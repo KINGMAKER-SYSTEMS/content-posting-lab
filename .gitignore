@@ -1,0 +1,16 @@
+.env
+tiktok_auth.json
+plan
+
+output/
+caption_output/
+burn_output/
+burn_uploads/
+video-output/
+
+__pycache__/
+*.pyc
+*.pyo
+
+.DS_Store
+.claude/

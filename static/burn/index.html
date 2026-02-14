@@ -1,0 +1,1013 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Caption Burner</title>
+<style>
+  @font-face {
+    font-family: 'TikTok Sans';
+    src: url('/fonts/TikTokSans16pt-Bold.ttf') format('truetype');
+    font-weight: 700;
+    font-style: normal;
+  }
+  @font-face {
+    font-family: 'TikTok Sans';
+    src: url('/fonts/TikTokSans16pt-ExtraBold.ttf') format('truetype');
+    font-weight: 800;
+    font-style: normal;
+  }
+  @font-face {
+    font-family: 'TikTok Sans';
+    src: url('/fonts/TikTokSans16pt-SemiBold.ttf') format('truetype');
+    font-weight: 600;
+    font-style: normal;
+  }
+
+  :root {
+    --bg: #0a0a0f;
+    --surface: #14141f;
+    --surface2: #1a1a2a;
+    --border: #2a2a3a;
+    --accent: #6c5ce7;
+    --accent-hover: #7c6df7;
+    --accent-glow: rgba(108,92,231,0.25);
+    --text: #e8e8f0;
+    --text-dim: #8888a0;
+    --success: #00d68f;
+    --error: #ff6b6b;
+    --warning: #ffc048;
+    --radius: 12px;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+  }
+
+  .layout {
+    display: grid;
+    grid-template-columns: 340px 1fr;
+    min-height: 100vh;
+  }
+
+  /* ─── Sidebar ─── */
+  .sidebar {
+    border-right: 1px solid var(--border);
+    padding: 1.5rem;
+    overflow-y: auto;
+    max-height: 100vh;
+    position: sticky;
+    top: 0;
+    display: flex;
+    flex-direction: column;
+  }
+
+  h1 {
+    font-size: 1.4rem;
+    font-weight: 700;
+    margin-bottom: 0.2rem;
+    background: linear-gradient(135deg, var(--accent), #a29bfe);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  .subtitle { color: var(--text-dim); margin-bottom: 1.5rem; font-size: 0.8rem; }
+
+  label {
+    display: block;
+    font-size: 0.72rem;
+    font-weight: 600;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin-bottom: 0.3rem;
+  }
+
+  select, input[type="number"], textarea {
+    width: 100%;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text);
+    padding: 0.55rem 0.7rem;
+    font-size: 0.85rem;
+    font-family: inherit;
+    margin-bottom: 0.9rem;
+  }
+  select:focus, input:focus, textarea:focus { outline: none; border-color: var(--accent); }
+  textarea { resize: vertical; min-height: 80px; line-height: 1.5; }
+
+  .row { display: flex; gap: 0.7rem; }
+  .row > * { flex: 1; }
+
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    background: var(--accent);
+    color: #fff;
+    border: none;
+    border-radius: 8px;
+    padding: 0.7rem 1.5rem;
+    font-size: 0.95rem;
+    font-weight: 600;
+    cursor: pointer;
+    width: 100%;
+    transition: background 0.2s;
+    margin-top: 0.3rem;
+  }
+  .btn:hover { background: var(--accent-hover); }
+  .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+  .btn-sm { padding: 0.4rem 0.8rem; font-size: 0.8rem; width: auto; margin-top: 0; }
+  .btn-outline { background: transparent; border: 1px solid var(--accent); color: var(--accent); }
+  .btn-outline:hover { background: rgba(108,92,231,0.1); }
+  .btn-success { background: var(--success); color: #0a0a0f; }
+  .btn-success:hover { background: #00e69a; }
+
+  .section-label {
+    font-size: 0.72rem;
+    font-weight: 600;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    padding-top: 0.5rem;
+    border-top: 1px solid var(--border);
+    margin-bottom: 0.5rem;
+    margin-top: 0.3rem;
+  }
+
+  .chip-row { display: flex; gap: 0.4rem; flex-wrap: wrap; margin-bottom: 0.9rem; }
+  .chip {
+    padding: 0.3rem 0.7rem;
+    border-radius: 6px;
+    font-size: 0.78rem;
+    font-weight: 600;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--text-dim);
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .chip.active { border-color: var(--accent); background: rgba(108,92,231,0.15); color: var(--text); }
+
+  .stat-row {
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.8rem;
+    color: var(--text-dim);
+    margin-bottom: 0.3rem;
+  }
+  .stat-row strong { color: var(--text); }
+
+  /* ─── Progress ─── */
+  .progress-track {
+    height: 4px;
+    background: var(--border);
+    border-radius: 2px;
+    overflow: hidden;
+    display: none;
+    margin-top: 0.6rem;
+  }
+  .progress-track.active { display: block; }
+  .progress-fill {
+    height: 100%;
+    background: var(--accent);
+    border-radius: 2px;
+    transition: width 0.4s ease;
+    width: 0%;
+  }
+  .progress-fill.complete { background: var(--success); }
+  .progress-label {
+    font-size: 0.75rem;
+    color: var(--text-dim);
+    text-align: center;
+    margin-top: 0.3rem;
+    display: none;
+  }
+  .progress-label.active { display: block; }
+
+  /* ─── Main panel ─── */
+  .main-panel {
+    padding: 1.5rem;
+    overflow-y: auto;
+    max-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+  }
+
+  .panel-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .panel-title { font-size: 1.2rem; font-weight: 700; }
+  .count-badge {
+    font-size: 0.78rem;
+    background: var(--surface2);
+    padding: 0.2rem 0.6rem;
+    border-radius: 4px;
+    color: var(--text-dim);
+  }
+
+  .empty-state {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 60vh;
+    color: var(--text-dim);
+    text-align: center;
+  }
+  .empty-state .icon { font-size: 3rem; opacity: 0.3; margin-bottom: 0.6rem; }
+
+  /* ─── Video cards ─── */
+  .video-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+    gap: 1rem;
+  }
+
+  .video-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+    transition: border-color 0.2s;
+    position: relative;
+  }
+  .video-card:hover { border-color: var(--accent); }
+  .video-card.burned { border-color: var(--success); }
+  .video-card.error { border-color: var(--error); }
+  .video-card.selected { border-color: var(--accent); box-shadow: 0 0 12px var(--accent-glow); }
+
+  .video-card .video-wrap {
+    position: relative;
+    background: #000;
+    aspect-ratio: 9/16;
+    overflow: hidden;
+    cursor: default;
+  }
+  .video-card video {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+    pointer-events: none;
+  }
+
+  /* ─── Draggable text layer ─── */
+  .text-layer {
+    position: absolute;
+    z-index: 10;
+    cursor: grab;
+    user-select: none;
+    touch-action: none;
+    max-width: 80%;
+    text-align: center;
+    transform: translate(-50%, -50%);
+  }
+  .text-layer.dragging { cursor: grabbing; }
+  .text-layer.selected-layer {
+    outline: 2px dashed var(--accent);
+    outline-offset: 6px;
+    border-radius: 4px;
+  }
+  .text-layer span {
+    font-family: 'TikTok Sans', sans-serif;
+    font-weight: 700;
+    color: white;
+    -webkit-text-stroke: 2px black;
+    paint-order: stroke fill;
+    line-height: 1.2;
+    word-wrap: break-word;
+    display: inline-block;
+  }
+
+  .text-layer textarea {
+    background: transparent;
+    border: none;
+    outline: none;
+    resize: none;
+    overflow: hidden;
+    font-family: 'TikTok Sans', sans-serif;
+    font-weight: 700;
+    color: white;
+    -webkit-text-stroke: 2px black;
+    paint-order: stroke fill;
+    line-height: 1.2;
+    text-align: center;
+    width: 100%;
+    min-height: 1.4em;
+    cursor: text;
+  }
+
+  /* Snap guides */
+  .snap-guide-h, .snap-guide-v {
+    position: absolute;
+    z-index: 20;
+    pointer-events: none;
+    display: none;
+  }
+  .snap-guide-h {
+    left: 0; right: 0;
+    top: 50%;
+    height: 1px;
+    background: var(--accent);
+    opacity: 0.7;
+  }
+  .snap-guide-v {
+    top: 0; bottom: 0;
+    left: 50%;
+    width: 1px;
+    background: var(--accent);
+    opacity: 0.7;
+  }
+
+  .video-card .card-footer {
+    padding: 0.5rem 0.6rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+  }
+  .video-card .card-footer .file-label {
+    font-size: 0.68rem;
+    color: var(--text-dim);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .card-caption-edit {
+    font-size: 0.82rem;
+    min-height: 44px;
+    padding: 0.4rem;
+    border-radius: 6px;
+    margin-bottom: 0;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    width: 100%;
+    font-family: inherit;
+    resize: vertical;
+    line-height: 1.5;
+  }
+  .card-caption-edit:focus { outline: none; border-color: var(--accent); }
+
+  .card-controls {
+    display: none;
+    padding: 0.4rem 0.6rem 0.5rem;
+    border-top: 1px solid var(--border);
+    gap: 0.4rem;
+    flex-wrap: wrap;
+    align-items: center;
+  }
+  .video-card.selected .card-controls { display: flex; }
+  .card-controls label { margin-bottom: 0; font-size: 0.65rem; }
+  .card-controls select, .card-controls input[type="number"] {
+    margin-bottom: 0;
+    padding: 0.3rem 0.4rem;
+    font-size: 0.75rem;
+    width: auto;
+    min-width: 60px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+  }
+
+  .burn-badge {
+    position: absolute;
+    top: 8px; right: 8px;
+    padding: 0.2rem 0.5rem;
+    border-radius: 4px;
+    font-size: 0.7rem;
+    font-weight: 700;
+    z-index: 25;
+  }
+  .burn-badge.done { background: var(--success); color: #0a0a0f; }
+  .burn-badge.fail { background: var(--error); color: white; }
+
+  .export-bar {
+    display: none;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.7rem 1rem;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+  }
+  .export-bar.active { display: flex; }
+  .export-bar .info { font-size: 0.82rem; color: var(--text-dim); }
+  .export-bar .actions { display: flex; gap: 0.5rem; }
+
+  .apply-all-btn {
+    padding: 0.35rem 0.7rem;
+    font-size: 0.72rem;
+    background: rgba(108,92,231,0.15);
+    border: 1px solid var(--accent);
+    border-radius: 6px;
+    color: var(--accent);
+    cursor: pointer;
+    transition: all 0.15s;
+    margin-top: 0.5rem;
+  }
+  .apply-all-btn:hover { background: rgba(108,92,231,0.25); }
+
+  @media (max-width: 800px) {
+    .layout { grid-template-columns: 1fr; }
+    .sidebar { position: static; max-height: none; border-right: none; border-bottom: 1px solid var(--border); }
+    .main-panel { max-height: none; }
+    .video-grid { grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); }
+  }
+</style>
+</head>
+<body>
+
+<div class="layout">
+  <div class="sidebar">
+    <h1>Caption Burner</h1>
+    <p class="subtitle">Pair videos with captions, drag to position, burn & download</p>
+
+    <label>Video Folder</label>
+    <select id="folderSelect"><option value="">Loading...</option></select>
+
+    <label>Caption Source</label>
+    <select id="captionSelect">
+      <option value="__paste">Paste manually</option>
+    </select>
+
+    <div id="pasteWrap" style="display:none">
+      <label>Captions (one per line)</label>
+      <textarea id="pasteArea" placeholder="First caption&#10;Second caption&#10;Third caption"></textarea>
+    </div>
+
+    <div class="section-label">Style Defaults</div>
+
+    <div class="row">
+      <div>
+        <label>Font</label>
+        <select id="fontSelect"><option value="">Loading...</option></select>
+      </div>
+      <div>
+        <label>Size</label>
+        <input type="number" id="fontSize" value="58" min="20" max="120" />
+      </div>
+    </div>
+
+    <label>Quick Position</label>
+    <div class="chip-row" id="posChips">
+      <span class="chip" data-pos="top">Top</span>
+      <span class="chip active" data-pos="center">Center</span>
+      <span class="chip" data-pos="bottom">Bottom</span>
+    </div>
+
+    <div class="stat-row">
+      <span>Videos</span>
+      <strong id="videoCount">0</strong>
+    </div>
+    <div class="stat-row">
+      <span>Captions</span>
+      <strong id="captionCount">0</strong>
+    </div>
+
+    <button class="btn" id="alignBtn">Align & Preview</button>
+
+    <button class="apply-all-btn" id="applyAllBtn" style="display:none">Apply Current Style to All</button>
+
+    <div class="progress-track" id="progressTrack">
+      <div class="progress-fill" id="progressFill"></div>
+    </div>
+    <div class="progress-label" id="progressLabel"></div>
+
+    <button class="btn btn-success" id="burnBtn" style="display:none">Burn All</button>
+
+    <div id="downloadSection" style="display:none">
+      <button class="btn btn-outline" id="downloadAllBtn">Download All Burned</button>
+    </div>
+
+    <div style="flex:1"></div>
+  </div>
+
+  <div class="main-panel">
+    <div id="emptyState" class="empty-state">
+      <div class="icon">&#128293;</div>
+      <p>Pick a video folder and caption source,<br/>then hit Align & Preview.</p>
+    </div>
+
+    <div id="gallery" style="display:none">
+      <div class="panel-header">
+        <span class="panel-title">Paired Clips</span>
+        <span class="count-badge" id="pairCount">0 pairs</span>
+      </div>
+
+      <div class="export-bar" id="exportBar">
+        <span class="info" id="exportInfo">0 burned</span>
+        <div class="actions">
+          <button class="btn btn-sm btn-success" id="dlBurnedBtn">Download All</button>
+        </div>
+      </div>
+
+      <div class="video-grid" id="videoGrid"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+let allVideos = [];
+let captionSources = [];
+let availableFonts = [];
+let pairs = [];
+let burning = false;
+let selectedIndex = -1;
+
+const $ = id => document.getElementById(id);
+
+const folderSelect = $('folderSelect');
+const captionSelect = $('captionSelect');
+const pasteWrap = $('pasteWrap');
+const pasteArea = $('pasteArea');
+const fontSelect = $('fontSelect');
+const fontSizeInput = $('fontSize');
+const posChips = $('posChips');
+const videoCount = $('videoCount');
+const captionCount = $('captionCount');
+const alignBtn = $('alignBtn');
+const burnBtn = $('burnBtn');
+const progressTrack = $('progressTrack');
+const progressFill = $('progressFill');
+const progressLabel = $('progressLabel');
+const emptyState = $('emptyState');
+const gallery = $('gallery');
+const videoGrid = $('videoGrid');
+const pairCount = $('pairCount');
+const exportBar = $('exportBar');
+const exportInfo = $('exportInfo');
+const dlBurnedBtn = $('dlBurnedBtn');
+const downloadSection = $('downloadSection');
+const downloadAllBtn = $('downloadAllBtn');
+const applyAllBtn = $('applyAllBtn');
+
+// ── Init: scan disk ──
+(async () => {
+  const [vRes, cRes, fRes] = await Promise.all([
+    fetch('/api/videos').then(r => r.json()),
+    fetch('/api/captions').then(r => r.json()),
+    fetch('/api/fonts').then(r => r.json()),
+  ]);
+  allVideos = vRes.videos;
+  captionSources = cRes.sources;
+  availableFonts = fRes.fonts;
+
+  // Folder dropdown
+  folderSelect.innerHTML = '';
+  const folders = {};
+  allVideos.forEach(v => {
+    const f = v.folder || '(root)';
+    if (!folders[f]) folders[f] = [];
+    folders[f].push(v);
+  });
+  Object.keys(folders).forEach(f => {
+    const opt = document.createElement('option');
+    opt.value = f;
+    opt.textContent = `${f} (${folders[f].length} videos)`;
+    folderSelect.appendChild(opt);
+  });
+  if (!folderSelect.options.length) {
+    folderSelect.innerHTML = '<option value="">No videos in video-output/</option>';
+  }
+
+  // Caption dropdown
+  captionSelect.innerHTML = '<option value="__paste">Paste manually</option>';
+  captionSources.forEach(src => {
+    const opt = document.createElement('option');
+    opt.value = src.username;
+    opt.textContent = `@${src.username} (${src.count} captions)`;
+    captionSelect.appendChild(opt);
+  });
+
+  // Font dropdown
+  fontSelect.innerHTML = '';
+  availableFonts.forEach(f => {
+    const opt = document.createElement('option');
+    opt.value = f.file;
+    opt.textContent = f.name;
+    if (f.file.includes('16pt-Bold.')) opt.selected = true;
+    fontSelect.appendChild(opt);
+  });
+
+  updateStats();
+})();
+
+// ── Stats ──
+folderSelect.addEventListener('change', updateStats);
+captionSelect.addEventListener('change', () => {
+  pasteWrap.style.display = captionSelect.value === '__paste' ? '' : 'none';
+  updateStats();
+});
+pasteArea.addEventListener('input', updateStats);
+
+function updateStats() {
+  const folder = folderSelect.value;
+  const vids = allVideos.filter(v => (v.folder || '(root)') === folder);
+  videoCount.textContent = vids.length;
+  captionCount.textContent = getCaptions().length;
+}
+
+function getCaptions() {
+  if (captionSelect.value === '__paste') {
+    return pasteArea.value.split('\n').filter(l => l.trim()).map(l => l.trim());
+  }
+  const src = captionSources.find(s => s.username === captionSelect.value);
+  return src ? src.captions.map(c => c.text) : [];
+}
+
+// ── Quick position chips ──
+posChips.addEventListener('click', e => {
+  const chip = e.target.closest('.chip');
+  if (!chip) return;
+  posChips.querySelectorAll('.chip').forEach(c => c.classList.remove('active'));
+  chip.classList.add('active');
+  const pos = chip.dataset.pos;
+  const yMap = { top: 15, center: 50, bottom: 85 };
+  const y = yMap[pos] || 50;
+  pairs.forEach(p => { p.x = 50; p.y = y; });
+  refreshAllOverlays();
+});
+
+// ── Align & Preview ──
+alignBtn.addEventListener('click', () => {
+  const folder = folderSelect.value;
+  if (!folder) return;
+  const vids = allVideos.filter(v => (v.folder || '(root)') === folder);
+  if (!vids.length) return;
+
+  const captions = getCaptions();
+  const defFont = fontSelect.value;
+  const defSize = parseInt(fontSizeInput.value) || 58;
+  const activePos = posChips.querySelector('.chip.active');
+  const yMap = { top: 15, center: 50, bottom: 85 };
+  const defY = yMap[activePos?.dataset.pos] || 50;
+
+  pairs = vids.map((v, i) => ({
+    videoPath: v.path,
+    name: v.name,
+    caption: captions.length > 0 ? captions[i % captions.length] : '',
+    x: 50,
+    y: defY,
+    fontSize: defSize,
+    fontFile: defFont,
+    maxWidthPct: 80,
+    result: null,
+  }));
+
+  renderGrid();
+  emptyState.style.display = 'none';
+  gallery.style.display = '';
+  burnBtn.style.display = '';
+  applyAllBtn.style.display = '';
+  pairCount.textContent = `${pairs.length} pairs`;
+  exportBar.classList.remove('active');
+  downloadSection.style.display = 'none';
+});
+
+// ── Render grid ──
+function renderGrid() {
+  videoGrid.innerHTML = '';
+
+  pairs.forEach((pair, i) => {
+    const card = document.createElement('div');
+    card.className = 'video-card';
+    card.dataset.idx = i;
+
+    const previewFontPx = Math.max(8, Math.round(pair.fontSize * 0.24));
+
+    card.innerHTML = `
+      <div class="video-wrap" data-wrap="${i}">
+        <video src="/video/${encodeURI(pair.videoPath)}" muted loop playsinline preload="metadata"></video>
+        <div class="snap-guide-h"></div>
+        <div class="snap-guide-v"></div>
+        <div class="text-layer" data-layer="${i}"
+             style="left:${pair.x}%;top:${pair.y}%;font-size:${previewFontPx}px">
+          <span>${esc(pair.caption)}</span>
+        </div>
+      </div>
+      <div class="card-footer">
+        <div class="file-label" title="${pair.name}">${pair.name}</div>
+        <textarea class="card-caption-edit" rows="2" data-cap="${i}">${esc(pair.caption)}</textarea>
+      </div>
+      <div class="card-controls">
+        <label>Size</label>
+        <input type="number" value="${pair.fontSize}" min="20" max="120" data-fsi="${i}" style="width:60px" />
+      </div>
+    `;
+
+    // Video hover play
+    const vid = card.querySelector('video');
+    card.addEventListener('mouseenter', () => vid.play().catch(() => {}));
+    card.addEventListener('mouseleave', () => { vid.pause(); vid.currentTime = 0; });
+
+    // Select card on click
+    card.addEventListener('click', (e) => {
+      if (e.target.closest('.text-layer') || e.target.closest('.card-caption-edit') || e.target.closest('.card-controls')) return;
+      selectCard(i);
+    });
+
+    // Caption textarea edit
+    card.querySelector(`[data-cap="${i}"]`).addEventListener('input', e => {
+      pair.caption = e.target.value;
+      const layerSpan = card.querySelector(`.text-layer span`);
+      if (layerSpan) layerSpan.textContent = e.target.value;
+    });
+
+    // Font size control
+    const fsi = card.querySelector(`[data-fsi="${i}"]`);
+    fsi.addEventListener('change', () => {
+      pair.fontSize = parseInt(fsi.value) || 58;
+      updateLayerStyle(i);
+    });
+
+    // Set up dragging on the text layer
+    setupDrag(card, i);
+
+    // Double-click text layer to edit inline
+    setupInlineEdit(card, i);
+
+    videoGrid.appendChild(card);
+  });
+}
+
+function selectCard(idx) {
+  document.querySelectorAll('.video-card.selected').forEach(c => c.classList.remove('selected'));
+  if (selectedIndex === idx) {
+    selectedIndex = -1;
+    return;
+  }
+  selectedIndex = idx;
+  const card = videoGrid.children[idx];
+  if (card) card.classList.add('selected');
+}
+
+function updateLayerStyle(idx) {
+  const pair = pairs[idx];
+  const layer = videoGrid.children[idx]?.querySelector('.text-layer');
+  if (!layer) return;
+  const previewFontPx = Math.max(8, Math.round(pair.fontSize * 0.24));
+  layer.style.fontSize = previewFontPx + 'px';
+  layer.style.left = pair.x + '%';
+  layer.style.top = pair.y + '%';
+}
+
+function refreshAllOverlays() {
+  pairs.forEach((_, i) => updateLayerStyle(i));
+}
+
+// ── Drag system (adapted from Shippi TextLayer) ──
+function setupDrag(card, idx) {
+  const layer = card.querySelector('.text-layer');
+  const wrap = card.querySelector('.video-wrap');
+  const guideH = card.querySelector('.snap-guide-h');
+  const guideV = card.querySelector('.snap-guide-v');
+  const SNAP = 3; // snap within 3% of center
+
+  let startX, startY, startLayerX, startLayerY, dragging = false;
+
+  layer.addEventListener('pointerdown', (e) => {
+    if (e.target.tagName === 'TEXTAREA') return;
+    e.preventDefault();
+    e.stopPropagation();
+    dragging = true;
+    layer.classList.add('dragging');
+    layer.classList.add('selected-layer');
+    selectCard(idx);
+
+    const rect = wrap.getBoundingClientRect();
+    startX = e.clientX;
+    startY = e.clientY;
+    startLayerX = pairs[idx].x;
+    startLayerY = pairs[idx].y;
+
+    const onMove = (me) => {
+      if (!dragging) return;
+      const dx = me.clientX - startX;
+      const dy = me.clientY - startY;
+      let newX = startLayerX + (dx / rect.width) * 100;
+      let newY = startLayerY + (dy / rect.height) * 100;
+
+      newX = Math.max(5, Math.min(95, newX));
+      newY = Math.max(5, Math.min(95, newY));
+
+      // Center snapping
+      let snapH = false, snapV = false;
+      if (Math.abs(newX - 50) < SNAP) { newX = 50; snapV = true; }
+      if (Math.abs(newY - 50) < SNAP) { newY = 50; snapH = true; }
+
+      guideH.style.display = snapH ? 'block' : 'none';
+      guideV.style.display = snapV ? 'block' : 'none';
+
+      pairs[idx].x = newX;
+      pairs[idx].y = newY;
+      layer.style.left = newX + '%';
+      layer.style.top = newY + '%';
+    };
+
+    const onUp = () => {
+      dragging = false;
+      layer.classList.remove('dragging');
+      guideH.style.display = 'none';
+      guideV.style.display = 'none';
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+    };
+
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+  });
+}
+
+// ── Inline text editing (double-click) ──
+function setupInlineEdit(card, idx) {
+  const layer = card.querySelector('.text-layer');
+  let editing = false;
+
+  layer.addEventListener('dblclick', (e) => {
+    if (editing) return;
+    e.stopPropagation();
+    editing = true;
+
+    const span = layer.querySelector('span');
+    const ta = document.createElement('textarea');
+    ta.value = pairs[idx].caption;
+    ta.style.fontSize = span.style?.fontSize || layer.style.fontSize;
+    ta.rows = Math.max(1, pairs[idx].caption.split('\n').length);
+
+    span.style.display = 'none';
+    layer.appendChild(ta);
+    ta.focus();
+    ta.select();
+
+    // Auto-resize
+    const resize = () => {
+      ta.style.height = 'auto';
+      ta.style.height = ta.scrollHeight + 'px';
+    };
+    ta.addEventListener('input', () => {
+      pairs[idx].caption = ta.value;
+      // Sync with card textarea
+      const cardTa = card.querySelector('.card-caption-edit');
+      if (cardTa) cardTa.value = ta.value;
+      resize();
+    });
+    resize();
+
+    const finish = () => {
+      editing = false;
+      span.textContent = pairs[idx].caption;
+      span.style.display = '';
+      ta.remove();
+    };
+
+    ta.addEventListener('blur', finish);
+    ta.addEventListener('keydown', (ke) => {
+      if (ke.key === 'Escape') { ta.blur(); }
+    });
+  });
+}
+
+// ── Apply style to all ──
+applyAllBtn.addEventListener('click', () => {
+  const defFont = fontSelect.value;
+  const defSize = parseInt(fontSizeInput.value) || 58;
+  const activePos = posChips.querySelector('.chip.active');
+  const yMap = { top: 15, center: 50, bottom: 85 };
+  const defY = yMap[activePos?.dataset.pos] || 50;
+
+  pairs.forEach((p, i) => {
+    p.fontSize = defSize;
+    p.fontFile = defFont;
+    p.x = 50;
+    p.y = defY;
+    // Update the per-card size input
+    const fsi = videoGrid.children[i]?.querySelector(`[data-fsi="${i}"]`);
+    if (fsi) fsi.value = defSize;
+  });
+  refreshAllOverlays();
+});
+
+// ── Burn All ──
+burnBtn.addEventListener('click', () => {
+  if (burning || !pairs.length) return;
+  burning = true;
+  burnBtn.disabled = true;
+  burnBtn.textContent = 'Burning...';
+  progressTrack.classList.add('active');
+  progressLabel.classList.add('active');
+  progressFill.style.width = '0%';
+  progressFill.classList.remove('complete');
+
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const ws = new WebSocket(`${proto}//${location.host}/ws/burn`);
+
+  ws.onopen = () => {
+    ws.send(JSON.stringify({
+      pairs: pairs.map(p => ({
+        videoPath: p.videoPath,
+        caption: p.caption,
+        x: p.x,
+        y: p.y,
+        fontSize: p.fontSize,
+        fontFile: p.fontFile,
+        maxWidthPct: p.maxWidthPct,
+      })),
+    }));
+  };
+
+  ws.onmessage = e => {
+    const msg = JSON.parse(e.data);
+
+    if (msg.event === 'burning') {
+      progressLabel.textContent = `Burning ${msg.index + 1} / ${msg.total}...`;
+      progressFill.style.width = Math.round((msg.index / msg.total) * 100) + '%';
+    }
+
+    if (msg.event === 'burned') {
+      pairs[msg.index].result = msg.result;
+      const card = videoGrid.children[msg.index];
+
+      if (msg.result.ok) {
+        card.classList.add('burned');
+        card.querySelector('.video-wrap').insertAdjacentHTML('beforeend',
+          '<span class="burn-badge done">Burned</span>');
+        // Swap video to burned version
+        card.querySelector('video').src = `/burned/${msg.result.file}`;
+        // Hide text layer (caption is now burned in)
+        const tl = card.querySelector('.text-layer');
+        if (tl) tl.style.display = 'none';
+      } else {
+        card.classList.add('error');
+        card.querySelector('.video-wrap').insertAdjacentHTML('beforeend',
+          `<span class="burn-badge fail" title="${esc(msg.result.error || '')}">Error</span>`);
+      }
+
+      progressFill.style.width = Math.round(((msg.index + 1) / msg.total) * 100) + '%';
+      progressLabel.textContent = `${msg.index + 1} / ${msg.total} done`;
+    }
+
+    if (msg.event === 'complete') {
+      progressFill.style.width = '100%';
+      progressFill.classList.add('complete');
+      progressLabel.textContent = `Done! ${msg.successCount}/${msg.total} burned.`;
+      burning = false;
+      burnBtn.textContent = 'Burn All';
+      burnBtn.disabled = false;
+
+      if (msg.successCount > 0) {
+        exportBar.classList.add('active');
+        exportInfo.textContent = `${msg.successCount} burned`;
+        const dl = () => downloadBatch(msg.batchId, msg.results);
+        dlBurnedBtn.onclick = dl;
+        downloadSection.style.display = '';
+        downloadAllBtn.onclick = dl;
+      }
+    }
+
+    if (msg.event === 'error') {
+      progressLabel.textContent = 'Error: ' + msg.error;
+      burning = false;
+      burnBtn.textContent = 'Burn All';
+      burnBtn.disabled = false;
+    }
+  };
+
+  ws.onerror = () => {
+    progressLabel.textContent = 'Connection error';
+    burning = false;
+    burnBtn.textContent = 'Burn All';
+    burnBtn.disabled = false;
+  };
+});
+
+function downloadBatch(batchId, results) {
+  results.filter(r => r.ok).forEach((r, i) => {
+    setTimeout(() => {
+      const a = document.createElement('a');
+      a.href = `/burned/${r.file}`;
+      a.download = `burned_${i}.mp4`;
+      a.click();
+    }, i * 300);
+  });
+}
+
+function esc(s) {
+  const d = document.createElement('div');
+  d.textContent = s || '';
+  return d.innerHTML;
+}
+</script>
+
+</body>
+</html>

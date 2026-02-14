@@ -1,0 +1,662 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Video Lab</title>
+<style>
+  :root {
+    --bg: #0a0a0f;
+    --surface: #14141f;
+    --surface2: #1a1a2a;
+    --border: #2a2a3a;
+    --accent: #6c5ce7;
+    --accent-hover: #7c6df7;
+    --text: #e8e8f0;
+    --text-dim: #8888a0;
+    --success: #00d68f;
+    --error: #ff6b6b;
+    --warning: #ffc048;
+    --radius: 12px;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+  }
+
+  /* ─── Layout: two-panel ─── */
+  .layout {
+    display: grid;
+    grid-template-columns: 420px 1fr;
+    min-height: 100vh;
+  }
+
+  .sidebar {
+    border-right: 1px solid var(--border);
+    padding: 1.5rem;
+    overflow-y: auto;
+    max-height: 100vh;
+    position: sticky;
+    top: 0;
+  }
+
+  .main-panel {
+    padding: 1.5rem 2rem;
+    overflow-y: auto;
+    max-height: 100vh;
+  }
+
+  h1 {
+    font-size: 1.5rem;
+    font-weight: 700;
+    margin-bottom: 0.2rem;
+    background: linear-gradient(135deg, var(--accent), #a29bfe);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+
+  .subtitle { color: var(--text-dim); margin-bottom: 1.5rem; font-size: 0.82rem; }
+
+  /* ─── Form ─── */
+  label {
+    display: block;
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin-bottom: 0.35rem;
+  }
+
+  textarea {
+    width: 100%;
+    min-height: 90px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text);
+    padding: 0.7rem;
+    font-size: 0.9rem;
+    resize: vertical;
+    font-family: inherit;
+    margin-bottom: 0.8rem;
+  }
+  textarea:focus { outline: none; border-color: var(--accent); }
+
+  .row { display: flex; gap: 0.7rem; margin-bottom: 0.8rem; flex-wrap: wrap; }
+  .row > * { flex: 1; min-width: 100px; }
+
+  select, input[type="number"] {
+    width: 100%;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text);
+    padding: 0.5rem 0.7rem;
+    font-size: 0.85rem;
+    font-family: inherit;
+  }
+  select:focus, input[type="number"]:focus { outline: none; border-color: var(--accent); }
+
+  /* ─── Upload ─── */
+  .upload-zone {
+    border: 2px dashed var(--border);
+    border-radius: 8px;
+    padding: 1rem;
+    text-align: center;
+    color: var(--text-dim);
+    cursor: pointer;
+    transition: border-color 0.2s, background 0.2s;
+    margin-bottom: 0.8rem;
+    position: relative;
+    font-size: 0.85rem;
+  }
+  .upload-zone:hover, .upload-zone.dragover {
+    border-color: var(--accent);
+    background: rgba(108, 92, 231, 0.05);
+  }
+  .upload-zone input { display: none; }
+  .upload-zone .icon { font-size: 1.3rem; margin-bottom: 0.2rem; }
+  .upload-zone .filename {
+    color: var(--accent);
+    font-weight: 600;
+    margin-top: 0.3rem;
+    word-break: break-all;
+  }
+  .upload-zone .clear-btn {
+    position: absolute;
+    top: 6px;
+    right: 6px;
+    background: var(--border);
+    border: none;
+    color: var(--text);
+    border-radius: 50%;
+    width: 22px;
+    height: 22px;
+    cursor: pointer;
+    font-size: 0.65rem;
+    display: none;
+  }
+  .upload-zone.has-file .clear-btn { display: block; }
+
+  /* ─── Buttons ─── */
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    background: var(--accent);
+    color: #fff;
+    border: none;
+    border-radius: 8px;
+    padding: 0.7rem 1.5rem;
+    font-size: 0.95rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.2s, transform 0.1s;
+    width: 100%;
+  }
+  .btn:hover { background: var(--accent-hover); }
+  .btn:active { transform: scale(0.98); }
+  .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  .btn-outline {
+    background: transparent;
+    border: 1px solid var(--accent);
+    color: var(--accent);
+  }
+  .btn-outline:hover { background: rgba(108, 92, 231, 0.1); }
+
+  .btn-sm {
+    padding: 0.45rem 1rem;
+    font-size: 0.82rem;
+    width: auto;
+  }
+
+  .btn-success {
+    background: var(--success);
+    color: #0a0a0f;
+  }
+  .btn-success:hover { background: #00e69a; }
+
+  /* ─── Media Panel ─── */
+  .panel-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 1.2rem;
+  }
+  .panel-title {
+    font-size: 1.2rem;
+    font-weight: 700;
+  }
+  .panel-empty {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 60vh;
+    color: var(--text-dim);
+    text-align: center;
+  }
+  .panel-empty .icon { font-size: 3rem; margin-bottom: 0.8rem; opacity: 0.3; }
+  .panel-empty p { font-size: 0.9rem; }
+
+  /* ─── Job block ─── */
+  .job {
+    margin-bottom: 1.5rem;
+  }
+  .job-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 0.6rem;
+  }
+  .job-prompt {
+    font-size: 0.82rem;
+    color: var(--text-dim);
+    font-style: italic;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 60%;
+  }
+  .job-progress {
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--text-dim);
+  }
+  .job-progress .done-count { color: var(--success); }
+
+  /* ─── Progress bar ─── */
+  .progress-track {
+    height: 4px;
+    background: var(--border);
+    border-radius: 2px;
+    margin-bottom: 0.8rem;
+    overflow: hidden;
+  }
+  .progress-fill {
+    height: 100%;
+    background: var(--accent);
+    border-radius: 2px;
+    transition: width 0.4s ease;
+  }
+  .progress-fill.complete { background: var(--success); }
+
+  /* ─── Video grid ─── */
+  .video-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+    gap: 0.8rem;
+    margin-bottom: 0.6rem;
+  }
+
+  .video-card {
+    border-radius: 10px;
+    overflow: hidden;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    transition: border-color 0.2s;
+  }
+  .video-card:hover { border-color: var(--accent); }
+
+  .video-card .video-wrap {
+    position: relative;
+    background: #000;
+    aspect-ratio: 9/16;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .video-card video {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+  }
+
+  .video-card .card-footer {
+    padding: 0.45rem 0.6rem;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-size: 0.75rem;
+  }
+
+  .status-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    font-weight: 600;
+    font-size: 0.75rem;
+  }
+  .status-queued { color: var(--text-dim); }
+  .status-generating, .status-polling { color: var(--warning); }
+  .status-downloading { color: #48c6ff; }
+  .status-done { color: var(--success); }
+  .status-error { color: var(--error); }
+
+  .pending-placeholder {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.5rem;
+    color: var(--text-dim);
+    font-size: 0.8rem;
+  }
+
+  .spinner {
+    width: 14px; height: 14px;
+    border: 2px solid transparent;
+    border-top-color: currentColor;
+    border-radius: 50%;
+    animation: spin 0.6s linear infinite;
+    display: inline-block;
+  }
+  .spinner-lg {
+    width: 28px; height: 28px;
+    border-width: 3px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .dl-single {
+    color: var(--accent);
+    text-decoration: none;
+    font-weight: 600;
+    font-size: 0.75rem;
+  }
+  .dl-single:hover { text-decoration: underline; }
+
+  .error-msg {
+    font-size: 0.7rem;
+    color: var(--error);
+    padding: 0.3rem 0.6rem;
+    word-break: break-all;
+  }
+
+  .job-actions {
+    display: flex;
+    gap: 0.5rem;
+    justify-content: flex-end;
+  }
+
+  /* ─── Responsive ─── */
+  @media (max-width: 900px) {
+    .layout {
+      grid-template-columns: 1fr;
+    }
+    .sidebar {
+      position: static;
+      max-height: none;
+      border-right: none;
+      border-bottom: 1px solid var(--border);
+    }
+    .main-panel { max-height: none; }
+  }
+</style>
+</head>
+<body>
+
+<div class="layout">
+  <!-- ─── Left: Controls ─── -->
+  <div class="sidebar">
+    <h1>Video Lab</h1>
+    <p class="subtitle">Multi-provider TikTok video generator</p>
+
+    <form id="genForm">
+      <label for="provider">Provider</label>
+      <select id="provider">
+        <option value="">Loading providers...</option>
+      </select>
+      <div id="providerPrice" style="font-size:0.75rem;color:var(--success);margin:-0.4rem 0 0.8rem 0;"></div>
+
+      <label for="prompt">Prompt</label>
+      <textarea id="prompt" placeholder="Describe the video you want to generate..." required></textarea>
+
+      <label>Upload Image or Video (optional)</label>
+      <div class="upload-zone" id="uploadZone">
+        <button type="button" class="clear-btn" id="clearFile">&times;</button>
+        <div class="icon">&#8686;</div>
+        <div>Drop file or <strong>click to browse</strong></div>
+        <div class="filename" id="fileName"></div>
+        <input type="file" id="mediaInput" accept="image/*,video/*" />
+      </div>
+
+      <div class="row">
+        <div>
+          <label for="count">Concurrent</label>
+          <input type="number" id="count" value="1" min="1" max="20" />
+        </div>
+        <div>
+          <label for="duration">Seconds</label>
+          <input type="number" id="duration" value="10" min="1" max="15" />
+        </div>
+      </div>
+
+      <div class="row">
+        <div>
+          <label for="aspect">Aspect Ratio</label>
+          <select id="aspect">
+            <option value="9:16" selected>9:16 TikTok</option>
+            <option value="16:9">16:9 Landscape</option>
+            <option value="1:1">1:1 Square</option>
+            <option value="4:3">4:3</option>
+            <option value="3:4">3:4</option>
+          </select>
+        </div>
+        <div>
+          <label for="resolution">Resolution</label>
+          <select id="resolution">
+            <option value="720p" selected>720p HD</option>
+            <option value="480p">480p SD</option>
+          </select>
+        </div>
+      </div>
+
+      <button type="submit" class="btn" id="submitBtn">Generate Videos</button>
+    </form>
+  </div>
+
+  <!-- ─── Right: Media Panel ─── -->
+  <div class="main-panel">
+    <div class="panel-header">
+      <div class="panel-title">Generated Videos</div>
+    </div>
+
+    <div id="emptyState" class="panel-empty">
+      <div class="icon">&#9654;</div>
+      <p>No videos yet.<br/>Enter a prompt and hit Generate.</p>
+    </div>
+
+    <div id="jobsList"></div>
+  </div>
+</div>
+
+<script>
+const form = document.getElementById('genForm');
+const uploadZone = document.getElementById('uploadZone');
+const mediaInput = document.getElementById('mediaInput');
+const fileNameEl = document.getElementById('fileName');
+const clearBtn = document.getElementById('clearFile');
+const submitBtn = document.getElementById('submitBtn');
+const jobsList = document.getElementById('jobsList');
+const emptyState = document.getElementById('emptyState');
+const providerSelect = document.getElementById('provider');
+const providerPrice = document.getElementById('providerPrice');
+
+// ─── Load providers from backend ───
+let providersData = [];
+(async () => {
+  try {
+    const resp = await fetch('/api/providers');
+    providersData = await resp.json();
+    providerSelect.innerHTML = '';
+    if (providersData.length === 0) {
+      providerSelect.innerHTML = '<option value="">No API keys configured</option>';
+      submitBtn.disabled = true;
+      return;
+    }
+    for (const p of providersData) {
+      const opt = document.createElement('option');
+      opt.value = p.id;
+      opt.textContent = `${p.name} (${p.pricing})`;
+      providerSelect.appendChild(opt);
+    }
+    updateProviderPrice();
+  } catch {
+    providerSelect.innerHTML = '<option value="">Failed to load</option>';
+  }
+})();
+
+providerSelect.addEventListener('change', updateProviderPrice);
+
+function updateProviderPrice() {
+  const p = providersData.find(x => x.id === providerSelect.value);
+  providerPrice.textContent = p ? `Pricing: ${p.pricing}` : '';
+}
+
+// ─── Upload handling ───
+uploadZone.addEventListener('click', (e) => {
+  if (e.target !== clearBtn) mediaInput.click();
+});
+mediaInput.addEventListener('change', () => updateFileName());
+uploadZone.addEventListener('dragover', (e) => { e.preventDefault(); uploadZone.classList.add('dragover'); });
+uploadZone.addEventListener('dragleave', () => uploadZone.classList.remove('dragover'));
+uploadZone.addEventListener('drop', (e) => {
+  e.preventDefault();
+  uploadZone.classList.remove('dragover');
+  if (e.dataTransfer.files.length) {
+    mediaInput.files = e.dataTransfer.files;
+    updateFileName();
+  }
+});
+clearBtn.addEventListener('click', (e) => {
+  e.stopPropagation();
+  mediaInput.value = '';
+  updateFileName();
+});
+
+function updateFileName() {
+  const file = mediaInput.files[0];
+  if (file) {
+    fileNameEl.textContent = file.name;
+    uploadZone.classList.add('has-file');
+  } else {
+    fileNameEl.textContent = '';
+    uploadZone.classList.remove('has-file');
+  }
+}
+
+// ─── Form submit ───
+form.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  submitBtn.disabled = true;
+  submitBtn.textContent = 'Submitting...';
+
+  const fd = new FormData();
+  fd.append('prompt', document.getElementById('prompt').value);
+  fd.append('provider', providerSelect.value);
+  fd.append('count', document.getElementById('count').value);
+  fd.append('duration', document.getElementById('duration').value);
+  fd.append('aspect_ratio', document.getElementById('aspect').value);
+  fd.append('resolution', document.getElementById('resolution').value);
+  if (mediaInput.files[0]) fd.append('media', mediaInput.files[0]);
+
+  try {
+    const resp = await fetch('/api/generate', { method: 'POST', body: fd });
+    if (!resp.ok) {
+      const err = await resp.text();
+      alert('Error: ' + err);
+      return;
+    }
+    const data = await resp.json();
+    emptyState.style.display = 'none';
+    pollJob(data.job_id);
+  } catch (err) {
+    alert('Network error: ' + err.message);
+  } finally {
+    submitBtn.disabled = false;
+    submitBtn.textContent = 'Generate Videos';
+  }
+});
+
+// ─── Polling ───
+const activePolls = new Set();
+
+function pollJob(jobId) {
+  if (activePolls.has(jobId)) return;
+  activePolls.add(jobId);
+
+  const el = document.createElement('div');
+  el.className = 'job';
+  el.id = 'job-' + jobId;
+  jobsList.prepend(el);
+
+  const tick = async () => {
+    try {
+      const resp = await fetch('/api/jobs/' + jobId);
+      const job = await resp.json();
+      renderJob(el, job);
+
+      const allDone = job.videos.every(v => v.status === 'done' || v.status === 'error');
+      if (!allDone) {
+        setTimeout(tick, 2000);
+      } else {
+        activePolls.delete(jobId);
+      }
+    } catch {
+      setTimeout(tick, 3000);
+    }
+  };
+  tick();
+}
+
+function statusLabel(s) {
+  const map = {
+    queued: 'Queued',
+    generating: 'Starting',
+    polling: 'Generating',
+    downloading: 'Saving',
+    done: 'Done',
+    error: 'Error',
+  };
+  return map[s] || s;
+}
+
+function renderJob(el, job) {
+  const doneCount = job.videos.filter(v => v.status === 'done').length;
+  const errorCount = job.videos.filter(v => v.status === 'error').length;
+  const total = job.count;
+  const allFinished = (doneCount + errorCount) === total;
+  const pct = Math.round(((doneCount + errorCount) / total) * 100);
+
+  let html = '';
+
+  // Header row
+  html += '<div class="job-header">';
+  const providerLabel = job.provider ? ` [${job.provider}]` : '';
+  html += `<div class="job-prompt" title="${job.prompt}">"${job.prompt}"${providerLabel}</div>`;
+  html += `<div class="job-progress"><span class="done-count">${doneCount}</span>/${total} complete</div>`;
+  html += '</div>';
+
+  // Progress bar
+  html += '<div class="progress-track">';
+  html += `<div class="progress-fill${allFinished && errorCount === 0 ? ' complete' : ''}" style="width:${pct}%"></div>`;
+  html += '</div>';
+
+  // Video grid
+  html += '<div class="video-grid">';
+  for (const v of job.videos) {
+    html += '<div class="video-card">';
+    html += '<div class="video-wrap">';
+
+    if (v.status === 'done' && v.url) {
+      html += `<video src="${v.url}" controls playsinline muted></video>`;
+    } else if (v.status === 'error') {
+      html += `<div class="pending-placeholder"><span style="font-size:1.5rem">&#10060;</span>Failed</div>`;
+    } else {
+      const isActive = v.status !== 'queued';
+      html += `<div class="pending-placeholder">`;
+      html += isActive ? `<span class="spinner spinner-lg"></span>` : `<span style="font-size:1.5rem;opacity:0.3">&#9654;</span>`;
+      html += `<span>${statusLabel(v.status)}</span></div>`;
+    }
+
+    html += '</div>'; // video-wrap
+
+    // Footer
+    html += '<div class="card-footer">';
+    html += `<span class="status-badge status-${v.status}">${statusLabel(v.status)}</span>`;
+    if (v.status === 'done' && v.url) {
+      html += `<a class="dl-single" href="${v.url}" download>Download</a>`;
+    }
+    html += '</div>';
+
+    if (v.error) {
+      html += `<div class="error-msg">${v.error}</div>`;
+    }
+
+    html += '</div>'; // video-card
+  }
+  html += '</div>'; // video-grid
+
+  // Download All button (when at least 1 done)
+  if (doneCount > 0) {
+    html += '<div class="job-actions">';
+    if (doneCount > 1) {
+      html += `<a class="btn btn-success btn-sm" href="/api/jobs/${job.id}/download-all" download>Download All (${doneCount} videos)</a>`;
+    }
+    html += '</div>';
+  }
+
+  el.innerHTML = html;
+}
+</script>
+
+</body>
+</html>

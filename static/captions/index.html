@@ -1,0 +1,855 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Caption Extractor</title>
+<style>
+  :root {
+    --bg: #0a0a0f;
+    --surface: #14141f;
+    --surface2: #1a1a2a;
+    --border: #2a2a3a;
+    --accent: #6c5ce7;
+    --accent-hover: #7c6df7;
+    --accent-glow: rgba(108,92,231,0.25);
+    --text: #e8e8f0;
+    --text-dim: #8888a0;
+    --success: #00d68f;
+    --error: #ff6b6b;
+    --warning: #ffc048;
+    --radius: 12px;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+  }
+
+  .layout {
+    display: grid;
+    grid-template-columns: 340px 1fr;
+    min-height: 100vh;
+  }
+
+  /* ─── Sidebar ─── */
+  .sidebar {
+    border-right: 1px solid var(--border);
+    padding: 1.5rem;
+    overflow-y: auto;
+    max-height: 100vh;
+    position: sticky;
+    top: 0;
+    display: flex;
+    flex-direction: column;
+  }
+
+  h1 {
+    font-size: 1.4rem;
+    font-weight: 700;
+    margin-bottom: 0.2rem;
+    background: linear-gradient(135deg, var(--accent), #a29bfe);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  .subtitle { color: var(--text-dim); margin-bottom: 1.5rem; font-size: 0.8rem; }
+
+  label {
+    display: block;
+    font-size: 0.72rem;
+    font-weight: 600;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin-bottom: 0.3rem;
+  }
+
+  input[type="text"], input[type="number"], select {
+    width: 100%;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text);
+    padding: 0.55rem 0.7rem;
+    font-size: 0.85rem;
+    font-family: inherit;
+    margin-bottom: 0.9rem;
+  }
+  input:focus, select:focus { outline: none; border-color: var(--accent); }
+
+  .row { display: flex; gap: 0.7rem; }
+  .row > * { flex: 1; }
+
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    background: var(--accent);
+    color: #fff;
+    border: none;
+    border-radius: 8px;
+    padding: 0.7rem 1.5rem;
+    font-size: 0.95rem;
+    font-weight: 600;
+    cursor: pointer;
+    width: 100%;
+    transition: background 0.2s;
+    margin-top: 0.3rem;
+  }
+  .btn:hover { background: var(--accent-hover); }
+  .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+  .btn-sm { padding: 0.4rem 0.8rem; font-size: 0.8rem; width: auto; }
+  .btn-outline {
+    background: transparent;
+    border: 1px solid var(--accent);
+    color: var(--accent);
+  }
+  .btn-outline:hover { background: rgba(108,92,231,0.1); }
+  .btn-success { background: var(--success); color: #0a0a0f; }
+
+  .status-bar {
+    margin-top: 1rem;
+    padding: 0.6rem 0.8rem;
+    background: var(--surface);
+    border-radius: 8px;
+    font-size: 0.8rem;
+    color: var(--text-dim);
+    display: none;
+  }
+  .status-bar.active { display: flex; align-items: center; gap: 0.5rem; }
+  .status-bar .spinner {
+    width: 14px; height: 14px;
+    border: 2px solid transparent;
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.6s linear infinite;
+    flex-shrink: 0;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ─── Main panel ─── */
+  .main-panel {
+    padding: 1.5rem;
+    overflow-y: auto;
+    max-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+  }
+
+  /* ─── Tab bar ─── */
+  .tab-bar {
+    display: flex;
+    gap: 0;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 0.5rem;
+  }
+  .tab-btn {
+    padding: 0.6rem 1.2rem;
+    font-size: 0.82rem;
+    font-weight: 600;
+    color: var(--text-dim);
+    background: none;
+    border: none;
+    border-bottom: 2px solid transparent;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+  .tab-btn:hover { color: var(--text); }
+  .tab-btn.active {
+    color: var(--accent);
+    border-bottom-color: var(--accent);
+  }
+  .tab-btn .badge {
+    display: inline-block;
+    background: var(--surface2);
+    color: var(--text-dim);
+    font-size: 0.7rem;
+    padding: 0.1rem 0.45rem;
+    border-radius: 10px;
+    margin-left: 0.3rem;
+  }
+  .tab-btn.active .badge { background: var(--accent-glow); color: var(--accent); }
+
+  .tab-content { display: none; }
+  .tab-content.active { display: block; }
+
+  /* ─── Grid (Phase 1 & 2) ─── */
+  .frame-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+    gap: 0.8rem;
+  }
+
+  .grid-cell {
+    position: relative;
+    border-radius: 10px;
+    overflow: hidden;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    aspect-ratio: 9/16;
+    transition: border-color 0.3s;
+  }
+  .grid-cell.ready { border-color: var(--border); }
+  .grid-cell.scanning { border-color: var(--accent); box-shadow: 0 0 12px var(--accent-glow); }
+  .grid-cell.ocr-done { border-color: var(--success); }
+  .grid-cell.error { border-color: var(--error); }
+
+  .grid-cell img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+    opacity: 0;
+    transition: opacity 0.4s ease;
+  }
+  .grid-cell img.loaded { opacity: 1; }
+
+  /* Placeholder skeleton */
+  .grid-cell .skeleton {
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(110deg, var(--surface) 30%, var(--surface2) 50%, var(--surface) 70%);
+    background-size: 200% 100%;
+    animation: shimmer 1.5s ease-in-out infinite;
+  }
+  @keyframes shimmer { to { background-position: -200% 0; } }
+
+  /* Scan overlay */
+  .grid-cell .scan-overlay {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.3s;
+  }
+  .grid-cell.scanning .scan-overlay { opacity: 1; }
+
+  .scan-line {
+    position: absolute;
+    left: 0; right: 0;
+    height: 3px;
+    background: linear-gradient(90deg, transparent, var(--accent), transparent);
+    box-shadow: 0 0 15px var(--accent);
+    animation: scanDown 1.5s ease-in-out infinite;
+  }
+  @keyframes scanDown {
+    0% { top: 0; }
+    100% { top: 100%; }
+  }
+
+  /* Caption overlay on cell */
+  .grid-cell .cell-caption {
+    position: absolute;
+    bottom: 0; left: 0; right: 0;
+    background: linear-gradient(transparent, rgba(0,0,0,0.85));
+    padding: 2rem 0.5rem 0.5rem;
+    font-size: 0.7rem;
+    line-height: 1.3;
+    color: #fff;
+    opacity: 0;
+    transition: opacity 0.4s;
+  }
+  .grid-cell.ocr-done .cell-caption { opacity: 1; }
+
+  .cell-status {
+    position: absolute;
+    top: 0.4rem; right: 0.4rem;
+    width: 20px; height: 20px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.65rem;
+    opacity: 0;
+    transition: opacity 0.3s;
+  }
+  .grid-cell.ocr-done .cell-status {
+    background: var(--success);
+    opacity: 1;
+    color: #fff;
+  }
+  .grid-cell.error .cell-status {
+    background: var(--error);
+    opacity: 1;
+    color: #fff;
+  }
+
+  /* ─── Table (Phase 3) ─── */
+  .table-wrap {
+    overflow-x: auto;
+  }
+
+  .caption-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.85rem;
+  }
+  .caption-table th {
+    text-align: left;
+    padding: 0.6rem 0.8rem;
+    font-size: 0.72rem;
+    font-weight: 600;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    border-bottom: 1px solid var(--border);
+    position: sticky;
+    top: 0;
+    background: var(--bg);
+  }
+  .caption-table td {
+    padding: 0.5rem 0.8rem;
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+  }
+  .caption-table tr:hover td { background: var(--surface); }
+
+  .caption-table .thumb-cell img {
+    width: 50px;
+    height: 88px;
+    object-fit: cover;
+    border-radius: 4px;
+    vertical-align: middle;
+  }
+
+  .caption-table .url-cell {
+    font-size: 0.75rem;
+    color: var(--text-dim);
+    max-width: 200px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .caption-table .url-cell a { color: var(--text-dim); text-decoration: none; }
+  .caption-table .url-cell a:hover { color: var(--accent); }
+
+  .caption-table .caption-cell {
+    min-width: 250px;
+    max-width: 400px;
+  }
+  .caption-table .caption-cell textarea {
+    width: 100%;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    color: var(--text);
+    font-size: 0.85rem;
+    font-family: inherit;
+    line-height: 1.4;
+    padding: 0.3rem 0.4rem;
+    resize: vertical;
+    min-height: 2.5rem;
+    transition: border-color 0.2s;
+  }
+  .caption-table .caption-cell textarea:focus {
+    outline: none;
+    border-color: var(--accent);
+    background: var(--surface);
+  }
+  .caption-table .caption-cell textarea:hover {
+    border-color: var(--border);
+  }
+
+  .caption-table .error-text { color: var(--error); font-size: 0.78rem; }
+  .caption-table .empty-text { color: var(--text-dim); font-style: italic; font-size: 0.78rem; }
+
+  /* ─── Progress bar ─── */
+  .progress-track {
+    height: 4px;
+    background: var(--border);
+    border-radius: 2px;
+    overflow: hidden;
+  }
+  .progress-fill {
+    height: 100%;
+    background: var(--accent);
+    border-radius: 2px;
+    transition: width 0.4s ease;
+    width: 0%;
+  }
+  .progress-fill.complete { background: var(--success); }
+  .progress-label {
+    font-size: 0.75rem;
+    color: var(--text-dim);
+    text-align: center;
+    margin-top: 0.3rem;
+  }
+
+  /* ─── Export bar ─── */
+  .export-bar {
+    display: none;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.7rem 1rem;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    margin-bottom: 0.5rem;
+  }
+  .export-bar.active { display: flex; }
+  .export-bar .info { font-size: 0.82rem; color: var(--text-dim); }
+  .export-bar .actions { display: flex; gap: 0.5rem; }
+
+  /* ─── Empty state ─── */
+  .empty-state {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 60vh;
+    color: var(--text-dim);
+    text-align: center;
+  }
+  .empty-state .icon { font-size: 3rem; opacity: 0.3; margin-bottom: 0.6rem; }
+
+  /* ─── Responsive ─── */
+  @media (max-width: 800px) {
+    .layout { grid-template-columns: 1fr; }
+    .sidebar {
+      position: static;
+      max-height: none;
+      border-right: none;
+      border-bottom: 1px solid var(--border);
+    }
+    .main-panel { max-height: none; }
+    .frame-grid { grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); }
+  }
+</style>
+</head>
+<body>
+
+<div class="layout">
+  <!-- ─── Sidebar ─── -->
+  <div class="sidebar">
+    <h1>Caption Extractor</h1>
+    <p class="subtitle">Extract burned-in captions from TikTok profiles</p>
+
+    <label for="profileUrl">TikTok Username</label>
+    <input type="text" id="profileUrl" placeholder="@username" />
+
+    <div class="row">
+      <div>
+        <label for="maxVideos">Videos</label>
+        <input type="number" id="maxVideos" value="10" min="1" max="50" />
+      </div>
+      <div>
+        <label for="sortBy">Sort</label>
+        <select id="sortBy">
+          <option value="latest">Latest</option>
+          <option value="popular">Popular</option>
+        </select>
+      </div>
+    </div>
+
+    <button class="btn" id="startBtn">Extract Captions</button>
+
+    <div class="status-bar" id="statusBar">
+      <span class="spinner"></span>
+      <span id="statusText">Starting...</span>
+    </div>
+
+    <div style="flex:1"></div>
+  </div>
+
+  <!-- ─── Main panel ─── -->
+  <div class="main-panel">
+
+    <!-- Empty state -->
+    <div id="emptyState" class="empty-state">
+      <div class="icon">&#128270;</div>
+      <p>Enter a TikTok username and hit Extract.<br/>
+      Frames will populate here as videos are processed.</p>
+    </div>
+
+    <!-- Working area (hidden until started) -->
+    <div id="workArea" style="display:none">
+
+      <!-- Progress -->
+      <div class="progress-track" id="progressTrack">
+        <div class="progress-fill" id="progressBar"></div>
+      </div>
+      <div class="progress-label" id="progressLabel"></div>
+
+      <!-- Tab bar -->
+      <div class="tab-bar">
+        <button class="tab-btn active" data-tab="grid">
+          Grid <span class="badge" id="gridBadge">0</span>
+        </button>
+        <button class="tab-btn" data-tab="table">
+          Table <span class="badge" id="tableBadge">0</span>
+        </button>
+      </div>
+
+      <!-- Grid tab -->
+      <div class="tab-content active" id="tabGrid">
+        <div class="frame-grid" id="frameGrid"></div>
+      </div>
+
+      <!-- Table tab -->
+      <div class="tab-content" id="tabTable">
+        <div class="export-bar" id="exportBar">
+          <span class="info" id="exportInfo">0 captions extracted</span>
+          <div class="actions">
+            <button class="btn btn-sm btn-outline" id="copyAllBtn">Copy All</button>
+            <button class="btn btn-sm btn-success" id="exportCsvBtn">Export CSV</button>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table class="caption-table">
+            <thead>
+              <tr>
+                <th style="width:60px">Frame</th>
+                <th style="width:200px">Video</th>
+                <th>Caption</th>
+                <th style="width:60px">Status</th>
+              </tr>
+            </thead>
+            <tbody id="tableBody"></tbody>
+          </table>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<script>
+// ─── DOM refs ──────────────────────────────────────────────────────────
+const startBtn = document.getElementById('startBtn');
+const emptyState = document.getElementById('emptyState');
+const workArea = document.getElementById('workArea');
+const frameGrid = document.getElementById('frameGrid');
+const tableBody = document.getElementById('tableBody');
+const statusBar = document.getElementById('statusBar');
+const statusText = document.getElementById('statusText');
+const progressBar = document.getElementById('progressBar');
+const progressLabel = document.getElementById('progressLabel');
+const gridBadge = document.getElementById('gridBadge');
+const tableBadge = document.getElementById('tableBadge');
+const exportBar = document.getElementById('exportBar');
+const exportInfo = document.getElementById('exportInfo');
+const copyAllBtn = document.getElementById('copyAllBtn');
+const exportCsvBtn = document.getElementById('exportCsvBtn');
+
+let ws = null;
+let totalVideos = 0;
+let framesLoaded = 0;
+let ocrDone = 0;
+let currentUsername = '';
+// Map index -> { video_id, video_url, b64, caption, error }
+const videoData = {};
+
+// ─── Tabs ──────────────────────────────────────────────────────────────
+document.querySelectorAll('.tab-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+    btn.classList.add('active');
+    document.getElementById('tab' + capitalize(btn.dataset.tab)).classList.add('active');
+  });
+});
+function capitalize(s) { return s.charAt(0).toUpperCase() + s.slice(1); }
+
+// ─── Start ─────────────────────────────────────────────────────────────
+startBtn.addEventListener('click', () => {
+  const profileUrl = document.getElementById('profileUrl').value.trim();
+  if (!profileUrl) return;
+
+  const maxVideos = parseInt(document.getElementById('maxVideos').value) || 10;
+  const sort = document.getElementById('sortBy').value;
+
+  // Reset
+  Object.keys(videoData).forEach(k => delete videoData[k]);
+  frameGrid.innerHTML = '';
+  tableBody.innerHTML = '';
+  totalVideos = 0;
+  framesLoaded = 0;
+  ocrDone = 0;
+  currentUsername = '';
+
+  emptyState.style.display = 'none';
+  workArea.style.display = '';
+  progressBar.style.width = '0%';
+  progressBar.classList.remove('complete');
+  progressLabel.textContent = '';
+  gridBadge.textContent = '0';
+  tableBadge.textContent = '0';
+  exportBar.classList.remove('active');
+  startBtn.disabled = true;
+  startBtn.textContent = 'Running...';
+  statusBar.classList.add('active');
+  statusText.textContent = 'Connecting...';
+
+  // Activate grid tab
+  document.querySelectorAll('.tab-btn')[0].click();
+
+  const jobId = Math.random().toString(36).substring(2, 14);
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  ws = new WebSocket(`${proto}//${location.host}/ws/${jobId}`);
+
+  ws.onopen = () => {
+    statusText.textContent = 'Scanning profile...';
+    ws.send(JSON.stringify({
+      action: 'start',
+      profile_url: profileUrl,
+      max_videos: maxVideos,
+      sort: sort,
+    }));
+  };
+
+  ws.onmessage = (e) => {
+    const msg = JSON.parse(e.data);
+    handleEvent(msg);
+  };
+
+  ws.onerror = () => {
+    statusText.textContent = 'Connection error';
+    startBtn.disabled = false;
+    startBtn.textContent = 'Extract Captions';
+  };
+
+  ws.onclose = () => {
+    startBtn.disabled = false;
+    startBtn.textContent = 'Extract Captions';
+  };
+});
+
+// ─── Event handling ────────────────────────────────────────────────────
+function handleEvent(msg) {
+  const ev = msg.event;
+
+  if (ev === 'status') {
+    statusText.textContent = msg.text || '';
+  }
+
+  // URLs found — create placeholder grid cells
+  if (ev === 'urls_collected') {
+    totalVideos = msg.count;
+    statusText.textContent = `Found ${totalVideos} videos — downloading frames...`;
+    progressLabel.textContent = `0 / ${totalVideos} frames`;
+
+    for (let i = 0; i < totalVideos; i++) {
+      // Grid cell
+      const cell = document.createElement('div');
+      cell.className = 'grid-cell';
+      cell.id = `cell-${i}`;
+      cell.innerHTML = `
+        <div class="skeleton"></div>
+        <img alt="" />
+        <div class="scan-overlay"><div class="scan-line"></div></div>
+        <div class="cell-caption"></div>
+        <div class="cell-status"></div>
+      `;
+      frameGrid.appendChild(cell);
+
+      // Table row
+      const tr = document.createElement('tr');
+      tr.id = `row-${i}`;
+      tr.innerHTML = `
+        <td class="thumb-cell"><div style="width:50px;height:88px;background:var(--surface);border-radius:4px"></div></td>
+        <td class="url-cell">—</td>
+        <td class="caption-cell"><span class="empty-text">Pending...</span></td>
+        <td style="text-align:center;font-size:0.75rem;color:var(--text-dim)">—</td>
+      `;
+      tableBody.appendChild(tr);
+    }
+  }
+
+  // Downloading indicator
+  if (ev === 'downloading') {
+    statusText.textContent = `Downloading ${msg.index + 1}/${msg.total}...`;
+  }
+
+  // Frame extracted — pop thumbnail into grid
+  if (ev === 'frame_ready') {
+    const i = msg.index;
+    framesLoaded++;
+    gridBadge.textContent = framesLoaded;
+    const pct = Math.round((framesLoaded / totalVideos) * 50); // first 50% is frames
+    progressBar.style.width = pct + '%';
+    progressLabel.textContent = `${framesLoaded} / ${totalVideos} frames`;
+
+    videoData[i] = {
+      video_id: msg.video_id,
+      video_url: msg.video_url,
+      b64: msg.b64,
+      caption: null,
+      error: null,
+    };
+
+    // Update grid cell
+    const cell = document.getElementById(`cell-${i}`);
+    if (cell) {
+      const img = cell.querySelector('img');
+      img.src = 'data:image/jpeg;base64,' + msg.b64;
+      img.onload = () => {
+        cell.querySelector('.skeleton').style.display = 'none';
+        img.classList.add('loaded');
+      };
+      cell.classList.add('ready');
+    }
+
+    // Update table row
+    const tr = document.getElementById(`row-${i}`);
+    if (tr) {
+      tr.querySelector('.thumb-cell').innerHTML =
+        `<img src="data:image/jpeg;base64,${msg.b64}" alt="" />`;
+      tr.querySelector('.url-cell').innerHTML =
+        `<a href="${esc(msg.video_url)}" target="_blank" rel="noopener">${esc(msg.video_url)}</a>`;
+    }
+  }
+
+  if (ev === 'frame_error') {
+    const cell = document.getElementById(`cell-${msg.index}`);
+    if (cell) {
+      cell.querySelector('.skeleton').style.display = 'none';
+      cell.classList.add('error');
+      cell.querySelector('.cell-status').textContent = '!';
+    }
+    videoData[msg.index] = {
+      video_id: msg.video_id, video_url: '', b64: null,
+      caption: null, error: msg.error,
+    };
+    framesLoaded++;
+    gridBadge.textContent = framesLoaded;
+  }
+
+  // OCR phase begins
+  if (ev === 'ocr_starting') {
+    statusText.textContent = 'Extracting captions...';
+    progressLabel.textContent = `0 / ${totalVideos} captions`;
+  }
+
+  // OCR scanning a cell
+  if (ev === 'ocr_started') {
+    const cell = document.getElementById(`cell-${msg.index}`);
+    if (cell) cell.classList.add('scanning');
+    statusText.textContent = `OCR ${msg.index + 1}/${msg.total}...`;
+  }
+
+  // OCR done for one cell
+  if (ev === 'ocr_done') {
+    const i = msg.index;
+    ocrDone++;
+    tableBadge.textContent = ocrDone;
+    const pct = 50 + Math.round((ocrDone / totalVideos) * 50);
+    progressBar.style.width = pct + '%';
+    progressLabel.textContent = `${ocrDone} / ${totalVideos} captions`;
+
+    if (videoData[i]) {
+      videoData[i].caption = msg.caption || '';
+      videoData[i].error = msg.error || null;
+    }
+
+    // Update grid cell
+    const cell = document.getElementById(`cell-${i}`);
+    if (cell) {
+      cell.classList.remove('scanning');
+      if (msg.error) {
+        cell.classList.add('error');
+        cell.querySelector('.cell-status').textContent = '!';
+      } else {
+        cell.classList.add('ocr-done');
+        cell.querySelector('.cell-status').textContent = '\u2713';
+        const capEl = cell.querySelector('.cell-caption');
+        capEl.textContent = msg.caption
+          ? (msg.caption.length > 80 ? msg.caption.slice(0, 80) + '...' : msg.caption)
+          : 'No caption';
+      }
+    }
+
+    // Update table row
+    const tr = document.getElementById(`row-${i}`);
+    if (tr) {
+      const captionCell = tr.querySelector('.caption-cell');
+      const statusCell = tr.children[3];
+      if (msg.error) {
+        captionCell.innerHTML = `<span class="error-text">${esc(msg.error)}</span>`;
+        statusCell.innerHTML = '<span style="color:var(--error)">Error</span>';
+      } else if (msg.caption) {
+        const ta = document.createElement('textarea');
+        ta.value = msg.caption;
+        ta.rows = Math.max(2, Math.ceil(msg.caption.length / 50));
+        ta.dataset.index = i;
+        ta.addEventListener('input', () => {
+          if (videoData[i]) videoData[i].caption = ta.value;
+        });
+        captionCell.innerHTML = '';
+        captionCell.appendChild(ta);
+        statusCell.innerHTML = '<span style="color:var(--success)">\u2713</span>';
+      } else {
+        captionCell.innerHTML = '<span class="empty-text">No caption detected</span>';
+        statusCell.innerHTML = '<span style="color:var(--text-dim)">Empty</span>';
+      }
+    }
+  }
+
+  // All done
+  if (ev === 'all_complete') {
+    currentUsername = msg.username || '';
+    statusText.textContent = 'Complete';
+    statusBar.querySelector('.spinner').style.display = 'none';
+    progressBar.style.width = '100%';
+    progressBar.classList.add('complete');
+    progressLabel.textContent = `${totalVideos} videos processed`;
+
+    const captionCount = Object.values(videoData).filter(d => d.caption).length;
+    exportInfo.textContent = `${captionCount} captions extracted`;
+    exportBar.classList.add('active');
+
+    startBtn.disabled = false;
+    startBtn.textContent = 'Extract Captions';
+  }
+
+  if (ev === 'error') {
+    statusText.textContent = 'Error: ' + msg.error;
+    statusBar.querySelector('.spinner').style.display = 'none';
+    startBtn.disabled = false;
+    startBtn.textContent = 'Extract Captions';
+  }
+}
+
+// ─── Export ────────────────────────────────────────────────────────────
+copyAllBtn.addEventListener('click', () => {
+  const text = Object.values(videoData)
+    .filter(d => d.caption)
+    .map(d => d.caption)
+    .join('\n\n---\n\n');
+  navigator.clipboard.writeText(text).then(() => {
+    copyAllBtn.textContent = 'Copied!';
+    setTimeout(() => { copyAllBtn.textContent = 'Copy All'; }, 1500);
+  });
+});
+
+exportCsvBtn.addEventListener('click', () => {
+  if (currentUsername) {
+    window.open(`/api/export/${encodeURIComponent(currentUsername)}`, '_blank');
+  } else {
+    // Fallback: generate CSV client-side from edited data
+    let csv = 'video_id,video_url,caption\n';
+    Object.values(videoData).forEach(d => {
+      csv += `"${d.video_id}","${d.video_url}","${(d.caption||'').replace(/"/g, '""')}"\n`;
+    });
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'captions.csv';
+    a.click();
+  }
+});
+
+function esc(s) {
+  const d = document.createElement('div');
+  d.textContent = s || '';
+  return d.innerHTML;
+}
+</script>
+
+</body>
+</html>
