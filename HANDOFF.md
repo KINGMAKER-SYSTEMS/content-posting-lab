@@ -1,18 +1,64 @@
 # Handoff: Content Posting Lab
 
-## Getting Started
+## Quick Setup (Agents: Start Here)
+
+Clone the repo and run the setup script with your API keys. It handles **everything** — Python venv, pip deps, Homebrew system deps (ffmpeg, tesseract), `.env` creation, output directories, and verification.
+
+**For AI agents / non-interactive setup** — pass keys as environment variables:
 
 ```bash
 git clone https://github.com/KINGMAKER-SYSTEMS/content-posting-lab.git
 cd content-posting-lab
-pip install -r requirements.txt
-brew install ffmpeg tesseract       # macOS system deps
-playwright install chromium         # only if you need browser-based TikTok scraping
+
+OPENAI_API_KEY="sk-proj-..." \
+XAI_API_KEY="xai-..." \
+REPLICATE_API_TOKEN="r8_..." \
+./setup.sh
 ```
+
+Only `OPENAI_API_KEY` is required. The other keys are optional — only providers with keys will appear in the video generation UI. You can pass any combination of: `OPENAI_API_KEY`, `XAI_API_KEY`, `REPLICATE_API_TOKEN`, `FAL_KEY`, `LUMA_API_KEY`.
+
+**For humans at a terminal** — run without env vars and it will prompt interactively:
+
+```bash
+chmod +x setup.sh && ./setup.sh
+```
+
+After setup completes, activate the venv and start the servers:
+
+```bash
+source venv/bin/activate
+
+# Each in its own terminal:
+python server.py           # localhost:8000 — video generation
+python caption_server.py   # localhost:8001 — caption scraping
+python burn_server.py      # localhost:8002 — caption burning
+```
+
+---
+
+## What This Project Does
+
+A three-server pipeline for TikTok-style video generation and captioning:
+
+1. **Server 1** (`server.py` :8000) — Generates AI videos from text prompts using multiple providers (xAI Grok, Replicate, FAL, Luma, OpenAI Sora)
+2. **Server 2** (`caption_server.py` :8001) — Scrapes TikTok profiles and extracts burned-in caption text from their videos using GPT-4o vision
+3. **Server 3** (`burn_server.py` :8002) — Burns caption text onto generated videos with pixel-perfect CSS rendering → PNG overlay → ffmpeg compositing
+
+The servers are independent. Server 3 reads from the output directories of servers 1 and 2 via the filesystem — no HTTP calls between them.
+
+```
+Server 1 → output/                    Server 2 → caption_output/
+               \                           /
+                → Server 3 reads both dirs
+                → burn_output/{batch_id}/burned_NNN.mp4
+```
+
+---
 
 ## Environment Variables
 
-Create a `.env` file in the project root. This file is gitignored — you need to create it yourself.
+Create a `.env` file in the project root (gitignored — you must create it yourself):
 
 ```env
 # ── Required ──────────────────────────────────────────────
@@ -55,7 +101,7 @@ LUMA_API_KEY=...
 
 ## System Dependencies
 
-These must be on your PATH:
+These must be on your PATH (the setup script installs them automatically):
 
 | Tool | Install | Used by |
 |------|---------|---------|
@@ -68,6 +114,8 @@ These must be on your PATH:
 Three separate terminals:
 
 ```bash
+source venv/bin/activate   # in each terminal
+
 python server.py           # localhost:8000 — video generation
 python caption_server.py   # localhost:8001 — caption scraping
 python burn_server.py      # localhost:8002 — caption burning
@@ -91,6 +139,13 @@ This opens a browser window — log into TikTok manually, then close it. Session
 2. Open `http://localhost:8000`
 3. Pick any provider you have a key for, type a prompt, hit generate
 4. If you get a video back, you're good
+
+For the burn server specifically:
+1. Start server 3: `python burn_server.py`
+2. Open `http://localhost:8002`
+3. Select a video folder from the dropdown, pick a caption source, click "Align & Preview"
+4. Hit "Burn All" — should produce MP4s in `burn_output/`
+5. Download as ZIP from the sidebar
 
 ## Architecture Overview
 
