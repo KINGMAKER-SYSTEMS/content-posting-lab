@@ -4,25 +4,9 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>Caption Burner</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
 <style>
-  @font-face {
-    font-family: 'TikTok Sans';
-    src: url('/fonts/TikTokSans16pt-Bold.ttf') format('truetype');
-    font-weight: 700;
-    font-style: normal;
-  }
-  @font-face {
-    font-family: 'TikTok Sans';
-    src: url('/fonts/TikTokSans16pt-ExtraBold.ttf') format('truetype');
-    font-weight: 800;
-    font-style: normal;
-  }
-  @font-face {
-    font-family: 'TikTok Sans';
-    src: url('/fonts/TikTokSans16pt-SemiBold.ttf') format('truetype');
-    font-weight: 600;
-    font-style: normal;
-  }
+  /* Font faces are generated dynamically from /api/fonts */
 
   :root {
     --bg: #0a0a0f;
@@ -60,7 +44,7 @@
     border-right: 1px solid var(--border);
     padding: 1.5rem;
     overflow-y: auto;
-    max-height: 100vh;
+    height: 100vh;
     position: sticky;
     top: 0;
     display: flex;
@@ -279,10 +263,10 @@
     border-radius: 4px;
   }
   .text-layer span {
-    font-family: 'TikTok Sans', sans-serif;
+    font-family: inherit;
     font-weight: 700;
     color: white;
-    -webkit-text-stroke: 2px black;
+    -webkit-text-stroke: 1.5px black;
     paint-order: stroke fill;
     line-height: 1.2;
     word-wrap: break-word;
@@ -295,10 +279,10 @@
     outline: none;
     resize: none;
     overflow: hidden;
-    font-family: 'TikTok Sans', sans-serif;
+    font-family: inherit;
     font-weight: 700;
     color: white;
-    -webkit-text-stroke: 2px black;
+    -webkit-text-stroke: 1.5px black;
     paint-order: stroke fill;
     line-height: 1.2;
     text-align: center;
@@ -405,6 +389,99 @@
   .export-bar .info { font-size: 0.82rem; color: var(--text-dim); }
   .export-bar .actions { display: flex; gap: 0.5rem; }
 
+  /* ─── Past Batches ─── */
+  .batch-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.45rem 0.65rem;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    font-size: 0.78rem;
+    cursor: pointer;
+    transition: border-color 0.15s;
+  }
+  .batch-item:hover { border-color: var(--accent); }
+  .batch-item .batch-info { color: var(--text-dim); }
+  .batch-item .batch-info strong { color: var(--text); }
+  .batch-item .batch-dl {
+    background: var(--accent);
+    color: white;
+    border: none;
+    padding: 0.2rem 0.5rem;
+    border-radius: 5px;
+    font-size: 0.72rem;
+    cursor: pointer;
+  }
+  .batch-item .batch-dl:hover { background: var(--accent-hover); }
+
+  /* ─── Color Correction Sliders ─── */
+  .cc-slider-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-bottom: 0.35rem;
+  }
+  .cc-slider-row .cc-label {
+    font-size: 0.72rem;
+    color: var(--text-dim);
+    min-width: 72px;
+    text-transform: none;
+    letter-spacing: 0;
+    font-weight: 500;
+    margin-bottom: 0;
+  }
+  .cc-slider-row input[type="range"] {
+    flex: 1;
+    -webkit-appearance: none;
+    appearance: none;
+    height: 4px;
+    background: var(--border);
+    border-radius: 2px;
+    outline: none;
+    margin: 0;
+    padding: 0;
+    border: none;
+  }
+  .cc-slider-row input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: var(--accent);
+    cursor: pointer;
+    border: 2px solid var(--bg);
+  }
+  .cc-slider-row input[type="range"]::-moz-range-thumb {
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: var(--accent);
+    cursor: pointer;
+    border: 2px solid var(--bg);
+  }
+  .cc-slider-row .cc-value {
+    font-size: 0.7rem;
+    color: var(--text);
+    min-width: 28px;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+  }
+  .cc-reset-btn {
+    padding: 0.25rem 0.6rem;
+    font-size: 0.68rem;
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    color: var(--text-dim);
+    cursor: pointer;
+    transition: all 0.15s;
+    margin-top: 0.2rem;
+    margin-bottom: 0.5rem;
+  }
+  .cc-reset-btn:hover { border-color: var(--accent); color: var(--text); }
+
   .apply-all-btn {
     padding: 0.35rem 0.7rem;
     font-size: 0.72rem;
@@ -455,7 +532,7 @@
       </div>
       <div>
         <label>Size</label>
-        <input type="number" id="fontSize" value="58" min="20" max="120" />
+        <input type="number" id="fontSize" value="32" min="8" max="120" />
       </div>
     </div>
 
@@ -465,6 +542,54 @@
       <span class="chip active" data-pos="center">Center</span>
       <span class="chip" data-pos="bottom">Bottom</span>
     </div>
+
+    <div class="section-label">Color Correction</div>
+    <div id="ccSliders">
+      <div class="cc-slider-row">
+        <span class="cc-label">Brightness</span>
+        <input type="range" id="ccBrightness" min="-100" max="100" value="0" />
+        <span class="cc-value" id="ccBrightnessVal">0</span>
+      </div>
+      <div class="cc-slider-row">
+        <span class="cc-label">Contrast</span>
+        <input type="range" id="ccContrast" min="-100" max="100" value="0" />
+        <span class="cc-value" id="ccContrastVal">0</span>
+      </div>
+      <div class="cc-slider-row">
+        <span class="cc-label">Saturation</span>
+        <input type="range" id="ccSaturation" min="-100" max="100" value="0" />
+        <span class="cc-value" id="ccSaturationVal">0</span>
+      </div>
+      <div class="cc-slider-row">
+        <span class="cc-label">Sharpness</span>
+        <input type="range" id="ccSharpness" min="0" max="100" value="0" />
+        <span class="cc-value" id="ccSharpnessVal">0</span>
+      </div>
+      <div class="cc-slider-row">
+        <span class="cc-label">Shadow</span>
+        <input type="range" id="ccShadow" min="-100" max="100" value="0" />
+        <span class="cc-value" id="ccShadowVal">0</span>
+      </div>
+      <div class="cc-slider-row">
+        <span class="cc-label">Temperature</span>
+        <input type="range" id="ccTemperature" min="-100" max="100" value="0" />
+        <span class="cc-value" id="ccTemperatureVal">0</span>
+      </div>
+      <div class="cc-slider-row">
+        <span class="cc-label">Tint</span>
+        <input type="range" id="ccTint" min="-100" max="100" value="0" />
+        <span class="cc-value" id="ccTintVal">0</span>
+      </div>
+      <div class="cc-slider-row">
+        <span class="cc-label">Fade</span>
+        <input type="range" id="ccFade" min="0" max="100" value="0" />
+        <span class="cc-value" id="ccFadeVal">0</span>
+      </div>
+    </div>
+    <button class="cc-reset-btn" id="ccResetBtn">Reset All</button>
+
+    <div class="section-label" style="margin-top:1.2rem">PAST BATCHES</div>
+    <div id="batchList" style="display:flex;flex-direction:column;gap:0.4rem;max-height:160px;overflow-y:auto;flex-shrink:0"></div>
 
     <div class="stat-row">
       <span>Videos</span>
@@ -490,7 +615,6 @@
       <button class="btn btn-outline" id="downloadAllBtn">Download All Burned</button>
     </div>
 
-    <div style="flex:1"></div>
   </div>
 
   <div class="main-panel">
@@ -527,6 +651,11 @@ let selectedIndex = -1;
 
 const $ = id => document.getElementById(id);
 
+// Map font filename to a unique CSS family name for preview
+function fontFamilyName(file) {
+  return 'tt-' + file.replace('.ttf', '').replace('.otf', '');
+}
+
 const folderSelect = $('folderSelect');
 const captionSelect = $('captionSelect');
 const pasteWrap = $('pasteWrap');
@@ -551,6 +680,106 @@ const dlBurnedBtn = $('dlBurnedBtn');
 const downloadSection = $('downloadSection');
 const downloadAllBtn = $('downloadAllBtn');
 const applyAllBtn = $('applyAllBtn');
+const ccResetBtn = $('ccResetBtn');
+
+// ── Color Correction ──
+const CC_SLIDERS = ['Brightness','Contrast','Saturation','Sharpness','Shadow','Temperature','Tint','Fade'];
+
+// Wire slider value displays + live sync to pairs + CSS preview
+function syncColorCorrectionToPairs() {
+  const cc = getColorCorrection();
+  pairs.forEach(p => { p.colorCorrection = cc; });
+  applyCSSFilterPreview();
+}
+
+function applyCSSFilterPreview() {
+  const b = parseInt($('ccBrightness').value) || 0;
+  const c = parseInt($('ccContrast').value) || 0;
+  const s = parseInt($('ccSaturation').value) || 0;
+  const sh = parseInt($('ccSharpness').value) || 0;
+  const sd = parseInt($('ccShadow').value) || 0;
+  const t = parseInt($('ccTemperature').value) || 0;
+  const ti = parseInt($('ccTint').value) || 0;
+  const f = parseInt($('ccFade').value) || 0;
+
+  // CSS filter values — these are the source of truth
+  let cssBrightness = 1 + b / 100;   // 0 → 2 (multiplier)
+  let cssContrast = 1 + c / 100;     // 0 → 2
+  let cssSaturate = 1 + s / 100;     // 0 → 2
+
+  // Fade compound
+  if (f > 0) {
+    const fade = f / 100;
+    cssBrightness = Math.min(2, cssBrightness + fade * 0.4);
+    cssContrast = Math.max(0.2, cssContrast - fade * 0.3);
+    cssSaturate = Math.max(0.2, cssSaturate - fade * 0.4);
+  }
+
+  // Shadow nudges brightness
+  if (sd !== 0) cssBrightness += sd / 400;
+
+  const parts = [];
+  if (Math.abs(cssBrightness - 1) > 0.005) parts.push(`brightness(${cssBrightness.toFixed(3)})`);
+  if (Math.abs(cssContrast - 1) > 0.005) parts.push(`contrast(${cssContrast.toFixed(3)})`);
+  if (Math.abs(cssSaturate - 1) > 0.005) parts.push(`saturate(${cssSaturate.toFixed(3)})`);
+
+  // Temperature: warm = sepia, cool = hue-rotate blue
+  if (Math.abs(t) > 1) {
+    if (t > 0) parts.push(`sepia(${(t / 200).toFixed(3)})`);
+    else parts.push(`hue-rotate(${(t / 5).toFixed(1)}deg)`);
+  }
+  // Tint: hue-rotate
+  if (Math.abs(ti) > 1) parts.push(`hue-rotate(${(ti / 3).toFixed(1)}deg)`);
+
+  const filterStr = parts.length ? parts.join(' ') : 'none';
+  videoGrid.querySelectorAll('video').forEach(v => { v.style.filter = filterStr; });
+}
+
+CC_SLIDERS.forEach(name => {
+  const slider = $('cc' + name);
+  const valSpan = $('cc' + name + 'Val');
+  slider.addEventListener('input', () => {
+    valSpan.textContent = slider.value;
+    syncColorCorrectionToPairs();
+  });
+});
+
+ccResetBtn.addEventListener('click', () => {
+  CC_SLIDERS.forEach(name => {
+    const slider = $('cc' + name);
+    slider.value = 0;
+    $('cc' + name + 'Val').textContent = '0';
+  });
+  syncColorCorrectionToPairs();
+});
+
+function getColorCorrection() {
+  const b = parseInt($('ccBrightness').value) || 0;
+  const c = parseInt($('ccContrast').value) || 0;
+  const s = parseInt($('ccSaturation').value) || 0;
+  const sh = parseInt($('ccSharpness').value) || 0;
+  const sd = parseInt($('ccShadow').value) || 0;
+  const t = parseInt($('ccTemperature').value) || 0;
+  const ti = parseInt($('ccTint').value) || 0;
+  const f = parseInt($('ccFade').value) || 0;
+
+  // All defaults → return null (no overhead)
+  if (b === 0 && c === 0 && s === 0 && sh === 0 && sd === 0 && t === 0 && ti === 0 && f === 0) {
+    return null;
+  }
+
+  // Send raw slider integers — backend maps to ffmpeg to match CSS preview
+  return {
+    brightness: b,     // -100 → 100
+    contrast: c,       // -100 → 100
+    saturation: s,     // -100 → 100
+    sharpness: sh,     // 0 → 100
+    shadow: sd,        // -100 → 100
+    temperature: t,    // -100 → 100
+    tint: ti,          // -100 → 100
+    fade: f,           // 0 → 100
+  };
+}
 
 // ── Init: scan disk ──
 (async () => {
@@ -574,7 +803,11 @@ const applyAllBtn = $('applyAllBtn');
   Object.keys(folders).forEach(f => {
     const opt = document.createElement('option');
     opt.value = f;
-    opt.textContent = `${f} (${folders[f].length} videos)`;
+    // Show short label: last folder part, cleaned up
+    const parts = f.split('/');
+    const label = parts[parts.length - 1].replace(/_/g, ' ').substring(0, 40);
+    opt.textContent = `${label} (${folders[f].length})`;
+    opt.title = f;  // full path on hover
     folderSelect.appendChild(opt);
   });
   if (!folderSelect.options.length) {
@@ -590,18 +823,55 @@ const applyAllBtn = $('applyAllBtn');
     captionSelect.appendChild(opt);
   });
 
-  // Font dropdown
+  // Font dropdown + dynamic @font-face loading
   fontSelect.innerHTML = '';
+  const styleEl = document.createElement('style');
   availableFonts.forEach(f => {
+    // Each font file gets a unique family name so we can switch in preview
+    const family = fontFamilyName(f.file);
+    styleEl.textContent += `
+      @font-face {
+        font-family: '${family}';
+        src: url('/fonts/${f.file}') format('truetype');
+        font-weight: 700;
+        font-style: normal;
+      }
+    `;
     const opt = document.createElement('option');
     opt.value = f.file;
     opt.textContent = f.name;
     if (f.file.includes('16pt-Bold.')) opt.selected = true;
     fontSelect.appendChild(opt);
   });
+  document.head.appendChild(styleEl);
 
   updateStats();
+  loadBatches();
 })();
+
+// ── Past Batches ──
+const batchList = $('batchList');
+
+async function loadBatches() {
+  const res = await fetch('/api/batches').then(r => r.json());
+  batchList.innerHTML = '';
+  if (!res.batches.length) {
+    batchList.innerHTML = '<div style="font-size:0.78rem;color:var(--text-dim)">No batches yet</div>';
+    return;
+  }
+  res.batches.forEach(b => {
+    const date = new Date(b.created * 1000);
+    const timeStr = date.toLocaleDateString(undefined, { month:'short', day:'numeric' })
+      + ' ' + date.toLocaleTimeString(undefined, { hour:'numeric', minute:'2-digit' });
+    const el = document.createElement('div');
+    el.className = 'batch-item';
+    el.innerHTML = `
+      <span class="batch-info"><strong>${b.count} clips</strong> · ${timeStr}</span>
+      <button class="batch-dl" onclick="event.stopPropagation();const a=document.createElement('a');a.href='/api/burn-zip/${b.id}';a.download='burned_${b.id}.zip';a.click()">ZIP</button>
+    `;
+    batchList.appendChild(el);
+  });
+}
 
 // ── Stats ──
 folderSelect.addEventListener('change', updateStats);
@@ -610,6 +880,16 @@ captionSelect.addEventListener('change', () => {
   updateStats();
 });
 pasteArea.addEventListener('input', updateStats);
+
+// Font change: update all pairs and refresh preview
+fontSelect.addEventListener('change', () => {
+  const newFont = fontSelect.value;
+  pairs.forEach((p, i) => {
+    p.fontFile = newFont;
+    const layer = videoGrid.children[i]?.querySelector('.text-layer');
+    if (layer) layer.style.fontFamily = `'${fontFamilyName(newFont)}', sans-serif`;
+  });
+});
 
 function updateStats() {
   const folder = folderSelect.value;
@@ -648,11 +928,12 @@ alignBtn.addEventListener('click', () => {
 
   const captions = getCaptions();
   const defFont = fontSelect.value;
-  const defSize = parseInt(fontSizeInput.value) || 58;
+  const defSize = parseInt(fontSizeInput.value) || 32;
   const activePos = posChips.querySelector('.chip.active');
   const yMap = { top: 15, center: 50, bottom: 85 };
   const defY = yMap[activePos?.dataset.pos] || 50;
 
+  const cc = getColorCorrection();
   pairs = vids.map((v, i) => ({
     videoPath: v.path,
     name: v.name,
@@ -662,6 +943,7 @@ alignBtn.addEventListener('click', () => {
     fontSize: defSize,
     fontFile: defFont,
     maxWidthPct: 80,
+    colorCorrection: cc,
     result: null,
   }));
 
@@ -684,15 +966,13 @@ function renderGrid() {
     card.className = 'video-card';
     card.dataset.idx = i;
 
-    const previewFontPx = Math.max(8, Math.round(pair.fontSize * 0.24));
-
     card.innerHTML = `
       <div class="video-wrap" data-wrap="${i}">
         <video src="/video/${encodeURI(pair.videoPath)}" muted loop playsinline preload="metadata"></video>
         <div class="snap-guide-h"></div>
         <div class="snap-guide-v"></div>
         <div class="text-layer" data-layer="${i}"
-             style="left:${pair.x}%;top:${pair.y}%;font-size:${previewFontPx}px">
+             style="left:${pair.x}%;top:${pair.y}%;font-family:'${fontFamilyName(pair.fontFile)}',sans-serif">
           <span>${esc(pair.caption)}</span>
         </div>
       </div>
@@ -702,12 +982,17 @@ function renderGrid() {
       </div>
       <div class="card-controls">
         <label>Size</label>
-        <input type="number" value="${pair.fontSize}" min="20" max="120" data-fsi="${i}" style="width:60px" />
+        <input type="number" value="${pair.fontSize}" min="8" max="120" data-fsi="${i}" style="width:60px" />
       </div>
     `;
 
-    // Video hover play
+    // Video hover play + read real resolution for font scaling
     const vid = card.querySelector('video');
+    vid.addEventListener('loadedmetadata', () => {
+      pair.videoWidth = vid.videoWidth;
+      pair.videoHeight = vid.videoHeight;
+      updateLayerStyle(i);
+    });
     card.addEventListener('mouseenter', () => vid.play().catch(() => {}));
     card.addEventListener('mouseleave', () => { vid.pause(); vid.currentTime = 0; });
 
@@ -727,7 +1012,7 @@ function renderGrid() {
     // Font size control
     const fsi = card.querySelector(`[data-fsi="${i}"]`);
     fsi.addEventListener('change', () => {
-      pair.fontSize = parseInt(fsi.value) || 58;
+      pair.fontSize = parseInt(fsi.value) || 32;
       updateLayerStyle(i);
     });
 
@@ -739,6 +1024,9 @@ function renderGrid() {
 
     videoGrid.appendChild(card);
   });
+
+  // Apply any active color correction CSS filters to the new video elements
+  applyCSSFilterPreview();
 }
 
 function selectCard(idx) {
@@ -752,14 +1040,29 @@ function selectCard(idx) {
   if (card) card.classList.add('selected');
 }
 
+// Single source of truth for text stroke width (px at full video resolution).
+// Used by both the CSS preview (scaled down) and the canvas capture (at full res).
+const TEXT_STROKE_PX = 3;
+
 function updateLayerStyle(idx) {
   const pair = pairs[idx];
-  const layer = videoGrid.children[idx]?.querySelector('.text-layer');
-  if (!layer) return;
-  const previewFontPx = Math.max(8, Math.round(pair.fontSize * 0.24));
+  const card = videoGrid.children[idx];
+  const layer = card?.querySelector('.text-layer');
+  const wrap = card?.querySelector('.video-wrap');
+  if (!layer || !wrap) return;
+
+  const cardWidth = wrap.offsetWidth;
+  const videoWidth = pair.videoWidth || 432;
+  const scale = cardWidth / videoWidth;
+  const previewFontPx = Math.max(6, Math.round(pair.fontSize * scale));
+
   layer.style.fontSize = previewFontPx + 'px';
   layer.style.left = pair.x + '%';
   layer.style.top = pair.y + '%';
+  layer.style.fontFamily = `'${fontFamilyName(pair.fontFile)}', sans-serif`;
+  // Scale stroke proportionally — same base value (TEXT_STROKE_PX) as canvas capture
+  const strokePx = Math.max(0.5, TEXT_STROKE_PX * scale);
+  layer.querySelector('span').style.webkitTextStroke = strokePx.toFixed(1) + 'px black';
 }
 
 function refreshAllOverlays() {
@@ -881,16 +1184,18 @@ function setupInlineEdit(card, idx) {
 // ── Apply style to all ──
 applyAllBtn.addEventListener('click', () => {
   const defFont = fontSelect.value;
-  const defSize = parseInt(fontSizeInput.value) || 58;
+  const defSize = parseInt(fontSizeInput.value) || 32;
   const activePos = posChips.querySelector('.chip.active');
   const yMap = { top: 15, center: 50, bottom: 85 };
   const defY = yMap[activePos?.dataset.pos] || 50;
+  const cc = getColorCorrection();
 
   pairs.forEach((p, i) => {
     p.fontSize = defSize;
     p.fontFile = defFont;
     p.x = 50;
     p.y = defY;
+    p.colorCorrection = cc;
     // Update the per-card size input
     const fsi = videoGrid.children[i]?.querySelector(`[data-fsi="${i}"]`);
     if (fsi) fsi.value = defSize;
@@ -898,8 +1203,86 @@ applyAllBtn.addEventListener('click', () => {
   refreshAllOverlays();
 });
 
-// ── Burn All ──
-burnBtn.addEventListener('click', () => {
+// ── Capture Preview as Video ──
+// Records exactly what's on screen. The text overlay is screenshotted from the
+// ACTUAL CSS-rendered DOM via html2canvas (not re-drawn with canvas text APIs).
+// Color correction uses ctx.filter which IS the CSS filter engine. Zero translation.
+
+async function captureTextOverlay(pair) {
+  // Create a hidden container at FULL video resolution with the SAME CSS as the preview.
+  // html2canvas screenshots this → pixel-perfect PNG of the text as CSS renders it.
+  const w = pair.videoWidth || 432;
+  const h = pair.videoHeight || 768;
+  const caption = (pair.caption || '').trim();
+  if (!caption) return null;
+
+  const container = document.createElement('div');
+  container.style.cssText = `
+    position: fixed; left: -9999px; top: -9999px;
+    width: ${w}px; height: ${h}px;
+    overflow: hidden; background: transparent;
+  `;
+
+  const textDiv = document.createElement('div');
+  textDiv.style.cssText = `
+    position: absolute;
+    left: ${pair.x}%;
+    top: ${pair.y}%;
+    transform: translate(-50%, -50%);
+    max-width: 80%;
+    text-align: center;
+  `;
+
+  const span = document.createElement('span');
+  span.style.cssText = `
+    font-family: '${fontFamilyName(pair.fontFile)}', sans-serif;
+    font-weight: 700;
+    font-size: ${pair.fontSize}px;
+    color: white;
+    -webkit-text-stroke: ${TEXT_STROKE_PX}px black;
+    paint-order: stroke fill;
+    line-height: 1.2;
+    word-wrap: break-word;
+    display: inline-block;
+  `;
+  span.textContent = caption;
+
+  textDiv.appendChild(span);
+  container.appendChild(textDiv);
+  document.body.appendChild(container);
+
+  // html2canvas screenshots the CSS-rendered text — EXACT match to preview
+  const overlayCanvas = await html2canvas(container, {
+    backgroundColor: null,  // transparent background
+    width: w,
+    height: h,
+    scale: 1,
+    logging: false,
+  });
+
+  document.body.removeChild(container);
+  return overlayCanvas;  // returns a <canvas> element we can drawImage from
+}
+
+// Send html2canvas PNG + video path to server for ffmpeg overlay
+async function burnOnServer(pair, index, batchId, overlayCanvas) {
+  const overlayPng = overlayCanvas ? overlayCanvas.toDataURL('image/png') : null;
+  const resp = await fetch('/api/burn-overlay', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      batchId,
+      index,
+      videoPath: pair.videoPath,
+      overlayPng,
+      colorCorrection: getColorCorrection(),
+    }),
+  });
+  return resp.json();
+}
+
+// ── Burn All (server-side, parallel) ──
+burnBtn.addEventListener('click', async () => {
   if (burning || !pairs.length) return;
   burning = true;
   burnBtn.disabled = true;
@@ -909,98 +1292,72 @@ burnBtn.addEventListener('click', () => {
   progressFill.style.width = '0%';
   progressFill.classList.remove('complete');
 
-  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const ws = new WebSocket(`${proto}//${location.host}/ws/burn`);
+  const batchId = Date.now().toString(36);
+  const total = pairs.length;
+  let doneCount = 0;
 
-  ws.onopen = () => {
-    ws.send(JSON.stringify({
-      pairs: pairs.map(p => ({
-        videoPath: p.videoPath,
-        caption: p.caption,
-        x: p.x,
-        y: p.y,
-        fontSize: p.fontSize,
-        fontFile: p.fontFile,
-        maxWidthPct: p.maxWidthPct,
-      })),
-    }));
-  };
+  // Phase 1: Screenshot all text overlays in parallel (html2canvas)
+  progressLabel.textContent = `Rendering ${total} text overlays...`;
+  const textOverlays = await Promise.all(
+    pairs.map(p => captureTextOverlay(p))
+  );
+  progressFill.style.width = '15%';
 
-  ws.onmessage = e => {
-    const msg = JSON.parse(e.data);
+  // Phase 2: Send all to server in parallel — ffmpeg composites at full fps
+  progressLabel.textContent = `Burning ${total} videos (server)...`;
+  const burnPromises = pairs.map((pair, i) =>
+    burnOnServer(pair, i, batchId, textOverlays[i]).then(result => {
+      doneCount++;
+      progressFill.style.width = (15 + Math.round((doneCount / total) * 85)) + '%';
+      progressLabel.textContent = `Burned ${doneCount}/${total}...`;
+      return result;
+    }).catch(err => {
+      doneCount++;
+      return { index: i, ok: false, error: err.message };
+    })
+  );
+  const results = await Promise.all(burnPromises);
 
-    if (msg.event === 'burning') {
-      progressLabel.textContent = `Burning ${msg.index + 1} / ${msg.total}...`;
-      progressFill.style.width = Math.round((msg.index / msg.total) * 100) + '%';
+  // Update cards with results
+  results.forEach((result, i) => {
+    const card = videoGrid.children[i];
+    if (result.ok) {
+      card.classList.add('burned');
+      card.querySelector('.video-wrap').insertAdjacentHTML('beforeend',
+        '<span class="burn-badge done">Burned</span>');
+      card.querySelector('video').src = `/burned/${result.file}`;
+      const tl = card.querySelector('.text-layer');
+      if (tl) tl.style.display = 'none';
+    } else {
+      card.classList.add('error');
+      card.querySelector('.video-wrap').insertAdjacentHTML('beforeend',
+        `<span class="burn-badge fail" title="${esc(result.error || '')}">Error</span>`);
     }
-
-    if (msg.event === 'burned') {
-      pairs[msg.index].result = msg.result;
-      const card = videoGrid.children[msg.index];
-
-      if (msg.result.ok) {
-        card.classList.add('burned');
-        card.querySelector('.video-wrap').insertAdjacentHTML('beforeend',
-          '<span class="burn-badge done">Burned</span>');
-        // Swap video to burned version
-        card.querySelector('video').src = `/burned/${msg.result.file}`;
-        // Hide text layer (caption is now burned in)
-        const tl = card.querySelector('.text-layer');
-        if (tl) tl.style.display = 'none';
-      } else {
-        card.classList.add('error');
-        card.querySelector('.video-wrap').insertAdjacentHTML('beforeend',
-          `<span class="burn-badge fail" title="${esc(msg.result.error || '')}">Error</span>`);
-      }
-
-      progressFill.style.width = Math.round(((msg.index + 1) / msg.total) * 100) + '%';
-      progressLabel.textContent = `${msg.index + 1} / ${msg.total} done`;
-    }
-
-    if (msg.event === 'complete') {
-      progressFill.style.width = '100%';
-      progressFill.classList.add('complete');
-      progressLabel.textContent = `Done! ${msg.successCount}/${msg.total} burned.`;
-      burning = false;
-      burnBtn.textContent = 'Burn All';
-      burnBtn.disabled = false;
-
-      if (msg.successCount > 0) {
-        exportBar.classList.add('active');
-        exportInfo.textContent = `${msg.successCount} burned`;
-        const dl = () => downloadBatch(msg.batchId, msg.results);
-        dlBurnedBtn.onclick = dl;
-        downloadSection.style.display = '';
-        downloadAllBtn.onclick = dl;
-      }
-    }
-
-    if (msg.event === 'error') {
-      progressLabel.textContent = 'Error: ' + msg.error;
-      burning = false;
-      burnBtn.textContent = 'Burn All';
-      burnBtn.disabled = false;
-    }
-  };
-
-  ws.onerror = () => {
-    progressLabel.textContent = 'Connection error';
-    burning = false;
-    burnBtn.textContent = 'Burn All';
-    burnBtn.disabled = false;
-  };
-});
-
-function downloadBatch(batchId, results) {
-  results.filter(r => r.ok).forEach((r, i) => {
-    setTimeout(() => {
-      const a = document.createElement('a');
-      a.href = `/burned/${r.file}`;
-      a.download = `burned_${i}.mp4`;
-      a.click();
-    }, i * 300);
   });
-}
+
+  const successCount = results.filter(r => r.ok).length;
+  progressFill.style.width = '100%';
+  progressFill.classList.add('complete');
+  progressLabel.textContent = `Done! ${successCount}/${total} burned.`;
+  burning = false;
+  burnBtn.textContent = 'Burn All';
+  loadBatches();
+  burnBtn.disabled = false;
+
+  if (successCount > 0) {
+    exportBar.classList.add('active');
+    exportInfo.textContent = `${successCount} burned`;
+    const dl = () => {
+      const a = document.createElement('a');
+      a.href = `/api/burn-zip/${batchId}`;
+      a.download = `burned_${batchId}.zip`;
+      a.click();
+    };
+    dlBurnedBtn.onclick = dl;
+    downloadSection.style.display = '';
+    downloadAllBtn.onclick = dl;
+  }
+});
 
 function esc(s) {
   const d = document.createElement('div');

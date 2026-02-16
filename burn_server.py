@@ -1,31 +1,28 @@
 """
 Caption Burn Server
-Burns scraped captions onto generated videos using Pillow + FFmpeg overlay.
+Burns scraped captions onto generated videos using browser-rendered overlays + FFmpeg.
 Run: python burn_server.py  (serves on port 8002)
 """
 
 import asyncio
+import base64
 import csv
-import json
 import os
 import tempfile
 import uuid
 from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageFont
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
-from starlette.responses import Response
 
 app = FastAPI()
 
 BASE_DIR = Path(__file__).parent
-VIDEO_DIR = BASE_DIR / "video-output"
+VIDEO_DIR = BASE_DIR / "output"
 CAPTION_DIR = BASE_DIR / "caption_output"
 BURN_DIR = BASE_DIR / "burn_output"
 FONT_DIR = BASE_DIR / "fonts"
-FONT_PATH = FONT_DIR / "TikTokSans16pt-Bold.ttf"
 
 BURN_DIR.mkdir(exist_ok=True)
 
@@ -33,34 +30,17 @@ BURN_DIR.mkdir(exist_ok=True)
 # ── Helpers ──────────────────────────────────────────────────────────
 
 
-def wrap_text(text: str, font: ImageFont.FreeTypeFont, max_width: int) -> str:
-    """Word-wrap text to fit within max_width pixels using actual font metrics."""
-    words = text.split()
-    lines = []
-    current = ""
-    for word in words:
-        test = f"{current} {word}".strip()
-        bbox = font.getbbox(test)
-        if bbox[2] > max_width and current:
-            lines.append(current)
-            current = word
-        else:
-            current = test
-    if current:
-        lines.append(current)
-    return "\n".join(lines)
-
-
 def scan_videos() -> list[dict]:
-    """Recursively find all mp4 files under video-output/."""
+    """Recursively find all mp4 files under video-output/.
+    Groups by full subfolder path (e.g. 'rep-minimax/prompt_slug')."""
     videos = []
     if not VIDEO_DIR.exists():
         return videos
     for mp4 in sorted(VIDEO_DIR.rglob("*.mp4")):
         rel = mp4.relative_to(VIDEO_DIR)
-        # folder = first directory level (e.g. "grok", "rep-minimax")
         parts = rel.parts
-        folder = parts[0] if len(parts) > 1 else ""
+        # folder = full parent path (e.g. "rep-minimax/a_black_ford_pickup...")
+        folder = str(rel.parent) if len(parts) > 1 else ""
         videos.append({
             "path": str(rel),
             "name": mp4.name,
@@ -118,6 +98,149 @@ def list_fonts() -> list[dict]:
     return fonts
 
 
+def build_filter_complex(color_correction: dict | None = None) -> str:
+    """Build ffmpeg filter_complex that replicates CSS filter behavior.
+
+    All color transforms are composed into a SINGLE colorchannelmixer filter
+    to avoid multiple YUV↔RGB conversions that degrade video quality.
+    Each CSS filter (brightness, contrast, saturate, sepia, hue-rotate) is
+    a linear per-pixel transform expressible as a 3x3 matrix + offset.
+    We pre-multiply them into one combined matrix.
+    """
+    import math
+
+    if not color_correction:
+        return "[0:v][1:v]overlay=0:0"
+
+    # Raw slider integers
+    b_raw = float(color_correction.get("brightness", 0))
+    c_raw = float(color_correction.get("contrast", 0))
+    s_raw = float(color_correction.get("saturation", 0))
+    sh_raw = float(color_correction.get("sharpness", 0))
+    sd_raw = float(color_correction.get("shadow", 0))
+    t_raw = float(color_correction.get("temperature", 0))
+    ti_raw = float(color_correction.get("tint", 0))
+    f_raw = float(color_correction.get("fade", 0))
+
+    # Map to CSS-equivalent values (same math as frontend applyCSSFilterPreview)
+    css_brightness = 1 + b_raw / 100
+    css_contrast = 1 + c_raw / 100
+    css_saturate = 1 + s_raw / 100
+
+    if f_raw > 0:
+        fade = f_raw / 100
+        css_brightness = min(2.0, css_brightness + fade * 0.4)
+        css_contrast = max(0.2, css_contrast - fade * 0.3)
+        css_saturate = max(0.2, css_saturate - fade * 0.4)
+
+    if sd_raw != 0:
+        css_brightness += sd_raw / 400
+
+    sharpness = sh_raw / 50
+
+    is_default = (
+        abs(css_brightness - 1.0) < 0.005
+        and abs(css_contrast - 1.0) < 0.005
+        and abs(css_saturate - 1.0) < 0.005
+        and abs(t_raw) <= 1
+        and abs(ti_raw) <= 1
+        and sharpness < 0.001
+    )
+    if is_default:
+        return "[0:v][1:v]overlay=0:0"
+
+    # --- Compose all transforms into one 3x3 matrix + offset ---
+    # colorchannelmixer: out_r = in_r*rr + in_g*rg + in_b*rb + ra
+    # where ra/ga/ba are offsets (fraction of full range, i.e. 0-1 maps to 0-255)
+
+    mat = [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
+    off = [0.0, 0.0, 0.0]
+
+    def mat_mul(a, b):
+        return [
+            [sum(a[i][k] * b[k][j] for k in range(3)) for j in range(3)]
+            for i in range(3)
+        ]
+
+    def mat_vec(m, v):
+        return [sum(m[i][j] * v[j] for j in range(3)) for i in range(3)]
+
+    # CSS brightness(b): out = in * b
+    if abs(css_brightness - 1.0) >= 0.005:
+        b = css_brightness
+        mat = [[b * mat[i][j] for j in range(3)] for i in range(3)]
+        off = [b * o for o in off]
+
+    # CSS contrast(c): out = (in - 0.5) * c + 0.5 = in*c + 0.5*(1-c)
+    if abs(css_contrast - 1.0) >= 0.005:
+        c = css_contrast
+        bias = 0.5 * (1 - c)
+        mat = [[c * mat[i][j] for j in range(3)] for i in range(3)]
+        off = [c * o + bias for o in off]
+
+    # CSS saturate(s): BT.709 saturation matrix
+    if abs(css_saturate - 1.0) >= 0.005:
+        s = css_saturate
+        sr, sg, sb = 0.2126, 0.7152, 0.0722
+        sat_mat = [
+            [sr + (1 - sr) * s, sg - sg * s,       sb - sb * s],
+            [sr - sr * s,       sg + (1 - sg) * s, sb - sb * s],
+            [sr - sr * s,       sg - sg * s,       sb + (1 - sb) * s],
+        ]
+        off = mat_vec(sat_mat, off)
+        mat = mat_mul(sat_mat, mat)
+
+    # Temperature: warm = CSS sepia(), cool = CSS hue-rotate(negative deg)
+    if abs(t_raw) > 1:
+        if t_raw > 0:
+            amt = min(1.0, t_raw / 200)
+            t_mat = [
+                [1 - amt + amt * 0.393, amt * 0.769,           amt * 0.189],
+                [amt * 0.349,           1 - amt + amt * 0.686, amt * 0.168],
+                [amt * 0.272,           amt * 0.534,           1 - amt + amt * 0.131],
+            ]
+        else:
+            rad = math.radians(t_raw / 5)
+            cos_a, sin_a = math.cos(rad), math.sin(rad)
+            t_mat = [
+                [0.213 + 0.787*cos_a - 0.213*sin_a, 0.715 - 0.715*cos_a - 0.715*sin_a, 0.072 - 0.072*cos_a + 0.928*sin_a],
+                [0.213 - 0.213*cos_a + 0.143*sin_a, 0.715 + 0.285*cos_a + 0.140*sin_a, 0.072 - 0.072*cos_a - 0.283*sin_a],
+                [0.213 - 0.213*cos_a - 0.787*sin_a, 0.715 - 0.715*cos_a + 0.715*sin_a, 0.072 + 0.928*cos_a + 0.072*sin_a],
+            ]
+        off = mat_vec(t_mat, off)
+        mat = mat_mul(t_mat, mat)
+
+    # Tint: CSS hue-rotate
+    if abs(ti_raw) > 1:
+        rad = math.radians(ti_raw / 3)
+        cos_a, sin_a = math.cos(rad), math.sin(rad)
+        ti_mat = [
+            [0.213 + 0.787*cos_a - 0.213*sin_a, 0.715 - 0.715*cos_a - 0.715*sin_a, 0.072 - 0.072*cos_a + 0.928*sin_a],
+            [0.213 - 0.213*cos_a + 0.143*sin_a, 0.715 + 0.285*cos_a + 0.140*sin_a, 0.072 - 0.072*cos_a - 0.283*sin_a],
+            [0.213 - 0.213*cos_a - 0.787*sin_a, 0.715 - 0.715*cos_a + 0.715*sin_a, 0.072 + 0.928*cos_a + 0.072*sin_a],
+        ]
+        off = mat_vec(ti_mat, off)
+        mat = mat_mul(ti_mat, mat)
+
+    # --- Build filter string ---
+    # Single colorchannelmixer with the composed matrix + offsets
+    # format=rgb24 forces RGB processing, avoiding YUV chroma subsampling artifacts
+    ccm = (
+        f"colorchannelmixer="
+        f"rr={mat[0][0]:.6f}:rg={mat[0][1]:.6f}:rb={mat[0][2]:.6f}:ra={off[0]:.6f}:"
+        f"gr={mat[1][0]:.6f}:gg={mat[1][1]:.6f}:gb={mat[1][2]:.6f}:ga={off[1]:.6f}:"
+        f"br={mat[2][0]:.6f}:bg={mat[2][1]:.6f}:bb={mat[2][2]:.6f}:ba={off[2]:.6f}"
+    )
+
+    filters = [f"format=rgb24", ccm]
+
+    if sharpness >= 0.001:
+        filters.append(f"unsharp=5:5:{sharpness:.2f}:5:5:{sharpness:.2f}")
+
+    chain = ",".join(filters)
+    return f"[0:v]{chain}[corrected];[corrected][1:v]overlay=0:0"
+
+
 async def get_video_dimensions(video_path: str) -> tuple[int, int]:
     """Probe video width and height with ffprobe."""
     proc = await asyncio.create_subprocess_exec(
@@ -134,88 +257,195 @@ async def get_video_dimensions(video_path: str) -> tuple[int, int]:
     return int(w), int(h)
 
 
-def render_caption_overlay(
-    caption: str,
-    width: int,
-    height: int,
-    x_pct: float,
-    y_pct: float,
-    font_size: int,
-    overlay_path: str,
-    font_file: str | None = None,
-    max_width_pct: float = 80,
-) -> str:
-    """Render caption as transparent PNG overlay using Pillow + Freetype.
-    x_pct/y_pct: text center position as percentage (0-100) of video dimensions.
-    """
-    font_path = FONT_DIR / font_file if font_file else FONT_PATH
-    font = ImageFont.truetype(str(font_path), font_size)
-    max_text_width = int(width * max_width_pct / 100)
-    wrapped = wrap_text(caption, font, max_text_width)
-
-    img = Image.new("RGBA", (width, height), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(img)
-
-    # Convert percentage to pixel position (text center)
-    cx = int(width * x_pct / 100)
-    cy = int(height * y_pct / 100)
-
-    draw.multiline_text(
-        (cx, cy),
-        wrapped,
-        font=font,
-        fill="white",
-        stroke_width=4,
-        stroke_fill="black",
-        anchor="mm",
-        align="center",
-    )
-    img.save(overlay_path)
-    return overlay_path
-
-
-async def burn_caption(
+async def burn_video(
     video_path: str,
-    caption: str,
-    x_pct: float,
-    y_pct: float,
-    font_size: int,
+    overlay_png_b64: str | None,
     output_path: str,
-    font_file: str | None = None,
-    max_width_pct: float = 80,
+    color_correction: dict | None = None,
 ) -> str:
-    """Burn caption onto video: Pillow renders text overlay, FFmpeg composites it."""
-    w, h = await get_video_dimensions(video_path)
+    """Burn overlay onto video using a browser-rendered PNG + ffmpeg color correction.
 
-    overlay_path = tempfile.mktemp(suffix=".png")
-    render_caption_overlay(caption, w, h, x_pct, y_pct, font_size, overlay_path, font_file, max_width_pct)
+    overlay_png_b64: base64-encoded PNG from browser canvas (text overlay at full video res).
+                     If None/empty, only color correction is applied.
+    """
+    overlay_path = None
 
-    cmd = [
-        "ffmpeg", "-y",
-        "-i", video_path,
-        "-i", overlay_path,
-        "-filter_complex", "[0:v][1:v]overlay=0:0",
-        "-c:v", "libx264",
-        "-preset", "fast",
-        "-crf", "20",
-        "-movflags", "+faststart",
-        "-c:a", "copy",
-        output_path,
-    ]
+    try:
+        # Write browser-rendered overlay PNG to temp file
+        if overlay_png_b64:
+            # Strip data URL prefix if present (e.g. "data:image/png;base64,...")
+            if "," in overlay_png_b64:
+                overlay_png_b64 = overlay_png_b64.split(",", 1)[1]
+            png_bytes = base64.b64decode(overlay_png_b64)
+            fd, overlay_path = tempfile.mkstemp(suffix=".png")
+            os.write(fd, png_bytes)
+            os.close(fd)
 
-    proc = await asyncio.create_subprocess_exec(
-        *cmd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
+        filter_complex = build_filter_complex(color_correction)
+
+        if overlay_path:
+            # Have overlay — use it
+            cmd = [
+                "ffmpeg", "-y",
+                "-i", video_path,
+                "-i", overlay_path,
+                "-filter_complex", filter_complex,
+                "-c:v", "libx264",
+                "-preset", "fast",
+                "-crf", "20",
+                "-movflags", "+faststart",
+                "-c:a", "copy",
+                output_path,
+            ]
+        else:
+            # No overlay — just apply color correction to the video directly
+            # Rewrite filter to not reference [1:v] overlay input
+            cc_filter = _build_color_only_filter(color_correction)
+            cmd = [
+                "ffmpeg", "-y",
+                "-i", video_path,
+                "-vf", cc_filter,
+                "-c:v", "libx264",
+                "-preset", "fast",
+                "-crf", "20",
+                "-movflags", "+faststart",
+                "-c:a", "copy",
+                output_path,
+            ]
+
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await proc.communicate()
+
+        if proc.returncode != 0:
+            raise RuntimeError(stderr.decode()[-500:])
+
+        return output_path
+
+    finally:
+        if overlay_path and os.path.exists(overlay_path):
+            os.unlink(overlay_path)
+
+
+def _build_color_only_filter(color_correction: dict | None) -> str:
+    """Build a -vf filter string for color correction only (no overlay input)."""
+    import math
+
+    if not color_correction:
+        return "null"
+
+    b_raw = float(color_correction.get("brightness", 0))
+    c_raw = float(color_correction.get("contrast", 0))
+    s_raw = float(color_correction.get("saturation", 0))
+    sh_raw = float(color_correction.get("sharpness", 0))
+    sd_raw = float(color_correction.get("shadow", 0))
+    t_raw = float(color_correction.get("temperature", 0))
+    ti_raw = float(color_correction.get("tint", 0))
+    f_raw = float(color_correction.get("fade", 0))
+
+    css_brightness = 1 + b_raw / 100
+    css_contrast = 1 + c_raw / 100
+    css_saturate = 1 + s_raw / 100
+
+    if f_raw > 0:
+        fade = f_raw / 100
+        css_brightness = min(2.0, css_brightness + fade * 0.4)
+        css_contrast = max(0.2, css_contrast - fade * 0.3)
+        css_saturate = max(0.2, css_saturate - fade * 0.4)
+
+    if sd_raw != 0:
+        css_brightness += sd_raw / 400
+
+    sharpness = sh_raw / 50
+
+    is_default = (
+        abs(css_brightness - 1.0) < 0.005
+        and abs(css_contrast - 1.0) < 0.005
+        and abs(css_saturate - 1.0) < 0.005
+        and abs(t_raw) <= 1
+        and abs(ti_raw) <= 1
+        and sharpness < 0.001
     )
-    _, stderr = await proc.communicate()
+    if is_default:
+        return "null"
 
-    os.unlink(overlay_path)
+    # Reuse the same matrix composition as build_filter_complex
+    mat = [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
+    off = [0.0, 0.0, 0.0]
 
-    if proc.returncode != 0:
-        raise RuntimeError(stderr.decode()[-500:])
+    def mat_mul(a, b):
+        return [[sum(a[i][k] * b[k][j] for k in range(3)) for j in range(3)] for i in range(3)]
 
-    return output_path
+    def mat_vec(m, v):
+        return [sum(m[i][j] * v[j] for j in range(3)) for i in range(3)]
+
+    if abs(css_brightness - 1.0) >= 0.005:
+        b = css_brightness
+        mat = [[b * mat[i][j] for j in range(3)] for i in range(3)]
+        off = [b * o for o in off]
+
+    if abs(css_contrast - 1.0) >= 0.005:
+        c = css_contrast
+        bias = 0.5 * (1 - c)
+        mat = [[c * mat[i][j] for j in range(3)] for i in range(3)]
+        off = [c * o + bias for o in off]
+
+    if abs(css_saturate - 1.0) >= 0.005:
+        s = css_saturate
+        sr, sg, sb = 0.2126, 0.7152, 0.0722
+        sat_mat = [
+            [sr + (1 - sr) * s, sg - sg * s, sb - sb * s],
+            [sr - sr * s, sg + (1 - sg) * s, sb - sb * s],
+            [sr - sr * s, sg - sg * s, sb + (1 - sb) * s],
+        ]
+        off = mat_vec(sat_mat, off)
+        mat = mat_mul(sat_mat, mat)
+
+    if abs(t_raw) > 1:
+        if t_raw > 0:
+            amt = min(1.0, t_raw / 200)
+            t_mat = [
+                [1 - amt + amt * 0.393, amt * 0.769, amt * 0.189],
+                [amt * 0.349, 1 - amt + amt * 0.686, amt * 0.168],
+                [amt * 0.272, amt * 0.534, 1 - amt + amt * 0.131],
+            ]
+        else:
+            rad = math.radians(t_raw / 5)
+            cos_a, sin_a = math.cos(rad), math.sin(rad)
+            t_mat = [
+                [0.213 + 0.787*cos_a - 0.213*sin_a, 0.715 - 0.715*cos_a - 0.715*sin_a, 0.072 - 0.072*cos_a + 0.928*sin_a],
+                [0.213 - 0.213*cos_a + 0.143*sin_a, 0.715 + 0.285*cos_a + 0.140*sin_a, 0.072 - 0.072*cos_a - 0.283*sin_a],
+                [0.213 - 0.213*cos_a - 0.787*sin_a, 0.715 - 0.715*cos_a + 0.715*sin_a, 0.072 + 0.928*cos_a + 0.072*sin_a],
+            ]
+        off = mat_vec(t_mat, off)
+        mat = mat_mul(t_mat, mat)
+
+    if abs(ti_raw) > 1:
+        rad = math.radians(ti_raw / 3)
+        cos_a, sin_a = math.cos(rad), math.sin(rad)
+        ti_mat = [
+            [0.213 + 0.787*cos_a - 0.213*sin_a, 0.715 - 0.715*cos_a - 0.715*sin_a, 0.072 - 0.072*cos_a + 0.928*sin_a],
+            [0.213 - 0.213*cos_a + 0.143*sin_a, 0.715 + 0.285*cos_a + 0.140*sin_a, 0.072 - 0.072*cos_a - 0.283*sin_a],
+            [0.213 - 0.213*cos_a - 0.787*sin_a, 0.715 - 0.715*cos_a + 0.715*sin_a, 0.072 + 0.928*cos_a + 0.072*sin_a],
+        ]
+        off = mat_vec(ti_mat, off)
+        mat = mat_mul(ti_mat, mat)
+
+    ccm = (
+        f"colorchannelmixer="
+        f"rr={mat[0][0]:.6f}:rg={mat[0][1]:.6f}:rb={mat[0][2]:.6f}:ra={off[0]:.6f}:"
+        f"gr={mat[1][0]:.6f}:gg={mat[1][1]:.6f}:gb={mat[1][2]:.6f}:ga={off[1]:.6f}:"
+        f"br={mat[2][0]:.6f}:bg={mat[2][1]:.6f}:bb={mat[2][2]:.6f}:ba={off[2]:.6f}"
+    )
+
+    filters = ["format=rgb24", ccm]
+    if sharpness >= 0.001:
+        filters.append(f"unsharp=5:5:{sharpness:.2f}:5:5:{sharpness:.2f}")
+
+    return ",".join(filters)
 
 
 # ── API Routes ───────────────────────────────────────────────────────
@@ -237,7 +467,85 @@ async def api_fonts():
     return {"fonts": list_fonts()}
 
 
-# ── WebSocket for batch burn with progress ───────────────────────────
+@app.post("/api/burn-overlay")
+async def api_burn_overlay(request: Request):
+    """Receive html2canvas PNG + video path, composite with ffmpeg at full fps."""
+    body = await request.json()
+
+    batch_id = body["batchId"]
+    idx = int(body["index"])
+    video_rel = body["videoPath"]
+    overlay_b64 = body.get("overlayPng")  # base64 PNG from html2canvas
+    color_correction = body.get("colorCorrection")
+
+    batch_dir = BURN_DIR / batch_id
+    batch_dir.mkdir(exist_ok=True)
+
+    video_abs = str(VIDEO_DIR / video_rel)
+    mp4_path = str(batch_dir / f"burned_{idx:03d}.mp4")
+
+    try:
+        if overlay_b64 or color_correction:
+            await burn_video(video_abs, overlay_b64, mp4_path, color_correction)
+        else:
+            import shutil
+            shutil.copy2(video_abs, mp4_path)
+
+        return {"index": idx, "ok": True, "file": f"{batch_id}/burned_{idx:03d}.mp4"}
+    except Exception as e:
+        return JSONResponse(
+            {"index": idx, "ok": False, "error": str(e)[:300]},
+            status_code=500,
+        )
+
+
+@app.get("/api/batches")
+async def api_batches():
+    """List all past burn batches with file counts and timestamps."""
+    batches = []
+    if not BURN_DIR.exists():
+        return {"batches": batches}
+    for d in sorted(BURN_DIR.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True):
+        if not d.is_dir():
+            continue
+        mp4s = list(d.glob("burned_*.mp4"))
+        if not mp4s:
+            continue
+        batches.append({
+            "id": d.name,
+            "count": len(mp4s),
+            "created": int(d.stat().st_mtime),
+        })
+    return {"batches": batches}
+
+
+@app.get("/api/burn-zip/{batch_id}")
+async def api_burn_zip(batch_id: str):
+    """Zip all burned MP4s in a batch and return the archive."""
+    import zipfile
+    from fastapi.responses import FileResponse
+
+    batch_dir = BURN_DIR / batch_id
+    if not batch_dir.exists():
+        return JSONResponse({"error": "Batch not found"}, status_code=404)
+
+    mp4s = sorted(batch_dir.glob("burned_*.mp4"))
+    if not mp4s:
+        return JSONResponse({"error": "No burned files in batch"}, status_code=404)
+
+    zip_path = str(batch_dir / f"{batch_id}.zip")
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        for mp4 in mp4s:
+            zf.write(mp4, mp4.name)
+
+    return FileResponse(
+        zip_path,
+        media_type="application/zip",
+        filename=f"burned_{batch_id}.zip",
+    )
+
+
+# ── WebSocket for batch burn with progress (legacy) ──────────────────
 
 
 @app.websocket("/ws/burn")
@@ -256,12 +564,8 @@ async def ws_burn(ws: WebSocket):
 
         for i, pair in enumerate(pairs):
             video_abs = str(VIDEO_DIR / pair["videoPath"])
-            caption = pair.get("caption", "")
-            x_pct = pair.get("x", 50)
-            y_pct = pair.get("y", 50)
-            font_size = pair.get("fontSize", 58)
-            font_file = pair.get("fontFile")
-            max_width_pct = pair.get("maxWidthPct", 80)
+            overlay_png = pair.get("overlayPng")  # base64 PNG from browser canvas
+            color_correction = pair.get("colorCorrection")
             out_name = f"burned_{i:03d}.mp4"
             out_path = str(batch_dir / out_name)
 
@@ -272,13 +576,11 @@ async def ws_burn(ws: WebSocket):
             })
 
             try:
-                if caption.strip():
-                    await burn_caption(
-                        video_abs, caption, x_pct, y_pct,
-                        font_size, out_path, font_file, max_width_pct,
+                if overlay_png or color_correction:
+                    await burn_video(
+                        video_abs, overlay_png, out_path, color_correction,
                     )
                 else:
-                    # No caption — just copy the video
                     import shutil
                     shutil.copy2(video_abs, out_path)
 
@@ -329,7 +631,20 @@ app.mount("/fonts", StaticFiles(directory=str(FONT_DIR)), name="fonts")
 # Serve burned videos for download
 app.mount("/burned", StaticFiles(directory=str(BURN_DIR)), name="burned")
 
-# Serve the UI (must be last)
+# Serve the UI — disable browser caching of HTML during development
+from starlette.middleware.base import BaseHTTPMiddleware
+
+class NoCacheHTMLMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request, call_next):
+        response = await call_next(request)
+        ct = response.headers.get("content-type", "")
+        if "text/html" in ct:
+            response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+            response.headers["Pragma"] = "no-cache"
+        return response
+
+app.add_middleware(NoCacheHTMLMiddleware)
+
 app.mount("/", StaticFiles(directory="static/burn", html=True), name="static")
 
 
