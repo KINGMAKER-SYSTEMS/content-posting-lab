@@ -13,10 +13,12 @@ cd content-posting-lab
 OPENAI_API_KEY="sk-proj-..." \
 XAI_API_KEY="xai-..." \
 REPLICATE_API_TOKEN="r8_..." \
+LATE_ORG_ID="..." \
+LATE_API_KEY="sk_..." \
 ./setup.sh
 ```
 
-Only `OPENAI_API_KEY` is required. The other keys are optional — only providers with keys will appear in the video generation UI. You can pass any combination of: `OPENAI_API_KEY`, `XAI_API_KEY`, `REPLICATE_API_TOKEN`, `FAL_KEY`, `LUMA_API_KEY`.
+Only `OPENAI_API_KEY` is required for video generation. Pass any combination of: `OPENAI_API_KEY`, `XAI_API_KEY`, `REPLICATE_API_TOKEN`, `FAL_KEY`, `LUMA_API_KEY`, `LATE_ORG_ID`, `LATE_API_KEY`.
 
 **For humans at a terminal** — run without env vars and it will prompt interactively:
 
@@ -82,6 +84,12 @@ FAL_KEY=...
 
 # Luma Dream Machine (Ray 2)
 LUMA_API_KEY=...
+
+# ── Posting / Distribution ──────────────────────────────────
+
+# Late.dev — TikTok posting API (https://docs.getlate.dev)
+LATE_ORG_ID=...
+LATE_API_KEY=sk_...
 ```
 
 ### Where to get keys
@@ -93,10 +101,12 @@ LUMA_API_KEY=...
 | `REPLICATE_API_TOKEN` | https://replicate.com/account/api-tokens | Pay-per-use. Gets you access to MiniMax, Wan, and Kling models. |
 | `FAL_KEY` | https://fal.ai/dashboard/keys | Similar to Replicate. Has newer model versions (Wan 2.5, Kling 2.5). |
 | `LUMA_API_KEY` | https://lumalabs.ai/dream-machine/api | Luma Dream Machine / Ray 2. |
+| `LATE_ORG_ID` + `LATE_API_KEY` | https://getlate.dev | TikTok posting via Late.dev unified social API. |
 
 ### What's strictly required vs optional
 
 - **`OPENAI_API_KEY`** — Required if you're using the caption scrape server (server 2) at all, since it uses GPT-4o to read captions from video frames.
+- **`LATE_ORG_ID` + `LATE_API_KEY`** — Required for posting burned videos to TikTok via Late.dev.
 - **Everything else** — Optional. The video generation server dynamically shows only providers that have keys configured. You can run with just one provider.
 
 ## System Dependencies

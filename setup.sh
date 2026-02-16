@@ -42,7 +42,7 @@ header(){ echo -e "\n${BOLD}── $1 ──${NC}"; }
 NONINTERACTIVE=false
 if [[ -n "${OPENAI_API_KEY:-}" ]] || [[ -n "${XAI_API_KEY:-}" ]] || \
    [[ -n "${REPLICATE_API_TOKEN:-}" ]] || [[ -n "${FAL_KEY:-}" ]] || \
-   [[ -n "${LUMA_API_KEY:-}" ]]; then
+   [[ -n "${LUMA_API_KEY:-}" ]] || [[ -n "${LATE_API_KEY:-}" ]]; then
     NONINTERACTIVE=true
     info "Non-interactive mode: API keys detected from environment."
 fi
@@ -141,6 +141,8 @@ write_env_file() {
     local replicate_key="${3:-}"
     local fal_key="${4:-}"
     local luma_key="${5:-}"
+    local late_org="${6:-}"
+    local late_key="${7:-}"
 
     cat > .env << 'ENVHEADER'
 # ── Required ──────────────────────────────────────────────
@@ -192,6 +194,24 @@ ENVMID
     else
         echo "# LUMA_API_KEY=" >> .env
     fi
+
+    cat >> .env << 'ENVPOST'
+
+# ── Posting / Distribution ──────────────────────────────────
+
+# Late.dev — TikTok posting API (https://docs.getlate.dev)
+ENVPOST
+
+    if [[ -n "$late_org" ]]; then
+        echo "LATE_ORG_ID=$late_org" >> .env
+    else
+        echo "# LATE_ORG_ID=" >> .env
+    fi
+    if [[ -n "$late_key" ]]; then
+        echo "LATE_API_KEY=$late_key" >> .env
+    else
+        echo "# LATE_API_KEY=" >> .env
+    fi
 }
 
 if [[ -f ".env" ]]; then
@@ -204,7 +224,9 @@ elif [[ "$NONINTERACTIVE" == true ]]; then
         "${XAI_API_KEY:-}" \
         "${REPLICATE_API_TOKEN:-}" \
         "${FAL_KEY:-}" \
-        "${LUMA_API_KEY:-}"
+        "${LUMA_API_KEY:-}" \
+        "${LATE_ORG_ID:-}" \
+        "${LATE_API_KEY:-}"
     ok ".env file created from environment variables"
 
     # Report what was set
@@ -213,6 +235,7 @@ elif [[ "$NONINTERACTIVE" == true ]]; then
     [[ -n "${REPLICATE_API_TOKEN:-}" ]]  && ok "Replicate key configured"    || info "Replicate key not provided"
     [[ -n "${FAL_KEY:-}" ]]              && ok "FAL key configured"          || info "FAL key not provided"
     [[ -n "${LUMA_API_KEY:-}" ]]         && ok "Luma key configured"         || info "Luma key not provided"
+    [[ -n "${LATE_API_KEY:-}" ]]         && ok "Late.dev key configured"     || info "Late.dev key not provided"
 else
     # Interactive: prompt for each key
     echo ""
@@ -225,13 +248,19 @@ else
     read -rp "$(echo -e "${CYAN}Replicate API Token${NC} (r8_...): ")" INPUT_REPLICATE
     read -rp "$(echo -e "${CYAN}FAL Key${NC}: ")" INPUT_FAL
     read -rp "$(echo -e "${CYAN}Luma API Key${NC}: ")" INPUT_LUMA
+    echo ""
+    info "Late.dev — TikTok posting API (https://docs.getlate.dev)"
+    read -rp "$(echo -e "${CYAN}Late.dev Org ID${NC}: ")" INPUT_LATE_ORG
+    read -rp "$(echo -e "${CYAN}Late.dev API Key${NC} (sk_...): ")" INPUT_LATE_KEY
 
     write_env_file \
         "${INPUT_OPENAI:-}" \
         "${INPUT_XAI:-}" \
         "${INPUT_REPLICATE:-}" \
         "${INPUT_FAL:-}" \
-        "${INPUT_LUMA:-}"
+        "${INPUT_LUMA:-}" \
+        "${INPUT_LATE_ORG:-}" \
+        "${INPUT_LATE_KEY:-}"
 
     echo ""
     ok ".env file created"
