@@ -9,3 +9,5 @@ openai
 pytesseract
 Pillow
 yt-dlp
+pytest
+pytest-asyncio

@@ -7,6 +7,10 @@ caption_output/
 burn_output/
 burn_uploads/
 video-output/
+projects/
+
+frontend/node_modules/
+frontend/dist/
 
 __pycache__/
 *.pyc
