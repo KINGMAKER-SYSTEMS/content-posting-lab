@@ -168,3 +168,8 @@
 - Overlay path: base64 PNG → tempfile → ffmpeg -i overlay → composite
 - Color-only path: uses -vf instead of -filter_complex (no overlay input)
 - Always scales to 1080x1920 (TikTok vertical)
+
+## Unified app wiring - Learnings
+- Catch-all frontend routes can swallow `/api/projects` because the projects router exposes `GET /` under its prefix, which only matches `/api/projects/` by default.
+- Adding an explicit `GET /api/projects` alias in `app.py` avoids SPA catch-all takeover and keeps the no-trailing-slash endpoint stable.
+- Static mounts needed by the unified app are `/fonts`, `/projects`, `/output`, `/caption-output`, and `/burn-output`; using `check_dir=False` prevents import-time startup failures when directories are not present yet.

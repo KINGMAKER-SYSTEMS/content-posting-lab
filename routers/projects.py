@@ -1,5 +1,7 @@
 """Projects router for managing campaigns and workflows."""
 
+import logging
+import os
 from datetime import datetime
 from pathlib import Path
 
@@ -7,6 +9,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from project_manager import (
+    BASE_DIR,
     PROJECTS_DIR,
     create_project,
     delete_project,
@@ -15,6 +18,8 @@ from project_manager import (
     list_projects,
     sanitize_project_name,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -146,3 +151,101 @@ async def get_project_stats(name: str):
             + burned_stats["total_size_bytes"]
         ),
     }
+
+
+LEGACY_PROJECT_NAME = "legacy-imports"
+
+
+def _symlink_files(
+    source_dir: Path, target_dir: Path, extensions: set[str]
+) -> list[str]:
+    """
+    Recursively find files matching extensions in source_dir and create
+    symlinks in target_dir. Returns list of created symlink names.
+
+    Uses absolute symlinks so they work regardless of cwd.
+    Skips files that already have a symlink in target_dir.
+    """
+    created = []
+    if not source_dir.exists():
+        return created
+
+    for f in source_dir.rglob("*"):
+        if not f.is_file() or f.suffix.lower() not in extensions:
+            continue
+
+        relative = f.relative_to(source_dir)
+        flat_name = str(relative).replace(os.sep, "_")
+        link_path = target_dir / flat_name
+
+        if link_path.exists():
+            continue
+
+        try:
+            link_path.symlink_to(f.resolve())
+            created.append(flat_name)
+        except OSError as e:
+            logger.warning("Failed to symlink %s -> %s: %s", f, link_path, e)
+
+    return created
+
+
+@router.post("/import-legacy")
+async def import_legacy_content():
+    """
+    Create a 'legacy-imports' project with symlinks to content from the old
+    output/, caption_output/, and burn_output/ directories.
+
+    Does NOT copy files — creates symlinks to preserve disk space.
+    Returns 409 if the project already exists (delete it first to re-import).
+    """
+    project_path = PROJECTS_DIR / LEGACY_PROJECT_NAME
+
+    if project_path.exists():
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Project '{LEGACY_PROJECT_NAME}' already exists. "
+                "Delete it first if you want to re-import."
+            ),
+        )
+
+    try:
+        create_project(LEGACY_PROJECT_NAME)
+    except (ValueError, FileExistsError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    videos_dir = project_path / "videos"
+    captions_dir = project_path / "captions"
+    burned_dir = project_path / "burned"
+
+    video_links = _symlink_files(
+        BASE_DIR / "output", videos_dir, {".mp4", ".mov", ".webm"}
+    )
+    caption_links = _symlink_files(BASE_DIR / "caption_output", captions_dir, {".csv"})
+    burned_links = _symlink_files(
+        BASE_DIR / "burn_output", burned_dir, {".mp4", ".mov", ".webm"}
+    )
+
+    summary = {
+        "project": LEGACY_PROJECT_NAME,
+        "imported": {
+            "videos": len(video_links),
+            "captions": len(caption_links),
+            "burned": len(burned_links),
+        },
+        "details": {
+            "video_files": video_links[:20],
+            "caption_files": caption_links[:20],
+            "burned_files": burned_links[:20],
+        },
+    }
+
+    logger.info(
+        "Legacy import complete: %d videos, %d captions, %d burned",
+        len(video_links),
+        len(caption_links),
+        len(burned_links),
+    )
+
+    return summary

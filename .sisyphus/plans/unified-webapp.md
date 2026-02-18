@@ -976,7 +976,7 @@ Max Concurrent: 6 (Waves 1, 2, 3)
   - Message: `feat(projects): add project CRUD API endpoints`
   - Files: `routers/projects.py`
 
-- [ ] 11. Unified App Wiring — CORS, Static Mounts, Health, Startup
+- [x] 11. Unified App Wiring — CORS, Static Mounts, Health, Startup
 
   **What to do**:
   - Wire ALL routers into `app.py`: `app.include_router(video_router)`, `app.include_router(captions_router)`, `app.include_router(burn_router)`, `app.include_router(projects_router)`
@@ -1059,7 +1059,7 @@ Max Concurrent: 6 (Waves 1, 2, 3)
   - Message: `feat(app): wire all routers, CORS, static mounts, health check, startup validation`
   - Files: `app.py`
 
-- [ ] 12. Legacy Compatibility + Data Migration Shim
+- [x] 12. Legacy Compatibility + Data Migration Shim
 
   **What to do**:
   - Add a "legacy import" endpoint or startup routine that:
