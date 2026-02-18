@@ -77,15 +77,23 @@ async def generate_one(
     duration: int,
     image_data_uri: str | None,
     jobs: dict,
+    output_dir: Path | None = None,
+    url_prefix: str = "/output",
 ):
-    """Orchestrate a single video generation: call provider, download, crop."""
+    """Orchestrate a single video generation: call provider, download, crop.
+
+    Args:
+        output_dir: Base directory for video files. Defaults to OUTPUT_DIR.
+        url_prefix: URL path prefix for serving videos. Defaults to "/output".
+    """
     from . import PROVIDERS
 
+    base_dir = output_dir or OUTPUT_DIR
     entry = jobs[job_id]["videos"][index]
     try:
-        # Organize: output/<provider>/<prompt_slug>/
+        # Organize: <base_dir>/<provider>/<prompt_slug>/
         slug = slugify(prompt)
-        sub_dir = OUTPUT_DIR / provider / slug
+        sub_dir = base_dir / provider / slug
         sub_dir.mkdir(parents=True, exist_ok=True)
         rel_dir = f"{provider}/{slug}"
 
@@ -111,7 +119,7 @@ async def generate_one(
                 await mod.generate(prompt, params, client)
                 entry["status"] = "done"
                 entry["file"] = f"{rel_dir}/{filename}"
-                entry["url"] = f"/output/{rel_dir}/{filename}"
+                entry["url"] = f"{url_prefix}/{rel_dir}/{filename}"
                 return
 
             video_url = await mod.generate(prompt, params, client)
@@ -128,7 +136,7 @@ async def generate_one(
 
             entry["status"] = "done"
             entry["file"] = f"{rel_dir}/{filename}"
-            entry["url"] = f"/output/{rel_dir}/{filename}"
+            entry["url"] = f"{url_prefix}/{rel_dir}/{filename}"
     except Exception as e:
         entry["status"] = "error"
         entry["error"] = str(e)

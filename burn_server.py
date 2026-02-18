@@ -110,7 +110,7 @@ def build_filter_complex(color_correction: dict | None = None) -> str:
     import math
 
     if not color_correction:
-        return "[0:v][1:v]overlay=0:0"
+        return "[0:v][1:v]overlay=0:0,scale=1080:1920:flags=lanczos,setsar=1"
 
     # Raw slider integers
     b_raw = float(color_correction.get("brightness", 0))
@@ -238,7 +238,7 @@ def build_filter_complex(color_correction: dict | None = None) -> str:
         filters.append(f"unsharp=5:5:{sharpness:.2f}:5:5:{sharpness:.2f}")
 
     chain = ",".join(filters)
-    return f"[0:v]{chain}[corrected];[corrected][1:v]overlay=0:0"
+    return f"[0:v]{chain}[corrected];[corrected][1:v]overlay=0:0,scale=1080:1920:flags=lanczos,setsar=1"
 
 
 async def get_video_dimensions(video_path: str) -> tuple[int, int]:
@@ -283,6 +283,20 @@ async def burn_video(
 
         filter_complex = build_filter_complex(color_correction)
 
+        # TikTok-optimized encode: 1080x1920, 30fps, ~15Mbps H.264 High
+        tiktok_encode = [
+            "-c:v", "libx264",
+            "-preset", "fast",
+            "-crf", "18",
+            "-maxrate", "15M",
+            "-bufsize", "15M",
+            "-profile:v", "high",
+            "-level", "4.2",
+            "-r", "30",
+            "-movflags", "+faststart",
+            "-c:a", "aac", "-b:a", "128k",
+        ]
+
         if overlay_path:
             # Have overlay — use it
             cmd = [
@@ -290,11 +304,7 @@ async def burn_video(
                 "-i", video_path,
                 "-i", overlay_path,
                 "-filter_complex", filter_complex,
-                "-c:v", "libx264",
-                "-preset", "fast",
-                "-crf", "20",
-                "-movflags", "+faststart",
-                "-c:a", "copy",
+                *tiktok_encode,
                 output_path,
             ]
         else:
@@ -305,11 +315,7 @@ async def burn_video(
                 "ffmpeg", "-y",
                 "-i", video_path,
                 "-vf", cc_filter,
-                "-c:v", "libx264",
-                "-preset", "fast",
-                "-crf", "20",
-                "-movflags", "+faststart",
-                "-c:a", "copy",
+                *tiktok_encode,
                 output_path,
             ]
 
@@ -334,8 +340,11 @@ def _build_color_only_filter(color_correction: dict | None) -> str:
     """Build a -vf filter string for color correction only (no overlay input)."""
     import math
 
+    # TikTok-optimized output: always scale to 1080x1920
+    TIKTOK_SCALE = "scale=1080:1920:flags=lanczos,setsar=1"
+
     if not color_correction:
-        return "null"
+        return TIKTOK_SCALE
 
     b_raw = float(color_correction.get("brightness", 0))
     c_raw = float(color_correction.get("contrast", 0))
@@ -370,7 +379,7 @@ def _build_color_only_filter(color_correction: dict | None) -> str:
         and sharpness < 0.001
     )
     if is_default:
-        return "null"
+        return TIKTOK_SCALE
 
     # Reuse the same matrix composition as build_filter_complex
     mat = [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
@@ -444,6 +453,7 @@ def _build_color_only_filter(color_correction: dict | None) -> str:
     filters = ["format=rgb24", ccm]
     if sharpness >= 0.001:
         filters.append(f"unsharp=5:5:{sharpness:.2f}:5:5:{sharpness:.2f}")
+    filters.append(TIKTOK_SCALE)
 
     return ",".join(filters)
 
