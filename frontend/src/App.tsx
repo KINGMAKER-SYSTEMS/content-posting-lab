@@ -1,31 +1,7 @@
 import { BrowserRouter, Routes, Route, Link, useLocation } from 'react-router-dom'
-
-function GeneratePage() {
-  return (
-    <div className="p-8">
-      <h1 className="text-3xl font-bold mb-4">Video Generation</h1>
-      <p className="text-slate-400">Generate AI videos from text prompts</p>
-    </div>
-  )
-}
-
-function CaptionsPage() {
-  return (
-    <div className="p-8">
-      <h1 className="text-3xl font-bold mb-4">Caption Scraping</h1>
-      <p className="text-slate-400">Scrape captions from TikTok profiles</p>
-    </div>
-  )
-}
-
-function BurnPage() {
-  return (
-    <div className="p-8">
-      <h1 className="text-3xl font-bold mb-4">Caption Burning</h1>
-      <p className="text-slate-400">Burn captions onto videos</p>
-    </div>
-  )
-}
+import { GeneratePage } from './pages/Generate'
+import { CaptionsPage } from './pages/Captions'
+import { BurnPage } from './pages/Burn'
 
 function HomePage() {
   return (

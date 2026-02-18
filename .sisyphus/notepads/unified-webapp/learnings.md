@@ -173,3 +173,49 @@
 - Catch-all frontend routes can swallow `/api/projects` because the projects router exposes `GET /` under its prefix, which only matches `/api/projects/` by default.
 - Adding an explicit `GET /api/projects` alias in `app.py` avoids SPA catch-all takeover and keeps the no-trailing-slash endpoint stable.
 - Static mounts needed by the unified app are `/fonts`, `/projects`, `/output`, `/caption-output`, and `/burn-output`; using `check_dir=False` prevents import-time startup failures when directories are not present yet.
+
+## UI Components - Learnings
+
+### What Was Built
+- Created a set of reusable UI components using Tailwind CSS in `frontend/src/components/`.
+- Components are designed to be flexible and support dark mode.
+- `ProgressBar`: Supports determinate and indeterminate states.
+- `StatusChip`: Maps status strings to colors.
+- `Toast`: Supports auto-dismiss and different types (success, error, info, warning).
+- `FileBrowser`: Grid view with thumbnails and download support.
+- `ErrorBoundary`: Catches errors and displays a fallback UI.
+- `EmptyState`: Displays a message and optional action when no data is available.
+- `ConfirmModal`: Modal for confirming actions.
+- `ProjectSelector`: Dropdown for selecting and creating projects.
+- `TabNav`: Navigation tabs with support for icons and counts.
+
+### Key Decisions
+- Used `type` imports for types to comply with `verbatimModuleSyntax` in `tsconfig.app.json`.
+- Defined interfaces for all component props.
+- Exported all components from `frontend/src/components/index.ts` for easy import.
+- Used Tailwind CSS for all styling, avoiding external component libraries.
+- Ensured dark mode compatibility using `dark:` variants.
+
+## App Shell Implementation - Learnings
+
+### What Was Built
+- Updated `App.tsx` to include a layout with `ProjectSelector` and `TabNav`.
+- Connected `App.tsx` to `useWorkflowStore` for active project management.
+- Updated `ProjectSelector.tsx` to use the shared `Project` type from `types/api.ts` to ensure consistency across the app.
+- Mocked project data in `App.tsx` to include required fields (`created_at`, `updated_at`) as per the API contract.
+- Used `Outlet` from `react-router-dom` for nested routing.
+
+### Key Decisions
+- **Shared Type Usage**: Updated `ProjectSelector` to use the shared `Project` type from `types/api.ts` instead of defining its own. This ensures that the project object passed around the app is consistent.
+- **Mock Data**: Since the backend API for projects isn't fully integrated yet, I mocked the project data in `App.tsx`. I made sure to include all required fields (`created_at`, `updated_at`) to match the TypeScript interface.
+- **Layout Component**: Created a `Layout` component within `App.tsx` to wrap the main content. This allows the header and navigation to persist across route changes.
+- **State Management**: Used `useWorkflowStore` to manage the active project state, ensuring it's accessible throughout the app.
+
+## Task 19: Build Generate.tsx - Learnings
+- Created `frontend/src/pages/Generate.tsx` with video generation UI.
+- Implemented polling for job status using `useRef` to track active polls.
+- Used `FormData` for multipart/form-data submission (required for file uploads).
+- Integrated `useWorkflowStore` for active project state.
+- Used shared components `StatusChip` and `EmptyState`.
+- Updated `App.tsx` to route to the new page.
+- Note: `FileBrowser` was not used as the requirements were met with a simpler file input and gallery view.

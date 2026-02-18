@@ -1118,7 +1118,7 @@ Max Concurrent: 6 (Waves 1, 2, 3)
 
 ### Wave 3 — Frontend Build
 
-- [ ] 13. App Shell — Routing, Tab Navigation, Project Context, Shared State
+- [x] 13. App Shell — Routing, Tab Navigation, Project Context, Shared State
 
   **What to do**:
   - Build the main `App.tsx` layout: persistent top nav bar with project selector + 4 tab navigation (Projects, Generate, Captions, Burn)
@@ -1184,7 +1184,7 @@ Max Concurrent: 6 (Waves 1, 2, 3)
   - Message: `feat(frontend): build app shell with tab routing, project context, dark mode`
   - Files: `frontend/src/App.tsx`, `frontend/src/stores/`, `frontend/src/hooks/`
 
-- [ ] 14. Projects Tab — Dashboard, CRUD, Project List
+- [x] 14. Projects Tab — Dashboard, CRUD, Project List
 
   **What to do**:
   - Build `pages/Projects.tsx` as the dashboard/home tab
@@ -1245,7 +1245,7 @@ Max Concurrent: 6 (Waves 1, 2, 3)
   - Message: `feat(frontend): build Projects dashboard with CRUD and project selection`
   - Files: `frontend/src/pages/Projects.tsx`
 
-- [ ] 15. Generate Tab — Prompt Form, Provider Picker, Job Progress, Video Gallery
+- [x] 15. Generate Tab — Prompt Form, Provider Picker, Job Progress, Video Gallery
 
   **What to do**:
   - Build `pages/Generate.tsx` porting functionality from `static/index.html`
@@ -1309,7 +1309,7 @@ Max Concurrent: 6 (Waves 1, 2, 3)
   - Message: `feat(frontend): build Generate tab with provider picker, job progress, video gallery`
   - Files: `frontend/src/pages/Generate.tsx`
 
-- [ ] 16. Captions Tab — Profile Input, WebSocket Progress, Results Table, CSV Export
+- [x] 16. Captions Tab — Profile Input, WebSocket Progress, Results Table, CSV Export
 
   **What to do**:
   - Build `pages/Captions.tsx` porting functionality from `static/captions/index.html`
@@ -1380,7 +1380,7 @@ Max Concurrent: 6 (Waves 1, 2, 3)
   - Message: `feat(frontend): build Captions tab with WebSocket progress and results table`
   - Files: `frontend/src/pages/Captions.tsx`, `frontend/src/hooks/useWebSocket.ts`
 
-- [ ] 17. Burn Tab — Video/Caption Picker, Pairing UI, Overlay, Burn Progress
+- [x] 17. Burn Tab — Video/Caption Picker, Pairing UI, Overlay, Burn Progress
 
   **What to do**:
   - Build `pages/Burn.tsx` porting functionality from `static/burn/index.html`
@@ -1449,7 +1449,7 @@ Max Concurrent: 6 (Waves 1, 2, 3)
   - Message: `feat(frontend): build Burn tab with video/caption picker, overlay preview, burn execution`
   - Files: `frontend/src/pages/Burn.tsx`
 
-- [ ] 18. Shared UI Components — Progress, Toasts, File Browsers, Error States
+- [x] 18. Shared UI Components — Progress, Toasts, File Browsers, Error States
 
   **What to do**:
   - Build reusable components in `frontend/src/components/`:
