@@ -38,7 +38,7 @@ export const FileBrowser: React.FC<FileBrowserProps> = ({
 
   if (files.length === 0) {
     return (
-      <div className={`flex items-center justify-center p-8 text-gray-500 dark:text-gray-400 border-2 border-dashed border-gray-300 dark:border-gray-700 rounded-lg ${className}`}>
+      <div className={`flex items-center justify-center p-8 text-gray-400 border-2 border-dashed border-white/10 rounded-lg ${className}`}>
         {emptyMessage}
       </div>
     );
@@ -51,12 +51,12 @@ export const FileBrowser: React.FC<FileBrowserProps> = ({
           key={file.id}
           className={`group relative border rounded-lg overflow-hidden cursor-pointer transition-all duration-200 hover:shadow-md ${
             selectedFileId === file.id
-              ? 'border-blue-500 ring-2 ring-blue-200 dark:ring-blue-900'
-              : 'border-gray-200 dark:border-gray-700 hover:border-gray-300 dark:hover:border-gray-600'
+              ? 'border-purple-500 ring-2 ring-purple-500/20'
+              : 'border-white/10 hover:border-white/20'
           }`}
           onClick={() => onSelect && onSelect(file)}
         >
-          <div className="aspect-square bg-gray-100 dark:bg-gray-800 flex items-center justify-center overflow-hidden relative">
+          <div className="aspect-square bg-black/20 flex items-center justify-center overflow-hidden relative">
             {file.thumbnailUrl ? (
               <img
                 src={file.thumbnailUrl}
@@ -64,7 +64,7 @@ export const FileBrowser: React.FC<FileBrowserProps> = ({
                 className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
               />
             ) : (
-              <div className="text-gray-400 dark:text-gray-500">
+              <div className="text-gray-500">
                 <svg className="w-12 h-12" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   {file.type === 'video' ? (
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
@@ -78,14 +78,14 @@ export const FileBrowser: React.FC<FileBrowserProps> = ({
             )}
             
             {/* Overlay actions */}
-            <div className="absolute inset-0 bg-black bg-opacity-0 group-hover:bg-opacity-30 transition-all duration-200 flex items-center justify-center opacity-0 group-hover:opacity-100">
+            <div className="absolute inset-0 bg-black/50 transition-all duration-200 flex items-center justify-center opacity-0 group-hover:opacity-100">
               {onDownload && (
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
                     onDownload(file);
                   }}
-                  className="p-2 bg-white dark:bg-gray-800 rounded-full shadow-lg hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-200 transition-colors"
+                  className="p-2 bg-white/10 backdrop-blur-md rounded-full shadow-lg hover:bg-white/20 text-white transition-colors"
                   title="Download"
                 >
                   <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -96,16 +96,16 @@ export const FileBrowser: React.FC<FileBrowserProps> = ({
             </div>
           </div>
           
-          <div className="p-3 bg-white dark:bg-gray-800">
-            <p className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate" title={file.name}>
+          <div className="p-3 bg-white/5">
+            <p className="text-sm font-medium text-gray-200 truncate" title={file.name}>
               {file.name}
             </p>
             <div className="flex justify-between items-center mt-1">
-              <span className="text-xs text-gray-500 dark:text-gray-400">
+              <span className="text-xs text-gray-500">
                 {formatSize(file.size)}
               </span>
               {file.date && (
-                <span className="text-xs text-gray-400 dark:text-gray-500">
+                <span className="text-xs text-gray-500">
                   {file.date}
                 </span>
               )}

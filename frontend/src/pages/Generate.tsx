@@ -1,10 +1,19 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useWorkflowStore } from '../stores/workflowStore';
-import type { Provider, Job, VideoEntry } from '../types/api';
+import type { Provider, Job } from '../types/api';
 import { StatusChip, EmptyState } from '../components';
 
 export function GeneratePage() {
-  const { activeProject } = useWorkflowStore();
+  const navigate = useNavigate();
+  const {
+    activeProject,
+    addGeneratedVideo,
+    addNotification,
+    setVideoRunningCount,
+    incrementBurnReadyCount,
+    primeBurnSelection,
+  } = useWorkflowStore();
   const [providers, setProviders] = useState<Provider[]>([]);
   const [jobs, setJobs] = useState<Job[]>([]);
   const [loading, setLoading] = useState(false);
@@ -22,16 +31,43 @@ export function GeneratePage() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const activePolls = useRef<Set<string>>(new Set());
 
-  // Load providers on mount
   useEffect(() => {
+    if (!activeProject) {
+      setProviders([]);
+      setSelectedProvider('');
+      return;
+    }
+
+    let isCancelled = false;
+
     fetch('/api/video/providers')
-      .then(res => res.json())
-      .then(data => {
-        setProviders(data);
-        if (data.length > 0) setSelectedProvider(data[0].id);
+      .then(async (res) => {
+        if (!res.ok) {
+          const text = await res.text();
+          throw new Error(text || `Failed to load providers (${res.status})`);
+        }
+        return res.json();
       })
-      .catch(err => console.error('Failed to load providers', err));
-  }, []);
+      .then((data: Provider[]) => {
+        if (isCancelled) {
+          return;
+        }
+        setProviders(data);
+        setSelectedProvider(data.length > 0 ? data[0].id : '');
+      })
+      .catch((err: unknown) => {
+        if (isCancelled) {
+          return;
+        }
+        const message = err instanceof Error ? err.message : 'Failed to load providers';
+        setError(message);
+        addNotification('error', message);
+      });
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [activeProject, addNotification]);
 
   // Poll active jobs
   useEffect(() => {
@@ -53,14 +89,24 @@ export function GeneratePage() {
             return [job, ...prev];
           });
 
-          const allDone = job.videos.every(v => v.status === 'done' || v.status === 'failed');
+          const allDone = job.videos.every(v => v.status === 'done' || v.status === 'failed' || v.status === 'error');
           if (!allDone) {
             setTimeout(checkStatus, 2000);
           } else {
             activePolls.current.delete(jobId);
+            const successCount = job.videos.filter(v => v.status === 'done').length;
+            if (successCount > 0) {
+              addGeneratedVideo(jobId);
+              incrementBurnReadyCount(successCount);
+              addNotification('success', `Generated ${successCount} videos for "${job.prompt.substring(0, 20)}..."`);
+              window.dispatchEvent(new Event('burn:refresh-request'));
+            } else {
+              addNotification('error', `Failed to generate videos for "${job.prompt.substring(0, 20)}..."`);
+            }
           }
         } catch (err) {
-          console.error('Polling error', err);
+          const message = err instanceof Error ? err.message : 'Polling error';
+          setError(message);
           setTimeout(checkStatus, 3000);
         }
       };
@@ -68,16 +114,27 @@ export function GeneratePage() {
       checkStatus();
     };
 
-    // Resume polling for any incomplete jobs in state
     jobs.forEach(job => {
-      const allDone = job.videos.every(v => v.status === 'done' || v.status === 'failed');
+      const allDone = job.videos.every(v => v.status === 'done' || v.status === 'failed' || v.status === 'error');
       if (!allDone) {
         pollJob(job.id);
       }
     });
-  }, [jobs]);
 
-  const handleSubmit = async (e: React.FormEvent) => {
+    const runningCount = jobs.filter((job) =>
+      job.videos.some((video) => video.status !== 'done' && video.status !== 'failed' && video.status !== 'error'),
+    ).length;
+    setVideoRunningCount(runningCount);
+
+  }, [addNotification, addGeneratedVideo, incrementBurnReadyCount, jobs, setVideoRunningCount]);
+
+  useEffect(() => {
+    return () => {
+      setVideoRunningCount(0);
+    };
+  }, [setVideoRunningCount]);
+
+  const handleSubmit: React.FormEventHandler<HTMLFormElement> = async (e) => {
     e.preventDefault();
     if (!activeProject) return;
     
@@ -91,6 +148,7 @@ export function GeneratePage() {
     formData.append('duration', duration.toString());
     formData.append('aspect_ratio', aspectRatio);
     formData.append('resolution', resolution);
+    formData.append('project', activeProject.name);
     if (mediaFile) {
       formData.append('media', mediaFile);
     }
@@ -107,23 +165,23 @@ export function GeneratePage() {
       }
 
       const data = await res.json();
-      // Add placeholder job immediately
       const newJob: Job = {
         id: data.job_id,
         prompt,
         provider: selectedProvider,
         count,
-        videos: Array(count).fill({ index: 0, status: 'queued' } as VideoEntry)
+        project: activeProject.name,
+        videos: Array.from({ length: count }, (_, index) => ({ index, status: 'queued' as const }))
       };
       setJobs(prev => [newJob, ...prev]);
-      
-      // Reset form
+
       setPrompt('');
       setMediaFile(null);
       if (fileInputRef.current) fileInputRef.current.value = '';
       
-    } catch (err: any) {
-      setError(err.message);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Failed to submit job';
+      setError(message);
     } finally {
       setLoading(false);
     }
@@ -133,6 +191,23 @@ export function GeneratePage() {
     if (e.target.files && e.target.files[0]) {
       setMediaFile(e.target.files[0]);
     }
+  };
+
+  const sendSelectionToBurn = (job: Job) => {
+    const videoPaths = job.videos.reduce<string[]>((paths, video) => {
+      if (video.status === 'done' && typeof video.file === 'string') {
+        paths.push(video.file);
+      }
+      return paths;
+    }, []);
+
+    if (videoPaths.length === 0) {
+      addNotification('info', 'No completed videos available to preselect in Burn yet.');
+      return;
+    }
+
+    primeBurnSelection({ videoPaths });
+    navigate('/burn');
   };
 
   if (!activeProject) {
@@ -150,21 +225,21 @@ export function GeneratePage() {
   return (
     <div className="h-full flex flex-col lg:flex-row overflow-hidden">
       {/* Sidebar - Controls */}
-      <div className="w-full lg:w-[400px] bg-slate-900 border-r border-slate-800 p-6 overflow-y-auto flex-shrink-0">
+      <div className="w-full lg:w-[400px] bg-black/20 border-r border-white/10 p-6 overflow-y-auto flex-shrink-0 backdrop-blur-sm">
         <h2 className="text-xl font-bold mb-6 text-white">Generate Video</h2>
         
         <form onSubmit={handleSubmit} className="space-y-6">
           <div>
-            <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">
+            <label className="label">
               Provider
             </label>
             <select
               value={selectedProvider}
               onChange={(e) => setSelectedProvider(e.target.value)}
-              className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-slate-200 focus:outline-none focus:border-blue-500"
+              className="input"
             >
               {providers.map(p => (
-                <option key={p.id} value={p.id}>
+                <option key={p.id} value={p.id} className="bg-charcoal">
                   {p.name} ({p.pricing})
                 </option>
               ))}
@@ -172,25 +247,25 @@ export function GeneratePage() {
           </div>
 
           <div>
-            <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">
+            <label className="label">
               Prompt
             </label>
             <textarea
               value={prompt}
               onChange={(e) => setPrompt(e.target.value)}
               placeholder="Describe the video you want to generate..."
-              className="w-full h-32 bg-slate-800 border border-slate-700 rounded-lg p-3 text-slate-200 focus:outline-none focus:border-blue-500 resize-none"
+              className="input h-32 resize-none"
               required
             />
           </div>
 
           <div>
-            <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">
+            <label className="label">
               Reference Media (Optional)
             </label>
             <div 
               className={`border-2 border-dashed rounded-lg p-4 text-center cursor-pointer transition-colors ${
-                mediaFile ? 'border-blue-500 bg-blue-500/10' : 'border-slate-700 hover:border-slate-600'
+                mediaFile ? 'border-purple-500 bg-purple-500/10' : 'border-white/10 hover:border-white/20 hover:bg-white/5'
               }`}
               onClick={() => fileInputRef.current?.click()}
             >
@@ -202,11 +277,11 @@ export function GeneratePage() {
                 accept="image/*,video/*"
               />
               {mediaFile ? (
-                <div className="text-sm text-blue-400 font-medium truncate">
+                <div className="text-sm text-purple-400 font-medium truncate">
                   {mediaFile.name}
                 </div>
               ) : (
-                <div className="text-slate-500 text-sm">
+                <div className="text-gray-500 text-sm">
                   Click to upload image or video
                 </div>
               )}
@@ -228,7 +303,7 @@ export function GeneratePage() {
 
           <div className="grid grid-cols-2 gap-4">
             <div>
-              <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">
+              <label className="label">
                 Count
               </label>
               <input
@@ -237,11 +312,11 @@ export function GeneratePage() {
                 max="10"
                 value={count}
                 onChange={(e) => setCount(parseInt(e.target.value))}
-                className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-slate-200 focus:outline-none focus:border-blue-500"
+                className="input"
               />
             </div>
             <div>
-              <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">
+              <label className="label">
                 Duration (s)
               </label>
               <input
@@ -250,39 +325,39 @@ export function GeneratePage() {
                 max="15"
                 value={duration}
                 onChange={(e) => setDuration(parseInt(e.target.value))}
-                className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-slate-200 focus:outline-none focus:border-blue-500"
+                className="input"
               />
             </div>
           </div>
 
           <div className="grid grid-cols-2 gap-4">
             <div>
-              <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">
+              <label className="label">
                 Aspect Ratio
               </label>
               <select
                 value={aspectRatio}
                 onChange={(e) => setAspectRatio(e.target.value)}
-                className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-slate-200 focus:outline-none focus:border-blue-500"
+                className="input"
               >
-                <option value="9:16">9:16 TikTok</option>
-                <option value="16:9">16:9 Landscape</option>
-                <option value="1:1">1:1 Square</option>
-                <option value="4:3">4:3</option>
-                <option value="3:4">3:4</option>
+                <option value="9:16" className="bg-charcoal">9:16 TikTok</option>
+                <option value="16:9" className="bg-charcoal">16:9 Landscape</option>
+                <option value="1:1" className="bg-charcoal">1:1 Square</option>
+                <option value="4:3" className="bg-charcoal">4:3</option>
+                <option value="3:4" className="bg-charcoal">3:4</option>
               </select>
             </div>
             <div>
-              <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">
+              <label className="label">
                 Resolution
               </label>
               <select
                 value={resolution}
                 onChange={(e) => setResolution(e.target.value)}
-                className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-slate-200 focus:outline-none focus:border-blue-500"
+                className="input"
               >
-                <option value="720p">720p HD</option>
-                <option value="480p">480p SD</option>
+                <option value="720p" className="bg-charcoal">720p HD</option>
+                <option value="480p" className="bg-charcoal">480p SD</option>
               </select>
             </div>
           </div>
@@ -296,10 +371,8 @@ export function GeneratePage() {
           <button
             type="submit"
             disabled={loading || !selectedProvider}
-            className={`w-full py-3 px-4 rounded-lg font-semibold text-white transition-all ${
-              loading || !selectedProvider
-                ? 'bg-slate-700 cursor-not-allowed opacity-50'
-                : 'bg-blue-600 hover:bg-blue-500 active:scale-[0.98]'
+            className={`w-full btn btn-primary ${
+              loading || !selectedProvider ? 'opacity-50 cursor-not-allowed' : ''
             }`}
           >
             {loading ? 'Submitting...' : 'Generate Videos'}
@@ -308,7 +381,7 @@ export function GeneratePage() {
       </div>
 
       {/* Main Panel - Results */}
-      <div className="flex-1 bg-slate-950 p-8 overflow-y-auto">
+      <div className="flex-1 p-8 overflow-y-auto">
         <div className="max-w-6xl mx-auto">
           <h2 className="text-2xl font-bold mb-8 text-white">Generated Videos</h2>
 
@@ -321,34 +394,43 @@ export function GeneratePage() {
           ) : (
             <div className="space-y-8">
               {jobs.map(job => (
-                <div key={job.id} className="bg-slate-900/50 border border-slate-800 rounded-xl p-6">
+                <div key={job.id} className="card">
                   <div className="flex items-start justify-between mb-6">
                     <div>
                       <div className="flex items-center gap-3 mb-2">
-                        <span className="text-xs font-mono bg-slate-800 text-slate-400 px-2 py-1 rounded">
+                        <span className="text-xs font-mono bg-white/10 text-gray-300 px-2 py-1 rounded">
                           {job.provider}
                         </span>
-                        <span className="text-xs text-slate-500">
+                        <span className="text-xs text-gray-500">
                           ID: {job.id}
                         </span>
                       </div>
-                      <p className="text-slate-200 font-medium italic">"{job.prompt}"</p>
+                      <p className="text-gray-200 font-medium italic">"{job.prompt}"</p>
                     </div>
                     
                     {job.videos.some(v => v.status === 'done') && (
-                      <a
-                        href={`/api/video/jobs/${job.id}/download-all`}
-                        className="text-sm bg-green-600/10 text-green-400 hover:bg-green-600/20 px-3 py-1.5 rounded-lg transition-colors font-medium"
-                        download
-                      >
-                        Download All
-                      </a>
+                      <div className="flex gap-2">
+                        <button
+                          onClick={() => sendSelectionToBurn(job)}
+                          className="btn btn-secondary text-sm py-1.5 px-3"
+                        >
+                          <span>Use in Burn</span>
+                          <span className="ml-1 text-lg">→</span>
+                        </button>
+                        <a
+                          href={`/api/video/jobs/${job.id}/download-all`}
+                          className="btn btn-secondary text-sm py-1.5 px-3 text-green-400 hover:text-green-300 border-green-500/20 hover:bg-green-500/10"
+                          download
+                        >
+                          Download All
+                        </a>
+                      </div>
                     )}
                   </div>
 
                   <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
                     {job.videos.map((video, idx) => (
-                      <div key={`${job.id}-${idx}`} className="group relative bg-black rounded-lg overflow-hidden aspect-[9/16] border border-slate-800 hover:border-slate-600 transition-colors">
+                      <div key={`${job.id}-${idx}`} className="group relative bg-black rounded-lg overflow-hidden aspect-[9/16] border border-white/10 hover:border-white/30 transition-colors">
                         {video.status === 'done' && video.file ? (
                           <>
                             <video
@@ -382,7 +464,7 @@ export function GeneratePage() {
                               </>
                             ) : (
                               <>
-                                <div className="w-8 h-8 border-2 border-blue-500/30 border-t-blue-500 rounded-full animate-spin mb-3" />
+                                <div className="w-8 h-8 border-2 border-purple-500/30 border-t-purple-500 rounded-full animate-spin mb-3" />
                                 <StatusChip status={video.status === 'queued' ? 'pending' : 'processing'} />
                               </>
                             )}

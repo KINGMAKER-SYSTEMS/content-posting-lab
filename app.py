@@ -8,6 +8,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+import uvicorn
 
 from project_manager import PROJECTS_DIR, ensure_default_project
 from providers import PROVIDERS
@@ -167,3 +168,7 @@ if FRONTEND_DIR.exists():
             status_code=404,
             detail="Frontend not built. Run 'npm run build' in frontend/ directory.",
         )
+
+
+if __name__ == "__main__":
+    uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=False)

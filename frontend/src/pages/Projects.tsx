@@ -1,231 +1,257 @@
-import React, { useEffect, useState } from 'react';
+import { type FormEventHandler, useEffect, useMemo, useState } from 'react';
+import { ConfirmModal, EmptyState, StatusChip } from '../components';
 import { useWorkflowStore } from '../stores/workflowStore';
-import type { Project, CreateProjectRequest } from '../types/api';
-import { EmptyState } from '../components/EmptyState';
-import { ConfirmModal } from '../components/ConfirmModal';
-import { StatusChip } from '../components/StatusChip';
+import {
+  type CreateProjectRequest,
+  type CreateProjectResponse,
+  type DeleteProjectResponse,
+  type Project,
+  type ProjectListResponse,
+} from '../types/api';
 
-// Mock API client since we don't have a real one yet
-const api = {
-  getProjects: async (): Promise<Project[]> => {
-    const res = await fetch('/api/projects');
-    if (!res.ok) throw new Error('Failed to fetch projects');
-    const data = await res.json();
-    return data.projects;
-  },
-  createProject: async (data: CreateProjectRequest): Promise<Project> => {
-    const res = await fetch('/api/projects', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(data),
-    });
-    if (!res.ok) throw new Error('Failed to create project');
-    return res.json();
-  },
-  deleteProject: async (name: string): Promise<void> => {
-    const res = await fetch(`/api/projects/${name}`, {
-      method: 'DELETE',
-    });
-    if (!res.ok) throw new Error('Failed to delete project');
-  },
-};
+async function getProjects(): Promise<Project[]> {
+  const response = await fetch('/api/projects');
+  if (!response.ok) {
+    throw new Error(`Failed to fetch projects (${response.status})`);
+  }
+  const payload = (await response.json()) as ProjectListResponse;
+  return payload.projects;
+}
 
-export const ProjectsPage: React.FC = () => {
+async function createProject(data: CreateProjectRequest): Promise<Project> {
+  const response = await fetch('/api/projects', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(text || `Failed to create project (${response.status})`);
+  }
+  const payload = (await response.json()) as CreateProjectResponse;
+  return payload.project;
+}
+
+async function removeProject(name: string): Promise<DeleteProjectResponse> {
+  const response = await fetch(`/api/projects/${encodeURIComponent(name)}`, {
+    method: 'DELETE',
+  });
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(text || `Failed to delete project (${response.status})`);
+  }
+  return (await response.json()) as DeleteProjectResponse;
+}
+
+export function ProjectsPage() {
   const { activeProject, setActiveProject, addNotification } = useWorkflowStore();
   const [projects, setProjects] = useState<Project[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [newProjectName, setNewProjectName] = useState('');
   const [projectToDelete, setProjectToDelete] = useState<Project | null>(null);
 
-  // Stats (mocked for now as they aren't in the Project type yet)
-  const getProjectStats = () => ({
-    videos: 0,
-    captions: 0,
-    burned: 0,
-  });
-
-  const fetchProjects = async () => {
-    try {
-      setIsLoading(true);
-      const data = await api.getProjects();
-      setProjects(data);
-    } catch (error) {
-      console.error('Error fetching projects:', error);
-      // Fallback to mock data if API fails (for development)
-      setProjects([
-        {
-          id: '1',
-          name: 'Music Video Campaign',
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-        },
-        {
-          id: '2',
-          name: 'Product Launch',
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-        },
-      ]);
-    } finally {
-      setIsLoading(false);
-    }
-  };
+  const totals = useMemo(
+    () =>
+      projects.reduce(
+        (acc, project) => ({
+          videos: acc.videos + project.video_count,
+          captions: acc.captions + project.caption_count,
+          burned: acc.burned + project.burned_count,
+        }),
+        { videos: 0, captions: 0, burned: 0 },
+      ),
+    [projects],
+  );
 
   useEffect(() => {
-    fetchProjects();
-  }, []);
+    const loadProjects = async () => {
+      setIsLoading(true);
+      setError(null);
+      try {
+        const loaded = await getProjects();
+        setProjects(loaded);
+        if (loaded.length > 0 && !activeProject) {
+          setActiveProject(loaded[0]);
+        }
+      } catch (loadError) {
+        const message = loadError instanceof Error ? loadError.message : 'Failed to load projects';
+        setError(message);
+        addNotification('error', message);
+      } finally {
+        setIsLoading(false);
+      }
+    };
 
-  const handleCreateProject = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!newProjectName.trim()) return;
+    void loadProjects();
+  }, [activeProject, addNotification, setActiveProject]);
+
+  const handleCreateProject: FormEventHandler<HTMLFormElement> = async (event) => {
+    event.preventDefault();
+    const name = newProjectName.trim();
+    if (!name) {
+      return;
+    }
 
     try {
-      const newProject = await api.createProject({ name: newProjectName });
-      setProjects([...projects, newProject]);
-      setActiveProject(newProject);
+      const created = await createProject({ name });
+      setProjects((prev) => [created, ...prev]);
+      setActiveProject(created);
       setIsCreateModalOpen(false);
       setNewProjectName('');
-      addNotification('success', `Project "${newProject.name}" created`);
-    } catch (error) {
-      console.error('Error creating project:', error);
-      addNotification('error', 'Failed to create project');
+      addNotification('success', `Project "${created.name}" created`);
+      window.dispatchEvent(new Event('projects:changed'));
+    } catch (createError) {
+      const message = createError instanceof Error ? createError.message : 'Failed to create project';
+      addNotification('error', message);
     }
   };
 
   const handleDeleteProject = async () => {
-    if (!projectToDelete) return;
+    if (!projectToDelete) {
+      return;
+    }
 
     try {
-      await api.deleteProject(projectToDelete.name);
-      setProjects(projects.filter((p) => p.id !== projectToDelete.id));
-      if (activeProject?.id === projectToDelete.id) {
+      await removeProject(projectToDelete.name);
+      setProjects((prev) => prev.filter((project) => project.name !== projectToDelete.name));
+      if (activeProject?.name === projectToDelete.name) {
         setActiveProject(null);
       }
       addNotification('success', `Project "${projectToDelete.name}" deleted`);
-    } catch (error) {
-      console.error('Error deleting project:', error);
-      addNotification('error', 'Failed to delete project');
+      window.dispatchEvent(new Event('projects:changed'));
+    } catch (deleteError) {
+      const message = deleteError instanceof Error ? deleteError.message : 'Failed to delete project';
+      addNotification('error', message);
     } finally {
       setProjectToDelete(null);
     }
   };
 
-  const sanitizeProjectName = (name: string) => {
-    return name.replace(/[^a-zA-Z0-9-_ ]/g, '').trim();
-  };
+  const sanitizeProjectName = (name: string) => name.toLowerCase().replace(/[^a-z0-9\-_ ]/g, '').trim().replaceAll(' ', '-');
 
   return (
-    <div className="p-8 max-w-7xl mx-auto">
-      <div className="flex items-center justify-between mb-8">
+    <div className="mx-auto max-w-7xl p-8">
+      <div className="mb-8 flex items-center justify-between">
         <div>
-          <h1 className="text-3xl font-bold text-white mb-2">Projects</h1>
+          <h1 className="mb-2 text-3xl font-bold text-white">Projects</h1>
           <p className="text-slate-400">Manage your content generation campaigns</p>
         </div>
         <button
+          type="button"
           onClick={() => setIsCreateModalOpen(true)}
-          className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg font-medium transition-colors flex items-center gap-2"
+          className="btn btn-primary gap-2"
         >
-          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-          </svg>
-          New Project
+          <span className="text-lg leading-none">+</span>
+          <span>New Project</span>
         </button>
       </div>
 
-      {/* Quick Stats */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
-        <div className="bg-slate-800/50 border border-slate-700 rounded-xl p-4">
-          <div className="text-slate-400 text-sm font-medium mb-1">Total Videos</div>
-          <div className="text-2xl font-bold text-white">0</div>
+      <div className="mb-8 grid grid-cols-1 gap-4 md:grid-cols-3">
+        <div className="card">
+          <div className="mb-1 text-sm font-medium text-slate-400">Total Videos</div>
+          <div className="text-2xl font-bold text-white">{totals.videos}</div>
         </div>
-        <div className="bg-slate-800/50 border border-slate-700 rounded-xl p-4">
-          <div className="text-slate-400 text-sm font-medium mb-1">Total Captions</div>
-          <div className="text-2xl font-bold text-white">0</div>
+        <div className="card">
+          <div className="mb-1 text-sm font-medium text-slate-400">Total Captions</div>
+          <div className="text-2xl font-bold text-white">{totals.captions}</div>
         </div>
-        <div className="bg-slate-800/50 border border-slate-700 rounded-xl p-4">
-          <div className="text-slate-400 text-sm font-medium mb-1">Total Burned</div>
-          <div className="text-2xl font-bold text-white">0</div>
+        <div className="card">
+          <div className="mb-1 text-sm font-medium text-slate-400">Total Burned</div>
+          <div className="text-2xl font-bold text-white">{totals.burned}</div>
         </div>
       </div>
 
       {isLoading ? (
         <div className="flex justify-center py-12">
-          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div>
+          <div className="h-8 w-8 animate-spin rounded-full border-b-2 border-purple-500" />
         </div>
+      ) : error ? (
+        <EmptyState
+          icon="!"
+          title="Unable to load projects"
+          description={error}
+          action={{
+            label: 'Retry',
+            onClick: () => window.location.reload(),
+          }}
+        />
       ) : projects.length === 0 ? (
         <EmptyState
+          icon="📁"
           title="No projects yet"
-          message="Create your first project to start generating content."
+          description="Create your first project to start generating content."
           action={{
             label: 'Create Project',
             onClick: () => setIsCreateModalOpen(true),
           }}
-          icon={
-            <svg className="w-12 h-12 mx-auto text-slate-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
-            </svg>
-          }
         />
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-           {projects.map((project) => {
-             const stats = getProjectStats();
-             const isActive = activeProject?.id === project.id;
+        <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-3">
+          {projects.map((project) => {
+            const isActive = activeProject?.name === project.name;
 
             return (
               <div
-                key={project.id}
-                className={`group relative bg-slate-800 border rounded-xl p-6 transition-all hover:shadow-lg ${
-                  isActive ? 'border-blue-500 ring-1 ring-blue-500/20' : 'border-slate-700 hover:border-slate-600'
+                key={project.name}
+                className={`group rounded-xl border p-6 transition-all ${
+                  isActive
+                    ? 'border-purple-500 bg-purple-500/10 ring-1 ring-purple-500/20'
+                    : 'border-white/10 bg-white/5 hover:border-white/25'
                 }`}
               >
-                <div className="flex justify-between items-start mb-4">
+                <div className="mb-4 flex items-start justify-between gap-2">
                   <div>
-                    <h3 className="text-lg font-semibold text-white mb-1 group-hover:text-blue-400 transition-colors">
+                    <h3 className="mb-1 text-lg font-semibold text-white transition-colors group-hover:text-purple-300">
                       {project.name}
                     </h3>
-                    <div className="text-xs text-slate-500">
-                      Created {new Date(project.created_at).toLocaleDateString()}
-                    </div>
+                    <div className="truncate text-xs text-slate-500">{project.path}</div>
                   </div>
-                  {isActive && <StatusChip status="active" className="bg-blue-500/10 text-blue-400" />}
+                  {isActive ? <StatusChip status="active" /> : null}
                 </div>
 
-                <div className="grid grid-cols-3 gap-2 mb-6">
-                  <div className="text-center p-2 bg-slate-900/50 rounded-lg">
-                    <div className="text-lg font-bold text-white">{stats.videos}</div>
+                <div className="mb-6 grid grid-cols-3 gap-2">
+                  <div className="rounded-lg bg-slate-900/50 p-2 text-center">
+                    <div className="text-lg font-bold text-white">{project.video_count}</div>
                     <div className="text-[10px] uppercase tracking-wider text-slate-500">Videos</div>
                   </div>
-                  <div className="text-center p-2 bg-slate-900/50 rounded-lg">
-                    <div className="text-lg font-bold text-white">{stats.captions}</div>
+                  <div className="rounded-lg bg-slate-900/50 p-2 text-center">
+                    <div className="text-lg font-bold text-white">{project.caption_count}</div>
                     <div className="text-[10px] uppercase tracking-wider text-slate-500">Captions</div>
                   </div>
-                  <div className="text-center p-2 bg-slate-900/50 rounded-lg">
-                    <div className="text-lg font-bold text-white">{stats.burned}</div>
+                  <div className="rounded-lg bg-slate-900/50 p-2 text-center">
+                    <div className="text-lg font-bold text-white">{project.burned_count}</div>
                     <div className="text-[10px] uppercase tracking-wider text-slate-500">Burned</div>
                   </div>
                 </div>
 
                 <div className="flex items-center gap-3">
                   <button
+                    type="button"
                     onClick={() => setActiveProject(project)}
                     disabled={isActive}
-                    className={`flex-1 py-2 px-4 rounded-lg text-sm font-medium transition-colors ${
+                    className={`flex-1 rounded-lg px-4 py-2 text-sm font-medium transition-colors ${
                       isActive
-                        ? 'bg-slate-700 text-slate-400 cursor-default'
-                        : 'bg-blue-600 hover:bg-blue-700 text-white'
+                        ? 'cursor-default bg-white/10 text-slate-400'
+                        : 'bg-purple-600 text-white hover:bg-purple-700'
                     }`}
                   >
                     {isActive ? 'Selected' : 'Select Project'}
                   </button>
                   <button
+                    type="button"
                     onClick={() => setProjectToDelete(project)}
-                    className="p-2 text-slate-400 hover:text-red-400 hover:bg-red-400/10 rounded-lg transition-colors"
+                    className="rounded-lg p-2 text-slate-400 transition-colors hover:bg-red-500/10 hover:text-red-400"
                     title="Delete Project"
                   >
-                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                    <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth={2}
+                        d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
+                      />
                     </svg>
                   </button>
                 </div>
@@ -235,51 +261,46 @@ export const ProjectsPage: React.FC = () => {
         </div>
       )}
 
-      {/* Create Project Modal */}
-      {isCreateModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
-          <div className="bg-slate-800 border border-slate-700 rounded-xl w-full max-w-md p-6 shadow-xl">
-            <h2 className="text-xl font-bold text-white mb-4">Create New Project</h2>
+      {isCreateModalOpen ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-md rounded-xl border border-white/15 bg-charcoal p-6 shadow-xl">
+            <h2 className="mb-4 text-xl font-bold text-white">Create New Project</h2>
             <form onSubmit={handleCreateProject}>
               <div className="mb-6">
-                <label htmlFor="projectName" className="block text-sm font-medium text-slate-300 mb-2">
+                <label htmlFor="projectName" className="label">
                   Project Name
                 </label>
                 <input
-                  type="text"
                   id="projectName"
+                  type="text"
                   value={newProjectName}
-                  onChange={(e) => setNewProjectName(e.target.value)}
-                  className="w-full bg-slate-900 border border-slate-700 rounded-lg px-4 py-2 text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-all"
-                  placeholder="e.g., Summer Campaign 2024"
+                  onChange={(event) => setNewProjectName(event.target.value)}
+                  className="input"
+                  placeholder="e.g., spring-release-campaign"
                   autoFocus
                 />
-                {newProjectName && (
+                {newProjectName ? (
                   <p className="mt-2 text-xs text-slate-500">
-                    Preview: <span className="font-mono text-slate-400">{sanitizeProjectName(newProjectName)}</span>
+                    Sanitized: <span className="font-mono text-slate-400">{sanitizeProjectName(newProjectName)}</span>
                   </p>
-                )}
+                ) : null}
               </div>
               <div className="flex justify-end gap-3">
                 <button
                   type="button"
                   onClick={() => setIsCreateModalOpen(false)}
-                  className="px-4 py-2 text-slate-300 hover:text-white hover:bg-slate-700 rounded-lg transition-colors"
+                  className="btn btn-secondary"
                 >
                   Cancel
                 </button>
-                <button
-                  type="submit"
-                  disabled={!newProjectName.trim()}
-                  className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-lg font-medium transition-colors"
-                >
+                <button type="submit" disabled={!newProjectName.trim()} className="btn btn-primary">
                   Create Project
                 </button>
               </div>
             </form>
           </div>
         </div>
-      )}
+      ) : null}
 
       <ConfirmModal
         isOpen={!!projectToDelete}
@@ -292,4 +313,4 @@ export const ProjectsPage: React.FC = () => {
       />
     </div>
   );
-};
+}

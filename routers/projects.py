@@ -79,6 +79,7 @@ async def list_all_projects():
     return {"projects": projects}
 
 
+@router.post("", status_code=201, include_in_schema=False)
 @router.post("/", status_code=201)
 async def create_new_project(body: CreateProjectRequest):
     """Create a new project."""

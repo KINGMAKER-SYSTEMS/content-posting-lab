@@ -1511,7 +1511,20 @@ Max Concurrent: 6 (Waves 1, 2, 3)
 
 ### Wave 4 — Integration & Polish
 
-- [ ] 19. Cross-Tab Artifact Flow + Notifications
+### Wave 3.5 - Remediation Gate (Mandatory Before Continuing)
+
+- Wave 3 was marked complete, but a follow-up audit found acceptance-criteria gaps in Task 13 and Task 14 implementation.
+- Before continuing Wave 4+, complete the remediation gate documented in:
+  - `.sisyphus/notepads/unified-webapp/wave3-remediation-gate.md`
+- This gate is blocking for Tasks 20-26.
+- Minimum required outcomes:
+  - App shell restored to 4-tab contract with nav-level project selector.
+  - Root route `/` is Projects.
+  - Project API/frontend types aligned (no mock fallback data).
+  - Project stats are API-backed, not hardcoded.
+
+
+- [x] 19. Cross-Tab Artifact Flow + Notifications
 
   **What to do**:
   - Wire up the key workflow transitions between tabs:

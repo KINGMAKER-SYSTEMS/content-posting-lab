@@ -34,7 +34,7 @@ export interface GenerateResponse {
 
 export interface VideoEntry {
   index: number;
-  status: "queued" | "processing" | "done" | "failed";
+  status: "queued" | "processing" | "done" | "failed" | "error";
   file?: string;
   error?: string;
 }
@@ -44,6 +44,7 @@ export interface Job {
   prompt: string;
   provider: string;
   count: number;
+  project?: string;
   videos: VideoEntry[];
 }
 
@@ -91,6 +92,7 @@ export interface CaptionWSStartMessage {
   profile_url: string;
   max_videos: number;
   sort: string;
+  project?: string;
 }
 
 export interface ExportResponse {
@@ -192,27 +194,36 @@ export interface BurnOverlayRequest {
 // ============================================================================
 
 export interface HealthResponse {
-  status: "ok" | "error";
-  message?: string;
+  status: "ok" | "degraded";
+  ffmpeg: boolean;
+  ytdlp: boolean;
+  providers: Record<string, boolean>;
 }
 
 // ============================================================================
-// PROJECT MANAGEMENT (future unified API)
 // ============================================================================
 
 export interface Project {
-  id: string;
   name: string;
-  description?: string;
-  created_at: string;
-  updated_at: string;
+  path: string;
+  video_count: number;
+  caption_count: number;
+  burned_count: number;
 }
 
 export interface CreateProjectRequest {
   name: string;
-  description?: string;
 }
 
 export interface ProjectListResponse {
   projects: Project[];
+}
+
+export interface CreateProjectResponse {
+  project: Project;
+}
+
+export interface DeleteProjectResponse {
+  deleted: boolean;
+  name: string;
 }

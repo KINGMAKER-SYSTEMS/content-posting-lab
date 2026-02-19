@@ -26,11 +26,11 @@ export const Toast: React.FC<ToastProps> = ({
     }
   }, [id, duration, onDismiss]);
 
-  const bgColors = {
-    success: 'bg-green-500',
-    error: 'bg-red-500',
-    info: 'bg-blue-500',
-    warning: 'bg-yellow-500',
+  const styles = {
+    success: 'bg-green-500/10 border-green-500/20 text-green-400',
+    error: 'bg-red-500/10 border-red-500/20 text-red-400',
+    info: 'bg-blue-500/10 border-blue-500/20 text-blue-400',
+    warning: 'bg-yellow-500/10 border-yellow-500/20 text-yellow-400',
   };
 
   const icons = {
@@ -58,16 +58,16 @@ export const Toast: React.FC<ToastProps> = ({
 
   return (
     <div
-      className={`${bgColors[type]} text-white px-4 py-3 rounded shadow-lg flex items-center justify-between mb-2 transition-all duration-300 ease-in-out transform hover:scale-105`}
+      className={`${styles[type]} border px-4 py-3 rounded-lg shadow-lg flex items-center justify-between mb-2 backdrop-blur-md transition-all duration-300 ease-in-out transform hover:scale-105`}
       role="alert"
     >
       <div className="flex items-center">
-        <span className="mr-2">{icons[type]}</span>
-        <span>{message}</span>
+        <span className="mr-3">{icons[type]}</span>
+        <span className="font-medium">{message}</span>
       </div>
       <button
         onClick={() => onDismiss(id)}
-        className="ml-4 text-white hover:text-gray-200 focus:outline-none"
+        className="ml-4 opacity-70 hover:opacity-100 focus:outline-none transition-opacity"
         aria-label="Close"
       >
         <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">

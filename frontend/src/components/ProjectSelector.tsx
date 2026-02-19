@@ -1,44 +1,53 @@
-import React, { useState, useRef, useEffect } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { type Project } from '../types/api';
 
 interface ProjectSelectorProps {
   projects: Project[];
-  activeProject?: Project;
+  activeProject: Project | null;
   onSelect: (project: Project) => void;
-  onCreate: (name: string) => void;
+  onCreate: (name: string) => Promise<void> | void;
   className?: string;
 }
 
-export const ProjectSelector: React.FC<ProjectSelectorProps> = ({
+export function ProjectSelector({
   projects,
   activeProject,
   onSelect,
   onCreate,
   className = '',
-}) => {
+}: ProjectSelectorProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [isCreating, setIsCreating] = useState(false);
   const [newProjectName, setNewProjectName] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
+    const onClickOutside = (event: MouseEvent) => {
       if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
         setIsOpen(false);
         setIsCreating(false);
       }
     };
 
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
+    document.addEventListener('mousedown', onClickOutside);
+    return () => document.removeEventListener('mousedown', onClickOutside);
   }, []);
 
-  const handleCreate = () => {
-    if (newProjectName.trim()) {
-      onCreate(newProjectName.trim());
+  const handleCreate = async () => {
+    const name = newProjectName.trim();
+    if (!name || isSubmitting) {
+      return;
+    }
+
+    setIsSubmitting(true);
+    try {
+      await onCreate(name);
       setNewProjectName('');
       setIsCreating(false);
       setIsOpen(false);
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
@@ -46,79 +55,98 @@ export const ProjectSelector: React.FC<ProjectSelectorProps> = ({
     <div className={`relative ${className}`} ref={dropdownRef}>
       <button
         type="button"
-        className="w-full bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-md shadow-sm pl-3 pr-10 py-2 text-left cursor-default focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
-        onClick={() => setIsOpen(!isOpen)}
+        className="w-full bg-black/30 border border-white/15 rounded-lg px-3 py-2 text-left hover:bg-black/40 focus:outline-none focus:ring-2 focus:ring-purple-500/40"
+        onClick={() => setIsOpen((prev) => !prev)}
       >
-        <span className="block truncate text-gray-900 dark:text-gray-100">
-          {activeProject ? activeProject.name : 'Select a project'}
-        </span>
-        <span className="absolute inset-y-0 right-0 flex items-center pr-2 pointer-events-none">
-          <svg className="h-5 w-5 text-gray-400" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-            <path fillRule="evenodd" d="M10 3a1 1 0 01.707.293l3 3a1 1 0 01-1.414 1.414L10 5.414 7.707 7.707a1 1 0 01-1.414-1.414l3-3A1 1 0 0110 3zm-3.707 9.293a1 1 0 011.414 0L10 14.586l2.293-2.293a1 1 0 011.414 1.414l-3 3a1 1 0 01-1.414 0l-3-3a1 1 0 010-1.414z" clipRule="evenodd" />
-          </svg>
-        </span>
+        <div className="text-[10px] uppercase tracking-wider text-gray-500">Active Project</div>
+        <div className="truncate text-sm font-medium text-white">
+          {activeProject ? activeProject.name : 'Select project'}
+        </div>
       </button>
 
       {isOpen && (
-        <div className="absolute z-10 mt-1 w-full bg-white dark:bg-gray-800 shadow-lg max-h-60 rounded-md py-1 text-base ring-1 ring-black ring-opacity-5 overflow-auto focus:outline-none sm:text-sm">
+        <div className="absolute z-50 mt-2 w-full rounded-lg border border-white/15 bg-charcoal shadow-xl">
           {!isCreating ? (
             <>
-              {projects.map((project) => (
-                <div
-                  key={project.id}
-                  className={`cursor-pointer select-none relative py-2 pl-3 pr-9 hover:bg-blue-50 dark:hover:bg-blue-900/30 ${
-                    activeProject?.id === project.id ? 'text-blue-900 dark:text-blue-100 bg-blue-50 dark:bg-blue-900/20' : 'text-gray-900 dark:text-gray-100'
-                  }`}
-                  onClick={() => {
-                    onSelect(project);
-                    setIsOpen(false);
-                  }}
-                >
-                  <span className={`block truncate ${activeProject?.id === project.id ? 'font-semibold' : 'font-normal'}`}>
-                    {project.name}
-                  </span>
-                  {activeProject?.id === project.id && (
-                    <span className="absolute inset-y-0 right-0 flex items-center pr-4 text-blue-600 dark:text-blue-400">
-                      <svg className="h-5 w-5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-                        <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
-                      </svg>
-                    </span>
-                  )}
-                </div>
-              ))}
-              <div
-                className="cursor-pointer select-none relative py-2 pl-3 pr-9 text-blue-600 dark:text-blue-400 hover:bg-gray-50 dark:hover:bg-gray-700 border-t border-gray-100 dark:border-gray-700 font-medium"
+              <div className="max-h-64 overflow-y-auto py-1">
+                {projects.length === 0 ? (
+                  <div className="px-3 py-3 text-sm text-gray-500">No projects found</div>
+                ) : (
+                  projects.map((project) => {
+                    const isActive = activeProject?.name === project.name;
+                    return (
+                      <button
+                        key={project.name}
+                        type="button"
+                        onClick={() => {
+                          onSelect(project);
+                          setIsOpen(false);
+                        }}
+                        className={`w-full px-3 py-2 text-left hover:bg-white/5 ${
+                          isActive ? 'bg-purple-500/15' : ''
+                        }`}
+                      >
+                        <div className="flex items-center justify-between gap-3">
+                          <span className={`truncate text-sm ${isActive ? 'text-purple-200' : 'text-gray-100'}`}>
+                            {project.name}
+                          </span>
+                          {isActive ? (
+                            <span className="text-[10px] rounded-full bg-purple-500/20 px-2 py-0.5 text-purple-200">Active</span>
+                          ) : null}
+                        </div>
+                        <div className="mt-1 text-[11px] text-gray-500">
+                          {project.video_count} videos, {project.caption_count} captions, {project.burned_count} burned
+                        </div>
+                      </button>
+                    );
+                  })
+                )}
+              </div>
+
+              <button
+                type="button"
+                className="w-full border-t border-white/10 px-3 py-2 text-left text-sm font-medium text-purple-300 hover:bg-white/5"
                 onClick={() => setIsCreating(true)}
               >
                 + Create New Project
-              </div>
+              </button>
             </>
           ) : (
-            <div className="p-2">
+            <div className="p-3">
               <input
                 type="text"
-                className="w-full border border-gray-300 dark:border-gray-600 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500 dark:bg-gray-700 dark:text-white mb-2"
+                className="input"
                 placeholder="Project name"
                 value={newProjectName}
-                onChange={(e) => setNewProjectName(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') handleCreate();
-                  if (e.key === 'Escape') setIsCreating(false);
+                onChange={(event) => setNewProjectName(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') {
+                    void handleCreate();
+                  }
+                  if (event.key === 'Escape') {
+                    setIsCreating(false);
+                  }
                 }}
                 autoFocus
               />
-              <div className="flex justify-end space-x-2">
+              <div className="mt-2 flex justify-end gap-2">
                 <button
-                  className="px-2 py-1 text-xs text-gray-600 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200"
+                  type="button"
+                  className="btn btn-secondary py-1.5 text-xs"
                   onClick={() => setIsCreating(false)}
+                  disabled={isSubmitting}
                 >
                   Cancel
                 </button>
                 <button
-                  className="px-2 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700"
-                  onClick={handleCreate}
+                  type="button"
+                  className="btn btn-primary py-1.5 text-xs"
+                  onClick={() => {
+                    void handleCreate();
+                  }}
+                  disabled={isSubmitting || !newProjectName.trim()}
                 >
-                  Create
+                  {isSubmitting ? 'Creating...' : 'Create'}
                 </button>
               </div>
             </div>
@@ -127,4 +155,4 @@ export const ProjectSelector: React.FC<ProjectSelectorProps> = ({
       )}
     </div>
   );
-};
+}
