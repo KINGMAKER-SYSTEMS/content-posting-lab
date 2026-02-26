@@ -21,42 +21,62 @@ interface BurnSelectionDraft {
   captionSource: string | null;
 }
 
+export interface ProjectStats {
+  path: string;
+  video_count: number;
+  caption_count: number;
+  burned_count: number;
+}
+
 type JobsState = Record<string, TrackedJob>;
 
-function readStoredProject(): Project | null {
+function readStoredProjectName(): string | null {
   if (typeof window === 'undefined') {
     return null;
   }
 
-  const stored = localStorage.getItem('activeProject');
-  if (!stored) {
-    return null;
+  const stored = localStorage.getItem('activeProjectName');
+  if (stored) {
+    return stored;
   }
 
-  try {
-    const parsed = JSON.parse(stored) as Project;
-    if (!parsed?.name || !parsed?.path) {
-      localStorage.removeItem('activeProject');
-      return null;
+  // Migration: read old format and convert
+  const legacy = localStorage.getItem('activeProject');
+  if (legacy) {
+    try {
+      const parsed = JSON.parse(legacy) as { name?: string };
+      if (parsed?.name) {
+        localStorage.setItem('activeProjectName', parsed.name);
+        localStorage.removeItem('activeProject');
+        return parsed.name;
+      }
+    } catch {
+      // ignore
     }
-    return parsed;
-  } catch {
     localStorage.removeItem('activeProject');
-    return null;
   }
+
+  return null;
 }
 
 interface WorkflowState {
-  activeProject: Project | null;
+  activeProjectName: string | null;
+  projectStats: Record<string, ProjectStats>;
   jobs: JobsState;
   notifications: Notification[];
   recentlyGeneratedVideos: string[];
   recentlyScrapedCaptions: string[];
   videoRunningCount: number;
   captionJobActive: boolean;
+  recreateJobActive: boolean;
   burnReadyCount: number;
   burnSelection: BurnSelectionDraft;
-  setActiveProject: (project: Project | null) => void;
+
+  // Generate page state — persists across tab switches
+  generateJobs: Job[];
+
+  setActiveProjectName: (name: string | null) => void;
+  updateProjectStats: (projects: Project[]) => void;
   addNotification: (type: 'success' | 'error' | 'info', message: string) => void;
   removeNotification: (id: string) => void;
   updateJob: (jobId: string, data: Partial<TrackedJob>) => void;
@@ -64,37 +84,59 @@ interface WorkflowState {
   addScrapedCaption: (username: string) => void;
   setVideoRunningCount: (count: number) => void;
   setCaptionJobActive: (active: boolean) => void;
+  setRecreateJobActive: (active: boolean) => void;
   setBurnReadyCount: (count: number) => void;
   incrementBurnReadyCount: (delta: number) => void;
   primeBurnSelection: (selection: Partial<BurnSelectionDraft>) => void;
   clearBurnSelection: () => void;
+
+  // Generate page actions
+  addGenerateJob: (job: Job) => void;
+  setGenerateJob: (job: Job) => void;
+  clearGenerateJobs: () => void;
 }
 
 export const useWorkflowStore = create<WorkflowState>((set) => ({
-  activeProject: readStoredProject(),
+  activeProjectName: readStoredProjectName(),
+  projectStats: {},
   jobs: {},
   notifications: [],
   recentlyGeneratedVideos: [],
   recentlyScrapedCaptions: [],
   videoRunningCount: 0,
   captionJobActive: false,
+  recreateJobActive: false,
   burnReadyCount: 0,
   burnSelection: {
     videoPaths: [],
     captionSource: null,
   },
+  generateJobs: [],
 
-  setActiveProject: (project) => {
-    set({ activeProject: project });
+  setActiveProjectName: (name) => {
+    set({ activeProjectName: name });
     if (typeof window === 'undefined') {
       return;
     }
 
-    if (project) {
-      localStorage.setItem('activeProject', JSON.stringify(project));
+    if (name) {
+      localStorage.setItem('activeProjectName', name);
     } else {
-      localStorage.removeItem('activeProject');
+      localStorage.removeItem('activeProjectName');
     }
+  },
+
+  updateProjectStats: (projects) => {
+    const stats: Record<string, ProjectStats> = {};
+    for (const p of projects) {
+      stats[p.name] = {
+        path: p.path,
+        video_count: p.video_count,
+        caption_count: p.caption_count,
+        burned_count: p.burned_count,
+      };
+    }
+    set({ projectStats: stats });
   },
 
   addNotification: (type, message) => {
@@ -155,6 +197,10 @@ export const useWorkflowStore = create<WorkflowState>((set) => ({
     set({ captionJobActive: active });
   },
 
+  setRecreateJobActive: (active) => {
+    set({ recreateJobActive: active });
+  },
+
   setBurnReadyCount: (count) => {
     set({ burnReadyCount: Math.max(0, count) });
   },
@@ -179,5 +225,30 @@ export const useWorkflowStore = create<WorkflowState>((set) => ({
         captionSource: null,
       },
     });
+  },
+
+  // Generate page actions — jobs persist in store across tab switches
+  addGenerateJob: (job) => {
+    set((state) => ({
+      generateJobs: [job, ...state.generateJobs],
+    }));
+  },
+
+  setGenerateJob: (job) => {
+    set((state) => {
+      const exists = state.generateJobs.some((j) => j.id === job.id);
+      if (exists) {
+        return {
+          generateJobs: state.generateJobs.map((j) => (j.id === job.id ? job : j)),
+        };
+      }
+      return {
+        generateJobs: [job, ...state.generateJobs],
+      };
+    });
+  },
+
+  clearGenerateJobs: () => {
+    set({ generateJobs: [] });
   },
 }));
