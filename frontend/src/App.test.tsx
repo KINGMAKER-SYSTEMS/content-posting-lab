@@ -40,6 +40,24 @@ const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
     } as Response;
   }
 
+  if (url.includes('/api/video/providers')) {
+    return {
+      ok: true,
+      status: 200,
+      json: async () => [],
+      text: async () => '[]',
+    } as Response;
+  }
+
+  if (url.includes('/api/video/prompts') || url.includes('/api/burn/')) {
+    return {
+      ok: true,
+      status: 200,
+      json: async () => [],
+      text: async () => '[]',
+    } as Response;
+  }
+
   return {
     ok: true,
     status: 200,
@@ -61,6 +79,7 @@ beforeEach(() => {
   vi.stubGlobal('fetch', fetchMock);
   fetchMock.mockClear();
   window.localStorage.clear();
+  Element.prototype.scrollIntoView = vi.fn();
 });
 
 afterEach(() => {
@@ -69,13 +88,24 @@ afterEach(() => {
 });
 
 describe('App', () => {
-  it('renders shell and projects route', async () => {
+  it('renders shell with all pages mounted simultaneously', async () => {
     render(<App />);
 
     expect(screen.getByText('Content Posting Lab')).toBeTruthy();
     await waitFor(() => {
       expect(screen.getByRole('heading', { name: 'Projects' })).toBeTruthy();
     });
+
+    const main = document.querySelector('main');
+    expect(main).toBeTruthy();
+    const tabPanels = main!.querySelectorAll(':scope > div');
+    expect(tabPanels.length).toBe(5);
+
+    expect((tabPanels[0] as HTMLElement).style.display).toBe('block');
+    expect((tabPanels[1] as HTMLElement).style.display).toBe('none');
+    expect((tabPanels[2] as HTMLElement).style.display).toBe('none');
+    expect((tabPanels[3] as HTMLElement).style.display).toBe('none');
+    expect((tabPanels[4] as HTMLElement).style.display).toBe('none');
   });
 
   it('loads health and projects on startup', async () => {
@@ -98,7 +128,7 @@ describe('App', () => {
         burned_count: 1,
       },
     ];
-    window.localStorage.setItem('activeProject', JSON.stringify(projectsPayload[0]));
+    window.localStorage.setItem('activeProjectName', projectsPayload[0].name);
 
     render(<App />);
 
