@@ -4,7 +4,6 @@ import asyncio
 import base64
 import json
 import shutil
-import uuid
 from pathlib import Path
 
 import httpx
