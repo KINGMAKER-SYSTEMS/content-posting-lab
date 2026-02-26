@@ -1,12 +1,15 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { BrowserRouter, Link, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
+import { BrowserRouter, Link, useLocation, useNavigate } from 'react-router-dom';
 import { CaptionsPage } from './pages/Captions';
 import { BurnPage } from './pages/Burn';
 import { GeneratePage } from './pages/Generate';
 import { ProjectsPage } from './pages/Projects';
+import { RecreatePage } from './pages/Recreate';
 import { ProjectSelector, ToastContainer } from './components';
 import { useWorkflowStore } from './stores/workflowStore';
 import { type CreateProjectResponse, type HealthResponse, type Project, type ProjectListResponse } from './types/api';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
 
 interface NavTab {
   path: string;
@@ -24,13 +27,15 @@ function AppShell() {
   const location = useLocation();
   const navigate = useNavigate();
   const {
-    activeProject,
+    activeProjectName,
     notifications,
     burnReadyCount,
     videoRunningCount,
     captionJobActive,
+    recreateJobActive,
     removeNotification,
-    setActiveProject,
+    setActiveProjectName,
+    updateProjectStats,
     addNotification,
   } = useWorkflowStore();
 
@@ -43,9 +48,10 @@ function AppShell() {
       { path: '/', label: 'Projects', badge: projects.length > 0 ? projects.length : undefined },
       { path: '/generate', label: 'Generate', badge: videoRunningCount > 0 ? videoRunningCount : undefined },
       { path: '/captions', label: 'Captions', badge: captionJobActive ? 'LIVE' : undefined },
+      { path: '/recreate', label: 'Recreate', badge: recreateJobActive ? 'LIVE' : undefined },
       { path: '/burn', label: 'Burn', badge: burnReadyCount > 0 ? burnReadyCount : undefined },
     ],
-    [burnReadyCount, captionJobActive, projects.length, videoRunningCount],
+    [burnReadyCount, captionJobActive, recreateJobActive, projects.length, videoRunningCount],
   );
 
   const visibleHealthItems = useMemo(
@@ -61,13 +67,15 @@ function AppShell() {
       }
 
       const payload = (await response.json()) as ProjectListResponse;
-      setProjects(payload.projects ?? []);
+      const list = payload.projects ?? [];
+      setProjects(list);
+      updateProjectStats(list);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to load projects';
       addNotification('error', message);
       setProjects([]);
     }
-  }, [addNotification]);
+  }, [addNotification, updateProjectStats]);
 
   const fetchHealth = useCallback(async () => {
     try {
@@ -129,7 +137,7 @@ function AppShell() {
         }
 
         const payload = (await response.json()) as CreateProjectResponse;
-        setActiveProject(payload.project);
+        setActiveProjectName(payload.project.name);
         addNotification('success', `Project "${payload.project.name}" created`);
         void fetchProjects();
         window.dispatchEvent(new Event('projects:changed'));
@@ -139,7 +147,7 @@ function AppShell() {
         addNotification('error', message);
       }
     },
-    [addNotification, fetchProjects, navigate, setActiveProject],
+    [addNotification, fetchProjects, navigate, setActiveProjectName],
   );
 
   const handleQuickCreate = useCallback(() => {
@@ -165,41 +173,31 @@ function AppShell() {
 
   useEffect(() => {
     if (projects.length === 0) {
-      if (activeProject) {
-        setActiveProject(null);
+      if (activeProjectName) {
+        setActiveProjectName(null);
       }
       return;
     }
 
-    if (!activeProject) {
-      setActiveProject(projects[0]);
+    if (!activeProjectName) {
+      setActiveProjectName(projects[0].name);
       return;
     }
 
-    const latestActive = projects.find((project) => project.name === activeProject.name);
-    if (!latestActive) {
-      setActiveProject(projects[0]);
-      return;
+    const stillExists = projects.some((p) => p.name === activeProjectName);
+    if (!stillExists) {
+      setActiveProjectName(projects[0].name);
     }
-
-    const isOutOfDate =
-      latestActive.path !== activeProject.path ||
-      latestActive.video_count !== activeProject.video_count ||
-      latestActive.caption_count !== activeProject.caption_count ||
-      latestActive.burned_count !== activeProject.burned_count;
-
-    if (isOutOfDate) {
-      setActiveProject(latestActive);
-    }
-  }, [activeProject, projects, setActiveProject]);
+  }, [activeProjectName, projects, setActiveProjectName]);
 
   return (
-    <div className="min-h-screen bg-charcoal text-gray-300 font-sans selection:bg-purple-500/30">
-      <header className="border-b border-white/10 bg-black/30 backdrop-blur-md">
+    <div className="min-h-screen bg-background text-foreground font-base">
+      {/* Top header — thick bottom border, card bg */}
+      <header className="border-b-2 border-border bg-card">
         <div className="mx-auto flex max-w-7xl flex-col gap-3 px-4 py-3 lg:flex-row lg:items-center lg:justify-between">
           <div className="flex items-center gap-3">
-            <div className="h-2.5 w-2.5 rounded-full bg-purple-400 shadow-[0_0_14px_rgba(192,132,252,0.9)]" />
-            <Link to="/" className="text-sm font-semibold tracking-wide text-white hover:text-purple-300">
+            <div className="h-6 w-6 rounded-[var(--border-radius)] border-2 border-border bg-primary shadow-[2px_2px_0_0_var(--border)]" />
+            <Link to="/" className="text-base font-heading text-foreground hover:text-primary transition-colors">
               Content Posting Lab
             </Link>
           </div>
@@ -208,33 +206,34 @@ function AppShell() {
             <ProjectSelector
               className="w-full min-w-[260px] sm:w-[320px]"
               projects={projects}
-              activeProject={activeProject}
-              onSelect={setActiveProject}
+              activeProjectName={activeProjectName}
+              onSelect={(project) => setActiveProjectName(project.name)}
               onCreate={createProject}
             />
-            <button type="button" onClick={handleQuickCreate} className="btn btn-secondary text-sm">
-              New Project
-            </button>
+            <Button variant="outline" onClick={handleQuickCreate}>
+              + New Project
+            </Button>
           </div>
         </div>
       </header>
 
+      {/* Health warnings */}
       {visibleHealthItems.length > 0 ? (
-        <div className="border-b border-white/10 bg-black/40 px-4 py-2">
+        <div className="border-b-2 border-border bg-muted px-4 py-2">
           <div className="mx-auto flex max-w-7xl flex-col gap-2">
             {visibleHealthItems.map((item) => (
               <div
                 key={item.id}
-                className={`flex items-start justify-between gap-4 rounded-lg border px-3 py-2 text-sm ${
+                className={`flex items-start justify-between gap-4 rounded-[var(--border-radius)] border-2 border-border px-3 py-2 text-sm font-base shadow-[2px_2px_0_0_var(--border)] ${
                   item.tone === 'warn'
-                    ? 'border-amber-500/30 bg-amber-500/10 text-amber-200'
-                    : 'border-sky-500/30 bg-sky-500/10 text-sky-200'
+                    ? 'bg-amber-100 text-amber-900'
+                    : 'bg-secondary text-accent'
                 }`}
               >
                 <span>{item.message}</span>
                 <button
                   type="button"
-                  className="rounded px-2 py-1 text-xs text-white/80 hover:bg-white/10"
+                  className="rounded-[var(--border-radius)] border-2 border-border bg-card px-2 py-0.5 text-xs font-bold text-foreground hover:bg-muted transition-colors"
                   onClick={() => setDismissedHealth((prev) => [...prev, item.id])}
                 >
                   Dismiss
@@ -245,7 +244,8 @@ function AppShell() {
         </div>
       ) : null}
 
-      <nav className="sticky top-0 z-40 border-b border-white/10 bg-black/20 backdrop-blur-md">
+      {/* Tab navigation — sticky, thick border bottom */}
+      <nav className="sticky top-0 z-40 border-b-2 border-border bg-card">
         <div className="mx-auto flex max-w-7xl gap-1 px-4">
           {tabs.map((tab) => {
             const isActive = location.pathname === tab.path;
@@ -253,25 +253,20 @@ function AppShell() {
               <Link
                 key={tab.path}
                 to={tab.path}
-                className={`relative flex items-center gap-2 px-4 py-4 text-sm font-medium transition-all ${
+                className={`relative flex items-center gap-2 px-4 py-3 text-sm font-bold transition-colors ${
                   isActive
-                    ? 'text-purple-400 after:absolute after:bottom-0 after:left-0 after:right-0 after:h-0.5 after:bg-purple-500'
-                    : 'text-gray-400 hover:bg-white/5 hover:text-gray-200'
+                    ? 'text-primary border-b-[3px] border-primary -mb-[2px]'
+                    : 'text-muted-foreground hover:text-foreground hover:bg-muted'
                 }`}
               >
                 {tab.label}
                 {tab.badge !== undefined ? (
-                  <span
-                    className={`rounded-full px-1.5 py-0.5 text-[10px] font-bold ${
-                      tab.badge === 'LIVE'
-                        ? 'bg-emerald-500/20 text-emerald-200'
-                        : isActive
-                          ? 'bg-purple-500/20 text-purple-200'
-                          : 'bg-white/10 text-gray-300'
-                    }`}
+                  <Badge
+                    variant={tab.badge === 'LIVE' ? 'success' : isActive ? 'default' : 'secondary'}
+                    className="text-[10px] px-1.5 py-0 shadow-none"
                   >
                     {tab.badge}
-                  </span>
+                  </Badge>
                 ) : null}
               </Link>
             );
@@ -282,12 +277,21 @@ function AppShell() {
       <ToastContainer toasts={notifications} onDismiss={removeNotification} />
 
       <main className="mx-auto max-w-7xl">
-        <Routes>
-          <Route path="/" element={<ProjectsPage />} />
-          <Route path="/generate" element={<GeneratePage />} />
-          <Route path="/captions" element={<CaptionsPage />} />
-          <Route path="/burn" element={<BurnPage />} />
-        </Routes>
+        <div style={{ display: location.pathname === '/' ? 'block' : 'none' }}>
+          <ProjectsPage />
+        </div>
+        <div style={{ display: location.pathname === '/generate' ? 'block' : 'none' }}>
+          <GeneratePage />
+        </div>
+        <div style={{ display: location.pathname === '/captions' ? 'block' : 'none' }}>
+          <CaptionsPage />
+        </div>
+        <div style={{ display: location.pathname === '/recreate' ? 'block' : 'none' }}>
+          <RecreatePage />
+        </div>
+        <div style={{ display: location.pathname === '/burn' ? 'block' : 'none' }}>
+          <BurnPage />
+        </div>
       </main>
     </div>
   );
