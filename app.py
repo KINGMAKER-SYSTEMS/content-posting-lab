@@ -16,6 +16,7 @@ from providers.base import API_KEYS
 from routers.burn import router as burn_router
 from routers.captions import router as captions_router
 from routers.projects import list_all_projects, router as projects_router
+from routers.recreate import router as recreate_router
 from routers.video import router as video_router
 
 load_dotenv()
@@ -57,8 +58,6 @@ def _check_ytdlp() -> bool:
 def _api_key_status() -> dict[str, bool]:
     return {
         "xai": bool(os.getenv("XAI_API_KEY")),
-        "fal": bool(os.getenv("FAL_KEY")),
-        "luma": bool(os.getenv("LUMA_API_KEY")),
         "replicate": bool(os.getenv("REPLICATE_API_TOKEN")),
         "openai": bool(os.getenv("OPENAI_API_KEY")),
     }
@@ -113,6 +112,7 @@ app.include_router(video_router, prefix="/api/video", tags=["video"])
 app.include_router(captions_router, prefix="/api/captions", tags=["captions"])
 app.include_router(burn_router, prefix="/api/burn", tags=["burn"])
 app.include_router(projects_router, prefix="/api/projects", tags=["projects"])
+app.include_router(recreate_router, prefix="/api/recreate", tags=["recreate"])
 
 
 @app.get("/api/projects", include_in_schema=False)
