@@ -46,9 +46,9 @@ function AppShell() {
   const tabs = useMemo<NavTab[]>(
     () => [
       { path: '/', label: 'Projects', badge: projects.length > 0 ? projects.length : undefined },
+      { path: '/recreate', label: 'Recreate', badge: recreateJobActive ? 'LIVE' : undefined },
       { path: '/generate', label: 'Generate', badge: videoRunningCount > 0 ? videoRunningCount : undefined },
       { path: '/captions', label: 'Captions', badge: captionJobActive ? 'LIVE' : undefined },
-      { path: '/recreate', label: 'Recreate', badge: recreateJobActive ? 'LIVE' : undefined },
       { path: '/burn', label: 'Burn', badge: burnReadyCount > 0 ? burnReadyCount : undefined },
     ],
     [burnReadyCount, captionJobActive, recreateJobActive, projects.length, videoRunningCount],
