@@ -89,6 +89,7 @@ def create_project(name: str) -> Path:
     (project_path / "videos").mkdir(exist_ok=True)
     (project_path / "captions").mkdir(exist_ok=True)
     (project_path / "burned").mkdir(exist_ok=True)
+    (project_path / "recreate").mkdir(exist_ok=True)
 
     return project_path
 
@@ -218,6 +219,12 @@ def get_project_burn_dir(name: str) -> Path:
     """Get the burned subdirectory for a project."""
     sanitized_name = sanitize_project_name(name)
     return PROJECTS_DIR / sanitized_name / "burned"
+
+
+def get_project_recreate_dir(name: str) -> Path:
+    """Get the recreate subdirectory for a project."""
+    sanitized_name = sanitize_project_name(name)
+    return PROJECTS_DIR / sanitized_name / "recreate"
 
 
 def ensure_default_project() -> Path:
