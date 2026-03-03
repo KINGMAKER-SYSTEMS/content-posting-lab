@@ -1,47 +1,362 @@
 @import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
 
-@theme {
-  --color-charcoal: #0f0f0f;
-  --color-accent: var(--color-purple-500);
-  --color-accent-hover: var(--color-purple-600);
+@custom-variant dark (&:is(.dark *));
+
+/* ══════════════════════════════════════════════════════════ */
+/* NEOBRUTALISM — Parchment + Rose/Terra Cotta + Slate Blue  */
+/* Inspired by neobrutalism.dev + weathertorun.app           */
+/* Hard shadows, visible borders, sharp corners, bold type   */
+/*                                                            */
+/* Warm:  #E8B4A0 (rose)  → #D4896E (terra cotta)           */
+/* Cool:  #B5CED6 (light) → #6A9DB5 (mid) → #456E82 (deep) */
+/* Borders: #2A2520 (warm near-black)                        */
+/* Background: #FAF6F1 (warm parchment)                      */
+/* ══════════════════════════════════════════════════════════ */
+
+:root {
+  /* Neobrutalism structural tokens */
+  --border-radius: 5px;
+  --box-shadow-x: 4px;
+  --box-shadow-y: 4px;
+  --reverse-box-shadow-x: -4px;
+  --reverse-box-shadow-y: -4px;
+
+  --heading-font-weight: 800;
+  --base-font-weight: 500;
+
+  /* Core */
+  --radius: 5px;
+  --background: oklch(96.5% 0.012 80);       /* warm parchment #FAF6F1 */
+  --foreground: oklch(20% 0.01 50);           /* warm near-black #2A2520 */
+  --card: oklch(100% 0 0);                    /* white cards */
+  --card-foreground: oklch(20% 0.01 50);
+  --popover: oklch(100% 0 0);
+  --popover-foreground: oklch(20% 0.01 50);
+
+  /* Primary = Terra cotta / salmon */
+  --primary: oklch(68% 0.1 40);               /* #D4896E terra cotta */
+  --primary-foreground: oklch(100% 0 0);      /* white on terra cotta */
+
+  /* Secondary = Light dusty blue */
+  --secondary: oklch(84% 0.04 220);           /* #B5CED6 light dusty blue */
+  --secondary-foreground: oklch(20% 0.01 50);
+
+  /* Muted = Warm parchment inset */
+  --muted: oklch(92% 0.01 75);               /* #EDE7DF warm muted */
+  --muted-foreground: oklch(48% 0.02 50);     /* #6B6058 muted text */
+
+  /* Accent = Deep slate blue */
+  --accent: oklch(52% 0.06 230);              /* #456E82 deep teal-slate */
+  --accent-foreground: oklch(100% 0 0);       /* white on slate */
+
+  /* Destructive */
+  --destructive: oklch(0.577 0.245 27.325);
+
+  /* Borders — visible, warm near-black (neobrutalism) */
+  --border: oklch(20% 0.01 50);               /* #2A2520 warm near-black */
+  --input: oklch(20% 0.01 50);
+  --ring: oklch(68% 0.1 40);                  /* terra cotta focus ring */
+
+  /* Neobrutalism shadow — hard, no blur */
+  --shadow: var(--box-shadow-x) var(--box-shadow-y) 0px 0px var(--border);
+
+  /* Chart = full palette spectrum */
+  --chart-1: oklch(68% 0.1 40);               /* #D4896E terra cotta */
+  --chart-2: oklch(52% 0.06 230);             /* #456E82 deep slate */
+  --chart-3: oklch(78% 0.07 35);              /* #E8B4A0 light rose */
+  --chart-4: oklch(65% 0.06 220);             /* #6A9DB5 mid blue */
+  --chart-5: oklch(84% 0.04 220);             /* #B5CED6 light blue */
+
+  /* Sidebar */
+  --sidebar: oklch(94% 0.015 75);
+  --sidebar-foreground: oklch(20% 0.01 50);
+  --sidebar-primary: oklch(68% 0.1 40);
+  --sidebar-primary-foreground: oklch(100% 0 0);
+  --sidebar-accent: oklch(84% 0.04 220);
+  --sidebar-accent-foreground: oklch(20% 0.01 50);
+  --sidebar-border: oklch(20% 0.01 50);
+  --sidebar-ring: oklch(68% 0.1 40);
 }
+
+/* ═══ THEME INLINE — Map to Tailwind ═══ */
+
+@theme inline {
+  --radius-sm: calc(var(--radius) - 2px);
+  --radius-md: var(--radius);
+  --radius-lg: calc(var(--radius) + 2px);
+  --radius-xl: calc(var(--radius) + 4px);
+  --radius-2xl: calc(var(--radius) + 6px);
+
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+
+  /* Neobrutalism spacing tokens */
+  --spacing-boxShadowX: var(--box-shadow-x);
+  --spacing-boxShadowY: var(--box-shadow-y);
+  --spacing-reverseBoxShadowX: var(--reverse-box-shadow-x);
+  --spacing-reverseBoxShadowY: var(--reverse-box-shadow-y);
+
+  /* Neobrutalism shadow */
+  --shadow-shadow: var(--shadow);
+
+  /* Font weights */
+  --font-weight-base: var(--base-font-weight);
+  --font-weight-heading: var(--heading-font-weight);
+}
+
+/* ═══ BASE LAYER ═══ */
 
 @layer base {
   body {
-    @apply bg-charcoal text-gray-300 antialiased;
+    @apply bg-background text-foreground antialiased font-base;
   }
-  
+
   h1, h2, h3, h4, h5, h6 {
-    @apply text-white font-semibold tracking-tight;
+    @apply text-foreground font-heading tracking-tight;
+  }
+
+  * {
+    @apply border-border outline-ring/50;
   }
 }
 
+/* ═══════════════════════════════════════════════════════════ */
+/* NEOBRUTALISM COMPONENT OVERRIDES                           */
+/* Hard 2px borders, 4px offset shadows, 5px radius           */
+/* Hover: translate(2px,2px) + shadow shrinks                 */
+/* Active: translate(4px,4px) + shadow disappears             */
+/* ═══════════════════════════════════════════════════════════ */
+
 @layer components {
-  .btn {
-    @apply inline-flex items-center justify-center px-4 py-2 rounded-lg font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-accent/50 disabled:opacity-50 disabled:cursor-not-allowed;
-  }
-  
-  .btn-primary {
-    @apply bg-accent text-white hover:bg-accent-hover shadow-lg shadow-purple-500/20;
-  }
-  
-  .btn-secondary {
-    @apply bg-white/5 text-white hover:bg-white/10 border border-white/10;
-  }
-  
-  .btn-danger {
-    @apply bg-red-500/10 text-red-400 hover:bg-red-500/20 border border-red-500/20;
+  /* ── Cards ── */
+  [data-slot="card"] {
+    border: 2px solid var(--border);
+    border-radius: var(--border-radius);
+    box-shadow: var(--shadow);
+    background: var(--card);
+    color: var(--card-foreground);
   }
 
-  .card {
-    @apply bg-white/5 border border-white/10 rounded-xl p-6 backdrop-blur-sm;
+  [data-slot="card-header"] {
+    padding-bottom: 0;
   }
 
-  .input {
-    @apply w-full bg-black/20 border border-white/10 rounded-lg px-4 py-2.5 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-accent/50 focus:border-transparent transition-all;
+  /* ── Buttons ── */
+  [data-slot="button"] {
+    border: 2px solid var(--border);
+    border-radius: var(--border-radius);
+    box-shadow: var(--shadow);
+    font-weight: 700;
+    transition: transform 0.1s ease, box-shadow 0.1s ease;
+    cursor: pointer;
   }
 
-  .label {
-    @apply block text-sm font-medium text-gray-400 mb-1.5;
+  [data-slot="button"]:hover {
+    transform: translate(2px, 2px);
+    box-shadow: 2px 2px 0px 0px var(--border);
+  }
+
+  [data-slot="button"]:active {
+    transform: translate(var(--box-shadow-x), var(--box-shadow-y));
+    box-shadow: none;
+  }
+
+  [data-slot="button"]:disabled {
+    box-shadow: none;
+    opacity: 0.5;
+    transform: none;
+    cursor: not-allowed;
+  }
+
+  /* ── Badges ── */
+  [data-slot="badge"] {
+    border: 2px solid var(--border);
+    border-radius: var(--border-radius);
+    box-shadow: 2px 2px 0px 0px var(--border);
+    font-weight: 700;
+  }
+
+  /* ── Inputs / Selects / Textareas ── */
+  [data-slot="input"],
+  [data-slot="textarea"],
+  [data-slot="select-trigger"] {
+    border: 2px solid var(--border);
+    border-radius: var(--border-radius);
+    background: var(--card);
+    color: var(--foreground);
+    font-weight: 500;
+    transition: box-shadow 0.1s ease;
+  }
+
+  [data-slot="input"]:focus,
+  [data-slot="textarea"]:focus,
+  [data-slot="select-trigger"]:focus,
+  [data-slot="select-trigger"][data-state="open"] {
+    box-shadow: var(--shadow);
+    outline: none;
+  }
+
+  [data-slot="input"]:hover,
+  [data-slot="textarea"]:hover {
+    background: var(--muted);
+  }
+
+  [data-slot="input"]:focus,
+  [data-slot="textarea"]:focus {
+    background: var(--card);
+  }
+
+  /* ── Select dropdowns ── */
+  [data-slot="select-content"] {
+    border: 2px solid var(--border);
+    border-radius: var(--border-radius);
+    box-shadow: var(--shadow);
+    background: var(--card);
+  }
+
+  [data-slot="select-item"] {
+    border-radius: calc(var(--border-radius) - 2px);
+    font-weight: 500;
+  }
+
+  [data-slot="select-item"][data-highlighted] {
+    background: var(--muted);
+  }
+
+  /* ── Labels ── */
+  [data-slot="label"] {
+    font-weight: 700;
+    font-size: 0.6875rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--foreground);
+  }
+
+  /* ── Progress ── */
+  [data-slot="progress"] {
+    border: 2px solid var(--border);
+    border-radius: var(--border-radius);
+    height: 12px;
+    background: var(--muted);
+  }
+
+  [data-slot="progress-indicator"] {
+    border-radius: calc(var(--border-radius) - 3px);
+  }
+
+  /* ── Dialog ── */
+  [data-slot="dialog-overlay"] {
+    background: oklch(20% 0.01 50 / 0.5);
+    backdrop-filter: none;
+  }
+
+  [data-slot="dialog-content"] {
+    border: 2px solid var(--border);
+    border-radius: var(--border-radius);
+    box-shadow: 6px 6px 0px 0px var(--border);
+    background: var(--card);
+  }
+
+  [data-slot="dialog-title"] {
+    font-weight: 800;
+  }
+
+  [data-slot="dialog-description"] {
+    color: var(--muted-foreground);
+  }
+
+  /* ── Dropdown menu ── */
+  [data-slot="dropdown-menu-content"] {
+    border: 2px solid var(--border);
+    border-radius: var(--border-radius);
+    box-shadow: var(--shadow);
+    background: var(--card);
+  }
+
+  [data-slot="dropdown-menu-item"] {
+    border-radius: calc(var(--border-radius) - 2px);
+    font-weight: 500;
+  }
+
+  [data-slot="dropdown-menu-item"][data-highlighted] {
+    background: var(--muted);
+  }
+
+  [data-slot="dropdown-menu-separator"] {
+    background: var(--border);
+    opacity: 0.15;
+  }
+
+  /* ── Tabs ── */
+  [data-slot="tabs-list"] {
+    border: 2px solid var(--border);
+    border-radius: var(--border-radius);
+    background: var(--muted);
+    padding: 3px;
+  }
+
+  [data-slot="tabs-trigger"] {
+    border-radius: calc(var(--border-radius) - 2px);
+    font-weight: 700;
+    transition: all 0.1s ease;
+  }
+
+  [data-slot="tabs-trigger"][data-state="active"] {
+    background: var(--card);
+    box-shadow: 2px 2px 0px 0px var(--border);
+    border: 1px solid var(--border);
+  }
+
+  /* ── Tooltip ── */
+  [data-slot="tooltip-content"] {
+    border: 2px solid var(--border);
+    border-radius: var(--border-radius);
+    box-shadow: 2px 2px 0px 0px var(--border);
+    background: var(--card);
+    color: var(--foreground);
+    font-weight: 500;
+  }
+
+  /* ── Separator ── */
+  [data-slot="separator"] {
+    background: var(--border);
+    opacity: 0.15;
+  }
+
+  /* ── Scroll area ── */
+  [data-slot="scroll-area-thumb"] {
+    background: var(--border);
+    border-radius: var(--border-radius);
   }
 }

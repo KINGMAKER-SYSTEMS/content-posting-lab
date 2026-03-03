@@ -165,10 +165,91 @@ async def generate(prompt: str, params: dict, client: httpx.AsyncClient) -> str:
     raise RuntimeError("Replicate generation timed out")
 
 
+async def _poll_prediction(
+    client: httpx.AsyncClient,
+    headers: dict,
+    pred_id: str,
+    label: str,
+    timeout_secs: int = 180,
+) -> str | list:
+    """Poll a Replicate prediction until it completes. Returns the output."""
+    poll_url = f"{REPLICATE_API}/predictions/{pred_id}"
+    deadline = time.time() + timeout_secs
+
+    while time.time() < deadline:
+        r = await client.get(poll_url, headers=headers, timeout=30)
+        data = r.json()
+        status = data.get("status", "")
+        if status == "succeeded":
+            return data.get("output")
+        if status in ("failed", "canceled"):
+            raise RuntimeError(
+                f"Replicate {label} {status}: {data.get('error', 'unknown')}"
+            )
+        await asyncio.sleep(3)
+
+    raise RuntimeError(f"Replicate {label} timed out after {timeout_secs}s")
+
+
+def _generate_text_mask(image_data_uri: str) -> str:
+    """Generate a binary mask highlighting burned-in text regions.
+
+    TikTok captions are typically white/bright text with dark stroke, positioned
+    in the center-lower area. We detect these by:
+    1. Convert to grayscale
+    2. Threshold for bright pixels (text is white/near-white)
+    3. Dilate to connect letter strokes into solid regions
+    4. Return as a base64 PNG data URI (white = remove, black = keep)
+    """
+    import base64
+    import io
+
+    from PIL import Image, ImageFilter
+
+    # Decode the data URI
+    _, b64data = image_data_uri.split(",", 1)
+    img = Image.open(io.BytesIO(base64.b64decode(b64data)))
+    w, h = img.size
+
+    # Convert to grayscale
+    gray = img.convert("L")
+
+    # Threshold: pixels brighter than 200 are likely text
+    threshold = 200
+    mask = gray.point(lambda p: 255 if p > threshold else 0, mode="1")
+
+    # Convert back to L mode for filtering
+    mask = mask.convert("L")
+
+    # Dilate to connect strokes and cover text edges/stroke outlines
+    # MaxFilter expands white regions — run multiple passes for solid coverage
+    for _ in range(5):
+        mask = mask.filter(ImageFilter.MaxFilter(5))
+
+    # Only keep the center 80% horizontally
+    # (TikTok captions are typically centered, not in corners)
+    final_mask = Image.new("L", (w, h), 0)
+    # Crop region: center 80% width, full height (captions can be anywhere vertically)
+    margin_x = int(w * 0.10)
+    final_mask.paste(mask.crop((margin_x, 0, w - margin_x, h)), (margin_x, 0))
+
+    # Encode as PNG data URI
+    buf = io.BytesIO()
+    final_mask.save(buf, format="PNG")
+    b64 = base64.b64encode(buf.getvalue()).decode()
+    return f"data:image/png;base64,{b64}"
+
+
+_LAMA_VERSION = "40e67426e1bf78199d78b36580389fbbdcb4c9cdc2bc2b489e99d713f167b3c5"
+
+
 async def remove_text(
     image_data_uri: str, client: httpx.AsyncClient | None = None
 ) -> str:
-    """Remove burned-in text from an image using FLUX Kontext text-removal.
+    """Remove burned-in text from an image using local mask + LaMa inpainting.
+
+    1. Locally generates a binary mask detecting bright text pixels (Pillow).
+    2. Sends image + mask to LaMa (dpakkk/image-object-removal) for inpainting.
 
     Args:
         image_data_uri: Base64 data URI of the source image.
@@ -194,37 +275,34 @@ async def remove_text(
         client = httpx.AsyncClient()
 
     try:
+        # Step 1: Generate text mask locally (fast, no API call)
+        mask_data_uri = _generate_text_mask(image_data_uri)
+
+        # Step 2: LaMa inpainting — community model, version-based endpoint
         resp = await client.post(
-            f"{REPLICATE_API}/models/flux-kontext-apps/text-removal/predictions",
+            f"{REPLICATE_API}/predictions",
             headers=headers,
-            json={"input": {"input_image": image_data_uri}},
+            json={
+                "version": _LAMA_VERSION,
+                "input": {
+                    "image": image_data_uri,
+                    "mask": mask_data_uri,
+                },
+            },
             timeout=30,
         )
         if resp.status_code not in (200, 201):
-            raise RuntimeError(f"Replicate text-removal start failed: {resp.text}")
+            raise RuntimeError(f"Replicate LaMa start failed: {resp.text}")
 
         pred_id = resp.json()["id"]
-        poll_url = f"{REPLICATE_API}/predictions/{pred_id}"
-        deadline = time.time() + 120
+        output = await _poll_prediction(client, headers, pred_id, "LaMa")
 
-        while time.time() < deadline:
-            r = await client.get(poll_url, headers=headers, timeout=30)
-            data = r.json()
-            status = data.get("status", "")
-            if status == "succeeded":
-                output = data.get("output")
-                if isinstance(output, str):
-                    return output
-                if isinstance(output, list) and output:
-                    return output[0]
-                raise RuntimeError(f"Replicate unexpected output: {output}")
-            if status in ("failed", "canceled"):
-                raise RuntimeError(
-                    f"Replicate text-removal {status}: {data.get('error', 'unknown')}"
-                )
-            await asyncio.sleep(3)
+        if isinstance(output, str):
+            return output
+        if isinstance(output, list) and output:
+            return output[0]
+        raise RuntimeError(f"LaMa unexpected output: {output}")
 
-        raise RuntimeError("Replicate text-removal timed out")
     finally:
         if owns_client:
             await client.aclose()

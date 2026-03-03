@@ -1,11 +1,11 @@
-import React from 'react';
+import type React from 'react';
 
 export interface FileItem {
   id: string;
   name: string;
   url?: string;
   thumbnailUrl?: string;
-  size?: number; // in bytes
+  size?: number;
   date?: string;
   type?: 'video' | 'image' | 'other';
 }
@@ -38,7 +38,7 @@ export const FileBrowser: React.FC<FileBrowserProps> = ({
 
   if (files.length === 0) {
     return (
-      <div className={`flex items-center justify-center p-8 text-gray-400 border-2 border-dashed border-white/10 rounded-lg ${className}`}>
+      <div className={`flex items-center justify-center p-8 text-muted-foreground border-2 border-dashed border-border rounded-[var(--border-radius)] ${className}`}>
         {emptyMessage}
       </div>
     );
@@ -49,22 +49,22 @@ export const FileBrowser: React.FC<FileBrowserProps> = ({
       {files.map((file) => (
         <div
           key={file.id}
-          className={`group relative border rounded-lg overflow-hidden cursor-pointer transition-all duration-200 hover:shadow-md ${
+          className={`group relative border-2 rounded-[var(--border-radius)] overflow-hidden cursor-pointer transition-all duration-100 ${
             selectedFileId === file.id
-              ? 'border-purple-500 ring-2 ring-purple-500/20'
-              : 'border-white/10 hover:border-white/20'
+              ? 'border-primary shadow-shadow'
+              : 'border-border shadow-[3px_3px_0_0_var(--border)] hover:translate-x-[1px] hover:translate-y-[1px] hover:shadow-[2px_2px_0_0_var(--border)]'
           }`}
-          onClick={() => onSelect && onSelect(file)}
+          onClick={() => onSelect?.(file)}
         >
-          <div className="aspect-square bg-black/20 flex items-center justify-center overflow-hidden relative">
+          <div className="aspect-square bg-muted flex items-center justify-center overflow-hidden relative">
             {file.thumbnailUrl ? (
               <img
                 src={file.thumbnailUrl}
                 alt={file.name}
-                className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
+                className="w-full h-full object-cover"
               />
             ) : (
-              <div className="text-gray-500">
+              <div className="text-muted-foreground">
                 <svg className="w-12 h-12" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   {file.type === 'video' ? (
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
@@ -76,16 +76,15 @@ export const FileBrowser: React.FC<FileBrowserProps> = ({
                 </svg>
               </div>
             )}
-            
-            {/* Overlay actions */}
-            <div className="absolute inset-0 bg-black/50 transition-all duration-200 flex items-center justify-center opacity-0 group-hover:opacity-100">
+
+            <div className="absolute inset-0 bg-foreground/50 transition-all duration-200 flex items-center justify-center opacity-0 group-hover:opacity-100">
               {onDownload && (
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
                     onDownload(file);
                   }}
-                  className="p-2 bg-white/10 backdrop-blur-md rounded-full shadow-lg hover:bg-white/20 text-white transition-colors"
+                  className="p-2 bg-card border-2 border-border rounded-[var(--border-radius)] shadow-[2px_2px_0_0_var(--border)] hover:translate-x-[1px] hover:translate-y-[1px] hover:shadow-[1px_1px_0_0_var(--border)] text-foreground transition-all duration-100"
                   title="Download"
                 >
                   <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -95,17 +94,17 @@ export const FileBrowser: React.FC<FileBrowserProps> = ({
               )}
             </div>
           </div>
-          
-          <div className="p-3 bg-white/5">
-            <p className="text-sm font-medium text-gray-200 truncate" title={file.name}>
+
+          <div className="p-3 bg-card">
+            <p className="text-sm font-semibold text-foreground truncate" title={file.name}>
               {file.name}
             </p>
             <div className="flex justify-between items-center mt-1">
-              <span className="text-xs text-gray-500">
+              <span className="text-xs text-muted-foreground">
                 {formatSize(file.size)}
               </span>
               {file.date && (
-                <span className="text-xs text-gray-500">
+                <span className="text-xs text-muted-foreground">
                   {file.date}
                 </span>
               )}

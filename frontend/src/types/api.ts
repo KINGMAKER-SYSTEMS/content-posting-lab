@@ -12,10 +12,32 @@
 export interface Provider {
   id: string;
   name: string;
+  group: string;
   key_id: string;
   pricing: string;
   models: string[];
 }
+
+// Provider schema types (from /api/video/provider-schemas)
+export interface SchemaField {
+  type: 'select' | 'range' | 'toggle' | 'text';
+  label: string;
+  default: string | number | boolean;
+  options?: (string | number)[];
+  min?: number;
+  max?: number;
+  step?: number;
+  note?: string;
+  placeholder?: string;
+}
+
+export type ProviderSchema = {
+  [key: string]: SchemaField | Record<string, SchemaField> | boolean | undefined;
+  _advanced?: Record<string, SchemaField>;
+  image_required?: boolean;
+};
+
+export type ProviderSchemas = Record<string, ProviderSchema>;
 
 export interface GenerateRequest {
   prompt: string;
@@ -34,8 +56,9 @@ export interface GenerateResponse {
 
 export interface VideoEntry {
   index: number;
-  status: "queued" | "processing" | "done" | "failed" | "error";
+  status: "queued" | "generating" | "polling" | "downloading" | "processing" | "done" | "failed" | "error";
   file?: string;
+  url?: string;
   error?: string;
 }
 
@@ -91,7 +114,7 @@ export interface CaptionWSStartMessage {
   action: "start";
   profile_url: string;
   max_videos: number;
-  sort: string;
+  sort: "latest" | "popular";
   project?: string;
 }
 
@@ -127,10 +150,21 @@ export interface FontInfo {
   name: string;
 }
 
+export interface ColorCorrection {
+  brightness: number;
+  contrast: number;
+  saturation: number;
+  sharpness: number;
+  shadow: number;
+  temperature: number;
+  tint: number;
+  fade: number;
+}
+
 export interface BurnPair {
   videoPath: string;
   overlayPng?: string;
-  colorCorrection?: string;
+  colorCorrection?: ColorCorrection | null;
 }
 
 export interface BurnRequest {
@@ -186,7 +220,7 @@ export interface BurnOverlayRequest {
   index: number;
   videoPath: string;
   overlayPng?: string;
-  colorCorrection?: string;
+  colorCorrection?: ColorCorrection | null;
 }
 
 // ============================================================================

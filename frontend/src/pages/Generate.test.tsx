@@ -17,16 +17,31 @@ const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => 
   const url = String(input);
   const method = init?.method || 'GET';
 
+  if (url.includes('/api/video/provider-schemas')) {
+    return jsonResponse({
+      'wan-t2v': {
+        aspect_ratio: { type: 'select', options: ['16:9', '9:16'], default: '16:9', label: 'Aspect Ratio' },
+        resolution: { type: 'select', options: ['480p', '720p'], default: '480p', label: 'Resolution' },
+        num_frames: { type: 'range', min: 81, max: 121, default: 81, step: 4, label: 'Frames' },
+      },
+    });
+  }
+
   if (url.includes('/api/video/providers')) {
     return jsonResponse([
       {
-        id: 'fal-wan',
-        name: 'FAL Wan',
-        key_id: 'fal',
-        pricing: 'low',
-        models: ['wan-v2.2-a14b'],
+        id: 'wan-t2v',
+        name: 'Text-to-Video (2.2 14B)',
+        group: 'Wan',
+        key_id: 'replicate',
+        pricing: '~$0.06/sec',
+        models: ['wan-video/wan-2.2-t2v-fast'],
       },
     ]);
+  }
+
+  if (url.includes('/api/video/prompts')) {
+    return jsonResponse([]);
   }
 
   if (url.includes('/api/video/generate') && method === 'POST') {
@@ -37,7 +52,7 @@ const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => 
     return jsonResponse({
       id: 'job-1',
       prompt: 'A test clip',
-      provider: 'fal-wan',
+      provider: 'wan-t2v',
       count: 1,
       videos: [{ index: 0, status: 'done', file: 'provider/prompt/job_0.mp4' }],
     });
@@ -49,8 +64,13 @@ const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => 
 beforeEach(() => {
   vi.stubGlobal('fetch', fetchMock);
   fetchMock.mockClear();
+  // Radix Select calls scrollIntoView which jsdom doesn't implement
+  Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+    configurable: true,
+    value: vi.fn(),
+  });
   useWorkflowStore.setState({
-    activeProject: null,
+    activeProjectName: null,
     jobs: {},
     notifications: [],
     recentlyGeneratedVideos: [],
@@ -59,6 +79,7 @@ beforeEach(() => {
     captionJobActive: false,
     burnReadyCount: 0,
     burnSelection: { videoPaths: [], captionSource: null },
+    generateJobs: [],
   });
 });
 
@@ -80,13 +101,7 @@ describe('GeneratePage', () => {
 
   it('loads provider list when project is active', async () => {
     useWorkflowStore.setState({
-      activeProject: {
-        name: 'quick-test',
-        path: '/tmp/projects/quick-test',
-        video_count: 0,
-        caption_count: 0,
-        burned_count: 0,
-      },
+      activeProjectName: 'quick-test',
     });
 
     render(
@@ -97,19 +112,13 @@ describe('GeneratePage', () => {
 
     await waitFor(() => {
       expect(screen.getByText('Generate Video')).toBeTruthy();
-      expect(screen.getByText(/FAL Wan/)).toBeTruthy();
+      expect(screen.getByText(/Text-to-Video/)).toBeTruthy();
     });
   });
 
   it('submits generation form and primes burn selection from completed job', async () => {
     useWorkflowStore.setState({
-      activeProject: {
-        name: 'quick-test',
-        path: '/tmp/projects/quick-test',
-        video_count: 0,
-        caption_count: 0,
-        burned_count: 0,
-      },
+      activeProjectName: 'quick-test',
     });
 
     render(
@@ -126,7 +135,20 @@ describe('GeneratePage', () => {
       target: { value: 'A test clip' },
     });
 
-    fireEvent.click(screen.getByRole('button', { name: 'Generate Videos' }));
+    // Radix Select can't be changed via fireEvent in jsdom, so click the trigger
+    // to open and then select the first provider option.
+    const providerTrigger = screen.getByRole('combobox', { name: /provider/i });
+    fireEvent.click(providerTrigger);
+    await waitFor(() => {
+      const option = screen.getByRole('option', { name: /Text-to-Video/i });
+      fireEvent.click(option);
+    });
+
+    const generateBtn = screen.getByRole('button', { name: 'Generate' });
+    expect(generateBtn).toBeTruthy();
+    expect((generateBtn as HTMLButtonElement).disabled).toBe(false);
+
+    fireEvent.submit(generateBtn.closest('form')!);
 
     await waitFor(() => {
       const generateCall = fetchMock.mock.calls.find(

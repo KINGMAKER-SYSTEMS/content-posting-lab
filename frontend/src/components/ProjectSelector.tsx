@@ -1,9 +1,19 @@
-import { useEffect, useRef, useState } from 'react';
+import { useState } from 'react';
 import { type Project } from '../types/api';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Badge } from '@/components/ui/badge';
 
 interface ProjectSelectorProps {
   projects: Project[];
-  activeProject: Project | null;
+  activeProjectName: string | null;
   onSelect: (project: Project) => void;
   onCreate: (name: string) => Promise<void> | void;
   className?: string;
@@ -11,148 +21,115 @@ interface ProjectSelectorProps {
 
 export function ProjectSelector({
   projects,
-  activeProject,
+  activeProjectName,
   onSelect,
   onCreate,
   className = '',
 }: ProjectSelectorProps) {
-  const [isOpen, setIsOpen] = useState(false);
   const [isCreating, setIsCreating] = useState(false);
   const [newProjectName, setNewProjectName] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const dropdownRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    const onClickOutside = (event: MouseEvent) => {
-      if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
-        setIsOpen(false);
-        setIsCreating(false);
-      }
-    };
-
-    document.addEventListener('mousedown', onClickOutside);
-    return () => document.removeEventListener('mousedown', onClickOutside);
-  }, []);
+  const [open, setOpen] = useState(false);
 
   const handleCreate = async () => {
     const name = newProjectName.trim();
-    if (!name || isSubmitting) {
-      return;
-    }
+    if (!name || isSubmitting) return;
 
     setIsSubmitting(true);
     try {
       await onCreate(name);
       setNewProjectName('');
       setIsCreating(false);
-      setIsOpen(false);
+      setOpen(false);
     } finally {
       setIsSubmitting(false);
     }
   };
 
   return (
-    <div className={`relative ${className}`} ref={dropdownRef}>
-      <button
-        type="button"
-        className="w-full bg-black/30 border border-white/15 rounded-lg px-3 py-2 text-left hover:bg-black/40 focus:outline-none focus:ring-2 focus:ring-purple-500/40"
-        onClick={() => setIsOpen((prev) => !prev)}
-      >
-        <div className="text-[10px] uppercase tracking-wider text-gray-500">Active Project</div>
-        <div className="truncate text-sm font-medium text-white">
-          {activeProject ? activeProject.name : 'Select project'}
-        </div>
-      </button>
+    <div className={className}>
+      <DropdownMenu open={open} onOpenChange={(o) => { setOpen(o); if (!o) setIsCreating(false); }}>
+        <DropdownMenuTrigger asChild>
+          <button
+            type="button"
+            className="w-full border-2 border-border rounded-[var(--border-radius)] bg-card px-3 py-2 text-left shadow-shadow hover:translate-x-[2px] hover:translate-y-[2px] hover:shadow-[2px_2px_0_0_var(--border)] transition-all duration-100"
+          >
+            <div className="text-[10px] uppercase tracking-wider font-bold text-muted-foreground">Active Project</div>
+            <div className="truncate text-sm font-bold text-foreground">
+              {activeProjectName ?? 'Select project'}
+            </div>
+          </button>
+        </DropdownMenuTrigger>
 
-      {isOpen && (
-        <div className="absolute z-50 mt-2 w-full rounded-lg border border-white/15 bg-charcoal shadow-xl">
+        <DropdownMenuContent align="start" className="w-72">
           {!isCreating ? (
             <>
-              <div className="max-h-64 overflow-y-auto py-1">
-                {projects.length === 0 ? (
-                  <div className="px-3 py-3 text-sm text-gray-500">No projects found</div>
-                ) : (
-                  projects.map((project) => {
-                    const isActive = activeProject?.name === project.name;
-                    return (
-                      <button
-                        key={project.name}
-                        type="button"
-                        onClick={() => {
-                          onSelect(project);
-                          setIsOpen(false);
-                        }}
-                        className={`w-full px-3 py-2 text-left hover:bg-white/5 ${
-                          isActive ? 'bg-purple-500/15' : ''
-                        }`}
-                      >
-                        <div className="flex items-center justify-between gap-3">
-                          <span className={`truncate text-sm ${isActive ? 'text-purple-200' : 'text-gray-100'}`}>
-                            {project.name}
-                          </span>
-                          {isActive ? (
-                            <span className="text-[10px] rounded-full bg-purple-500/20 px-2 py-0.5 text-purple-200">Active</span>
-                          ) : null}
-                        </div>
-                        <div className="mt-1 text-[11px] text-gray-500">
-                          {project.video_count} videos, {project.caption_count} captions, {project.burned_count} burned
-                        </div>
-                      </button>
-                    );
-                  })
-                )}
-              </div>
-
-              <button
-                type="button"
-                className="w-full border-t border-white/10 px-3 py-2 text-left text-sm font-medium text-purple-300 hover:bg-white/5"
-                onClick={() => setIsCreating(true)}
+              {projects.length === 0 ? (
+                <div className="px-3 py-3 text-sm text-muted-foreground">No projects found</div>
+              ) : (
+                projects.map((project) => {
+                  const isActive = activeProjectName === project.name;
+                  return (
+                    <DropdownMenuItem
+                      key={project.name}
+                      className="flex flex-col items-start gap-1 py-2"
+                      onSelect={() => onSelect(project)}
+                    >
+                      <div className="flex w-full items-center justify-between gap-3">
+                        <span className="truncate text-sm font-bold">{project.name}</span>
+                        {isActive && <Badge variant="active">Active</Badge>}
+                      </div>
+                      <div className="text-[11px] text-muted-foreground">
+                        {project.video_count} videos, {project.caption_count} captions, {project.burned_count} burned
+                      </div>
+                    </DropdownMenuItem>
+                  );
+                })
+              )}
+              <DropdownMenuSeparator />
+              <DropdownMenuItem
+                onSelect={(e) => {
+                  e.preventDefault();
+                  setIsCreating(true);
+                }}
+                className="font-bold text-primary"
               >
                 + Create New Project
-              </button>
+              </DropdownMenuItem>
             </>
           ) : (
-            <div className="p-3">
-              <input
-                type="text"
-                className="input"
+            <div className="p-3" onClick={(e) => e.stopPropagation()}>
+              <Input
                 placeholder="Project name"
                 value={newProjectName}
-                onChange={(event) => setNewProjectName(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter') {
-                    void handleCreate();
-                  }
-                  if (event.key === 'Escape') {
-                    setIsCreating(false);
-                  }
+                onChange={(e) => setNewProjectName(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') void handleCreate();
+                  if (e.key === 'Escape') setIsCreating(false);
                 }}
                 autoFocus
               />
               <div className="mt-2 flex justify-end gap-2">
-                <button
-                  type="button"
-                  className="btn btn-secondary py-1.5 text-xs"
+                <Button
+                  variant="outline"
+                  size="sm"
                   onClick={() => setIsCreating(false)}
                   disabled={isSubmitting}
                 >
                   Cancel
-                </button>
-                <button
-                  type="button"
-                  className="btn btn-primary py-1.5 text-xs"
-                  onClick={() => {
-                    void handleCreate();
-                  }}
+                </Button>
+                <Button
+                  size="sm"
+                  onClick={() => { void handleCreate(); }}
                   disabled={isSubmitting || !newProjectName.trim()}
                 >
                   {isSubmitting ? 'Creating...' : 'Create'}
-                </button>
+                </Button>
               </div>
             </div>
           )}
-        </div>
-      )}
+        </DropdownMenuContent>
+      </DropdownMenu>
     </div>
   );
 }

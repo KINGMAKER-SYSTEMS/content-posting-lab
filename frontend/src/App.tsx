@@ -8,6 +8,7 @@ import { RecreatePage } from './pages/Recreate';
 import { ProjectSelector, ToastContainer } from './components';
 import { useWorkflowStore } from './stores/workflowStore';
 import { type CreateProjectResponse, type HealthResponse, type Project, type ProjectListResponse } from './types/api';
+import { apiUrl } from './lib/api';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 
@@ -61,7 +62,7 @@ function AppShell() {
 
   const fetchProjects = useCallback(async () => {
     try {
-      const response = await fetch('/api/projects');
+      const response = await fetch(apiUrl('/api/projects'));
       if (!response.ok) {
         throw new Error(`Failed to load projects (${response.status})`);
       }
@@ -79,7 +80,7 @@ function AppShell() {
 
   const fetchHealth = useCallback(async () => {
     try {
-      const response = await fetch('/api/health');
+      const response = await fetch(apiUrl('/api/health'));
       if (!response.ok) {
         throw new Error(`Health check failed (${response.status})`);
       }
@@ -125,7 +126,7 @@ function AppShell() {
       }
 
       try {
-        const response = await fetch('/api/projects', {
+        const response = await fetch(apiUrl('/api/projects'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ name: trimmed }),

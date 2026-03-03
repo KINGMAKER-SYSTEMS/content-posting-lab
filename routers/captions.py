@@ -71,7 +71,7 @@ async def _run_pipeline(
         await _broadcast(
             job_id, "status", {"text": f"Listing videos for @{username}..."}
         )
-        video_urls = await list_profile_videos(profile_url, max_videos)
+        video_urls = await list_profile_videos(profile_url, max_videos, sort)
         total = len(video_urls)
 
         await _broadcast(job_id, "urls_collected", {"count": total, "urls": video_urls})

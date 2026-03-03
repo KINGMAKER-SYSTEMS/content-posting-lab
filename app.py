@@ -22,15 +22,16 @@ from routers.video import router as video_router
 load_dotenv()
 
 FRONTEND_DIR = Path("frontend/dist")
-CORS_ORIGINS = [
+_DEFAULT_CORS = [
     "http://localhost:5173",
     "http://localhost:8000",
     "http://127.0.0.1:5173",
     "http://127.0.0.1:8000",
 ]
-_extra_origins = os.getenv("CORS_ORIGINS", "")
-if _extra_origins:
-    CORS_ORIGINS.extend([o.strip() for o in _extra_origins.split(",") if o.strip()])
+_EXTRA_CORS = os.getenv("CORS_ORIGINS")
+CORS_ORIGINS = _DEFAULT_CORS + (
+    [o.strip() for o in _EXTRA_CORS.split(",") if o.strip()] if _EXTRA_CORS else []
+)
 
 
 def _check_command(command: list[str]) -> bool:
@@ -174,5 +175,4 @@ if FRONTEND_DIR.exists():
 
 
 if __name__ == "__main__":
-    port = int(os.getenv("PORT", "8000"))
-    uvicorn.run("app:app", host="0.0.0.0", port=port, reload=False)
+    uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=False)

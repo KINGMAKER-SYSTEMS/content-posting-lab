@@ -1,7 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import { BurnPage } from './Burn';
 import { useWorkflowStore } from '../stores/workflowStore';
+
+// Mock html2canvas
+vi.mock('html2canvas', () => ({
+  default: vi.fn(async () => {
+    const canvas = document.createElement('canvas');
+    canvas.width = 100;
+    canvas.height = 100;
+    return canvas;
+  }),
+}));
 
 function jsonResponse(data: unknown, status = 200): Response {
   return {
@@ -12,9 +22,8 @@ function jsonResponse(data: unknown, status = 200): Response {
   } as Response;
 }
 
-const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
   const url = String(input);
-  const method = init?.method || 'GET';
 
   if (url.includes('/api/burn/videos')) {
     return jsonResponse({
@@ -47,7 +56,19 @@ const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => 
     });
   }
 
-  if (url.includes('/api/burn/overlay') && method === 'POST') {
+  if (url.includes('/api/burn/fonts')) {
+    return jsonResponse({
+      fonts: [
+        { file: 'TikTokSans16pt-Bold.ttf', name: 'TikTok Sans Bold' },
+      ],
+    });
+  }
+
+  if (url.includes('/api/burn/batches')) {
+    return jsonResponse({ batches: [] });
+  }
+
+  if (url.includes('/api/burn/overlay')) {
     return jsonResponse({ index: 0, ok: true, file: 'batch-1/burned_000.mp4' });
   }
 
@@ -73,7 +94,7 @@ beforeEach(() => {
   });
 
   useWorkflowStore.setState({
-    activeProject: null,
+    activeProjectName: null,
     jobs: {},
     notifications: [],
     recentlyGeneratedVideos: [],
@@ -96,51 +117,50 @@ describe('BurnPage', () => {
     expect(screen.getByText('No Project Selected')).toBeTruthy();
   });
 
-  it('loads project videos and caption sources', async () => {
+  it('loads project data and shows sidebar controls', async () => {
     useWorkflowStore.setState({
-      activeProject: {
-        name: 'quick-test',
-        path: '/tmp/projects/quick-test',
-        video_count: 1,
-        caption_count: 1,
-        burned_count: 0,
-      },
+      activeProjectName: 'quick-test',
     });
 
     render(<BurnPage />);
 
     await waitFor(() => {
-      expect(screen.getByText('Burn Captions')).toBeTruthy();
-      expect(screen.getByText(/artist1/)).toBeTruthy();
-      expect(screen.getAllByText('caption text').length).toBeGreaterThan(0);
+      expect(screen.getByText('Caption Burner')).toBeTruthy();
+      // Caption sources are in a Radix Select (options not in DOM when closed).
+      // Verify data loaded by checking the captions fetch was made.
+      const urls = fetchMock.mock.calls.map(([u]) => String(u));
+      expect(urls.some((u) => u.includes('/api/burn/captions'))).toBe(true);
     });
   });
 
-  it('submits burn overlay request and shows success result', async () => {
+  it('fetches videos, captions, fonts, and batches on mount', async () => {
     useWorkflowStore.setState({
-      activeProject: {
-        name: 'quick-test',
-        path: '/tmp/projects/quick-test',
-        video_count: 1,
-        caption_count: 1,
-        burned_count: 0,
-      },
+      activeProjectName: 'quick-test',
     });
 
     render(<BurnPage />);
 
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: 'Burn Caption' })).toBeTruthy();
+      const urls = fetchMock.mock.calls.map(([u]) => String(u));
+      expect(urls.some((u) => u.includes('/api/burn/videos'))).toBe(true);
+      expect(urls.some((u) => u.includes('/api/burn/captions'))).toBe(true);
+      expect(urls.some((u) => u.includes('/api/burn/fonts'))).toBe(true);
+      expect(urls.some((u) => u.includes('/api/burn/batches'))).toBe(true);
+    });
+  });
+
+  it('shows color correction sliders', async () => {
+    useWorkflowStore.setState({
+      activeProjectName: 'quick-test',
     });
 
-    fireEvent.click(screen.getByRole('button', { name: 'Burn Caption' }));
+    render(<BurnPage />);
 
     await waitFor(() => {
-      const overlayCall = fetchMock.mock.calls.find(
-        ([url, init]) => String(url).includes('/api/burn/overlay') && (init?.method || 'GET') === 'POST',
-      );
-      expect(overlayCall).toBeTruthy();
-      expect(screen.getByText('Success')).toBeTruthy();
+      expect(screen.getByText('Brightness')).toBeTruthy();
+      expect(screen.getByText('Contrast')).toBeTruthy();
+      expect(screen.getByText('Saturation')).toBeTruthy();
+      expect(screen.getByText('Temperature')).toBeTruthy();
     });
   });
 });

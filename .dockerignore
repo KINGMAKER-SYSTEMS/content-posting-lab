@@ -1,13 +1,38 @@
-node_modules/
-frontend/node_modules/
-frontend/dist/
-.git/
+# Dependencies and env (installed in image)
+venv
+node_modules
+frontend/node_modules
 .env
-__pycache__/
-venv/
-.claude/
-docs/
-static/preview/
-*.pyc
+.env.*
+!.env.example
+
+# Git and IDE
+.git
+.gitignore
+.cursor
 .DS_Store
-excalidraw.log
+*.md
+!README.md
+
+# Build outputs we recreate in Docker (frontend/dist built in stage 1)
+frontend/dist
+
+# Test and dev
+tests
+__pycache__
+*.pyc
+.pytest_cache
+.coverage
+htmlcov
+.excalidraw.log
+docs
+static
+.claude
+
+# Large or ephemeral data (not needed in image; use mounts at runtime)
+projects
+output
+caption_output
+burn_output
+*.mp4
+*.zip
