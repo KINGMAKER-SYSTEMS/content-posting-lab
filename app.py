@@ -22,12 +22,16 @@ from routers.video import router as video_router
 load_dotenv()
 
 FRONTEND_DIR = Path("frontend/dist")
-CORS_ORIGINS = [
+_DEFAULT_CORS = [
     "http://localhost:5173",
     "http://localhost:8000",
     "http://127.0.0.1:5173",
     "http://127.0.0.1:8000",
 ]
+_EXTRA_CORS = os.getenv("CORS_ORIGINS")
+CORS_ORIGINS = _DEFAULT_CORS + (
+    [o.strip() for o in _EXTRA_CORS.split(",") if o.strip()] if _EXTRA_CORS else []
+)
 
 
 def _check_command(command: list[str]) -> bool:
