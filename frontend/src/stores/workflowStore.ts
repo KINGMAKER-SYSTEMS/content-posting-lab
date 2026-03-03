@@ -21,6 +21,14 @@ interface BurnSelectionDraft {
   captionSource: string | null;
 }
 
+export interface GeneratePrefill {
+  prompt: string;
+  firstFrameDataUri: string;
+  lastFrameDataUri: string | null;
+  provider: string;
+  aspectRatio: string;
+}
+
 export interface ProjectStats {
   path: string;
   video_count: number;
@@ -71,6 +79,7 @@ interface WorkflowState {
   recreateJobActive: boolean;
   burnReadyCount: number;
   burnSelection: BurnSelectionDraft;
+  generatePrefill: GeneratePrefill | null;
 
   // Generate page state — persists across tab switches
   generateJobs: Job[];
@@ -89,6 +98,8 @@ interface WorkflowState {
   incrementBurnReadyCount: (delta: number) => void;
   primeBurnSelection: (selection: Partial<BurnSelectionDraft>) => void;
   clearBurnSelection: () => void;
+  primeGeneratePrefill: (prefill: GeneratePrefill) => void;
+  clearGeneratePrefill: () => void;
 
   // Generate page actions
   addGenerateJob: (job: Job) => void;
@@ -111,6 +122,7 @@ export const useWorkflowStore = create<WorkflowState>((set) => ({
     videoPaths: [],
     captionSource: null,
   },
+  generatePrefill: null,
   generateJobs: [],
 
   setActiveProjectName: (name) => {
@@ -225,6 +237,14 @@ export const useWorkflowStore = create<WorkflowState>((set) => ({
         captionSource: null,
       },
     });
+  },
+
+  primeGeneratePrefill: (prefill) => {
+    set({ generatePrefill: prefill });
+  },
+
+  clearGeneratePrefill: () => {
+    set({ generatePrefill: null });
   },
 
   // Generate page actions — jobs persist in store across tab switches

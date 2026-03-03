@@ -42,7 +42,7 @@ async def extract_caption(screenshot_bytes: bytes) -> str:
     b64 = base64.b64encode(screenshot_bytes).decode()
 
     resp = await client.chat.completions.create(
-        model="gpt-4o",
+        model="gpt-4.1",
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
             {

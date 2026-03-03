@@ -1,67 +1,44 @@
-from . import fal, grok, luma, replicate, sora
+from . import grok, replicate
 
 PROVIDERS = {
     "grok": {
-        "name": "Grok Imagine",
+        "name": "Grok",
+        "group": "xAI",
         "key_id": "xai",
         "pricing": "~$5/10s video",
         "models": ["grok-imagine-video"],
         "module": grok,
     },
-    "rep-minimax": {
-        "name": "MiniMax Hailuo 2.3",
+    "hailuo": {
+        "name": "Hailuo 2.3",
+        "group": "MiniMax",
         "key_id": "replicate",
         "pricing": "~$0.28/video",
         "models": ["minimax/hailuo-2.3"],
         "module": replicate,
     },
-    "rep-wan": {
-        "name": "Wan 2.1 720p",
+    "wan-t2v": {
+        "name": "Text-to-Video (2.2 14B)",
+        "group": "Wan",
         "key_id": "replicate",
         "pricing": "~$0.06/sec",
-        "models": ["wavespeedai/wan-2.1-t2v-720p"],
+        "models": ["wan-video/wan-2.2-t2v-fast"],
         "module": replicate,
     },
-    "rep-kling": {
-        "name": "Kling v2.1",
+    "wan-i2v": {
+        "name": "Image-to-Video (2.2 14B)",
+        "group": "Wan",
         "key_id": "replicate",
-        "pricing": "~$0.07/sec",
-        "models": ["kwaivgi/kling-v2.1-master"],
+        "pricing": "~$0.06/sec",
+        "models": ["wan-video/wan-2.2-i2v-a14b"],
         "module": replicate,
     },
-    "fal-wan": {
-        "name": "Wan 2.5 (FAL)",
-        "key_id": "fal",
-        "pricing": "$0.05/sec",
-        "models": ["fal-ai/wan-25-preview/text-to-video"],
-        "module": fal,
-    },
-    "fal-kling": {
-        "name": "Kling 2.5 (FAL)",
-        "key_id": "fal",
-        "pricing": "$0.07/sec",
-        "models": ["fal-ai/kling-video/v2.5-turbo/pro"],
-        "module": fal,
-    },
-    "fal-ovi": {
-        "name": "Ovi (FAL)",
-        "key_id": "fal",
-        "pricing": "$0.20/video",
-        "models": ["fal-ai/ovi"],
-        "module": fal,
-    },
-    "luma": {
-        "name": "Luma Ray 2",
-        "key_id": "luma",
-        "pricing": "~$1-2/video",
-        "models": ["ray-2"],
-        "module": luma,
-    },
-    "sora": {
-        "name": "Sora 2",
-        "key_id": "openai",
-        "pricing": "~$0.10/sec (720p)",
-        "models": ["sora-2"],
-        "module": sora,
+    "wan-i2v-fast": {
+        "name": "Image-to-Video Fast (2.2 14B)",
+        "group": "Wan",
+        "key_id": "replicate",
+        "pricing": "~$0.06/sec",
+        "models": ["wan-video/wan-2.2-i2v-fast"],
+        "module": replicate,
     },
 }

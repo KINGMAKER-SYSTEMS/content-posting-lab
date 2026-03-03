@@ -14,13 +14,8 @@ interface WebSocketOptions {
 
 export function useWebSocket(url: string | null, options: WebSocketOptions = {}) {
   const {
-    onMessage,
-    onOpen,
-    onClose,
-    onError,
     maxReconnectAttempts = 10,
     maxReconnectDelayMs = 30000,
-    shouldReconnect,
   } = options;
 
   const [status, setStatus] = useState<WebSocketStatus>('disconnected');
@@ -32,6 +27,18 @@ export function useWebSocket(url: string | null, options: WebSocketOptions = {})
   const isDisposedRef = useRef(false);
   const queuedMessagesRef = useRef<string[]>([]);
   const lastStartPayloadRef = useRef<string | null>(null);
+
+  const onMessageRef = useRef(options.onMessage);
+  const onOpenRef = useRef(options.onOpen);
+  const onCloseRef = useRef(options.onClose);
+  const onErrorRef = useRef(options.onError);
+  const shouldReconnectRef = useRef(options.shouldReconnect);
+
+  onMessageRef.current = options.onMessage;
+  onOpenRef.current = options.onOpen;
+  onCloseRef.current = options.onClose;
+  onErrorRef.current = options.onError;
+  shouldReconnectRef.current = options.shouldReconnect;
 
   const clearReconnectTimer = useCallback(() => {
     if (reconnectTimerRef.current) {
@@ -76,29 +83,29 @@ export function useWebSocket(url: string | null, options: WebSocketOptions = {})
             socket.send(lastStartPayloadRef.current);
           }
 
-          onOpen?.(event);
+          onOpenRef.current?.(event);
         };
 
         socket.onmessage = (event) => {
-          onMessage?.(event);
+          onMessageRef.current?.(event);
         };
 
         socket.onerror = (event) => {
           setError('WebSocket connection error');
           setStatus('error');
-          onError?.(event);
+          onErrorRef.current?.(event);
         };
 
         socket.onclose = (event) => {
           wsRef.current = null;
-          onClose?.(event);
+          onCloseRef.current?.(event);
 
           if (isDisposedRef.current) {
             setStatus('disconnected');
             return;
           }
 
-          const reconnectAllowed = shouldReconnect ? shouldReconnect(event) : true;
+          const reconnectAllowed = shouldReconnectRef.current ? shouldReconnectRef.current(event) : true;
           if (!reconnectAllowed) {
             setStatus('disconnected');
             return;
@@ -126,7 +133,7 @@ export function useWebSocket(url: string | null, options: WebSocketOptions = {})
         setError('Failed to initialize WebSocket');
       }
     },
-    [clearReconnectTimer, maxReconnectAttempts, maxReconnectDelayMs, onClose, onError, onMessage, onOpen, shouldReconnect, url],
+    [clearReconnectTimer, maxReconnectAttempts, maxReconnectDelayMs, url],
   );
 
   useEffect(() => {
@@ -184,6 +191,10 @@ export function useWebSocket(url: string | null, options: WebSocketOptions = {})
     connect('reconnecting');
   }, [clearReconnectTimer, connect]);
 
+  const clearStartPayload = useCallback(() => {
+    lastStartPayloadRef.current = null;
+  }, []);
+
   return {
     ws: wsRef.current,
     error,
@@ -192,5 +203,6 @@ export function useWebSocket(url: string | null, options: WebSocketOptions = {})
     reconnectAttempts: reconnectAttemptsRef.current,
     sendMessage,
     reconnect,
+    clearStartPayload,
   };
 }

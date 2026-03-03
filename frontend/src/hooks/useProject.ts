@@ -1,10 +1,10 @@
 import { useWorkflowStore } from '../stores/workflowStore';
 
 export function useProject() {
-  const { activeProject, setActiveProject } = useWorkflowStore();
+  const { activeProjectName, setActiveProjectName } = useWorkflowStore();
 
   return {
-    activeProject,
-    setActiveProject,
+    activeProjectName,
+    setActiveProjectName,
   };
 }

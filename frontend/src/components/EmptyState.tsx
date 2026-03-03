@@ -1,4 +1,5 @@
-import React, { type ReactNode } from 'react';
+import { type ReactNode } from 'react';
+import { Button } from '@/components/ui/button';
 
 interface EmptyStateProps {
   icon?: ReactNode;
@@ -12,28 +13,25 @@ interface EmptyStateProps {
   className?: string;
 }
 
-export const EmptyState: React.FC<EmptyStateProps> = ({
+export function EmptyState({
   icon,
   title,
   message,
   description,
   action,
   className = '',
-}) => {
+}: EmptyStateProps) {
   const displayMessage = message || description;
   return (
     <div className={`flex flex-col items-center justify-center p-8 text-center ${className}`}>
-      {icon && <div className="mb-4 text-4xl text-gray-600">{icon}</div>}
-      <h3 className="text-lg font-medium text-white mb-2">{title}</h3>
-      {displayMessage && <p className="text-sm text-gray-400 max-w-sm mb-6">{displayMessage}</p>}
+      {icon && <div className="mb-4 text-4xl text-muted-foreground">{icon}</div>}
+      <h3 className="text-lg font-heading text-foreground mb-2">{title}</h3>
+      {displayMessage && <p className="text-sm text-muted-foreground max-w-sm mb-6">{displayMessage}</p>}
       {action && (
-        <button
-          onClick={action.onClick}
-          className="btn btn-primary"
-        >
+        <Button onClick={action.onClick}>
           {action.label}
-        </button>
+        </Button>
       )}
     </div>
   );
-};
+}

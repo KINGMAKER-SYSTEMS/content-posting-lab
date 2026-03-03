@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { apiUrl, wsUrl } from '../lib/api';
 import { EmptyState } from '../components';
 import { useWebSocket, type WebSocketStatus } from '../hooks/useWebSocket';
 import { useWorkflowStore } from '../stores/workflowStore';
@@ -61,13 +63,16 @@ const EMPTY_FRAMES: FrameState = {
 };
 
 export function RecreatePage() {
-  const { activeProjectName, addNotification, setRecreateJobActive } = useWorkflowStore();
+  const { activeProjectName, addNotification, setRecreateJobActive, primeGeneratePrefill } = useWorkflowStore();
+  const navigate = useNavigate();
 
   const [videoUrl, setVideoUrl] = useState('');
   const [running, setRunning] = useState(false);
   const [complete, setComplete] = useState(false);
   const [logs, setLogs] = useState<string[]>([]);
   const [frames, setFrames] = useState<FrameState>(EMPTY_FRAMES);
+  const [generatedPrompt, setGeneratedPrompt] = useState<string | null>(null);
+  const [promptLoading, setPromptLoading] = useState(false);
   const [resultPaths, setResultPaths] = useState<{ firstClean: string | null; lastClean: string | null }>({
     firstClean: null,
     lastClean: null,
@@ -86,7 +91,7 @@ export function RecreatePage() {
 
   const fetchPastJobs = useCallback(() => {
     if (!activeProjectName) return;
-    fetch(`/api/recreate/jobs?project=${encodeURIComponent(activeProjectName)}`)
+    fetch(apiUrl(`/api/recreate/jobs?project=${encodeURIComponent(activeProjectName)}`))
       .then((r) => (r.ok ? r.json() : { jobs: [] }))
       .then((data: { jobs: PastJob[] }) => setPastJobs(data.jobs || []))
       .catch(() => {});
@@ -101,12 +106,11 @@ export function RecreatePage() {
   }, [logs]);
 
   // Build WebSocket URL only when running
-  const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const wsUrl = running && jobIdRef.current
-    ? `${wsProtocol}//${window.location.host}/api/recreate/ws/${jobIdRef.current}`
+  const wsEndpoint = running && jobIdRef.current
+    ? wsUrl(`/api/recreate/ws/${jobIdRef.current}`)
     : null;
 
-  const { status, sendMessage, clearStartPayload } = useWebSocket(wsUrl, {
+  const { status, sendMessage, clearStartPayload } = useWebSocket(wsEndpoint, {
     onOpen: () => {
       if (!activeProjectName) return;
       addLog('Connected - starting pipeline');
@@ -151,6 +155,7 @@ export function RecreatePage() {
           ...prev,
           firstOriginal: data.first_frame || data.first_original || null,
           lastOriginal: data.last_frame || data.last_original || null,
+          duration: data.duration ?? prev.duration,
         }));
         break;
       case 'removing_text':
@@ -215,6 +220,7 @@ export function RecreatePage() {
     setLogs([]);
     setFrames(EMPTY_FRAMES);
     setResultPaths({ firstClean: null, lastClean: null });
+    setGeneratedPrompt(null);
     setComplete(false);
     setRunning(true);
     setRecreateJobActive(true);
@@ -232,6 +238,7 @@ export function RecreatePage() {
       firstClean: job.first_clean || null,
       lastClean: job.last_clean || null,
     });
+    setGeneratedPrompt(null);
     setComplete(true);
     setLogs([]);
   };
@@ -239,7 +246,7 @@ export function RecreatePage() {
   const deletePastJob = async (jobId: string) => {
     if (!activeProjectName) return;
     try {
-      await fetch(`/api/recreate/jobs/${jobId}?project=${encodeURIComponent(activeProjectName)}`, {
+      await fetch(apiUrl(`/api/recreate/jobs/${jobId}?project=${encodeURIComponent(activeProjectName)}`), {
         method: 'DELETE',
       });
       setPastJobs((prev) => prev.filter((j) => j.job_id !== jobId));
@@ -537,6 +544,114 @@ export function RecreatePage() {
               <CardContent className="py-3 flex items-center gap-2 text-sm text-muted-foreground">
                 <span className="font-bold text-foreground">Duration:</span>
                 <span>{frames.duration.toFixed(1)}s</span>
+              </CardContent>
+            </Card>
+          )}
+
+          {/* Generate Prompt + Send to Generate */}
+          {frames.firstClean && frames.lastClean && (
+            <Card className="mt-6">
+              <CardContent className="p-0">
+                <div className="px-4 py-3 border-b-2 border-border flex items-center justify-between">
+                  <span className="text-sm font-bold text-foreground">Generate Video Prompt</span>
+                  <Badge variant="info" className="text-[10px]">GPT-4.1 Vision</Badge>
+                </div>
+                <div className="p-4 space-y-3">
+                  {generatedPrompt === null ? (
+                    <Button
+                      onClick={async () => {
+                        setPromptLoading(true);
+                        try {
+                          const resp = await fetch(apiUrl('/api/recreate/generate-prompt'), {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                              first_frame: frames.firstClean,
+                              last_frame: frames.lastClean,
+                            }),
+                          });
+                          if (!resp.ok) {
+                            const err = await resp.json().catch(() => ({ detail: 'Request failed' }));
+                            throw new Error(err.detail || 'Failed to generate prompt');
+                          }
+                          const data = await resp.json() as { prompt: string };
+                          setGeneratedPrompt(data.prompt);
+                        } catch (e) {
+                          addNotification('error', e instanceof Error ? e.message : 'Failed to generate prompt');
+                        } finally {
+                          setPromptLoading(false);
+                        }
+                      }}
+                      disabled={promptLoading}
+                      className="w-full"
+                      variant="secondary"
+                    >
+                      {promptLoading ? (
+                        <span className="flex items-center gap-2">
+                          <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-muted border-t-primary" />
+                          Analyzing frames...
+                        </span>
+                      ) : (
+                        'Generate Prompt from Frames'
+                      )}
+                    </Button>
+                  ) : (
+                    <>
+                      <textarea
+                        value={generatedPrompt}
+                        onChange={(e) => setGeneratedPrompt(e.target.value)}
+                        rows={4}
+                        className="w-full rounded-[var(--border-radius)] border-2 border-border bg-muted p-3 text-sm text-foreground resize-y focus:outline-none focus:ring-2 focus:ring-primary/40 focus:border-primary"
+                        placeholder="Video generation prompt..."
+                      />
+                      <div className="flex gap-2">
+                        <Button
+                          variant="secondary"
+                          className="flex-1"
+                          onClick={async () => {
+                            setGeneratedPrompt(null);
+                            setPromptLoading(true);
+                            try {
+                              const resp = await fetch(apiUrl('/api/recreate/generate-prompt'), {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({
+                                  first_frame: frames.firstClean,
+                                  last_frame: frames.lastClean,
+                                }),
+                              });
+                              if (!resp.ok) throw new Error('Failed');
+                              const data = await resp.json() as { prompt: string };
+                              setGeneratedPrompt(data.prompt);
+                            } catch {
+                              addNotification('error', 'Failed to regenerate prompt');
+                            } finally {
+                              setPromptLoading(false);
+                            }
+                          }}
+                          disabled={promptLoading}
+                        >
+                          {promptLoading ? 'Regenerating...' : 'Regenerate'}
+                        </Button>
+                        <Button
+                          className="flex-1"
+                          onClick={() => {
+                            primeGeneratePrefill({
+                              prompt: generatedPrompt,
+                              firstFrameDataUri: frames.firstClean!,
+                              lastFrameDataUri: frames.lastClean,
+                              provider: 'wan-i2v-fast',
+                              aspectRatio: '9:16',
+                            });
+                            navigate('/generate');
+                          }}
+                        >
+                          Send to Generate →
+                        </Button>
+                      </div>
+                    </>
+                  )}
+                </div>
               </CardContent>
             </Card>
           )}

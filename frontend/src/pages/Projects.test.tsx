@@ -57,7 +57,7 @@ beforeEach(() => {
   fetchMock.mockClear();
   window.localStorage.clear();
   useWorkflowStore.setState({
-    activeProject: null,
+    activeProjectName: null,
     jobs: {},
     notifications: [],
     recentlyGeneratedVideos: [],
@@ -81,9 +81,9 @@ describe('ProjectsPage', () => {
     await waitFor(() => {
       expect(screen.getByText('quick-test')).toBeTruthy();
     });
-    expect(screen.getByText('Total Videos')).toBeTruthy();
-    expect(screen.getByText('Total Captions')).toBeTruthy();
-    expect(screen.getByText('Total Burned')).toBeTruthy();
+    expect(screen.getByText('Videos Generated')).toBeTruthy();
+    expect(screen.getByText('Captions Scraped')).toBeTruthy();
+    expect(screen.getByText('Videos Burned')).toBeTruthy();
   });
 
   it('shows empty-state when no projects are returned', async () => {

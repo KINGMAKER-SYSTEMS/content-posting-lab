@@ -18,14 +18,12 @@ OUTPUT_DIR.mkdir(exist_ok=True)
 # ---------------------------------------------------------------------------
 API_KEYS = {
     "xai": os.getenv("XAI_API_KEY"),
-    "fal": os.getenv("FAL_KEY"),
-    "luma": os.getenv("LUMA_API_KEY"),
     "replicate": os.getenv("REPLICATE_API_TOKEN"),
     "openai": os.getenv("OPENAI_API_KEY"),
 }
 
 # Providers that always output 16:9 regardless of aspect_ratio setting
-FORCE_LANDSCAPE = {"rep-minimax"}
+FORCE_LANDSCAPE = {"hailuo"}
 
 
 async def download_video(client: httpx.AsyncClient, url: str, dest: Path):
@@ -79,6 +77,7 @@ async def generate_one(
     jobs: dict,
     output_dir: Path | None = None,
     url_prefix: str = "/output",
+    **extra,
 ):
     """Orchestrate a single video generation: call provider, download, crop.
 
@@ -110,17 +109,8 @@ async def generate_one(
                 "image_data_uri": image_data_uri,
                 "entry": entry,
                 "model_id": provider_info["models"][0],
+                **extra,
             }
-
-            if provider == "sora":
-                filename = f"{job_id}_{index}.mp4"
-                dest = sub_dir / filename
-                params["dest"] = dest
-                await mod.generate(prompt, params, client)
-                entry["status"] = "done"
-                entry["file"] = f"{rel_dir}/{filename}"
-                entry["url"] = f"{url_prefix}/{rel_dir}/{filename}"
-                return
 
             video_url = await mod.generate(prompt, params, client)
 

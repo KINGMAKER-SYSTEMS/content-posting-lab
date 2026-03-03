@@ -39,6 +39,7 @@ def _video_id(url: str) -> str:
 
 # ── Pipeline (no browser) ────────────────────────────────────────────
 
+
 async def _run_pipeline(job_id: str, profile_url: str, max_videos: int, sort: str):
     from scraper.frame_extractor import list_profile_videos, get_thumbnail
     from scraper.caption_extractor import extract_caption
@@ -58,44 +59,74 @@ async def _run_pipeline(job_id: str, profile_url: str, max_videos: int, sort: st
 
     try:
         # Phase 1: List video URLs via yt-dlp (no browser)
-        await _broadcast(job_id, "status", {"text": f"Listing videos for @{username}..."})
-        video_urls = await list_profile_videos(profile_url, max_videos)
+        await _broadcast(
+            job_id, "status", {"text": f"Listing videos for @{username}..."}
+        )
+        video_urls = await list_profile_videos(profile_url, max_videos, sort)
         total = len(video_urls)
 
         await _broadcast(job_id, "urls_collected", {"count": total, "urls": video_urls})
 
         if total == 0:
-            await _broadcast(job_id, "all_complete", {"results": [], "csv": None, "username": username})
+            await _broadcast(
+                job_id,
+                "all_complete",
+                {"results": [], "csv": None, "username": username},
+            )
             return
 
-        results: list[dict] = [None] * total
+        results: list[dict | None] = [None] * total
 
         # Phase 2: Download + extract frames (concurrent, batches of 5)
         DOWNLOAD_BATCH = 5
 
         async def _download_one(i: int, url: str):
             vid = _video_id(url)
-            row = {"index": i, "video_url": url, "video_id": vid,
-                   "frame_path": None, "caption": None, "error": None}
+            row = {
+                "index": i,
+                "video_url": url,
+                "video_id": vid,
+                "frame_path": None,
+                "caption": None,
+                "error": None,
+            }
             try:
-                await _broadcast(job_id, "downloading", {"index": i, "total": total, "video_id": vid})
+                await _broadcast(
+                    job_id, "downloading", {"index": i, "total": total, "video_id": vid}
+                )
                 thumb_path = frames_dir / f"{vid}.jpg"
                 await get_thumbnail(url, thumb_path)
                 row["frame_path"] = str(thumb_path)
                 b64 = base64.b64encode(thumb_path.read_bytes()).decode()
-                await _broadcast(job_id, "frame_ready", {
-                    "index": i, "total": total, "video_id": vid,
-                    "b64": b64, "video_url": url,
-                })
+                await _broadcast(
+                    job_id,
+                    "frame_ready",
+                    {
+                        "index": i,
+                        "total": total,
+                        "video_id": vid,
+                        "b64": b64,
+                        "video_url": url,
+                    },
+                )
             except Exception as e:
                 row["error"] = str(e)
-                await _broadcast(job_id, "frame_error", {
-                    "index": i, "total": total, "video_id": vid, "error": str(e),
-                })
+                await _broadcast(
+                    job_id,
+                    "frame_error",
+                    {
+                        "index": i,
+                        "total": total,
+                        "video_id": vid,
+                        "error": str(e),
+                    },
+                )
             results[i] = row
 
         for batch_start in range(0, total, DOWNLOAD_BATCH):
-            batch = list(enumerate(video_urls))[batch_start:batch_start + DOWNLOAD_BATCH]
+            batch = list(enumerate(video_urls))[
+                batch_start : batch_start + DOWNLOAD_BATCH
+            ]
             await asyncio.gather(*[_download_one(i, url) for i, url in batch])
 
         # Phase 3: GPT-4o vision caption extraction (concurrent, batches of 10)
@@ -105,14 +136,27 @@ async def _run_pipeline(job_id: str, profile_url: str, max_videos: int, sort: st
         async def _ocr_one(row: dict):
             i = row["index"]
             if row["error"] or not row["frame_path"]:
-                await _broadcast(job_id, "ocr_done", {
-                    "index": i, "total": total, "video_id": row["video_id"],
-                    "caption": "", "error": row["error"],
-                })
+                await _broadcast(
+                    job_id,
+                    "ocr_done",
+                    {
+                        "index": i,
+                        "total": total,
+                        "video_id": row["video_id"],
+                        "caption": "",
+                        "error": row["error"],
+                    },
+                )
                 return
-            await _broadcast(job_id, "ocr_started", {
-                "index": i, "total": total, "video_id": row["video_id"],
-            })
+            await _broadcast(
+                job_id,
+                "ocr_started",
+                {
+                    "index": i,
+                    "total": total,
+                    "video_id": row["video_id"],
+                },
+            )
             try:
                 frame_bytes = Path(row["frame_path"]).read_bytes()
                 caption = await extract_caption(frame_bytes)
@@ -120,45 +164,70 @@ async def _run_pipeline(job_id: str, profile_url: str, max_videos: int, sort: st
             except Exception as e:
                 row["error"] = str(e)
                 caption = ""
-            await _broadcast(job_id, "ocr_done", {
-                "index": i, "total": total, "video_id": row["video_id"],
-                "caption": caption, "error": row.get("error"),
-            })
+            await _broadcast(
+                job_id,
+                "ocr_done",
+                {
+                    "index": i,
+                    "total": total,
+                    "video_id": row["video_id"],
+                    "caption": caption,
+                    "error": row.get("error"),
+                },
+            )
 
         for batch_start in range(0, total, OCR_BATCH):
-            batch = results[batch_start:batch_start + OCR_BATCH]
+            batch = results[batch_start : batch_start + OCR_BATCH]
             await asyncio.gather(*[_ocr_one(row) for row in batch if row])
 
         # Write CSV
         csv_path = job_dir / "captions.csv"
         with open(csv_path, "w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=["video_id", "video_url", "caption", "error"])
+            writer = csv.DictWriter(
+                f, fieldnames=["video_id", "video_url", "caption", "error"]
+            )
             writer.writeheader()
             for row in results:
-                writer.writerow({
-                    "video_id": row["video_id"],
-                    "video_url": row["video_url"],
-                    "caption": row.get("caption", ""),
-                    "error": row.get("error", ""),
-                })
+                if row is None:
+                    continue
+                writer.writerow(
+                    {
+                        "video_id": row["video_id"],
+                        "video_url": row["video_url"],
+                        "caption": row.get("caption", ""),
+                        "error": row.get("error", ""),
+                    }
+                )
 
-        await _broadcast(job_id, "all_complete", {
-            "results": [
-                {"index": r["index"], "video_id": r["video_id"], "video_url": r["video_url"],
-                 "caption": r.get("caption", ""), "error": r.get("error")}
-                for r in results
-            ],
-            "csv": str(csv_path),
-            "username": username,
-        })
+        await _broadcast(
+            job_id,
+            "all_complete",
+            {
+                "results": [
+                    {
+                        "index": r["index"],
+                        "video_id": r["video_id"],
+                        "video_url": r["video_url"],
+                        "caption": r.get("caption", ""),
+                        "error": r.get("error"),
+                    }
+                    for r in results
+                    if r is not None
+                ],
+                "csv": str(csv_path),
+                "username": username,
+            },
+        )
 
     except Exception as e:
         import traceback
+
         traceback.print_exc()
         await _broadcast(job_id, "error", {"error": str(e)})
 
 
 # ── WebSocket endpoint ────────────────────────────────────────────────
+
 
 @app.websocket("/ws/{job_id}")
 async def websocket_endpoint(ws: WebSocket, job_id: str):
@@ -169,12 +238,14 @@ async def websocket_endpoint(ws: WebSocket, job_id: str):
             raw = await ws.receive_text()
             msg = json.loads(raw)
             if msg.get("action") == "start":
-                asyncio.create_task(_run_pipeline(
-                    job_id,
-                    msg["profile_url"],
-                    min(max(1, msg.get("max_videos", 20)), 50),
-                    msg.get("sort", "latest"),
-                ))
+                asyncio.create_task(
+                    _run_pipeline(
+                        job_id,
+                        msg["profile_url"],
+                        min(max(1, msg.get("max_videos", 20)), 50),
+                        msg.get("sort", "latest"),
+                    )
+                )
     except WebSocketDisconnect:
         pass
     finally:
@@ -187,6 +258,7 @@ async def websocket_endpoint(ws: WebSocket, job_id: str):
 async def export_csv(username: str):
     from fastapi.responses import FileResponse
     from fastapi import HTTPException
+
     csv_path = OUTPUT_DIR / username / "captions.csv"
     if not csv_path.exists():
         raise HTTPException(404, "CSV not found")
