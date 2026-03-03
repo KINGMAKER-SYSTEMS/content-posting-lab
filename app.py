@@ -28,6 +28,9 @@ CORS_ORIGINS = [
     "http://127.0.0.1:5173",
     "http://127.0.0.1:8000",
 ]
+_extra_origins = os.getenv("CORS_ORIGINS", "")
+if _extra_origins:
+    CORS_ORIGINS.extend([o.strip() for o in _extra_origins.split(",") if o.strip()])
 
 
 def _check_command(command: list[str]) -> bool:
@@ -171,4 +174,5 @@ if FRONTEND_DIR.exists():
 
 
 if __name__ == "__main__":
-    uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=False)
+    port = int(os.getenv("PORT", "8000"))
+    uvicorn.run("app:app", host="0.0.0.0", port=port, reload=False)
