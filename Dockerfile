@@ -34,4 +34,4 @@ COPY --from=frontend-build /app/frontend/dist ./frontend/dist
 
 # Railway injects PORT at runtime
 EXPOSE 8000
-CMD uvicorn app:app --host 0.0.0.0 --port ${PORT:-8000}
+CMD ["python", "main.py"]
