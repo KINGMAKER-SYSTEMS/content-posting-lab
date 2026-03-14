@@ -48,6 +48,60 @@ async def _send(job_id: str, event: str, data: dict):
         clients.remove(ws)
 
 
+async def _generate_thumbnail(video_path: Path, thumb_path: Path, seek: float = -1) -> bool:
+    """Extract a single JPEG frame for use as a poster/thumbnail.
+
+    Uses -ss after -i for accurate frame-level seeking.
+    Tries multiple seek points to avoid blank intro frames.
+    """
+    # Get duration to calculate smart seek points
+    duration = 0.0
+    if seek < 0:
+        try:
+            info = await _get_video_info(video_path)
+            duration = info.get("duration", 0)
+        except Exception:
+            pass
+
+    # Try multiple seek points: 10%, 2s, 5s, 0.5s
+    if seek >= 0:
+        seek_points = [seek]
+    elif duration > 0:
+        seek_points = [duration * 0.1, 2.0, 5.0, 0.5]
+        seek_points = [s for s in seek_points if s < duration]
+        if not seek_points:
+            seek_points = [0.1]
+    else:
+        seek_points = [2.0, 0.5, 0.1]
+
+    min_thumb_size = 2000  # bytes — below this likely a blank/black frame
+
+    for sp in seek_points:
+        proc = await asyncio.create_subprocess_exec(
+            "ffmpeg", "-y",
+            "-i", str(video_path),
+            "-ss", f"{sp:.3f}",
+            "-vframes", "1",
+            "-q:v", "3",
+            "-vf", "scale=270:480:force_original_aspect_ratio=decrease",
+            str(thumb_path),
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await proc.communicate()
+        if proc.returncode == 0 and thumb_path.exists():
+            if thumb_path.stat().st_size >= min_thumb_size:
+                return True
+            log.debug("thumbnail at %.1fs too small (%d bytes), trying next seek",
+                      sp, thumb_path.stat().st_size)
+
+    # Accept whatever we got even if small
+    if thumb_path.exists():
+        return True
+    log.warning("thumbnail failed for %s: %s", video_path, stderr.decode(errors="replace")[-200:])
+    return False
+
+
 async def _faststart(mp4_path: Path) -> None:
     """Move moov atom to front of mp4 for instant browser playback/seeking."""
     tmp = mp4_path.with_suffix(".faststart.mp4")
@@ -471,12 +525,18 @@ async def upload_batch(
             log.error("probe failed for %s: %s", file.filename, e)
             info = {"duration": 0, "width": 0, "height": 0}
 
+        # Generate thumbnail
+        thumb_name = f"thumb_{i:03d}.jpg"
+        thumb_path = staging_dir / thumb_name
+        await _generate_thumbnail(dest, thumb_path)
+
         sanitized = sanitize_project_name(project)
         results.append({
             "index": i,
             "original_name": file.filename,
             "path": str(dest),
             "url": f"/projects/{sanitized}/clips/_staging_{batch_id}/{safe_name}",
+            "thumb_url": f"/projects/{sanitized}/clips/_staging_{batch_id}/{thumb_name}",
             "duration": info["duration"],
             "width": info["width"],
             "height": info["height"],
@@ -511,6 +571,10 @@ async def download_url(body: dict):
     except Exception:
         info = {"duration": 0, "width": 0, "height": 0}
 
+    # Generate thumbnail
+    thumb_path = staging_dir / "thumb_000.jpg"
+    await _generate_thumbnail(dest, thumb_path)
+
     sanitized = sanitize_project_name(project)
     return {
         "batch_id": batch_id,
@@ -519,6 +583,7 @@ async def download_url(body: dict):
             "original_name": video_url.split("/")[-1].split("?")[0] or "video.mp4",
             "path": str(dest),
             "url": f"/projects/{sanitized}/clips/_staging_{batch_id}/src_000.mp4",
+            "thumb_url": f"/projects/{sanitized}/clips/_staging_{batch_id}/thumb_000.jpg",
             "duration": info["duration"],
             "width": info["width"],
             "height": info["height"],
@@ -596,6 +661,108 @@ async def trim_batch(body: dict):
         "clips": results,
         "ok_count": sum(1 for r in results if r.get("ok")),
         "total": len(results),
+    }
+
+
+@router.post("/process-batch")
+async def process_batch(body: dict):
+    """Process staged videos: apply trims, split into clips of desired length.
+
+    Body: {
+        "project": "...",
+        "batch_id": "...",
+        "clip_length": 7.0,
+        "sources": [
+            {"path": "...", "trim_start": 0.0, "trim_end": 30.0, "original_name": "..."}
+        ]
+    }
+    """
+    import math
+
+    project = body.get("project", "quick-test")
+    batch_id = body.get("batch_id", "")
+    clip_length = float(body.get("clip_length", 7))
+    sources = body.get("sources", [])
+
+    if not sources:
+        raise HTTPException(400, "No sources provided")
+    if clip_length < 1:
+        raise HTTPException(400, "clip_length must be >= 1 second")
+
+    clipper_dir = _get_clipper_dir(project)
+    job_id = uuid.uuid4().hex[:12]
+    job_dir = clipper_dir / job_id
+    job_dir.mkdir(parents=True, exist_ok=True)
+
+    sanitized = sanitize_project_name(project)
+    results: list[dict] = []
+    clip_counter = 0
+
+    for src_idx, src in enumerate(sources):
+        source = Path(src["path"])
+        if not source.exists():
+            results.append({"index": clip_counter, "ok": False, "error": f"Source {src_idx} not found"})
+            clip_counter += 1
+            continue
+
+        trim_start = float(src.get("trim_start", 0))
+        trim_end = float(src.get("trim_end", 0))
+        trim_duration = trim_end - trim_start
+
+        if trim_duration < 0.5:
+            results.append({"index": clip_counter, "ok": False, "error": f"Source {src_idx} trim too short"})
+            clip_counter += 1
+            continue
+
+        # Probe source dimensions
+        try:
+            info = await _get_video_info(source)
+        except Exception:
+            info = {"width": 1080, "height": 1920}
+
+        # Calculate how many clips from this source
+        num_clips = max(1, math.floor(trim_duration / clip_length))
+        actual_clip_len = min(clip_length, trim_duration)
+
+        log.info("process source %d: %.1fs trimmed → %d clips of %.1fs",
+                 src_idx, trim_duration, num_clips, actual_clip_len)
+
+        for c in range(num_clips):
+            clip_counter += 1
+            clip_start = trim_start + c * actual_clip_len
+            clip_name = f"clip_{clip_counter:03d}.mp4"
+            clip_path = job_dir / clip_name
+
+            ok = await _clip_segment(
+                source, clip_path, clip_start, actual_clip_len,
+                info["width"], info["height"],
+            )
+
+            # Generate thumbnail for output clip
+            thumb_name = f"thumb_{clip_counter:03d}.jpg"
+            thumb_path = job_dir / thumb_name
+            if ok:
+                await _generate_thumbnail(clip_path, thumb_path)
+
+            results.append({
+                "index": clip_counter - 1,
+                "name": clip_name,
+                "source_name": src.get("original_name", f"source_{src_idx}"),
+                "ok": ok,
+                "url": f"/projects/{sanitized}/clips/{job_id}/{clip_name}" if ok else None,
+                "thumb_url": f"/projects/{sanitized}/clips/{job_id}/{thumb_name}" if ok else None,
+                "start": round(clip_start, 2),
+                "duration": round(actual_clip_len, 2),
+            })
+            log.info("  clip %d: %.1f+%.1fs → %s (%s)",
+                     clip_counter, clip_start, actual_clip_len, clip_name, "ok" if ok else "FAIL")
+
+    return {
+        "job_id": job_id,
+        "clips": results,
+        "ok_count": sum(1 for r in results if r.get("ok")),
+        "total": len(results),
+        "clip_length": clip_length,
     }
 
 
@@ -769,6 +936,11 @@ async def list_clipper_jobs(project: str = Query(default="quick-test")):
                 {
                     "name": c.name,
                     "url": f"/projects/{sanitized}/clips/{job_dir.name}/{c.name}",
+                    "thumb_url": f"/projects/{sanitized}/clips/{job_dir.name}/{c.stem}_thumb.jpg"
+                        if (job_dir / f"{c.stem}_thumb.jpg").exists()
+                        else f"/projects/{sanitized}/clips/{job_dir.name}/thumb_{c.stem.split('_')[-1]}.jpg"
+                        if (job_dir / f"thumb_{c.stem.split('_')[-1]}.jpg").exists()
+                        else None,
                 }
                 for c in clips
             ],
