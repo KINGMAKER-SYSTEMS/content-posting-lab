@@ -158,11 +158,12 @@ async def generate(prompt: str, params: dict, client: httpx.AsyncClient) -> str:
                 return output[0]
             raise RuntimeError(f"Replicate unexpected output: {output}")
         if status in ("failed", "canceled"):
+            err = data.get("error") or data.get("logs") or "unknown error (no details from API)"
             raise RuntimeError(
-                f"Replicate {status}: {data.get('error', 'unknown')}"
+                f"Replicate {status}: {err}"
             )
         await asyncio.sleep(5)
-    raise RuntimeError("Replicate generation timed out")
+    raise RuntimeError(f"Replicate generation timed out after 600s (prediction {pred_id})")
 
 
 async def _poll_prediction(

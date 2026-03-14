@@ -31,6 +31,16 @@ export default defineConfig({
         changeOrigin: true,
         ws: true,
       },
+      '/api/recreate/ws': {
+        target: 'http://localhost:8000',
+        changeOrigin: true,
+        ws: true,
+      },
+      '/api/clipper/ws': {
+        target: 'http://localhost:8000',
+        changeOrigin: true,
+        ws: true,
+      },
       '/api': {
         target: 'http://localhost:8000',
         changeOrigin: true,

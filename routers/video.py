@@ -27,6 +27,65 @@ def _prompts_path(project: str) -> Path:
     return PROJECTS_DIR / project / "prompts.json"
 
 
+def _jobs_path(project: str) -> Path:
+    return PROJECTS_DIR / project / "jobs.json"
+
+
+def _save_jobs(project: str) -> None:
+    """Persist active jobs for this project to disk."""
+    project_jobs = {jid: j for jid, j in jobs.items() if j.get("project") == project}
+    if not project_jobs:
+        return
+    p = _jobs_path(project)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        p.write_text(json.dumps(project_jobs, indent=2), encoding="utf-8")
+    except OSError:
+        pass
+
+
+_TERMINAL_STATUSES = {"done", "error"}
+
+
+def _load_jobs(project: str) -> None:
+    """Load persisted jobs from disk into the in-memory dict.
+
+    Videos stuck in non-terminal states (generating, downloading, cropping, polling)
+    are marked as done-with-crops if crop files exist on disk, or as error otherwise.
+    This handles server restarts that kill in-flight async tasks.
+    """
+    p = _jobs_path(project)
+    if not p.exists():
+        return
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+        for jid, job in data.items():
+            if jid not in jobs:
+                # Fix stuck videos from previous server session
+                for v in job.get("videos", []):
+                    if v.get("status") not in _TERMINAL_STATUSES:
+                        # Check if crop files landed on disk before the crash
+                        if v.get("crops"):
+                            v["status"] = "done"
+                        elif v.get("file"):
+                            v["status"] = "done"
+                        else:
+                            v["status"] = "error"
+                            v["error"] = "Server restarted during processing"
+                jobs[jid] = job
+    except (json.JSONDecodeError, OSError):
+        pass
+
+
+def _persist_job(job_id: str) -> None:
+    """Callback for generate_one — write job state to disk on completion."""
+    job = jobs.get(job_id)
+    if not job:
+        return
+    project = job.get("project", "quick-test")
+    _save_jobs(project)
+
+
 def _read_prompts(project: str) -> list[dict]:
     p = _prompts_path(project)
     if not p.exists():
@@ -74,6 +133,7 @@ PROVIDER_SCHEMAS: dict[str, dict] = {
     "hailuo": {
         "duration": {"type": "select", "options": [6, 10], "default": 6, "label": "Duration (seconds)", "note": "10s only at 768p"},
         "resolution": {"type": "select", "options": ["768p", "1080p"], "default": "768p", "label": "Resolution", "note": "1080p locks duration to 6s"},
+        "crop_mode": {"type": "select", "options": ["none", "dual", "triptych", "both"], "default": "both", "label": "Multi-Crop", "note": "dual=2, triptych=3, both=5 crops from one 16:9"},
         "optimize_prompt": {"type": "toggle", "default": True, "label": "Prompt Optimizer"},
     },
     "wan-t2v": {
@@ -135,6 +195,22 @@ async def clear_prompts(project: str = "quick-test"):
     return {"ok": True}
 
 
+@router.delete("/file")
+async def delete_video_file(project: str = "quick-test", path: str = ""):
+    """Delete a single video file from a project's videos directory."""
+    if not path:
+        raise HTTPException(400, "path is required")
+    video_dir = get_project_video_dir(project)
+    target = (video_dir / path).resolve()
+    # Prevent path traversal
+    if not str(target).startswith(str(video_dir.resolve())):
+        raise HTTPException(400, "Invalid path")
+    if not target.exists():
+        raise HTTPException(404, "File not found")
+    target.unlink()
+    return {"deleted": True, "path": path}
+
+
 @router.post("/generate")
 async def generate_video(
     prompt: str = Form(...),
@@ -158,6 +234,7 @@ async def generate_video(
     lora_scale_transformer: float | None = Form(None),
     lora_weights_transformer_2: str | None = Form(None),
     lora_scale_transformer_2: float | None = Form(None),
+    crop_mode: str | None = Form(None),
 ):
     if provider not in PROVIDERS:
         raise HTTPException(status_code=400, detail=f"Unknown provider: {provider}")
@@ -199,6 +276,7 @@ async def generate_video(
         ("lora_scale_transformer", lora_scale_transformer),
         ("lora_weights_transformer_2", lora_weights_transformer_2),
         ("lora_scale_transformer_2", lora_scale_transformer_2),
+        ("crop_mode", crop_mode),
     ]:
         if val is not None:
             extra[key] = val
@@ -238,6 +316,7 @@ async def generate_video(
                 job_id, i, provider, prompt,
                 aspect_ratio, resolution, duration, image_data_uri,
                 jobs, output_dir, url_prefix,
+                on_complete=_persist_job,
                 **extra,
             )
         )
@@ -246,14 +325,20 @@ async def generate_video(
 
 
 @router.get("/jobs")
-async def list_jobs():
-    return list(jobs.values())
+async def list_jobs(project: str = "quick-test"):
+    _load_jobs(project)
+    return [j for j in jobs.values() if j.get("project") == project]
 
 
 @router.get("/jobs/{job_id}")
 async def get_job(job_id: str):
     if job_id not in jobs:
-        raise HTTPException(status_code=404, detail="Job not found")
+        # Try loading from all projects
+        for proj_dir in PROJECTS_DIR.iterdir():
+            if proj_dir.is_dir():
+                _load_jobs(proj_dir.name)
+        if job_id not in jobs:
+            raise HTTPException(status_code=404, detail="Job not found")
     return jobs[job_id]
 
 

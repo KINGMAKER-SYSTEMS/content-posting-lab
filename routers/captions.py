@@ -20,12 +20,14 @@ _ws_clients: dict[str, list[WebSocket]] = {}
 
 async def _broadcast(job_id: str, event: str, data: dict):
     clients = _ws_clients.get(job_id, [])
+    print(f"[captions] _broadcast({job_id[:8]}): event={event}, clients={len(clients)}", flush=True)
     msg = json.dumps({"event": event, **data})
     dead: list[WebSocket] = []
     for ws in clients:
         try:
             await ws.send_text(msg)
-        except Exception:
+        except Exception as e:
+            print(f"[captions] _broadcast send failed: {e}", flush=True)
             dead.append(ws)
     for ws in dead:
         clients.remove(ws)
@@ -48,6 +50,7 @@ async def _run_pipeline(
 ):
     from scraper.frame_extractor import list_profile_videos, get_thumbnail
     from scraper.caption_extractor import extract_caption
+    from scraper.sentiment_analyzer import analyze_mood
 
     # Normalize URL
     pu = profile_url.strip()
@@ -97,6 +100,7 @@ async def _run_pipeline(
                 "video_id": vid,
                 "frame_path": None,
                 "caption": None,
+                "mood": None,
                 "error": None,
             }
             try:
@@ -119,6 +123,7 @@ async def _run_pipeline(
                     },
                 )
             except Exception as e:
+                print(f"[captions] thumbnail failed for {vid}: {e}", flush=True)
                 row["error"] = str(e)
                 await _broadcast(
                     job_id,
@@ -138,8 +143,8 @@ async def _run_pipeline(
             ]
             await asyncio.gather(*[_download_one(i, url) for i, url in batch])
 
-        # Phase 3: GPT-4o vision caption extraction (concurrent, batches of 10)
-        OCR_BATCH = 10
+        # Phase 3: GPT-4.1 vision caption extraction (concurrent, small batches to avoid rate limits)
+        OCR_BATCH = 3
         await _broadcast(job_id, "ocr_starting", {"total": total})
 
         async def _ocr_one(row: dict):
@@ -170,7 +175,18 @@ async def _run_pipeline(
                 frame_bytes = Path(row["frame_path"]).read_bytes()
                 caption = await extract_caption(frame_bytes)
                 row["caption"] = caption
+                # Analyze mood/sentiment if caption was extracted
+                if caption.strip():
+                    try:
+                        mood = await analyze_mood(caption)
+                        row["mood"] = mood
+                    except Exception as me:
+                        print(f"[captions] mood analysis failed for {row['video_id']}: {me}", flush=True)
+                        row["mood"] = "chill"
+                else:
+                    row["mood"] = None
             except Exception as e:
+                print(f"[captions] OCR failed for {row['video_id']}: {e}", flush=True)
                 row["error"] = str(e)
                 caption = ""
             await _broadcast(
@@ -181,6 +197,7 @@ async def _run_pipeline(
                     "total": total,
                     "video_id": row["video_id"],
                     "caption": caption,
+                    "mood": row.get("mood"),
                     "error": row.get("error"),
                 },
             )
@@ -193,7 +210,7 @@ async def _run_pipeline(
         csv_path = job_dir / "captions.csv"
         with open(csv_path, "w", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(
-                f, fieldnames=["video_id", "video_url", "caption", "error"]
+                f, fieldnames=["video_id", "video_url", "caption", "mood", "error"]
             )
             writer.writeheader()
             for row in results:
@@ -203,6 +220,7 @@ async def _run_pipeline(
                             "video_id": row["video_id"],
                             "video_url": row["video_url"],
                             "caption": row.get("caption", ""),
+                            "mood": row.get("mood", ""),
                             "error": row.get("error", ""),
                         }
                     )
@@ -217,6 +235,7 @@ async def _run_pipeline(
                         "video_id": r["video_id"],
                         "video_url": r["video_url"],
                         "caption": r.get("caption", ""),
+                        "mood": r.get("mood"),
                         "error": r.get("error"),
                     }
                     for r in results
@@ -241,12 +260,14 @@ async def _run_pipeline(
 async def websocket_scrape(ws: WebSocket, job_id: str):
     """WebSocket endpoint for real-time caption scraping progress."""
     await ws.accept()
+    print(f"[captions] WS connected: {job_id[:8]}", flush=True)
     _ws_clients.setdefault(job_id, []).append(ws)
     try:
         while True:
             raw = await ws.receive_text()
             msg = json.loads(raw)
             if msg.get("action") == "start":
+                print(f"[captions] start: profile={msg.get('profile_url', '')[:60]}, max={msg.get('max_videos')}", flush=True)
                 asyncio.create_task(
                     _run_pipeline(
                         job_id,
@@ -257,7 +278,7 @@ async def websocket_scrape(ws: WebSocket, job_id: str):
                     )
                 )
     except WebSocketDisconnect:
-        pass
+        print(f"[captions] WS disconnected: {job_id[:8]}", flush=True)
     finally:
         clients = _ws_clients.get(job_id, [])
         if ws in clients:

@@ -14,9 +14,12 @@ from project_manager import PROJECTS_DIR, ensure_default_project
 from providers import PROVIDERS
 from providers.base import API_KEYS
 from routers.burn import router as burn_router
+from routers.caption_bank import router as caption_bank_router
 from routers.captions import router as captions_router
+from routers.clipper import router as clipper_router
 from routers.projects import list_all_projects, router as projects_router
 from routers.recreate import router as recreate_router
+from routers.postiz import router as postiz_router
 from routers.video import router as video_router
 
 load_dotenv()
@@ -75,10 +78,17 @@ def _provider_status() -> dict[str, bool]:
 
 
 def _log_startup_validation(ffmpeg_ok: bool, ytdlp_ok: bool):
-    print("✓ Content Posting Lab starting...")
-    print(f"  ffmpeg: {'ok' if ffmpeg_ok else 'missing'}")
-    print(f"  yt-dlp: {'ok' if ytdlp_ok else 'missing'}")
-    print(f"  api keys: {_api_key_status()}")
+    print("✓ Content Posting Lab starting...", flush=True)
+    print(f"  ffmpeg: {'ok' if ffmpeg_ok else 'missing'}", flush=True)
+    print(f"  yt-dlp: {'ok' if ytdlp_ok else 'missing'}", flush=True)
+    print(f"  api keys: {_api_key_status()}", flush=True)
+    # Debug: log key lengths to catch whitespace/truncation issues
+    for name in ("XAI_API_KEY", "REPLICATE_API_TOKEN", "OPENAI_API_KEY"):
+        val = os.getenv(name, "")
+        if val:
+            print(f"  {name}: len={len(val)}, starts={val[:10]}..., ends=...{val[-4:]}", flush=True)
+        else:
+            print(f"  {name}: NOT SET", flush=True)
 
 
 @asynccontextmanager
@@ -117,6 +127,9 @@ app.include_router(captions_router, prefix="/api/captions", tags=["captions"])
 app.include_router(burn_router, prefix="/api/burn", tags=["burn"])
 app.include_router(projects_router, prefix="/api/projects", tags=["projects"])
 app.include_router(recreate_router, prefix="/api/recreate", tags=["recreate"])
+app.include_router(caption_bank_router, prefix="/api/caption-bank", tags=["caption-bank"])
+app.include_router(clipper_router, prefix="/api/clipper", tags=["clipper"])
+app.include_router(postiz_router, prefix="/api/postiz", tags=["postiz"])
 
 
 @app.get("/api/projects", include_in_schema=False)
@@ -134,6 +147,7 @@ async def health_check():
         "ffmpeg": ffmpeg_ok,
         "ytdlp": ytdlp_ok,
         "providers": providers,
+        "postiz": bool(os.getenv("POSTIZ_API_KEY")),
     }
 
 

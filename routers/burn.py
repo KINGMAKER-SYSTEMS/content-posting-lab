@@ -23,6 +23,7 @@ from project_manager import (
     PROJECTS_DIR,
     get_project_burn_dir,
     get_project_caption_dir,
+    get_project_clips_dir,
     get_project_video_dir,
     sanitize_project_name,
 )
@@ -31,27 +32,88 @@ router = APIRouter()
 
 FONT_DIR = BASE_DIR / "fonts"
 
+# Limit concurrent ffmpeg burn processes to avoid resource exhaustion
+_burn_semaphore = asyncio.Semaphore(3)
+
 
 # ── Helpers ──────────────────────────────────────────────────────────
 
 
+def _extract_job_id(filename: str) -> str | None:
+    """Extract the job_id prefix from a generated video filename.
+
+    Filenames follow the pattern: {job_id}_{index}.mp4 or {job_id}_{index}_crop{n}.mp4
+    where job_id is a hex string (8-12 chars).
+    """
+    import re
+    m = re.match(r"^([0-9a-f]{8,12})_\d+", filename)
+    return m.group(1) if m else None
+
+
 def _scan_project_videos(project: str) -> list[dict]:
-    """Recursively find all mp4 files under projects/{name}/videos/."""
+    """Recursively find all mp4 files under projects/{name}/videos/ and clips/.
+
+    Excludes original source videos when multi-crop variants (_crop0, _crop1, …)
+    exist in the same directory, so triptych/dual burns only pick up the crops.
+
+    Groups videos by job run: if a directory contains files from multiple jobs,
+    each job gets its own virtual sub-folder so runs aren't merged in the burn UI.
+    """
     videos = []
     video_dir = get_project_video_dir(project)
-    if not video_dir.exists():
-        return videos
-    for mp4 in sorted(video_dir.rglob("*.mp4")):
-        rel = mp4.relative_to(video_dir)
-        parts = rel.parts
-        folder = str(rel.parent) if len(parts) > 1 else ""
-        videos.append(
-            {
-                "path": str(rel),
-                "name": mp4.name,
-                "folder": folder,
-            }
-        )
+    if video_dir.exists():
+        all_mp4s = sorted(video_dir.rglob("*.mp4"))
+        # Build a set of stems that have crop variants so we can skip the source
+        crop_sources: set[Path] = set()
+        for mp4 in all_mp4s:
+            if "_crop" in mp4.stem:
+                # e.g. "abc_0_crop1" → source stem is "abc_0"
+                base_stem = mp4.stem.rsplit("_crop", 1)[0]
+                crop_sources.add(mp4.parent / f"{base_stem}.mp4")
+
+        # Group files by directory to detect multi-job folders
+        from collections import defaultdict
+        dir_jobs: dict[Path, dict[str, list[Path]]] = defaultdict(lambda: defaultdict(list))
+        kept_mp4s = [mp4 for mp4 in all_mp4s if mp4 not in crop_sources]
+        for mp4 in kept_mp4s:
+            job_id = _extract_job_id(mp4.name)
+            dir_jobs[mp4.parent][job_id or "unknown"].append(mp4)
+
+        for parent_dir, jobs_in_dir in dir_jobs.items():
+            # If only one job in the directory, use the normal folder path
+            # If multiple jobs, append /run_{job_id} to split them
+            multi_job = len(jobs_in_dir) > 1
+            for job_id, mp4s in jobs_in_dir.items():
+                for mp4 in mp4s:
+                    rel = mp4.relative_to(video_dir)
+                    base_folder = str(rel.parent) if len(rel.parts) > 1 else ""
+                    if multi_job and job_id != "unknown":
+                        folder = f"{base_folder}/run_{job_id}" if base_folder else f"run_{job_id}"
+                    else:
+                        folder = base_folder
+                    videos.append(
+                        {
+                            "path": str(rel),
+                            "name": mp4.name,
+                            "folder": folder,
+                        }
+                    )
+
+    # Also include clips — prefixed with "clips/" so the burn resolver can find them
+    clips_dir = get_project_clips_dir(project)
+    if clips_dir.exists():
+        for mp4 in sorted(clips_dir.rglob("clip_*.mp4")):
+            rel = mp4.relative_to(clips_dir)
+            # path = "clips/{job_id}/clip_001.mp4", folder = "clips/{job_id}"
+            prefixed = Path("clips") / rel
+            videos.append(
+                {
+                    "path": str(prefixed),
+                    "name": mp4.name,
+                    "folder": str(prefixed.parent),
+                }
+            )
+
     return videos
 
 
@@ -127,7 +189,7 @@ def _build_filter_complex(color_correction: dict | None = None) -> str:
     We pre-multiply them into one combined matrix.
     """
     if not color_correction:
-        return "[0:v][1:v]overlay=0:0,scale=1080:1920:flags=lanczos,setsar=1"
+        return "[0:v]scale=1080:1920:flags=lanczos,setsar=1[vid];[1:v]scale=1080:1920:flags=lanczos[ovr];[vid][ovr]overlay=0:0"
 
     # Raw slider integers
     b_raw = float(color_correction.get("brightness", 0))
@@ -164,7 +226,7 @@ def _build_filter_complex(color_correction: dict | None = None) -> str:
         and sharpness < 0.001
     )
     if is_default:
-        return "[0:v][1:v]overlay=0:0"
+        return "[0:v]scale=1080:1920:flags=lanczos,setsar=1[vid];[1:v]scale=1080:1920:flags=lanczos[ovr];[vid][ovr]overlay=0:0"
 
     # --- Compose all transforms into one 3x3 matrix + offset ---
     mat = [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
@@ -274,7 +336,7 @@ def _build_filter_complex(color_correction: dict | None = None) -> str:
         filters.append(f"unsharp=5:5:{sharpness:.2f}:5:5:{sharpness:.2f}")
 
     chain = ",".join(filters)
-    return f"[0:v]{chain}[corrected];[corrected][1:v]overlay=0:0,scale=1080:1920:flags=lanczos,setsar=1"
+    return f"[0:v]{chain},scale=1080:1920:flags=lanczos,setsar=1[corrected];[1:v]scale=1080:1920:flags=lanczos[ovr];[corrected][ovr]overlay=0:0"
 
 
 def _build_color_only_filter(color_correction: dict | None) -> str:
@@ -448,22 +510,29 @@ async def _burn_video(
 
         filter_complex = _build_filter_complex(color_correction)
 
-        # TikTok-optimized encode: 1080x1920, 30fps, ~15Mbps H.264 High
+        # TikTok-optimized encode: 1080x1920, 30fps, H.264 High
+        # -crf 16 + slow preset = near-lossless quality for iPhone/HEVC sources
+        # -minrate 8M ensures the encoder doesn't produce low-bitrate output
+        # even for simple scenes — keeps text overlays crisp on re-upload
         tiktok_encode = [
             "-c:v",
             "libx264",
             "-preset",
-            "fast",
+            "slow",
             "-crf",
-            "18",
+            "16",
+            "-minrate",
+            "8M",
             "-maxrate",
-            "15M",
+            "20M",
             "-bufsize",
-            "15M",
+            "20M",
             "-profile:v",
             "high",
             "-level",
             "4.2",
+            "-pix_fmt",
+            "yuv420p",
             "-r",
             "30",
             "-movflags",
@@ -471,7 +540,7 @@ async def _burn_video(
             "-c:a",
             "aac",
             "-b:a",
-            "128k",
+            "192k",
         ]
 
         if overlay_path:
@@ -576,12 +645,18 @@ async def burn_overlay(request: Request):
         batch_dir = burn_dir / batch_id
         batch_dir.mkdir(exist_ok=True)
 
-        video_dir = get_project_video_dir(project)
-        video_abs = str(video_dir / video_rel)
+        # clips/ paths resolve from project root, regular paths from videos/
+        if video_rel.startswith("clips/"):
+            project_dir = PROJECTS_DIR / sanitize_project_name(project)
+            video_abs = str(project_dir / video_rel)
+        else:
+            video_dir = get_project_video_dir(project)
+            video_abs = str(video_dir / video_rel)
         mp4_path = str(batch_dir / f"burned_{idx:03d}.mp4")
 
         if overlay_b64 or color_correction:
-            await _burn_video(video_abs, overlay_b64, mp4_path, color_correction)
+            async with _burn_semaphore:
+                await _burn_video(video_abs, overlay_b64, mp4_path, color_correction)
         else:
             shutil.copy2(video_abs, mp4_path)
 
@@ -675,6 +750,7 @@ async def ws_burn(ws: WebSocket):
       }
     """
     await ws.accept()
+    print(f"[burn] WS connected", flush=True)
     try:
         data = await ws.receive_json()
         project = data.get("project", "quick-test")
@@ -696,7 +772,13 @@ async def ws_burn(ws: WebSocket):
         results = []
 
         for i, pair in enumerate(pairs):
-            video_abs = str(video_dir / pair["videoPath"])
+            vp = pair["videoPath"]
+            # clips/ paths resolve from project root, regular paths from videos/
+            if vp.startswith("clips/"):
+                project_dir = PROJECTS_DIR / sanitize_project_name(project)
+                video_abs = str(project_dir / vp)
+            else:
+                video_abs = str(video_dir / vp)
             overlay_png = pair.get("overlayPng")  # base64 PNG from browser canvas
             color_correction = pair.get("colorCorrection")
             out_name = f"burned_{i:03d}.mp4"
@@ -729,6 +811,7 @@ async def ws_burn(ws: WebSocket):
                     }
                 )
             except Exception as e:
+                print(f"[burn] burn failed for pair {i}: {e}", flush=True)
                 results.append(
                     {
                         "index": i,
@@ -757,8 +840,9 @@ async def ws_burn(ws: WebSocket):
         )
 
     except WebSocketDisconnect:
-        pass
+        print(f"[burn] WS disconnected", flush=True)
     except Exception as e:
+        print(f"[burn] WS pipeline error: {e}", flush=True)
         try:
             await ws.send_json({"event": "error", "error": str(e)})
         except Exception:

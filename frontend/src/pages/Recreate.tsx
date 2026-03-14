@@ -136,6 +136,7 @@ export function RecreatePage() {
   });
 
   const handleMessage = useCallback((data: RecreateWSMessage) => {
+    console.log('[recreate] WS event:', data.event, data);
     switch (data.event) {
       case 'downloading':
         addLog(`Downloading video${data.video_id ? ` (${data.video_id})` : ''}...`);
@@ -151,6 +152,8 @@ export function RecreatePage() {
         break;
       case 'frames_ready':
         addLog('Frames extracted');
+        console.log('[recreate] frames_ready: first_frame=%d chars, last_frame=%d chars',
+          data.first_frame?.length ?? 0, data.last_frame?.length ?? 0);
         setFrames((prev) => ({
           ...prev,
           firstOriginal: data.first_frame || data.first_original || null,
@@ -163,6 +166,8 @@ export function RecreatePage() {
         break;
       case 'text_removed':
         addLog('Text removal complete');
+        console.log('[recreate] text_removed: first_clean=%d chars, last_clean=%d chars',
+          data.first_clean?.length ?? 0, data.last_clean?.length ?? 0);
         setFrames((prev) => ({
           ...prev,
           firstClean: data.first_clean || null,
@@ -175,6 +180,8 @@ export function RecreatePage() {
         break;
       case 'complete':
         addLog('Pipeline complete');
+        console.log('[recreate] complete: first_clean=%d chars, last_clean=%d chars',
+          data.first_clean?.length ?? 0, data.last_clean?.length ?? 0);
         pipelineCompleteRef.current = true;
         clearStartPayload();
         setRunning(false);
@@ -198,6 +205,7 @@ export function RecreatePage() {
         break;
       case 'error':
         addLog(`Error: ${data.error || data.message || 'Unknown error'}`);
+        console.error('[recreate] pipeline error:', data.error || data.message);
         pipelineCompleteRef.current = true;
         clearStartPayload();
         setRunning(false);
@@ -554,29 +562,39 @@ export function RecreatePage() {
               <CardContent className="p-0">
                 <div className="px-4 py-3 border-b-2 border-border flex items-center justify-between">
                   <span className="text-sm font-bold text-foreground">Generate Video Prompt</span>
-                  <Badge variant="info" className="text-[10px]">GPT-4.1 Vision</Badge>
+                  <Badge variant="info" className="text-[10px]">GPT-4o Vision</Badge>
                 </div>
                 <div className="p-4 space-y-3">
                   {generatedPrompt === null ? (
                     <Button
                       onClick={async () => {
                         setPromptLoading(true);
+                        const bodyPayload = {
+                          first_frame: frames.firstClean,
+                          last_frame: frames.lastClean,
+                        };
+                        const bodyStr = JSON.stringify(bodyPayload);
+                        console.log('[recreate] generate-prompt: sending request',
+                          { first_frame_len: frames.firstClean?.length ?? 0, last_frame_len: frames.lastClean?.length ?? 0, body_size: bodyStr.length });
                         try {
                           const resp = await fetch(apiUrl('/api/recreate/generate-prompt'), {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({
-                              first_frame: frames.firstClean,
-                              last_frame: frames.lastClean,
-                            }),
+                            body: bodyStr,
                           });
+                          console.log('[recreate] generate-prompt: response status=%d', resp.status);
                           if (!resp.ok) {
-                            const err = await resp.json().catch(() => ({ detail: 'Request failed' }));
-                            throw new Error(err.detail || 'Failed to generate prompt');
+                            const text = await resp.text();
+                            console.error('[recreate] generate-prompt: error response:', text.slice(0, 500));
+                            let detail = `Server error (${resp.status})`;
+                            try { detail = JSON.parse(text).detail || detail; } catch { detail = text || detail; }
+                            throw new Error(detail);
                           }
                           const data = await resp.json() as { prompt: string };
+                          console.log('[recreate] generate-prompt: success, prompt=%s', data.prompt?.slice(0, 80));
                           setGeneratedPrompt(data.prompt);
                         } catch (e) {
+                          console.error('[recreate] generate-prompt: FAILED:', e);
                           addNotification('error', e instanceof Error ? e.message : 'Failed to generate prompt');
                         } finally {
                           setPromptLoading(false);
@@ -620,11 +638,16 @@ export function RecreatePage() {
                                   last_frame: frames.lastClean,
                                 }),
                               });
-                              if (!resp.ok) throw new Error('Failed');
+                              if (!resp.ok) {
+                                const text = await resp.text();
+                                let detail = `Server error (${resp.status})`;
+                                try { detail = JSON.parse(text).detail || detail; } catch { detail = text || detail; }
+                                throw new Error(detail);
+                              }
                               const data = await resp.json() as { prompt: string };
                               setGeneratedPrompt(data.prompt);
-                            } catch {
-                              addNotification('error', 'Failed to regenerate prompt');
+                            } catch (e) {
+                              addNotification('error', e instanceof Error ? e.message : 'Failed to regenerate prompt');
                             } finally {
                               setPromptLoading(false);
                             }

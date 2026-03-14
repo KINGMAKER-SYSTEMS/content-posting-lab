@@ -1,8 +1,46 @@
 """Download TikTok videos with yt-dlp and extract frames with ffmpeg."""
 
 import asyncio
+import base64
+import os
 import shutil
+import tempfile
 from pathlib import Path
+
+# ── Cookies support ──────────────────────────────────────────────────
+# If YTDLP_COOKIES env var is set (base64-encoded Netscape cookies.txt),
+# decode it to a temp file on first access.
+_cookies_path: Path | None = None
+
+
+def get_cookies_path() -> Path | None:
+    global _cookies_path
+    if _cookies_path is not None:
+        return _cookies_path if _cookies_path.exists() else None
+    raw = os.getenv("YTDLP_COOKIES")
+    if not raw:
+        # Also check for a plain file at a known path
+        fallback = Path("cookies.txt")
+        if fallback.exists():
+            _cookies_path = fallback
+            return _cookies_path
+        return None
+    try:
+        data = base64.b64decode(raw)
+        fd, path = tempfile.mkstemp(suffix=".txt", prefix="ytdlp_cookies_")
+        os.write(fd, data)
+        os.close(fd)
+        _cookies_path = Path(path)
+        return _cookies_path
+    except Exception:
+        return None
+
+
+def _add_cookies(cmd: list[str]) -> list[str]:
+    cp = get_cookies_path()
+    if cp and cp.exists():
+        cmd += ["--cookies", str(cp)]
+    return cmd
 
 
 def _check_deps():
@@ -47,8 +85,8 @@ async def list_profile_videos(
             )
             if urls:
                 return urls[:max_videos]
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[frame_extractor] Playwright fallback failed: {e}", flush=True)
 
     cmd = [
         "yt-dlp",
@@ -61,6 +99,7 @@ async def list_profile_videos(
         "webpage_url",
         profile_url,
     ]
+    cmd = _add_cookies(cmd)
     proc = await asyncio.create_subprocess_exec(
         *cmd,
         stdout=asyncio.subprocess.PIPE,
@@ -68,6 +107,22 @@ async def list_profile_videos(
     )
     stdout, stderr = await proc.communicate()
     if proc.returncode != 0:
+        # yt-dlp can't list TikTok profiles directly anymore — fall back to Playwright
+        print(
+            f"[frame_extractor] yt-dlp listing failed, trying Playwright fallback",
+            flush=True,
+        )
+        try:
+            urls = await _list_profile_videos_with_playwright(
+                profile_url, max_videos, sort
+            )
+            if urls:
+                return urls[:max_videos]
+        except Exception as pw_err:
+            print(
+                f"[frame_extractor] Playwright fallback also failed: {pw_err}",
+                flush=True,
+            )
         err = stderr.decode(errors="replace").strip()
         raise RuntimeError(f"yt-dlp listing failed: {err[-300:]}")
     urls = [
@@ -81,16 +136,20 @@ async def get_thumbnail(video_url: str, dest: Path) -> Path:
     _check_deps()
     dest.parent.mkdir(parents=True, exist_ok=True)
 
-    # Get thumbnail URL from yt-dlp
+    # Use yt-dlp's built-in thumbnail download — it handles cookies/headers properly
+    # Output template without extension; yt-dlp adds the actual extension
+    thumb_base = dest.with_suffix("")
     cmd = [
         "yt-dlp",
         "--no-download",
         "--no-warnings",
         "--no-check-certificates",
-        "--print",
-        "thumbnail",
+        "--write-thumbnail",
+        "--convert-thumbnails", "jpg",
+        "-o", f"thumbnail:{thumb_base}",
         video_url,
     ]
+    cmd = _add_cookies(cmd)
     proc = await asyncio.create_subprocess_exec(
         *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
     )
@@ -99,23 +158,49 @@ async def get_thumbnail(video_url: str, dest: Path) -> Path:
         raise RuntimeError(
             f"yt-dlp thumbnail failed: {stderr.decode(errors='replace')[-200:]}"
         )
-    thumb_url = stdout.decode().strip()
-    if not thumb_url:
-        raise RuntimeError("No thumbnail URL returned")
 
-    # Download the thumbnail image (in thread to avoid blocking event loop)
-    import urllib.request
-    import functools
+    # yt-dlp may write as dest (without ext) or with .jpg extension
+    if dest.exists():
+        return dest
+    jpg_path = dest.with_suffix(".jpg")
+    if jpg_path.exists():
+        jpg_path.rename(dest)
+        return dest
+    # Search for any file yt-dlp wrote with matching stem
+    for variant in dest.parent.glob(f"{dest.stem}*"):
+        if variant.is_file():
+            variant.rename(dest)
+            return dest
 
-    loop = asyncio.get_running_loop()
-    try:
-        data = await loop.run_in_executor(
-            None, functools.partial(urllib.request.urlopen, thumb_url, timeout=15)
-        )
-        dest.write_bytes(data.read())
-    except Exception as e:
-        raise RuntimeError(f"Thumbnail download failed: {e}")
-    return dest
+    # Fallback: try the old urllib approach
+    cmd2 = [
+        "yt-dlp",
+        "--no-download",
+        "--no-warnings",
+        "--no-check-certificates",
+        "--print", "thumbnail",
+        video_url,
+    ]
+    cmd2 = _add_cookies(cmd2)
+    proc2 = await asyncio.create_subprocess_exec(
+        *cmd2, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+    )
+    stdout2, _ = await proc2.communicate()
+    thumb_url = stdout2.decode().strip()
+    if thumb_url:
+        import urllib.request
+        import functools
+        loop = asyncio.get_running_loop()
+        try:
+            data = await loop.run_in_executor(
+                None, functools.partial(urllib.request.urlopen, thumb_url, timeout=15)
+            )
+            dest.write_bytes(data.read())
+            return dest
+        except Exception as e:
+            raise RuntimeError(f"Thumbnail download failed: {e}")
+
+    raise RuntimeError("No thumbnail downloaded")
 
 
 async def download_video(
@@ -130,6 +215,8 @@ async def download_video(
         "--no-warnings",
         "--no-playlist",
         "-f",
+        "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best[ext=mp4]/best",
+        "--merge-output-format",
         "mp4",
         "-o",
         str(dest),
@@ -137,6 +224,8 @@ async def download_video(
     ]
     if cookies_file and cookies_file.exists():
         cmd += ["--cookies", str(cookies_file)]
+    else:
+        cmd = _add_cookies(cmd)
     cmd.append(video_url)
 
     proc = await asyncio.create_subprocess_exec(

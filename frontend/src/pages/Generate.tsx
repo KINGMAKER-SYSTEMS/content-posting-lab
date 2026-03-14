@@ -105,6 +105,7 @@ function startPolling(
   if (activePolls.has(jobId)) return;
   activePolls.add(jobId);
   const startedAt = Date.now();
+  let consecutiveErrors = 0;
 
   const tick = async () => {
     if (Date.now() - startedAt > POLL_TIMEOUT_MS) {
@@ -121,8 +122,9 @@ function startPolling(
 
     try {
       const res = await fetch(apiUrl(`/api/video/jobs/${jobId}`));
-      if (!res.ok) throw new Error('Failed to fetch job');
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const job: Job = await res.json();
+      consecutiveErrors = 0;
       onUpdate(job);
 
       const allDone = job.videos.every(isTerminal);
@@ -133,6 +135,18 @@ function startPolling(
         onComplete(job);
       }
     } catch {
+      consecutiveErrors++;
+      if (consecutiveErrors >= 10) {
+        activePolls.delete(jobId);
+        onComplete({
+          id: jobId,
+          prompt: '',
+          provider: '',
+          count: 0,
+          videos: [{ index: 0, status: 'error', error: 'Lost connection to server' }],
+        });
+        return;
+      }
       setTimeout(tick, 3000);
     }
   };
@@ -146,6 +160,7 @@ export function GeneratePage() {
     generateJobs,
     addGenerateJob,
     setGenerateJob,
+    clearGenerateJobs,
     addGeneratedVideo,
     addNotification,
     setVideoRunningCount,
@@ -269,15 +284,57 @@ export function GeneratePage() {
     fetchHistory();
   }, [fetchHistory]);
 
+  // Recover jobs from backend on mount / project change
+  useEffect(() => {
+    if (!activeProjectName) return;
+    let cancelled = false;
+
+    // Clear old project's jobs and stop all active polls
+    clearGenerateJobs();
+    activePolls.clear();
+
+    const recover = async () => {
+      try {
+        const res = await fetch(apiUrl(`/api/video/jobs?project=${encodeURIComponent(activeProjectName)}`));
+        if (!res.ok || cancelled) return;
+        const serverJobs: Job[] = await res.json();
+
+        for (const job of serverJobs) {
+          setGenerateJob(job);
+          const allDone = job.videos.every(isTerminal);
+          if (!allDone) {
+            startPolling(job.id, stableOnUpdate, stableOnComplete);
+          }
+        }
+      } catch {
+        // Recovery is best-effort
+      }
+    };
+    recover();
+
+    return () => { cancelled = true; };
+  }, [activeProjectName, setGenerateJob, clearGenerateJobs, stableOnUpdate, stableOnComplete]);
+
   useEffect(() => {
     // Skip cleanup when prefill is being applied — the prefill sets provider
     // and then immediately sets lastImageFile, so the cleanup would clobber it.
     if (applyingPrefillRef.current) return;
-    setExtraParams({});
+    // Seed extraParams with schema defaults so submit sends the correct values
+    // even if the user never touches the controls (e.g. Hailuo duration=6).
+    const schema = providerSchemas[selectedProvider];
+    const defaults: Record<string, unknown> = {};
+    if (schema) {
+      for (const [key, field] of Object.entries(schema)) {
+        if (key === '_advanced' || key === 'image_required') continue;
+        const f = field as SchemaField;
+        if (f.default !== undefined) defaults[key] = f.default;
+      }
+    }
+    setExtraParams(defaults);
     setAdvancedOpen(false);
     setLastImageFile(null);
     if (lastImageInputRef.current) lastImageInputRef.current.value = '';
-  }, [selectedProvider]);
+  }, [selectedProvider, providerSchemas]);
 
   // Consume generatePrefill from Recreate → Generate workflow
   useEffect(() => {
@@ -345,13 +402,20 @@ export function GeneratePage() {
     setLoading(true);
     setError(null);
 
+    // Schema-driven extraParams override top-level defaults for shared keys
+    // (e.g. Hailuo schema sets duration=6 and resolution=768p, which must
+    // take precedence over the generic form defaults of duration=10 / 720p)
+    const effectiveDuration = extraParams.duration !== undefined ? Number(extraParams.duration) : duration;
+    const effectiveResolution = extraParams.resolution !== undefined ? String(extraParams.resolution) : resolution;
+    const effectiveAspectRatio = extraParams.aspect_ratio !== undefined ? String(extraParams.aspect_ratio) : aspectRatio;
+
     const formData = new FormData();
     formData.append('prompt', prompt);
     formData.append('provider', selectedProvider);
     formData.append('count', count.toString());
-    formData.append('duration', duration.toString());
-    formData.append('aspect_ratio', aspectRatio);
-    formData.append('resolution', resolution);
+    formData.append('duration', effectiveDuration.toString());
+    formData.append('aspect_ratio', effectiveAspectRatio);
+    formData.append('resolution', effectiveResolution);
     formData.append('project', activeProjectName);
     if (mediaFile) {
       formData.append('media', mediaFile);
@@ -360,9 +424,12 @@ export function GeneratePage() {
       formData.append('last_image', lastImageFile);
     }
 
-    // Append model-specific params from schema controls
+    // Append model-specific params from schema controls (skip keys already sent above)
+    const TOP_LEVEL_KEYS = new Set(['duration', 'resolution', 'aspect_ratio']);
     for (const [key, val] of Object.entries(extraParams)) {
-      if (val !== undefined && val !== null && val !== '') {
+      if (val !== undefined && val !== null && val !== '' && !TOP_LEVEL_KEYS.has(key)) {
+        // "none" crop_mode means no cropping — don't send it
+        if (key === 'crop_mode' && val === 'none') continue;
         formData.append(key, String(val));
       }
     }
@@ -895,47 +962,93 @@ export function GeneratePage() {
                       />
 
                       <div className="grid grid-cols-[repeat(auto-fill,minmax(180px,1fr))] gap-3 mb-2">
-                        {job.videos.map((video, idx) => (
+                        {job.videos.flatMap((video, idx) => {
+                          // If crops exist, render each crop as a separate card
+                          const items = video.crops && video.crops.length > 0
+                            ? video.crops.map((crop, ci) => ({ key: `${job.id}-${idx}-crop${ci}`, url: crop.url, file: crop.file, label: `Crop ${ci + 1}`, video, idx }))
+                            : [{ key: `${job.id}-${idx}`, url: video.url, file: video.file, label: undefined, video, idx }];
+
+                          return items.map(({ key, url, file, label, video: v, idx: vIdx }) => (
                           <div
-                            key={`${job.id}-${idx}`}
+                            key={key}
                             className="rounded-[var(--border-radius)] overflow-hidden border-2 border-border bg-card shadow-[2px_2px_0_0_var(--border)] hover:translate-x-[1px] hover:translate-y-[1px] hover:shadow-[1px_1px_0_0_var(--border)] transition-all"
                           >
                             <div className="relative bg-muted aspect-[9/16] flex items-center justify-center">
-                              {video.status === 'done' && video.url ? (
-                                <video src={staticUrl(video.url)} className="w-full h-full object-cover" controls playsInline muted />
-                              ) : video.status === 'error' || video.status === 'failed' ? (
+                              {v.status === 'done' && url ? (
+                                <video
+                                  src={staticUrl(url)}
+                                  className="w-full h-full object-cover"
+                                  playsInline
+                                  muted
+                                  loop
+                                  onMouseEnter={(e) => { void e.currentTarget.play().catch(() => {}); }}
+                                  onMouseLeave={(e) => { e.currentTarget.pause(); e.currentTarget.currentTime = 0; }}
+                                />
+                              ) : v.status === 'error' || v.status === 'failed' ? (
                                 <div className="flex flex-col items-center gap-2 text-muted-foreground text-sm">
                                   <span className="text-2xl">✕</span>
                                   <span className="font-bold">Failed</span>
                                 </div>
                               ) : (
                                 <div className="flex flex-col items-center gap-2 text-muted-foreground text-sm">
-                                  {video.status === 'queued' ? (
+                                  {v.status === 'queued' ? (
                                     <span className="text-2xl opacity-30">▶</span>
                                   ) : (
                                     <div className="w-7 h-7 border-3 border-muted border-t-primary rounded-full animate-spin" />
                                   )}
-                                  <span className="font-bold">{statusLabel(video.status)}</span>
+                                  <span className="font-bold">{statusLabel(v.status)}</span>
+                                </div>
+                              )}
+                              {label && v.status === 'done' && (
+                                <div className="absolute top-1.5 left-1.5">
+                                  <Badge variant="secondary" className="text-[10px] shadow-none">{label}</Badge>
                                 </div>
                               )}
                             </div>
 
                             <div className="px-2.5 py-1.5 flex items-center justify-between text-xs">
-                              <Badge variant={statusVariant(video.status)} className="text-[10px] shadow-none">
-                                {statusLabel(video.status)}
+                              <Badge variant={statusVariant(v.status)} className="text-[10px] shadow-none">
+                                {statusLabel(v.status)}
                               </Badge>
-                              {video.status === 'done' && video.url && (
-                                <a href={staticUrl(video.url)} download className="text-primary hover:underline font-bold text-xs">
-                                  Download
-                                </a>
-                              )}
+                              <div className="flex items-center gap-2">
+                                {v.status === 'done' && file && (
+                                  <button
+                                    type="button"
+                                    onClick={async (e) => {
+                                      e.stopPropagation();
+                                      const project = job.project || 'quick-test';
+                                      try {
+                                        const r = await fetch(apiUrl(`/api/video/file?project=${encodeURIComponent(project)}&path=${encodeURIComponent(file!)}`), { method: 'DELETE' });
+                                        if (!r.ok) throw new Error('Failed');
+                                        setGenerateJob({
+                                          ...job,
+                                          videos: job.videos.map((vv, vi) => vi === vIdx ? { ...vv, status: 'failed' as const, error: 'Deleted', file: undefined, url: undefined, crops: undefined } : vv),
+                                        });
+                                        addNotification('success', 'Video deleted');
+                                      } catch {
+                                        addNotification('error', 'Failed to delete video');
+                                      }
+                                    }}
+                                    className="text-muted-foreground hover:text-destructive transition-colors font-bold text-[11px]"
+                                    title="Delete video"
+                                  >
+                                    Delete
+                                  </button>
+                                )}
+                                {v.status === 'done' && url && (
+                                  <a href={staticUrl(url)} download className="text-primary hover:underline font-bold text-xs">
+                                    Download
+                                  </a>
+                                )}
+                              </div>
                             </div>
 
-                            {video.error && (
-                              <div className="px-2.5 pb-1.5 text-[11px] text-destructive break-all">{video.error}</div>
+                            {v.error && (
+                              <div className="px-2.5 pb-1.5 text-[11px] text-destructive break-all">{v.error}</div>
                             )}
                           </div>
-                        ))}
+                          ));
+                        })}
                       </div>
 
                       {doneCount > 0 && (

@@ -4,7 +4,8 @@ import { apiUrl, wsUrl } from '../lib/api';
 import { EmptyState, ProgressBar } from '../components';
 import { useWebSocket, type WebSocketStatus } from '../hooks/useWebSocket';
 import { useWorkflowStore } from '../stores/workflowStore';
-import type { CaptionResult, CaptionWSMessage } from '../types/api';
+import type { CaptionResult, CaptionWSMessage, MoodTag } from '../types/api';
+import { MOOD_COLORS } from '../types/api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -38,6 +39,7 @@ interface VideoDataRow {
   video_url: string;
   b64: string | null;
   caption: string;
+  mood: MoodTag | null;
   error: string | null;
   frameStatus: 'pending' | 'ready' | 'error';
   ocrStatus: 'pending' | 'scanning' | 'done' | 'error';
@@ -180,7 +182,7 @@ export function CaptionsPage() {
         for (let index = 0; index < data.count; index += 1) {
           nextRows[index] = {
             index, video_id: '', video_url: data.urls[index] || '', b64: null,
-            caption: '', error: null, frameStatus: 'pending', ocrStatus: 'pending',
+            caption: '', mood: null, error: null, frameStatus: 'pending', ocrStatus: 'pending',
           };
         }
         frameProgressSetRef.current = new Set();
@@ -231,7 +233,7 @@ export function CaptionsPage() {
           ocrProgressSetRef.current.add(data.index);
           setOcrDone((prev) => prev + 1);
         }
-        updateRow(data.index, (c) => ({ ...c, video_id: data.video_id || c.video_id, caption: data.caption || '', error: data.error || null, ocrStatus: data.error ? 'error' : 'done' }));
+        updateRow(data.index, (c) => ({ ...c, video_id: data.video_id || c.video_id, caption: data.caption || '', mood: data.mood || null, error: data.error || null, ocrStatus: data.error ? 'error' : 'done' }));
         setLogs((prev) => [...prev, `[ocr] Done for ${data.video_id}`]);
         return;
       }
@@ -580,7 +582,12 @@ export function CaptionsPage() {
 
                         {isDone ? (
                           <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 via-black/40 to-transparent px-2 pb-2 pt-8 text-[11px] leading-snug text-white">
-                            {row.caption.length > 80 ? `${row.caption.slice(0, 80)}...` : row.caption || 'No caption'}
+                            {row.mood ? (
+                              <span className={`mb-1 inline-block rounded-sm border px-1.5 py-0.5 text-[9px] font-bold uppercase ${MOOD_COLORS[row.mood]}`}>
+                                {row.mood}
+                              </span>
+                            ) : null}
+                            <div>{row.caption.length > 80 ? `${row.caption.slice(0, 80)}...` : row.caption || 'No caption'}</div>
                           </div>
                         ) : null}
 
@@ -618,6 +625,7 @@ export function CaptionsPage() {
                           <th className="sticky top-0 w-[60px] border-b-2 border-border bg-muted px-3 py-2 text-left text-[11px] font-bold uppercase tracking-wider text-muted-foreground">Frame</th>
                           <th className="sticky top-0 w-[200px] border-b-2 border-border bg-muted px-3 py-2 text-left text-[11px] font-bold uppercase tracking-wider text-muted-foreground">Video</th>
                           <th className="sticky top-0 border-b-2 border-border bg-muted px-3 py-2 text-left text-[11px] font-bold uppercase tracking-wider text-muted-foreground">Caption</th>
+                          <th className="sticky top-0 w-[100px] border-b-2 border-border bg-muted px-3 py-2 text-left text-[11px] font-bold uppercase tracking-wider text-muted-foreground">Mood</th>
                           <th className="sticky top-0 w-[80px] border-b-2 border-border bg-muted px-3 py-2 text-left text-[11px] font-bold uppercase tracking-wider text-muted-foreground">Status</th>
                         </tr>
                       </thead>
@@ -654,6 +662,15 @@ export function CaptionsPage() {
                                 ) : (
                                   <span className="text-xs italic text-muted-foreground">No caption detected</span>
                                 )}
+                              </td>
+                              <td className="px-3 py-2 align-top">
+                                {row.mood ? (
+                                  <span className={`inline-block rounded-sm border px-2 py-0.5 text-[10px] font-bold uppercase ${MOOD_COLORS[row.mood]}`}>
+                                    {row.mood}
+                                  </span>
+                                ) : hasCaption && !isPending ? (
+                                  <span className="text-xs italic text-muted-foreground">—</span>
+                                ) : null}
                               </td>
                               <td className="px-3 py-2 align-top">
                                 {row.error ? (

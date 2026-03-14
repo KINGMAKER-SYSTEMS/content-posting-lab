@@ -54,12 +54,18 @@ export interface GenerateResponse {
   count: number;
 }
 
+export interface CropEntry {
+  file: string;
+  url: string;
+}
+
 export interface VideoEntry {
   index: number;
   status: "queued" | "generating" | "polling" | "downloading" | "processing" | "done" | "failed" | "error";
   file?: string;
   url?: string;
   error?: string;
+  crops?: CropEntry[];
 }
 
 export interface Job {
@@ -83,11 +89,35 @@ export interface JobsListResponse {
 // CAPTION SCRAPING SERVER (port 8001) - WebSocket Events
 // ============================================================================
 
+export type MoodTag =
+  | "sad"
+  | "hype"
+  | "love"
+  | "funny"
+  | "chill";
+
+export const MOOD_TAGS: MoodTag[] = [
+  "sad",
+  "hype",
+  "love",
+  "funny",
+  "chill",
+];
+
+export const MOOD_COLORS: Record<MoodTag, string> = {
+  sad: "bg-blue-100 text-blue-800 border-blue-300",
+  hype: "bg-red-100 text-red-800 border-red-300",
+  love: "bg-pink-100 text-pink-800 border-pink-300",
+  funny: "bg-yellow-100 text-yellow-800 border-yellow-300",
+  chill: "bg-teal-100 text-teal-800 border-teal-300",
+};
+
 export interface CaptionResult {
   index: number;
   video_id: string;
   video_url: string;
   caption: string;
+  mood?: MoodTag | null;
   error?: string;
 }
 
@@ -106,7 +136,7 @@ export type CaptionWSMessage =
   | { event: "frame_error"; index: number; total: number; video_id: string; error: string }
   | { event: "ocr_starting"; total: number }
   | { event: "ocr_started"; index: number; total: number; video_id: string }
-  | { event: "ocr_done"; index: number; total: number; video_id: string; caption: string; error?: string }
+  | { event: "ocr_done"; index: number; total: number; video_id: string; caption: string; mood?: MoodTag | null; error?: string }
   | { event: "all_complete"; results: CaptionResult[]; csv: string | null; username: string }
   | { event: "error"; error: string };
 
@@ -201,6 +231,22 @@ export interface CaptionsResponse {
   sources: CaptionSource[];
 }
 
+export interface CaptionEntry {
+  text: string;
+  mood: MoodTag | null;
+}
+
+export interface CaptionCategory {
+  id: string;
+  name: string;
+  captions: CaptionEntry[];
+  count: number;
+}
+
+export interface CaptionBankResponse {
+  categories: CaptionCategory[];
+}
+
 export interface FontsResponse {
   fonts: FontInfo[];
 }
@@ -232,6 +278,44 @@ export interface HealthResponse {
   ffmpeg: boolean;
   ytdlp: boolean;
   providers: Record<string, boolean>;
+  postiz?: boolean;
+}
+
+// ============================================================================
+// POSTIZ PUBLISHING
+// ============================================================================
+
+export interface PostizIntegration {
+  id: string;
+  name: string;
+  picture?: string;
+  provider: string;  // e.g. "tiktok", "instagram", etc.
+  disabled?: boolean;
+}
+
+export interface PostizStatusResponse {
+  configured: boolean;
+  reachable: boolean;
+}
+
+export interface PublishableVideo {
+  name: string;
+  path: string;  // relative path for static serving
+  size: number;
+}
+
+export interface PublishableBatch {
+  batch_id: string;
+  created: number;
+  videos: PublishableVideo[];
+}
+
+export interface PublishableVideosResponse {
+  batches: PublishableBatch[];
+}
+
+export interface PostizUploadResponse {
+  path: string;
 }
 
 // ============================================================================

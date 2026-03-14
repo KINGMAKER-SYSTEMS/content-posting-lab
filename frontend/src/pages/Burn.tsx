@@ -6,6 +6,8 @@ import type {
   BatchesResponse,
   BurnBatch,
   BurnResponse,
+  CaptionBankResponse,
+  CaptionCategory,
   CaptionSource,
   CaptionsResponse,
   ColorCorrection,
@@ -24,7 +26,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Separator } from '@/components/ui/separator';
 
-const TEXT_STROKE_PX = 3;
+const TEXT_STROKE_PX = 1.5;
 const SNAP_THRESHOLD = 3;
 
 const DEFAULT_COLOR_CORRECTION: ColorCorrection = {
@@ -120,48 +122,71 @@ async function captureTextOverlay(pair: BurnPairState): Promise<string | null> {
   const caption = pair.caption.trim();
   if (!caption) return null;
 
+  // Render at 2x the target resolution for crisp text edges (supersampling).
+  // The overlay is always rendered at a minimum of 1080x1920 (9:16) to avoid
+  // pixelated text when the source video is low-res. ffmpeg scales it to match
+  // the video in the filter_complex.
+  const TARGET_W = 1080;
+  const TARGET_H = 1920;
+  const SUPERSAMPLE = 2;
+  const renderW = TARGET_W * SUPERSAMPLE;
+  const renderH = TARGET_H * SUPERSAMPLE;
+  const scaleX = renderW / w;
+  const scaleY = renderH / h;
+
   // Ensure the custom font is loaded before we draw on the canvas.
   // Canvas silently falls back to sans-serif if the font isn't ready,
   // which completely breaks text metrics and positioning.
   const fontFamily = `'${fontFamilyName(pair.fontFile)}', sans-serif`;
   const fontSize = pair.fontSize;
+  const renderFontSize = fontSize * scaleY;
   try {
-    await document.fonts.load(`700 ${fontSize}px ${fontFamily}`);
+    await document.fonts.load(`700 ${Math.ceil(renderFontSize)}px ${fontFamily}`);
   } catch { /* proceed with fallback font if load fails */ }
 
   const canvas = document.createElement('canvas');
-  canvas.width = w;
-  canvas.height = h;
+  canvas.width = renderW;
+  canvas.height = renderH;
   const ctx = canvas.getContext('2d');
   if (!ctx) return null;
 
-  // Position in pixels from percentage
-  const cx = (pair.x / 100) * w;
-  const cy = (pair.y / 100) * h;
-  const maxWidth = (pair.maxWidthPct / 100) * w;
+  // Enable high-quality rendering
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
 
-  ctx.font = `700 ${fontSize}px ${fontFamily}`;
+  // Position in pixels from percentage (scaled to render resolution)
+  const cx = (pair.x / 100) * renderW;
+  const cy = (pair.y / 100) * renderH;
+  const maxWidth = (pair.maxWidthPct / 100) * renderW;
+
+  ctx.font = `700 ${renderFontSize}px ${fontFamily}`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
 
-  // Word-wrap: break caption into lines that fit within maxWidth
-  const words = caption.split(/\s+/);
+  // Word-wrap: respect explicit \n line breaks, then wrap within maxWidth
+  const paragraphs = caption.split('\n');
   const lines: string[] = [];
-  let currentLine = '';
-  for (const word of words) {
-    const testLine = currentLine ? `${currentLine} ${word}` : word;
-    if (ctx.measureText(testLine).width > maxWidth && currentLine) {
-      lines.push(currentLine);
-      currentLine = word;
-    } else {
-      currentLine = testLine;
+  for (const para of paragraphs) {
+    const words = para.split(/\s+/).filter(Boolean);
+    if (words.length === 0) { lines.push(''); continue; }
+    let currentLine = '';
+    for (const word of words) {
+      const testLine = currentLine ? `${currentLine} ${word}` : word;
+      if (ctx.measureText(testLine).width > maxWidth && currentLine) {
+        lines.push(currentLine);
+        currentLine = word;
+      } else {
+        currentLine = testLine;
+      }
     }
+    if (currentLine) lines.push(currentLine);
   }
-  if (currentLine) lines.push(currentLine);
 
-  const lineHeight = fontSize * 1.2;
+  const lineHeight = renderFontSize * 1.2;
   const totalHeight = lines.length * lineHeight;
   const startY = cy - totalHeight / 2 + lineHeight / 2;
+
+  const renderStroke = TEXT_STROKE_PX * 2 * Math.max(scaleX, scaleY);
 
   // Draw each line: black stroke first, then white fill (paint-order: stroke fill)
   // Do NOT pass maxWidth to fillText/strokeText — it squishes text horizontally
@@ -169,10 +194,11 @@ async function captureTextOverlay(pair: BurnPairState): Promise<string | null> {
   for (let i = 0; i < lines.length; i++) {
     const ly = startY + i * lineHeight;
 
-    // Black stroke
+    // Black stroke — thin crisp outline matching TikTok's native style
     ctx.strokeStyle = 'black';
-    ctx.lineWidth = TEXT_STROKE_PX * 2; // strokeText is center-stroked, so double it
+    ctx.lineWidth = renderStroke;
     ctx.lineJoin = 'round';
+    ctx.miterLimit = 2;
     ctx.strokeText(lines[i], cx, ly);
 
     // White fill
@@ -191,8 +217,16 @@ export function BurnPage() {
   const [availableFonts, setAvailableFonts] = useState<FontInfo[]>([]);
   const [batches, setBatches] = useState<BurnBatch[]>([]);
 
-  const [selectedFolder, setSelectedFolder] = useState('');
+  const [bankCategories, setBankCategories] = useState<CaptionCategory[]>([]);
   const [selectedCaptionSource, setSelectedCaptionSource] = useState('__paste');
+  const [selectedMoodFilter, setSelectedMoodFilter] = useState<string>('');
+  const [randomizeCaptions, setRandomizeCaptions] = useState(false);
+  const [newCategoryName, setNewCategoryName] = useState('');
+  const [showNewCategory, setShowNewCategory] = useState(false);
+  const [showImportPicker, setShowImportPicker] = useState(false);
+  const [importTargetCategoryId, setImportTargetCategoryId] = useState('');
+
+  const [selectedFolder, setSelectedFolder] = useState('');
   const [manualPaste, setManualPaste] = useState('');
   const [selectedFontFile, setSelectedFontFile] = useState('');
   const [defaultFontSize, setDefaultFontSize] = useState(32);
@@ -234,9 +268,38 @@ export function BurnPage() {
 
   const selectedCaptionItems = useMemo(() => {
     if (selectedCaptionSource === '__paste') return manualPaste.split('\n').map((l) => l.trim()).filter(Boolean);
+
+    // Cross-pollinated mood bank: all captions across all categories with this mood
+    if (selectedCaptionSource.startsWith('mood:')) {
+      const mood = selectedCaptionSource.slice(5);
+      const items: string[] = [];
+      const seen = new Set<string>();
+      for (const cat of bankCategories) {
+        for (const c of cat.captions) {
+          const entry = typeof c === 'string' ? { text: c, mood: null } : c;
+          if (entry.mood === mood && entry.text && !seen.has(entry.text)) {
+            seen.add(entry.text);
+            items.push(entry.text);
+          }
+        }
+      }
+      return items;
+    }
+
+    // Check bank categories (prefixed with 'bank:')
+    if (selectedCaptionSource.startsWith('bank:')) {
+      const catId = selectedCaptionSource.slice(5);
+      const cat = bankCategories.find((c) => c.id === catId);
+      if (!cat) return [];
+      let captions = cat.captions.map((c) => typeof c === 'string' ? { text: c, mood: null } : c);
+      if (selectedMoodFilter) {
+        captions = captions.filter((c) => c.mood === selectedMoodFilter);
+      }
+      return captions.map((c) => c.text);
+    }
     const src = captionSources.find((s) => s.username === selectedCaptionSource);
     return src ? src.captions.map((r) => r.text) : [];
-  }, [captionSources, manualPaste, selectedCaptionSource]);
+  }, [bankCategories, captionSources, manualPaste, selectedCaptionSource, selectedMoodFilter]);
 
   const cssFilterPreview = useMemo(() => applyCSSFilterPreview(colorCorrection), [colorCorrection]);
   const showPasteManual = selectedCaptionSource === '__paste';
@@ -257,15 +320,71 @@ export function BurnPage() {
     } catch { setBatches([]); }
   }, [projectName]);
 
+  const loadBankCategories = useCallback(async () => {
+    try {
+      const r = await fetch(apiUrl('/api/caption-bank/'));
+      if (!r.ok) throw new Error('Failed');
+      const d = (await r.json()) as CaptionBankResponse;
+      setBankCategories(d.categories ?? []);
+    } catch { setBankCategories([]); }
+  }, []);
+
+  const handleCreateCategory = useCallback(async () => {
+    const name = newCategoryName.trim();
+    if (!name) return;
+    try {
+      const r = await fetch(apiUrl('/api/caption-bank/categories'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name }),
+      });
+      if (!r.ok) throw new Error('Failed to create category');
+      setNewCategoryName('');
+      setShowNewCategory(false);
+      await loadBankCategories();
+    } catch (e) {
+      addNotification('error', e instanceof Error ? e.message : 'Failed to create category');
+    }
+  }, [newCategoryName, loadBankCategories, addNotification]);
+
+  const handleDeleteCategory = useCallback(async (catId: string) => {
+    try {
+      const r = await fetch(apiUrl(`/api/caption-bank/categories/${catId}`), { method: 'DELETE' });
+      if (!r.ok) throw new Error('Failed');
+      if (selectedCaptionSource === `bank:${catId}`) setSelectedCaptionSource('__paste');
+      await loadBankCategories();
+    } catch (e) {
+      addNotification('error', e instanceof Error ? e.message : 'Failed to delete category');
+    }
+  }, [selectedCaptionSource, loadBankCategories, addNotification]);
+
+  const handleImportScraped = useCallback(async (categoryId: string, username: string) => {
+    try {
+      const r = await fetch(apiUrl('/api/caption-bank/import'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ project: projectName, username, categoryId }),
+      });
+      if (!r.ok) throw new Error('Failed to import');
+      const d = await r.json();
+      addNotification('success', `Imported ${d.added} captions`);
+      setShowImportPicker(false);
+      await loadBankCategories();
+    } catch (e) {
+      addNotification('error', e instanceof Error ? e.message : 'Import failed');
+    }
+  }, [projectName, loadBankCategories, addNotification]);
+
   const loadData = useCallback(async () => {
     if (!activeProjectName) return;
     setIsLoading(true);
     setError(null);
     try {
       const pq = encodeURIComponent(activeProjectName);
-      const [vR, cR, fR, bR] = await Promise.all([
+      const [vR, cR, fR, bR, bankR] = await Promise.all([
         fetch(apiUrl(`/api/burn/videos?project=${pq}`)), fetch(apiUrl(`/api/burn/captions?project=${pq}`)),
         fetch(apiUrl('/api/burn/fonts')), fetch(apiUrl(`/api/burn/batches?project=${pq}`)),
+        fetch(apiUrl('/api/caption-bank/')),
       ]);
       if (!vR.ok || !cR.ok || !fR.ok || !bR.ok) throw new Error('Failed to load burn workspace data');
 
@@ -273,6 +392,10 @@ export function BurnPage() {
       const ns = ((await cR.json()) as CaptionsResponse).sources ?? [];
       const nf = ((await fR.json()) as FontsResponse).fonts ?? [];
       const nb = ((await bR.json()) as BatchesResponse).batches ?? [];
+      if (bankR.ok) {
+        const bankData = (await bankR.json()) as CaptionBankResponse;
+        setBankCategories(bankData.categories ?? []);
+      }
 
       setVideos(nv); setCaptionSources(ns); setAvailableFonts(nf); setBatches(nb);
 
@@ -295,7 +418,7 @@ export function BurnPage() {
         return allFolders[0] ?? '';
       });
       setSelectedCaptionSource((c) => {
-        if (c === '__paste' || ns.some((s) => s.username === c)) return c;
+        if (c === '__paste' || c.startsWith('bank:') || ns.some((s) => s.username === c)) return c;
         if (burnSelection.captionSource && ns.some((s) => s.username === burnSelection.captionSource)) return burnSelection.captionSource;
         return '__paste';
       });
@@ -346,7 +469,14 @@ export function BurnPage() {
     if (!selectedFolder) return;
     const nv = videos.filter((v) => (v.folder || '(root)') === selectedFolder);
     if (!nv.length) return;
-    const captions = selectedCaptionItems;
+    let captions = [...selectedCaptionItems];
+    if (randomizeCaptions && captions.length > 1) {
+      // Fisher-Yates shuffle
+      for (let i = captions.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [captions[i], captions[j]] = [captions[j], captions[i]];
+      }
+    }
     const y = POSITION_Y_MAP[quickPosition] ?? 50;
     const cc = getColorCorrectionOrNull(colorCorrection);
     const np: BurnPairState[] = nv.map((v, i) => ({
@@ -359,7 +489,7 @@ export function BurnPage() {
     setShowExportBar(false); setExportCount(0); setBurnBatchId(null);
     setProgressVisible(false); setProgressLabel(''); setProgressValue(0);
     requestAnimationFrame(() => refreshPairScales());
-  }, [colorCorrection, defaultFontSize, quickPosition, refreshPairScales, selectedCaptionItems, selectedFolder, selectedFontFile, videos]);
+  }, [colorCorrection, defaultFontSize, quickPosition, randomizeCaptions, refreshPairScales, selectedCaptionItems, selectedFolder, selectedFontFile, videos]);
 
   const handleQuickPosition = useCallback((pos: QuickPosition) => {
     setQuickPosition(pos);
@@ -501,18 +631,153 @@ export function BurnPage() {
           </SelectContent>
         </Select>
 
-        <Label htmlFor="burn-caption-source">Caption Source</Label>
-        <Select value={selectedCaptionSource} onValueChange={setSelectedCaptionSource}>
-          <SelectTrigger id="burn-caption-source" className="w-full mt-1 mb-4">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="__paste">Paste manually</SelectItem>
-            {captionSources.map((s) => (
-              <SelectItem key={s.username} value={s.username}>@{s.username} ({s.count} captions)</SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+        <Label>Caption Source</Label>
+        <div className="mt-1 mb-2 flex flex-wrap gap-1.5">
+          <button
+            type="button"
+            onClick={() => setSelectedCaptionSource('__paste')}
+            className={`rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
+              selectedCaptionSource === '__paste'
+                ? 'border-primary bg-primary text-primary-foreground'
+                : 'border-border bg-muted text-muted-foreground hover:bg-accent'
+            }`}
+          >
+            Paste
+          </button>
+          {bankCategories.map((cat) => (
+            <button
+              key={cat.id}
+              type="button"
+              onClick={() => setSelectedCaptionSource(`bank:${cat.id}`)}
+              className={`group relative rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
+                selectedCaptionSource === `bank:${cat.id}`
+                  ? 'border-primary bg-primary text-primary-foreground'
+                  : 'border-border bg-muted text-muted-foreground hover:bg-accent'
+              }`}
+            >
+              {cat.name} ({cat.count})
+              <span
+                onClick={(e) => { e.stopPropagation(); handleDeleteCategory(cat.id); }}
+                className="ml-1 hidden cursor-pointer opacity-60 hover:opacity-100 group-hover:inline"
+              >&times;</span>
+            </button>
+          ))}
+          <button
+            type="button"
+            onClick={() => setShowNewCategory((v) => !v)}
+            className="rounded-full border border-dashed border-border px-2 py-1 text-xs text-muted-foreground hover:bg-accent"
+            title="Add category"
+          >+</button>
+        </div>
+
+        {showNewCategory && (
+          <div className="mb-2 flex gap-1.5">
+            <Input
+              value={newCategoryName}
+              onChange={(e) => setNewCategoryName(e.target.value)}
+              placeholder="Category name..."
+              className="h-7 text-xs"
+              onKeyDown={(e) => { if (e.key === 'Enter') void handleCreateCategory(); }}
+            />
+            <Button size="sm" className="h-7 px-2 text-xs" onClick={() => void handleCreateCategory()}>Add</Button>
+          </div>
+        )}
+
+        {captionSources.length > 0 && bankCategories.length > 0 && (
+          <div className="mb-2">
+            {!showImportPicker ? (
+              <button
+                type="button"
+                onClick={() => setShowImportPicker(true)}
+                className="text-[11px] text-muted-foreground underline hover:text-foreground"
+              >Import from scraped</button>
+            ) : (
+              <div className="rounded border border-border bg-muted/50 p-2 text-xs">
+                <div className="mb-1 font-medium">Import scraped captions into:</div>
+                <Select value={importTargetCategoryId} onValueChange={setImportTargetCategoryId}>
+                  <SelectTrigger className="h-7 w-full text-xs mb-1.5">
+                    <SelectValue placeholder="Select category..." />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {bankCategories.map((c) => (
+                      <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <div className="mb-1 font-medium">From:</div>
+                <div className="flex flex-col gap-1">
+                  {captionSources.map((s) => (
+                    <button
+                      key={s.username}
+                      type="button"
+                      disabled={!importTargetCategoryId}
+                      onClick={() => void handleImportScraped(importTargetCategoryId, s.username)}
+                      className="rounded border border-border px-2 py-0.5 text-left text-xs hover:bg-accent disabled:opacity-40"
+                    >@{s.username} ({s.count})</button>
+                  ))}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowImportPicker(false)}
+                  className="mt-1.5 text-[10px] text-muted-foreground underline"
+                >Cancel</button>
+              </div>
+            )}
+          </div>
+        )}
+
+        {bankCategories.length > 0 && (
+          <>
+            <Label className="mt-1">Mood Filter</Label>
+            <div className="mt-1 mb-2 flex flex-wrap gap-1.5">
+              {['sad', 'hype', 'love', 'funny', 'chill'].map((mood) => {
+                const moodCount = bankCategories.reduce((sum, cat) =>
+                  sum + cat.captions.filter((c) => (typeof c === 'string' ? null : c.mood) === mood).length, 0);
+                if (moodCount === 0) return null;
+                const isActive = selectedCaptionSource === `mood:${mood}`;
+                const isFilter = selectedMoodFilter === mood;
+                return (
+                  <button
+                    key={mood}
+                    type="button"
+                    onClick={() => {
+                      if (isActive) { setSelectedCaptionSource('__paste'); setSelectedMoodFilter(''); }
+                      else if (selectedCaptionSource.startsWith('bank:')) { setSelectedMoodFilter(isFilter ? '' : mood); }
+                      else { setSelectedCaptionSource(`mood:${mood}`); setSelectedMoodFilter(''); }
+                    }}
+                    className={`rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
+                      isActive || isFilter
+                        ? 'border-primary bg-primary text-primary-foreground'
+                        : 'border-border bg-muted text-muted-foreground hover:bg-accent'
+                    }`}
+                  >
+                    {mood} ({moodCount})
+                  </button>
+                );
+              })}
+              {(selectedMoodFilter || selectedCaptionSource.startsWith('mood:')) && (
+                <button
+                  type="button"
+                  onClick={() => { setSelectedMoodFilter(''); if (selectedCaptionSource.startsWith('mood:')) setSelectedCaptionSource('__paste'); }}
+                  className="rounded-full border border-border px-2 py-1 text-[10px] text-muted-foreground hover:bg-accent"
+                >clear</button>
+              )}
+            </div>
+          </>
+        )}
+
+        <div className="mb-3 flex items-center gap-2">
+          <label className="flex cursor-pointer items-center gap-1.5 text-xs text-muted-foreground">
+            <input
+              type="checkbox"
+              checked={randomizeCaptions}
+              onChange={(e) => setRandomizeCaptions(e.target.checked)}
+              className="accent-primary"
+            />
+            Randomize caption order
+          </label>
+          <span className="text-[10px] text-muted-foreground/60">({selectedCaptionItems.length} captions)</span>
+        </div>
 
         {showPasteManual ? (
           <div className="mb-4">
@@ -706,9 +971,10 @@ export function BurnPage() {
                 const scale = pair.previewScale ?? 1;
                 const previewFontPx = Math.max(6, Math.round(pair.fontSize * scale));
                 const strokePx = Math.max(0.5, TEXT_STROKE_PX * scale);
+                const videoSubdir = pair.videoPath.startsWith('clips/') ? '' : 'videos/';
                 const videoSrc = hasBurned && pair.burnedFile
                   ? staticUrl(`/projects/${encodedProjectName}/burned/${encodePathForUrl(pair.burnedFile)}`)
-                  : staticUrl(`/projects/${encodedProjectName}/videos/${encodePathForUrl(pair.videoPath)}`);
+                  : staticUrl(`/projects/${encodedProjectName}/${videoSubdir}${encodePathForUrl(pair.videoPath)}`);
 
                 return (
                   <article
@@ -730,7 +996,7 @@ export function BurnPage() {
                       className="relative aspect-[9/16] overflow-hidden bg-muted"
                     >
                       <video
-                        src={videoSrc} muted loop playsInline preload="metadata"
+                        src={`${videoSrc}#t=0.001`} muted loop playsInline preload="auto"
                         style={{ filter: cssFilterPreview }}
                         className="block h-full w-full object-cover"
                         onLoadedMetadata={(e) => setPairDimensions(index, e.currentTarget.videoWidth, e.currentTarget.videoHeight)}
@@ -746,8 +1012,8 @@ export function BurnPage() {
                           data-text-layer
                           onPointerDown={(e) => startDrag(e, index)}
                           onDoubleClick={(e) => { e.stopPropagation(); setInlineEditIndex(index); setSelectedIndex(index); }}
-                          className={`absolute z-10 max-w-[80%] select-none text-center ${dragRef.current?.index === index ? 'cursor-grabbing' : 'cursor-grab'} ${selected ? 'outline outline-2 outline-offset-4 outline-dashed outline-primary' : ''}`}
-                          style={{ left: `${pair.x}%`, top: `${pair.y}%`, transform: 'translate(-50%, -50%)', fontFamily: `'${fontFamilyName(pair.fontFile)}', sans-serif` }}
+                          className={`absolute z-10 select-none text-center ${dragRef.current?.index === index ? 'cursor-grabbing' : 'cursor-grab'} ${selected ? 'outline outline-2 outline-offset-4 outline-dashed outline-primary' : ''}`}
+                          style={{ left: `${pair.x}%`, top: `${pair.y}%`, transform: 'translate(-50%, -50%)', maxWidth: `${pair.maxWidthPct}%`, fontFamily: `'${fontFamilyName(pair.fontFile)}', sans-serif` }}
                         >
                           {inlineEditIndex === index ? (
                             <textarea
@@ -756,12 +1022,12 @@ export function BurnPage() {
                               onBlur={() => setInlineEditIndex(null)}
                               onKeyDown={(e) => { if (e.key === 'Escape') e.currentTarget.blur(); }}
                               autoFocus
-                              rows={Math.max(1, pair.caption.split('\n').length)}
+                              rows={Math.max(2, pair.caption.split('\n').length + 1)}
                               className="w-full resize-none overflow-hidden border-none bg-transparent text-center font-bold text-white outline-none"
-                              style={{ fontSize: `${previewFontPx}px`, lineHeight: 1.2, WebkitTextStroke: `${strokePx.toFixed(1)}px black`, paintOrder: 'stroke fill' }}
+                              style={{ fontSize: `${previewFontPx}px`, lineHeight: 1.2, WebkitTextStroke: `${strokePx.toFixed(1)}px black`, paintOrder: 'stroke fill', whiteSpace: 'pre-wrap' }}
                             />
                           ) : (
-                            <span className="inline-block break-words font-bold text-white" style={{ fontSize: `${previewFontPx}px`, lineHeight: 1.2, WebkitTextStroke: `${strokePx.toFixed(1)}px black`, paintOrder: 'stroke fill' }}>
+                            <span className="inline-block break-words font-bold text-white" style={{ fontSize: `${previewFontPx}px`, lineHeight: 1.2, WebkitTextStroke: `${strokePx.toFixed(1)}px black`, paintOrder: 'stroke fill', whiteSpace: 'pre-wrap' }}>
                               {pair.caption}
                             </span>
                           )}

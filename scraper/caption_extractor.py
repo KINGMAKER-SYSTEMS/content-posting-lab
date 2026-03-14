@@ -1,8 +1,9 @@
+import asyncio
 import base64
 import os
 
 from dotenv import load_dotenv
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, RateLimitError
 
 load_dotenv()
 
@@ -12,7 +13,7 @@ _client: AsyncOpenAI | None = None
 def _get_client() -> AsyncOpenAI:
     global _client
     if _client is None:
-        key = os.getenv("OPENAI_API_KEY")
+        key = (os.getenv("OPENAI_API_KEY") or "").strip()
         if not key:
             raise RuntimeError("OPENAI_API_KEY not set in environment")
         _client = AsyncOpenAI(api_key=key)
@@ -33,35 +34,47 @@ SYSTEM_PROMPT = (
 )
 
 
-async def extract_caption(screenshot_bytes: bytes) -> str:
-    """Send a screenshot to GPT-4o vision and extract burned-in caption text.
+async def extract_caption(screenshot_bytes: bytes, _max_retries: int = 4) -> str:
+    """Send a screenshot to GPT-4.1 vision and extract burned-in caption text.
 
     Returns the extracted caption string, or empty string if none found.
+    Retries with exponential backoff on rate-limit (429) errors.
     """
     client = _get_client()
     b64 = base64.b64encode(screenshot_bytes).decode()
 
-    resp = await client.chat.completions.create(
-        model="gpt-4.1",
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "image_url",
-                        "image_url": {"url": f"data:image/jpeg;base64,{b64}"},
-                    },
-                    {
-                        "type": "text",
-                        "text": "Extract the burned-in caption text from this TikTok video screenshot.",
-                    },
-                ],
-            },
-        ],
-        max_tokens=500,
-        temperature=0.0,
-    )
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "image_url",
+                    "image_url": {"url": f"data:image/jpeg;base64,{b64}"},
+                },
+                {
+                    "type": "text",
+                    "text": "Extract the burned-in caption text from this TikTok video screenshot.",
+                },
+            ],
+        },
+    ]
 
-    text = resp.choices[0].message.content.strip()
-    return "" if text == "NO_CAPTION" else text
+    for attempt in range(_max_retries + 1):
+        try:
+            resp = await client.chat.completions.create(
+                model="gpt-4.1",
+                messages=messages,
+                max_tokens=500,
+                temperature=0.0,
+            )
+            text = resp.choices[0].message.content.strip()
+            return "" if text == "NO_CAPTION" else text
+        except RateLimitError as e:
+            if attempt == _max_retries:
+                raise
+            wait = min(2 ** attempt * 2, 30)
+            print(f"[caption_extractor] Rate limited, retrying in {wait}s (attempt {attempt + 1}/{_max_retries})...", flush=True)
+            await asyncio.sleep(wait)
+
+    return ""

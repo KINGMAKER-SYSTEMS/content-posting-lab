@@ -3,15 +3,24 @@
 import asyncio
 import base64
 import json
+import logging
 import os
 import shutil
+import time
 from pathlib import Path
 
 import httpx
-from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 
 from project_manager import get_project_recreate_dir
+
+log = logging.getLogger("recreate")
+log.setLevel(logging.DEBUG)
+if not log.handlers:
+    _h = logging.StreamHandler()
+    _h.setFormatter(logging.Formatter("[recreate] %(levelname)s  %(message)s"))
+    log.addHandler(_h)
 
 # ── OpenAI client (lazy singleton, same pattern as caption_extractor) ─
 _openai_client = None
@@ -21,10 +30,11 @@ def _get_openai():
     global _openai_client
     if _openai_client is None:
         from openai import AsyncOpenAI
-        key = os.getenv("OPENAI_API_KEY")
+        key = (os.getenv("OPENAI_API_KEY") or "").strip()
         if not key:
             raise RuntimeError("OPENAI_API_KEY not set")
         _openai_client = AsyncOpenAI(api_key=key)
+        log.info("OpenAI client initialized (key len=%d)", len(key))
     return _openai_client
 
 router = APIRouter()
@@ -38,14 +48,14 @@ async def _send(job_id: str, event: str, data: dict):
     clients = _ws_clients.get(job_id, [])
     # Truncate base64 fields for logging
     log_data = {k: (f"{v[:40]}..." if isinstance(v, str) and len(v) > 50 else v) for k, v in data.items()}
-    print(f"[recreate] _send({job_id[:8]}): event={event}, clients={len(clients)}, data_keys={list(log_data.keys())}")
+    log.debug("_send(%s): event=%s, clients=%d, data_keys=%s", job_id[:8], event, len(clients), list(log_data.keys()))
     msg = json.dumps({"event": event, **data})
     dead: list[WebSocket] = []
     for ws in clients:
         try:
             await ws.send_text(msg)
         except Exception as e:
-            print(f"[recreate] _send failed for client: {e}")
+            log.warning("_send failed for client: %s", e)
             dead.append(ws)
     for ws in dead:
         clients.remove(ws)
@@ -59,11 +69,13 @@ def _image_to_data_uri(path: Path) -> str:
     mime = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png"}.get(
         ext, "image/png"
     )
+    log.debug("_image_to_data_uri: %s → %d bytes, %d chars b64", path.name, len(data), len(b64))
     return f"data:{mime};base64,{b64}"
 
 
 async def _get_video_duration(video_path: Path) -> float:
     """Run ffprobe to get video duration in seconds."""
+    log.debug("ffprobe: %s", video_path)
     proc = await asyncio.create_subprocess_exec(
         "ffprobe",
         "-v", "error",
@@ -75,8 +87,12 @@ async def _get_video_duration(video_path: Path) -> float:
     )
     stdout, stderr = await proc.communicate()
     if proc.returncode != 0:
-        raise RuntimeError(f"ffprobe failed: {stderr.decode(errors='replace')[:300]}")
-    return float(stdout.decode().strip())
+        err_msg = stderr.decode(errors='replace')[:300]
+        log.error("ffprobe failed (rc=%d): %s", proc.returncode, err_msg)
+        raise RuntimeError(f"ffprobe failed: {err_msg}")
+    duration = float(stdout.decode().strip())
+    log.info("ffprobe: duration=%.2fs", duration)
+    return duration
 
 
 # ── Pipeline ─────────────────────────────────────────────────────────
@@ -87,17 +103,23 @@ async def _run_pipeline(job_id: str, video_url: str, project: str):
     from scraper.frame_extractor import download_video, extract_frame
     from providers.replicate import remove_text
 
+    t0 = time.time()
+    log.info("pipeline START job=%s url=%s project=%s", job_id[:8], video_url[:80], project)
+
     recreate_dir = get_project_recreate_dir(project)
     job_dir = recreate_dir / job_id
     job_dir.mkdir(parents=True, exist_ok=True)
 
     try:
         # Phase 1: Download video
+        t1 = time.time()
         await _send(job_id, "downloading", {"text": "Downloading video..."})
         video_path = job_dir / "source_video.mp4"
         await download_video(video_url, video_path)
+        log.info("phase1 download: %.1fs, size=%d bytes", time.time() - t1, video_path.stat().st_size if video_path.exists() else 0)
 
         # Phase 2: Extract first and last frames
+        t2 = time.time()
         await _send(job_id, "extracting_frames", {"text": "Extracting frames..."})
         duration = await _get_video_duration(video_path)
 
@@ -110,6 +132,7 @@ async def _run_pipeline(job_id: str, video_url: str, project: str):
 
         first_b64 = _image_to_data_uri(first_frame)
         last_b64 = _image_to_data_uri(last_frame)
+        log.info("phase2 frames: %.1fs, first=%d chars, last=%d chars", time.time() - t2, len(first_b64), len(last_b64))
 
         await _send(job_id, "frames_ready", {
             "first_frame": first_b64,
@@ -118,12 +141,16 @@ async def _run_pipeline(job_id: str, video_url: str, project: str):
         })
 
         # Phase 3: Remove text from each frame (local mask + LaMa inpainting)
+        t3 = time.time()
         async with httpx.AsyncClient() as client:
             # First frame
             await _send(job_id, "removing_text", {
                 "text": "Generating text mask & inpainting first frame (LaMa)...",
             })
+            log.debug("remove_text: first frame (%d chars)", len(first_b64))
             first_clean_url = await remove_text(first_b64, client=client)
+            log.info("remove_text: first frame done → %s", first_clean_url[:120] if first_clean_url else "None")
+
             await _send(job_id, "status", {
                 "text": "Downloading cleaned first frame...",
             })
@@ -136,7 +163,10 @@ async def _run_pipeline(job_id: str, video_url: str, project: str):
             await _send(job_id, "removing_text", {
                 "text": "Generating text mask & inpainting last frame (LaMa)...",
             })
+            log.debug("remove_text: last frame (%d chars)", len(last_b64))
             last_clean_url = await remove_text(last_b64, client=client)
+            log.info("remove_text: last frame done → %s", last_clean_url[:120] if last_clean_url else "None")
+
             await _send(job_id, "status", {
                 "text": "Downloading cleaned last frame...",
             })
@@ -144,6 +174,8 @@ async def _run_pipeline(job_id: str, video_url: str, project: str):
             last_clean_path = job_dir / "last_frame_clean.png"
             last_clean_path.write_bytes(resp.content)
             last_clean_b64 = _image_to_data_uri(last_clean_path)
+
+            log.info("phase3 text removal: %.1fs, first_clean=%d chars, last_clean=%d chars", time.time() - t3, len(first_clean_b64), len(last_clean_b64))
 
             await _send(job_id, "text_removed", {
                 "first_clean": first_clean_b64,
@@ -158,9 +190,11 @@ async def _run_pipeline(job_id: str, video_url: str, project: str):
             "first_clean": first_clean_b64,
             "last_clean": last_clean_b64,
         })
+        log.info("pipeline COMPLETE job=%s total=%.1fs", job_id[:8], time.time() - t0)
 
     except Exception as e:
         import traceback
+        log.error("pipeline FAILED job=%s after %.1fs: %s", job_id[:8], time.time() - t0, e)
         traceback.print_exc()
         await _send(job_id, "error", {"error": str(e)})
 
@@ -188,33 +222,68 @@ class GeneratePromptRequest(BaseModel):
 
 
 @router.post("/generate-prompt")
-async def generate_prompt(req: GeneratePromptRequest):
-    """Use GPT-4.1 vision to write a video generation prompt from clean frames."""
+async def generate_prompt(request: Request, req: GeneratePromptRequest):
+    """Use GPT-4o vision to write a video generation prompt from clean frames."""
+    content_length = request.headers.get("content-length", "?")
+    log.info(
+        "generate-prompt: content-length=%s, first_frame=%d chars, last_frame=%d chars",
+        content_length, len(req.first_frame), len(req.last_frame),
+    )
+
     if not req.first_frame or not req.last_frame:
+        log.warning("generate-prompt: empty frames")
         raise HTTPException(400, "Both first_frame and last_frame are required")
 
-    client = _get_openai()
-    resp = await client.chat.completions.create(
-        model="gpt-4.1",
-        messages=[
-            {"role": "system", "content": _PROMPT_GEN_SYSTEM},
-            {
-                "role": "user",
-                "content": [
-                    {"type": "image_url", "image_url": {"url": req.first_frame}},
-                    {"type": "image_url", "image_url": {"url": req.last_frame}},
-                    {
-                        "type": "text",
-                        "text": "Write a video generation prompt for recreating this video.",
-                    },
-                ],
-            },
-        ],
-        max_tokens=300,
-        temperature=0.7,
-    )
-    prompt = resp.choices[0].message.content.strip()
-    return {"prompt": prompt}
+    # Validate data URI format
+    for label, uri in [("first_frame", req.first_frame), ("last_frame", req.last_frame)]:
+        if not uri.startswith("data:image/"):
+            log.error("generate-prompt: %s is not a data URI (starts with %r)", label, uri[:60])
+            raise HTTPException(400, f"{label} must be a data:image/... URI, got: {uri[:60]}...")
+
+    try:
+        client = _get_openai()
+    except RuntimeError as e:
+        log.error("generate-prompt: OpenAI client init failed: %s", e)
+        raise HTTPException(500, str(e))
+
+    try:
+        t0 = time.time()
+        log.info("generate-prompt: calling OpenAI gpt-4o ...")
+        resp = await client.chat.completions.create(
+            model="gpt-4o",
+            messages=[
+                {"role": "system", "content": _PROMPT_GEN_SYSTEM},
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "image_url", "image_url": {"url": req.first_frame}},
+                        {"type": "image_url", "image_url": {"url": req.last_frame}},
+                        {
+                            "type": "text",
+                            "text": "Write a video generation prompt for recreating this video.",
+                        },
+                    ],
+                },
+            ],
+            max_tokens=300,
+            temperature=0.7,
+        )
+        prompt = resp.choices[0].message.content.strip()
+        log.info(
+            "generate-prompt: OK in %.1fs, tokens=%s, prompt=%r",
+            time.time() - t0,
+            getattr(resp.usage, "total_tokens", "?"),
+            prompt[:80],
+        )
+        return {"prompt": prompt}
+    except Exception as e:
+        import traceback
+        log.error("generate-prompt: OpenAI call FAILED: %s", e)
+        traceback.print_exc()
+        detail = str(e)
+        if hasattr(e, "status_code"):
+            detail = f"OpenAI API error ({e.status_code}): {detail}"
+        raise HTTPException(502, detail)
 
 
 # ── WebSocket endpoint ────────────────────────────────────────────────
@@ -224,13 +293,13 @@ async def generate_prompt(req: GeneratePromptRequest):
 async def websocket_recreate(ws: WebSocket, job_id: str):
     """WebSocket endpoint for real-time recreate pipeline progress."""
     await ws.accept()
-    print(f"[recreate] WS connected: {job_id[:8]}")
+    log.info("WS connected: %s", job_id[:8])
     _ws_clients.setdefault(job_id, []).append(ws)
     try:
         while True:
             raw = await ws.receive_text()
             msg = json.loads(raw)
-            print(f"[recreate] WS received: action={msg.get('action')}, url={msg.get('video_url', '')[:60]}")
+            log.info("WS received: action=%s, url=%s", msg.get("action"), msg.get("video_url", "")[:60])
             if msg.get("action") == "start":
                 asyncio.create_task(
                     _run_pipeline(
@@ -240,7 +309,7 @@ async def websocket_recreate(ws: WebSocket, job_id: str):
                     )
                 )
     except WebSocketDisconnect:
-        print(f"[recreate] WS disconnected: {job_id[:8]}")
+        log.info("WS disconnected: %s", job_id[:8])
     finally:
         clients = _ws_clients.get(job_id, [])
         if ws in clients:
@@ -281,6 +350,7 @@ async def list_recreate_jobs(project: str = Query(default="quick-test")):
 
         jobs.append(entry)
 
+    log.info("list jobs: project=%s, count=%d", project, len(jobs))
     return {"jobs": jobs}
 
 
@@ -297,4 +367,5 @@ async def delete_recreate_job(
         raise HTTPException(404, "Job not found")
 
     shutil.rmtree(job_dir)
+    log.info("deleted job %s", job_id[:8])
     return {"deleted": True, "job_id": job_id}

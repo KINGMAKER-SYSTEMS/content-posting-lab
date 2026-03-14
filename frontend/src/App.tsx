@@ -1,10 +1,12 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { BrowserRouter, Link, useLocation, useNavigate } from 'react-router-dom';
 import { CaptionsPage } from './pages/Captions';
 import { BurnPage } from './pages/Burn';
 import { GeneratePage } from './pages/Generate';
 import { ProjectsPage } from './pages/Projects';
 import { RecreatePage } from './pages/Recreate';
+import { PublishPage } from './pages/Publish';
+import { ClipperPage } from './pages/Clipper';
 import { ProjectSelector, ToastContainer } from './components';
 import { useWorkflowStore } from './stores/workflowStore';
 import { type CreateProjectResponse, type HealthResponse, type Project, type ProjectListResponse } from './types/api';
@@ -23,6 +25,8 @@ interface HealthBannerItem {
   tone: 'warn' | 'info';
   message: string;
 }
+
+const TOOL_PATHS = ['/generate', '/clipper', '/recreate', '/captions', '/burn'];
 
 function AppShell() {
   const location = useLocation();
@@ -44,16 +48,38 @@ function AppShell() {
   const [healthItems, setHealthItems] = useState<HealthBannerItem[]>([]);
   const [dismissedHealth, setDismissedHealth] = useState<string[]>([]);
 
-  const tabs = useMemo<NavTab[]>(
+  const toolTabs = useMemo<NavTab[]>(
     () => [
-      { path: '/', label: 'Projects', badge: projects.length > 0 ? projects.length : undefined },
-      { path: '/recreate', label: 'Recreate', badge: recreateJobActive ? 'LIVE' : undefined },
       { path: '/generate', label: 'Generate', badge: videoRunningCount > 0 ? videoRunningCount : undefined },
+      { path: '/clipper', label: 'Clipper' },
+      { path: '/recreate', label: 'Recreate', badge: recreateJobActive ? 'LIVE' : undefined },
       { path: '/captions', label: 'Captions', badge: captionJobActive ? 'LIVE' : undefined },
       { path: '/burn', label: 'Burn', badge: burnReadyCount > 0 ? burnReadyCount : undefined },
     ],
-    [burnReadyCount, captionJobActive, recreateJobActive, projects.length, videoRunningCount],
+    [burnReadyCount, captionJobActive, recreateJobActive, videoRunningCount],
   );
+
+  const [toolsOpen, setToolsOpen] = useState(false);
+  const toolsRef = useRef<HTMLDivElement>(null);
+  const isToolActive = TOOL_PATHS.includes(location.pathname);
+
+  // Compute aggregate badge for the Tools menu
+  const toolsBadgeCount = (videoRunningCount > 0 ? 1 : 0)
+    + (recreateJobActive ? 1 : 0)
+    + (captionJobActive ? 1 : 0)
+    + (burnReadyCount > 0 ? 1 : 0);
+  const hasToolLive = recreateJobActive || captionJobActive;
+
+  // Close dropdown on outside click
+  useEffect(() => {
+    const handleClick = (e: MouseEvent) => {
+      if (toolsRef.current && !toolsRef.current.contains(e.target as Node)) {
+        setToolsOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClick);
+    return () => document.removeEventListener('mousedown', handleClick);
+  }, []);
 
   const visibleHealthItems = useMemo(
     () => healthItems.filter((item) => !dismissedHealth.includes(item.id)),
@@ -248,30 +274,91 @@ function AppShell() {
       {/* Tab navigation — sticky, thick border bottom */}
       <nav className="sticky top-0 z-40 border-b-2 border-border bg-card">
         <div className="mx-auto flex max-w-7xl gap-1 px-4">
-          {tabs.map((tab) => {
-            const isActive = location.pathname === tab.path;
-            return (
-              <Link
-                key={tab.path}
-                to={tab.path}
-                className={`relative flex items-center gap-2 px-4 py-3 text-sm font-bold transition-colors ${
-                  isActive
-                    ? 'text-primary border-b-[3px] border-primary -mb-[2px]'
-                    : 'text-muted-foreground hover:text-foreground hover:bg-muted'
-                }`}
+          {/* Projects tab */}
+          <Link
+            to="/"
+            className={`relative flex items-center gap-2 px-4 py-3 text-sm font-bold transition-colors ${
+              location.pathname === '/'
+                ? 'text-primary border-b-[3px] border-primary -mb-[2px]'
+                : 'text-muted-foreground hover:text-foreground hover:bg-muted'
+            }`}
+          >
+            Projects
+            {projects.length > 0 ? (
+              <Badge
+                variant={location.pathname === '/' ? 'default' : 'secondary'}
+                className="text-[10px] px-1.5 py-0 shadow-none"
               >
-                {tab.label}
-                {tab.badge !== undefined ? (
-                  <Badge
-                    variant={tab.badge === 'LIVE' ? 'success' : isActive ? 'default' : 'secondary'}
-                    className="text-[10px] px-1.5 py-0 shadow-none"
-                  >
-                    {tab.badge}
-                  </Badge>
-                ) : null}
-              </Link>
-            );
-          })}
+                {projects.length}
+              </Badge>
+            ) : null}
+          </Link>
+
+          {/* Tools dropdown */}
+          <div ref={toolsRef} className="relative">
+            <button
+              type="button"
+              onClick={() => setToolsOpen((prev) => !prev)}
+              className={`relative flex items-center gap-2 px-4 py-3 text-sm font-bold transition-colors ${
+                isToolActive
+                  ? 'text-primary border-b-[3px] border-primary -mb-[2px]'
+                  : 'text-muted-foreground hover:text-foreground hover:bg-muted'
+              }`}
+            >
+              Tools
+              <span className={`text-[10px] transition-transform ${toolsOpen ? 'rotate-180' : ''}`}>&#9660;</span>
+              {toolsBadgeCount > 0 ? (
+                <Badge
+                  variant={hasToolLive ? 'success' : 'info'}
+                  className="text-[10px] px-1.5 py-0 shadow-none"
+                >
+                  {hasToolLive ? 'LIVE' : toolsBadgeCount}
+                </Badge>
+              ) : null}
+            </button>
+
+            {toolsOpen && (
+              <div className="absolute left-0 top-full mt-[2px] z-50 min-w-[200px] rounded-[var(--border-radius)] border-2 border-border bg-card shadow-[4px_4px_0_0_var(--border)]">
+                {toolTabs.map((tab) => {
+                  const isActive = location.pathname === tab.path;
+                  return (
+                    <Link
+                      key={tab.path}
+                      to={tab.path}
+                      onClick={() => setToolsOpen(false)}
+                      className={`flex items-center justify-between gap-3 px-4 py-2.5 text-sm font-bold transition-colors ${
+                        isActive
+                          ? 'bg-primary/10 text-primary'
+                          : 'text-foreground hover:bg-muted hover:text-primary'
+                      }`}
+                    >
+                      {tab.label}
+                      {tab.badge !== undefined ? (
+                        <Badge
+                          variant={tab.badge === 'LIVE' ? 'success' : isActive ? 'default' : 'secondary'}
+                          className="text-[10px] px-1.5 py-0 shadow-none"
+                        >
+                          {tab.badge}
+                        </Badge>
+                      ) : null}
+                    </Link>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          {/* Publish tab */}
+          <Link
+            to="/publish"
+            className={`relative flex items-center gap-2 px-4 py-3 text-sm font-bold transition-colors ${
+              location.pathname === '/publish'
+                ? 'text-primary border-b-[3px] border-primary -mb-[2px]'
+                : 'text-muted-foreground hover:text-foreground hover:bg-muted'
+            }`}
+          >
+            Publish
+          </Link>
         </div>
       </nav>
 
@@ -292,6 +379,12 @@ function AppShell() {
         </div>
         <div style={{ display: location.pathname === '/burn' ? 'block' : 'none' }}>
           <BurnPage />
+        </div>
+        <div style={{ display: location.pathname === '/clipper' ? 'block' : 'none' }}>
+          <ClipperPage />
+        </div>
+        <div style={{ display: location.pathname === '/publish' ? 'block' : 'none' }}>
+          <PublishPage />
         </div>
       </main>
     </div>
