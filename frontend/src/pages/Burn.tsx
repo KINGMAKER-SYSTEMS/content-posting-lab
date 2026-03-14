@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { apiUrl, staticUrl } from '../lib/api';
 import { EmptyState, ProgressBar } from '../components';
 import { useWorkflowStore } from '../stores/workflowStore';
@@ -207,6 +207,55 @@ async function captureTextOverlay(pair: BurnPairState): Promise<string | null> {
   }
 
   return canvas.toDataURL('image/png');
+}
+
+// Lazy-loading video that only fetches when scrolled into view
+function LazyVideo({ src, style, className, selected, onLoadedMetadata, onLoadedData }: {
+  src: string;
+  style?: CSSProperties;
+  className?: string;
+  selected?: boolean;
+  onLoadedMetadata?: (e: React.SyntheticEvent<HTMLVideoElement>) => void;
+  onLoadedData?: (e: React.SyntheticEvent<HTMLVideoElement>) => void;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [visible, setVisible] = useState(false);
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const obs = new IntersectionObserver(
+      ([entry]) => { if (entry.isIntersecting) { setVisible(true); obs.disconnect(); } },
+      { rootMargin: '200px' },
+    );
+    obs.observe(el);
+    return () => obs.disconnect();
+  }, []);
+
+  // Always visible if selected
+  const shouldLoad = visible || selected;
+
+  return (
+    <div ref={ref} className="w-full h-full">
+      {shouldLoad ? (
+        <video
+          src={src} muted loop playsInline
+          preload={selected ? 'auto' : 'metadata'}
+          style={style}
+          className={className}
+          onLoadedData={(e) => {
+            e.currentTarget.currentTime = 0.001;
+            onLoadedData?.(e);
+          }}
+          onLoadedMetadata={onLoadedMetadata}
+          onMouseEnter={(e) => { void e.currentTarget.play().catch(() => {}); }}
+          onMouseLeave={(e) => { e.currentTarget.pause(); e.currentTarget.currentTime = 0.001; }}
+        />
+      ) : (
+        <div className="w-full h-full bg-muted" />
+      )}
+    </div>
+  );
 }
 
 export function BurnPage() {
@@ -995,13 +1044,12 @@ export function BurnPage() {
                       ref={(node) => { wrapRefs.current[index] = node; }}
                       className="relative aspect-[9/16] overflow-hidden bg-muted"
                     >
-                      <video
-                        src={`${videoSrc}#t=0.001`} muted loop playsInline preload="auto"
+                      <LazyVideo
+                        src={`${videoSrc}#t=0.001`}
+                        selected={selected}
                         style={{ filter: cssFilterPreview }}
                         className="block h-full w-full object-cover"
-                        onLoadedMetadata={(e) => setPairDimensions(index, e.currentTarget.videoWidth, e.currentTarget.videoHeight)}
-                        onMouseEnter={(e) => { void e.currentTarget.play().catch(() => {}); }}
-                        onMouseLeave={(e) => { e.currentTarget.pause(); e.currentTarget.currentTime = 0; }}
+                        onLoadedMetadata={(e) => setPairDimensions(index, (e.target as HTMLVideoElement).videoWidth, (e.target as HTMLVideoElement).videoHeight)}
                       />
 
                       <div className={`pointer-events-none absolute inset-x-0 top-1/2 z-20 h-px bg-primary/70 ${snapGuide && snapGuide.index === index && snapGuide.horizontal ? 'block' : 'hidden'}`} />
