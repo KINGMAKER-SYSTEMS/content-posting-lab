@@ -366,6 +366,7 @@ export function ClipperPage() {
 
   // Processing / Results
   const [processing, setProcessing] = useState(false);
+  const [processProgress, setProcessProgress] = useState<{ clip: number; total: number; source: string } | null>(null);
   const [resultClips, setResultClips] = useState<ClipInfo[]>([]);
   const [resultJobId, setResultJobId] = useState<string | null>(null);
   const [pastJobs, setPastJobs] = useState<PastJob[]>([]);
@@ -460,12 +461,13 @@ export function ClipperPage() {
     }
   };
 
-  // ── Process all ─────────────────────────────────────────────────
+  // ── Process all (SSE streaming) ──────────────────────────────────
   const handleProcessAll = async () => {
     if (!activeProjectName || !batchId || stagedFiles.length === 0) return;
     setStage('processing');
     setProcessing(true);
     setResultClips([]);
+    setProcessProgress(null);
 
     try {
       const resp = await fetch(apiUrl('/api/clipper/process-batch'), {
@@ -485,20 +487,55 @@ export function ClipperPage() {
       });
       if (!resp.ok) throw new Error(await resp.text() || 'Processing failed');
 
-      const data = await resp.json() as {
-        job_id: string; clips: Array<ClipInfo & { thumb_url?: string }>; ok_count: number; total: number;
-      };
+      const reader = resp.body?.getReader();
+      if (!reader) throw new Error('No response body');
 
-      setResultJobId(data.job_id);
-      setResultClips(data.clips.map((c) => ({ ...c, thumbUrl: c.thumb_url })));
-      setStage('results');
-      addNotification('success', `Processed ${data.ok_count}/${data.total} clips`);
-      fetchPastJobs();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let finalData: { job_id: string; clips: Array<ClipInfo & { thumb_url?: string }>; ok_count: number; total: number } | null = null;
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        // Parse SSE lines
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          try {
+            const event = JSON.parse(line.slice(6));
+            if (event.type === 'plan') {
+              setProcessProgress({ clip: 0, total: event.total_clips, source: '' });
+              setResultJobId(event.job_id);
+            } else if (event.type === 'progress') {
+              setProcessProgress({ clip: event.clip, total: event.total, source: event.source_name });
+            } else if (event.type === 'clip_done' && event.clip?.ok) {
+              const c = event.clip;
+              setResultClips((prev) => [...prev, { ...c, thumbUrl: c.thumb_url }]);
+            } else if (event.type === 'complete') {
+              finalData = event;
+            }
+          } catch { /* ignore parse errors */ }
+        }
+      }
+
+      if (finalData) {
+        setResultClips(finalData.clips.map((c) => ({ ...c, thumbUrl: c.thumb_url })));
+        setStage('results');
+        addNotification('success', `Processed ${finalData.ok_count}/${finalData.total} clips`);
+        fetchPastJobs();
+      } else {
+        setStage('results');
+      }
     } catch (e) {
       addNotification('error', e instanceof Error ? e.message : 'Processing failed');
       setStage('configure');
     } finally {
       setProcessing(false);
+      setProcessProgress(null);
     }
   };
 
@@ -797,11 +834,61 @@ export function ClipperPage() {
 
           {/* ── STAGE: Processing ── */}
           {stage === 'processing' && (
-            <div className="flex flex-col items-center justify-center py-20 gap-4">
-              <span className="h-8 w-8 animate-spin rounded-full border-4 border-muted border-t-primary" />
-              <p className="text-sm text-muted-foreground">
-                Processing {stagedFiles.length} source{stagedFiles.length !== 1 ? 's' : ''} into {clipLength}s clips...
-              </p>
+            <div className="max-w-xl mx-auto py-10">
+              <h2 className="text-xl font-heading text-foreground mb-6 text-center">Processing</h2>
+
+              {processProgress && (
+                <div className="space-y-4">
+                  {/* Progress bar */}
+                  <div className="w-full bg-muted rounded-full h-4 border-2 border-border overflow-hidden">
+                    <div
+                      className="h-full bg-primary rounded-full transition-all duration-300"
+                      style={{ width: `${processProgress.total > 0 ? (processProgress.clip / processProgress.total) * 100 : 0}%` }}
+                    />
+                  </div>
+                  <div className="flex justify-between text-sm">
+                    <span className="text-foreground font-bold">
+                      Clip {processProgress.clip} / {processProgress.total}
+                    </span>
+                    <span className="text-muted-foreground">
+                      {Math.round((processProgress.clip / Math.max(1, processProgress.total)) * 100)}%
+                    </span>
+                  </div>
+                  {processProgress.source && (
+                    <p className="text-xs text-muted-foreground text-center">
+                      Encoding from: <strong className="text-foreground">{processProgress.source}</strong>
+                    </p>
+                  )}
+
+                  {/* Live results appearing */}
+                  {resultClips.length > 0 && (
+                    <div className="mt-6">
+                      <p className="text-xs text-muted-foreground mb-3">{resultClips.length} clip{resultClips.length !== 1 ? 's' : ''} ready:</p>
+                      <div className="grid grid-cols-[repeat(auto-fill,minmax(80px,1fr))] gap-2">
+                        {resultClips.slice(-12).map((clip) => (
+                          <div key={clip.index} className="aspect-[9/16] rounded overflow-hidden border border-border bg-muted">
+                            {clip.thumbUrl ? (
+                              <img src={staticUrl(clip.thumbUrl)} alt={clip.name}
+                                className="w-full h-full object-cover" loading="lazy" />
+                            ) : (
+                              <div className="w-full h-full flex items-center justify-center text-[10px] text-muted-foreground">
+                                #{clip.index + 1}
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {!processProgress && (
+                <div className="flex flex-col items-center gap-4">
+                  <span className="h-8 w-8 animate-spin rounded-full border-4 border-muted border-t-primary" />
+                  <p className="text-sm text-muted-foreground">Starting...</p>
+                </div>
+              )}
             </div>
           )}
 

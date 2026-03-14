@@ -11,7 +11,7 @@ from pathlib import Path
 from zipfile import ZipFile
 
 from fastapi import APIRouter, HTTPException, Query, UploadFile, File, Form, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 
 from project_manager import PROJECTS_DIR, sanitize_project_name
 
@@ -666,19 +666,15 @@ async def trim_batch(body: dict):
 
 @router.post("/process-batch")
 async def process_batch(body: dict):
-    """Process staged videos: apply trims, split into clips of desired length.
+    """Process staged videos with SSE progress streaming.
 
-    Body: {
-        "project": "...",
-        "batch_id": "...",
-        "clip_length": 7.0,
-        "sources": [
-            {"path": "...", "trim_start": 0.0, "trim_end": 30.0, "original_name": "..."}
-        ]
-    }
+    Returns text/event-stream. Each line is a JSON event:
+      {"type": "plan", "job_id": "...", "total_clips": N}
+      {"type": "progress", "clip": 3, "total": 10, "source_name": "...", "status": "encoding"}
+      {"type": "clip_done", "clip": {...clip info...}}
+      {"type": "complete", "job_id": "...", "clips": [...], "ok_count": N, "total": N}
+      {"type": "error", "message": "..."}
     """
-    import math
-
     project = body.get("project", "quick-test")
     batch_id = body.get("batch_id", "")
     clip_length = float(body.get("clip_length", 7))
@@ -689,81 +685,98 @@ async def process_batch(body: dict):
     if clip_length < 1:
         raise HTTPException(400, "clip_length must be >= 1 second")
 
-    clipper_dir = _get_clipper_dir(project)
-    job_id = uuid.uuid4().hex[:12]
-    job_dir = clipper_dir / job_id
-    job_dir.mkdir(parents=True, exist_ok=True)
+    async def generate():
+        clipper_dir = _get_clipper_dir(project)
+        job_id = uuid.uuid4().hex[:12]
+        job_dir = clipper_dir / job_id
+        job_dir.mkdir(parents=True, exist_ok=True)
+        sanitized = sanitize_project_name(project)
 
-    sanitized = sanitize_project_name(project)
-    results: list[dict] = []
-    clip_counter = 0
-
-    for src_idx, src in enumerate(sources):
-        source = Path(src["path"])
-        if not source.exists():
-            results.append({"index": clip_counter, "ok": False, "error": f"Source {src_idx} not found"})
-            clip_counter += 1
-            continue
-
-        trim_start = float(src.get("trim_start", 0))
-        trim_end = float(src.get("trim_end", 0))
-        trim_duration = trim_end - trim_start
-
-        if trim_duration < 0.5:
-            results.append({"index": clip_counter, "ok": False, "error": f"Source {src_idx} trim too short"})
-            clip_counter += 1
-            continue
-
-        # Probe source dimensions
-        try:
-            info = await _get_video_info(source)
-        except Exception:
-            info = {"width": 1080, "height": 1920}
-
-        # Calculate how many clips from this source
-        num_clips = max(1, math.floor(trim_duration / clip_length))
-        actual_clip_len = min(clip_length, trim_duration)
-
-        log.info("process source %d: %.1fs trimmed → %d clips of %.1fs",
-                 src_idx, trim_duration, num_clips, actual_clip_len)
-
-        for c in range(num_clips):
-            clip_counter += 1
-            clip_start = trim_start + c * actual_clip_len
-            clip_name = f"clip_{clip_counter:03d}.mp4"
-            clip_path = job_dir / clip_name
-
-            ok = await _clip_segment(
-                source, clip_path, clip_start, actual_clip_len,
-                info["width"], info["height"],
-            )
-
-            # Generate thumbnail for output clip
-            thumb_name = f"thumb_{clip_counter:03d}.jpg"
-            thumb_path = job_dir / thumb_name
-            if ok:
-                await _generate_thumbnail(clip_path, thumb_path)
-
-            results.append({
-                "index": clip_counter - 1,
-                "name": clip_name,
-                "source_name": src.get("original_name", f"source_{src_idx}"),
-                "ok": ok,
-                "url": f"/projects/{sanitized}/clips/{job_id}/{clip_name}" if ok else None,
-                "thumb_url": f"/projects/{sanitized}/clips/{job_id}/{thumb_name}" if ok else None,
-                "start": round(clip_start, 2),
-                "duration": round(actual_clip_len, 2),
+        # Pre-calculate total clips
+        total_clips = 0
+        source_plans: list[dict] = []
+        for src_idx, src in enumerate(sources):
+            source = Path(src["path"])
+            trim_start = float(src.get("trim_start", 0))
+            trim_end = float(src.get("trim_end", 0))
+            trim_duration = trim_end - trim_start
+            if not source.exists() or trim_duration < 0.5:
+                source_plans.append({"skip": True, "src_idx": src_idx, "src": src})
+                total_clips += 1
+                continue
+            num = max(1, math.floor(trim_duration / clip_length))
+            total_clips += num
+            source_plans.append({
+                "skip": False, "src_idx": src_idx, "src": src,
+                "source": source, "trim_start": trim_start, "trim_end": trim_end,
+                "trim_duration": trim_duration, "num_clips": num,
             })
-            log.info("  clip %d: %.1f+%.1fs → %s (%s)",
-                     clip_counter, clip_start, actual_clip_len, clip_name, "ok" if ok else "FAIL")
 
-    return {
-        "job_id": job_id,
-        "clips": results,
-        "ok_count": sum(1 for r in results if r.get("ok")),
-        "total": len(results),
-        "clip_length": clip_length,
-    }
+        yield f"data: {json.dumps({'type': 'plan', 'job_id': job_id, 'total_clips': total_clips})}\n\n"
+
+        results: list[dict] = []
+        clip_counter = 0
+
+        for plan in source_plans:
+            src = plan["src"]
+            src_idx = plan["src_idx"]
+            source_name = src.get("original_name", f"source_{src_idx}")
+
+            if plan.get("skip"):
+                clip_counter += 1
+                error = "Source not found" if not Path(src["path"]).exists() else "Trim too short"
+                result = {"index": clip_counter - 1, "ok": False, "error": error}
+                results.append(result)
+                yield f"data: {json.dumps({'type': 'clip_done', 'clip': result})}\n\n"
+                continue
+
+            source = plan["source"]
+            trim_start = plan["trim_start"]
+            num_clips = plan["num_clips"]
+            actual_clip_len = min(clip_length, plan["trim_duration"])
+
+            try:
+                info = await _get_video_info(source)
+            except Exception:
+                info = {"width": 1080, "height": 1920}
+
+            for c in range(num_clips):
+                clip_counter += 1
+                clip_start = trim_start + c * actual_clip_len
+                clip_name = f"clip_{clip_counter:03d}.mp4"
+                clip_path = job_dir / clip_name
+
+                yield f"data: {json.dumps({'type': 'progress', 'clip': clip_counter, 'total': total_clips, 'source_name': source_name, 'status': 'encoding'})}\n\n"
+
+                ok = await _clip_segment(
+                    source, clip_path, clip_start, actual_clip_len,
+                    info["width"], info["height"],
+                )
+
+                thumb_name = f"thumb_{clip_counter:03d}.jpg"
+                thumb_path = job_dir / thumb_name
+                if ok:
+                    await _generate_thumbnail(clip_path, thumb_path, seek=actual_clip_len * 0.3)
+
+                result = {
+                    "index": clip_counter - 1,
+                    "name": clip_name,
+                    "source_name": source_name,
+                    "ok": ok,
+                    "url": f"/projects/{sanitized}/clips/{job_id}/{clip_name}" if ok else None,
+                    "thumb_url": f"/projects/{sanitized}/clips/{job_id}/{thumb_name}" if ok else None,
+                    "start": round(clip_start, 2),
+                    "duration": round(actual_clip_len, 2),
+                }
+                results.append(result)
+                yield f"data: {json.dumps({'type': 'clip_done', 'clip': result})}\n\n"
+
+                log.info("  clip %d/%d: %.1f+%.1fs → %s (%s)",
+                         clip_counter, total_clips, clip_start, actual_clip_len, clip_name, "ok" if ok else "FAIL")
+
+        yield f"data: {json.dumps({'type': 'complete', 'job_id': job_id, 'clips': results, 'ok_count': sum(1 for r in results if r.get('ok')), 'total': len(results), 'clip_length': clip_length})}\n\n"
+
+    return StreamingResponse(generate(), media_type="text/event-stream")
 
 
 # ── Pipeline for local files ─────────────────────────────────────────
