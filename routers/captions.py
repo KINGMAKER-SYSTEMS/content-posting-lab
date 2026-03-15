@@ -61,11 +61,8 @@ async def _run_pipeline(
     m = re.search(r"@([\w.]+)", profile_url)
     username = m.group(1) if m else "unknown"
 
-    # Project-scoped output directory
-    if project:
-        job_dir = get_project_caption_dir(project) / username
-    else:
-        job_dir = Path("caption_output") / username
+    # Project-scoped output directory (always project-scoped for Railway persistence)
+    job_dir = get_project_caption_dir(project or "quick-test") / username
     frames_dir = job_dir / "frames"
     frames_dir.mkdir(parents=True, exist_ok=True)
 
@@ -294,10 +291,7 @@ async def export_captions(
     project: str | None = Query(default=None),
 ):
     """Download captions CSV for a username, optionally scoped to a project."""
-    if project:
-        csv_path = get_project_caption_dir(project) / username / "captions.csv"
-    else:
-        csv_path = Path("caption_output") / username / "captions.csv"
+    csv_path = get_project_caption_dir(project or "quick-test") / username / "captions.csv"
     if not csv_path.exists():
         raise HTTPException(404, "CSV not found")
     return FileResponse(csv_path, filename=f"{username}_captions.csv")

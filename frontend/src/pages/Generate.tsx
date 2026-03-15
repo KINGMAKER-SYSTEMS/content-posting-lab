@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { apiUrl, staticUrl } from '../lib/api';
 import { useWorkflowStore } from '../stores/workflowStore';
 import type { Provider, Job, VideoEntry, ProviderSchemas, SchemaField } from '../types/api';
-import { EmptyState } from '../components';
+import { EmptyState, LazyVideo, ProgressBar } from '../components';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
@@ -11,7 +11,6 @@ import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent } from '@/components/ui/card';
 import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { ProgressBar } from '../components';
 import { ScrollArea } from '@/components/ui/scroll-area';
 
 const STATUS_LABELS: Record<string, string> = {
@@ -975,14 +974,9 @@ export function GeneratePage() {
                           >
                             <div className="relative bg-muted aspect-[9/16] flex items-center justify-center">
                               {v.status === 'done' && url ? (
-                                <video
+                                <LazyVideo
                                   src={staticUrl(url)}
                                   className="w-full h-full object-cover"
-                                  playsInline
-                                  muted
-                                  loop
-                                  onMouseEnter={(e) => { void e.currentTarget.play().catch(() => {}); }}
-                                  onMouseLeave={(e) => { e.currentTarget.pause(); e.currentTarget.currentTime = 0; }}
                                 />
                               ) : v.status === 'error' || v.status === 'failed' ? (
                                 <div className="flex flex-col items-center gap-2 text-muted-foreground text-sm">

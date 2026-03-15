@@ -346,8 +346,21 @@ export function ClipperPage() {
   const { activeProjectName, addNotification, primeBurnSelection } = useWorkflowStore();
   const navigate = useNavigate();
 
+  // Restore persisted staging state
+  const storageKey = activeProjectName ? `clipper:staging:${activeProjectName}` : null;
+  const restored = useRef(false);
+  const initial = (() => {
+    if (restored.current || !storageKey) return null;
+    restored.current = true;
+    try {
+      const raw = localStorage.getItem(storageKey);
+      if (raw) return JSON.parse(raw) as { stagedFiles: StagedFile[]; batchId: string | null; stage: ClipperStage; clipLength: number };
+    } catch { /* ignore */ }
+    return null;
+  })();
+
   // Pipeline stage
-  const [stage, setStage] = useState<ClipperStage>('ingest');
+  const [stage, setStage] = useState<ClipperStage>(initial?.stage && initial.stage !== 'processing' ? initial.stage : 'ingest');
 
   // Ingest
   const [dragOver, setDragOver] = useState(false);
@@ -357,12 +370,24 @@ export function ClipperPage() {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Staging
-  const [stagedFiles, setStagedFiles] = useState<StagedFile[]>([]);
-  const [batchId, setBatchId] = useState<string | null>(null);
+  const [stagedFiles, setStagedFiles] = useState<StagedFile[]>(initial?.stagedFiles ?? []);
+  const [batchId, setBatchId] = useState<string | null>(initial?.batchId ?? null);
   const [expandedIndex, setExpandedIndex] = useState<number | null>(null);
 
   // Configure
-  const [clipLength, setClipLength] = useState(7);
+  const [clipLength, setClipLength] = useState(initial?.clipLength ?? 7);
+
+  // Persist staging state to localStorage
+  useEffect(() => {
+    if (!storageKey) return;
+    if (stagedFiles.length === 0 && stage === 'ingest') {
+      localStorage.removeItem(storageKey);
+      return;
+    }
+    // Only persist during ingest/trim/configure — not processing/results
+    if (stage === 'processing' || stage === 'results') return;
+    localStorage.setItem(storageKey, JSON.stringify({ stagedFiles, batchId, stage, clipLength }));
+  }, [storageKey, stagedFiles, batchId, stage, clipLength]);
 
   // Processing / Results
   const [processing, setProcessing] = useState(false);
@@ -561,6 +586,7 @@ export function ClipperPage() {
     setResultClips([]);
     setResultJobId(null);
     setStage('ingest');
+    if (storageKey) localStorage.removeItem(storageKey);
   };
 
   const viewPastJob = (job: PastJob) => {

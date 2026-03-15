@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { apiUrl, staticUrl } from '../lib/api';
-import { EmptyState, ProgressBar } from '../components';
+import { EmptyState, LazyVideo, ProgressBar } from '../components';
 import { useWorkflowStore } from '../stores/workflowStore';
 import type {
   BatchesResponse,
@@ -209,55 +209,6 @@ async function captureTextOverlay(pair: BurnPairState): Promise<string | null> {
   return canvas.toDataURL('image/png');
 }
 
-// Lazy-loading video that only fetches when scrolled into view
-function LazyVideo({ src, style, className, selected, onLoadedMetadata, onLoadedData }: {
-  src: string;
-  style?: CSSProperties;
-  className?: string;
-  selected?: boolean;
-  onLoadedMetadata?: (e: React.SyntheticEvent<HTMLVideoElement>) => void;
-  onLoadedData?: (e: React.SyntheticEvent<HTMLVideoElement>) => void;
-}) {
-  const ref = useRef<HTMLDivElement>(null);
-  const [visible, setVisible] = useState(false);
-
-  useEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    const obs = new IntersectionObserver(
-      ([entry]) => { if (entry.isIntersecting) { setVisible(true); obs.disconnect(); } },
-      { rootMargin: '200px' },
-    );
-    obs.observe(el);
-    return () => obs.disconnect();
-  }, []);
-
-  // Always visible if selected
-  const shouldLoad = visible || selected;
-
-  return (
-    <div ref={ref} className="w-full h-full">
-      {shouldLoad ? (
-        <video
-          src={src} muted loop playsInline
-          preload={selected ? 'auto' : 'metadata'}
-          style={style}
-          className={className}
-          onLoadedData={(e) => {
-            e.currentTarget.currentTime = 0.001;
-            onLoadedData?.(e);
-          }}
-          onLoadedMetadata={onLoadedMetadata}
-          onMouseEnter={(e) => { void e.currentTarget.play().catch(() => {}); }}
-          onMouseLeave={(e) => { e.currentTarget.pause(); e.currentTarget.currentTime = 0.001; }}
-        />
-      ) : (
-        <div className="w-full h-full bg-muted" />
-      )}
-    </div>
-  );
-}
-
 export function BurnPage() {
   const { activeProjectName, addNotification, burnSelection, clearBurnSelection, setBurnReadyCount } = useWorkflowStore();
 
@@ -275,7 +226,10 @@ export function BurnPage() {
   const [showImportPicker, setShowImportPicker] = useState(false);
   const [importTargetCategoryId, setImportTargetCategoryId] = useState('');
 
-  const [selectedFolder, setSelectedFolder] = useState('');
+  const [selectedFolder, setSelectedFolder] = useState(() => {
+    if (!activeProjectName) return '';
+    return localStorage.getItem(`burn:folder:${activeProjectName}`) || '';
+  });
   const [manualPaste, setManualPaste] = useState('');
   const [selectedFontFile, setSelectedFontFile] = useState('');
   const [defaultFontSize, setDefaultFontSize] = useState(32);
@@ -492,6 +446,11 @@ export function BurnPage() {
   }, []);
 
   useEffect(() => { void loadData(); }, [loadData]);
+  useEffect(() => {
+    if (activeProjectName && selectedFolder) {
+      localStorage.setItem(`burn:folder:${activeProjectName}`, selectedFolder);
+    }
+  }, [activeProjectName, selectedFolder]);
   useEffect(() => {
     const h: EventListener = () => { void loadData(); };
     window.addEventListener('burn:refresh-request', h);

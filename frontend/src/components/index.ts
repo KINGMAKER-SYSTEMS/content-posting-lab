@@ -8,3 +8,4 @@ export * from './EmptyState';
 export * from './ConfirmModal';
 export * from './ProjectSelector';
 export * from './TabNav';
+export * from './LazyVideo';
