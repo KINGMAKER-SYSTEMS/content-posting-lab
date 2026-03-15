@@ -3,6 +3,4 @@ builder = "dockerfile"
 
 [deploy]
 healthcheckPath = "/api/health"
-
-[[mounts]]
-mountPath = "/app/projects"
+healthcheckTimeout = 30
