@@ -153,7 +153,12 @@ async def get_thumbnail(video_url: str, dest: Path) -> Path:
     proc = await asyncio.create_subprocess_exec(
         *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
     )
-    stdout, stderr = await proc.communicate()
+    try:
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.communicate()
+        raise RuntimeError("yt-dlp thumbnail timed out after 30s")
     if proc.returncode != 0:
         raise RuntimeError(
             f"yt-dlp thumbnail failed: {stderr.decode(errors='replace')[-200:]}"
@@ -185,7 +190,12 @@ async def get_thumbnail(video_url: str, dest: Path) -> Path:
     proc2 = await asyncio.create_subprocess_exec(
         *cmd2, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
     )
-    stdout2, _ = await proc2.communicate()
+    try:
+        stdout2, _ = await asyncio.wait_for(proc2.communicate(), timeout=15)
+    except asyncio.TimeoutError:
+        proc2.kill()
+        await proc2.communicate()
+        raise RuntimeError("yt-dlp thumbnail URL lookup timed out")
     thumb_url = stdout2.decode().strip()
     if thumb_url:
         import urllib.request

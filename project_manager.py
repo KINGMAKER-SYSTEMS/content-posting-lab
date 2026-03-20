@@ -91,6 +91,7 @@ def create_project(name: str) -> Path:
     (project_path / "burned").mkdir(exist_ok=True)
     (project_path / "recreate").mkdir(exist_ok=True)
     (project_path / "clips").mkdir(exist_ok=True)
+    (project_path / "slideshow-images").mkdir(exist_ok=True)
 
     return project_path
 
@@ -232,6 +233,22 @@ def get_project_clips_dir(name: str) -> Path:
     """Get the clips subdirectory for a project."""
     sanitized_name = sanitize_project_name(name)
     return PROJECTS_DIR / sanitized_name / "clips"
+
+
+def get_project_slideshow_dir(name: str) -> Path:
+    """Get the slideshow subdirectory for a project (rendered videos)."""
+    sanitized_name = sanitize_project_name(name)
+    path = PROJECTS_DIR / sanitized_name / "videos" / "slideshow"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def get_project_slideshow_images_dir(name: str) -> Path:
+    """Get the slideshow images subdirectory for a project (uploaded/cropped images)."""
+    sanitized_name = sanitize_project_name(name)
+    path = PROJECTS_DIR / sanitized_name / "slideshow-images"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
 
 
 def ensure_default_project() -> Path:

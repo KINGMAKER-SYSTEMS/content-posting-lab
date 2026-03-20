@@ -104,6 +104,7 @@ interface WorkflowState {
   // Generate page actions
   addGenerateJob: (job: Job) => void;
   setGenerateJob: (job: Job) => void;
+  removeGenerateJob: (jobId: string) => void;
   clearGenerateJobs: () => void;
 }
 
@@ -266,6 +267,12 @@ export const useWorkflowStore = create<WorkflowState>((set) => ({
         generateJobs: [job, ...state.generateJobs],
       };
     });
+  },
+
+  removeGenerateJob: (jobId) => {
+    set((state) => ({
+      generateJobs: state.generateJobs.filter((j) => j.id !== jobId),
+    }));
   },
 
   clearGenerateJobs: () => {

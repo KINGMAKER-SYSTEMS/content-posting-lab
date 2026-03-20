@@ -44,6 +44,12 @@ export default defineConfig({
       '/api': {
         target: 'http://localhost:8000',
         changeOrigin: true,
+        configure: (proxy) => {
+          // Raise proxy body size limit to 500MB for large video uploads
+          proxy.on('proxyReq', (proxyReq) => {
+            proxyReq.setHeader('connection', 'keep-alive');
+          });
+        },
       },
       '/fonts': {
         target: 'http://localhost:8000',

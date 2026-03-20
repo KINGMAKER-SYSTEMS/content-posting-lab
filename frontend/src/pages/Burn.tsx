@@ -1020,8 +1020,14 @@ export function BurnPage() {
                           onPointerDown={(e) => startDrag(e, index)}
                           onDoubleClick={(e) => { e.stopPropagation(); setInlineEditIndex(index); setSelectedIndex(index); }}
                           className={`absolute z-10 select-none text-center ${dragRef.current?.index === index ? 'cursor-grabbing' : 'cursor-grab'} ${selected ? 'outline outline-2 outline-offset-4 outline-dashed outline-primary' : ''}`}
-                          style={{ left: `${pair.x}%`, top: `${pair.y}%`, transform: 'translate(-50%, -50%)', maxWidth: `${pair.maxWidthPct}%`, fontFamily: `'${fontFamilyName(pair.fontFile)}', sans-serif` }}
+                          style={{ left: `${pair.x}%`, top: `${pair.y}%`, transform: 'translate(-50%, -50%)', maxWidth: `${pair.maxWidthPct}%`, minWidth: '40px', minHeight: '24px', fontFamily: `'${fontFamilyName(pair.fontFile)}', sans-serif` }}
                         >
+                          {/* Drag handle indicator — visible when selected */}
+                          {selected && !inlineEditIndex ? (
+                            <div className="pointer-events-none absolute -top-3 left-1/2 -translate-x-1/2 rounded-full bg-primary px-1.5 py-0.5 text-[8px] font-bold text-primary-foreground shadow-sm">
+                              drag
+                            </div>
+                          ) : null}
                           {inlineEditIndex === index ? (
                             <textarea
                               value={pair.caption}
@@ -1035,7 +1041,7 @@ export function BurnPage() {
                             />
                           ) : (
                             <span className="inline-block break-words font-bold text-white" style={{ fontSize: `${previewFontPx}px`, lineHeight: 1.2, WebkitTextStroke: `${strokePx.toFixed(1)}px black`, paintOrder: 'stroke fill', whiteSpace: 'pre-wrap' }}>
-                              {pair.caption}
+                              {pair.caption || '\u00A0'}
                             </span>
                           )}
                         </div>

@@ -342,6 +342,42 @@ async def get_job(job_id: str):
     return jobs[job_id]
 
 
+@router.delete("/jobs/{job_id}")
+async def delete_job(job_id: str, project: str = "quick-test"):
+    """Delete a job and all its video files from disk."""
+    if job_id not in jobs:
+        _load_jobs(project)
+    job = jobs.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    proj = job.get("project", project)
+    video_dir = get_project_video_dir(proj)
+
+    # Delete all video files on disk
+    deleted_files = 0
+    for v in job.get("videos", []):
+        # Delete main file
+        if v.get("file"):
+            target = (video_dir / v["file"]).resolve()
+            if str(target).startswith(str(video_dir.resolve())) and target.exists():
+                target.unlink()
+                deleted_files += 1
+        # Delete crop files
+        for crop in v.get("crops", []):
+            if crop.get("file"):
+                target = (video_dir / crop["file"]).resolve()
+                if str(target).startswith(str(video_dir.resolve())) and target.exists():
+                    target.unlink()
+                    deleted_files += 1
+
+    # Remove from in-memory state
+    del jobs[job_id]
+    _save_jobs(proj)
+
+    return {"deleted": True, "job_id": job_id, "files_removed": deleted_files}
+
+
 @router.get("/jobs/{job_id}/download-all")
 async def download_all(job_id: str):
     if job_id not in jobs:

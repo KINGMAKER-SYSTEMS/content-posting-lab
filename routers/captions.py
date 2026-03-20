@@ -105,7 +105,8 @@ async def _run_pipeline(
                     job_id, "downloading", {"index": i, "total": total, "video_id": vid}
                 )
                 thumb_path = frames_dir / f"{vid}.jpg"
-                await get_thumbnail(url, thumb_path)
+                # Timeout each thumbnail download to prevent stalling the batch
+                await asyncio.wait_for(get_thumbnail(url, thumb_path), timeout=45)
                 row["frame_path"] = str(thumb_path)
                 b64 = base64.b64encode(thumb_path.read_bytes()).decode()
                 await _broadcast(
@@ -117,6 +118,19 @@ async def _run_pipeline(
                         "video_id": vid,
                         "b64": b64,
                         "video_url": url,
+                    },
+                )
+            except asyncio.TimeoutError:
+                print(f"[captions] thumbnail timed out for {vid}", flush=True)
+                row["error"] = "Thumbnail download timed out"
+                await _broadcast(
+                    job_id,
+                    "frame_error",
+                    {
+                        "index": i,
+                        "total": total,
+                        "video_id": vid,
+                        "error": "Thumbnail download timed out",
                     },
                 )
             except Exception as e:
@@ -170,18 +184,22 @@ async def _run_pipeline(
             )
             try:
                 frame_bytes = Path(row["frame_path"]).read_bytes()
-                caption = await extract_caption(frame_bytes)
+                caption = await asyncio.wait_for(extract_caption(frame_bytes), timeout=30)
                 row["caption"] = caption
                 # Analyze mood/sentiment if caption was extracted
                 if caption.strip():
                     try:
-                        mood = await analyze_mood(caption)
+                        mood = await asyncio.wait_for(analyze_mood(caption), timeout=10)
                         row["mood"] = mood
-                    except Exception as me:
+                    except (asyncio.TimeoutError, Exception) as me:
                         print(f"[captions] mood analysis failed for {row['video_id']}: {me}", flush=True)
                         row["mood"] = "chill"
                 else:
                     row["mood"] = None
+            except asyncio.TimeoutError:
+                print(f"[captions] OCR timed out for {row['video_id']}", flush=True)
+                row["error"] = "Caption extraction timed out"
+                caption = ""
             except Exception as e:
                 print(f"[captions] OCR failed for {row['video_id']}: {e}", flush=True)
                 row["error"] = str(e)

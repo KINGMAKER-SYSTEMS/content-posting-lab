@@ -345,3 +345,44 @@ export interface DeleteProjectResponse {
   deleted: boolean;
   name: string;
 }
+
+// ============================================================================
+// SLIDESHOW
+// ============================================================================
+
+export interface SlideshowImage {
+  name: string;
+  path: string;
+}
+
+export interface SlideshowImagesResponse {
+  images: SlideshowImage[];
+}
+
+export interface SlideConfig {
+  image: string;
+  duration: number;
+}
+
+export interface SlideshowRenderRequest {
+  project: string;
+  slides: SlideConfig[];
+  fps?: number;
+}
+
+export interface SlideshowRenderJob {
+  status: 'pending' | 'running' | 'complete' | 'error' | 'not_found';
+  progress: number;
+  message: string;
+  output?: string;
+  path?: string;
+}
+
+export interface SlideshowRender {
+  name: string;
+  path: string;
+}
+
+export interface SlideshowRendersResponse {
+  renders: SlideshowRender[];
+}

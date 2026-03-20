@@ -7,6 +7,7 @@ import { ProjectsPage } from './pages/Projects';
 import { RecreatePage } from './pages/Recreate';
 import { PublishPage } from './pages/Publish';
 import { ClipperPage } from './pages/Clipper';
+import { SlideshowPage } from './pages/Slideshow';
 import { ProjectSelector, ToastContainer } from './components';
 import { useWorkflowStore } from './stores/workflowStore';
 import { type CreateProjectResponse, type HealthResponse, type Project, type ProjectListResponse } from './types/api';
@@ -26,7 +27,7 @@ interface HealthBannerItem {
   message: string;
 }
 
-const TOOL_PATHS = ['/generate', '/clipper', '/recreate', '/captions', '/burn'];
+const TOOL_PATHS = ['/generate', '/clipper', '/recreate', '/captions', '/burn', '/slideshow'];
 
 function AppShell() {
   const location = useLocation();
@@ -55,6 +56,7 @@ function AppShell() {
       { path: '/recreate', label: 'Recreate', badge: recreateJobActive ? 'LIVE' : undefined },
       { path: '/captions', label: 'Captions', badge: captionJobActive ? 'LIVE' : undefined },
       { path: '/burn', label: 'Burn', badge: burnReadyCount > 0 ? burnReadyCount : undefined },
+      { path: '/slideshow', label: 'Slideshow' },
     ],
     [burnReadyCount, captionJobActive, recreateJobActive, videoRunningCount],
   );
@@ -382,6 +384,9 @@ function AppShell() {
         </div>
         <div style={{ display: location.pathname === '/clipper' ? 'block' : 'none' }}>
           <ClipperPage />
+        </div>
+        <div style={{ display: location.pathname === '/slideshow' ? 'block' : 'none' }}>
+          <SlideshowPage />
         </div>
         <div style={{ display: location.pathname === '/publish' ? 'block' : 'none' }}>
           <PublishPage />

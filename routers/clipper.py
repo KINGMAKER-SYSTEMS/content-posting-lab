@@ -463,9 +463,13 @@ async def upload_video(
     ext = Path(file.filename or "video.mp4").suffix or ".mp4"
     dest = job_dir / f"source{ext}"
 
-    content = await file.read()
-    dest.write_bytes(content)
-    log.info("upload: %s → %s (%d bytes)", file.filename, dest, len(content))
+    # Stream to disk in chunks to handle large files without exhausting memory
+    total_bytes = 0
+    with open(dest, "wb") as f:
+        while chunk := await file.read(1024 * 1024):  # 1MB chunks
+            f.write(chunk)
+            total_bytes += len(chunk)
+    log.info("upload: %s → %s (%d bytes)", file.filename, dest, total_bytes)
 
     return {"job_id": job_id, "path": str(dest)}
 
@@ -487,18 +491,25 @@ async def upload_batch(
         # Always output as .mp4 for browser compatibility
         safe_name = f"src_{i:03d}.mp4"
         dest = staging_dir / safe_name
-        content = await file.read()
 
+        # Stream to disk in chunks to handle large files
         if orig_ext == ".mp4":
-            # MP4: write directly then faststart in-place
-            dest.write_bytes(content)
-            log.info("batch upload: %s → %s (%d bytes)", file.filename, dest, len(content))
+            total_bytes = 0
+            with open(dest, "wb") as f:
+                while chunk := await file.read(1024 * 1024):
+                    f.write(chunk)
+                    total_bytes += len(chunk)
+            log.info("batch upload: %s → %s (%d bytes)", file.filename, dest, total_bytes)
             await _faststart(dest)
         else:
             # Non-MP4 (.mov, .mkv, .webm, etc): transcode to mp4 with faststart
             raw_path = staging_dir / f"_raw_{i:03d}{orig_ext}"
-            raw_path.write_bytes(content)
-            log.info("batch upload: %s → transcoding to mp4...", file.filename)
+            total_bytes = 0
+            with open(raw_path, "wb") as f:
+                while chunk := await file.read(1024 * 1024):
+                    f.write(chunk)
+                    total_bytes += len(chunk)
+            log.info("batch upload: %s (%d bytes) → transcoding to mp4...", file.filename, total_bytes)
             proc = await asyncio.create_subprocess_exec(
                 "ffmpeg", "-y", "-i", str(raw_path),
                 "-c:v", "libx264", "-preset", "fast", "-crf", "23",

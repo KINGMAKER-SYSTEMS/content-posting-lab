@@ -159,6 +159,7 @@ export function GeneratePage() {
     generateJobs,
     addGenerateJob,
     setGenerateJob,
+    removeGenerateJob,
     clearGenerateJobs,
     addGeneratedVideo,
     addNotification,
@@ -946,12 +947,50 @@ export function GeneratePage() {
                   <Card key={job.id}>
                     <CardContent className="pt-0">
                       <div className="flex items-center justify-between mb-2">
-                        <div className="text-sm text-muted-foreground italic truncate max-w-[60%]" title={job.prompt}>
+                        <div className="text-sm text-muted-foreground italic truncate max-w-[50%]" title={job.prompt}>
                           "{job.prompt}" <span className="text-foreground font-bold">[{job.provider}]</span>
                         </div>
-                        <Badge variant={allFinished && errorCount === 0 ? 'success' : 'info'}>
-                          {doneCount}/{total} done
-                        </Badge>
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            title="Copy generation command"
+                            onClick={async () => {
+                              const params = [
+                                `Prompt: ${job.prompt}`,
+                                `Provider: ${job.provider}`,
+                                `Count: ${job.count}`,
+                                `Job ID: ${job.id}`,
+                              ].join('\n');
+                              try {
+                                await navigator.clipboard.writeText(params);
+                                addNotification('success', 'Command copied to clipboard');
+                              } catch {
+                                addNotification('error', 'Failed to copy to clipboard');
+                              }
+                            }}
+                            className="text-[11px] font-bold text-muted-foreground hover:text-primary transition-colors"
+                          >
+                            Copy
+                          </button>
+                          <button
+                            type="button"
+                            title="Delete this job and its videos"
+                            onClick={async () => {
+                              const project = job.project || 'quick-test';
+                              try {
+                                await fetch(apiUrl(`/api/video/jobs/${job.id}?project=${encodeURIComponent(project)}`), { method: 'DELETE' });
+                              } catch { /* ignore — still remove from UI */ }
+                              removeGenerateJob(job.id);
+                              activePolls.delete(job.id);
+                            }}
+                            className="text-[11px] font-bold text-muted-foreground hover:text-destructive transition-colors"
+                          >
+                            Delete
+                          </button>
+                          <Badge variant={allFinished && errorCount === 0 ? 'success' : 'info'}>
+                            {doneCount}/{total} done
+                          </Badge>
+                        </div>
                       </div>
 
                       <ProgressBar
@@ -1014,10 +1053,18 @@ export function GeneratePage() {
                                       try {
                                         const r = await fetch(apiUrl(`/api/video/file?project=${encodeURIComponent(project)}&path=${encodeURIComponent(file!)}`), { method: 'DELETE' });
                                         if (!r.ok) throw new Error('Failed');
-                                        setGenerateJob({
-                                          ...job,
-                                          videos: job.videos.map((vv, vi) => vi === vIdx ? { ...vv, status: 'failed' as const, error: 'Deleted', file: undefined, url: undefined, crops: undefined } : vv),
+                                        // Remove the video from the job (or remove just the crop)
+                                        const updatedVideos = job.videos.map((vv, vi) => {
+                                          if (vi !== vIdx) return vv;
+                                          // If this video has crops and we deleted one crop, remove that crop
+                                          if (vv.crops && vv.crops.length > 0) {
+                                            const remainingCrops = vv.crops.filter((c) => c.file !== file);
+                                            if (remainingCrops.length > 0) return { ...vv, crops: remainingCrops };
+                                          }
+                                          // Otherwise mark the whole video as deleted
+                                          return { ...vv, status: 'failed' as const, error: 'Deleted', file: undefined, url: undefined, crops: undefined };
                                         });
+                                        setGenerateJob({ ...job, videos: updatedVideos });
                                         addNotification('success', 'Video deleted');
                                       } catch {
                                         addNotification('error', 'Failed to delete video');
@@ -1027,6 +1074,20 @@ export function GeneratePage() {
                                     title="Delete video"
                                   >
                                     Delete
+                                  </button>
+                                )}
+                                {v.status === 'done' && file && (
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      primeBurnSelection({ videoPaths: [file!] });
+                                      navigate('/burn');
+                                    }}
+                                    className="text-muted-foreground hover:text-primary transition-colors font-bold text-[11px]"
+                                    title="Send this video to Burn"
+                                  >
+                                    Burn
                                   </button>
                                 )}
                                 {v.status === 'done' && url && (

@@ -22,6 +22,7 @@ COPY app.py main.py project_manager.py ./
 COPY routers/ ./routers/
 COPY providers/ ./providers/
 COPY scraper/ ./scraper/
+COPY services/ ./services/
 COPY fonts/ ./fonts/
 COPY --from=frontend /app/frontend/dist ./frontend/dist
 
