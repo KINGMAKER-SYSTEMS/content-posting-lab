@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { type Job, type Project } from '../types/api';
+import { type Job, type Project, type RosterPage } from '../types/api';
 
 interface Notification {
   id: string;
@@ -84,6 +84,10 @@ interface WorkflowState {
   // Generate page state — persists across tab switches
   generateJobs: Job[];
 
+  // Roster state
+  rosterPages: RosterPage[];
+  rosterLoading: boolean;
+
   setActiveProjectName: (name: string | null) => void;
   updateProjectStats: (projects: Project[]) => void;
   addNotification: (type: 'success' | 'error' | 'info', message: string) => void;
@@ -106,6 +110,10 @@ interface WorkflowState {
   setGenerateJob: (job: Job) => void;
   removeGenerateJob: (jobId: string) => void;
   clearGenerateJobs: () => void;
+
+  // Roster actions
+  setRosterPages: (pages: RosterPage[]) => void;
+  setRosterLoading: (loading: boolean) => void;
 }
 
 export const useWorkflowStore = create<WorkflowState>((set) => ({
@@ -125,6 +133,8 @@ export const useWorkflowStore = create<WorkflowState>((set) => ({
   },
   generatePrefill: null,
   generateJobs: [],
+  rosterPages: [],
+  rosterLoading: false,
 
   setActiveProjectName: (name) => {
     set({ activeProjectName: name });
@@ -277,5 +287,13 @@ export const useWorkflowStore = create<WorkflowState>((set) => ({
 
   clearGenerateJobs: () => {
     set({ generateJobs: [] });
+  },
+
+  setRosterPages: (pages) => {
+    set({ rosterPages: pages });
+  },
+
+  setRosterLoading: (loading) => {
+    set({ rosterLoading: loading });
   },
 }));

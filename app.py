@@ -20,6 +20,7 @@ from routers.clipper import router as clipper_router
 from routers.projects import list_all_projects, router as projects_router
 from routers.recreate import router as recreate_router
 from routers.postiz import router as postiz_router
+from routers.roster import router as roster_router
 from routers.slideshow import router as slideshow_router
 from routers.video import router as video_router
 
@@ -131,6 +132,7 @@ app.include_router(recreate_router, prefix="/api/recreate", tags=["recreate"])
 app.include_router(caption_bank_router, prefix="/api/caption-bank", tags=["caption-bank"])
 app.include_router(clipper_router, prefix="/api/clipper", tags=["clipper"])
 app.include_router(postiz_router, prefix="/api/postiz", tags=["postiz"])
+app.include_router(roster_router, prefix="/api/roster", tags=["roster"])
 app.include_router(slideshow_router, prefix="/api/slideshow", tags=["slideshow"])
 
 

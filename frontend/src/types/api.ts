@@ -386,3 +386,27 @@ export interface SlideshowRender {
 export interface SlideshowRendersResponse {
   renders: SlideshowRender[];
 }
+
+// ── Roster ────────────────────────────────────────────────────────────────
+
+export interface RosterPage {
+  integration_id: string;
+  name: string;
+  provider: string;
+  picture?: string;
+  project: string | null;
+  drive_folder_url: string | null;
+  drive_folder_id: string | null;
+  added_at: string;
+  updated_at: string;
+}
+
+export interface RosterResponse {
+  pages: RosterPage[];
+}
+
+export interface RosterSyncResponse {
+  added: number;
+  removed: number;
+  pages: RosterPage[];
+}
