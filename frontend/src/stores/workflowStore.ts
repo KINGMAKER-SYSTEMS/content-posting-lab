@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { type Job, type Project, type RosterPage } from '../types/api';
+import { type Job, type Project, type RosterPage, type UploadJob, type UploadQueueStats } from '../types/api';
 
 interface Notification {
   id: string;
@@ -88,6 +88,10 @@ interface WorkflowState {
   rosterPages: RosterPage[];
   rosterLoading: boolean;
 
+  // Upload queue state
+  uploadJobs: UploadJob[];
+  uploadStats: UploadQueueStats | null;
+
   setActiveProjectName: (name: string | null) => void;
   updateProjectStats: (projects: Project[]) => void;
   addNotification: (type: 'success' | 'error' | 'info', message: string) => void;
@@ -114,6 +118,12 @@ interface WorkflowState {
   // Roster actions
   setRosterPages: (pages: RosterPage[]) => void;
   setRosterLoading: (loading: boolean) => void;
+
+  // Upload actions
+  setUploadJobs: (jobs: UploadJob[]) => void;
+  setUploadStats: (stats: UploadQueueStats | null) => void;
+  addUploadJob: (job: UploadJob) => void;
+  updateUploadJob: (job: UploadJob) => void;
 }
 
 export const useWorkflowStore = create<WorkflowState>((set) => ({
@@ -135,6 +145,8 @@ export const useWorkflowStore = create<WorkflowState>((set) => ({
   generateJobs: [],
   rosterPages: [],
   rosterLoading: false,
+  uploadJobs: [],
+  uploadStats: null,
 
   setActiveProjectName: (name) => {
     set({ activeProjectName: name });
@@ -295,5 +307,25 @@ export const useWorkflowStore = create<WorkflowState>((set) => ({
 
   setRosterLoading: (loading) => {
     set({ rosterLoading: loading });
+  },
+
+  setUploadJobs: (jobs) => {
+    set({ uploadJobs: jobs });
+  },
+
+  setUploadStats: (stats) => {
+    set({ uploadStats: stats });
+  },
+
+  addUploadJob: (job) => {
+    set((state) => ({
+      uploadJobs: [job, ...state.uploadJobs],
+    }));
+  },
+
+  updateUploadJob: (job) => {
+    set((state) => ({
+      uploadJobs: state.uploadJobs.map((j) => (j.job_id === job.job_id ? job : j)),
+    }));
   },
 }));

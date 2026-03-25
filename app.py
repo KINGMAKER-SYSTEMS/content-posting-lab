@@ -22,6 +22,8 @@ from routers.recreate import router as recreate_router
 from routers.postiz import router as postiz_router
 from routers.roster import router as roster_router
 from routers.slideshow import router as slideshow_router
+from routers.email_routing import router as email_router
+from routers.upload import router as upload_router
 from routers.video import router as video_router
 
 load_dotenv()
@@ -134,6 +136,8 @@ app.include_router(clipper_router, prefix="/api/clipper", tags=["clipper"])
 app.include_router(postiz_router, prefix="/api/postiz", tags=["postiz"])
 app.include_router(roster_router, prefix="/api/roster", tags=["roster"])
 app.include_router(slideshow_router, prefix="/api/slideshow", tags=["slideshow"])
+app.include_router(email_router, prefix="/api/email", tags=["email"])
+app.include_router(upload_router, prefix="/api/upload", tags=["upload"])
 
 
 @app.get("/api/projects", include_in_schema=False)

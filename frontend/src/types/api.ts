@@ -397,6 +397,9 @@ export interface RosterPage {
   project: string | null;
   drive_folder_url: string | null;
   drive_folder_id: string | null;
+  email_alias: string | null;
+  email_rule_id: string | null;
+  fwd_destination: string | null;
   added_at: string;
   updated_at: string;
 }
@@ -409,4 +412,87 @@ export interface RosterSyncResponse {
   added: number;
   removed: number;
   pages: RosterPage[];
+}
+
+// ── Email Routing ──────────────────────────────────────────────────────────
+
+export interface EmailStatusResponse {
+  configured: boolean;
+  domain: string | null;
+}
+
+export interface EmailRule {
+  id: string;
+  name: string;
+  enabled: boolean;
+  matchers: { type: string; field: string; value: string }[];
+  actions: { type: string; value: string[] }[];
+}
+
+export interface EmailDestination {
+  id: string;
+  email: string;
+  verified: string | null;
+  created: string;
+}
+
+export interface AutoCreateEmailResponse {
+  rule: EmailRule;
+  alias: string;
+  page: RosterPage;
+}
+
+// ── Upload Engine ─────────────────────────────────────────────────────────
+
+export interface UploadJob {
+  job_id: string;
+  status: 'queued' | 'uploading' | 'completed' | 'failed' | 'cancelled';
+  video_path: string;
+  account_name: string;
+  description: string;
+  hashtags: string[];
+  sound_name: string | null;
+  sound_aud_vol: string;
+  schedule_time: string | null;
+  schedule_day: number | null;
+  copyrightcheck: boolean;
+  headless: boolean;
+  stealth: boolean;
+  proxy: Record<string, string> | null;
+  created_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+  error: string | null;
+}
+
+export interface UploadQueueStats {
+  queued: number;
+  uploading: number;
+  completed: number;
+  failed: number;
+  cancelled: number;
+  active_job_id: string | null;
+  queue_running: boolean;
+}
+
+export interface CookieStatus {
+  account: string;
+  path: string;
+  status: 'valid' | 'expired' | 'corrupt' | 'missing';
+  cookie_count: number;
+  modified: string | null;
+}
+
+export interface UploadSubmitRequest {
+  video_path: string;
+  account_name: string;
+  description?: string;
+  hashtags?: string[];
+  sound_name?: string | null;
+  sound_aud_vol?: string;
+  schedule_time?: string | null;
+  schedule_day?: number | null;
+  copyrightcheck?: boolean;
+  headless?: boolean;
+  stealth?: boolean;
 }

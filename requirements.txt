@@ -9,5 +9,6 @@ openai
 pytesseract
 Pillow
 yt-dlp
+tiktokautouploader
 pytest
 pytest-asyncio
