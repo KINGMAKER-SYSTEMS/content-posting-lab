@@ -839,6 +839,37 @@ async def ws_burn(ws: WebSocket):
             }
         )
 
+        # Auto-upload burned videos to linked Drive folders
+        try:
+            from services.gdrive import is_configured as drive_configured, upload_file as drive_upload
+            from services.roster import list_pages_for_project
+
+            if drive_configured():
+                pages = list_pages_for_project(project)
+                drive_folders = [p["drive_folder_id"] for p in pages if p.get("drive_folder_id")]
+                if drive_folders:
+                    burned_files = [
+                        str(batch_dir / r["file"].split("/")[-1])
+                        for r in results
+                        if r.get("ok") and r.get("file")
+                    ]
+                    uploaded = 0
+                    for fp in burned_files:
+                        for fid in drive_folders:
+                            try:
+                                drive_upload(fid, fp)
+                                uploaded += 1
+                            except Exception as de:
+                                print(f"[burn] Drive upload failed: {de}", flush=True)
+                    if uploaded > 0:
+                        await ws.send_json(
+                            {"event": "drive_uploaded", "count": uploaded, "folders": len(drive_folders)}
+                        )
+        except ImportError:
+            pass  # Drive deps not installed
+        except Exception as de:
+            print(f"[burn] Drive auto-upload error: {de}", flush=True)
+
     except WebSocketDisconnect:
         print(f"[burn] WS disconnected", flush=True)
     except Exception as e:

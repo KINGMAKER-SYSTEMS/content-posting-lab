@@ -24,6 +24,7 @@ from routers.roster import router as roster_router
 from routers.slideshow import router as slideshow_router
 from routers.email_routing import router as email_router
 from routers.upload import router as upload_router
+from routers.gdrive import router as gdrive_router
 from routers.video import router as video_router
 
 load_dotenv()
@@ -138,6 +139,7 @@ app.include_router(roster_router, prefix="/api/roster", tags=["roster"])
 app.include_router(slideshow_router, prefix="/api/slideshow", tags=["slideshow"])
 app.include_router(email_router, prefix="/api/email", tags=["email"])
 app.include_router(upload_router, prefix="/api/upload", tags=["upload"])
+app.include_router(gdrive_router, prefix="/api/drive", tags=["drive"])
 
 
 @app.get("/api/projects", include_in_schema=False)

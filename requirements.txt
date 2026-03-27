@@ -10,5 +10,7 @@ pytesseract
 Pillow
 yt-dlp
 tiktokautouploader
+google-api-python-client
+google-auth
 pytest
 pytest-asyncio

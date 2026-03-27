@@ -483,6 +483,24 @@ export interface CookieStatus {
   modified: string | null;
 }
 
+export interface DriveStatusResponse {
+  configured: boolean;
+}
+
+export interface DriveInventoryResponse {
+  inventory: Record<string, number>;
+  configured: boolean;
+}
+
+export interface DriveFile {
+  id: string;
+  name: string;
+  mimeType: string;
+  size?: string;
+  createdTime?: string;
+  modifiedTime?: string;
+}
+
 export interface UploadSubmitRequest {
   video_path: string;
   account_name: string;

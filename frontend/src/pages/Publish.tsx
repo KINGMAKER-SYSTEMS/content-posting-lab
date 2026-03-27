@@ -10,6 +10,7 @@ import type {
   AutoCreateEmailResponse,
   UploadJob,
   CookieStatus,
+  DriveStatusResponse,
 } from '../types/api';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -71,6 +72,10 @@ export function PublishPage() {
   // Cookie state
   const [cookieStatuses, setCookieStatuses] = useState<Record<string, string>>({});
   const [loggingIn, setLoggingIn] = useState<string | null>(null);
+
+  // Drive state
+  const [driveStatus, setDriveStatus] = useState<DriveStatusResponse | null>(null);
+  const [driveInventory, setDriveInventory] = useState<Record<string, number>>({});
 
   // Upload form state
   const [showUploadForm, setShowUploadForm] = useState(false);
@@ -180,6 +185,26 @@ export function PublishPage() {
     }
   }, []);
 
+  // ── Fetch Drive status + inventory ─────────────────────────────────────
+
+  const fetchDriveStatus = useCallback(async () => {
+    try {
+      const resp = await fetch(apiUrl('/api/drive/status'));
+      if (!resp.ok) return;
+      const data = (await resp.json()) as DriveStatusResponse;
+      setDriveStatus(data);
+      if (data.configured) {
+        const invResp = await fetch(apiUrl('/api/drive/inventory'));
+        if (invResp.ok) {
+          const invData = await invResp.json();
+          setDriveInventory(invData.inventory ?? {});
+        }
+      }
+    } catch {
+      setDriveStatus({ configured: false });
+    }
+  }, []);
+
   // ── Fetch upload jobs ─────────────────────────────────────────────────────
 
   const fetchUploadJobs = useCallback(async () => {
@@ -232,13 +257,14 @@ export function PublishPage() {
       void fetchEmailStatus();
       void fetchCookies();
       void fetchUploadJobs();
+      void fetchDriveStatus();
       if (status.configured && status.reachable) {
         await syncFromPostiz();
       } else {
         await fetchRoster();
       }
     })();
-  }, [isVisible, fetchStatus, fetchEmailStatus, fetchCookies, fetchUploadJobs, fetchRoster, syncFromPostiz]);
+  }, [isVisible, fetchStatus, fetchEmailStatus, fetchCookies, fetchUploadJobs, fetchDriveStatus, fetchRoster, syncFromPostiz]);
 
   // ── Poll upload jobs while queue is active ────────────────────────────────
 
@@ -572,6 +598,9 @@ export function PublishPage() {
           ) : (
             <Badge variant="secondary">Checking...</Badge>
           )}
+          {driveStatus?.configured && (
+            <Badge variant="success">Drive</Badge>
+          )}
           {emailStatus?.configured && (
             <Badge variant="info">{emailStatus.domain}</Badge>
           )}
@@ -682,6 +711,7 @@ export function PublishPage() {
                     const cookieBadge = COOKIE_BADGE[cookieStatus] ?? COOKIE_BADGE.missing;
                     const isLoggingIn = loggingIn === page.name;
                     const queueCount = queuedPerAccount[page.name] ?? 0;
+                    const driveCount = driveInventory[page.integration_id] ?? 0;
 
                     return (
                       <tr
@@ -827,15 +857,24 @@ export function PublishPage() {
                           </div>
                         </td>
 
-                        {/* Upload Queue */}
+                        {/* Queue (Drive files + upload queue) */}
                         <td className="px-3 py-2">
                           <div className="flex items-center gap-1.5">
-                            {queueCount > 0 ? (
-                              <Badge variant="active" className="text-[10px]">
-                                {queueCount}
+                            {page.drive_folder_id && driveStatus?.configured ? (
+                              <Badge
+                                variant={driveCount > 0 ? 'info' : 'secondary'}
+                                className="text-[10px]"
+                                title={`${driveCount} video${driveCount !== 1 ? 's' : ''} in Drive`}
+                              >
+                                {driveCount}
                               </Badge>
                             ) : (
-                              <span className="text-xs text-muted-foreground/40">0</span>
+                              <span className="text-xs text-muted-foreground/40">—</span>
+                            )}
+                            {queueCount > 0 && (
+                              <Badge variant="active" className="text-[10px]" title="Uploading to TikTok">
+                                {queueCount}
+                              </Badge>
                             )}
                             {cookieStatus === 'valid' && (
                               <Button
