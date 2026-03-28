@@ -74,6 +74,7 @@ export interface Job {
   provider: string;
   count: number;
   project?: string;
+  created_at?: string;
   videos: VideoEntry[];
 }
 

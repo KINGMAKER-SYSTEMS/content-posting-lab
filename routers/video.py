@@ -291,6 +291,7 @@ async def generate_video(
         "provider": provider,
         "count": count,
         "project": project,
+        "created_at": datetime.now(timezone.utc).isoformat(),
         "videos": [{"index": i, "status": "queued"} for i in range(count)],
     }
 
@@ -404,3 +405,94 @@ async def download_all(job_id: str):
         media_type="application/zip",
         headers={"Content-Disposition": f"attachment; filename=videolab_{job_id}.zip"},
     )
+
+
+@router.post("/bulk-download")
+async def bulk_download(body: dict):
+    """Download all completed videos from multiple jobs as a single ZIP.
+
+    Body: {"job_ids": ["id1", "id2", ...], "project": "..."}
+    """
+    job_ids = body.get("job_ids", [])
+    project = body.get("project", "quick-test")
+    if not job_ids:
+        raise HTTPException(status_code=400, detail="No job IDs provided")
+
+    _load_jobs(project)
+    base_dir = get_project_video_dir(project)
+    buf = io.BytesIO()
+    file_count = 0
+
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for jid in job_ids:
+            job = jobs.get(jid)
+            if not job:
+                continue
+            for v in job.get("videos", []):
+                if v.get("status") != "done":
+                    continue
+                # Add main file
+                if v.get("file"):
+                    fp = base_dir / v["file"]
+                    if fp.exists():
+                        zf.write(fp, f"{jid}/{v['file']}")
+                        file_count += 1
+                # Add crop files
+                for crop in v.get("crops", []):
+                    if crop.get("file"):
+                        fp = base_dir / crop["file"]
+                        if fp.exists():
+                            zf.write(fp, f"{jid}/{crop['file']}")
+                            file_count += 1
+
+    if file_count == 0:
+        raise HTTPException(status_code=400, detail="No completed videos found in the selected jobs")
+
+    buf.seek(0)
+    today = datetime.now().strftime("%Y-%m-%d")
+    return StreamingResponse(
+        buf,
+        media_type="application/zip",
+        headers={"Content-Disposition": f"attachment; filename=videolab_{today}_{file_count}videos.zip"},
+    )
+
+
+@router.post("/bulk-delete")
+async def bulk_delete(body: dict):
+    """Delete multiple jobs and their video files.
+
+    Body: {"job_ids": ["id1", "id2", ...], "project": "..."}
+    """
+    job_ids = body.get("job_ids", [])
+    project = body.get("project", "quick-test")
+    if not job_ids:
+        raise HTTPException(status_code=400, detail="No job IDs provided")
+
+    _load_jobs(project)
+    video_dir = get_project_video_dir(project)
+    deleted_jobs = 0
+    deleted_files = 0
+
+    for jid in job_ids:
+        job = jobs.get(jid)
+        if not job:
+            continue
+        proj = job.get("project", project)
+        vdir = get_project_video_dir(proj)
+        for v in job.get("videos", []):
+            if v.get("file"):
+                target = (vdir / v["file"]).resolve()
+                if str(target).startswith(str(vdir.resolve())) and target.exists():
+                    target.unlink()
+                    deleted_files += 1
+            for crop in v.get("crops", []):
+                if crop.get("file"):
+                    target = (vdir / crop["file"]).resolve()
+                    if str(target).startswith(str(vdir.resolve())) and target.exists():
+                        target.unlink()
+                        deleted_files += 1
+        del jobs[jid]
+        deleted_jobs += 1
+
+    _save_jobs(project)
+    return {"deleted_jobs": deleted_jobs, "deleted_files": deleted_files}

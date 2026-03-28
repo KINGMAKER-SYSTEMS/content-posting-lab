@@ -33,7 +33,7 @@ router = APIRouter()
 FONT_DIR = BASE_DIR / "fonts"
 
 # Limit concurrent ffmpeg burn processes to avoid resource exhaustion
-_burn_semaphore = asyncio.Semaphore(3)
+_burn_semaphore = asyncio.Semaphore(4)
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -511,16 +511,16 @@ async def _burn_video(
         filter_complex = _build_filter_complex(color_correction)
 
         # TikTok-optimized encode: 1080x1920, 30fps, H.264 High
-        # -crf 16 + slow preset = near-lossless quality for iPhone/HEVC sources
+        # -crf 18 + medium preset = high quality with 2-3x faster encoding
         # -minrate 8M ensures the encoder doesn't produce low-bitrate output
         # even for simple scenes — keeps text overlays crisp on re-upload
         tiktok_encode = [
             "-c:v",
             "libx264",
             "-preset",
-            "slow",
+            "medium",
             "-crf",
-            "16",
+            "18",
             "-minrate",
             "8M",
             "-maxrate",
