@@ -80,6 +80,24 @@ function formatBatchTime(created: number): string {
   return `${d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} ${d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}`;
 }
 
+/**
+ * Calculate CSS translateX% so text overlay stays within the container bounds.
+ * Without this, text at e.g. x=80% with maxWidth=80% extends from 40% to 120%,
+ * causing the right side to be clipped by overflow:hidden (looks "compacted").
+ * Similarly, dragging left causes left-side clipping (looks "stretched/flat").
+ */
+function getTextTranslateX(x: number, maxWidthPct: number): number {
+  const halfW = maxWidthPct / 2;
+  if (x < halfW) {
+    // Near left edge — pin text so left edge touches container left
+    return -(x / maxWidthPct) * 100;
+  } else if (x > 100 - halfW) {
+    // Near right edge — pin text so right edge touches container right
+    return -(1 - (100 - x) / maxWidthPct) * 100;
+  }
+  return -50; // Normal: centered at position
+}
+
 function getColorCorrectionOrNull(cc: ColorCorrection): ColorCorrection | null {
   if (cc.brightness === 0 && cc.contrast === 0 && cc.saturation === 0 && cc.sharpness === 0 && cc.shadow === 0 && cc.temperature === 0 && cc.tint === 0 && cc.fade === 0) return null;
   return { ...cc };
@@ -155,9 +173,11 @@ async function captureTextOverlay(pair: BurnPairState): Promise<string | null> {
   ctx.imageSmoothingQuality = 'high';
 
   // Position in pixels from percentage (scaled to render resolution)
-  const cx = (pair.x / 100) * renderW;
+  const rawCx = (pair.x / 100) * renderW;
   const cy = (pair.y / 100) * renderH;
   const maxWidth = (pair.maxWidthPct / 100) * renderW;
+  // Clamp center X so text stays within canvas bounds (matches preview edge clamping)
+  const cx = Math.max(maxWidth / 2, Math.min(renderW - maxWidth / 2, rawCx));
 
   ctx.font = `700 ${renderFontSize}px ${fontFamily}`;
   ctx.textAlign = 'center';
@@ -470,6 +490,10 @@ export function BurnPage() {
 
   useEffect(() => { if (selectedFontFile) setPairs((p) => p.map((pair) => ({ ...pair, fontFile: selectedFontFile }))); }, [selectedFontFile]);
   useEffect(() => { applyPairsColorCorrection(colorCorrection); }, [applyPairsColorCorrection, colorCorrection]);
+  // Auto-apply font size changes to all existing pairs
+  useEffect(() => { if (pairs.length > 0) setPairs((p) => p.map((pair) => ({ ...pair, fontSize: defaultFontSize || 32 }))); }, [defaultFontSize]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Auto-apply quick position changes to all existing pairs
+  useEffect(() => { if (pairs.length > 0) { const y = POSITION_Y_MAP[quickPosition] ?? 50; setPairs((p) => p.map((pair) => ({ ...pair, x: 50, y }))); } }, [quickPosition]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { setBurnReadyCount(Math.min(selectedFolderVideos.length, selectedCaptionItems.length)); }, [selectedFolderVideos.length, selectedCaptionItems.length, setBurnReadyCount]);
   useEffect(() => { const h = () => refreshPairScales(); window.addEventListener('resize', h); return () => window.removeEventListener('resize', h); }, [refreshPairScales]);
 
@@ -1020,7 +1044,7 @@ export function BurnPage() {
                           onPointerDown={(e) => startDrag(e, index)}
                           onDoubleClick={(e) => { e.stopPropagation(); setInlineEditIndex(index); setSelectedIndex(index); }}
                           className={`absolute z-10 select-none text-center ${dragRef.current?.index === index ? 'cursor-grabbing' : 'cursor-grab'} ${selected ? 'outline outline-2 outline-offset-4 outline-dashed outline-primary' : ''}`}
-                          style={{ left: `${pair.x}%`, top: `${pair.y}%`, transform: 'translate(-50%, -50%)', maxWidth: `${pair.maxWidthPct}%`, minWidth: '40px', minHeight: '24px', fontFamily: `'${fontFamilyName(pair.fontFile)}', sans-serif` }}
+                          style={{ left: `${pair.x}%`, top: `${pair.y}%`, transform: `translate(${getTextTranslateX(pair.x, pair.maxWidthPct)}%, -50%)`, maxWidth: `${pair.maxWidthPct}%`, minWidth: '40px', minHeight: '24px', fontFamily: `'${fontFamilyName(pair.fontFile)}', sans-serif` }}
                         >
                           {/* Drag handle indicator — visible when selected */}
                           {selected && !inlineEditIndex ? (

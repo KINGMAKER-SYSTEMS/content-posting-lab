@@ -365,6 +365,7 @@ export function ClipperPage() {
   // Ingest
   const [dragOver, setDragOver] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
   const [videoUrl, setVideoUrl] = useState('');
   const [downloading, setDownloading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -415,22 +416,53 @@ export function ClipperPage() {
   const handleUpload = async (files: FileList) => {
     if (!activeProjectName || files.length === 0) return;
     setUploading(true);
+    setUploadProgress(0);
+
+    // Check total size — warn on very large files
+    let totalSize = 0;
+    for (let i = 0; i < files.length; i++) totalSize += files[i].size;
+    const totalGB = totalSize / (1024 * 1024 * 1024);
+
+    if (totalGB > 10) {
+      addNotification('error', `Total file size (${totalGB.toFixed(1)}GB) exceeds 10GB limit.`);
+      setUploading(false);
+      return;
+    }
 
     try {
+      // Use XMLHttpRequest for progress tracking (especially important for large files)
       const formData = new FormData();
       for (let i = 0; i < files.length; i++) formData.append('files', files[i]);
       formData.append('project', activeProjectName);
 
-      const resp = await fetch(apiUrl('/api/clipper/upload-batch'), { method: 'POST', body: formData });
-      if (!resp.ok) throw new Error(await resp.text() || `Upload failed (${resp.status})`);
-
-      const data = await resp.json() as {
+      const data = await new Promise<{
         batch_id: string;
         files: Array<{
           index: number; original_name: string; path: string; url: string; thumb_url: string;
           duration: number; width: number; height: number;
         }>;
-      };
+      }>((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', apiUrl('/api/clipper/upload-batch'));
+
+        xhr.upload.onprogress = (e) => {
+          if (e.lengthComputable) setUploadProgress(Math.round((e.loaded / e.total) * 100));
+        };
+
+        xhr.onload = () => {
+          if (xhr.status >= 200 && xhr.status < 300) {
+            try { resolve(JSON.parse(xhr.responseText)); }
+            catch { reject(new Error('Invalid response from server')); }
+          } else {
+            reject(new Error(xhr.responseText || `Upload failed (${xhr.status})`));
+          }
+        };
+
+        xhr.onerror = () => reject(new Error('Upload failed — connection error'));
+        xhr.ontimeout = () => reject(new Error('Upload timed out'));
+        xhr.timeout = 0; // No timeout for large files
+        xhr.send(formData);
+      });
 
       setBatchId(data.batch_id);
       const newFiles: StagedFile[] = data.files.map((f) => ({
@@ -443,6 +475,7 @@ export function ClipperPage() {
       addNotification('error', e instanceof Error ? e.message : 'Upload failed');
     } finally {
       setUploading(false);
+      setUploadProgress(0);
       if (fileInputRef.current) fileInputRef.current.value = '';
     }
   };
@@ -612,9 +645,27 @@ export function ClipperPage() {
     } catch { addNotification('error', 'Failed to delete job'); }
   };
 
-  const downloadAll = (jobId: string) => {
+  const downloadAll = async (jobId: string) => {
     if (!activeProjectName) return;
-    window.open(apiUrl(`/api/clipper/jobs/${jobId}/download-all?project=${encodeURIComponent(activeProjectName)}`));
+    try {
+      const url = apiUrl(`/api/clipper/jobs/${jobId}/download-all?project=${encodeURIComponent(activeProjectName)}`);
+      const resp = await fetch(url);
+      if (!resp.ok) {
+        const text = await resp.text();
+        throw new Error(text || `Download failed (${resp.status})`);
+      }
+      const blob = await resp.blob();
+      const blobUrl = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = blobUrl;
+      a.download = `clips_${jobId.slice(0, 8)}.zip`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(blobUrl);
+    } catch (e) {
+      addNotification('error', e instanceof Error ? e.message : 'ZIP download failed');
+    }
   };
 
   const sendToBurn = (clips: ClipInfo[]) => {
@@ -682,9 +733,25 @@ export function ClipperPage() {
                 className="hidden" accept="video/*" multiple disabled={isBusy}
               />
               {uploading ? (
-                <div className="flex items-center justify-center gap-2 py-2">
-                  <span className="h-4 w-4 animate-spin rounded-full border-2 border-muted border-t-primary" />
-                  <span className="text-sm text-muted-foreground">Uploading & analyzing...</span>
+                <div className="flex flex-col items-center gap-2 py-2">
+                  <div className="flex items-center gap-2">
+                    <span className="h-4 w-4 animate-spin rounded-full border-2 border-muted border-t-primary" />
+                    <span className="text-sm text-muted-foreground">
+                      {uploadProgress > 0 && uploadProgress < 100
+                        ? `Uploading... ${uploadProgress}%`
+                        : uploadProgress >= 100
+                          ? 'Analyzing...'
+                          : 'Uploading & analyzing...'}
+                    </span>
+                  </div>
+                  {uploadProgress > 0 && (
+                    <div className="w-full h-1.5 bg-muted rounded-full overflow-hidden">
+                      <div
+                        className="h-full bg-primary transition-all duration-300"
+                        style={{ width: `${Math.min(uploadProgress, 100)}%` }}
+                      />
+                    </div>
+                  )}
                 </div>
               ) : (
                 <>

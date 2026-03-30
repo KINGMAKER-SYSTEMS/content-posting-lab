@@ -23,6 +23,9 @@ from routers.postiz import router as postiz_router
 from routers.roster import router as roster_router
 from routers.slideshow import router as slideshow_router
 from routers.telegram import router as telegram_router
+from routers.email_routing import router as email_router
+from routers.upload import router as upload_router
+from routers.gdrive import router as gdrive_router
 from routers.video import router as video_router
 
 load_dotenv()
@@ -157,6 +160,9 @@ app.include_router(postiz_router, prefix="/api/postiz", tags=["postiz"])
 app.include_router(roster_router, prefix="/api/roster", tags=["roster"])
 app.include_router(slideshow_router, prefix="/api/slideshow", tags=["slideshow"])
 app.include_router(telegram_router, prefix="/api/telegram", tags=["telegram"])
+app.include_router(email_router, prefix="/api/email", tags=["email"])
+app.include_router(upload_router, prefix="/api/upload", tags=["upload"])
+app.include_router(gdrive_router, prefix="/api/drive", tags=["drive"])
 
 
 @app.get("/api/projects", include_in_schema=False)
@@ -216,4 +222,11 @@ if FRONTEND_DIR.exists():
 
 
 if __name__ == "__main__":
-    uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=False)
+    uvicorn.run(
+        "app:app",
+        host="0.0.0.0",
+        port=8000,
+        reload=False,
+        timeout_keep_alive=300,
+        h11_max_incomplete_event_size=0,
+    )

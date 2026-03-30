@@ -98,10 +98,45 @@ async def _get_video_duration(video_path: Path) -> float:
 # ── Pipeline ─────────────────────────────────────────────────────────
 
 
+async def _remove_text_with_retry(
+    image_b64: str, client: httpx.AsyncClient, label: str, max_retries: int = 3,
+) -> str:
+    """Call remove_text with retry logic for transient Replicate API failures."""
+    from providers.replicate import remove_text
+
+    last_error = None
+    for attempt in range(1, max_retries + 1):
+        try:
+            url = await remove_text(image_b64, client=client)
+            return url
+        except Exception as e:
+            last_error = e
+            log.warning("remove_text %s attempt %d/%d failed: %s", label, attempt, max_retries, e)
+            if attempt < max_retries:
+                await asyncio.sleep(2 * attempt)  # Exponential backoff: 2s, 4s
+    raise RuntimeError(f"Text removal failed for {label} after {max_retries} attempts: {last_error}")
+
+
+async def _download_cleaned_image(
+    client: httpx.AsyncClient, url: str, dest: Path, label: str,
+) -> None:
+    """Download a cleaned image from Replicate CDN with retry."""
+    for attempt in range(1, 4):
+        try:
+            resp = await client.get(url, timeout=60)
+            resp.raise_for_status()
+            dest.write_bytes(resp.content)
+            return
+        except Exception as e:
+            log.warning("download %s attempt %d failed: %s", label, attempt, e)
+            if attempt < 3:
+                await asyncio.sleep(2)
+    raise RuntimeError(f"Failed to download cleaned {label} from {url[:80]}")
+
+
 async def _run_pipeline(job_id: str, video_url: str, project: str):
     """Download video, extract first/last frames, remove text from each."""
     from scraper.frame_extractor import download_video, extract_frame
-    from providers.replicate import remove_text
 
     t0 = time.time()
     log.info("pipeline START job=%s url=%s project=%s", job_id[:8], video_url[:80], project)
@@ -115,20 +150,33 @@ async def _run_pipeline(job_id: str, video_url: str, project: str):
         t1 = time.time()
         await _send(job_id, "downloading", {"text": "Downloading video..."})
         video_path = job_dir / "source_video.mp4"
-        await download_video(video_url, video_path)
-        log.info("phase1 download: %.1fs, size=%d bytes", time.time() - t1, video_path.stat().st_size if video_path.exists() else 0)
+        try:
+            await asyncio.wait_for(download_video(video_url, video_path), timeout=120)
+        except asyncio.TimeoutError:
+            raise RuntimeError("Video download timed out after 2 minutes. Try a shorter video or check the URL.")
+        if not video_path.exists() or video_path.stat().st_size < 1000:
+            raise RuntimeError("Video download failed — file is empty or missing. Check if the URL is accessible.")
+        log.info("phase1 download: %.1fs, size=%d bytes", time.time() - t1, video_path.stat().st_size)
 
         # Phase 2: Extract first and last frames
         t2 = time.time()
         await _send(job_id, "extracting_frames", {"text": "Extracting frames..."})
-        duration = await _get_video_duration(video_path)
+        try:
+            duration = await _get_video_duration(video_path)
+        except Exception as e:
+            raise RuntimeError(f"Could not read video duration — file may be corrupted: {e}")
 
         first_frame = job_dir / "first_frame_original.jpg"
         last_frame = job_dir / "last_frame_original.jpg"
 
         await extract_frame(video_path, first_frame, timestamp=0.0)
+        if not first_frame.exists():
+            raise RuntimeError("Failed to extract first frame from video")
+
         last_ts = max(0.0, duration - 0.1)
         await extract_frame(video_path, last_frame, timestamp=last_ts)
+        if not last_frame.exists():
+            raise RuntimeError("Failed to extract last frame from video")
 
         first_b64 = _image_to_data_uri(first_frame)
         last_b64 = _image_to_data_uri(last_frame)
@@ -142,37 +190,31 @@ async def _run_pipeline(job_id: str, video_url: str, project: str):
 
         # Phase 3: Remove text from each frame (local mask + LaMa inpainting)
         t3 = time.time()
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(60, connect=15)) as client:
             # First frame
             await _send(job_id, "removing_text", {
-                "text": "Generating text mask & inpainting first frame (LaMa)...",
+                "text": "Removing text from first frame (attempt 1)...",
             })
             log.debug("remove_text: first frame (%d chars)", len(first_b64))
-            first_clean_url = await remove_text(first_b64, client=client)
+            first_clean_url = await _remove_text_with_retry(first_b64, client, "first frame")
             log.info("remove_text: first frame done → %s", first_clean_url[:120] if first_clean_url else "None")
 
-            await _send(job_id, "status", {
-                "text": "Downloading cleaned first frame...",
-            })
-            resp = await client.get(first_clean_url, timeout=30)
+            await _send(job_id, "status", {"text": "Downloading cleaned first frame..."})
             first_clean_path = job_dir / "first_frame_clean.png"
-            first_clean_path.write_bytes(resp.content)
+            await _download_cleaned_image(client, first_clean_url, first_clean_path, "first frame")
             first_clean_b64 = _image_to_data_uri(first_clean_path)
 
             # Last frame
             await _send(job_id, "removing_text", {
-                "text": "Generating text mask & inpainting last frame (LaMa)...",
+                "text": "Removing text from last frame...",
             })
             log.debug("remove_text: last frame (%d chars)", len(last_b64))
-            last_clean_url = await remove_text(last_b64, client=client)
+            last_clean_url = await _remove_text_with_retry(last_b64, client, "last frame")
             log.info("remove_text: last frame done → %s", last_clean_url[:120] if last_clean_url else "None")
 
-            await _send(job_id, "status", {
-                "text": "Downloading cleaned last frame...",
-            })
-            resp = await client.get(last_clean_url, timeout=30)
+            await _send(job_id, "status", {"text": "Downloading cleaned last frame..."})
             last_clean_path = job_dir / "last_frame_clean.png"
-            last_clean_path.write_bytes(resp.content)
+            await _download_cleaned_image(client, last_clean_url, last_clean_path, "last frame")
             last_clean_b64 = _image_to_data_uri(last_clean_path)
 
             log.info("phase3 text removal: %.1fs, first_clean=%d chars, last_clean=%d chars", time.time() - t3, len(first_clean_b64), len(last_clean_b64))
@@ -196,7 +238,10 @@ async def _run_pipeline(job_id: str, video_url: str, project: str):
         import traceback
         log.error("pipeline FAILED job=%s after %.1fs: %s", job_id[:8], time.time() - t0, e)
         traceback.print_exc()
-        await _send(job_id, "error", {"error": str(e)})
+        try:
+            await _send(job_id, "error", {"error": str(e)})
+        except Exception:
+            log.error("Failed to send error event to WebSocket")
 
 
 # ── Prompt generation ─────────────────────────────────────────────────

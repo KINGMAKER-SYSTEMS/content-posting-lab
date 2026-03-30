@@ -33,7 +33,7 @@ router = APIRouter()
 FONT_DIR = BASE_DIR / "fonts"
 
 # Limit concurrent ffmpeg burn processes to avoid resource exhaustion
-_burn_semaphore = asyncio.Semaphore(3)
+_burn_semaphore = asyncio.Semaphore(4)
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -511,16 +511,16 @@ async def _burn_video(
         filter_complex = _build_filter_complex(color_correction)
 
         # TikTok-optimized encode: 1080x1920, 30fps, H.264 High
-        # -crf 16 + slow preset = near-lossless quality for iPhone/HEVC sources
+        # -crf 18 + medium preset = high quality with 2-3x faster encoding
         # -minrate 8M ensures the encoder doesn't produce low-bitrate output
         # even for simple scenes — keeps text overlays crisp on re-upload
         tiktok_encode = [
             "-c:v",
             "libx264",
             "-preset",
-            "slow",
+            "medium",
             "-crf",
-            "16",
+            "18",
             "-minrate",
             "8M",
             "-maxrate",
@@ -838,6 +838,37 @@ async def ws_burn(ws: WebSocket):
                 "total": total,
             }
         )
+
+        # Auto-upload burned videos to linked Drive folders
+        try:
+            from services.gdrive import is_configured as drive_configured, upload_file as drive_upload
+            from services.roster import list_pages_for_project
+
+            if drive_configured():
+                pages = list_pages_for_project(project)
+                drive_folders = [p["drive_folder_id"] for p in pages if p.get("drive_folder_id")]
+                if drive_folders:
+                    burned_files = [
+                        str(batch_dir / r["file"].split("/")[-1])
+                        for r in results
+                        if r.get("ok") and r.get("file")
+                    ]
+                    uploaded = 0
+                    for fp in burned_files:
+                        for fid in drive_folders:
+                            try:
+                                drive_upload(fid, fp)
+                                uploaded += 1
+                            except Exception as de:
+                                print(f"[burn] Drive upload failed: {de}", flush=True)
+                    if uploaded > 0:
+                        await ws.send_json(
+                            {"event": "drive_uploaded", "count": uploaded, "folders": len(drive_folders)}
+                        )
+        except ImportError:
+            pass  # Drive deps not installed
+        except Exception as de:
+            print(f"[burn] Drive auto-upload error: {de}", flush=True)
 
     except WebSocketDisconnect:
         print(f"[burn] WS disconnected", flush=True)

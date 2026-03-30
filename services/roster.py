@@ -59,6 +59,9 @@ def set_page(integration_id: str, data: dict) -> dict:
         "project": data.get("project", existing.get("project")),
         "drive_folder_url": data.get("drive_folder_url", existing.get("drive_folder_url")),
         "drive_folder_id": data.get("drive_folder_id", existing.get("drive_folder_id")),
+        "email_alias": data.get("email_alias", existing.get("email_alias")),
+        "email_rule_id": data.get("email_rule_id", existing.get("email_rule_id")),
+        "fwd_destination": data.get("fwd_destination", existing.get("fwd_destination")),
         "added_at": existing.get("added_at", now),
         "updated_at": now,
     }

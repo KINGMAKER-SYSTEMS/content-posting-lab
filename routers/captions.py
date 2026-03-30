@@ -313,3 +313,84 @@ async def export_captions(
     if not csv_path.exists():
         raise HTTPException(404, "CSV not found")
     return FileResponse(csv_path, filename=f"{username}_captions.csv")
+
+
+@router.get("/history")
+async def caption_history(project: str = Query(default="quick-test")):
+    """List all previously scraped caption batches for a project.
+
+    Returns each username folder with its caption count, file modified time,
+    and sample captions for preview.
+    """
+    import csv as csv_mod
+
+    caption_dir = get_project_caption_dir(project)
+    if not caption_dir.exists():
+        return {"batches": []}
+
+    batches: list[dict] = []
+    for user_dir in sorted(caption_dir.iterdir()):
+        if not user_dir.is_dir():
+            continue
+        csv_path = user_dir / "captions.csv"
+        if not csv_path.exists():
+            continue
+
+        # Read captions from CSV
+        captions: list[dict] = []
+        try:
+            with open(csv_path, "r", encoding="utf-8") as f:
+                reader = csv_mod.DictReader(f)
+                for row in reader:
+                    captions.append({
+                        "text": row.get("caption", ""),
+                        "mood": row.get("mood", None),
+                        "video_id": row.get("video_id", ""),
+                    })
+        except Exception:
+            pass
+
+        stat = csv_path.stat()
+        batches.append({
+            "username": user_dir.name,
+            "caption_count": len(captions),
+            "modified_at": stat.st_mtime,
+            "captions": captions,
+            "sample": [c["text"] for c in captions[:3]],
+        })
+
+    # Sort by most recent first
+    batches.sort(key=lambda b: b["modified_at"], reverse=True)
+    return {"batches": batches}
+
+
+@router.post("/rename-batch")
+async def rename_caption_batch(body: dict):
+    """Rename a caption batch (username folder).
+
+    Body: {"project": "...", "old_name": "...", "new_name": "..."}
+    """
+    project = body.get("project", "quick-test")
+    old_name = body.get("old_name", "")
+    new_name = body.get("new_name", "").strip()
+
+    if not old_name or not new_name:
+        raise HTTPException(400, "Both old_name and new_name are required")
+
+    # Sanitize new_name
+    new_name = new_name.replace("/", "").replace("\\", "").replace("..", "").strip()
+    if not new_name:
+        raise HTTPException(400, "Invalid new name")
+
+    caption_dir = get_project_caption_dir(project)
+    old_path = caption_dir / old_name
+    new_path = caption_dir / new_name
+
+    if not old_path.exists():
+        raise HTTPException(404, f"Batch '{old_name}' not found")
+    if new_path.exists():
+        raise HTTPException(409, f"Batch '{new_name}' already exists")
+
+    import shutil
+    shutil.move(str(old_path), str(new_path))
+    return {"renamed": True, "old_name": old_name, "new_name": new_name}
