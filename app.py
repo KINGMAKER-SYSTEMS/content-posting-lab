@@ -22,6 +22,7 @@ from routers.recreate import router as recreate_router
 from routers.postiz import router as postiz_router
 from routers.roster import router as roster_router
 from routers.slideshow import router as slideshow_router
+from routers.telegram import router as telegram_router
 from routers.email_routing import router as email_router
 from routers.upload import router as upload_router
 from routers.gdrive import router as gdrive_router
@@ -108,7 +109,28 @@ async def lifespan(app: FastAPI):
     ytdlp_ok = _check_ytdlp()
     _log_startup_validation(ffmpeg_ok, ytdlp_ok)
 
+    # Start Telegram bot if token configured
+    from services.telegram import load_config as load_tg_config
+    from telegram_bot import start_bot as start_tg_bot, stop_bot as stop_tg_bot
+
+    tg_config = load_tg_config()
+    tg_token = tg_config.get("bot_token")
+    if tg_token:
+        try:
+            await start_tg_bot(tg_token)
+            print("  telegram bot: started", flush=True)
+        except Exception as e:
+            print(f"  telegram bot: failed ({e})", flush=True)
+    else:
+        print("  telegram bot: no token configured", flush=True)
+
     yield
+
+    # Stop Telegram bot
+    try:
+        await stop_tg_bot()
+    except Exception:
+        pass
     print("✓ Content Posting Lab shutting down...")
 
 
@@ -137,6 +159,7 @@ app.include_router(clipper_router, prefix="/api/clipper", tags=["clipper"])
 app.include_router(postiz_router, prefix="/api/postiz", tags=["postiz"])
 app.include_router(roster_router, prefix="/api/roster", tags=["roster"])
 app.include_router(slideshow_router, prefix="/api/slideshow", tags=["slideshow"])
+app.include_router(telegram_router, prefix="/api/telegram", tags=["telegram"])
 app.include_router(email_router, prefix="/api/email", tags=["email"])
 app.include_router(upload_router, prefix="/api/upload", tags=["upload"])
 app.include_router(gdrive_router, prefix="/api/drive", tags=["drive"])

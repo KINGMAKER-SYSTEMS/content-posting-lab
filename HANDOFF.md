@@ -1,226 +1,117 @@
-# Handoff: Publish Feature — Full Plan Ready for Implementation
+# Handoff: Telegram Bot Content Distribution Pipeline
 
-**Date:** 2026-03-25
-**Branch:** `main`
-**Last commit:** `6dfb727` — `feat: add page roster system`
+**Date:** 2026-03-30
+**Branch:** `claude/amazing-cray`
+**Last commit:** `e4d3bcc` — `feat: add Telegram bot content distribution pipeline`
 **Repo:** `KINGMAKER-SYSTEMS/content-posting-lab`
 
 ---
 
-## Context
+## What Was Built
 
-The explore/research phase is complete for the Publish feature. The goal is to transform the Publish tab from a simple roster viewer into a **full content distribution command center** with three integrated systems:
+A full Telegram bot integration that turns Telegram forum topics into a content staging + distribution system. Two-layer architecture:
 
-1. **Account Roster Table** — data table with inline editing
-2. **Cloudflare Email Routing** — create/manage forwarding addresses per account
-3. **TikTok Upload Engine** — queue and execute uploads via `tiktokautouploader`
+1. **Staging Group** (agency-owned) — one topic per roster page, bot watches for manual media drops, tracks everything as inventory
+2. **Poster Groups** (one per account holder) — videos forwarded daily from staging, sounds sent to General topic, fire-and-forget for posters
 
----
+### Files Created
 
-## What Already Exists
+| File | Lines | Purpose |
+|------|-------|---------|
+| `services/telegram.py` | 408 | Data layer — config, inventory, posters, sounds, schedule (mirrors roster.py pattern) |
+| `telegram_bot.py` | 465 | aiogram v3 bot worker — lifecycle, media handler, scheduler, utility functions |
+| `routers/telegram.py` | 550 | 22 FastAPI endpoints — config, staging, posters, inventory, sounds, schedule, batch |
+| `frontend/src/pages/Telegram.tsx` | ~930 | Full UI — 6 sections: bot config, staging group, posters, sounds, schedule, send |
 
-### Roster System (built, working)
-- **Backend:** `routers/roster.py` + `services/roster.py`
-  - CRUD for pages in `page_roster.json` (filesystem, no DB)
-  - Sync from Postiz API (fetches integrations, merges into roster)
-  - Fields per page: `integration_id`, `name`, `provider`, `picture`, `project`, `drive_folder_url`, `drive_folder_id`, `added_at`, `updated_at`
-- **Frontend:** `frontend/src/pages/Publish.tsx` (~430 lines)
-  - Card-based layout grouped by project (assigned vs unassigned)
-  - Project assignment dropdown per page
-  - Drive folder URL input with save/cancel
-  - Postiz connection status badge + sync button
-  - Uses `Badge`, `Button`, `Input` from `@/components/ui/`
-- **Types:** `frontend/src/types/api.ts` — `RosterPage`, `RosterResponse`, `RosterSyncResponse`, `PostizStatusResponse`
-- **Store:** `workflowStore.ts` holds `rosterPages`, `rosterLoading`, `setRosterPages`, `setRosterLoading`
-- **Router mount:** `app.py` line 135 — `app.include_router(roster_router, prefix="/api/roster")`
+### Files Modified
 
-### Postiz Integration
-- **Backend:** `routers/postiz.py` — status check endpoint
-- **Router mount:** `app.py` line 134
+| File | Change |
+|------|--------|
+| `app.py` | Import + mount telegram router, start/stop bot in lifespan |
+| `frontend/src/App.tsx` | Added Telegram tab to nav + CSS display switching |
+| `frontend/src/types/api.ts` | Added 10 Telegram TypeScript interfaces |
+| `requirements.txt` | Added `aiogram>=3.4` |
+| `.gitignore` | Added `telegram_config.json` |
 
 ---
 
-## The Plan — 4 Phases
+## Architecture
 
-### Phase 1: Roster Table Redesign
-
-Refactor `Publish.tsx` from card groups to a proper **data table**.
-
-**Target columns:**
-
-| Column | Type | Editable | Source |
-|--------|------|----------|--------|
-| Avatar | img | no | Postiz sync |
-| Name | text | no | Postiz sync |
-| Provider | badge | no | Postiz sync |
-| Project | dropdown | yes | roster JSON |
-| Drive Folder | URL input | yes | roster JSON |
-| Email Alias | text | yes/auto | CF Email Routing (Phase 2) |
-| Fwd Destination | text | read | CF Email Routing (Phase 2) |
-| Cookie Status | badge | read | cookie file check (Phase 3) |
-| Upload Queue | count | read | upload queue (Phase 3) |
-| Actions | buttons | - | edit/delete/upload |
-
-**Backend changes:**
-- Extend `page_roster.json` schema: add `email_alias`, `email_rule_id`, `fwd_destination` fields to `services/roster.py` `set_page()`
-- Add cookie status endpoint to `routers/roster.py`
-
-**Frontend changes:**
-- Replace `PageGroup` / `PageRow` card components with a `<table>` layout
-- Inline edit mode: click cell -> input appears, Enter saves, Esc cancels
-- Column sorting (name, provider, project)
-- Filter by project dropdown
-- Keep Postiz sync bar and status badge
-
-**Design:** Tailwind v4, neo-brutalist consistent with app:
-- Table: `border-2 border-border`, `divide-y divide-border`
-- Cells: `px-3 py-2 text-sm`
-- Status badges: existing `Badge` component
-
----
-
-### Phase 2: Cloudflare Email Routing Integration
-
-**API is fully REST — no CLI proxy needed.** All via `https://api.cloudflare.com/client/v4/`.
-
-**CF API endpoints:**
-
-| Operation | Endpoint |
-|-----------|----------|
-| Create routing rule | `POST /zones/{zone_id}/email/routing/rules` |
-| List rules | `GET /zones/{zone_id}/email/routing/rules` |
-| Update rule | `PUT /zones/{zone_id}/email/routing/rules/{rule_id}` |
-| Delete rule | `DELETE /zones/{zone_id}/email/routing/rules/{rule_id}` |
-| Create destination address | `POST /accounts/{account_id}/email/routing/addresses` |
-| List destinations | `GET /accounts/{account_id}/email/routing/addresses` |
-
-Auth: `Authorization: Bearer {CF_API_TOKEN}` header.
-
-**Important:** Destination addresses must be verified (CF sends verification email) before rules activate. Destinations are account-level, shared across zones.
-
-**New env vars in `.env`:**
 ```
-CF_API_TOKEN=xxx
-CF_ZONE_ID=xxx
-CF_ACCOUNT_ID=xxx
-CF_EMAIL_DOMAIN=yourdomain.com
+telegram_config.json (filesystem, atomic writes)
+├── bot_token / bot_username
+├── staging_group
+│   ├── chat_id → Telegram supergroup
+│   └── topics: { integration_id → { topic_id, topic_name } }
+├── posters
+│   ├── poster_id (slugified name)
+│   │   ├── chat_id → poster's Telegram supergroup
+│   │   ├── page_ids: [integration_id, ...]
+│   │   └── topics: { integration_id → { topic_id, topic_name } }
+├── inventory
+│   └── { integration_id → [ { id, message_id, file_id, source, forwarded: {} } ] }
+├── sounds: [ { id, url, label, active } ]
+└── schedule: { enabled, forward_time, timezone, last_run }
 ```
 
-**New backend: `routers/email_routing.py`**
-- `GET /api/email/rules` — list all routing rules
-- `POST /api/email/rules` — create rule (alias -> destination)
-- `PUT /api/email/rules/{rule_id}` — update
-- `DELETE /api/email/rules/{rule_id}` — delete
-- `GET /api/email/destinations` — list verified destinations
-- `POST /api/email/destinations` — add new destination (triggers verification)
+**Routing flow:** `integration_id` (from Postiz roster) → staging topic → inventory → forward to poster's topic
 
-**New service: `services/email_routing.py`** — CF API client
-
-**Frontend:** Email column in roster table shows alias or "Create" button. "Create" auto-generates `accountname@domain.com`, calls API, links in roster. Modal for destination address management.
+**Bot runs as:** `asyncio.create_task()` inside FastAPI's event loop (aiogram v3 polling). Scheduler is a second async task that sleeps until configured forward time.
 
 ---
 
-### Phase 3: TikTok Upload Engine
+## Key Design Decisions
 
-**Core dependency:** `tiktokautouploader` (pip package)
-**Source repo:** `github.com/Risingtides-dev/TikTokAutoUploader`
-
-**Key function:**
-```python
-from tiktokautouploader import upload_tiktok
-
-result = upload_tiktok(
-    video='path/to/video.mp4',
-    description='Caption text',
-    accountname='myaccount',       # maps to TK_cookies_{name}.json
-    hashtags=['#fyp', '#viral'],
-    sound_name='trending_sound',   # optional
-    sound_aud_vol='mix',           # main/mix/background
-    schedule='15:00',              # optional HH:MM
-    day=5,                         # optional, up to 10 days out
-    copyrightcheck=False,
-    headless=True,
-    stealth=True,
-    proxy=None                     # optional dict with server/username/password
-)
-# Returns "Completed" or "Error"
-```
-
-**Architecture:** Library is **synchronous Playwright** (Phantomwright stealth engine). Must run in **background thread pool** — cannot block FastAPI async event loop. Same pattern as existing video generation jobs in `routers/video.py`.
-
-**Cookie system:** First run per account opens non-headless browser for manual TikTok login. Saves `TK_cookies_{accountname}.json`. Reuses after. Has built-in expiry checking.
-
-**Captcha handling:** Auto-solves via Roboflow inference SDK (built into the library).
-
-**New backend: `routers/upload.py`**
-```
-POST /api/upload/submit              — queue upload job
-GET  /api/upload/jobs                — list all jobs
-GET  /api/upload/jobs/{job_id}       — poll single job
-POST /api/upload/jobs/{job_id}/cancel — cancel queued job
-GET  /api/upload/cookies             — list cookie files + expiry status
-POST /api/upload/login/{account}     — trigger login flow (non-headless browser)
-```
-
-**Job states:** `queued` -> `uploading` -> `completed` | `failed` | `cancelled`
-
-**Queue behavior:**
-- Max 1 concurrent upload (browser resource + TikTok rate limit)
-- FIFO with configurable delay between uploads (default random 5-15 min)
-- Jobs persisted to `upload_jobs.json` (filesystem, no DB)
-
-**Inspired by repo's `TelegramAutomation/Fancy_Upload.py`:**
-- Random 6-9 hour intervals for anti-rate-limit
-- Sequential processing, status tracking (streak, last upload, next time)
-
-**Frontend:** Upload panel below roster table. Upload button per row or bulk select. Queue view with pending/active/completed jobs. Form: description, hashtags, sound, schedule, stealth toggle.
+1. **aiogram v3 over python-telegram-bot** — async-native, no event loop conflicts with FastAPI
+2. **Inventory watches staging topics** — bot handler catches all media dropped manually into staging topics, so inventory stays accurate regardless of how content arrives
+3. **Dedup on message_id** — prevents double-inventory on bot restart/update replay
+4. **Slug collision protection** — poster IDs auto-suffix `-2`, `-3` if name slugs collide
+5. **Stale topic clearing** — changing staging group chat_id wipes old topic mappings
+6. **Fire-and-forget for posters** — no emoji reactions, no deletion tracking. Posters delete after posting to TikTok, re-forward from staging if needed
+7. **Sounds separate from videos** — sounds go to poster's General topic, videos go to page-specific topics. No pairing logic in V1 (future: campaign hub API)
 
 ---
 
-### Phase 4: Queue & Scheduling (future)
-- Batch upload: select videos -> distribute across accounts
-- Schedule uploads for specific times
-- Upload history with success/fail tracking
-- Telegram bot notifications (optional, from existing Fancy_Upload.py pattern)
+## What's NOT Built Yet
+
+1. **Campaign hub API integration** — sounds are manual input. Future: pull active sounds from the railway campaign tracking hub
+2. **Sound-to-video pairing** — currently all posters get all sounds. Future: campaign-aware assignment based on which pages are on which campaigns
+3. **Inventory cleanup** — no cap on inventory list size. May need periodic pruning for long-running deployments
+4. **Tests** — no backend tests for telegram router/service, no frontend tests for Telegram.tsx
 
 ---
 
-## Files to Touch
+## To Test
 
-**Backend — modify:**
-- `services/roster.py` — extend schema for email + cookie fields
-- `routers/roster.py` — add cookie status endpoint
-- `app.py` — mount new routers (`email_routing`, `upload`)
-- `requirements.txt` — add `tiktokautouploader`
-- `.env` — add CF_API_TOKEN, CF_ZONE_ID, CF_ACCOUNT_ID, CF_EMAIL_DOMAIN
-
-**Backend — create:**
-- `routers/email_routing.py` — Cloudflare Email Routing API proxy
-- `routers/upload.py` — TikTok upload engine with job queue
-- `services/email_routing.py` — CF API client logic
-- `services/upload.py` — upload queue management, cookie helpers
-
-**Frontend — modify:**
-- `frontend/src/pages/Publish.tsx` — rewrite from cards to data table
-- `frontend/src/types/api.ts` — add email routing + upload types
-- `frontend/src/stores/workflowStore.ts` — add upload queue state
-
-**Frontend — create (if needed):**
-- Components for upload form, queue view, email management modal
+1. `pip install aiogram` (or `pip install -r requirements.txt`)
+2. Create bot via @BotFather → get token
+3. Create Telegram supergroup → enable Topics → add bot as admin → get chat_id
+4. Start app: `python app.py`
+5. Go to Telegram tab in UI:
+   - Paste bot token → Save → should show "Connected"
+   - Paste staging group chat_id → Set Group → should show "Forum" + "Admin" badges
+   - Click "Sync Topics" → should create one topic per roster page
+   - Send a test video via "Send to Staging"
+   - Create a poster, assign pages, forward content
+   - Try "Run Batch Now"
 
 ---
 
-## Hard Constraints (from CLAUDE.md)
+## Publish Feature Plan (Previous Work)
 
-- **NO database** — filesystem + in-memory only
-- **NO authentication** — single-user local tool
-- **NO component library** — Tailwind CSS directly (exception: existing `@/components/ui/` components already in use — `Badge`, `Button`, `Input` — keep using them)
-- **ZERO feature drops** — existing roster functionality must work identically
-- **Tab switching preserves state** — components never unmount (CSS display toggling)
-- **All async** — FastAPI throughout, no sync blocking in event loop (use thread pool for sync libs)
+The Publish feature phases 1-4 from the previous handoff are still valid and independent of this Telegram work:
+- Phase 1: Roster table redesign (cards → data table)
+- Phase 2: Cloudflare email routing
+- Phase 3: TikTok upload engine
+- Phase 4: Queue & scheduling
+
+Archived previous handoff: `HANDOFF-publish-plan-2026-03-25.md`
 
 ---
 
-## Recommended Start
+## Next Steps
 
-**Phase 1 first.** The table layout creates the column slots that Phases 2 and 3 fill in. Start by refactoring `Publish.tsx` from cards to table, then extend the backend schema for the new fields.
+1. **Smoke test** — configure bot, staging group, posters, send/forward content end-to-end
+2. **Fix any Telegram API quirks** — permissions, topic creation rate limits, message forwarding edge cases
+3. **Campaign hub integration** — connect to railway deployment for automated sound assignment
+4. **Continue Publish phases** — roster table redesign (Phase 1) is independent and ready to build

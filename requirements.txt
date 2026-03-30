@@ -9,6 +9,7 @@ openai
 pytesseract
 Pillow
 yt-dlp
+aiogram>=3.4
 tiktokautouploader
 google-api-python-client
 google-auth

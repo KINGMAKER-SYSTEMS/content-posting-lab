@@ -415,6 +415,84 @@ export interface RosterSyncResponse {
   pages: RosterPage[];
 }
 
+// ── Telegram ─────────────────────────────────────────────────────────────
+
+export interface TelegramStatus {
+  bot_configured: boolean;
+  bot_running: boolean;
+  bot_username: string | null;
+  staging_group: TelegramStagingGroup | null;
+  poster_count: number;
+  total_inventory: number;
+  schedule: TelegramSchedule;
+}
+
+export interface TelegramStagingGroup {
+  chat_id: number | null;
+  name: string | null;
+  topic_count: number;
+  topics: Record<string, TelegramTopicInfo>;
+}
+
+export interface TelegramTopicInfo {
+  topic_id: number;
+  topic_name: string;
+  inventory_total?: number;
+  inventory_pending?: number;
+  inventory_forwarded?: number;
+}
+
+export interface TelegramPoster {
+  poster_id: string;
+  name: string;
+  chat_id: number;
+  page_ids: string[];
+  topics: Record<string, { topic_id: number; topic_name: string }>;
+  added_at: string;
+  updated_at: string;
+}
+
+export interface TelegramInventoryItem {
+  id: string;
+  message_id: number;
+  media_type: string;
+  file_name: string;
+  file_id: string;
+  caption: string | null;
+  source: 'api' | 'manual';
+  added_at: string;
+  forwarded: Record<string, { poster_id: string; message_id: number; forwarded_at: string }>;
+}
+
+export interface TelegramInventorySummary {
+  integration_id: string;
+  page_name: string;
+  total: number;
+  pending: number;
+  forwarded: number;
+}
+
+export interface TelegramSound {
+  id: string;
+  url: string;
+  label: string;
+  added_at: string;
+  active: boolean;
+}
+
+export interface TelegramSchedule {
+  enabled: boolean;
+  forward_time: string;
+  timezone: string;
+  last_run: string | null;
+}
+
+export interface TelegramBatchResult {
+  posters_notified: number;
+  videos_forwarded: number;
+  sounds_sent: number;
+}
+
 // ── Email Routing ──────────────────────────────────────────────────────────
 
 export interface EmailStatusResponse {
