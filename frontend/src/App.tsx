@@ -8,6 +8,7 @@ import { RecreatePage } from './pages/Recreate';
 import { PublishPage } from './pages/Publish';
 import { ClipperPage } from './pages/Clipper';
 import { SlideshowPage } from './pages/Slideshow';
+import { TelegramPage } from './pages/Telegram';
 import { ProjectSelector, ToastContainer } from './components';
 import { useWorkflowStore } from './stores/workflowStore';
 import { type CreateProjectResponse, type HealthResponse, type Project, type ProjectListResponse } from './types/api';
@@ -361,6 +362,18 @@ function AppShell() {
           >
             Publish
           </Link>
+
+          {/* Telegram tab */}
+          <Link
+            to="/telegram"
+            className={`relative flex items-center gap-2 px-4 py-3 text-sm font-bold transition-colors ${
+              location.pathname === '/telegram'
+                ? 'text-primary border-b-[3px] border-primary -mb-[2px]'
+                : 'text-muted-foreground hover:text-foreground hover:bg-muted'
+            }`}
+          >
+            Telegram
+          </Link>
         </div>
       </nav>
 
@@ -390,6 +403,9 @@ function AppShell() {
         </div>
         <div style={{ display: location.pathname === '/publish' ? 'block' : 'none' }}>
           <PublishPage />
+        </div>
+        <div style={{ display: location.pathname === '/telegram' ? 'block' : 'none' }}>
+          <TelegramPage />
         </div>
       </main>
     </div>

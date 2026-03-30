@@ -9,5 +9,6 @@ openai
 pytesseract
 Pillow
 yt-dlp
+aiogram>=3.4
 pytest
 pytest-asyncio
