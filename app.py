@@ -110,11 +110,10 @@ async def lifespan(app: FastAPI):
     _log_startup_validation(ffmpeg_ok, ytdlp_ok)
 
     # Start Telegram bot if token configured
-    from services.telegram import load_config as load_tg_config
+    from services.telegram import get_bot_token as get_tg_token
     from telegram_bot import start_bot as start_tg_bot, stop_bot as stop_tg_bot
 
-    tg_config = load_tg_config()
-    tg_token = tg_config.get("bot_token")
+    tg_token = get_tg_token()
     if tg_token:
         try:
             await start_tg_bot(tg_token)

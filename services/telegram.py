@@ -69,7 +69,11 @@ def save_config(data: dict) -> None:
 
 
 def get_bot_token() -> str | None:
-    """Return the stored bot token or None."""
+    """Return the bot token. Env var TELEGRAM_BOT_TOKEN takes priority over config file."""
+    import os
+    env_token = os.getenv("TELEGRAM_BOT_TOKEN")
+    if env_token:
+        return env_token
     return load_config().get("bot_token")
 
 
