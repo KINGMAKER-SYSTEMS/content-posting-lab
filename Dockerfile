@@ -18,7 +18,8 @@ COPY requirements.txt .
 RUN grep -v -E '^(playwright|pytesseract|tiktokautouploader)' requirements.txt > requirements-prod.txt \
     && pip install --no-cache-dir -r requirements-prod.txt
 
-COPY app.py main.py project_manager.py ./
+COPY app.py main.py project_manager.py telegram_bot.py ./
+COPY telegram_config.json ./
 COPY routers/ ./routers/
 COPY providers/ ./providers/
 COPY scraper/ ./scraper/
