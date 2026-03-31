@@ -157,10 +157,10 @@ export function TelegramPage() {
         body: JSON.stringify({ chat_id: id }),
       });
       setChatIdInput('');
-      addNotification('success', 'Staging group set');
+      addNotification('success', 'Storage group connected');
       await refresh();
     } catch (err) {
-      addNotification('error', err instanceof Error ? err.message : 'Failed to set staging group');
+      addNotification('error', err instanceof Error ? err.message : 'Failed to connect storage group');
     }
   }, [chatIdInput, addNotification, refresh]);
 
@@ -171,10 +171,10 @@ export function TelegramPage() {
         { method: 'POST' },
       );
       setSyncResult(result);
-      addNotification('success', `Synced topics: ${result.created} created, ${result.existing} existing`);
+      addNotification('success', `Page folders: ${result.created} created, ${result.existing} existing`);
       await refresh();
     } catch (err) {
-      addNotification('error', err instanceof Error ? err.message : 'Failed to sync topics');
+      addNotification('error', err instanceof Error ? err.message : 'Failed to set up page folders');
     }
   }, [addNotification, refresh]);
 
@@ -224,10 +224,10 @@ export function TelegramPage() {
   const handleSyncPosterTopics = useCallback(async (posterId: string) => {
     try {
       await fetchOk(apiUrl(`/api/telegram/posters/${encodeURIComponent(posterId)}/sync-topics`), { method: 'POST' });
-      addNotification('success', 'Poster topics synced');
+      addNotification('success', 'Page folders created');
       await refresh();
     } catch (err) {
-      addNotification('error', err instanceof Error ? err.message : 'Failed to sync poster topics');
+      addNotification('error', err instanceof Error ? err.message : 'Failed to set up page folders');
     }
   }, [addNotification, refresh]);
 
@@ -354,7 +354,7 @@ export function TelegramPage() {
       setSendResult('Sent successfully');
       setSendFilePath('');
       setSendCaption('');
-      addNotification('success', 'Content sent to staging');
+      addNotification('success', 'Content sent to storage');
       await refresh();
     } catch (err) {
       addNotification('error', err instanceof Error ? err.message : 'Failed to send');
@@ -406,7 +406,7 @@ export function TelegramPage() {
       <div>
         <h1 className="mb-1 text-3xl font-heading text-foreground">Telegram Distribution</h1>
         <p className="text-sm text-muted-foreground">
-          Manage your Telegram bot, staging group, posters, and content distribution schedule.
+          Stage content, assign it to pages, and distribute to your posters on a daily schedule.
         </p>
       </div>
 
@@ -437,7 +437,7 @@ export function TelegramPage() {
               type="password"
               value={tokenInput}
               onChange={(e) => setTokenInput(e.target.value)}
-              placeholder="Bot token from @BotFather"
+              placeholder="Paste bot token here"
               className="flex-1"
             />
             <Button onClick={handleSaveToken} disabled={!tokenInput.trim()}>
@@ -455,7 +455,7 @@ export function TelegramPage() {
       {/* Section 2: Staging Group */}
       <Card>
         <CardHeader>
-          <CardTitle>Staging Group</CardTitle>
+          <CardTitle>Content Storage</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
           {/* Set group input */}
@@ -464,7 +464,7 @@ export function TelegramPage() {
               type="number"
               value={chatIdInput}
               onChange={(e) => setChatIdInput(e.target.value)}
-              placeholder="Chat ID (negative for groups)"
+              placeholder="Group ID"
               className="flex-1"
             />
             <Button onClick={handleSetGroup} disabled={!chatIdInput.trim()}>
@@ -479,8 +479,8 @@ export function TelegramPage() {
                 <span className="text-sm font-medium text-foreground">
                   {stagingGroup.name ?? `Chat ${stagingGroup.chat_id}`}
                 </span>
-                <Badge variant="success">Forum</Badge>
-                <Badge variant="success">Admin</Badge>
+                <Badge variant="success">Connected</Badge>
+                <Badge variant="success">Bot Active</Badge>
               </div>
 
               {/* Inventory Table */}
@@ -490,7 +490,7 @@ export function TelegramPage() {
                     <thead className="bg-muted">
                       <tr>
                         <th className="px-3 py-2 text-left text-xs font-bold uppercase tracking-wider text-muted-foreground">Page</th>
-                        <th className="px-3 py-2 text-left text-xs font-bold uppercase tracking-wider text-muted-foreground">Topic Status</th>
+                        <th className="px-3 py-2 text-left text-xs font-bold uppercase tracking-wider text-muted-foreground">Folder Status</th>
                         <th className="px-3 py-2 text-right text-xs font-bold uppercase tracking-wider text-muted-foreground">Staged</th>
                         <th className="px-3 py-2 text-right text-xs font-bold uppercase tracking-wider text-muted-foreground">Pending</th>
                         <th className="px-3 py-2 text-right text-xs font-bold uppercase tracking-wider text-muted-foreground">Forwarded</th>
@@ -539,10 +539,10 @@ export function TelegramPage() {
                 </div>
               )}
 
-              {/* Sync Topics */}
+              {/* Set Up Folders */}
               <div className="flex items-center gap-3">
                 <Button variant="outline" onClick={handleSyncTopics}>
-                  Sync Topics
+                  Set Up Folders
                 </Button>
                 {syncResult && (
                   <span className="text-sm text-muted-foreground">
@@ -606,7 +606,7 @@ export function TelegramPage() {
                         size="xs"
                         onClick={() => handleSyncPosterTopics(poster.poster_id)}
                       >
-                        Sync Topics
+                        Set Up Folders
                       </Button>
 
                       {/* Assign page dropdown */}
@@ -664,7 +664,7 @@ export function TelegramPage() {
                 type="number"
                 value={newPosterChatId}
                 onChange={(e) => setNewPosterChatId(e.target.value)}
-                placeholder="Chat ID"
+                placeholder="Group ID"
                 className="w-40"
               />
               <Button
@@ -854,7 +854,7 @@ export function TelegramPage() {
       {/* Section 6: Send Content */}
       <Card>
         <CardHeader>
-          <CardTitle>Send to Staging</CardTitle>
+          <CardTitle>Send Content</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
           {/* Page selector */}
@@ -886,7 +886,7 @@ export function TelegramPage() {
               id="send-file"
               value={sendFilePath}
               onChange={(e) => setSendFilePath(e.target.value)}
-              placeholder="projects/backroad/burned/batch123/video.mp4"
+              placeholder="Path to video file"
             />
           </div>
 
@@ -911,7 +911,7 @@ export function TelegramPage() {
               onClick={handleSendToStaging}
               disabled={!sendPage || !sendFilePath.trim()}
             >
-              Send to Staging
+              Send Content
             </Button>
             {sendResult && (
               <Badge variant="success">{sendResult}</Badge>
