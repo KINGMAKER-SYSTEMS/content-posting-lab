@@ -238,7 +238,7 @@ export function TelegramPage() {
       await fetchOk(apiUrl(`/api/telegram/posters/${encodeURIComponent(posterId)}/pages`), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ page_id: pageId }),
+        body: JSON.stringify({ page_ids: [pageId] }),
       });
       setPosterAssignPage((prev) => ({ ...prev, [posterId]: '' }));
       addNotification('success', 'Page assigned');
