@@ -20,6 +20,7 @@ from services.telegram import (
     get_all_inventory_summary,
     get_bot_token,
     get_inventory,
+    get_last_forwarded_id,
     get_pending_inventory,
     get_poster,
     get_poster_for_page,
@@ -34,6 +35,7 @@ from services.telegram import (
     remove_sound,
     remove_staging_topic,
     set_bot_token,
+    set_last_forwarded_id,
     set_last_run,
     set_poster,
     set_poster_topic,
@@ -507,72 +509,53 @@ async def send_content(req: SendRequest):
 
 
 @router.post("/forward/{integration_id}")
-async def forward_all_pending(integration_id: str):
-    """Forward all pending inventory items for a page to its poster group."""
-    _require_bot()
+async def forward_all_new(integration_id: str):
+    """Forward all new messages in a staging topic to the poster's group.
 
-    pending = get_pending_inventory(integration_id)
-    if not pending:
-        return {"forwarded": 0, "poster_id": None}
-
-    poster = get_poster_for_page(integration_id)
-    if not poster:
-        raise HTTPException(status_code=400, detail=f"No poster assigned for integration {integration_id}")
-
-    poster_id = poster.get("poster_id", "")
-    poster_chat_id = poster.get("chat_id")
-    poster_topic_id = poster.get("topics", {}).get(integration_id, {}).get("topic_id")
-
-    staging = get_staging_group()
-    staging_chat_id = staging.get("chat_id") if staging else None
-
-    forwarded = 0
-    for item in pending:
-        try:
-            fwd_msg_id = await _tg_bot.forward_message(
-                from_chat_id=staging_chat_id,
-                message_id=item.get("message_id"),
-                to_chat_id=poster_chat_id,
-                to_topic_id=poster_topic_id,
-            )
-            mark_forwarded(integration_id, item.get("id", ""), poster_id, fwd_msg_id)
-            forwarded += 1
-        except Exception as exc:
-            logger.warning("Failed to forward item %s: %s", item.get("id"), exc)
-
-    return {"forwarded": forwarded, "poster_id": poster_id}
-
-
-@router.post("/forward/{integration_id}/{item_id}")
-async def forward_single_item(integration_id: str, item_id: str):
-    """Forward a single inventory item to its poster group."""
+    Uses message ID range scanning — no inventory tracking needed.
+    Picks up everything uploaded since the last forward, regardless of
+    whether the bot was running when it was uploaded.
+    """
     _require_bot()
 
     poster = get_poster_for_page(integration_id)
     if not poster:
-        raise HTTPException(status_code=400, detail=f"No poster assigned for integration {integration_id}")
+        raise HTTPException(status_code=400, detail=f"No poster assigned for page {integration_id}")
 
-    poster_id = poster.get("poster_id", "")
     poster_chat_id = poster.get("chat_id")
     poster_topic_id = poster.get("topics", {}).get(integration_id, {}).get("topic_id")
+    if not poster_topic_id:
+        raise HTTPException(status_code=400, detail="Poster has no folder for this page — run Set Up Folders first")
 
     staging = get_staging_group()
-    staging_chat_id = staging.get("chat_id") if staging else None
+    if not staging or not staging.get("chat_id"):
+        raise HTTPException(status_code=400, detail="Staging group not configured")
 
-    inventory = get_inventory(integration_id)
-    item = next((i for i in inventory if i.get("id") == item_id), None)
-    if not item:
-        raise HTTPException(status_code=404, detail="Inventory item not found")
+    staging_chat_id = staging["chat_id"]
+    staging_topic = staging.get("topics", {}).get(integration_id)
+    if not staging_topic:
+        raise HTTPException(status_code=400, detail="No staging folder for this page")
 
-    fwd_msg_id = await _tg_bot.forward_message(
+    staging_topic_id = staging_topic["topic_id"]
+    after_id = get_last_forwarded_id(integration_id)
+
+    result = await _tg_bot.forward_new_messages(
         from_chat_id=staging_chat_id,
-        message_id=item.get("message_id"),
+        from_topic_id=staging_topic_id,
         to_chat_id=poster_chat_id,
         to_topic_id=poster_topic_id,
+        after_message_id=after_id,
     )
-    mark_forwarded(integration_id, item_id, poster_id, fwd_msg_id)
 
-    return {"ok": True, "item_id": item_id, "poster_id": poster_id}
+    # Update the high-water mark
+    if result["last_message_id"] > after_id:
+        set_last_forwarded_id(integration_id, result["last_message_id"])
+
+    return {
+        "forwarded": result["forwarded"],
+        "skipped": result["errors"],
+        "poster_id": poster.get("poster_id", ""),
+    }
 
 
 @router.get("/inventory/{integration_id}")

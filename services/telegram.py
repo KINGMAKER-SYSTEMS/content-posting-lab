@@ -138,6 +138,22 @@ def remove_staging_topic(integration_id: str) -> bool:
     return True
 
 
+def get_last_forwarded_id(integration_id: str) -> int:
+    """Get the last forwarded message_id for a staging topic. Returns 0 if never forwarded."""
+    config = load_config()
+    topic = config["staging_group"].get("topics", {}).get(integration_id, {})
+    return topic.get("last_forwarded_id", 0)
+
+
+def set_last_forwarded_id(integration_id: str, message_id: int) -> None:
+    """Update the last forwarded message_id for a staging topic."""
+    config = load_config()
+    topic = config["staging_group"].get("topics", {}).get(integration_id)
+    if topic is not None:
+        topic["last_forwarded_id"] = message_id
+        save_config(config)
+
+
 # ---------------------------------------------------------------------------
 # Posters
 # ---------------------------------------------------------------------------
