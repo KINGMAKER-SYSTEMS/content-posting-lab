@@ -221,6 +221,17 @@ async def create_forum_topic(chat_id: int, name: str) -> int:
     return result.message_thread_id
 
 
+async def delete_forum_topic(chat_id: int, topic_id: int) -> bool:
+    """Delete a forum topic from a supergroup. Returns True on success."""
+    if _bot is None:
+        raise RuntimeError("Bot is not running")
+    try:
+        await _bot.delete_forum_topic(chat_id=chat_id, message_thread_id=topic_id)
+        return True
+    except Exception:
+        return False
+
+
 async def send_media_to_topic(
     chat_id: int,
     topic_id: int,

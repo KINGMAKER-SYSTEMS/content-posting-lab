@@ -63,7 +63,8 @@ export function TelegramPage() {
 
   const [newPosterName, setNewPosterName] = useState('');
   const [newPosterChatId, setNewPosterChatId] = useState('');
-  const [posterAssignPage, setPosterAssignPage] = useState<Record<string, string>>({});
+  const [posterSelectedPages, setPosterSelectedPages] = useState<Record<string, Set<string>>>({});
+  const [posterAssignOpen, setPosterAssignOpen] = useState<Record<string, boolean>>({});
 
   const [newSoundUrl, setNewSoundUrl] = useState('');
   const [newSoundLabel, setNewSoundLabel] = useState('');
@@ -231,22 +232,57 @@ export function TelegramPage() {
     }
   }, [addNotification, refresh]);
 
-  const handleAssignPage = useCallback(async (posterId: string) => {
-    const pageId = posterAssignPage[posterId];
-    if (!pageId) return;
+  const handleUnassignPage = useCallback(async (posterId: string, pageId: string, pageName: string) => {
+    try {
+      await fetchOk(
+        apiUrl(`/api/telegram/posters/${encodeURIComponent(posterId)}/pages/${encodeURIComponent(pageId)}`),
+        { method: 'DELETE' },
+      );
+      addNotification('success', `${pageName} removed`);
+      await refresh();
+    } catch (err) {
+      addNotification('error', err instanceof Error ? err.message : 'Failed to remove page');
+    }
+  }, [addNotification, refresh]);
+
+  const togglePageSelection = useCallback((posterId: string, pageId: string) => {
+    setPosterSelectedPages((prev) => {
+      const current = new Set(prev[posterId] ?? []);
+      if (current.has(pageId)) {
+        current.delete(pageId);
+      } else {
+        current.add(pageId);
+      }
+      return { ...prev, [posterId]: current };
+    });
+  }, []);
+
+  const selectAllPages = useCallback((posterId: string, pageIds: string[]) => {
+    setPosterSelectedPages((prev) => ({ ...prev, [posterId]: new Set(pageIds) }));
+  }, []);
+
+  const clearPageSelection = useCallback((posterId: string) => {
+    setPosterSelectedPages((prev) => ({ ...prev, [posterId]: new Set() }));
+  }, []);
+
+  const handleAssignPages = useCallback(async (posterId: string) => {
+    const selected = posterSelectedPages[posterId];
+    if (!selected || selected.size === 0) return;
+    const pageIds = Array.from(selected);
     try {
       await fetchOk(apiUrl(`/api/telegram/posters/${encodeURIComponent(posterId)}/pages`), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ page_ids: [pageId] }),
+        body: JSON.stringify({ page_ids: pageIds }),
       });
-      setPosterAssignPage((prev) => ({ ...prev, [posterId]: '' }));
-      addNotification('success', 'Page assigned');
+      setPosterSelectedPages((prev) => ({ ...prev, [posterId]: new Set() }));
+      setPosterAssignOpen((prev) => ({ ...prev, [posterId]: false }));
+      addNotification('success', `${pageIds.length} page${pageIds.length > 1 ? 's' : ''} assigned — folders being created`);
       await refresh();
     } catch (err) {
-      addNotification('error', err instanceof Error ? err.message : 'Failed to assign page');
+      addNotification('error', err instanceof Error ? err.message : 'Failed to assign pages');
     }
-  }, [posterAssignPage, addNotification, refresh]);
+  }, [posterSelectedPages, addNotification, refresh]);
 
   // -----------------------------------------------------------------------
   // Sound handlers
@@ -563,81 +599,200 @@ export function TelegramPage() {
         <CardContent className="space-y-4">
           {/* Poster grid */}
           {posters.length > 0 && (
-            <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+            <div className="space-y-4">
               {posters.map((poster) => {
                 const assignedPages = rosterPages.filter((p) => poster.page_ids.includes(p.integration_id));
-                const unassignedPages = rosterPages.filter((p) => !poster.page_ids.includes(p.integration_id));
-                const selectedAssign = posterAssignPage[poster.poster_id] ?? '';
+                const unassignedPages = rosterPages.filter(
+                  (p) => !posters.some((pr) => pr.page_ids.includes(p.integration_id)),
+                );
+                const isAssignOpen = posterAssignOpen[poster.poster_id] ?? false;
+                const selected = posterSelectedPages[poster.poster_id] ?? new Set<string>();
 
                 return (
                   <div
                     key={poster.poster_id}
-                    className="rounded-[var(--border-radius)] border-2 border-border bg-card p-4 shadow-[4px_4px_0_0_var(--border)]"
+                    className="rounded-[var(--border-radius)] border-2 border-border bg-card shadow-[4px_4px_0_0_var(--border)]"
                   >
-                    <div className="mb-2 flex items-start justify-between">
+                    {/* Poster header */}
+                    <div className="flex items-start justify-between border-b border-border p-4">
                       <div>
-                        <p className="font-heading text-foreground">{poster.name}</p>
-                        <p className="text-xs text-muted-foreground font-mono">{poster.chat_id}</p>
+                        <p className="text-lg font-heading text-foreground">{poster.name}</p>
+                        <p className="text-xs text-muted-foreground">
+                          {assignedPages.length} page{assignedPages.length !== 1 ? 's' : ''} assigned
+                        </p>
                       </div>
-                      <Button
-                        variant="destructive"
-                        size="xs"
-                        onClick={() => handleRemovePoster(poster.poster_id)}
-                      >
-                        Remove
-                      </Button>
+                      <div className="flex items-center gap-2">
+                        <Button
+                          variant="outline"
+                          size="xs"
+                          onClick={() => handleSyncPosterTopics(poster.poster_id)}
+                        >
+                          Set Up Folders
+                        </Button>
+                        <Button
+                          variant="destructive"
+                          size="xs"
+                          onClick={() => handleRemovePoster(poster.poster_id)}
+                        >
+                          Remove
+                        </Button>
+                      </div>
                     </div>
 
-                    {/* Assigned pages */}
+                    {/* Assigned pages as cards */}
                     {assignedPages.length > 0 && (
-                      <div className="mb-3 flex flex-wrap gap-1.5">
-                        {assignedPages.map((p) => (
-                          <Badge key={p.integration_id} variant="info">
-                            {p.name}
-                          </Badge>
-                        ))}
+                      <div className="border-b border-border p-4">
+                        <p className="mb-2 text-xs font-bold uppercase tracking-wider text-muted-foreground">
+                          Assigned Pages
+                        </p>
+                        <div className="grid grid-cols-3 gap-2 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6">
+                          {assignedPages.map((p) => (
+                            <div
+                              key={p.integration_id}
+                              className="group relative flex flex-col items-center gap-1.5 rounded-[var(--border-radius)] border-2 border-primary/30 bg-primary/5 p-2 text-center"
+                            >
+                              {/* Remove button — top right, visible on hover */}
+                              <button
+                                type="button"
+                                onClick={() => handleUnassignPage(poster.poster_id, p.integration_id, p.name)}
+                                className="absolute -right-1.5 -top-1.5 flex h-4 w-4 items-center justify-center rounded-full border border-border bg-destructive text-[10px] font-bold text-white opacity-0 transition-opacity group-hover:opacity-100"
+                                title={`Remove ${p.name}`}
+                              >
+                                ×
+                              </button>
+                              {p.picture ? (
+                                <img
+                                  src={p.picture}
+                                  alt={p.name}
+                                  className="h-8 w-8 rounded-full border border-border object-cover"
+                                />
+                              ) : (
+                                <div className="flex h-8 w-8 items-center justify-center rounded-full border border-border bg-muted text-xs font-bold text-muted-foreground">
+                                  {p.name.charAt(0).toUpperCase()}
+                                </div>
+                              )}
+                              <span className="text-[11px] font-medium leading-tight text-foreground">
+                                {p.name}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
                       </div>
                     )}
 
-                    {/* Actions row */}
-                    <div className="flex flex-wrap items-center gap-2">
-                      <Button
-                        variant="outline"
-                        size="xs"
-                        onClick={() => handleSyncPosterTopics(poster.poster_id)}
-                      >
-                        Set Up Folders
-                      </Button>
+                    {/* Assign pages panel */}
+                    <div className="p-4">
+                      {!isAssignOpen ? (
+                        <Button
+                          variant="outline"
+                          onClick={() => {
+                            clearPageSelection(poster.poster_id);
+                            setPosterAssignOpen((prev) => ({ ...prev, [poster.poster_id]: true }));
+                          }}
+                          disabled={unassignedPages.length === 0}
+                        >
+                          {unassignedPages.length > 0
+                            ? `+ Assign Pages (${unassignedPages.length} available)`
+                            : 'All pages assigned'}
+                        </Button>
+                      ) : (
+                        <div className="space-y-3">
+                          <div className="flex items-center justify-between">
+                            <p className="text-xs font-bold uppercase tracking-wider text-muted-foreground">
+                              Select pages to assign
+                            </p>
+                            <div className="flex items-center gap-2">
+                              <button
+                                type="button"
+                                onClick={() => selectAllPages(poster.poster_id, unassignedPages.map((p) => p.integration_id))}
+                                className="text-xs font-medium text-primary hover:underline"
+                              >
+                                Select All
+                              </button>
+                              <span className="text-xs text-muted-foreground">|</span>
+                              <button
+                                type="button"
+                                onClick={() => clearPageSelection(poster.poster_id)}
+                                className="text-xs font-medium text-muted-foreground hover:underline"
+                              >
+                                Clear
+                              </button>
+                            </div>
+                          </div>
 
-                      {/* Assign page dropdown */}
-                      {unassignedPages.length > 0 && (
-                        <>
-                          <select
-                            value={selectedAssign}
-                            onChange={(e) =>
-                              setPosterAssignPage((prev) => ({
-                                ...prev,
-                                [poster.poster_id]: e.target.value,
-                              }))
-                            }
-                            className="h-6 rounded-md border border-border bg-card px-2 text-xs text-foreground"
-                          >
-                            <option value="">Assign page...</option>
-                            {unassignedPages.map((p) => (
-                              <option key={p.integration_id} value={p.integration_id}>
-                                {p.name}
-                              </option>
-                            ))}
-                          </select>
-                          <Button
-                            variant="outline"
-                            size="xs"
-                            onClick={() => handleAssignPage(poster.poster_id)}
-                            disabled={!selectedAssign}
-                          >
-                            Assign
-                          </Button>
-                        </>
+                          {/* Page selection grid */}
+                          <div className="grid grid-cols-3 gap-2 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6">
+                            {unassignedPages.map((p) => {
+                              const isSelected = selected.has(p.integration_id);
+                              return (
+                                <button
+                                  key={p.integration_id}
+                                  type="button"
+                                  onClick={() => togglePageSelection(poster.poster_id, p.integration_id)}
+                                  className={`relative flex flex-col items-center gap-1.5 rounded-[var(--border-radius)] border-2 p-2 text-center transition-all ${
+                                    isSelected
+                                      ? 'border-primary bg-primary/10 shadow-[2px_2px_0_0_var(--border)]'
+                                      : 'border-border bg-card hover:border-muted-foreground hover:bg-muted/50'
+                                  }`}
+                                >
+                                  {/* Checkmark */}
+                                  <div
+                                    className={`absolute right-1 top-1 flex h-4 w-4 items-center justify-center rounded-sm border transition-all ${
+                                      isSelected
+                                        ? 'border-primary bg-primary text-white'
+                                        : 'border-border bg-card'
+                                    }`}
+                                  >
+                                    {isSelected && (
+                                      <svg className="h-3 w-3" viewBox="0 0 12 12" fill="none">
+                                        <path d="M2.5 6L5 8.5L9.5 3.5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                                      </svg>
+                                    )}
+                                  </div>
+
+                                  {p.picture ? (
+                                    <img
+                                      src={p.picture}
+                                      alt={p.name}
+                                      className="h-8 w-8 rounded-full border border-border object-cover"
+                                    />
+                                  ) : (
+                                    <div className="flex h-8 w-8 items-center justify-center rounded-full border border-border bg-muted text-xs font-bold text-muted-foreground">
+                                      {p.name.charAt(0).toUpperCase()}
+                                    </div>
+                                  )}
+                                  <span className="text-[11px] font-medium leading-tight text-foreground">
+                                    {p.name}
+                                  </span>
+                                </button>
+                              );
+                            })}
+                          </div>
+
+                          {/* Action buttons */}
+                          <div className="flex items-center gap-2">
+                            <Button
+                              onClick={() => handleAssignPages(poster.poster_id)}
+                              disabled={selected.size === 0}
+                            >
+                              Assign {selected.size > 0 ? `${selected.size} Page${selected.size > 1 ? 's' : ''}` : 'Pages'}
+                            </Button>
+                            <Button
+                              variant="outline"
+                              onClick={() => {
+                                clearPageSelection(poster.poster_id);
+                                setPosterAssignOpen((prev) => ({ ...prev, [poster.poster_id]: false }));
+                              }}
+                            >
+                              Cancel
+                            </Button>
+                            {selected.size > 0 && (
+                              <span className="text-xs text-muted-foreground">
+                                {selected.size} selected — folders will be created automatically
+                              </span>
+                            )}
+                          </div>
+                        </div>
                       )}
                     </div>
                   </div>

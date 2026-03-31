@@ -400,11 +400,25 @@ async def assign_pages(poster_id: str, req: AssignPagesRequest):
 
 @router.delete("/posters/{poster_id}/pages/{integration_id}")
 async def unassign_page(poster_id: str, integration_id: str):
-    """Remove a page assignment from a poster."""
-    if not get_poster(poster_id):
+    """Remove a page assignment from a poster and delete the topic in their group."""
+    poster = get_poster(poster_id)
+    if not poster:
         raise HTTPException(status_code=404, detail="Poster not found")
+
+    # Delete the topic in the poster's Telegram group if it exists
+    topic_deleted = False
+    poster_topics = poster.get("topics", {})
+    topic_info = poster_topics.get(integration_id)
+    if topic_info and poster.get("chat_id") and _tg_bot.get_bot() is not None:
+        try:
+            topic_deleted = await _tg_bot.delete_forum_topic(
+                poster["chat_id"], topic_info["topic_id"]
+            )
+        except Exception as exc:
+            logger.warning("Failed to delete topic for %s in poster %s: %s", integration_id, poster_id, exc)
+
     unassign_page_from_poster(poster_id, integration_id)
-    return {"ok": True}
+    return {"ok": True, "topic_deleted": topic_deleted}
 
 
 @router.post("/posters/{poster_id}/sync-topics")
