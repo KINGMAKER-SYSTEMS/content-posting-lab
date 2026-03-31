@@ -272,14 +272,20 @@ async def sync_staging_topics():
         provider = page.get("provider", "")
         topic_name = f"{page_name} ({provider})" if provider else page_name
 
-        try:
-            topic_id = await _tg_bot.create_forum_topic(chat_id, topic_name)
-            set_staging_topic(integration_id, topic_id, topic_name)
-            created += 1
-        except Exception as exc:
-            logger.warning("Failed to create topic for %s: %s", integration_id, exc)
+        for attempt in range(3):
+            try:
+                topic_id = await _tg_bot.create_forum_topic(chat_id, topic_name)
+                set_staging_topic(integration_id, topic_id, topic_name)
+                created += 1
+                break
+            except Exception as exc:
+                if attempt < 2 and "retry" in str(exc).lower() or "too many" in str(exc).lower() or "429" in str(exc):
+                    await asyncio.sleep(5)  # back off on rate limit
+                else:
+                    logger.warning("Failed to create topic for %s: %s", integration_id, exc)
+                    break
 
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(2)
 
     return {"created": created, "existing": existing}
 
@@ -374,14 +380,20 @@ async def assign_pages(poster_id: str, req: AssignPagesRequest):
 
         if page_id not in existing_topics:
             page_name = _find_page_name(page_id)
-            try:
-                topic_id = await _tg_bot.create_forum_topic(chat_id, page_name)
-                set_poster_topic(poster_id, page_id, topic_id, page_name)
-                created_topics += 1
-            except Exception as exc:
-                logger.warning("Failed to create topic for %s in poster %s: %s", page_id, poster_id, exc)
+            for attempt in range(3):
+                try:
+                    topic_id = await _tg_bot.create_forum_topic(chat_id, page_name)
+                    set_poster_topic(poster_id, page_id, topic_id, page_name)
+                    created_topics += 1
+                    break
+                except Exception as exc:
+                    if attempt < 2 and ("retry" in str(exc).lower() or "too many" in str(exc).lower() or "429" in str(exc)):
+                        await asyncio.sleep(5)
+                    else:
+                        logger.warning("Failed to create topic for %s in poster %s: %s", page_id, poster_id, exc)
+                        break
 
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(2)
 
     return {"ok": True, "assigned": len(req.page_ids), "topics_created": created_topics}
 
@@ -417,14 +429,20 @@ async def sync_poster_topics(poster_id: str):
             continue
 
         page_name = _find_page_name(page_id)
-        try:
-            topic_id = await _tg_bot.create_forum_topic(chat_id, page_name)
-            set_poster_topic(poster_id, page_id, topic_id, page_name)
-            created += 1
-        except Exception as exc:
-            logger.warning("Failed to create topic for %s in poster %s: %s", page_id, poster_id, exc)
+        for attempt in range(3):
+            try:
+                topic_id = await _tg_bot.create_forum_topic(chat_id, page_name)
+                set_poster_topic(poster_id, page_id, topic_id, page_name)
+                created += 1
+                break
+            except Exception as exc:
+                if attempt < 2 and ("retry" in str(exc).lower() or "too many" in str(exc).lower() or "429" in str(exc)):
+                    await asyncio.sleep(5)
+                else:
+                    logger.warning("Failed to create topic for %s in poster %s: %s", page_id, poster_id, exc)
+                    break
 
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(2)
 
     return {"created": created, "existing": existing_count}
 
