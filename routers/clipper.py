@@ -749,16 +749,15 @@ async def trim_batch(body: dict):
     }
 
 
+# ── In-memory job state for process-batch (polling pattern) ─────────────
+
+_batch_jobs: dict[str, dict] = {}
+
+
 @router.post("/process-batch")
 async def process_batch(body: dict):
-    """Process staged videos with SSE progress streaming.
-
-    Returns text/event-stream. Each line is a JSON event:
-      {"type": "plan", "job_id": "...", "total_clips": N}
-      {"type": "progress", "clip": 3, "total": 10, "source_name": "...", "status": "encoding"}
-      {"type": "clip_done", "clip": {...clip info...}}
-      {"type": "complete", "job_id": "...", "clips": [...], "ok_count": N, "total": N}
-      {"type": "error", "message": "..."}
+    """Start a clip batch job in the background. Returns job_id immediately.
+    Poll GET /process-batch/{job_id} for progress — no SSE, no timeouts.
     """
     project = body.get("project", "quick-test")
     batch_id = body.get("batch_id", "")
@@ -770,15 +769,60 @@ async def process_batch(body: dict):
     if clip_length < 1:
         raise HTTPException(400, "clip_length must be >= 1 second")
 
-    async def generate():
-        clipper_dir = _get_clipper_dir(project)
-        job_id = _make_clip_job_id(project)
-        job_dir = clipper_dir / job_id
-        job_dir.mkdir(parents=True, exist_ok=True)
-        sanitized = sanitize_project_name(project)
+    job_id = _make_clip_job_id(project)
 
-        # Pre-calculate total clips
-        total_clips = 0
+    # Pre-calculate total clips
+    total_clips = 0
+    for src in sources:
+        trim_start = float(src.get("trim_start", 0))
+        trim_end = float(src.get("trim_end", 0))
+        trim_duration = trim_end - trim_start
+        if not Path(src["path"]).exists() or trim_duration < 0.5:
+            total_clips += 1
+        else:
+            total_clips += max(1, math.floor(trim_duration / clip_length))
+
+    _batch_jobs[job_id] = {
+        "job_id": job_id,
+        "status": "running",
+        "clip": 0,
+        "total": total_clips,
+        "source": "",
+        "clips": [],
+        "ok_count": 0,
+        "clip_length": clip_length,
+        "error": None,
+    }
+
+    asyncio.create_task(_run_batch_job(job_id, project, batch_id, clip_length, sources))
+
+    return {"job_id": job_id, "total_clips": total_clips}
+
+
+@router.get("/process-batch/{job_id}")
+async def poll_batch(job_id: str):
+    """Poll a clip batch job for progress. Returns current state."""
+    job = _batch_jobs.get(job_id)
+    if not job:
+        raise HTTPException(404, "Job not found")
+    return job
+
+
+async def _run_batch_job(
+    job_id: str,
+    project: str,
+    batch_id: str,
+    clip_length: float,
+    sources: list[dict],
+):
+    """Background task: process all clips, update _batch_jobs in-memory state."""
+    job = _batch_jobs[job_id]
+    clipper_dir = _get_clipper_dir(project)
+    job_dir = clipper_dir / job_id
+    job_dir.mkdir(parents=True, exist_ok=True)
+    sanitized = sanitize_project_name(project)
+
+    try:
         source_plans: list[dict] = []
         for src_idx, src in enumerate(sources):
             source = Path(src["path"])
@@ -787,17 +831,13 @@ async def process_batch(body: dict):
             trim_duration = trim_end - trim_start
             if not source.exists() or trim_duration < 0.5:
                 source_plans.append({"skip": True, "src_idx": src_idx, "src": src})
-                total_clips += 1
                 continue
             num = max(1, math.floor(trim_duration / clip_length))
-            total_clips += num
             source_plans.append({
                 "skip": False, "src_idx": src_idx, "src": src,
                 "source": source, "trim_start": trim_start, "trim_end": trim_end,
                 "trim_duration": trim_duration, "num_clips": num,
             })
-
-        yield f"data: {json.dumps({'type': 'plan', 'job_id': job_id, 'total_clips': total_clips})}\n\n"
 
         results: list[dict] = []
         clip_counter = 0
@@ -810,9 +850,9 @@ async def process_batch(body: dict):
             if plan.get("skip"):
                 clip_counter += 1
                 error = "Source not found" if not Path(src["path"]).exists() else "Trim too short"
-                result = {"index": clip_counter - 1, "ok": False, "error": error}
-                results.append(result)
-                yield f"data: {json.dumps({'type': 'clip_done', 'clip': result})}\n\n"
+                results.append({"index": clip_counter - 1, "ok": False, "error": error})
+                job["clip"] = clip_counter
+                job["clips"] = list(results)
                 continue
 
             source = plan["source"]
@@ -831,25 +871,13 @@ async def process_batch(body: dict):
                 clip_name = f"clip_{clip_counter:03d}.mp4"
                 clip_path = job_dir / clip_name
 
-                yield f"data: {json.dumps({'type': 'progress', 'clip': clip_counter, 'total': total_clips, 'source_name': source_name, 'status': 'encoding'})}\n\n"
+                job["clip"] = clip_counter
+                job["source"] = source_name
 
-                # Run clip_segment with periodic keepalive pings to prevent
-                # Railway/proxy timeout on long encodes
-                clip_task = asyncio.create_task(
-                    _clip_segment(
-                        source, clip_path, clip_start, actual_clip_len,
-                        info["width"], info["height"],
-                    )
+                ok = await _clip_segment(
+                    source, clip_path, clip_start, actual_clip_len,
+                    info["width"], info["height"],
                 )
-                while not clip_task.done():
-                    try:
-                        ok = await asyncio.wait_for(asyncio.shield(clip_task), timeout=10)
-                        break
-                    except asyncio.TimeoutError:
-                        # Send keepalive ping so SSE connection stays open
-                        yield f"data: {json.dumps({'type': 'keepalive', 'clip': clip_counter, 'total': total_clips})}\n\n"
-                else:
-                    ok = clip_task.result()
 
                 thumb_name = f"thumb_{clip_counter:03d}.jpg"
                 thumb_path = job_dir / thumb_name
@@ -867,14 +895,28 @@ async def process_batch(body: dict):
                     "duration": round(actual_clip_len, 2),
                 }
                 results.append(result)
-                yield f"data: {json.dumps({'type': 'clip_done', 'clip': result})}\n\n"
+                job["clips"] = list(results)
+                job["ok_count"] = sum(1 for r in results if r.get("ok"))
 
                 log.info("  clip %d/%d: %.1f+%.1fs → %s (%s)",
-                         clip_counter, total_clips, clip_start, actual_clip_len, clip_name, "ok" if ok else "FAIL")
+                         clip_counter, job["total"], clip_start, actual_clip_len, clip_name, "ok" if ok else "FAIL")
 
-        yield f"data: {json.dumps({'type': 'complete', 'job_id': job_id, 'clips': results, 'ok_count': sum(1 for r in results if r.get('ok')), 'total': len(results), 'clip_length': clip_length})}\n\n"
+        # Clean up staging dir
+        staging_dir = clipper_dir / f"_staging_{batch_id}"
+        if staging_dir.exists():
+            shutil.rmtree(staging_dir)
 
-    return StreamingResponse(generate(), media_type="text/event-stream")
+        job["status"] = "complete"
+        job["clips"] = results
+        job["ok_count"] = sum(1 for r in results if r.get("ok"))
+        log.info("batch COMPLETE: %s — %d/%d clips ok", job_id, job["ok_count"], job["total"])
+
+    except Exception as e:
+        log.error("batch FAILED: %s — %s", job_id, e)
+        import traceback
+        traceback.print_exc()
+        job["status"] = "error"
+        job["error"] = str(e)
 
 
 # ── Pipeline for local files ─────────────────────────────────────────

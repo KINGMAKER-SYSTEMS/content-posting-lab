@@ -519,7 +519,7 @@ export function ClipperPage() {
     }
   };
 
-  // ── Process all (SSE streaming) ──────────────────────────────────
+  // ── Process all (background job + polling) ──────────────────────────
   const handleProcessAll = async () => {
     if (!activeProjectName || !batchId || stagedFiles.length === 0) return;
     setStage('processing');
@@ -528,7 +528,8 @@ export function ClipperPage() {
     setProcessProgress(null);
 
     try {
-      const resp = await fetch(apiUrl('/api/clipper/process-batch'), {
+      // Start the job — returns immediately with job_id
+      const startResp = await fetch(apiUrl('/api/clipper/process-batch'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -543,50 +544,47 @@ export function ClipperPage() {
           })),
         }),
       });
-      if (!resp.ok) throw new Error(await resp.text() || 'Processing failed');
+      if (!startResp.ok) throw new Error(await startResp.text() || 'Processing failed');
 
-      const reader = resp.body?.getReader();
-      if (!reader) throw new Error('No response body');
+      const { job_id, total_clips } = await startResp.json();
+      setResultJobId(job_id);
+      setProcessProgress({ clip: 0, total: total_clips, source: '' });
 
-      const decoder = new TextDecoder();
-      let buffer = '';
-      let finalData: { job_id: string; clips: Array<ClipInfo & { thumb_url?: string }>; ok_count: number; total: number } | null = null;
+      // Poll for progress until complete or error
+      let done = false;
+      while (!done) {
+        await new Promise((r) => setTimeout(r, 1500));
 
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
+        const pollResp = await fetch(apiUrl(`/api/clipper/process-batch/${encodeURIComponent(job_id)}`));
+        if (!pollResp.ok) throw new Error('Failed to poll job status');
 
-        // Parse SSE lines
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || '';
+        const job = await pollResp.json();
 
-        for (const line of lines) {
-          if (!line.startsWith('data: ')) continue;
-          try {
-            const event = JSON.parse(line.slice(6));
-            if (event.type === 'plan') {
-              setProcessProgress({ clip: 0, total: event.total_clips, source: '' });
-              setResultJobId(event.job_id);
-            } else if (event.type === 'progress') {
-              setProcessProgress({ clip: event.clip, total: event.total, source: event.source_name });
-            } else if (event.type === 'clip_done' && event.clip?.ok) {
-              const c = event.clip;
-              setResultClips((prev) => [...prev, { ...c, thumbUrl: c.thumb_url }]);
-            } else if (event.type === 'complete') {
-              finalData = event;
-            }
-          } catch { /* ignore parse errors */ }
+        // Update progress
+        setProcessProgress({ clip: job.clip, total: job.total, source: job.source || '' });
+
+        // Update clips as they complete
+        if (job.clips && job.clips.length > 0) {
+          setResultClips(
+            job.clips
+              .filter((c: { ok: boolean }) => c.ok)
+              .map((c: { thumb_url?: string }) => ({ ...c, thumbUrl: c.thumb_url })),
+          );
         }
-      }
 
-      if (finalData) {
-        setResultClips(finalData.clips.map((c) => ({ ...c, thumbUrl: c.thumb_url })));
-        setStage('results');
-        addNotification('success', `Processed ${finalData.ok_count}/${finalData.total} clips`);
-        fetchPastJobs();
-      } else {
-        setStage('results');
+        if (job.status === 'complete') {
+          setResultClips(
+            (job.clips || [])
+              .filter((c: { ok: boolean }) => c.ok)
+              .map((c: { thumb_url?: string }) => ({ ...c, thumbUrl: c.thumb_url })),
+          );
+          setStage('results');
+          addNotification('success', `Processed ${job.ok_count}/${job.total} clips`);
+          fetchPastJobs();
+          done = true;
+        } else if (job.status === 'error') {
+          throw new Error(job.error || 'Processing failed');
+        }
       }
     } catch (e) {
       addNotification('error', e instanceof Error ? e.message : 'Processing failed');
