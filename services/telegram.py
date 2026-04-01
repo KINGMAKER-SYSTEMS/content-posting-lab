@@ -14,9 +14,9 @@ import os
 
 BASE_DIR = Path(__file__).parent.parent
 
-# Store config on a persistent volume if available, otherwise in app dir
-_DATA_DIR = os.getenv("RAILWAY_VOLUME_MOUNT_PATH", "") or os.getenv("DATA_DIR", "")
-CONFIG_PATH = Path(_DATA_DIR) / "telegram_config.json" if _DATA_DIR else BASE_DIR / "telegram_config.json"
+# Store config on persistent volume (/data on Railway), fallback to app dir locally
+_DATA_DIR = Path("/data") if Path("/data").exists() else BASE_DIR
+CONFIG_PATH = _DATA_DIR / "telegram_config.json"
 
 # Default posters — seeded on first boot so they don't need to be recreated
 _DEFAULT_POSTERS = {

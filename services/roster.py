@@ -10,7 +10,8 @@ import time
 from pathlib import Path
 
 BASE_DIR = Path(__file__).parent.parent
-ROSTER_PATH = BASE_DIR / "page_roster.json"
+_DATA_DIR = Path("/data") if Path("/data").exists() else BASE_DIR
+ROSTER_PATH = _DATA_DIR / "page_roster.json"
 
 _DRIVE_FOLDER_RE = re.compile(r"folders/([a-zA-Z0-9_-]+)")
 
