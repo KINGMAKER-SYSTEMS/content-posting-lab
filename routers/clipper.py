@@ -229,9 +229,12 @@ async def _clip_segment(
     src_ratio = src_width / src_height if src_height else 1.0
     is_already_9_16 = abs(src_ratio - target_ratio) < 0.02  # ~1% tolerance
 
-    # Use faster preset for large source files (>1GB) to avoid crashes/timeouts
+    # Use fast preset on deployed environments (RAILWAY_ENVIRONMENT set) or large files
+    # slow preset causes proxy timeouts on Railway due to long encode times
+    import os
     source_size = source.stat().st_size if source.exists() else 0
-    preset = "fast" if source_size > 1 * 1024 * 1024 * 1024 else "slow"
+    is_deployed = bool(os.getenv("RAILWAY_ENVIRONMENT") or os.getenv("RAILWAY_SERVICE_ID"))
+    preset = "fast" if is_deployed or source_size > 500 * 1024 * 1024 else "slow"
 
     log.info(
         "clip_segment: src=%dx%d ratio=%.4f target=%.4f diff=%.4f is_9_16=%s",
@@ -817,10 +820,23 @@ async def process_batch(body: dict):
 
                 yield f"data: {json.dumps({'type': 'progress', 'clip': clip_counter, 'total': total_clips, 'source_name': source_name, 'status': 'encoding'})}\n\n"
 
-                ok = await _clip_segment(
-                    source, clip_path, clip_start, actual_clip_len,
-                    info["width"], info["height"],
+                # Run clip_segment with periodic keepalive pings to prevent
+                # Railway/proxy timeout on long encodes
+                clip_task = asyncio.create_task(
+                    _clip_segment(
+                        source, clip_path, clip_start, actual_clip_len,
+                        info["width"], info["height"],
+                    )
                 )
+                while not clip_task.done():
+                    try:
+                        ok = await asyncio.wait_for(asyncio.shield(clip_task), timeout=10)
+                        break
+                    except asyncio.TimeoutError:
+                        # Send keepalive ping so SSE connection stays open
+                        yield f"data: {json.dumps({'type': 'keepalive', 'clip': clip_counter, 'total': total_clips})}\n\n"
+                else:
+                    ok = clip_task.result()
 
                 thumb_name = f"thumb_{clip_counter:03d}.jpg"
                 thumb_path = job_dir / thumb_name
