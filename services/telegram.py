@@ -10,8 +10,24 @@ import time
 import uuid
 from pathlib import Path
 
+import os
+
 BASE_DIR = Path(__file__).parent.parent
-CONFIG_PATH = BASE_DIR / "telegram_config.json"
+
+# Store config on persistent volume (/data on Railway), fallback to app dir locally
+_DATA_DIR = Path("/data") if Path("/data").exists() else BASE_DIR
+CONFIG_PATH = _DATA_DIR / "telegram_config.json"
+
+# Default posters — seeded on first boot so they don't need to be recreated
+_DEFAULT_POSTERS = {
+    "seffra": {"poster_id": "seffra", "name": "Seffra", "chat_id": -1003869464172},
+    "gigi": {"poster_id": "gigi", "name": "Gigi", "chat_id": -1003814954137},
+    "johnny-balik": {"poster_id": "johnny-balik", "name": "Johnny Balik", "chat_id": -1003754164520},
+    "sam-hudgen": {"poster_id": "sam-hudgen", "name": "Sam Hudgen", "chat_id": -1003691005229},
+    "jake-balik": {"poster_id": "jake-balik", "name": "Jake Balik", "chat_id": -1003867018292},
+    "eric-cromartie": {"poster_id": "eric-cromartie", "name": "Eric Cromartie", "chat_id": -1003796560010},
+    "john-smathers": {"poster_id": "john-smathers", "name": "John Smathers", "chat_id": -1003302681249},
+}
 
 
 def _empty_config() -> dict:
@@ -20,8 +36,8 @@ def _empty_config() -> dict:
         "bot_token": None,
         "bot_username": None,
         "staging_group": {
-            "chat_id": None,
-            "name": None,
+            "chat_id": -1003748889949,
+            "name": "Rising Tides Pages",
             "topics": {},
         },
         "posters": {},
@@ -34,6 +50,22 @@ def _empty_config() -> dict:
             "last_run": None,
         },
     }
+
+
+def _seed_config() -> dict:
+    """Create a fresh config with default staging group and posters."""
+    config = _empty_config()
+    now = _now()
+    for pid, pdata in _DEFAULT_POSTERS.items():
+        config["posters"][pid] = {
+            **pdata,
+            "page_ids": [],
+            "topics": {},
+            "added_at": now,
+            "updated_at": now,
+        }
+    save_config(config)
+    return config
 
 
 def _now() -> str:
@@ -49,9 +81,9 @@ def _gen_id() -> str:
 # ---------------------------------------------------------------------------
 
 def load_config() -> dict:
-    """Load config from disk. Returns empty structure if file missing or corrupt."""
+    """Load config from disk. Auto-seeds with defaults on first boot."""
     if not CONFIG_PATH.exists():
-        return _empty_config()
+        return _seed_config()
     try:
         data = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
         if not isinstance(data, dict) or "version" not in data:
@@ -69,8 +101,12 @@ def save_config(data: dict) -> None:
 
 
 def get_bot_token() -> str | None:
-    """Return the stored bot token or None."""
-    return load_config().get("bot_token")
+    """Return the bot token. Env var TELEGRAM_BOT_TOKEN takes priority over config file."""
+    env_token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+    if env_token:
+        return env_token
+    token = load_config().get("bot_token")
+    return token.strip() if isinstance(token, str) else token
 
 
 def set_bot_token(token: str) -> None:
@@ -131,6 +167,22 @@ def remove_staging_topic(integration_id: str) -> bool:
     del topics[integration_id]
     save_config(config)
     return True
+
+
+def get_last_forwarded_id(integration_id: str) -> int:
+    """Get the last forwarded message_id for a staging topic. Returns 0 if never forwarded."""
+    config = load_config()
+    topic = config["staging_group"].get("topics", {}).get(integration_id, {})
+    return topic.get("last_forwarded_id", 0)
+
+
+def set_last_forwarded_id(integration_id: str, message_id: int) -> None:
+    """Update the last forwarded message_id for a staging topic."""
+    config = load_config()
+    topic = config["staging_group"].get("topics", {}).get(integration_id)
+    if topic is not None:
+        topic["last_forwarded_id"] = message_id
+        save_config(config)
 
 
 # ---------------------------------------------------------------------------

@@ -476,6 +476,13 @@ export function CaptionsPage() {
             <div ref={logsEndRef} />
           </ScrollArea>
         </div>
+
+        {/* Caption History */}
+        <CaptionHistory
+          projectName={activeProjectName}
+          onNotification={addNotification}
+          onJumpToBurn={(username) => { primeBurnSelection({ captionSource: username }); navigate('/burn'); }}
+        />
       </div>
 
       {/* Right content */}
@@ -695,6 +702,154 @@ export function CaptionsPage() {
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+
+// ── Caption History Component ──────────────────────────────────────────
+
+interface CaptionBatch {
+  username: string;
+  caption_count: number;
+  modified_at: number;
+  sample: string[];
+}
+
+function CaptionHistory({
+  projectName,
+  onNotification,
+  onJumpToBurn,
+}: {
+  projectName: string;
+  onNotification: (type: 'success' | 'error' | 'info', msg: string) => void;
+  onJumpToBurn: (username: string) => void;
+}) {
+  const [batches, setBatches] = useState<CaptionBatch[]>([]);
+  const [open, setOpen] = useState(false);
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState('');
+
+  const loadHistory = async () => {
+    try {
+      const r = await fetch(apiUrl(`/api/captions/history?project=${encodeURIComponent(projectName)}`));
+      if (!r.ok) return;
+      const d = await r.json();
+      setBatches(d.batches ?? []);
+    } catch { /* ignore */ }
+  };
+
+  useEffect(() => { if (open) void loadHistory(); }, [open, projectName]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const handleRename = async (oldName: string) => {
+    const newName = renameValue.trim();
+    if (!newName || newName === oldName) { setRenamingId(null); return; }
+    try {
+      const r = await fetch(apiUrl('/api/captions/rename-batch'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ project: projectName, old_name: oldName, new_name: newName }),
+      });
+      if (!r.ok) throw new Error(await r.text());
+      onNotification('success', `Renamed "${oldName}" to "${newName}"`);
+      setRenamingId(null);
+      await loadHistory();
+    } catch (e) {
+      onNotification('error', e instanceof Error ? e.message : 'Rename failed');
+    }
+  };
+
+  return (
+    <div className="mt-6 border-t-2 border-border pt-4">
+      <button
+        type="button"
+        onClick={() => setOpen(!open)}
+        className="flex w-full items-center justify-between text-left group"
+      >
+        <span className="text-sm font-bold text-foreground group-hover:text-primary transition-colors">
+          Caption History
+          {batches.length > 0 && (
+            <span className="ml-1.5 text-[11px] text-muted-foreground font-normal">({batches.length})</span>
+          )}
+        </span>
+        <span className={`text-muted-foreground text-xs transition-transform ${open ? 'rotate-0' : '-rotate-90'}`}>
+          ▼
+        </span>
+      </button>
+
+      {open && (
+        <div className="mt-3 space-y-2">
+          {batches.length === 0 ? (
+            <p className="text-xs text-muted-foreground italic">No caption batches yet.</p>
+          ) : (
+            batches.map((batch) => (
+              <div
+                key={batch.username}
+                className="rounded-[var(--border-radius)] border-2 border-border bg-card p-2.5 hover:shadow-[2px_2px_0_0_var(--border)] transition-all"
+              >
+                <div className="flex items-center justify-between mb-1">
+                  {renamingId === batch.username ? (
+                    <div className="flex items-center gap-1 flex-1 mr-2">
+                      <Input
+                        value={renameValue}
+                        onChange={(e) => setRenameValue(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') void handleRename(batch.username);
+                          if (e.key === 'Escape') setRenamingId(null);
+                        }}
+                        autoFocus
+                        className="h-6 text-xs"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => void handleRename(batch.username)}
+                        className="text-[10px] font-bold text-primary"
+                      >
+                        Save
+                      </button>
+                    </div>
+                  ) : (
+                    <span className="text-sm font-bold text-foreground truncate">@{batch.username}</span>
+                  )}
+                  <Badge variant="secondary" className="text-[10px] shadow-none ml-1">{batch.caption_count}</Badge>
+                </div>
+                <div className="text-[10px] text-muted-foreground mb-1.5">
+                  {new Date(batch.modified_at * 1000).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}{' '}
+                  {new Date(batch.modified_at * 1000).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}
+                </div>
+                {batch.sample.length > 0 && (
+                  <div className="text-[11px] text-muted-foreground italic line-clamp-2 mb-1.5">
+                    {batch.sample.join(' · ')}
+                  </div>
+                )}
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => onJumpToBurn(batch.username)}
+                    className="text-[10px] font-bold text-primary hover:underline"
+                  >
+                    Use in Burn
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => { setRenamingId(batch.username); setRenameValue(batch.username); }}
+                    className="text-[10px] font-bold text-muted-foreground hover:text-foreground"
+                  >
+                    Rename
+                  </button>
+                  <a
+                    href={apiUrl(`/api/captions/export/${encodeURIComponent(batch.username)}?project=${encodeURIComponent(projectName)}`)}
+                    download
+                    className="text-[10px] font-bold text-muted-foreground hover:text-foreground"
+                  >
+                    CSV
+                  </a>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+      )}
     </div>
   );
 }

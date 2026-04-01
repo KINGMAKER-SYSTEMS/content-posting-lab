@@ -75,6 +75,23 @@ function timeAgo(iso: string): string {
   return new Date(iso).toLocaleDateString();
 }
 
+function formatJobTimestamp(iso?: string): string {
+  if (!iso) return '';
+  const d = new Date(iso);
+  return `${d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} ${d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}`;
+}
+
+function getDateKey(iso?: string): string {
+  if (!iso) return 'Unknown';
+  const d = new Date(iso);
+  const today = new Date();
+  const yesterday = new Date(today);
+  yesterday.setDate(yesterday.getDate() - 1);
+  if (d.toDateString() === today.toDateString()) return 'Today';
+  if (d.toDateString() === yesterday.toDateString()) return 'Yesterday';
+  return d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
+}
+
 const PROVIDER_SHORT: Record<string, string> = {
   'hailuo': 'Hailuo',
   'wan-t2v': 'Wan',
@@ -936,7 +953,74 @@ export function GeneratePage() {
             <EmptyState icon="▶" title="No Videos Yet" description="Enter a prompt and hit Generate." />
           ) : (
             <div className="space-y-6">
-              {generateJobs.map((job) => {
+              {/* Group jobs by date */}
+              {(() => {
+                const groups = new Map<string, Job[]>();
+                for (const job of generateJobs) {
+                  const key = getDateKey(job.created_at);
+                  groups.set(key, [...(groups.get(key) || []), job]);
+                }
+                return Array.from(groups.entries()).map(([dateLabel, dateJobs]) => {
+                  const dateDoneCount = dateJobs.reduce((n, j) => n + j.videos.filter((v) => v.status === 'done').length, 0);
+                  const dateJobIds = dateJobs.map((j) => j.id);
+                  return (
+                  <div key={dateLabel}>
+                    <div className="flex items-center gap-3 mb-3">
+                      <div className="text-sm font-bold text-muted-foreground uppercase tracking-wider">{dateLabel}</div>
+                      <div className="flex-1 h-px bg-border" />
+                      <Badge variant="secondary" className="text-[10px]">{dateDoneCount} videos</Badge>
+                      {dateDoneCount > 1 && (
+                        <button
+                          type="button"
+                          className="text-[11px] font-bold text-primary hover:underline"
+                          onClick={async () => {
+                            try {
+                              const r = await fetch(apiUrl('/api/video/bulk-download'), {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ job_ids: dateJobIds, project: activeProjectName }),
+                              });
+                              if (!r.ok) throw new Error(await r.text());
+                              const blob = await r.blob();
+                              const url = URL.createObjectURL(blob);
+                              const a = document.createElement('a');
+                              a.href = url;
+                              a.download = `videos_${dateLabel.replace(/\s+/g, '_')}.zip`;
+                              a.click();
+                              URL.revokeObjectURL(url);
+                            } catch (e) {
+                              addNotification('error', e instanceof Error ? e.message : 'Bulk download failed');
+                            }
+                          }}
+                        >
+                          Download All ({dateDoneCount})
+                        </button>
+                      )}
+                      {dateJobs.length > 0 && dateJobs.every((j) => j.videos.every((v) => isTerminal(v))) && (
+                        <button
+                          type="button"
+                          className="text-[11px] font-bold text-muted-foreground hover:text-destructive transition-colors"
+                          onClick={async () => {
+                            if (!confirm(`Delete all ${dateJobs.length} jobs from ${dateLabel}?`)) return;
+                            try {
+                              await fetch(apiUrl('/api/video/bulk-delete'), {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ job_ids: dateJobIds, project: activeProjectName }),
+                              });
+                              for (const jid of dateJobIds) { removeGenerateJob(jid); activePolls.delete(jid); }
+                              addNotification('success', `Deleted ${dateJobs.length} jobs`);
+                            } catch (e) {
+                              addNotification('error', e instanceof Error ? e.message : 'Bulk delete failed');
+                            }
+                          }}
+                        >
+                          Delete All
+                        </button>
+                      )}
+                    </div>
+                    <div className="space-y-4">
+                      {dateJobs.map((job) => {
                 const doneCount = job.videos.filter((v) => v.status === 'done').length;
                 const errorCount = job.videos.filter((v) => v.status === 'error' || v.status === 'failed').length;
                 const total = job.count;
@@ -949,6 +1033,7 @@ export function GeneratePage() {
                       <div className="flex items-center justify-between mb-2">
                         <div className="text-sm text-muted-foreground italic truncate max-w-[50%]" title={job.prompt}>
                           "{job.prompt}" <span className="text-foreground font-bold">[{job.provider}]</span>
+                          {job.created_at && <span className="text-[10px] text-muted-foreground not-italic ml-2">{formatJobTimestamp(job.created_at)}</span>}
                         </div>
                         <div className="flex items-center gap-2">
                           <button
@@ -1124,6 +1209,11 @@ export function GeneratePage() {
                   </Card>
                 );
               })}
+                    </div>
+                  </div>
+                );
+                });
+              })()}
             </div>
           )}
         </div>

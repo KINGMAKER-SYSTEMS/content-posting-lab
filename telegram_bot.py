@@ -221,6 +221,17 @@ async def create_forum_topic(chat_id: int, name: str) -> int:
     return result.message_thread_id
 
 
+async def delete_forum_topic(chat_id: int, topic_id: int) -> bool:
+    """Delete a forum topic from a supergroup. Returns True on success."""
+    if _bot is None:
+        raise RuntimeError("Bot is not running")
+    try:
+        await _bot.delete_forum_topic(chat_id=chat_id, message_thread_id=topic_id)
+        return True
+    except Exception:
+        return False
+
+
 async def send_media_to_topic(
     chat_id: int,
     topic_id: int,
@@ -282,6 +293,71 @@ async def forward_message(
         message_thread_id=to_topic_id,
     )
     return forwarded.message_id
+
+
+async def forward_new_messages(
+    from_chat_id: int,
+    from_topic_id: int,
+    to_chat_id: int,
+    to_topic_id: int,
+    after_message_id: int = 0,
+) -> dict:
+    """Forward all messages in a staging topic that are newer than after_message_id.
+
+    Strategy: send a temporary marker message to the staging topic to discover
+    the current max message_id, then try to forward every ID in the range
+    (after_message_id+1 .. marker-1). Non-existent IDs are silently skipped.
+
+    Returns {forwarded: int, last_message_id: int, errors: int}.
+    """
+    if _bot is None:
+        raise RuntimeError("Bot is not running")
+
+    # Send a temporary marker to find the current message_id ceiling
+    marker = await _bot.send_message(
+        chat_id=from_chat_id,
+        message_thread_id=from_topic_id,
+        text="⏳",  # temporary marker
+    )
+    marker_id = marker.message_id
+
+    # Delete the marker immediately
+    try:
+        await _bot.delete_message(chat_id=from_chat_id, message_id=marker_id)
+    except Exception:
+        pass  # not critical if delete fails
+
+    if after_message_id >= marker_id - 1:
+        return {"forwarded": 0, "last_message_id": after_message_id, "errors": 0}
+
+    forwarded = 0
+    errors = 0
+    last_success_id = after_message_id
+
+    # Try each message_id in the range
+    for msg_id in range(after_message_id + 1, marker_id):
+        try:
+            await _bot.forward_message(
+                chat_id=to_chat_id,
+                from_chat_id=from_chat_id,
+                message_id=msg_id,
+                message_thread_id=to_topic_id,
+            )
+            forwarded += 1
+            last_success_id = msg_id
+        except Exception:
+            # Message doesn't exist, was deleted, or is a service message — skip
+            errors += 1
+
+        # Small delay to avoid rate limits
+        if forwarded % 10 == 0 and forwarded > 0:
+            await asyncio.sleep(1)
+
+    return {
+        "forwarded": forwarded,
+        "last_message_id": marker_id - 1,
+        "errors": errors,
+    }
 
 
 async def send_text_to_topic(
@@ -356,15 +432,22 @@ async def _run_scheduler() -> None:
 
 
 async def run_daily_batch() -> dict:
-    """Execute the daily batch: forward pending inventory to posters, send summary."""
+    """Execute the daily batch: forward new content to posters, send summary + sounds.
+
+    Uses range-based message forwarding — doesn't depend on inventory tracking.
+    Forwards everything uploaded to staging topics since the last forward.
+    """
     if _bot is None:
         raise RuntimeError("Bot is not running")
 
+    from services.telegram import get_last_forwarded_id, set_last_forwarded_id
+
     staging = get_staging_group()
-    if not staging:
+    if not staging or not staging.get("chat_id"):
         return {"posters_notified": 0, "videos_forwarded": 0, "sounds_sent": 0}
 
     staging_chat_id = int(staging["chat_id"])
+    staging_topics = staging.get("topics", {})
     posters = list_posters()
     sounds = list_sounds()
 
@@ -387,46 +470,51 @@ async def run_daily_batch() -> dict:
         poster_total = 0
 
         for page_id in page_ids:
-            pending = get_pending_inventory(page_id)
-            if not pending:
+            # Get staging topic for this page
+            staging_topic = staging_topics.get(page_id)
+            if not staging_topic:
+                continue
+            staging_topic_id = staging_topic.get("topic_id")
+            if not staging_topic_id:
                 continue
 
-            # Find the poster's topic for this page
+            # Get poster's topic for this page
             poster_topics = poster_data.get("topics", {})
-            target_topic_id = None
-            topic_entry = poster_topics.get(page_id)
-            if topic_entry:
-                target_topic_id = topic_entry.get("topic_id")
+            poster_topic_entry = poster_topics.get(page_id)
+            if not poster_topic_entry:
+                continue
+            poster_topic_id = poster_topic_entry.get("topic_id")
+            if not poster_topic_id:
+                continue
 
-            # Find page name from roster
-            page_info = None
+            # Find page name
+            page_name = page_id
             for p in list_all_pages():
                 if p.get("integration_id") == page_id:
-                    page_info = p
+                    page_name = p.get("name", page_id)
                     break
-            page_name = page_info.get("name", page_id) if page_info else page_id
 
-            forwarded_count = 0
-            for item in pending:
-                try:
-                    if target_topic_id is not None:
-                        fwd_msg_id = await forward_message(
-                            from_chat_id=staging_chat_id,
-                            message_id=item["message_id"],
-                            to_chat_id=poster_chat_id,
-                            to_topic_id=int(target_topic_id),
-                        )
-                    else:
-                        fwd_msg_id = 0
-                    mark_forwarded(page_id, item.get("id", ""), poster_id or "", fwd_msg_id)
-                    forwarded_count += 1
-                except Exception as e:
-                    print(f"  forward error page={page_id} item={item.get('message_id')}: {e}", flush=True)
+            # Forward new messages since last forward
+            after_id = get_last_forwarded_id(page_id)
+            try:
+                result = await forward_new_messages(
+                    from_chat_id=staging_chat_id,
+                    from_topic_id=int(staging_topic_id),
+                    to_chat_id=poster_chat_id,
+                    to_topic_id=int(poster_topic_id),
+                    after_message_id=after_id,
+                )
 
-            if forwarded_count > 0:
-                summary_lines.append(f"\U0001f4f1 {page_name}: {forwarded_count} new video(s)")
-                poster_total += forwarded_count
-                page_count += 1
+                if result["last_message_id"] > after_id:
+                    set_last_forwarded_id(page_id, result["last_message_id"])
+
+                if result["forwarded"] > 0:
+                    summary_lines.append(f"\U0001f4f1 {page_name}: {result['forwarded']} new video(s)")
+                    poster_total += result["forwarded"]
+                    page_count += 1
+
+            except Exception as e:
+                print(f"  batch forward error page={page_id}: {e}", flush=True)
 
         total_forwarded += poster_total
 

@@ -9,9 +9,10 @@ import time
 import uuid
 from datetime import datetime
 from pathlib import Path
+import zipfile
 from zipfile import ZipFile
 
-from fastapi import APIRouter, HTTPException, Query, UploadFile, File, Form, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, HTTPException, Query, Request, UploadFile, File, Form, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, StreamingResponse
 
 from project_manager import PROJECTS_DIR, sanitize_project_name
@@ -241,6 +242,13 @@ async def _clip_segment(
     src_ratio = src_width / src_height if src_height else 1.0
     is_already_9_16 = abs(src_ratio - target_ratio) < 0.02  # ~1% tolerance
 
+    # Use fast preset on deployed environments (RAILWAY_ENVIRONMENT set) or large files
+    # slow preset causes proxy timeouts on Railway due to long encode times
+    import os
+    source_size = source.stat().st_size if source.exists() else 0
+    is_deployed = bool(os.getenv("RAILWAY_ENVIRONMENT") or os.getenv("RAILWAY_SERVICE_ID"))
+    preset = "fast" if is_deployed or source_size > 500 * 1024 * 1024 else "slow"
+
     log.info(
         "clip_segment: src=%dx%d ratio=%.4f target=%.4f diff=%.4f is_9_16=%s",
         src_width, src_height, src_ratio, target_ratio,
@@ -250,14 +258,14 @@ async def _clip_segment(
     if is_already_9_16 and src_width >= 1080 and src_height >= 1920:
         # Already 9:16 at full res — re-encode to H.264 for browser compatibility
         # (source may be HEVC which Chrome can't play)
-        log.info("Source is already 9:16 (%dx%d) at full res, re-encoding to H.264", src_width, src_height)
+        log.info("Source is already 9:16 (%dx%d) at full res, re-encoding to H.264 (preset=%s)", src_width, src_height, preset)
         cmd = [
             "ffmpeg", "-y",
             "-ss", f"{start:.3f}",
             "-i", str(source),
             "-t", f"{clip_duration:.3f}",
             "-c:v", "libx264",
-            "-preset", "slow",
+            "-preset", preset,
             "-crf", "16",
             "-minrate", "8M",
             "-maxrate", "20M",
@@ -271,7 +279,7 @@ async def _clip_segment(
         ]
     elif is_already_9_16:
         # Already 9:16 but low res — scale up to 1080x1920 with high quality encode
-        log.info("Source is 9:16 (%dx%d) but below 1080x1920, scaling up", src_width, src_height)
+        log.info("Source is 9:16 (%dx%d) but below 1080x1920, scaling up (preset=%s)", src_width, src_height, preset)
         cmd = [
             "ffmpeg", "-y",
             "-ss", f"{start:.3f}",
@@ -279,7 +287,7 @@ async def _clip_segment(
             "-t", f"{clip_duration:.3f}",
             "-vf", f"scale=1080:1920:flags=lanczos",
             "-c:v", "libx264",
-            "-preset", "slow",
+            "-preset", preset,
             "-crf", "16",
             "-minrate", "8M",
             "-maxrate", "20M",
@@ -308,7 +316,7 @@ async def _clip_segment(
             crop_y = (src_height - crop_h) // 2
             vf = f"crop={crop_w}:{crop_h}:{crop_x}:{crop_y},scale={out_w}:{out_h}:flags=lanczos"
 
-        log.debug("cropping %dx%d → 9:16 with vf=%s", src_width, src_height, vf)
+        log.debug("cropping %dx%d → 9:16 with vf=%s (preset=%s)", src_width, src_height, vf, preset)
         cmd = [
             "ffmpeg", "-y",
             "-ss", f"{start:.3f}",
@@ -316,7 +324,7 @@ async def _clip_segment(
             "-t", f"{clip_duration:.3f}",
             "-vf", vf,
             "-c:v", "libx264",
-            "-preset", "slow",
+            "-preset", preset,
             "-crf", "16",
             "-minrate", "8M",
             "-maxrate", "20M",
@@ -456,7 +464,49 @@ async def _run_pipeline(
         await _send(job_id, "error", {"error": str(e)})
 
 
-# ── File upload endpoint ──────────────────────────────────────────────
+# ── File upload endpoints ─────────────────────────────────────────────
+
+# Max file size: 10 GB
+_MAX_UPLOAD_BYTES = 10 * 1024 * 1024 * 1024
+
+
+@router.post("/upload-stream")
+async def upload_video_stream(request: Request):
+    """Streaming upload that bypasses multipart parsing — handles files >3GB.
+
+    Query params: project, job_id (optional), filename (optional)
+    Body: raw binary video data (Content-Type: application/octet-stream)
+    """
+    project = request.query_params.get("project", "quick-test")
+    job_id = request.query_params.get("job_id") or str(uuid.uuid4())
+    filename = request.query_params.get("filename", "video.mp4")
+
+    clipper_dir = _get_clipper_dir(project)
+    job_dir = clipper_dir / job_id
+    job_dir.mkdir(parents=True, exist_ok=True)
+
+    ext = Path(filename).suffix or ".mp4"
+    dest = job_dir / f"source{ext}"
+
+    total_bytes = 0
+    try:
+        with open(dest, "wb") as f:
+            async for chunk in request.stream():
+                total_bytes += len(chunk)
+                if total_bytes > _MAX_UPLOAD_BYTES:
+                    dest.unlink(missing_ok=True)
+                    raise HTTPException(413, f"File exceeds maximum size of {_MAX_UPLOAD_BYTES // (1024**3)}GB")
+                f.write(chunk)
+    except HTTPException:
+        raise
+    except Exception as e:
+        dest.unlink(missing_ok=True)
+        log.error("streaming upload failed at %d bytes: %s", total_bytes, e)
+        raise HTTPException(500, f"Upload failed after {total_bytes / (1024**3):.2f}GB: {e}")
+
+    log.info("stream upload: %s → %s (%d bytes / %.2f GB)", filename, dest, total_bytes, total_bytes / (1024**3))
+    return {"job_id": job_id, "path": str(dest), "size_bytes": total_bytes}
+
 
 @router.post("/upload")
 async def upload_video(
@@ -476,15 +526,26 @@ async def upload_video(
     ext = Path(file.filename or "video.mp4").suffix or ".mp4"
     dest = job_dir / f"source{ext}"
 
-    # Stream to disk in chunks to handle large files without exhausting memory
+    # Stream to disk in 8MB chunks for better throughput on large files
     total_bytes = 0
-    with open(dest, "wb") as f:
-        while chunk := await file.read(1024 * 1024):  # 1MB chunks
-            f.write(chunk)
-            total_bytes += len(chunk)
+    try:
+        with open(dest, "wb") as f:
+            while chunk := await file.read(8 * 1024 * 1024):  # 8MB chunks
+                f.write(chunk)
+                total_bytes += len(chunk)
+                if total_bytes > _MAX_UPLOAD_BYTES:
+                    dest.unlink(missing_ok=True)
+                    raise HTTPException(413, f"File exceeds maximum size of {_MAX_UPLOAD_BYTES // (1024**3)}GB")
+    except HTTPException:
+        raise
+    except Exception as e:
+        dest.unlink(missing_ok=True)
+        log.error("upload failed at %d bytes: %s", total_bytes, e)
+        raise HTTPException(500, f"Upload failed after {total_bytes / (1024**2):.0f}MB: {e}")
+
     log.info("upload: %s → %s (%d bytes)", file.filename, dest, total_bytes)
 
-    return {"job_id": job_id, "path": str(dest)}
+    return {"job_id": job_id, "path": str(dest), "size_bytes": total_bytes}
 
 
 @router.post("/upload-batch")
@@ -505,11 +566,11 @@ async def upload_batch(
         safe_name = f"src_{i:03d}.mp4"
         dest = staging_dir / safe_name
 
-        # Stream to disk in chunks to handle large files
+        # Stream to disk in 8MB chunks for better throughput on large files
         if orig_ext == ".mp4":
             total_bytes = 0
             with open(dest, "wb") as f:
-                while chunk := await file.read(1024 * 1024):
+                while chunk := await file.read(8 * 1024 * 1024):
                     f.write(chunk)
                     total_bytes += len(chunk)
             log.info("batch upload: %s → %s (%d bytes)", file.filename, dest, total_bytes)
@@ -519,7 +580,7 @@ async def upload_batch(
             raw_path = staging_dir / f"_raw_{i:03d}{orig_ext}"
             total_bytes = 0
             with open(raw_path, "wb") as f:
-                while chunk := await file.read(1024 * 1024):
+                while chunk := await file.read(8 * 1024 * 1024):
                     f.write(chunk)
                     total_bytes += len(chunk)
             log.info("batch upload: %s (%d bytes) → transcoding to mp4...", file.filename, total_bytes)
@@ -772,10 +833,23 @@ async def process_batch(body: dict):
 
                 yield f"data: {json.dumps({'type': 'progress', 'clip': clip_counter, 'total': total_clips, 'source_name': source_name, 'status': 'encoding'})}\n\n"
 
-                ok = await _clip_segment(
-                    source, clip_path, clip_start, actual_clip_len,
-                    info["width"], info["height"],
+                # Run clip_segment with periodic keepalive pings to prevent
+                # Railway/proxy timeout on long encodes
+                clip_task = asyncio.create_task(
+                    _clip_segment(
+                        source, clip_path, clip_start, actual_clip_len,
+                        info["width"], info["height"],
+                    )
                 )
+                while not clip_task.done():
+                    try:
+                        ok = await asyncio.wait_for(asyncio.shield(clip_task), timeout=10)
+                        break
+                    except asyncio.TimeoutError:
+                        # Send keepalive ping so SSE connection stays open
+                        yield f"data: {json.dumps({'type': 'keepalive', 'clip': clip_counter, 'total': total_clips})}\n\n"
+                else:
+                    ok = clip_task.result()
 
                 thumb_name = f"thumb_{clip_counter:03d}.jpg"
                 thumb_path = job_dir / thumb_name
@@ -1012,7 +1086,9 @@ async def download_all_clips(job_id: str, project: str = Query(default="quick-te
         raise HTTPException(404, "No clips found")
 
     zip_path = job_dir / "clips.zip"
-    with ZipFile(zip_path, "w") as zf:
+    # Use ZIP_STORED (no compression) — MP4s are already compressed,
+    # deflate just wastes CPU and can time out on large clips
+    with ZipFile(zip_path, "w", compression=zipfile.ZIP_STORED) as zf:
         for clip in clips:
             zf.write(clip, clip.name)
 

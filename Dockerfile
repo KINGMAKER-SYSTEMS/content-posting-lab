@@ -15,10 +15,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
-RUN grep -v -E '^(playwright|pytesseract)' requirements.txt > requirements-prod.txt \
+RUN grep -v -E '^(playwright|pytesseract|tiktokautouploader)' requirements.txt > requirements-prod.txt \
     && pip install --no-cache-dir -r requirements-prod.txt
 
-COPY app.py main.py project_manager.py ./
+COPY app.py main.py project_manager.py telegram_bot.py ./
 COPY routers/ ./routers/
 COPY providers/ ./providers/
 COPY scraper/ ./scraper/
