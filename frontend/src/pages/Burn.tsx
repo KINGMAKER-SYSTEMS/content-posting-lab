@@ -80,6 +80,14 @@ function formatBatchTime(created: number): string {
   return `${d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} ${d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}`;
 }
 
+function makeBatchId(project: string, label?: string): string {
+  const now = new Date();
+  const ts = `${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}`;
+  const prefix = (label || project).toLowerCase().replace(/\s+/g, '-').slice(0, 30);
+  const short = Math.random().toString(36).slice(2, 6);
+  return `${prefix}-${ts}-${short}`;
+}
+
 function getColorCorrectionOrNull(cc: ColorCorrection): ColorCorrection | null {
   if (cc.brightness === 0 && cc.contrast === 0 && cc.saturation === 0 && cc.sharpness === 0 && cc.shadow === 0 && cc.temperature === 0 && cc.tint === 0 && cc.fade === 0) return null;
   return { ...cc };
@@ -248,8 +256,10 @@ export function BurnPage() {
   const [progressValue, setProgressValue] = useState(0);
   const [progressLabel, setProgressLabel] = useState('');
   const [burnBatchId, setBurnBatchId] = useState<string | null>(null);
+  const [batchLabel, setBatchLabel] = useState('');
   const [showExportBar, setShowExportBar] = useState(false);
   const [exportCount, setExportCount] = useState(0);
+  const [sendingToTelegram, setSendingToTelegram] = useState<string | null>(null);
 
   const wrapRefs = useRef<Record<number, HTMLDivElement | null>>({});
   const dragRef = useRef<DragState | null>(null);
@@ -573,7 +583,7 @@ export function BurnPage() {
     if (burning || pairs.length === 0 || !projectName) return;
     setBurning(true); setError(null); setProgressVisible(true); setProgressValue(0);
     setProgressLabel(`Rendering ${pairs.length} text overlays...`);
-    const batchId = Date.now().toString(36); setBurnBatchId(batchId);
+    const batchId = makeBatchId(projectName, batchLabel || undefined); setBurnBatchId(batchId);
     try {
       const overlays = await Promise.all(pairs.map((p) => captureTextOverlay(p)));
       setProgressValue(15); setProgressLabel(`Burning ${pairs.length} videos (server)...`);
@@ -897,11 +907,45 @@ export function BurnPage() {
             <div className="space-y-1.5 pr-1">
               {batches.map((b) => (
                 <Card key={b.id} className="py-0">
-                  <CardContent className="flex items-center justify-between py-2">
-                    <span className="text-xs text-muted-foreground">
-                      <strong className="text-foreground">{b.count} clips</strong> · {formatBatchTime(b.created)}
-                    </span>
-                    <Button size="xs" onClick={() => downloadBatchZip(b.id)}>ZIP</Button>
+                  <CardContent className="space-y-1 py-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs text-muted-foreground">
+                        <strong className="text-foreground">{b.label || b.id}</strong> · {b.count} clips
+                      </span>
+                      <Button size="xs" onClick={() => downloadBatchZip(b.id)}>ZIP</Button>
+                    </div>
+                    <div className="flex items-center gap-1">
+                      <span className="text-[10px] text-muted-foreground">{formatBatchTime(b.created)}</span>
+                      <Button
+                        size="xs"
+                        variant="ghost"
+                        className="ml-auto h-5 px-1.5 text-[10px]"
+                        disabled={sendingToTelegram === b.id}
+                        onClick={async () => {
+                          // Quick telegram send — uses first roster page
+                          const rosterPages = useWorkflowStore.getState().rosterPages;
+                          if (!rosterPages.length) {
+                            addNotification('error', 'No roster pages configured. Set up pages in Telegram tab first.');
+                            return;
+                          }
+                          setSendingToTelegram(b.id);
+                          try {
+                            const res = await fetch(apiUrl('/api/telegram/send-batch'), {
+                              method: 'POST',
+                              headers: { 'Content-Type': 'application/json' },
+                              body: JSON.stringify({ integration_id: rosterPages[0].integration_id, batch_id: b.id, project: projectName }),
+                            });
+                            const data = await res.json();
+                            if (!res.ok) throw new Error(data.error || data.detail || 'Send failed');
+                            addNotification('success', `Sent ${data.sent}/${data.total} to Telegram`);
+                          } catch (err) {
+                            addNotification('error', err instanceof Error ? err.message : 'Telegram send failed');
+                          } finally { setSendingToTelegram(null); }
+                        }}
+                      >
+                        {sendingToTelegram === b.id ? '...' : 'TG'}
+                      </Button>
+                    </div>
                   </CardContent>
                 </Card>
               ))}
@@ -931,9 +975,18 @@ export function BurnPage() {
         ) : null}
 
         {hasPairs ? (
-          <Button onClick={handleBurnAll} disabled={burning} className="mt-3 w-full" variant={burning ? 'secondary' : 'default'}>
-            {burning ? 'Burning...' : 'Burn All'}
-          </Button>
+          <>
+            <Input
+              value={batchLabel}
+              onChange={(e) => setBatchLabel(e.target.value)}
+              placeholder="Batch label (optional)"
+              className="mt-3"
+              disabled={burning}
+            />
+            <Button onClick={handleBurnAll} disabled={burning} className="mt-2 w-full" variant={burning ? 'secondary' : 'default'}>
+              {burning ? 'Burning...' : 'Burn All'}
+            </Button>
+          </>
         ) : null}
 
         {burnBatchId && exportCount > 0 ? (

@@ -74,7 +74,13 @@ export interface Job {
   provider: string;
   count: number;
   project?: string;
+  label?: string;
   videos: VideoEntry[];
+}
+
+export interface ErrorResponse {
+  error: string;
+  detail?: string;
 }
 
 export interface ProvidersResponse {
@@ -219,6 +225,7 @@ export interface BurnResponse {
 
 export interface BurnBatch {
   id: string;
+  label?: string;
   count: number;
   created: number;
 }

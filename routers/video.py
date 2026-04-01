@@ -4,6 +4,7 @@ import asyncio
 import base64
 import io
 import json
+import re
 import uuid
 import zipfile
 from datetime import datetime, timezone
@@ -21,6 +22,22 @@ router = APIRouter()
 jobs: dict[str, dict] = {}
 
 MAX_PROMPT_HISTORY = 200
+
+# Limit concurrent video generation tasks to prevent resource exhaustion
+_gen_semaphore = asyncio.Semaphore(10)
+
+
+def _make_job_id(provider: str, prompt: str) -> str:
+    """Generate a readable job ID: {provider}-{words}-{MMDDHHmm}-{short_uuid}.
+
+    Example: "grok-stars-and-gal-04011430-a1b2"
+    """
+    # Extract first 3 words from prompt, slugified
+    words = re.sub(r"[^a-z0-9 ]", "", prompt.lower()).split()[:3]
+    slug = "-".join(words)[:20] if words else "gen"
+    ts = datetime.now().strftime("%m%d%H%M")
+    short = uuid.uuid4().hex[:4]
+    return f"{provider}-{slug}-{ts}-{short}"
 
 
 def _prompts_path(project: str) -> Path:
@@ -284,7 +301,7 @@ async def generate_video(
     output_dir = get_project_video_dir(project)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    job_id = uuid.uuid4().hex[:12]
+    job_id = _make_job_id(provider, prompt)
     jobs[job_id] = {
         "id": job_id,
         "prompt": prompt,
@@ -310,16 +327,19 @@ async def generate_video(
     )
 
     url_prefix = f"/projects/{project}/videos"
-    for i in range(count):
-        asyncio.create_task(
-            generate_one(
-                job_id, i, provider, prompt,
+
+    async def _throttled_generate(index: int) -> None:
+        async with _gen_semaphore:
+            await generate_one(
+                job_id, index, provider, prompt,
                 aspect_ratio, resolution, duration, image_data_uri,
                 jobs, output_dir, url_prefix,
                 on_complete=_persist_job,
                 **extra,
             )
-        )
+
+    for i in range(count):
+        asyncio.create_task(_throttled_generate(i))
 
     return {"job_id": job_id, "count": count}
 

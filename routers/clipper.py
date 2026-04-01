@@ -7,6 +7,7 @@ import math
 import shutil
 import time
 import uuid
+from datetime import datetime
 from pathlib import Path
 from zipfile import ZipFile
 
@@ -26,6 +27,14 @@ router = APIRouter()
 
 # ── WebSocket client registry ────────────────────────────────────────
 _ws_clients: dict[str, list[WebSocket]] = {}
+
+
+def _make_clip_job_id(project: str = "clip") -> str:
+    """Generate a readable clip job ID: clip-{project}-{MMDDHHmm}-{short_uuid}."""
+    prefix = project.lower().replace(" ", "-")[:20]
+    ts = datetime.now().strftime("%m%d%H%M")
+    short = uuid.uuid4().hex[:4]
+    return f"clip-{prefix}-{ts}-{short}"
 
 
 def _get_clipper_dir(project: str) -> Path:
@@ -138,7 +147,11 @@ async def _get_video_info(video_path: Path) -> dict:
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
-    stdout, stderr = await proc.communicate()
+    try:
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=15)
+    except asyncio.TimeoutError:
+        proc.kill()
+        raise RuntimeError(f"ffprobe timed out after 15s — file may be corrupt: {video_path.name}")
     if proc.returncode != 0:
         raise RuntimeError(f"ffprobe failed: {stderr.decode(errors='replace')[:300]}")
 
@@ -620,7 +633,7 @@ async def trim_batch(body: dict):
         raise HTTPException(400, "No trims provided")
 
     clipper_dir = _get_clipper_dir(project)
-    job_id = uuid.uuid4().hex[:12]
+    job_id = _make_clip_job_id(project)
     job_dir = clipper_dir / job_id
     job_dir.mkdir(parents=True, exist_ok=True)
 
@@ -698,7 +711,7 @@ async def process_batch(body: dict):
 
     async def generate():
         clipper_dir = _get_clipper_dir(project)
-        job_id = uuid.uuid4().hex[:12]
+        job_id = _make_clip_job_id(project)
         job_dir = clipper_dir / job_id
         job_dir.mkdir(parents=True, exist_ok=True)
         sanitized = sanitize_project_name(project)
@@ -1006,5 +1019,5 @@ async def download_all_clips(job_id: str, project: str = Query(default="quick-te
     return FileResponse(
         zip_path,
         media_type="application/zip",
-        filename=f"clips_{job_id[:8]}.zip",
+        filename=f"{job_id}.zip",
     )

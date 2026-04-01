@@ -1,4 +1,5 @@
 import asyncio
+import re
 import shutil
 import subprocess
 import uuid
@@ -6,6 +7,9 @@ from pathlib import Path
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
+
+# Safe filename pattern — alphanumeric, dash, underscore, dot only
+_SAFE_FILENAME_RE = re.compile(r"^[a-zA-Z0-9_\-][a-zA-Z0-9_\-\.]*$")
 
 from project_manager import (
     get_project_slideshow_dir,
@@ -87,8 +91,15 @@ async def list_images(project: str):
 
 @router.delete("/images/{filename}")
 async def delete_image(filename: str, project: str):
+    if not _SAFE_FILENAME_RE.match(filename):
+        raise HTTPException(status_code=400, detail="Invalid filename")
     images_dir = get_project_slideshow_images_dir(project)
     target = images_dir / filename
+    # Prevent path traversal
+    try:
+        target.resolve().relative_to(images_dir.resolve())
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid path")
     if not target.exists() or not target.is_file():
         raise HTTPException(status_code=404, detail="Image not found")
     target.unlink()
@@ -134,7 +145,14 @@ def _build_slideshow_ffmpeg(
     inputs: list[str] = []
 
     for i, slide in enumerate(slides):
+        if not _SAFE_FILENAME_RE.match(slide.image):
+            raise ValueError(f"Invalid image filename: {slide.image}")
         img_path = images_dir / slide.image
+        # Prevent path traversal
+        try:
+            img_path.resolve().relative_to(images_dir.resolve())
+        except ValueError:
+            raise ValueError(f"Invalid image path: {slide.image}")
         if not img_path.exists():
             raise FileNotFoundError(f"Image not found: {slide.image}")
         inputs += ["-loop", "1", "-t", f"{slide.duration:.3f}", "-i", str(img_path)]
@@ -186,7 +204,7 @@ def _run_render(job_id: str, project: str, slides: list[SlideConfig], fps: int):
 
         result = subprocess.run(cmd, capture_output=True, timeout=300)
         if result.returncode != 0:
-            stderr = result.stderr.decode(errors="replace")[-500:]
+            stderr = result.stderr.decode(errors="replace")[-2000:]
             raise RuntimeError(f"FFmpeg failed: {stderr}")
 
         jobs[job_id] = {
@@ -248,8 +266,14 @@ async def list_renders(project: str):
 
 @router.delete("/renders/{filename}")
 async def delete_render(filename: str, project: str):
+    if not _SAFE_FILENAME_RE.match(filename):
+        raise HTTPException(status_code=400, detail="Invalid filename")
     output_dir = get_project_slideshow_dir(project)
     target = output_dir / filename
+    try:
+        target.resolve().relative_to(output_dir.resolve())
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid path")
     if not target.exists():
         raise HTTPException(status_code=404, detail="Render not found")
     target.unlink()
