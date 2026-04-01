@@ -19,7 +19,6 @@ RUN grep -v -E '^(playwright|pytesseract|tiktokautouploader)' requirements.txt >
     && pip install --no-cache-dir -r requirements-prod.txt
 
 COPY app.py main.py project_manager.py telegram_bot.py ./
-COPY telegram_config.json ./
 COPY routers/ ./routers/
 COPY providers/ ./providers/
 COPY scraper/ ./scraper/
