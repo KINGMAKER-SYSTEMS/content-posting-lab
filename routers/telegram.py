@@ -397,11 +397,15 @@ async def assign_pages(poster_id: str, req: AssignPagesRequest):
 
             await asyncio.sleep(2)
 
+    # Re-read poster to confirm assignment was saved
+    updated_poster = get_poster(poster_id)
     return {
         "ok": True,
         "assigned": len(req.page_ids),
         "topics_created": created_topics,
         "bot_available": bot_available,
+        "poster_page_ids": updated_poster.get("page_ids", []) if updated_poster else [],
+        "poster_topics": list(updated_poster.get("topics", {}).keys()) if updated_poster else [],
     }
 
 

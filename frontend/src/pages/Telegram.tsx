@@ -65,6 +65,7 @@ export function TelegramPage() {
   const [newPosterChatId, setNewPosterChatId] = useState('');
   const [posterSelectedPages, setPosterSelectedPages] = useState<Record<string, Set<string>>>({});
   const [posterAssignOpen, setPosterAssignOpen] = useState<Record<string, boolean>>({});
+  const [assignLoading, setAssignLoading] = useState<string | null>(null);
 
   const [newSoundUrl, setNewSoundUrl] = useState('');
   const [newSoundLabel, setNewSoundLabel] = useState('');
@@ -269,18 +270,28 @@ export function TelegramPage() {
     const selected = posterSelectedPages[posterId];
     if (!selected || selected.size === 0) return;
     const pageIds = Array.from(selected);
+    setAssignLoading(posterId);
     try {
-      await fetchOk(apiUrl(`/api/telegram/posters/${encodeURIComponent(posterId)}/pages`), {
+      const res = await fetch(apiUrl(`/api/telegram/posters/${encodeURIComponent(posterId)}/pages`), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ page_ids: pageIds }),
       });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data?.detail || JSON.stringify(data) || `Request failed (${res.status})`);
+      }
       setPosterSelectedPages((prev) => ({ ...prev, [posterId]: new Set() }));
       setPosterAssignOpen((prev) => ({ ...prev, [posterId]: false }));
-      addNotification('success', `${pageIds.length} page${pageIds.length > 1 ? 's' : ''} assigned — folders being created`);
+      const topicMsg = data.topics_created > 0
+        ? ` — ${data.topics_created} folder${data.topics_created > 1 ? 's' : ''} created`
+        : data.bot_available ? '' : ' (bot offline — run Set Up Folders later)';
+      addNotification('success', `${pageIds.length} page${pageIds.length > 1 ? 's' : ''} assigned${topicMsg}`);
       await refresh();
     } catch (err) {
       addNotification('error', err instanceof Error ? err.message : 'Failed to assign pages');
+    } finally {
+      setAssignLoading(null);
     }
   }, [posterSelectedPages, addNotification, refresh]);
 
@@ -773,9 +784,12 @@ export function TelegramPage() {
                           <div className="flex items-center gap-2">
                             <Button
                               onClick={() => handleAssignPages(poster.poster_id)}
-                              disabled={selected.size === 0}
+                              disabled={selected.size === 0 || assignLoading === poster.poster_id}
                             >
-                              Assign {selected.size > 0 ? `${selected.size} Page${selected.size > 1 ? 's' : ''}` : 'Pages'}
+                              {assignLoading === poster.poster_id
+                                ? 'Assigning & creating folders...'
+                                : `Assign ${selected.size > 0 ? `${selected.size} Page${selected.size > 1 ? 's' : ''}` : 'Pages'}`
+                              }
                             </Button>
                             <Button
                               variant="outline"
