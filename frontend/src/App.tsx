@@ -180,17 +180,35 @@ function AppShell() {
     [addNotification, fetchProjects, navigate, setActiveProjectName],
   );
 
+  const [showNewProjectInput, setShowNewProjectInput] = useState(false);
+  const [newProjectName, setNewProjectName] = useState('');
+  const [visitedTabs, setVisitedTabs] = useState<Set<string>>(new Set(['/']));
+
   const handleQuickCreate = useCallback(() => {
-    const name = window.prompt('Enter a new project name');
+    if (!showNewProjectInput) {
+      setShowNewProjectInput(true);
+      return;
+    }
+    const name = newProjectName.trim();
     if (name) {
       void createProject(name);
+      setNewProjectName('');
+      setShowNewProjectInput(false);
     }
-  }, [createProject]);
+  }, [createProject, newProjectName, showNewProjectInput]);
 
   useEffect(() => {
     void fetchProjects();
     void fetchHealth();
   }, [fetchHealth, fetchProjects]);
+
+  // Track which tabs have been visited for lazy mounting
+  useEffect(() => {
+    setVisitedTabs((prev) => {
+      if (prev.has(location.pathname)) return prev;
+      return new Set([...prev, location.pathname]);
+    });
+  }, [location.pathname]);
 
   useEffect(() => {
     const onProjectsChanged = () => {
@@ -240,9 +258,27 @@ function AppShell() {
               onSelect={(project) => setActiveProjectName(project.name)}
               onCreate={createProject}
             />
-            <Button variant="outline" onClick={handleQuickCreate}>
-              + New Project
-            </Button>
+            {showNewProjectInput ? (
+              <form
+                className="flex items-center gap-1"
+                onSubmit={(e) => { e.preventDefault(); handleQuickCreate(); }}
+              >
+                <input
+                  autoFocus
+                  value={newProjectName}
+                  onChange={(e) => setNewProjectName(e.target.value)}
+                  placeholder="Project name..."
+                  className="h-8 w-36 rounded border bg-background px-2 text-sm"
+                  onBlur={() => { if (!newProjectName.trim()) setShowNewProjectInput(false); }}
+                  onKeyDown={(e) => { if (e.key === 'Escape') { setShowNewProjectInput(false); setNewProjectName(''); } }}
+                />
+                <Button type="submit" size="sm" disabled={!newProjectName.trim()}>Create</Button>
+              </form>
+            ) : (
+              <Button variant="outline" onClick={handleQuickCreate}>
+                + New Project
+              </Button>
+            )}
           </div>
         </div>
       </header>
@@ -380,33 +416,50 @@ function AppShell() {
       <ToastContainer toasts={notifications} onDismiss={removeNotification} />
 
       <main className="mx-auto max-w-7xl">
+        {/* Lazy mount: pages only render once visited, then stay mounted (CSS toggle) */}
         <div style={{ display: location.pathname === '/' ? 'block' : 'none' }}>
           <ProjectsPage />
         </div>
-        <div style={{ display: location.pathname === '/generate' ? 'block' : 'none' }}>
-          <GeneratePage />
-        </div>
-        <div style={{ display: location.pathname === '/captions' ? 'block' : 'none' }}>
-          <CaptionsPage />
-        </div>
-        <div style={{ display: location.pathname === '/recreate' ? 'block' : 'none' }}>
-          <RecreatePage />
-        </div>
-        <div style={{ display: location.pathname === '/burn' ? 'block' : 'none' }}>
-          <BurnPage />
-        </div>
-        <div style={{ display: location.pathname === '/clipper' ? 'block' : 'none' }}>
-          <ClipperPage />
-        </div>
-        <div style={{ display: location.pathname === '/slideshow' ? 'block' : 'none' }}>
-          <SlideshowPage />
-        </div>
-        <div style={{ display: location.pathname === '/publish' ? 'block' : 'none' }}>
-          <PublishPage />
-        </div>
-        <div style={{ display: location.pathname === '/telegram' ? 'block' : 'none' }}>
-          <TelegramPage />
-        </div>
+        {visitedTabs.has('/generate') && (
+          <div style={{ display: location.pathname === '/generate' ? 'block' : 'none' }}>
+            <GeneratePage />
+          </div>
+        )}
+        {visitedTabs.has('/captions') && (
+          <div style={{ display: location.pathname === '/captions' ? 'block' : 'none' }}>
+            <CaptionsPage />
+          </div>
+        )}
+        {visitedTabs.has('/recreate') && (
+          <div style={{ display: location.pathname === '/recreate' ? 'block' : 'none' }}>
+            <RecreatePage />
+          </div>
+        )}
+        {visitedTabs.has('/burn') && (
+          <div style={{ display: location.pathname === '/burn' ? 'block' : 'none' }}>
+            <BurnPage />
+          </div>
+        )}
+        {visitedTabs.has('/clipper') && (
+          <div style={{ display: location.pathname === '/clipper' ? 'block' : 'none' }}>
+            <ClipperPage />
+          </div>
+        )}
+        {visitedTabs.has('/slideshow') && (
+          <div style={{ display: location.pathname === '/slideshow' ? 'block' : 'none' }}>
+            <SlideshowPage />
+          </div>
+        )}
+        {visitedTabs.has('/publish') && (
+          <div style={{ display: location.pathname === '/publish' ? 'block' : 'none' }}>
+            <PublishPage />
+          </div>
+        )}
+        {visitedTabs.has('/telegram') && (
+          <div style={{ display: location.pathname === '/telegram' ? 'block' : 'none' }}>
+            <TelegramPage />
+          </div>
+        )}
       </main>
     </div>
   );

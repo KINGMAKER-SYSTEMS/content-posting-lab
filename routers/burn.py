@@ -7,12 +7,14 @@ All endpoints are project-scoped via `project` query param.
 import asyncio
 import base64
 import csv
+import json as _json
 import math
 import os
 import shutil
 import tempfile
 import uuid
 import zipfile
+from datetime import datetime
 from pathlib import Path
 
 from fastapi import APIRouter, Query, Request, WebSocket, WebSocketDisconnect
@@ -36,6 +38,44 @@ FONT_DIR = BASE_DIR / "fonts"
 _burn_semaphore = asyncio.Semaphore(4)
 
 
+def _make_batch_id(project: str, burn_dir: Path, label: str | None = None) -> str:
+    """Generate a systematic batch ID: {project}-{MMDDHHmm}-{run}.
+
+    Example: "my-project-04011430-1", "my-project-04011430-2"
+    If a label is provided, use: {label}-{MMDDHHmm}-{run}
+    """
+    ts = datetime.now().strftime("%m%d%H%M")
+    prefix = (label or project).lower().replace(" ", "-")[:30]
+    # Find next run number for this prefix+timestamp
+    run = 1
+    if burn_dir.exists():
+        for d in burn_dir.iterdir():
+            if d.is_dir() and d.name.startswith(f"{prefix}-{ts}-"):
+                try:
+                    existing_run = int(d.name.rsplit("-", 1)[-1])
+                    run = max(run, existing_run + 1)
+                except ValueError:
+                    pass
+    return f"{prefix}-{ts}-{run}"
+
+
+def _save_batch_meta(batch_dir: Path, meta: dict) -> None:
+    """Write batch metadata sidecar JSON."""
+    meta_path = batch_dir / "batch_meta.json"
+    meta_path.write_text(_json.dumps(meta, indent=2), encoding="utf-8")
+
+
+def _load_batch_meta(batch_dir: Path) -> dict | None:
+    """Load batch metadata if it exists."""
+    meta_path = batch_dir / "batch_meta.json"
+    if meta_path.exists():
+        try:
+            return _json.loads(meta_path.read_text(encoding="utf-8"))
+        except (_json.JSONDecodeError, OSError):
+            pass
+    return None
+
+
 # ── Helpers ──────────────────────────────────────────────────────────
 
 
@@ -43,10 +83,13 @@ def _extract_job_id(filename: str) -> str | None:
     """Extract the job_id prefix from a generated video filename.
 
     Filenames follow the pattern: {job_id}_{index}.mp4 or {job_id}_{index}_crop{n}.mp4
-    where job_id is a hex string (8-12 chars).
+    where job_id can be:
+    - Legacy hex string (8-12 chars): "a1b2c3d4_0.mp4"
+    - New readable format: "grok-stars-and-gal-04011430-a1b2_0.mp4"
     """
     import re
-    m = re.match(r"^([0-9a-f]{8,12})_\d+", filename)
+    # New format: everything before the last _N or _N_cropN
+    m = re.match(r"^(.+?)_\d+(?:_crop\d+)?\.mp4$", filename)
     return m.group(1) if m else None
 
 
@@ -503,6 +546,9 @@ async def _burn_video(
             # Strip data URL prefix if present (e.g. "data:image/png;base64,...")
             if "," in overlay_png_b64:
                 overlay_png_b64 = overlay_png_b64.split(",", 1)[1]
+            # Guard against OOM from oversized payloads (50MB base64 ≈ 37.5MB decoded)
+            if len(overlay_png_b64) > 50_000_000:
+                raise ValueError("Overlay PNG too large (>50MB base64). Reduce overlay resolution.")
             png_bytes = base64.b64decode(overlay_png_b64)
             fd, overlay_path = tempfile.mkstemp(suffix=".png")
             os.write(fd, png_bytes)
@@ -579,7 +625,7 @@ async def _burn_video(
         _, stderr = await proc.communicate()
 
         if proc.returncode != 0:
-            raise RuntimeError(stderr.decode()[-500:])
+            raise RuntimeError(stderr.decode()[-2000:])
 
         return output_path
 
@@ -633,7 +679,7 @@ async def burn_overlay(request: Request):
     if not project:
         return JSONResponse({"error": "project is required"}, status_code=400)
 
-    batch_id = body["batchId"]
+    batch_id = body.get("batchId") or body.get("batch_id", "")
     idx = int(body["index"])
     video_rel = body["videoPath"]
     overlay_b64 = body.get("overlayPng")  # base64 PNG from html2canvas
@@ -669,7 +715,7 @@ async def burn_overlay(request: Request):
         return JSONResponse({"error": str(e)}, status_code=400)
     except Exception as e:
         return JSONResponse(
-            {"index": idx, "ok": False, "error": str(e)[:300]},
+            {"index": idx, "ok": False, "error": str(e)[:2000]},
             status_code=500,
         )
 
@@ -692,9 +738,11 @@ async def list_batches(project: str = Query(..., description="Project name")):
         mp4s = list(d.glob("burned_*.mp4"))
         if not mp4s:
             continue
+        meta = _load_batch_meta(d)
         batches.append(
             {
                 "id": d.name,
+                "label": meta.get("label") if meta else None,
                 "count": len(mp4s),
                 "created": int(d.stat().st_mtime),
             }
@@ -721,15 +769,27 @@ async def download_burn_zip(
     if not mp4s:
         return JSONResponse({"error": "No burned files in batch"}, status_code=404)
 
-    zip_path = str(batch_dir / f"{batch_id}.zip")
-    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
-        for mp4 in mp4s:
-            zf.write(mp4, mp4.name)
+    # Use label from metadata for ZIP filename if available
+    meta = _load_batch_meta(batch_dir)
+    zip_label = meta.get("label") if meta else None
+    zip_name = f"{zip_label or batch_id}.zip"
+
+    # Write ZIP to temp file to avoid in-memory spikes for large batches
+    tmp_fd, tmp_path = tempfile.mkstemp(suffix=".zip")
+    os.close(tmp_fd)
+    try:
+        with zipfile.ZipFile(tmp_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            for mp4 in mp4s:
+                zf.write(mp4, mp4.name)
+    except Exception:
+        os.unlink(tmp_path)
+        raise
 
     return FileResponse(
-        zip_path,
+        tmp_path,
         media_type="application/zip",
-        filename=f"burned_{batch_id}.zip",
+        filename=zip_name,
+        background=None,  # file cleanup handled by FileResponse
     )
 
 
@@ -755,6 +815,7 @@ async def ws_burn(ws: WebSocket):
         data = await ws.receive_json()
         project = data.get("project", "quick-test")
         pairs = data.get("pairs", [])
+        label = data.get("label")  # optional user-provided label
 
         try:
             video_dir = get_project_video_dir(project)
@@ -764,9 +825,18 @@ async def ws_burn(ws: WebSocket):
             await ws.send_json({"event": "error", "error": str(e)})
             return
 
-        batch_id = uuid.uuid4().hex[:8]
+        batch_id = _make_batch_id(project, burn_dir, label)
         batch_dir = burn_dir / batch_id
         batch_dir.mkdir(exist_ok=True)
+
+        # Persist batch metadata
+        _save_batch_meta(batch_dir, {
+            "batch_id": batch_id,
+            "project": project,
+            "label": label,
+            "created": datetime.now().isoformat(),
+            "total": len(pairs),
+        })
 
         total = len(pairs)
         results = []
@@ -816,7 +886,7 @@ async def ws_burn(ws: WebSocket):
                     {
                         "index": i,
                         "ok": False,
-                        "error": str(e)[:300],
+                        "error": str(e)[:2000],
                     }
                 )
 

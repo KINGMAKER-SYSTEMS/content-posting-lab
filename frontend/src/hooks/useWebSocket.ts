@@ -24,6 +24,8 @@ export function useWebSocket(url: string | null, options: WebSocketOptions = {})
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectAttemptsRef = useRef(0);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const heartbeatTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const lastPongRef = useRef<number>(Date.now());
   const isDisposedRef = useRef(false);
   const queuedMessagesRef = useRef<string[]>([]);
   const lastStartPayloadRef = useRef<string | null>(null);
@@ -46,6 +48,34 @@ export function useWebSocket(url: string | null, options: WebSocketOptions = {})
       reconnectTimerRef.current = null;
     }
   }, []);
+
+  const clearHeartbeat = useCallback(() => {
+    if (heartbeatTimerRef.current) {
+      clearInterval(heartbeatTimerRef.current);
+      heartbeatTimerRef.current = null;
+    }
+  }, []);
+
+  const startHeartbeat = useCallback(() => {
+    clearHeartbeat();
+    lastPongRef.current = Date.now();
+    heartbeatTimerRef.current = setInterval(() => {
+      const socket = wsRef.current;
+      if (!socket || socket.readyState !== WebSocket.OPEN) return;
+      // If no data received in 45s, connection is likely dead
+      if (Date.now() - lastPongRef.current > 45_000) {
+        clearHeartbeat();
+        socket.close(4000, 'heartbeat timeout');
+        return;
+      }
+      // Send lightweight ping
+      try {
+        socket.send(JSON.stringify({ action: 'ping' }));
+      } catch {
+        // socket already dead
+      }
+    }, 30_000);
+  }, [clearHeartbeat]);
 
   const connect = useCallback(
     (mode: 'connecting' | 'reconnecting' = 'connecting') => {
@@ -71,6 +101,7 @@ export function useWebSocket(url: string | null, options: WebSocketOptions = {})
 
           const hadReconnects = reconnectAttemptsRef.current > 0;
           reconnectAttemptsRef.current = 0;
+          startHeartbeat();
 
           if (queuedMessagesRef.current.length > 0) {
             for (const payload of queuedMessagesRef.current) {
@@ -87,6 +118,7 @@ export function useWebSocket(url: string | null, options: WebSocketOptions = {})
         };
 
         socket.onmessage = (event) => {
+          lastPongRef.current = Date.now();
           onMessageRef.current?.(event);
         };
 
@@ -98,6 +130,7 @@ export function useWebSocket(url: string | null, options: WebSocketOptions = {})
 
         socket.onclose = (event) => {
           wsRef.current = null;
+          clearHeartbeat();
           onCloseRef.current?.(event);
 
           if (isDisposedRef.current) {
@@ -133,7 +166,7 @@ export function useWebSocket(url: string | null, options: WebSocketOptions = {})
         setError('Failed to initialize WebSocket');
       }
     },
-    [clearReconnectTimer, maxReconnectAttempts, maxReconnectDelayMs, url],
+    [clearReconnectTimer, clearHeartbeat, startHeartbeat, maxReconnectAttempts, maxReconnectDelayMs, url],
   );
 
   useEffect(() => {
@@ -153,13 +186,14 @@ export function useWebSocket(url: string | null, options: WebSocketOptions = {})
     return () => {
       isDisposedRef.current = true;
       clearReconnectTimer();
+      clearHeartbeat();
       if (wsRef.current) {
         wsRef.current.close(1000, 'cleanup');
       }
       wsRef.current = null;
       setStatus('disconnected');
     };
-  }, [clearReconnectTimer, connect, url]);
+  }, [clearReconnectTimer, clearHeartbeat, connect, url]);
 
   const sendMessage = useCallback((data: unknown) => {
     const payload = JSON.stringify(data);

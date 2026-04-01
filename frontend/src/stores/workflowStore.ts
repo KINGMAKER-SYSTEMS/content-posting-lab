@@ -11,6 +11,7 @@ interface TrackedJob {
   kind: 'video' | 'caption';
   status: string;
   progress?: number;
+  error?: string;
   provider?: Job['provider'];
   prompt?: Job['prompt'];
   username?: string;
@@ -207,9 +208,9 @@ export const useWorkflowStore = create<WorkflowState>((set) => ({
       if (state.recentlyGeneratedVideos.includes(jobId)) {
         return state;
       }
-      return {
-        recentlyGeneratedVideos: [jobId, ...state.recentlyGeneratedVideos],
-      };
+      // Cap at 50 entries to prevent unbounded growth
+      const updated = [jobId, ...state.recentlyGeneratedVideos].slice(0, 50);
+      return { recentlyGeneratedVideos: updated };
     });
   },
 
@@ -218,9 +219,9 @@ export const useWorkflowStore = create<WorkflowState>((set) => ({
       if (state.recentlyScrapedCaptions.includes(username)) {
         return state;
       }
-      return {
-        recentlyScrapedCaptions: [username, ...state.recentlyScrapedCaptions],
-      };
+      // Cap at 50 entries
+      const updated = [username, ...state.recentlyScrapedCaptions].slice(0, 50);
+      return { recentlyScrapedCaptions: updated };
     });
   },
 
@@ -273,7 +274,8 @@ export const useWorkflowStore = create<WorkflowState>((set) => ({
   // Generate page actions — jobs persist in store across tab switches
   addGenerateJob: (job) => {
     set((state) => ({
-      generateJobs: [job, ...state.generateJobs],
+      // Cap at 100 jobs to prevent unbounded growth
+      generateJobs: [job, ...state.generateJobs].slice(0, 100),
     }));
   },
 

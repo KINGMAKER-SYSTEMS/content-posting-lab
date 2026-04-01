@@ -102,6 +102,12 @@ class SendRequest(BaseModel):
     caption: str | None = None
 
 
+class SendBatchRequest(BaseModel):
+    integration_id: str
+    batch_id: str
+    project: str
+
+
 class SoundCreateRequest(BaseModel):
     url: str
     label: str
@@ -515,6 +521,74 @@ async def send_content(req: SendRequest):
     })
 
     return item
+
+
+@router.post("/send-batch")
+async def send_batch(req: SendBatchRequest):
+    """Send all burned MP4s from a batch to a staging topic.
+
+    Used by the Burn tab to send completed burn batches to Telegram.
+    """
+    _require_bot()
+
+    from project_manager import get_project_burn_dir, sanitize_project_name
+
+    try:
+        burn_dir = get_project_burn_dir(req.project)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    batch_dir = burn_dir / req.batch_id
+    if not batch_dir.exists() or not batch_dir.is_dir():
+        raise HTTPException(status_code=404, detail=f"Batch '{req.batch_id}' not found")
+
+    mp4s = sorted(batch_dir.glob("burned_*.mp4"))
+    if not mp4s:
+        raise HTTPException(status_code=404, detail="No burned videos in batch")
+
+    staging = get_staging_group()
+    if not staging or not staging.get("chat_id"):
+        raise HTTPException(status_code=400, detail="Staging group not configured")
+
+    topics = staging.get("topics", {})
+    topic_info = topics.get(req.integration_id)
+    if not topic_info:
+        raise HTTPException(status_code=400, detail=f"No staging topic for integration {req.integration_id}")
+
+    chat_id = staging["chat_id"]
+    topic_id = topic_info.get("topic_id")
+
+    sent = 0
+    errors: list[str] = []
+    for mp4 in mp4s:
+        try:
+            result = await _tg_bot.send_media_to_topic(
+                chat_id=chat_id,
+                topic_id=topic_id,
+                file_path=str(mp4),
+                caption=None,
+            )
+            add_inventory_item(req.integration_id, {
+                "message_id": result.get("message_id"),
+                "file_id": result.get("file_id"),
+                "file_name": mp4.name,
+                "media_type": "video",
+                "caption": None,
+                "source": "api",
+            })
+            sent += 1
+            # Rate limit between sends
+            await asyncio.sleep(0.3)
+        except Exception as exc:
+            logger.warning("Failed to send %s: %s", mp4.name, exc)
+            errors.append(f"{mp4.name}: {exc}")
+
+    return {
+        "sent": sent,
+        "total": len(mp4s),
+        "errors": errors,
+        "batch_id": req.batch_id,
+    }
 
 
 @router.post("/forward/{integration_id}")
