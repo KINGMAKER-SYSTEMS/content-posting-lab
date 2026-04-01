@@ -367,8 +367,6 @@ async def delete_poster(poster_id: str):
 @router.post("/posters/{poster_id}/pages")
 async def assign_pages(poster_id: str, req: AssignPagesRequest):
     """Assign pages to a poster and auto-create topics in the poster's group."""
-    _require_bot()
-
     poster = get_poster(poster_id)
     if not poster:
         raise HTTPException(status_code=404, detail="Poster not found")
@@ -376,11 +374,13 @@ async def assign_pages(poster_id: str, req: AssignPagesRequest):
     chat_id = poster.get("chat_id")
     existing_topics = poster.get("topics", {})
     created_topics = 0
+    bot_available = _tg_bot.get_bot() is not None
 
     for page_id in req.page_ids:
         assign_page_to_poster(poster_id, page_id)
 
-        if page_id not in existing_topics:
+        # Auto-create topic in poster's group if bot is running
+        if bot_available and page_id not in existing_topics:
             page_name = _find_page_name(page_id)
             for attempt in range(3):
                 try:
@@ -397,7 +397,12 @@ async def assign_pages(poster_id: str, req: AssignPagesRequest):
 
             await asyncio.sleep(2)
 
-    return {"ok": True, "assigned": len(req.page_ids), "topics_created": created_topics}
+    return {
+        "ok": True,
+        "assigned": len(req.page_ids),
+        "topics_created": created_topics,
+        "bot_available": bot_available,
+    }
 
 
 @router.delete("/posters/{poster_id}/pages/{integration_id}")
