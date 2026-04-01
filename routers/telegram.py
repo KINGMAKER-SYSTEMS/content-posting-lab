@@ -158,7 +158,7 @@ async def telegram_status():
     bot = _tg_bot.get_bot()
     staging = config.get("staging_group", {})
     return {
-        "bot_configured": bool(config.get("bot_token")),
+        "bot_configured": bool(get_bot_token()),  # checks env var first, then config
         "bot_running": bot is not None,
         "bot_username": config.get("bot_username"),
         "staging_group": {
