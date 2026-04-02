@@ -214,6 +214,7 @@ export function TelegramPage() {
   }, [newPosterName, newPosterChatId, addNotification, refresh]);
 
   const handleRemovePoster = useCallback(async (posterId: string) => {
+    if (!confirm(`Remove poster "${posterId}"? This cannot be undone.`)) return;
     try {
       await fetchOk(apiUrl(`/api/telegram/posters/${encodeURIComponent(posterId)}`), { method: 'DELETE' });
       addNotification('success', 'Poster removed');
@@ -272,10 +273,16 @@ export function TelegramPage() {
     const pageIds = Array.from(selected);
     setAssignLoading(posterId);
     try {
+      // Build name map so backend can name Telegram topics properly
+      const pageNames: Record<string, string> = {};
+      for (const pid of pageIds) {
+        const page = rosterPages.find((p) => p.integration_id === pid);
+        if (page?.name) pageNames[pid] = page.name;
+      }
       const res = await fetch(apiUrl(`/api/telegram/posters/${encodeURIComponent(posterId)}/pages`), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ page_ids: pageIds }),
+        body: JSON.stringify({ page_ids: pageIds, page_names: pageNames }),
       });
       const data = await res.json();
       if (!res.ok) {

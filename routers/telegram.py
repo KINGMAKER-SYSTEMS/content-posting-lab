@@ -94,6 +94,7 @@ class PosterUpdateRequest(BaseModel):
 
 class AssignPagesRequest(BaseModel):
     page_ids: list[str]
+    page_names: dict[str, str] | None = None  # {integration_id: display_name} — optional hint for topic naming
 
 
 class SendRequest(BaseModel):
@@ -370,6 +371,29 @@ async def delete_poster(poster_id: str):
     return {"ok": True}
 
 
+@router.post("/posters/reset-defaults")
+async def reset_default_posters():
+    """Re-seed the default posters (Seffra, Gigi, etc.) without wiping custom ones."""
+    from services.telegram import _DEFAULT_POSTERS, _now
+    config = load_config()
+    added = 0
+    for pid, pdata in _DEFAULT_POSTERS.items():
+        if pid not in config.get("posters", {}):
+            now = _now()
+            config.setdefault("posters", {})[pid] = {
+                **pdata,
+                "page_ids": [],
+                "topics": {},
+                "added_at": now,
+                "updated_at": now,
+            }
+            added += 1
+    if added > 0:
+        from services.telegram import save_config
+        save_config(config)
+    return {"ok": True, "added": added, "total": len(config.get("posters", {}))}
+
+
 @router.post("/posters/{poster_id}/pages")
 async def assign_pages(poster_id: str, req: AssignPagesRequest):
     """Assign pages to a poster and auto-create topics in the poster's group.
@@ -395,10 +419,13 @@ async def assign_pages(poster_id: str, req: AssignPagesRequest):
         if bot_available and pid not in existing_topics
     ]
 
+    # Build name lookup: prefer names passed from frontend, fallback to roster
+    passed_names = req.page_names or {}
+
     async def _create_topics_bg():
         created = 0
         for page_id in pages_needing_topics:
-            page_name = _find_page_name(page_id)
+            page_name = passed_names.get(page_id) or _find_page_name(page_id)
             for attempt in range(3):
                 try:
                     topic_id = await _tg_bot.create_forum_topic(chat_id, page_name)
