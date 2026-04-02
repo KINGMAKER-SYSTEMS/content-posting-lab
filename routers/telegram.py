@@ -158,20 +158,34 @@ async def telegram_status():
     config = load_config()
     bot = _tg_bot.get_bot()
     staging = config.get("staging_group", {})
+    inventory_summary = get_all_inventory_summary()
+
+    # Enrich topics with inventory counts so frontend can show what's fed
+    enriched_topics = {}
+    summary_by_id = {s["integration_id"]: s for s in inventory_summary}
+    for iid, topic_info in staging.get("topics", {}).items():
+        inv = summary_by_id.get(iid, {})
+        enriched_topics[iid] = {
+            **topic_info,
+            "inventory_total": inv.get("total", 0),
+            "inventory_pending": inv.get("pending", 0),
+            "inventory_forwarded": inv.get("forwarded", 0),
+        }
+
     return {
-        "bot_configured": bool(get_bot_token()),  # checks env var first, then config
+        "bot_configured": bool(get_bot_token()),
         "bot_running": bot is not None,
         "bot_username": config.get("bot_username"),
         "staging_group": {
             "chat_id": staging.get("chat_id"),
             "name": staging.get("name"),
             "topic_count": len(staging.get("topics", {})),
-            "topics": staging.get("topics", {}),
+            "topics": enriched_topics,
         }
         if staging.get("chat_id")
         else None,
         "poster_count": len(list_posters()),
-        "total_inventory": sum(s["total"] for s in get_all_inventory_summary()),
+        "total_inventory": sum(s["total"] for s in inventory_summary),
         "schedule": config.get("schedule", {}),
     }
 
@@ -254,7 +268,12 @@ async def get_staging_group_info():
 
 @router.post("/staging-group/sync-topics")
 async def sync_staging_topics():
-    """Create forum topics in the staging group for all roster pages."""
+    """Create forum topics in the staging group for roster pages that don't have one yet.
+
+    APPEND-ONLY: Never overwrites existing topic mappings. If a page already has
+    a topic_id in the config, it is skipped — even if the topic_id is stale.
+    To remap a topic, delete it first via DELETE /staging-group/topics/{integration_id}.
+    """
     _require_bot()
 
     staging = get_staging_group()
@@ -262,18 +281,23 @@ async def sync_staging_topics():
         raise HTTPException(status_code=400, detail="Staging group not configured")
 
     chat_id = staging["chat_id"]
-    existing_topics = staging.get("topics", {})
+    # Re-read config each iteration to see topics created by earlier iterations
     pages = list_all_pages()
 
     created = 0
     existing = 0
+    skipped_names: list[str] = []
 
     for page in pages:
         integration_id = page.get("integration_id", "")
         if not integration_id:
             continue
 
-        if integration_id in existing_topics:
+        # Re-read fresh config to catch topics just created in this loop
+        fresh_staging = get_staging_group()
+        fresh_topics = fresh_staging.get("topics", {})
+
+        if integration_id in fresh_topics:
             existing += 1
             continue
 
@@ -288,15 +312,17 @@ async def sync_staging_topics():
                 created += 1
                 break
             except Exception as exc:
-                if attempt < 2 and "retry" in str(exc).lower() or "too many" in str(exc).lower() or "429" in str(exc):
-                    await asyncio.sleep(5)  # back off on rate limit
+                err_str = str(exc).lower()
+                if attempt < 2 and ("retry" in err_str or "too many" in err_str or "429" in err_str):
+                    await asyncio.sleep(5)
                 else:
                     logger.warning("Failed to create topic for %s: %s", integration_id, exc)
+                    skipped_names.append(page_name)
                     break
 
-        await asyncio.sleep(2)
+        await asyncio.sleep(1.5)
 
-    return {"created": created, "existing": existing}
+    return {"created": created, "existing": existing, "failed": skipped_names}
 
 
 @router.delete("/staging-group/topics/{integration_id}")
@@ -451,7 +477,10 @@ async def unassign_page(poster_id: str, integration_id: str):
 
 @router.post("/posters/{poster_id}/sync-topics")
 async def sync_poster_topics(poster_id: str):
-    """Ensure topics exist in a poster's group for all assigned pages."""
+    """Ensure topics exist in a poster's group for all assigned pages.
+
+    APPEND-ONLY: Never overwrites existing topic mappings.
+    """
     _require_bot()
 
     poster = get_poster(poster_id)
@@ -460,13 +489,16 @@ async def sync_poster_topics(poster_id: str):
 
     chat_id = poster.get("chat_id")
     page_ids = poster.get("page_ids", [])
-    existing_topics = poster.get("topics", {})
 
     created = 0
     existing_count = 0
 
     for page_id in page_ids:
-        if page_id in existing_topics:
+        # Re-read fresh each iteration to see topics just created
+        fresh_poster = get_poster(poster_id) or {}
+        fresh_topics = fresh_poster.get("topics", {})
+
+        if page_id in fresh_topics:
             existing_count += 1
             continue
 
@@ -478,13 +510,14 @@ async def sync_poster_topics(poster_id: str):
                 created += 1
                 break
             except Exception as exc:
-                if attempt < 2 and ("retry" in str(exc).lower() or "too many" in str(exc).lower() or "429" in str(exc)):
+                err_str = str(exc).lower()
+                if attempt < 2 and ("retry" in err_str or "too many" in err_str or "429" in err_str):
                     await asyncio.sleep(5)
                 else:
                     logger.warning("Failed to create topic for %s in poster %s: %s", page_id, poster_id, exc)
                     break
 
-        await asyncio.sleep(2)
+        await asyncio.sleep(1.5)
 
     return {"created": created, "existing": existing_count}
 
