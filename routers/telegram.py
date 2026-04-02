@@ -372,27 +372,38 @@ async def delete_poster(poster_id: str):
 
 @router.post("/posters/{poster_id}/pages")
 async def assign_pages(poster_id: str, req: AssignPagesRequest):
-    """Assign pages to a poster and auto-create topics in the poster's group."""
+    """Assign pages to a poster and auto-create topics in the poster's group.
+
+    Page assignment is saved immediately. Topic creation runs in the background
+    to avoid Railway's ~30s request timeout when assigning many pages.
+    """
     poster = get_poster(poster_id)
     if not poster:
         raise HTTPException(status_code=404, detail="Poster not found")
 
     chat_id = poster.get("chat_id")
     existing_topics = poster.get("topics", {})
-    created_topics = 0
     bot_available = _tg_bot.get_bot() is not None
 
+    # Save all page assignments immediately (fast, no network calls)
     for page_id in req.page_ids:
         assign_page_to_poster(poster_id, page_id)
 
-        # Auto-create topic in poster's group if bot is running
-        if bot_available and page_id not in existing_topics:
+    # Create topics in the background so we don't timeout
+    pages_needing_topics = [
+        pid for pid in req.page_ids
+        if bot_available and pid not in existing_topics
+    ]
+
+    async def _create_topics_bg():
+        created = 0
+        for page_id in pages_needing_topics:
             page_name = _find_page_name(page_id)
             for attempt in range(3):
                 try:
                     topic_id = await _tg_bot.create_forum_topic(chat_id, page_name)
                     set_poster_topic(poster_id, page_id, topic_id, page_name)
-                    created_topics += 1
+                    created += 1
                     break
                 except Exception as exc:
                     if attempt < 2 and ("retry" in str(exc).lower() or "too many" in str(exc).lower() or "429" in str(exc)):
@@ -400,15 +411,17 @@ async def assign_pages(poster_id: str, req: AssignPagesRequest):
                     else:
                         logger.warning("Failed to create topic for %s in poster %s: %s", page_id, poster_id, exc)
                         break
+            await asyncio.sleep(1)
+        logger.info("Background topic creation for %s: %d/%d created", poster_id, created, len(pages_needing_topics))
 
-            await asyncio.sleep(2)
+    if pages_needing_topics:
+        asyncio.create_task(_create_topics_bg())
 
-    # Re-read poster to confirm assignment was saved
     updated_poster = get_poster(poster_id)
     return {
         "ok": True,
         "assigned": len(req.page_ids),
-        "topics_created": created_topics,
+        "topics_creating": len(pages_needing_topics),
         "bot_available": bot_available,
         "poster_page_ids": updated_poster.get("page_ids", []) if updated_poster else [],
         "poster_topics": list(updated_poster.get("topics", {}).keys()) if updated_poster else [],
