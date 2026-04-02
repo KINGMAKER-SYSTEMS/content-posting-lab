@@ -147,9 +147,15 @@ def set_staging_group(chat_id: int, name: str) -> dict:
     return config["staging_group"]
 
 
-def set_staging_topic(integration_id: str, topic_id: int, topic_name: str) -> dict:
-    """Map an integration to a staging group topic. Returns updated staging group."""
+def set_staging_topic(integration_id: str, topic_id: int, topic_name: str, force: bool = False) -> dict:
+    """Map an integration to a staging group topic. Returns updated staging group.
+
+    APPEND-ONLY by default: refuses to overwrite an existing mapping unless force=True.
+    """
     config = load_config()
+    existing = config["staging_group"]["topics"].get(integration_id)
+    if existing and not force:
+        return config["staging_group"]
     config["staging_group"]["topics"][integration_id] = {
         "topic_id": topic_id,
         "topic_name": topic_name,
@@ -263,12 +269,18 @@ def unassign_page_from_poster(poster_id: str, integration_id: str) -> dict:
     return poster
 
 
-def set_poster_topic(poster_id: str, integration_id: str, topic_id: int, topic_name: str) -> dict:
-    """Map an integration to a topic within a poster. Returns updated poster."""
+def set_poster_topic(poster_id: str, integration_id: str, topic_id: int, topic_name: str, force: bool = False) -> dict:
+    """Map an integration to a topic within a poster. Returns updated poster.
+
+    APPEND-ONLY by default: refuses to overwrite an existing mapping unless force=True.
+    """
     config = load_config()
     poster = config.get("posters", {}).get(poster_id)
     if poster is None:
         raise ValueError(f"Poster {poster_id} not found")
+    existing = poster.get("topics", {}).get(integration_id)
+    if existing and not force:
+        return poster
     poster.setdefault("topics", {})[integration_id] = {
         "topic_id": topic_id,
         "topic_name": topic_name,
