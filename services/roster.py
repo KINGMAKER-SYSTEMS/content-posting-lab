@@ -5,12 +5,14 @@ and Google Drive folders.
 """
 
 import json
+import os
 import re
 import time
 from pathlib import Path
 
 BASE_DIR = Path(__file__).parent.parent
-_DATA_DIR = Path("/data") if Path("/data").exists() else BASE_DIR
+_VOLUME_PATH = os.getenv("RAILWAY_VOLUME_MOUNT_PATH", "")
+_DATA_DIR = Path(_VOLUME_PATH) if _VOLUME_PATH and Path(_VOLUME_PATH).exists() else BASE_DIR
 ROSTER_PATH = _DATA_DIR / "page_roster.json"
 
 _DRIVE_FOLDER_RE = re.compile(r"folders/([a-zA-Z0-9_-]+)")
