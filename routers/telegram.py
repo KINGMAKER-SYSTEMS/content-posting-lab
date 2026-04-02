@@ -413,42 +413,13 @@ async def assign_pages(poster_id: str, req: AssignPagesRequest):
     for page_id in req.page_ids:
         assign_page_to_poster(poster_id, page_id)
 
-    # Create topics in the background so we don't timeout
-    pages_needing_topics = [
-        pid for pid in req.page_ids
-        if bot_available and pid not in existing_topics
-    ]
-
-    # Build name lookup: prefer names passed from frontend, fallback to roster
-    passed_names = req.page_names or {}
-
-    async def _create_topics_bg():
-        created = 0
-        for page_id in pages_needing_topics:
-            page_name = passed_names.get(page_id) or _find_page_name(page_id)
-            for attempt in range(3):
-                try:
-                    topic_id = await _tg_bot.create_forum_topic(chat_id, page_name)
-                    set_poster_topic(poster_id, page_id, topic_id, page_name)
-                    created += 1
-                    break
-                except Exception as exc:
-                    if attempt < 2 and ("retry" in str(exc).lower() or "too many" in str(exc).lower() or "429" in str(exc)):
-                        await asyncio.sleep(5)
-                    else:
-                        logger.warning("Failed to create topic for %s in poster %s: %s", page_id, poster_id, exc)
-                        break
-            await asyncio.sleep(1)
-        logger.info("Background topic creation for %s: %d/%d created", poster_id, created, len(pages_needing_topics))
-
-    if pages_needing_topics:
-        asyncio.create_task(_create_topics_bg())
+    # Topics are NOT auto-created here to avoid duplicates and race conditions.
+    # Use "Set Up Folders" (POST /posters/{id}/sync-topics) after assigning pages.
 
     updated_poster = get_poster(poster_id)
     return {
         "ok": True,
         "assigned": len(req.page_ids),
-        "topics_creating": len(pages_needing_topics),
         "bot_available": bot_available,
         "poster_page_ids": updated_poster.get("page_ids", []) if updated_poster else [],
         "poster_topics": list(updated_poster.get("topics", {}).keys()) if updated_poster else [],
