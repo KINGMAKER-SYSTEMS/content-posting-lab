@@ -510,6 +510,9 @@ async def sync_poster_topics(poster_id: str):
 
     created = 0
     existing_count = 0
+    errors: list[str] = []
+
+    logger.info("sync-topics for %s: chat_id=%s, %d page_ids", poster_id, chat_id, len(page_ids))
 
     for page_id in page_ids:
         # Re-read fresh each iteration to see topics just created
@@ -521,23 +524,29 @@ async def sync_poster_topics(poster_id: str):
             continue
 
         page_name = _find_page_name(page_id)
+        logger.info("  creating topic for %s (%s) in %s", page_id[:12], page_name, poster_id)
+
+        success = False
         for attempt in range(3):
             try:
                 topic_id = await _tg_bot.create_forum_topic(chat_id, page_name)
                 set_poster_topic(poster_id, page_id, topic_id, page_name)
                 created += 1
+                success = True
+                logger.info("  → created topic_id=%s for %s", topic_id, page_name)
                 break
             except Exception as exc:
                 err_str = str(exc).lower()
+                logger.warning("  → attempt %d failed: %s", attempt + 1, exc)
                 if attempt < 2 and ("retry" in err_str or "too many" in err_str or "429" in err_str):
                     await asyncio.sleep(5)
                 else:
-                    logger.warning("Failed to create topic for %s in poster %s: %s", page_id, poster_id, exc)
+                    errors.append(f"{page_name}: {exc}")
                     break
 
         await asyncio.sleep(1.5)
 
-    return {"created": created, "existing": existing_count}
+    return {"created": created, "existing": existing_count, "errors": errors, "total_pages": len(page_ids)}
 
 
 # ── Content & Inventory ───────────────────────────────────────────────────
