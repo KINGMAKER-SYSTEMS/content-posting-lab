@@ -554,7 +554,7 @@ export function TelegramPage() {
                         return (
                           <tr key={integrationId}>
                             <td className="px-3 py-2 text-sm font-medium text-foreground">
-                              {page?.name ?? integrationId}
+                              {page?.name || topic.topic_name || integrationId}
                             </td>
                             <td className="px-3 py-2 text-sm">
                               {topic.topic_id ? (
