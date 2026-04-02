@@ -4,6 +4,7 @@ WORKDIR /app/frontend
 COPY frontend/package.json frontend/package-lock.json* ./
 RUN npm install --no-audit --no-fund
 COPY frontend/ .
+# Cache-bust: change this comment to force frontend rebuild → v2
 ENV NODE_ENV=production
 RUN npm run build
 
