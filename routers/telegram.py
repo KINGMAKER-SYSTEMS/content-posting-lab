@@ -332,6 +332,24 @@ async def delete_staging_topic(integration_id: str):
     return {"ok": True}
 
 
+@router.put("/staging-group/topics")
+async def bulk_restore_staging_topics(body: dict):
+    """Bulk restore topic mappings without creating new Telegram topics.
+
+    Body: {"topics": {"integration_id": {"topic_id": 1234, "topic_name": "..."}}}
+    Used to restore mappings after config loss. Does NOT call Telegram API.
+    """
+    topics = body.get("topics", {})
+    restored = 0
+    for iid, info in topics.items():
+        tid = info.get("topic_id")
+        tname = info.get("topic_name", "")
+        if tid:
+            set_staging_topic(iid, int(tid), tname, force=True)
+            restored += 1
+    return {"ok": True, "restored": restored}
+
+
 # ── Posters ───────────────────────────────────────────────────────────────
 
 
