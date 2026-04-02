@@ -283,8 +283,8 @@ export function TelegramPage() {
       }
       setPosterSelectedPages((prev) => ({ ...prev, [posterId]: new Set() }));
       setPosterAssignOpen((prev) => ({ ...prev, [posterId]: false }));
-      const topicMsg = data.topics_created > 0
-        ? ` — ${data.topics_created} folder${data.topics_created > 1 ? 's' : ''} created`
+      const topicMsg = data.topics_creating > 0
+        ? ` — ${data.topics_creating} folder${data.topics_creating > 1 ? 's' : ''} creating in background`
         : data.bot_available ? '' : ' (bot offline — run Set Up Folders later)';
       addNotification('success', `${pageIds.length} page${pageIds.length > 1 ? 's' : ''} assigned${topicMsg}`);
       await refresh();
