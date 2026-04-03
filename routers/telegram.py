@@ -364,7 +364,10 @@ async def create_poster(req: PosterCreateRequest):
     """Create a new poster group. Validates the group is a forum with bot admin."""
     _require_bot()
 
-    info = await _tg_bot.validate_group(req.chat_id)
+    try:
+        info = await _tg_bot.validate_group(req.chat_id)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Can't reach group {req.chat_id}: {exc}")
     if not info.get("is_forum"):
         raise HTTPException(status_code=400, detail="Group must be a forum (topics enabled)")
     if not info.get("is_admin"):
