@@ -1,7 +1,10 @@
 import asyncio
+import base64
+import random
 import re
 import shutil
 import subprocess
+import tempfile
 import uuid
 from pathlib import Path
 
@@ -12,8 +15,10 @@ from pydantic import BaseModel
 _SAFE_FILENAME_RE = re.compile(r"^[a-zA-Z0-9_\-][a-zA-Z0-9_\-\.]*$")
 
 from project_manager import (
+    get_project_slideshow_audio_dir,
     get_project_slideshow_dir,
     get_project_slideshow_images_dir,
+    get_project_video_dir,
     sanitize_project_name,
 )
 from services.cropper import crop_to_916
@@ -23,6 +28,8 @@ router = APIRouter(tags=["slideshow"])
 jobs: dict[str, dict] = {}
 
 VALID_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
+VALID_AUDIO_EXTENSIONS = {".mp3", ".wav", ".m4a", ".aac", ".ogg"}
+VALID_VIDEO_EXTENSIONS = {".mp4", ".mov", ".webm", ".mkv"}
 
 
 # ── Image management ────────────────────────────────────────────────────
@@ -278,3 +285,400 @@ async def delete_render(filename: str, project: str):
         raise HTTPException(status_code=404, detail="Render not found")
     target.unlink()
     return {"deleted": filename}
+
+
+# ── Audio management ──────────────────────────────────────────────────────
+
+
+@router.post("/audio/upload")
+async def upload_audio(
+    project: str = Form(...),
+    file: UploadFile = File(...),
+):
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="No file provided")
+    ext = Path(file.filename).suffix.lower()
+    if ext not in VALID_AUDIO_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid audio format. Allowed: {', '.join(VALID_AUDIO_EXTENSIONS)}",
+        )
+
+    audio_dir = get_project_slideshow_audio_dir(project)
+    safe_name = f"{uuid.uuid4().hex[:12]}{ext}"
+    target = audio_dir / safe_name
+
+    content = await file.read()
+    target.write_bytes(content)
+
+    return {
+        "name": safe_name,
+        "original_name": file.filename,
+        "path": str(target.relative_to(audio_dir.parent.parent)),
+    }
+
+
+@router.get("/audio")
+async def list_audio(project: str):
+    audio_dir = get_project_slideshow_audio_dir(project)
+    if not audio_dir.exists():
+        return {"audio": []}
+
+    files = []
+    for p in sorted(audio_dir.iterdir()):
+        if p.suffix.lower() in VALID_AUDIO_EXTENSIONS:
+            files.append({
+                "name": p.name,
+                "path": str(p.relative_to(audio_dir.parent.parent)),
+            })
+    return {"audio": files}
+
+
+@router.delete("/audio/{filename}")
+async def delete_audio(filename: str, project: str):
+    if not _SAFE_FILENAME_RE.match(filename):
+        raise HTTPException(status_code=400, detail="Invalid filename")
+    audio_dir = get_project_slideshow_audio_dir(project)
+    target = audio_dir / filename
+    try:
+        target.resolve().relative_to(audio_dir.resolve())
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid path")
+    if not target.exists():
+        raise HTTPException(status_code=404, detail="Audio not found")
+    target.unlink()
+    return {"deleted": filename}
+
+
+# ── Render V2: Two-Block Slideshow ────────────────────────────────────────
+
+
+class BlockOneConfig(BaseModel):
+    images: list[str]
+    duration: float
+    shuffle_speed: float = 0.4
+    overlay_png: str | None = None
+
+
+class BlockTwoConfig(BaseModel):
+    source: str
+    source_type: str  # "image" or "video"
+    duration: float
+
+
+class RenderV2Request(BaseModel):
+    project: str
+    block1: BlockOneConfig
+    block2: BlockTwoConfig
+    audio: str | None = None
+    fps: int = 30
+
+
+def _validate_image(filename: str, images_dir: Path) -> Path:
+    """Validate and return resolved path for an image filename."""
+    if not _SAFE_FILENAME_RE.match(filename):
+        raise ValueError(f"Invalid image filename: {filename}")
+    img_path = images_dir / filename
+    try:
+        img_path.resolve().relative_to(images_dir.resolve())
+    except ValueError:
+        raise ValueError(f"Invalid image path: {filename}")
+    if not img_path.exists():
+        raise FileNotFoundError(f"Image not found: {filename}")
+    return img_path
+
+
+def _build_block1_cmd(
+    images: list[str],
+    images_dir: Path,
+    duration: float,
+    shuffle_speed: float,
+    overlay_path: Path | None,
+    output_path: Path,
+    fps: int = 30,
+) -> list[str]:
+    """Build FFmpeg command for Block 1: rapid image shuffle + optional text overlay."""
+    # Validate all images first
+    image_paths = [_validate_image(img, images_dir) for img in images]
+    if not image_paths:
+        raise ValueError("Block 1 needs at least one image")
+
+    # Build shuffled sequence: randomize and repeat until we fill the duration
+    sequence: list[Path] = []
+    remaining = duration
+    while remaining > 0:
+        shuffled = list(image_paths)
+        random.shuffle(shuffled)
+        for p in shuffled:
+            if remaining <= 0:
+                break
+            sequence.append(p)
+            remaining -= shuffle_speed
+
+    # Build ffmpeg inputs and filter
+    filter_parts: list[str] = []
+    inputs: list[str] = []
+    input_idx = 0
+
+    for i, img_path in enumerate(sequence):
+        t = min(shuffle_speed, duration - i * shuffle_speed)
+        if t <= 0:
+            break
+        inputs += ["-loop", "1", "-t", f"{t:.3f}", "-i", str(img_path)]
+        filter_parts.append(
+            f"[{input_idx}:v]scale=1080:1920:force_original_aspect_ratio=increase,"
+            f"crop=1080:1920,setsar=1,fps={fps}[s{input_idx}]"
+        )
+        input_idx += 1
+
+    # Concat all image segments
+    concat_in = "".join(f"[s{i}]" for i in range(input_idx))
+    filter_parts.append(f"{concat_in}concat=n={input_idx}:v=1:a=0[shuffled]")
+
+    # If overlay, add it as the last input and composite
+    if overlay_path and overlay_path.exists():
+        inputs += ["-i", str(overlay_path)]
+        overlay_idx = input_idx
+        filter_parts.append(
+            f"[{overlay_idx}:v]scale=1080:1920:flags=lanczos[ovr];"
+            f"[shuffled][ovr]overlay=0:0[out]"
+        )
+        map_label = "[out]"
+    else:
+        map_label = "[shuffled]"
+
+    filter_complex = ";".join(filter_parts)
+
+    cmd = [
+        "ffmpeg", "-y",
+        *inputs,
+        "-filter_complex", filter_complex,
+        "-map", map_label,
+        "-c:v", "libx264", "-crf", "18", "-preset", "fast",
+        "-pix_fmt", "yuv420p",
+        "-r", str(fps),
+        "-movflags", "+faststart",
+        str(output_path),
+    ]
+    return cmd
+
+
+def _build_block2_cmd(
+    source: str,
+    source_type: str,
+    source_dir: Path,
+    duration: float,
+    output_path: Path,
+    fps: int = 30,
+) -> list[str]:
+    """Build FFmpeg command for Block 2: single static image or video clip."""
+    if not _SAFE_FILENAME_RE.match(source):
+        raise ValueError(f"Invalid source filename: {source}")
+    source_path = source_dir / source
+    try:
+        source_path.resolve().relative_to(source_dir.resolve())
+    except ValueError:
+        raise ValueError(f"Invalid source path: {source}")
+    if not source_path.exists():
+        raise FileNotFoundError(f"Source not found: {source}")
+
+    if source_type == "image":
+        cmd = [
+            "ffmpeg", "-y",
+            "-loop", "1", "-t", f"{duration:.3f}",
+            "-i", str(source_path),
+            "-vf", f"scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1,fps={fps}",
+            "-c:v", "libx264", "-crf", "18", "-preset", "fast",
+            "-pix_fmt", "yuv420p",
+            "-r", str(fps),
+            "-movflags", "+faststart",
+            str(output_path),
+        ]
+    else:
+        # Video: trim to duration, scale to 1080x1920
+        cmd = [
+            "ffmpeg", "-y",
+            "-stream_loop", "-1",
+            "-t", f"{duration:.3f}",
+            "-i", str(source_path),
+            "-vf", f"scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1,fps={fps}",
+            "-c:v", "libx264", "-crf", "18", "-preset", "fast",
+            "-pix_fmt", "yuv420p",
+            "-r", str(fps),
+            "-an",
+            "-movflags", "+faststart",
+            str(output_path),
+        ]
+    return cmd
+
+
+def _assemble_final_cmd(
+    block1_path: Path,
+    block2_path: Path,
+    audio_path: Path | None,
+    output_path: Path,
+    total_duration: float,
+) -> list[str]:
+    """Concat two blocks and mux audio into final output."""
+    # Use ffmpeg concat protocol via filter
+    cmd = [
+        "ffmpeg", "-y",
+        "-i", str(block1_path),
+        "-i", str(block2_path),
+    ]
+
+    if audio_path and audio_path.exists():
+        cmd += ["-i", str(audio_path)]
+        # Concat video streams, map audio from input 2, trim to total duration
+        cmd += [
+            "-filter_complex",
+            "[0:v][1:v]concat=n=2:v=1:a=0[outv]",
+            "-map", "[outv]",
+            "-map", "2:a",
+            "-t", f"{total_duration:.3f}",
+            "-c:v", "libx264", "-crf", "18", "-preset", "fast",
+            "-pix_fmt", "yuv420p",
+            "-c:a", "aac", "-b:a", "192k",
+            "-movflags", "+faststart",
+            str(output_path),
+        ]
+    else:
+        # No audio — just concat
+        cmd += [
+            "-filter_complex",
+            "[0:v][1:v]concat=n=2:v=1:a=0[outv]",
+            "-map", "[outv]",
+            "-c:v", "libx264", "-crf", "18", "-preset", "fast",
+            "-pix_fmt", "yuv420p",
+            "-movflags", "+faststart",
+            str(output_path),
+        ]
+
+    return cmd
+
+
+def _run_render_v2(job_id: str, body: RenderV2Request):
+    """Synchronous V2 render — runs in thread pool."""
+    tmp_dir = None
+    try:
+        jobs[job_id] = {"status": "running", "progress": 5, "message": "Preparing..."}
+
+        images_dir = get_project_slideshow_images_dir(body.project)
+        output_dir = get_project_slideshow_dir(body.project)
+        output_name = f"slideshow_{job_id[:8]}.mp4"
+        output_path = output_dir / output_name
+
+        tmp_dir = tempfile.mkdtemp(prefix="slideshow_v2_")
+        tmp = Path(tmp_dir)
+        block1_path = tmp / "block1.mp4"
+        block2_path = tmp / "block2.mp4"
+
+        # Decode overlay PNG if provided
+        overlay_path: Path | None = None
+        if body.block1.overlay_png:
+            overlay_path = tmp / "overlay.png"
+            png_data = body.block1.overlay_png
+            if png_data.startswith("data:"):
+                png_data = png_data.split(",", 1)[1]
+            overlay_path.write_bytes(base64.b64decode(png_data))
+
+        # Resolve audio path
+        audio_path: Path | None = None
+        if body.audio:
+            audio_dir = get_project_slideshow_audio_dir(body.project)
+            candidate = audio_dir / body.audio
+            if candidate.exists():
+                audio_path = candidate
+
+        # ── Pass 1: Block 1 (shuffle + overlay) ──
+        jobs[job_id] = {"status": "running", "progress": 15, "message": "Rendering Block 1 (shuffle)..."}
+        cmd1 = _build_block1_cmd(
+            body.block1.images, images_dir, body.block1.duration,
+            body.block1.shuffle_speed, overlay_path, block1_path, body.fps,
+        )
+        result1 = subprocess.run(cmd1, capture_output=True, timeout=600)
+        if result1.returncode != 0:
+            stderr = result1.stderr.decode(errors="replace")[-2000:]
+            raise RuntimeError(f"Block 1 FFmpeg failed: {stderr}")
+
+        # ── Pass 2: Block 2 (static) ──
+        jobs[job_id] = {"status": "running", "progress": 50, "message": "Rendering Block 2 (static)..."}
+
+        # Determine source directory for Block 2
+        if body.block2.source_type == "video":
+            video_dir = get_project_video_dir(body.project)
+            b2_source_dir = video_dir
+        else:
+            b2_source_dir = images_dir
+
+        cmd2 = _build_block2_cmd(
+            body.block2.source, body.block2.source_type,
+            b2_source_dir, body.block2.duration, block2_path, body.fps,
+        )
+        result2 = subprocess.run(cmd2, capture_output=True, timeout=600)
+        if result2.returncode != 0:
+            stderr = result2.stderr.decode(errors="replace")[-2000:]
+            raise RuntimeError(f"Block 2 FFmpeg failed: {stderr}")
+
+        # ── Pass 3: Assemble final ──
+        jobs[job_id] = {"status": "running", "progress": 80, "message": "Assembling final video..."}
+        total_duration = body.block1.duration + body.block2.duration
+        cmd3 = _assemble_final_cmd(block1_path, block2_path, audio_path, output_path, total_duration)
+        result3 = subprocess.run(cmd3, capture_output=True, timeout=600)
+        if result3.returncode != 0:
+            stderr = result3.stderr.decode(errors="replace")[-2000:]
+            raise RuntimeError(f"Assembly FFmpeg failed: {stderr}")
+
+        jobs[job_id] = {
+            "status": "complete",
+            "progress": 100,
+            "message": f"Done: {output_name}",
+            "output": output_name,
+            "path": str(output_path.relative_to(output_dir.parent.parent.parent)),
+        }
+
+    except Exception as e:
+        jobs[job_id] = {"status": "error", "progress": 0, "message": str(e)}
+    finally:
+        if tmp_dir:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+@router.post("/render-v2")
+async def start_render_v2(body: RenderV2Request):
+    if not body.block1.images:
+        raise HTTPException(status_code=400, detail="Block 1 needs at least one image")
+    if not body.block2.source:
+        raise HTTPException(status_code=400, detail="Block 2 needs a source")
+    if body.block2.source_type not in ("image", "video"):
+        raise HTTPException(status_code=400, detail="Block 2 source_type must be 'image' or 'video'")
+
+    job_id = str(uuid.uuid4())
+    jobs[job_id] = {"status": "pending", "progress": 0, "message": "Queued..."}
+
+    loop = asyncio.get_event_loop()
+    loop.run_in_executor(None, _run_render_v2, job_id, body)
+    return {"job_id": job_id}
+
+
+# ── Project videos listing (for Block 2 video picker) ────────────────────
+
+
+@router.get("/project-videos")
+async def list_project_videos(project: str):
+    """List MP4 files in project videos directory for Block 2 video picker."""
+    video_dir = get_project_video_dir(project)
+    if not video_dir.exists():
+        return {"videos": []}
+
+    videos = []
+    for p in sorted(video_dir.rglob("*.mp4")):
+        # Skip slideshow renders themselves
+        if "slideshow" in str(p.relative_to(video_dir)):
+            continue
+        videos.append({
+            "name": p.name,
+            "path": str(p.relative_to(video_dir)),
+            "full_path": str(p.relative_to(video_dir.parent.parent)),
+        })
+    return {"videos": videos}

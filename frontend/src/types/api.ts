@@ -395,6 +395,40 @@ export interface SlideshowRendersResponse {
   renders: SlideshowRender[];
 }
 
+// V2: Two-Block Slideshow
+
+export interface SlideshowAudioFile {
+  name: string;
+  path: string;
+}
+
+export interface BlockOneConfig {
+  images: string[];
+  duration: number;
+  shuffle_speed: number;
+  overlay_png?: string;
+}
+
+export interface BlockTwoConfig {
+  source: string;
+  source_type: 'image' | 'video';
+  duration: number;
+}
+
+export interface SlideshowRenderV2Request {
+  project: string;
+  block1: BlockOneConfig;
+  block2: BlockTwoConfig;
+  audio?: string;
+  fps?: number;
+}
+
+export interface SlideshowProjectVideo {
+  name: string;
+  path: string;
+  full_path: string;
+}
+
 // ── Roster ────────────────────────────────────────────────────────────────
 
 export interface RosterPage {

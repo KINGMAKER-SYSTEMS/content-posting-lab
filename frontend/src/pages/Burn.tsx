@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { apiUrl, staticUrl } from '../lib/api';
 import { EmptyState, LazyVideo, ProgressBar } from '../components';
 import { useWorkflowStore } from '../stores/workflowStore';
+import { captureTextOverlay as captureTextOverlayShared, fontFamilyName, getTextTranslateX } from '../lib/textOverlay';
+import type { TextOverlayConfig } from '../lib/textOverlay';
 import type {
   BatchesResponse,
   BurnBatch,
@@ -66,10 +68,6 @@ interface DragState {
   rect: DOMRect;
 }
 
-function fontFamilyName(file: string): string {
-  return `tt-${file.replace(/\.(ttf|otf)$/i, '')}`;
-}
-
 function encodePathForUrl(path: string): string {
   return path.split('/').map((s) => encodeURIComponent(s)).join('/');
 }
@@ -86,19 +84,6 @@ function makeBatchId(project: string, label?: string): string {
   const prefix = (label || project).toLowerCase().replace(/\s+/g, '-').slice(0, 30);
   const short = Math.random().toString(36).slice(2, 6);
   return `${prefix}-${ts}-${short}`;
-}
-
-/**
- * Calculate CSS translateX% so text overlay stays within the container bounds.
- */
-function getTextTranslateX(x: number, maxWidthPct: number): number {
-  const halfW = maxWidthPct / 2;
-  if (x < halfW) {
-    return -(x / maxWidthPct) * 100;
-  } else if (x > 100 - halfW) {
-    return -(1 - (100 - x) / maxWidthPct) * 100;
-  }
-  return -50;
 }
 
 function getColorCorrectionOrNull(cc: ColorCorrection): ColorCorrection | null {
@@ -138,98 +123,17 @@ function applyCSSFilterPreview(cc: ColorCorrection): string {
 }
 
 async function captureTextOverlay(pair: BurnPairState): Promise<string | null> {
-  const w = pair.videoWidth || 432;
-  const h = pair.videoHeight || 768;
-  const caption = pair.caption.trim();
-  if (!caption) return null;
-
-  // Render at 2x the target resolution for crisp text edges (supersampling).
-  // The overlay is always rendered at a minimum of 1080x1920 (9:16) to avoid
-  // pixelated text when the source video is low-res. ffmpeg scales it to match
-  // the video in the filter_complex.
-  const TARGET_W = 1080;
-  const TARGET_H = 1920;
-  const SUPERSAMPLE = 2;
-  const renderW = TARGET_W * SUPERSAMPLE;
-  const renderH = TARGET_H * SUPERSAMPLE;
-  const scaleX = renderW / w;
-  const scaleY = renderH / h;
-
-  // Ensure the custom font is loaded before we draw on the canvas.
-  // Canvas silently falls back to sans-serif if the font isn't ready,
-  // which completely breaks text metrics and positioning.
-  const fontFamily = `'${fontFamilyName(pair.fontFile)}', sans-serif`;
-  const fontSize = pair.fontSize;
-  const renderFontSize = fontSize * scaleY;
-  try {
-    await document.fonts.load(`700 ${Math.ceil(renderFontSize)}px ${fontFamily}`);
-  } catch { /* proceed with fallback font if load fails */ }
-
-  const canvas = document.createElement('canvas');
-  canvas.width = renderW;
-  canvas.height = renderH;
-  const ctx = canvas.getContext('2d');
-  if (!ctx) return null;
-
-  // Enable high-quality rendering
-  ctx.imageSmoothingEnabled = true;
-  ctx.imageSmoothingQuality = 'high';
-
-  // Position in pixels from percentage (scaled to render resolution)
-  const rawCx = (pair.x / 100) * renderW;
-  const cy = (pair.y / 100) * renderH;
-  const maxWidth = (pair.maxWidthPct / 100) * renderW;
-  // Clamp center X so text stays within canvas bounds (matches preview edge clamping)
-  const cx = Math.max(maxWidth / 2, Math.min(renderW - maxWidth / 2, rawCx));
-
-  ctx.font = `700 ${renderFontSize}px ${fontFamily}`;
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-
-  // Word-wrap: respect explicit \n line breaks, then wrap within maxWidth
-  const paragraphs = caption.split('\n');
-  const lines: string[] = [];
-  for (const para of paragraphs) {
-    const words = para.split(/\s+/).filter(Boolean);
-    if (words.length === 0) { lines.push(''); continue; }
-    let currentLine = '';
-    for (const word of words) {
-      const testLine = currentLine ? `${currentLine} ${word}` : word;
-      if (ctx.measureText(testLine).width > maxWidth && currentLine) {
-        lines.push(currentLine);
-        currentLine = word;
-      } else {
-        currentLine = testLine;
-      }
-    }
-    if (currentLine) lines.push(currentLine);
-  }
-
-  const lineHeight = renderFontSize * 1.2;
-  const totalHeight = lines.length * lineHeight;
-  const startY = cy - totalHeight / 2 + lineHeight / 2;
-
-  const renderStroke = TEXT_STROKE_PX * 2 * Math.max(scaleX, scaleY);
-
-  // Draw each line: black stroke first, then white fill (paint-order: stroke fill)
-  // Do NOT pass maxWidth to fillText/strokeText — it squishes text horizontally
-  // instead of wrapping. We already handle wrapping above.
-  for (let i = 0; i < lines.length; i++) {
-    const ly = startY + i * lineHeight;
-
-    // Black stroke — thin crisp outline matching TikTok's native style
-    ctx.strokeStyle = 'black';
-    ctx.lineWidth = renderStroke;
-    ctx.lineJoin = 'round';
-    ctx.miterLimit = 2;
-    ctx.strokeText(lines[i], cx, ly);
-
-    // White fill
-    ctx.fillStyle = 'white';
-    ctx.fillText(lines[i], cx, ly);
-  }
-
-  return canvas.toDataURL('image/png');
+  const config: TextOverlayConfig = {
+    caption: pair.caption,
+    x: pair.x,
+    y: pair.y,
+    fontSize: pair.fontSize,
+    fontFile: pair.fontFile,
+    maxWidthPct: pair.maxWidthPct,
+    videoWidth: pair.videoWidth,
+    videoHeight: pair.videoHeight,
+  };
+  return captureTextOverlayShared(config);
 }
 
 export function BurnPage() {
