@@ -712,12 +712,25 @@ export function BurnPage() {
     const batchId = makeBatchId(projectName, batchLabel || undefined); setBurnBatchId(batchId);
     try {
       const overlays = await Promise.all(pairs.map((p) => captureTextOverlay(p)));
-      setProgressValue(15); setProgressLabel(`Burning ${pairs.length} videos (server)...`);
+      setProgressValue(15); setProgressLabel(`Burning 0/${pairs.length}...`);
+
+      // Process in chunks of 4 to avoid overwhelming the server
+      const CHUNK_SIZE = 4;
+      const results: BurnResponse[] = new Array(pairs.length);
       let done = 0;
-      const results = await Promise.all(pairs.map((p, i) =>
-        burnOnServer(p, i, batchId, overlays[i]).then((r) => { done++; setProgressValue(15 + Math.round((done / pairs.length) * 85)); setProgressLabel(`Burned ${done}/${pairs.length}...`); return r; })
-          .catch((err: unknown) => { done++; setProgressValue(15 + Math.round((done / pairs.length) * 85)); return { index: i, ok: false, error: err instanceof Error ? err.message : 'Burn failed' } as BurnResponse; })
-      ));
+      for (let start = 0; start < pairs.length; start += CHUNK_SIZE) {
+        const end = Math.min(start + CHUNK_SIZE, pairs.length);
+        const chunk = pairs.slice(start, end).map((p, ci) => {
+          const i = start + ci;
+          return burnOnServer(p, i, batchId, overlays[i])
+            .then((r) => { done++; setProgressValue(15 + Math.round((done / pairs.length) * 85)); setProgressLabel(`Burned ${done}/${pairs.length}...`); return r; })
+            .catch((err: unknown) => { done++; setProgressValue(15 + Math.round((done / pairs.length) * 85)); return { index: i, ok: false, error: err instanceof Error ? err.message : 'Burn failed' } as BurnResponse; });
+        });
+        const chunkResults = await Promise.all(chunk);
+        for (let ci = 0; ci < chunkResults.length; ci++) {
+          results[start + ci] = chunkResults[ci];
+        }
+      }
       setPairs(pairs.map((p, i) => {
         const r = results[i];
         return r?.ok && r.file ? { ...p, result: r, burnedFile: r.file } : { ...p, result: r };
