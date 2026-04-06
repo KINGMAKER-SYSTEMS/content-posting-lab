@@ -68,8 +68,6 @@ interface DragState {
   startY: number;
   startLayerX: number;
   startLayerY: number;
-  startMaxWidthPct: number;
-  startFontSize: number;
   rect: DOMRect;
 }
 
@@ -232,7 +230,7 @@ const PairCard = memo(function PairCard({
                 onPointerDown={(e) => onStartDrag(e, index)}
                 onDoubleClick={(e) => { e.stopPropagation(); onInlineEdit(index); }}
                 className={`absolute z-10 select-none text-center ${draggingIndex === index ? 'cursor-grabbing' : 'cursor-grab'} ${selected ? 'outline outline-2 outline-offset-4 outline-dashed outline-primary' : ''}`}
-                style={{ left: '50%', top: `${pair.y}%`, transform: 'translate(-50%, -50%)', width: `${pair.maxWidthPct}%`, minHeight: '24px', fontFamily: `'${fontFamilyName(pair.fontFile)}', sans-serif` }}
+                style={{ left: `${pair.x}%`, top: `${pair.y}%`, transform: `translate(${getTextTranslateX(pair.x, pair.maxWidthPct)}%, -50%)`, maxWidth: `${pair.maxWidthPct}%`, minWidth: '40px', minHeight: '24px', fontFamily: `'${fontFamilyName(pair.fontFile)}', sans-serif` }}
               >
                 {selected && !inlineEditing ? (
                   <div className="pointer-events-none absolute -top-3 left-1/2 -translate-x-1/2 rounded-full bg-primary px-1.5 py-0.5 text-[8px] font-bold text-primary-foreground shadow-sm">
@@ -634,24 +632,15 @@ export function BurnPage() {
     if (!d) return;
     const dx = e.clientX - d.startX;
     const dy = e.clientY - d.startY;
-
-    // Vertical drag → move y position
+    let nx = d.startLayerX + (dx / d.rect.width) * 100;
     let ny = d.startLayerY + (dy / d.rect.height) * 100;
+    nx = Math.max(5, Math.min(95, nx));
     ny = Math.max(5, Math.min(95, ny));
-    let sH = false;
+    let sH = false, sV = false;
+    if (Math.abs(nx - 50) < SNAP_THRESHOLD) { nx = 50; sV = true; }
     if (Math.abs(ny - 50) < SNAP_THRESHOLD) { ny = 50; sH = true; }
-
-    // Horizontal drag → text density (wrap width + font size coupled)
-    // dx in pixels mapped to a ±40% range of the starting values
-    // Drag right = compact (narrower + smaller), drag left = expand (wider + bigger)
-    const dxNorm = dx / d.rect.width; // -1 to +1 range across card width
-    let newMaxW = d.startMaxWidthPct - dxNorm * 40; // ±40% of wrap width
-    newMaxW = Math.max(25, Math.min(100, newMaxW));
-    let newFontSize = Math.round(d.startFontSize - dxNorm * d.startFontSize * 0.3); // ±30% of font size
-    newFontSize = Math.max(14, Math.min(100, newFontSize));
-
-    setSnapGuide({ index: d.index, horizontal: sH, vertical: false });
-    setPairs((p) => p.map((pair, idx) => idx !== d.index ? pair : { ...pair, x: 50, y: ny, maxWidthPct: newMaxW, fontSize: newFontSize }));
+    setSnapGuide({ index: d.index, horizontal: sH, vertical: sV });
+    setPairs((p) => p.map((pair, idx) => idx !== d.index ? pair : { ...pair, x: nx, y: ny }));
   }, []);
 
   const onDragEnd = useCallback(() => {
@@ -667,7 +656,7 @@ export function BurnPage() {
     e.preventDefault(); e.stopPropagation();
     const pair = pairs[i]; if (!pair) return;
     selectCard(i);
-    dragRef.current = { index: i, startX: e.clientX, startY: e.clientY, startLayerX: pair.x, startLayerY: pair.y, startMaxWidthPct: pair.maxWidthPct, startFontSize: pair.fontSize, rect: w.getBoundingClientRect() };
+    dragRef.current = { index: i, startX: e.clientX, startY: e.clientY, startLayerX: pair.x, startLayerY: pair.y, rect: w.getBoundingClientRect() };
     window.addEventListener('pointermove', onDragMove);
     window.addEventListener('pointerup', onDragEnd);
   }, [inlineEditIndex, onDragEnd, onDragMove, pairs, selectCard]);
