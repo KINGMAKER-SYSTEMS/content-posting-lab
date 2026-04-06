@@ -164,21 +164,6 @@ async function captureTextOverlay(pair: BurnPairState): Promise<string | null> {
   return captureTextOverlayShared(config);
 }
 
-// ── Lazy visibility for large grids ──────────────────────────────────
-
-function useIsVisible(rootMargin = '400px') {
-  const ref = useRef<HTMLDivElement>(null);
-  const [visible, setVisible] = useState(false);
-  useEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    const obs = new IntersectionObserver(([entry]) => { if (entry.isIntersecting) { setVisible(true); obs.disconnect(); } }, { rootMargin });
-    obs.observe(el);
-    return () => obs.disconnect();
-  }, [rootMargin]);
-  return { ref, visible };
-}
-
 // ── Memoized pair card ──────────────────────────────────────────────
 
 interface PairCardProps {
@@ -204,7 +189,6 @@ const PairCard = memo(function PairCard({
   cssFilterPreview, encodedProjectName,
   onSelect, onStartDrag, onInlineEdit, onCaptionChange, onFontSizeChange, onDimensions, onWrapRef,
 }: PairCardProps) {
-  const { ref: visRef, visible } = useIsVisible();
   const hasError = Boolean(pair.result && !pair.result.ok);
   const hasBurned = Boolean(pair.result?.ok && pair.burnedFile);
   const scale = pair.previewScale ?? 1;
@@ -217,7 +201,6 @@ const PairCard = memo(function PairCard({
 
   return (
     <article
-      ref={visRef}
       className={`relative overflow-hidden rounded-[var(--border-radius)] border-2 bg-card transition-all ${
         hasBurned ? 'border-green-700 shadow-[3px_3px_0_0_var(--green-700,#15803d)]'
           : hasError ? 'border-destructive'
@@ -230,8 +213,6 @@ const PairCard = memo(function PairCard({
         onSelect(index);
       }}
     >
-      {visible ? (
-        <>
           <div
             ref={(node) => { onWrapRef(index, node); }}
             className="relative aspect-[9/16] overflow-hidden bg-muted"
@@ -308,16 +289,6 @@ const PairCard = memo(function PairCard({
               />
             </div>
           ) : null}
-        </>
-      ) : (
-        /* Placeholder — rendered until card scrolls into view */
-        <div className="aspect-[9/16] bg-muted flex items-center justify-center">
-          <div className="text-center px-2">
-            <div className="text-[10px] text-muted-foreground truncate">{pair.name}</div>
-            <div className="text-[9px] text-muted-foreground/60 mt-1 line-clamp-2">{pair.caption}</div>
-          </div>
-        </div>
-      )}
     </article>
   );
 });
