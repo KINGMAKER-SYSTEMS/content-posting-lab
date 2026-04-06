@@ -2,7 +2,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { apiUrl, staticUrl } from '../lib/api';
 import { EmptyState, LazyVideo, ProgressBar } from '../components';
 import { useWorkflowStore } from '../stores/workflowStore';
-import { captureTextOverlay as captureTextOverlayShared, fontFamilyName, getTextTranslateX } from '../lib/textOverlay';
+import { captureTextOverlay as captureTextOverlayShared, fontFamilyName } from '../lib/textOverlay';
 import type { TextOverlayConfig } from '../lib/textOverlay';
 import type {
   BatchesResponse,
@@ -66,8 +66,8 @@ interface DragState {
   index: number;
   startX: number;
   startY: number;
-  startLayerX: number;
   startLayerY: number;
+  startMaxWidthPct: number;
   rect: DOMRect;
 }
 
@@ -230,7 +230,7 @@ const PairCard = memo(function PairCard({
                 onPointerDown={(e) => onStartDrag(e, index)}
                 onDoubleClick={(e) => { e.stopPropagation(); onInlineEdit(index); }}
                 className={`absolute z-10 select-none text-center ${draggingIndex === index ? 'cursor-grabbing' : 'cursor-grab'} ${selected ? 'outline outline-2 outline-offset-4 outline-dashed outline-primary' : ''}`}
-                style={{ left: `${pair.x}%`, top: `${pair.y}%`, transform: `translate(${getTextTranslateX(pair.x, pair.maxWidthPct)}%, -50%)`, maxWidth: `${pair.maxWidthPct}%`, minWidth: '40px', minHeight: '24px', fontFamily: `'${fontFamilyName(pair.fontFile)}', sans-serif` }}
+                style={{ left: '50%', top: `${pair.y}%`, transform: 'translate(-50%, -50%)', width: `${pair.maxWidthPct}%`, minHeight: '24px', fontFamily: `'${fontFamilyName(pair.fontFile)}', sans-serif` }}
               >
                 {selected && !inlineEditing ? (
                   <div className="pointer-events-none absolute -top-3 left-1/2 -translate-x-1/2 rounded-full bg-primary px-1.5 py-0.5 text-[8px] font-bold text-primary-foreground shadow-sm">
@@ -632,15 +632,22 @@ export function BurnPage() {
     if (!d) return;
     const dx = e.clientX - d.startX;
     const dy = e.clientY - d.startY;
-    let nx = d.startLayerX + (dx / d.rect.width) * 100;
+
+    // Vertical → move y position (with center snap)
     let ny = d.startLayerY + (dy / d.rect.height) * 100;
-    nx = Math.max(5, Math.min(95, nx));
     ny = Math.max(5, Math.min(95, ny));
-    let sH = false, sV = false;
-    if (Math.abs(nx - 50) < SNAP_THRESHOLD) { nx = 50; sV = true; }
+    let sH = false;
     if (Math.abs(ny - 50) < SNAP_THRESHOLD) { ny = 50; sH = true; }
-    setSnapGuide({ index: d.index, horizontal: sH, vertical: sV });
-    setPairs((p) => p.map((pair, idx) => idx !== d.index ? pair : { ...pair, x: nx, y: ny }));
+
+    // Horizontal → adjust wrap width (text density)
+    // Full card-width drag = 60pct change in maxWidthPct
+    // Drag right = narrower (compact), drag left = wider (flatten)
+    const dxPct = (dx / d.rect.width) * 60;
+    let newMaxW = d.startMaxWidthPct - dxPct;
+    newMaxW = Math.max(20, Math.min(95, newMaxW));
+
+    setSnapGuide({ index: d.index, horizontal: sH, vertical: false });
+    setPairs((p) => p.map((pair, idx) => idx !== d.index ? pair : { ...pair, x: 50, y: ny, maxWidthPct: newMaxW }));
   }, []);
 
   const onDragEnd = useCallback(() => {
@@ -656,7 +663,7 @@ export function BurnPage() {
     e.preventDefault(); e.stopPropagation();
     const pair = pairs[i]; if (!pair) return;
     selectCard(i);
-    dragRef.current = { index: i, startX: e.clientX, startY: e.clientY, startLayerX: pair.x, startLayerY: pair.y, rect: w.getBoundingClientRect() };
+    dragRef.current = { index: i, startX: e.clientX, startY: e.clientY, startLayerY: pair.y, startMaxWidthPct: pair.maxWidthPct, rect: w.getBoundingClientRect() };
     window.addEventListener('pointermove', onDragMove);
     window.addEventListener('pointerup', onDragEnd);
   }, [inlineEditIndex, onDragEnd, onDragMove, pairs, selectCard]);
