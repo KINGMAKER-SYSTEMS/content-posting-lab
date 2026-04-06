@@ -42,6 +42,7 @@ interface ClipInfo {
 
 interface PastJob {
   job_id: string;
+  label?: string | null;
   clip_count: number;
   clips: { name: string; url: string; thumb_url?: string | null }[];
 }
@@ -396,6 +397,8 @@ export function ClipperPage() {
   const [resultClips, setResultClips] = useState<ClipInfo[]>([]);
   const [resultJobId, setResultJobId] = useState<string | null>(null);
   const [pastJobs, setPastJobs] = useState<PastJob[]>([]);
+  const [renamingJobId, setRenamingJobId] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState('');
 
   const fetchPastJobs = useCallback(() => {
     if (!activeProjectName) return;
@@ -406,6 +409,22 @@ export function ClipperPage() {
   }, [activeProjectName]);
 
   useEffect(() => { fetchPastJobs(); }, [fetchPastJobs]);
+
+  const handleRenameJob = useCallback(async (jobId: string, label: string) => {
+    if (!activeProjectName || !label.trim()) return;
+    try {
+      const r = await fetch(apiUrl(`/api/clipper/jobs/${encodeURIComponent(jobId)}/rename?project=${encodeURIComponent(activeProjectName)}`), {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ label: label.trim() }),
+      });
+      if (!r.ok) throw new Error('Rename failed');
+      setRenamingJobId(null);
+      fetchPastJobs();
+    } catch (e) {
+      addNotification('error', e instanceof Error ? e.message : 'Rename failed');
+    }
+  }, [activeProjectName, fetchPastJobs, addNotification]);
 
   // Derived
   const hasStaged = stagedFiles.length > 0;
@@ -815,10 +834,23 @@ export function ClipperPage() {
             ) : pastJobs.map((job) => (
               <div key={job.job_id}
                 className="group flex items-center gap-2 rounded-[var(--border-radius)] border-2 border-border bg-card px-3 py-2 hover:bg-muted hover:shadow-[2px_2px_0_0_var(--border)] transition-all">
-                <button type="button" onClick={() => viewPastJob(job)}
-                  className="flex-1 text-left text-xs text-foreground group-hover:text-primary truncate">
-                  {job.job_id.slice(0, 8)}... ({job.clip_count} clips)
-                </button>
+                {renamingJobId === job.job_id ? (
+                  <Input
+                    value={renameValue}
+                    onChange={(e) => setRenameValue(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === 'Enter') void handleRenameJob(job.job_id, renameValue); if (e.key === 'Escape') setRenamingJobId(null); }}
+                    onBlur={() => { if (renameValue.trim()) void handleRenameJob(job.job_id, renameValue); else setRenamingJobId(null); }}
+                    autoFocus
+                    className="h-6 text-xs flex-1"
+                  />
+                ) : (
+                  <button type="button" onClick={() => viewPastJob(job)}
+                    className="flex-1 text-left text-xs text-foreground group-hover:text-primary truncate">
+                    {job.label || `${job.job_id.slice(0, 8)}...`} ({job.clip_count} clips)
+                  </button>
+                )}
+                <button type="button" onClick={() => { setRenamingJobId(job.job_id); setRenameValue(job.label || job.job_id.slice(0, 8)); }}
+                  className="text-[10px] text-muted-foreground hover:text-primary transition-colors font-bold opacity-0 group-hover:opacity-100">Rename</button>
                 <button type="button" onClick={() => downloadAll(job.job_id)}
                   className="text-[10px] text-muted-foreground hover:text-primary transition-colors font-bold opacity-0 group-hover:opacity-100">ZIP</button>
                 <button type="button" onClick={() => void deletePastJob(job.job_id)}

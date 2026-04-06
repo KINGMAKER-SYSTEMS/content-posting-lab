@@ -13,7 +13,7 @@ import zipfile
 from zipfile import ZipFile
 
 from fastapi import APIRouter, HTTPException, Query, Request, UploadFile, File, Form, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
 from project_manager import PROJECTS_DIR, sanitize_project_name
 
@@ -1082,8 +1082,16 @@ async def list_clipper_jobs(project: str = Query(default="quick-test")):
         if not clips:
             continue
         sanitized = sanitize_project_name(project)
+        meta_path = job_dir / "job_meta.json"
+        meta_label = None
+        if meta_path.exists():
+            try:
+                meta_label = json.loads(meta_path.read_text(encoding="utf-8")).get("label")
+            except Exception:
+                pass
         jobs.append({
             "job_id": job_dir.name,
+            "label": meta_label,
             "clip_count": len(clips),
             "clips": [
                 {
@@ -1100,6 +1108,28 @@ async def list_clipper_jobs(project: str = Query(default="quick-test")):
         })
 
     return {"jobs": jobs}
+
+
+@router.patch("/jobs/{job_id}/rename")
+async def rename_clipper_job(job_id: str, body: dict, project: str = Query(default="quick-test")):
+    """Rename a clipper job by writing/updating a meta sidecar."""
+    new_label = (body.get("label") or "").strip()
+    if not new_label:
+        return JSONResponse({"error": "Label is required"}, status_code=400)
+    clipper_dir = _get_clipper_dir(project)
+    job_dir = clipper_dir / job_id
+    if not job_dir.exists():
+        raise HTTPException(404, "Job not found")
+    meta_path = job_dir / "job_meta.json"
+    meta = {}
+    if meta_path.exists():
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    meta["label"] = new_label
+    meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    return {"ok": True, "label": new_label}
 
 
 @router.delete("/jobs/{job_id}")

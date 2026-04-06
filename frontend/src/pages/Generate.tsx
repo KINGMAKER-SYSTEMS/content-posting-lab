@@ -200,6 +200,10 @@ export function GeneratePage() {
   const [lastImageFile, setLastImageFile] = useState<File | null>(null);
   const [dragOver, setDragOver] = useState(false);
 
+  // Selection mode state
+  const [selectMode, setSelectMode] = useState(false);
+  const [selectedVideos, setSelectedVideos] = useState<Set<string>>(new Set());
+
   const [providerSchemas, setProviderSchemas] = useState<ProviderSchemas>({});
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [extraParams, setExtraParams] = useState<Record<string, unknown>>({});
@@ -524,6 +528,46 @@ export function GeneratePage() {
     (acc[group] ??= []).push(p);
     return acc;
   }, {});
+
+  const toggleVideoSelection = useCallback((filePath: string) => {
+    setSelectedVideos((prev) => {
+      const next = new Set(prev);
+      if (next.has(filePath)) next.delete(filePath); else next.add(filePath);
+      return next;
+    });
+  }, []);
+
+  const selectAllFromJob = useCallback((job: Job) => {
+    const paths = job.videos
+      .filter((v) => v.status === 'done' && typeof v.file === 'string')
+      .map((v) => v.file as string);
+    setSelectedVideos((prev) => {
+      const next = new Set(prev);
+      const allSelected = paths.every((p) => next.has(p));
+      if (allSelected) { for (const p of paths) next.delete(p); }
+      else { for (const p of paths) next.add(p); }
+      return next;
+    });
+  }, []);
+
+  const selectAllVideos = useCallback(() => {
+    const allPaths = generateJobs.flatMap((j) =>
+      j.videos.filter((v) => v.status === 'done' && typeof v.file === 'string').map((v) => v.file as string)
+    );
+    setSelectedVideos((prev) => {
+      if (prev.size === allPaths.length && allPaths.every((p) => prev.has(p))) return new Set();
+      return new Set(allPaths);
+    });
+  }, [generateJobs]);
+
+  const sendSelectedToBurn = useCallback(() => {
+    const paths = Array.from(selectedVideos);
+    if (paths.length === 0) { addNotification('info', 'No videos selected.'); return; }
+    primeBurnSelection({ videoPaths: paths });
+    setSelectMode(false);
+    setSelectedVideos(new Set());
+    navigate('/burn');
+  }, [selectedVideos, primeBurnSelection, navigate, addNotification]);
 
   const sendSelectionToBurn = (job: Job) => {
     const videoPaths = job.videos.reduce<string[]>((paths, video) => {
@@ -944,9 +988,20 @@ export function GeneratePage() {
         <div className="max-w-6xl mx-auto">
           <div className="flex items-center justify-between mb-6">
             <div className="text-xl font-heading text-foreground">Active Jobs</div>
-            {generateJobs.length > 0 && (
-              <Badge variant="info">{generateJobs.filter((j) => j.videos.some((v) => !isTerminal(v))).length} running</Badge>
-            )}
+            <div className="flex items-center gap-2">
+              {generateJobs.some((j) => j.videos.some((v) => v.status === 'done')) && (
+                <Button
+                  variant={selectMode ? 'default' : 'outline'}
+                  size="sm"
+                  onClick={() => { setSelectMode((v) => !v); if (selectMode) setSelectedVideos(new Set()); }}
+                >
+                  {selectMode ? 'Cancel Select' : 'Select Videos'}
+                </Button>
+              )}
+              {generateJobs.length > 0 && (
+                <Badge variant="info">{generateJobs.filter((j) => j.videos.some((v) => !isTerminal(v))).length} running</Badge>
+              )}
+            </div>
           </div>
 
           {generateJobs.length === 0 ? (
@@ -1094,9 +1149,25 @@ export function GeneratePage() {
                           return items.map(({ key, url, file, label, video: v, idx: vIdx }) => (
                           <div
                             key={key}
-                            className="rounded-[var(--border-radius)] overflow-hidden border-2 border-border bg-card shadow-[2px_2px_0_0_var(--border)] hover:translate-x-[1px] hover:translate-y-[1px] hover:shadow-[1px_1px_0_0_var(--border)] transition-all"
+                            className={`rounded-[var(--border-radius)] overflow-hidden border-2 bg-card transition-all ${
+                              selectMode && file && selectedVideos.has(file)
+                                ? 'border-primary shadow-[4px_4px_0_0_var(--primary)]'
+                                : 'border-border shadow-[2px_2px_0_0_var(--border)] hover:translate-x-[1px] hover:translate-y-[1px] hover:shadow-[1px_1px_0_0_var(--border)]'
+                            }`}
+                            onClick={selectMode && v.status === 'done' && file ? () => toggleVideoSelection(file) : undefined}
                           >
                             <div className="relative bg-muted aspect-[9/16] flex items-center justify-center">
+                              {selectMode && v.status === 'done' && file && (
+                                <div className="absolute top-2 left-2 z-10">
+                                  <input
+                                    type="checkbox"
+                                    checked={selectedVideos.has(file)}
+                                    onChange={() => toggleVideoSelection(file)}
+                                    onClick={(e) => e.stopPropagation()}
+                                    className="h-5 w-5 accent-primary cursor-pointer"
+                                  />
+                                </div>
+                              )}
                               {v.status === 'done' && url ? (
                                 <LazyVideo
                                   src={staticUrl(url)}
@@ -1193,9 +1264,15 @@ export function GeneratePage() {
 
                       {doneCount > 0 && (
                         <div className="flex gap-2 justify-end mt-2">
-                          <Button variant="secondary" size="sm" onClick={() => sendSelectionToBurn(job)}>
-                            Use in Burn →
-                          </Button>
+                          {selectMode ? (
+                            <Button variant="outline" size="sm" onClick={() => selectAllFromJob(job)}>
+                              {job.videos.filter((v) => v.status === 'done' && v.file).every((v) => selectedVideos.has(v.file!)) ? 'Deselect Job' : 'Select Job'}
+                            </Button>
+                          ) : (
+                            <Button variant="secondary" size="sm" onClick={() => sendSelectionToBurn(job)}>
+                              Use in Burn →
+                            </Button>
+                          )}
                           {doneCount > 1 && (
                             <Button asChild size="sm" variant="outline">
                               <a href={apiUrl(`/api/video/jobs/${job.id}/download-all`)} download>
@@ -1217,6 +1294,21 @@ export function GeneratePage() {
             </div>
           )}
         </div>
+
+        {/* Floating selection bar */}
+        {selectMode && (
+          <div className="sticky bottom-0 left-0 right-0 z-30 flex items-center justify-between border-t-2 border-border bg-card px-6 py-3 shadow-[0_-2px_8px_rgba(0,0,0,0.1)]">
+            <div className="flex items-center gap-3">
+              <Badge variant="secondary">{selectedVideos.size} selected</Badge>
+              <Button variant="ghost" size="sm" onClick={selectAllVideos}>
+                {selectedVideos.size === generateJobs.reduce((n, j) => n + j.videos.filter((v) => v.status === 'done' && v.file).length, 0) ? 'Deselect All' : 'Select All'}
+              </Button>
+            </div>
+            <Button size="sm" disabled={selectedVideos.size === 0} onClick={sendSelectedToBurn}>
+              Send {selectedVideos.size} to Burn →
+            </Button>
+          </div>
+        )}
       </div>
     </div>
   );

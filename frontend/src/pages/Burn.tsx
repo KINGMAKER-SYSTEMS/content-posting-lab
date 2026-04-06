@@ -28,7 +28,8 @@ import { Textarea } from '@/components/ui/textarea';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Separator } from '@/components/ui/separator';
 
-const TEXT_STROKE_PX = 1.5;
+const DEFAULT_LINE_HEIGHT = 1.08;
+const DEFAULT_STROKE_WIDTH = 4;
 const SNAP_THRESHOLD = 3;
 
 const DEFAULT_COLOR_CORRECTION: ColorCorrection = {
@@ -51,6 +52,8 @@ interface BurnPairState {
   fontSize: number;
   fontFile: string;
   maxWidthPct: number;
+  lineHeight: number;
+  strokeWidth: number;
   colorCorrection: ColorCorrection | null;
   result: BurnResponse | null;
   burnedFile?: string;
@@ -130,6 +133,8 @@ async function captureTextOverlay(pair: BurnPairState): Promise<string | null> {
     fontSize: pair.fontSize,
     fontFile: pair.fontFile,
     maxWidthPct: pair.maxWidthPct,
+    lineHeight: pair.lineHeight,
+    strokeWidth: pair.strokeWidth,
     videoWidth: pair.videoWidth,
     videoHeight: pair.videoHeight,
   };
@@ -179,6 +184,8 @@ export function BurnPage() {
   const [showExportBar, setShowExportBar] = useState(false);
   const [exportCount, setExportCount] = useState(0);
   const [sendingToTelegram, setSendingToTelegram] = useState<string | null>(null);
+  const [renamingBatchId, setRenamingBatchId] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState('');
 
   const wrapRefs = useRef<Record<number, HTMLDivElement | null>>({});
   const dragRef = useRef<DragState | null>(null);
@@ -399,6 +406,7 @@ export function BurnPage() {
 
   useEffect(() => { if (selectedFontFile) setPairs((p) => p.map((pair) => ({ ...pair, fontFile: selectedFontFile }))); }, [selectedFontFile]);
   useEffect(() => { applyPairsColorCorrection(colorCorrection); }, [applyPairsColorCorrection, colorCorrection]);
+  // Auto-apply font size / line-height / stroke changes to all existing pairs
   // Auto-apply font size changes to all existing pairs
   useEffect(() => { if (pairs.length > 0) setPairs((p) => p.map((pair) => ({ ...pair, fontSize: defaultFontSize || 32 }))); }, [defaultFontSize]); // eslint-disable-line react-hooks/exhaustive-deps
   // Auto-apply quick position changes to all existing pairs
@@ -423,6 +431,7 @@ export function BurnPage() {
     const np: BurnPairState[] = nv.map((v, i) => ({
       videoPath: v.path, name: v.name, caption: captions.length > 0 ? captions[i % captions.length] : '',
       x: 50, y, fontSize: defaultFontSize || 32, fontFile: selectedFontFile, maxWidthPct: 80,
+      lineHeight: DEFAULT_LINE_HEIGHT, strokeWidth: DEFAULT_STROKE_WIDTH,
       colorCorrection: cc, result: null,
     }));
     wrapRefs.current = {};
@@ -440,7 +449,7 @@ export function BurnPage() {
   const handleApplyCurrentStyleToAll = useCallback(() => {
     const y = POSITION_Y_MAP[quickPosition] ?? 50;
     const cc = getColorCorrectionOrNull(colorCorrection);
-    setPairs((p) => p.map((pair) => ({ ...pair, fontSize: defaultFontSize || 32, fontFile: selectedFontFile, x: 50, y, colorCorrection: cc })));
+    setPairs((p) => p.map((pair) => ({ ...pair, fontSize: defaultFontSize || 32, fontFile: selectedFontFile, x: 50, y, lineHeight: DEFAULT_LINE_HEIGHT, strokeWidth: DEFAULT_STROKE_WIDTH, colorCorrection: cc })));
   }, [colorCorrection, defaultFontSize, quickPosition, selectedFontFile]);
 
   const handlePairCaptionChange = useCallback((i: number, caption: string) => {
@@ -531,6 +540,22 @@ export function BurnPage() {
       setError(msg); addNotification('error', msg);
     } finally { setBurning(false); }
   }, [addNotification, burnOnServer, burning, loadBatches, pairs, projectName]);
+
+  const handleRenameBatch = useCallback(async (batchId: string, label: string) => {
+    if (!projectName || !label.trim()) return;
+    try {
+      const r = await fetch(apiUrl(`/api/burn/batches/${encodeURIComponent(batchId)}/rename?project=${encodeURIComponent(projectName)}`), {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ label: label.trim() }),
+      });
+      if (!r.ok) throw new Error('Rename failed');
+      setRenamingBatchId(null);
+      await loadBatches();
+    } catch (e) {
+      addNotification('error', e instanceof Error ? e.message : 'Rename failed');
+    }
+  }, [projectName, loadBatches, addNotification]);
 
   const downloadBatchZip = useCallback((bId: string) => {
     if (!projectName) return;
@@ -768,6 +793,7 @@ export function BurnPage() {
           </div>
         </div>
 
+
         <Label>Quick Position</Label>
         <div className="mb-4 mt-1 flex flex-wrap gap-2">
           {(['top', 'center', 'bottom'] as QuickPosition[]).map((pos) => (
@@ -832,9 +858,25 @@ export function BurnPage() {
                 <Card key={b.id} className="py-0">
                   <CardContent className="space-y-1 py-2">
                     <div className="flex items-center justify-between">
-                      <span className="text-xs text-muted-foreground">
-                        <strong className="text-foreground">{b.label || b.id}</strong> · {b.count} clips
-                      </span>
+                      {renamingBatchId === b.id ? (
+                        <Input
+                          value={renameValue}
+                          onChange={(e) => setRenameValue(e.target.value)}
+                          onKeyDown={(e) => { if (e.key === 'Enter') void handleRenameBatch(b.id, renameValue); if (e.key === 'Escape') setRenamingBatchId(null); }}
+                          onBlur={() => { if (renameValue.trim()) void handleRenameBatch(b.id, renameValue); else setRenamingBatchId(null); }}
+                          autoFocus
+                          className="h-6 text-xs flex-1 mr-1"
+                        />
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => { setRenamingBatchId(b.id); setRenameValue(b.label || b.id); }}
+                          className="text-xs text-muted-foreground text-left truncate hover:text-primary transition-colors"
+                          title="Click to rename"
+                        >
+                          <strong className="text-foreground">{b.label || b.id}</strong> · {b.count} clips
+                        </button>
+                      )}
                       <Button size="xs" onClick={() => downloadBatchZip(b.id)}>ZIP</Button>
                     </div>
                     <div className="flex items-center gap-1">
@@ -954,7 +996,7 @@ export function BurnPage() {
                 const hasBurned = Boolean(pair.result?.ok && pair.burnedFile);
                 const scale = pair.previewScale ?? 1;
                 const previewFontPx = Math.max(6, Math.round(pair.fontSize * scale));
-                const strokePx = Math.max(0.5, TEXT_STROKE_PX * scale);
+                const strokePx = Math.max(0.5, (pair.strokeWidth / 2) * scale);
                 const videoSubdir = pair.videoPath.startsWith('clips/') ? '' : 'videos/';
                 const videoSrc = hasBurned && pair.burnedFile
                   ? staticUrl(`/projects/${encodedProjectName}/burned/${encodePathForUrl(pair.burnedFile)}`)
@@ -1013,10 +1055,10 @@ export function BurnPage() {
                               autoFocus
                               rows={Math.max(2, pair.caption.split('\n').length + 1)}
                               className="w-full resize-none overflow-hidden border-none bg-transparent text-center font-bold text-white outline-none"
-                              style={{ fontSize: `${previewFontPx}px`, lineHeight: 1.2, WebkitTextStroke: `${strokePx.toFixed(1)}px black`, paintOrder: 'stroke fill', whiteSpace: 'pre-wrap' }}
+                              style={{ fontSize: `${previewFontPx}px`, lineHeight: pair.lineHeight, WebkitTextStroke: `${strokePx.toFixed(1)}px black`, paintOrder: 'stroke fill', whiteSpace: 'pre-wrap' }}
                             />
                           ) : (
-                            <span className="inline-block break-words font-bold text-white" style={{ fontSize: `${previewFontPx}px`, lineHeight: 1.2, WebkitTextStroke: `${strokePx.toFixed(1)}px black`, paintOrder: 'stroke fill', whiteSpace: 'pre-wrap' }}>
+                            <span className="inline-block break-words font-bold text-white" style={{ fontSize: `${previewFontPx}px`, lineHeight: pair.lineHeight, WebkitTextStroke: `${strokePx.toFixed(1)}px black`, paintOrder: 'stroke fill', whiteSpace: 'pre-wrap' }}>
                               {pair.caption || '\u00A0'}
                             </span>
                           )}

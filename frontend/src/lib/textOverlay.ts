@@ -4,8 +4,6 @@
  * Used by both Burn and Slideshow pages.
  */
 
-const TEXT_STROKE_PX = 1.5;
-
 export interface TextOverlayConfig {
   caption: string;
   x: number;           // 0-100 percentage
@@ -13,6 +11,8 @@ export interface TextOverlayConfig {
   fontSize: number;    // px (at preview resolution)
   fontFile: string;    // font filename e.g. "TikTokSans16pt-Bold.ttf"
   maxWidthPct: number; // 0-100 percentage of canvas width
+  lineHeight?: number; // multiplier (default 1.08)
+  strokeWidth?: number; // px at preview scale (default 4)
   /** Preview container dimensions (used for scaling) */
   videoWidth?: number;
   videoHeight?: number;
@@ -100,11 +100,13 @@ export async function captureTextOverlay(config: TextOverlayConfig): Promise<str
     if (currentLine) lines.push(currentLine);
   }
 
-  const lineHeight = renderFontSize * 1.2;
+  const lhMultiplier = config.lineHeight ?? 1.08;
+  const lineHeight = renderFontSize * lhMultiplier;
   const totalHeight = lines.length * lineHeight;
   const startY = cy - totalHeight / 2 + lineHeight / 2;
 
-  const renderStroke = TEXT_STROKE_PX * 2 * Math.max(scaleX, scaleY);
+  const userStroke = config.strokeWidth ?? 4;
+  const renderStroke = userStroke * Math.max(scaleX, scaleY);
 
   for (let i = 0; i < lines.length; i++) {
     const ly = startY + i * lineHeight;
