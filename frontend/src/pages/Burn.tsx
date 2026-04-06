@@ -689,17 +689,18 @@ export function BurnPage() {
     try {
       const overlays = await Promise.all(pairs.map((p) => captureTextOverlay(p)));
       setProgressValue(15); setProgressLabel(`Burning 0/${pairs.length}...`);
+      const CONCURRENT = 4;
+      const results: BurnResponse[] = new Array(pairs.length);
       let done = 0;
-      const results: BurnResponse[] = [];
-      for (let i = 0; i < pairs.length; i++) {
-        try {
-          const r = await burnOnServer(pairs[i], i, batchId, overlays[i]);
-          results.push(r);
-        } catch (err: unknown) {
-          console.error(`[burn] pair ${i} failed:`, err);
-          results.push({ index: i, ok: false, error: err instanceof Error ? err.message : 'Burn failed' });
-        }
-        done++;
+      for (let start = 0; start < pairs.length; start += CONCURRENT) {
+        const chunk = pairs.slice(start, start + CONCURRENT).map((p, ci) => {
+          const i = start + ci;
+          return burnOnServer(p, i, batchId, overlays[i])
+            .then((r) => { results[i] = r; })
+            .catch((err: unknown) => { results[i] = { index: i, ok: false, error: err instanceof Error ? err.message : 'Burn failed' }; });
+        });
+        await Promise.all(chunk);
+        done += chunk.length;
         setProgressValue(15 + Math.round((done / pairs.length) * 85));
         setProgressLabel(`Burned ${done}/${pairs.length}...`);
       }
