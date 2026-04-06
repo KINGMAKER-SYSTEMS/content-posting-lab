@@ -688,12 +688,21 @@ export function BurnPage() {
     const batchId = makeBatchId(projectName, batchLabel || undefined); setBurnBatchId(batchId);
     try {
       const overlays = await Promise.all(pairs.map((p) => captureTextOverlay(p)));
-      setProgressValue(15); setProgressLabel(`Burning ${pairs.length} videos (server)...`);
+      setProgressValue(15); setProgressLabel(`Burning 0/${pairs.length}...`);
       let done = 0;
-      const results = await Promise.all(pairs.map((p, i) =>
-        burnOnServer(p, i, batchId, overlays[i]).then((r) => { done++; setProgressValue(15 + Math.round((done / pairs.length) * 85)); setProgressLabel(`Burned ${done}/${pairs.length}...`); return r; })
-          .catch((err: unknown) => { done++; console.error(`[burn] catch for pair ${i}:`, err); setProgressValue(15 + Math.round((done / pairs.length) * 85)); return { index: i, ok: false, error: err instanceof Error ? err.message : 'Burn failed' } as BurnResponse; })
-      ));
+      const results: BurnResponse[] = [];
+      for (let i = 0; i < pairs.length; i++) {
+        try {
+          const r = await burnOnServer(pairs[i], i, batchId, overlays[i]);
+          results.push(r);
+        } catch (err: unknown) {
+          console.error(`[burn] pair ${i} failed:`, err);
+          results.push({ index: i, ok: false, error: err instanceof Error ? err.message : 'Burn failed' });
+        }
+        done++;
+        setProgressValue(15 + Math.round((done / pairs.length) * 85));
+        setProgressLabel(`Burned ${done}/${pairs.length}...`);
+      }
       setPairs(pairs.map((p, i) => {
         const r = results[i];
         return r?.ok && r.file ? { ...p, result: r, burnedFile: r.file } : { ...p, result: r };
