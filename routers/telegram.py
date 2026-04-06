@@ -561,7 +561,7 @@ async def sync_poster_topics(poster_id: str):
     if not fresh_poster.get("sounds_topic_id"):
         for attempt in range(3):
             try:
-                sounds_tid = await _tg_bot.create_forum_topic(chat_id, "🎵 Sounds")
+                sounds_tid = await _tg_bot.create_forum_topic(chat_id, "Campaign Sounds")
                 set_poster_sounds_topic(poster_id, sounds_tid)
                 sounds_topic_created = True
                 logger.info("  → created Sounds topic_id=%s for %s", sounds_tid, poster_id)
@@ -880,6 +880,105 @@ async def sync_sounds_from_hub_endpoint():
         raise HTTPException(status_code=502, detail=f"Campaign Hub sync failed: {exc}")
 
     return result
+
+
+@router.post("/sounds/forward/{poster_id}")
+async def forward_sounds_to_poster(poster_id: str):
+    """Send all active sound links to a poster's Sounds topic."""
+    _require_bot()
+
+    poster = get_poster(poster_id)
+    if not poster:
+        raise HTTPException(status_code=404, detail="Poster not found")
+
+    sounds_topic_id = poster.get("sounds_topic_id")
+    if not sounds_topic_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Poster has no Sounds topic — click 'Set Up Folders' first",
+        )
+
+    poster_chat_id = poster.get("chat_id")
+    if not poster_chat_id:
+        raise HTTPException(status_code=400, detail="Poster has no chat_id")
+
+    sounds = list_sounds(active_only=True)
+    if not sounds:
+        return {"ok": True, "sent": 0, "message": "No active sounds to send"}
+
+    from datetime import datetime
+
+    today = datetime.now().strftime("%B %d, %Y")
+    msg_parts = [f"\U0001f3b5 Active Sounds \u2014 {today}", ""]
+    for sound in sounds:
+        label = sound.get("label", sound.get("name", "Sound"))
+        url = sound.get("url", "")
+        msg_parts.append(f"\u2022 {label}")
+        msg_parts.append(f"  {url}")
+        msg_parts.append("")
+
+    try:
+        await _tg_bot.send_text_to_topic(
+            chat_id=int(poster_chat_id),
+            topic_id=int(sounds_topic_id),
+            text="\n".join(msg_parts),
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Failed to send sounds: {exc}")
+
+    return {"ok": True, "sent": len(sounds), "poster_id": poster_id}
+
+
+@router.post("/sounds/forward-all")
+async def forward_sounds_to_all_posters():
+    """Send all active sound links to every poster's Sounds topic."""
+    _require_bot()
+
+    sounds = list_sounds(active_only=True)
+    if not sounds:
+        return {"ok": True, "sent_to": 0, "sound_count": 0, "errors": []}
+
+    from datetime import datetime
+
+    today = datetime.now().strftime("%B %d, %Y")
+    msg_parts = [f"\U0001f3b5 Active Sounds \u2014 {today}", ""]
+    for sound in sounds:
+        label = sound.get("label", sound.get("name", "Sound"))
+        url = sound.get("url", "")
+        msg_parts.append(f"\u2022 {label}")
+        msg_parts.append(f"  {url}")
+        msg_parts.append("")
+
+    text = "\n".join(msg_parts)
+    posters = list_posters()
+    sent_to = 0
+    errors: list[str] = []
+
+    for poster in posters:
+        poster_id = poster.get("poster_id", "")
+        sounds_topic_id = poster.get("sounds_topic_id")
+        poster_chat_id = poster.get("chat_id")
+
+        if not sounds_topic_id or not poster_chat_id:
+            continue
+
+        try:
+            await _tg_bot.send_text_to_topic(
+                chat_id=int(poster_chat_id),
+                topic_id=int(sounds_topic_id),
+                text=text,
+            )
+            sent_to += 1
+        except Exception as exc:
+            errors.append(f"{poster.get('name', poster_id)}: {exc}")
+
+    return {
+        "ok": True,
+        "sent_to": sent_to,
+        "sound_count": len(sounds),
+        "total_posters": len(posters),
+        "errors": errors,
+    }
 
 
 # ── Schedule & Batch ──────────────────────────────────────────────────────

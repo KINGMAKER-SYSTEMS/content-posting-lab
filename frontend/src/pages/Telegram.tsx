@@ -245,6 +245,30 @@ export function TelegramPage() {
     }
   }, [addNotification, refresh]);
 
+  const handleForwardSounds = useCallback(async (posterId: string) => {
+    try {
+      const result = await fetchJson<{ sent: number }>(
+        apiUrl(`/api/telegram/sounds/forward/${encodeURIComponent(posterId)}`),
+        { method: 'POST' },
+      );
+      addNotification('success', `Sent ${result.sent} sound${result.sent !== 1 ? 's' : ''} to poster`);
+    } catch (err) {
+      addNotification('error', err instanceof Error ? err.message : 'Failed to send sounds');
+    }
+  }, [addNotification]);
+
+  const handleForwardSoundsAll = useCallback(async () => {
+    try {
+      const result = await fetchJson<{ sent_to: number; sound_count: number }>(
+        apiUrl('/api/telegram/sounds/forward-all'),
+        { method: 'POST' },
+      );
+      addNotification('success', `Sent ${result.sound_count} sounds to ${result.sent_to} posters`);
+    } catch (err) {
+      addNotification('error', err instanceof Error ? err.message : 'Failed to send sounds to all');
+    }
+  }, [addNotification]);
+
   const handleUnassignPage = useCallback(async (posterId: string, pageId: string, pageName: string) => {
     try {
       await fetchOk(
@@ -678,6 +702,14 @@ export function TelegramPage() {
                           Set Up Folders
                         </Button>
                         <Button
+                          variant="outline"
+                          size="xs"
+                          onClick={() => handleForwardSounds(poster.poster_id)}
+                          disabled={!poster.sounds_topic_id || sounds.filter((s) => s.active).length === 0}
+                        >
+                          Send Sounds
+                        </Button>
+                        <Button
                           variant="destructive"
                           size="xs"
                           onClick={() => handleRemovePoster(poster.poster_id)}
@@ -899,25 +931,35 @@ export function TelegramPage() {
                 </div>
               )}
             </div>
-            {status?.notion_configured && (
-              <div className="flex items-center gap-2">
-                {notionResult && (
-                  <span className="text-xs font-normal text-muted-foreground">
-                    {notionResult.added > 0
-                      ? `+${notionResult.added} new`
-                      : `${notionResult.skipped} already synced`}
-                  </span>
-                )}
-                <Button
-                  variant="outline"
-                  size="xs"
-                  onClick={handleNotionSync}
-                  disabled={notionSyncing}
-                >
-                  {notionSyncing ? 'Syncing...' : 'Sync from Notion'}
-                </Button>
-              </div>
-            )}
+            <div className="flex items-center gap-2">
+              {status?.notion_configured && (
+                <>
+                  {notionResult && (
+                    <span className="text-xs font-normal text-muted-foreground">
+                      {notionResult.added > 0
+                        ? `+${notionResult.added} new`
+                        : `${notionResult.skipped} already synced`}
+                    </span>
+                  )}
+                  <Button
+                    variant="outline"
+                    size="xs"
+                    onClick={handleNotionSync}
+                    disabled={notionSyncing}
+                  >
+                    {notionSyncing ? 'Syncing...' : 'Sync from Notion'}
+                  </Button>
+                </>
+              )}
+              <Button
+                variant="outline"
+                size="xs"
+                onClick={handleForwardSoundsAll}
+                disabled={sounds.filter((s) => s.active).length === 0}
+              >
+                Send to All Posters
+              </Button>
+            </div>
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
