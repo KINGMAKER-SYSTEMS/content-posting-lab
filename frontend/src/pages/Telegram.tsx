@@ -10,6 +10,7 @@ import type {
   TelegramPoster,
   TelegramSound,
   TelegramBatchResult,
+  NotionSyncResult,
   RosterPage,
 } from '@/types/api';
 
@@ -76,6 +77,9 @@ export function TelegramPage() {
   const [batchResult, setBatchResult] = useState<TelegramBatchResult | null>(null);
   const [batchRunning, setBatchRunning] = useState(false);
 
+  const [notionSyncing, setNotionSyncing] = useState(false);
+  const [notionResult, setNotionResult] = useState<NotionSyncResult | null>(null);
+
   const [sendPage, setSendPage] = useState('');
   const [sendFilePath, setSendFilePath] = useState('');
   const [sendCaption, setSendCaption] = useState('');
@@ -90,7 +94,7 @@ export function TelegramPage() {
       const [statusData, postersData, soundsData, rosterData] = await Promise.all([
         fetchJson<TelegramStatus>(apiUrl('/api/telegram/status')),
         fetchJson<TelegramPoster[]>(apiUrl('/api/telegram/posters')).catch(() => [] as TelegramPoster[]),
-        fetchJson<TelegramSound[]>(apiUrl('/api/telegram/sounds')).catch(() => [] as TelegramSound[]),
+        fetchJson<TelegramSound[]>(apiUrl('/api/telegram/sounds?active_only=false')).catch(() => [] as TelegramSound[]),
         fetchJson<{ pages: RosterPage[] }>(apiUrl('/api/roster/')).catch(() => ({ pages: [] as RosterPage[] })),
       ]);
       setStatus(statusData);
@@ -112,7 +116,14 @@ export function TelegramPage() {
 
   useEffect(() => {
     setLoading(true);
-    refresh().finally(() => setLoading(false));
+    refresh().finally(() => {
+      setLoading(false);
+      // Background sync on page load — fire-and-forget, then refresh sounds
+      Promise.all([
+        fetch(apiUrl('/api/telegram/sounds/sync-notion'), { method: 'POST' }).catch(() => {}),
+        fetch(apiUrl('/api/telegram/sounds/sync-hub'), { method: 'POST' }).catch(() => {}),
+      ]).then(() => refresh()).catch(() => {});
+    });
   }, [refresh]);
 
   // -----------------------------------------------------------------------
@@ -342,6 +353,28 @@ export function TelegramPage() {
       await refresh();
     } catch (err) {
       addNotification('error', err instanceof Error ? err.message : 'Failed to delete sound');
+    }
+  }, [addNotification, refresh]);
+
+  const handleNotionSync = useCallback(async () => {
+    setNotionSyncing(true);
+    setNotionResult(null);
+    try {
+      const result = await fetchJson<NotionSyncResult>(
+        apiUrl('/api/telegram/sounds/sync-notion'),
+        { method: 'POST' },
+      );
+      setNotionResult(result);
+      if (result.added > 0) {
+        addNotification('success', `Synced ${result.added} new sound${result.added > 1 ? 's' : ''} from Notion`);
+      } else {
+        addNotification('success', `Notion sync complete — no new sounds (${result.skipped} already synced)`);
+      }
+      await refresh();
+    } catch (err) {
+      addNotification('error', err instanceof Error ? err.message : 'Notion sync failed');
+    } finally {
+      setNotionSyncing(false);
     }
   }, [addNotification, refresh]);
 
@@ -854,18 +887,61 @@ export function TelegramPage() {
       {/* Section 4: Sounds */}
       <Card>
         <CardHeader>
-          <CardTitle>Active Sounds</CardTitle>
+          <CardTitle className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <span>Campaign Sounds</span>
+              {sounds.length > 0 && (
+                <div className="flex items-center gap-2">
+                  <Badge variant="success">{sounds.filter((s) => s.active).length} active</Badge>
+                  {sounds.filter((s) => !s.active).length > 0 && (
+                    <Badge variant="secondary">{sounds.filter((s) => !s.active).length} completed</Badge>
+                  )}
+                </div>
+              )}
+            </div>
+            {status?.notion_configured && (
+              <div className="flex items-center gap-2">
+                {notionResult && (
+                  <span className="text-xs font-normal text-muted-foreground">
+                    {notionResult.added > 0
+                      ? `+${notionResult.added} new`
+                      : `${notionResult.skipped} already synced`}
+                  </span>
+                )}
+                <Button
+                  variant="outline"
+                  size="xs"
+                  onClick={handleNotionSync}
+                  disabled={notionSyncing}
+                >
+                  {notionSyncing ? 'Syncing...' : 'Sync from Notion'}
+                </Button>
+              </div>
+            )}
+          </CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
           {sounds.length > 0 ? (
             <div className="space-y-2">
-              {sounds.map((sound) => (
+              {/* Active sounds first, then inactive */}
+              {[...sounds].sort((a, b) => (a.active === b.active ? 0 : a.active ? -1 : 1)).map((sound) => (
                 <div
                   key={sound.id}
-                  className="flex items-center gap-3 rounded-[var(--border-radius)] border-2 border-border p-3"
+                  className={`flex items-center gap-3 rounded-[var(--border-radius)] border-2 p-3 ${
+                    sound.active
+                      ? 'border-border'
+                      : 'border-border/50 bg-muted/30 opacity-60'
+                  }`}
                 >
                   <div className="min-w-0 flex-1">
-                    <p className="text-sm font-medium text-foreground">{sound.label}</p>
+                    <div className="flex items-center gap-2">
+                      <p className={`text-sm font-medium ${sound.active ? 'text-foreground' : 'text-muted-foreground line-through'}`}>
+                        {sound.label}
+                      </p>
+                      {!sound.active && (
+                        <Badge variant="secondary" className="text-[10px]">Completed</Badge>
+                      )}
+                    </div>
                     <a
                       href={sound.url}
                       target="_blank"
@@ -904,7 +980,7 @@ export function TelegramPage() {
               ))}
             </div>
           ) : (
-            <p className="text-sm text-muted-foreground">No sounds configured.</p>
+            <p className="text-sm text-muted-foreground">No sounds yet. {status?.notion_configured ? 'Click "Sync from Notion" to pull campaign sounds.' : 'Add sounds manually or configure Notion integration.'}</p>
           )}
 
           {/* Add sound form */}

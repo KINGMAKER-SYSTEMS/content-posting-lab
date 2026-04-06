@@ -466,6 +466,15 @@ export interface TelegramStatus {
   poster_count: number;
   total_inventory: number;
   schedule: TelegramSchedule;
+  notion_configured: boolean;
+  campaign_hub_configured: boolean;
+}
+
+export interface NotionSyncResult {
+  added: number;
+  skipped: number;
+  total_in_notion: number;
+  errors: string[];
 }
 
 export interface TelegramStagingGroup {
@@ -489,6 +498,7 @@ export interface TelegramPoster {
   chat_id: number;
   page_ids: string[];
   topics: Record<string, { topic_id: number; topic_name: string }>;
+  sounds_topic_id: number | null;
   added_at: string;
   updated_at: string;
 }

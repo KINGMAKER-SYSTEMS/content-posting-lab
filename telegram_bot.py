@@ -40,6 +40,10 @@ _bot: Bot | None = None
 _dp: Dispatcher | None = None
 _poll_task: asyncio.Task | None = None
 _schedule_task: asyncio.Task | None = None
+_notion_sync_task: asyncio.Task | None = None
+
+# How often to poll Notion for new sounds (seconds)
+NOTION_SYNC_INTERVAL = int(os.getenv("NOTION_SYNC_INTERVAL", "900"))  # 15 min default
 
 # ---------------------------------------------------------------------------
 # Lifecycle
@@ -48,7 +52,7 @@ _schedule_task: asyncio.Task | None = None
 
 async def start_bot(token: str) -> None:
     """Start the Telegram bot and background scheduler."""
-    global _bot, _dp, _poll_task, _schedule_task
+    global _bot, _dp, _poll_task, _schedule_task, _notion_sync_task
 
     await stop_bot()
 
@@ -64,13 +68,22 @@ async def start_bot(token: str) -> None:
 
     _poll_task = asyncio.create_task(_dp.start_polling(_bot))
     _schedule_task = asyncio.create_task(_run_scheduler())
+    _notion_sync_task = asyncio.create_task(_run_notion_sync())
 
     print(f"  telegram bot started as @{me.username}", flush=True)
 
 
 async def stop_bot() -> None:
     """Gracefully stop the bot, scheduler, and clean up resources."""
-    global _bot, _dp, _poll_task, _schedule_task
+    global _bot, _dp, _poll_task, _schedule_task, _notion_sync_task
+
+    if _notion_sync_task is not None:
+        _notion_sync_task.cancel()
+        try:
+            await _notion_sync_task
+        except asyncio.CancelledError:
+            pass
+        _notion_sync_task = None
 
     if _schedule_task is not None:
         _schedule_task.cancel()
@@ -427,6 +440,50 @@ async def _run_scheduler() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Notion sound sync (polling)
+# ---------------------------------------------------------------------------
+
+
+async def _run_notion_sync() -> None:
+    """Background task that polls Notion for new sounds and Campaign Hub for completions."""
+    from services.notion import sync_sounds_from_notion, is_configured as notion_ok
+    from services.campaign_hub import sync_sound_status, is_configured as hub_ok
+
+    # Wait a bit on startup before first sync
+    await asyncio.sleep(30)
+
+    while True:
+        try:
+            # Step 1: Pull new sounds from Notion
+            if notion_ok():
+                result = await sync_sounds_from_notion()
+                if result["added"] > 0:
+                    print(
+                        f"  notion sync: added {result['added']} sound(s), "
+                        f"skipped {result['skipped']}, "
+                        f"total in Notion: {result['total_in_notion']}",
+                        flush=True,
+                    )
+
+            # Step 2: Deactivate completed campaign sounds via Campaign Hub
+            if hub_ok():
+                hub_result = await sync_sound_status()
+                if hub_result["deactivated"] > 0:
+                    print(
+                        f"  campaign hub sync: deactivated {hub_result['deactivated']} sound(s), "
+                        f"still active: {hub_result['still_active']}",
+                        flush=True,
+                    )
+
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            print(f"  sound sync error: {e}", flush=True)
+
+        await asyncio.sleep(NOTION_SYNC_INTERVAL)
+
+
+# ---------------------------------------------------------------------------
 # Daily batch forwarding
 # ---------------------------------------------------------------------------
 
@@ -547,6 +604,29 @@ async def run_daily_batch() -> dict:
             posters_notified += 1
         except Exception as e:
             print(f"  summary send error poster={poster_id}: {e}", flush=True)
+
+        # Send sound links to the poster's dedicated Sounds topic
+        sounds_topic_id = poster_data.get("sounds_topic_id")
+        if sounds and sounds_topic_id:
+            sounds_msg_parts: list[str] = [
+                f"\U0001f3b5 Active Sounds \u2014 {today}",
+                "",
+            ]
+            for sound in sounds:
+                label = sound.get("label", sound.get("name", "Sound"))
+                url = sound.get("url", "")
+                sounds_msg_parts.append(f"\u2022 {label}")
+                sounds_msg_parts.append(f"  {url}")
+                sounds_msg_parts.append("")
+
+            try:
+                await send_text_to_topic(
+                    chat_id=poster_chat_id,
+                    topic_id=int(sounds_topic_id),
+                    text="\n".join(sounds_msg_parts),
+                )
+            except Exception as e:
+                print(f"  sounds topic send error poster={poster_id}: {e}", flush=True)
 
     set_last_run(datetime.now(tz=ZoneInfo("UTC")).isoformat())
 
