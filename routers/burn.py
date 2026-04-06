@@ -750,6 +750,31 @@ async def list_batches(project: str = Query(..., description="Project name")):
     return {"batches": batches}
 
 
+@router.patch("/batches/{batch_id}/rename")
+async def rename_batch(
+    batch_id: str,
+    body: dict,
+    project: str = Query(..., description="Project name"),
+):
+    """Rename a burn batch by updating its metadata label."""
+    new_label = (body.get("label") or "").strip()
+    if not new_label:
+        return JSONResponse({"error": "Label is required"}, status_code=400)
+    try:
+        burn_dir = get_project_burn_dir(project)
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+
+    batch_dir = burn_dir / batch_id
+    if not batch_dir.exists():
+        return JSONResponse({"error": "Batch not found"}, status_code=404)
+
+    meta = _load_batch_meta(batch_dir) or {"batch_id": batch_id, "project": project}
+    meta["label"] = new_label
+    _save_batch_meta(batch_dir, meta)
+    return {"ok": True, "label": new_label}
+
+
 @router.get("/zip/{batch_id}")
 async def download_burn_zip(
     batch_id: str,
@@ -841,6 +866,17 @@ async def ws_burn(ws: WebSocket):
         total = len(pairs)
         results = []
 
+        # Keepalive: send pings every 30s to prevent proxy/browser timeout
+        async def keepalive():
+            try:
+                while True:
+                    await asyncio.sleep(30)
+                    await ws.send_json({"event": "ping"})
+            except Exception:
+                pass
+
+        keepalive_task = asyncio.create_task(keepalive())
+
         for i, pair in enumerate(pairs):
             vp = pair["videoPath"]
             # clips/ paths resolve from project root, regular paths from videos/
@@ -898,6 +934,8 @@ async def ws_burn(ws: WebSocket):
                     "result": results[-1],
                 }
             )
+
+        keepalive_task.cancel()
 
         await ws.send_json(
             {

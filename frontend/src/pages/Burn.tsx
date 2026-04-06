@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { apiUrl, staticUrl } from '../lib/api';
 import { EmptyState, LazyVideo, ProgressBar } from '../components';
 import { useWorkflowStore } from '../stores/workflowStore';
@@ -28,7 +28,8 @@ import { Textarea } from '@/components/ui/textarea';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Separator } from '@/components/ui/separator';
 
-const TEXT_STROKE_PX = 1.5;
+const DEFAULT_LINE_HEIGHT = 1.08;
+const DEFAULT_STROKE_WIDTH = 4;
 const SNAP_THRESHOLD = 3;
 
 const DEFAULT_COLOR_CORRECTION: ColorCorrection = {
@@ -51,6 +52,8 @@ interface BurnPairState {
   fontSize: number;
   fontFile: string;
   maxWidthPct: number;
+  lineHeight: number;
+  strokeWidth: number;
   colorCorrection: ColorCorrection | null;
   result: BurnResponse | null;
   burnedFile?: string;
@@ -130,11 +133,171 @@ async function captureTextOverlay(pair: BurnPairState): Promise<string | null> {
     fontSize: pair.fontSize,
     fontFile: pair.fontFile,
     maxWidthPct: pair.maxWidthPct,
+    lineHeight: pair.lineHeight,
+    strokeWidth: pair.strokeWidth,
     videoWidth: pair.videoWidth,
     videoHeight: pair.videoHeight,
   };
   return captureTextOverlayShared(config);
 }
+
+// ── Lazy visibility for large grids ──────────────────────────────────
+
+function useIsVisible(rootMargin = '400px') {
+  const ref = useRef<HTMLDivElement>(null);
+  const [visible, setVisible] = useState(false);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const obs = new IntersectionObserver(([entry]) => { if (entry.isIntersecting) { setVisible(true); obs.disconnect(); } }, { rootMargin });
+    obs.observe(el);
+    return () => obs.disconnect();
+  }, [rootMargin]);
+  return { ref, visible };
+}
+
+// ── Memoized pair card ──────────────────────────────────────────────
+
+interface PairCardProps {
+  pair: BurnPairState;
+  index: number;
+  selected: boolean;
+  inlineEditing: boolean;
+  snapGuide: { index: number; horizontal: boolean; vertical: boolean } | null;
+  draggingIndex: number | null;
+  cssFilterPreview: string;
+  encodedProjectName: string;
+  onSelect: (i: number) => void;
+  onStartDrag: (e: React.PointerEvent<HTMLDivElement>, i: number) => void;
+  onInlineEdit: (i: number) => void;
+  onCaptionChange: (i: number, caption: string) => void;
+  onFontSizeChange: (i: number, v: number) => void;
+  onDimensions: (i: number, w: number, h: number) => void;
+  onWrapRef: (i: number, node: HTMLDivElement | null) => void;
+}
+
+const PairCard = memo(function PairCard({
+  pair, index, selected, inlineEditing, snapGuide, draggingIndex,
+  cssFilterPreview, encodedProjectName,
+  onSelect, onStartDrag, onInlineEdit, onCaptionChange, onFontSizeChange, onDimensions, onWrapRef,
+}: PairCardProps) {
+  const { ref: visRef, visible } = useIsVisible();
+  const hasError = Boolean(pair.result && !pair.result.ok);
+  const hasBurned = Boolean(pair.result?.ok && pair.burnedFile);
+  const scale = pair.previewScale ?? 1;
+  const previewFontPx = Math.max(6, Math.round(pair.fontSize * scale));
+  const strokePx = Math.max(0.5, (pair.strokeWidth / 2) * scale);
+  const videoSubdir = pair.videoPath.startsWith('clips/') ? '' : 'videos/';
+  const videoSrc = hasBurned && pair.burnedFile
+    ? staticUrl(`/projects/${encodedProjectName}/burned/${encodePathForUrl(pair.burnedFile)}`)
+    : staticUrl(`/projects/${encodedProjectName}/${videoSubdir}${encodePathForUrl(pair.videoPath)}`);
+
+  return (
+    <article
+      ref={visRef}
+      className={`relative overflow-hidden rounded-[var(--border-radius)] border-2 bg-card transition-all ${
+        hasBurned ? 'border-green-700 shadow-[3px_3px_0_0_var(--green-700,#15803d)]'
+          : hasError ? 'border-destructive'
+          : selected ? 'border-primary shadow-[4px_4px_0_0_var(--primary)]'
+          : 'border-border hover:translate-x-[1px] hover:translate-y-[1px] hover:shadow-[3px_3px_0_0_var(--border)]'
+      }`}
+      onClick={(e) => {
+        const t = e.target as HTMLElement;
+        if (t.closest('[data-text-layer]') || t.closest('[data-caption-edit]') || t.closest('[data-card-controls]')) return;
+        onSelect(index);
+      }}
+    >
+      {visible ? (
+        <>
+          <div
+            ref={(node) => { onWrapRef(index, node); }}
+            className="relative aspect-[9/16] overflow-hidden bg-muted"
+          >
+            <LazyVideo
+              src={`${videoSrc}#t=0.001`}
+              selected={selected}
+              style={{ filter: cssFilterPreview }}
+              className="block h-full w-full object-cover"
+              onLoadedMetadata={(e) => onDimensions(index, (e.target as HTMLVideoElement).videoWidth, (e.target as HTMLVideoElement).videoHeight)}
+            />
+
+            <div className={`pointer-events-none absolute inset-x-0 top-1/2 z-20 h-px bg-primary/70 ${snapGuide && snapGuide.index === index && snapGuide.horizontal ? 'block' : 'hidden'}`} />
+            <div className={`pointer-events-none absolute inset-y-0 left-1/2 z-20 w-px bg-primary/70 ${snapGuide && snapGuide.index === index && snapGuide.vertical ? 'block' : 'hidden'}`} />
+
+            {!hasBurned ? (
+              <div
+                data-text-layer
+                onPointerDown={(e) => onStartDrag(e, index)}
+                onDoubleClick={(e) => { e.stopPropagation(); onInlineEdit(index); }}
+                className={`absolute z-10 select-none text-center ${draggingIndex === index ? 'cursor-grabbing' : 'cursor-grab'} ${selected ? 'outline outline-2 outline-offset-4 outline-dashed outline-primary' : ''}`}
+                style={{ left: `${pair.x}%`, top: `${pair.y}%`, transform: `translate(${getTextTranslateX(pair.x, pair.maxWidthPct)}%, -50%)`, maxWidth: `${pair.maxWidthPct}%`, minWidth: '40px', minHeight: '24px', fontFamily: `'${fontFamilyName(pair.fontFile)}', sans-serif` }}
+              >
+                {selected && !inlineEditing ? (
+                  <div className="pointer-events-none absolute -top-3 left-1/2 -translate-x-1/2 rounded-full bg-primary px-1.5 py-0.5 text-[8px] font-bold text-primary-foreground shadow-sm">
+                    drag
+                  </div>
+                ) : null}
+                {inlineEditing ? (
+                  <textarea
+                    value={pair.caption}
+                    onChange={(e) => onCaptionChange(index, e.target.value)}
+                    onBlur={() => onInlineEdit(-1)}
+                    onKeyDown={(e) => { if (e.key === 'Escape') e.currentTarget.blur(); }}
+                    autoFocus
+                    rows={Math.max(2, pair.caption.split('\n').length + 1)}
+                    className="w-full resize-none overflow-hidden border-none bg-transparent text-center font-bold text-white outline-none"
+                    style={{ fontSize: `${previewFontPx}px`, lineHeight: pair.lineHeight, WebkitTextStroke: `${strokePx.toFixed(1)}px black`, paintOrder: 'stroke fill', whiteSpace: 'pre-wrap' }}
+                  />
+                ) : (
+                  <span className="inline-block break-words font-bold text-white" style={{ fontSize: `${previewFontPx}px`, lineHeight: pair.lineHeight, WebkitTextStroke: `${strokePx.toFixed(1)}px black`, paintOrder: 'stroke fill', whiteSpace: 'pre-wrap' }}>
+                    {pair.caption || '\u00A0'}
+                  </span>
+                )}
+              </div>
+            ) : null}
+
+            {hasBurned ? <Badge variant="success" className="absolute right-2 top-2 z-30">Burned</Badge> : null}
+            {hasError ? <Badge variant="error" className="absolute right-2 top-2 z-30" title={pair.result?.error || ''}>Error</Badge> : null}
+          </div>
+
+          <div className="flex flex-col gap-1.5 px-2.5 py-2">
+            <div className="truncate text-xs text-muted-foreground" title={pair.name}>{pair.name}</div>
+            <Textarea
+              data-caption-edit
+              value={pair.caption}
+              onChange={(e) => onCaptionChange(index, e.target.value)}
+              rows={2}
+              className="min-h-11 resize-y text-sm"
+            />
+          </div>
+
+          {selected ? (
+            <div data-card-controls className="flex items-center gap-2 border-t-2 border-border px-2.5 py-2">
+              <Label htmlFor={`pair-size-${index}`} className="text-[11px] uppercase tracking-wide text-muted-foreground">Size</Label>
+              <Input
+                id={`pair-size-${index}`}
+                type="number"
+                min={8}
+                max={120}
+                value={pair.fontSize}
+                onChange={(e) => onFontSizeChange(index, Number.parseInt(e.target.value, 10))}
+                className="w-[60px]"
+              />
+            </div>
+          ) : null}
+        </>
+      ) : (
+        /* Placeholder — rendered until card scrolls into view */
+        <div className="aspect-[9/16] bg-muted flex items-center justify-center">
+          <div className="text-center px-2">
+            <div className="text-[10px] text-muted-foreground truncate">{pair.name}</div>
+            <div className="text-[9px] text-muted-foreground/60 mt-1 line-clamp-2">{pair.caption}</div>
+          </div>
+        </div>
+      )}
+    </article>
+  );
+});
 
 export function BurnPage() {
   const { activeProjectName, addNotification, burnSelection, clearBurnSelection, setBurnReadyCount } = useWorkflowStore();
@@ -179,6 +342,8 @@ export function BurnPage() {
   const [showExportBar, setShowExportBar] = useState(false);
   const [exportCount, setExportCount] = useState(0);
   const [sendingToTelegram, setSendingToTelegram] = useState<string | null>(null);
+  const [renamingBatchId, setRenamingBatchId] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState('');
 
   const wrapRefs = useRef<Record<number, HTMLDivElement | null>>({});
   const dragRef = useRef<DragState | null>(null);
@@ -363,6 +528,8 @@ export function BurnPage() {
   }, [activeProjectName, addNotification, burnSelection.captionSource, burnSelection.videoPaths, clearBurnSelection]);
 
   const selectCard = useCallback((i: number) => { setInlineEditIndex(null); setSelectedIndex((p) => p === i ? -1 : i); }, []);
+  const handleInlineEdit = useCallback((i: number) => { if (i < 0) setInlineEditIndex(null); else { setInlineEditIndex(i); setSelectedIndex(i); } }, []);
+  const handleWrapRef = useCallback((i: number, node: HTMLDivElement | null) => { wrapRefs.current[i] = node; }, []);
 
   const refreshPairScales = useCallback(() => {
     setPairs((prev) => prev.map((p, i) => {
@@ -399,6 +566,7 @@ export function BurnPage() {
 
   useEffect(() => { if (selectedFontFile) setPairs((p) => p.map((pair) => ({ ...pair, fontFile: selectedFontFile }))); }, [selectedFontFile]);
   useEffect(() => { applyPairsColorCorrection(colorCorrection); }, [applyPairsColorCorrection, colorCorrection]);
+  // Auto-apply font size / line-height / stroke changes to all existing pairs
   // Auto-apply font size changes to all existing pairs
   useEffect(() => { if (pairs.length > 0) setPairs((p) => p.map((pair) => ({ ...pair, fontSize: defaultFontSize || 32 }))); }, [defaultFontSize]); // eslint-disable-line react-hooks/exhaustive-deps
   // Auto-apply quick position changes to all existing pairs
@@ -423,6 +591,7 @@ export function BurnPage() {
     const np: BurnPairState[] = nv.map((v, i) => ({
       videoPath: v.path, name: v.name, caption: captions.length > 0 ? captions[i % captions.length] : '',
       x: 50, y, fontSize: defaultFontSize || 32, fontFile: selectedFontFile, maxWidthPct: 80,
+      lineHeight: DEFAULT_LINE_HEIGHT, strokeWidth: DEFAULT_STROKE_WIDTH,
       colorCorrection: cc, result: null,
     }));
     wrapRefs.current = {};
@@ -440,7 +609,7 @@ export function BurnPage() {
   const handleApplyCurrentStyleToAll = useCallback(() => {
     const y = POSITION_Y_MAP[quickPosition] ?? 50;
     const cc = getColorCorrectionOrNull(colorCorrection);
-    setPairs((p) => p.map((pair) => ({ ...pair, fontSize: defaultFontSize || 32, fontFile: selectedFontFile, x: 50, y, colorCorrection: cc })));
+    setPairs((p) => p.map((pair) => ({ ...pair, fontSize: defaultFontSize || 32, fontFile: selectedFontFile, x: 50, y, lineHeight: DEFAULT_LINE_HEIGHT, strokeWidth: DEFAULT_STROKE_WIDTH, colorCorrection: cc })));
   }, [colorCorrection, defaultFontSize, quickPosition, selectedFontFile]);
 
   const handlePairCaptionChange = useCallback((i: number, caption: string) => {
@@ -531,6 +700,22 @@ export function BurnPage() {
       setError(msg); addNotification('error', msg);
     } finally { setBurning(false); }
   }, [addNotification, burnOnServer, burning, loadBatches, pairs, projectName]);
+
+  const handleRenameBatch = useCallback(async (batchId: string, label: string) => {
+    if (!projectName || !label.trim()) return;
+    try {
+      const r = await fetch(apiUrl(`/api/burn/batches/${encodeURIComponent(batchId)}/rename?project=${encodeURIComponent(projectName)}`), {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ label: label.trim() }),
+      });
+      if (!r.ok) throw new Error('Rename failed');
+      setRenamingBatchId(null);
+      await loadBatches();
+    } catch (e) {
+      addNotification('error', e instanceof Error ? e.message : 'Rename failed');
+    }
+  }, [projectName, loadBatches, addNotification]);
 
   const downloadBatchZip = useCallback((bId: string) => {
     if (!projectName) return;
@@ -768,6 +953,7 @@ export function BurnPage() {
           </div>
         </div>
 
+
         <Label>Quick Position</Label>
         <div className="mb-4 mt-1 flex flex-wrap gap-2">
           {(['top', 'center', 'bottom'] as QuickPosition[]).map((pos) => (
@@ -832,9 +1018,25 @@ export function BurnPage() {
                 <Card key={b.id} className="py-0">
                   <CardContent className="space-y-1 py-2">
                     <div className="flex items-center justify-between">
-                      <span className="text-xs text-muted-foreground">
-                        <strong className="text-foreground">{b.label || b.id}</strong> · {b.count} clips
-                      </span>
+                      {renamingBatchId === b.id ? (
+                        <Input
+                          value={renameValue}
+                          onChange={(e) => setRenameValue(e.target.value)}
+                          onKeyDown={(e) => { if (e.key === 'Enter') void handleRenameBatch(b.id, renameValue); if (e.key === 'Escape') setRenamingBatchId(null); }}
+                          onBlur={() => { if (renameValue.trim()) void handleRenameBatch(b.id, renameValue); else setRenamingBatchId(null); }}
+                          autoFocus
+                          className="h-6 text-xs flex-1 mr-1"
+                        />
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => { setRenamingBatchId(b.id); setRenameValue(b.label || b.id); }}
+                          className="text-xs text-muted-foreground text-left truncate hover:text-primary transition-colors"
+                          title="Click to rename"
+                        >
+                          <strong className="text-foreground">{b.label || b.id}</strong> · {b.count} clips
+                        </button>
+                      )}
                       <Button size="xs" onClick={() => downloadBatchZip(b.id)}>ZIP</Button>
                     </div>
                     <div className="flex items-center gap-1">
@@ -948,113 +1150,26 @@ export function BurnPage() {
             ) : null}
 
             <div className="grid grid-cols-[repeat(auto-fill,minmax(240px,1fr))] gap-4">
-              {pairs.map((pair, index) => {
-                const selected = selectedIndex === index;
-                const hasError = Boolean(pair.result && !pair.result.ok);
-                const hasBurned = Boolean(pair.result?.ok && pair.burnedFile);
-                const scale = pair.previewScale ?? 1;
-                const previewFontPx = Math.max(6, Math.round(pair.fontSize * scale));
-                const strokePx = Math.max(0.5, TEXT_STROKE_PX * scale);
-                const videoSubdir = pair.videoPath.startsWith('clips/') ? '' : 'videos/';
-                const videoSrc = hasBurned && pair.burnedFile
-                  ? staticUrl(`/projects/${encodedProjectName}/burned/${encodePathForUrl(pair.burnedFile)}`)
-                  : staticUrl(`/projects/${encodedProjectName}/${videoSubdir}${encodePathForUrl(pair.videoPath)}`);
-
-                return (
-                  <article
-                    key={`${pair.videoPath}-${index}`}
-                    className={`relative overflow-hidden rounded-[var(--border-radius)] border-2 bg-card transition-all ${
-                      hasBurned ? 'border-green-700 shadow-[3px_3px_0_0_var(--green-700,#15803d)]'
-                        : hasError ? 'border-destructive'
-                        : selected ? 'border-primary shadow-[4px_4px_0_0_var(--primary)]'
-                        : 'border-border hover:translate-x-[1px] hover:translate-y-[1px] hover:shadow-[3px_3px_0_0_var(--border)]'
-                    }`}
-                    onClick={(e) => {
-                      const t = e.target as HTMLElement;
-                      if (t.closest('[data-text-layer]') || t.closest('[data-caption-edit]') || t.closest('[data-card-controls]')) return;
-                      selectCard(index);
-                    }}
-                  >
-                    <div
-                      ref={(node) => { wrapRefs.current[index] = node; }}
-                      className="relative aspect-[9/16] overflow-hidden bg-muted"
-                    >
-                      <LazyVideo
-                        src={`${videoSrc}#t=0.001`}
-                        selected={selected}
-                        style={{ filter: cssFilterPreview }}
-                        className="block h-full w-full object-cover"
-                        onLoadedMetadata={(e) => setPairDimensions(index, (e.target as HTMLVideoElement).videoWidth, (e.target as HTMLVideoElement).videoHeight)}
-                      />
-
-                      <div className={`pointer-events-none absolute inset-x-0 top-1/2 z-20 h-px bg-primary/70 ${snapGuide && snapGuide.index === index && snapGuide.horizontal ? 'block' : 'hidden'}`} />
-                      <div className={`pointer-events-none absolute inset-y-0 left-1/2 z-20 w-px bg-primary/70 ${snapGuide && snapGuide.index === index && snapGuide.vertical ? 'block' : 'hidden'}`} />
-
-                      {!hasBurned ? (
-                        <div
-                          data-text-layer
-                          onPointerDown={(e) => startDrag(e, index)}
-                          onDoubleClick={(e) => { e.stopPropagation(); setInlineEditIndex(index); setSelectedIndex(index); }}
-                          className={`absolute z-10 select-none text-center ${dragRef.current?.index === index ? 'cursor-grabbing' : 'cursor-grab'} ${selected ? 'outline outline-2 outline-offset-4 outline-dashed outline-primary' : ''}`}
-                          style={{ left: `${pair.x}%`, top: `${pair.y}%`, transform: `translate(${getTextTranslateX(pair.x, pair.maxWidthPct)}%, -50%)`, maxWidth: `${pair.maxWidthPct}%`, minWidth: '40px', minHeight: '24px', fontFamily: `'${fontFamilyName(pair.fontFile)}', sans-serif` }}
-                        >
-                          {/* Drag handle indicator — visible when selected */}
-                          {selected && !inlineEditIndex ? (
-                            <div className="pointer-events-none absolute -top-3 left-1/2 -translate-x-1/2 rounded-full bg-primary px-1.5 py-0.5 text-[8px] font-bold text-primary-foreground shadow-sm">
-                              drag
-                            </div>
-                          ) : null}
-                          {inlineEditIndex === index ? (
-                            <textarea
-                              value={pair.caption}
-                              onChange={(e) => handlePairCaptionChange(index, e.target.value)}
-                              onBlur={() => setInlineEditIndex(null)}
-                              onKeyDown={(e) => { if (e.key === 'Escape') e.currentTarget.blur(); }}
-                              autoFocus
-                              rows={Math.max(2, pair.caption.split('\n').length + 1)}
-                              className="w-full resize-none overflow-hidden border-none bg-transparent text-center font-bold text-white outline-none"
-                              style={{ fontSize: `${previewFontPx}px`, lineHeight: 1.2, WebkitTextStroke: `${strokePx.toFixed(1)}px black`, paintOrder: 'stroke fill', whiteSpace: 'pre-wrap' }}
-                            />
-                          ) : (
-                            <span className="inline-block break-words font-bold text-white" style={{ fontSize: `${previewFontPx}px`, lineHeight: 1.2, WebkitTextStroke: `${strokePx.toFixed(1)}px black`, paintOrder: 'stroke fill', whiteSpace: 'pre-wrap' }}>
-                              {pair.caption || '\u00A0'}
-                            </span>
-                          )}
-                        </div>
-                      ) : null}
-
-                      {hasBurned ? <Badge variant="success" className="absolute right-2 top-2 z-30">Burned</Badge> : null}
-                      {hasError ? <Badge variant="error" className="absolute right-2 top-2 z-30" title={pair.result?.error || ''}>Error</Badge> : null}
-                    </div>
-
-                    <div className="flex flex-col gap-1.5 px-2.5 py-2">
-                      <div className="truncate text-xs text-muted-foreground" title={pair.name}>{pair.name}</div>
-                      <Textarea
-                        data-caption-edit
-                        value={pair.caption}
-                        onChange={(e) => handlePairCaptionChange(index, e.target.value)}
-                        rows={2}
-                        className="min-h-11 resize-y text-sm"
-                      />
-                    </div>
-
-                    {selected ? (
-                      <div data-card-controls className="flex items-center gap-2 border-t-2 border-border px-2.5 py-2">
-                        <Label htmlFor={`pair-size-${index}`} className="text-[11px] uppercase tracking-wide text-muted-foreground">Size</Label>
-                        <Input
-                          id={`pair-size-${index}`}
-                          type="number"
-                          min={8}
-                          max={120}
-                          value={pair.fontSize}
-                          onChange={(e) => handlePairFontSizeChange(index, Number.parseInt(e.target.value, 10))}
-                          className="w-[60px]"
-                        />
-                      </div>
-                    ) : null}
-                  </article>
-                );
-              })}
+              {pairs.map((pair, index) => (
+                <PairCard
+                  key={`${pair.videoPath}-${index}`}
+                  pair={pair}
+                  index={index}
+                  selected={selectedIndex === index}
+                  inlineEditing={inlineEditIndex === index}
+                  snapGuide={snapGuide}
+                  draggingIndex={dragRef.current?.index ?? null}
+                  cssFilterPreview={cssFilterPreview}
+                  encodedProjectName={encodedProjectName}
+                  onSelect={selectCard}
+                  onStartDrag={startDrag}
+                  onInlineEdit={handleInlineEdit}
+                  onCaptionChange={handlePairCaptionChange}
+                  onFontSizeChange={handlePairFontSizeChange}
+                  onDimensions={setPairDimensions}
+                  onWrapRef={handleWrapRef}
+                />
+              ))}
             </div>
           </div>
         )}

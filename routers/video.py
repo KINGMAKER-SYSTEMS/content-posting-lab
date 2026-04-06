@@ -4,14 +4,16 @@ import asyncio
 import base64
 import io
 import json
+import os
 import re
+import tempfile
 import uuid
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 
 from project_manager import PROJECTS_DIR, get_project_video_dir
 from providers import PROVIDERS
@@ -413,17 +415,22 @@ async def download_all(job_id: str):
     project = job.get("project", "quick-test")
     base_dir = get_project_video_dir(project)
 
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        for v in done_videos:
-            filepath = base_dir / v["file"]
-            if filepath.exists():
-                zf.write(filepath, v["file"])
-    buf.seek(0)
-    return StreamingResponse(
-        buf,
+    tmp_fd, tmp_path = tempfile.mkstemp(suffix=".zip")
+    os.close(tmp_fd)
+    try:
+        with zipfile.ZipFile(tmp_path, "w", zipfile.ZIP_STORED) as zf:
+            for v in done_videos:
+                filepath = base_dir / v["file"]
+                if filepath.exists():
+                    zf.write(filepath, v["file"])
+    except Exception:
+        os.unlink(tmp_path)
+        raise
+
+    return FileResponse(
+        tmp_path,
         media_type="application/zip",
-        headers={"Content-Disposition": f"attachment; filename=videolab_{job_id}.zip"},
+        filename=f"videolab_{job_id}.zip",
     )
 
 
@@ -440,40 +447,43 @@ async def bulk_download(body: dict):
 
     _load_jobs(project)
     base_dir = get_project_video_dir(project)
-    buf = io.BytesIO()
-    file_count = 0
 
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        for jid in job_ids:
-            job = jobs.get(jid)
-            if not job:
-                continue
-            for v in job.get("videos", []):
-                if v.get("status") != "done":
+    tmp_fd, tmp_path = tempfile.mkstemp(suffix=".zip")
+    os.close(tmp_fd)
+    file_count = 0
+    try:
+        with zipfile.ZipFile(tmp_path, "w", zipfile.ZIP_STORED) as zf:
+            for jid in job_ids:
+                job = jobs.get(jid)
+                if not job:
                     continue
-                # Add main file
-                if v.get("file"):
-                    fp = base_dir / v["file"]
-                    if fp.exists():
-                        zf.write(fp, f"{jid}/{v['file']}")
-                        file_count += 1
-                # Add crop files
-                for crop in v.get("crops", []):
-                    if crop.get("file"):
-                        fp = base_dir / crop["file"]
+                for v in job.get("videos", []):
+                    if v.get("status") != "done":
+                        continue
+                    if v.get("file"):
+                        fp = base_dir / v["file"]
                         if fp.exists():
-                            zf.write(fp, f"{jid}/{crop['file']}")
+                            zf.write(fp, f"{jid}/{v['file']}")
                             file_count += 1
+                    for crop in v.get("crops", []):
+                        if crop.get("file"):
+                            fp = base_dir / crop["file"]
+                            if fp.exists():
+                                zf.write(fp, f"{jid}/{crop['file']}")
+                                file_count += 1
+    except Exception:
+        os.unlink(tmp_path)
+        raise
 
     if file_count == 0:
+        os.unlink(tmp_path)
         raise HTTPException(status_code=400, detail="No completed videos found in the selected jobs")
 
-    buf.seek(0)
     today = datetime.now().strftime("%Y-%m-%d")
-    return StreamingResponse(
-        buf,
+    return FileResponse(
+        tmp_path,
         media_type="application/zip",
-        headers={"Content-Disposition": f"attachment; filename=videolab_{today}_{file_count}videos.zip"},
+        filename=f"videolab_{today}_{file_count}videos.zip",
     )
 
 
