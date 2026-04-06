@@ -16,6 +16,10 @@ NOTION_CAMPAIGNS_DB = os.getenv("NOTION_CAMPAIGNS_DB", "")
 NOTION_API_BASE = "https://api.notion.com/v1"
 NOTION_VERSION = "2022-06-28"
 
+# Only sync campaigns created on or after this date.
+# Older campaigns predate the Campaign Hub and would never get deactivated.
+NOTION_SOUND_CUTOFF = os.getenv("NOTION_SOUND_CUTOFF", "2026-03-01")
+
 
 def _headers() -> dict[str, str]:
     return {
@@ -104,8 +108,16 @@ async def fetch_campaigns_with_sounds() -> list[dict[str, Any]]:
         while has_more:
             body: dict[str, Any] = {
                 "filter": {
-                    "property": "TikTok Sound Link",
-                    "url": {"is_not_empty": True},
+                    "and": [
+                        {
+                            "property": "TikTok Sound Link",
+                            "url": {"is_not_empty": True},
+                        },
+                        {
+                            "timestamp": "created_time",
+                            "created_time": {"on_or_after": NOTION_SOUND_CUTOFF},
+                        },
+                    ],
                 },
                 "page_size": 100,
             }
