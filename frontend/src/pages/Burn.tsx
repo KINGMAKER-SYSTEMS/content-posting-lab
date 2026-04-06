@@ -696,13 +696,18 @@ export function BurnPage() {
   }, [inlineEditIndex, onDragEnd, onDragMove, pairs, selectCard]);
 
   const burnOnServer = useCallback(async (pair: BurnPairState, index: number, batchId: string, overlayPng: string | null): Promise<BurnResponse> => {
-    const r = await fetch(apiUrl('/api/burn/overlay'), {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ project: projectName, batchId, index, videoPath: pair.videoPath, overlayPng, colorCorrection: pair.colorCorrection }),
-    });
-    const d = (await r.json()) as BurnResponse & { error?: string };
-    if (!r.ok || !d.ok) throw new Error(d.error || `Burn failed (${r.status})`);
-    return d;
+    try {
+      const r = await fetch(apiUrl('/api/burn/overlay'), {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ project: projectName, batchId, index, videoPath: pair.videoPath, overlayPng, colorCorrection: pair.colorCorrection }),
+      });
+      const d = (await r.json()) as BurnResponse & { error?: string };
+      if (!r.ok || !d.ok) throw new Error(d.error || `Burn failed (${r.status})`);
+      return d;
+    } catch (err) {
+      console.error(`[burn] pair ${index} failed:`, err, 'videoPath:', pair.videoPath);
+      throw err;
+    }
   }, [projectName]);
 
   const handleBurnAll = useCallback(async () => {
@@ -716,7 +721,7 @@ export function BurnPage() {
       let done = 0;
       const results = await Promise.all(pairs.map((p, i) =>
         burnOnServer(p, i, batchId, overlays[i]).then((r) => { done++; setProgressValue(15 + Math.round((done / pairs.length) * 85)); setProgressLabel(`Burned ${done}/${pairs.length}...`); return r; })
-          .catch((err: unknown) => { done++; setProgressValue(15 + Math.round((done / pairs.length) * 85)); return { index: i, ok: false, error: err instanceof Error ? err.message : 'Burn failed' } as BurnResponse; })
+          .catch((err: unknown) => { done++; console.error(`[burn] catch for pair ${i}:`, err); setProgressValue(15 + Math.round((done / pairs.length) * 85)); return { index: i, ok: false, error: err instanceof Error ? err.message : 'Burn failed' } as BurnResponse; })
       ));
       setPairs(pairs.map((p, i) => {
         const r = results[i];
