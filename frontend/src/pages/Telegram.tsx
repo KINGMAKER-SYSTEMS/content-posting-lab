@@ -705,7 +705,7 @@ export function TelegramPage() {
                           variant="outline"
                           size="xs"
                           onClick={() => handleForwardSounds(poster.poster_id)}
-                          disabled={!poster.sounds_topic_id || sounds.filter((s) => s.active).length === 0}
+                          disabled={sounds.filter((s) => s.active).length === 0}
                         >
                           Send Sounds
                         </Button>

@@ -882,25 +882,48 @@ async def sync_sounds_from_hub_endpoint():
     return result
 
 
+async def _ensure_sounds_topic(poster_id: str, poster: dict) -> int | None:
+    """Create the Campaign Sounds topic in a poster's group if it doesn't exist.
+
+    Returns the topic_id (existing or newly created), or None on failure.
+    """
+    sounds_topic_id = poster.get("sounds_topic_id")
+    if sounds_topic_id:
+        return int(sounds_topic_id)
+
+    chat_id = poster.get("chat_id")
+    if not chat_id:
+        return None
+
+    try:
+        tid = await _tg_bot.create_forum_topic(int(chat_id), "Campaign Sounds")
+        set_poster_sounds_topic(poster_id, tid)
+        logger.info("Auto-created Campaign Sounds topic_id=%s for %s", tid, poster_id)
+        return tid
+    except Exception as exc:
+        logger.warning("Failed to create Campaign Sounds topic for %s: %s", poster_id, exc)
+        return None
+
+
 @router.post("/sounds/forward/{poster_id}")
 async def forward_sounds_to_poster(poster_id: str):
-    """Send all active sound links to a poster's Sounds topic."""
+    """Send all active sound links to a poster's Sounds topic.
+
+    Auto-creates the Campaign Sounds topic if it doesn't exist yet.
+    """
     _require_bot()
 
     poster = get_poster(poster_id)
     if not poster:
         raise HTTPException(status_code=404, detail="Poster not found")
 
-    sounds_topic_id = poster.get("sounds_topic_id")
-    if not sounds_topic_id:
-        raise HTTPException(
-            status_code=400,
-            detail="Poster has no Sounds topic — click 'Set Up Folders' first",
-        )
-
     poster_chat_id = poster.get("chat_id")
     if not poster_chat_id:
         raise HTTPException(status_code=400, detail="Poster has no chat_id")
+
+    sounds_topic_id = await _ensure_sounds_topic(poster_id, poster)
+    if not sounds_topic_id:
+        raise HTTPException(status_code=502, detail="Failed to create Campaign Sounds topic")
 
     sounds = list_sounds(active_only=True)
     if not sounds:
@@ -920,7 +943,7 @@ async def forward_sounds_to_poster(poster_id: str):
     try:
         await _tg_bot.send_text_to_topic(
             chat_id=int(poster_chat_id),
-            topic_id=int(sounds_topic_id),
+            topic_id=sounds_topic_id,
             text="\n".join(msg_parts),
         )
     except Exception as exc:
@@ -931,7 +954,10 @@ async def forward_sounds_to_poster(poster_id: str):
 
 @router.post("/sounds/forward-all")
 async def forward_sounds_to_all_posters():
-    """Send all active sound links to every poster's Sounds topic."""
+    """Send all active sound links to every poster's Sounds topic.
+
+    Auto-creates Campaign Sounds topics for posters that don't have one yet.
+    """
     _require_bot()
 
     sounds = list_sounds(active_only=True)
@@ -952,29 +978,41 @@ async def forward_sounds_to_all_posters():
     text = "\n".join(msg_parts)
     posters = list_posters()
     sent_to = 0
+    topics_created = 0
     errors: list[str] = []
 
     for poster in posters:
         poster_id = poster.get("poster_id", "")
-        sounds_topic_id = poster.get("sounds_topic_id")
         poster_chat_id = poster.get("chat_id")
-
-        if not sounds_topic_id or not poster_chat_id:
+        if not poster_chat_id:
             continue
+
+        # Auto-create Campaign Sounds topic if needed
+        sounds_topic_id = await _ensure_sounds_topic(poster_id, poster)
+        if not sounds_topic_id:
+            errors.append(f"{poster.get('name', poster_id)}: failed to create topic")
+            continue
+
+        if not poster.get("sounds_topic_id"):
+            topics_created += 1
 
         try:
             await _tg_bot.send_text_to_topic(
                 chat_id=int(poster_chat_id),
-                topic_id=int(sounds_topic_id),
+                topic_id=sounds_topic_id,
                 text=text,
             )
             sent_to += 1
         except Exception as exc:
             errors.append(f"{poster.get('name', poster_id)}: {exc}")
 
+        # Small delay between posters to avoid rate limits
+        await asyncio.sleep(0.5)
+
     return {
         "ok": True,
         "sent_to": sent_to,
+        "topics_created": topics_created,
         "sound_count": len(sounds),
         "total_posters": len(posters),
         "errors": errors,
