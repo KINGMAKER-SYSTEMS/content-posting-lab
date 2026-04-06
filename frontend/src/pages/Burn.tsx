@@ -69,6 +69,7 @@ interface DragState {
   startLayerX: number;
   startLayerY: number;
   startMaxWidthPct: number;
+  startFontSize: number;
   rect: DOMRect;
 }
 
@@ -640,14 +641,21 @@ export function BurnPage() {
     let sH = false;
     if (Math.abs(ny - 50) < SNAP_THRESHOLD) { ny = 50; sH = true; }
 
-    // Horizontal drag → adjust maxWidthPct (text wrap width)
-    // Drag right = narrower (more compact), drag left = wider (fewer lines)
+    // Horizontal drag → coupled text density control
+    // Drag right = compact (narrower wrap + smaller font)
+    // Drag left = expand (wider wrap + larger font)
+    // Both scale together so the text stays balanced and centered
     const dxPct = (dx / d.rect.width) * 100;
-    let newMaxW = d.startMaxWidthPct - dxPct;
+    const ratio = 1 - dxPct / 100; // >1 when dragging right, <1 when left
+    let newMaxW = d.startMaxWidthPct * ratio;
     newMaxW = Math.max(20, Math.min(100, newMaxW));
+    // Font scales at 40% of the wrap ratio change to keep it subtle
+    const fontRatio = 1 - (dxPct / 100) * 0.4;
+    let newFontSize = Math.round(d.startFontSize * fontRatio);
+    newFontSize = Math.max(12, Math.min(100, newFontSize));
 
     setSnapGuide({ index: d.index, horizontal: sH, vertical: false });
-    setPairs((p) => p.map((pair, idx) => idx !== d.index ? pair : { ...pair, x: 50, y: ny, maxWidthPct: newMaxW }));
+    setPairs((p) => p.map((pair, idx) => idx !== d.index ? pair : { ...pair, x: 50, y: ny, maxWidthPct: newMaxW, fontSize: newFontSize }));
   }, []);
 
   const onDragEnd = useCallback(() => {
@@ -663,7 +671,7 @@ export function BurnPage() {
     e.preventDefault(); e.stopPropagation();
     const pair = pairs[i]; if (!pair) return;
     selectCard(i);
-    dragRef.current = { index: i, startX: e.clientX, startY: e.clientY, startLayerX: pair.x, startLayerY: pair.y, startMaxWidthPct: pair.maxWidthPct, rect: w.getBoundingClientRect() };
+    dragRef.current = { index: i, startX: e.clientX, startY: e.clientY, startLayerX: pair.x, startLayerY: pair.y, startMaxWidthPct: pair.maxWidthPct, startFontSize: pair.fontSize, rect: w.getBoundingClientRect() };
     window.addEventListener('pointermove', onDragMove);
     window.addEventListener('pointerup', onDragEnd);
   }, [inlineEditIndex, onDragEnd, onDragMove, pairs, selectCard]);
