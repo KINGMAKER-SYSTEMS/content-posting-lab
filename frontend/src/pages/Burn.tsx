@@ -699,9 +699,10 @@ export function BurnPage() {
         return r?.ok && r.file ? { ...p, result: r, burnedFile: r.file } : { ...p, result: r };
       }));
       const sc = results.filter((r) => r.ok).length;
+      const firstErr = results.find((r) => !r.ok && r.error);
       setExportCount(sc); setProgressValue(100); setProgressLabel(`Done! ${sc}/${pairs.length} burned.`);
       if (sc > 0) { setShowExportBar(true); addNotification('success', `Burn complete: ${sc}/${pairs.length}`); }
-      else { setShowExportBar(false); addNotification('error', 'Burn finished with no successful outputs'); }
+      else { setShowExportBar(false); addNotification('error', `Burn 0/${pairs.length}: ${firstErr?.error || 'unknown error'}`); }
       await loadBatches();
       window.dispatchEvent(new Event('projects:changed'));
       window.dispatchEvent(new Event('burn:refresh-request'));
