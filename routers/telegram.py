@@ -16,6 +16,7 @@ from services.telegram import (
     add_inventory_item,
     add_sound,
     assign_page_to_poster,
+    clear_all_sounds,
     clear_bot_token,
     get_all_inventory_summary,
     get_bot_token,
@@ -800,6 +801,13 @@ async def get_sounds(active_only: bool = Query(default=True)):
 async def create_sound(req: SoundCreateRequest):
     """Add a new sound to the library."""
     return add_sound(url=req.url, label=req.label)
+
+
+@router.delete("/sounds/all")
+async def wipe_all_sounds():
+    """Remove ALL sounds from the library. Used to reset before a clean re-sync."""
+    count = clear_all_sounds()
+    return {"ok": True, "removed": count}
 
 
 @router.delete("/sounds/{sound_id}")

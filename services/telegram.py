@@ -399,6 +399,15 @@ def remove_inventory_item(integration_id: str, item_id: str) -> bool:
 # Sounds
 # ---------------------------------------------------------------------------
 
+def clear_all_sounds() -> int:
+    """Remove all sounds. Returns count removed."""
+    config = load_config()
+    count = len(config.get("sounds", []))
+    config["sounds"] = []
+    save_config(config)
+    return count
+
+
 def list_sounds(active_only: bool = True) -> list[dict]:
     """List sounds, optionally filtering to active only."""
     config = load_config()
