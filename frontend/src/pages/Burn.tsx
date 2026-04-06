@@ -68,6 +68,7 @@ interface DragState {
   startY: number;
   startLayerX: number;
   startLayerY: number;
+  startMaxWidthPct: number;
   rect: DOMRect;
 }
 
@@ -632,15 +633,21 @@ export function BurnPage() {
     if (!d) return;
     const dx = e.clientX - d.startX;
     const dy = e.clientY - d.startY;
-    let nx = d.startLayerX + (dx / d.rect.width) * 100;
+
+    // Vertical drag → move y position
     let ny = d.startLayerY + (dy / d.rect.height) * 100;
-    nx = Math.max(5, Math.min(95, nx));
     ny = Math.max(5, Math.min(95, ny));
-    let sH = false, sV = false;
-    if (Math.abs(nx - 50) < SNAP_THRESHOLD) { nx = 50; sV = true; }
+    let sH = false;
     if (Math.abs(ny - 50) < SNAP_THRESHOLD) { ny = 50; sH = true; }
-    setSnapGuide({ index: d.index, horizontal: sH, vertical: sV });
-    setPairs((p) => p.map((pair, idx) => idx !== d.index ? pair : { ...pair, x: nx, y: ny }));
+
+    // Horizontal drag → adjust maxWidthPct (text wrap width)
+    // Drag right = narrower (more compact), drag left = wider (fewer lines)
+    const dxPct = (dx / d.rect.width) * 100;
+    let newMaxW = d.startMaxWidthPct - dxPct;
+    newMaxW = Math.max(20, Math.min(100, newMaxW));
+
+    setSnapGuide({ index: d.index, horizontal: sH, vertical: false });
+    setPairs((p) => p.map((pair, idx) => idx !== d.index ? pair : { ...pair, x: 50, y: ny, maxWidthPct: newMaxW }));
   }, []);
 
   const onDragEnd = useCallback(() => {
@@ -656,7 +663,7 @@ export function BurnPage() {
     e.preventDefault(); e.stopPropagation();
     const pair = pairs[i]; if (!pair) return;
     selectCard(i);
-    dragRef.current = { index: i, startX: e.clientX, startY: e.clientY, startLayerX: pair.x, startLayerY: pair.y, rect: w.getBoundingClientRect() };
+    dragRef.current = { index: i, startX: e.clientX, startY: e.clientY, startLayerX: pair.x, startLayerY: pair.y, startMaxWidthPct: pair.maxWidthPct, rect: w.getBoundingClientRect() };
     window.addEventListener('pointermove', onDragMove);
     window.addEventListener('pointerup', onDragEnd);
   }, [inlineEditIndex, onDragEnd, onDragMove, pairs, selectCard]);
