@@ -13,6 +13,8 @@ export interface TextOverlayConfig {
   maxWidthPct: number; // 0-100 percentage of canvas width
   lineHeight?: number; // multiplier (default 1.08)
   strokeWidth?: number; // px at preview scale (default 4)
+  fontColor?: string;   // fill color for text (default '#FFFFFF')
+  strokeColor?: string; // stroke/outline color (default '#000000')
   /** Preview container dimensions (used for scaling) */
   videoWidth?: number;
   videoHeight?: number;
@@ -111,13 +113,13 @@ export async function captureTextOverlay(config: TextOverlayConfig): Promise<str
   for (let i = 0; i < lines.length; i++) {
     const ly = startY + i * lineHeight;
 
-    ctx.strokeStyle = 'black';
+    ctx.strokeStyle = config.strokeColor || '#000000';
     ctx.lineWidth = renderStroke;
     ctx.lineJoin = 'round';
     ctx.miterLimit = 2;
     ctx.strokeText(lines[i], cx, ly);
 
-    ctx.fillStyle = 'white';
+    ctx.fillStyle = config.fontColor || '#FFFFFF';
     ctx.fillText(lines[i], cx, ly);
   }
 
