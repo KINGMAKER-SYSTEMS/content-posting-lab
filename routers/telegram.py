@@ -43,10 +43,13 @@ from services.telegram import (
     set_staging_group,
     set_staging_topic,
     toggle_sound,
+    set_poster_sounds_topic,
     unassign_page_from_poster,
     update_sound,
 )
 from services.roster import list_all_pages
+from services.notion import sync_sounds_from_notion, is_configured as notion_configured
+from services.campaign_hub import sync_sound_status as hub_sync_sound_status, is_configured as hub_configured
 
 # Lazy import to avoid circular import at module level.
 # telegram_bot imports services.telegram, and this module also imports
@@ -187,6 +190,8 @@ async def telegram_status():
         "poster_count": len(list_posters()),
         "total_inventory": sum(s["total"] for s in inventory_summary),
         "schedule": config.get("schedule", {}),
+        "notion_configured": notion_configured(),
+        "campaign_hub_configured": hub_configured(),
     }
 
 
@@ -549,7 +554,32 @@ async def sync_poster_topics(poster_id: str):
 
         await asyncio.sleep(1.5)
 
-    return {"created": created, "existing": existing_count, "errors": errors, "total_pages": len(page_ids)}
+    # Ensure a "Sounds" topic exists for sound link forwarding
+    sounds_topic_created = False
+    fresh_poster = get_poster(poster_id) or {}
+    if not fresh_poster.get("sounds_topic_id"):
+        for attempt in range(3):
+            try:
+                sounds_tid = await _tg_bot.create_forum_topic(chat_id, "🎵 Sounds")
+                set_poster_sounds_topic(poster_id, sounds_tid)
+                sounds_topic_created = True
+                logger.info("  → created Sounds topic_id=%s for %s", sounds_tid, poster_id)
+                break
+            except Exception as exc:
+                err_str = str(exc).lower()
+                if attempt < 2 and ("retry" in err_str or "too many" in err_str or "429" in err_str):
+                    await asyncio.sleep(5)
+                else:
+                    errors.append(f"Sounds topic: {exc}")
+                    break
+
+    return {
+        "created": created,
+        "existing": existing_count,
+        "sounds_topic_created": sounds_topic_created,
+        "errors": errors,
+        "total_pages": len(page_ids),
+    }
 
 
 # ── Content & Inventory ───────────────────────────────────────────────────
@@ -798,6 +828,50 @@ async def update_sound_endpoint(sound_id: str, req: SoundUpdateRequest):
             raise HTTPException(status_code=404, detail="Sound not found")
 
     return {"ok": True, "sound_id": sound_id}
+
+
+@router.post("/sounds/sync-notion")
+async def sync_sounds_from_notion_endpoint():
+    """Sync TikTok sound links from the Notion campaigns CRM.
+
+    Queries Notion for all campaigns with a TikTok Sound Link,
+    deduplicates against existing sounds, and adds new ones as active.
+    """
+    if not notion_configured():
+        raise HTTPException(
+            status_code=400,
+            detail="Notion integration not configured. Set NOTION_API_KEY and NOTION_CAMPAIGNS_DB environment variables.",
+        )
+
+    try:
+        result = await sync_sounds_from_notion()
+    except Exception as exc:
+        logger.error("Notion sound sync failed: %s", exc)
+        raise HTTPException(status_code=502, detail=f"Notion sync failed: {exc}")
+
+    return result
+
+
+@router.post("/sounds/sync-hub")
+async def sync_sounds_from_hub_endpoint():
+    """Sync sound active/inactive status from the Campaign Hub.
+
+    Cross-references active sounds with Campaign Hub completion status.
+    Sounds matching completed campaigns get deactivated.
+    """
+    if not hub_configured():
+        raise HTTPException(
+            status_code=400,
+            detail="Campaign Hub URL not configured.",
+        )
+
+    try:
+        result = await hub_sync_sound_status()
+    except Exception as exc:
+        logger.error("Campaign Hub sound sync failed: %s", exc)
+        raise HTTPException(status_code=502, detail=f"Campaign Hub sync failed: {exc}")
+
+    return result
 
 
 # ── Schedule & Batch ──────────────────────────────────────────────────────
