@@ -32,6 +32,25 @@ const DEFAULT_LINE_HEIGHT = 1.08;
 const DEFAULT_STROKE_WIDTH = 4;
 const SNAP_THRESHOLD = 3;
 
+const TIKTOK_COLOR_PRESETS: { name: string; hex: string }[] = [
+  { name: 'White', hex: '#FFFFFF' },
+  { name: 'Black', hex: '#000000' },
+  { name: 'TikTok Red', hex: '#FE2C55' },
+  { name: 'TikTok Cyan', hex: '#25F4EE' },
+  { name: 'Pastel Yellow', hex: '#FADE4B' },
+  { name: 'Blue', hex: '#5B9BD5' },
+  { name: 'Green', hex: '#27AE60' },
+  { name: 'Orange', hex: '#FF8A00' },
+  { name: 'Pink', hex: '#FF3B5C' },
+  { name: 'Purple', hex: '#7B2FBE' },
+];
+
+const STROKE_COLOR_PRESETS: { name: string; hex: string }[] = [
+  { name: 'Black', hex: '#000000' },
+  { name: 'White', hex: '#FFFFFF' },
+  { name: 'None', hex: 'transparent' },
+];
+
 const DEFAULT_COLOR_CORRECTION: ColorCorrection = {
   brightness: 0, contrast: 0, saturation: 0, sharpness: 0,
   shadow: 0, temperature: 0, tint: 0, fade: 0,
@@ -54,6 +73,8 @@ interface BurnPairState {
   maxWidthPct: number;
   lineHeight: number;
   strokeWidth: number;
+  fontColor: string;
+  strokeColor: string;
   colorCorrection: ColorCorrection | null;
   result: BurnResponse | null;
   burnedFile?: string;
@@ -137,6 +158,8 @@ async function captureTextOverlay(pair: BurnPairState): Promise<string | null> {
     maxWidthPct: pair.maxWidthPct,
     lineHeight: pair.lineHeight,
     strokeWidth: pair.strokeWidth,
+    fontColor: pair.fontColor,
+    strokeColor: pair.strokeColor,
     videoWidth: pair.videoWidth,
     videoHeight: pair.videoHeight,
   };
@@ -247,11 +270,11 @@ const PairCard = memo(function PairCard({
                     onKeyDown={(e) => { if (e.key === 'Escape') e.currentTarget.blur(); }}
                     autoFocus
                     rows={Math.max(2, pair.caption.split('\n').length + 1)}
-                    className="w-full resize-none overflow-hidden border-none bg-transparent text-center font-bold text-white outline-none"
-                    style={{ fontSize: `${previewFontPx}px`, lineHeight: pair.lineHeight, WebkitTextStroke: `${strokePx.toFixed(1)}px black`, paintOrder: 'stroke fill', whiteSpace: 'pre-wrap' }}
+                    className="w-full resize-none overflow-hidden border-none bg-transparent text-center font-bold outline-none"
+                    style={{ fontSize: `${previewFontPx}px`, lineHeight: pair.lineHeight, color: pair.fontColor || '#FFFFFF', WebkitTextStroke: `${strokePx.toFixed(1)}px ${pair.strokeColor || '#000000'}`, paintOrder: 'stroke fill', whiteSpace: 'pre-wrap' }}
                   />
                 ) : (
-                  <span className="inline-block break-words font-bold text-white" style={{ fontSize: `${previewFontPx}px`, lineHeight: pair.lineHeight, WebkitTextStroke: `${strokePx.toFixed(1)}px black`, paintOrder: 'stroke fill', whiteSpace: 'pre-wrap' }}>
+                  <span className="inline-block break-words font-bold" style={{ fontSize: `${previewFontPx}px`, lineHeight: pair.lineHeight, color: pair.fontColor || '#FFFFFF', WebkitTextStroke: `${strokePx.toFixed(1)}px ${pair.strokeColor || '#000000'}`, paintOrder: 'stroke fill', whiteSpace: 'pre-wrap' }}>
                     {pair.caption || '\u00A0'}
                   </span>
                 )}
@@ -325,6 +348,8 @@ export function BurnPage() {
   const [manualPaste, setManualPaste] = useState('');
   const [selectedFontFile, setSelectedFontFile] = useState('');
   const [defaultFontSize, setDefaultFontSize] = useState(32);
+  const [fontColor, setFontColor] = useState('#FFFFFF');
+  const [strokeColor, setStrokeColor] = useState('#000000');
   const [quickPosition, setQuickPosition] = useState<QuickPosition>('center');
   const [colorCorrection, setColorCorrection] = useState<ColorCorrection>(DEFAULT_COLOR_CORRECTION);
 
@@ -567,6 +592,7 @@ export function BurnPage() {
   }, [availableFonts]);
 
   useEffect(() => { if (selectedFontFile) setPairs((p) => p.map((pair) => ({ ...pair, fontFile: selectedFontFile }))); }, [selectedFontFile]);
+  useEffect(() => { if (pairs.length > 0) setPairs((p) => p.map((pair) => ({ ...pair, fontColor, strokeColor }))); }, [fontColor, strokeColor]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { applyPairsColorCorrection(colorCorrection); }, [applyPairsColorCorrection, colorCorrection]);
   // Auto-apply font size / line-height / stroke changes to all existing pairs
   // Auto-apply font size changes to all existing pairs
@@ -594,6 +620,7 @@ export function BurnPage() {
       videoPath: v.path, name: v.name, caption: captions.length > 0 ? captions[i % captions.length] : '',
       x: 50, y, fontSize: defaultFontSize || 32, fontFile: selectedFontFile, maxWidthPct: 80,
       lineHeight: DEFAULT_LINE_HEIGHT, strokeWidth: DEFAULT_STROKE_WIDTH,
+      fontColor, strokeColor,
       colorCorrection: cc, result: null,
     }));
     wrapRefs.current = {};
@@ -601,7 +628,7 @@ export function BurnPage() {
     setShowExportBar(false); setExportCount(0); setBurnBatchId(null);
     setProgressVisible(false); setProgressLabel(''); setProgressValue(0);
     requestAnimationFrame(() => refreshPairScales());
-  }, [colorCorrection, defaultFontSize, quickPosition, randomizeCaptions, refreshPairScales, selectedCaptionItems, selectedFolder, selectedFontFile, videos]);
+  }, [colorCorrection, defaultFontSize, fontColor, quickPosition, randomizeCaptions, refreshPairScales, selectedCaptionItems, selectedFolder, selectedFontFile, strokeColor, videos]);
 
   const handleQuickPosition = useCallback((pos: QuickPosition) => {
     setQuickPosition(pos);
@@ -611,8 +638,8 @@ export function BurnPage() {
   const handleApplyCurrentStyleToAll = useCallback(() => {
     const y = POSITION_Y_MAP[quickPosition] ?? 50;
     const cc = getColorCorrectionOrNull(colorCorrection);
-    setPairs((p) => p.map((pair) => ({ ...pair, fontSize: defaultFontSize || 32, fontFile: selectedFontFile, x: 50, y, lineHeight: DEFAULT_LINE_HEIGHT, strokeWidth: DEFAULT_STROKE_WIDTH, colorCorrection: cc })));
-  }, [colorCorrection, defaultFontSize, quickPosition, selectedFontFile]);
+    setPairs((p) => p.map((pair) => ({ ...pair, fontSize: defaultFontSize || 32, fontFile: selectedFontFile, x: 50, y, lineHeight: DEFAULT_LINE_HEIGHT, strokeWidth: DEFAULT_STROKE_WIDTH, fontColor, strokeColor, colorCorrection: cc })));
+  }, [colorCorrection, defaultFontSize, fontColor, quickPosition, selectedFontFile, strokeColor]);
 
   const handlePairCaptionChange = useCallback((i: number, caption: string) => {
     setPairs((p) => p.map((pair, idx) => idx === i ? { ...pair, caption } : pair));
@@ -968,6 +995,58 @@ export function BurnPage() {
           </div>
         </div>
 
+
+        <Label>Font Color</Label>
+        <div className="mb-2 mt-1 flex flex-wrap gap-1.5">
+          {TIKTOK_COLOR_PRESETS.map((c) => (
+            <button
+              key={c.hex}
+              type="button"
+              title={c.name}
+              onClick={() => setFontColor(c.hex)}
+              className={`h-7 w-7 rounded-full border-2 transition-all ${fontColor === c.hex ? 'border-primary scale-110 ring-2 ring-primary/40' : 'border-border hover:scale-105'}`}
+              style={{ backgroundColor: c.hex, boxShadow: c.hex === '#FFFFFF' ? 'inset 0 0 0 1px rgba(0,0,0,0.1)' : undefined }}
+            />
+          ))}
+          <label
+            title="Custom color"
+            className={`relative flex h-7 w-7 cursor-pointer items-center justify-center rounded-full border-2 border-border bg-gradient-to-br from-red-400 via-yellow-300 to-blue-400 transition-all hover:scale-105 ${!TIKTOK_COLOR_PRESETS.some((c) => c.hex === fontColor) ? 'border-primary scale-110 ring-2 ring-primary/40' : ''}`}
+          >
+            <input
+              type="color"
+              value={fontColor}
+              onChange={(e) => setFontColor(e.target.value)}
+              className="absolute inset-0 cursor-pointer opacity-0"
+            />
+          </label>
+        </div>
+
+        <Label>Stroke Color</Label>
+        <div className="mb-4 mt-1 flex flex-wrap gap-1.5">
+          {STROKE_COLOR_PRESETS.map((c) => (
+            <button
+              key={c.hex}
+              type="button"
+              title={c.name}
+              onClick={() => setStrokeColor(c.hex)}
+              className={`h-7 w-7 rounded-full border-2 transition-all ${strokeColor === c.hex ? 'border-primary scale-110 ring-2 ring-primary/40' : 'border-border hover:scale-105'}`}
+              style={{ backgroundColor: c.hex === 'transparent' ? undefined : c.hex, boxShadow: c.hex === '#FFFFFF' ? 'inset 0 0 0 1px rgba(0,0,0,0.1)' : undefined }}
+            >
+              {c.hex === 'transparent' ? <span className="block h-full w-full rounded-full bg-muted relative overflow-hidden"><span className="absolute inset-0 flex items-center justify-center text-destructive text-xs font-bold">/</span></span> : null}
+            </button>
+          ))}
+          <label
+            title="Custom stroke color"
+            className={`relative flex h-7 w-7 cursor-pointer items-center justify-center rounded-full border-2 border-border bg-gradient-to-br from-gray-600 via-gray-400 to-gray-200 transition-all hover:scale-105 ${!STROKE_COLOR_PRESETS.some((c) => c.hex === strokeColor) ? 'border-primary scale-110 ring-2 ring-primary/40' : ''}`}
+          >
+            <input
+              type="color"
+              value={strokeColor === 'transparent' ? '#000000' : strokeColor}
+              onChange={(e) => setStrokeColor(e.target.value)}
+              className="absolute inset-0 cursor-pointer opacity-0"
+            />
+          </label>
+        </div>
 
         <Label>Quick Position</Label>
         <div className="mb-4 mt-1 flex flex-wrap gap-2">
