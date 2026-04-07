@@ -667,34 +667,19 @@ export function BurnPage() {
     window.addEventListener('pointerup', onDragEnd);
   }, [inlineEditIndex, onDragEnd, onDragMove, pairs, selectCard]);
 
-  const burnOnServer = useCallback(async (pair: BurnPairState, index: number, batchId: string, overlayPng: string | null): Promise<BurnResponse> => {
-    const bodyStr = JSON.stringify({ project: projectName, batchId, index, videoPath: pair.videoPath, overlayPng, colorCorrection: pair.colorCorrection });
-    let r: Response;
-    try {
-      r = await fetch(apiUrl('/api/burn/overlay'), {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: bodyStr,
-      });
-    } catch (networkErr) {
-      // fetch() itself failed — network error, CORS, DNS, connection refused, etc.
-      throw new Error(`NETWORK #${index}: ${networkErr instanceof Error ? networkErr.message : String(networkErr)} (bodySize=${(bodyStr.length / 1024).toFixed(0)}KB)`);
+  /**
+   * Submit a single burn item. The server queues it and returns immediately.
+   * We then poll batch-status to track progress.
+   */
+  const submitBurnItem = useCallback(async (pair: BurnPairState, index: number, batchId: string, overlayPng: string | null): Promise<void> => {
+    const r = await fetch(apiUrl('/api/burn/overlay'), {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ project: projectName, batchId, index, videoPath: pair.videoPath, overlayPng, colorCorrection: pair.colorCorrection }),
+    });
+    if (!r.ok) {
+      const d = await r.json().catch(() => ({ error: `HTTP ${r.status}` }));
+      throw new Error(d.error || `Submit failed (${r.status})`);
     }
-    let text: string;
-    try {
-      text = await r.text();
-    } catch (readErr) {
-      throw new Error(`READ_BODY #${index}: status=${r.status} ${readErr instanceof Error ? readErr.message : String(readErr)}`);
-    }
-    let d: BurnResponse & { error?: string };
-    try {
-      d = JSON.parse(text);
-    } catch {
-      throw new Error(`JSON_PARSE #${index}: status=${r.status} body=${text.slice(0, 200)}`);
-    }
-    if (!r.ok || !d.ok) {
-      throw new Error(`SERVER #${index}: status=${r.status} ok=${d.ok} err=${d.error || 'none'} body=${text.slice(0, 200)}`);
-    }
-    return d;
   }, [projectName]);
 
   const handleBurnAll = useCallback(async () => {
@@ -703,27 +688,71 @@ export function BurnPage() {
     setProgressLabel(`Rendering ${pairs.length} text overlays...`);
     const batchId = makeBatchId(projectName, batchLabel || undefined); setBurnBatchId(batchId);
     try {
+      // Phase 1: Render all text overlays client-side
       const overlays = await Promise.all(pairs.map((p) => captureTextOverlay(p)));
-      setProgressValue(15); setProgressLabel(`Burning 0/${pairs.length}...`);
-      const CONCURRENT = 4;
-      const results: BurnResponse[] = new Array(pairs.length);
-      let done = 0;
-      for (let start = 0; start < pairs.length; start += CONCURRENT) {
-        const chunk = pairs.slice(start, start + CONCURRENT).map((p, ci) => {
+      setProgressValue(10); setProgressLabel(`Submitting ${pairs.length} burn jobs...`);
+
+      // Phase 2: Submit all burn requests (server returns immediately, processes in background)
+      // Send in chunks of 8 to avoid overwhelming the browser connection pool
+      const SUBMIT_CHUNK = 8;
+      const submitErrors: string[] = [];
+      for (let start = 0; start < pairs.length; start += SUBMIT_CHUNK) {
+        const chunk = pairs.slice(start, start + SUBMIT_CHUNK).map((p, ci) => {
           const i = start + ci;
-          return burnOnServer(p, i, batchId, overlays[i])
-            .then((r) => { results[i] = r; })
-            .catch((err: unknown) => { results[i] = { index: i, ok: false, error: err instanceof Error ? err.message : 'Burn failed' }; });
+          return submitBurnItem(p, i, batchId, overlays[i]).catch((err: unknown) => {
+            submitErrors.push(`#${i}: ${err instanceof Error ? err.message : String(err)}`);
+          });
         });
         await Promise.all(chunk);
-        done += chunk.length;
-        setProgressValue(15 + Math.round((done / pairs.length) * 85));
-        setProgressLabel(`Burned ${done}/${pairs.length}...`);
       }
-      const okCount = results.filter((r) => r?.ok).length;
-      const emptyCount = results.filter((r) => r === undefined || r === null).length;
-      const failCount = results.filter((r) => r && !r.ok).length;
-      const errMsgs = results.filter((r) => r && !r.ok && r.error).map((r) => r.error!).slice(0, 3);
+
+      if (submitErrors.length === pairs.length) {
+        // All submissions failed — no point polling
+        setError(`All ${pairs.length} submissions failed: ${submitErrors.slice(0, 3).join(' | ')}`);
+        addNotification('error', `All burns failed to submit`);
+        return;
+      }
+      if (submitErrors.length > 0) {
+        console.warn(`[burn] ${submitErrors.length} submit errors:`, submitErrors);
+      }
+
+      setProgressValue(20); setProgressLabel(`Burning 0/${pairs.length}...`);
+
+      // Phase 3: Poll batch-status until all items are done/error
+      const pollInterval = 2000; // 2 seconds
+      const maxPolls = 600; // 20 minutes max
+      let polls = 0;
+      let finalResults: Record<string, { index: number; ok: boolean; file?: string; error?: string; status: string }> = {};
+
+      while (polls < maxPolls) {
+        await new Promise((resolve) => setTimeout(resolve, pollInterval));
+        polls++;
+        try {
+          const statusRes = await fetch(apiUrl(`/api/burn/batch-status/${encodeURIComponent(batchId)}`));
+          if (!statusRes.ok) continue;
+          const status = await statusRes.json();
+          finalResults = status.items || {};
+          const doneCount = status.done || 0;
+          const okCount = status.ok || 0;
+          setProgressValue(20 + Math.round((doneCount / pairs.length) * 80));
+          setProgressLabel(`Burned ${doneCount}/${pairs.length} (${okCount} OK)...`);
+
+          if (doneCount >= pairs.length) break;
+        } catch {
+          // Poll failed, retry
+        }
+      }
+
+      // Phase 4: Collect results
+      const results: BurnResponse[] = pairs.map((_, i) => {
+        const item = finalResults[String(i)];
+        if (!item) return { index: i, ok: false, error: 'No status returned' };
+        return { index: item.index ?? i, ok: !!item.ok, file: item.file, error: item.error };
+      });
+
+      const okCount = results.filter((r) => r.ok).length;
+      const failCount = results.filter((r) => !r.ok).length;
+      const errMsgs = results.filter((r) => !r.ok && r.error).map((r) => r.error!).slice(0, 3);
 
       setPairs(pairs.map((p, i) => {
         const r = results[i];
@@ -737,7 +766,7 @@ export function BurnPage() {
         addNotification('success', `Burn complete: ${okCount}/${pairs.length}`);
       } else {
         setShowExportBar(false);
-        const debugInfo = `ok=${okCount} fail=${failCount} empty=${emptyCount} | ${errMsgs.join(' | ') || 'no error messages'}`;
+        const debugInfo = `ok=${okCount} fail=${failCount} | ${errMsgs.join(' | ') || 'no error messages'}`;
         setError(debugInfo);
         addNotification('error', `Burn 0/${pairs.length}`);
       }
@@ -749,7 +778,7 @@ export function BurnPage() {
       setError(`OUTER CATCH: ${msg}`);
       addNotification('error', `Burn crashed: ${msg}`);
     } finally { setBurning(false); }
-  }, [addNotification, burnOnServer, burning, loadBatches, pairs, projectName]);
+  }, [addNotification, batchLabel, submitBurnItem, burning, loadBatches, pairs, projectName]);
 
   const handleRenameBatch = useCallback(async (batchId: string, label: string) => {
     if (!projectName || !label.trim()) return;

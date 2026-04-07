@@ -661,9 +661,58 @@ async def list_fonts():
     return {"fonts": _list_fonts()}
 
 
+# ── Background burn job tracking ────────────────────────────────────
+# Stores per-batch item status so the frontend can poll progress.
+# Each batch_id → {index: {"status": "queued"|"burning"|"done"|"error", ...}}
+_burn_jobs: dict[str, dict[int, dict]] = {}
+
+
+async def _burn_background(
+    batch_id: str,
+    idx: int,
+    video_abs: str,
+    overlay_b64: str | None,
+    mp4_path: str,
+    color_correction: dict | None,
+    video_rel: str,
+) -> None:
+    """Run a single burn in the background, updating _burn_jobs status."""
+    _burn_jobs.setdefault(batch_id, {})[idx] = {"status": "burning"}
+    try:
+        if overlay_b64 or color_correction:
+            async with _burn_semaphore:
+                await _burn_video(video_abs, overlay_b64, mp4_path, color_correction)
+        else:
+            shutil.copy2(video_abs, mp4_path)
+
+        out_file = f"{batch_id}/burned_{idx:03d}.mp4"
+        print(f"[burn] OK #{idx} -> {out_file}", flush=True)
+        _burn_jobs[batch_id][idx] = {
+            "status": "done",
+            "index": idx,
+            "ok": True,
+            "file": out_file,
+        }
+    except Exception as e:
+        import traceback
+        print(f"[burn] FAIL #{idx} Exception: {e}", flush=True)
+        traceback.print_exc()
+        _burn_jobs[batch_id][idx] = {
+            "status": "error",
+            "index": idx,
+            "ok": False,
+            "error": str(e)[:2000],
+        }
+
+
 @router.post("/overlay")
 async def burn_overlay(request: Request):
-    """Receive html2canvas PNG + video path, composite with ffmpeg at full fps."""
+    """Accept a burn request and process it in the background.
+
+    Returns immediately with {"index": N, "ok": true, "status": "queued"}.
+    Frontend polls GET /batch-status/{batch_id} for progress.
+    This avoids Railway's ~30s proxy timeout on long ffmpeg operations.
+    """
     body = await request.json()
 
     project = body.get("project")
@@ -697,18 +746,14 @@ async def burn_overlay(request: Request):
 
         mp4_path = str(batch_dir / f"burned_{idx:03d}.mp4")
 
-        if overlay_b64 or color_correction:
-            async with _burn_semaphore:
-                await _burn_video(video_abs, overlay_b64, mp4_path, color_correction)
-        else:
-            shutil.copy2(video_abs, mp4_path)
+        # Track as queued and fire background task
+        _burn_jobs.setdefault(batch_id, {})[idx] = {"status": "queued"}
+        asyncio.create_task(
+            _burn_background(batch_id, idx, video_abs, overlay_b64, mp4_path, color_correction, video_rel)
+        )
 
-        print(f"[burn] OK #{idx} -> {batch_id}/burned_{idx:03d}.mp4", flush=True)
-        return {
-            "index": idx,
-            "ok": True,
-            "file": f"{batch_id}/burned_{idx:03d}.mp4",
-        }
+        return {"index": idx, "ok": True, "status": "queued"}
+
     except ValueError as e:
         print(f"[burn] FAIL #{idx} ValueError: {e}", flush=True)
         return JSONResponse({"error": str(e)}, status_code=400)
@@ -720,6 +765,26 @@ async def burn_overlay(request: Request):
             {"index": idx, "ok": False, "error": str(e)[:2000]},
             status_code=500,
         )
+
+
+@router.get("/batch-status/{batch_id}")
+async def batch_status(batch_id: str):
+    """Poll endpoint for burn batch progress.
+
+    Returns the status of all items in a batch. Each item has:
+      - status: "queued" | "burning" | "done" | "error"
+      - index, ok, file (when done)
+      - error (when error)
+    """
+    items = _burn_jobs.get(batch_id, {})
+    return {
+        "batchId": batch_id,
+        "items": items,
+        "total": len(items),
+        "done": sum(1 for v in items.values() if v["status"] in ("done", "error")),
+        "ok": sum(1 for v in items.values() if v.get("ok")),
+        "failed": sum(1 for v in items.values() if v["status"] == "error"),
+    }
 
 
 @router.get("/batches")
