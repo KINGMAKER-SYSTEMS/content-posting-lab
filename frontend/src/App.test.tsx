@@ -99,13 +99,11 @@ describe('App', () => {
     const main = document.querySelector('main');
     expect(main).toBeTruthy();
     const tabPanels = main!.querySelectorAll(':scope > div');
-    expect(tabPanels.length).toBe(5);
+    // Only Projects is always-mounted; other tabs are lazy (mount on first visit)
+    expect(tabPanels.length).toBeGreaterThanOrEqual(1);
 
+    // Projects tab is visible on /
     expect((tabPanels[0] as HTMLElement).style.display).toBe('block');
-    expect((tabPanels[1] as HTMLElement).style.display).toBe('none');
-    expect((tabPanels[2] as HTMLElement).style.display).toBe('none');
-    expect((tabPanels[3] as HTMLElement).style.display).toBe('none');
-    expect((tabPanels[4] as HTMLElement).style.display).toBe('none');
   });
 
   it('loads health and projects on startup', async () => {
