@@ -379,11 +379,8 @@ async def discover_topics(
 ) -> list[dict]:
     """Discover all forum topics in a group by probing message_thread_ids.
 
-    Sends a marker to find the message ID ceiling, then probes each candidate
-    ID by trying to send a message with that thread_id. If it succeeds, a
-    topic exists there.
-
-    Returns list of {topic_id, topic_name}.
+    Sends a marker to find the message ID ceiling, then probes candidates
+    concurrently (batches of 15) for speed. Returns list of {topic_id, topic_name}.
     """
     if _bot is None:
         raise RuntimeError("Bot is not running")
@@ -396,22 +393,19 @@ async def discover_topics(
     except Exception:
         pass
 
+    logger.info("discover_topics: ceiling=%d, probing %d candidates", ceiling, ceiling)
+
     topics: list[dict] = []
     probed = 0
 
-    for candidate_id in range(1, ceiling + 1):
-        probed += 1
-        if progress_callback and probed % 50 == 0:
-            progress_callback(probed, ceiling, len(topics))
-
+    async def _probe_one(candidate_id: int) -> dict | None:
+        """Probe a single candidate_id. Returns topic dict or None."""
         try:
             test_msg = await _bot.send_message(
                 chat_id=chat_id,
                 message_thread_id=candidate_id,
                 text=".",
             )
-            # Success — topic exists. Try to read topic name from the
-            # reply_to_message (which is the topic creation service msg)
             topic_name = None
             if test_msg.reply_to_message and test_msg.reply_to_message.forum_topic_created:
                 topic_name = test_msg.reply_to_message.forum_topic_created.name
@@ -421,21 +415,34 @@ async def discover_topics(
             except Exception:
                 pass
 
-            topics.append({
-                "topic_id": candidate_id,
-                "topic_name": topic_name,
-            })
+            return {"topic_id": candidate_id, "topic_name": topic_name}
 
         except Exception as exc:
             err = str(exc).lower()
             if "too many requests" in err or "429" in err:
-                await asyncio.sleep(5)
-            # All other errors = not a valid topic, skip
-            continue
+                await asyncio.sleep(10)
+            return None
 
-        # Rate limit between successful finds
-        await asyncio.sleep(0.15)
+    # Process in batches of 15 concurrent probes
+    BATCH_SIZE = 15
+    all_ids = list(range(1, ceiling + 1))
 
+    for batch_start in range(0, len(all_ids), BATCH_SIZE):
+        batch = all_ids[batch_start : batch_start + BATCH_SIZE]
+        results = await asyncio.gather(*[_probe_one(cid) for cid in batch])
+
+        for r in results:
+            if r is not None:
+                topics.append(r)
+
+        probed += len(batch)
+        if progress_callback:
+            progress_callback(probed, ceiling, len(topics))
+
+        # Small delay between batches to avoid rate limits
+        await asyncio.sleep(0.3)
+
+    logger.info("discover_topics: found %d topics out of %d probed", len(topics), probed)
     return topics
 
 
@@ -456,11 +463,15 @@ async def scan_topic_inventory(
         raise RuntimeError("Bot is not running")
 
     # Send marker to find the ceiling message_id
-    marker = await _bot.send_message(
-        chat_id=chat_id,
-        message_thread_id=topic_id,
-        text="📊 Scanning inventory...",
-    )
+    try:
+        marker = await _bot.send_message(
+            chat_id=chat_id,
+            message_thread_id=topic_id,
+            text="📊 Scanning inventory...",
+        )
+    except Exception as exc:
+        logger.warning("scan_topic_inventory: cannot send to topic %s — %s", topic_id, exc)
+        return {"found": 0, "skipped_existing": 0, "total_scanned": 0, "error": str(exc)[:200]}
     marker_id = marker.message_id
 
     # The topic's first message is the topic creation service message.

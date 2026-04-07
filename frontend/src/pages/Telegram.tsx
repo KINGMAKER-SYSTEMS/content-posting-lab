@@ -482,13 +482,18 @@ export function TelegramPage() {
 
   const stagingGroup = status?.staging_group ?? null;
   const topics = stagingGroup?.topics ?? {};
-  // Deduplicate topic entries by display name — keep only the first entry per page name
+  // Normalize name for dedup: strip emoji, lowercase, collapse whitespace
+  const normalizeName = (n: string) =>
+    n.replace(/[\u{1F600}-\u{1F64F}\u{1F300}-\u{1F5FF}\u{1F680}-\u{1F6FF}\u{1F1E0}-\u{1F1FF}\u{1F900}-\u{1F9FF}\u{1FA00}-\u{1FAFF}\u{2600}-\u{26FF}\u{FE0F}\u{200D}]+/gu, '')
+      .replace(/\s+/g, ' ').toLowerCase().trim();
+
+  // Deduplicate topic entries by normalized display name
   const topicEntries = (() => {
     const all = Object.entries(topics);
     const seen = new Set<string>();
     return all.filter(([integrationId, topic]) => {
       const page = rosterPages.find((p) => p.integration_id === integrationId);
-      const name = (page?.name || (topic as { topic_name?: string }).topic_name || integrationId).toLowerCase().trim();
+      const name = normalizeName(page?.name || (topic as { topic_name?: string }).topic_name || integrationId);
       if (seen.has(name)) return false;
       seen.add(name);
       return true;
@@ -496,12 +501,12 @@ export function TelegramPage() {
   })();
   const schedule = status?.schedule ?? null;
 
-  // Pages that have staging topics (for the Send section dropdown), deduped by name
+  // Pages that have staging topics (for the Send section dropdown), deduped by normalized name
   const pagesWithTopics = (() => {
     const all = rosterPages.filter((p) => topics[p.integration_id]);
     const seen = new Set<string>();
     return all.filter((p) => {
-      const key = (p.name || p.integration_id).toLowerCase().trim();
+      const key = normalizeName(p.name || p.integration_id);
       if (seen.has(key)) return false;
       seen.add(key);
       return true;
