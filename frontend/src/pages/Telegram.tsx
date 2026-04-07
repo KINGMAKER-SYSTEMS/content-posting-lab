@@ -477,11 +477,31 @@ export function TelegramPage() {
 
   const stagingGroup = status?.staging_group ?? null;
   const topics = stagingGroup?.topics ?? {};
-  const topicEntries = Object.entries(topics);
+  // Deduplicate topic entries by display name — keep only the first entry per page name
+  const topicEntries = (() => {
+    const all = Object.entries(topics);
+    const seen = new Set<string>();
+    return all.filter(([integrationId, topic]) => {
+      const page = rosterPages.find((p) => p.integration_id === integrationId);
+      const name = (page?.name || (topic as { topic_name?: string }).topic_name || integrationId).toLowerCase().trim();
+      if (seen.has(name)) return false;
+      seen.add(name);
+      return true;
+    });
+  })();
   const schedule = status?.schedule ?? null;
 
-  // Pages that have staging topics (for the Send section dropdown)
-  const pagesWithTopics = rosterPages.filter((p) => topics[p.integration_id]);
+  // Pages that have staging topics (for the Send section dropdown), deduped by name
+  const pagesWithTopics = (() => {
+    const all = rosterPages.filter((p) => topics[p.integration_id]);
+    const seen = new Set<string>();
+    return all.filter((p) => {
+      const key = (p.name || p.integration_id).toLowerCase().trim();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  })();
 
   // -----------------------------------------------------------------------
   // Render
