@@ -466,58 +466,19 @@ async def _discover_topics_pyrogram(
         progress_callback(0, 0, 0)
 
     try:
-        # Pyrogram get_forum_topics returns ForumTopic objects
-        # Paginate through all topics
-        offset_date = 0
-        offset_id = 0
-        offset_topic = 0
-
-        while True:
-            result = await _pyro.invoke(
-                _pyro_raw().channels.GetForumTopics(
-                    channel=await _pyro.resolve_peer(chat_id),
-                    offset_date=offset_date,
-                    offset_id=offset_id,
-                    offset_topic=offset_topic,
-                    limit=100,
-                    q="",
-                )
-            )
-
-            if not result.topics:
-                break
-
-            for topic in result.topics:
-                topics.append({
-                    "topic_id": topic.id,
-                    "topic_name": getattr(topic, "title", None),
-                })
-
+        async for topic in _pyro.get_forum_topics(chat_id=chat_id):
+            topics.append({
+                "topic_id": topic.id,
+                "topic_name": getattr(topic, "title", None),
+            })
             if progress_callback:
                 progress_callback(len(topics), len(topics), len(topics))
-
-            # Check if we got all topics
-            if len(result.topics) < 100:
-                break
-
-            # Pagination: use the last topic's info as offset
-            last = result.topics[-1]
-            offset_date = getattr(last, "date", 0)
-            offset_id = getattr(last, "top_message", 0)
-            offset_topic = last.id
-
     except Exception as exc:
         logger.error("pyrogram discover_topics failed: %s", exc)
         raise
 
     logger.info("discover_topics (pyrogram): found %d topics", len(topics))
     return topics
-
-
-def _pyro_raw():
-    """Lazy import pyrogram raw types."""
-    from pyrogram import raw
-    return raw.functions
 
 
 async def _discover_topics_fallback(
