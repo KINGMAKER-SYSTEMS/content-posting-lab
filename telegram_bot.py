@@ -8,6 +8,7 @@ Handles media inventory from staging group topics and daily batch forwarding.
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -15,6 +16,8 @@ from zoneinfo import ZoneInfo
 from aiogram import Bot, Dispatcher, Router, F
 from aiogram.filters import Command
 from aiogram.types import Message, FSInputFile
+
+logger = logging.getLogger(__name__)
 
 from services.telegram import (
     load_config,
