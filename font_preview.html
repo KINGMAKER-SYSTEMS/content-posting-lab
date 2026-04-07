@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>TikTok Sans Font Preview</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #111; color: #fff; font-family: system-ui; padding: 20px; }
+h1 { margin-bottom: 16px; font-size: 20px; }
+.controls {
+  position: sticky; top: 0; z-index: 10; background: #111; padding: 12px 0;
+  border-bottom: 1px solid #333; margin-bottom: 16px;
+  display: flex; gap: 20px; align-items: center; flex-wrap: wrap;
+}
+.controls label { font-size: 13px; color: #aaa; display: flex; align-items: center; gap: 6px; }
+.controls input[type=range] { width: 180px; }
+.controls input[type=text] { background: #222; border: 1px solid #444; color: #fff; padding: 4px 8px; border-radius: 4px; width: 280px; }
+.controls .val { font-weight: bold; min-width: 40px; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; }
+.card { background: #1a1a1a; border: 2px solid #333; border-radius: 8px; overflow: hidden; }
+.card-header { padding: 6px 10px; background: #222; font-size: 11px; color: #FADE4B; font-weight: bold; }
+.preview { aspect-ratio: 9/16; display: flex; align-items: center; justify-content: center; padding: 12px; text-align: center; }
+</style>
+</head>
+<body>
+<h1>TikTok Sans Font Preview</h1>
+<div class="controls">
+  <label>Size <input type="range" id="sz" min="12" max="120" value="48"> <span class="val" id="szv">48px</span></label>
+  <label>Text <input type="text" id="tx" value="The quick brown fox jumps over the lazy dog"></label>
+</div>
+<div class="grid" id="g"></div>
+<script>
+const F=[
+"TikTokSans-Bold.ttf","TikTokSans-Regular.ttf",
+"TikTokSans12pt-Black.ttf","TikTokSans12pt-BlackItalic.ttf",
+"TikTokSans12pt-Bold.ttf","TikTokSans12pt-BoldItalic.ttf",
+"TikTokSans12pt-ExtraBold.ttf","TikTokSans12pt-ExtraBoldItalic.ttf",
+"TikTokSans12pt-Light.ttf","TikTokSans12pt-LightItalic.ttf",
+"TikTokSans12pt-Medium.ttf","TikTokSans12pt-MediumItalic.ttf",
+"TikTokSans12pt-Regular.ttf","TikTokSans12pt-RegularItalic.ttf",
+"TikTokSans12pt-SemiBold.ttf","TikTokSans12pt-SemiBoldItalic.ttf",
+"TikTokSans16pt-Black.ttf","TikTokSans16pt-BlackItalic.ttf",
+"TikTokSans16pt-Bold.ttf","TikTokSans16pt-BoldItalic.ttf",
+"TikTokSans16pt-ExtraBold.ttf","TikTokSans16pt-ExtraBoldItalic.ttf",
+"TikTokSans16pt-Light.ttf","TikTokSans16pt-LightItalic.ttf",
+"TikTokSans16pt-Medium.ttf","TikTokSans16pt-MediumItalic.ttf",
+"TikTokSans16pt-Regular.ttf","TikTokSans16pt-RegularItalic.ttf",
+"TikTokSans16pt-SemiBold.ttf","TikTokSans16pt-SemiBoldItalic.ttf",
+"TikTokSans36pt-Black.ttf","TikTokSans36pt-BlackItalic.ttf",
+"TikTokSans36pt-Bold.ttf","TikTokSans36pt-BoldItalic.ttf",
+"TikTokSans36pt-ExtraBold.ttf","TikTokSans36pt-ExtraBoldItalic.ttf",
+"TikTokSans36pt-Italic.ttf",
+"TikTokSans36pt-Light.ttf","TikTokSans36pt-LightItalic.ttf",
+"TikTokSans36pt-Medium.ttf","TikTokSans36pt-MediumItalic.ttf",
+"TikTokSans36pt-Regular.ttf",
+"TikTokSans36pt-SemiBold.ttf","TikTokSans36pt-SemiBoldItalic.ttf",
+];
+const st=document.createElement('style');
+const g=document.getElementById('g');
+let css='';
+for(const f of F){
+  const n=f.replace('.ttf','');
+  const fam='p-'+n;
+  css+=`@font-face{font-family:'${fam}';src:url('fonts/${f}')format('truetype');}`;
+  g.innerHTML+=`<div class="card"><div class="card-header">${n}</div><div class="preview"><span style="font-family:'${fam}',sans-serif" data-p>${document.getElementById('tx').value}</span></div></div>`;
+}
+st.textContent=css;
+document.head.appendChild(st);
+document.getElementById('sz').oninput=e=>{
+  document.getElementById('szv').textContent=e.target.value+'px';
+  document.querySelectorAll('[data-p]').forEach(el=>el.style.fontSize=e.target.value+'px');
+};
+document.getElementById('tx').oninput=e=>{
+  document.querySelectorAll('[data-p]').forEach(el=>el.textContent=e.target.value);
+};
+document.querySelectorAll('[data-p]').forEach(el=>el.style.fontSize='48px');
+</script>
+</body>
+</html>

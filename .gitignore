@@ -24,6 +24,5 @@ telegram_config.json
 .claude/
 .vercel
 
-# Temporary font preview files
-font_preview.html
+# Temporary font preview PNGs
 font_previews/
