@@ -469,9 +469,6 @@ async def scan_topic_inventory(
     if _bot is None:
         raise RuntimeError("Bot is not running")
 
-    bot_info = await _bot.get_me()
-    bot_user_id = bot_info.id
-
     # Send marker to find the current ceiling (only used if no next_topic_id)
     try:
         marker = await _bot.send_message(
@@ -508,9 +505,10 @@ async def scan_topic_inventory(
             continue
 
         try:
-            # Forward to bot's Saved Messages to inspect without polluting group
+            # Forward to same group's General topic to get full Message object.
+            # General always exists. We inspect for media then delete immediately.
             fwd = await _bot.forward_message(
-                chat_id=bot_user_id,
+                chat_id=chat_id,
                 from_chat_id=chat_id,
                 message_id=msg_id,
             )
@@ -536,9 +534,9 @@ async def scan_topic_inventory(
                 file_id = fwd.document.file_id
                 file_name = fwd.document.file_name
 
-            # Clean up from Saved Messages
+            # Delete the forwarded copy from General immediately
             try:
-                await _bot.delete_message(chat_id=bot_user_id, message_id=fwd.message_id)
+                await _bot.delete_message(chat_id=chat_id, message_id=fwd.message_id)
             except Exception:
                 pass
 
