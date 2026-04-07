@@ -5,10 +5,9 @@ import { BurnPage } from './pages/Burn';
 import { GeneratePage } from './pages/Generate';
 import { ProjectsPage } from './pages/Projects';
 import { RecreatePage } from './pages/Recreate';
-import { PublishPage } from './pages/Publish';
 import { ClipperPage } from './pages/Clipper';
 import { SlideshowPage } from './pages/Slideshow';
-import { TelegramPage } from './pages/Telegram';
+import { DistributionPage } from './pages/Distribution';
 import { ProjectSelector, ToastContainer } from './components';
 import { useWorkflowStore } from './stores/workflowStore';
 import { type CreateProjectResponse, type HealthResponse, type Project, type ProjectListResponse } from './types/api';
@@ -205,8 +204,10 @@ function AppShell() {
   // Track which tabs have been visited for lazy mounting
   useEffect(() => {
     setVisitedTabs((prev) => {
-      if (prev.has(location.pathname)) return prev;
-      return new Set([...prev, location.pathname]);
+      // Normalize distribution sub-paths to their root for lazy mounting
+      const key = location.pathname.startsWith('/distribution') ? '/distribution' : location.pathname;
+      if (prev.has(key)) return prev;
+      return new Set([...prev, key]);
     });
   }, [location.pathname]);
 
@@ -387,28 +388,16 @@ function AppShell() {
             )}
           </div>
 
-          {/* Publish tab */}
+          {/* Distribution tab (merged Publish + Telegram) */}
           <Link
-            to="/publish"
+            to="/distribution"
             className={`relative flex items-center gap-2 px-4 py-3 text-sm font-bold transition-colors ${
-              location.pathname === '/publish'
+              location.pathname.startsWith('/distribution')
                 ? 'text-primary border-b-[3px] border-primary -mb-[2px]'
                 : 'text-muted-foreground hover:text-foreground hover:bg-muted'
             }`}
           >
-            Publish
-          </Link>
-
-          {/* Telegram tab */}
-          <Link
-            to="/telegram"
-            className={`relative flex items-center gap-2 px-4 py-3 text-sm font-bold transition-colors ${
-              location.pathname === '/telegram'
-                ? 'text-primary border-b-[3px] border-primary -mb-[2px]'
-                : 'text-muted-foreground hover:text-foreground hover:bg-muted'
-            }`}
-          >
-            Telegram
+            Distribution
           </Link>
         </div>
       </nav>
@@ -450,14 +439,9 @@ function AppShell() {
             <SlideshowPage />
           </div>
         )}
-        {visitedTabs.has('/publish') && (
-          <div style={{ display: location.pathname === '/publish' ? 'block' : 'none' }}>
-            <PublishPage />
-          </div>
-        )}
-        {visitedTabs.has('/telegram') && (
-          <div style={{ display: location.pathname === '/telegram' ? 'block' : 'none' }}>
-            <TelegramPage />
+        {visitedTabs.has('/distribution') && (
+          <div style={{ display: location.pathname.startsWith('/distribution') ? 'block' : 'none' }}>
+            <DistributionPage />
           </div>
         )}
       </main>
