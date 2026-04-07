@@ -8,8 +8,6 @@ import type {
   BatchesResponse,
   BurnBatch,
   BurnResponse,
-  CaptionBankResponse,
-  CaptionCategory,
   CaptionSource,
   CaptionsResponse,
   ColorCorrection,
@@ -302,14 +300,8 @@ export function BurnPage() {
   const [availableFonts, setAvailableFonts] = useState<FontInfo[]>([]);
   const [batches, setBatches] = useState<BurnBatch[]>([]);
 
-  const [bankCategories, setBankCategories] = useState<CaptionCategory[]>([]);
   const [selectedCaptionSource, setSelectedCaptionSource] = useState('__paste');
-  const [selectedMoodFilter, setSelectedMoodFilter] = useState<string>('');
   const [randomizeCaptions, setRandomizeCaptions] = useState(false);
-  const [newCategoryName, setNewCategoryName] = useState('');
-  const [showNewCategory, setShowNewCategory] = useState(false);
-  const [showImportPicker, setShowImportPicker] = useState(false);
-  const [importTargetCategoryId, setImportTargetCategoryId] = useState('');
 
   const [selectedFolder, setSelectedFolder] = useState(() => {
     if (!activeProjectName) return '';
@@ -362,38 +354,9 @@ export function BurnPage() {
 
   const selectedCaptionItems = useMemo(() => {
     if (selectedCaptionSource === '__paste') return manualPaste.split('\n').map((l) => l.trim()).filter(Boolean);
-
-    // Cross-pollinated mood bank: all captions across all categories with this mood
-    if (selectedCaptionSource.startsWith('mood:')) {
-      const mood = selectedCaptionSource.slice(5);
-      const items: string[] = [];
-      const seen = new Set<string>();
-      for (const cat of bankCategories) {
-        for (const c of cat.captions) {
-          const entry = typeof c === 'string' ? { text: c, mood: null } : c;
-          if (entry.mood === mood && entry.text && !seen.has(entry.text)) {
-            seen.add(entry.text);
-            items.push(entry.text);
-          }
-        }
-      }
-      return items;
-    }
-
-    // Check bank categories (prefixed with 'bank:')
-    if (selectedCaptionSource.startsWith('bank:')) {
-      const catId = selectedCaptionSource.slice(5);
-      const cat = bankCategories.find((c) => c.id === catId);
-      if (!cat) return [];
-      let captions = cat.captions.map((c) => typeof c === 'string' ? { text: c, mood: null } : c);
-      if (selectedMoodFilter) {
-        captions = captions.filter((c) => c.mood === selectedMoodFilter);
-      }
-      return captions.map((c) => c.text);
-    }
     const src = captionSources.find((s) => s.username === selectedCaptionSource);
     return src ? src.captions.map((r) => r.text) : [];
-  }, [bankCategories, captionSources, manualPaste, selectedCaptionSource, selectedMoodFilter]);
+  }, [captionSources, manualPaste, selectedCaptionSource]);
 
   const cssFilterPreview = useMemo(() => applyCSSFilterPreview(colorCorrection), [colorCorrection]);
   const showPasteManual = selectedCaptionSource === '__paste';
@@ -414,71 +377,15 @@ export function BurnPage() {
     } catch { setBatches([]); }
   }, [projectName]);
 
-  const loadBankCategories = useCallback(async () => {
-    try {
-      const r = await fetch(apiUrl('/api/caption-bank/'));
-      if (!r.ok) throw new Error('Failed');
-      const d = (await r.json()) as CaptionBankResponse;
-      setBankCategories(d.categories ?? []);
-    } catch { setBankCategories([]); }
-  }, []);
-
-  const handleCreateCategory = useCallback(async () => {
-    const name = newCategoryName.trim();
-    if (!name) return;
-    try {
-      const r = await fetch(apiUrl('/api/caption-bank/categories'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name }),
-      });
-      if (!r.ok) throw new Error('Failed to create category');
-      setNewCategoryName('');
-      setShowNewCategory(false);
-      await loadBankCategories();
-    } catch (e) {
-      addNotification('error', e instanceof Error ? e.message : 'Failed to create category');
-    }
-  }, [newCategoryName, loadBankCategories, addNotification]);
-
-  const handleDeleteCategory = useCallback(async (catId: string) => {
-    try {
-      const r = await fetch(apiUrl(`/api/caption-bank/categories/${catId}`), { method: 'DELETE' });
-      if (!r.ok) throw new Error('Failed');
-      if (selectedCaptionSource === `bank:${catId}`) setSelectedCaptionSource('__paste');
-      await loadBankCategories();
-    } catch (e) {
-      addNotification('error', e instanceof Error ? e.message : 'Failed to delete category');
-    }
-  }, [selectedCaptionSource, loadBankCategories, addNotification]);
-
-  const handleImportScraped = useCallback(async (categoryId: string, username: string) => {
-    try {
-      const r = await fetch(apiUrl('/api/caption-bank/import'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ project: projectName, username, categoryId }),
-      });
-      if (!r.ok) throw new Error('Failed to import');
-      const d = await r.json();
-      addNotification('success', `Imported ${d.added} captions`);
-      setShowImportPicker(false);
-      await loadBankCategories();
-    } catch (e) {
-      addNotification('error', e instanceof Error ? e.message : 'Import failed');
-    }
-  }, [projectName, loadBankCategories, addNotification]);
-
   const loadData = useCallback(async () => {
     if (!activeProjectName) return;
     setIsLoading(true);
     setError(null);
     try {
       const pq = encodeURIComponent(activeProjectName);
-      const [vR, cR, fR, bR, bankR] = await Promise.all([
+      const [vR, cR, fR, bR] = await Promise.all([
         fetch(apiUrl(`/api/burn/videos?project=${pq}`)), fetch(apiUrl(`/api/burn/captions?project=${pq}`)),
         fetch(apiUrl('/api/burn/fonts')), fetch(apiUrl(`/api/burn/batches?project=${pq}`)),
-        fetch(apiUrl('/api/caption-bank/')),
       ]);
       if (!vR.ok || !cR.ok || !fR.ok || !bR.ok) throw new Error('Failed to load burn workspace data');
 
@@ -486,10 +393,6 @@ export function BurnPage() {
       const ns = ((await cR.json()) as CaptionsResponse).sources ?? [];
       const nf = ((await fR.json()) as FontsResponse).fonts ?? [];
       const nb = ((await bR.json()) as BatchesResponse).batches ?? [];
-      if (bankR.ok) {
-        const bankData = (await bankR.json()) as CaptionBankResponse;
-        setBankCategories(bankData.categories ?? []);
-      }
 
       setVideos(nv); setCaptionSources(ns); setAvailableFonts(nf); setBatches(nb);
 
@@ -512,7 +415,7 @@ export function BurnPage() {
         return allFolders[0] ?? '';
       });
       setSelectedCaptionSource((c) => {
-        if (c === '__paste' || c.startsWith('bank:') || ns.some((s) => s.username === c)) return c;
+        if (c === '__paste' || ns.some((s) => s.username === c)) return c;
         if (burnSelection.captionSource && ns.some((s) => s.username === burnSelection.captionSource)) return burnSelection.captionSource;
         return '__paste';
       });
@@ -849,127 +752,21 @@ export function BurnPage() {
           >
             Paste
           </button>
-          {bankCategories.map((cat) => (
+          {captionSources.map((s) => (
             <button
-              key={cat.id}
+              key={s.username}
               type="button"
-              onClick={() => setSelectedCaptionSource(`bank:${cat.id}`)}
-              className={`group relative rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
-                selectedCaptionSource === `bank:${cat.id}`
+              onClick={() => setSelectedCaptionSource(s.username)}
+              className={`rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
+                selectedCaptionSource === s.username
                   ? 'border-primary bg-primary text-primary-foreground'
                   : 'border-border bg-muted text-muted-foreground hover:bg-accent'
               }`}
             >
-              {cat.name} ({cat.count})
-              <span
-                onClick={(e) => { e.stopPropagation(); handleDeleteCategory(cat.id); }}
-                className="ml-1 hidden cursor-pointer opacity-60 hover:opacity-100 group-hover:inline"
-              >&times;</span>
+              @{s.username} ({s.count})
             </button>
           ))}
-          <button
-            type="button"
-            onClick={() => setShowNewCategory((v) => !v)}
-            className="rounded-full border border-dashed border-border px-2 py-1 text-xs text-muted-foreground hover:bg-accent"
-            title="Add category"
-          >+</button>
         </div>
-
-        {showNewCategory && (
-          <div className="mb-2 flex gap-1.5">
-            <Input
-              value={newCategoryName}
-              onChange={(e) => setNewCategoryName(e.target.value)}
-              placeholder="Category name..."
-              className="h-7 text-xs"
-              onKeyDown={(e) => { if (e.key === 'Enter') void handleCreateCategory(); }}
-            />
-            <Button size="sm" className="h-7 px-2 text-xs" onClick={() => void handleCreateCategory()}>Add</Button>
-          </div>
-        )}
-
-        {captionSources.length > 0 && bankCategories.length > 0 && (
-          <div className="mb-2">
-            {!showImportPicker ? (
-              <button
-                type="button"
-                onClick={() => setShowImportPicker(true)}
-                className="text-[11px] text-muted-foreground underline hover:text-foreground"
-              >Import from scraped</button>
-            ) : (
-              <div className="rounded border border-border bg-muted/50 p-2 text-xs">
-                <div className="mb-1 font-medium">Import scraped captions into:</div>
-                <Select value={importTargetCategoryId} onValueChange={setImportTargetCategoryId}>
-                  <SelectTrigger className="h-7 w-full text-xs mb-1.5">
-                    <SelectValue placeholder="Select category..." />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {bankCategories.map((c) => (
-                      <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                <div className="mb-1 font-medium">From:</div>
-                <div className="flex flex-col gap-1">
-                  {captionSources.map((s) => (
-                    <button
-                      key={s.username}
-                      type="button"
-                      disabled={!importTargetCategoryId}
-                      onClick={() => void handleImportScraped(importTargetCategoryId, s.username)}
-                      className="rounded border border-border px-2 py-0.5 text-left text-xs hover:bg-accent disabled:opacity-40"
-                    >@{s.username} ({s.count})</button>
-                  ))}
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setShowImportPicker(false)}
-                  className="mt-1.5 text-[10px] text-muted-foreground underline"
-                >Cancel</button>
-              </div>
-            )}
-          </div>
-        )}
-
-        {bankCategories.length > 0 && (
-          <>
-            <Label className="mt-1">Mood Filter</Label>
-            <div className="mt-1 mb-2 flex flex-wrap gap-1.5">
-              {['sad', 'hype', 'love', 'funny', 'chill'].map((mood) => {
-                const moodCount = bankCategories.reduce((sum, cat) =>
-                  sum + cat.captions.filter((c) => (typeof c === 'string' ? null : c.mood) === mood).length, 0);
-                if (moodCount === 0) return null;
-                const isActive = selectedCaptionSource === `mood:${mood}`;
-                const isFilter = selectedMoodFilter === mood;
-                return (
-                  <button
-                    key={mood}
-                    type="button"
-                    onClick={() => {
-                      if (isActive) { setSelectedCaptionSource('__paste'); setSelectedMoodFilter(''); }
-                      else if (selectedCaptionSource.startsWith('bank:')) { setSelectedMoodFilter(isFilter ? '' : mood); }
-                      else { setSelectedCaptionSource(`mood:${mood}`); setSelectedMoodFilter(''); }
-                    }}
-                    className={`rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
-                      isActive || isFilter
-                        ? 'border-primary bg-primary text-primary-foreground'
-                        : 'border-border bg-muted text-muted-foreground hover:bg-accent'
-                    }`}
-                  >
-                    {mood} ({moodCount})
-                  </button>
-                );
-              })}
-              {(selectedMoodFilter || selectedCaptionSource.startsWith('mood:')) && (
-                <button
-                  type="button"
-                  onClick={() => { setSelectedMoodFilter(''); if (selectedCaptionSource.startsWith('mood:')) setSelectedCaptionSource('__paste'); }}
-                  className="rounded-full border border-border px-2 py-1 text-[10px] text-muted-foreground hover:bg-accent"
-                >clear</button>
-              )}
-            </div>
-          </>
-        )}
 
         <div className="mb-3 flex items-center gap-2">
           <label className="flex cursor-pointer items-center gap-1.5 text-xs text-muted-foreground">
