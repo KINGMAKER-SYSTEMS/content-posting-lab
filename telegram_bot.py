@@ -17,6 +17,15 @@ from aiogram import Bot, Dispatcher, Router, F
 from aiogram.filters import Command
 from aiogram.types import Message, FSInputFile
 
+# Pyrogram MTProto client — used for forum topic listing and message search
+# (capabilities the Bot API doesn't support)
+try:
+    from pyrogram import Client as PyroClient
+    from pyrogram import enums as pyro_enums
+    PYROGRAM_AVAILABLE = True
+except ImportError:
+    PYROGRAM_AVAILABLE = False
+
 logger = logging.getLogger(__name__)
 
 from services.telegram import (
@@ -44,6 +53,7 @@ _dp: Dispatcher | None = None
 _poll_task: asyncio.Task | None = None
 _schedule_task: asyncio.Task | None = None
 _notion_sync_task: asyncio.Task | None = None
+_pyro: "PyroClient | None" = None  # Pyrogram MTProto client
 
 # How often to poll Notion for new sounds (seconds)
 NOTION_SYNC_INTERVAL = int(os.getenv("NOTION_SYNC_INTERVAL", "900"))  # 15 min default
@@ -51,6 +61,49 @@ NOTION_SYNC_INTERVAL = int(os.getenv("NOTION_SYNC_INTERVAL", "900"))  # 15 min d
 # ---------------------------------------------------------------------------
 # Lifecycle
 # ---------------------------------------------------------------------------
+
+
+async def _start_pyrogram(token: str) -> None:
+    """Start Pyrogram MTProto client using bot token (for forum topic & search APIs)."""
+    global _pyro
+    if not PYROGRAM_AVAILABLE:
+        logger.info("pyrogram not installed — discover/scan will use fallback")
+        return
+
+    api_id = os.getenv("TELEGRAM_API_ID", "").strip()
+    api_hash = os.getenv("TELEGRAM_API_HASH", "").strip()
+    if not api_id or not api_hash:
+        logger.info("TELEGRAM_API_ID / TELEGRAM_API_HASH not set — pyrogram disabled")
+        return
+
+    try:
+        _pyro = PyroClient(
+            name="cpl_bot",
+            api_id=int(api_id),
+            api_hash=api_hash,
+            bot_token=token,
+            in_memory=True,
+            no_updates=True,  # we only use it for API calls, not receiving updates
+        )
+        await _pyro.start()
+        me = await _pyro.get_me()
+        logger.info("pyrogram started as @%s (MTProto)", me.username)
+        print(f"  pyrogram MTProto client started as @{me.username}", flush=True)
+    except Exception as exc:
+        logger.warning("pyrogram failed to start: %s", exc)
+        print(f"  pyrogram failed: {exc}", flush=True)
+        _pyro = None
+
+
+async def _stop_pyrogram() -> None:
+    """Stop the Pyrogram client."""
+    global _pyro
+    if _pyro is not None:
+        try:
+            await _pyro.stop()
+        except Exception:
+            pass
+        _pyro = None
 
 
 async def start_bot(token: str) -> None:
@@ -72,6 +125,9 @@ async def start_bot(token: str) -> None:
     _poll_task = asyncio.create_task(_dp.start_polling(_bot))
     _schedule_task = asyncio.create_task(_run_scheduler())
     _notion_sync_task = asyncio.create_task(_run_notion_sync())
+
+    # Start Pyrogram MTProto client alongside aiogram
+    await _start_pyrogram(token)
 
     print(f"  telegram bot started as @{me.username}", flush=True)
 
@@ -112,10 +168,17 @@ async def stop_bot() -> None:
             pass
         _poll_task = None
 
+    await _stop_pyrogram()
+
 
 def get_bot() -> Bot | None:
     """Return the active Bot instance or None."""
     return _bot
+
+
+def get_pyro():
+    """Return the active Pyrogram client or None."""
+    return _pyro
 
 
 # ---------------------------------------------------------------------------
@@ -380,15 +443,91 @@ async def discover_topics(
     chat_id: int,
     progress_callback=None,
 ) -> list[dict]:
-    """Discover all forum topics in a group by probing message_thread_ids.
+    """Discover all forum topics in a group.
 
-    Sends a marker to find the message ID ceiling, then probes candidates
-    concurrently (batches of 15) for speed. Returns list of {topic_id, topic_name}.
+    Uses Pyrogram's get_forum_topics() MTProto API which returns real topic
+    data directly — no brute-force probing needed.
+
+    Falls back to aiogram brute-force if Pyrogram is not available.
     """
+    if _pyro is not None:
+        return await _discover_topics_pyrogram(chat_id, progress_callback)
+    return await _discover_topics_fallback(chat_id, progress_callback)
+
+
+async def _discover_topics_pyrogram(
+    chat_id: int,
+    progress_callback=None,
+) -> list[dict]:
+    """Discover topics using Pyrogram MTProto get_forum_topics()."""
+    topics: list[dict] = []
+
+    if progress_callback:
+        progress_callback(0, 0, 0)
+
+    try:
+        # Pyrogram get_forum_topics returns ForumTopic objects
+        # Paginate through all topics
+        offset_date = 0
+        offset_id = 0
+        offset_topic = 0
+
+        while True:
+            result = await _pyro.invoke(
+                _pyro_raw().channels.GetForumTopics(
+                    channel=await _pyro.resolve_peer(chat_id),
+                    offset_date=offset_date,
+                    offset_id=offset_id,
+                    offset_topic=offset_topic,
+                    limit=100,
+                    q="",
+                )
+            )
+
+            if not result.topics:
+                break
+
+            for topic in result.topics:
+                topics.append({
+                    "topic_id": topic.id,
+                    "topic_name": getattr(topic, "title", None),
+                })
+
+            if progress_callback:
+                progress_callback(len(topics), len(topics), len(topics))
+
+            # Check if we got all topics
+            if len(result.topics) < 100:
+                break
+
+            # Pagination: use the last topic's info as offset
+            last = result.topics[-1]
+            offset_date = getattr(last, "date", 0)
+            offset_id = getattr(last, "top_message", 0)
+            offset_topic = last.id
+
+    except Exception as exc:
+        logger.error("pyrogram discover_topics failed: %s", exc)
+        raise
+
+    logger.info("discover_topics (pyrogram): found %d topics", len(topics))
+    return topics
+
+
+def _pyro_raw():
+    """Lazy import pyrogram raw types."""
+    from pyrogram import raw
+    return raw.functions
+
+
+async def _discover_topics_fallback(
+    chat_id: int,
+    progress_callback=None,
+) -> list[dict]:
+    """Fallback: discover topics by brute-force probing message_thread_ids."""
     if _bot is None:
         raise RuntimeError("Bot is not running")
 
-    # Send to General to find max message_id
     marker = await _bot.send_message(chat_id=chat_id, text="🔍 Discovering topics...")
     ceiling = marker.message_id
     try:
@@ -396,56 +535,41 @@ async def discover_topics(
     except Exception:
         pass
 
-    logger.info("discover_topics: ceiling=%d, probing %d candidates", ceiling, ceiling)
-
     topics: list[dict] = []
     probed = 0
 
     async def _probe_one(candidate_id: int) -> dict | None:
-        """Probe a single candidate_id. Returns topic dict or None."""
         try:
             test_msg = await _bot.send_message(
-                chat_id=chat_id,
-                message_thread_id=candidate_id,
-                text=".",
+                chat_id=chat_id, message_thread_id=candidate_id, text=".",
             )
             topic_name = None
             if test_msg.reply_to_message and test_msg.reply_to_message.forum_topic_created:
                 topic_name = test_msg.reply_to_message.forum_topic_created.name
-
             try:
                 await _bot.delete_message(chat_id=chat_id, message_id=test_msg.message_id)
             except Exception:
                 pass
-
             return {"topic_id": candidate_id, "topic_name": topic_name}
-
         except Exception as exc:
             err = str(exc).lower()
             if "too many requests" in err or "429" in err:
                 await asyncio.sleep(10)
             return None
 
-    # Process in batches of 15 concurrent probes
     BATCH_SIZE = 15
     all_ids = list(range(1, ceiling + 1))
-
     for batch_start in range(0, len(all_ids), BATCH_SIZE):
         batch = all_ids[batch_start : batch_start + BATCH_SIZE]
         results = await asyncio.gather(*[_probe_one(cid) for cid in batch])
-
         for r in results:
             if r is not None:
                 topics.append(r)
-
         probed += len(batch)
         if progress_callback:
             progress_callback(probed, ceiling, len(topics))
-
-        # Small delay between batches to avoid rate limits
         await asyncio.sleep(0.3)
 
-    logger.info("discover_topics: found %d topics out of %d probed", len(topics), probed)
     return topics
 
 
@@ -457,27 +581,110 @@ async def scan_topic_inventory(
 ) -> dict:
     """Scan a staging topic for existing media.
 
-    Telegram message_ids are group-wide, not per-topic. To only count media
-    belonging to THIS topic, we scan message_ids between this topic_id and
-    the next topic_id (or the marker). Pass next_topic_id for accurate scoping.
-
-    Forwards each candidate to bot's Saved Messages to inspect without
-    polluting the group topic.
+    Uses Pyrogram search_messages with message_thread_id to accurately
+    find media in a specific topic. Falls back to brute-force if unavailable.
 
     Returns {found: int, skipped_existing: int, total_scanned: int}.
     """
+    if _pyro is not None:
+        return await _scan_topic_pyrogram(chat_id, topic_id, integration_id)
+    return await _scan_topic_fallback(chat_id, topic_id, integration_id, next_topic_id)
+
+
+async def _scan_topic_pyrogram(
+    chat_id: int,
+    topic_id: int,
+    integration_id: str,
+) -> dict:
+    """Scan a topic using Pyrogram's search_messages with message_thread_id."""
+    existing = get_inventory(integration_id)
+    existing_msg_ids = {item.get("message_id") for item in existing}
+
+    found = 0
+    skipped = 0
+    scanned = 0
+
+    # Search for all media types in this specific topic
+    try:
+        async for msg in _pyro.search_messages(
+            chat_id=chat_id,
+            message_thread_id=topic_id,
+            filter=pyro_enums.MessagesFilter.VIDEO,
+        ):
+            scanned += 1
+            if msg.id in existing_msg_ids:
+                skipped += 1
+                continue
+
+            file_id = None
+            file_name = None
+            media_type = "video"
+
+            if msg.video:
+                file_id = msg.video.file_id
+                file_name = msg.video.file_name
+            elif msg.document:
+                file_id = msg.document.file_id
+                file_name = msg.document.file_name
+
+            if file_id:
+                add_inventory_item(integration_id, {
+                    "file_id": file_id,
+                    "file_name": file_name or f"video_{msg.id}",
+                    "media_type": media_type,
+                    "caption": msg.caption,
+                    "message_id": msg.id,
+                    "chat_id": chat_id,
+                    "source": "scan",
+                })
+                found += 1
+
+        # Also search for documents (some videos are sent as documents)
+        async for msg in _pyro.search_messages(
+            chat_id=chat_id,
+            message_thread_id=topic_id,
+            filter=pyro_enums.MessagesFilter.DOCUMENT,
+        ):
+            scanned += 1
+            if msg.id in existing_msg_ids:
+                skipped += 1
+                continue
+
+            # Only count video-like documents
+            if msg.document and msg.document.mime_type and msg.document.mime_type.startswith("video/"):
+                add_inventory_item(integration_id, {
+                    "file_id": msg.document.file_id,
+                    "file_name": msg.document.file_name or f"doc_{msg.id}",
+                    "media_type": "video",
+                    "caption": msg.caption,
+                    "message_id": msg.id,
+                    "chat_id": chat_id,
+                    "source": "scan",
+                })
+                found += 1
+
+    except Exception as exc:
+        logger.error("pyrogram scan_topic failed for topic %s: %s", topic_id, exc)
+        return {"found": found, "skipped_existing": skipped, "total_scanned": scanned, "error": str(exc)[:200]}
+
+    return {"found": found, "skipped_existing": skipped, "total_scanned": scanned}
+
+
+async def _scan_topic_fallback(
+    chat_id: int,
+    topic_id: int,
+    integration_id: str,
+    next_topic_id: int | None = None,
+) -> dict:
+    """Fallback scan using aiogram forward approach (less reliable)."""
     if _bot is None:
         raise RuntimeError("Bot is not running")
 
-    # Send marker to find the current ceiling (only used if no next_topic_id)
     try:
         marker = await _bot.send_message(
-            chat_id=chat_id,
-            message_thread_id=topic_id,
-            text="📊",
+            chat_id=chat_id, message_thread_id=topic_id, text="📊",
         )
     except Exception as exc:
-        logger.warning("scan_topic_inventory: cannot send to topic %s — %s", topic_id, exc)
         return {"found": 0, "skipped_existing": 0, "total_scanned": 0, "error": str(exc)[:200]}
 
     marker_id = marker.message_id
@@ -486,11 +693,7 @@ async def scan_topic_inventory(
     except Exception:
         pass
 
-    # Scope: only scan messages between this topic_id and the next one
     end_id = next_topic_id if next_topic_id else marker_id
-    start_id = topic_id + 1  # skip the topic creation service message
-
-    # Get existing inventory to skip dupes
     existing = get_inventory(integration_id)
     existing_msg_ids = {item.get("message_id") for item in existing}
 
@@ -498,72 +701,37 @@ async def scan_topic_inventory(
     skipped = 0
     scanned = 0
 
-    for msg_id in range(start_id, end_id):
+    for msg_id in range(topic_id + 1, end_id):
         scanned += 1
         if msg_id in existing_msg_ids:
             skipped += 1
             continue
-
         try:
-            # Forward to same group's General topic to get full Message object.
-            # General always exists. We inspect for media then delete immediately.
             fwd = await _bot.forward_message(
-                chat_id=chat_id,
-                from_chat_id=chat_id,
-                message_id=msg_id,
+                chat_id=chat_id, from_chat_id=chat_id, message_id=msg_id,
             )
-
-            media_type = None
-            file_id = None
-            file_name = None
-
+            media_type = file_id = file_name = None
             if fwd.video:
-                media_type = "video"
-                file_id = fwd.video.file_id
-                file_name = fwd.video.file_name
-            elif fwd.photo:
-                media_type = "photo"
-                file_id = fwd.photo[-1].file_id
-                file_name = f"photo_{msg_id}.jpg"
-            elif fwd.animation:
-                media_type = "animation"
-                file_id = fwd.animation.file_id
-                file_name = fwd.animation.file_name
+                media_type, file_id, file_name = "video", fwd.video.file_id, fwd.video.file_name
             elif fwd.document:
-                media_type = "document"
-                file_id = fwd.document.file_id
-                file_name = fwd.document.file_name
-
-            # Delete the forwarded copy from General immediately
+                media_type, file_id, file_name = "document", fwd.document.file_id, fwd.document.file_name
             try:
                 await _bot.delete_message(chat_id=chat_id, message_id=fwd.message_id)
             except Exception:
                 pass
-
             if media_type and file_id:
                 add_inventory_item(integration_id, {
-                    "file_id": file_id,
-                    "file_name": file_name or f"{media_type}_{msg_id}",
-                    "media_type": media_type,
-                    "caption": fwd.caption,
-                    "message_id": msg_id,
-                    "chat_id": chat_id,
-                    "source": "scan",
+                    "file_id": file_id, "file_name": file_name or f"{media_type}_{msg_id}",
+                    "media_type": media_type, "caption": fwd.caption,
+                    "message_id": msg_id, "chat_id": chat_id, "source": "scan",
                 })
                 found += 1
-
         except Exception:
             pass
-
-        # Rate limit
         if scanned % 15 == 0:
             await asyncio.sleep(1)
 
-    return {
-        "found": found,
-        "skipped_existing": skipped,
-        "total_scanned": scanned,
-    }
+    return {"found": found, "skipped_existing": skipped, "total_scanned": scanned}
 
 
 async def send_text_to_topic(

@@ -186,6 +186,7 @@ async def telegram_status():
     return {
         "bot_configured": bool(get_bot_token()),
         "bot_running": bot is not None,
+        "pyrogram_available": _tg_bot.get_pyro() is not None,
         "bot_username": config.get("bot_username"),
         "staging_group": {
             "chat_id": staging.get("chat_id"),

@@ -10,6 +10,7 @@ pytesseract
 Pillow
 yt-dlp
 aiogram>=3.4
+pyrotgfork>=2.2
 tiktokautouploader
 google-api-python-client
 google-auth
