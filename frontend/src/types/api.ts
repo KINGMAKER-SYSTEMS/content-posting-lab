@@ -239,21 +239,6 @@ export interface CaptionsResponse {
   sources: CaptionSource[];
 }
 
-export interface CaptionEntry {
-  text: string;
-  mood: MoodTag | null;
-}
-
-export interface CaptionCategory {
-  id: string;
-  name: string;
-  captions: CaptionEntry[];
-  count: number;
-}
-
-export interface CaptionBankResponse {
-  categories: CaptionCategory[];
-}
 
 export interface FontsResponse {
   fonts: FontInfo[];

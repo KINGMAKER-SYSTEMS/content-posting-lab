@@ -14,7 +14,6 @@ from project_manager import PROJECTS_DIR, ensure_default_project
 from providers import PROVIDERS
 from providers.base import API_KEYS
 from routers.burn import router as burn_router
-from routers.caption_bank import router as caption_bank_router
 from routers.captions import router as captions_router
 from routers.clipper import router as clipper_router
 from routers.projects import list_all_projects, router as projects_router
@@ -153,7 +152,6 @@ app.include_router(captions_router, prefix="/api/captions", tags=["captions"])
 app.include_router(burn_router, prefix="/api/burn", tags=["burn"])
 app.include_router(projects_router, prefix="/api/projects", tags=["projects"])
 app.include_router(recreate_router, prefix="/api/recreate", tags=["recreate"])
-app.include_router(caption_bank_router, prefix="/api/caption-bank", tags=["caption-bank"])
 app.include_router(clipper_router, prefix="/api/clipper", tags=["clipper"])
 app.include_router(postiz_router, prefix="/api/postiz", tags=["postiz"])
 app.include_router(roster_router, prefix="/api/roster", tags=["roster"])
