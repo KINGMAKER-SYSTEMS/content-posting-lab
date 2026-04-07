@@ -34,7 +34,8 @@ const SNAP_THRESHOLD = 3;
 
 const TIKTOK_COLOR_PRESETS: { name: string; hex: string }[] = [
   { name: 'White', hex: '#FFFFFF' },
-  { name: 'Pastel Yellow', hex: '#FADE4B' },
+  { name: 'Yellow', hex: '#FFFC00' },
+  { name: 'Pastel Yellow', hex: '#FFF176' },
   { name: 'TikTok Red', hex: '#FE2C55' },
   { name: 'TikTok Cyan', hex: '#25F4EE' },
   { name: 'Blue', hex: '#5B9BD5' },
