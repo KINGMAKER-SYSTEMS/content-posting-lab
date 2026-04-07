@@ -705,34 +705,35 @@ export function BurnPage() {
         setProgressValue(15 + Math.round((done / pairs.length) * 85));
         setProgressLabel(`Burned ${done}/${pairs.length}...`);
       }
-      // Debug: log what we got back
       const okCount = results.filter((r) => r?.ok).length;
-      const undefinedCount = results.filter((r) => r === undefined || r === null).length;
+      const emptyCount = results.filter((r) => r === undefined || r === null).length;
       const failCount = results.filter((r) => r && !r.ok).length;
-      console.log(`[burn] results: ${okCount} ok, ${failCount} failed, ${undefinedCount} undefined/null, total array length=${results.length}, pairs=${pairs.length}`);
-      if (undefinedCount > 0) {
-        console.log('[burn] undefined indices:', results.map((r, i) => r === undefined || r === null ? i : null).filter(Boolean));
-      }
-      if (failCount > 0) {
-        console.log('[burn] failed:', results.filter((r) => r && !r.ok).map((r) => `#${r.index}: ${r.error}`));
-      }
+      const firstErr = results.find((r) => r && !r.ok && r.error);
 
       setPairs(pairs.map((p, i) => {
         const r = results[i];
         return r?.ok && r.file ? { ...p, result: r, burnedFile: r.file } : { ...p, result: r };
       }));
-      const sc = results.filter((r) => r?.ok).length;
-      const firstErr = results.find((r) => r && !r.ok && r.error);
-      setExportCount(sc); setProgressValue(100); setProgressLabel(`Done! ${sc}/${pairs.length} burned.`);
-      if (sc > 0) { setShowExportBar(true); addNotification('success', `Burn complete: ${sc}/${pairs.length}`); }
-      else { setShowExportBar(false); addNotification('error', `Burn 0/${pairs.length}: ${firstErr?.error || 'unknown error — check console'}`); }
+      setExportCount(okCount); setProgressValue(100);
+      setProgressLabel(`Done! ${okCount}/${pairs.length} burned.`);
+
+      if (okCount > 0) {
+        setShowExportBar(true);
+        addNotification('success', `Burn complete: ${okCount}/${pairs.length}`);
+      } else {
+        setShowExportBar(false);
+        // Show detailed debug info in the error banner so we can see it without console
+        const debugInfo = `ok=${okCount} fail=${failCount} empty=${emptyCount} len=${results.length} pairs=${pairs.length} err="${firstErr?.error || 'none'}"`;
+        setError(debugInfo);
+        addNotification('error', `Burn 0/${pairs.length} — ${debugInfo}`);
+      }
       await loadBatches();
       window.dispatchEvent(new Event('projects:changed'));
       window.dispatchEvent(new Event('burn:refresh-request'));
     } catch (e) {
-      console.error('[burn] OUTER CATCH:', e);
-      const msg = e instanceof Error ? e.message : 'Burn failed';
-      setError(msg); addNotification('error', msg);
+      const msg = e instanceof Error ? e.message : String(e);
+      setError(`OUTER CATCH: ${msg}`);
+      addNotification('error', `Burn crashed: ${msg}`);
     } finally { setBurning(false); }
   }, [addNotification, burnOnServer, burning, loadBatches, pairs, projectName]);
 

@@ -936,9 +936,9 @@ export function TelegramPage() {
             <div className="flex items-center gap-2">
               {notionResult && (
                 <span className="text-xs font-normal text-muted-foreground">
-                  {notionResult.sounds_added > 0 || notionResult.sounds_deactivated > 0
-                    ? `+${notionResult.sounds_added || 0} / -${notionResult.sounds_deactivated || 0}`
-                    : `${notionResult.active_campaigns || 0} active`}
+                  {(notionResult as any).sounds_added > 0 || (notionResult as any).sounds_deactivated > 0
+                    ? `+${(notionResult as any).sounds_added || 0} / -${(notionResult as any).sounds_deactivated || 0}`
+                    : `${(notionResult as any).active_campaigns || 0} active`}
                 </span>
               )}
               <Button
