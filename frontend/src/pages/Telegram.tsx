@@ -62,6 +62,7 @@ export function TelegramPage() {
   const [chatIdInput, setChatIdInput] = useState('');
   const [syncResult, setSyncResult] = useState<{ created: number; existing: number } | null>(null);
   const [scanning, setScanning] = useState(false);
+  const [scanProgress, setScanProgress] = useState('');
   const [scanResult, setScanResult] = useState<{ scanned_topics: number; total_found: number } | null>(null);
 
   const [newPosterName, setNewPosterName] = useState('');
@@ -682,20 +683,40 @@ export function TelegramPage() {
                   onClick={async () => {
                     setScanning(true);
                     setScanResult(null);
+                    setScanProgress('Starting scan...');
                     try {
-                      const res = await fetchJson<{ scanned_topics: number; total_found: number; results: { topic_name: string; found?: number; error?: string }[] }>(
-                        apiUrl('/api/telegram/staging-group/scan-inventory'), { method: 'POST' }
-                      );
-                      setScanResult({ scanned_topics: res.scanned_topics, total_found: res.total_found });
-                      addNotification('success', `Scanned ${res.scanned_topics} topics, found ${res.total_found} media items`);
-                      await refresh();
+                      // Fire-and-forget POST to start background scan
+                      await fetch(apiUrl('/api/telegram/staging-group/scan-inventory'), { method: 'POST' });
+
+                      // Poll GET for progress
+                      const maxPolls = 300; // 10 minutes
+                      for (let i = 0; i < maxPolls; i++) {
+                        await new Promise((r) => setTimeout(r, 2000));
+                        try {
+                          const status = await fetchJson<{
+                            status: string; scanned_topics?: number; total_topics?: number;
+                            total_found?: number; current_topic?: string;
+                          }>(apiUrl('/api/telegram/staging-group/scan-inventory'));
+
+                          if (status.status === 'done') {
+                            setScanResult({ scanned_topics: status.scanned_topics ?? 0, total_found: status.total_found ?? 0 });
+                            setScanProgress('');
+                            addNotification('success', `Scanned ${status.scanned_topics} topics, found ${status.total_found} media items`);
+                            await refresh();
+                            break;
+                          } else if (status.status === 'running') {
+                            setScanProgress(`Scanning ${status.scanned_topics ?? 0}/${status.total_topics ?? '?'}: ${status.current_topic ?? '...'} (${status.total_found ?? 0} found)`);
+                          }
+                        } catch { /* poll failed, retry */ }
+                      }
                     } catch (err) {
                       addNotification('error', err instanceof Error ? err.message : 'Scan failed');
-                    } finally { setScanning(false); }
+                    } finally { setScanning(false); setScanProgress(''); }
                   }}
                 >
                   {scanning ? 'Scanning...' : 'Scan Inventory'}
                 </Button>
+                {scanProgress && <span className="text-xs text-muted-foreground">{scanProgress}</span>}
                 <Button variant="ghost" size="sm" onClick={async () => {
                   try {
                     const res = await fetchJson<{

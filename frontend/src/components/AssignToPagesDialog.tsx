@@ -66,7 +66,6 @@ export function AssignToPagesDialog({
   }, []);
 
   const selectedCount = selected.size;
-  const eligiblePages = pages.filter((p) => p.has_staging_topic);
 
   // Compute round-robin preview
   const splitPreview = selectedCount > 0

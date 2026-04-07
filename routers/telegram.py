@@ -349,34 +349,28 @@ async def sync_staging_topics():
     return {"created": created, "existing": existing, "failed": skipped_names}
 
 
-@router.post("/staging-group/scan-inventory")
-async def scan_all_inventory():
-    """Scan ALL staging topics for existing media and backfill inventory.
+# Background scan job state
+_scan_job: dict | None = None
 
-    Iterates message IDs in each topic to discover manually uploaded content
-    that the bot missed. This can take a while with many topics.
-    """
-    _require_bot()
 
-    staging = get_staging_group()
-    if not staging or not staging.get("chat_id"):
-        raise HTTPException(status_code=400, detail="Staging group not configured")
-
-    chat_id = staging["chat_id"]
-    topics = staging.get("topics", {})
-
-    # Deduplicate by topic_id (multiple integration_ids may share a topic)
-    seen_topic_ids: dict[int, str] = {}  # topic_id -> first integration_id
-    for int_id, info in topics.items():
-        tid = info.get("topic_id") if isinstance(info, dict) else None
-        if tid and tid not in seen_topic_ids:
-            seen_topic_ids[tid] = int_id
-
+async def _run_scan_job(chat_id: int, seen_topic_ids: dict[int, str], topics: dict) -> None:
+    """Background task that scans all topics and updates _scan_job state."""
+    global _scan_job
     results = []
     total_found = 0
+    total_topics = len(seen_topic_ids)
 
-    for topic_id, integration_id in seen_topic_ids.items():
+    for idx, (topic_id, integration_id) in enumerate(seen_topic_ids.items()):
         topic_name = topics[integration_id].get("topic_name", str(topic_id))
+        _scan_job = {
+            "status": "running",
+            "progress": f"{idx}/{total_topics}",
+            "current_topic": topic_name,
+            "scanned_topics": idx,
+            "total_topics": total_topics,
+            "total_found": total_found,
+            "results": results,
+        }
         try:
             r = await _tg_bot.scan_topic_inventory(
                 chat_id=int(chat_id),
@@ -397,14 +391,56 @@ async def scan_all_inventory():
                 "error": str(exc)[:200],
             })
 
-        # Rate limit between topics
         await asyncio.sleep(1)
 
-    return {
+    _scan_job = {
+        "status": "done",
         "scanned_topics": len(results),
+        "total_topics": total_topics,
         "total_found": total_found,
         "results": results,
     }
+
+
+@router.post("/staging-group/scan-inventory")
+async def scan_all_inventory():
+    """Start a background scan of ALL staging topics for existing media.
+
+    Returns immediately. Poll GET /staging-group/scan-inventory for progress.
+    """
+    global _scan_job
+    _require_bot()
+
+    # If already running, don't start another
+    if _scan_job and _scan_job.get("status") == "running":
+        return {"status": "already_running", **_scan_job}
+
+    staging = get_staging_group()
+    if not staging or not staging.get("chat_id"):
+        raise HTTPException(status_code=400, detail="Staging group not configured")
+
+    chat_id = staging["chat_id"]
+    topics = staging.get("topics", {})
+
+    # Deduplicate by topic_id
+    seen_topic_ids: dict[int, str] = {}
+    for int_id, info in topics.items():
+        tid = info.get("topic_id") if isinstance(info, dict) else None
+        if tid and tid not in seen_topic_ids:
+            seen_topic_ids[tid] = int_id
+
+    _scan_job = {"status": "starting", "total_topics": len(seen_topic_ids), "total_found": 0}
+    asyncio.create_task(_run_scan_job(chat_id, seen_topic_ids, topics))
+
+    return {"status": "started", "total_topics": len(seen_topic_ids)}
+
+
+@router.get("/staging-group/scan-inventory")
+async def get_scan_status():
+    """Poll the background scan job progress."""
+    if _scan_job is None:
+        return {"status": "idle"}
+    return _scan_job
 
 
 @router.post("/staging-group/scan-inventory/{integration_id}")
