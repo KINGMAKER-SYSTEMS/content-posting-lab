@@ -81,6 +81,177 @@ async def delete_page(integration_id: str):
     return {"deleted": True}
 
 
+# ── Dedup ────────────────────────────────────────────────────────────────
+
+
+@router.get("/duplicates")
+async def find_duplicates():
+    """Audit roster for duplicate page names.
+
+    For each duplicate set, shows which integration_ids have:
+    - staging topics (with topic_id)
+    - inventory items (staged/pending/forwarded)
+    So the user can decide which to keep.
+    """
+    from collections import defaultdict
+
+    roster = load_roster()
+    pages = roster["pages"]
+
+    # Get staging topics and inventory data
+    try:
+        from services.telegram import get_staging_group, get_inventory
+        staging = get_staging_group()
+        staging_topics = staging.get("topics", {})
+    except Exception:
+        staging_topics = {}
+
+    try:
+        from services.telegram import load_config as load_tg_config
+        tg_config = load_tg_config()
+        all_inventory = tg_config.get("inventory", {})
+    except Exception:
+        all_inventory = {}
+
+    # Group by lowercase name
+    by_name: dict[str, list[str]] = defaultdict(list)
+    for ig_id, page in pages.items():
+        key = (page.get("name") or ig_id).lower().strip()
+        by_name[key].append(ig_id)
+
+    duplicates = []
+    for name, ids in sorted(by_name.items()):
+        if len(ids) <= 1:
+            continue
+
+        entries = []
+        for ig_id in ids:
+            page = pages[ig_id]
+            topic = staging_topics.get(ig_id, {})
+            inv = all_inventory.get(ig_id, [])
+            inv_pending = sum(1 for i in inv if not i.get("forwarded"))
+            inv_forwarded = sum(1 for i in inv if i.get("forwarded"))
+
+            entries.append({
+                "integration_id": ig_id,
+                "name": page.get("name", ""),
+                "provider": page.get("provider", ""),
+                "has_topic": bool(topic.get("topic_id")),
+                "topic_id": topic.get("topic_id"),
+                "topic_name": topic.get("topic_name", ""),
+                "inventory_total": len(inv),
+                "inventory_pending": inv_pending,
+                "inventory_forwarded": inv_forwarded,
+                "has_project": bool(page.get("project")),
+                "has_drive": bool(page.get("drive_folder_id")),
+            })
+
+        duplicates.append({"name": name, "count": len(ids), "entries": entries})
+
+    return {
+        "total_pages": len(pages),
+        "duplicate_names": len(duplicates),
+        "duplicates": duplicates,
+    }
+
+
+@router.post("/dedup")
+async def dedup_roster():
+    """Remove duplicate roster entries that share the same name.
+
+    For each duplicate set, keeps the entry with the most inventory/data.
+    Merges inventory from removed entries into the kept one.
+    Also cleans up duplicate staging topics.
+    """
+    from collections import defaultdict
+
+    roster = load_roster()
+    pages = roster["pages"]
+
+    try:
+        from services.telegram import (
+            get_staging_group,
+            remove_staging_topic,
+            load_config as load_tg_config,
+            save_config as save_tg_config,
+        )
+        staging = get_staging_group()
+        staging_topics = staging.get("topics", {})
+        tg_config = load_tg_config()
+        all_inventory = tg_config.get("inventory", {})
+    except Exception:
+        staging_topics = {}
+        tg_config = None
+        all_inventory = {}
+
+    by_name: dict[str, list[str]] = defaultdict(list)
+    for ig_id, page in pages.items():
+        key = (page.get("name") or ig_id).lower().strip()
+        by_name[key].append(ig_id)
+
+    removed_ids: list[str] = []
+    removed_names: list[str] = []
+    inventory_merged = 0
+
+    for name, ids in by_name.items():
+        if len(ids) <= 1:
+            continue
+
+        # Score: prefer entries with inventory > topic > project > drive
+        def score(ig_id: str) -> int:
+            s = 0
+            inv = all_inventory.get(ig_id, [])
+            s += len(inv) * 100  # inventory items matter most
+            if ig_id in staging_topics:
+                s += 50
+            p = pages[ig_id]
+            if p.get("project"):
+                s += 10
+            if p.get("drive_folder_id"):
+                s += 5
+            return s
+
+        ids_sorted = sorted(ids, key=score, reverse=True)
+        keep_id = ids_sorted[0]
+
+        for dupe_id in ids_sorted[1:]:
+            # Merge inventory from dupe into keeper
+            dupe_inv = all_inventory.get(dupe_id, [])
+            if dupe_inv and tg_config is not None:
+                keep_inv = tg_config.get("inventory", {}).setdefault(keep_id, [])
+                keep_inv.extend(dupe_inv)
+                inventory_merged += len(dupe_inv)
+                # Remove dupe inventory
+                if dupe_id in tg_config.get("inventory", {}):
+                    del tg_config["inventory"][dupe_id]
+
+            removed_ids.append(dupe_id)
+            removed_names.append(pages[dupe_id].get("name", dupe_id))
+            remove_page(dupe_id)
+
+    # Save merged inventory
+    if tg_config is not None and inventory_merged > 0:
+        save_tg_config(tg_config)
+
+    # Clean up staging topics for removed IDs
+    topic_removed = 0
+    for rid in removed_ids:
+        if rid in staging_topics:
+            try:
+                remove_staging_topic(rid)
+                topic_removed += 1
+            except Exception:
+                pass
+
+    return {
+        "removed": len(removed_ids),
+        "removed_names": removed_names,
+        "inventory_merged": inventory_merged,
+        "topics_cleaned": topic_removed,
+        "remaining": len(list_all_pages()),
+    }
+
+
 # ── Sync with Postiz ──────────────────────────────────────────────────────
 
 

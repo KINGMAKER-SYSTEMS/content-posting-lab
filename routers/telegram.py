@@ -294,6 +294,9 @@ async def sync_staging_topics():
     existing = 0
     skipped_names: list[str] = []
 
+    # Track which page names already have topics (to skip duplicate names)
+    seen_names: set[str] = set()
+
     for page in pages:
         integration_id = page.get("integration_id", "")
         if not integration_id:
@@ -305,9 +308,18 @@ async def sync_staging_topics():
 
         if integration_id in fresh_topics:
             existing += 1
+            # Track the name so we skip duplicates
+            seen_names.add(_page_display_name(page).lower().strip())
             continue
 
         page_name = _page_display_name(page)
+
+        # Skip if another integration with the same name already has a topic
+        if page_name.lower().strip() in seen_names:
+            existing += 1
+            continue
+        seen_names.add(page_name.lower().strip())
+
         provider = page.get("provider", "")
         topic_name = f"{page_name} ({provider})" if provider else page_name
 

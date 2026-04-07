@@ -669,10 +669,52 @@ export function TelegramPage() {
                 </div>
               )}
 
-              {/* Set Up Folders */}
-              <div className="flex items-center gap-3">
+              {/* Set Up Folders + Dedup */}
+              <div className="flex flex-wrap items-center gap-3">
                 <Button variant="outline" onClick={handleSyncTopics}>
                   Set Up Folders
+                </Button>
+                <Button variant="ghost" size="sm" onClick={async () => {
+                  try {
+                    const res = await fetchJson<{
+                      total_pages: number;
+                      duplicate_names: number;
+                      duplicates: { name: string; count: number; entries: { integration_id: string; has_topic: boolean; inventory_total: number; inventory_pending: number; inventory_forwarded: number }[] }[];
+                    }>(apiUrl('/api/roster/duplicates'));
+                    if (res.duplicate_names === 0) {
+                      addNotification('info', `No duplicates found (${res.total_pages} pages)`);
+                    } else {
+                      const summary = res.duplicates.map((d) => {
+                        const parts = d.entries.map((e) =>
+                          `  ${e.integration_id.slice(0, 8)}… topic=${e.has_topic ? 'yes' : 'no'} inv=${e.inventory_total}(${e.inventory_pending}p/${e.inventory_forwarded}f)`
+                        );
+                        return `${d.name} (x${d.count}):\n${parts.join('\n')}`;
+                      }).join('\n\n');
+                      setError(`${res.duplicate_names} duplicate names found:\n\n${summary}`);
+                    }
+                  } catch (err) {
+                    addNotification('error', err instanceof Error ? err.message : 'Audit failed');
+                  }
+                }}>
+                  Audit Dupes
+                </Button>
+                <Button variant="ghost" size="sm" className="text-destructive" onClick={async () => {
+                  if (!confirm('This will merge inventory from duplicate pages and remove extras. Continue?')) return;
+                  try {
+                    const res = await fetchJson<{ removed: number; inventory_merged: number; topics_cleaned: number; remaining: number }>(
+                      apiUrl('/api/roster/dedup'), { method: 'POST' }
+                    );
+                    if (res.removed > 0) {
+                      addNotification('success', `Removed ${res.removed} dupes, merged ${res.inventory_merged} inventory items, cleaned ${res.topics_cleaned} topics. ${res.remaining} pages remaining.`);
+                      await refresh();
+                    } else {
+                      addNotification('info', 'No duplicates to clean');
+                    }
+                  } catch (err) {
+                    addNotification('error', err instanceof Error ? err.message : 'Dedup failed');
+                  }
+                }}>
+                  Clean Dupes
                 </Button>
                 {syncResult && (
                   <span className="text-sm text-muted-foreground">
@@ -680,6 +722,16 @@ export function TelegramPage() {
                   </span>
                 )}
               </div>
+
+              {/* Dedup audit output */}
+              {error && error.includes('duplicate') && (
+                <Card className="border-amber-500 bg-amber-50">
+                  <CardContent className="max-h-64 overflow-y-auto py-3">
+                    <pre className="whitespace-pre-wrap text-xs text-amber-900 select-all">{error}</pre>
+                    <Button size="xs" variant="ghost" className="mt-2" onClick={() => setError(null)}>Dismiss</Button>
+                  </CardContent>
+                </Card>
+              )}
             </div>
           )}
         </CardContent>
