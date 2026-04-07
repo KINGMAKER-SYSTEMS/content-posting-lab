@@ -2,7 +2,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { apiUrl, staticUrl } from '../lib/api';
 import { EmptyState, LazyVideo, ProgressBar } from '../components';
 import { useWorkflowStore } from '../stores/workflowStore';
-import { captureTextOverlay as captureTextOverlayShared, fontFamilyName, getTextTranslateX } from '../lib/textOverlay';
+import { captureTextOverlay as captureTextOverlayShared, fontFamilyName } from '../lib/textOverlay';
 import type { TextOverlayConfig } from '../lib/textOverlay';
 import type {
   BatchesResponse,
@@ -88,10 +88,8 @@ interface DragState {
   index: number;
   startX: number;
   startY: number;
-  startLayerX: number;
   startLayerY: number;
   startMaxWidthPct: number;
-  startFontSize: number;
   rect: DOMRect;
 }
 
@@ -167,21 +165,6 @@ async function captureTextOverlay(pair: BurnPairState): Promise<string | null> {
   return captureTextOverlayShared(config);
 }
 
-// ── Lazy visibility for large grids ──────────────────────────────────
-
-function useIsVisible(rootMargin = '400px') {
-  const ref = useRef<HTMLDivElement>(null);
-  const [visible, setVisible] = useState(false);
-  useEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    const obs = new IntersectionObserver(([entry]) => { if (entry.isIntersecting) { setVisible(true); obs.disconnect(); } }, { rootMargin });
-    obs.observe(el);
-    return () => obs.disconnect();
-  }, [rootMargin]);
-  return { ref, visible };
-}
-
 // ── Memoized pair card ──────────────────────────────────────────────
 
 interface PairCardProps {
@@ -207,7 +190,6 @@ const PairCard = memo(function PairCard({
   cssFilterPreview, encodedProjectName,
   onSelect, onStartDrag, onInlineEdit, onCaptionChange, onFontSizeChange, onDimensions, onWrapRef,
 }: PairCardProps) {
-  const { ref: visRef, visible } = useIsVisible();
   const hasError = Boolean(pair.result && !pair.result.ok);
   const hasBurned = Boolean(pair.result?.ok && pair.burnedFile);
   const scale = pair.previewScale ?? 1;
@@ -220,7 +202,6 @@ const PairCard = memo(function PairCard({
 
   return (
     <article
-      ref={visRef}
       className={`relative overflow-hidden rounded-[var(--border-radius)] border-2 bg-card transition-all ${
         hasBurned ? 'border-green-700 shadow-[3px_3px_0_0_var(--green-700,#15803d)]'
           : hasError ? 'border-destructive'
@@ -233,8 +214,6 @@ const PairCard = memo(function PairCard({
         onSelect(index);
       }}
     >
-      {visible ? (
-        <>
           <div
             ref={(node) => { onWrapRef(index, node); }}
             className="relative aspect-[9/16] overflow-hidden bg-muted"
@@ -256,7 +235,7 @@ const PairCard = memo(function PairCard({
                 onPointerDown={(e) => onStartDrag(e, index)}
                 onDoubleClick={(e) => { e.stopPropagation(); onInlineEdit(index); }}
                 className={`absolute z-10 select-none text-center ${draggingIndex === index ? 'cursor-grabbing' : 'cursor-grab'} ${selected ? 'outline outline-2 outline-offset-4 outline-dashed outline-primary' : ''}`}
-                style={{ left: `${pair.x}%`, top: `${pair.y}%`, transform: `translate(${getTextTranslateX(pair.x, pair.maxWidthPct)}%, -50%)`, maxWidth: `${pair.maxWidthPct}%`, minWidth: '40px', minHeight: '24px', fontFamily: `'${fontFamilyName(pair.fontFile)}', sans-serif` }}
+                style={{ left: '50%', top: `${pair.y}%`, transform: 'translate(-50%, -50%)', width: `${pair.maxWidthPct}%`, minHeight: '24px', fontFamily: `'${fontFamilyName(pair.fontFile)}', sans-serif` }}
               >
                 {selected && !inlineEditing ? (
                   <div className="pointer-events-none absolute -top-3 left-1/2 -translate-x-1/2 rounded-full bg-primary px-1.5 py-0.5 text-[8px] font-bold text-primary-foreground shadow-sm">
@@ -311,16 +290,6 @@ const PairCard = memo(function PairCard({
               />
             </div>
           ) : null}
-        </>
-      ) : (
-        /* Placeholder — rendered until card scrolls into view */
-        <div className="aspect-[9/16] bg-muted flex items-center justify-center">
-          <div className="text-center px-2">
-            <div className="text-[10px] text-muted-foreground truncate">{pair.name}</div>
-            <div className="text-[9px] text-muted-foreground/60 mt-1 line-clamp-2">{pair.caption}</div>
-          </div>
-        </div>
-      )}
     </article>
   );
 });
@@ -663,27 +632,21 @@ export function BurnPage() {
     const dx = e.clientX - d.startX;
     const dy = e.clientY - d.startY;
 
-    // Vertical drag → move y position
+    // Vertical → move y position (with center snap)
     let ny = d.startLayerY + (dy / d.rect.height) * 100;
     ny = Math.max(5, Math.min(95, ny));
     let sH = false;
     if (Math.abs(ny - 50) < SNAP_THRESHOLD) { ny = 50; sH = true; }
 
-    // Horizontal drag → coupled text density control
-    // Drag right = compact (narrower wrap + smaller font)
-    // Drag left = expand (wider wrap + larger font)
-    // Both scale together so the text stays balanced and centered
-    const dxPct = (dx / d.rect.width) * 100;
-    const ratio = 1 - dxPct / 100; // >1 when dragging right, <1 when left
-    let newMaxW = d.startMaxWidthPct * ratio;
-    newMaxW = Math.max(20, Math.min(100, newMaxW));
-    // Font scales at 40% of the wrap ratio change to keep it subtle
-    const fontRatio = 1 - (dxPct / 100) * 0.4;
-    let newFontSize = Math.round(d.startFontSize * fontRatio);
-    newFontSize = Math.max(12, Math.min(100, newFontSize));
+    // Horizontal → adjust wrap width (text density)
+    // Full card-width drag = 60pct change in maxWidthPct
+    // Drag right = narrower (compact), drag left = wider (flatten)
+    const dxPct = (dx / d.rect.width) * 60;
+    let newMaxW = d.startMaxWidthPct - dxPct;
+    newMaxW = Math.max(20, Math.min(95, newMaxW));
 
     setSnapGuide({ index: d.index, horizontal: sH, vertical: false });
-    setPairs((p) => p.map((pair, idx) => idx !== d.index ? pair : { ...pair, x: 50, y: ny, maxWidthPct: newMaxW, fontSize: newFontSize }));
+    setPairs((p) => p.map((pair, idx) => idx !== d.index ? pair : { ...pair, x: 50, y: ny, maxWidthPct: newMaxW }));
   }, []);
 
   const onDragEnd = useCallback(() => {
@@ -699,19 +662,24 @@ export function BurnPage() {
     e.preventDefault(); e.stopPropagation();
     const pair = pairs[i]; if (!pair) return;
     selectCard(i);
-    dragRef.current = { index: i, startX: e.clientX, startY: e.clientY, startLayerX: pair.x, startLayerY: pair.y, startMaxWidthPct: pair.maxWidthPct, startFontSize: pair.fontSize, rect: w.getBoundingClientRect() };
+    dragRef.current = { index: i, startX: e.clientX, startY: e.clientY, startLayerY: pair.y, startMaxWidthPct: pair.maxWidthPct, rect: w.getBoundingClientRect() };
     window.addEventListener('pointermove', onDragMove);
     window.addEventListener('pointerup', onDragEnd);
   }, [inlineEditIndex, onDragEnd, onDragMove, pairs, selectCard]);
 
-  const burnOnServer = useCallback(async (pair: BurnPairState, index: number, batchId: string, overlayPng: string | null): Promise<BurnResponse> => {
+  /**
+   * Submit a single burn item. The server queues it and returns immediately.
+   * We then poll batch-status to track progress.
+   */
+  const submitBurnItem = useCallback(async (pair: BurnPairState, index: number, batchId: string, overlayPng: string | null): Promise<void> => {
     const r = await fetch(apiUrl('/api/burn/overlay'), {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ project: projectName, batchId, index, videoPath: pair.videoPath, overlayPng, colorCorrection: pair.colorCorrection }),
     });
-    const d = (await r.json()) as BurnResponse & { error?: string };
-    if (!r.ok || !d.ok) throw new Error(d.error || `Burn failed (${r.status})`);
-    return d;
+    if (!r.ok) {
+      const d = await r.json().catch(() => ({ error: `HTTP ${r.status}` }));
+      throw new Error(d.error || `Submit failed (${r.status})`);
+    }
   }, [projectName]);
 
   const handleBurnAll = useCallback(async () => {
@@ -720,29 +688,97 @@ export function BurnPage() {
     setProgressLabel(`Rendering ${pairs.length} text overlays...`);
     const batchId = makeBatchId(projectName, batchLabel || undefined); setBurnBatchId(batchId);
     try {
+      // Phase 1: Render all text overlays client-side
       const overlays = await Promise.all(pairs.map((p) => captureTextOverlay(p)));
-      setProgressValue(15); setProgressLabel(`Burning ${pairs.length} videos (server)...`);
-      let done = 0;
-      const results = await Promise.all(pairs.map((p, i) =>
-        burnOnServer(p, i, batchId, overlays[i]).then((r) => { done++; setProgressValue(15 + Math.round((done / pairs.length) * 85)); setProgressLabel(`Burned ${done}/${pairs.length}...`); return r; })
-          .catch((err: unknown) => { done++; setProgressValue(15 + Math.round((done / pairs.length) * 85)); return { index: i, ok: false, error: err instanceof Error ? err.message : 'Burn failed' } as BurnResponse; })
-      ));
+      setProgressValue(10); setProgressLabel(`Submitting ${pairs.length} burn jobs...`);
+
+      // Phase 2: Submit all burn requests (server returns immediately, processes in background)
+      // Send in chunks of 8 to avoid overwhelming the browser connection pool
+      const SUBMIT_CHUNK = 8;
+      const submitErrors: string[] = [];
+      for (let start = 0; start < pairs.length; start += SUBMIT_CHUNK) {
+        const chunk = pairs.slice(start, start + SUBMIT_CHUNK).map((p, ci) => {
+          const i = start + ci;
+          return submitBurnItem(p, i, batchId, overlays[i]).catch((err: unknown) => {
+            submitErrors.push(`#${i}: ${err instanceof Error ? err.message : String(err)}`);
+          });
+        });
+        await Promise.all(chunk);
+      }
+
+      if (submitErrors.length === pairs.length) {
+        // All submissions failed — no point polling
+        setError(`All ${pairs.length} submissions failed: ${submitErrors.slice(0, 3).join(' | ')}`);
+        addNotification('error', `All burns failed to submit`);
+        return;
+      }
+      if (submitErrors.length > 0) {
+        console.warn(`[burn] ${submitErrors.length} submit errors:`, submitErrors);
+      }
+
+      setProgressValue(20); setProgressLabel(`Burning 0/${pairs.length}...`);
+
+      // Phase 3: Poll batch-status until all items are done/error
+      const pollInterval = 2000; // 2 seconds
+      const maxPolls = 600; // 20 minutes max
+      let polls = 0;
+      let finalResults: Record<string, { index: number; ok: boolean; file?: string; error?: string; status: string }> = {};
+
+      while (polls < maxPolls) {
+        await new Promise((resolve) => setTimeout(resolve, pollInterval));
+        polls++;
+        try {
+          const statusRes = await fetch(apiUrl(`/api/burn/batch-status/${encodeURIComponent(batchId)}`));
+          if (!statusRes.ok) continue;
+          const status = await statusRes.json();
+          finalResults = status.items || {};
+          const doneCount = status.done || 0;
+          const okCount = status.ok || 0;
+          setProgressValue(20 + Math.round((doneCount / pairs.length) * 80));
+          setProgressLabel(`Burned ${doneCount}/${pairs.length} (${okCount} OK)...`);
+
+          if (doneCount >= pairs.length) break;
+        } catch {
+          // Poll failed, retry
+        }
+      }
+
+      // Phase 4: Collect results
+      const results: BurnResponse[] = pairs.map((_, i) => {
+        const item = finalResults[String(i)];
+        if (!item) return { index: i, ok: false, error: 'No status returned' };
+        return { index: item.index ?? i, ok: !!item.ok, file: item.file, error: item.error };
+      });
+
+      const okCount = results.filter((r) => r.ok).length;
+      const failCount = results.filter((r) => !r.ok).length;
+      const errMsgs = results.filter((r) => !r.ok && r.error).map((r) => r.error!).slice(0, 3);
+
       setPairs(pairs.map((p, i) => {
         const r = results[i];
         return r?.ok && r.file ? { ...p, result: r, burnedFile: r.file } : { ...p, result: r };
       }));
-      const sc = results.filter((r) => r.ok).length;
-      setExportCount(sc); setProgressValue(100); setProgressLabel(`Done! ${sc}/${pairs.length} burned.`);
-      if (sc > 0) { setShowExportBar(true); addNotification('success', `Burn complete: ${sc}/${pairs.length}`); }
-      else { setShowExportBar(false); addNotification('error', 'Burn finished with no successful outputs'); }
+      setExportCount(okCount); setProgressValue(100);
+      setProgressLabel(`Done! ${okCount}/${pairs.length} burned.`);
+
+      if (okCount > 0) {
+        setShowExportBar(true);
+        addNotification('success', `Burn complete: ${okCount}/${pairs.length}`);
+      } else {
+        setShowExportBar(false);
+        const debugInfo = `ok=${okCount} fail=${failCount} | ${errMsgs.join(' | ') || 'no error messages'}`;
+        setError(debugInfo);
+        addNotification('error', `Burn 0/${pairs.length}`);
+      }
       await loadBatches();
       window.dispatchEvent(new Event('projects:changed'));
       window.dispatchEvent(new Event('burn:refresh-request'));
     } catch (e) {
-      const msg = e instanceof Error ? e.message : 'Burn failed';
-      setError(msg); addNotification('error', msg);
+      const msg = e instanceof Error ? e.message : String(e);
+      setError(`OUTER CATCH: ${msg}`);
+      addNotification('error', `Burn crashed: ${msg}`);
     } finally { setBurning(false); }
-  }, [addNotification, burnOnServer, burning, loadBatches, pairs, projectName]);
+  }, [addNotification, batchLabel, submitBurnItem, burning, loadBatches, pairs, projectName]);
 
   const handleRenameBatch = useCallback(async (batchId: string, label: string) => {
     if (!projectName || !label.trim()) return;
@@ -1217,7 +1253,7 @@ export function BurnPage() {
 
         {error ? (
           <Card className="mt-3 border-destructive bg-red-50">
-            <CardContent className="py-2 text-xs text-red-800">{error}</CardContent>
+            <CardContent className="max-h-48 overflow-y-auto py-2 text-xs text-red-800 whitespace-pre-wrap break-all select-all">{error}</CardContent>
           </Card>
         ) : null}
       </aside>

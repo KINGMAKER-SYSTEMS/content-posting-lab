@@ -52,9 +52,8 @@ export async function captureTextOverlay(config: TextOverlayConfig): Promise<str
 
   const TARGET_W = 1080;
   const TARGET_H = 1920;
-  const SUPERSAMPLE = 2;
-  const renderW = TARGET_W * SUPERSAMPLE;
-  const renderH = TARGET_H * SUPERSAMPLE;
+  const renderW = TARGET_W;
+  const renderH = TARGET_H;
   const scaleX = renderW / w;
   const scaleY = renderH / h;
 

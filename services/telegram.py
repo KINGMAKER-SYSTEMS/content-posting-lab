@@ -222,6 +222,7 @@ def set_poster(poster_id: str, data: dict) -> dict:
         "chat_id": data.get("chat_id", existing.get("chat_id")),
         "page_ids": data.get("page_ids", existing.get("page_ids", [])),
         "topics": data.get("topics", existing.get("topics", {})),
+        "sounds_topic_id": data.get("sounds_topic_id", existing.get("sounds_topic_id")),
         "added_at": existing.get("added_at", now),
         "updated_at": now,
     }
@@ -300,6 +301,18 @@ def get_poster_for_page(integration_id: str) -> dict | None:
         if integration_id in poster.get("page_ids", []):
             return poster
     return None
+
+
+def set_poster_sounds_topic(poster_id: str, topic_id: int) -> dict:
+    """Set the sounds topic ID for a poster. Returns updated poster."""
+    config = load_config()
+    poster = config.get("posters", {}).get(poster_id)
+    if poster is None:
+        raise ValueError(f"Poster {poster_id} not found")
+    poster["sounds_topic_id"] = topic_id
+    poster["updated_at"] = _now()
+    save_config(config)
+    return poster
 
 
 # ---------------------------------------------------------------------------
@@ -385,6 +398,15 @@ def remove_inventory_item(integration_id: str, item_id: str) -> bool:
 # ---------------------------------------------------------------------------
 # Sounds
 # ---------------------------------------------------------------------------
+
+def clear_all_sounds() -> int:
+    """Remove all sounds. Returns count removed."""
+    config = load_config()
+    count = len(config.get("sounds", []))
+    config["sounds"] = []
+    save_config(config)
+    return count
+
 
 def list_sounds(active_only: bool = True) -> list[dict]:
     """List sounds, optionally filtering to active only."""

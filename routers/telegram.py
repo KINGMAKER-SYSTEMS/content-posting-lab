@@ -16,6 +16,7 @@ from services.telegram import (
     add_inventory_item,
     add_sound,
     assign_page_to_poster,
+    clear_all_sounds,
     clear_bot_token,
     get_all_inventory_summary,
     get_bot_token,
@@ -43,10 +44,13 @@ from services.telegram import (
     set_staging_group,
     set_staging_topic,
     toggle_sound,
+    set_poster_sounds_topic,
     unassign_page_from_poster,
     update_sound,
 )
 from services.roster import list_all_pages
+from services.notion import sync_sounds_from_notion, is_configured as notion_configured
+from services.campaign_hub import sync_sound_status as hub_sync_sound_status, is_configured as hub_configured
 
 # Lazy import to avoid circular import at module level.
 # telegram_bot imports services.telegram, and this module also imports
@@ -187,6 +191,8 @@ async def telegram_status():
         "poster_count": len(list_posters()),
         "total_inventory": sum(s["total"] for s in inventory_summary),
         "schedule": config.get("schedule", {}),
+        "notion_configured": notion_configured(),
+        "campaign_hub_configured": hub_configured(),
     }
 
 
@@ -549,7 +555,32 @@ async def sync_poster_topics(poster_id: str):
 
         await asyncio.sleep(1.5)
 
-    return {"created": created, "existing": existing_count, "errors": errors, "total_pages": len(page_ids)}
+    # Ensure a "Sounds" topic exists for sound link forwarding
+    sounds_topic_created = False
+    fresh_poster = get_poster(poster_id) or {}
+    if not fresh_poster.get("sounds_topic_id"):
+        for attempt in range(3):
+            try:
+                sounds_tid = await _tg_bot.create_forum_topic(chat_id, "Campaign Sounds")
+                set_poster_sounds_topic(poster_id, sounds_tid)
+                sounds_topic_created = True
+                logger.info("  → created Sounds topic_id=%s for %s", sounds_tid, poster_id)
+                break
+            except Exception as exc:
+                err_str = str(exc).lower()
+                if attempt < 2 and ("retry" in err_str or "too many" in err_str or "429" in err_str):
+                    await asyncio.sleep(5)
+                else:
+                    errors.append(f"Sounds topic: {exc}")
+                    break
+
+    return {
+        "created": created,
+        "existing": existing_count,
+        "sounds_topic_created": sounds_topic_created,
+        "errors": errors,
+        "total_pages": len(page_ids),
+    }
 
 
 # ── Content & Inventory ───────────────────────────────────────────────────
@@ -772,6 +803,13 @@ async def create_sound(req: SoundCreateRequest):
     return add_sound(url=req.url, label=req.label)
 
 
+@router.delete("/sounds/all")
+async def wipe_all_sounds():
+    """Remove ALL sounds from the library. Used to reset before a clean re-sync."""
+    count = clear_all_sounds()
+    return {"ok": True, "removed": count}
+
+
 @router.delete("/sounds/{sound_id}")
 async def delete_sound(sound_id: str):
     """Remove a sound from the library."""
@@ -798,6 +836,187 @@ async def update_sound_endpoint(sound_id: str, req: SoundUpdateRequest):
             raise HTTPException(status_code=404, detail="Sound not found")
 
     return {"ok": True, "sound_id": sound_id}
+
+
+@router.post("/sounds/sync-notion")
+async def sync_sounds_from_notion_endpoint():
+    """Legacy endpoint — redirects to unified sync."""
+    return await sync_sounds_unified()
+
+
+@router.post("/sounds/sync-hub")
+async def sync_sounds_from_hub_endpoint():
+    """Legacy endpoint — redirects to unified sync."""
+    return await sync_sounds_unified()
+
+
+@router.post("/sounds/sync")
+async def sync_sounds_unified():
+    """Unified sound sync: Campaign Hub (active campaigns) + Notion (sound links).
+
+    Campaign Hub is source of truth for what's active.
+    Notion CRM provides the TikTok Sound Links.
+    AI-assisted fuzzy matching bridges naming differences.
+    """
+    if not hub_configured():
+        raise HTTPException(
+            status_code=400,
+            detail="Campaign Hub URL not configured.",
+        )
+
+    # Fetch Notion data if available (optional — sync still works without it)
+    notion_data = None
+    if notion_configured():
+        try:
+            from services.notion import fetch_campaigns_with_sounds
+            notion_data = await fetch_campaigns_with_sounds()
+        except Exception as exc:
+            logger.warning("Notion fetch failed (continuing with Hub only): %s", exc)
+
+    try:
+        result = await hub_sync_sound_status(notion_campaigns=notion_data)
+    except Exception as exc:
+        logger.error("Sound sync failed: %s", exc)
+        raise HTTPException(status_code=502, detail=f"Sound sync failed: {exc}")
+
+    return result
+
+
+async def _ensure_sounds_topic(poster_id: str, poster: dict) -> int | None:
+    """Create the Campaign Sounds topic in a poster's group if it doesn't exist.
+
+    Returns the topic_id (existing or newly created), or None on failure.
+    """
+    sounds_topic_id = poster.get("sounds_topic_id")
+    if sounds_topic_id:
+        return int(sounds_topic_id)
+
+    chat_id = poster.get("chat_id")
+    if not chat_id:
+        return None
+
+    try:
+        tid = await _tg_bot.create_forum_topic(int(chat_id), "Campaign Sounds")
+        set_poster_sounds_topic(poster_id, tid)
+        logger.info("Auto-created Campaign Sounds topic_id=%s for %s", tid, poster_id)
+        return tid
+    except Exception as exc:
+        logger.warning("Failed to create Campaign Sounds topic for %s: %s", poster_id, exc)
+        return None
+
+
+@router.post("/sounds/forward/{poster_id}")
+async def forward_sounds_to_poster(poster_id: str):
+    """Send all active sound links to a poster's Sounds topic.
+
+    Auto-creates the Campaign Sounds topic if it doesn't exist yet.
+    """
+    _require_bot()
+
+    poster = get_poster(poster_id)
+    if not poster:
+        raise HTTPException(status_code=404, detail="Poster not found")
+
+    poster_chat_id = poster.get("chat_id")
+    if not poster_chat_id:
+        raise HTTPException(status_code=400, detail="Poster has no chat_id")
+
+    sounds_topic_id = await _ensure_sounds_topic(poster_id, poster)
+    if not sounds_topic_id:
+        raise HTTPException(status_code=502, detail="Failed to create Campaign Sounds topic")
+
+    sounds = list_sounds(active_only=True)
+    if not sounds:
+        return {"ok": True, "sent": 0, "message": "No active sounds to send"}
+
+    from datetime import datetime
+
+    today = datetime.now().strftime("%B %d, %Y")
+    msg_parts = [f"\U0001f3b5 Active Sounds \u2014 {today}", ""]
+    for sound in sounds:
+        label = sound.get("label", sound.get("name", "Sound"))
+        url = sound.get("url", "")
+        msg_parts.append(f"\u2022 {label}")
+        msg_parts.append(f"  {url}")
+        msg_parts.append("")
+
+    try:
+        await _tg_bot.send_text_to_topic(
+            chat_id=int(poster_chat_id),
+            topic_id=sounds_topic_id,
+            text="\n".join(msg_parts),
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Failed to send sounds: {exc}")
+
+    return {"ok": True, "sent": len(sounds), "poster_id": poster_id}
+
+
+@router.post("/sounds/forward-all")
+async def forward_sounds_to_all_posters():
+    """Send all active sound links to every poster's Sounds topic.
+
+    Auto-creates Campaign Sounds topics for posters that don't have one yet.
+    """
+    _require_bot()
+
+    sounds = list_sounds(active_only=True)
+    if not sounds:
+        return {"ok": True, "sent_to": 0, "sound_count": 0, "errors": []}
+
+    from datetime import datetime
+
+    today = datetime.now().strftime("%B %d, %Y")
+    msg_parts = [f"\U0001f3b5 Active Sounds \u2014 {today}", ""]
+    for sound in sounds:
+        label = sound.get("label", sound.get("name", "Sound"))
+        url = sound.get("url", "")
+        msg_parts.append(f"\u2022 {label}")
+        msg_parts.append(f"  {url}")
+        msg_parts.append("")
+
+    text = "\n".join(msg_parts)
+    posters = list_posters()
+    sent_to = 0
+    topics_created = 0
+    errors: list[str] = []
+
+    for poster in posters:
+        poster_id = poster.get("poster_id", "")
+        poster_chat_id = poster.get("chat_id")
+        if not poster_chat_id:
+            continue
+
+        # Auto-create Campaign Sounds topic if needed
+        sounds_topic_id = await _ensure_sounds_topic(poster_id, poster)
+        if not sounds_topic_id:
+            errors.append(f"{poster.get('name', poster_id)}: failed to create topic")
+            continue
+
+        if not poster.get("sounds_topic_id"):
+            topics_created += 1
+
+        try:
+            await _tg_bot.send_text_to_topic(
+                chat_id=int(poster_chat_id),
+                topic_id=sounds_topic_id,
+                text=text,
+            )
+            sent_to += 1
+        except Exception as exc:
+            errors.append(f"{poster.get('name', poster_id)}: {exc}")
+
+        # Small delay between posters to avoid rate limits
+        await asyncio.sleep(0.5)
+
+    return {
+        "ok": True,
+        "sent_to": sent_to,
+        "topics_created": topics_created,
+        "sound_count": len(sounds),
+        "total_posters": len(posters),
+        "errors": errors,
+    }
 
 
 # ── Schedule & Batch ──────────────────────────────────────────────────────
