@@ -1230,9 +1230,17 @@ export function BurnPage() {
         ) : null}
 
         {burnBatchId && exportCount > 0 ? (
-          <Button variant="outline" onClick={() => downloadBatchZip(burnBatchId)} className="mt-3 w-full">
-            Download All Burned
-          </Button>
+          <div className="mt-3 flex flex-col gap-2">
+            <Button
+              onClick={() => { setAssignBatchId(burnBatchId); setAssignBatchCount(exportCount); }}
+              className="w-full"
+            >
+              Assign to Pages
+            </Button>
+            <Button variant="outline" onClick={() => downloadBatchZip(burnBatchId)} className="w-full">
+              Download All Burned
+            </Button>
+          </div>
         ) : null}
 
         {error ? (
@@ -1259,7 +1267,12 @@ export function BurnPage() {
               <Card>
                 <CardContent className="flex items-center justify-between py-3">
                   <span className="text-sm text-muted-foreground">{exportCount} burned</span>
-                  <Button size="sm" onClick={() => downloadBatchZip(burnBatchId)}>Download All</Button>
+                  <div className="flex items-center gap-2">
+                    <Button size="sm" onClick={() => { setAssignBatchId(burnBatchId); setAssignBatchCount(exportCount); }}>
+                      Assign to Pages
+                    </Button>
+                    <Button size="sm" variant="outline" onClick={() => downloadBatchZip(burnBatchId)}>Download</Button>
+                  </div>
                 </CardContent>
               </Card>
             ) : null}
