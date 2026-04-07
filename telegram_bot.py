@@ -64,7 +64,16 @@ NOTION_SYNC_INTERVAL = int(os.getenv("NOTION_SYNC_INTERVAL", "900"))  # 15 min d
 
 
 async def _start_pyrogram(token: str) -> None:
-    """Start Pyrogram MTProto client using bot token (for forum topic & search APIs)."""
+    """Start Pyrogram MTProto client for forum topic & search APIs.
+
+    Uses a user session string (TELEGRAM_SESSION_STRING) because
+    get_forum_topics and search_messages with message_thread_id are
+    user-only methods — bots get BOT_METHOD_INVALID.
+
+    Generate a session string once locally with:
+        python generate_session.py
+    Then set TELEGRAM_SESSION_STRING env var on Railway.
+    """
     global _pyro
     if not PYROGRAM_AVAILABLE:
         logger.info("pyrogram not installed — discover/scan will use fallback")
@@ -72,23 +81,30 @@ async def _start_pyrogram(token: str) -> None:
 
     api_id = os.getenv("TELEGRAM_API_ID", "").strip()
     api_hash = os.getenv("TELEGRAM_API_HASH", "").strip()
+    session_string = os.getenv("TELEGRAM_SESSION_STRING", "").strip()
+
     if not api_id or not api_hash:
         logger.info("TELEGRAM_API_ID / TELEGRAM_API_HASH not set — pyrogram disabled")
         return
 
+    if not session_string:
+        logger.info("TELEGRAM_SESSION_STRING not set — pyrogram disabled (run generate_session.py)")
+        print("  pyrogram disabled: set TELEGRAM_SESSION_STRING env var", flush=True)
+        return
+
     try:
         _pyro = PyroClient(
-            name="cpl_bot",
+            name="cpl_user",
             api_id=int(api_id),
             api_hash=api_hash,
-            bot_token=token,
-            in_memory=True,
+            session_string=session_string,
             no_updates=True,  # we only use it for API calls, not receiving updates
         )
         await _pyro.start()
         me = await _pyro.get_me()
-        logger.info("pyrogram started as @%s (MTProto)", me.username)
-        print(f"  pyrogram MTProto client started as @{me.username}", flush=True)
+        name = me.first_name or me.username or "user"
+        logger.info("pyrogram started as %s (user MTProto)", name)
+        print(f"  pyrogram MTProto client started as {name}", flush=True)
     except Exception as exc:
         logger.warning("pyrogram failed to start: %s", exc)
         print(f"  pyrogram failed: {exc}", flush=True)
