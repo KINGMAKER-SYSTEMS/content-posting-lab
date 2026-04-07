@@ -1,6 +1,6 @@
 # Content Posting Lab
 
-Unified local webapp for TikTok-style video generation, caption scraping, and caption burning. Single FastAPI backend + React/TypeScript frontend, served from one process.
+Unified local webapp for TikTok-style video generation, caption scraping, video clipping, and caption burning. Single FastAPI backend + React/TypeScript frontend, served from one process.
 
 ## How to Run
 
@@ -23,6 +23,7 @@ python app.py (port 8000)
 ├── FastAPI backend
 │   ├── /api/video/*      → routers/video.py      (video generation)
 │   ├── /api/captions/*   → routers/captions.py    (caption scraping via WebSocket)
+│   ├── /api/clipper/*    → routers/clipper.py     (video clipping via SSE)
 │   ├── /api/burn/*       → routers/burn.py        (caption burning via WebSocket)
 │   ├── /api/projects/*   → routers/projects.py    (project CRUD)
 │   └── /api/health       → app.py                 (system health check)
@@ -38,6 +39,7 @@ React frontend (frontend/dist/ or dev server on :5173)
 ├── App.tsx               → Shell with CSS-based tab switching (all pages always mounted)
 ├── pages/Generate.tsx    → Video generation UI
 ├── pages/Captions.tsx    → Caption scraping UI
+├── pages/Clipper.tsx     → Video clipping UI
 ├── pages/Burn.tsx        → Caption burning UI
 └── pages/Projects.tsx    → Project management UI
 ```
@@ -59,6 +61,7 @@ All data is organized per-project under `projects/{name}/`:
 projects/{name}/
 ├── videos/         ← generated MP4s land here
 ├── captions/       ← scraped caption frames + CSVs
+├── clips/          ← clipped video segments (per job_id subdirs)
 ├── burned/         ← final burned MP4s
 └── prompts.json    ← prompt history (auto-saved on generate)
 ```
@@ -71,7 +74,7 @@ The `project_manager.py` module handles all project CRUD, path resolution, and f
 
 - FastAPI with lifespan handler (creates output dirs, ensures default project)
 - CORS for localhost dev servers
-- Mounts 4 routers + static file directories
+- Mounts 5 routers + static file directories
 - SPA fallback serves `frontend/dist/index.html` for all non-API routes
 - Health check at `/api/health` (ffmpeg, yt-dlp, provider key status)
 
@@ -108,6 +111,34 @@ Scrapes TikTok profiles to extract burned-in caption text from their videos.
 6. `error` — pipeline failure
 
 **Pipeline:** yt-dlp video listing → thumbnail download (batches of 5) → GPT-4.1 vision OCR (batches of 10) → write CSV to `projects/{name}/captions/`.
+
+### Router: Video Clipper — `routers/clipper.py` (1071 lines)
+
+Downloads or accepts uploaded videos and chops them into 9:16 short-form clips using ffmpeg.
+
+**Endpoints:**
+- `POST /api/clipper/upload` — single file upload (multipart form)
+- `POST /api/clipper/upload-stream` — streaming raw binary upload (handles files >3GB)
+- `POST /api/clipper/upload-batch` — multi-file upload with thumbnail generation + video probing
+- `POST /api/clipper/download-url` — download video from URL (TikTok, YouTube, etc.) into staging
+- `POST /api/clipper/trim-batch` — trim staged videos with custom start/end times
+- `POST /api/clipper/process-batch` — process staged videos into clips (SSE streaming response)
+- `GET /api/clipper/jobs?project=` — list completed clip jobs
+- `DELETE /api/clipper/jobs/{job_id}?project=` — delete a clip job
+- `GET /api/clipper/jobs/{job_id}/download-all?project=` — ZIP download of all clips in a job
+- `WebSocket /api/clipper/ws/{job_id}` — real-time clip pipeline (URL download + clip)
+
+**Pipeline (process-batch, SSE):** Upload/download → stage files with thumbnails → user trims in/out points per source → configure clip length → `POST /process-batch` returns `text/event-stream` with events:
+1. `plan` — job_id, total clip count
+2. `progress` — clip N of M, source name, encoding status
+3. `clip_done` — individual clip result (url, thumbnail, duration)
+4. `complete` — all clips finished, summary
+
+**Clip process:** For each source, calculates segments based on clip length → ffmpeg crops to 9:16 (center crop if wider, top/bottom crop if taller) → re-encodes to H.264 with high quality (CRF 16, 8-20M bitrate) → generates per-clip thumbnails → outputs to `projects/{name}/clips/{job_id}/`.
+
+**Known issue:** Long ffmpeg encodes can cause SSE connection timeouts (no keepalive between clips).
+
+**Staging:** Uploaded files stored in `projects/{name}/clips/_staging_{batch_id}/`, cleaned up after processing.
 
 ### Router: Caption Burning — `routers/burn.py` (765 lines)
 
@@ -184,7 +215,7 @@ The caption extractor uses `gpt-4.1` (not `gpt-4o` — was changed after model d
 
 ### Key Architecture Decisions
 
-**CSS-based tab switching (NOT React Router routes):** All 4 page components are rendered simultaneously in `App.tsx`. Active tab shown with `display: block`, others hidden with `display: none`. This keeps all components mounted at all times — WebSocket connections stay alive, form state persists, running jobs remain visible when switching tabs. React Router is only used for URL updates and the `useLocation` hook.
+**CSS-based tab switching (NOT React Router routes):** All 5 page components are rendered simultaneously in `App.tsx`. Active tab shown with `display: block`, others hidden with `display: none`. This keeps all components mounted at all times — WebSocket connections stay alive, form state persists, running jobs remain visible when switching tabs. React Router is only used for URL updates and the `useLocation` hook.
 
 ```tsx
 // App.tsx — all pages always mounted
@@ -192,6 +223,7 @@ The caption extractor uses `gpt-4.1` (not `gpt-4o` — was changed after model d
   <div style={{ display: pathname === '/' ? 'block' : 'none' }}><ProjectsPage /></div>
   <div style={{ display: pathname === '/generate' ? 'block' : 'none' }}><GeneratePage /></div>
   <div style={{ display: pathname === '/captions' ? 'block' : 'none' }}><CaptionsPage /></div>
+  <div style={{ display: pathname === '/clipper' ? 'block' : 'none' }}><ClipperPage /></div>
   <div style={{ display: pathname === '/burn' ? 'block' : 'none' }}><BurnPage /></div>
 </main>
 ```
@@ -207,6 +239,7 @@ The caption extractor uses `gpt-4.1` (not `gpt-4o` — was changed after model d
 | `App.tsx` | 310 | Shell — header, project selector, tab nav, CSS tab switching, health banner, toasts |
 | `pages/Generate.tsx` | 644 | Video generation — provider select, prompt input, form controls, job cards with status polling, video preview/download, prompt history sidebar |
 | `pages/Captions.tsx` | 837 | Caption scraping — TikTok username input, WebSocket pipeline, real-time log, frame thumbnails, results table with CSV export |
+| `pages/Clipper.tsx` | 1047 | Video clipping — multi-file upload/URL ingest, per-source trim timeline, clip length config, SSE processing with live progress, results grid, send-to-burn integration |
 | `pages/Burn.tsx` | 1261 | Caption burning — video browser, caption source selector, html2canvas overlay rendering, color correction sliders, burn pipeline via WebSocket, batch management |
 | `pages/Projects.tsx` | 316 | Project list — stats cards, create/delete, project grid |
 | `stores/workflowStore.ts` | 218 | Zustand global state — active project, notifications, job counts, generate jobs, burn selections |
@@ -235,6 +268,17 @@ The caption extractor uses `gpt-4.1` (not `gpt-4o` — was changed after model d
 - CSV export via `/api/captions/export/{username}`
 - `shouldReconnect` guard prevents reconnect loop after `all_complete`
 
+### Clipper Page Details
+
+- Multi-step wizard: Ingest → Trim → Configure → Processing → Results
+- **Ingest:** Drag-and-drop file upload (XHR with progress tracking) or paste URL (uses yt-dlp via `/api/clipper/download-url`)
+- **Trim:** Per-file trim timeline with video preview, draggable in/out handles, keyboard shortcuts (Space: play/pause, I/O: set in/out, Arrow keys: seek)
+- **Configure:** Set output clip length (1-60s), shows breakdown table of sources × clips
+- **Processing:** SSE stream from `POST /api/clipper/process-batch` — progress bar, live thumbnail grid as clips complete
+- **Results:** Grid of completed clips with thumbnails, individual download, ZIP download, "Use in Burn" button (primes burn selection via zustand)
+- Staging state persisted to localStorage (survives tab switches and page reloads, cleared on new batch)
+- Past jobs sidebar: list previous clip jobs, view results, download ZIPs, delete
+
 ### Burn Page Details
 
 - Left panel: video browser (tree view of project videos), caption source selector (from scraped CSVs)
@@ -254,6 +298,7 @@ content-posting-lab/
 ├── routers/
 │   ├── video.py               # Video generation router
 │   ├── captions.py            # Caption scraping router (WebSocket)
+│   ├── clipper.py             # Video clipping router (SSE + WebSocket)
 │   ├── burn.py                # Caption burning router (WebSocket)
 │   └── projects.py            # Project management router
 ├── providers/
@@ -274,6 +319,7 @@ content-posting-lab/
 │   │   ├── pages/
 │   │   │   ├── Generate.tsx   # Video generation UI (644 lines)
 │   │   │   ├── Captions.tsx   # Caption scraping UI (837 lines)
+│   │   │   ├── Clipper.tsx    # Video clipping UI (1047 lines)
 │   │   │   ├── Burn.tsx       # Caption burning UI (1261 lines)
 │   │   │   └── Projects.tsx   # Project management UI (316 lines)
 │   │   ├── stores/
@@ -345,7 +391,7 @@ These are the authoritative reference for feature parity. If the new app behaves
 - **All async** — FastAPI throughout, no sync blocking.
 - **In-memory job state** — restart loses job tracking (files on disk survive).
 - **No inter-server HTTP** — burn router reads video/caption directories directly via filesystem.
-- **WebSocket for real-time** — captions and burn use WebSocket streaming. Video generation uses HTTP polling.
+- **WebSocket for real-time** — captions and burn use WebSocket streaming. Video generation uses HTTP polling. Clipper uses SSE (Server-Sent Events) via `StreamingResponse` for process-batch progress.
 - **Project-scoped everything** — all endpoints accept `?project=` query param. Frontend sends active project name with every request.
 - **Font:** `fonts/TikTokSans16pt-Bold.ttf` is the default burn font. White text with black stroke.
 - **Color correction** in burn uses ffmpeg `eq` and `colorbalance` filters — the sliders in the UI map directly to ffmpeg filter params.
@@ -356,5 +402,6 @@ These are the authoritative reference for feature parity. If the new app behaves
 
 1. **Generate videos** — Generate tab. Pick provider, write prompt, set params, generate. Videos saved to `projects/{name}/videos/`.
 2. **Scrape captions** — Captions tab. Enter TikTok username, scrape and extract captions via GPT-4.1 vision. CSVs saved to `projects/{name}/captions/`.
-3. **Burn captions onto videos** — Burn tab. Pair videos with captions, customize overlay, burn. Output in `projects/{name}/burned/`.
-4. Result: final captioned videos ready to post.
+3. **Clip videos** — Clipper tab. Upload or paste URLs, trim in/out points, set clip length, process into 9:16 clips. Output in `projects/{name}/clips/`. Can send clips directly to Burn.
+4. **Burn captions onto videos** — Burn tab. Pair videos with captions, customize overlay, burn. Output in `projects/{name}/burned/`.
+5. Result: final captioned videos ready to post.

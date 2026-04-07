@@ -44,10 +44,16 @@ export default defineConfig({
       '/api': {
         target: 'http://localhost:8000',
         changeOrigin: true,
+        timeout: 0,
         configure: (proxy) => {
-          // Raise proxy body size limit to 500MB for large video uploads
+          // Disable proxy timeouts for long-running SSE streams (clipper process-batch)
+          // and raise body size limit for large video uploads
           proxy.on('proxyReq', (proxyReq) => {
             proxyReq.setHeader('connection', 'keep-alive');
+            proxyReq.socket?.setTimeout(0);
+          });
+          proxy.on('proxyRes', (proxyRes) => {
+            proxyRes.socket?.setTimeout(0);
           });
         },
       },
