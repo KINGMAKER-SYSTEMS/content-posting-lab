@@ -202,6 +202,16 @@ app.mount(
 )
 
 
+_FONT_PREVIEW = Path("font_preview.html")
+
+
+@app.get("/font-preview")
+async def serve_font_preview():
+    if _FONT_PREVIEW.exists():
+        return FileResponse(_FONT_PREVIEW, media_type="text/html")
+    raise HTTPException(status_code=404, detail="font_preview.html not found")
+
+
 if FRONTEND_DIR.exists():
 
     @app.get("/{full_path:path}")
