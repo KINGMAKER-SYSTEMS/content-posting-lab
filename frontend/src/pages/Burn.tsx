@@ -668,18 +668,33 @@ export function BurnPage() {
   }, [inlineEditIndex, onDragEnd, onDragMove, pairs, selectCard]);
 
   const burnOnServer = useCallback(async (pair: BurnPairState, index: number, batchId: string, overlayPng: string | null): Promise<BurnResponse> => {
+    const bodyStr = JSON.stringify({ project: projectName, batchId, index, videoPath: pair.videoPath, overlayPng, colorCorrection: pair.colorCorrection });
+    let r: Response;
     try {
-      const r = await fetch(apiUrl('/api/burn/overlay'), {
+      r = await fetch(apiUrl('/api/burn/overlay'), {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ project: projectName, batchId, index, videoPath: pair.videoPath, overlayPng, colorCorrection: pair.colorCorrection }),
+        body: bodyStr,
       });
-      const d = (await r.json()) as BurnResponse & { error?: string };
-      if (!r.ok || !d.ok) throw new Error(d.error || `Burn failed (${r.status})`);
-      return d;
-    } catch (err) {
-      console.error(`[burn] pair ${index} failed:`, err, 'videoPath:', pair.videoPath);
-      throw err;
+    } catch (networkErr) {
+      // fetch() itself failed — network error, CORS, DNS, connection refused, etc.
+      throw new Error(`NETWORK #${index}: ${networkErr instanceof Error ? networkErr.message : String(networkErr)} (bodySize=${(bodyStr.length / 1024).toFixed(0)}KB)`);
     }
+    let text: string;
+    try {
+      text = await r.text();
+    } catch (readErr) {
+      throw new Error(`READ_BODY #${index}: status=${r.status} ${readErr instanceof Error ? readErr.message : String(readErr)}`);
+    }
+    let d: BurnResponse & { error?: string };
+    try {
+      d = JSON.parse(text);
+    } catch {
+      throw new Error(`JSON_PARSE #${index}: status=${r.status} body=${text.slice(0, 200)}`);
+    }
+    if (!r.ok || !d.ok) {
+      throw new Error(`SERVER #${index}: status=${r.status} ok=${d.ok} err=${d.error || 'none'} body=${text.slice(0, 200)}`);
+    }
+    return d;
   }, [projectName]);
 
   const handleBurnAll = useCallback(async () => {
@@ -708,7 +723,7 @@ export function BurnPage() {
       const okCount = results.filter((r) => r?.ok).length;
       const emptyCount = results.filter((r) => r === undefined || r === null).length;
       const failCount = results.filter((r) => r && !r.ok).length;
-      const firstErr = results.find((r) => r && !r.ok && r.error);
+      const errMsgs = results.filter((r) => r && !r.ok && r.error).map((r) => r.error!).slice(0, 3);
 
       setPairs(pairs.map((p, i) => {
         const r = results[i];
@@ -722,10 +737,9 @@ export function BurnPage() {
         addNotification('success', `Burn complete: ${okCount}/${pairs.length}`);
       } else {
         setShowExportBar(false);
-        // Show detailed debug info in the error banner so we can see it without console
-        const debugInfo = `ok=${okCount} fail=${failCount} empty=${emptyCount} len=${results.length} pairs=${pairs.length} err="${firstErr?.error || 'none'}"`;
+        const debugInfo = `ok=${okCount} fail=${failCount} empty=${emptyCount} | ${errMsgs.join(' | ') || 'no error messages'}`;
         setError(debugInfo);
-        addNotification('error', `Burn 0/${pairs.length} — ${debugInfo}`);
+        addNotification('error', `Burn 0/${pairs.length}`);
       }
       await loadBatches();
       window.dispatchEvent(new Event('projects:changed'));
@@ -1210,7 +1224,7 @@ export function BurnPage() {
 
         {error ? (
           <Card className="mt-3 border-destructive bg-red-50">
-            <CardContent className="py-2 text-xs text-red-800">{error}</CardContent>
+            <CardContent className="max-h-48 overflow-y-auto py-2 text-xs text-red-800 whitespace-pre-wrap break-all select-all">{error}</CardContent>
           </Card>
         ) : null}
       </aside>
