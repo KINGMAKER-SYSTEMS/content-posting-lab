@@ -61,6 +61,8 @@ export function TelegramPage() {
   const [tokenInput, setTokenInput] = useState('');
   const [chatIdInput, setChatIdInput] = useState('');
   const [syncResult, setSyncResult] = useState<{ created: number; existing: number } | null>(null);
+  const [scanning, setScanning] = useState(false);
+  const [scanResult, setScanResult] = useState<{ scanned_topics: number; total_found: number } | null>(null);
 
   const [newPosterName, setNewPosterName] = useState('');
   const [newPosterChatId, setNewPosterChatId] = useState('');
@@ -669,10 +671,30 @@ export function TelegramPage() {
                 </div>
               )}
 
-              {/* Set Up Folders + Dedup */}
+              {/* Set Up Folders + Scan + Dedup */}
               <div className="flex flex-wrap items-center gap-3">
                 <Button variant="outline" onClick={handleSyncTopics}>
                   Set Up Folders
+                </Button>
+                <Button
+                  variant="outline"
+                  disabled={scanning}
+                  onClick={async () => {
+                    setScanning(true);
+                    setScanResult(null);
+                    try {
+                      const res = await fetchJson<{ scanned_topics: number; total_found: number; results: { topic_name: string; found?: number; error?: string }[] }>(
+                        apiUrl('/api/telegram/staging-group/scan-inventory'), { method: 'POST' }
+                      );
+                      setScanResult({ scanned_topics: res.scanned_topics, total_found: res.total_found });
+                      addNotification('success', `Scanned ${res.scanned_topics} topics, found ${res.total_found} media items`);
+                      await refresh();
+                    } catch (err) {
+                      addNotification('error', err instanceof Error ? err.message : 'Scan failed');
+                    } finally { setScanning(false); }
+                  }}
+                >
+                  {scanning ? 'Scanning...' : 'Scan Inventory'}
                 </Button>
                 <Button variant="ghost" size="sm" onClick={async () => {
                   try {
@@ -719,6 +741,11 @@ export function TelegramPage() {
                 {syncResult && (
                   <span className="text-sm text-muted-foreground">
                     Created {syncResult.created}, Existing {syncResult.existing}
+                  </span>
+                )}
+                {scanResult && (
+                  <span className="text-sm text-muted-foreground">
+                    Scanned {scanResult.scanned_topics} topics, found {scanResult.total_found} items
                   </span>
                 )}
               </div>

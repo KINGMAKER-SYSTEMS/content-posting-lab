@@ -373,6 +373,125 @@ async def forward_new_messages(
     }
 
 
+async def scan_topic_inventory(
+    chat_id: int,
+    topic_id: int,
+    integration_id: str,
+) -> dict:
+    """Scan a staging topic for existing media by iterating message IDs.
+
+    Uses a marker message to find the current max message_id, then tries
+    to forward each ID in the range to discover media. Adds any found
+    media to inventory (skipping duplicates by message_id).
+
+    Returns {found: int, skipped: int, total_scanned: int}.
+    """
+    if _bot is None:
+        raise RuntimeError("Bot is not running")
+
+    # Send marker to find the ceiling message_id
+    marker = await _bot.send_message(
+        chat_id=chat_id,
+        message_thread_id=topic_id,
+        text="📊 Scanning inventory...",
+    )
+    marker_id = marker.message_id
+
+    # The topic's first message is the topic creation service message.
+    # Telegram topic_id IS the message_id of that service message.
+    start_id = topic_id  # topic creation message
+
+    # Get existing inventory to skip dupes
+    existing = get_inventory(integration_id)
+    existing_msg_ids = {item.get("message_id") for item in existing}
+
+    found = 0
+    skipped = 0
+    scanned = 0
+
+    # Try to copy each message to the same topic — if it's media, we get file info
+    # We use forward_message to General topic (topic_id=None won't work in groups),
+    # so instead we'll try to get message info by forwarding to same chat
+    for msg_id in range(start_id + 1, marker_id):
+        scanned += 1
+        if msg_id in existing_msg_ids:
+            skipped += 1
+            continue
+
+        try:
+            # Forward the message to the same chat's General topic temporarily
+            # This lets us inspect what we forwarded
+            fwd = await _bot.forward_message(
+                chat_id=chat_id,
+                from_chat_id=chat_id,
+                message_id=msg_id,
+                message_thread_id=topic_id,  # forward back to same topic
+            )
+
+            # Check if the forwarded message is media
+            media_type = None
+            file_id = None
+            file_name = None
+
+            if fwd.video:
+                media_type = "video"
+                file_id = fwd.video.file_id
+                file_name = fwd.video.file_name
+            elif fwd.photo:
+                media_type = "photo"
+                file_id = fwd.photo[-1].file_id
+                file_name = f"photo_{msg_id}.jpg"
+            elif fwd.animation:
+                media_type = "animation"
+                file_id = fwd.animation.file_id
+                file_name = fwd.animation.file_name
+            elif fwd.document:
+                media_type = "document"
+                file_id = fwd.document.file_id
+                file_name = fwd.document.file_name
+
+            # Delete the forwarded copy to keep the topic clean
+            try:
+                await _bot.delete_message(chat_id=chat_id, message_id=fwd.message_id)
+            except Exception:
+                pass
+
+            if media_type and file_id:
+                add_inventory_item(integration_id, {
+                    "file_id": file_id,
+                    "file_name": file_name or f"{media_type}_{msg_id}",
+                    "media_type": media_type,
+                    "caption": fwd.caption,
+                    "message_id": msg_id,
+                    "chat_id": chat_id,
+                    "source": "scan",
+                })
+                found += 1
+            else:
+                # Not media (text message, service message, etc.) — delete the copy
+                pass
+
+        except Exception:
+            # Message doesn't exist, was deleted, or is a service message
+            pass
+
+        # Rate limit
+        if scanned % 15 == 0:
+            await asyncio.sleep(1)
+
+    # Delete the marker
+    try:
+        await _bot.delete_message(chat_id=chat_id, message_id=marker_id)
+    except Exception:
+        pass
+
+    return {
+        "found": found,
+        "skipped_existing": skipped,
+        "total_scanned": scanned,
+    }
+
+
 async def send_text_to_topic(
     chat_id: int,
     topic_id: int | None,

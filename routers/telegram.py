@@ -113,6 +113,12 @@ class SendBatchRequest(BaseModel):
     project: str
 
 
+class AssignBatchRequest(BaseModel):
+    batch_id: str
+    project: str
+    integration_ids: list[str]
+
+
 class SoundCreateRequest(BaseModel):
     url: str
     label: str
@@ -341,6 +347,95 @@ async def sync_staging_topics():
         await asyncio.sleep(1.5)
 
     return {"created": created, "existing": existing, "failed": skipped_names}
+
+
+@router.post("/staging-group/scan-inventory")
+async def scan_all_inventory():
+    """Scan ALL staging topics for existing media and backfill inventory.
+
+    Iterates message IDs in each topic to discover manually uploaded content
+    that the bot missed. This can take a while with many topics.
+    """
+    _require_bot()
+
+    staging = get_staging_group()
+    if not staging or not staging.get("chat_id"):
+        raise HTTPException(status_code=400, detail="Staging group not configured")
+
+    chat_id = staging["chat_id"]
+    topics = staging.get("topics", {})
+
+    # Deduplicate by topic_id (multiple integration_ids may share a topic)
+    seen_topic_ids: dict[int, str] = {}  # topic_id -> first integration_id
+    for int_id, info in topics.items():
+        tid = info.get("topic_id") if isinstance(info, dict) else None
+        if tid and tid not in seen_topic_ids:
+            seen_topic_ids[tid] = int_id
+
+    results = []
+    total_found = 0
+
+    for topic_id, integration_id in seen_topic_ids.items():
+        topic_name = topics[integration_id].get("topic_name", str(topic_id))
+        try:
+            r = await _tg_bot.scan_topic_inventory(
+                chat_id=int(chat_id),
+                topic_id=topic_id,
+                integration_id=integration_id,
+            )
+            total_found += r["found"]
+            results.append({
+                "integration_id": integration_id,
+                "topic_name": topic_name,
+                **r,
+            })
+        except Exception as exc:
+            logger.warning("Scan failed for topic %s (%s): %s", topic_name, integration_id, exc)
+            results.append({
+                "integration_id": integration_id,
+                "topic_name": topic_name,
+                "error": str(exc)[:200],
+            })
+
+        # Rate limit between topics
+        await asyncio.sleep(1)
+
+    return {
+        "scanned_topics": len(results),
+        "total_found": total_found,
+        "results": results,
+    }
+
+
+@router.post("/staging-group/scan-inventory/{integration_id}")
+async def scan_single_inventory(integration_id: str):
+    """Scan a single staging topic for existing media and backfill inventory."""
+    _require_bot()
+
+    staging = get_staging_group()
+    if not staging or not staging.get("chat_id"):
+        raise HTTPException(status_code=400, detail="Staging group not configured")
+
+    chat_id = staging["chat_id"]
+    topics = staging.get("topics", {})
+    topic_info = topics.get(integration_id)
+    if not topic_info:
+        raise HTTPException(status_code=404, detail=f"No topic for integration {integration_id}")
+
+    topic_id = topic_info.get("topic_id")
+    topic_name = topic_info.get("topic_name", str(topic_id))
+
+    r = await _tg_bot.scan_topic_inventory(
+        chat_id=int(chat_id),
+        topic_id=topic_id,
+        integration_id=integration_id,
+    )
+
+    return {
+        "integration_id": integration_id,
+        "topic_name": topic_name,
+        **r,
+    }
 
 
 @router.delete("/staging-group/topics/{integration_id}")
@@ -706,6 +801,122 @@ async def send_batch(req: SendBatchRequest):
         "errors": errors,
         "batch_id": req.batch_id,
     }
+
+
+# Double-send guard for assign-batch
+_active_assign_batches: set[str] = set()
+
+
+@router.post("/assign-batch")
+async def assign_batch(req: AssignBatchRequest):
+    """Round-robin split burned videos across pages and send to staging topics.
+
+    Takes a batch of burned videos and distributes them evenly across the
+    specified pages, sending each page's share to its staging topic.
+    """
+    _require_bot()
+
+    # Double-send guard
+    batch_key = f"{req.project}:{req.batch_id}"
+    if batch_key in _active_assign_batches:
+        raise HTTPException(status_code=409, detail="This batch is already being assigned")
+    _active_assign_batches.add(batch_key)
+
+    try:
+        from project_manager import get_project_burn_dir
+
+        try:
+            burn_dir = get_project_burn_dir(req.project)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
+        batch_dir = burn_dir / req.batch_id
+        if not batch_dir.exists() or not batch_dir.is_dir():
+            raise HTTPException(status_code=404, detail=f"Batch '{req.batch_id}' not found")
+
+        mp4s = sorted(batch_dir.glob("burned_*.mp4"))
+        if not mp4s:
+            raise HTTPException(status_code=404, detail="No burned videos in batch")
+
+        if not req.integration_ids:
+            raise HTTPException(status_code=400, detail="No pages selected")
+
+        # Validate all pages have staging topics
+        staging = get_staging_group()
+        if not staging or not staging.get("chat_id"):
+            raise HTTPException(status_code=400, detail="Staging group not configured")
+
+        chat_id = staging["chat_id"]
+        topics = staging.get("topics", {})
+
+        valid_pages: list[dict] = []
+        for iid in req.integration_ids:
+            topic_info = topics.get(iid)
+            if not topic_info or not topic_info.get("topic_id"):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Page {iid} has no staging topic. Run 'Set Up Folders' first.",
+                )
+            page_name = _find_page_name(iid)
+            valid_pages.append({
+                "integration_id": iid,
+                "topic_id": topic_info["topic_id"],
+                "page_name": page_name,
+            })
+
+        # Round-robin assignment
+        assignments: dict[str, list[Path]] = {p["integration_id"]: [] for p in valid_pages}
+        for idx, mp4 in enumerate(mp4s):
+            page = valid_pages[idx % len(valid_pages)]
+            assignments[page["integration_id"]].append(mp4)
+
+        # Send each page's files to its staging topic
+        results: list[dict] = []
+        for page in valid_pages:
+            iid = page["integration_id"]
+            page_files = assignments[iid]
+            sent = 0
+            errors: list[str] = []
+
+            for mp4 in page_files:
+                try:
+                    result = await _tg_bot.send_media_to_topic(
+                        chat_id=chat_id,
+                        topic_id=page["topic_id"],
+                        file_path=str(mp4),
+                        caption=None,
+                    )
+                    add_inventory_item(iid, {
+                        "message_id": result.get("message_id"),
+                        "file_id": result.get("file_id"),
+                        "file_name": mp4.name,
+                        "media_type": "video",
+                        "caption": None,
+                        "source": "assign-batch",
+                    })
+                    sent += 1
+                    await asyncio.sleep(0.3)
+                except Exception as exc:
+                    logger.warning("assign-batch send fail %s→%s: %s", mp4.name, iid, exc)
+                    errors.append(f"{mp4.name}: {exc}")
+
+            results.append({
+                "integration_id": iid,
+                "page_name": page["page_name"],
+                "files": [f.name for f in page_files],
+                "sent": sent,
+                "errors": errors,
+            })
+
+        return {
+            "total": len(mp4s),
+            "pages_used": len(valid_pages),
+            "assignments": results,
+            "batch_id": req.batch_id,
+        }
+
+    finally:
+        _active_assign_batches.discard(batch_key)
 
 
 @router.post("/forward/{integration_id}")
