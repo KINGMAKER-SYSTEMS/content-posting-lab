@@ -34,21 +34,22 @@ const SNAP_THRESHOLD = 3;
 
 const TIKTOK_COLOR_PRESETS: { name: string; hex: string }[] = [
   { name: 'White', hex: '#FFFFFF' },
-  { name: 'Black', hex: '#000000' },
+  { name: 'Yellow', hex: '#FFFC00' },
+  { name: 'Pastel Yellow', hex: '#FFF176' },
   { name: 'TikTok Red', hex: '#FE2C55' },
   { name: 'TikTok Cyan', hex: '#25F4EE' },
-  { name: 'Pastel Yellow', hex: '#FADE4B' },
   { name: 'Blue', hex: '#5B9BD5' },
   { name: 'Green', hex: '#27AE60' },
   { name: 'Orange', hex: '#FF8A00' },
   { name: 'Pink', hex: '#FF3B5C' },
   { name: 'Purple', hex: '#7B2FBE' },
+  { name: 'Black', hex: '#000000' },
 ];
 
 const STROKE_COLOR_PRESETS: { name: string; hex: string }[] = [
+  { name: 'None', hex: 'transparent' },
   { name: 'Black', hex: '#000000' },
   { name: 'White', hex: '#FFFFFF' },
-  { name: 'None', hex: 'transparent' },
 ];
 
 const DEFAULT_COLOR_CORRECTION: ColorCorrection = {
@@ -318,7 +319,7 @@ export function BurnPage() {
   const [selectedFontFile, setSelectedFontFile] = useState('');
   const [defaultFontSize, setDefaultFontSize] = useState(32);
   const [fontColor, setFontColor] = useState('#FFFFFF');
-  const [strokeColor, setStrokeColor] = useState('#000000');
+  const [strokeColor, setStrokeColor] = useState('transparent');
   const [quickPosition, setQuickPosition] = useState<QuickPosition>('center');
   const [colorCorrection, setColorCorrection] = useState<ColorCorrection>(DEFAULT_COLOR_CORRECTION);
 
