@@ -18,6 +18,7 @@ from services.telegram import (
     assign_page_to_poster,
     clear_all_sounds,
     clear_bot_token,
+    clear_scan_inventory,
     get_all_inventory_summary,
     get_bot_token,
     get_inventory,
@@ -424,14 +425,24 @@ async def _run_discover_job(chat_id: int) -> None:
 
 
 async def _run_scan_job(chat_id: int, seen_topic_ids: dict[int, str], topics: dict) -> None:
-    """Background task that scans all topics and updates _scan_job state."""
+    """Background task that scans all topics and updates _scan_job state.
+
+    Sorts topics by topic_id so we can pass next_topic_id to scope each scan
+    to only messages belonging to that topic (message_ids are group-wide).
+    """
     global _scan_job
     results = []
     total_found = 0
-    total_topics = len(seen_topic_ids)
 
-    for idx, (topic_id, integration_id) in enumerate(seen_topic_ids.items()):
+    # Sort by topic_id so we know the boundary for each topic
+    sorted_entries = sorted(seen_topic_ids.items(), key=lambda x: x[0])
+    total_topics = len(sorted_entries)
+
+    for idx, (topic_id, integration_id) in enumerate(sorted_entries):
+        # Next topic's ID is the upper boundary for this topic's messages
+        next_topic_id = sorted_entries[idx + 1][0] if idx + 1 < len(sorted_entries) else None
         topic_name = topics[integration_id].get("topic_name", str(topic_id))
+
         _scan_job = {
             "status": "running",
             "progress": f"{idx}/{total_topics}",
@@ -446,8 +457,9 @@ async def _run_scan_job(chat_id: int, seen_topic_ids: dict[int, str], topics: di
                 chat_id=int(chat_id),
                 topic_id=topic_id,
                 integration_id=integration_id,
+                next_topic_id=next_topic_id,
             )
-            total_found += r["found"]
+            total_found += r.get("found", 0)
             results.append({
                 "integration_id": integration_id,
                 "topic_name": topic_name,
@@ -1127,6 +1139,17 @@ async def get_inventory_summary():
         {**s, "page_name": page_name_map.get(s.get("integration_id", ""), s.get("integration_id", ""))}
         for s in summaries
     ]
+
+
+@router.delete("/inventory/scan")
+async def wipe_scan_inventory():
+    """Remove all inventory items that were added by the scan feature (source='scan').
+
+    Use this to clean up after a broken/inaccurate scan without losing
+    items that were added via direct send or assign-batch.
+    """
+    removed = clear_scan_inventory()
+    return {"ok": True, "removed": removed}
 
 
 @router.get("/log")

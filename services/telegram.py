@@ -395,6 +395,32 @@ def remove_inventory_item(integration_id: str, item_id: str) -> bool:
     return False
 
 
+def clear_all_inventory() -> int:
+    """Wipe ALL inventory across all pages. Returns total items removed."""
+    config = load_config()
+    inventory = config.get("inventory", {})
+    total = sum(len(items) for items in inventory.values())
+    config["inventory"] = {}
+    save_config(config)
+    return total
+
+
+def clear_scan_inventory() -> int:
+    """Remove only inventory items added by scan (source='scan'). Returns count removed."""
+    config = load_config()
+    inventory = config.get("inventory", {})
+    removed = 0
+    for integration_id in list(inventory.keys()):
+        items = inventory[integration_id]
+        before = len(items)
+        inventory[integration_id] = [i for i in items if i.get("source") != "scan"]
+        removed += before - len(inventory[integration_id])
+        if not inventory[integration_id]:
+            del inventory[integration_id]
+    save_config(config)
+    return removed
+
+
 # ---------------------------------------------------------------------------
 # Sounds
 # ---------------------------------------------------------------------------

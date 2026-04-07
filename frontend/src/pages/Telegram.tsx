@@ -758,6 +758,25 @@ export function TelegramPage() {
                 >
                   {discovering ? 'Discovering...' : 'Discover Topics'}
                 </Button>
+                <Button
+                  variant="destructive"
+                  size="sm"
+                  onClick={async () => {
+                    if (!confirm('Remove all inventory data from scans? Items sent via API are kept.')) return;
+                    try {
+                      const res = await fetchJson<{ removed: number }>(
+                        apiUrl('/api/telegram/inventory/scan'),
+                        { method: 'DELETE' },
+                      );
+                      addNotification('success', `Cleared ${res.removed} scan items`);
+                      await refresh();
+                    } catch (err) {
+                      addNotification('error', err instanceof Error ? err.message : 'Failed to clear scan data');
+                    }
+                  }}
+                >
+                  Clear Scan Data
+                </Button>
                 {(scanProgress || discoverProgress) && <span className="text-xs text-muted-foreground">{scanProgress || discoverProgress}</span>}
                 <Button variant="ghost" size="sm" onClick={async () => {
                   try {

@@ -450,33 +450,45 @@ async def scan_topic_inventory(
     chat_id: int,
     topic_id: int,
     integration_id: str,
+    next_topic_id: int | None = None,
 ) -> dict:
-    """Scan a staging topic for existing media by iterating message IDs.
+    """Scan a staging topic for existing media.
 
-    Uses a marker message to find the current max message_id, then tries
-    to forward each ID in the range to discover media. Adds any found
-    media to inventory (skipping duplicates by message_id).
+    Telegram message_ids are group-wide, not per-topic. To only count media
+    belonging to THIS topic, we scan message_ids between this topic_id and
+    the next topic_id (or the marker). Pass next_topic_id for accurate scoping.
 
-    Returns {found: int, skipped: int, total_scanned: int}.
+    Forwards each candidate to bot's Saved Messages to inspect without
+    polluting the group topic.
+
+    Returns {found: int, skipped_existing: int, total_scanned: int}.
     """
     if _bot is None:
         raise RuntimeError("Bot is not running")
 
-    # Send marker to find the ceiling message_id
+    bot_info = await _bot.get_me()
+    bot_user_id = bot_info.id
+
+    # Send marker to find the current ceiling (only used if no next_topic_id)
     try:
         marker = await _bot.send_message(
             chat_id=chat_id,
             message_thread_id=topic_id,
-            text="📊 Scanning inventory...",
+            text="📊",
         )
     except Exception as exc:
         logger.warning("scan_topic_inventory: cannot send to topic %s — %s", topic_id, exc)
         return {"found": 0, "skipped_existing": 0, "total_scanned": 0, "error": str(exc)[:200]}
-    marker_id = marker.message_id
 
-    # The topic's first message is the topic creation service message.
-    # Telegram topic_id IS the message_id of that service message.
-    start_id = topic_id  # topic creation message
+    marker_id = marker.message_id
+    try:
+        await _bot.delete_message(chat_id=chat_id, message_id=marker_id)
+    except Exception:
+        pass
+
+    # Scope: only scan messages between this topic_id and the next one
+    end_id = next_topic_id if next_topic_id else marker_id
+    start_id = topic_id + 1  # skip the topic creation service message
 
     # Get existing inventory to skip dupes
     existing = get_inventory(integration_id)
@@ -486,26 +498,20 @@ async def scan_topic_inventory(
     skipped = 0
     scanned = 0
 
-    # Try to copy each message to the same topic — if it's media, we get file info
-    # We use forward_message to General topic (topic_id=None won't work in groups),
-    # so instead we'll try to get message info by forwarding to same chat
-    for msg_id in range(start_id + 1, marker_id):
+    for msg_id in range(start_id, end_id):
         scanned += 1
         if msg_id in existing_msg_ids:
             skipped += 1
             continue
 
         try:
-            # Forward the message to the same chat's General topic temporarily
-            # This lets us inspect what we forwarded
+            # Forward to bot's Saved Messages to inspect without polluting group
             fwd = await _bot.forward_message(
-                chat_id=chat_id,
+                chat_id=bot_user_id,
                 from_chat_id=chat_id,
                 message_id=msg_id,
-                message_thread_id=topic_id,  # forward back to same topic
             )
 
-            # Check if the forwarded message is media
             media_type = None
             file_id = None
             file_name = None
@@ -527,9 +533,9 @@ async def scan_topic_inventory(
                 file_id = fwd.document.file_id
                 file_name = fwd.document.file_name
 
-            # Delete the forwarded copy to keep the topic clean
+            # Clean up from Saved Messages
             try:
-                await _bot.delete_message(chat_id=chat_id, message_id=fwd.message_id)
+                await _bot.delete_message(chat_id=bot_user_id, message_id=fwd.message_id)
             except Exception:
                 pass
 
@@ -544,23 +550,13 @@ async def scan_topic_inventory(
                     "source": "scan",
                 })
                 found += 1
-            else:
-                # Not media (text message, service message, etc.) — delete the copy
-                pass
 
         except Exception:
-            # Message doesn't exist, was deleted, or is a service message
             pass
 
         # Rate limit
         if scanned % 15 == 0:
             await asyncio.sleep(1)
-
-    # Delete the marker
-    try:
-        await _bot.delete_message(chat_id=chat_id, message_id=marker_id)
-    except Exception:
-        pass
 
     return {
         "found": found,
