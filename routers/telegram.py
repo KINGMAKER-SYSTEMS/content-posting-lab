@@ -349,8 +349,78 @@ async def sync_staging_topics():
     return {"created": created, "existing": existing, "failed": skipped_names}
 
 
-# Background scan job state
+# Background job state
 _scan_job: dict | None = None
+_discover_job: dict | None = None
+
+
+async def _run_discover_job(chat_id: int) -> None:
+    """Background task: discover all topics in a group, remap staging config."""
+    global _discover_job
+
+    def on_progress(probed, ceiling, found):
+        global _discover_job
+        _discover_job = {
+            "status": "running",
+            "probed": probed,
+            "ceiling": ceiling,
+            "topics_found": found,
+        }
+
+    _discover_job = {"status": "running", "probed": 0, "ceiling": 0, "topics_found": 0}
+
+    try:
+        discovered = await _tg_bot.discover_topics(
+            chat_id=int(chat_id),
+            progress_callback=on_progress,
+        )
+
+        # Try to match discovered topics to roster pages by name
+        pages = list_all_pages()
+        page_by_name: dict[str, dict] = {}
+        for p in pages:
+            name = (p.get("name") or "").lower().strip()
+            if name and name not in page_by_name:
+                page_by_name[name] = p
+
+        matched = 0
+        unmatched_topics = []
+
+        for topic in discovered:
+            tname = (topic.get("topic_name") or "").lower().strip()
+            # Also try without emoji/provider suffix
+            tname_clean = tname.split("(")[0].strip()
+
+            page = page_by_name.get(tname) or page_by_name.get(tname_clean)
+            if page:
+                # Remap this integration_id to the discovered topic_id
+                integration_id = page["integration_id"]
+                set_staging_topic(
+                    integration_id,
+                    topic["topic_id"],
+                    topic.get("topic_name") or str(topic["topic_id"]),
+                    force=True,
+                )
+                matched += 1
+                topic["matched_page"] = page.get("name")
+                topic["integration_id"] = integration_id
+            else:
+                unmatched_topics.append(topic)
+
+        _discover_job = {
+            "status": "done",
+            "topics_found": len(discovered),
+            "matched": matched,
+            "unmatched": len(unmatched_topics),
+            "unmatched_topics": unmatched_topics[:20],
+            "all_topics": discovered,
+        }
+    except Exception as exc:
+        logger.error("Topic discovery failed: %s", exc)
+        _discover_job = {
+            "status": "error",
+            "error": str(exc)[:500],
+        }
 
 
 async def _run_scan_job(chat_id: int, seen_topic_ids: dict[int, str], topics: dict) -> None:
@@ -472,6 +542,37 @@ async def scan_single_inventory(integration_id: str):
         "topic_name": topic_name,
         **r,
     }
+
+
+@router.post("/staging-group/discover-topics")
+async def discover_topics():
+    """Discover all forum topics in the staging group by probing message IDs.
+
+    Returns immediately. Poll GET /staging-group/discover-topics for progress.
+    Discovered topics are auto-matched to roster pages by name and remapped.
+    """
+    global _discover_job
+    _require_bot()
+
+    if _discover_job and _discover_job.get("status") == "running":
+        return {"status": "already_running", **_discover_job}
+
+    staging = get_staging_group()
+    if not staging or not staging.get("chat_id"):
+        raise HTTPException(status_code=400, detail="Staging group not configured")
+
+    _discover_job = {"status": "starting"}
+    asyncio.create_task(_run_discover_job(staging["chat_id"]))
+
+    return {"status": "started"}
+
+
+@router.get("/staging-group/discover-topics")
+async def get_discover_status():
+    """Poll the background topic discovery job."""
+    if _discover_job is None:
+        return {"status": "idle"}
+    return _discover_job
 
 
 @router.delete("/staging-group/topics/{integration_id}")

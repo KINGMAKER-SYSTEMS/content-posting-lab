@@ -64,6 +64,8 @@ export function TelegramPage() {
   const [scanning, setScanning] = useState(false);
   const [scanProgress, setScanProgress] = useState('');
   const [scanResult, setScanResult] = useState<{ scanned_topics: number; total_found: number } | null>(null);
+  const [discovering, setDiscovering] = useState(false);
+  const [discoverProgress, setDiscoverProgress] = useState('');
 
   const [newPosterName, setNewPosterName] = useState('');
   const [newPosterChatId, setNewPosterChatId] = useState('');
@@ -716,7 +718,42 @@ export function TelegramPage() {
                 >
                   {scanning ? 'Scanning...' : 'Scan Inventory'}
                 </Button>
-                {scanProgress && <span className="text-xs text-muted-foreground">{scanProgress}</span>}
+                <Button
+                  variant="outline"
+                  disabled={discovering}
+                  onClick={async () => {
+                    setDiscovering(true);
+                    setDiscoverProgress('Starting discovery...');
+                    try {
+                      await fetch(apiUrl('/api/telegram/staging-group/discover-topics'), { method: 'POST' });
+                      for (let i = 0; i < 600; i++) {
+                        await new Promise((r) => setTimeout(r, 2000));
+                        try {
+                          const s = await fetchJson<{
+                            status: string; probed?: number; ceiling?: number;
+                            topics_found?: number; matched?: number; unmatched?: number; error?: string;
+                          }>(apiUrl('/api/telegram/staging-group/discover-topics'));
+                          if (s.status === 'done') {
+                            setDiscoverProgress('');
+                            addNotification('success', `Found ${s.topics_found} topics, matched ${s.matched} to pages, ${s.unmatched} unmatched`);
+                            await refresh();
+                            break;
+                          } else if (s.status === 'error') {
+                            addNotification('error', s.error || 'Discovery failed');
+                            break;
+                          } else if (s.status === 'running') {
+                            setDiscoverProgress(`Probing ${s.probed ?? 0}/${s.ceiling ?? '?'} — ${s.topics_found ?? 0} topics found`);
+                          }
+                        } catch { /* retry */ }
+                      }
+                    } catch (err) {
+                      addNotification('error', err instanceof Error ? err.message : 'Discovery failed');
+                    } finally { setDiscovering(false); setDiscoverProgress(''); }
+                  }}
+                >
+                  {discovering ? 'Discovering...' : 'Discover Topics'}
+                </Button>
+                {(scanProgress || discoverProgress) && <span className="text-xs text-muted-foreground">{scanProgress || discoverProgress}</span>}
                 <Button variant="ghost" size="sm" onClick={async () => {
                   try {
                     const res = await fetchJson<{
