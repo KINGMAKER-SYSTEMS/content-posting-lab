@@ -1,6 +1,7 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { apiUrl, staticUrl } from '../lib/api';
 import { EmptyState, LazyVideo, ProgressBar } from '../components';
+import { AssignToPagesDialog } from '../components/AssignToPagesDialog';
 import { useWorkflowStore } from '../stores/workflowStore';
 import { captureTextOverlay as captureTextOverlayShared, fontFamilyName } from '../lib/textOverlay';
 import type { TextOverlayConfig } from '../lib/textOverlay';
@@ -338,7 +339,8 @@ export function BurnPage() {
   const [batchLabel, setBatchLabel] = useState('');
   const [showExportBar, setShowExportBar] = useState(false);
   const [exportCount, setExportCount] = useState(0);
-  const [sendingToTelegram, setSendingToTelegram] = useState<string | null>(null);
+  const [assignBatchId, setAssignBatchId] = useState<string | null>(null);
+  const [assignBatchCount, setAssignBatchCount] = useState(0);
   const [renamingBatchId, setRenamingBatchId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState('');
 
@@ -1176,30 +1178,12 @@ export function BurnPage() {
                         size="xs"
                         variant="ghost"
                         className="ml-auto h-5 px-1.5 text-[10px]"
-                        disabled={sendingToTelegram === b.id}
-                        onClick={async () => {
-                          // Quick telegram send — uses first roster page
-                          const rosterPages = useWorkflowStore.getState().rosterPages;
-                          if (!rosterPages.length) {
-                            addNotification('error', 'No roster pages configured. Set up pages in Telegram tab first.');
-                            return;
-                          }
-                          setSendingToTelegram(b.id);
-                          try {
-                            const res = await fetch(apiUrl('/api/telegram/send-batch'), {
-                              method: 'POST',
-                              headers: { 'Content-Type': 'application/json' },
-                              body: JSON.stringify({ integration_id: rosterPages[0].integration_id, batch_id: b.id, project: projectName }),
-                            });
-                            const data = await res.json();
-                            if (!res.ok) throw new Error(data.error || data.detail || 'Send failed');
-                            addNotification('success', `Sent ${data.sent}/${data.total} to Telegram`);
-                          } catch (err) {
-                            addNotification('error', err instanceof Error ? err.message : 'Telegram send failed');
-                          } finally { setSendingToTelegram(null); }
+                        onClick={() => {
+                          setAssignBatchId(b.id);
+                          setAssignBatchCount(b.count ?? 0);
                         }}
                       >
-                        {sendingToTelegram === b.id ? '...' : 'TG'}
+                        Assign
                       </Button>
                     </div>
                   </CardContent>
@@ -1305,6 +1289,15 @@ export function BurnPage() {
           </div>
         )}
       </main>
+
+      {/* Assign to Pages dialog */}
+      <AssignToPagesDialog
+        open={assignBatchId !== null}
+        onOpenChange={(open) => { if (!open) setAssignBatchId(null); }}
+        batchId={assignBatchId ?? ''}
+        projectName={projectName}
+        videoCount={assignBatchCount}
+      />
     </div>
   );
 }

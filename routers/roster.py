@@ -49,8 +49,24 @@ async def list_roster():
 
 @router.get("/project/{project_name}")
 async def get_project_pages(project_name: str):
-    """List pages assigned to a specific project."""
-    return {"pages": list_pages_for_project(project_name)}
+    """List pages assigned to a specific project, enriched with staging topic status."""
+    from services.telegram import get_staging_group
+
+    pages = list_pages_for_project(project_name)
+    staging = get_staging_group()
+    topics = staging.get("topics", {}) if staging else {}
+
+    enriched = []
+    for page in pages:
+        iid = page.get("integration_id", "")
+        topic_info = topics.get(iid)
+        enriched.append({
+            **page,
+            "has_staging_topic": bool(topic_info and topic_info.get("topic_id")),
+            "staging_topic_name": topic_info.get("topic_name") if topic_info else None,
+        })
+
+    return {"pages": enriched}
 
 
 @router.put("/{integration_id}")

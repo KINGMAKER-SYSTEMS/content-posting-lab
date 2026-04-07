@@ -456,6 +456,28 @@ export interface RosterSyncResponse {
   pages: RosterPage[];
 }
 
+// ── Assign to Pages ──────────────────────────────────────────────────────
+
+export interface RosterPageWithStaging extends RosterPage {
+  has_staging_topic: boolean;
+  staging_topic_name: string | null;
+}
+
+export interface AssignBatchPageResult {
+  integration_id: string;
+  page_name: string;
+  files: string[];
+  sent: number;
+  errors: string[];
+}
+
+export interface AssignBatchResponse {
+  total: number;
+  pages_used: number;
+  assignments: AssignBatchPageResult[];
+  batch_id: string;
+}
+
 // ── Telegram ─────────────────────────────────────────────────────────────
 
 export interface TelegramStatus {
