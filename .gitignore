@@ -23,3 +23,7 @@ telegram_config.json
 .DS_Store
 .claude/
 .vercel
+
+# Temporary font preview files
+font_preview.html
+font_previews/
