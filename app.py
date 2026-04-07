@@ -202,7 +202,7 @@ app.mount(
 )
 
 
-_FONT_PREVIEW = Path("font_preview.html")
+_FONT_PREVIEW = Path(__file__).parent / "font_preview.html"
 
 
 @app.get("/font-preview")
