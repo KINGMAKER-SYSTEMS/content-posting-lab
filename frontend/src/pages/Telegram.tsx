@@ -118,11 +118,10 @@ export function TelegramPage() {
     setLoading(true);
     refresh().finally(() => {
       setLoading(false);
-      // Background sync on page load — fire-and-forget, then refresh sounds
-      Promise.all([
-        fetch(apiUrl('/api/telegram/sounds/sync-notion'), { method: 'POST' }).catch(() => {}),
-        fetch(apiUrl('/api/telegram/sounds/sync-hub'), { method: 'POST' }).catch(() => {}),
-      ]).then(() => refresh()).catch(() => {});
+      // Background sync on page load — Campaign Hub + Notion unified sync
+      fetch(apiUrl('/api/telegram/sounds/sync'), { method: 'POST' })
+        .then(() => refresh())
+        .catch(() => {});
     });
   }, [refresh]);
 
@@ -384,15 +383,18 @@ export function TelegramPage() {
     setNotionSyncing(true);
     setNotionResult(null);
     try {
-      const result = await fetchJson<NotionSyncResult>(
-        apiUrl('/api/telegram/sounds/sync-notion'),
+      const result = await fetchJson<any>(
+        apiUrl('/api/telegram/sounds/sync'),
         { method: 'POST' },
       );
       setNotionResult(result);
-      if (result.added > 0) {
-        addNotification('success', `Synced ${result.added} new sound${result.added > 1 ? 's' : ''} from Notion`);
+      const added = result.sounds_added || 0;
+      const deactivated = result.sounds_deactivated || 0;
+      const unmatched = result.unmatched?.length || 0;
+      if (added > 0 || deactivated > 0) {
+        addNotification('success', `Sync: +${added} new, ${deactivated} deactivated${unmatched > 0 ? `, ${unmatched} unmatched` : ''}`);
       } else {
-        addNotification('success', `Notion sync complete — no new sounds (${result.skipped} already synced)`);
+        addNotification('success', `Sync complete — ${result.active_campaigns || 0} active campaigns, no changes needed`);
       }
       await refresh();
     } catch (err) {
@@ -932,25 +934,21 @@ export function TelegramPage() {
               )}
             </div>
             <div className="flex items-center gap-2">
-              {status?.notion_configured && (
-                <>
-                  {notionResult && (
-                    <span className="text-xs font-normal text-muted-foreground">
-                      {notionResult.added > 0
-                        ? `+${notionResult.added} new`
-                        : `${notionResult.skipped} already synced`}
-                    </span>
-                  )}
-                  <Button
-                    variant="outline"
-                    size="xs"
-                    onClick={handleNotionSync}
-                    disabled={notionSyncing}
-                  >
-                    {notionSyncing ? 'Syncing...' : 'Sync from Notion'}
-                  </Button>
-                </>
+              {notionResult && (
+                <span className="text-xs font-normal text-muted-foreground">
+                  {notionResult.sounds_added > 0 || notionResult.sounds_deactivated > 0
+                    ? `+${notionResult.sounds_added || 0} / -${notionResult.sounds_deactivated || 0}`
+                    : `${notionResult.active_campaigns || 0} active`}
+                </span>
               )}
+              <Button
+                variant="outline"
+                size="xs"
+                onClick={handleNotionSync}
+                disabled={notionSyncing}
+              >
+                {notionSyncing ? 'Syncing...' : 'Sync Campaigns'}
+              </Button>
               <Button
                 variant="outline"
                 size="xs"

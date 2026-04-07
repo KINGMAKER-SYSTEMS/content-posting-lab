@@ -1,12 +1,14 @@
 """
-Campaign Hub integration for sound lifecycle management.
-Polls the Campaign Hub API to detect completed campaigns and deactivate
-their corresponding sounds in the Telegram sound library.
+Campaign Hub + Notion integrated sound sync.
 
-Two-pass matching:
-1. Deterministic: normalized artist+song exact match (free, instant)
-2. AI-assisted: sends unmatched sounds + hub campaigns to LLM for fuzzy
-   matching (handles typos, abbreviations, name variations)
+Campaign Hub is the source of truth for WHAT campaigns are active.
+Notion CRM is the source of truth for TikTok Sound Links.
+
+Flow:
+1. Fetch active campaigns from Campaign Hub
+2. For each, find the TikTok Sound Link from Notion (AI-assisted fuzzy matching)
+3. Add active sounds to Telegram library
+4. Deactivate sounds whose Campaign Hub entry is now 'completed'
 """
 
 import json
@@ -16,7 +18,7 @@ from typing import Any
 
 import httpx
 
-from services.telegram import list_sounds, toggle_sound
+from services.telegram import list_sounds, toggle_sound, add_sound, remove_sound
 
 CAMPAIGN_HUB_URL = os.getenv(
     "CAMPAIGN_HUB_URL",
@@ -27,12 +29,11 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 
 
 # ---------------------------------------------------------------------------
-# Normalization helpers (pass 1: deterministic)
+# Normalization for deterministic pass
 # ---------------------------------------------------------------------------
 
 
 def _slugify(text: str) -> str:
-    """Normalize for matching: lowercase, strip punctuation, collapse spaces."""
     text = text.lower().strip()
     text = text.replace("\u00f8", "o").replace("\u00e9", "e").replace("\u00e1", "a")
     text = re.sub(r"[^a-z0-9 ]", "", text)
@@ -44,13 +45,12 @@ def _nospace(text: str) -> str:
 
 
 def _first_collab(artist: str) -> str:
-    """Extract first artist from collab string: 'A & B' -> 'A', 'A X B' -> 'A'."""
     parts = re.split(r"\s+(?:x|&|and|feat|ft|with)\s+", artist, maxsplit=1)
     return parts[0].strip()
 
 
-def _deterministic_keys(artist: str, song: str) -> set[str]:
-    """Generate normalized match keys for deterministic pass."""
+def _match_keys(artist: str, song: str) -> set[str]:
+    """Generate normalized keys for deterministic matching."""
     keys = set()
     a = _slugify(artist)
     s = _slugify(song)
@@ -59,7 +59,6 @@ def _deterministic_keys(artist: str, song: str) -> set[str]:
         keys.add(f"{a}|{s}")
         keys.add(f"{_nospace(a)}|{s}")
         keys.add(f"{_nospace(a)}|{_nospace(s)}")
-        # First word of song (iloveit vs iloveit r3)
         s1 = s.split()[0] if s.split() else s
         if len(s1) > 3:
             keys.add(f"{a}|{s1}")
@@ -67,8 +66,6 @@ def _deterministic_keys(artist: str, song: str) -> set[str]:
     if a:
         keys.add(f"artist:{a}")
         keys.add(f"artist:{_nospace(a)}")
-
-    # First collab artist
     fa = _first_collab(a) if a else ""
     if fa and fa != a:
         keys.add(f"artist:{fa}")
@@ -87,47 +84,49 @@ def _parse_sound_label(label: str) -> tuple[str, str]:
 
 
 # ---------------------------------------------------------------------------
-# AI matching (pass 2: handles typos, abbreviations, etc.)
+# AI matching
 # ---------------------------------------------------------------------------
 
 
-async def _ai_match_sounds(
-    unmatched_sounds: list[dict[str, str]],
+async def _ai_match_campaigns(
     hub_campaigns: list[dict[str, str]],
+    notion_entries: list[dict[str, str]],
 ) -> dict[str, str | None]:
-    """Use GPT-4.1-mini to fuzzy-match sounds to campaign hub entries.
+    """Use GPT-4.1-mini to match Hub campaigns to Notion entries by artist+song.
 
     Args:
-        unmatched_sounds: [{"id": sound_id, "label": "Artist - Song"}, ...]
-        hub_campaigns: [{"slug": slug, "title": "Artist - Song", "status": "completed"}, ...]
+        hub_campaigns: [{"slug": ..., "artist": ..., "song": ...}, ...]
+        notion_entries: [{"id": notion_page_id, "artist": ..., "song": ..., "url": ...}, ...]
 
-    Returns: {sound_id: hub_slug_or_None} for each unmatched sound.
+    Returns: {hub_slug: notion_id_or_None}
     """
-    if not OPENAI_API_KEY or not unmatched_sounds:
+    if not OPENAI_API_KEY or not hub_campaigns or not notion_entries:
         return {}
 
-    # Build compact representations
-    sound_list = "\n".join(f"- [{s['id']}] {s['label']}" for s in unmatched_sounds)
     hub_list = "\n".join(
-        f"- [{c['slug']}] {c['title']} ({c['status']})"
+        f"- [{c['slug']}] {c['artist']} - {c['song']}"
         for c in hub_campaigns
     )
+    notion_list = "\n".join(
+        f"- [{n['id']}] {n['artist']} - {n['song']}"
+        for n in notion_entries
+    )
 
-    prompt = f"""Match each sound to its corresponding campaign. These are music campaigns where the same artist+song may be spelled differently (typos, abbreviations, name variations like "Cam" vs "Cameron", "Mon Rovia" vs "Monrovia", etc).
+    prompt = f"""Match each campaign to its Notion CRM entry. These are music campaigns where the same artist+song may be spelled differently between systems (typos, abbreviations like "Cam" vs "Cameron", "Mon Rovia" vs "Monrovia", "r2" suffix means round 2 of same campaign, etc).
 
-SOUNDS (unmatched):
-{sound_list}
-
-CAMPAIGNS:
+CAMPAIGNS (need sound links):
 {hub_list}
 
-Return a JSON object mapping each sound ID to the campaign slug it matches, or null if no match.
-Example: {{"abc123": "artist_song_slug", "def456": null}}
+NOTION CRM ENTRIES (have sound links):
+{notion_list}
 
-Only return confident matches. If uncertain, use null."""
+Return a JSON object mapping each campaign slug to the Notion entry ID it matches, or null if no match exists.
+Example: {{"artist_song_slug": "notion-page-id", "other_slug": null}}
+
+Only return confident matches. If uncertain, use null. A campaign with "R2"/"r2" in the name is round 2 of the same song — match it to the original Notion entry."""
 
     try:
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with httpx.AsyncClient(timeout=60) as client:
             resp = await client.post(
                 "https://api.openai.com/v1/chat/completions",
                 headers={
@@ -145,7 +144,7 @@ Only return confident matches. If uncertain, use null."""
             content = resp.json()["choices"][0]["message"]["content"]
             return json.loads(content)
     except Exception as exc:
-        print(f"  AI matching failed (non-fatal): {exc}", flush=True)
+        print(f"  AI campaign matching failed (non-fatal): {exc}", flush=True)
         return {}
 
 
@@ -162,122 +161,162 @@ async def fetch_all_campaigns() -> list[dict[str, Any]]:
         return resp.json()
 
 
-async def sync_sound_status() -> dict[str, Any]:
-    """Cross-reference Campaign Hub completion status with Telegram sounds.
+async def sync_sound_status(notion_campaigns: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    """Full sound sync: Campaign Hub as source of truth, Notion for sound links.
 
-    Pass 1 (deterministic): exact normalized artist+song matching.
-    Pass 2 (AI): sends remaining unmatched sounds to GPT-4.1-mini for
-    fuzzy matching to handle typos and name variations.
+    1. Fetch all Campaign Hub campaigns
+    2. For active ones, find TikTok Sound Link from Notion (deterministic + AI)
+    3. Add new active sounds to library
+    4. Deactivate sounds for completed campaigns
 
-    Returns {deactivated, already_inactive, still_active, matched, unmatched, errors}.
+    Args:
+        notion_campaigns: Pre-fetched Notion campaigns (to avoid double-fetch).
+            If None, will import and call fetch_campaigns_with_sounds().
+
+    Returns detailed sync result.
     """
     all_hub = await fetch_all_campaigns()
+    active_hub = [c for c in all_hub if c.get("completion_status") != "completed"]
+    completed_hub = [c for c in all_hub if c.get("completion_status") == "completed"]
 
-    # Build deterministic lookup: key -> completion_status
-    hub_status_by_key: dict[str, str] = {}
-    hub_slug_to_status: dict[str, str] = {}
-    for c in all_hub:
+    # Get Notion data for sound links
+    if notion_campaigns is None:
+        from services.notion import fetch_campaigns_with_sounds
+        notion_campaigns = await fetch_campaigns_with_sounds()
+
+    # Build Notion lookup by deterministic keys: key -> {url, artist, song, id}
+    notion_by_key: dict[str, dict] = {}
+    notion_entries_for_ai: list[dict[str, str]] = []
+    for n in notion_campaigns:
+        entry = {
+            "id": n.get("notion_page_id", ""),
+            "artist": n.get("artist", ""),
+            "song": n.get("song", ""),
+            "url": n.get("tiktok_url", ""),
+        }
+        notion_entries_for_ai.append(entry)
+        for key in _match_keys(entry["artist"], entry["song"]):
+            notion_by_key[key] = entry
+
+    # Pass 1: Deterministic matching for active campaigns
+    matched_active: list[dict] = []  # [{hub_campaign, notion_url, notion_label}]
+    unmatched_for_ai: list[dict[str, str]] = []
+
+    for c in active_hub:
         artist = c.get("artist", "")
         song = c.get("song", "")
-        status = c.get("completion_status", "none")
-        slug = c.get("slug", "")
-        hub_slug_to_status[slug] = status
+        hub_keys = _match_keys(artist, song)
 
-        for key in _deterministic_keys(artist, song):
-            hub_status_by_key[key] = status
-        # Also from title
-        title = c.get("title", "")
-        if " - " in title:
-            t_artist, t_song = title.split(" - ", 1)
-            for key in _deterministic_keys(t_artist, t_song):
-                hub_status_by_key[key] = status
-
-    all_sounds = list_sounds(active_only=False)
-    deactivated = 0
-    already_inactive = 0
-    still_active = 0
-    matched = 0
-    errors: list[str] = []
-
-    # Pass 1: deterministic matching
-    unmatched_for_ai: list[dict[str, str]] = []
-    sound_map: dict[str, dict] = {}  # sound_id -> sound dict
-
-    for sound in all_sounds:
-        label = sound.get("label", "")
-        sound_artist, sound_song = _parse_sound_label(label)
-        sound_keys = _deterministic_keys(sound_artist, sound_song)
-
-        hub_match: str | None = None
-        for key in sound_keys:
-            if key in hub_status_by_key:
-                hub_match = hub_status_by_key[key]
+        notion_entry = None
+        for key in hub_keys:
+            if key in notion_by_key:
+                notion_entry = notion_by_key[key]
                 break
 
-        if hub_match is not None:
-            matched += 1
-            if hub_match == "completed":
-                if sound.get("active", True):
-                    try:
-                        toggle_sound(sound["id"], False)
-                        deactivated += 1
-                    except Exception as exc:
-                        errors.append(f"{label}: {exc}")
-                else:
-                    already_inactive += 1
-            else:
-                if sound.get("active", True):
-                    still_active += 1
-        else:
-            # Unmatched — queue for AI pass
-            sound_map[sound["id"]] = sound
-            unmatched_for_ai.append({"id": sound["id"], "label": label})
-
-    # Pass 2: AI matching for remaining
-    ai_unmatched_labels: list[str] = []
-    if unmatched_for_ai:
-        hub_for_ai = [
-            {
+        if notion_entry and notion_entry["url"]:
+            matched_active.append({
+                "artist": artist,
+                "song": song,
+                "url": notion_entry["url"],
+                "label": f"{artist} - {song}" if artist and song else artist or song,
                 "slug": c.get("slug", ""),
-                "title": c.get("title", f"{c.get('artist', '')} - {c.get('song', '')}"),
-                "status": c.get("completion_status", "none"),
-            }
-            for c in all_hub
-        ]
+            })
+        else:
+            unmatched_for_ai.append({
+                "slug": c.get("slug", ""),
+                "artist": artist,
+                "song": song,
+            })
 
-        ai_matches = await _ai_match_sounds(unmatched_for_ai, hub_for_ai)
+    # Pass 2: AI matching for unmatched active campaigns
+    ai_matched = 0
+    if unmatched_for_ai and notion_entries_for_ai:
+        ai_results = await _ai_match_campaigns(unmatched_for_ai, notion_entries_for_ai)
+
+        notion_by_id = {n["id"]: n for n in notion_entries_for_ai}
+        still_unmatched: list[dict] = []
 
         for item in unmatched_for_ai:
-            sound = sound_map[item["id"]]
-            ai_slug = ai_matches.get(item["id"])
+            notion_id = ai_results.get(item["slug"])
+            if notion_id and notion_id in notion_by_id:
+                n = notion_by_id[notion_id]
+                if n["url"]:
+                    matched_active.append({
+                        "artist": item["artist"],
+                        "song": item["song"],
+                        "url": n["url"],
+                        "label": f"{item['artist']} - {item['song']}" if item["artist"] and item["song"] else item["artist"] or item["song"],
+                        "slug": item["slug"],
+                    })
+                    ai_matched += 1
+                    continue
+            still_unmatched.append(item)
 
-            if ai_slug and ai_slug in hub_slug_to_status:
-                matched += 1
-                hub_status = hub_slug_to_status[ai_slug]
-                if hub_status == "completed":
-                    if sound.get("active", True):
-                        try:
-                            toggle_sound(sound["id"], False)
-                            deactivated += 1
-                        except Exception as exc:
-                            errors.append(f"{item['label']}: {exc}")
-                    else:
-                        already_inactive += 1
-                else:
-                    if sound.get("active", True):
-                        still_active += 1
-            else:
-                if sound.get("active", True):
-                    ai_unmatched_labels.append(item["label"])
-                    still_active += 1
+        unmatched_for_ai = still_unmatched
+
+    # Now sync the sounds library
+    existing_sounds = list_sounds(active_only=False)
+    existing_urls = {s.get("url", "").rstrip("/").lower(): s for s in existing_sounds}
+
+    sounds_added = 0
+    sounds_deactivated = 0
+    sounds_reactivated = 0
+    errors: list[str] = []
+
+    # Add/reactivate active campaign sounds
+    active_urls: set[str] = set()
+    for m in matched_active:
+        url_key = m["url"].rstrip("/").lower()
+        active_urls.add(url_key)
+
+        existing = existing_urls.get(url_key)
+        if existing:
+            # Sound exists — make sure it's active
+            if not existing.get("active", True):
+                try:
+                    toggle_sound(existing["id"], True)
+                    sounds_reactivated += 1
+                except Exception as exc:
+                    errors.append(f"reactivate {m['label']}: {exc}")
+        else:
+            # New sound — add as active
+            try:
+                add_sound(url=m["url"], label=m["label"])
+                sounds_added += 1
+            except Exception as exc:
+                errors.append(f"add {m['label']}: {exc}")
+
+    # Deactivate sounds for completed campaigns
+    # Build completed URL set from deterministic + AI matching
+    completed_urls: set[str] = set()
+    for c in completed_hub:
+        hub_keys = _match_keys(c.get("artist", ""), c.get("song", ""))
+        for key in hub_keys:
+            if key in notion_by_key:
+                url = notion_by_key[key].get("url", "")
+                if url:
+                    completed_urls.add(url.rstrip("/").lower())
+                break
+
+    for sound in existing_sounds:
+        url_key = sound.get("url", "").rstrip("/").lower()
+        if url_key not in active_urls and sound.get("active", True):
+            # Not in active list — deactivate
+            try:
+                toggle_sound(sound["id"], False)
+                sounds_deactivated += 1
+            except Exception as exc:
+                errors.append(f"deactivate {sound.get('label', '')}: {exc}")
 
     return {
-        "deactivated": deactivated,
-        "already_inactive": already_inactive,
-        "still_active": still_active,
-        "matched": matched,
-        "unmatched": ai_unmatched_labels,
-        "completed_campaigns": sum(1 for c in all_hub if c.get("completion_status") == "completed"),
+        "active_campaigns": len(active_hub),
+        "completed_campaigns": len(completed_hub),
+        "sounds_added": sounds_added,
+        "sounds_deactivated": sounds_deactivated,
+        "sounds_reactivated": sounds_reactivated,
+        "matched_deterministic": len(matched_active) - ai_matched,
+        "matched_ai": ai_matched,
+        "unmatched": [f"{u['artist']} - {u['song']}" for u in unmatched_for_ai],
         "errors": errors,
     }
 

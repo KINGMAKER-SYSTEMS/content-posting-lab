@@ -840,32 +840,23 @@ async def update_sound_endpoint(sound_id: str, req: SoundUpdateRequest):
 
 @router.post("/sounds/sync-notion")
 async def sync_sounds_from_notion_endpoint():
-    """Sync TikTok sound links from the Notion campaigns CRM.
-
-    Queries Notion for all campaigns with a TikTok Sound Link,
-    deduplicates against existing sounds, and adds new ones as active.
-    """
-    if not notion_configured():
-        raise HTTPException(
-            status_code=400,
-            detail="Notion integration not configured. Set NOTION_API_KEY and NOTION_CAMPAIGNS_DB environment variables.",
-        )
-
-    try:
-        result = await sync_sounds_from_notion()
-    except Exception as exc:
-        logger.error("Notion sound sync failed: %s", exc)
-        raise HTTPException(status_code=502, detail=f"Notion sync failed: {exc}")
-
-    return result
+    """Legacy endpoint — redirects to unified sync."""
+    return await sync_sounds_unified()
 
 
 @router.post("/sounds/sync-hub")
 async def sync_sounds_from_hub_endpoint():
-    """Sync sound active/inactive status from the Campaign Hub.
+    """Legacy endpoint — redirects to unified sync."""
+    return await sync_sounds_unified()
 
-    Cross-references active sounds with Campaign Hub completion status.
-    Sounds matching completed campaigns get deactivated.
+
+@router.post("/sounds/sync")
+async def sync_sounds_unified():
+    """Unified sound sync: Campaign Hub (active campaigns) + Notion (sound links).
+
+    Campaign Hub is source of truth for what's active.
+    Notion CRM provides the TikTok Sound Links.
+    AI-assisted fuzzy matching bridges naming differences.
     """
     if not hub_configured():
         raise HTTPException(
@@ -873,11 +864,20 @@ async def sync_sounds_from_hub_endpoint():
             detail="Campaign Hub URL not configured.",
         )
 
+    # Fetch Notion data if available (optional — sync still works without it)
+    notion_data = None
+    if notion_configured():
+        try:
+            from services.notion import fetch_campaigns_with_sounds
+            notion_data = await fetch_campaigns_with_sounds()
+        except Exception as exc:
+            logger.warning("Notion fetch failed (continuing with Hub only): %s", exc)
+
     try:
-        result = await hub_sync_sound_status()
+        result = await hub_sync_sound_status(notion_campaigns=notion_data)
     except Exception as exc:
-        logger.error("Campaign Hub sound sync failed: %s", exc)
-        raise HTTPException(status_code=502, detail=f"Campaign Hub sync failed: {exc}")
+        logger.error("Sound sync failed: %s", exc)
+        raise HTTPException(status_code=502, detail=f"Sound sync failed: {exc}")
 
     return result
 
