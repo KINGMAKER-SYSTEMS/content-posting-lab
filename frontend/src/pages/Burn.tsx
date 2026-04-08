@@ -311,6 +311,7 @@ export function BurnPage() {
   const [manualPaste, setManualPaste] = useState('');
   const [selectedFontFile, setSelectedFontFile] = useState('');
   const [defaultFontSize, setDefaultFontSize] = useState(32);
+  const [defaultMaxWidth, setDefaultMaxWidth] = useState(80);
   const [fontColor, setFontColor] = useState('#FFFFFF');
   const [strokeColor, setStrokeColor] = useState('transparent');
   const [quickPosition, setQuickPosition] = useState<QuickPosition>('center');
@@ -472,6 +473,8 @@ export function BurnPage() {
   // Auto-apply font size / line-height / stroke changes to all existing pairs
   // Auto-apply font size changes to all existing pairs
   useEffect(() => { if (pairs.length > 0) setPairs((p) => p.map((pair) => ({ ...pair, fontSize: defaultFontSize || 32 }))); }, [defaultFontSize]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Auto-apply text width changes to all existing pairs
+  useEffect(() => { if (pairs.length > 0) setPairs((p) => p.map((pair) => ({ ...pair, maxWidthPct: defaultMaxWidth }))); }, [defaultMaxWidth]); // eslint-disable-line react-hooks/exhaustive-deps
   // Auto-apply quick position changes to all existing pairs
   useEffect(() => { if (pairs.length > 0) { const y = POSITION_Y_MAP[quickPosition] ?? 50; setPairs((p) => p.map((pair) => ({ ...pair, x: 50, y }))); } }, [quickPosition]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { setBurnReadyCount(Math.min(selectedFolderVideos.length, selectedCaptionItems.length)); }, [selectedFolderVideos.length, selectedCaptionItems.length, setBurnReadyCount]);
@@ -493,7 +496,7 @@ export function BurnPage() {
     const cc = getColorCorrectionOrNull(colorCorrection);
     const np: BurnPairState[] = nv.map((v, i) => ({
       videoPath: v.path, name: v.name, caption: captions.length > 0 ? captions[i % captions.length] : '',
-      x: 50, y, fontSize: defaultFontSize || 32, fontFile: selectedFontFile, maxWidthPct: 80,
+      x: 50, y, fontSize: defaultFontSize || 32, fontFile: selectedFontFile, maxWidthPct: defaultMaxWidth,
       lineHeight: DEFAULT_LINE_HEIGHT, strokeWidth: DEFAULT_STROKE_WIDTH,
       fontColor, strokeColor,
       colorCorrection: cc, result: null,
@@ -503,7 +506,7 @@ export function BurnPage() {
     setShowExportBar(false); setExportCount(0); setBurnBatchId(null);
     setProgressVisible(false); setProgressLabel(''); setProgressValue(0);
     requestAnimationFrame(() => refreshPairScales());
-  }, [colorCorrection, defaultFontSize, fontColor, quickPosition, randomizeCaptions, refreshPairScales, selectedCaptionItems, selectedFolder, selectedFontFile, strokeColor, videos]);
+  }, [colorCorrection, defaultFontSize, defaultMaxWidth, fontColor, quickPosition, randomizeCaptions, refreshPairScales, selectedCaptionItems, selectedFolder, selectedFontFile, strokeColor, videos]);
 
   const handleQuickPosition = useCallback((pos: QuickPosition) => {
     setQuickPosition(pos);
@@ -513,8 +516,8 @@ export function BurnPage() {
   const handleApplyCurrentStyleToAll = useCallback(() => {
     const y = POSITION_Y_MAP[quickPosition] ?? 50;
     const cc = getColorCorrectionOrNull(colorCorrection);
-    setPairs((p) => p.map((pair) => ({ ...pair, fontSize: defaultFontSize || 32, fontFile: selectedFontFile, x: 50, y, lineHeight: DEFAULT_LINE_HEIGHT, strokeWidth: DEFAULT_STROKE_WIDTH, fontColor, strokeColor, colorCorrection: cc })));
-  }, [colorCorrection, defaultFontSize, fontColor, quickPosition, selectedFontFile, strokeColor]);
+    setPairs((p) => p.map((pair) => ({ ...pair, fontSize: defaultFontSize || 32, fontFile: selectedFontFile, x: 50, y, maxWidthPct: defaultMaxWidth, lineHeight: DEFAULT_LINE_HEIGHT, strokeWidth: DEFAULT_STROKE_WIDTH, fontColor, strokeColor, colorCorrection: cc })));
+  }, [colorCorrection, defaultFontSize, defaultMaxWidth, fontColor, quickPosition, selectedFontFile, strokeColor]);
 
   const handlePairCaptionChange = useCallback((i: number, caption: string) => {
     setPairs((p) => p.map((pair, idx) => idx === i ? { ...pair, caption } : pair));
@@ -831,6 +834,18 @@ export function BurnPage() {
           </div>
         </div>
 
+        <Label>Text Width</Label>
+        <div className="mb-4 mt-1 flex items-center gap-2">
+          <input
+            type="range"
+            min={20}
+            max={95}
+            value={defaultMaxWidth}
+            onChange={(e) => setDefaultMaxWidth(Number.parseInt(e.target.value, 10))}
+            className="h-1.5 flex-1 cursor-pointer appearance-none rounded-full bg-muted accent-primary"
+          />
+          <span className="min-w-8 text-right text-xs font-bold tabular-nums text-foreground">{defaultMaxWidth}%</span>
+        </div>
 
         <Label>Font Color</Label>
         <div className="mb-2 mt-1 flex flex-wrap gap-1.5">
