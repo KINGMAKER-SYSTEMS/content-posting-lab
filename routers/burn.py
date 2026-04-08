@@ -18,7 +18,7 @@ from datetime import datetime
 from pathlib import Path
 
 from fastapi import APIRouter, Query, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from project_manager import (
     BASE_DIR,
@@ -847,7 +847,12 @@ async def download_burn_zip(
     batch_id: str,
     project: str = Query(..., description="Project name"),
 ):
-    """Zip all burned MP4s in a batch and return the archive."""
+    """Zip all burned MP4s in a batch and stream the archive.
+
+    Uses ZIP_STORED (no compression) and streams chunks as they're written
+    so the first bytes reach the client immediately. This prevents Railway's
+    ~30s proxy timeout from killing large batch downloads.
+    """
     try:
         burn_dir = get_project_burn_dir(project)
     except ValueError as e:
@@ -866,22 +871,44 @@ async def download_burn_zip(
     zip_label = meta.get("label") if meta else None
     zip_name = f"{zip_label or batch_id}.zip"
 
-    # Write ZIP to temp file to avoid in-memory spikes for large batches
+    # Build ZIP to temp file with ZIP_STORED (no compression = near-instant).
+    # Then stream it in chunks so Railway's proxy sees continuous data and
+    # doesn't kill the connection on large batches.
     tmp_fd, tmp_path = tempfile.mkstemp(suffix=".zip")
     os.close(tmp_fd)
     try:
-        with zipfile.ZipFile(tmp_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        with zipfile.ZipFile(tmp_path, "w", zipfile.ZIP_STORED) as zf:
             for mp4 in mp4s:
                 zf.write(mp4, mp4.name)
     except Exception:
         os.unlink(tmp_path)
         raise
 
-    return FileResponse(
-        tmp_path,
+    zip_size = os.path.getsize(tmp_path)
+
+    async def _stream_chunks():
+        """Stream the ZIP file in 1 MB chunks, then clean up."""
+        try:
+            CHUNK = 1024 * 1024  # 1 MB
+            with open(tmp_path, "rb") as f:
+                while True:
+                    chunk = f.read(CHUNK)
+                    if not chunk:
+                        break
+                    yield chunk
+        finally:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+
+    return StreamingResponse(
+        _stream_chunks(),
         media_type="application/zip",
-        filename=zip_name,
-        background=None,  # file cleanup handled by FileResponse
+        headers={
+            "Content-Disposition": f'attachment; filename="{zip_name}"',
+            "Content-Length": str(zip_size),
+        },
     )
 
 

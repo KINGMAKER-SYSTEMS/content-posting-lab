@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import StreamingResponse
 
 from project_manager import PROJECTS_DIR, get_project_video_dir
 from providers import PROVIDERS
@@ -427,10 +427,27 @@ async def download_all(job_id: str):
         os.unlink(tmp_path)
         raise
 
-    return FileResponse(
-        tmp_path,
+    zip_size = os.path.getsize(tmp_path)
+    zip_name = f"videolab_{job_id}.zip"
+
+    async def _stream():
+        try:
+            with open(tmp_path, "rb") as f:
+                while chunk := f.read(1024 * 1024):
+                    yield chunk
+        finally:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+
+    return StreamingResponse(
+        _stream(),
         media_type="application/zip",
-        filename=f"videolab_{job_id}.zip",
+        headers={
+            "Content-Disposition": f'attachment; filename="{zip_name}"',
+            "Content-Length": str(zip_size),
+        },
     )
 
 
@@ -479,11 +496,28 @@ async def bulk_download(body: dict):
         os.unlink(tmp_path)
         raise HTTPException(status_code=400, detail="No completed videos found in the selected jobs")
 
+    zip_size = os.path.getsize(tmp_path)
     today = datetime.now().strftime("%Y-%m-%d")
-    return FileResponse(
-        tmp_path,
+    zip_name = f"videolab_{today}_{file_count}videos.zip"
+
+    async def _stream():
+        try:
+            with open(tmp_path, "rb") as f:
+                while chunk := f.read(1024 * 1024):
+                    yield chunk
+        finally:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+
+    return StreamingResponse(
+        _stream(),
         media_type="application/zip",
-        filename=f"videolab_{today}_{file_count}videos.zip",
+        headers={
+            "Content-Disposition": f'attachment; filename="{zip_name}"',
+            "Content-Length": str(zip_size),
+        },
     )
 
 
