@@ -171,24 +171,36 @@ interface PairCardProps {
   index: number;
   selected: boolean;
   inlineEditing: boolean;
+  toolbarOpen: boolean;
   snapGuide: { index: number; horizontal: boolean; vertical: boolean } | null;
   draggingIndex: number | null;
-  cssFilterPreview: string;
   encodedProjectName: string;
+  availableFonts: FontInfo[];
   onSelect: (i: number) => void;
   onStartDrag: (e: React.PointerEvent<HTMLDivElement>, i: number) => void;
   onInlineEdit: (i: number) => void;
+  onToggleToolbar: (i: number) => void;
   onCaptionChange: (i: number, caption: string) => void;
   onFontSizeChange: (i: number, v: number) => void;
+  onFontFileChange: (i: number, fontFile: string) => void;
+  onMaxWidthChange: (i: number, v: number) => void;
+  onFontColorChange: (i: number, color: string) => void;
+  onStrokeColorChange: (i: number, color: string) => void;
+  onPositionChange: (i: number, y: number) => void;
+  onColorCorrectionChange: (i: number, key: keyof ColorCorrection, val: number) => void;
   onDimensions: (i: number, w: number, h: number) => void;
   onWrapRef: (i: number, node: HTMLDivElement | null) => void;
 }
 
 const PairCard = memo(function PairCard({
-  pair, index, selected, inlineEditing, snapGuide, draggingIndex,
-  cssFilterPreview, encodedProjectName,
-  onSelect, onStartDrag, onInlineEdit, onCaptionChange, onFontSizeChange, onDimensions, onWrapRef,
+  pair, index, selected, inlineEditing, toolbarOpen, snapGuide, draggingIndex,
+  encodedProjectName, availableFonts,
+  onSelect, onStartDrag, onInlineEdit, onToggleToolbar,
+  onCaptionChange, onFontSizeChange, onFontFileChange, onMaxWidthChange,
+  onFontColorChange, onStrokeColorChange, onPositionChange, onColorCorrectionChange,
+  onDimensions, onWrapRef,
 }: PairCardProps) {
+  const [ccOpen, setCcOpen] = useState(false);
   const hasError = Boolean(pair.result && !pair.result.ok);
   const hasBurned = Boolean(pair.result?.ok && pair.burnedFile);
   const scale = pair.previewScale ?? 1;
@@ -198,6 +210,12 @@ const PairCard = memo(function PairCard({
   const videoSrc = hasBurned && pair.burnedFile
     ? staticUrl(`/projects/${encodedProjectName}/burned/${encodePathForUrl(pair.burnedFile)}`)
     : staticUrl(`/projects/${encodedProjectName}/${videoSubdir}${encodePathForUrl(pair.videoPath)}`);
+
+  const pairCc = pair.colorCorrection ?? DEFAULT_COLOR_CORRECTION;
+  const cardCssFilter = useMemo(() => applyCSSFilterPreview(pairCc), [pairCc]);
+
+  // Current quick position based on pair.y
+  const currentPos: QuickPosition | null = pair.y <= 20 ? 'top' : pair.y >= 80 ? 'bottom' : Math.abs(pair.y - 50) < 5 ? 'center' : null;
 
   return (
     <article
@@ -209,7 +227,7 @@ const PairCard = memo(function PairCard({
       }`}
       onClick={(e) => {
         const t = e.target as HTMLElement;
-        if (t.closest('[data-text-layer]') || t.closest('[data-caption-edit]') || t.closest('[data-card-controls]')) return;
+        if (t.closest('[data-text-layer]') || t.closest('[data-caption-edit]') || t.closest('[data-card-controls]') || t.closest('[data-card-toolbar]')) return;
         onSelect(index);
       }}
     >
@@ -220,7 +238,7 @@ const PairCard = memo(function PairCard({
             <LazyVideo
               src={`${videoSrc}#t=0.001`}
               selected={selected}
-              style={{ filter: cssFilterPreview }}
+              style={{ filter: cardCssFilter }}
               className="block h-full w-full object-cover"
               onLoadedMetadata={(e) => onDimensions(index, (e.target as HTMLVideoElement).videoWidth, (e.target as HTMLVideoElement).videoHeight)}
             />
@@ -265,7 +283,24 @@ const PairCard = memo(function PairCard({
           </div>
 
           <div className="flex flex-col gap-1.5 px-2.5 py-2">
-            <div className="truncate text-xs text-muted-foreground" title={pair.name}>{pair.name}</div>
+            <div className="flex items-center justify-between">
+              <div className="truncate text-xs text-muted-foreground" title={pair.name}>{pair.name}</div>
+              {!hasBurned ? (
+                <button
+                  type="button"
+                  data-card-controls
+                  onClick={(e) => { e.stopPropagation(); onToggleToolbar(index); }}
+                  className={`flex items-center gap-1 rounded-md border px-2 py-0.5 text-[10px] font-medium transition-colors ${
+                    toolbarOpen
+                      ? 'border-primary bg-primary/10 text-primary'
+                      : 'border-border text-muted-foreground hover:border-primary hover:text-primary'
+                  }`}
+                >
+                  <span>{toolbarOpen ? '▾' : '▸'}</span>
+                  Edit
+                </button>
+              ) : null}
+            </div>
             <Textarea
               data-caption-edit
               value={pair.caption}
@@ -275,18 +310,174 @@ const PairCard = memo(function PairCard({
             />
           </div>
 
-          {selected ? (
-            <div data-card-controls className="flex items-center gap-2 border-t-2 border-border px-2.5 py-2">
-              <Label htmlFor={`pair-size-${index}`} className="text-[11px] uppercase tracking-wide text-muted-foreground">Size</Label>
-              <Input
-                id={`pair-size-${index}`}
-                type="number"
-                min={8}
-                max={120}
-                value={pair.fontSize}
-                onChange={(e) => onFontSizeChange(index, Number.parseInt(e.target.value, 10))}
-                className="w-[60px]"
-              />
+          {/* Per-card style toolbar */}
+          {toolbarOpen && !hasBurned ? (
+            <div data-card-toolbar className="border-t-2 border-border px-2.5 py-2.5 space-y-2.5">
+              {/* Font + Size row */}
+              <div className="flex gap-2">
+                <div className="flex-1 min-w-0">
+                  <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">Font</Label>
+                  <Select value={pair.fontFile} onValueChange={(v: string) => onFontFileChange(index, v)}>
+                    <SelectTrigger className="h-8 mt-0.5 text-xs">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {availableFonts.map((f) => (
+                        <SelectItem key={f.file} value={f.file}>{f.name}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="w-16">
+                  <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">Size</Label>
+                  <Input
+                    type="number"
+                    min={8}
+                    max={120}
+                    value={pair.fontSize}
+                    onChange={(e) => onFontSizeChange(index, Number.parseInt(e.target.value, 10))}
+                    className="h-8 mt-0.5 text-xs"
+                  />
+                </div>
+              </div>
+
+              {/* Text Width slider */}
+              <div>
+                <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">Text Width</Label>
+                <div className="flex items-center gap-2 mt-0.5">
+                  <input
+                    type="range"
+                    min={20}
+                    max={95}
+                    value={pair.maxWidthPct}
+                    onChange={(e) => onMaxWidthChange(index, Number.parseInt(e.target.value, 10))}
+                    className="h-1 flex-1 cursor-pointer appearance-none rounded-full bg-muted accent-primary"
+                  />
+                  <span className="min-w-7 text-right text-[10px] font-bold tabular-nums text-foreground">{pair.maxWidthPct}%</span>
+                </div>
+              </div>
+
+              {/* Font Color swatches */}
+              <div>
+                <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">Font Color</Label>
+                <div className="flex flex-wrap gap-1 mt-0.5">
+                  {TIKTOK_COLOR_PRESETS.map((c) => (
+                    <button
+                      key={c.hex}
+                      type="button"
+                      title={c.name}
+                      onClick={() => onFontColorChange(index, c.hex)}
+                      className={`h-5 w-5 rounded-full border-2 transition-all ${pair.fontColor === c.hex ? 'border-primary scale-110 ring-1 ring-primary/40' : 'border-border hover:scale-105'}`}
+                      style={{ backgroundColor: c.hex, boxShadow: c.hex === '#FFFFFF' ? 'inset 0 0 0 1px rgba(0,0,0,0.1)' : undefined }}
+                    />
+                  ))}
+                  <label
+                    title="Custom color"
+                    className={`relative flex h-5 w-5 cursor-pointer items-center justify-center rounded-full border-2 border-border bg-gradient-to-br from-red-400 via-yellow-300 to-blue-400 transition-all hover:scale-105 ${!TIKTOK_COLOR_PRESETS.some((c) => c.hex === pair.fontColor) ? 'border-primary scale-110 ring-1 ring-primary/40' : ''}`}
+                  >
+                    <input
+                      type="color"
+                      value={pair.fontColor}
+                      onChange={(e) => onFontColorChange(index, e.target.value)}
+                      className="absolute inset-0 cursor-pointer opacity-0"
+                    />
+                  </label>
+                </div>
+              </div>
+
+              {/* Stroke Color swatches */}
+              <div>
+                <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">Stroke</Label>
+                <div className="flex flex-wrap gap-1 mt-0.5">
+                  {STROKE_COLOR_PRESETS.map((c) => (
+                    <button
+                      key={c.hex}
+                      type="button"
+                      title={c.name}
+                      onClick={() => onStrokeColorChange(index, c.hex)}
+                      className={`h-5 w-5 rounded-full border-2 transition-all ${pair.strokeColor === c.hex ? 'border-primary scale-110 ring-1 ring-primary/40' : 'border-border hover:scale-105'}`}
+                      style={{ backgroundColor: c.hex === 'transparent' ? undefined : c.hex, boxShadow: c.hex === '#FFFFFF' ? 'inset 0 0 0 1px rgba(0,0,0,0.1)' : undefined }}
+                    >
+                      {c.hex === 'transparent' ? <span className="block h-full w-full rounded-full bg-muted relative overflow-hidden"><span className="absolute inset-0 flex items-center justify-center text-destructive text-[8px] font-bold">/</span></span> : null}
+                    </button>
+                  ))}
+                  <label
+                    title="Custom stroke"
+                    className={`relative flex h-5 w-5 cursor-pointer items-center justify-center rounded-full border-2 border-border bg-gradient-to-br from-gray-600 via-gray-400 to-gray-200 transition-all hover:scale-105 ${!STROKE_COLOR_PRESETS.some((c) => c.hex === pair.strokeColor) ? 'border-primary scale-110 ring-1 ring-primary/40' : ''}`}
+                  >
+                    <input
+                      type="color"
+                      value={pair.strokeColor === 'transparent' ? '#000000' : pair.strokeColor}
+                      onChange={(e) => onStrokeColorChange(index, e.target.value)}
+                      className="absolute inset-0 cursor-pointer opacity-0"
+                    />
+                  </label>
+                </div>
+              </div>
+
+              {/* Quick Position */}
+              <div>
+                <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">Position</Label>
+                <div className="flex gap-1.5 mt-0.5">
+                  {(['top', 'center', 'bottom'] as QuickPosition[]).map((pos) => (
+                    <button
+                      key={pos}
+                      type="button"
+                      onClick={() => onPositionChange(index, POSITION_Y_MAP[pos])}
+                      className={`rounded-md border px-2 py-0.5 text-[10px] font-medium capitalize transition-colors ${
+                        currentPos === pos
+                          ? 'border-primary bg-primary text-primary-foreground'
+                          : 'border-border text-muted-foreground hover:border-primary hover:text-primary'
+                      }`}
+                    >
+                      {pos}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Color Correction (collapsible) */}
+              <div>
+                <button
+                  type="button"
+                  onClick={() => setCcOpen((o) => !o)}
+                  className="flex w-full items-center gap-1 text-[10px] font-bold uppercase tracking-wide text-muted-foreground hover:text-foreground transition-colors"
+                >
+                  <span>{ccOpen ? '▾' : '▸'}</span>
+                  Color Correction
+                </button>
+                {ccOpen ? (
+                  <div className="mt-1.5 space-y-1">
+                    {[
+                      { key: 'brightness', label: 'Bright', min: -100, max: 100 },
+                      { key: 'contrast', label: 'Contrast', min: -100, max: 100 },
+                      { key: 'saturation', label: 'Satur.', min: -100, max: 100 },
+                      { key: 'sharpness', label: 'Sharp', min: 0, max: 100 },
+                      { key: 'shadow', label: 'Shadow', min: -100, max: 100 },
+                      { key: 'temperature', label: 'Temp', min: -100, max: 100 },
+                      { key: 'tint', label: 'Tint', min: -100, max: 100 },
+                      { key: 'fade', label: 'Fade', min: 0, max: 100 },
+                    ].map((slider) => {
+                      const k = slider.key as keyof ColorCorrection;
+                      const v = pairCc[k];
+                      return (
+                        <div key={slider.key} className="flex items-center gap-1.5">
+                          <span className="min-w-[44px] text-[10px] text-muted-foreground">{slider.label}</span>
+                          <input
+                            type="range"
+                            min={slider.min}
+                            max={slider.max}
+                            value={v}
+                            onChange={(e) => onColorCorrectionChange(index, k, Number.parseInt(e.target.value, 10) || 0)}
+                            className="h-1 flex-1 cursor-pointer appearance-none rounded-full bg-muted accent-primary"
+                          />
+                          <span className="min-w-5 text-right text-[10px] font-bold tabular-nums text-foreground">{v}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : null}
+              </div>
             </div>
           ) : null}
     </article>
@@ -321,6 +512,8 @@ export function BurnPage() {
   const [selectedIndex, setSelectedIndex] = useState(-1);
   const [inlineEditIndex, setInlineEditIndex] = useState<number | null>(null);
   const [snapGuide, setSnapGuide] = useState<{ index: number; horizontal: boolean; vertical: boolean } | null>(null);
+
+  const [expandedToolbars, setExpandedToolbars] = useState<Set<number>>(new Set());
 
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -361,7 +554,6 @@ export function BurnPage() {
     return src ? src.captions.map((r) => r.text) : [];
   }, [captionSources, manualPaste, selectedCaptionSource]);
 
-  const cssFilterPreview = useMemo(() => applyCSSFilterPreview(colorCorrection), [colorCorrection]);
   const showPasteManual = selectedCaptionSource === '__paste';
   const projectName = activeProjectName ?? '';
   const encodedProjectName = useMemo(() => encodeURIComponent(projectName), [projectName]);
@@ -526,6 +718,35 @@ export function BurnPage() {
   const handlePairFontSizeChange = useCallback((i: number, v: number) => {
     const size = Number.isNaN(v) ? 32 : Math.max(8, Math.min(120, v));
     setPairs((p) => p.map((pair, idx) => idx === i ? { ...pair, fontSize: size } : pair));
+  }, []);
+
+  const handlePairFontFileChange = useCallback((i: number, fontFile: string) => {
+    setPairs((p) => p.map((pair, idx) => idx === i ? { ...pair, fontFile } : pair));
+  }, []);
+
+  const handlePairMaxWidthChange = useCallback((i: number, v: number) => {
+    setPairs((p) => p.map((pair, idx) => idx === i ? { ...pair, maxWidthPct: Math.max(20, Math.min(95, v)) } : pair));
+  }, []);
+
+  const handlePairFontColorChange = useCallback((i: number, color: string) => {
+    setPairs((p) => p.map((pair, idx) => idx === i ? { ...pair, fontColor: color } : pair));
+  }, []);
+
+  const handlePairStrokeColorChange = useCallback((i: number, color: string) => {
+    setPairs((p) => p.map((pair, idx) => idx === i ? { ...pair, strokeColor: color } : pair));
+  }, []);
+
+  const handlePairPositionChange = useCallback((i: number, y: number) => {
+    setPairs((p) => p.map((pair, idx) => idx === i ? { ...pair, x: 50, y } : pair));
+  }, []);
+
+  const handlePairColorCorrectionChange = useCallback((i: number, key: keyof ColorCorrection, val: number) => {
+    setPairs((p) => p.map((pair, idx) => {
+      if (idx !== i) return pair;
+      const base = pair.colorCorrection ?? { ...DEFAULT_COLOR_CORRECTION };
+      const updated = { ...base, [key]: val };
+      return { ...pair, colorCorrection: getColorCorrectionOrNull(updated) };
+    }));
   }, []);
 
   const setPairDimensions = useCallback((i: number, vw: number, vh: number) => {
@@ -1097,15 +1318,23 @@ export function BurnPage() {
                   index={index}
                   selected={selectedIndex === index}
                   inlineEditing={inlineEditIndex === index}
+                  toolbarOpen={expandedToolbars.has(index)}
                   snapGuide={snapGuide}
                   draggingIndex={dragRef.current?.index ?? null}
-                  cssFilterPreview={cssFilterPreview}
                   encodedProjectName={encodedProjectName}
+                  availableFonts={availableFonts}
                   onSelect={selectCard}
                   onStartDrag={startDrag}
                   onInlineEdit={handleInlineEdit}
+                  onToggleToolbar={(i) => setExpandedToolbars((prev) => { const next = new Set(prev); if (next.has(i)) next.delete(i); else next.add(i); return next; })}
                   onCaptionChange={handlePairCaptionChange}
                   onFontSizeChange={handlePairFontSizeChange}
+                  onFontFileChange={handlePairFontFileChange}
+                  onMaxWidthChange={handlePairMaxWidthChange}
+                  onFontColorChange={handlePairFontColorChange}
+                  onStrokeColorChange={handlePairStrokeColorChange}
+                  onPositionChange={handlePairPositionChange}
+                  onColorCorrectionChange={handlePairColorCorrectionChange}
                   onDimensions={setPairDimensions}
                   onWrapRef={handleWrapRef}
                 />
