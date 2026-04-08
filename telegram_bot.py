@@ -573,11 +573,17 @@ async def _scan_topic_pyrogram(
     topic_id: int,
     integration_id: str,
 ) -> dict:
-    """Scan a topic using Pyrogram's search_messages with message_thread_id.
+    """Scan a topic for media using Pyrogram MTProto APIs.
 
-    Uses no filter to get ALL messages in the topic, then checks each one
-    for media (video, document, photo, animation). This catches videos sent
-    as documents, forwarded content, etc.
+    Strategy (in order of reliability):
+    1. get_discussion_replies(message_id=topic_id) — uses messages.GetReplies,
+       no query needed, returns all messages in the topic thread.
+    2. If that fails or returns 0, fall back to search_messages with explicit
+       VIDEO filter (messages.Search with a media filter works without a query).
+
+    The old approach (search_messages with no query + no filter) was unreliable
+    because messages.Search with empty q + inputMessagesFilterEmpty is undefined
+    behavior in MTProto — works for some topics, returns 0 for others.
     """
     existing = get_inventory(integration_id)
     existing_msg_ids = {item.get("message_id") for item in existing}
@@ -585,60 +591,97 @@ async def _scan_topic_pyrogram(
     found = 0
     skipped = 0
     scanned = 0
+    method_used = "unknown"
 
+    def _extract_media(msg):
+        """Extract media info from a Pyrogram message. Returns (type, file_id, name) or Nones."""
+        if msg.video:
+            return "video", msg.video.file_id, msg.video.file_name
+        if msg.document:
+            mt = "document"
+            if msg.document.mime_type and msg.document.mime_type.startswith("video/"):
+                mt = "video"
+            return mt, msg.document.file_id, msg.document.file_name
+        if msg.animation:
+            return "animation", msg.animation.file_id, msg.animation.file_name
+        if msg.photo:
+            fid = msg.photo.file_id if hasattr(msg.photo, "file_id") else None
+            return "photo", fid, f"photo_{msg.id}.jpg"
+        return None, None, None
+
+    def _process_msg(msg):
+        """Process a single message — returns True if media was found and added."""
+        nonlocal found, skipped, scanned
+        scanned += 1
+        if msg.id in existing_msg_ids:
+            skipped += 1
+            return False
+
+        media_type, file_id, file_name = _extract_media(msg)
+        if media_type and file_id:
+            add_inventory_item(integration_id, {
+                "file_id": file_id,
+                "file_name": file_name or f"{media_type}_{msg.id}",
+                "media_type": media_type,
+                "caption": msg.caption,
+                "message_id": msg.id,
+                "chat_id": chat_id,
+                "source": "scan",
+            })
+            found += 1
+            return True
+        return False
+
+    # --- Strategy 1: get_discussion_replies (messages.GetReplies) ---
     try:
-        # No filter — get ALL messages in this topic, check for media
-        async for msg in _pyro.search_messages(
+        async for msg in _pyro.get_discussion_replies(
             chat_id=chat_id,
-            message_thread_id=topic_id,
+            message_id=topic_id,
         ):
-            scanned += 1
-            if msg.id in existing_msg_ids:
-                skipped += 1
-                continue
-
-            # Check all media types
-            media_type = None
-            file_id = None
-            file_name = None
-
-            if msg.video:
-                media_type = "video"
-                file_id = msg.video.file_id
-                file_name = msg.video.file_name
-            elif msg.document:
-                media_type = "document"
-                file_id = msg.document.file_id
-                file_name = msg.document.file_name
-                # Treat video documents as video
-                if msg.document.mime_type and msg.document.mime_type.startswith("video/"):
-                    media_type = "video"
-            elif msg.animation:
-                media_type = "animation"
-                file_id = msg.animation.file_id
-                file_name = msg.animation.file_name
-            elif msg.photo:
-                media_type = "photo"
-                file_id = msg.photo.file_id if hasattr(msg.photo, "file_id") else None
-                file_name = f"photo_{msg.id}.jpg"
-
-            if media_type and file_id:
-                add_inventory_item(integration_id, {
-                    "file_id": file_id,
-                    "file_name": file_name or f"{media_type}_{msg.id}",
-                    "media_type": media_type,
-                    "caption": msg.caption,
-                    "message_id": msg.id,
-                    "chat_id": chat_id,
-                    "source": "scan",
-                })
-                found += 1
-
+            _process_msg(msg)
+        method_used = "get_discussion_replies"
     except Exception as exc:
-        logger.error("pyrogram scan_topic failed for topic %s: %s", topic_id, exc)
-        return {"found": found, "skipped_existing": skipped, "total_scanned": scanned, "error": str(exc)[:200]}
+        logger.warning("get_discussion_replies failed for topic %s: %s — trying search fallback", topic_id, exc)
+        # Reset counters for fallback attempt
+        found = 0
+        skipped = 0
+        scanned = 0
 
-    return {"found": found, "skipped_existing": skipped, "total_scanned": scanned}
+    # --- Strategy 2: search_messages with VIDEO filter (if strategy 1 failed or got 0) ---
+    if scanned == 0:
+        try:
+            # With an explicit filter, search_messages works without a query
+            async for msg in _pyro.search_messages(
+                chat_id=chat_id,
+                message_thread_id=topic_id,
+                filter=pyro_enums.MessagesFilter.VIDEO,
+            ):
+                _process_msg(msg)
+
+            # Also check for documents (videos sent as files)
+            async for msg in _pyro.search_messages(
+                chat_id=chat_id,
+                message_thread_id=topic_id,
+                filter=pyro_enums.MessagesFilter.DOCUMENT,
+            ):
+                _process_msg(msg)
+
+            # And photos
+            async for msg in _pyro.search_messages(
+                chat_id=chat_id,
+                message_thread_id=topic_id,
+                filter=pyro_enums.MessagesFilter.PHOTO,
+            ):
+                _process_msg(msg)
+
+            method_used = "search_messages(filtered)"
+        except Exception as exc:
+            logger.error("pyrogram scan_topic failed for topic %s: %s", topic_id, exc)
+            return {"found": found, "skipped_existing": skipped, "total_scanned": scanned, "error": str(exc)[:200]}
+
+    logger.info("scan topic %s (%s): method=%s scanned=%d found=%d skipped=%d",
+                topic_id, integration_id[:12], method_used, scanned, found, skipped)
+    return {"found": found, "skipped_existing": skipped, "total_scanned": scanned, "method": method_used}
 
 
 async def _scan_topic_fallback(
