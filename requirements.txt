@@ -11,6 +11,7 @@ Pillow
 yt-dlp
 aiogram>=3.4
 pyrotgfork>=2.2
+TgCrypto
 tiktokautouploader
 google-api-python-client
 google-auth
