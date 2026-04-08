@@ -1,21 +1,25 @@
+import logging
 import os
 import subprocess
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 import uvicorn
 
+import debug_logger
 from project_manager import PROJECTS_DIR, ensure_default_project
 from providers import PROVIDERS
 from providers.base import API_KEYS
 from routers.burn import router as burn_router
 from routers.captions import router as captions_router
 from routers.clipper import router as clipper_router
+from routers.debug import router as debug_router
 from routers.projects import list_all_projects, router as projects_router
 from routers.recreate import router as recreate_router
 from routers.postiz import router as postiz_router
@@ -28,6 +32,8 @@ from routers.gdrive import router as gdrive_router
 from routers.video import router as video_router
 
 load_dotenv()
+
+log = logging.getLogger("app")
 
 FRONTEND_DIR = Path("frontend/dist")
 _DEFAULT_CORS = [
@@ -83,21 +89,23 @@ def _provider_status() -> dict[str, bool]:
 
 
 def _log_startup_validation(ffmpeg_ok: bool, ytdlp_ok: bool):
-    print("✓ Content Posting Lab starting...", flush=True)
-    print(f"  ffmpeg: {'ok' if ffmpeg_ok else 'missing'}", flush=True)
-    print(f"  yt-dlp: {'ok' if ytdlp_ok else 'missing'}", flush=True)
-    print(f"  api keys: {_api_key_status()}", flush=True)
-    # Debug: log key lengths to catch whitespace/truncation issues
+    log.info("Content Posting Lab starting...")
+    log.info("ffmpeg: %s", "ok" if ffmpeg_ok else "MISSING")
+    log.info("yt-dlp: %s", "ok" if ytdlp_ok else "MISSING")
+    log.info("api keys: %s", _api_key_status())
     for name in ("XAI_API_KEY", "REPLICATE_API_TOKEN", "OPENAI_API_KEY"):
         val = os.getenv(name, "")
         if val:
-            print(f"  {name}: len={len(val)}, starts={val[:10]}..., ends=...{val[-4:]}", flush=True)
+            log.debug("%s: len=%d, starts=%s..., ends=...%s", name, len(val), val[:10], val[-4:])
         else:
-            print(f"  {name}: NOT SET", flush=True)
+            log.warning("%s: NOT SET", name)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Initialize structured logging before anything else
+    debug_logger.setup_logging()
+
     Path("output").mkdir(parents=True, exist_ok=True)
     Path("caption_output").mkdir(parents=True, exist_ok=True)
     Path("burn_output").mkdir(parents=True, exist_ok=True)
@@ -116,11 +124,11 @@ async def lifespan(app: FastAPI):
     if tg_token:
         try:
             await start_tg_bot(tg_token)
-            print("  telegram bot: started", flush=True)
+            log.info("telegram bot: started")
         except Exception as e:
-            print(f"  telegram bot: failed ({e})", flush=True)
+            log.error("telegram bot: failed (%s)", e)
     else:
-        print("  telegram bot: no token configured", flush=True)
+        log.info("telegram bot: no token configured")
 
     yield
 
@@ -129,7 +137,7 @@ async def lifespan(app: FastAPI):
         await stop_tg_bot()
     except Exception:
         pass
-    print("✓ Content Posting Lab shutting down...")
+    log.info("Content Posting Lab shutting down...")
 
 
 app = FastAPI(
@@ -147,6 +155,35 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    """Log every HTTP request with timing. Skip static files and health checks."""
+    path = request.url.path
+    # Skip noise: static files, favicon, frontend assets
+    if path.startswith(("/fonts/", "/projects/", "/output/", "/burn-output/", "/caption-output/", "/assets/")):
+        return await call_next(request)
+    if path == "/favicon.ico":
+        return await call_next(request)
+
+    t0 = time.time()
+    response = await call_next(request)
+    elapsed_ms = (time.time() - t0) * 1000
+
+    # Only log API routes and slow requests
+    if path.startswith("/api/") or elapsed_ms > 1000:
+        log.info(
+            "%s %s → %d (%.0fms)",
+            request.method,
+            path,
+            response.status_code,
+            elapsed_ms,
+        )
+
+    return response
+
+
+app.include_router(debug_router, prefix="/api/debug", tags=["debug"])
 app.include_router(video_router, prefix="/api/video", tags=["video"])
 app.include_router(captions_router, prefix="/api/captions", tags=["captions"])
 app.include_router(burn_router, prefix="/api/burn", tags=["burn"])

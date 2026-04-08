@@ -12,11 +12,14 @@ Flow:
 """
 
 import json
+import logging
 import os
 import re
 from typing import Any
 
 import httpx
+
+log = logging.getLogger("services.campaign_hub")
 
 from services.telegram import list_sounds, toggle_sound, add_sound, remove_sound
 
@@ -144,7 +147,7 @@ Only return confident matches. If uncertain, use null. A campaign with "R2"/"r2"
             content = resp.json()["choices"][0]["message"]["content"]
             return json.loads(content)
     except Exception as exc:
-        print(f"  AI campaign matching failed (non-fatal): {exc}", flush=True)
+        log.warning("AI campaign matching failed (non-fatal): %s", exc)
         return {}
 
 

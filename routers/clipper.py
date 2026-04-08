@@ -18,11 +18,6 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from project_manager import PROJECTS_DIR, sanitize_project_name
 
 log = logging.getLogger("clipper")
-log.setLevel(logging.DEBUG)
-if not log.handlers:
-    _h = logging.StreamHandler()
-    _h.setFormatter(logging.Formatter("[clipper] %(levelname)s  %(message)s"))
-    log.addHandler(_h)
 
 router = APIRouter()
 

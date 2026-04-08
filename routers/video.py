@@ -4,6 +4,7 @@ import asyncio
 import base64
 import io
 import json
+import logging
 import os
 import re
 import tempfile
@@ -18,6 +19,8 @@ from fastapi.responses import FileResponse, StreamingResponse
 from project_manager import PROJECTS_DIR, get_project_video_dir
 from providers import PROVIDERS
 from providers.base import API_KEYS, generate_one
+
+log = logging.getLogger("video")
 
 router = APIRouter()
 
@@ -59,8 +62,8 @@ def _save_jobs(project: str) -> None:
     p.parent.mkdir(parents=True, exist_ok=True)
     try:
         p.write_text(json.dumps(project_jobs, indent=2), encoding="utf-8")
-    except OSError:
-        pass
+    except OSError as e:
+        log.error("Failed to save jobs for project %s: %s", project, e)
 
 
 _TERMINAL_STATUSES = {"done", "error"}
@@ -92,8 +95,8 @@ def _load_jobs(project: str) -> None:
                             v["status"] = "error"
                             v["error"] = "Server restarted during processing"
                 jobs[jid] = job
-    except (json.JSONDecodeError, OSError):
-        pass
+    except (json.JSONDecodeError, OSError) as e:
+        log.error("Failed to load jobs from %s: %s", p, e)
 
 
 def _persist_job(job_id: str) -> None:
@@ -304,6 +307,10 @@ async def generate_video(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     job_id = _make_job_id(provider, prompt)
+    log.info(
+        "generate job=%s provider=%s count=%d project=%s prompt=%s",
+        job_id, provider, count, project, prompt[:80],
+    )
     jobs[job_id] = {
         "id": job_id,
         "prompt": prompt,
