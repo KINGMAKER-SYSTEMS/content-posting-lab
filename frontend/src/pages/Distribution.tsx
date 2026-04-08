@@ -65,9 +65,9 @@ const SUB_TABS = [
 type SubTabId = typeof SUB_TABS[number]['id'];
 
 function pathToSubTab(pathname: string): SubTabId {
-  if (pathname.startsWith('/distribution/telegram')) return 'telegram';
-  if (pathname.startsWith('/distribution/sounds')) return 'sounds';
-  if (pathname.startsWith('/distribution/uploads')) return 'uploads';
+  if (pathname.startsWith('/distribute/telegram')) return 'telegram';
+  if (pathname.startsWith('/distribute/sounds')) return 'sounds';
+  if (pathname.startsWith('/distribute/uploads')) return 'uploads';
   return 'roster';
 }
 
@@ -78,7 +78,7 @@ function pathToSubTab(pathname: string): SubTabId {
 export function DistributionPage() {
   const location = useLocation();
   const navigate = useNavigate();
-  const isVisible = location.pathname.startsWith('/distribution');
+  const isVisible = location.pathname.startsWith('/distribute');
 
   const {
     activeProjectName,
@@ -956,7 +956,7 @@ export function DistributionPage() {
         tabs={SUB_TABS.map((t) => ({ ...t }))}
         activeTab={activeSubTab}
         onTabChange={(tabId) => {
-          const path = tabId === 'roster' ? '/distribution' : `/distribution/${tabId}`;
+          const path = tabId === 'roster' ? '/distribute' : `/distribute/${tabId}`;
           navigate(path);
         }}
       />
@@ -1006,7 +1006,7 @@ export function DistributionPage() {
             onOpenUploadForm={(page) => {
               setUploadTarget(page);
               setShowUploadForm(true);
-              navigate('/distribution/uploads');
+              navigate('/distribute/uploads');
             }}
             onAssignProject={assignProject}
             onRefreshRoster={fetchRoster}

@@ -88,21 +88,24 @@ afterEach(() => {
 });
 
 describe('App', () => {
-  it('renders shell with all pages mounted simultaneously', async () => {
+  it('renders shell with pipeline nav tabs', async () => {
     render(<App />);
 
     expect(screen.getByText('Content Posting Lab')).toBeTruthy();
+
+    // Pipeline nav tabs
     await waitFor(() => {
-      expect(screen.getByRole('heading', { name: 'Projects' })).toBeTruthy();
+      expect(screen.getByRole('link', { name: /Home/i })).toBeTruthy();
+      expect(screen.getByRole('link', { name: /Create/i })).toBeTruthy();
+      expect(screen.getByRole('link', { name: /Captions/i })).toBeTruthy();
+      expect(screen.getByRole('link', { name: /Distribute/i })).toBeTruthy();
     });
 
+    // Home page is always mounted and visible
     const main = document.querySelector('main');
     expect(main).toBeTruthy();
     const tabPanels = main!.querySelectorAll(':scope > div');
-    // Only Projects is always-mounted; other tabs are lazy (mount on first visit)
     expect(tabPanels.length).toBeGreaterThanOrEqual(1);
-
-    // Projects tab is visible on /
     expect((tabPanels[0] as HTMLElement).style.display).toBe('block');
   });
 

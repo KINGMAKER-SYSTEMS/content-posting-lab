@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { ProjectsPage } from './Projects';
+import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { BrowserRouter } from 'react-router-dom';
+import { HomePage } from './Home';
 import { useWorkflowStore } from '../stores/workflowStore';
 
 function jsonResponse(data: unknown, status = 200): Response {
@@ -64,8 +65,11 @@ beforeEach(() => {
     recentlyScrapedCaptions: [],
     videoRunningCount: 0,
     captionJobActive: false,
+    recreateJobActive: false,
     burnReadyCount: 0,
     burnSelection: { videoPaths: [], captionSource: null },
+    generateJobs: [],
+    uploadJobs: [],
   });
 });
 
@@ -74,46 +78,48 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-describe('ProjectsPage', () => {
-  it('renders projects and aggregate stats', async () => {
-    render(<ProjectsPage />);
+describe('HomePage', () => {
+  it('renders project summary and quick launch cards', async () => {
+    render(
+      <BrowserRouter>
+        <HomePage />
+      </BrowserRouter>,
+    );
 
     await waitFor(() => {
       expect(screen.getByText('quick-test')).toBeTruthy();
     });
-    expect(screen.getByText('Videos Generated')).toBeTruthy();
-    expect(screen.getByText('Captions Scraped')).toBeTruthy();
-    expect(screen.getByText('Videos Burned')).toBeTruthy();
+    expect(screen.getByText('Generate Video')).toBeTruthy();
+    expect(screen.getByText('Clip Video')).toBeTruthy();
+    expect(screen.getByText('Scrape Captions')).toBeTruthy();
+    expect(screen.getByText('Burn Captions')).toBeTruthy();
   });
 
-  it('shows empty-state when no projects are returned', async () => {
+  it('shows empty state when no projects exist', async () => {
     fetchMock.mockImplementationOnce(async () => jsonResponse({ projects: [] }));
 
-    render(<ProjectsPage />);
+    render(
+      <BrowserRouter>
+        <HomePage />
+      </BrowserRouter>,
+    );
 
     await waitFor(() => {
       expect(screen.getByText('No projects yet')).toBeTruthy();
     });
   });
 
-  it('opens create modal and submits create project request', async () => {
-    render(<ProjectsPage />);
+  it('shows pipeline status when jobs are active', async () => {
+    useWorkflowStore.setState({ videoRunningCount: 3 });
+
+    render(
+      <BrowserRouter>
+        <HomePage />
+      </BrowserRouter>,
+    );
 
     await waitFor(() => {
-      expect(screen.getByText('quick-test')).toBeTruthy();
-    });
-
-    fireEvent.click(screen.getByRole('button', { name: /New Project/i }));
-    fireEvent.change(screen.getByLabelText('Project Name'), {
-      target: { value: 'New Campaign' },
-    });
-    fireEvent.click(screen.getByRole('button', { name: 'Create Project' }));
-
-    await waitFor(() => {
-      const postCall = fetchMock.mock.calls.find(
-        ([url, init]) => String(url).includes('/api/projects') && (init?.method || 'GET') === 'POST',
-      );
-      expect(postCall).toBeTruthy();
+      expect(screen.getByText(/3 videos generating/)).toBeTruthy();
     });
   });
 });
