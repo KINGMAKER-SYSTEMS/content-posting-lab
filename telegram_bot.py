@@ -484,8 +484,8 @@ async def _discover_topics_pyrogram(
     try:
         async for topic in _pyro.get_forum_topics(chat_id=chat_id):
             topics.append({
-                "topic_id": topic.id,
-                "topic_name": getattr(topic, "title", None),
+                "topic_id": topic.message_thread_id,
+                "topic_name": topic.name,
             })
             if progress_callback:
                 progress_callback(len(topics), len(topics), len(topics))
