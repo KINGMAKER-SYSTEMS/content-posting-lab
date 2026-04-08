@@ -1,9 +1,12 @@
 import asyncio
 import base64
+import logging
 import os
 
 from dotenv import load_dotenv
 from openai import AsyncOpenAI, RateLimitError
+
+log = logging.getLogger("scraper.caption_extractor")
 
 load_dotenv()
 
@@ -74,7 +77,7 @@ async def extract_caption(screenshot_bytes: bytes, _max_retries: int = 4) -> str
             if attempt == _max_retries:
                 raise
             wait = min(2 ** attempt * 2, 30)
-            print(f"[caption_extractor] Rate limited, retrying in {wait}s (attempt {attempt + 1}/{_max_retries})...", flush=True)
+            log.warning("Rate limited, retrying in %ds (attempt %d/%d)", wait, attempt + 1, _max_retries)
             await asyncio.sleep(wait)
 
     return ""

@@ -4,6 +4,7 @@ import asyncio
 import base64
 import csv
 import json
+import logging
 import re
 from pathlib import Path
 
@@ -11,6 +12,8 @@ from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconn
 from fastapi.responses import FileResponse
 
 from project_manager import get_project_caption_dir
+
+log = logging.getLogger("captions")
 
 router = APIRouter()
 
@@ -20,14 +23,14 @@ _ws_clients: dict[str, list[WebSocket]] = {}
 
 async def _broadcast(job_id: str, event: str, data: dict):
     clients = _ws_clients.get(job_id, [])
-    print(f"[captions] _broadcast({job_id[:8]}): event={event}, clients={len(clients)}", flush=True)
+    log.debug("broadcast job=%s event=%s clients=%d", job_id[:8], event, len(clients))
     msg = json.dumps({"event": event, **data})
     dead: list[WebSocket] = []
     for ws in clients:
         try:
             await ws.send_text(msg)
         except Exception as e:
-            print(f"[captions] _broadcast send failed: {e}", flush=True)
+            log.warning("broadcast send failed: %s", e)
             dead.append(ws)
     for ws in dead:
         clients.remove(ws)
@@ -121,7 +124,7 @@ async def _run_pipeline(
                     },
                 )
             except asyncio.TimeoutError:
-                print(f"[captions] thumbnail timed out for {vid}", flush=True)
+                log.warning("thumbnail timed out for %s", vid)
                 row["error"] = "Thumbnail download timed out"
                 await _broadcast(
                     job_id,
@@ -134,7 +137,7 @@ async def _run_pipeline(
                     },
                 )
             except Exception as e:
-                print(f"[captions] thumbnail failed for {vid}: {e}", flush=True)
+                log.error("thumbnail failed for %s: %s", vid, e)
                 row["error"] = str(e)
                 await _broadcast(
                     job_id,
@@ -192,16 +195,16 @@ async def _run_pipeline(
                         mood = await asyncio.wait_for(analyze_mood(caption), timeout=10)
                         row["mood"] = mood
                     except (asyncio.TimeoutError, Exception) as me:
-                        print(f"[captions] mood analysis failed for {row['video_id']}: {me}", flush=True)
+                        log.warning("mood analysis failed for %s: %s", row['video_id'], me)
                         row["mood"] = "chill"
                 else:
                     row["mood"] = None
             except asyncio.TimeoutError:
-                print(f"[captions] OCR timed out for {row['video_id']}", flush=True)
+                log.warning("OCR timed out for %s", row['video_id'])
                 row["error"] = "Caption extraction timed out"
                 caption = ""
             except Exception as e:
-                print(f"[captions] OCR failed for {row['video_id']}: {e}", flush=True)
+                log.error("OCR failed for %s: %s", row['video_id'], e)
                 row["error"] = str(e)
                 caption = ""
             await _broadcast(
@@ -262,9 +265,7 @@ async def _run_pipeline(
         )
 
     except Exception as e:
-        import traceback
-
-        traceback.print_exc()
+        log.error("pipeline failed for job=%s: %s", job_id[:8], e, exc_info=True)
         await _broadcast(job_id, "error", {"error": str(e)})
 
 
@@ -275,14 +276,14 @@ async def _run_pipeline(
 async def websocket_scrape(ws: WebSocket, job_id: str):
     """WebSocket endpoint for real-time caption scraping progress."""
     await ws.accept()
-    print(f"[captions] WS connected: {job_id[:8]}", flush=True)
+    log.info("WS connected: %s", job_id[:8])
     _ws_clients.setdefault(job_id, []).append(ws)
     try:
         while True:
             raw = await ws.receive_text()
             msg = json.loads(raw)
             if msg.get("action") == "start":
-                print(f"[captions] start: profile={msg.get('profile_url', '')[:60]}, max={msg.get('max_videos')}", flush=True)
+                log.info("start scrape: profile=%s max=%s job=%s", msg.get('profile_url', '')[:60], msg.get('max_videos'), job_id[:8])
                 asyncio.create_task(
                     _run_pipeline(
                         job_id,
@@ -293,7 +294,7 @@ async def websocket_scrape(ws: WebSocket, job_id: str):
                     )
                 )
     except WebSocketDisconnect:
-        print(f"[captions] WS disconnected: {job_id[:8]}", flush=True)
+        log.info("WS disconnected: %s", job_id[:8])
     finally:
         clients = _ws_clients.get(job_id, [])
         if ws in clients:
@@ -347,8 +348,8 @@ async def caption_history(project: str = Query(default="quick-test")):
                         "mood": row.get("mood", None),
                         "video_id": row.get("video_id", ""),
                     })
-        except Exception:
-            pass
+        except Exception as e:
+            log.warning("Failed to read caption CSV %s: %s", csv_path, e)
 
         stat = csv_path.stat()
         batches.append({

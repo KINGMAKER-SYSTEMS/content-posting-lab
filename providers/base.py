@@ -1,12 +1,15 @@
 """Shared utilities for all video generation providers."""
 
 import asyncio
+import logging
 import os
 import re
 from pathlib import Path
 
 import httpx
 from dotenv import load_dotenv
+
+log = logging.getLogger("providers")
 
 load_dotenv()
 
@@ -172,7 +175,7 @@ async def generate_one(
 
         async with httpx.AsyncClient() as client:
             entry["status"] = "generating"
-            print(f"[generate] job={job_id} idx={index} provider={provider} starting", flush=True)
+            log.info("job=%s idx=%d provider=%s starting", job_id, index, provider)
 
             provider_info = PROVIDERS[provider]
             mod = provider_info["module"]
@@ -222,14 +225,12 @@ async def generate_one(
                 entry["status"] = "done"
                 entry["file"] = f"{rel_dir}/{filename}"
                 entry["url"] = f"{url_prefix}/{rel_dir}/{filename}"
-            print(f"[generate] job={job_id} idx={index} done: {entry['file']}", flush=True)
+            log.info("job=%s idx=%d done: %s", job_id, index, entry['file'])
             if on_complete:
                 on_complete(job_id)
     except Exception as e:
-        import traceback
         err_msg = str(e) or repr(e)
-        print(f"[generate] job={job_id} idx={index} provider={provider} error: {err_msg}", flush=True)
-        traceback.print_exc()
+        log.error("job=%s idx=%d provider=%s error: %s", job_id, index, provider, err_msg, exc_info=True)
         entry["status"] = "error"
         entry["error"] = err_msg
         if on_complete:

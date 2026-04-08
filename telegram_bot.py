@@ -89,7 +89,7 @@ async def _start_pyrogram(token: str) -> None:
 
     if not session_string:
         logger.info("TELEGRAM_SESSION_STRING not set — pyrogram disabled (run generate_session.py)")
-        print("  pyrogram disabled: set TELEGRAM_SESSION_STRING env var", flush=True)
+        logger.info("pyrogram disabled: set TELEGRAM_SESSION_STRING env var")
         return
 
     try:
@@ -104,10 +104,10 @@ async def _start_pyrogram(token: str) -> None:
         me = await _pyro.get_me()
         name = me.first_name or me.username or "user"
         logger.info("pyrogram started as %s (user MTProto)", name)
-        print(f"  pyrogram MTProto client started as {name}", flush=True)
+        logger.info("pyrogram MTProto client started as %s", name)
     except Exception as exc:
         logger.warning("pyrogram failed to start: %s", exc)
-        print(f"  pyrogram failed: {exc}", flush=True)
+        logger.warning("pyrogram failed: %s", exc)
         _pyro = None
 
 
@@ -145,7 +145,7 @@ async def start_bot(token: str) -> None:
     # Start Pyrogram MTProto client alongside aiogram
     await _start_pyrogram(token)
 
-    print(f"  telegram bot started as @{me.username}", flush=True)
+    logger.info("telegram bot started as @%s", me.username)
 
 
 async def stop_bot() -> None:
@@ -810,7 +810,7 @@ async def _run_scheduler() -> None:
         except asyncio.CancelledError:
             break
         except Exception as e:
-            print(f"  telegram scheduler error: {e}", flush=True)
+            logger.error("telegram scheduler error: %s", e, exc_info=True)
             await asyncio.sleep(60)
 
 
@@ -836,24 +836,22 @@ async def _run_notion_sync() -> None:
                     try:
                         notion_data = await fetch_campaigns_with_sounds()
                     except Exception as e:
-                        print(f"  notion fetch failed (continuing): {e}", flush=True)
+                        logger.warning("notion fetch failed (continuing): %s", e)
 
                 result = await sync_sound_status(notion_campaigns=notion_data)
                 added = result.get("sounds_added", 0)
                 deactivated = result.get("sounds_deactivated", 0)
                 unmatched = len(result.get("unmatched", []))
                 if added > 0 or deactivated > 0:
-                    print(
-                        f"  sound sync: +{added} added, -{deactivated} deactivated, "
-                        f"{unmatched} unmatched, "
-                        f"{result.get('matched_ai', 0)} AI-matched",
-                        flush=True,
+                    logger.info(
+                        "sound sync: +%d added, -%d deactivated, %d unmatched, %d AI-matched",
+                        added, deactivated, unmatched, result.get('matched_ai', 0),
                     )
 
         except asyncio.CancelledError:
             break
         except Exception as e:
-            print(f"  sound sync error: {e}", flush=True)
+            logger.error("sound sync error: %s", e, exc_info=True)
 
         await asyncio.sleep(NOTION_SYNC_INTERVAL)
 
@@ -946,7 +944,7 @@ async def run_daily_batch() -> dict:
                     page_count += 1
 
             except Exception as e:
-                print(f"  batch forward error page={page_id}: {e}", flush=True)
+                logger.error("batch forward error page=%s: %s", page_id, e)
 
         total_forwarded += poster_total
 
@@ -978,7 +976,7 @@ async def run_daily_batch() -> dict:
             )
             posters_notified += 1
         except Exception as e:
-            print(f"  summary send error poster={poster_id}: {e}", flush=True)
+            logger.error("summary send error poster=%s: %s", poster_id, e)
 
         # Send sound links to the poster's dedicated Sounds topic
         sounds_topic_id = poster_data.get("sounds_topic_id")
@@ -1001,7 +999,7 @@ async def run_daily_batch() -> dict:
                     text="\n".join(sounds_msg_parts),
                 )
             except Exception as e:
-                print(f"  sounds topic send error poster={poster_id}: {e}", flush=True)
+                logger.error("sounds topic send error poster=%s: %s", poster_id, e)
 
     set_last_run(datetime.now(tz=ZoneInfo("UTC")).isoformat())
 

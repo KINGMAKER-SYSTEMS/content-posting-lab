@@ -8,6 +8,7 @@ import asyncio
 import base64
 import csv
 import json as _json
+import logging
 import math
 import os
 import shutil
@@ -29,6 +30,8 @@ from project_manager import (
     get_project_video_dir,
     sanitize_project_name,
 )
+
+log = logging.getLogger("burn")
 
 router = APIRouter()
 
@@ -686,7 +689,7 @@ async def _burn_background(
             shutil.copy2(video_abs, mp4_path)
 
         out_file = f"{batch_id}/burned_{idx:03d}.mp4"
-        print(f"[burn] OK #{idx} -> {out_file}", flush=True)
+        log.info("burn OK #%d -> %s", idx, out_file)
         _burn_jobs[batch_id][idx] = {
             "status": "done",
             "index": idx,
@@ -694,9 +697,7 @@ async def _burn_background(
             "file": out_file,
         }
     except Exception as e:
-        import traceback
-        print(f"[burn] FAIL #{idx} Exception: {e}", flush=True)
-        traceback.print_exc()
+        log.error("burn FAIL #%d: %s", idx, e, exc_info=True)
         _burn_jobs[batch_id][idx] = {
             "status": "error",
             "index": idx,
@@ -725,7 +726,7 @@ async def burn_overlay(request: Request):
     overlay_b64 = body.get("overlayPng")
     color_correction = body.get("colorCorrection")
 
-    print(f"[burn] overlay #{idx} project={project} batch={batch_id} video={video_rel} overlay={'yes' if overlay_b64 else 'no'} cc={'yes' if color_correction else 'no'}", flush=True)
+    log.info("overlay #%d project=%s batch=%s video=%s overlay=%s cc=%s", idx, project, batch_id, video_rel, 'yes' if overlay_b64 else 'no', 'yes' if color_correction else 'no')
 
     try:
         burn_dir = get_project_burn_dir(project)
@@ -741,7 +742,7 @@ async def burn_overlay(request: Request):
             video_abs = str(video_dir / video_rel)
 
         if not Path(video_abs).exists():
-            print(f"[burn] ERROR #{idx}: video not found: {video_abs}", flush=True)
+            log.error("burn #%d: video not found: %s", idx, video_abs)
             return JSONResponse({"index": idx, "ok": False, "error": f"Video not found: {video_rel}"}, status_code=404)
 
         mp4_path = str(batch_dir / f"burned_{idx:03d}.mp4")
@@ -755,12 +756,10 @@ async def burn_overlay(request: Request):
         return {"index": idx, "ok": True, "status": "queued"}
 
     except ValueError as e:
-        print(f"[burn] FAIL #{idx} ValueError: {e}", flush=True)
+        log.error("burn #%d ValueError: %s", idx, e)
         return JSONResponse({"error": str(e)}, status_code=400)
     except Exception as e:
-        import traceback
-        print(f"[burn] FAIL #{idx} Exception: {e}", flush=True)
-        traceback.print_exc()
+        log.error("burn FAIL #%d: %s", idx, e, exc_info=True)
         return JSONResponse(
             {"index": idx, "ok": False, "error": str(e)[:2000]},
             status_code=500,
@@ -929,7 +928,7 @@ async def ws_burn(ws: WebSocket):
       }
     """
     await ws.accept()
-    print(f"[burn] WS connected", flush=True)
+    log.info("WS connected for batch burn")
     try:
         data = await ws.receive_json()
         project = data.get("project", "quick-test")
@@ -1011,7 +1010,7 @@ async def ws_burn(ws: WebSocket):
                     }
                 )
             except Exception as e:
-                print(f"[burn] burn failed for pair {i}: {e}", flush=True)
+                log.error("burn failed for pair %d: %s", i, e)
                 results.append(
                     {
                         "index": i,
@@ -1062,7 +1061,7 @@ async def ws_burn(ws: WebSocket):
                                 drive_upload(fid, fp)
                                 uploaded += 1
                             except Exception as de:
-                                print(f"[burn] Drive upload failed: {de}", flush=True)
+                                log.error("Drive upload failed: %s", de)
                     if uploaded > 0:
                         await ws.send_json(
                             {"event": "drive_uploaded", "count": uploaded, "folders": len(drive_folders)}
@@ -1070,12 +1069,12 @@ async def ws_burn(ws: WebSocket):
         except ImportError:
             pass  # Drive deps not installed
         except Exception as de:
-            print(f"[burn] Drive auto-upload error: {de}", flush=True)
+            log.error("Drive auto-upload error: %s", de)
 
     except WebSocketDisconnect:
-        print(f"[burn] WS disconnected", flush=True)
+        log.info("WS disconnected")
     except Exception as e:
-        print(f"[burn] WS pipeline error: {e}", flush=True)
+        log.error("WS pipeline error: %s", e, exc_info=True)
         try:
             await ws.send_json({"event": "error", "error": str(e)})
         except Exception:
