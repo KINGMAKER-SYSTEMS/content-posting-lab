@@ -840,6 +840,112 @@ async def sync_poster_topics(poster_id: str):
     }
 
 
+_poster_discover_job: dict | None = None
+
+
+@router.post("/posters/{poster_id}/discover-topics")
+async def discover_poster_topics(poster_id: str):
+    """Discover all topics in a poster's Telegram group and remap them.
+
+    Uses Pyrogram to list all forum topics, then matches each to a roster
+    page by name. Any matched topics are saved to the poster's topic config.
+    Unmatched topics (manually created, not in roster) are returned as orphans.
+
+    Returns immediately. Poll GET /posters/{poster_id}/discover-topics.
+    """
+    global _poster_discover_job
+
+    if _poster_discover_job and _poster_discover_job.get("status") == "running":
+        return {"status": "already_running", **_poster_discover_job}
+
+    poster = get_poster(poster_id)
+    if not poster:
+        raise HTTPException(status_code=404, detail="Poster not found")
+
+    chat_id = poster.get("chat_id")
+    if not chat_id:
+        raise HTTPException(status_code=400, detail="Poster has no chat_id")
+
+    _poster_discover_job = {"status": "starting", "poster_id": poster_id}
+    asyncio.create_task(_run_poster_discover(poster_id, chat_id))
+    return {"status": "started", "poster_id": poster_id}
+
+
+@router.get("/posters/{poster_id}/discover-topics")
+async def get_poster_discover_status(poster_id: str):
+    """Poll poster topic discovery progress."""
+    if _poster_discover_job is None:
+        return {"status": "idle"}
+    return _poster_discover_job
+
+
+async def _run_poster_discover(poster_id: str, chat_id: int) -> None:
+    """Background: discover topics in a poster group and match to pages."""
+    global _poster_discover_job
+    import re
+
+    _EMOJI_RE = re.compile(
+        r"[\U0001F600-\U0001F64F\U0001F300-\U0001F5FF\U0001F680-\U0001F6FF"
+        r"\U0001F1E0-\U0001F1FF\U00002702-\U000027B0\U000024C2-\U0001F251"
+        r"\U0001F900-\U0001F9FF\U0001FA00-\U0001FA6F\U0001FA70-\U0001FAFF"
+        r"\U00002600-\U000026FF\U0000FE0F\U0000200D]+",
+        re.UNICODE,
+    )
+
+    def _norm(name: str) -> str:
+        name = _EMOJI_RE.sub("", name)
+        return re.sub(r"\s+", " ", name).lower().strip()
+
+    try:
+        _poster_discover_job = {"status": "running", "poster_id": poster_id, "topics_found": 0}
+
+        discovered = await _tg_bot.discover_topics(chat_id=int(chat_id))
+
+        # Build lookup: normalized page name → integration_id
+        pages = list_all_pages()
+        page_by_name: dict[str, dict] = {}
+        for p in pages:
+            name = _norm(p.get("name") or "")
+            if name and name not in page_by_name:
+                page_by_name[name] = p
+
+        matched = 0
+        orphans: list[dict] = []
+
+        for topic in discovered:
+            tname = topic.get("topic_name") or ""
+            tname_norm = _norm(tname)
+            # Also try without provider suffix like "(tiktok)"
+            tname_clean = _norm(tname.split("(")[0])
+
+            page = page_by_name.get(tname_norm) or page_by_name.get(tname_clean)
+            if page:
+                integration_id = page["integration_id"]
+                set_poster_topic(poster_id, integration_id, topic["topic_id"], tname)
+                matched += 1
+                topic["matched_page"] = page.get("name")
+                topic["integration_id"] = integration_id
+            else:
+                orphans.append(topic)
+
+        _poster_discover_job = {
+            "status": "done",
+            "poster_id": poster_id,
+            "topics_found": len(discovered),
+            "matched": matched,
+            "orphans": len(orphans),
+            "orphan_topics": orphans[:50],
+            "all_topics": discovered,
+        }
+    except Exception as exc:
+        logger.error("Poster topic discovery failed for %s: %s", poster_id, exc)
+        _poster_discover_job = {
+            "status": "error",
+            "poster_id": poster_id,
+            "error": str(exc)[:500],
+        }
+
+
 # ── Content & Inventory ───────────────────────────────────────────────────
 
 

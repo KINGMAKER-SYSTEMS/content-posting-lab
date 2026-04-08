@@ -573,7 +573,12 @@ async def _scan_topic_pyrogram(
     topic_id: int,
     integration_id: str,
 ) -> dict:
-    """Scan a topic using Pyrogram's search_messages with message_thread_id."""
+    """Scan a topic using Pyrogram's search_messages with message_thread_id.
+
+    Uses no filter to get ALL messages in the topic, then checks each one
+    for media (video, document, photo, animation). This catches videos sent
+    as documents, forwarded content, etc.
+    """
     existing = get_inventory(integration_id)
     existing_msg_ids = {item.get("message_id") for item in existing}
 
@@ -581,58 +586,47 @@ async def _scan_topic_pyrogram(
     skipped = 0
     scanned = 0
 
-    # Search for all media types in this specific topic
     try:
+        # No filter — get ALL messages in this topic, check for media
         async for msg in _pyro.search_messages(
             chat_id=chat_id,
             message_thread_id=topic_id,
-            filter=pyro_enums.MessagesFilter.VIDEO,
         ):
             scanned += 1
             if msg.id in existing_msg_ids:
                 skipped += 1
                 continue
 
+            # Check all media types
+            media_type = None
             file_id = None
             file_name = None
-            media_type = "video"
 
             if msg.video:
+                media_type = "video"
                 file_id = msg.video.file_id
                 file_name = msg.video.file_name
             elif msg.document:
+                media_type = "document"
                 file_id = msg.document.file_id
                 file_name = msg.document.file_name
+                # Treat video documents as video
+                if msg.document.mime_type and msg.document.mime_type.startswith("video/"):
+                    media_type = "video"
+            elif msg.animation:
+                media_type = "animation"
+                file_id = msg.animation.file_id
+                file_name = msg.animation.file_name
+            elif msg.photo:
+                media_type = "photo"
+                file_id = msg.photo.file_id if hasattr(msg.photo, "file_id") else None
+                file_name = f"photo_{msg.id}.jpg"
 
-            if file_id:
+            if media_type and file_id:
                 add_inventory_item(integration_id, {
                     "file_id": file_id,
-                    "file_name": file_name or f"video_{msg.id}",
+                    "file_name": file_name or f"{media_type}_{msg.id}",
                     "media_type": media_type,
-                    "caption": msg.caption,
-                    "message_id": msg.id,
-                    "chat_id": chat_id,
-                    "source": "scan",
-                })
-                found += 1
-
-        # Also search for documents (some videos are sent as documents)
-        async for msg in _pyro.search_messages(
-            chat_id=chat_id,
-            message_thread_id=topic_id,
-            filter=pyro_enums.MessagesFilter.DOCUMENT,
-        ):
-            scanned += 1
-            if msg.id in existing_msg_ids:
-                skipped += 1
-                continue
-
-            # Only count video-like documents
-            if msg.document and msg.document.mime_type and msg.document.mime_type.startswith("video/"):
-                add_inventory_item(integration_id, {
-                    "file_id": msg.document.file_id,
-                    "file_name": msg.document.file_name or f"doc_{msg.id}",
-                    "media_type": "video",
                     "caption": msg.caption,
                     "message_id": msg.id,
                     "chat_id": chat_id,
