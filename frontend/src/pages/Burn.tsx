@@ -338,6 +338,7 @@ export function BurnPage() {
   const [renameValue, setRenameValue] = useState('');
 
   const wrapRefs = useRef<Record<number, HTMLDivElement | null>>({});
+  const gridRef = useRef<HTMLDivElement | null>(null);
   const dragRef = useRef<DragState | null>(null);
   const fontStyleRef = useRef<HTMLStyleElement | null>(null);
 
@@ -434,15 +435,27 @@ export function BurnPage() {
   const handleInlineEdit = useCallback((i: number) => { if (i < 0) setInlineEditIndex(null); else { setInlineEditIndex(i); setSelectedIndex(i); } }, []);
   const handleWrapRef = useCallback((i: number, node: HTMLDivElement | null) => { wrapRefs.current[i] = node; }, []);
 
+  /** Compute the actual card width from the grid container.
+   *  CSS grid `auto-fill, minmax(240px, 1fr)` means all cards are the same width.
+   *  Reading the grid's width is reliable even when individual cards are off-screen. */
+  const getCardWidth = useCallback((): number => {
+    const grid = gridRef.current;
+    if (!grid) return 240;
+    const gridW = grid.offsetWidth;
+    const gap = 16; // gap-4 = 1rem = 16px
+    // Replicate CSS grid auto-fill logic: how many 240px cols fit?
+    const cols = Math.max(1, Math.floor((gridW + gap) / (240 + gap)));
+    return (gridW - gap * (cols - 1)) / cols;
+  }, []);
+
   const refreshPairScales = useCallback(() => {
-    setPairs((prev) => prev.map((p, i) => {
-      const w = wrapRefs.current[i];
-      if (!w) return p;
-      const ns = w.offsetWidth / (p.videoWidth || 432);
+    const cardW = getCardWidth();
+    setPairs((prev) => prev.map((p) => {
+      const ns = cardW / (p.videoWidth || 432);
       if (Math.abs((p.previewScale ?? 0) - ns) < 0.005) return p;
       return { ...p, previewScale: ns };
     }));
-  }, []);
+  }, [getCardWidth]);
 
   useEffect(() => { void loadData(); }, [loadData]);
   useEffect(() => {
@@ -529,10 +542,10 @@ export function BurnPage() {
   }, []);
 
   const setPairDimensions = useCallback((i: number, vw: number, vh: number) => {
-    const w = wrapRefs.current[i];
-    const scale = w ? w.offsetWidth / (vw || 432) : undefined;
+    const cardW = getCardWidth();
+    const scale = cardW / (vw || 432);
     setPairs((p) => p.map((pair, idx) => idx !== i ? pair : { ...pair, videoWidth: vw, videoHeight: vh, previewScale: scale }));
-  }, []);
+  }, [getCardWidth]);
 
   const onDragMove = useCallback((e: PointerEvent) => {
     const d = dragRef.current;
@@ -1089,7 +1102,7 @@ export function BurnPage() {
               </Card>
             ) : null}
 
-            <div className="grid grid-cols-[repeat(auto-fill,minmax(240px,1fr))] gap-4">
+            <div ref={gridRef} className="grid grid-cols-[repeat(auto-fill,minmax(240px,1fr))] gap-4">
               {pairs.map((pair, index) => (
                 <PairCard
                   key={`${pair.videoPath}-${index}`}
