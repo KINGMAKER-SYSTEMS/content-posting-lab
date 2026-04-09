@@ -11,12 +11,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 # Safe filename pattern — alphanumeric, dash, underscore, dot only
 _SAFE_FILENAME_RE = re.compile(r"^[a-zA-Z0-9_\-][a-zA-Z0-9_\-\.]*$")
 
 from project_manager import (
+    get_global_sounds_dir,
     get_project_slideshow_audio_dir,
     get_project_slideshow_dir,
     get_project_slideshow_formats_dir,
@@ -24,6 +26,7 @@ from project_manager import (
     get_project_video_dir,
     sanitize_project_name,
 )
+from services import sound_cache
 from services.captions import scan_project_captions
 from services.cropper import crop_to_916
 
@@ -400,40 +403,71 @@ def _build_block1_cmd(
     overlay_path: Path | None,
     output_path: Path,
     fps: int = 30,
+    beats: list[float] | None = None,
 ) -> list[str]:
-    """Build FFmpeg command for Block 1: rapid image shuffle + optional text overlay."""
+    """Build FFmpeg command for Block 1: image shuffle + optional text overlay.
+
+    If `beats` is provided, photo switches land on the beat timestamps.
+    Otherwise, photos cycle at fixed `shuffle_speed` intervals.
+    """
     # Validate all images first
     image_paths = [_validate_image(img, images_dir) for img in images]
     if not image_paths:
         raise ValueError("Block 1 needs at least one image")
 
-    # Build shuffled sequence: randomize and repeat until we fill the duration
-    sequence: list[Path] = []
-    remaining = duration
-    while remaining > 0:
-        shuffled = list(image_paths)
-        random.shuffle(shuffled)
-        for p in shuffled:
-            if remaining <= 0:
-                break
-            sequence.append(p)
+    # Shuffle once per call (each batch item gets a different photo order)
+    shuffled = list(image_paths)
+    random.shuffle(shuffled)
+
+    # Build (image, segment_duration) pairs
+    sequence: list[tuple[Path, float]] = []
+
+    if beats:
+        # Beat-synced mode: one photo per beat interval
+        # If there are more beats than photos, photos cycle via modulo.
+        # Safety cap: merge adjacent beats if total > 100 (ffmpeg filter_complex
+        # starts getting unwieldy beyond that).
+        usable_beats = [t for t in beats if 0.0 < t <= duration]
+        if len(usable_beats) > 100:
+            # Keep every other beat
+            usable_beats = usable_beats[::2]
+
+        prev_t = 0.0
+        for i, t in enumerate(usable_beats):
+            seg_dur = t - prev_t
+            if seg_dur < 0.05:  # skip too-short segments
+                continue
+            sequence.append((shuffled[i % len(shuffled)], seg_dur))
+            prev_t = t
+        # Tail segment: from last beat to end of duration
+        if prev_t < duration - 0.01:
+            tail_img = shuffled[len(sequence) % len(shuffled)]
+            sequence.append((tail_img, duration - prev_t))
+    else:
+        # Fixed-interval mode: cycle photos at shuffle_speed cadence
+        remaining = duration
+        i = 0
+        while remaining > 0.05:
+            seg_dur = min(shuffle_speed, remaining)
+            sequence.append((shuffled[i % len(shuffled)], seg_dur))
             remaining -= shuffle_speed
+            i += 1
+
+    if not sequence:
+        raise ValueError("Block 1 produced no segments — check duration and beats")
 
     # Build ffmpeg inputs and filter
     filter_parts: list[str] = []
     inputs: list[str] = []
-    input_idx = 0
 
-    for i, img_path in enumerate(sequence):
-        t = min(shuffle_speed, duration - i * shuffle_speed)
-        if t <= 0:
-            break
-        inputs += ["-loop", "1", "-t", f"{t:.3f}", "-i", str(img_path)]
+    for i, (img_path, seg_dur) in enumerate(sequence):
+        inputs += ["-loop", "1", "-t", f"{seg_dur:.3f}", "-i", str(img_path)]
         filter_parts.append(
-            f"[{input_idx}:v]scale=1080:1920:force_original_aspect_ratio=increase,"
-            f"crop=1080:1920,setsar=1,fps={fps}[s{input_idx}]"
+            f"[{i}:v]scale=1080:1920:force_original_aspect_ratio=increase,"
+            f"crop=1080:1920,setsar=1,fps={fps}[s{i}]"
         )
-        input_idx += 1
+
+    input_idx = len(sequence)
 
     # Concat all image segments
     concat_in = "".join(f"[s{i}]" for i in range(input_idx))
@@ -697,6 +731,45 @@ async def list_captions(project: str):
     return {"sources": scan_project_captions(project)}
 
 
+# ── Campaign Sound Cache (beat-synced slideshows) ────────────────────────
+
+
+class PrepareSoundRequest(BaseModel):
+    telegram_sound_id: str
+    label: str
+
+
+@router.post("/sounds/prepare")
+async def prepare_sound_endpoint(body: PrepareSoundRequest):
+    """Match a campaign sound to a Campaign Hub video and cache its audio + beats.
+
+    - Matches telegram sound label → Campaign Hub campaign title
+    - Pulls the highest-viewed matched_videos URL
+    - Downloads with yt-dlp, extracts audio with ffmpeg
+    - Runs librosa beat detection
+    - Caches MP3 + beats JSON under projects/sounds/{tiktok_sound_id}.*
+    - Subsequent calls for the same TikTok sound_id hit the cache instantly
+    """
+    try:
+        return await sound_cache.prepare_sound(body.telegram_sound_id, body.label)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to prepare sound: {e}")
+
+
+@router.get("/sounds/{sound_id}/audio")
+async def serve_sound_audio(sound_id: str):
+    """Stream the cached MP3 for browser audio preview playback."""
+    # TikTok sound IDs are numeric — hard validation prevents path traversal
+    if not sound_id.isdigit():
+        raise HTTPException(status_code=400, detail="Invalid sound_id")
+    path = get_global_sounds_dir() / f"{sound_id}.mp3"
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Sound not cached")
+    return FileResponse(path, media_type="audio/mpeg")
+
+
 # ── Meme Mode: Batch Render ──────────────────────────────────────────────
 
 
@@ -705,8 +778,10 @@ class MemeRenderRequest(BaseModel):
     images: list[str]
     batch_size: int
     duration: float
-    shuffle_speed: float = 0.4
-    audio: str | None = None
+    shuffle_speed: float = 0.4  # ignored when beats provided
+    audio: str | None = None  # legacy: per-project uploaded audio
+    sound_id: str | None = None  # NEW: TikTok sound_id from /sounds/prepare
+    beats: list[float] | None = None  # NEW: beat timestamps for on-beat cuts
     fps: int = 30
 
 
@@ -753,9 +828,14 @@ def _run_meme_batch(job_id: str, body: MemeRenderRequest):
         output_dir = get_project_slideshow_dir(body.project)
         short_id = job_id[:8]
 
-        # Resolve audio path once
+        # Resolve audio path once — prefer campaign sound cache, fall back to
+        # per-project upload. Beat sync only applies when sound_id is set.
         audio_path: Path | None = None
-        if body.audio:
+        if body.sound_id and body.sound_id.isdigit():
+            candidate = get_global_sounds_dir() / f"{body.sound_id}.mp3"
+            if candidate.exists():
+                audio_path = candidate
+        if audio_path is None and body.audio:
             audio_dir = get_project_slideshow_audio_dir(body.project)
             candidate = audio_dir / body.audio
             if candidate.exists():
@@ -774,10 +854,11 @@ def _run_meme_batch(job_id: str, body: MemeRenderRequest):
             final_path = output_dir / output_name
 
             try:
-                # Build block1 (shuffles images randomly each call)
+                # Build block1 — shuffles images per call; uses beats if provided
                 cmd = _build_block1_cmd(
                     body.images, images_dir, body.duration,
                     body.shuffle_speed, None, block1_path, body.fps,
+                    beats=body.beats,
                 )
                 result = subprocess.run(cmd, capture_output=True, timeout=600)
                 if result.returncode != 0:

@@ -268,6 +268,18 @@ def get_project_slideshow_formats_dir(name: str) -> Path:
     return path
 
 
+def get_global_sounds_dir() -> Path:
+    """Get the global sounds cache directory (sibling of project dirs).
+
+    Used by the beat-synced slideshow feature to cache MP3 audio and beat
+    detection results keyed by TikTok sound_id. Not per-project — sounds
+    are reusable across all projects and survive on the Railway volume.
+    """
+    path = PROJECTS_DIR / "sounds"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 def ensure_default_project() -> Path:
     """
     Ensure 'quick-test' default project exists.

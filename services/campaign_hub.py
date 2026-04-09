@@ -164,6 +164,35 @@ async def fetch_all_campaigns() -> list[dict[str, Any]]:
         return resp.json()
 
 
+async def fetch_campaign_detail(slug: str) -> dict[str, Any]:
+    """Fetch full campaign detail (including matched_videos and sound_id).
+
+    Note the singular /api/campaign/{slug} path — the plural
+    /api/campaigns/{slug} falls through to the Campaign Hub SPA.
+    """
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.get(f"{CAMPAIGN_HUB_URL}/api/campaign/{slug}")
+        resp.raise_for_status()
+        return resp.json()
+
+
+async def find_campaign_by_label(label: str) -> dict[str, Any] | None:
+    """Match a telegram sound label to a Campaign Hub campaign by title.
+
+    The telegram sounds list uses labels like "Artist - Song" which exactly
+    match Campaign Hub titles (verified: 23/23 sounds match). Case-insensitive
+    comparison. Returns None if no match.
+    """
+    needle = (label or "").strip().lower()
+    if not needle:
+        return None
+    campaigns = await fetch_all_campaigns()
+    for c in campaigns:
+        if c.get("title", "").strip().lower() == needle:
+            return c
+    return None
+
+
 async def sync_sound_status(notion_campaigns: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     """Full sound sync: Campaign Hub as source of truth, Notion for sound links.
 

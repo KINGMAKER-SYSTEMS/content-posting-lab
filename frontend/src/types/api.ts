@@ -415,6 +415,28 @@ export interface SlideshowProjectVideo {
   full_path: string;
 }
 
+// Campaign sounds (from telegram sync) + beat-synced prepare
+
+export interface CampaignSound {
+  id: string;
+  url: string;
+  label: string;
+  active: boolean;
+  added_at: string;
+}
+
+export interface PreparedSound {
+  sound_id: string;           // TikTok numeric ID (cache key)
+  telegram_sound_id: string;  // Original telegram config hex ID
+  cached: boolean;
+  bpm: number;
+  duration: number;
+  beats: number[];
+  source_video_url: string;
+  label: string;
+  slug: string;
+}
+
 // Meme batch rendering
 
 export interface MemeRenderRequest {
@@ -424,6 +446,8 @@ export interface MemeRenderRequest {
   duration: number;
   shuffle_speed: number;
   audio?: string;
+  sound_id?: string;   // NEW: TikTok sound_id for beat sync
+  beats?: number[];    // NEW: beat timestamps
   fps?: number;
 }
 
