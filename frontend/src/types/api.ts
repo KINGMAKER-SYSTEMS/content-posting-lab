@@ -173,6 +173,7 @@ export interface CaptionRow {
   text: string;
   video_id: string;
   video_url: string;
+  mood?: string;
 }
 
 export interface CaptionSource {
@@ -412,6 +413,44 @@ export interface SlideshowProjectVideo {
   name: string;
   path: string;
   full_path: string;
+}
+
+// Meme batch rendering
+
+export interface MemeRenderRequest {
+  project: string;
+  images: string[];
+  batch_size: number;
+  duration: number;
+  shuffle_speed: number;
+  audio?: string;
+  fps?: number;
+}
+
+export interface BatchJobItem {
+  index: number;
+  status: 'pending' | 'running' | 'complete' | 'error';
+  output?: string;
+  error?: string;
+}
+
+export interface BatchJobStatus {
+  status: 'pending' | 'running' | 'complete' | 'error' | 'not_found';
+  progress: number;
+  message: string;
+  batch_size: number;
+  completed: number;
+  items: BatchJobItem[];
+}
+
+// Slideshow formats (saved presets)
+
+export interface SlideshowFormat {
+  name: string;
+  mode: 'meme' | 'fan-page';
+  created_at: string;
+  updated_at?: string;
+  config: Record<string, unknown>;
 }
 
 // ── Roster ────────────────────────────────────────────────────────────────

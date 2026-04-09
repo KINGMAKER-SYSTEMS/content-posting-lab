@@ -1,11 +1,13 @@
 import asyncio
 import base64
+import json as _json
 import random
 import re
 import shutil
 import subprocess
 import tempfile
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
@@ -17,10 +19,12 @@ _SAFE_FILENAME_RE = re.compile(r"^[a-zA-Z0-9_\-][a-zA-Z0-9_\-\.]*$")
 from project_manager import (
     get_project_slideshow_audio_dir,
     get_project_slideshow_dir,
+    get_project_slideshow_formats_dir,
     get_project_slideshow_images_dir,
     get_project_video_dir,
     sanitize_project_name,
 )
+from services.captions import scan_project_captions
 from services.cropper import crop_to_916
 
 router = APIRouter(tags=["slideshow"])
@@ -682,3 +686,226 @@ async def list_project_videos(project: str):
             "full_path": str(p.relative_to(video_dir.parent.parent)),
         })
     return {"videos": videos}
+
+
+# ── Captions proxy (shared with burn router) ─────────────────────────────
+
+
+@router.get("/captions")
+async def list_captions(project: str):
+    """List caption sources available for this project (from scraped TikTok data)."""
+    return {"sources": scan_project_captions(project)}
+
+
+# ── Meme Mode: Batch Render ──────────────────────────────────────────────
+
+
+class MemeRenderRequest(BaseModel):
+    project: str
+    images: list[str]
+    batch_size: int
+    duration: float
+    shuffle_speed: float = 0.4
+    audio: str | None = None
+    fps: int = 30
+
+
+def _mux_audio(
+    video_path: Path,
+    audio_path: Path,
+    output_path: Path,
+    duration: float,
+) -> None:
+    """Mux an audio track onto a video, trimming to duration."""
+    cmd = [
+        "ffmpeg", "-y",
+        "-i", str(video_path),
+        "-i", str(audio_path),
+        "-c:v", "copy",
+        "-c:a", "aac", "-b:a", "192k",
+        "-t", f"{duration:.3f}",
+        "-movflags", "+faststart",
+        str(output_path),
+    ]
+    result = subprocess.run(cmd, capture_output=True, timeout=300)
+    if result.returncode != 0:
+        stderr = result.stderr.decode(errors="replace")[-2000:]
+        raise RuntimeError(f"Audio mux failed: {stderr}")
+
+
+def _run_meme_batch(job_id: str, body: MemeRenderRequest):
+    """Render a batch of meme slideshows (Block 1 only, no caption overlay)."""
+    tmp_dir = None
+    try:
+        jobs[job_id] = {
+            "status": "running",
+            "progress": 0,
+            "message": "Starting batch...",
+            "batch_size": body.batch_size,
+            "completed": 0,
+            "items": [
+                {"index": i, "status": "pending"}
+                for i in range(body.batch_size)
+            ],
+        }
+
+        images_dir = get_project_slideshow_images_dir(body.project)
+        output_dir = get_project_slideshow_dir(body.project)
+        short_id = job_id[:8]
+
+        # Resolve audio path once
+        audio_path: Path | None = None
+        if body.audio:
+            audio_dir = get_project_slideshow_audio_dir(body.project)
+            candidate = audio_dir / body.audio
+            if candidate.exists():
+                audio_path = candidate
+
+        for i in range(body.batch_size):
+            tmp_dir = tempfile.mkdtemp(prefix=f"meme_{short_id}_{i}_")
+            tmp = Path(tmp_dir)
+
+            jobs[job_id]["items"][i]["status"] = "running"
+            jobs[job_id]["message"] = f"Rendering {i + 1}/{body.batch_size}..."
+            jobs[job_id]["progress"] = int((i / body.batch_size) * 100)
+
+            output_name = f"meme_{short_id}_{i:03d}.mp4"
+            block1_path = tmp / "block1.mp4"
+            final_path = output_dir / output_name
+
+            try:
+                # Build block1 (shuffles images randomly each call)
+                cmd = _build_block1_cmd(
+                    body.images, images_dir, body.duration,
+                    body.shuffle_speed, None, block1_path, body.fps,
+                )
+                result = subprocess.run(cmd, capture_output=True, timeout=600)
+                if result.returncode != 0:
+                    stderr = result.stderr.decode(errors="replace")[-2000:]
+                    raise RuntimeError(f"FFmpeg failed: {stderr}")
+
+                # Mux audio if provided
+                if audio_path:
+                    _mux_audio(block1_path, audio_path, final_path, body.duration)
+                else:
+                    shutil.move(str(block1_path), str(final_path))
+
+                jobs[job_id]["items"][i] = {
+                    "index": i,
+                    "status": "complete",
+                    "output": output_name,
+                }
+            except Exception as e:
+                jobs[job_id]["items"][i] = {
+                    "index": i,
+                    "status": "error",
+                    "error": str(e),
+                }
+            finally:
+                shutil.rmtree(tmp_dir, ignore_errors=True)
+                tmp_dir = None
+
+            jobs[job_id]["completed"] = sum(
+                1 for it in jobs[job_id]["items"] if it["status"] in ("complete", "error")
+            )
+
+        jobs[job_id]["status"] = "complete"
+        jobs[job_id]["progress"] = 100
+        ok = sum(1 for it in jobs[job_id]["items"] if it["status"] == "complete")
+        jobs[job_id]["message"] = f"Done: {ok}/{body.batch_size} rendered"
+
+    except Exception as e:
+        jobs[job_id]["status"] = "error"
+        jobs[job_id]["progress"] = 0
+        jobs[job_id]["message"] = str(e)
+
+
+@router.post("/render-meme")
+async def start_meme_render(body: MemeRenderRequest):
+    if not body.images:
+        raise HTTPException(status_code=400, detail="No images selected")
+    if body.batch_size < 1 or body.batch_size > 50:
+        raise HTTPException(status_code=400, detail="Batch size must be 1-50")
+
+    job_id = str(uuid.uuid4())
+    jobs[job_id] = {"status": "pending", "progress": 0, "message": "Queued..."}
+
+    loop = asyncio.get_event_loop()
+    loop.run_in_executor(None, _run_meme_batch, job_id, body)
+    return {"job_id": job_id}
+
+
+# ── Format Save/Load ────────────────────────────────────────────────────
+
+
+class SaveFormatRequest(BaseModel):
+    project: str
+    name: str
+    mode: str  # "meme" or "fan-page"
+    config: dict
+
+
+@router.post("/formats")
+async def save_format(body: SaveFormatRequest):
+    fmt_dir = get_project_slideshow_formats_dir(body.project)
+    safe_name = re.sub(r"[^a-zA-Z0-9_\-]", "_", body.name.strip())[:64]
+    if not safe_name:
+        raise HTTPException(status_code=400, detail="Invalid format name")
+
+    fmt_path = fmt_dir / f"{safe_name}.json"
+    now = datetime.now(timezone.utc).isoformat()
+
+    # Preserve created_at if updating existing format
+    created_at = now
+    if fmt_path.exists():
+        try:
+            existing = _json.loads(fmt_path.read_text(encoding="utf-8"))
+            created_at = existing.get("created_at", now)
+        except Exception:
+            pass
+
+    data = {
+        "name": body.name.strip(),
+        "mode": body.mode,
+        "created_at": created_at,
+        "updated_at": now,
+        "config": body.config,
+    }
+    fmt_path.write_text(_json.dumps(data, indent=2), encoding="utf-8")
+    return {"saved": safe_name, "format": data}
+
+
+@router.get("/formats")
+async def list_formats(project: str):
+    fmt_dir = get_project_slideshow_formats_dir(project)
+    formats = []
+    for p in sorted(fmt_dir.iterdir()):
+        if p.suffix == ".json":
+            try:
+                data = _json.loads(p.read_text(encoding="utf-8"))
+                formats.append(data)
+            except Exception:
+                continue
+    return {"formats": formats}
+
+
+@router.get("/formats/{name}")
+async def get_format(name: str, project: str):
+    fmt_dir = get_project_slideshow_formats_dir(project)
+    safe_name = re.sub(r"[^a-zA-Z0-9_\-]", "_", name.strip())[:64]
+    fmt_path = fmt_dir / f"{safe_name}.json"
+    if not fmt_path.exists():
+        raise HTTPException(status_code=404, detail="Format not found")
+    data = _json.loads(fmt_path.read_text(encoding="utf-8"))
+    return {"format": data}
+
+
+@router.delete("/formats/{name}")
+async def delete_format(name: str, project: str):
+    fmt_dir = get_project_slideshow_formats_dir(project)
+    safe_name = re.sub(r"[^a-zA-Z0-9_\-]", "_", name.strip())[:64]
+    fmt_path = fmt_dir / f"{safe_name}.json"
+    if not fmt_path.exists():
+        raise HTTPException(status_code=404, detail="Format not found")
+    fmt_path.unlink()
+    return {"deleted": safe_name}
