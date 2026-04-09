@@ -9,12 +9,13 @@ import { Label } from '@/components/ui/label';
 import {
   Upload, Trash2, Play, Image as ImageIcon, Film, Music,
   Layers, Square, CheckSquare, Volume2, Sparkles, Save,
-  Download, ArrowRight,
+  Download, ArrowRight, Radio, Loader2,
 } from 'lucide-react';
 import type {
   SlideshowImage, SlideshowRender, SlideshowRenderJob,
   SlideshowAudioFile, SlideshowProjectVideo, FontInfo,
   CaptionSource, BatchJobStatus, SlideshowFormat,
+  CampaignSound, PreparedSound,
 } from '../types/api';
 
 type QuickPosition = 'top' | 'center' | 'bottom';
@@ -74,6 +75,13 @@ export function SlideshowPage() {
   const [batchJob, setBatchJob] = useState<BatchJobStatus | null>(null);
   const [memeRendering, setMemeRendering] = useState(false);
   const memePollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // ── Campaign sound picker (beat-synced slideshows) ──
+  const [campaignSounds, setCampaignSounds] = useState<CampaignSound[]>([]);
+  const [selectedCampaignSoundId, setSelectedCampaignSoundId] = useState<string>('');
+  const [preparedSound, setPreparedSound] = useState<PreparedSound | null>(null);
+  const [preparingSound, setPreparingSound] = useState(false);
+  const [prepareSoundError, setPrepareSoundError] = useState<string | null>(null);
 
   // ── Formats state ──
   const [formats, setFormats] = useState<SlideshowFormat[]>([]);
@@ -152,6 +160,63 @@ export function SlideshowPage() {
     } catch { /* ignore */ }
   }, [activeProjectName]);
 
+  const fetchCampaignSounds = useCallback(async () => {
+    try {
+      const res = await fetch(apiUrl('/api/telegram/sounds?active_only=true'));
+      if (res.ok) {
+        const data = await res.json();
+        // /api/telegram/sounds returns an array directly, not { sounds: [...] }
+        setCampaignSounds(Array.isArray(data) ? data : (data.sounds ?? []));
+      }
+    } catch { /* ignore */ }
+  }, []);
+
+  // Prepare a campaign sound: match label → Campaign Hub → download audio → detect beats
+  const handleSelectCampaignSound = useCallback(async (sound: CampaignSound) => {
+    setSelectedCampaignSoundId(sound.id);
+    setPreparedSound(null);
+    setPrepareSoundError(null);
+    setPreparingSound(true);
+
+    try {
+      const res = await fetch(apiUrl('/api/slideshow/sounds/prepare'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          telegram_sound_id: sound.id,
+          label: sound.label,
+        }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: `HTTP ${res.status}` }));
+        throw new Error(err.detail || `Prepare failed (${res.status})`);
+      }
+      const data = (await res.json()) as PreparedSound;
+      setPreparedSound(data);
+      // Auto-adjust slideshow duration to match sound duration (capped at 30s)
+      const clamped = Math.min(Math.max(3, data.duration), 30);
+      setB1Duration(Math.round(clamped));
+      addNotification(
+        data.cached ? 'info' : 'success',
+        data.cached
+          ? `Sound ready (cached): ${data.bpm.toFixed(0)} BPM, ${data.beats.length} beats`
+          : `Sound analyzed: ${data.bpm.toFixed(0)} BPM, ${data.beats.length} beats`
+      );
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Failed to prepare sound';
+      setPrepareSoundError(msg);
+      addNotification('error', msg);
+    } finally {
+      setPreparingSound(false);
+    }
+  }, [addNotification]);
+
+  const clearCampaignSound = useCallback(() => {
+    setSelectedCampaignSoundId('');
+    setPreparedSound(null);
+    setPrepareSoundError(null);
+  }, []);
+
   // Reset on project change
   useEffect(() => {
     setB1Images(new Set());
@@ -163,6 +228,9 @@ export function SlideshowPage() {
     setMemeRendering(false);
     setSelectedCaptionSource('');
     setMoodFilter(null);
+    setSelectedCampaignSoundId('');
+    setPreparedSound(null);
+    setPrepareSoundError(null);
     if (pollingRef.current) { clearInterval(pollingRef.current); pollingRef.current = null; }
     if (memePollingRef.current) { clearInterval(memePollingRef.current); memePollingRef.current = null; }
     void fetchImages();
@@ -172,7 +240,8 @@ export function SlideshowPage() {
     void fetchFonts();
     void fetchCaptions();
     void fetchFormats();
-  }, [activeProjectName, fetchImages, fetchRenders, fetchAudio, fetchProjectVideos, fetchFonts, fetchCaptions, fetchFormats]);
+    void fetchCampaignSounds();
+  }, [activeProjectName, fetchImages, fetchRenders, fetchAudio, fetchProjectVideos, fetchFonts, fetchCaptions, fetchFormats, fetchCampaignSounds]);
 
   useEffect(() => {
     return () => {
@@ -329,14 +398,22 @@ export function SlideshowPage() {
     setBatchJob(null);
 
     try {
-      const body = {
+      const body: Record<string, unknown> = {
         project: activeProjectName,
         images: Array.from(b1Images),
         batch_size: effectiveBatchSize,
         duration: b1Duration,
         shuffle_speed: b1ShuffleSpeed,
-        audio: selectedAudio || undefined,
       };
+
+      if (preparedSound) {
+        // Beat-synced mode: use campaign sound + beats
+        body.sound_id = preparedSound.sound_id;
+        body.beats = preparedSound.beats;
+      } else if (selectedAudio) {
+        // Legacy: per-project uploaded audio
+        body.audio = selectedAudio;
+      }
 
       const res = await fetch(apiUrl('/api/slideshow/render-meme'), {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
@@ -368,7 +445,7 @@ export function SlideshowPage() {
       addNotification('error', err instanceof Error ? err.message : 'Batch render failed');
       setMemeRendering(false);
     }
-  }, [activeProjectName, b1Images, b1Duration, b1ShuffleSpeed, selectedAudio, selectedCaptionSource, effectiveBatchSize, addNotification, fetchRenders]);
+  }, [activeProjectName, b1Images, b1Duration, b1ShuffleSpeed, selectedAudio, selectedCaptionSource, effectiveBatchSize, preparedSound, addNotification, fetchRenders]);
 
   // ── Use in Burn ──
 
@@ -993,34 +1070,110 @@ export function SlideshowPage() {
                 </div>
               </div>
 
-              {/* Audio */}
+              {/* Campaign Sound (beat sync) */}
               <div className="rounded-[var(--border-radius)] border-2 border-border bg-card p-4 shadow-[2px_2px_0_0_var(--border)]">
                 <h2 className="text-sm font-heading text-foreground mb-3 flex items-center gap-2">
-                  <Music className="h-4 w-4" /> Audio Track
+                  <Radio className="h-4 w-4" /> Campaign Sound
+                  {preparedSound && (
+                    <Badge variant="secondary" className="text-[10px] px-1.5 py-0">
+                      beat synced
+                    </Badge>
+                  )}
                 </h2>
-                <input ref={audioFileRef} type="file" accept=".mp3,.wav,.m4a,.aac,.ogg"
-                  onChange={(e) => handleAudioUpload(e.target.files)}
-                  className="block w-full text-sm text-foreground file:mr-3 file:rounded-[var(--border-radius)] file:border-2 file:border-border file:bg-secondary file:px-3 file:py-1.5 file:text-sm file:font-bold file:text-foreground file:cursor-pointer hover:file:bg-muted" />
-                {uploadingAudio && <Badge variant="info" className="mt-2 text-xs">Uploading...</Badge>}
-                {audioFiles.length > 0 && (
-                  <div className="mt-3 space-y-2">
-                    {audioFiles.map((af) => (
-                      <div key={af.name}
-                        className={`flex items-center gap-2 rounded-[var(--border-radius)] border-2 px-2 py-1.5 cursor-pointer transition-all ${
-                          selectedAudio === af.name ? 'border-primary bg-primary/5' : 'border-border bg-muted hover:border-muted-foreground'
-                        }`}
-                        onClick={() => setSelectedAudio(selectedAudio === af.name ? '' : af.name)}>
-                        <Volume2 className={`h-3 w-3 flex-shrink-0 ${selectedAudio === af.name ? 'text-primary' : 'text-muted-foreground'}`} />
-                        <span className="text-xs font-bold text-foreground truncate flex-1">{af.name}</span>
-                        <button className="opacity-0 group-hover:opacity-100 hover:opacity-100 transition-opacity"
-                          onClick={(e) => { e.stopPropagation(); handleDeleteAudio(af.name); }}>
-                          <Trash2 className="h-3 w-3 text-red-500" />
-                        </button>
+
+                {preparedSound ? (
+                  // Prepared state — show readout + preview player + clear button
+                  <div className="space-y-3">
+                    <div className="rounded-[var(--border-radius)] border-2 border-border bg-muted p-3 text-xs">
+                      <div className="font-bold text-foreground mb-1 truncate">{preparedSound.label}</div>
+                      <div className="flex items-center gap-3 text-muted-foreground">
+                        <span><strong className="text-foreground">{preparedSound.bpm.toFixed(0)}</strong> BPM</span>
+                        <span><strong className="text-foreground">{preparedSound.beats.length}</strong> beats</span>
+                        <span><strong className="text-foreground">{preparedSound.duration.toFixed(1)}s</strong></span>
                       </div>
-                    ))}
+                      {preparedSound.cached && (
+                        <div className="mt-1 text-[10px] text-muted-foreground/80">served from cache</div>
+                      )}
+                    </div>
+                    <audio
+                      controls
+                      src={apiUrl(`/api/slideshow/sounds/${encodeURIComponent(preparedSound.sound_id)}/audio`)}
+                      className="w-full h-8"
+                    />
+                    <Button variant="outline" size="sm" className="w-full h-7 text-xs" onClick={clearCampaignSound}>
+                      <Trash2 className="mr-1 h-3 w-3" /> Clear sound
+                    </Button>
                   </div>
+                ) : preparingSound ? (
+                  // Preparing state
+                  <div className="py-4 text-center">
+                    <Loader2 className="mx-auto h-5 w-5 text-primary animate-spin" />
+                    <p className="text-xs text-muted-foreground mt-2">
+                      Preparing sound... (first time can take 10-30s)
+                    </p>
+                  </div>
+                ) : campaignSounds.length === 0 ? (
+                  <p className="text-xs text-muted-foreground text-center py-3">
+                    No campaign sounds synced yet. Visit the Distribute tab to sync.
+                  </p>
+                ) : (
+                  // Sound picker
+                  <>
+                    <div className="max-h-48 overflow-y-auto space-y-1">
+                      {campaignSounds.map((s) => (
+                        <button
+                          key={s.id}
+                          type="button"
+                          onClick={() => void handleSelectCampaignSound(s)}
+                          className={`w-full text-left rounded-[var(--border-radius)] border-2 px-2 py-1.5 text-xs transition-all ${
+                            selectedCampaignSoundId === s.id
+                              ? 'border-primary bg-primary/5'
+                              : 'border-border bg-muted hover:border-muted-foreground'
+                          }`}
+                        >
+                          <div className="font-bold text-foreground truncate">{s.label}</div>
+                        </button>
+                      ))}
+                    </div>
+                    {prepareSoundError && (
+                      <div className="mt-2 rounded-[var(--border-radius)] border-2 border-red-200 bg-red-50 px-2 py-1.5">
+                        <p className="text-[10px] font-bold text-red-800">{prepareSoundError}</p>
+                      </div>
+                    )}
+                  </>
                 )}
               </div>
+
+              {/* Audio Track (legacy — per-project upload, only shown if no campaign sound picked) */}
+              {!preparedSound && (
+                <div className="rounded-[var(--border-radius)] border-2 border-border bg-card p-4 shadow-[2px_2px_0_0_var(--border)]">
+                  <h2 className="text-sm font-heading text-foreground mb-3 flex items-center gap-2">
+                    <Music className="h-4 w-4" /> Or Upload Audio
+                  </h2>
+                  <input ref={audioFileRef} type="file" accept=".mp3,.wav,.m4a,.aac,.ogg"
+                    onChange={(e) => handleAudioUpload(e.target.files)}
+                    className="block w-full text-sm text-foreground file:mr-3 file:rounded-[var(--border-radius)] file:border-2 file:border-border file:bg-secondary file:px-3 file:py-1.5 file:text-sm file:font-bold file:text-foreground file:cursor-pointer hover:file:bg-muted" />
+                  {uploadingAudio && <Badge variant="info" className="mt-2 text-xs">Uploading...</Badge>}
+                  {audioFiles.length > 0 && (
+                    <div className="mt-3 space-y-2">
+                      {audioFiles.map((af) => (
+                        <div key={af.name}
+                          className={`flex items-center gap-2 rounded-[var(--border-radius)] border-2 px-2 py-1.5 cursor-pointer transition-all ${
+                            selectedAudio === af.name ? 'border-primary bg-primary/5' : 'border-border bg-muted hover:border-muted-foreground'
+                          }`}
+                          onClick={() => setSelectedAudio(selectedAudio === af.name ? '' : af.name)}>
+                          <Volume2 className={`h-3 w-3 flex-shrink-0 ${selectedAudio === af.name ? 'text-primary' : 'text-muted-foreground'}`} />
+                          <span className="text-xs font-bold text-foreground truncate flex-1">{af.name}</span>
+                          <button className="opacity-0 group-hover:opacity-100 hover:opacity-100 transition-opacity"
+                            onClick={(e) => { e.stopPropagation(); handleDeleteAudio(af.name); }}>
+                            <Trash2 className="h-3 w-3 text-red-500" />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
 
               {/* Meme Render */}
               <div className="rounded-[var(--border-radius)] border-2 border-border bg-card p-4 shadow-[2px_2px_0_0_var(--border)]">
@@ -1028,10 +1181,15 @@ export function SlideshowPage() {
                   <Sparkles className="h-4 w-4" /> Render Batch
                 </h2>
                 <div className="text-xs text-muted-foreground space-y-1 mb-3">
-                  <p>Images: {b1Images.size} selected, {b1Duration}s, {b1ShuffleSpeed}s/frame</p>
+                  <p>
+                    Images: {b1Images.size} selected, {b1Duration}s
+                    {preparedSound
+                      ? `, beat-synced (${preparedSound.beats.length} cuts)`
+                      : `, ${b1ShuffleSpeed}s/frame`}
+                  </p>
                   <p>Captions: {selectedCaptionSource ? `@${selectedCaptionSource}` : 'none'}{moodFilter ? ` (${moodFilter})` : ''}</p>
                   <p>Batch: {effectiveBatchSize} video{effectiveBatchSize !== 1 ? 's' : ''}</p>
-                  <p>Audio: {selectedAudio || 'none'}</p>
+                  <p>Sound: {preparedSound ? preparedSound.label : (selectedAudio || 'none')}</p>
                 </div>
 
                 <Button onClick={handleMemeRender} disabled={!canRenderMeme} className="w-full">
