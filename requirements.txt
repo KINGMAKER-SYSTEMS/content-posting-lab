@@ -15,5 +15,6 @@ TgCrypto
 tiktokautouploader
 google-api-python-client
 google-auth
+librosa==0.10.2
 pytest
 pytest-asyncio
