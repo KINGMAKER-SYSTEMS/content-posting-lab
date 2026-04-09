@@ -6,7 +6,6 @@ All endpoints are project-scoped via `project` query param.
 
 import asyncio
 import base64
-import csv
 import json as _json
 import logging
 import math
@@ -25,11 +24,11 @@ from project_manager import (
     BASE_DIR,
     PROJECTS_DIR,
     get_project_burn_dir,
-    get_project_caption_dir,
     get_project_clips_dir,
     get_project_video_dir,
     sanitize_project_name,
 )
+from services.captions import scan_project_captions
 
 log = logging.getLogger("burn")
 
@@ -163,45 +162,7 @@ def _scan_project_videos(project: str) -> list[dict]:
     return videos
 
 
-def _load_captions(csv_path: Path) -> list[dict]:
-    """Load captions from a CSV file."""
-    captions = []
-    with open(csv_path, "r", encoding="utf-8") as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            text = (row.get("caption") or "").strip()
-            if text:
-                captions.append(
-                    {
-                        "text": text,
-                        "video_id": row.get("video_id", ""),
-                        "video_url": row.get("video_url", ""),
-                    }
-                )
-    return captions
-
-
-def _scan_project_captions(project: str) -> list[dict]:
-    """Find all caption CSVs in projects/{name}/captions/."""
-    sources = []
-    caption_dir = get_project_caption_dir(project)
-    if not caption_dir.exists():
-        return sources
-    for user_dir in sorted(caption_dir.iterdir()):
-        if not user_dir.is_dir() or user_dir.name.startswith("."):
-            continue
-        csv_path = user_dir / "captions.csv"
-        if csv_path.exists():
-            caps = _load_captions(csv_path)
-            sources.append(
-                {
-                    "username": user_dir.name,
-                    "csv_path": str(csv_path.relative_to(BASE_DIR)),
-                    "count": len(caps),
-                    "captions": caps,
-                }
-            )
-    return sources
+# Caption loading delegated to services.captions (load_captions, scan_project_captions)
 
 
 def _list_fonts() -> list[dict]:
@@ -653,7 +614,7 @@ async def list_videos(project: str = Query(..., description="Project name")):
 async def list_captions(project: str = Query(..., description="Project name")):
     """List caption CSVs from project's captions/ directory."""
     try:
-        return {"sources": _scan_project_captions(project)}
+        return {"sources": scan_project_captions(project)}
     except ValueError as e:
         return JSONResponse({"error": str(e)}, status_code=400)
 

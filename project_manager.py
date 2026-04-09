@@ -260,6 +260,14 @@ def get_project_slideshow_audio_dir(name: str) -> Path:
     return path
 
 
+def get_project_slideshow_formats_dir(name: str) -> Path:
+    """Get the slideshow formats subdirectory for a project (saved format presets)."""
+    sanitized_name = sanitize_project_name(name)
+    path = PROJECTS_DIR / sanitized_name / "slideshow-formats"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 def ensure_default_project() -> Path:
     """
     Ensure 'quick-test' default project exists.
