@@ -495,10 +495,28 @@ export function BurnPage() {
   const [selectedCaptionSource, setSelectedCaptionSource] = useState('__paste');
   const [randomizeCaptions, setRandomizeCaptions] = useState(false);
 
-  const [selectedFolder, setSelectedFolder] = useState(() => {
-    if (!activeProjectName) return '';
-    return localStorage.getItem(`burn:folder:${activeProjectName}`) || '';
+  const [selectedFolders, setSelectedFolders] = useState<string[]>(() => {
+    if (!activeProjectName) return [];
+    // Try new key first
+    try {
+      const raw = localStorage.getItem(`burn:folders:${activeProjectName}`);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed) && parsed.every((v) => typeof v === 'string')) return parsed;
+      }
+    } catch {
+      // fall through to legacy
+    }
+    // Legacy migration: single-folder string under `burn:folder:{project}`
+    const legacy = localStorage.getItem(`burn:folder:${activeProjectName}`);
+    if (legacy) {
+      localStorage.removeItem(`burn:folder:${activeProjectName}`);
+      return [legacy];
+    }
+    return [];
   });
+  const [renamingFolder, setRenamingFolder] = useState<string | null>(null);
+  const [renameFolderValue, setRenameFolderValue] = useState('');
   const [manualPaste, setManualPaste] = useState('');
   const [selectedFontFile, setSelectedFontFile] = useState('');
   const [defaultFontSize, setDefaultFontSize] = useState(32);
@@ -544,10 +562,27 @@ export function BurnPage() {
     }));
   }, [videos]);
 
-  const selectedFolderVideos = useMemo(() => {
-    if (!selectedFolder) return [];
-    return videos.filter((v) => (v.folder || '(root)') === selectedFolder);
-  }, [videos, selectedFolder]);
+  const multiSelectedVideos = useMemo(() => {
+    if (selectedFolders.length === 0) return [];
+    const set = new Set(selectedFolders);
+    return videos
+      .filter((v) => set.has(v.folder || '(root)'))
+      .slice() // don't mutate source
+      .sort((a, b) => (a.created ?? 0) - (b.created ?? 0));
+  }, [videos, selectedFolders]);
+
+  const isFolderRenameable = useCallback((folder: string): boolean => {
+    if (!folder || folder === '(root)' || folder === 'clips') return false;
+    // Virtual multi-job subfolders invented by backend — no disk equivalent
+    for (const seg of folder.split('/')) {
+      if (seg.startsWith('run_')) return false;
+    }
+    return true;
+  }, []);
+
+  const toggleFolder = useCallback((folder: string) => {
+    setSelectedFolders((prev) => prev.includes(folder) ? prev.filter((f) => f !== folder) : [...prev, folder]);
+  }, []);
 
   const selectedCaptionItems = useMemo(() => {
     if (selectedCaptionSource === '__paste') return manualPaste.split('\n').map((l) => l.trim()).filter(Boolean);
@@ -602,13 +637,17 @@ export function BurnPage() {
       const folders = new Map<string, VideoFile[]>();
       for (const v of nv) { const f = v.folder || '(root)'; folders.set(f, [...(folders.get(f) || []), v]); }
       const allFolders = Array.from(folders.keys());
+      const knownFolders = new Set(allFolders);
       const pv = burnSelection.videoPaths.find((p) => nv.some((v) => v.path === p));
       const pf = pv ? (nv.find((v) => v.path === pv)?.folder || '(root)') : null;
 
-      setSelectedFolder((c) => {
-        if (c && allFolders.includes(c)) return c;
-        if (pf && allFolders.includes(pf)) return pf;
-        return allFolders[0] ?? '';
+      setSelectedFolders((curr) => {
+        // Filter to folders that still exist on disk (drops stale renamed ones).
+        const kept = curr.filter((f) => knownFolders.has(f));
+        if (kept.length > 0) return kept;
+        // Fallback: prior selection from store, else first available folder.
+        if (pf && knownFolders.has(pf)) return [pf];
+        return allFolders.length > 0 ? [allFolders[0]] : [];
       });
       setSelectedCaptionSource((c) => {
         if (c === '__paste' || ns.some((s) => s.username === c)) return c;
@@ -651,10 +690,13 @@ export function BurnPage() {
 
   useEffect(() => { void loadData(); }, [loadData]);
   useEffect(() => {
-    if (activeProjectName && selectedFolder) {
-      localStorage.setItem(`burn:folder:${activeProjectName}`, selectedFolder);
+    if (!activeProjectName) return;
+    try {
+      localStorage.setItem(`burn:folders:${activeProjectName}`, JSON.stringify(selectedFolders));
+    } catch {
+      // localStorage full / disabled — ignore
     }
-  }, [activeProjectName, selectedFolder]);
+  }, [activeProjectName, selectedFolders]);
   useEffect(() => {
     const h: EventListener = () => { void loadData(); };
     window.addEventListener('burn:refresh-request', h);
@@ -682,12 +724,11 @@ export function BurnPage() {
   useEffect(() => { if (pairs.length > 0) setPairs((p) => p.map((pair) => ({ ...pair, maxWidthPct: defaultMaxWidth }))); }, [defaultMaxWidth]); // eslint-disable-line react-hooks/exhaustive-deps
   // Auto-apply quick position changes to all existing pairs
   useEffect(() => { if (pairs.length > 0) { const y = POSITION_Y_MAP[quickPosition] ?? 50; setPairs((p) => p.map((pair) => ({ ...pair, x: 50, y }))); } }, [quickPosition]); // eslint-disable-line react-hooks/exhaustive-deps
-  useEffect(() => { setBurnReadyCount(Math.min(selectedFolderVideos.length, selectedCaptionItems.length)); }, [selectedFolderVideos.length, selectedCaptionItems.length, setBurnReadyCount]);
+  useEffect(() => { setBurnReadyCount(Math.min(multiSelectedVideos.length, selectedCaptionItems.length)); }, [multiSelectedVideos.length, selectedCaptionItems.length, setBurnReadyCount]);
   useEffect(() => { const h = () => refreshPairScales(); window.addEventListener('resize', h); return () => window.removeEventListener('resize', h); }, [refreshPairScales]);
 
   const handleAlignPreview = useCallback(() => {
-    if (!selectedFolder) return;
-    const nv = videos.filter((v) => (v.folder || '(root)') === selectedFolder);
+    const nv = multiSelectedVideos;
     if (!nv.length) return;
     let captions = [...selectedCaptionItems];
     if (randomizeCaptions && captions.length > 1) {
@@ -711,7 +752,7 @@ export function BurnPage() {
     setShowExportBar(false); setExportCount(0); setBurnBatchId(null);
     setProgressVisible(false); setProgressLabel(''); setProgressValue(0);
     requestAnimationFrame(() => refreshPairScales());
-  }, [colorCorrection, defaultFontSize, defaultMaxWidth, fontColor, quickPosition, randomizeCaptions, refreshPairScales, selectedCaptionItems, selectedFolder, selectedFontFile, strokeColor, videos]);
+  }, [colorCorrection, defaultFontSize, defaultMaxWidth, fontColor, multiSelectedVideos, quickPosition, randomizeCaptions, refreshPairScales, selectedCaptionItems, selectedFontFile, strokeColor]);
 
   const handleQuickPosition = useCallback((pos: QuickPosition) => {
     setQuickPosition(pos);
@@ -938,6 +979,58 @@ export function BurnPage() {
     }
   }, [projectName, loadBatches, addNotification]);
 
+  const handleRenameSourceFolder = useCallback(async (oldFolder: string, newName: string) => {
+    const trimmed = newName.trim();
+    const oldLeaf = oldFolder.includes('/') ? (oldFolder.split('/').pop() || oldFolder) : oldFolder;
+    if (!trimmed || trimmed === oldLeaf) {
+      setRenamingFolder(null);
+      setRenameFolderValue('');
+      return;
+    }
+    if (!projectName) {
+      setRenamingFolder(null);
+      return;
+    }
+    try {
+      const r = await fetch(apiUrl(`/api/burn/folders/rename?project=${encodeURIComponent(projectName)}`), {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ folder: oldFolder, new_name: trimmed }),
+      });
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({ error: `HTTP ${r.status}` }));
+        throw new Error(err.error || 'Rename failed');
+      }
+      const data = await r.json() as { ok: boolean; old_folder: string; new_folder: string };
+      const newFolder = data.new_folder;
+
+      // 1. Optimistically update selection so reload doesn't drop it
+      setSelectedFolders((prev) => prev.map((f) => f === oldFolder ? newFolder : f));
+
+      // 2. Rewrite in-memory pair videoPaths that point at the renamed folder.
+      //    Handles both videos/ (no prefix) and clips/{job}/ (clips/ prefix preserved).
+      setPairs((prev) => prev.map((p) => {
+        // Match folder:
+        //   - For root ('(root)' or ''): path has no '/' → not affected because rename blocked on root.
+        //   - For clips/job → pair.videoPath starts with 'clips/job/' (clips prefix IS in path).
+        //   - For videos folder 'foo' → pair.videoPath starts with 'foo/'.
+        const oldPrefix = oldFolder === '(root)' ? '' : `${oldFolder}/`;
+        if (!oldPrefix || !p.videoPath.startsWith(oldPrefix)) return p;
+        const rest = p.videoPath.slice(oldPrefix.length);
+        const newPrefix = newFolder === '(root)' ? '' : `${newFolder}/`;
+        return { ...p, videoPath: `${newPrefix}${rest}` };
+      }));
+
+      setRenamingFolder(null);
+      setRenameFolderValue('');
+      addNotification('success', `Renamed to "${trimmed}"`);
+      await loadData();
+    } catch (e) {
+      addNotification('error', e instanceof Error ? e.message : 'Rename failed');
+      // Keep edit field open for retry
+    }
+  }, [projectName, loadData, addNotification]);
+
   const downloadBatchZip = useCallback((bId: string) => {
     if (!projectName) return;
     const a = document.createElement('a');
@@ -962,21 +1055,104 @@ export function BurnPage() {
         <h2 className="text-xl font-heading text-foreground">Caption Burner</h2>
         <p className="mb-6 mt-1 text-xs text-muted-foreground">Pair videos with captions, drag to position, burn & download</p>
 
-        <Label htmlFor="burn-folder">Video Folder</Label>
-        <Select value={selectedFolder} onValueChange={setSelectedFolder}>
-          <SelectTrigger id="burn-folder" className="w-full mt-1 mb-4">
-            <SelectValue placeholder="Select folder..." />
-          </SelectTrigger>
-          <SelectContent>
-            {groupedFolders.length === 0 ? (
-              <SelectItem value="__none" disabled>No videos in project</SelectItem>
-            ) : (
-              groupedFolders.map((g) => (
-                <SelectItem key={g.folder} value={g.folder}>{g.label}</SelectItem>
-              ))
-            )}
-          </SelectContent>
-        </Select>
+        <div className="mt-0 flex items-center justify-between">
+          <Label>Video Folders</Label>
+          <div className="flex items-center gap-2 text-[10px] text-muted-foreground">
+            <button
+              type="button"
+              onClick={() => setSelectedFolders(groupedFolders.map((g) => g.folder))}
+              disabled={groupedFolders.length === 0}
+              className="uppercase tracking-wide hover:text-primary disabled:opacity-40"
+            >
+              All
+            </button>
+            <span className="opacity-40">/</span>
+            <button
+              type="button"
+              onClick={() => setSelectedFolders([])}
+              disabled={selectedFolders.length === 0}
+              className="uppercase tracking-wide hover:text-primary disabled:opacity-40"
+            >
+              None
+            </button>
+          </div>
+        </div>
+        <div className="mt-1 mb-1 text-[10px] text-muted-foreground">
+          {selectedFolders.length}/{groupedFolders.length} selected
+        </div>
+        <div className="mb-4 max-h-56 overflow-y-auto rounded-md border-2 border-border bg-background">
+          {groupedFolders.length === 0 ? (
+            <div className="px-2 py-3 text-xs text-muted-foreground italic">No videos in project</div>
+          ) : (
+            groupedFolders.map((g) => {
+              const checked = selectedFolders.includes(g.folder);
+              const renameable = isFolderRenameable(g.folder);
+              const editing = renamingFolder === g.folder;
+              const leaf = g.folder === '(root)' ? '(root)' : (g.folder.split('/').pop() || g.folder);
+              return (
+                <div
+                  key={g.folder}
+                  className="group flex items-center gap-2 border-b border-border/60 px-2 py-1.5 last:border-b-0 hover:bg-accent/40"
+                >
+                  <input
+                    type="checkbox"
+                    checked={checked}
+                    onChange={() => toggleFolder(g.folder)}
+                    className="h-3.5 w-3.5 shrink-0 cursor-pointer accent-primary"
+                    aria-label={`Select folder ${g.label}`}
+                  />
+                  {editing ? (
+                    <Input
+                      autoFocus
+                      value={renameFolderValue}
+                      onChange={(e) => setRenameFolderValue(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          void handleRenameSourceFolder(g.folder, renameFolderValue);
+                        } else if (e.key === 'Escape') {
+                          e.preventDefault();
+                          setRenamingFolder(null);
+                          setRenameFolderValue('');
+                        }
+                      }}
+                      onBlur={() => {
+                        if (renameFolderValue.trim()) void handleRenameSourceFolder(g.folder, renameFolderValue);
+                        else { setRenamingFolder(null); setRenameFolderValue(''); }
+                      }}
+                      className="h-6 flex-1 min-w-0 text-xs"
+                    />
+                  ) : (
+                    <span
+                      className="flex-1 min-w-0 truncate cursor-pointer text-xs"
+                      title={g.folder || '(root)'}
+                      onClick={() => toggleFolder(g.folder)}
+                    >
+                      {g.label}
+                    </span>
+                  )}
+                  {renameable && !editing ? (
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setRenamingFolder(g.folder);
+                        setRenameFolderValue(leaf);
+                      }}
+                      className="shrink-0 opacity-0 group-hover:opacity-100 focus:opacity-100 text-muted-foreground hover:text-primary transition-opacity"
+                      title="Rename folder"
+                      aria-label={`Rename folder ${g.label}`}
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M17 3a2.828 2.828 0 114 4L7.5 20.5 2 22l1.5-5.5L17 3z" />
+                      </svg>
+                    </button>
+                  ) : null}
+                </div>
+              );
+            })
+          )}
+        </div>
 
         <Label>Caption Source</Label>
         <div className="mt-1 mb-2 flex flex-wrap gap-1.5">
@@ -1240,13 +1416,13 @@ export function BurnPage() {
         </ScrollArea>
 
         <div className="mb-1 flex items-center justify-between text-xs text-muted-foreground">
-          <span>Videos</span><strong className="text-foreground">{selectedFolderVideos.length}</strong>
+          <span>Videos</span><strong className="text-foreground">{multiSelectedVideos.length}</strong>
         </div>
         <div className="mb-3 flex items-center justify-between text-xs text-muted-foreground">
           <span>Captions</span><strong className="text-foreground">{selectedCaptionItems.length}</strong>
         </div>
 
-        <Button onClick={handleAlignPreview} disabled={!selectedFolder || selectedFolderVideos.length === 0 || isLoading} className="w-full">
+        <Button onClick={handleAlignPreview} disabled={multiSelectedVideos.length === 0 || isLoading} className="w-full">
           Align & Preview
         </Button>
 

@@ -1,6 +1,7 @@
 from project_manager import (
     get_project_burn_dir,
     get_project_caption_dir,
+    get_project_clips_dir,
     get_project_video_dir,
 )
 
@@ -76,3 +77,119 @@ def test_caption_export_endpoint(sync_client):
         "/api/captions/export/missing-user", params={"project": "caption-suite"}
     )
     assert missing.status_code == 404
+
+
+def test_burn_folder_rename_happy_path(sync_client):
+    created = sync_client.post("/api/projects", json={"name": "Rename Happy"})
+    assert created.status_code == 201
+
+    video_dir = get_project_video_dir("rename-happy") / "oldname"
+    video_dir.mkdir(parents=True, exist_ok=True)
+    (video_dir / "clip.mp4").write_bytes(b"video")
+
+    resp = sync_client.patch(
+        "/api/burn/folders/rename",
+        params={"project": "rename-happy"},
+        json={"folder": "oldname", "new_name": "new name"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ok"] is True
+    assert body["old_folder"] == "oldname"
+    # "new name" sanitizes to "new-name"
+    assert body["new_folder"] == "new-name"
+
+    # Disk state: old dir gone, new dir contains the file
+    assert not (get_project_video_dir("rename-happy") / "oldname").exists()
+    assert (get_project_video_dir("rename-happy") / "new-name" / "clip.mp4").exists()
+
+    # videos list reflects the rename
+    videos = sync_client.get(
+        "/api/burn/videos", params={"project": "rename-happy"}
+    ).json()["videos"]
+    folders = {v["folder"] for v in videos}
+    assert "new-name" in folders
+    assert "oldname" not in folders
+    # `created` field is now populated
+    assert all("created" in v and isinstance(v["created"], int) for v in videos)
+
+
+def test_burn_folder_rename_collision(sync_client):
+    created = sync_client.post("/api/projects", json={"name": "Rename Collide"})
+    assert created.status_code == 201
+
+    root = get_project_video_dir("rename-collide")
+    (root / "alpha").mkdir(parents=True, exist_ok=True)
+    (root / "beta").mkdir(parents=True, exist_ok=True)
+    (root / "alpha" / "a.mp4").write_bytes(b"a")
+    (root / "beta" / "b.mp4").write_bytes(b"b")
+
+    resp = sync_client.patch(
+        "/api/burn/folders/rename",
+        params={"project": "rename-collide"},
+        json={"folder": "alpha", "new_name": "beta"},
+    )
+    assert resp.status_code == 409
+    # Both dirs still present — no partial state
+    assert (root / "alpha").exists()
+    assert (root / "beta").exists()
+
+
+def test_burn_folder_rename_rejects_virtual_and_root(sync_client):
+    created = sync_client.post("/api/projects", json={"name": "Rename Virt"})
+    assert created.status_code == 201
+
+    # Virtual run_* folder
+    resp = sync_client.patch(
+        "/api/burn/folders/rename",
+        params={"project": "rename-virt"},
+        json={"folder": "run_abc123", "new_name": "something"},
+    )
+    assert resp.status_code == 400
+
+    # Root
+    resp = sync_client.patch(
+        "/api/burn/folders/rename",
+        params={"project": "rename-virt"},
+        json={"folder": "(root)", "new_name": "something"},
+    )
+    assert resp.status_code == 400
+
+    # Clips root
+    resp = sync_client.patch(
+        "/api/burn/folders/rename",
+        params={"project": "rename-virt"},
+        json={"folder": "clips", "new_name": "something"},
+    )
+    assert resp.status_code == 400
+
+    # Path traversal in new_name
+    (get_project_video_dir("rename-virt") / "foo").mkdir(parents=True, exist_ok=True)
+    resp = sync_client.patch(
+        "/api/burn/folders/rename",
+        params={"project": "rename-virt"},
+        json={"folder": "foo", "new_name": "../evil"},
+    )
+    assert resp.status_code == 400
+    assert (get_project_video_dir("rename-virt") / "foo").exists()
+
+
+def test_burn_folder_rename_clips_preserves_prefix(sync_client):
+    created = sync_client.post("/api/projects", json={"name": "Rename Clips"})
+    assert created.status_code == 201
+
+    clips_dir = get_project_clips_dir("rename-clips") / "job_xyz"
+    clips_dir.mkdir(parents=True, exist_ok=True)
+    (clips_dir / "clip_001.mp4").write_bytes(b"clip")
+
+    resp = sync_client.patch(
+        "/api/burn/folders/rename",
+        params={"project": "rename-clips"},
+        json={"folder": "clips/job_xyz", "new_name": "rooftop-shoot"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["new_folder"] == "clips/rooftop-shoot"
+
+    assert not (get_project_clips_dir("rename-clips") / "job_xyz").exists()
+    assert (get_project_clips_dir("rename-clips") / "rooftop-shoot" / "clip_001.mp4").exists()
