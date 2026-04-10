@@ -167,6 +167,7 @@ export interface VideoFile {
   path: string;
   name: string;
   folder: string;
+  created?: number;
 }
 
 export interface CaptionRow {

@@ -141,6 +141,7 @@ def _scan_project_videos(project: str) -> list[dict]:
                             "path": str(rel),
                             "name": mp4.name,
                             "folder": folder,
+                            "created": int(mp4.stat().st_mtime),
                         }
                     )
 
@@ -156,6 +157,7 @@ def _scan_project_videos(project: str) -> list[dict]:
                     "path": str(prefixed),
                     "name": mp4.name,
                     "folder": str(prefixed.parent),
+                    "created": int(mp4.stat().st_mtime),
                 }
             )
 
@@ -800,6 +802,133 @@ async def rename_batch(
     meta["label"] = new_label
     _save_batch_meta(batch_dir, meta)
     return {"ok": True, "label": new_label}
+
+
+def _sanitize_folder_leaf(name: str) -> str:
+    """Sanitize a folder leaf name for filesystem safety.
+
+    Mirrors sanitize_project_name's ruleset: lowercase, replace spaces with
+    hyphens, strip everything except [a-z0-9_-], cap at 100 chars, reject empty.
+    Blocks path traversal characters up front.
+    """
+    if not isinstance(name, str) or not name.strip():
+        raise ValueError("New folder name must be a non-empty string")
+
+    raw = name.strip()
+    if ".." in raw or "/" in raw or "\\" in raw:
+        raise ValueError("New folder name cannot contain path separators or traversal characters")
+
+    sanitized = raw.lower().replace(" ", "-")
+    import re as _re
+    sanitized = _re.sub(r"[^a-z0-9\-_]", "", sanitized)
+    sanitized = sanitized[:100]
+    if not sanitized:
+        raise ValueError("New folder name must contain at least one alphanumeric character")
+    return sanitized
+
+
+def _is_virtual_folder(folder: str) -> bool:
+    """Check if a folder string corresponds to a virtual (non-disk) folder
+    invented by _scan_project_videos (e.g. `run_{job_id}` subfolders)."""
+    if not folder or folder == "(root)":
+        return True
+    # Any segment matching run_* is virtual
+    for segment in folder.split("/"):
+        if segment.startswith("run_"):
+            return True
+    return False
+
+
+@router.patch("/folders/rename")
+async def rename_folder(
+    body: dict,
+    project: str = Query(..., description="Project name"),
+):
+    """Rename a source video/clips folder on disk.
+
+    Accepts a `folder` string exactly as returned by GET /api/burn/videos and
+    a `new_name` leaf. Renames only the final path segment. Preserves the
+    `clips/` prefix for clips folders. Rejects virtual (run_*) folders, root,
+    and path-traversal attempts.
+    """
+    folder = (body.get("folder") or "").strip()
+    new_name_raw = body.get("new_name") or ""
+
+    if not folder:
+        return JSONResponse({"error": "folder is required"}, status_code=400)
+
+    # Block virtual folders (run_*, root) and the clips root itself.
+    if _is_virtual_folder(folder):
+        return JSONResponse(
+            {"error": "This folder is virtual and cannot be renamed"},
+            status_code=400,
+        )
+    if folder == "clips":
+        return JSONResponse({"error": "The clips root cannot be renamed"}, status_code=400)
+
+    # Sanitize the new leaf name.
+    try:
+        new_leaf = _sanitize_folder_leaf(new_name_raw)
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+
+    # Route to videos/ or clips/ root based on the `clips/` prefix.
+    try:
+        if folder.startswith("clips/"):
+            root_dir = get_project_clips_dir(project)
+            rel_folder = folder[len("clips/"):]  # strip prefix for disk path
+            response_prefix = "clips/"
+        else:
+            root_dir = get_project_video_dir(project)
+            rel_folder = folder
+            response_prefix = ""
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+
+    if not rel_folder:
+        return JSONResponse({"error": "Cannot rename the root folder"}, status_code=400)
+
+    src_path = (root_dir / rel_folder).resolve()
+    root_resolved = root_dir.resolve()
+
+    # Defensive containment check — prevents .. escape even after sanitize.
+    try:
+        src_path.relative_to(root_resolved)
+    except ValueError:
+        return JSONResponse({"error": "Folder path escapes project root"}, status_code=400)
+
+    if not src_path.exists() or not src_path.is_dir():
+        return JSONResponse({"error": f"Folder not found: {folder}"}, status_code=404)
+
+    # Leaf-only rename: keep any parent path, replace last segment.
+    parent_rel = Path(rel_folder).parent  # Path('.') if no parent
+    new_rel = parent_rel / new_leaf if str(parent_rel) != "." else Path(new_leaf)
+    dst_path = (root_dir / new_rel).resolve()
+
+    try:
+        dst_path.relative_to(root_resolved)
+    except ValueError:
+        return JSONResponse({"error": "Destination path escapes project root"}, status_code=400)
+
+    if dst_path.exists():
+        return JSONResponse(
+            {"error": f"A folder named '{new_leaf}' already exists here"},
+            status_code=409,
+        )
+
+    if src_path == dst_path:
+        # No-op: sanitized new leaf matches current leaf.
+        return {"ok": True, "old_folder": folder, "new_folder": folder}
+
+    try:
+        src_path.rename(dst_path)
+    except OSError as e:
+        log.error("folder rename failed: %s -> %s: %s", src_path, dst_path, e)
+        return JSONResponse({"error": f"Rename failed: {e}"}, status_code=500)
+
+    new_folder = f"{response_prefix}{new_rel.as_posix()}"
+    log.info("folder renamed: %s -> %s (project=%s)", folder, new_folder, project)
+    return {"ok": True, "old_folder": folder, "new_folder": new_folder}
 
 
 @router.get("/zip/{batch_id}")
