@@ -1080,7 +1080,7 @@ export function BurnPage() {
         <div className="mt-1 mb-1 text-[10px] text-muted-foreground">
           {selectedFolders.length}/{groupedFolders.length} selected
         </div>
-        <div className="mb-4 max-h-56 overflow-y-auto rounded-md border-2 border-border bg-background">
+        <div className="mb-4 min-h-[72px] max-h-56 shrink-0 overflow-y-auto rounded-md border-2 border-border bg-background">
           {groupedFolders.length === 0 ? (
             <div className="px-2 py-3 text-xs text-muted-foreground italic">No videos in project</div>
           ) : (
