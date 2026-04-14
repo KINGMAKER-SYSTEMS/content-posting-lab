@@ -182,6 +182,17 @@ PROVIDER_SCHEMAS: dict[str, dict] = {
             "go_fast": {"type": "toggle", "default": False, "label": "Go Fast"},
         },
     },
+    "pruna-pvideo": {
+        "duration": {"type": "range", "min": 1, "max": 10, "default": 6, "label": "Duration (seconds)"},
+        "resolution": {"type": "select", "options": ["720p", "1080p"], "default": "720p", "label": "Resolution"},
+        "crop_mode": {"type": "select", "options": ["none", "dual", "triptych", "both"], "default": "both", "label": "Multi-Crop", "note": "dual=2, triptych=3, both=5 crops from one 16:9"},
+        "optimize_prompt": {"type": "toggle", "default": True, "label": "Prompt Optimizer"},
+    },
+    "pruna-pvideo-vertical": {
+        "duration": {"type": "range", "min": 1, "max": 10, "default": 6, "label": "Duration (seconds)"},
+        "resolution": {"type": "select", "options": ["720p", "1080p"], "default": "720p", "label": "Resolution"},
+        "optimize_prompt": {"type": "toggle", "default": True, "label": "Prompt Optimizer"},
+    },
     "wan-i2v-fast": {
         "resolution": {"type": "select", "options": ["480p", "720p"], "default": "480p", "label": "Resolution"},
         "num_frames": {"type": "range", "min": 81, "max": 121, "default": 81, "step": 4, "label": "Frames", "note": "81 = ~5s, 121 = ~7.5s at 16fps"},

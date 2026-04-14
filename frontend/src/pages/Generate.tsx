@@ -98,6 +98,8 @@ const PROVIDER_SHORT: Record<string, string> = {
   'wan-i2v': 'Wan',
   'wan-i2v-fast': 'Wan',
   'grok': 'Grok',
+  'pruna-pvideo': 'Pruna',
+  'pruna-pvideo-vertical': 'Pruna 9:16',
 };
 
 /** Convert a base64 data URI to a File object. */

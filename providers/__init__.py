@@ -41,4 +41,22 @@ PROVIDERS = {
         "models": ["wan-video/wan-2.2-i2v-fast"],
         "module": replicate,
     },
+    "pruna-pvideo": {
+        "name": "P-Video",
+        "group": "PrunaAI",
+        "key_id": "replicate",
+        "pricing": "~$0.02/sec → 5 crops per run",
+        "models": ["prunaai/p-video"],
+        "module": replicate,
+        "variant": "landscape",
+    },
+    "pruna-pvideo-vertical": {
+        "name": "P-Video Vertical",
+        "group": "PrunaAI",
+        "key_id": "replicate",
+        "pricing": "~$0.02/sec",
+        "models": ["prunaai/p-video"],
+        "module": replicate,
+        "variant": "vertical",
+    },
 }

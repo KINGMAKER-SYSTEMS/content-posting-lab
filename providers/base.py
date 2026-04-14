@@ -26,7 +26,7 @@ API_KEYS = {
 }
 
 # Providers that always output 16:9 regardless of aspect_ratio setting
-FORCE_LANDSCAPE = {"hailuo"}
+FORCE_LANDSCAPE = {"hailuo", "pruna-pvideo"}
 
 
 async def download_video(client: httpx.AsyncClient, url: str, dest: Path):
@@ -187,6 +187,7 @@ async def generate_one(
                 "image_data_uri": image_data_uri,
                 "entry": entry,
                 "model_id": provider_info["models"][0],
+                "variant": provider_info.get("variant"),
                 **extra,
             }
 
