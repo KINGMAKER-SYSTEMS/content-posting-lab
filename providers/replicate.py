@@ -78,6 +78,37 @@ def _build_wan_i2v_input(prompt: str, params: dict) -> dict:
     }
 
 
+def _build_pvideo_input(prompt: str, params: dict) -> dict:
+    """Build Replicate input payload for PrunaAI P-Video.
+
+    Two variants share this builder, dispatched via params["variant"]:
+      - "landscape": locks aspect_ratio="16:9" so the multi-crop pipeline
+        (FORCE_LANDSCAPE) can slice into 9:16 clips, mirroring Hailuo's UX.
+      - "vertical": locks aspect_ratio="9:16" for native vertical output,
+        single clip per generation.
+    """
+    variant = params.get("variant", "landscape")
+    aspect_ratio = "9:16" if variant == "vertical" else "16:9"
+
+    duration = max(1, min(int(params.get("duration", 6)), 10))
+    resolution = params.get("resolution", "720p")
+    if resolution not in ("720p", "1080p"):
+        resolution = "720p"
+
+    return {
+        "prompt": prompt,
+        "duration": duration,
+        "aspect_ratio": aspect_ratio,
+        "resolution": resolution,
+        "fps": 24,
+        "draft": False,
+        "prompt_upsampling": params.get("optimize_prompt", True),
+        "disable_safety_filter": True,
+        "save_audio": False,
+        "no_op": False,
+    }
+
+
 def _build_wan_i2v_fast_input(prompt: str, params: dict) -> dict:
     """Build Replicate input payload for Wan 2.2 14B I2V Fast (PrunaAI)."""
     image = params.get("image_data_uri")
@@ -115,6 +146,7 @@ _INPUT_BUILDERS = {
     "wan-video/wan-2.2-t2v-fast": _build_wan_t2v_input,
     "wan-video/wan-2.2-i2v-a14b": _build_wan_i2v_input,
     "wan-video/wan-2.2-i2v-fast": _build_wan_i2v_fast_input,
+    "prunaai/p-video": _build_pvideo_input,
 }
 
 
