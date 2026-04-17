@@ -5,4 +5,4 @@ builder = "dockerfile"
 startCommand = "python main.py"
 
 [[mounts]]
-mountPath = "/data"
+mountPath = "/app/projects"
