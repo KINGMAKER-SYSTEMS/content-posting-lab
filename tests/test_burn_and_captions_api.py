@@ -6,6 +6,23 @@ from project_manager import (
 )
 
 
+def test_burn_overlay_rejects_path_traversal(sync_client):
+    created = sync_client.post("/api/projects", json={"name": "Traversal Suite"})
+    assert created.status_code == 201
+
+    resp = sync_client.post(
+        "/api/burn/overlay",
+        json={
+            "project": "traversal-suite",
+            "batchId": "batch-y",
+            "index": 0,
+            "videoPath": "../../etc/passwd",
+        },
+    )
+    assert resp.status_code == 400
+    assert resp.json().get("error") == "Invalid path"
+
+
 def test_burn_list_endpoints(sync_client):
     created = sync_client.post("/api/projects", json={"name": "Burn Suite"})
     assert created.status_code == 201

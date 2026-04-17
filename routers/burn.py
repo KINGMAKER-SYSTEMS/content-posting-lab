@@ -704,6 +704,11 @@ async def burn_overlay(request: Request):
             video_dir = get_project_video_dir(project)
             video_abs = str(video_dir / video_rel)
 
+        project_root = (PROJECTS_DIR / sanitize_project_name(project)).resolve()
+        if not str(Path(video_abs).resolve()).startswith(str(project_root)):
+            log.error("burn #%d: path traversal blocked: %s", idx, video_rel)
+            return JSONResponse({"index": idx, "ok": False, "error": "Invalid path"}, status_code=400)
+
         if not Path(video_abs).exists():
             log.error("burn #%d: video not found: %s", idx, video_abs)
             return JSONResponse({"index": idx, "ok": False, "error": f"Video not found: {video_rel}"}, status_code=404)
@@ -1060,6 +1065,8 @@ async def ws_burn(ws: WebSocket):
 
         keepalive_task = asyncio.create_task(keepalive())
 
+        project_root = (PROJECTS_DIR / sanitize_project_name(project)).resolve()
+
         for i, pair in enumerate(pairs):
             vp = pair["videoPath"]
             # clips/ paths resolve from project root, regular paths from videos/
@@ -1080,6 +1087,25 @@ async def ws_burn(ws: WebSocket):
                     "total": total,
                 }
             )
+
+            if not str(Path(video_abs).resolve()).startswith(str(project_root)):
+                log.error("burn ws: path traversal blocked for pair %d: %s", i, vp)
+                results.append(
+                    {
+                        "index": i,
+                        "ok": False,
+                        "error": "Invalid path",
+                    }
+                )
+                await ws.send_json(
+                    {
+                        "event": "burned",
+                        "index": i,
+                        "total": total,
+                        "result": results[-1],
+                    }
+                )
+                continue
 
             try:
                 if overlay_png or color_correction:
