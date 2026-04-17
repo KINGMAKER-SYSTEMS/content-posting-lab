@@ -503,6 +503,118 @@ async def upload_video_stream(request: Request):
     return {"job_id": job_id, "path": str(dest), "size_bytes": total_bytes}
 
 
+@router.post("/stage-streamed")
+async def stage_streamed(request: Request):
+    """Streaming single-file upload that lands in a staging batch dir and runs
+    the same probe/thumbnail/transcode pipeline as /upload-batch.
+
+    Use this instead of /upload-batch for large files to avoid multipart parsing
+    and Railway-style proxy limits that kill big multipart requests.
+
+    Query params:
+      project: project name
+      batch_id: optional — pass an existing batch_id to group multiple files into
+                the same staging dir. If absent, a new one is created.
+      filename: original filename (for extension detection + error messages)
+      index: integer index within the batch (for naming src_NNN.mp4)
+    Body: raw binary video (Content-Type: application/octet-stream)
+    """
+    project = request.query_params.get("project", "quick-test")
+    batch_id = request.query_params.get("batch_id") or uuid.uuid4().hex[:12]
+    filename = request.query_params.get("filename", "video.mp4")
+    try:
+        index = int(request.query_params.get("index", "0"))
+    except ValueError:
+        index = 0
+
+    clipper_dir = _get_clipper_dir(project)
+    staging_dir = clipper_dir / f"_staging_{batch_id}"
+    staging_dir.mkdir(parents=True, exist_ok=True)
+
+    orig_ext = (Path(filename).suffix or ".mp4").lower()
+    safe_name = f"src_{index:03d}.mp4"
+    dest = staging_dir / safe_name
+
+    # For non-mp4, stream to a raw path and transcode afterward
+    if orig_ext == ".mp4":
+        write_path = dest
+    else:
+        write_path = staging_dir / f"_raw_{index:03d}{orig_ext}"
+
+    total_bytes = 0
+    try:
+        with open(write_path, "wb") as f:
+            async for chunk in request.stream():
+                total_bytes += len(chunk)
+                if total_bytes > _MAX_UPLOAD_BYTES:
+                    write_path.unlink(missing_ok=True)
+                    raise HTTPException(413, f"File exceeds maximum size of {_MAX_UPLOAD_BYTES // (1024**3)}GB")
+                f.write(chunk)
+    except HTTPException:
+        raise
+    except Exception as e:
+        write_path.unlink(missing_ok=True)
+        log.error("stage-streamed upload failed at %d bytes: %s", total_bytes, e)
+        raise HTTPException(500, f"Upload failed after {total_bytes / (1024**3):.2f}GB: {e}")
+
+    if total_bytes == 0:
+        write_path.unlink(missing_ok=True)
+        raise HTTPException(400, f"{filename}: uploaded file is empty (0 bytes)")
+
+    log.info("stage-streamed: %s → %s (%.2f GB)", filename, write_path, total_bytes / (1024**3))
+
+    # MP4: faststart in place. Non-MP4: transcode to mp4.
+    if orig_ext == ".mp4":
+        await _faststart(dest)
+    else:
+        proc = await asyncio.create_subprocess_exec(
+            "ffmpeg", "-y", "-i", str(write_path),
+            "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+            "-c:a", "aac", "-movflags", "+faststart",
+            str(dest),
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await proc.communicate()
+        if proc.returncode != 0:
+            stderr_text = stderr.decode(errors="replace")[-300:]
+            log.error("transcode failed for %s: %s", filename, stderr_text)
+            write_path.unlink(missing_ok=True)
+            dest.unlink(missing_ok=True)
+            raise HTTPException(500, f"{filename}: transcode failed: {stderr_text.strip()[-200:]}")
+        write_path.unlink(missing_ok=True)
+
+    try:
+        info = await _get_video_info(dest)
+    except Exception as e:
+        log.error("probe failed for %s: %s", filename, e)
+        dest.unlink(missing_ok=True)
+        raise HTTPException(400, f"{filename}: probe failed: {e}")
+
+    if not info.get("duration") or info["duration"] <= 0:
+        dest.unlink(missing_ok=True)
+        raise HTTPException(400, f"{filename}: could not determine video duration")
+
+    thumb_name = f"thumb_{index:03d}.jpg"
+    thumb_path = staging_dir / thumb_name
+    thumb_ok = await _generate_thumbnail(dest, thumb_path)
+
+    sanitized = sanitize_project_name(project)
+    return {
+        "batch_id": batch_id,
+        "file": {
+            "index": index,
+            "original_name": filename,
+            "path": str(dest),
+            "url": f"/projects/{sanitized}/clips/_staging_{batch_id}/{safe_name}",
+            "thumb_url": f"/projects/{sanitized}/clips/_staging_{batch_id}/{thumb_name}" if thumb_ok else "",
+            "duration": info["duration"],
+            "width": info["width"],
+            "height": info["height"],
+        },
+    }
+
+
 @router.post("/upload")
 async def upload_video(
     file: UploadFile = File(...),
@@ -555,6 +667,7 @@ async def upload_batch(
     staging_dir.mkdir(parents=True, exist_ok=True)
 
     results: list[dict] = []
+    errors: list[dict] = []
     for i, file in enumerate(files):
         orig_ext = (Path(file.filename or "video.mp4").suffix or ".mp4").lower()
         # Always output as .mp4 for browser compatibility
@@ -569,6 +682,11 @@ async def upload_batch(
                     f.write(chunk)
                     total_bytes += len(chunk)
             log.info("batch upload: %s → %s (%d bytes)", file.filename, dest, total_bytes)
+            if total_bytes == 0:
+                log.error("upload for %s produced 0 bytes", file.filename)
+                dest.unlink(missing_ok=True)
+                errors.append({"name": file.filename, "reason": "uploaded file is empty (0 bytes)"})
+                continue
             await _faststart(dest)
         else:
             # Non-MP4 (.mov, .mkv, .webm, etc): transcode to mp4 with faststart
@@ -579,6 +697,11 @@ async def upload_batch(
                     f.write(chunk)
                     total_bytes += len(chunk)
             log.info("batch upload: %s (%d bytes) → transcoding to mp4...", file.filename, total_bytes)
+            if total_bytes == 0:
+                log.error("upload for %s produced 0 bytes", file.filename)
+                raw_path.unlink(missing_ok=True)
+                errors.append({"name": file.filename, "reason": "uploaded file is empty (0 bytes)"})
+                continue
             proc = await asyncio.create_subprocess_exec(
                 "ffmpeg", "-y", "-i", str(raw_path),
                 "-c:v", "libx264", "-preset", "fast", "-crf", "23",
@@ -589,26 +712,39 @@ async def upload_batch(
             )
             _, stderr = await proc.communicate()
             if proc.returncode != 0:
-                log.error("transcode failed for %s: %s", file.filename,
-                          stderr.decode(errors="replace")[-300:])
-                # Fallback: just copy the raw file
-                import shutil
-                shutil.move(str(raw_path), str(dest))
-            else:
+                stderr_text = stderr.decode(errors="replace")[-300:]
+                log.error("transcode failed for %s: %s", file.filename, stderr_text)
                 raw_path.unlink(missing_ok=True)
-                log.info("batch upload: %s → transcoded to %s", file.filename, dest)
+                dest.unlink(missing_ok=True)
+                errors.append({
+                    "name": file.filename,
+                    "reason": f"transcode failed: {stderr_text.strip()[-200:]}",
+                })
+                continue
+            raw_path.unlink(missing_ok=True)
+            log.info("batch upload: %s → transcoded to %s", file.filename, dest)
 
-        # Probe video info
+        # Probe video info — fail loudly if unreadable
         try:
             info = await _get_video_info(dest)
         except Exception as e:
             log.error("probe failed for %s: %s", file.filename, e)
-            info = {"duration": 0, "width": 0, "height": 0}
+            dest.unlink(missing_ok=True)
+            errors.append({"name": file.filename, "reason": f"probe failed: {e}"})
+            continue
 
-        # Generate thumbnail
+        if not info.get("duration") or info["duration"] <= 0:
+            log.error("probe returned zero duration for %s", file.filename)
+            dest.unlink(missing_ok=True)
+            errors.append({"name": file.filename, "reason": "could not determine video duration"})
+            continue
+
+        # Generate thumbnail (best-effort — not fatal)
         thumb_name = f"thumb_{i:03d}.jpg"
         thumb_path = staging_dir / thumb_name
-        await _generate_thumbnail(dest, thumb_path)
+        thumb_ok = await _generate_thumbnail(dest, thumb_path)
+        if not thumb_ok:
+            log.warning("thumbnail generation failed for %s (continuing without)", file.filename)
 
         sanitized = sanitize_project_name(project)
         results.append({
@@ -616,13 +752,22 @@ async def upload_batch(
             "original_name": file.filename,
             "path": str(dest),
             "url": f"/projects/{sanitized}/clips/_staging_{batch_id}/{safe_name}",
-            "thumb_url": f"/projects/{sanitized}/clips/_staging_{batch_id}/{thumb_name}",
+            "thumb_url": f"/projects/{sanitized}/clips/_staging_{batch_id}/{thumb_name}" if thumb_ok else "",
             "duration": info["duration"],
             "width": info["width"],
             "height": info["height"],
         })
 
-    return {"batch_id": batch_id, "files": results}
+    # If every file failed, remove the empty staging dir and 4xx out so the UI shows toast
+    if not results and errors:
+        try:
+            shutil.rmtree(staging_dir, ignore_errors=True)
+        except Exception:
+            pass
+        detail = "; ".join(f"{e['name']}: {e['reason']}" for e in errors)
+        raise HTTPException(status_code=400, detail=f"All uploads failed — {detail}")
+
+    return {"batch_id": batch_id, "files": results, "errors": errors}
 
 
 @router.post("/download-url")

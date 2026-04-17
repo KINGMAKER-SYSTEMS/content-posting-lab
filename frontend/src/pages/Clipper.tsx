@@ -432,64 +432,103 @@ export function ClipperPage() {
   const isBusy = uploading || downloading || processing;
 
   // ── Upload handler ─────────────────────────────────────────────
+  // Streams each file as raw bytes to /api/clipper/stage-streamed, one at a time,
+  // sharing a batch_id so they land in the same staging dir. Avoids multipart
+  // encoding which Railway's proxy drops on large (>~500MB) uploads.
   const handleUpload = async (files: FileList) => {
     if (!activeProjectName || files.length === 0) return;
     setUploading(true);
     setUploadProgress(0);
 
-    // Check total size — warn on very large files
     let totalSize = 0;
     for (let i = 0; i < files.length; i++) totalSize += files[i].size;
     const totalGB = totalSize / (1024 * 1024 * 1024);
-
     if (totalGB > 10) {
       addNotification('error', `Total file size (${totalGB.toFixed(1)}GB) exceeds 10GB limit.`);
       setUploading(false);
       return;
     }
 
+    let batch: string | null = null;
+    const staged: StagedFile[] = [];
+    let bytesDoneBefore = 0;
+    const failures: string[] = [];
+
     try {
-      // Use XMLHttpRequest for progress tracking (especially important for large files)
-      const formData = new FormData();
-      for (let i = 0; i < files.length; i++) formData.append('files', files[i]);
-      formData.append('project', activeProjectName);
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+        const params = new URLSearchParams({
+          project: activeProjectName,
+          filename: file.name,
+          index: String(i),
+          ...(batch ? { batch_id: batch } : {}),
+        });
+        const url = apiUrl(`/api/clipper/stage-streamed?${params.toString()}`);
 
-      const data = await new Promise<{
-        batch_id: string;
-        files: Array<{
-          index: number; original_name: string; path: string; url: string; thumb_url: string;
-          duration: number; width: number; height: number;
-        }>;
-      }>((resolve, reject) => {
-        const xhr = new XMLHttpRequest();
-        xhr.open('POST', apiUrl('/api/clipper/upload-batch'));
+        try {
+          const resp = await new Promise<{
+            batch_id: string;
+            file: {
+              index: number; original_name: string; path: string; url: string; thumb_url: string;
+              duration: number; width: number; height: number;
+            };
+          }>((resolve, reject) => {
+            const xhr = new XMLHttpRequest();
+            xhr.open('POST', url);
+            xhr.setRequestHeader('Content-Type', 'application/octet-stream');
 
-        xhr.upload.onprogress = (e) => {
-          if (e.lengthComputable) setUploadProgress(Math.round((e.loaded / e.total) * 100));
-        };
+            xhr.upload.onprogress = (e) => {
+              if (e.lengthComputable) {
+                const overall = bytesDoneBefore + e.loaded;
+                setUploadProgress(Math.round((overall / totalSize) * 100));
+              }
+            };
 
-        xhr.onload = () => {
-          if (xhr.status >= 200 && xhr.status < 300) {
-            try { resolve(JSON.parse(xhr.responseText)); }
-            catch { reject(new Error('Invalid response from server')); }
-          } else {
-            reject(new Error(xhr.responseText || `Upload failed (${xhr.status})`));
-          }
-        };
+            xhr.onload = () => {
+              if (xhr.status >= 200 && xhr.status < 300) {
+                try { resolve(JSON.parse(xhr.responseText)); }
+                catch { reject(new Error('Invalid response from server')); }
+              } else {
+                let msg = xhr.responseText || `Upload failed (${xhr.status})`;
+                try {
+                  const parsed = JSON.parse(xhr.responseText);
+                  if (parsed?.detail) msg = parsed.detail;
+                } catch { /* keep raw */ }
+                reject(new Error(msg));
+              }
+            };
+            xhr.onerror = () => reject(new Error(`Upload failed — connection error (${file.name})`));
+            xhr.ontimeout = () => reject(new Error(`Upload timed out (${file.name})`));
+            xhr.timeout = 0;
+            xhr.send(file);
+          });
 
-        xhr.onerror = () => reject(new Error('Upload failed — connection error'));
-        xhr.ontimeout = () => reject(new Error('Upload timed out'));
-        xhr.timeout = 0; // No timeout for large files
-        xhr.send(formData);
-      });
+          batch = resp.batch_id;
+          staged.push({
+            ...resp.file,
+            thumbUrl: resp.file.thumb_url,
+            trimStart: 0,
+            trimEnd: resp.file.duration,
+          });
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          failures.push(`${file.name}: ${msg}`);
+          addNotification('error', `${file.name}: ${msg}`);
+        } finally {
+          bytesDoneBefore += file.size;
+          setUploadProgress(Math.round((bytesDoneBefore / totalSize) * 100));
+        }
+      }
 
-      setBatchId(data.batch_id);
-      const newFiles: StagedFile[] = data.files.map((f) => ({
-        ...f, thumbUrl: f.thumb_url, trimStart: 0, trimEnd: f.duration,
-      }));
-      setStagedFiles((prev) => [...prev, ...newFiles]);
+      if (staged.length === 0) {
+        if (failures.length === 0) addNotification('error', 'No files were staged');
+        return;
+      }
+
+      setBatchId(batch!);
+      setStagedFiles((prev) => [...prev, ...staged]);
       if (stage === 'ingest' || stage === 'trim') setStage('trim');
-      if (newFiles.length === 1 && stagedFiles.length === 0) setExpandedIndex(newFiles[0].index);
+      setExpandedIndex(staged[0].index);
     } catch (e) {
       addNotification('error', e instanceof Error ? e.message : 'Upload failed');
     } finally {
@@ -520,15 +559,21 @@ export function ClipperPage() {
         }>;
       };
 
+      const badFiles = data.files.filter((f) => !f.duration || f.duration <= 0);
+      if (badFiles.length) {
+        addNotification('error', `Downloaded video has no readable duration — likely corrupt or not a video`);
+        return;
+      }
+
       setBatchId(data.batch_id);
       const newFiles: StagedFile[] = data.files.map((f) => ({
         ...f, thumbUrl: f.thumb_url, trimStart: 0, trimEnd: f.duration,
       }));
       setStagedFiles((prev) => {
         const next = [...prev, ...newFiles];
-        if (next.length === 1) setExpandedIndex(newFiles[0].index);
         return next;
       });
+      if (newFiles.length > 0) setExpandedIndex(newFiles[0].index);
       setVideoUrl('');
       if (stage === 'ingest' || stage === 'trim') setStage('trim');
     } catch (e) {
