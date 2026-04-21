@@ -676,27 +676,47 @@ export function GeneratePage() {
       return;
     }
     const cc = getColorCorrectionOrNull(batchCc);
+    // Server caps bulk requests at 50 items — chunk client-side so any feed
+    // size works. Multiple zips land (one per batch) for large batches.
+    const CHUNK = 50;
+    const chunks: string[][] = [];
+    for (let i = 0; i < allDoneVideoPaths.length; i += CHUNK) {
+      chunks.push(allDoneVideoPaths.slice(i, i + CHUNK));
+    }
     setBatchCcBusy(true);
+    const today = new Date().toISOString().slice(0, 10);
+    let succeeded = 0;
     try {
-      const items = allDoneVideoPaths.map((p) => ({ path: p, color_correction: cc }));
-      const res = await fetch(apiUrl('/api/video/color-correct/bulk'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ project: activeProjectName, items }),
-      });
-      if (!res.ok) {
-        const text = await res.text().catch(() => '');
-        throw new Error(text || `HTTP ${res.status}`);
+      for (let idx = 0; idx < chunks.length; idx++) {
+        const paths = chunks[idx];
+        const items = paths.map((p) => ({ path: p, color_correction: cc }));
+        const res = await fetch(apiUrl('/api/video/color-correct/bulk'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ project: activeProjectName, items }),
+        });
+        if (!res.ok) {
+          const text = await res.text().catch(() => '');
+          throw new Error(text || `HTTP ${res.status}`);
+        }
+        const blob = await res.blob();
+        const suffix = chunks.length > 1 ? `_part${idx + 1}of${chunks.length}` : '';
+        triggerBlobDownload(blob, `videos_${today}_${paths.length}${suffix}.zip`);
+        succeeded += paths.length;
       }
-      const blob = await res.blob();
-      const today = new Date().toISOString().slice(0, 10);
-      triggerBlobDownload(blob, `videos_${today}_${allDoneVideoPaths.length}.zip`);
       addNotification(
         'success',
-        `Downloaded ${allDoneVideoPaths.length} ${cc ? 'color-corrected ' : ''}videos`,
+        `Downloaded ${succeeded} ${cc ? 'color-corrected ' : ''}videos${chunks.length > 1 ? ` in ${chunks.length} zips` : ''}`,
       );
     } catch (e) {
-      addNotification('error', e instanceof Error ? `Download failed: ${e.message}` : 'Download failed');
+      if (succeeded > 0) {
+        addNotification(
+          'error',
+          `Only ${succeeded}/${allDoneVideoPaths.length} downloaded before failing: ${e instanceof Error ? e.message : 'unknown'}`,
+        );
+      } else {
+        addNotification('error', e instanceof Error ? `Download failed: ${e.message}` : 'Download failed');
+      }
     } finally {
       setBatchCcBusy(false);
     }

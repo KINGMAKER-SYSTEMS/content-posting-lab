@@ -876,15 +876,16 @@ async def color_correct_bulk(body: dict):
         used_names: set[str] = set()
         errors: list[str] = []
 
-        def _pick_name(stem: str) -> str:
-            base = f"{stem}_cc.mp4"
+        def _pick_name(stem: str, has_cc: bool) -> str:
+            suffix = "_cc" if has_cc else ""
+            base = f"{stem}{suffix}.mp4"
             if base not in used_names:
                 used_names.add(base)
                 return base
             n = 2
-            while f"{stem}_cc_{n}.mp4" in used_names:
+            while f"{stem}{suffix}_{n}.mp4" in used_names:
                 n += 1
-            name = f"{stem}_cc_{n}.mp4"
+            name = f"{stem}{suffix}_{n}.mp4"
             used_names.add(name)
             return name
 
@@ -893,8 +894,9 @@ async def color_correct_bulk(body: dict):
         try:
             with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_STORED) as zf:
                 for idx, (src, cc) in enumerate(resolved):
-                    arcname = _pick_name(src.stem)
-                    if is_default_cc(cc):
+                    has_cc = not is_default_cc(cc)
+                    arcname = _pick_name(src.stem, has_cc)
+                    if not has_cc:
                         zf.write(src, arcname)
                         continue
                     ok, err = encode_results.get(idx, (False, "unknown encode failure"))
