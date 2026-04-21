@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { type Job, type Project, type RosterPage, type UploadJob, type UploadQueueStats } from '../types/api';
+import { type ColorCorrection, type Job, type Project, type RosterPage, type UploadJob, type UploadQueueStats } from '../types/api';
 
 interface Notification {
   id: string;
@@ -85,6 +85,11 @@ interface WorkflowState {
   // Generate page state — persists across tab switches
   generateJobs: Job[];
 
+  // Per-video color-correction drafts on the Generate tab, keyed by file path.
+  // Session-only (not persisted) — cleared on project switch to avoid stale
+  // entries when a user jumps between projects.
+  generateColorCorrections: Record<string, ColorCorrection>;
+
   // Roster state
   rosterPages: RosterPage[];
   rosterLoading: boolean;
@@ -116,6 +121,11 @@ interface WorkflowState {
   removeGenerateJob: (jobId: string) => void;
   clearGenerateJobs: () => void;
 
+  // Generate page per-video color-correction draft actions
+  setGenerateCc: (filePath: string, cc: ColorCorrection) => void;
+  resetGenerateCc: (filePath: string) => void;
+  clearGenerateCcsForFiles: (paths: string[]) => void;
+
   // Roster actions
   setRosterPages: (pages: RosterPage[]) => void;
   setRosterLoading: (loading: boolean) => void;
@@ -144,13 +154,19 @@ export const useWorkflowStore = create<WorkflowState>((set) => ({
   },
   generatePrefill: null,
   generateJobs: [],
+  generateColorCorrections: {},
   rosterPages: [],
   rosterLoading: false,
   uploadJobs: [],
   uploadStats: null,
 
   setActiveProjectName: (name) => {
-    set({ activeProjectName: name });
+    // Clear per-video CC drafts when the active project changes — paths are
+    // project-scoped and a stale entry from another project would be wrong.
+    set((state) => ({
+      activeProjectName: name,
+      generateColorCorrections: state.activeProjectName === name ? state.generateColorCorrections : {},
+    }));
     if (typeof window === 'undefined') {
       return;
     }
@@ -301,6 +317,45 @@ export const useWorkflowStore = create<WorkflowState>((set) => ({
 
   clearGenerateJobs: () => {
     set({ generateJobs: [] });
+  },
+
+  setGenerateCc: (filePath, cc) => {
+    set((state) => {
+      const next = { ...state.generateColorCorrections, [filePath]: cc };
+      const keys = Object.keys(next);
+      // FIFO cap at 500 entries to avoid unbounded growth in long sessions.
+      if (keys.length > 500) {
+        const drop = keys.length - 500;
+        for (let i = 0; i < drop; i++) {
+          delete next[keys[i]];
+        }
+      }
+      return { generateColorCorrections: next };
+    });
+  },
+
+  resetGenerateCc: (filePath) => {
+    set((state) => {
+      if (!(filePath in state.generateColorCorrections)) return state;
+      const next = { ...state.generateColorCorrections };
+      delete next[filePath];
+      return { generateColorCorrections: next };
+    });
+  },
+
+  clearGenerateCcsForFiles: (paths) => {
+    if (!paths.length) return;
+    set((state) => {
+      const next = { ...state.generateColorCorrections };
+      let changed = false;
+      for (const p of paths) {
+        if (p in next) {
+          delete next[p];
+          changed = true;
+        }
+      }
+      return changed ? { generateColorCorrections: next } : state;
+    });
   },
 
   setRosterPages: (pages) => {

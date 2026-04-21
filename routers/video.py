@@ -19,6 +19,7 @@ from fastapi.responses import StreamingResponse
 from project_manager import PROJECTS_DIR, get_project_video_dir
 from providers import PROVIDERS
 from providers.base import API_KEYS, generate_one
+from services.ffmpeg import is_default_cc, run_color_correct
 
 log = logging.getLogger("video")
 
@@ -30,6 +31,34 @@ MAX_PROMPT_HISTORY = 200
 
 # Limit concurrent video generation tasks to prevent resource exhaustion
 _gen_semaphore = asyncio.Semaphore(10)
+
+# Cap concurrent color-correct ffmpeg encodes so a big bulk request can't
+# exhaust the host's CPU/IO. 4 is conservative and matches the burn router's
+# tolerance for parallel ffmpeg work.
+_cc_semaphore = asyncio.Semaphore(4)
+
+# Hard ceiling on a single bulk color-correct request — prevents a runaway
+# client from queueing thousands of encodes.
+_CC_BULK_MAX_ITEMS = 50
+
+
+def _resolve_safe_video_path(project: str, path: str) -> Path:
+    """Resolve a user-supplied video path against the project's video dir.
+
+    Mirrors the containment check used by delete_video_file. Raises
+    HTTPException(400) on traversal, HTTPException(404) if the file is missing.
+    """
+    if not project:
+        raise HTTPException(400, "project is required")
+    if not path:
+        raise HTTPException(400, "path is required")
+    video_dir = get_project_video_dir(project)
+    target = (video_dir / path).resolve()
+    if not str(target).startswith(str(video_dir.resolve())):
+        raise HTTPException(400, "Invalid path")
+    if not target.exists() or not target.is_file():
+        raise HTTPException(404, "File not found")
+    return target
 
 
 def _make_job_id(provider: str, prompt: str) -> str:
@@ -67,6 +96,29 @@ def _save_jobs(project: str) -> None:
 
 
 _TERMINAL_STATUSES = {"done", "error"}
+
+
+def _mark_entry_error(job_id: str, index: int, message: str) -> None:
+    """Flip a video entry to 'error' if it hasn't already reached a terminal state.
+
+    Used as a safety net for tasks that crash before generate_one's own
+    exception handler can run. Idempotent — safe to call multiple times.
+    """
+    job = jobs.get(job_id)
+    if not job:
+        return
+    videos = job.get("videos") or []
+    if index < 0 or index >= len(videos):
+        return
+    entry = videos[index]
+    if entry.get("status") in _TERMINAL_STATUSES:
+        return
+    entry["status"] = "error"
+    entry["error"] = message
+    try:
+        _save_jobs(job.get("project", "quick-test"))
+    except Exception:  # noqa: BLE001 - best-effort persistence
+        log.exception("failed to persist job after marking error job=%s idx=%d", job_id, index)
 
 
 def _load_jobs(project: str) -> None:
@@ -327,6 +379,7 @@ async def generate_video(
         "prompt": prompt,
         "provider": provider,
         "count": count,
+        "crop_mode": crop_mode if crop_mode and crop_mode != "none" else None,
         "project": project,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "videos": [{"index": i, "status": "queued"} for i in range(count)],
@@ -350,25 +403,99 @@ async def generate_video(
     url_prefix = f"/projects/{project}/videos"
 
     async def _throttled_generate(index: int) -> None:
-        async with _gen_semaphore:
-            await generate_one(
-                job_id, index, provider, prompt,
-                aspect_ratio, resolution, duration, image_data_uri,
-                jobs, output_dir, url_prefix,
-                on_complete=_persist_job,
-                **extra,
+        # Defensive wrapper: if anything raises *outside* generate_one's own
+        # try/except (e.g. semaphore cancellation, httpx init, import-time
+        # provider errors), this ensures the corresponding video entry is
+        # flipped to "error" instead of silently sticking on "queued" forever.
+        try:
+            async with _gen_semaphore:
+                await generate_one(
+                    job_id, index, provider, prompt,
+                    aspect_ratio, resolution, duration, image_data_uri,
+                    jobs, output_dir, url_prefix,
+                    on_complete=_persist_job,
+                    **extra,
+                )
+        except asyncio.CancelledError:
+            _mark_entry_error(job_id, index, "Task cancelled")
+            raise
+        except Exception as exc:  # noqa: BLE001 - last-resort safety net
+            log.error(
+                "job=%s idx=%d provider=%s unhandled task error: %s",
+                job_id, index, provider, exc, exc_info=True,
             )
+            _mark_entry_error(job_id, index, f"Unhandled error: {exc}")
+
+    def _on_task_done(index: int):
+        def _cb(task: asyncio.Task) -> None:
+            # Backstop for anything that slipped past the wrapper above.
+            if task.cancelled():
+                _mark_entry_error(job_id, index, "Task cancelled")
+                return
+            exc = task.exception()
+            if exc is not None:
+                log.error(
+                    "job=%s idx=%d task ended with exception: %s",
+                    job_id, index, exc, exc_info=exc,
+                )
+                _mark_entry_error(job_id, index, f"Task crashed: {exc}")
+        return _cb
 
     for i in range(count):
-        asyncio.create_task(_throttled_generate(i))
+        t = asyncio.create_task(_throttled_generate(i))
+        t.add_done_callback(_on_task_done(i))
 
     return {"job_id": job_id, "count": count}
+
+
+# Max wall-clock time an individual video is allowed to stay in a non-terminal
+# state before the watchdog flips it to "error". Generous — real providers
+# finish within 3-5 minutes even at 1080p, so 20 minutes means the task is
+# almost certainly wedged (crashed before hitting generate_one's except block,
+# or a provider poll loop gave up without raising).
+_STUCK_JOB_TIMEOUT_SECS = 20 * 60
+
+
+def _sweep_stuck_entries(job: dict) -> None:
+    """Flip non-terminal video entries to 'error' if the job is old enough.
+
+    Runs on every /jobs and /jobs/{id} poll. Idempotent — only touches entries
+    still in a non-terminal state past the timeout.
+    """
+    created = job.get("created_at")
+    if not created:
+        return
+    try:
+        created_dt = datetime.fromisoformat(created.replace("Z", "+00:00"))
+    except ValueError:
+        return
+    age = (datetime.now(timezone.utc) - created_dt).total_seconds()
+    if age < _STUCK_JOB_TIMEOUT_SECS:
+        return
+    swept = False
+    for entry in job.get("videos", []):
+        if entry.get("status") in _TERMINAL_STATUSES:
+            continue
+        entry["status"] = "error"
+        entry["error"] = (
+            f"Stuck in '{entry.get('status', 'queued')}' for over "
+            f"{_STUCK_JOB_TIMEOUT_SECS // 60} minutes — task likely crashed"
+        )
+        swept = True
+    if swept:
+        try:
+            _save_jobs(job.get("project", "quick-test"))
+        except Exception:  # noqa: BLE001 - best-effort persistence
+            log.exception("failed to persist job after sweep job=%s", job.get("id"))
 
 
 @router.get("/jobs")
 async def list_jobs(project: str = "quick-test"):
     _load_jobs(project)
-    return [j for j in jobs.values() if j.get("project") == project]
+    project_jobs = [j for j in jobs.values() if j.get("project") == project]
+    for j in project_jobs:
+        _sweep_stuck_entries(j)
+    return project_jobs
 
 
 @router.get("/jobs/{job_id}")
@@ -380,6 +507,7 @@ async def get_job(job_id: str):
                 _load_jobs(proj_dir.name)
         if job_id not in jobs:
             raise HTTPException(status_code=404, detail="Job not found")
+    _sweep_stuck_entries(jobs[job_id])
     return jobs[job_id]
 
 
@@ -436,11 +564,31 @@ async def download_all(job_id: str):
     tmp_fd, tmp_path = tempfile.mkstemp(suffix=".zip")
     os.close(tmp_fd)
     try:
+        written: set[str] = set()
         with zipfile.ZipFile(tmp_path, "w", zipfile.ZIP_STORED) as zf:
             for v in done_videos:
-                filepath = base_dir / v["file"]
-                if filepath.exists():
-                    zf.write(filepath, v["file"])
+                # Prefer crops when present — each crop is a separate deliverable
+                # file, and v["file"] is just an alias for the first crop in
+                # multi-crop mode (set in providers/base.py). If we only zipped
+                # v["file"] we'd silently drop crops 2..N.
+                crops = v.get("crops") or []
+                if crops:
+                    for crop in crops:
+                        rel = crop.get("file")
+                        if not rel or rel in written:
+                            continue
+                        filepath = base_dir / rel
+                        if filepath.exists():
+                            zf.write(filepath, rel)
+                            written.add(rel)
+                else:
+                    rel = v["file"]
+                    if rel in written:
+                        continue
+                    filepath = base_dir / rel
+                    if filepath.exists():
+                        zf.write(filepath, rel)
+                        written.add(rel)
     except Exception:
         os.unlink(tmp_path)
         raise
@@ -578,3 +726,236 @@ async def bulk_delete(body: dict):
 
     _save_jobs(project)
     return {"deleted_jobs": deleted_jobs, "deleted_files": deleted_files}
+
+
+@router.post("/color-correct")
+async def color_correct_one(body: dict):
+    """Return a color-corrected copy of a single video.
+
+    Body: {"project": "...", "path": "...", "color_correction": {...} | null}
+
+    Preserves source dimensions (no scale filter) so arbitrary aspect ratios
+    survive round-trip. When the CC dict is null/empty/all-zero, streams the
+    original file bytes unchanged (zero re-encode cost).
+    """
+    project = body.get("project") or ""
+    path = body.get("path") or ""
+    cc = body.get("color_correction")
+
+    src = _resolve_safe_video_path(project, path)
+    src_stem = src.stem
+    out_name = f"{src_stem}_cc.mp4"
+
+    # Zero-CC fast path — stream the original file untouched.
+    if is_default_cc(cc):
+        file_size = src.stat().st_size
+
+        async def _stream_src():
+            with open(src, "rb") as f:
+                while chunk := f.read(1024 * 1024):
+                    yield chunk
+
+        return StreamingResponse(
+            _stream_src(),
+            media_type="video/mp4",
+            headers={
+                "Content-Disposition": f'attachment; filename="{out_name}"',
+                "Content-Length": str(file_size),
+            },
+        )
+
+    tmp_fd, tmp_path = tempfile.mkstemp(suffix=".mp4")
+    os.close(tmp_fd)
+    try:
+        async with _cc_semaphore:
+            await run_color_correct(str(src), tmp_path, cc, scale=None)
+        out_size = os.path.getsize(tmp_path)
+    except Exception as e:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        log.error("color-correct failed project=%s path=%s: %s", project, path, e)
+        raise HTTPException(status_code=500, detail=f"ffmpeg failed: {str(e)[-500:]}")
+
+    async def _stream():
+        try:
+            with open(tmp_path, "rb") as f:
+                while chunk := f.read(1024 * 1024):
+                    yield chunk
+        finally:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+
+    return StreamingResponse(
+        _stream(),
+        media_type="video/mp4",
+        headers={
+            "Content-Disposition": f'attachment; filename="{out_name}"',
+            "Content-Length": str(out_size),
+        },
+    )
+
+
+async def _cc_bulk_worker(
+    src: Path,
+    dst: Path,
+    cc: dict | None,
+) -> tuple[bool, str]:
+    """Run one color-correct under the semaphore. Returns (ok, error_message)."""
+    async with _cc_semaphore:
+        try:
+            await run_color_correct(str(src), str(dst), cc, scale=None)
+            return True, ""
+        except Exception as e:  # noqa: BLE001 - any ffmpeg failure is recorded, not raised
+            return False, str(e)[-500:]
+
+
+@router.post("/color-correct/bulk")
+async def color_correct_bulk(body: dict):
+    """Stream a ZIP of color-corrected videos.
+
+    Body: {
+        "project": "...",
+        "items": [{"path": "...", "color_correction": {...}|null}, ...]
+    }
+
+    Items with null/empty CC are copied raw (no re-encode) to match the fast
+    path in /bulk-download. Per-item ffmpeg failures are written to an
+    _errors.txt entry in the ZIP rather than aborting the batch.
+    """
+    project = body.get("project") or ""
+    items = body.get("items") or []
+    if not project:
+        raise HTTPException(400, "project is required")
+    if not items:
+        raise HTTPException(400, "items is required")
+    if len(items) > _CC_BULK_MAX_ITEMS:
+        raise HTTPException(
+            400,
+            f"Too many items (max {_CC_BULK_MAX_ITEMS})",
+        )
+
+    # Resolve+validate all input paths up front so a single bad path fails
+    # the whole request rather than silently skipping.
+    resolved: list[tuple[Path, dict | None]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            raise HTTPException(400, "Each item must be an object")
+        src = _resolve_safe_video_path(project, item.get("path") or "")
+        cc = item.get("color_correction")
+        resolved.append((src, cc))
+
+    # Split into fast-path copies and ffmpeg encodes. Only encodes need a temp
+    # file + subprocess; copies are just source reads.
+    tmpfiles: list[str] = []
+    encode_tasks: list[tuple[int, asyncio.Task]] = []
+    try:
+        for idx, (src, cc) in enumerate(resolved):
+            if is_default_cc(cc):
+                continue
+            tmp_fd, tmp_path = tempfile.mkstemp(suffix=".mp4")
+            os.close(tmp_fd)
+            tmpfiles.append(tmp_path)
+            task = asyncio.create_task(_cc_bulk_worker(src, Path(tmp_path), cc))
+            encode_tasks.append((idx, task))
+
+        # Wait for all encodes (semaphore inside _cc_bulk_worker caps concurrency).
+        encode_results: dict[int, tuple[bool, str]] = {}
+        if encode_tasks:
+            results = await asyncio.gather(*(t for _, t in encode_tasks))
+            for (idx, _), res in zip(encode_tasks, results):
+                encode_results[idx] = res
+
+        # Build the ZIP: one entry per item, dedupe basename collisions with
+        # a numeric counter. Record errors in _errors.txt.
+        tmp_fd, zip_path = tempfile.mkstemp(suffix=".zip")
+        os.close(tmp_fd)
+        used_names: set[str] = set()
+        errors: list[str] = []
+
+        def _pick_name(stem: str) -> str:
+            base = f"{stem}_cc.mp4"
+            if base not in used_names:
+                used_names.add(base)
+                return base
+            n = 2
+            while f"{stem}_cc_{n}.mp4" in used_names:
+                n += 1
+            name = f"{stem}_cc_{n}.mp4"
+            used_names.add(name)
+            return name
+
+        tmp_by_idx = {idx: tmpfiles[tmpfiles_i] for tmpfiles_i, (idx, _) in enumerate(encode_tasks)}
+
+        try:
+            with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_STORED) as zf:
+                for idx, (src, cc) in enumerate(resolved):
+                    arcname = _pick_name(src.stem)
+                    if is_default_cc(cc):
+                        zf.write(src, arcname)
+                        continue
+                    ok, err = encode_results.get(idx, (False, "unknown encode failure"))
+                    if not ok:
+                        errors.append(f"{src.name}: {err}")
+                        continue
+                    tmp_path = tmp_by_idx.get(idx)
+                    if not tmp_path or not os.path.exists(tmp_path):
+                        errors.append(f"{src.name}: output missing after encode")
+                        continue
+                    zf.write(tmp_path, arcname)
+                if errors:
+                    zf.writestr("_errors.txt", "\n".join(errors) + "\n")
+        except Exception:
+            try:
+                os.unlink(zip_path)
+            except OSError:
+                pass
+            raise
+
+        zip_size = os.path.getsize(zip_path)
+        today = datetime.now().strftime("%Y-%m-%d")
+        ok_count = sum(1 for idx, _ in enumerate(resolved) if idx not in encode_results or encode_results[idx][0])
+        zip_name = f"videolab_cc_{today}_{ok_count}videos.zip"
+
+        async def _stream():
+            try:
+                with open(zip_path, "rb") as f:
+                    while chunk := f.read(1024 * 1024):
+                        yield chunk
+            finally:
+                try:
+                    os.unlink(zip_path)
+                except OSError:
+                    pass
+                # temp per-item encodes also get cleaned up here
+                for p in tmpfiles:
+                    try:
+                        os.unlink(p)
+                    except OSError:
+                        pass
+
+        return StreamingResponse(
+            _stream(),
+            media_type="application/zip",
+            headers={
+                "Content-Disposition": f'attachment; filename="{zip_name}"',
+                "Content-Length": str(zip_size),
+            },
+        )
+    except HTTPException:
+        for p in tmpfiles:
+            try:
+                os.unlink(p)
+            except OSError:
+                pass
+        raise
+    except Exception:
+        for p in tmpfiles:
+            try:
+                os.unlink(p)
+            except OSError:
+                pass
+        raise

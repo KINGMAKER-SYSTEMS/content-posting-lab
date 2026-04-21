@@ -144,7 +144,7 @@ describe('GeneratePage', () => {
       fireEvent.click(option);
     });
 
-    const generateBtn = screen.getByRole('button', { name: 'Generate' });
+    const generateBtn = screen.getByRole('button', { name: /^Generate\b/ });
     expect(generateBtn).toBeTruthy();
     expect((generateBtn as HTMLButtonElement).disabled).toBe(false);
 
