@@ -51,6 +51,31 @@ function isTerminal(v: VideoEntry): boolean {
   return v.status === 'done' || v.status === 'failed' || v.status === 'error';
 }
 
+const CROP_MULTIPLIERS: Record<string, number> = {
+  none: 1,
+  dual: 2,
+  triptych: 3,
+  both: 5,
+};
+
+function cropMultiplier(mode?: string | null): number {
+  if (!mode) return 1;
+  return CROP_MULTIPLIERS[mode] ?? 1;
+}
+
+function expectedOutputCount(job: Pick<Job, 'count' | 'crop_mode'>): number {
+  return job.count * cropMultiplier(job.crop_mode);
+}
+
+function deliveredFileCount(videos: VideoEntry[]): number {
+  return videos.reduce((n, v) => {
+    if (v.status !== 'done') return n;
+    if (v.crops && v.crops.length > 0) return n + v.crops.length;
+    if (v.file) return n + 1;
+    return n;
+  }, 0);
+}
+
 interface PromptEntry {
   prompt: string;
   provider: string;
@@ -902,12 +927,38 @@ export function GeneratePage() {
             </Card>
           )}
 
+          {(() => {
+            const cropModeRaw = extraParams.crop_mode;
+            const cropMode = typeof cropModeRaw === 'string' ? cropModeRaw : undefined;
+            const mult = cropMultiplier(cropMode);
+            const expected = count * mult;
+            if (mult <= 1) return null;
+            return (
+              <div className="flex items-center justify-between rounded-[var(--border-radius)] border-2 border-primary/30 bg-primary/5 px-3 py-2 text-xs">
+                <span className="text-muted-foreground">
+                  {count} × <span className="font-bold text-foreground">{mult}-crop</span>
+                </span>
+                <span className="font-bold text-foreground">
+                  = {expected} output files
+                </span>
+              </div>
+            );
+          })()}
+
           <Button
             type="submit"
             disabled={loading || !selectedProvider}
             className="w-full"
           >
-            {loading ? 'Submitting...' : 'Generate'}
+            {loading ? 'Submitting...' : (() => {
+              const cropModeRaw = extraParams.crop_mode;
+              const cropMode = typeof cropModeRaw === 'string' ? cropModeRaw : undefined;
+              const expected = count * cropMultiplier(cropMode);
+              if (expected === count) {
+                return `Generate (${count} video${count === 1 ? '' : 's'})`;
+              }
+              return `Generate (${count} × ${cropMultiplier(cropMode)} = ${expected} files)`;
+            })()}
           </Button>
         </form>
 
@@ -1019,14 +1070,19 @@ export function GeneratePage() {
                 }
                 return Array.from(groups.entries()).map(([dateLabel, dateJobs]) => {
                   const dateDoneCount = dateJobs.reduce((n, j) => n + j.videos.filter((v) => v.status === 'done').length, 0);
+                  const dateFileCount = dateJobs.reduce((n, j) => n + deliveredFileCount(j.videos), 0);
                   const dateJobIds = dateJobs.map((j) => j.id);
                   return (
                   <div key={dateLabel}>
                     <div className="flex items-center gap-3 mb-3">
                       <div className="text-sm font-bold text-muted-foreground uppercase tracking-wider">{dateLabel}</div>
                       <div className="flex-1 h-px bg-border" />
-                      <Badge variant="secondary" className="text-[10px]">{dateDoneCount} videos</Badge>
-                      {dateDoneCount > 1 && (
+                      <Badge variant="secondary" className="text-[10px]">
+                        {dateFileCount === dateDoneCount
+                          ? `${dateDoneCount} videos`
+                          : `${dateFileCount} files`}
+                      </Badge>
+                      {dateFileCount > 1 && (
                         <button
                           type="button"
                           className="text-[11px] font-bold text-primary hover:underline"
@@ -1050,7 +1106,7 @@ export function GeneratePage() {
                             }
                           }}
                         >
-                          Download All ({dateDoneCount})
+                          Download All ({dateFileCount})
                         </button>
                       )}
                       {dateJobs.length > 0 && dateJobs.every((j) => j.videos.every((v) => isTerminal(v))) && (
@@ -1083,6 +1139,9 @@ export function GeneratePage() {
                 const total = job.count;
                 const allFinished = doneCount + errorCount === total;
                 const pct = Math.round(((doneCount + errorCount) / total) * 100);
+                const mult = cropMultiplier(job.crop_mode);
+                const expectedFiles = expectedOutputCount(job);
+                const deliveredFiles = deliveredFileCount(job.videos);
 
                 return (
                   <Card key={job.id}>
@@ -1130,7 +1189,9 @@ export function GeneratePage() {
                             Delete
                           </button>
                           <Badge variant={allFinished && errorCount === 0 ? 'success' : 'info'}>
-                            {doneCount}/{total} done
+                            {mult > 1
+                              ? `${deliveredFiles}/${expectedFiles} files`
+                              : `${doneCount}/${total} done`}
                           </Badge>
                         </div>
                       </div>
@@ -1275,10 +1336,10 @@ export function GeneratePage() {
                               Use in Burn →
                             </Button>
                           )}
-                          {doneCount > 1 && (
+                          {deliveredFiles > 1 && (
                             <Button asChild size="sm" variant="outline">
                               <a href={apiUrl(`/api/video/jobs/${job.id}/download-all`)} download>
-                                Download All ({doneCount})
+                                Download All ({deliveredFiles})
                               </a>
                             </Button>
                           )}

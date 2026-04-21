@@ -69,6 +69,29 @@ def _save_jobs(project: str) -> None:
 _TERMINAL_STATUSES = {"done", "error"}
 
 
+def _mark_entry_error(job_id: str, index: int, message: str) -> None:
+    """Flip a video entry to 'error' if it hasn't already reached a terminal state.
+
+    Used as a safety net for tasks that crash before generate_one's own
+    exception handler can run. Idempotent — safe to call multiple times.
+    """
+    job = jobs.get(job_id)
+    if not job:
+        return
+    videos = job.get("videos") or []
+    if index < 0 or index >= len(videos):
+        return
+    entry = videos[index]
+    if entry.get("status") in _TERMINAL_STATUSES:
+        return
+    entry["status"] = "error"
+    entry["error"] = message
+    try:
+        _save_jobs(job.get("project", "quick-test"))
+    except Exception:  # noqa: BLE001 - best-effort persistence
+        log.exception("failed to persist job after marking error job=%s idx=%d", job_id, index)
+
+
 def _load_jobs(project: str) -> None:
     """Load persisted jobs from disk into the in-memory dict.
 
@@ -327,6 +350,7 @@ async def generate_video(
         "prompt": prompt,
         "provider": provider,
         "count": count,
+        "crop_mode": crop_mode if crop_mode and crop_mode != "none" else None,
         "project": project,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "videos": [{"index": i, "status": "queued"} for i in range(count)],
@@ -350,25 +374,99 @@ async def generate_video(
     url_prefix = f"/projects/{project}/videos"
 
     async def _throttled_generate(index: int) -> None:
-        async with _gen_semaphore:
-            await generate_one(
-                job_id, index, provider, prompt,
-                aspect_ratio, resolution, duration, image_data_uri,
-                jobs, output_dir, url_prefix,
-                on_complete=_persist_job,
-                **extra,
+        # Defensive wrapper: if anything raises *outside* generate_one's own
+        # try/except (e.g. semaphore cancellation, httpx init, import-time
+        # provider errors), this ensures the corresponding video entry is
+        # flipped to "error" instead of silently sticking on "queued" forever.
+        try:
+            async with _gen_semaphore:
+                await generate_one(
+                    job_id, index, provider, prompt,
+                    aspect_ratio, resolution, duration, image_data_uri,
+                    jobs, output_dir, url_prefix,
+                    on_complete=_persist_job,
+                    **extra,
+                )
+        except asyncio.CancelledError:
+            _mark_entry_error(job_id, index, "Task cancelled")
+            raise
+        except Exception as exc:  # noqa: BLE001 - last-resort safety net
+            log.error(
+                "job=%s idx=%d provider=%s unhandled task error: %s",
+                job_id, index, provider, exc, exc_info=True,
             )
+            _mark_entry_error(job_id, index, f"Unhandled error: {exc}")
+
+    def _on_task_done(index: int):
+        def _cb(task: asyncio.Task) -> None:
+            # Backstop for anything that slipped past the wrapper above.
+            if task.cancelled():
+                _mark_entry_error(job_id, index, "Task cancelled")
+                return
+            exc = task.exception()
+            if exc is not None:
+                log.error(
+                    "job=%s idx=%d task ended with exception: %s",
+                    job_id, index, exc, exc_info=exc,
+                )
+                _mark_entry_error(job_id, index, f"Task crashed: {exc}")
+        return _cb
 
     for i in range(count):
-        asyncio.create_task(_throttled_generate(i))
+        t = asyncio.create_task(_throttled_generate(i))
+        t.add_done_callback(_on_task_done(i))
 
     return {"job_id": job_id, "count": count}
+
+
+# Max wall-clock time an individual video is allowed to stay in a non-terminal
+# state before the watchdog flips it to "error". Generous — real providers
+# finish within 3-5 minutes even at 1080p, so 20 minutes means the task is
+# almost certainly wedged (crashed before hitting generate_one's except block,
+# or a provider poll loop gave up without raising).
+_STUCK_JOB_TIMEOUT_SECS = 20 * 60
+
+
+def _sweep_stuck_entries(job: dict) -> None:
+    """Flip non-terminal video entries to 'error' if the job is old enough.
+
+    Runs on every /jobs and /jobs/{id} poll. Idempotent — only touches entries
+    still in a non-terminal state past the timeout.
+    """
+    created = job.get("created_at")
+    if not created:
+        return
+    try:
+        created_dt = datetime.fromisoformat(created.replace("Z", "+00:00"))
+    except ValueError:
+        return
+    age = (datetime.now(timezone.utc) - created_dt).total_seconds()
+    if age < _STUCK_JOB_TIMEOUT_SECS:
+        return
+    swept = False
+    for entry in job.get("videos", []):
+        if entry.get("status") in _TERMINAL_STATUSES:
+            continue
+        entry["status"] = "error"
+        entry["error"] = (
+            f"Stuck in '{entry.get('status', 'queued')}' for over "
+            f"{_STUCK_JOB_TIMEOUT_SECS // 60} minutes — task likely crashed"
+        )
+        swept = True
+    if swept:
+        try:
+            _save_jobs(job.get("project", "quick-test"))
+        except Exception:  # noqa: BLE001 - best-effort persistence
+            log.exception("failed to persist job after sweep job=%s", job.get("id"))
 
 
 @router.get("/jobs")
 async def list_jobs(project: str = "quick-test"):
     _load_jobs(project)
-    return [j for j in jobs.values() if j.get("project") == project]
+    project_jobs = [j for j in jobs.values() if j.get("project") == project]
+    for j in project_jobs:
+        _sweep_stuck_entries(j)
+    return project_jobs
 
 
 @router.get("/jobs/{job_id}")
@@ -380,6 +478,7 @@ async def get_job(job_id: str):
                 _load_jobs(proj_dir.name)
         if job_id not in jobs:
             raise HTTPException(status_code=404, detail="Job not found")
+    _sweep_stuck_entries(jobs[job_id])
     return jobs[job_id]
 
 
@@ -436,11 +535,31 @@ async def download_all(job_id: str):
     tmp_fd, tmp_path = tempfile.mkstemp(suffix=".zip")
     os.close(tmp_fd)
     try:
+        written: set[str] = set()
         with zipfile.ZipFile(tmp_path, "w", zipfile.ZIP_STORED) as zf:
             for v in done_videos:
-                filepath = base_dir / v["file"]
-                if filepath.exists():
-                    zf.write(filepath, v["file"])
+                # Prefer crops when present — each crop is a separate deliverable
+                # file, and v["file"] is just an alias for the first crop in
+                # multi-crop mode (set in providers/base.py). If we only zipped
+                # v["file"] we'd silently drop crops 2..N.
+                crops = v.get("crops") or []
+                if crops:
+                    for crop in crops:
+                        rel = crop.get("file")
+                        if not rel or rel in written:
+                            continue
+                        filepath = base_dir / rel
+                        if filepath.exists():
+                            zf.write(filepath, rel)
+                            written.add(rel)
+                else:
+                    rel = v["file"]
+                    if rel in written:
+                        continue
+                    filepath = base_dir / rel
+                    if filepath.exists():
+                        zf.write(filepath, rel)
+                        written.add(rel)
     except Exception:
         os.unlink(tmp_path)
         raise

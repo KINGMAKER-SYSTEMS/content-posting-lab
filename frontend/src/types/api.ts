@@ -68,11 +68,14 @@ export interface VideoEntry {
   crops?: CropEntry[];
 }
 
+export type CropMode = "dual" | "triptych" | "both";
+
 export interface Job {
   id: string;
   prompt: string;
   provider: string;
   count: number;
+  crop_mode?: CropMode | null;
   project?: string;
   label?: string;
   created_at?: string;
