@@ -231,7 +231,6 @@ export function GeneratePage() {
     generateJobs,
     addGenerateJob,
     setGenerateJob,
-    removeGenerateJob,
     clearGenerateJobs,
     addGeneratedVideo,
     addNotification,
@@ -240,6 +239,10 @@ export function GeneratePage() {
     primeBurnSelection,
     generatePrefill,
     clearGeneratePrefill,
+    archivedJobIds,
+    archiveJob,
+    archiveJobs,
+    unarchiveJob,
   } = useWorkflowStore();
   const [providers, setProviders] = useState<Provider[]>([]);
   const [loading, setLoading] = useState(false);
@@ -258,6 +261,19 @@ export function GeneratePage() {
   // Selection mode state
   const [selectMode, setSelectMode] = useState(false);
   const [selectedVideos, setSelectedVideos] = useState<Set<string>>(new Set());
+
+  // Archive-view + per-job expand state. Done jobs default to collapsed so
+  // the feed stays clean; users can expand individual jobs on demand.
+  const [showArchived, setShowArchived] = useState(false);
+  const [expandedJobIds, setExpandedJobIds] = useState<Set<string>>(new Set());
+  const toggleJobExpanded = useCallback((jobId: string) => {
+    setExpandedJobIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(jobId)) next.delete(jobId);
+      else next.add(jobId);
+      return next;
+    });
+  }, []);
 
   // Global color-correction draft — applied to EVERY done video in the feed
   // (live CSS preview) and to every file when the user clicks "Download all".
@@ -653,11 +669,23 @@ export function GeneratePage() {
     [batchCc],
   );
 
-  // Every done video file in the feed (including per-crop outputs).
-  // The CC panel applies the current slider draft to all of these on download.
+  // Split jobs into live vs archived. Archived stays hidden behind a toggle
+  // so the feed only shows active work by default.
+  const archivedSet = useMemo(() => new Set(archivedJobIds), [archivedJobIds]);
+  const liveJobs = useMemo(
+    () => generateJobs.filter((j) => !archivedSet.has(j.id)),
+    [generateJobs, archivedSet],
+  );
+  const archivedJobs = useMemo(
+    () => generateJobs.filter((j) => archivedSet.has(j.id)),
+    [generateJobs, archivedSet],
+  );
+
+  // Every done video file in the live feed (including per-crop outputs).
+  // Archived jobs are excluded — Download All targets visible work only.
   const allDoneVideoPaths = useMemo(() => {
     const out: string[] = [];
-    for (const job of generateJobs) {
+    for (const job of liveJobs) {
       for (const v of job.videos) {
         if (v.status !== 'done') continue;
         if (v.crops && v.crops.length > 0) {
@@ -668,7 +696,7 @@ export function GeneratePage() {
       }
     }
     return out;
-  }, [generateJobs]);
+  }, [liveJobs]);
 
   const runBatchColorCorrect = useCallback(async () => {
     if (allDoneVideoPaths.length === 0) {
@@ -704,9 +732,30 @@ export function GeneratePage() {
         triggerBlobDownload(blob, `videos_${today}_${paths.length}${suffix}.zip`);
         succeeded += paths.length;
       }
+      // Auto-archive fully-done, non-error jobs on successful download — keeps
+      // the feed tidy once the user has their files.
+      const downloadedSet = new Set(allDoneVideoPaths);
+      const toArchive: string[] = [];
+      for (const job of liveJobs) {
+        const allTerminal = job.videos.every(isTerminal);
+        const anyError = job.videos.some((v) => v.status === 'error' || v.status === 'failed');
+        if (!allTerminal || anyError) continue;
+        const jobPaths: string[] = [];
+        for (const v of job.videos) {
+          if (v.crops && v.crops.length > 0) {
+            for (const c of v.crops) if (c.file) jobPaths.push(c.file);
+          } else if (v.file) {
+            jobPaths.push(v.file);
+          }
+        }
+        if (jobPaths.length > 0 && jobPaths.every((p) => downloadedSet.has(p))) {
+          toArchive.push(job.id);
+        }
+      }
+      if (toArchive.length > 0) archiveJobs(toArchive);
       addNotification(
         'success',
-        `Downloaded ${succeeded} ${cc ? 'color-corrected ' : ''}videos${chunks.length > 1 ? ` in ${chunks.length} zips` : ''}`,
+        `Downloaded ${succeeded} ${cc ? 'color-corrected ' : ''}videos${chunks.length > 1 ? ` in ${chunks.length} zips` : ''}${toArchive.length > 0 ? ` · archived ${toArchive.length} jobs` : ''}`,
       );
     } catch (e) {
       if (succeeded > 0) {
@@ -720,7 +769,260 @@ export function GeneratePage() {
     } finally {
       setBatchCcBusy(false);
     }
-  }, [activeProjectName, addNotification, allDoneVideoPaths, batchCc]);
+  }, [activeProjectName, addNotification, allDoneVideoPaths, archiveJobs, batchCc, liveJobs]);
+
+  // Renders a single job. Fully-done jobs collapse to a one-line row until
+  // the user expands them — keeps the feed scannable once batches pile up.
+  // `mode` only switches the header action (Archive in the live feed,
+  // Restore in the archived section).
+  const renderJobCard = (job: Job, mode: 'live' | 'archived') => {
+    const doneCount = job.videos.filter((v) => v.status === 'done').length;
+    const errorCount = job.videos.filter((v) => v.status === 'error' || v.status === 'failed').length;
+    const total = job.count;
+    const allFinished = doneCount + errorCount === total;
+    const pct = Math.round(((doneCount + errorCount) / total) * 100);
+    const mult = cropMultiplier(job.crop_mode);
+    const expectedFiles = expectedOutputCount(job);
+    const deliveredFiles = deliveredFileCount(job.videos);
+    const isFullyDone = allFinished && errorCount === 0 && doneCount === total;
+    const isExpanded = expandedJobIds.has(job.id);
+    const showCollapsed = isFullyDone && !isExpanded && !selectMode;
+
+    const archiveButton = mode === 'live' ? (
+      <button
+        type="button"
+        onClick={(e) => { e.stopPropagation(); archiveJob(job.id); }}
+        className="text-[11px] font-bold text-muted-foreground hover:text-foreground transition-colors"
+        title="Hide this job from the active feed"
+      >
+        Archive
+      </button>
+    ) : (
+      <button
+        type="button"
+        onClick={(e) => { e.stopPropagation(); unarchiveJob(job.id); }}
+        className="text-[11px] font-bold text-muted-foreground hover:text-primary transition-colors"
+        title="Return this job to the active feed"
+      >
+        Restore
+      </button>
+    );
+
+    if (showCollapsed) {
+      return (
+        <div
+          key={job.id}
+          className="group flex items-center gap-3 rounded-[var(--border-radius)] border-2 border-border bg-card px-3 py-2 hover:shadow-[2px_2px_0_0_var(--border)] hover:translate-x-[1px] hover:translate-y-[1px] transition-all cursor-pointer"
+          onClick={() => toggleJobExpanded(job.id)}
+        >
+          <span className="text-xs text-muted-foreground -rotate-90 inline-block">▼</span>
+          <div className="flex-1 truncate text-sm text-muted-foreground italic" title={job.prompt}>
+            "{job.prompt}" <span className="text-foreground font-bold not-italic">[{job.provider}]</span>
+          </div>
+          <Badge variant="success" className="text-[10px] shadow-none">
+            {deliveredFiles} {deliveredFiles === 1 ? 'file' : 'files'}
+          </Badge>
+          {job.created_at && (
+            <span className="text-[10px] text-muted-foreground">{formatJobTimestamp(job.created_at)}</span>
+          )}
+          <div className="opacity-0 group-hover:opacity-100 transition-opacity">
+            {archiveButton}
+          </div>
+        </div>
+      );
+    }
+
+    return (
+      <Card key={job.id}>
+        <CardContent className="pt-0">
+          <div className="flex items-center justify-between mb-2">
+            <div className="text-sm text-muted-foreground italic truncate max-w-[50%]" title={job.prompt}>
+              "{job.prompt}" <span className="text-foreground font-bold">[{job.provider}]</span>
+              {job.created_at && (
+                <span className="text-[10px] text-muted-foreground not-italic ml-2">
+                  {formatJobTimestamp(job.created_at)}
+                </span>
+              )}
+            </div>
+            <div className="flex items-center gap-2">
+              {isFullyDone && (
+                <button
+                  type="button"
+                  title="Collapse this job"
+                  onClick={() => toggleJobExpanded(job.id)}
+                  className="text-[11px] font-bold text-muted-foreground hover:text-primary transition-colors"
+                >
+                  Collapse
+                </button>
+              )}
+              <button
+                type="button"
+                title="Copy generation command"
+                onClick={async () => {
+                  const params = [
+                    `Prompt: ${job.prompt}`,
+                    `Provider: ${job.provider}`,
+                    `Count: ${job.count}`,
+                    `Job ID: ${job.id}`,
+                  ].join('\n');
+                  try {
+                    await navigator.clipboard.writeText(params);
+                    addNotification('success', 'Command copied to clipboard');
+                  } catch {
+                    addNotification('error', 'Failed to copy to clipboard');
+                  }
+                }}
+                className="text-[11px] font-bold text-muted-foreground hover:text-primary transition-colors"
+              >
+                Copy
+              </button>
+              {archiveButton}
+              <Badge variant={allFinished && errorCount === 0 ? 'success' : 'info'}>
+                {mult > 1
+                  ? `${deliveredFiles}/${expectedFiles} files`
+                  : `${doneCount}/${total} done`}
+              </Badge>
+            </div>
+          </div>
+
+          <ProgressBar
+            value={pct}
+            color={allFinished && errorCount === 0 ? 'success' : 'primary'}
+            className="mb-3"
+          />
+
+          <div className="grid grid-cols-[repeat(auto-fill,minmax(180px,1fr))] gap-3 mb-2">
+            {job.videos.flatMap((video, idx) => {
+              const multiCrop = (video.crops?.length ?? 0) > 1;
+              const items = video.crops && video.crops.length > 0
+                ? video.crops.map((crop, ci) => ({
+                    key: `${job.id}-${idx}-crop${ci}`,
+                    url: crop.url,
+                    file: crop.file,
+                    label: multiCrop ? `Crop ${ci + 1}` : undefined,
+                    video,
+                    idx,
+                  }))
+                : [{ key: `${job.id}-${idx}`, url: video.url, file: video.file, label: undefined, video, idx }];
+
+              return items.map(({ key, url, file, label, video: v, idx: vIdx }) => (
+                <div
+                  key={key}
+                  className={`group/card relative rounded-[var(--border-radius)] overflow-hidden border-2 bg-card transition-all ${
+                    selectMode && file && selectedVideos.has(file)
+                      ? 'border-primary shadow-[4px_4px_0_0_var(--primary)]'
+                      : 'border-border shadow-[2px_2px_0_0_var(--border)] hover:translate-x-[1px] hover:translate-y-[1px] hover:shadow-[1px_1px_0_0_var(--border)]'
+                  }`}
+                  onClick={selectMode && v.status === 'done' && file ? () => toggleVideoSelection(file) : undefined}
+                >
+                  <div className="relative bg-muted aspect-[9/16] flex items-center justify-center">
+                    {selectMode && v.status === 'done' && file && (
+                      <div className="absolute top-2 left-2 z-10">
+                        <input
+                          type="checkbox"
+                          checked={selectedVideos.has(file)}
+                          onChange={() => toggleVideoSelection(file)}
+                          onClick={(e) => e.stopPropagation()}
+                          className="h-5 w-5 accent-primary cursor-pointer"
+                        />
+                      </div>
+                    )}
+                    {v.status === 'done' && url ? (
+                      <LazyVideo
+                        src={staticUrl(url)}
+                        className="w-full h-full object-cover"
+                        style={batchCcPreview ? { filter: batchCcPreview } : undefined}
+                      />
+                    ) : v.status === 'error' || v.status === 'failed' ? (
+                      <div className="flex flex-col items-center gap-2 text-muted-foreground text-sm">
+                        <span className="text-2xl">✕</span>
+                        <span className="font-bold">Failed</span>
+                      </div>
+                    ) : (
+                      <div className="flex flex-col items-center gap-2 text-muted-foreground text-sm">
+                        {v.status === 'queued' ? (
+                          <span className="text-2xl opacity-30">▶</span>
+                        ) : (
+                          <div className="w-7 h-7 border-3 border-muted border-t-primary rounded-full animate-spin" />
+                        )}
+                        <span className="font-bold">{statusLabel(v.status)}</span>
+                      </div>
+                    )}
+                    {label && v.status === 'done' && (
+                      <div className="absolute top-1.5 left-1.5">
+                        <Badge variant="secondary" className="text-[10px] shadow-none">{label}</Badge>
+                      </div>
+                    )}
+                    {v.status === 'done' && file && !selectMode && (
+                      <button
+                        type="button"
+                        onClick={async (e) => {
+                          e.stopPropagation();
+                          const project = job.project || 'quick-test';
+                          try {
+                            const r = await fetch(apiUrl(`/api/video/file?project=${encodeURIComponent(project)}&path=${encodeURIComponent(file!)}`), { method: 'DELETE' });
+                            if (!r.ok) throw new Error('Failed');
+                            const updatedVideos = job.videos.map((vv, vi) => {
+                              if (vi !== vIdx) return vv;
+                              if (vv.crops && vv.crops.length > 0) {
+                                const remainingCrops = vv.crops.filter((c) => c.file !== file);
+                                if (remainingCrops.length > 0) return { ...vv, crops: remainingCrops };
+                              }
+                              return { ...vv, status: 'failed' as const, error: 'Deleted', file: undefined, url: undefined, crops: undefined };
+                            });
+                            setGenerateJob({ ...job, videos: updatedVideos });
+                            addNotification('success', 'Video deleted');
+                          } catch {
+                            addNotification('error', 'Failed to delete video');
+                          }
+                        }}
+                        className="absolute top-1.5 right-1.5 z-10 rounded bg-background/90 px-1.5 py-0.5 text-[10px] font-bold text-muted-foreground opacity-0 group-hover/card:opacity-100 hover:text-destructive transition-opacity"
+                        title="Delete this video"
+                      >
+                        Delete
+                      </button>
+                    )}
+                  </div>
+
+                  {v.status === 'done' && url ? (
+                    <div className="px-2.5 py-1.5 flex items-center justify-end text-xs">
+                      <a href={staticUrl(url)} download className="text-primary hover:underline font-bold text-xs">
+                        Download
+                      </a>
+                    </div>
+                  ) : (
+                    <div className="px-2.5 py-1.5 flex items-center justify-between text-xs">
+                      <Badge variant={statusVariant(v.status)} className="text-[10px] shadow-none">
+                        {statusLabel(v.status)}
+                      </Badge>
+                    </div>
+                  )}
+
+                  {v.error && (
+                    <div className="px-2.5 pb-1.5 text-[11px] text-destructive break-all">{v.error}</div>
+                  )}
+                </div>
+              ));
+            })}
+          </div>
+
+          {doneCount > 0 && (
+            <div className="flex gap-2 justify-end mt-2 flex-wrap">
+              {selectMode ? (
+                <Button variant="outline" size="sm" onClick={() => selectAllFromJob(job)}>
+                  {job.videos.filter((v) => v.status === 'done' && v.file).every((v) => selectedVideos.has(v.file!)) ? 'Deselect Job' : 'Select Job'}
+                </Button>
+              ) : (
+                <Button variant="secondary" size="sm" onClick={() => sendSelectionToBurn(job)}>
+                  Use in Burn →
+                </Button>
+              )}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+    );
+  };
 
   if (!activeProjectName) {
     return (
@@ -1214,295 +1516,54 @@ export function GeneratePage() {
             <EmptyState icon="▶" title="No Videos Yet" description="Enter a prompt and hit Generate." />
           ) : (
             <div className="space-y-6">
-              {/* Group jobs by date */}
+              {liveJobs.length === 0 && archivedJobs.length > 0 && (
+                <div className="rounded-[var(--border-radius)] border-2 border-dashed border-border bg-muted/30 px-4 py-6 text-center text-sm text-muted-foreground">
+                  All caught up. {archivedJobs.length} archived {archivedJobs.length === 1 ? 'job' : 'jobs'} below.
+                </div>
+              )}
+              {/* Group live jobs by date */}
               {(() => {
                 const groups = new Map<string, Job[]>();
-                for (const job of generateJobs) {
+                for (const job of liveJobs) {
                   const key = getDateKey(job.created_at);
                   groups.set(key, [...(groups.get(key) || []), job]);
                 }
                 return Array.from(groups.entries()).map(([dateLabel, dateJobs]) => {
-                  const dateDoneCount = dateJobs.reduce((n, j) => n + j.videos.filter((v) => v.status === 'done').length, 0);
                   const dateFileCount = dateJobs.reduce((n, j) => n + deliveredFileCount(j.videos), 0);
-                  const dateJobIds = dateJobs.map((j) => j.id);
                   return (
-                  <div key={dateLabel}>
-                    <div className="flex items-center gap-3 mb-3">
-                      <div className="text-sm font-bold text-muted-foreground uppercase tracking-wider">{dateLabel}</div>
-                      <div className="flex-1 h-px bg-border" />
-                      <Badge variant="secondary" className="text-[10px]">
-                        {dateFileCount === dateDoneCount
-                          ? `${dateDoneCount} videos`
-                          : `${dateFileCount} files`}
-                      </Badge>
-                      {dateFileCount > 1 && (
-                        <button
-                          type="button"
-                          className="text-[11px] font-bold text-primary hover:underline"
-                          onClick={async () => {
-                            try {
-                              const r = await fetch(apiUrl('/api/video/bulk-download'), {
-                                method: 'POST',
-                                headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({ job_ids: dateJobIds, project: activeProjectName }),
-                              });
-                              if (!r.ok) throw new Error(await r.text());
-                              const blob = await r.blob();
-                              triggerBlobDownload(blob, `videos_${dateLabel.replace(/\s+/g, '_')}.zip`);
-                            } catch (e) {
-                              addNotification('error', e instanceof Error ? e.message : 'Bulk download failed');
-                            }
-                          }}
-                        >
-                          Download All ({dateFileCount})
-                        </button>
-                      )}
-                      {dateJobs.length > 0 && dateJobs.every((j) => j.videos.every((v) => isTerminal(v))) && (
-                        <button
-                          type="button"
-                          className="text-[11px] font-bold text-muted-foreground hover:text-destructive transition-colors"
-                          onClick={async () => {
-                            if (!confirm(`Delete all ${dateJobs.length} jobs from ${dateLabel}?`)) return;
-                            try {
-                              await fetch(apiUrl('/api/video/bulk-delete'), {
-                                method: 'POST',
-                                headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({ job_ids: dateJobIds, project: activeProjectName }),
-                              });
-                              for (const jid of dateJobIds) { removeGenerateJob(jid); activePolls.delete(jid); }
-                              addNotification('success', `Deleted ${dateJobs.length} jobs`);
-                            } catch (e) {
-                              addNotification('error', e instanceof Error ? e.message : 'Bulk delete failed');
-                            }
-                          }}
-                        >
-                          Delete All
-                        </button>
-                      )}
-                    </div>
-                    <div className="space-y-4">
-                      {dateJobs.map((job) => {
-                const doneCount = job.videos.filter((v) => v.status === 'done').length;
-                const errorCount = job.videos.filter((v) => v.status === 'error' || v.status === 'failed').length;
-                const total = job.count;
-                const allFinished = doneCount + errorCount === total;
-                const pct = Math.round(((doneCount + errorCount) / total) * 100);
-                const mult = cropMultiplier(job.crop_mode);
-                const expectedFiles = expectedOutputCount(job);
-                const deliveredFiles = deliveredFileCount(job.videos);
-
-                return (
-                  <Card key={job.id}>
-                    <CardContent className="pt-0">
-                      <div className="flex items-center justify-between mb-2">
-                        <div className="text-sm text-muted-foreground italic truncate max-w-[50%]" title={job.prompt}>
-                          "{job.prompt}" <span className="text-foreground font-bold">[{job.provider}]</span>
-                          {job.created_at && <span className="text-[10px] text-muted-foreground not-italic ml-2">{formatJobTimestamp(job.created_at)}</span>}
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <button
-                            type="button"
-                            title="Copy generation command"
-                            onClick={async () => {
-                              const params = [
-                                `Prompt: ${job.prompt}`,
-                                `Provider: ${job.provider}`,
-                                `Count: ${job.count}`,
-                                `Job ID: ${job.id}`,
-                              ].join('\n');
-                              try {
-                                await navigator.clipboard.writeText(params);
-                                addNotification('success', 'Command copied to clipboard');
-                              } catch {
-                                addNotification('error', 'Failed to copy to clipboard');
-                              }
-                            }}
-                            className="text-[11px] font-bold text-muted-foreground hover:text-primary transition-colors"
-                          >
-                            Copy
-                          </button>
-                          <button
-                            type="button"
-                            title="Delete this job and its videos"
-                            onClick={async () => {
-                              const project = job.project || 'quick-test';
-                              try {
-                                await fetch(apiUrl(`/api/video/jobs/${job.id}?project=${encodeURIComponent(project)}`), { method: 'DELETE' });
-                              } catch { /* ignore — still remove from UI */ }
-                              removeGenerateJob(job.id);
-                              activePolls.delete(job.id);
-                            }}
-                            className="text-[11px] font-bold text-muted-foreground hover:text-destructive transition-colors"
-                          >
-                            Delete
-                          </button>
-                          <Badge variant={allFinished && errorCount === 0 ? 'success' : 'info'}>
-                            {mult > 1
-                              ? `${deliveredFiles}/${expectedFiles} files`
-                              : `${doneCount}/${total} done`}
-                          </Badge>
-                        </div>
+                    <div key={dateLabel}>
+                      <div className="flex items-center gap-3 mb-3">
+                        <div className="text-sm font-bold text-muted-foreground uppercase tracking-wider">{dateLabel}</div>
+                        <div className="flex-1 h-px bg-border" />
+                        <Badge variant="secondary" className="text-[10px]">
+                          {dateFileCount} {dateFileCount === 1 ? 'file' : 'files'}
+                        </Badge>
                       </div>
-
-                      <ProgressBar
-                        value={pct}
-                        color={allFinished && errorCount === 0 ? 'success' : 'primary'}
-                        className="mb-3"
-                      />
-
-                      <div className="grid grid-cols-[repeat(auto-fill,minmax(180px,1fr))] gap-3 mb-2">
-                        {job.videos.flatMap((video, idx) => {
-                          // If crops exist, render each crop as a separate card
-                          const items = video.crops && video.crops.length > 0
-                            ? video.crops.map((crop, ci) => ({ key: `${job.id}-${idx}-crop${ci}`, url: crop.url, file: crop.file, label: `Crop ${ci + 1}`, video, idx }))
-                            : [{ key: `${job.id}-${idx}`, url: video.url, file: video.file, label: undefined, video, idx }];
-
-                          return items.map(({ key, url, file, label, video: v, idx: vIdx }) => (
-                          <div
-                            key={key}
-                            className={`rounded-[var(--border-radius)] overflow-hidden border-2 bg-card transition-all ${
-                              selectMode && file && selectedVideos.has(file)
-                                ? 'border-primary shadow-[4px_4px_0_0_var(--primary)]'
-                                : 'border-border shadow-[2px_2px_0_0_var(--border)] hover:translate-x-[1px] hover:translate-y-[1px] hover:shadow-[1px_1px_0_0_var(--border)]'
-                            }`}
-                            onClick={selectMode && v.status === 'done' && file ? () => toggleVideoSelection(file) : undefined}
-                          >
-                            <div className="relative bg-muted aspect-[9/16] flex items-center justify-center">
-                              {selectMode && v.status === 'done' && file && (
-                                <div className="absolute top-2 left-2 z-10">
-                                  <input
-                                    type="checkbox"
-                                    checked={selectedVideos.has(file)}
-                                    onChange={() => toggleVideoSelection(file)}
-                                    onClick={(e) => e.stopPropagation()}
-                                    className="h-5 w-5 accent-primary cursor-pointer"
-                                  />
-                                </div>
-                              )}
-                              {v.status === 'done' && url ? (
-                                <LazyVideo
-                                  src={staticUrl(url)}
-                                  className="w-full h-full object-cover"
-                                  style={batchCcPreview ? { filter: batchCcPreview } : undefined}
-                                />
-                              ) : v.status === 'error' || v.status === 'failed' ? (
-                                <div className="flex flex-col items-center gap-2 text-muted-foreground text-sm">
-                                  <span className="text-2xl">✕</span>
-                                  <span className="font-bold">Failed</span>
-                                </div>
-                              ) : (
-                                <div className="flex flex-col items-center gap-2 text-muted-foreground text-sm">
-                                  {v.status === 'queued' ? (
-                                    <span className="text-2xl opacity-30">▶</span>
-                                  ) : (
-                                    <div className="w-7 h-7 border-3 border-muted border-t-primary rounded-full animate-spin" />
-                                  )}
-                                  <span className="font-bold">{statusLabel(v.status)}</span>
-                                </div>
-                              )}
-                              {label && v.status === 'done' && (
-                                <div className="absolute top-1.5 left-1.5">
-                                  <Badge variant="secondary" className="text-[10px] shadow-none">{label}</Badge>
-                                </div>
-                              )}
-                            </div>
-
-                            <div className="px-2.5 py-1.5 flex items-center justify-between text-xs">
-                              <Badge variant={statusVariant(v.status)} className="text-[10px] shadow-none">
-                                {statusLabel(v.status)}
-                              </Badge>
-                              <div className="flex items-center gap-2">
-                                {v.status === 'done' && file && (
-                                  <button
-                                    type="button"
-                                    onClick={async (e) => {
-                                      e.stopPropagation();
-                                      const project = job.project || 'quick-test';
-                                      try {
-                                        const r = await fetch(apiUrl(`/api/video/file?project=${encodeURIComponent(project)}&path=${encodeURIComponent(file!)}`), { method: 'DELETE' });
-                                        if (!r.ok) throw new Error('Failed');
-                                        // Remove the video from the job (or remove just the crop)
-                                        const updatedVideos = job.videos.map((vv, vi) => {
-                                          if (vi !== vIdx) return vv;
-                                          // If this video has crops and we deleted one crop, remove that crop
-                                          if (vv.crops && vv.crops.length > 0) {
-                                            const remainingCrops = vv.crops.filter((c) => c.file !== file);
-                                            if (remainingCrops.length > 0) return { ...vv, crops: remainingCrops };
-                                          }
-                                          // Otherwise mark the whole video as deleted
-                                          return { ...vv, status: 'failed' as const, error: 'Deleted', file: undefined, url: undefined, crops: undefined };
-                                        });
-                                        setGenerateJob({ ...job, videos: updatedVideos });
-                                        addNotification('success', 'Video deleted');
-                                      } catch {
-                                        addNotification('error', 'Failed to delete video');
-                                      }
-                                    }}
-                                    className="text-muted-foreground hover:text-destructive transition-colors font-bold text-[11px]"
-                                    title="Delete video"
-                                  >
-                                    Delete
-                                  </button>
-                                )}
-                                {v.status === 'done' && file && (
-                                  <button
-                                    type="button"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      primeBurnSelection({ videoPaths: [file!] });
-                                      navigate('/burn');
-                                    }}
-                                    className="text-muted-foreground hover:text-primary transition-colors font-bold text-[11px]"
-                                    title="Send this video to Burn"
-                                  >
-                                    Burn
-                                  </button>
-                                )}
-                                {v.status === 'done' && url && (
-                                  <a href={staticUrl(url)} download className="text-primary hover:underline font-bold text-xs">
-                                    Download
-                                  </a>
-                                )}
-                              </div>
-                            </div>
-
-                            {v.error && (
-                              <div className="px-2.5 pb-1.5 text-[11px] text-destructive break-all">{v.error}</div>
-                            )}
-                          </div>
-                          ));
-                        })}
+                      <div className="space-y-3">
+                        {dateJobs.map((job) => renderJobCard(job, 'live'))}
                       </div>
-
-                      {doneCount > 0 && (
-                        <div className="flex gap-2 justify-end mt-2 flex-wrap">
-                          {selectMode ? (
-                            <Button variant="outline" size="sm" onClick={() => selectAllFromJob(job)}>
-                              {job.videos.filter((v) => v.status === 'done' && v.file).every((v) => selectedVideos.has(v.file!)) ? 'Deselect Job' : 'Select Job'}
-                            </Button>
-                          ) : (
-                            <Button variant="secondary" size="sm" onClick={() => sendSelectionToBurn(job)}>
-                              Use in Burn →
-                            </Button>
-                          )}
-                          {deliveredFiles > 1 && (
-                            <Button asChild size="sm" variant="outline">
-                              <a href={apiUrl(`/api/video/jobs/${job.id}/download-all`)} download>
-                                Download All ({deliveredFiles})
-                              </a>
-                            </Button>
-                          )}
-                        </div>
-                      )}
-                    </CardContent>
-                  </Card>
-                );
-              })}
                     </div>
-                  </div>
-                );
+                  );
                 });
               })()}
+
+              {archivedJobs.length > 0 && (
+                <div className="pt-4 border-t border-border">
+                  <button
+                    type="button"
+                    onClick={() => setShowArchived((v) => !v)}
+                    className="flex items-center gap-2 text-sm font-bold text-muted-foreground hover:text-foreground transition-colors"
+                  >
+                    <span className={`text-xs transition-transform ${showArchived ? 'rotate-0' : '-rotate-90'}`}>▼</span>
+                    Archived ({archivedJobs.length})
+                  </button>
+                  {showArchived && (
+                    <div className="mt-4 space-y-3">
+                      {archivedJobs.map((job) => renderJobCard(job, 'archived'))}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           )}
         </div>
