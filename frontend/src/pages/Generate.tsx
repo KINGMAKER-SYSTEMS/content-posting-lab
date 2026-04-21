@@ -144,13 +144,6 @@ function triggerBlobDownload(blob: Blob, filename: string): void {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-/** Derive a download filename with the _cc.mp4 suffix from a video's relative path. */
-function ccFilenameFor(filePath: string): string {
-  const base = filePath.split('/').pop() || 'video.mp4';
-  const stem = base.replace(/\.[^./]+$/, '');
-  return `${stem}_cc.mp4`;
-}
-
 const CC_SLIDERS: ReadonlyArray<{ key: keyof ColorCorrection; label: string; min: number; max: number }> = [
   { key: 'brightness', label: 'Brightness', min: -100, max: 100 },
   { key: 'contrast', label: 'Contrast', min: -100, max: 100 },
@@ -247,10 +240,6 @@ export function GeneratePage() {
     primeBurnSelection,
     generatePrefill,
     clearGeneratePrefill,
-    generateColorCorrections,
-    setGenerateCc,
-    resetGenerateCc,
-    clearGenerateCcsForFiles,
   } = useWorkflowStore();
   const [providers, setProviders] = useState<Provider[]>([]);
   const [loading, setLoading] = useState(false);
@@ -270,9 +259,11 @@ export function GeneratePage() {
   const [selectMode, setSelectMode] = useState(false);
   const [selectedVideos, setSelectedVideos] = useState<Set<string>>(new Set());
 
-  // Color-correction UI state
-  const [ccPanelOpen, setCcPanelOpen] = useState<Set<string>>(new Set());
-  const [ccDownloading, setCcDownloading] = useState<Set<string>>(new Set());
+  // Batch color-correct panel state — single CC draft applied to every
+  // selected video on download.
+  const [batchCcOpen, setBatchCcOpen] = useState(false);
+  const [batchCc, setBatchCc] = useState<ColorCorrection>(DEFAULT_COLOR_CORRECTION);
+  const [batchCcBusy, setBatchCcBusy] = useState(false);
 
   const [providerSchemas, setProviderSchemas] = useState<ProviderSchemas>({});
   const [advancedOpen, setAdvancedOpen] = useState(false);
@@ -656,112 +647,42 @@ export function GeneratePage() {
     navigate('/burn');
   };
 
-  const getCcFor = useCallback(
-    (filePath: string): ColorCorrection =>
-      generateColorCorrections[filePath] ?? DEFAULT_COLOR_CORRECTION,
-    [generateColorCorrections],
+  // Live CSS preview for the batch color-correct sliders, shown on selected
+  // cards so the user sees their dialed values before committing to an encode.
+  const batchCcPreview = useMemo(
+    () => (getColorCorrectionOrNull(batchCc) ? applyCSSFilterPreview(batchCc) : ''),
+    [batchCc],
   );
 
-  const updateCc = useCallback(
-    (filePath: string, key: keyof ColorCorrection, val: number) => {
-      const current = generateColorCorrections[filePath] ?? DEFAULT_COLOR_CORRECTION;
-      setGenerateCc(filePath, { ...current, [key]: val });
-    },
-    [generateColorCorrections, setGenerateCc],
-  );
-
-  const toggleCcPanel = useCallback((filePath: string) => {
-    setCcPanelOpen((prev) => {
-      const next = new Set(prev);
-      if (next.has(filePath)) next.delete(filePath);
-      else next.add(filePath);
-      return next;
-    });
-  }, []);
-
-  const applyJobCcToAll = useCallback(
-    (job: Job) => {
-      const doneFiles: string[] = [];
-      for (const v of job.videos) {
-        if (v.status !== 'done') continue;
-        if (v.crops && v.crops.length > 0) {
-          for (const c of v.crops) if (c.file) doneFiles.push(c.file);
-        } else if (v.file) {
-          doneFiles.push(v.file);
-        }
-      }
-      if (doneFiles.length < 2) {
-        addNotification('info', 'Need at least 2 completed videos to copy CC.');
-        return;
-      }
-      // Use the first card's CC as the source (DEFAULT if unset). If the user
-      // hasn't touched any sliders, this resets the rest to default too — which
-      // is the expected behavior (matches the semantics of "copy this one").
-      const source = generateColorCorrections[doneFiles[0]] ?? DEFAULT_COLOR_CORRECTION;
-      for (let i = 1; i < doneFiles.length; i++) {
-        setGenerateCc(doneFiles[i], { ...source });
-      }
-      addNotification('success', `Applied CC to ${doneFiles.length - 1} other video${doneFiles.length - 1 === 1 ? '' : 's'}`);
-    },
-    [addNotification, generateColorCorrections, setGenerateCc],
-  );
-
-  const downloadWithCc = useCallback(
-    async (project: string, filePath: string, url: string | undefined) => {
-      const cc = generateColorCorrections[filePath];
-      const nonDefault = cc ? getColorCorrectionOrNull(cc) : null;
-      const fname = ccFilenameFor(filePath);
-      // Zero-CC fast path: if sliders are all default, skip the round-trip
-      // through ffmpeg entirely and use the static URL the browser already
-      // has cached. Saves a re-encode for the common "just download" flow.
-      if (!nonDefault && url) {
-        const a = document.createElement('a');
-        a.href = staticUrl(url);
-        a.download = fname;
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-        return;
-      }
-      setCcDownloading((prev) => {
-        const next = new Set(prev);
-        next.add(filePath);
-        return next;
-      });
-      try {
-        const res = await fetch(apiUrl('/api/video/color-correct'), {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ project, path: filePath, color_correction: nonDefault }),
-        });
-        if (!res.ok) {
-          const text = await res.text().catch(() => '');
-          throw new Error(text || `HTTP ${res.status}`);
-        }
-        const blob = await res.blob();
-        triggerBlobDownload(blob, fname);
-      } catch (e) {
-        addNotification('error', e instanceof Error ? `Color-correct failed: ${e.message}` : 'Color-correct failed');
-      } finally {
-        setCcDownloading((prev) => {
-          const next = new Set(prev);
-          next.delete(filePath);
-          return next;
-        });
-      }
-    },
-    [addNotification, generateColorCorrections],
-  );
-
-  // Memoize the live-preview CSS filter strings so thousands of slider ticks
-  // don't force an O(n) walk of every card's filter on every render.
-  const ccPreviewByPath = useMemo(() => {
-    const out: Record<string, string> = {};
-    for (const [path, cc] of Object.entries(generateColorCorrections)) {
-      out[path] = applyCSSFilterPreview(cc);
+  const runBatchColorCorrect = useCallback(async () => {
+    const paths = Array.from(selectedVideos);
+    if (paths.length === 0) {
+      addNotification('info', 'Select some videos first.');
+      return;
     }
-    return out;
-  }, [generateColorCorrections]);
+    const cc = getColorCorrectionOrNull(batchCc);
+    setBatchCcBusy(true);
+    try {
+      const items = paths.map((p) => ({ path: p, color_correction: cc }));
+      const res = await fetch(apiUrl('/api/video/color-correct/bulk'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ project: activeProjectName, items }),
+      });
+      if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        throw new Error(text || `HTTP ${res.status}`);
+      }
+      const blob = await res.blob();
+      const today = new Date().toISOString().slice(0, 10);
+      triggerBlobDownload(blob, `videos_${today}_${paths.length}.zip`);
+      addNotification('success', `Downloaded ${paths.length} ${cc ? 'color-corrected ' : ''}videos`);
+    } catch (e) {
+      addNotification('error', e instanceof Error ? `Download failed: ${e.message}` : 'Download failed');
+    } finally {
+      setBatchCcBusy(false);
+    }
+  }, [activeProjectName, addNotification, batchCc, selectedVideos]);
 
   if (!activeProjectName) {
     return (
@@ -1232,76 +1153,28 @@ export function GeneratePage() {
                           ? `${dateDoneCount} videos`
                           : `${dateFileCount} files`}
                       </Badge>
-                      {dateFileCount > 1 && (() => {
-                        const dateFilePaths: string[] = [];
-                        for (const j of dateJobs) {
-                          for (const vv of j.videos) {
-                            if (vv.status !== 'done') continue;
-                            if (vv.crops && vv.crops.length > 0) {
-                              for (const c of vv.crops) if (c.file) dateFilePaths.push(c.file);
-                            } else if (vv.file) {
-                              dateFilePaths.push(vv.file);
+                      {dateFileCount > 1 && (
+                        <button
+                          type="button"
+                          className="text-[11px] font-bold text-primary hover:underline"
+                          onClick={async () => {
+                            try {
+                              const r = await fetch(apiUrl('/api/video/bulk-download'), {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ job_ids: dateJobIds, project: activeProjectName }),
+                              });
+                              if (!r.ok) throw new Error(await r.text());
+                              const blob = await r.blob();
+                              triggerBlobDownload(blob, `videos_${dateLabel.replace(/\s+/g, '_')}.zip`);
+                            } catch (e) {
+                              addNotification('error', e instanceof Error ? e.message : 'Bulk download failed');
                             }
-                          }
-                        }
-                        const dateHasCc = dateFilePaths.some(
-                          (p) => generateColorCorrections[p] && getColorCorrectionOrNull(generateColorCorrections[p])
-                        );
-                        const dateBulkBusy = ccDownloading.has(`__bulk_date__${dateLabel}`);
-                        return (
-                          <button
-                            type="button"
-                            disabled={dateBulkBusy}
-                            className="text-[11px] font-bold text-primary hover:underline disabled:opacity-50 disabled:cursor-wait"
-                            onClick={async () => {
-                              try {
-                                if (dateHasCc) {
-                                  setCcDownloading((prev) => new Set(prev).add(`__bulk_date__${dateLabel}`));
-                                  const items = dateFilePaths.map((p) => ({
-                                    path: p,
-                                    color_correction: generateColorCorrections[p]
-                                      ? getColorCorrectionOrNull(generateColorCorrections[p])
-                                      : null,
-                                  }));
-                                  const r = await fetch(apiUrl('/api/video/color-correct/bulk'), {
-                                    method: 'POST',
-                                    headers: { 'Content-Type': 'application/json' },
-                                    body: JSON.stringify({ project: activeProjectName, items }),
-                                  });
-                                  if (!r.ok) throw new Error(await r.text());
-                                  const blob = await r.blob();
-                                  triggerBlobDownload(blob, `videos_${dateLabel.replace(/\s+/g, '_')}_cc.zip`);
-                                } else {
-                                  const r = await fetch(apiUrl('/api/video/bulk-download'), {
-                                    method: 'POST',
-                                    headers: { 'Content-Type': 'application/json' },
-                                    body: JSON.stringify({ job_ids: dateJobIds, project: activeProjectName }),
-                                  });
-                                  if (!r.ok) throw new Error(await r.text());
-                                  const blob = await r.blob();
-                                  triggerBlobDownload(blob, `videos_${dateLabel.replace(/\s+/g, '_')}.zip`);
-                                }
-                              } catch (e) {
-                                addNotification('error', e instanceof Error ? e.message : 'Bulk download failed');
-                              } finally {
-                                if (dateHasCc) {
-                                  setCcDownloading((prev) => {
-                                    const next = new Set(prev);
-                                    next.delete(`__bulk_date__${dateLabel}`);
-                                    return next;
-                                  });
-                                }
-                              }
-                            }}
-                          >
-                            {dateBulkBusy
-                              ? 'Encoding…'
-                              : dateHasCc
-                                ? `Download All (${dateFileCount}, with CC)`
-                                : `Download All (${dateFileCount})`}
-                          </button>
-                        );
-                      })()}
+                          }}
+                        >
+                          Download All ({dateFileCount})
+                        </button>
+                      )}
                       {dateJobs.length > 0 && dateJobs.every((j) => j.videos.every((v) => isTerminal(v))) && (
                         <button
                           type="button"
@@ -1314,14 +1187,6 @@ export function GeneratePage() {
                                 headers: { 'Content-Type': 'application/json' },
                                 body: JSON.stringify({ job_ids: dateJobIds, project: activeProjectName }),
                               });
-                              const deletedFiles: string[] = [];
-                              for (const j of dateJobs) {
-                                for (const vv of j.videos) {
-                                  if (vv.file) deletedFiles.push(vv.file);
-                                  if (vv.crops) for (const c of vv.crops) if (c.file) deletedFiles.push(c.file);
-                                }
-                              }
-                              clearGenerateCcsForFiles(deletedFiles);
                               for (const jid of dateJobIds) { removeGenerateJob(jid); activePolls.delete(jid); }
                               addNotification('success', `Deleted ${dateJobs.length} jobs`);
                             } catch (e) {
@@ -1382,12 +1247,6 @@ export function GeneratePage() {
                               try {
                                 await fetch(apiUrl(`/api/video/jobs/${job.id}?project=${encodeURIComponent(project)}`), { method: 'DELETE' });
                               } catch { /* ignore — still remove from UI */ }
-                              const jobFiles: string[] = [];
-                              for (const vv of job.videos) {
-                                if (vv.file) jobFiles.push(vv.file);
-                                if (vv.crops) for (const c of vv.crops) if (c.file) jobFiles.push(c.file);
-                              }
-                              clearGenerateCcsForFiles(jobFiles);
                               removeGenerateJob(job.id);
                               activePolls.delete(job.id);
                             }}
@@ -1442,7 +1301,11 @@ export function GeneratePage() {
                                 <LazyVideo
                                   src={staticUrl(url)}
                                   className="w-full h-full object-cover"
-                                  style={file && ccPreviewByPath[file] ? { filter: ccPreviewByPath[file] } : undefined}
+                                  style={
+                                    selectMode && file && selectedVideos.has(file) && batchCcPreview
+                                      ? { filter: batchCcPreview }
+                                      : undefined
+                                  }
                                 />
                               ) : v.status === 'error' || v.status === 'failed' ? (
                                 <div className="flex flex-col items-center gap-2 text-muted-foreground text-sm">
@@ -1517,74 +1380,13 @@ export function GeneratePage() {
                                     Burn
                                   </button>
                                 )}
-                                {v.status === 'done' && file && (
-                                  <button
-                                    type="button"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      toggleCcPanel(file);
-                                    }}
-                                    className={`font-bold text-[11px] transition-colors ${
-                                      ccPanelOpen.has(file)
-                                        ? 'text-primary'
-                                        : 'text-muted-foreground hover:text-primary'
-                                    }`}
-                                    title={ccPanelOpen.has(file) ? 'Hide color sliders' : 'Show color sliders'}
-                                  >
-                                    CC {ccPanelOpen.has(file) ? '▾' : '▸'}
-                                  </button>
-                                )}
-                                {v.status === 'done' && file && (
-                                  <button
-                                    type="button"
-                                    disabled={ccDownloading.has(file)}
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      void downloadWithCc(job.project || activeProjectName || 'quick-test', file, url);
-                                    }}
-                                    className="text-primary hover:underline font-bold text-xs disabled:opacity-50 disabled:cursor-wait"
-                                    title={generateColorCorrections[file] ? 'Download with color correction' : 'Download'}
-                                  >
-                                    {ccDownloading.has(file) ? 'Encoding…' : 'Download'}
-                                  </button>
+                                {v.status === 'done' && url && (
+                                  <a href={staticUrl(url)} download className="text-primary hover:underline font-bold text-xs">
+                                    Download
+                                  </a>
                                 )}
                               </div>
                             </div>
-
-                            {v.status === 'done' && file && ccPanelOpen.has(file) && (
-                              <div className="px-2.5 pb-2 pt-1 border-t border-border">
-                                <div className="space-y-1" onClick={(e) => e.stopPropagation()}>
-                                  {CC_SLIDERS.map((slider) => {
-                                    const cc = getCcFor(file);
-                                    const val = cc[slider.key];
-                                    return (
-                                      <div key={slider.key} className="flex items-center gap-1.5">
-                                        <span className="min-w-[58px] text-[10px] text-muted-foreground">{slider.label}</span>
-                                        <input
-                                          type="range"
-                                          min={slider.min}
-                                          max={slider.max}
-                                          value={val}
-                                          onChange={(e) => updateCc(file, slider.key, Number.parseInt(e.target.value, 10) || 0)}
-                                          className="h-1 flex-1 cursor-pointer appearance-none rounded-full bg-muted accent-primary"
-                                        />
-                                        <span className="min-w-[22px] text-right text-[10px] font-bold tabular-nums text-foreground">{val}</span>
-                                      </div>
-                                    );
-                                  })}
-                                </div>
-                                <button
-                                  type="button"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    resetGenerateCc(file);
-                                  }}
-                                  className="mt-1.5 text-[10px] text-muted-foreground hover:text-foreground"
-                                >
-                                  Reset
-                                </button>
-                              </div>
-                            )}
 
                             {v.error && (
                               <div className="px-2.5 pb-1.5 text-[11px] text-destructive break-all">{v.error}</div>
@@ -1594,89 +1396,26 @@ export function GeneratePage() {
                         })}
                       </div>
 
-                      {doneCount > 0 && (() => {
-                        const jobDoneFiles: string[] = [];
-                        for (const vid of job.videos) {
-                          if (vid.status !== 'done') continue;
-                          if (vid.crops && vid.crops.length > 0) {
-                            for (const c of vid.crops) if (c.file) jobDoneFiles.push(c.file);
-                          } else if (vid.file) {
-                            jobDoneFiles.push(vid.file);
-                          }
-                        }
-                        const jobHasCc = jobDoneFiles.some(
-                          (p) => generateColorCorrections[p] && getColorCorrectionOrNull(generateColorCorrections[p])
-                        );
-                        const jobBulkBusy = ccDownloading.has(`__bulk__${job.id}`);
-                        return (
-                          <div className="flex gap-2 justify-end mt-2 flex-wrap">
-                            {selectMode ? (
-                              <Button variant="outline" size="sm" onClick={() => selectAllFromJob(job)}>
-                                {job.videos.filter((v) => v.status === 'done' && v.file).every((v) => selectedVideos.has(v.file!)) ? 'Deselect Job' : 'Select Job'}
-                              </Button>
-                            ) : (
-                              <>
-                                {jobDoneFiles.length > 1 && (
-                                  <Button variant="ghost" size="sm" onClick={() => applyJobCcToAll(job)} title="Copy the first video's color correction to every video in this job">
-                                    Apply CC to all
-                                  </Button>
-                                )}
-                                <Button variant="secondary" size="sm" onClick={() => sendSelectionToBurn(job)}>
-                                  Use in Burn →
-                                </Button>
-                              </>
-                            )}
-                            {deliveredFiles > 1 && (
-                              jobHasCc ? (
-                                <Button
-                                  size="sm"
-                                  variant="outline"
-                                  disabled={jobBulkBusy}
-                                  onClick={async () => {
-                                    const project = job.project || activeProjectName || 'quick-test';
-                                    const items = jobDoneFiles.map((p) => ({
-                                      path: p,
-                                      color_correction: generateColorCorrections[p]
-                                        ? getColorCorrectionOrNull(generateColorCorrections[p])
-                                        : null,
-                                    }));
-                                    setCcDownloading((prev) => new Set(prev).add(`__bulk__${job.id}`));
-                                    try {
-                                      const res = await fetch(apiUrl('/api/video/color-correct/bulk'), {
-                                        method: 'POST',
-                                        headers: { 'Content-Type': 'application/json' },
-                                        body: JSON.stringify({ project, items }),
-                                      });
-                                      if (!res.ok) {
-                                        const t = await res.text().catch(() => '');
-                                        throw new Error(t || `HTTP ${res.status}`);
-                                      }
-                                      const blob = await res.blob();
-                                      triggerBlobDownload(blob, `${job.id}_cc.zip`);
-                                    } catch (e) {
-                                      addNotification('error', e instanceof Error ? `Bulk CC failed: ${e.message}` : 'Bulk CC failed');
-                                    } finally {
-                                      setCcDownloading((prev) => {
-                                        const next = new Set(prev);
-                                        next.delete(`__bulk__${job.id}`);
-                                        return next;
-                                      });
-                                    }
-                                  }}
-                                >
-                                  {jobBulkBusy ? 'Encoding…' : `Download All (${deliveredFiles}, with CC)`}
-                                </Button>
-                              ) : (
-                                <Button asChild size="sm" variant="outline">
-                                  <a href={apiUrl(`/api/video/jobs/${job.id}/download-all`)} download>
-                                    Download All ({deliveredFiles})
-                                  </a>
-                                </Button>
-                              )
-                            )}
-                          </div>
-                        );
-                      })()}
+                      {doneCount > 0 && (
+                        <div className="flex gap-2 justify-end mt-2 flex-wrap">
+                          {selectMode ? (
+                            <Button variant="outline" size="sm" onClick={() => selectAllFromJob(job)}>
+                              {job.videos.filter((v) => v.status === 'done' && v.file).every((v) => selectedVideos.has(v.file!)) ? 'Deselect Job' : 'Select Job'}
+                            </Button>
+                          ) : (
+                            <Button variant="secondary" size="sm" onClick={() => sendSelectionToBurn(job)}>
+                              Use in Burn →
+                            </Button>
+                          )}
+                          {deliveredFiles > 1 && (
+                            <Button asChild size="sm" variant="outline">
+                              <a href={apiUrl(`/api/video/jobs/${job.id}/download-all`)} download>
+                                Download All ({deliveredFiles})
+                              </a>
+                            </Button>
+                          )}
+                        </div>
+                      )}
                     </CardContent>
                   </Card>
                 );
@@ -1692,16 +1431,77 @@ export function GeneratePage() {
 
         {/* Floating selection bar */}
         {selectMode && (
-          <div className="sticky bottom-0 left-0 right-0 z-30 flex items-center justify-between border-t-2 border-border bg-card px-6 py-3 shadow-[0_-2px_8px_rgba(0,0,0,0.1)]">
-            <div className="flex items-center gap-3">
-              <Badge variant="secondary">{selectedVideos.size} selected</Badge>
-              <Button variant="ghost" size="sm" onClick={selectAllVideos}>
-                {selectedVideos.size === generateJobs.reduce((n, j) => n + j.videos.filter((v) => v.status === 'done' && v.file).length, 0) ? 'Deselect All' : 'Select All'}
-              </Button>
+          <div className="sticky bottom-0 left-0 right-0 z-30 border-t-2 border-border bg-card shadow-[0_-2px_8px_rgba(0,0,0,0.1)]">
+            {batchCcOpen && (
+              <div className="border-b border-border bg-muted/40 px-6 py-3">
+                <div className="mb-2 flex items-center justify-between">
+                  <span className="text-xs font-semibold text-foreground">Color correction — applied to all selected videos</span>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setBatchCc(DEFAULT_COLOR_CORRECTION)}
+                    disabled={!getColorCorrectionOrNull(batchCc)}
+                  >
+                    Reset
+                  </Button>
+                </div>
+                <div className="grid grid-cols-2 gap-x-6 gap-y-2 md:grid-cols-4">
+                  {CC_SLIDERS.map((slider) => {
+                    const v = batchCc[slider.key];
+                    return (
+                      <div key={slider.key} className="flex items-center gap-2">
+                        <span className="min-w-[72px] text-xs text-muted-foreground">{slider.label}</span>
+                        <input
+                          type="range"
+                          min={slider.min}
+                          max={slider.max}
+                          value={v}
+                          onChange={(e) =>
+                            setBatchCc((prev) => ({
+                              ...prev,
+                              [slider.key]: Number.parseInt(e.target.value, 10) || 0,
+                            }))
+                          }
+                          className="h-1 flex-1 cursor-pointer appearance-none rounded-full bg-muted accent-primary"
+                        />
+                        <span className="min-w-[28px] text-right text-xs font-bold tabular-nums text-foreground">{v}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+            <div className="flex items-center justify-between px-6 py-3">
+              <div className="flex items-center gap-3">
+                <Badge variant="secondary">{selectedVideos.size} selected</Badge>
+                <Button variant="ghost" size="sm" onClick={selectAllVideos}>
+                  {selectedVideos.size === generateJobs.reduce((n, j) => n + j.videos.filter((v) => v.status === 'done' && v.file).length, 0) ? 'Deselect All' : 'Select All'}
+                </Button>
+              </div>
+              <div className="flex items-center gap-2">
+                <Button
+                  variant={batchCcOpen ? 'default' : 'outline'}
+                  size="sm"
+                  onClick={() => setBatchCcOpen((v) => !v)}
+                >
+                  Color correct {batchCcOpen ? '▾' : '▸'}
+                  {getColorCorrectionOrNull(batchCc) ? ' •' : ''}
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={selectedVideos.size === 0 || batchCcBusy}
+                  onClick={runBatchColorCorrect}
+                >
+                  {batchCcBusy
+                    ? 'Preparing…'
+                    : `Download ${selectedVideos.size > 0 ? `(${selectedVideos.size})` : ''}`}
+                </Button>
+                <Button size="sm" disabled={selectedVideos.size === 0} onClick={sendSelectedToBurn}>
+                  Send {selectedVideos.size} to Burn →
+                </Button>
+              </div>
             </div>
-            <Button size="sm" disabled={selectedVideos.size === 0} onClick={sendSelectedToBurn}>
-              Send {selectedVideos.size} to Burn →
-            </Button>
           </div>
         )}
       </div>
