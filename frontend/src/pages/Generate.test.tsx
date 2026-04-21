@@ -157,6 +157,15 @@ describe('GeneratePage', () => {
       expect(generateCall).toBeTruthy();
     });
 
+    // Fully-done jobs collapse to a one-liner by default after the declutter
+    // pass. Wait for the collapsed row (the prompt text is inside it), click
+    // it to expand, then check for the Use-in-Burn action.
+    await waitFor(() => {
+      expect(screen.getByText(/A test clip/)).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByText(/A test clip/));
+
     await waitFor(() => {
       expect(screen.getByRole('button', { name: /Use in Burn/i })).toBeTruthy();
     });

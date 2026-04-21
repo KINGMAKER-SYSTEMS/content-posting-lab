@@ -68,6 +68,31 @@ function readStoredProjectName(): string | null {
   return null;
 }
 
+function readArchivedForProject(project: string | null): string[] {
+  if (!project || typeof window === 'undefined') return [];
+  try {
+    const raw = localStorage.getItem(`archived:${project}`);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed) && parsed.every((v) => typeof v === 'string')) {
+      return parsed;
+    }
+  } catch {
+    // ignore malformed
+  }
+  return [];
+}
+
+function writeArchivedForProject(project: string | null, ids: string[]): void {
+  if (!project || typeof window === 'undefined') return;
+  const key = `archived:${project}`;
+  if (ids.length === 0) {
+    localStorage.removeItem(key);
+  } else {
+    localStorage.setItem(key, JSON.stringify(ids));
+  }
+}
+
 interface WorkflowState {
   activeProjectName: string | null;
   projectStats: Record<string, ProjectStats>;
@@ -84,6 +109,11 @@ interface WorkflowState {
 
   // Generate page state — persists across tab switches
   generateJobs: Job[];
+
+  // Archived Generate job IDs for the active project — persisted to
+  // localStorage under `archived:{project}` so hidden jobs stay hidden
+  // across reloads. Re-loaded on project switch.
+  archivedJobIds: string[];
 
   // Roster state
   rosterPages: RosterPage[];
@@ -116,6 +146,12 @@ interface WorkflowState {
   removeGenerateJob: (jobId: string) => void;
   clearGenerateJobs: () => void;
 
+  // Archive actions — all persist to localStorage `archived:{project}`
+  archiveJob: (jobId: string) => void;
+  archiveJobs: (jobIds: string[]) => void;
+  unarchiveJob: (jobId: string) => void;
+  clearArchive: () => void;
+
   // Roster actions
   setRosterPages: (pages: RosterPage[]) => void;
   setRosterLoading: (loading: boolean) => void;
@@ -127,7 +163,7 @@ interface WorkflowState {
   updateUploadJob: (job: UploadJob) => void;
 }
 
-export const useWorkflowStore = create<WorkflowState>((set) => ({
+export const useWorkflowStore = create<WorkflowState>((set, get) => ({
   activeProjectName: readStoredProjectName(),
   projectStats: {},
   jobs: {},
@@ -144,13 +180,17 @@ export const useWorkflowStore = create<WorkflowState>((set) => ({
   },
   generatePrefill: null,
   generateJobs: [],
+  archivedJobIds: readArchivedForProject(readStoredProjectName()),
   rosterPages: [],
   rosterLoading: false,
   uploadJobs: [],
   uploadStats: null,
 
   setActiveProjectName: (name) => {
-    set({ activeProjectName: name });
+    set({
+      activeProjectName: name,
+      archivedJobIds: readArchivedForProject(name),
+    });
     if (typeof window === 'undefined') {
       return;
     }
@@ -301,6 +341,40 @@ export const useWorkflowStore = create<WorkflowState>((set) => ({
 
   clearGenerateJobs: () => {
     set({ generateJobs: [] });
+  },
+
+  archiveJob: (jobId) => {
+    set((state) => {
+      if (state.archivedJobIds.includes(jobId)) return state;
+      const next = [...state.archivedJobIds, jobId];
+      writeArchivedForProject(state.activeProjectName, next);
+      return { archivedJobIds: next };
+    });
+  },
+
+  archiveJobs: (jobIds) => {
+    set((state) => {
+      const add = jobIds.filter((id) => !state.archivedJobIds.includes(id));
+      if (add.length === 0) return state;
+      const next = [...state.archivedJobIds, ...add];
+      writeArchivedForProject(state.activeProjectName, next);
+      return { archivedJobIds: next };
+    });
+  },
+
+  unarchiveJob: (jobId) => {
+    set((state) => {
+      if (!state.archivedJobIds.includes(jobId)) return state;
+      const next = state.archivedJobIds.filter((id) => id !== jobId);
+      writeArchivedForProject(state.activeProjectName, next);
+      return { archivedJobIds: next };
+    });
+  },
+
+  clearArchive: () => {
+    const project = get().activeProjectName;
+    writeArchivedForProject(project, []);
+    set({ archivedJobIds: [] });
   },
 
   setRosterPages: (pages) => {
