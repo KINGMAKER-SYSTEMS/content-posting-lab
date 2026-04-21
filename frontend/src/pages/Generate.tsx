@@ -259,9 +259,8 @@ export function GeneratePage() {
   const [selectMode, setSelectMode] = useState(false);
   const [selectedVideos, setSelectedVideos] = useState<Set<string>>(new Set());
 
-  // Batch color-correct panel state — single CC draft applied to every
-  // selected video on download.
-  const [batchCcOpen, setBatchCcOpen] = useState(false);
+  // Global color-correction draft — applied to EVERY done video in the feed
+  // (live CSS preview) and to every file when the user clicks "Download all".
   const [batchCc, setBatchCc] = useState<ColorCorrection>(DEFAULT_COLOR_CORRECTION);
   const [batchCcBusy, setBatchCcBusy] = useState(false);
 
@@ -654,35 +653,74 @@ export function GeneratePage() {
     [batchCc],
   );
 
+  // Every done video file in the feed (including per-crop outputs).
+  // The CC panel applies the current slider draft to all of these on download.
+  const allDoneVideoPaths = useMemo(() => {
+    const out: string[] = [];
+    for (const job of generateJobs) {
+      for (const v of job.videos) {
+        if (v.status !== 'done') continue;
+        if (v.crops && v.crops.length > 0) {
+          for (const c of v.crops) if (c.file) out.push(c.file);
+        } else if (v.file) {
+          out.push(v.file);
+        }
+      }
+    }
+    return out;
+  }, [generateJobs]);
+
   const runBatchColorCorrect = useCallback(async () => {
-    const paths = Array.from(selectedVideos);
-    if (paths.length === 0) {
-      addNotification('info', 'Select some videos first.');
+    if (allDoneVideoPaths.length === 0) {
+      addNotification('info', 'No finished videos to download yet.');
       return;
     }
     const cc = getColorCorrectionOrNull(batchCc);
+    // Server caps bulk requests at 50 items — chunk client-side so any feed
+    // size works. Multiple zips land (one per batch) for large batches.
+    const CHUNK = 50;
+    const chunks: string[][] = [];
+    for (let i = 0; i < allDoneVideoPaths.length; i += CHUNK) {
+      chunks.push(allDoneVideoPaths.slice(i, i + CHUNK));
+    }
     setBatchCcBusy(true);
+    const today = new Date().toISOString().slice(0, 10);
+    let succeeded = 0;
     try {
-      const items = paths.map((p) => ({ path: p, color_correction: cc }));
-      const res = await fetch(apiUrl('/api/video/color-correct/bulk'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ project: activeProjectName, items }),
-      });
-      if (!res.ok) {
-        const text = await res.text().catch(() => '');
-        throw new Error(text || `HTTP ${res.status}`);
+      for (let idx = 0; idx < chunks.length; idx++) {
+        const paths = chunks[idx];
+        const items = paths.map((p) => ({ path: p, color_correction: cc }));
+        const res = await fetch(apiUrl('/api/video/color-correct/bulk'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ project: activeProjectName, items }),
+        });
+        if (!res.ok) {
+          const text = await res.text().catch(() => '');
+          throw new Error(text || `HTTP ${res.status}`);
+        }
+        const blob = await res.blob();
+        const suffix = chunks.length > 1 ? `_part${idx + 1}of${chunks.length}` : '';
+        triggerBlobDownload(blob, `videos_${today}_${paths.length}${suffix}.zip`);
+        succeeded += paths.length;
       }
-      const blob = await res.blob();
-      const today = new Date().toISOString().slice(0, 10);
-      triggerBlobDownload(blob, `videos_${today}_${paths.length}.zip`);
-      addNotification('success', `Downloaded ${paths.length} ${cc ? 'color-corrected ' : ''}videos`);
+      addNotification(
+        'success',
+        `Downloaded ${succeeded} ${cc ? 'color-corrected ' : ''}videos${chunks.length > 1 ? ` in ${chunks.length} zips` : ''}`,
+      );
     } catch (e) {
-      addNotification('error', e instanceof Error ? `Download failed: ${e.message}` : 'Download failed');
+      if (succeeded > 0) {
+        addNotification(
+          'error',
+          `Only ${succeeded}/${allDoneVideoPaths.length} downloaded before failing: ${e instanceof Error ? e.message : 'unknown'}`,
+        );
+      } else {
+        addNotification('error', e instanceof Error ? `Download failed: ${e.message}` : 'Download failed');
+      }
     } finally {
       setBatchCcBusy(false);
     }
-  }, [activeProjectName, addNotification, batchCc, selectedVideos]);
+  }, [activeProjectName, addNotification, allDoneVideoPaths, batchCc]);
 
   if (!activeProjectName) {
     return (
@@ -1033,13 +1071,57 @@ export function GeneratePage() {
           </Button>
         </form>
 
-        {/* Quick tip */}
-        <Card className="mt-6 bg-primary/10 border-primary/30">
+        {/* Color correction — applies to every done video in the feed */}
+        <Card className="mt-6 border-primary/30">
           <CardContent className="py-3">
-            <div className="text-xs font-bold uppercase tracking-wider text-foreground mb-1">Quick Tip</div>
-            <p className="text-xs text-muted-foreground">
-              Use specific visual descriptions. "Cinematic close-up of rain hitting neon-lit pavement" works better than "rainy city".
-            </p>
+            <div className="mb-2 flex items-center justify-between">
+              <div className="text-xs font-bold uppercase tracking-wider text-foreground">Color Correction</div>
+              <button
+                type="button"
+                onClick={() => setBatchCc(DEFAULT_COLOR_CORRECTION)}
+                disabled={!getColorCorrectionOrNull(batchCc)}
+                className="text-[11px] text-muted-foreground hover:text-foreground disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                Reset
+              </button>
+            </div>
+            <div className="space-y-1.5">
+              {CC_SLIDERS.map((slider) => {
+                const v = batchCc[slider.key];
+                return (
+                  <div key={slider.key} className="flex items-center gap-2">
+                    <span className="min-w-[72px] text-[11px] text-muted-foreground">{slider.label}</span>
+                    <input
+                      type="range"
+                      min={slider.min}
+                      max={slider.max}
+                      value={v}
+                      onChange={(e) =>
+                        setBatchCc((prev) => ({
+                          ...prev,
+                          [slider.key]: Number.parseInt(e.target.value, 10) || 0,
+                        }))
+                      }
+                      className="h-1 flex-1 cursor-pointer appearance-none rounded-full bg-muted accent-primary"
+                    />
+                    <span className="min-w-[28px] text-right text-[11px] font-bold tabular-nums text-foreground">{v}</span>
+                  </div>
+                );
+              })}
+            </div>
+            <Button
+              type="button"
+              size="sm"
+              onClick={runBatchColorCorrect}
+              disabled={batchCcBusy || allDoneVideoPaths.length === 0}
+              className="mt-3 w-full"
+            >
+              {batchCcBusy
+                ? 'Preparing ZIP…'
+                : allDoneVideoPaths.length === 0
+                  ? 'No videos yet'
+                  : `Download all (${allDoneVideoPaths.length})${getColorCorrectionOrNull(batchCc) ? ' with CC' : ''}`}
+            </Button>
           </CardContent>
         </Card>
 
@@ -1301,11 +1383,7 @@ export function GeneratePage() {
                                 <LazyVideo
                                   src={staticUrl(url)}
                                   className="w-full h-full object-cover"
-                                  style={
-                                    selectMode && file && selectedVideos.has(file) && batchCcPreview
-                                      ? { filter: batchCcPreview }
-                                      : undefined
-                                  }
+                                  style={batchCcPreview ? { filter: batchCcPreview } : undefined}
                                 />
                               ) : v.status === 'error' || v.status === 'failed' ? (
                                 <div className="flex flex-col items-center gap-2 text-muted-foreground text-sm">
@@ -1429,79 +1507,18 @@ export function GeneratePage() {
           )}
         </div>
 
-        {/* Floating selection bar */}
+        {/* Floating selection bar — send-to-Burn only; CC lives in the sidebar */}
         {selectMode && (
-          <div className="sticky bottom-0 left-0 right-0 z-30 border-t-2 border-border bg-card shadow-[0_-2px_8px_rgba(0,0,0,0.1)]">
-            {batchCcOpen && (
-              <div className="border-b border-border bg-muted/40 px-6 py-3">
-                <div className="mb-2 flex items-center justify-between">
-                  <span className="text-xs font-semibold text-foreground">Color correction — applied to all selected videos</span>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => setBatchCc(DEFAULT_COLOR_CORRECTION)}
-                    disabled={!getColorCorrectionOrNull(batchCc)}
-                  >
-                    Reset
-                  </Button>
-                </div>
-                <div className="grid grid-cols-2 gap-x-6 gap-y-2 md:grid-cols-4">
-                  {CC_SLIDERS.map((slider) => {
-                    const v = batchCc[slider.key];
-                    return (
-                      <div key={slider.key} className="flex items-center gap-2">
-                        <span className="min-w-[72px] text-xs text-muted-foreground">{slider.label}</span>
-                        <input
-                          type="range"
-                          min={slider.min}
-                          max={slider.max}
-                          value={v}
-                          onChange={(e) =>
-                            setBatchCc((prev) => ({
-                              ...prev,
-                              [slider.key]: Number.parseInt(e.target.value, 10) || 0,
-                            }))
-                          }
-                          className="h-1 flex-1 cursor-pointer appearance-none rounded-full bg-muted accent-primary"
-                        />
-                        <span className="min-w-[28px] text-right text-xs font-bold tabular-nums text-foreground">{v}</span>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
-            <div className="flex items-center justify-between px-6 py-3">
-              <div className="flex items-center gap-3">
-                <Badge variant="secondary">{selectedVideos.size} selected</Badge>
-                <Button variant="ghost" size="sm" onClick={selectAllVideos}>
-                  {selectedVideos.size === generateJobs.reduce((n, j) => n + j.videos.filter((v) => v.status === 'done' && v.file).length, 0) ? 'Deselect All' : 'Select All'}
-                </Button>
-              </div>
-              <div className="flex items-center gap-2">
-                <Button
-                  variant={batchCcOpen ? 'default' : 'outline'}
-                  size="sm"
-                  onClick={() => setBatchCcOpen((v) => !v)}
-                >
-                  Color correct {batchCcOpen ? '▾' : '▸'}
-                  {getColorCorrectionOrNull(batchCc) ? ' •' : ''}
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  disabled={selectedVideos.size === 0 || batchCcBusy}
-                  onClick={runBatchColorCorrect}
-                >
-                  {batchCcBusy
-                    ? 'Preparing…'
-                    : `Download ${selectedVideos.size > 0 ? `(${selectedVideos.size})` : ''}`}
-                </Button>
-                <Button size="sm" disabled={selectedVideos.size === 0} onClick={sendSelectedToBurn}>
-                  Send {selectedVideos.size} to Burn →
-                </Button>
-              </div>
+          <div className="sticky bottom-0 left-0 right-0 z-30 flex items-center justify-between border-t-2 border-border bg-card px-6 py-3 shadow-[0_-2px_8px_rgba(0,0,0,0.1)]">
+            <div className="flex items-center gap-3">
+              <Badge variant="secondary">{selectedVideos.size} selected</Badge>
+              <Button variant="ghost" size="sm" onClick={selectAllVideos}>
+                {selectedVideos.size === generateJobs.reduce((n, j) => n + j.videos.filter((v) => v.status === 'done' && v.file).length, 0) ? 'Deselect All' : 'Select All'}
+              </Button>
             </div>
+            <Button size="sm" disabled={selectedVideos.size === 0} onClick={sendSelectedToBurn}>
+              Send {selectedVideos.size} to Burn →
+            </Button>
           </div>
         )}
       </div>
