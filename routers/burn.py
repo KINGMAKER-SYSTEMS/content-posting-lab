@@ -29,6 +29,7 @@ from project_manager import (
     sanitize_project_name,
 )
 from services.captions import scan_project_captions
+from services.ffmpeg import TIKTOK_ENCODE_ARGS, build_cc_filter
 
 log = logging.getLogger("burn")
 
@@ -349,148 +350,13 @@ def _build_filter_complex(color_correction: dict | None = None) -> str:
 
 
 def _build_color_only_filter(color_correction: dict | None) -> str:
-    """Build a -vf filter string for color correction only (no overlay input)."""
-    TIKTOK_SCALE = "scale=1080:1920:flags=lanczos,setsar=1"
+    """Build a -vf filter string for color correction only (no overlay input).
 
-    if not color_correction:
-        return TIKTOK_SCALE
-
-    b_raw = float(color_correction.get("brightness", 0))
-    c_raw = float(color_correction.get("contrast", 0))
-    s_raw = float(color_correction.get("saturation", 0))
-    sh_raw = float(color_correction.get("sharpness", 0))
-    sd_raw = float(color_correction.get("shadow", 0))
-    t_raw = float(color_correction.get("temperature", 0))
-    ti_raw = float(color_correction.get("tint", 0))
-    f_raw = float(color_correction.get("fade", 0))
-
-    css_brightness = 1 + b_raw / 100
-    css_contrast = 1 + c_raw / 100
-    css_saturate = 1 + s_raw / 100
-
-    if f_raw > 0:
-        fade = f_raw / 100
-        css_brightness = min(2.0, css_brightness + fade * 0.4)
-        css_contrast = max(0.2, css_contrast - fade * 0.3)
-        css_saturate = max(0.2, css_saturate - fade * 0.4)
-
-    if sd_raw != 0:
-        css_brightness += sd_raw / 400
-
-    sharpness = sh_raw / 50
-
-    is_default = (
-        abs(css_brightness - 1.0) < 0.005
-        and abs(css_contrast - 1.0) < 0.005
-        and abs(css_saturate - 1.0) < 0.005
-        and abs(t_raw) <= 1
-        and abs(ti_raw) <= 1
-        and sharpness < 0.001
-    )
-    if is_default:
-        return TIKTOK_SCALE
-
-    mat = [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
-    off = [0.0, 0.0, 0.0]
-
-    def mat_mul(a: list, b: list) -> list:
-        return [
-            [sum(a[i][k] * b[k][j] for k in range(3)) for j in range(3)]
-            for i in range(3)
-        ]
-
-    def mat_vec(m: list, v: list) -> list:
-        return [sum(m[i][j] * v[j] for j in range(3)) for i in range(3)]
-
-    if abs(css_brightness - 1.0) >= 0.005:
-        b = css_brightness
-        mat = [[b * mat[i][j] for j in range(3)] for i in range(3)]
-        off = [b * o for o in off]
-
-    if abs(css_contrast - 1.0) >= 0.005:
-        c = css_contrast
-        bias = 0.5 * (1 - c)
-        mat = [[c * mat[i][j] for j in range(3)] for i in range(3)]
-        off = [c * o + bias for o in off]
-
-    if abs(css_saturate - 1.0) >= 0.005:
-        s = css_saturate
-        sr, sg, sb = 0.2126, 0.7152, 0.0722
-        sat_mat = [
-            [sr + (1 - sr) * s, sg - sg * s, sb - sb * s],
-            [sr - sr * s, sg + (1 - sg) * s, sb - sb * s],
-            [sr - sr * s, sg - sg * s, sb + (1 - sb) * s],
-        ]
-        off = mat_vec(sat_mat, off)
-        mat = mat_mul(sat_mat, mat)
-
-    if abs(t_raw) > 1:
-        if t_raw > 0:
-            amt = min(1.0, t_raw / 200)
-            t_mat = [
-                [1 - amt + amt * 0.393, amt * 0.769, amt * 0.189],
-                [amt * 0.349, 1 - amt + amt * 0.686, amt * 0.168],
-                [amt * 0.272, amt * 0.534, 1 - amt + amt * 0.131],
-            ]
-        else:
-            rad = math.radians(t_raw / 5)
-            cos_a, sin_a = math.cos(rad), math.sin(rad)
-            t_mat = [
-                [
-                    0.213 + 0.787 * cos_a - 0.213 * sin_a,
-                    0.715 - 0.715 * cos_a - 0.715 * sin_a,
-                    0.072 - 0.072 * cos_a + 0.928 * sin_a,
-                ],
-                [
-                    0.213 - 0.213 * cos_a + 0.143 * sin_a,
-                    0.715 + 0.285 * cos_a + 0.140 * sin_a,
-                    0.072 - 0.072 * cos_a - 0.283 * sin_a,
-                ],
-                [
-                    0.213 - 0.213 * cos_a - 0.787 * sin_a,
-                    0.715 - 0.715 * cos_a + 0.715 * sin_a,
-                    0.072 + 0.928 * cos_a + 0.072 * sin_a,
-                ],
-            ]
-        off = mat_vec(t_mat, off)
-        mat = mat_mul(t_mat, mat)
-
-    if abs(ti_raw) > 1:
-        rad = math.radians(ti_raw / 3)
-        cos_a, sin_a = math.cos(rad), math.sin(rad)
-        ti_mat = [
-            [
-                0.213 + 0.787 * cos_a - 0.213 * sin_a,
-                0.715 - 0.715 * cos_a - 0.715 * sin_a,
-                0.072 - 0.072 * cos_a + 0.928 * sin_a,
-            ],
-            [
-                0.213 - 0.213 * cos_a + 0.143 * sin_a,
-                0.715 + 0.285 * cos_a + 0.140 * sin_a,
-                0.072 - 0.072 * cos_a - 0.283 * sin_a,
-            ],
-            [
-                0.213 - 0.213 * cos_a - 0.787 * sin_a,
-                0.715 - 0.715 * cos_a + 0.715 * sin_a,
-                0.072 + 0.928 * cos_a + 0.072 * sin_a,
-            ],
-        ]
-        off = mat_vec(ti_mat, off)
-        mat = mat_mul(ti_mat, mat)
-
-    ccm = (
-        f"colorchannelmixer="
-        f"rr={mat[0][0]:.6f}:rg={mat[0][1]:.6f}:rb={mat[0][2]:.6f}:ra={off[0]:.6f}:"
-        f"gr={mat[1][0]:.6f}:gg={mat[1][1]:.6f}:gb={mat[1][2]:.6f}:ga={off[1]:.6f}:"
-        f"br={mat[2][0]:.6f}:bg={mat[2][1]:.6f}:bb={mat[2][2]:.6f}:ba={off[2]:.6f}"
-    )
-
-    filters = ["format=rgb24", ccm]
-    if sharpness >= 0.001:
-        filters.append(f"unsharp=5:5:{sharpness:.2f}:5:5:{sharpness:.2f}")
-    filters.append(TIKTOK_SCALE)
-
-    return ",".join(filters)
+    Thin wrapper around services.ffmpeg.build_cc_filter that keeps burn's
+    1080×1920 TikTok scale as the default. See services/ffmpeg.py for the
+    full color-matrix implementation.
+    """
+    return build_cc_filter(color_correction, scale="1080:1920")
 
 
 async def _burn_video(
@@ -522,39 +388,6 @@ async def _burn_video(
 
         filter_complex = _build_filter_complex(color_correction)
 
-        # TikTok-optimized encode: 1080x1920, 30fps, H.264 High
-        # -crf 18 + medium preset = high quality with 2-3x faster encoding
-        # -minrate 8M ensures the encoder doesn't produce low-bitrate output
-        # even for simple scenes — keeps text overlays crisp on re-upload
-        tiktok_encode = [
-            "-c:v",
-            "libx264",
-            "-preset",
-            "medium",
-            "-crf",
-            "18",
-            "-minrate",
-            "8M",
-            "-maxrate",
-            "20M",
-            "-bufsize",
-            "20M",
-            "-profile:v",
-            "high",
-            "-level",
-            "4.2",
-            "-pix_fmt",
-            "yuv420p",
-            "-r",
-            "30",
-            "-movflags",
-            "+faststart",
-            "-c:a",
-            "aac",
-            "-b:a",
-            "192k",
-        ]
-
         if overlay_path:
             # Have overlay — use it
             cmd = [
@@ -566,7 +399,7 @@ async def _burn_video(
                 overlay_path,
                 "-filter_complex",
                 filter_complex,
-                *tiktok_encode,
+                *TIKTOK_ENCODE_ARGS,
                 output_path,
             ]
         else:
@@ -579,7 +412,7 @@ async def _burn_video(
                 video_path,
                 "-vf",
                 cc_filter,
-                *tiktok_encode,
+                *TIKTOK_ENCODE_ARGS,
                 output_path,
             ]
 
