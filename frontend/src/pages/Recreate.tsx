@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { ArrowRightIcon, FolderOpenIcon, FilmSlateIcon } from '@phosphor-icons/react';
 import { apiUrl, wsUrl } from '../lib/api';
 import { EmptyState } from '../components';
 import { useWebSocket, type WebSocketStatus } from '../hooks/useWebSocket';
@@ -270,7 +271,7 @@ export function RecreatePage() {
     return (
       <div className="flex h-full items-center justify-center">
         <EmptyState
-          icon="&#128193;"
+          icon={<FolderOpenIcon size={48} weight="duotone" />}
           title="No Project Selected"
           description="Please select or create a project to start recreating videos."
         />
@@ -408,7 +409,7 @@ export function RecreatePage() {
 
           {!hasFrames ? (
             <EmptyState
-              icon="&#127910;"
+              icon={<FilmSlateIcon size={48} weight="duotone" />}
               title="No Frames Yet"
               description="Enter a TikTok video URL and click Extract & Clean to extract and process frames."
             />
@@ -669,7 +670,7 @@ export function RecreatePage() {
                             navigate('/generate');
                           }}
                         >
-                          Send to Generate →
+                          Send to Generate <ArrowRightIcon size={14} weight="bold" className="inline ml-1" />
                         </Button>
                       </div>
                     </>

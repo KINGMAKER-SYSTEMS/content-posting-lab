@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState, type ComponentType } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { FilmSlateIcon, ScissorsIcon, ChatCircleTextIcon, FlameIcon, FolderOpenIcon, type IconProps } from '@phosphor-icons/react';
 import { apiUrl } from '../lib/api';
 import { useWorkflowStore } from '../stores/workflowStore';
 import { ConfirmModal, EmptyState } from '../components';
@@ -246,30 +247,36 @@ export function HomePage() {
 
   // ── Quick launch cards ──────────────────────────────────────────
 
-  const quickLaunch = [
+  const quickLaunch: {
+    Icon: ComponentType<IconProps>;
+    title: string;
+    desc: string;
+    route: string;
+    badge: number | string | null;
+  }[] = [
     {
-      icon: '🎬',
+      Icon: FilmSlateIcon,
       title: 'Generate Video',
       desc: 'AI-powered video creation',
       route: '/create',
       badge: videoRunningCount > 0 ? videoRunningCount : null,
     },
     {
-      icon: '✂️',
+      Icon: ScissorsIcon,
       title: 'Clip Video',
       desc: 'Chop videos into short-form clips',
       route: '/create/clipper',
       badge: null,
     },
     {
-      icon: '💬',
+      Icon: ChatCircleTextIcon,
       title: 'Scrape Captions',
       desc: 'Extract captions from TikTok',
       route: '/captions',
       badge: captionJobActive ? 'LIVE' : null,
     },
     {
-      icon: '🔥',
+      Icon: FlameIcon,
       title: 'Burn Captions',
       desc: 'Overlay captions onto videos',
       route: '/captions/burn',
@@ -291,7 +298,7 @@ export function HomePage() {
     return (
       <div className="mx-auto max-w-7xl p-8">
         <EmptyState
-          icon="📁"
+          icon={<FolderOpenIcon size={48} weight="duotone" />}
           title="No projects yet"
           description="Create your first project to start generating content."
           action={{
@@ -480,30 +487,35 @@ export function HomePage() {
           Quick Launch
         </div>
         <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-          {quickLaunch.map((card) => (
-            <button
-              key={card.route}
-              type="button"
-              onClick={() => navigate(card.route)}
-              className="group rounded-[var(--border-radius)] border-2 border-border bg-card p-6 shadow-[var(--shadow)] cursor-pointer hover:translate-x-[1px] hover:translate-y-[1px] hover:shadow-[3px_3px_0_0_var(--border)] transition-all text-left"
-            >
-              <div className="text-3xl mb-3">{card.icon}</div>
-              <div className="flex items-center gap-2">
-                <div className="text-lg font-heading text-foreground group-hover:text-primary transition-colors">
-                  {card.title}
+          {quickLaunch.map((card) => {
+            const Icon = card.Icon;
+            return (
+              <button
+                key={card.route}
+                type="button"
+                onClick={() => navigate(card.route)}
+                className="group rounded-[var(--border-radius)] border-2 border-border bg-card p-6 shadow-[var(--shadow)] cursor-pointer hover:translate-x-[1px] hover:translate-y-[1px] hover:shadow-[3px_3px_0_0_var(--border)] transition-all text-left"
+              >
+                <div className="mb-3 text-primary group-hover:scale-110 transition-transform origin-left">
+                  <Icon size={40} weight="duotone" />
                 </div>
-                {card.badge !== null && (
-                  <Badge
-                    variant={card.badge === 'LIVE' ? 'success' : 'info'}
-                    className="text-[10px] px-1.5 py-0 shadow-none"
-                  >
-                    {card.badge}
-                  </Badge>
-                )}
-              </div>
-              <div className="text-xs text-muted-foreground mt-1">{card.desc}</div>
-            </button>
-          ))}
+                <div className="flex items-center gap-2">
+                  <div className="text-lg font-heading text-foreground group-hover:text-primary transition-colors">
+                    {card.title}
+                  </div>
+                  {card.badge !== null && (
+                    <Badge
+                      variant={card.badge === 'LIVE' ? 'success' : 'info'}
+                      className="text-[10px] px-1.5 py-0 shadow-none"
+                    >
+                      {card.badge}
+                    </Badge>
+                  )}
+                </div>
+                <div className="text-xs text-muted-foreground mt-1">{card.desc}</div>
+              </button>
+            );
+          })}
         </div>
       </div>
 

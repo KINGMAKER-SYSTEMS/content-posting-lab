@@ -4,6 +4,7 @@ import { apiUrl, staticUrl } from '../lib/api';
 import { useWorkflowStore } from '../stores/workflowStore';
 import type { ColorCorrection, Provider, Job, VideoEntry, ProviderSchemas, SchemaField } from '../types/api';
 import { EmptyState, LazyVideo, ProgressBar } from '../components';
+import { FolderOpenIcon, XIcon, UploadSimpleIcon, ArrowRightIcon, PlayIcon } from '@phosphor-icons/react';
 import {
   DEFAULT_COLOR_CORRECTION,
   applyCSSFilterPreview,
@@ -935,7 +936,7 @@ export function GeneratePage() {
                       />
                     ) : v.status === 'error' || v.status === 'failed' ? (
                       <div className="flex flex-col items-center gap-2 text-muted-foreground text-sm">
-                        <span className="text-2xl">✕</span>
+                        <XIcon size={24} weight="bold" />
                         <span className="font-bold">Failed</span>
                       </div>
                     ) : (
@@ -1014,7 +1015,7 @@ export function GeneratePage() {
                 </Button>
               ) : (
                 <Button variant="secondary" size="sm" onClick={() => sendSelectionToBurn(job)}>
-                  Use in Burn →
+                  Use in Burn <ArrowRightIcon size={16} weight="bold" className="ml-1" />
                 </Button>
               )}
             </div>
@@ -1027,7 +1028,7 @@ export function GeneratePage() {
   if (!activeProjectName) {
     return (
       <div className="h-full flex items-center justify-center">
-        <EmptyState icon="📁" title="No Project Selected" description="Please select or create a project to start generating videos." />
+        <EmptyState icon={<FolderOpenIcon size={48} weight="duotone" />} title="No Project Selected" description="Please select or create a project to start generating videos." />
       </div>
     );
   }
@@ -1111,7 +1112,7 @@ export function GeneratePage() {
                 <div className="text-sm text-primary font-bold truncate">{mediaFile.name}</div>
               ) : (
                 <>
-                  <div className="text-lg mb-0.5">⇪</div>
+                  <UploadSimpleIcon size={20} weight="bold" className="mb-0.5" />
                   <div className="text-muted-foreground text-sm">
                     Drop file or <strong className="text-foreground">click to browse</strong>
                   </div>
@@ -1266,7 +1267,7 @@ export function GeneratePage() {
                     onClick={() => setAdvancedOpen(!advancedOpen)}
                     className="text-xs font-bold text-muted-foreground hover:text-primary transition-colors flex items-center gap-1"
                   >
-                    <span className={`transition-transform ${advancedOpen ? 'rotate-90' : ''}`}>&#9654;</span>
+                    <span className={`inline-flex transition-transform ${advancedOpen ? 'rotate-90' : ''}`}><PlayIcon size={10} weight="fill" /></span>
                     Advanced Settings
                   </button>
                   {advancedOpen && (
@@ -1513,7 +1514,7 @@ export function GeneratePage() {
           </div>
 
           {generateJobs.length === 0 ? (
-            <EmptyState icon="▶" title="No Videos Yet" description="Enter a prompt and hit Generate." />
+            <EmptyState icon={<PlayIcon size={48} weight="duotone" />} title="No Videos Yet" description="Enter a prompt and hit Generate." />
           ) : (
             <div className="space-y-6">
               {liveJobs.length === 0 && archivedJobs.length > 0 && (
@@ -1578,7 +1579,7 @@ export function GeneratePage() {
               </Button>
             </div>
             <Button size="sm" disabled={selectedVideos.size === 0} onClick={sendSelectedToBurn}>
-              Send {selectedVideos.size} to Burn →
+              Send {selectedVideos.size} to Burn <ArrowRightIcon size={16} weight="bold" className="ml-1" />
             </Button>
           </div>
         )}

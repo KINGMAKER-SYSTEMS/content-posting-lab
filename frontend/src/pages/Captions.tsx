@@ -2,6 +2,7 @@ import { type FormEventHandler, useEffect, useMemo, useRef, useState } from 'rea
 import { useNavigate } from 'react-router-dom';
 import { apiUrl, wsUrl } from '../lib/api';
 import { EmptyState, ProgressBar } from '../components';
+import { FolderOpenIcon, MagnifyingGlassIcon, CheckIcon, WarningIcon, ArrowRightIcon } from '@phosphor-icons/react';
 import { useWebSocket, type WebSocketStatus } from '../hooks/useWebSocket';
 import { useWorkflowStore } from '../stores/workflowStore';
 import type { CaptionResult, CaptionWSMessage, MoodTag } from '../types/api';
@@ -380,7 +381,7 @@ export function CaptionsPage() {
   if (!activeProjectName) {
     return (
       <div className="flex h-full items-center justify-center">
-        <EmptyState icon="📁" title="No Project Selected" description="Please select or create a project to start scraping captions." />
+        <EmptyState icon={<FolderOpenIcon size={48} weight="duotone" />} title="No Project Selected" description="Please select or create a project to start scraping captions." />
       </div>
     );
   }
@@ -493,7 +494,7 @@ export function CaptionsPage() {
             <div className="flex gap-2">
               {results.length > 0 ? (
                 <Button variant="secondary" onClick={jumpToBurn}>
-                  Use in Burn →
+                  Use in Burn <ArrowRightIcon size={16} weight="bold" className="ml-1" />
                 </Button>
               ) : null}
               {csvUrl ? (
@@ -505,7 +506,7 @@ export function CaptionsPage() {
           </div>
 
           {!hasStarted ? (
-            <EmptyState icon="🔎" title="No Captions Yet" description="Enter a TikTok username and hit Extract. Frames will populate here as videos are processed." />
+            <EmptyState icon={<MagnifyingGlassIcon size={48} weight="duotone" />} title="No Captions Yet" description="Enter a TikTok username and hit Extract. Frames will populate here as videos are processed." />
           ) : (
             <div className="space-y-4">
               <ProgressBar
@@ -599,8 +600,8 @@ export function CaptionsPage() {
                         ) : null}
 
                         {(isDone || isError) ? (
-                          <div className={`absolute right-1.5 top-1.5 flex h-5 w-5 items-center justify-center rounded-[var(--border-radius)] border-2 border-border text-[11px] font-bold ${isDone ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}`}>
-                            {isDone ? '✓' : '!'}
+                          <div className={`absolute right-1.5 top-1.5 flex h-5 w-5 items-center justify-center rounded-[var(--border-radius)] border-2 border-border ${isDone ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}`}>
+                            {isDone ? <CheckIcon size={12} weight="bold" /> : <WarningIcon size={12} weight="bold" />}
                           </div>
                         ) : null}
                       </div>

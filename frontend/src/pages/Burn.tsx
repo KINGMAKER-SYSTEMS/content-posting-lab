@@ -1,6 +1,7 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { apiUrl, staticUrl } from '../lib/api';
 import { EmptyState, LazyVideo, ProgressBar } from '../components';
+import { FolderOpenIcon, FlameIcon } from '@phosphor-icons/react';
 import { AssignToPagesDialog } from '../components/AssignToPagesDialog';
 import { useWorkflowStore } from '../stores/workflowStore';
 import { captureTextOverlay as captureTextOverlayShared, fontFamilyName } from '../lib/textOverlay';
@@ -1008,7 +1009,7 @@ export function BurnPage() {
   if (!activeProjectName) {
     return (
       <div className="flex h-full items-center justify-center">
-        <EmptyState icon="📁" title="No Project Selected" description="Please select or create a project to start burning captions." />
+        <EmptyState icon={<FolderOpenIcon size={48} weight="duotone" />} title="No Project Selected" description="Please select or create a project to start burning captions." />
       </div>
     );
   }
@@ -1441,7 +1442,7 @@ export function BurnPage() {
       <main className="min-h-0 overflow-y-auto bg-background p-6">
         {!hasPairs ? (
           <div className="flex h-[60vh] items-center justify-center">
-            <EmptyState icon="🔥" title="No Pairs Yet" description="Pick a video folder and caption source, then hit Align & Preview." />
+            <EmptyState icon={<FlameIcon size={48} weight="duotone" />} title="No Pairs Yet" description="Pick a video folder and caption source, then hit Align & Preview." />
           </div>
         ) : (
           <div className="flex flex-col gap-4">
