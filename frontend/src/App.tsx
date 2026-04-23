@@ -1,15 +1,17 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { BrowserRouter, Link, useLocation } from 'react-router-dom';
+import { MoonIcon, SunIcon } from '@phosphor-icons/react';
 import { HomePage } from './pages/Home';
 import { CreatePage } from './pages/Create';
 import { CaptionsStagePage } from './pages/CaptionsStage';
 import { DistributionPage } from './pages/Distribution';
 import { ProjectSelector, ToastContainer } from './components';
+import { BrandLogo } from './components/BrandLogo';
+import { useTheme } from './components/ThemeProvider';
 import { useWorkflowStore } from './stores/workflowStore';
 import { type HealthResponse, type Project, type ProjectListResponse } from './types/api';
 import { apiUrl } from './lib/api';
 import { Badge } from '@/components/ui/badge';
-import rtLogo from './assets/brand/logos/logo-horizontal-white.svg';
 
 interface HealthBannerItem {
   id: string;
@@ -19,6 +21,7 @@ interface HealthBannerItem {
 
 function AppShell() {
   const location = useLocation();
+  const { theme, toggleTheme } = useTheme();
   const {
     activeProjectName,
     notifications,
@@ -147,49 +150,56 @@ function AppShell() {
         <div className="mx-auto max-w-7xl px-4 py-3">
           {/* Row 1: Logo + Project Selector */}
           <div className="flex items-center justify-between mb-2">
-            <Link to="/" className="group flex items-center gap-3">
-              <img
-                src={rtLogo}
-                alt="Rising Tides Entertainment"
-                className="h-5 w-auto opacity-95 transition-opacity group-hover:opacity-100"
-              />
+            <Link to="/" className="group flex items-center gap-3 text-foreground">
+              <BrandLogo className="h-5 w-auto opacity-95 transition-opacity group-hover:opacity-100" />
               <span className="h-4 w-px bg-border" aria-hidden="true" />
               <span className="text-sm font-heading tracking-[0.08em] uppercase text-muted-foreground group-hover:text-foreground transition-colors">
                 Content Posting Lab
               </span>
             </Link>
-            <ProjectSelector
-              className="w-full min-w-[260px] sm:w-[320px]"
-              projects={projects}
-              activeProjectName={activeProjectName}
-              onSelect={(project) => setActiveProjectName(project.name)}
-              onCreate={async (name) => {
-                const trimmed = name.trim();
-                if (!trimmed) return;
-                try {
-                  const response = await fetch(apiUrl('/api/projects'), {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ name: trimmed }),
-                  });
-                  if (!response.ok) {
-                    const text = await response.text();
-                    throw new Error(text || `Failed to create project (${response.status})`);
+            <div className="flex items-center gap-3">
+              <button
+                type="button"
+                onClick={toggleTheme}
+                title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+                aria-label={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+                className="flex h-9 w-9 items-center justify-center rounded-md border border-border bg-card text-muted-foreground transition-colors hover:text-foreground hover:border-primary/40"
+              >
+                {theme === 'dark' ? <SunIcon size={16} weight="bold" /> : <MoonIcon size={16} weight="bold" />}
+              </button>
+              <ProjectSelector
+                className="w-full min-w-[260px] sm:w-[320px]"
+                projects={projects}
+                activeProjectName={activeProjectName}
+                onSelect={(project) => setActiveProjectName(project.name)}
+                onCreate={async (name) => {
+                  const trimmed = name.trim();
+                  if (!trimmed) return;
+                  try {
+                    const response = await fetch(apiUrl('/api/projects'), {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ name: trimmed }),
+                    });
+                    if (!response.ok) {
+                      const text = await response.text();
+                      throw new Error(text || `Failed to create project (${response.status})`);
+                    }
+                    const payload = await response.json();
+                    await fetchProjects();
+                    setActiveProjectName(payload.project.name);
+                    setHighlightedProject(payload.project.name);
+                    window.setTimeout(() => setHighlightedProject((curr) => curr === payload.project.name ? null : curr), 2000);
+                    addNotification('success', `Project "${payload.project.name}" created`);
+                    window.dispatchEvent(new Event('projects:changed'));
+                  } catch (error) {
+                    const message = error instanceof Error ? error.message : 'Failed to create project';
+                    addNotification('error', message);
                   }
-                  const payload = await response.json();
-                  await fetchProjects();
-                  setActiveProjectName(payload.project.name);
-                  setHighlightedProject(payload.project.name);
-                  window.setTimeout(() => setHighlightedProject((curr) => curr === payload.project.name ? null : curr), 2000);
-                  addNotification('success', `Project "${payload.project.name}" created`);
-                  window.dispatchEvent(new Event('projects:changed'));
-                } catch (error) {
-                  const message = error instanceof Error ? error.message : 'Failed to create project';
-                  addNotification('error', message);
-                }
-              }}
-              highlightedProjectName={highlightedProject}
-            />
+                }}
+                highlightedProjectName={highlightedProject}
+              />
+            </div>
           </div>
 
           {/* Row 2: Pipeline tabs */}

@@ -1,6 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import App from './App';
+import { ThemeProvider } from './components/ThemeProvider';
+
+function renderApp() {
+  return render(
+    <ThemeProvider>
+      <App />
+    </ThemeProvider>,
+  );
+}
 
 let projectsPayload = [
   {
@@ -89,7 +98,7 @@ afterEach(() => {
 
 describe('App', () => {
   it('renders shell with pipeline nav tabs', async () => {
-    render(<App />);
+    renderApp();
 
     expect(screen.getByText('Content Posting Lab')).toBeTruthy();
 
@@ -110,7 +119,7 @@ describe('App', () => {
   });
 
   it('loads health and projects on startup', async () => {
-    render(<App />);
+    renderApp();
 
     await waitFor(() => {
       const requested = fetchMock.mock.calls.map((call) => String(call[0]));
@@ -131,7 +140,7 @@ describe('App', () => {
     ];
     window.localStorage.setItem('activeProjectName', projectsPayload[0].name);
 
-    render(<App />);
+    renderApp();
 
     await waitFor(() => {
       expect(screen.getAllByText('persisted-project').length).toBeGreaterThan(0);

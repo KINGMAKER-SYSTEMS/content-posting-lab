@@ -57,6 +57,14 @@
   src: url('./assets/brand/fonts/Poppins-BoldItalic.woff2') format('woff2');
 }
 
+/* ═══ LIGHT MODE = :root DEFAULT ═══                                  */
+/* The app boots on whichever theme ThemeProvider applies via a class  */
+/* on <html>. No theme class = light (fallback). `.dark` class on      */
+/* <html> swaps to the dark palette below.                             */
+/*                                                                     */
+/* Brand tokens (gradient, magenta, purple) are SAME in both modes —   */
+/* Rising Tides brand identity doesn't change with theme.              */
+
 :root {
   /* Structural tokens */
   --border-radius: 8px;
@@ -68,8 +76,71 @@
   --brand-purple: #8500D7;
   --brand-gradient: linear-gradient(90deg, #E100C3 0%, #8500D7 100%);
 
-  /* Core surfaces */
+  /* Radius — same in both modes */
   --radius: 8px;
+
+  /* ── LIGHT MODE ──────────────────────────────────────────────────── */
+  /* Crisp premium-dashboard light. Near-white surfaces, near-black    */
+  /* text, brand magenta stays identical for CTA consistency.          */
+
+  /* Core surfaces */
+  --background: #FAFCFF;                 /* page — inverted from dark fg */
+  --foreground: #0A0A0A;                 /* primary text — deep charcoal */
+  --card: #FFFFFF;                       /* elevated surface */
+  --card-foreground: #0A0A0A;
+  --popover: #FFFFFF;
+  --popover-foreground: #0A0A0A;
+
+  /* Primary = brand magenta (identical in both modes) */
+  --primary: #E100C3;
+  --primary-foreground: #FAFCFF;
+
+  /* Secondary = light neutral */
+  --secondary: #F4F4F6;
+  --secondary-foreground: #0A0A0A;
+
+  /* Muted = light inset well */
+  --muted: #F4F4F6;
+  --muted-foreground: #6B7280;
+
+  /* Accent = brand purple (identical in both modes) */
+  --accent: #8500D7;
+  --accent-foreground: #FAFCFF;
+
+  /* Destructive — keep existing red */
+  --destructive: oklch(0.577 0.245 27.325);
+
+  /* Borders — low-opacity black on light */
+  --border: rgba(0, 0, 0, 0.10);
+  --input: rgba(0, 0, 0, 0.10);
+  --ring: #E100C3;
+
+  /* Soft shadow — gentler on light */
+  --shadow: 0 4px 16px rgba(0, 0, 0, 0.08);
+
+  /* Chart = brand-aligned palette (mode-agnostic) */
+  --chart-1: #E100C3;
+  --chart-2: #8500D7;
+  --chart-3: #6A9DB5;
+  --chart-4: #6B7280;
+  --chart-5: #2E323C;
+
+  /* Sidebar mirrors card/muted */
+  --sidebar: #FFFFFF;
+  --sidebar-foreground: #0A0A0A;
+  --sidebar-primary: #E100C3;
+  --sidebar-primary-foreground: #FAFCFF;
+  --sidebar-accent: #F4F4F6;
+  --sidebar-accent-foreground: #0A0A0A;
+  --sidebar-border: rgba(0, 0, 0, 0.06);
+  --sidebar-ring: #E100C3;
+}
+
+/* ═══ DARK MODE — .dark class on <html> ═══                          */
+/* Rising Tides dark-premium. Brand-accent only, not landing-page.    */
+
+.dark {
+  /* Core surfaces */
   --background: #060606;                 /* page */
   --foreground: #FAFCFF;                 /* primary text */
   --card: #141414;                       /* elevated surface */
@@ -77,7 +148,7 @@
   --popover: #0A0A0A;
   --popover-foreground: #FAFCFF;
 
-  /* Primary = brand magenta (buttons, focus ring, accent marks) */
+  /* Primary — identical to light (brand) */
   --primary: #E100C3;
   --primary-foreground: #FAFCFF;
 
@@ -89,11 +160,11 @@
   --muted: #1A1A1A;
   --muted-foreground: #B8B9BB;
 
-  /* Accent = brand purple (gradient partner) */
+  /* Accent — identical to light (brand) */
   --accent: #8500D7;
   --accent-foreground: #FAFCFF;
 
-  /* Destructive — keep existing red */
+  /* Destructive — same red works on both modes */
   --destructive: oklch(0.577 0.245 27.325);
 
   /* Borders — low-opacity white on dark */
@@ -101,15 +172,11 @@
   --input: rgba(255, 255, 255, 0.10);
   --ring: #E100C3;
 
-  /* Soft deep shadow — NOT hard offset (no more neobrutalism) */
+  /* Soft deep shadow */
   --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
 
-  /* Chart = brand-aligned palette */
-  --chart-1: #E100C3;
-  --chart-2: #8500D7;
-  --chart-3: #6A9DB5;
+  /* Chart 4 swaps neutral on dark */
   --chart-4: #B8B9BB;
-  --chart-5: #2E323C;
 
   /* Sidebar mirrors card/muted */
   --sidebar: #0A0A0A;
