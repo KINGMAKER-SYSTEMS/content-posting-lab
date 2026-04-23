@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { FolderOpenIcon, ScissorsIcon, PlayIcon, UploadSimpleIcon } from '@phosphor-icons/react';
 import { apiUrl, staticUrl } from '../lib/api';
 import { EmptyState } from '../components';
 import { useWorkflowStore } from '../stores/workflowStore';
@@ -208,7 +207,7 @@ function TrimTimeline({ file, onChange }: {
         />
         {!playing && (
           <div className="absolute inset-0 flex items-center justify-center bg-black/20">
-            <div className="w-12 h-12 rounded-full bg-black/60 flex items-center justify-center text-white"><PlayIcon size={24} weight="fill" /></div>
+            <div className="w-12 h-12 rounded-full bg-black/60 flex items-center justify-center text-white text-xl">&#9654;</div>
           </div>
         )}
         <div className="absolute bottom-2 right-2 bg-black/70 text-white text-[11px] px-1.5 py-0.5 rounded font-mono">
@@ -223,7 +222,7 @@ function TrimTimeline({ file, onChange }: {
           {playing ? '\u23F8' : '\u25B6'}
         </button>
         <div ref={trackRef}
-          className="relative flex-1 h-10 rounded bg-muted border border-border select-none touch-none cursor-pointer"
+          className="relative flex-1 h-10 rounded bg-muted border-2 border-border select-none touch-none cursor-pointer"
           onPointerDown={handleTrackPointerDown} onPointerMove={handlePointerMove}
           onPointerUp={handlePointerUp} onPointerLeave={handlePointerUp}>
           <div className="absolute inset-y-0 left-0 bg-black/30 rounded-l z-[1]" style={{ width: `${pctStart}%` }} />
@@ -300,7 +299,7 @@ function ConfigurePanel({ stagedFiles, clipLength, setClipLength, onProcess, onB
       </div>
 
       {/* Breakdown table */}
-      <div className="border border-border rounded-[var(--border-radius)] overflow-hidden mb-6">
+      <div className="border-2 border-border rounded-[var(--border-radius)] overflow-hidden mb-6">
         <table className="w-full text-sm">
           <thead>
             <tr className="bg-muted border-b-2 border-border">
@@ -433,9 +432,12 @@ export function ClipperPage() {
   const isBusy = uploading || downloading || processing;
 
   // ── Upload handler ─────────────────────────────────────────────
-  // Streams each file as raw bytes to /api/clipper/stage-streamed, one at a time,
-  // sharing a batch_id so they land in the same staging dir. Avoids multipart
-  // encoding which Railway's proxy drops on large (>~500MB) uploads.
+  // Two-step direct-to-R2 flow (bypasses Railway edge proxy entirely):
+  //   1. POST /r2/upload-init → server returns presigned PUT URLs
+  //   2. PUT each file directly to R2 (no 5-min proxy ceiling, no multipart)
+  //   3. POST /r2/upload-complete → server fetches R2 → probes → stages
+  // Unsupported/older deployments fall back to /stage-streamed automatically
+  // when upload-init responds with 503 (R2 not configured).
   const handleUpload = async (files: FileList) => {
     if (!activeProjectName || files.length === 0) return;
     setUploading(true);
@@ -450,67 +452,66 @@ export function ClipperPage() {
       return;
     }
 
-    let batch: string | null = null;
-    const staged: StagedFile[] = [];
-    let bytesDoneBefore = 0;
-    const failures: string[] = [];
-
     try {
+      // Step 1: ask the server for presigned PUT URLs
+      const initResp = await fetch(apiUrl('/api/clipper/r2/upload-init'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          project: activeProjectName,
+          files: Array.from(files).map((f) => ({
+            filename: f.name,
+            content_type: f.type || 'video/mp4',
+          })),
+        }),
+      });
+
+      if (initResp.status === 503) {
+        // R2 not configured on this deployment — fall back to legacy streaming.
+        await handleUploadLegacy(files);
+        return;
+      }
+      if (!initResp.ok) {
+        const text = await initResp.text();
+        throw new Error(text || `upload-init failed (${initResp.status})`);
+      }
+
+      const init: {
+        batch_id: string;
+        items: { index: number; filename: string; key: string; put_url: string }[];
+      } = await initResp.json();
+
+      // Step 2: PUT each file directly to R2, tracking aggregate progress.
+      let bytesDoneBefore = 0;
+      const uploaded: { index: number; filename: string; key: string }[] = [];
+      const failures: string[] = [];
+
       for (let i = 0; i < files.length; i++) {
         const file = files[i];
-        const params = new URLSearchParams({
-          project: activeProjectName,
-          filename: file.name,
-          index: String(i),
-          ...(batch ? { batch_id: batch } : {}),
-        });
-        const url = apiUrl(`/api/clipper/stage-streamed?${params.toString()}`);
+        const item = init.items[i];
+        if (!item) continue;
 
         try {
-          const resp = await new Promise<{
-            batch_id: string;
-            file: {
-              index: number; original_name: string; path: string; url: string; thumb_url: string;
-              duration: number; width: number; height: number;
-            };
-          }>((resolve, reject) => {
+          await new Promise<void>((resolve, reject) => {
             const xhr = new XMLHttpRequest();
-            xhr.open('POST', url);
-            xhr.setRequestHeader('Content-Type', 'application/octet-stream');
-
+            xhr.open('PUT', item.put_url);
+            xhr.setRequestHeader('Content-Type', file.type || 'video/mp4');
             xhr.upload.onprogress = (e) => {
               if (e.lengthComputable) {
                 const overall = bytesDoneBefore + e.loaded;
                 setUploadProgress(Math.round((overall / totalSize) * 100));
               }
             };
-
             xhr.onload = () => {
-              if (xhr.status >= 200 && xhr.status < 300) {
-                try { resolve(JSON.parse(xhr.responseText)); }
-                catch { reject(new Error('Invalid response from server')); }
-              } else {
-                let msg = xhr.responseText || `Upload failed (${xhr.status})`;
-                try {
-                  const parsed = JSON.parse(xhr.responseText);
-                  if (parsed?.detail) msg = parsed.detail;
-                } catch { /* keep raw */ }
-                reject(new Error(msg));
-              }
+              if (xhr.status >= 200 && xhr.status < 300) resolve();
+              else reject(new Error(`R2 upload failed (${xhr.status})`));
             };
-            xhr.onerror = () => reject(new Error(`Upload failed — connection error (${file.name})`));
-            xhr.ontimeout = () => reject(new Error(`Upload timed out (${file.name})`));
+            xhr.onerror = () => reject(new Error(`R2 upload failed — connection error (${file.name})`));
+            xhr.ontimeout = () => reject(new Error(`R2 upload timed out (${file.name})`));
             xhr.timeout = 0;
             xhr.send(file);
           });
-
-          batch = resp.batch_id;
-          staged.push({
-            ...resp.file,
-            thumbUrl: resp.file.thumb_url,
-            trimStart: 0,
-            trimEnd: resp.file.duration,
-          });
+          uploaded.push({ index: item.index, filename: item.filename, key: item.key });
         } catch (e) {
           const msg = e instanceof Error ? e.message : String(e);
           failures.push(`${file.name}: ${msg}`);
@@ -521,12 +522,52 @@ export function ClipperPage() {
         }
       }
 
-      if (staged.length === 0) {
-        if (failures.length === 0) addNotification('error', 'No files were staged');
+      if (uploaded.length === 0) {
+        if (failures.length === 0) addNotification('error', 'No files uploaded to R2');
         return;
       }
 
-      setBatchId(batch!);
+      // Step 3: tell the server to pull from R2 and probe.
+      const completeResp = await fetch(apiUrl('/api/clipper/r2/upload-complete'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          project: activeProjectName,
+          batch_id: init.batch_id,
+          items: uploaded,
+        }),
+      });
+      if (!completeResp.ok) {
+        const text = await completeResp.text();
+        throw new Error(text || `upload-complete failed (${completeResp.status})`);
+      }
+
+      const complete: {
+        batch_id: string;
+        files: {
+          index: number; original_name: string; path: string; url: string; thumb_url: string;
+          duration: number; width: number; height: number;
+        }[];
+        errors?: { filename: string; error: string }[];
+      } = await completeResp.json();
+
+      for (const err of complete.errors || []) {
+        addNotification('error', `${err.filename}: ${err.error}`);
+      }
+
+      const staged: StagedFile[] = complete.files.map((f) => ({
+        ...f,
+        thumbUrl: f.thumb_url,
+        trimStart: 0,
+        trimEnd: f.duration,
+      }));
+
+      if (staged.length === 0) {
+        addNotification('error', 'No files were staged');
+        return;
+      }
+
+      setBatchId(complete.batch_id);
       setStagedFiles((prev) => [...prev, ...staged]);
       if (stage === 'ingest' || stage === 'trim') setStage('trim');
       setExpandedIndex(staged[0].index);
@@ -537,6 +578,71 @@ export function ClipperPage() {
       setUploadProgress(0);
       if (fileInputRef.current) fileInputRef.current.value = '';
     }
+  };
+
+  // Legacy fallback — used only when R2 is not configured on the backend
+  // (e.g. local dev without R2 env vars). Streams through /stage-streamed.
+  const handleUploadLegacy = async (files: FileList) => {
+    let batch: string | null = null;
+    const staged: StagedFile[] = [];
+    let totalSize = 0;
+    for (let i = 0; i < files.length; i++) totalSize += files[i].size;
+    let bytesDoneBefore = 0;
+
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      const params = new URLSearchParams({
+        project: activeProjectName!,
+        filename: file.name,
+        index: String(i),
+        ...(batch ? { batch_id: batch } : {}),
+      });
+      const url = apiUrl(`/api/clipper/stage-streamed?${params.toString()}`);
+      try {
+        const resp = await new Promise<{
+          batch_id: string;
+          file: {
+            index: number; original_name: string; path: string; url: string; thumb_url: string;
+            duration: number; width: number; height: number;
+          };
+        }>((resolve, reject) => {
+          const xhr = new XMLHttpRequest();
+          xhr.open('POST', url);
+          xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+          xhr.upload.onprogress = (e) => {
+            if (e.lengthComputable) {
+              setUploadProgress(Math.round(((bytesDoneBefore + e.loaded) / totalSize) * 100));
+            }
+          };
+          xhr.onload = () => {
+            if (xhr.status >= 200 && xhr.status < 300) {
+              try { resolve(JSON.parse(xhr.responseText)); }
+              catch { reject(new Error('Invalid response from server')); }
+            } else {
+              let msg = xhr.responseText || `Upload failed (${xhr.status})`;
+              try { const p = JSON.parse(xhr.responseText); if (p?.detail) msg = p.detail; } catch { /* keep raw */ }
+              reject(new Error(msg));
+            }
+          };
+          xhr.onerror = () => reject(new Error(`Upload failed — connection error (${file.name})`));
+          xhr.timeout = 0;
+          xhr.send(file);
+        });
+        batch = resp.batch_id;
+        staged.push({ ...resp.file, thumbUrl: resp.file.thumb_url, trimStart: 0, trimEnd: resp.file.duration });
+      } catch (e) {
+        addNotification('error', `${file.name}: ${e instanceof Error ? e.message : String(e)}`);
+      } finally {
+        bytesDoneBefore += file.size;
+        setUploadProgress(Math.round((bytesDoneBefore / totalSize) * 100));
+      }
+    }
+
+    if (staged.length === 0) return;
+    setBatchId(batch!);
+    setStagedFiles((prev) => [...prev, ...staged]);
+    if (stage === 'ingest' || stage === 'trim') setStage('trim');
+    setExpandedIndex(staged[0].index);
   };
 
   // ── Download URL handler ─────────────────────────────────────────
@@ -717,6 +823,33 @@ export function ClipperPage() {
         const text = await resp.text();
         throw new Error(text || `Download failed (${resp.status})`);
       }
+
+      const ctype = resp.headers.get('content-type') || '';
+      // R2 mode: server returns JSON list of presigned URLs — click each to
+      // download directly from R2 (bypasses Railway's 5-min edge proxy limit).
+      if (ctype.includes('application/json')) {
+        const data: { mode: string; clips: { name: string; url: string; size?: number }[] } = await resp.json();
+        if (!data.clips || data.clips.length === 0) {
+          throw new Error('No clips available to download');
+        }
+        // Trigger one download per clip, spaced out so the browser doesn't
+        // coalesce or cancel them.
+        for (const clip of data.clips) {
+          const a = document.createElement('a');
+          a.href = clip.url;
+          a.download = clip.name;
+          a.target = '_blank';
+          a.rel = 'noopener noreferrer';
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          await new Promise((r) => setTimeout(r, 250));
+        }
+        addNotification('success', `Started ${data.clips.length} downloads from R2`);
+        return;
+      }
+
+      // Fallback: legacy server-built ZIP (pre-R2 behaviour).
       const blob = await resp.blob();
       const blobUrl = URL.createObjectURL(blob);
       const a = document.createElement('a');
@@ -727,7 +860,7 @@ export function ClipperPage() {
       document.body.removeChild(a);
       URL.revokeObjectURL(blobUrl);
     } catch (e) {
-      addNotification('error', e instanceof Error ? e.message : 'ZIP download failed');
+      addNotification('error', e instanceof Error ? e.message : 'Download failed');
     }
   };
 
@@ -743,7 +876,7 @@ export function ClipperPage() {
   if (!activeProjectName) {
     return (
       <div className="flex h-full items-center justify-center">
-        <EmptyState icon={<FolderOpenIcon size={48} weight="duotone" />} title="No Project Selected" description="Select or create a project to start clipping." />
+        <EmptyState icon="&#128193;" title="No Project Selected" description="Select or create a project to start clipping." />
       </div>
     );
   }
@@ -781,7 +914,7 @@ export function ClipperPage() {
           <>
             <Label>Upload Videos</Label>
             <div
-              className={`relative mt-1 border border-dashed rounded-[var(--border-radius)] p-4 text-center cursor-pointer transition-colors ${
+              className={`relative mt-1 border-2 border-dashed rounded-[var(--border-radius)] p-4 text-center cursor-pointer transition-colors ${
                 dragOver ? 'border-primary bg-primary/5'
                   : hasStaged ? 'border-primary bg-primary/10'
                     : 'border-border hover:border-muted-foreground hover:bg-muted'
@@ -818,7 +951,7 @@ export function ClipperPage() {
                 </div>
               ) : (
                 <>
-                  <div className="mb-0.5 text-muted-foreground"><UploadSimpleIcon size={20} weight="bold" /></div>
+                  <div className="text-lg mb-0.5">&#8679;</div>
                   <div className="text-muted-foreground text-sm">
                     Drop video{hasStaged ? 's to add more' : '(s)'} or <strong className="text-foreground">click to browse</strong>
                   </div>
@@ -879,7 +1012,7 @@ export function ClipperPage() {
               <p className="text-xs text-muted-foreground italic">No previous jobs.</p>
             ) : pastJobs.map((job) => (
               <div key={job.job_id}
-                className="group flex items-center gap-2 rounded-[var(--border-radius)] border border-border bg-card px-3 py-2 hover:bg-muted hover:border-primary/30 transition-all">
+                className="group flex items-center gap-2 rounded-[var(--border-radius)] border-2 border-border bg-card px-3 py-2 hover:bg-muted hover:shadow-[2px_2px_0_0_var(--border)] transition-all">
                 {renamingJobId === job.job_id ? (
                   <Input
                     value={renameValue}
@@ -934,10 +1067,10 @@ export function ClipperPage() {
 
                   return (
                     <div key={file.index}
-                      className={`rounded-[var(--border-radius)] overflow-hidden border bg-card transition-all ${
-                        isExpanded ? 'border-primary ring-2 ring-primary/40 col-span-1'
-                          : trimmed ? 'border-emerald-500/40 ring-1 ring-emerald-500/30 hover:border-emerald-500/60'
-                            : 'border-border shadow-[var(--shadow)] hover:border-primary/30'
+                      className={`rounded-[var(--border-radius)] overflow-hidden border-2 bg-card transition-all ${
+                        isExpanded ? 'border-primary shadow-[4px_4px_0_0_var(--primary)] col-span-1'
+                          : trimmed ? 'border-green-700 shadow-[2px_2px_0_0_var(--green-700,#15803d)] hover:translate-x-[1px] hover:translate-y-[1px]'
+                            : 'border-border shadow-[2px_2px_0_0_var(--border)] hover:translate-x-[1px] hover:translate-y-[1px] hover:shadow-[1px_1px_0_0_var(--border)]'
                       }`}>
                       {/* Header */}
                       <div className="flex items-center justify-between px-3 py-2 border-b border-border">
@@ -1009,7 +1142,7 @@ export function ClipperPage() {
               {processProgress && (
                 <div className="space-y-4">
                   {/* Progress bar */}
-                  <div className="w-full bg-muted rounded-full h-4 border border-border overflow-hidden">
+                  <div className="w-full bg-muted rounded-full h-4 border-2 border-border overflow-hidden">
                     <div
                       className="h-full bg-primary rounded-full transition-all duration-300"
                       style={{ width: `${processProgress.total > 0 ? (processProgress.clip / processProgress.total) * 100 : 0}%` }}
@@ -1079,7 +1212,7 @@ export function ClipperPage() {
               <div className="grid grid-cols-[repeat(auto-fill,minmax(180px,1fr))] gap-3">
                 {resultClips.filter((c) => c.ok && c.url).map((clip) => (
                   <div key={clip.index}
-                    className="rounded-[var(--border-radius)] overflow-hidden border border-border bg-card shadow-[var(--shadow)] hover:border-primary/30 transition-all">
+                    className="rounded-[var(--border-radius)] overflow-hidden border-2 border-border bg-card shadow-[2px_2px_0_0_var(--border)] hover:translate-x-[1px] hover:translate-y-[1px] hover:shadow-[1px_1px_0_0_var(--border)] transition-all">
                     <div className="relative bg-muted aspect-[9/16]">
                       {clip.thumbUrl ? (
                         <img src={staticUrl(clip.thumbUrl)} alt={clip.name}
@@ -1110,7 +1243,7 @@ export function ClipperPage() {
           {/* ── Empty state (ingest) ── */}
           {stage === 'ingest' && !hasStaged && !hasResults && (
             <EmptyState
-              icon={<ScissorsIcon size={48} weight="duotone" />}
+              icon="&#9986;"
               title="No Clips Yet"
               description="Upload video files or paste links. Trim each one, set your desired clip length, then process them all into 9:16 short-form clips."
             />
