@@ -5,7 +5,15 @@ interface Notification {
   id: string;
   type: 'success' | 'error' | 'info';
   message: string;
+  baseMessage: string;
+  count: number;
+  createdAt: number;
+  timerId: ReturnType<typeof setTimeout> | null;
 }
+
+const DEDUP_WINDOW_MS = 5000;
+const NOTIFICATION_TTL_MS = 5000;
+const MAX_VISIBLE_NOTIFICATIONS = 5;
 
 interface TrackedJob {
   kind: 'video' | 'caption';
@@ -137,6 +145,7 @@ interface WorkflowState {
   incrementBurnReadyCount: (delta: number) => void;
   primeBurnSelection: (selection: Partial<BurnSelectionDraft>) => void;
   clearBurnSelection: () => void;
+  consumeBurnSelection: () => BurnSelectionDraft;
   primeGeneratePrefill: (prefill: GeneratePrefill) => void;
   clearGeneratePrefill: () => void;
 
@@ -216,22 +225,53 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
   },
 
   addNotification: (type, message) => {
-    const id = Math.random().toString(36).substring(2, 10);
-    set((state) => ({
-      notifications: [...state.notifications, { id, type, message }],
-    }));
+    const now = Date.now();
+    const current = useWorkflowStore.getState().notifications;
+    const dup = current.find(
+      (n) => n.type === type && n.baseMessage === message && (now - n.createdAt) < DEDUP_WINDOW_MS,
+    );
 
-    setTimeout(() => {
+    const dismiss = (id: string) => {
+      set((state) => {
+        const target = state.notifications.find((n) => n.id === id);
+        if (target?.timerId) clearTimeout(target.timerId);
+        return { notifications: state.notifications.filter((n) => n.id !== id) };
+      });
+    };
+
+    if (dup) {
+      if (dup.timerId) clearTimeout(dup.timerId);
+      const newCount = dup.count + 1;
+      const timerId = setTimeout(() => dismiss(dup.id), NOTIFICATION_TTL_MS);
       set((state) => ({
-        notifications: state.notifications.filter((notification) => notification.id !== id),
+        notifications: state.notifications.map((n) =>
+          n.id === dup.id
+            ? { ...n, count: newCount, message: `${message} (×${newCount})`, createdAt: now, timerId }
+            : n,
+        ),
       }));
-    }, 5000);
+      return;
+    }
+
+    const id = Math.random().toString(36).substring(2, 10);
+    const timerId = setTimeout(() => dismiss(id), NOTIFICATION_TTL_MS);
+    set((state) => {
+      const next = [...state.notifications, { id, type, message, baseMessage: message, count: 1, createdAt: now, timerId }];
+      // Cap visible — drop oldest if we exceed the cap
+      while (next.length > MAX_VISIBLE_NOTIFICATIONS) {
+        const dropped = next.shift();
+        if (dropped?.timerId) clearTimeout(dropped.timerId);
+      }
+      return { notifications: next };
+    });
   },
 
   removeNotification: (id) => {
-    set((state) => ({
-      notifications: state.notifications.filter((notification) => notification.id !== id),
-    }));
+    set((state) => {
+      const target = state.notifications.find((n) => n.id === id);
+      if (target?.timerId) clearTimeout(target.timerId);
+      return { notifications: state.notifications.filter((n) => n.id !== id) };
+    });
   },
 
   updateJob: (jobId, data) => {
@@ -301,6 +341,20 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
         captionSource: null,
       },
     });
+  },
+
+  consumeBurnSelection: () => {
+    let snapshot: BurnSelectionDraft = { videoPaths: [], captionSource: null };
+    set((state) => {
+      snapshot = {
+        videoPaths: [...state.burnSelection.videoPaths],
+        captionSource: state.burnSelection.captionSource,
+      };
+      return {
+        burnSelection: { videoPaths: [], captionSource: null },
+      };
+    });
+    return snapshot;
   },
 
   primeGeneratePrefill: (prefill) => {

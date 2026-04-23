@@ -564,7 +564,7 @@ export function SlideshowPage() {
   if (!activeProjectName) {
     return (
       <div className="p-6">
-        <div className="rounded-[var(--border-radius)] border-2 border-border bg-card p-8 text-center shadow-[2px_2px_0_0_var(--border)]">
+        <div className="rounded-[var(--border-radius)] border border-border bg-card p-8 text-center shadow-[var(--shadow)]">
           <Film className="mx-auto mb-3 h-10 w-10 text-muted-foreground" />
           <h2 className="text-lg font-heading text-foreground mb-1">No Project Selected</h2>
           <p className="text-sm text-muted-foreground">Select or create a project to start building slideshows.</p>
@@ -609,7 +609,7 @@ export function SlideshowPage() {
                 e.target.value = '';
               }}
               defaultValue=""
-              className="rounded-[var(--border-radius)] border-2 border-border bg-muted px-2 py-1 text-xs font-bold text-foreground"
+              className="rounded-[var(--border-radius)] border border-border bg-muted px-2 py-1 text-xs font-bold text-foreground"
             >
               <option value="" disabled>Load Format...</option>
               {formats.map((f) => (
@@ -622,7 +622,7 @@ export function SlideshowPage() {
               <input
                 type="text" value={formatName} onChange={(e) => setFormatName(e.target.value)}
                 placeholder="Format name..."
-                className="rounded-[var(--border-radius)] border-2 border-border bg-muted px-2 py-1 text-xs font-bold text-foreground w-32"
+                className="rounded-[var(--border-radius)] border border-border bg-muted px-2 py-1 text-xs font-bold text-foreground w-32"
                 onKeyDown={(e) => { if (e.key === 'Enter') void handleSaveFormat(); if (e.key === 'Escape') setShowFormatSave(false); }}
                 autoFocus
               />
@@ -668,20 +668,20 @@ export function SlideshowPage() {
         {/* ── Column 1: Image Gallery ── */}
         <div className="space-y-4">
           {/* Upload */}
-          <div className="rounded-[var(--border-radius)] border-2 border-border bg-card p-4 shadow-[2px_2px_0_0_var(--border)]">
+          <div className="rounded-[var(--border-radius)] border border-border bg-card p-4 shadow-[var(--shadow)]">
             <h2 className="text-sm font-heading text-foreground mb-3 flex items-center gap-2">
               <Upload className="h-4 w-4" /> Upload Images
             </h2>
             <input
               ref={fileRef} type="file" accept="image/*" multiple
               onChange={(e) => handleUpload(e.target.files)}
-              className="block w-full text-sm text-foreground file:mr-3 file:rounded-[var(--border-radius)] file:border-2 file:border-border file:bg-secondary file:px-3 file:py-1.5 file:text-sm file:font-bold file:text-foreground file:cursor-pointer hover:file:bg-muted"
+              className="block w-full text-sm text-foreground file:mr-3 file:rounded-[var(--border-radius)] file:border file:border-border file:bg-secondary file:px-3 file:py-1.5 file:text-sm file:font-bold file:text-foreground file:cursor-pointer hover:file:bg-muted"
             />
             {uploading && <Badge variant="info" className="mt-2 text-xs">Uploading...</Badge>}
           </div>
 
           {/* Gallery */}
-          <div className="rounded-[var(--border-radius)] border-2 border-border bg-card p-4 shadow-[2px_2px_0_0_var(--border)]">
+          <div className="rounded-[var(--border-radius)] border border-border bg-card p-4 shadow-[var(--shadow)]">
             <div className="flex items-center justify-between mb-3">
               <h2 className="text-sm font-heading text-foreground flex items-center gap-2">
                 <ImageIcon className="h-4 w-4" /> Gallery
@@ -706,7 +706,7 @@ export function SlideshowPage() {
                   return (
                     <div
                       key={img.name}
-                      className={`group relative rounded-[var(--border-radius)] border-2 bg-muted overflow-hidden shadow-[2px_2px_0_0_var(--border)] cursor-pointer transition-all ${
+                      className={`group relative rounded-[var(--border-radius)] border bg-muted overflow-hidden shadow-[var(--shadow)] cursor-pointer transition-all ${
                         selected ? 'border-primary ring-2 ring-primary/30' : 'border-border hover:border-muted-foreground'
                       }`}
                       onClick={() => toggleB1Image(img.name)}
@@ -738,7 +738,7 @@ export function SlideshowPage() {
         {/* ── Column 2: Block 1 config ── */}
         <div className="space-y-4">
           {/* Shuffle config (shared) */}
-          <div className="rounded-[var(--border-radius)] border-2 border-border bg-card p-4 shadow-[2px_2px_0_0_var(--border)]">
+          <div className="rounded-[var(--border-radius)] border border-border bg-card p-4 shadow-[var(--shadow)]">
             <h2 className="text-sm font-heading text-foreground mb-3 flex items-center gap-2">
               <Layers className="h-4 w-4" /> {mode === 'meme' ? 'Shuffle Config' : 'Block 1: Shuffle'}
               <Badge variant="secondary" className="text-[10px] px-1.5 py-0">
@@ -757,10 +757,10 @@ export function SlideshowPage() {
                     <div key={name} className="relative group">
                       <img
                         src={apiUrl(`/projects/${encodeURIComponent(activeProjectName)}/slideshow-images/${encodeURIComponent(name)}`)}
-                        alt={name} className="h-12 w-8 rounded border-2 border-border object-cover"
+                        alt={name} className="h-12 w-8 rounded border border-border object-cover"
                       />
                       <button
-                        className="absolute -top-1 -right-1 bg-red-500 rounded-full p-0.5 opacity-0 group-hover:opacity-100 transition-opacity"
+                        className="absolute -top-1 -right-1 bg-destructive rounded-full p-0.5 opacity-0 group-hover:opacity-100 transition-opacity"
                         onClick={() => toggleB1Image(name)}
                       >
                         <Trash2 className="h-2 w-2 text-white" />
@@ -774,7 +774,7 @@ export function SlideshowPage() {
                     <input
                       type="number" min={1} max={60} step={1} value={b1Duration}
                       onChange={(e) => setB1Duration(parseFloat(e.target.value) || 8)}
-                      className="w-full mt-1 rounded-[var(--border-radius)] border-2 border-border bg-muted px-2 py-1 text-xs font-bold text-foreground"
+                      className="w-full mt-1 rounded-[var(--border-radius)] border border-border bg-muted px-2 py-1 text-xs font-bold text-foreground"
                     />
                   </div>
                   <div>
@@ -782,7 +782,7 @@ export function SlideshowPage() {
                     <input
                       type="number" min={0.2} max={1.0} step={0.05} value={b1ShuffleSpeed}
                       onChange={(e) => setB1ShuffleSpeed(parseFloat(e.target.value) || 0.4)}
-                      className="w-full mt-1 rounded-[var(--border-radius)] border-2 border-border bg-muted px-2 py-1 text-xs font-bold text-foreground"
+                      className="w-full mt-1 rounded-[var(--border-radius)] border border-border bg-muted px-2 py-1 text-xs font-bold text-foreground"
                     />
                   </div>
                 </div>
@@ -792,13 +792,13 @@ export function SlideshowPage() {
 
           {/* Caption Controls (fan-page only) */}
           {mode === 'fan-page' && (
-            <div className="rounded-[var(--border-radius)] border-2 border-border bg-card p-4 shadow-[2px_2px_0_0_var(--border)]">
+            <div className="rounded-[var(--border-radius)] border border-border bg-card p-4 shadow-[var(--shadow)]">
               <h2 className="text-sm font-heading text-foreground mb-3">Caption Overlay</h2>
 
               <textarea
                 value={b1Caption} onChange={(e) => setB1Caption(e.target.value)}
                 placeholder="Enter caption text (optional)..." rows={3}
-                className="w-full rounded-[var(--border-radius)] border-2 border-border bg-muted px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground resize-none"
+                className="w-full rounded-[var(--border-radius)] border border-border bg-muted px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground resize-none"
               />
 
               <div className="grid grid-cols-2 gap-3 mt-3">
@@ -806,7 +806,7 @@ export function SlideshowPage() {
                   <Label className="text-[10px] font-bold text-muted-foreground">Font</Label>
                   <select
                     value={b1FontFile} onChange={(e) => setB1FontFile(e.target.value)}
-                    className="w-full mt-1 rounded-[var(--border-radius)] border-2 border-border bg-muted px-2 py-1 text-xs font-bold text-foreground"
+                    className="w-full mt-1 rounded-[var(--border-radius)] border border-border bg-muted px-2 py-1 text-xs font-bold text-foreground"
                   >
                     {fonts.map((f) => (<option key={f.file} value={f.file}>{f.name}</option>))}
                   </select>
@@ -816,7 +816,7 @@ export function SlideshowPage() {
                   <input
                     type="number" min={8} max={120} step={1} value={b1FontSize}
                     onChange={(e) => setB1FontSize(parseInt(e.target.value) || 32)}
-                    className="w-full mt-1 rounded-[var(--border-radius)] border-2 border-border bg-muted px-2 py-1 text-xs font-bold text-foreground"
+                    className="w-full mt-1 rounded-[var(--border-radius)] border border-border bg-muted px-2 py-1 text-xs font-bold text-foreground"
                   />
                 </div>
               </div>
@@ -841,7 +841,7 @@ export function SlideshowPage() {
                 <div className="mt-3 relative mx-auto" style={{ width: 160, height: 284 }}>
                   <img
                     src={apiUrl(`/projects/${encodeURIComponent(activeProjectName)}/slideshow-images/${encodeURIComponent(Array.from(b1Images)[0])}`)}
-                    alt="preview" className="w-full h-full object-cover rounded-[var(--border-radius)] border-2 border-border"
+                    alt="preview" className="w-full h-full object-cover rounded-[var(--border-radius)] border border-border"
                   />
                   <div
                     className="absolute pointer-events-none"
@@ -869,7 +869,7 @@ export function SlideshowPage() {
           {mode === 'fan-page' ? (
             <>
               {/* Block 2 */}
-              <div className="rounded-[var(--border-radius)] border-2 border-border bg-card p-4 shadow-[2px_2px_0_0_var(--border)]">
+              <div className="rounded-[var(--border-radius)] border border-border bg-card p-4 shadow-[var(--shadow)]">
                 <h2 className="text-sm font-heading text-foreground mb-3 flex items-center gap-2">
                   <Square className="h-4 w-4" /> Block 2: Static
                 </h2>
@@ -890,7 +890,7 @@ export function SlideshowPage() {
                     <div className="grid grid-cols-3 gap-2 max-h-48 overflow-y-auto">
                       {images.map((img) => (
                         <div key={img.name}
-                          className={`rounded-[var(--border-radius)] border-2 overflow-hidden cursor-pointer transition-all ${
+                          className={`rounded-[var(--border-radius)] border overflow-hidden cursor-pointer transition-all ${
                             b2Source === img.name ? 'border-primary ring-2 ring-primary/30' : 'border-border hover:border-muted-foreground'
                           }`}
                           onClick={() => setB2Source(img.name)}>
@@ -903,7 +903,7 @@ export function SlideshowPage() {
                 ) : (
                   projectVideos.length > 0 ? (
                     <select value={b2Source} onChange={(e) => setB2Source(e.target.value)}
-                      className="w-full rounded-[var(--border-radius)] border-2 border-border bg-muted px-2 py-1.5 text-xs font-bold text-foreground">
+                      className="w-full rounded-[var(--border-radius)] border border-border bg-muted px-2 py-1.5 text-xs font-bold text-foreground">
                       <option value="">Select a video...</option>
                       {projectVideos.map((v) => (<option key={v.name} value={v.name}>{v.name}</option>))}
                     </select>
@@ -914,31 +914,31 @@ export function SlideshowPage() {
                   <Label className="text-[10px] font-bold text-muted-foreground">Duration (sec)</Label>
                   <input type="number" min={1} max={30} step={0.5} value={b2Duration}
                     onChange={(e) => setB2Duration(parseFloat(e.target.value) || 3)}
-                    className="w-full mt-1 rounded-[var(--border-radius)] border-2 border-border bg-muted px-2 py-1 text-xs font-bold text-foreground" />
+                    className="w-full mt-1 rounded-[var(--border-radius)] border border-border bg-muted px-2 py-1 text-xs font-bold text-foreground" />
                 </div>
 
                 {b2Source && b2SourceType === 'image' && (
                   <div className="mt-3 mx-auto" style={{ width: 120 }}>
                     <img src={apiUrl(`/projects/${encodeURIComponent(activeProjectName)}/slideshow-images/${encodeURIComponent(b2Source)}`)}
-                      alt="Block 2 preview" className="w-full rounded-[var(--border-radius)] border-2 border-border" />
+                      alt="Block 2 preview" className="w-full rounded-[var(--border-radius)] border border-border" />
                   </div>
                 )}
               </div>
 
               {/* Audio */}
-              <div className="rounded-[var(--border-radius)] border-2 border-border bg-card p-4 shadow-[2px_2px_0_0_var(--border)]">
+              <div className="rounded-[var(--border-radius)] border border-border bg-card p-4 shadow-[var(--shadow)]">
                 <h2 className="text-sm font-heading text-foreground mb-3 flex items-center gap-2">
                   <Music className="h-4 w-4" /> Audio Track
                 </h2>
                 <input ref={audioFileRef} type="file" accept=".mp3,.wav,.m4a,.aac,.ogg"
                   onChange={(e) => handleAudioUpload(e.target.files)}
-                  className="block w-full text-sm text-foreground file:mr-3 file:rounded-[var(--border-radius)] file:border-2 file:border-border file:bg-secondary file:px-3 file:py-1.5 file:text-sm file:font-bold file:text-foreground file:cursor-pointer hover:file:bg-muted" />
+                  className="block w-full text-sm text-foreground file:mr-3 file:rounded-[var(--border-radius)] file:border file:border-border file:bg-secondary file:px-3 file:py-1.5 file:text-sm file:font-bold file:text-foreground file:cursor-pointer hover:file:bg-muted" />
                 {uploadingAudio && <Badge variant="info" className="mt-2 text-xs">Uploading...</Badge>}
                 {audioFiles.length > 0 && (
                   <div className="mt-3 space-y-2">
                     {audioFiles.map((af) => (
                       <div key={af.name}
-                        className={`flex items-center gap-2 rounded-[var(--border-radius)] border-2 px-2 py-1.5 cursor-pointer transition-all ${
+                        className={`flex items-center gap-2 rounded-[var(--border-radius)] border px-2 py-1.5 cursor-pointer transition-all ${
                           selectedAudio === af.name ? 'border-primary bg-primary/5' : 'border-border bg-muted hover:border-muted-foreground'
                         }`}
                         onClick={() => setSelectedAudio(selectedAudio === af.name ? '' : af.name)}>
@@ -955,7 +955,7 @@ export function SlideshowPage() {
               </div>
 
               {/* Fan-page Render */}
-              <div className="rounded-[var(--border-radius)] border-2 border-border bg-card p-4 shadow-[2px_2px_0_0_var(--border)]">
+              <div className="rounded-[var(--border-radius)] border border-border bg-card p-4 shadow-[var(--shadow)]">
                 <h2 className="text-sm font-heading text-foreground mb-3 flex items-center gap-2">
                   <Film className="h-4 w-4" /> Render
                 </h2>
@@ -976,19 +976,19 @@ export function SlideshowPage() {
                       <span className="font-bold text-foreground">{job.message || 'Processing...'}</span>
                       <span className="font-bold text-muted-foreground">{Math.round(job.progress)}%</span>
                     </div>
-                    <div className="h-3 w-full rounded-[var(--border-radius)] border-2 border-border bg-muted overflow-hidden">
+                    <div className="h-3 w-full rounded-[var(--border-radius)] border border-border bg-muted overflow-hidden">
                       <div className="h-full bg-primary transition-all duration-300" style={{ width: `${job.progress}%` }} />
                     </div>
                   </div>
                 )}
                 {job?.status === 'complete' && (
-                  <div className="mt-3 rounded-[var(--border-radius)] border-2 border-border bg-green-50 px-3 py-2">
-                    <p className="text-xs font-bold text-green-800">Render complete!</p>
+                  <div className="mt-3 rounded-[var(--border-radius)] border border-emerald-500/30 bg-emerald-500/10 px-3 py-2">
+                    <p className="text-xs font-bold text-emerald-300">Render complete!</p>
                   </div>
                 )}
                 {job?.status === 'error' && (
-                  <div className="mt-3 rounded-[var(--border-radius)] border-2 border-border bg-red-50 px-3 py-2">
-                    <p className="text-xs font-bold text-red-800">{job.message || 'Render failed.'}</p>
+                  <div className="mt-3 rounded-[var(--border-radius)] border border-destructive/30 bg-destructive/10 px-3 py-2">
+                    <p className="text-xs font-bold text-destructive">{job.message || 'Render failed.'}</p>
                   </div>
                 )}
               </div>
@@ -997,7 +997,7 @@ export function SlideshowPage() {
             /* ── MEME MODE COLUMN ── */
             <>
               {/* Caption Source */}
-              <div className="rounded-[var(--border-radius)] border-2 border-border bg-card p-4 shadow-[2px_2px_0_0_var(--border)]">
+              <div className="rounded-[var(--border-radius)] border border-border bg-card p-4 shadow-[var(--shadow)]">
                 <h2 className="text-sm font-heading text-foreground mb-3 flex items-center gap-2">
                   <Sparkles className="h-4 w-4" /> Caption Source
                 </h2>
@@ -1055,13 +1055,13 @@ export function SlideshowPage() {
               </div>
 
               {/* Batch Config */}
-              <div className="rounded-[var(--border-radius)] border-2 border-border bg-card p-4 shadow-[2px_2px_0_0_var(--border)]">
+              <div className="rounded-[var(--border-radius)] border border-border bg-card p-4 shadow-[var(--shadow)]">
                 <h2 className="text-sm font-heading text-foreground mb-3">Batch Config</h2>
                 <div>
                   <Label className="text-[10px] font-bold text-muted-foreground">How many to render</Label>
                   <input type="number" min={1} max={50} step={1} value={batchSize}
                     onChange={(e) => setBatchSize(Math.max(1, Math.min(50, parseInt(e.target.value) || 1)))}
-                    className="w-full mt-1 rounded-[var(--border-radius)] border-2 border-border bg-muted px-2 py-1 text-xs font-bold text-foreground" />
+                    className="w-full mt-1 rounded-[var(--border-radius)] border border-border bg-muted px-2 py-1 text-xs font-bold text-foreground" />
                   {filteredCaptions.length > 0 && batchSize > filteredCaptions.length && (
                     <p className="text-[10px] text-amber-600 mt-1">
                       Capped to {filteredCaptions.length} (available captions)
@@ -1071,7 +1071,7 @@ export function SlideshowPage() {
               </div>
 
               {/* Campaign Sound (beat sync) */}
-              <div className="rounded-[var(--border-radius)] border-2 border-border bg-card p-4 shadow-[2px_2px_0_0_var(--border)]">
+              <div className="rounded-[var(--border-radius)] border border-border bg-card p-4 shadow-[var(--shadow)]">
                 <h2 className="text-sm font-heading text-foreground mb-3 flex items-center gap-2">
                   <Radio className="h-4 w-4" /> Campaign Sound
                   {preparedSound && (
@@ -1084,7 +1084,7 @@ export function SlideshowPage() {
                 {preparedSound ? (
                   // Prepared state — show readout + preview player + clear button
                   <div className="space-y-3">
-                    <div className="rounded-[var(--border-radius)] border-2 border-border bg-muted p-3 text-xs">
+                    <div className="rounded-[var(--border-radius)] border border-border bg-muted p-3 text-xs">
                       <div className="font-bold text-foreground mb-1 truncate">{preparedSound.label}</div>
                       <div className="flex items-center gap-3 text-muted-foreground">
                         <span><strong className="text-foreground">{preparedSound.bpm.toFixed(0)}</strong> BPM</span>
@@ -1125,7 +1125,7 @@ export function SlideshowPage() {
                           key={s.id}
                           type="button"
                           onClick={() => void handleSelectCampaignSound(s)}
-                          className={`w-full text-left rounded-[var(--border-radius)] border-2 px-2 py-1.5 text-xs transition-all ${
+                          className={`w-full text-left rounded-[var(--border-radius)] border px-2 py-1.5 text-xs transition-all ${
                             selectedCampaignSoundId === s.id
                               ? 'border-primary bg-primary/5'
                               : 'border-border bg-muted hover:border-muted-foreground'
@@ -1136,8 +1136,8 @@ export function SlideshowPage() {
                       ))}
                     </div>
                     {prepareSoundError && (
-                      <div className="mt-2 rounded-[var(--border-radius)] border-2 border-red-200 bg-red-50 px-2 py-1.5">
-                        <p className="text-[10px] font-bold text-red-800">{prepareSoundError}</p>
+                      <div className="mt-2 rounded-[var(--border-radius)] border border-destructive/30 bg-destructive/10 px-2 py-1.5">
+                        <p className="text-[10px] font-bold text-destructive">{prepareSoundError}</p>
                       </div>
                     )}
                   </>
@@ -1146,19 +1146,19 @@ export function SlideshowPage() {
 
               {/* Audio Track (legacy — per-project upload, only shown if no campaign sound picked) */}
               {!preparedSound && (
-                <div className="rounded-[var(--border-radius)] border-2 border-border bg-card p-4 shadow-[2px_2px_0_0_var(--border)]">
+                <div className="rounded-[var(--border-radius)] border border-border bg-card p-4 shadow-[var(--shadow)]">
                   <h2 className="text-sm font-heading text-foreground mb-3 flex items-center gap-2">
                     <Music className="h-4 w-4" /> Or Upload Audio
                   </h2>
                   <input ref={audioFileRef} type="file" accept=".mp3,.wav,.m4a,.aac,.ogg"
                     onChange={(e) => handleAudioUpload(e.target.files)}
-                    className="block w-full text-sm text-foreground file:mr-3 file:rounded-[var(--border-radius)] file:border-2 file:border-border file:bg-secondary file:px-3 file:py-1.5 file:text-sm file:font-bold file:text-foreground file:cursor-pointer hover:file:bg-muted" />
+                    className="block w-full text-sm text-foreground file:mr-3 file:rounded-[var(--border-radius)] file:border file:border-border file:bg-secondary file:px-3 file:py-1.5 file:text-sm file:font-bold file:text-foreground file:cursor-pointer hover:file:bg-muted" />
                   {uploadingAudio && <Badge variant="info" className="mt-2 text-xs">Uploading...</Badge>}
                   {audioFiles.length > 0 && (
                     <div className="mt-3 space-y-2">
                       {audioFiles.map((af) => (
                         <div key={af.name}
-                          className={`flex items-center gap-2 rounded-[var(--border-radius)] border-2 px-2 py-1.5 cursor-pointer transition-all ${
+                          className={`flex items-center gap-2 rounded-[var(--border-radius)] border px-2 py-1.5 cursor-pointer transition-all ${
                             selectedAudio === af.name ? 'border-primary bg-primary/5' : 'border-border bg-muted hover:border-muted-foreground'
                           }`}
                           onClick={() => setSelectedAudio(selectedAudio === af.name ? '' : af.name)}>
@@ -1176,7 +1176,7 @@ export function SlideshowPage() {
               )}
 
               {/* Meme Render */}
-              <div className="rounded-[var(--border-radius)] border-2 border-border bg-card p-4 shadow-[2px_2px_0_0_var(--border)]">
+              <div className="rounded-[var(--border-radius)] border border-border bg-card p-4 shadow-[var(--shadow)]">
                 <h2 className="text-sm font-heading text-foreground mb-3 flex items-center gap-2">
                   <Sparkles className="h-4 w-4" /> Render Batch
                 </h2>
@@ -1204,7 +1204,7 @@ export function SlideshowPage() {
                       <span className="font-bold text-foreground">{batchJob.message || 'Processing...'}</span>
                       <span className="font-bold text-muted-foreground">{batchJob.completed}/{batchJob.batch_size}</span>
                     </div>
-                    <div className="h-3 w-full rounded-[var(--border-radius)] border-2 border-border bg-muted overflow-hidden">
+                    <div className="h-3 w-full rounded-[var(--border-radius)] border border-border bg-muted overflow-hidden">
                       <div className="h-full bg-primary transition-all duration-300"
                         style={{ width: `${batchJob.batch_size > 0 ? (batchJob.completed / batchJob.batch_size) * 100 : 0}%` }} />
                     </div>
@@ -1214,7 +1214,7 @@ export function SlideshowPage() {
                 {batchJob?.status === 'complete' && memeOutputs.length > 0 && (
                   <div className="mt-3 space-y-3">
                     <div className="flex items-center justify-between">
-                      <p className="text-xs font-bold text-green-800">
+                      <p className="text-xs font-bold text-emerald-300">
                         {memeOutputs.length} video{memeOutputs.length !== 1 ? 's' : ''} ready
                       </p>
                       <Button variant="default" size="sm" className="h-7 px-3 text-xs" onClick={sendToBurn}>
@@ -1223,7 +1223,7 @@ export function SlideshowPage() {
                     </div>
                     <div className="grid grid-cols-2 gap-2 max-h-64 overflow-y-auto">
                       {memeOutputs.map((item) => (
-                        <div key={item.index} className="rounded-[var(--border-radius)] border-2 border-border bg-muted overflow-hidden">
+                        <div key={item.index} className="rounded-[var(--border-radius)] border border-border bg-muted overflow-hidden">
                           <video
                             src={apiUrl(`/projects/${encodeURIComponent(activeProjectName)}/videos/slideshow/${encodeURIComponent(item.output!)}`)}
                             controls className="w-full aspect-[9/16]"
@@ -1242,8 +1242,8 @@ export function SlideshowPage() {
                 )}
 
                 {batchJob?.status === 'error' && (
-                  <div className="mt-3 rounded-[var(--border-radius)] border-2 border-border bg-red-50 px-3 py-2">
-                    <p className="text-xs font-bold text-red-800">{batchJob.message || 'Batch render failed.'}</p>
+                  <div className="mt-3 rounded-[var(--border-radius)] border border-destructive/30 bg-destructive/10 px-3 py-2">
+                    <p className="text-xs font-bold text-destructive">{batchJob.message || 'Batch render failed.'}</p>
                   </div>
                 )}
               </div>
@@ -1251,7 +1251,7 @@ export function SlideshowPage() {
           )}
 
           {/* Completed Renders (shared between modes) */}
-          <div className="rounded-[var(--border-radius)] border-2 border-border bg-card p-4 shadow-[2px_2px_0_0_var(--border)]">
+          <div className="rounded-[var(--border-radius)] border border-border bg-card p-4 shadow-[var(--shadow)]">
             <h2 className="text-sm font-heading text-foreground mb-3 flex items-center gap-2">
               <Film className="h-4 w-4" /> Completed Renders
               {renders.length > 0 && <Badge variant="secondary" className="text-[10px] px-1.5 py-0">{renders.length}</Badge>}
@@ -1262,7 +1262,7 @@ export function SlideshowPage() {
             ) : (
               <div className="space-y-2">
                 {renders.map((render) => (
-                  <div key={render.name} className="rounded-[var(--border-radius)] border-2 border-border bg-muted p-3">
+                  <div key={render.name} className="rounded-[var(--border-radius)] border border-border bg-muted p-3">
                     <div className="flex items-center justify-between mb-2">
                       <span className="text-xs font-bold text-foreground truncate flex-1 mr-2">{render.name}</span>
                       <div className="flex items-center gap-1 flex-shrink-0">
@@ -1270,7 +1270,7 @@ export function SlideshowPage() {
                           download className="inline-flex">
                           <Button variant="outline" size="sm" className="h-7 px-2 text-xs">Download</Button>
                         </a>
-                        <Button variant="outline" size="sm" className="h-7 px-2 text-xs text-red-600 hover:bg-red-50"
+                        <Button variant="outline" size="sm" className="h-7 px-2 text-xs text-destructive hover:bg-destructive/10"
                           onClick={() => handleDeleteRender(render.name)}>
                           <Trash2 className="h-3 w-3" />
                         </Button>
@@ -1278,7 +1278,7 @@ export function SlideshowPage() {
                     </div>
                     <video
                       src={apiUrl(`/projects/${encodeURIComponent(activeProjectName)}/videos/slideshow/${encodeURIComponent(render.name)}`)}
-                      controls className="w-full rounded-[var(--border-radius)] border-2 border-border"
+                      controls className="w-full rounded-[var(--border-radius)] border border-border"
                     />
                   </div>
                 ))}

@@ -4,7 +4,13 @@ import { apiUrl, staticUrl } from '../lib/api';
 import { useWorkflowStore } from '../stores/workflowStore';
 import type { ColorCorrection, Provider, Job, VideoEntry, ProviderSchemas, SchemaField } from '../types/api';
 import { EmptyState, LazyVideo, ProgressBar } from '../components';
-import { FolderOpenIcon, XIcon, UploadSimpleIcon, ArrowRightIcon, PlayIcon } from '@phosphor-icons/react';
+import {
+  XIcon,
+  PlayIcon,
+  FolderOpenIcon,
+  UploadSimpleIcon,
+  ArrowRightIcon,
+} from '@phosphor-icons/react';
 import {
   DEFAULT_COLOR_CORRECTION,
   applyCSSFilterPreview,
@@ -169,6 +175,29 @@ function dataUriToFile(dataUri: string, filename: string): File {
 const activePolls = new Set<string>();
 const POLL_TIMEOUT_MS = 15 * 60 * 1000;
 
+interface PollStatus {
+  startedAt: number;
+  lastTickAt: number;
+  reconnecting: boolean;
+}
+
+const pollStatus = new Map<string, PollStatus>();
+const pollListeners = new Set<() => void>();
+
+function notifyPollListeners() {
+  for (const listener of pollListeners) listener();
+}
+
+/** Subscribe to poll-status changes. Returns unsubscribe fn. */
+export function subscribeToPollStatus(listener: () => void): () => void {
+  pollListeners.add(listener);
+  return () => { pollListeners.delete(listener); };
+}
+
+export function getPollStatus(jobId: string): PollStatus | undefined {
+  return pollStatus.get(jobId);
+}
+
 function startPolling(
   jobId: string,
   onUpdate: (job: Job) => void,
@@ -177,11 +206,15 @@ function startPolling(
   if (activePolls.has(jobId)) return;
   activePolls.add(jobId);
   const startedAt = Date.now();
+  pollStatus.set(jobId, { startedAt, lastTickAt: startedAt, reconnecting: false });
+  notifyPollListeners();
   let consecutiveErrors = 0;
 
   const tick = async () => {
     if (Date.now() - startedAt > POLL_TIMEOUT_MS) {
       activePolls.delete(jobId);
+      pollStatus.delete(jobId);
+      notifyPollListeners();
       onComplete({
         id: jobId,
         prompt: '',
@@ -197,6 +230,11 @@ function startPolling(
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const job: Job = await res.json();
       consecutiveErrors = 0;
+      const prev = pollStatus.get(jobId);
+      if (prev) {
+        pollStatus.set(jobId, { ...prev, lastTickAt: Date.now(), reconnecting: false });
+        notifyPollListeners();
+      }
       onUpdate(job);
 
       const allDone = job.videos.every(isTerminal);
@@ -204,12 +242,21 @@ function startPolling(
         setTimeout(tick, 2000);
       } else {
         activePolls.delete(jobId);
+        pollStatus.delete(jobId);
+        notifyPollListeners();
         onComplete(job);
       }
     } catch {
       consecutiveErrors++;
+      const prev = pollStatus.get(jobId);
+      if (prev) {
+        pollStatus.set(jobId, { ...prev, reconnecting: true });
+        notifyPollListeners();
+      }
       if (consecutiveErrors >= 10) {
         activePolls.delete(jobId);
+        pollStatus.delete(jobId);
+        notifyPollListeners();
         onComplete({
           id: jobId,
           prompt: '',
@@ -223,6 +270,26 @@ function startPolling(
     }
   };
   tick();
+}
+
+/** Provider p95 typical durations (approximate, based on observed latency). */
+const PROVIDER_P95_MS: Record<string, number> = {
+  sora: 4 * 60 * 1000,
+  luma: 3 * 60 * 1000,
+  'fal-wan': 2 * 60 * 1000,
+  'fal-kling': 2 * 60 * 1000,
+  'fal-ovi': 2 * 60 * 1000,
+  'rep-minimax': 3 * 60 * 1000,
+  'rep-wan': 3 * 60 * 1000,
+  'rep-kling': 3 * 60 * 1000,
+  grok: 2 * 60 * 1000,
+};
+
+function formatElapsed(ms: number): string {
+  const totalSec = Math.floor(ms / 1000);
+  const m = Math.floor(totalSec / 60);
+  const s = totalSec % 60;
+  return m > 0 ? `${m}m ${s.toString().padStart(2, '0')}s` : `${s}s`;
 }
 
 export function GeneratePage() {
@@ -248,6 +315,14 @@ export function GeneratePage() {
   const [providers, setProviders] = useState<Provider[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [pollTick, setPollTick] = useState(0);
+
+  useEffect(() => {
+    const rerender = () => setPollTick((t) => t + 1);
+    const unsubscribe = subscribeToPollStatus(rerender);
+    const interval = window.setInterval(rerender, 1000);
+    return () => { unsubscribe(); window.clearInterval(interval); };
+  }, []);
 
   const [prompt, setPrompt] = useState('');
   const [selectedProvider, setSelectedProvider] = useState('');
@@ -813,7 +888,7 @@ export function GeneratePage() {
       return (
         <div
           key={job.id}
-          className="group flex items-center gap-3 rounded-[var(--border-radius)] border-2 border-border bg-card px-3 py-2 hover:shadow-[2px_2px_0_0_var(--border)] hover:translate-x-[1px] hover:translate-y-[1px] transition-all cursor-pointer"
+          className="group flex items-center gap-3 rounded-[var(--border-radius)] border border-border bg-card px-3 py-2 hover:bg-muted hover:border-primary/30 transition-all cursor-pointer"
           onClick={() => toggleJobExpanded(job.id)}
         >
           <span className="text-xs text-muted-foreground -rotate-90 inline-block">▼</span>
@@ -846,6 +921,34 @@ export function GeneratePage() {
               )}
             </div>
             <div className="flex items-center gap-2">
+              {(() => {
+                const status = getPollStatus(job.id);
+                if (!status || allFinished) return null;
+                const elapsedMs = Date.now() - status.startedAt;
+                const p95 = PROVIDER_P95_MS[job.provider] ?? 2 * 60 * 1000;
+                const overP95 = elapsedMs > p95;
+                // Reference pollTick so this block re-renders every second
+                void pollTick;
+                return (
+                  <div className="flex items-center gap-2 text-[11px]">
+                    {status.reconnecting ? (
+                      <Badge variant="warning" className="text-[10px] shadow-none">
+                        Reconnecting…
+                      </Badge>
+                    ) : (
+                      <span className="heartbeat-dot" aria-label="Live polling" />
+                    )}
+                    <span className={`font-mono tabular-nums ${overP95 ? 'text-amber-400' : 'text-muted-foreground'}`}>
+                      {formatElapsed(elapsedMs)}
+                    </span>
+                    {overP95 && !status.reconnecting && (
+                      <span className="text-[10px] text-muted-foreground italic">
+                        Taking longer than usual…
+                      </span>
+                    )}
+                  </div>
+                );
+              })()}
               {isFullyDone && (
                 <button
                   type="button"
@@ -909,10 +1012,10 @@ export function GeneratePage() {
               return items.map(({ key, url, file, label, video: v, idx: vIdx }) => (
                 <div
                   key={key}
-                  className={`group/card relative rounded-[var(--border-radius)] overflow-hidden border-2 bg-card transition-all ${
+                  className={`group/card relative rounded-[var(--border-radius)] overflow-hidden border bg-card transition-all ${
                     selectMode && file && selectedVideos.has(file)
-                      ? 'border-primary shadow-[4px_4px_0_0_var(--primary)]'
-                      : 'border-border shadow-[2px_2px_0_0_var(--border)] hover:translate-x-[1px] hover:translate-y-[1px] hover:shadow-[1px_1px_0_0_var(--border)]'
+                      ? 'border-primary ring-2 ring-primary/40'
+                      : 'border-border shadow-[var(--shadow)] hover:border-primary/30'
                   }`}
                   onClick={selectMode && v.status === 'done' && file ? () => toggleVideoSelection(file) : undefined}
                 >
@@ -936,13 +1039,13 @@ export function GeneratePage() {
                       />
                     ) : v.status === 'error' || v.status === 'failed' ? (
                       <div className="flex flex-col items-center gap-2 text-muted-foreground text-sm">
-                        <XIcon size={24} weight="bold" />
+                        <XIcon size={28} weight="bold" />
                         <span className="font-bold">Failed</span>
                       </div>
                     ) : (
                       <div className="flex flex-col items-center gap-2 text-muted-foreground text-sm">
                         {v.status === 'queued' ? (
-                          <span className="text-2xl opacity-30">▶</span>
+                          <PlayIcon size={28} weight="duotone" className="opacity-30" />
                         ) : (
                           <div className="w-7 h-7 border-3 border-muted border-t-primary rounded-full animate-spin" />
                         )}
@@ -1015,7 +1118,7 @@ export function GeneratePage() {
                 </Button>
               ) : (
                 <Button variant="secondary" size="sm" onClick={() => sendSelectionToBurn(job)}>
-                  Use in Burn <ArrowRightIcon size={16} weight="bold" className="ml-1" />
+                  Use in Burn <ArrowRightIcon size={14} weight="bold" className="inline ml-1" />
                 </Button>
               )}
             </div>
@@ -1083,7 +1186,7 @@ export function GeneratePage() {
           <div>
             <Label>Upload Image or Video (optional)</Label>
             <div
-              className={`relative mt-1 border-2 border-dashed rounded-[var(--border-radius)] p-4 text-center cursor-pointer transition-colors ${
+              className={`relative mt-1 border border-dashed rounded-[var(--border-radius)] p-4 text-center cursor-pointer transition-colors ${
                 dragOver
                   ? 'border-primary bg-primary/5'
                   : mediaFile
@@ -1102,7 +1205,7 @@ export function GeneratePage() {
                 <button
                   type="button"
                   onClick={clearFile}
-                  className="absolute top-1.5 right-1.5 w-5 h-5 rounded-full border-2 border-border bg-card hover:bg-muted text-foreground text-xs flex items-center justify-center"
+                  className="absolute top-1.5 right-1.5 w-5 h-5 rounded-full border border-border bg-card hover:bg-muted text-foreground text-xs flex items-center justify-center"
                 >
                   ×
                 </button>
@@ -1112,7 +1215,7 @@ export function GeneratePage() {
                 <div className="text-sm text-primary font-bold truncate">{mediaFile.name}</div>
               ) : (
                 <>
-                  <UploadSimpleIcon size={20} weight="bold" className="mb-0.5" />
+                  <div className="mb-0.5 text-muted-foreground"><UploadSimpleIcon size={20} weight="bold" /></div>
                   <div className="text-muted-foreground text-sm">
                     Drop file or <strong className="text-foreground">click to browse</strong>
                   </div>
@@ -1206,8 +1309,8 @@ export function GeneratePage() {
 
               {/* Image required notice for i2v models */}
               {schema.image_required && !mediaFile && (
-                <Card className="border-amber-400 bg-amber-50">
-                  <CardContent className="py-2 text-sm text-amber-800">
+                <Card className="border-amber-500/40 bg-amber-500/10">
+                  <CardContent className="py-2 text-sm text-amber-200">
                     This model requires an image. Upload one above.
                   </CardContent>
                 </Card>
@@ -1218,7 +1321,7 @@ export function GeneratePage() {
                 <div>
                   <Label>Last Frame Image (optional)</Label>
                   <div
-                    className={`relative mt-1 border-2 border-dashed rounded-[var(--border-radius)] p-3 text-center cursor-pointer transition-colors ${
+                    className={`relative mt-1 border border-dashed rounded-[var(--border-radius)] p-3 text-center cursor-pointer transition-colors ${
                       lastImageFile
                         ? 'border-primary bg-primary/10'
                         : 'border-border hover:border-muted-foreground hover:bg-muted'
@@ -1233,7 +1336,7 @@ export function GeneratePage() {
                           setLastImageFile(null);
                           if (lastImageInputRef.current) lastImageInputRef.current.value = '';
                         }}
-                        className="absolute top-1.5 right-1.5 w-5 h-5 rounded-full border-2 border-border bg-card hover:bg-muted text-foreground text-xs flex items-center justify-center"
+                        className="absolute top-1.5 right-1.5 w-5 h-5 rounded-full border border-border bg-card hover:bg-muted text-foreground text-xs flex items-center justify-center"
                       >
                         ×
                       </button>
@@ -1334,8 +1437,8 @@ export function GeneratePage() {
           )}
 
           {error && (
-            <Card className="border-destructive bg-red-50">
-              <CardContent className="py-3 text-sm text-red-800">{error}</CardContent>
+            <Card className="border-destructive/40 bg-destructive/10">
+              <CardContent className="py-3 text-sm text-destructive">{error}</CardContent>
             </Card>
           )}
 
@@ -1346,7 +1449,7 @@ export function GeneratePage() {
             const expected = count * mult;
             if (mult <= 1) return null;
             return (
-              <div className="flex items-center justify-between rounded-[var(--border-radius)] border-2 border-primary/30 bg-primary/5 px-3 py-2 text-xs">
+              <div className="flex items-center justify-between rounded-[var(--border-radius)] border border-primary/30 bg-primary/5 px-3 py-2 text-xs">
                 <span className="text-muted-foreground">
                   {count} × <span className="font-bold text-foreground">{mult}-crop</span>
                 </span>
@@ -1459,7 +1562,7 @@ export function GeneratePage() {
                           key={`${entry.job_id}-${i}`}
                           type="button"
                           onClick={() => applyPromptEntry(entry)}
-                          className="w-full text-left rounded-[var(--border-radius)] px-3 py-2 border-2 border-border bg-card hover:bg-muted hover:shadow-[2px_2px_0_0_var(--border)] transition-all group"
+                          className="w-full text-left rounded-[var(--border-radius)] px-3 py-2 border border-border bg-card hover:bg-muted hover:border-primary/30 transition-all group"
                         >
                           <div className="text-[13px] text-foreground group-hover:text-primary leading-snug line-clamp-2">
                             {entry.prompt}
@@ -1518,7 +1621,7 @@ export function GeneratePage() {
           ) : (
             <div className="space-y-6">
               {liveJobs.length === 0 && archivedJobs.length > 0 && (
-                <div className="rounded-[var(--border-radius)] border-2 border-dashed border-border bg-muted/30 px-4 py-6 text-center text-sm text-muted-foreground">
+                <div className="rounded-[var(--border-radius)] border border-dashed border-border bg-muted/30 px-4 py-6 text-center text-sm text-muted-foreground">
                   All caught up. {archivedJobs.length} archived {archivedJobs.length === 1 ? 'job' : 'jobs'} below.
                 </div>
               )}
@@ -1579,7 +1682,7 @@ export function GeneratePage() {
               </Button>
             </div>
             <Button size="sm" disabled={selectedVideos.size === 0} onClick={sendSelectedToBurn}>
-              Send {selectedVideos.size} to Burn <ArrowRightIcon size={16} weight="bold" className="ml-1" />
+              Send {selectedVideos.size} to Burn <ArrowRightIcon size={14} weight="bold" className="inline ml-1" />
             </Button>
           </div>
         )}

@@ -1,8 +1,14 @@
 import { useMemo } from 'react';
+import {
+  CaretUpDownIcon,
+  CaretUpIcon,
+  CaretDownIcon,
+  CheckIcon,
+  XIcon,
+} from '@phosphor-icons/react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { CaretUpDownIcon, CaretUpIcon, CaretDownIcon, CheckIcon, XIcon } from '@phosphor-icons/react';
 import type {
   RosterPage,
   EmailStatusResponse,
@@ -132,10 +138,8 @@ export function RosterTab({
   onRefreshRoster,
 }: RosterTabProps) {
   const sortArrow = (key: SortKey) => {
-    if (sortKey !== key) return <CaretUpDownIcon size={12} weight="bold" className="inline text-muted-foreground/40 ml-1" />;
-    return sortDir === 'asc'
-      ? <CaretUpIcon size={12} weight="bold" className="inline ml-1" />
-      : <CaretDownIcon size={12} weight="bold" className="inline ml-1" />;
+    if (sortKey !== key) return <CaretUpDownIcon size={12} weight="bold" className="text-muted-foreground/40 ml-1 inline" />;
+    return <span className="ml-1 inline-flex">{sortDir === 'asc' ? <CaretUpIcon size={12} weight="bold" /> : <CaretDownIcon size={12} weight="bold" />}</span>;
   };
 
   const displayPages = useMemo(() => {
@@ -153,7 +157,7 @@ export function RosterTab({
     <div className="space-y-4">
       {/* Not configured warning */}
       {!postizConfigured && (
-        <div className="rounded-[var(--border-radius)] border-2 border-border bg-amber-100 text-amber-900 px-4 py-3 text-sm shadow-[2px_2px_0_0_var(--border)]">
+        <div className="rounded-[var(--border-radius)] border border-amber-500/30 bg-amber-500/10 text-amber-200 px-4 py-3 text-sm">
           <strong>POSTIZ_API_KEY</strong> is not set in your <code>.env</code> file. Add it to enable publishing.
         </div>
       )}
@@ -161,7 +165,7 @@ export function RosterTab({
       {postizConfigured && (
         <div className="space-y-4">
           {/* Toolbar */}
-          <div className="flex items-center justify-between rounded-[var(--border-radius)] border-2 border-border bg-muted px-4 py-3">
+          <div className="flex items-center justify-between rounded-[var(--border-radius)] border border-border bg-muted px-4 py-3">
             <div className="flex items-center gap-4 text-sm">
               <span>
                 <span className="font-bold">{rosterPages.length}</span> page{rosterPages.length !== 1 ? 's' : ''}
@@ -184,7 +188,7 @@ export function RosterTab({
               )}
               <label className="text-xs font-bold text-muted-foreground">Filter:</label>
               <select
-                className="rounded-[var(--border-radius)] border-2 border-border bg-card px-2 py-1 text-xs font-bold"
+                className="rounded-[var(--border-radius)] border border-border bg-card px-2 py-1 text-xs font-bold"
                 value={filterProject}
                 onChange={(e) => onFilterProjectChange(e.target.value)}
               >
@@ -202,14 +206,14 @@ export function RosterTab({
 
           {/* Empty state */}
           {rosterPages.length === 0 && !rosterLoading && !syncing && (
-            <div className="rounded-[var(--border-radius)] border-2 border-border bg-muted px-4 py-8 text-center text-muted-foreground">
+            <div className="rounded-[var(--border-radius)] border border-border bg-muted px-4 py-8 text-center text-muted-foreground">
               No pages found. Make sure Postiz is reachable — pages sync automatically.
             </div>
           )}
 
           {/* Data table */}
           {displayPages.length > 0 && (
-            <div className="rounded-[var(--border-radius)] border-2 border-border bg-card shadow-[2px_2px_0_0_var(--border)] overflow-x-auto">
+            <div className="rounded-[var(--border-radius)] border border-border bg-card shadow-[var(--shadow)] overflow-x-auto">
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b-2 border-border bg-muted text-left">
@@ -261,7 +265,7 @@ export function RosterTab({
                         </td>
                         <td className="px-3 py-2">
                           <select
-                            className="rounded-[var(--border-radius)] border-2 border-border bg-card px-2 py-1 text-xs font-bold w-full min-w-[120px]"
+                            className="rounded-[var(--border-radius)] border border-border bg-card px-2 py-1 text-xs font-bold w-full min-w-[120px]"
                             value={page.project ?? ''}
                             onChange={(e) => onAssignProject(page.integration_id, e.target.value || null)}
                           >
@@ -321,7 +325,7 @@ export function RosterTab({
                                 onClick={() => onDeleteEmailAlias(page)}
                                 title="Remove alias"
                               >
-                                <XIcon size={12} weight="bold" />
+                                <XIcon size={10} weight="bold" />
                               </button>
                             </div>
                           ) : emailStatus?.configured ? (
@@ -395,7 +399,7 @@ export function RosterTab({
       {/* Destination Address Modal */}
       {showDestModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-          <div className="w-full max-w-md rounded-[var(--border-radius)] border-2 border-border bg-card shadow-[4px_4px_0_0_var(--border)] p-6 space-y-4">
+          <div className="w-full max-w-md rounded-[var(--border-radius)] border border-border bg-card shadow-[0_24px_64px_rgba(0,0,0,0.65)] p-6 space-y-4">
             <div className="flex items-center justify-between">
               <h2 className="text-lg font-heading font-bold">Destination Addresses</h2>
               <button type="button" className="text-muted-foreground hover:text-foreground" onClick={() => onShowDestModal(false)}>
@@ -412,7 +416,7 @@ export function RosterTab({
                 <div className="text-sm text-muted-foreground text-center py-3">No destinations yet.</div>
               ) : (
                 destinations.map((dest) => (
-                  <div key={dest.id} className="flex items-center justify-between rounded-[var(--border-radius)] border-2 border-border px-3 py-2">
+                  <div key={dest.id} className="flex items-center justify-between rounded-[var(--border-radius)] border border-border px-3 py-2">
                     <span className="text-sm font-mono">{dest.email}</span>
                     <Badge variant={dest.verified ? 'success' : 'warning'} className="text-[10px]">
                       {dest.verified ? 'Verified' : 'Pending'}

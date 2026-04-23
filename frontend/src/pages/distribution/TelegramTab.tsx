@@ -152,7 +152,7 @@ export function TelegramTab({
 
               {/* Inventory Table */}
               {topicEntries.length > 0 && (
-                <div className="overflow-hidden rounded-[var(--border-radius)] border-2 border-border">
+                <div className="overflow-hidden rounded-[var(--border-radius)] border border-border">
                   <table className="w-full divide-y divide-border">
                     <thead className="bg-muted">
                       <tr>
@@ -243,9 +243,9 @@ export function TelegramTab({
 
               {/* Dedup audit output */}
               {error && error.includes('duplicate') && (
-                <Card className="border-amber-500 bg-amber-50">
+                <Card className="border-amber-500/40 bg-amber-500/10">
                   <CardContent className="max-h-64 overflow-y-auto py-3">
-                    <pre className="whitespace-pre-wrap text-xs text-amber-900 select-all">{error}</pre>
+                    <pre className="whitespace-pre-wrap text-xs text-amber-200 select-all">{error}</pre>
                     <Button size="xs" variant="ghost" className="mt-2" onClick={() => setError(null)}>Dismiss</Button>
                   </CardContent>
                 </Card>
@@ -274,7 +274,7 @@ export function TelegramTab({
                 return (
                   <div
                     key={poster.poster_id}
-                    className="rounded-[var(--border-radius)] border-2 border-border bg-card shadow-[4px_4px_0_0_var(--border)]"
+                    className="rounded-[var(--border-radius)] border border-border bg-card shadow-[0_8px_24px_rgba(0,0,0,0.55)]"
                   >
                     {/* Poster header */}
                     <div className="flex items-start justify-between border-b border-border p-4">
@@ -312,7 +312,7 @@ export function TelegramTab({
                           {assignedPages.map((p) => (
                             <div
                               key={p.integration_id}
-                              className="group relative flex flex-col items-center gap-1.5 rounded-[var(--border-radius)] border-2 border-primary/30 bg-primary/5 p-2 text-center"
+                              className="group relative flex flex-col items-center gap-1.5 rounded-[var(--border-radius)] border border-primary/30 bg-primary/5 p-2 text-center"
                             >
                               <button
                                 type="button"
@@ -384,9 +384,9 @@ export function TelegramTab({
                                   key={p.integration_id}
                                   type="button"
                                   onClick={() => onTogglePageSelection(poster.poster_id, p.integration_id)}
-                                  className={`relative flex flex-col items-center gap-1.5 rounded-[var(--border-radius)] border-2 p-2 text-center transition-all ${
+                                  className={`relative flex flex-col items-center gap-1.5 rounded-[var(--border-radius)] border p-2 text-center transition-all ${
                                     isSelected
-                                      ? 'border-primary bg-primary/10 shadow-[2px_2px_0_0_var(--border)]'
+                                      ? 'border-primary bg-primary/10 ring-2 ring-primary/40'
                                       : 'border-border bg-card hover:border-muted-foreground hover:bg-muted/50'
                                   }`}
                                 >

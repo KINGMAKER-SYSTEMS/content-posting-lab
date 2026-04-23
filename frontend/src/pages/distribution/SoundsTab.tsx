@@ -84,7 +84,7 @@ export function SoundsTab({
               {[...sounds].sort((a, b) => (a.active === b.active ? 0 : a.active ? -1 : 1)).map((sound) => (
                 <div
                   key={sound.id}
-                  className={`flex items-center gap-3 rounded-[var(--border-radius)] border-2 p-3 ${
+                  className={`flex items-center gap-3 rounded-[var(--border-radius)] border p-3 ${
                     sound.active
                       ? 'border-border'
                       : 'border-border/50 bg-muted/30 opacity-60'

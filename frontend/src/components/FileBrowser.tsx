@@ -38,7 +38,7 @@ export const FileBrowser: React.FC<FileBrowserProps> = ({
 
   if (files.length === 0) {
     return (
-      <div className={`flex items-center justify-center p-8 text-muted-foreground border-2 border-dashed border-border rounded-[var(--border-radius)] ${className}`}>
+      <div className={`flex items-center justify-center p-8 text-muted-foreground border border-dashed border-border rounded-[var(--border-radius)] ${className}`}>
         {emptyMessage}
       </div>
     );
@@ -49,10 +49,10 @@ export const FileBrowser: React.FC<FileBrowserProps> = ({
       {files.map((file) => (
         <div
           key={file.id}
-          className={`group relative border-2 rounded-[var(--border-radius)] overflow-hidden cursor-pointer transition-all duration-100 ${
+          className={`group relative border rounded-[var(--border-radius)] overflow-hidden cursor-pointer transition-all duration-100 ${
             selectedFileId === file.id
-              ? 'border-primary shadow-shadow'
-              : 'border-border shadow-[3px_3px_0_0_var(--border)] hover:translate-x-[1px] hover:translate-y-[1px] hover:shadow-[2px_2px_0_0_var(--border)]'
+              ? 'border-primary ring-2 ring-primary/40'
+              : 'border-border shadow-[var(--shadow)] hover:border-primary/30'
           }`}
           onClick={() => onSelect?.(file)}
         >
@@ -84,7 +84,7 @@ export const FileBrowser: React.FC<FileBrowserProps> = ({
                     e.stopPropagation();
                     onDownload(file);
                   }}
-                  className="p-2 bg-card border-2 border-border rounded-[var(--border-radius)] shadow-[2px_2px_0_0_var(--border)] hover:translate-x-[1px] hover:translate-y-[1px] hover:shadow-[1px_1px_0_0_var(--border)] text-foreground transition-all duration-100"
+                  className="p-2 bg-card border border-border rounded-[var(--border-radius)] shadow-[var(--shadow)] hover:border-primary/30 hover:bg-muted text-foreground transition-all duration-100"
                   title="Download"
                 >
                   <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">

@@ -156,7 +156,7 @@ export function AssignToPagesDialog({
                     type="button"
                     disabled={!eligible}
                     onClick={() => eligible && togglePage(page.integration_id)}
-                    className={`flex w-full items-center gap-3 rounded-md border-2 p-3 text-left transition-all ${
+                    className={`flex w-full items-center gap-3 rounded-md border p-3 text-left transition-all ${
                       !eligible
                         ? 'cursor-not-allowed border-border/50 bg-muted/30 opacity-50'
                         : isSelected

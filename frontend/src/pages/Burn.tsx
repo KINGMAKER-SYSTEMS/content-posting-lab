@@ -1,4 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { FolderOpenIcon, FlameIcon } from '@phosphor-icons/react';
 import { apiUrl, staticUrl } from '../lib/api';
 import { EmptyState, LazyVideo, ProgressBar } from '../components';
 import { FolderOpenIcon, FlameIcon } from '@phosphor-icons/react';
@@ -83,6 +84,10 @@ interface BurnPairState {
   videoWidth?: number;
   videoHeight?: number;
   previewScale?: number;
+  /** When true, per-pair styling has been manually overridden and should NOT
+   *  inherit live updates from the default style panel. Reset button restores
+   *  inherit-from-defaults behavior. */
+  styleOverridden?: boolean;
 }
 
 interface DragState {
@@ -154,6 +159,7 @@ interface PairCardProps {
   onStrokeColorChange: (i: number, color: string) => void;
   onPositionChange: (i: number, y: number) => void;
   onColorCorrectionChange: (i: number, key: keyof ColorCorrection, val: number) => void;
+  onResetToDefault: (i: number) => void;
   onDimensions: (i: number, w: number, h: number) => void;
   onWrapRef: (i: number, node: HTMLDivElement | null) => void;
 }
@@ -164,7 +170,7 @@ const PairCard = memo(function PairCard({
   onSelect, onStartDrag, onInlineEdit, onToggleToolbar,
   onCaptionChange, onFontSizeChange, onFontFileChange, onMaxWidthChange,
   onFontColorChange, onStrokeColorChange, onPositionChange, onColorCorrectionChange,
-  onDimensions, onWrapRef,
+  onResetToDefault, onDimensions, onWrapRef,
 }: PairCardProps) {
   const [ccOpen, setCcOpen] = useState(false);
   const hasError = Boolean(pair.result && !pair.result.ok);
@@ -185,11 +191,11 @@ const PairCard = memo(function PairCard({
 
   return (
     <article
-      className={`relative overflow-hidden rounded-[var(--border-radius)] border-2 bg-card transition-all ${
-        hasBurned ? 'border-green-700 shadow-[3px_3px_0_0_var(--green-700,#15803d)]'
-          : hasError ? 'border-destructive'
-          : selected ? 'border-primary shadow-[4px_4px_0_0_var(--primary)]'
-          : 'border-border hover:translate-x-[1px] hover:translate-y-[1px] hover:shadow-[3px_3px_0_0_var(--border)]'
+      className={`relative overflow-hidden rounded-[var(--border-radius)] border bg-card transition-all ${
+        hasBurned ? 'border-emerald-500/40 ring-2 ring-emerald-500/30'
+          : hasError ? 'border-destructive ring-2 ring-destructive/30'
+          : selected ? 'border-primary ring-2 ring-primary/40'
+          : 'border-border shadow-[var(--shadow)] hover:border-primary/30'
       }`}
       onClick={(e) => {
         const t = e.target as HTMLElement;
@@ -246,25 +252,47 @@ const PairCard = memo(function PairCard({
 
             {hasBurned ? <Badge variant="success" className="absolute right-2 top-2 z-30">Burned</Badge> : null}
             {hasError ? <Badge variant="error" className="absolute right-2 top-2 z-30" title={pair.result?.error || ''}>Error</Badge> : null}
+            {!hasBurned ? (
+              <Badge
+                variant={pair.styleOverridden ? 'default' : 'secondary'}
+                className="absolute left-2 top-2 z-30 text-[9px] px-1.5 py-0"
+                title={pair.styleOverridden ? 'This pair has custom style — Default Style panel updates will not apply.' : 'Inheriting from Default Style — panel updates cascade here.'}
+              >
+                {pair.styleOverridden ? 'Overridden' : 'Inherits'}
+              </Badge>
+            ) : null}
           </div>
 
           <div className="flex flex-col gap-1.5 px-2.5 py-2">
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between gap-2">
               <div className="truncate text-xs text-muted-foreground" title={pair.name}>{pair.name}</div>
               {!hasBurned ? (
-                <button
-                  type="button"
-                  data-card-controls
-                  onClick={(e) => { e.stopPropagation(); onToggleToolbar(index); }}
-                  className={`flex items-center gap-1 rounded-md border px-2 py-0.5 text-[10px] font-medium transition-colors ${
-                    toolbarOpen
-                      ? 'border-primary bg-primary/10 text-primary'
-                      : 'border-border text-muted-foreground hover:border-primary hover:text-primary'
-                  }`}
-                >
-                  <span>{toolbarOpen ? '▾' : '▸'}</span>
-                  Edit
-                </button>
+                <div className="flex items-center gap-1">
+                  {pair.styleOverridden ? (
+                    <button
+                      type="button"
+                      data-card-controls
+                      onClick={(e) => { e.stopPropagation(); onResetToDefault(index); }}
+                      title="Reset this pair's style to the Default Style panel values"
+                      className="flex items-center gap-1 rounded-md border border-border px-2 py-0.5 text-[10px] font-medium text-muted-foreground transition-colors hover:border-primary hover:text-primary"
+                    >
+                      Reset
+                    </button>
+                  ) : null}
+                  <button
+                    type="button"
+                    data-card-controls
+                    onClick={(e) => { e.stopPropagation(); onToggleToolbar(index); }}
+                    className={`flex items-center gap-1 rounded-md border px-2 py-0.5 text-[10px] font-medium transition-colors ${
+                      toolbarOpen
+                        ? 'border-primary bg-primary/10 text-primary'
+                        : 'border-border text-muted-foreground hover:border-primary hover:text-primary'
+                    }`}
+                  >
+                    <span>{toolbarOpen ? '▾' : '▸'}</span>
+                    Edit
+                  </button>
+                </div>
               ) : null}
             </div>
             <Textarea
@@ -451,7 +479,14 @@ const PairCard = memo(function PairCard({
 });
 
 export function BurnPage() {
-  const { activeProjectName, addNotification, burnSelection, clearBurnSelection, setBurnReadyCount } = useWorkflowStore();
+  const { activeProjectName, addNotification, burnSelection, consumeBurnSelection, setBurnReadyCount } = useWorkflowStore();
+
+  const [carryoverHint, setCarryoverHint] = useState<{ videoCount: number; captionSource: string | null } | null>(() => {
+    if (burnSelection.videoPaths.length > 0 || burnSelection.captionSource) {
+      return { videoCount: burnSelection.videoPaths.length, captionSource: burnSelection.captionSource };
+    }
+    return null;
+  });
 
   const [videos, setVideos] = useState<VideoFile[]>([]);
   const [captionSources, setCaptionSources] = useState<CaptionSource[]>([]);
@@ -561,7 +596,7 @@ export function BurnPage() {
   const encodedProjectName = useMemo(() => encodeURIComponent(projectName), [projectName]);
 
   const applyPairsColorCorrection = useCallback((cc: ColorCorrection) => {
-    setPairs((prev) => prev.map((p) => ({ ...p, colorCorrection: getColorCorrectionOrNull(cc) })));
+    setPairs((prev) => prev.map((p) => p.styleOverridden ? p : ({ ...p, colorCorrection: getColorCorrectionOrNull(cc) })));
   }, []);
 
   const loadBatches = useCallback(async () => {
@@ -620,13 +655,12 @@ export function BurnPage() {
         if (burnSelection.captionSource && ns.some((s) => s.username === burnSelection.captionSource)) return burnSelection.captionSource;
         return '__paste';
       });
-      if (burnSelection.videoPaths.length > 0 || burnSelection.captionSource) clearBurnSelection();
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'Failed to load burn data';
       setError(msg); addNotification('error', msg);
       setVideos([]); setCaptionSources([]); setAvailableFonts([]); setBatches([]);
     } finally { setIsLoading(false); }
-  }, [activeProjectName, addNotification, burnSelection.captionSource, burnSelection.videoPaths, clearBurnSelection]);
+  }, [activeProjectName, addNotification, burnSelection.captionSource, burnSelection.videoPaths]);
 
   const selectCard = useCallback((i: number) => { setInlineEditIndex(null); setSelectedIndex((p) => p === i ? -1 : i); }, []);
   const handleInlineEdit = useCallback((i: number) => { if (i < 0) setInlineEditIndex(null); else { setInlineEditIndex(i); setSelectedIndex(i); } }, []);
@@ -656,6 +690,11 @@ export function BurnPage() {
 
   useEffect(() => { void loadData(); }, [loadData]);
   useEffect(() => {
+    if (burnSelection.videoPaths.length > 0 || burnSelection.captionSource) {
+      setCarryoverHint({ videoCount: burnSelection.videoPaths.length, captionSource: burnSelection.captionSource });
+    }
+  }, [burnSelection.videoPaths, burnSelection.captionSource]);
+  useEffect(() => {
     if (!activeProjectName) return;
     try {
       localStorage.setItem(`burn:folders:${activeProjectName}`, JSON.stringify(selectedFolders));
@@ -680,16 +719,13 @@ export function BurnPage() {
     return () => { if (fontStyleRef.current) { document.head.removeChild(fontStyleRef.current); fontStyleRef.current = null; } };
   }, [availableFonts]);
 
-  useEffect(() => { if (selectedFontFile) setPairs((p) => p.map((pair) => ({ ...pair, fontFile: selectedFontFile }))); }, [selectedFontFile]);
-  useEffect(() => { if (pairs.length > 0) setPairs((p) => p.map((pair) => ({ ...pair, fontColor, strokeColor }))); }, [fontColor, strokeColor]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { if (selectedFontFile) setPairs((p) => p.map((pair) => pair.styleOverridden ? pair : ({ ...pair, fontFile: selectedFontFile }))); }, [selectedFontFile]);
+  useEffect(() => { if (pairs.length > 0) setPairs((p) => p.map((pair) => pair.styleOverridden ? pair : ({ ...pair, fontColor, strokeColor }))); }, [fontColor, strokeColor]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { applyPairsColorCorrection(colorCorrection); }, [applyPairsColorCorrection, colorCorrection]);
-  // Auto-apply font size / line-height / stroke changes to all existing pairs
-  // Auto-apply font size changes to all existing pairs
-  useEffect(() => { if (pairs.length > 0) setPairs((p) => p.map((pair) => ({ ...pair, fontSize: defaultFontSize || 32 }))); }, [defaultFontSize]); // eslint-disable-line react-hooks/exhaustive-deps
-  // Auto-apply text width changes to all existing pairs
-  useEffect(() => { if (pairs.length > 0) setPairs((p) => p.map((pair) => ({ ...pair, maxWidthPct: defaultMaxWidth }))); }, [defaultMaxWidth]); // eslint-disable-line react-hooks/exhaustive-deps
-  // Auto-apply quick position changes to all existing pairs
-  useEffect(() => { if (pairs.length > 0) { const y = POSITION_Y_MAP[quickPosition] ?? 50; setPairs((p) => p.map((pair) => ({ ...pair, x: 50, y }))); } }, [quickPosition]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Auto-apply default style changes to all pairs EXCEPT those manually overridden
+  useEffect(() => { if (pairs.length > 0) setPairs((p) => p.map((pair) => pair.styleOverridden ? pair : ({ ...pair, fontSize: defaultFontSize || 32 }))); }, [defaultFontSize]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { if (pairs.length > 0) setPairs((p) => p.map((pair) => pair.styleOverridden ? pair : ({ ...pair, maxWidthPct: defaultMaxWidth }))); }, [defaultMaxWidth]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { if (pairs.length > 0) { const y = POSITION_Y_MAP[quickPosition] ?? 50; setPairs((p) => p.map((pair) => pair.styleOverridden ? pair : ({ ...pair, x: 50, y }))); } }, [quickPosition]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { setBurnReadyCount(Math.min(multiSelectedVideos.length, selectedCaptionItems.length)); }, [multiSelectedVideos.length, selectedCaptionItems.length, setBurnReadyCount]);
   useEffect(() => { const h = () => refreshPairScales(); window.addEventListener('resize', h); return () => window.removeEventListener('resize', h); }, [refreshPairScales]);
 
@@ -717,8 +753,12 @@ export function BurnPage() {
     setPairs(np); setSelectedIndex(-1); setInlineEditIndex(null);
     setShowExportBar(false); setExportCount(0); setBurnBatchId(null);
     setProgressVisible(false); setProgressLabel(''); setProgressValue(0);
+    if (burnSelection.videoPaths.length > 0 || burnSelection.captionSource) {
+      consumeBurnSelection();
+      setCarryoverHint(null);
+    }
     requestAnimationFrame(() => refreshPairScales());
-  }, [colorCorrection, defaultFontSize, defaultMaxWidth, fontColor, multiSelectedVideos, quickPosition, randomizeCaptions, refreshPairScales, selectedCaptionItems, selectedFontFile, strokeColor]);
+  }, [burnSelection.captionSource, burnSelection.videoPaths, colorCorrection, consumeBurnSelection, defaultFontSize, defaultMaxWidth, fontColor, multiSelectedVideos, quickPosition, randomizeCaptions, refreshPairScales, selectedCaptionItems, selectedFontFile, strokeColor]);
 
   const handleQuickPosition = useCallback((pos: QuickPosition) => {
     setQuickPosition(pos);
@@ -737,27 +777,27 @@ export function BurnPage() {
 
   const handlePairFontSizeChange = useCallback((i: number, v: number) => {
     const size = Number.isNaN(v) ? 32 : Math.max(8, Math.min(120, v));
-    setPairs((p) => p.map((pair, idx) => idx === i ? { ...pair, fontSize: size } : pair));
+    setPairs((p) => p.map((pair, idx) => idx === i ? { ...pair, fontSize: size, styleOverridden: true } : pair));
   }, []);
 
   const handlePairFontFileChange = useCallback((i: number, fontFile: string) => {
-    setPairs((p) => p.map((pair, idx) => idx === i ? { ...pair, fontFile } : pair));
+    setPairs((p) => p.map((pair, idx) => idx === i ? { ...pair, fontFile, styleOverridden: true } : pair));
   }, []);
 
   const handlePairMaxWidthChange = useCallback((i: number, v: number) => {
-    setPairs((p) => p.map((pair, idx) => idx === i ? { ...pair, maxWidthPct: Math.max(20, Math.min(95, v)) } : pair));
+    setPairs((p) => p.map((pair, idx) => idx === i ? { ...pair, maxWidthPct: Math.max(20, Math.min(95, v)), styleOverridden: true } : pair));
   }, []);
 
   const handlePairFontColorChange = useCallback((i: number, color: string) => {
-    setPairs((p) => p.map((pair, idx) => idx === i ? { ...pair, fontColor: color } : pair));
+    setPairs((p) => p.map((pair, idx) => idx === i ? { ...pair, fontColor: color, styleOverridden: true } : pair));
   }, []);
 
   const handlePairStrokeColorChange = useCallback((i: number, color: string) => {
-    setPairs((p) => p.map((pair, idx) => idx === i ? { ...pair, strokeColor: color } : pair));
+    setPairs((p) => p.map((pair, idx) => idx === i ? { ...pair, strokeColor: color, styleOverridden: true } : pair));
   }, []);
 
   const handlePairPositionChange = useCallback((i: number, y: number) => {
-    setPairs((p) => p.map((pair, idx) => idx === i ? { ...pair, x: 50, y } : pair));
+    setPairs((p) => p.map((pair, idx) => idx === i ? { ...pair, x: 50, y, styleOverridden: true } : pair));
   }, []);
 
   const handlePairColorCorrectionChange = useCallback((i: number, key: keyof ColorCorrection, val: number) => {
@@ -765,9 +805,46 @@ export function BurnPage() {
       if (idx !== i) return pair;
       const base = pair.colorCorrection ?? { ...DEFAULT_COLOR_CORRECTION };
       const updated = { ...base, [key]: val };
-      return { ...pair, colorCorrection: getColorCorrectionOrNull(updated) };
+      return { ...pair, colorCorrection: getColorCorrectionOrNull(updated), styleOverridden: true };
     }));
   }, []);
+
+  /** Reset one pair back to the defaults from the top panel — flips
+   *  styleOverridden off so future default-panel edits cascade again. */
+  const handlePairResetToDefault = useCallback((i: number) => {
+    const y = POSITION_Y_MAP[quickPosition] ?? 50;
+    const cc = getColorCorrectionOrNull(colorCorrection);
+    setPairs((p) => p.map((pair, idx) => idx === i ? {
+      ...pair,
+      x: 50, y,
+      fontSize: defaultFontSize || 32,
+      fontFile: selectedFontFile,
+      maxWidthPct: defaultMaxWidth,
+      lineHeight: DEFAULT_LINE_HEIGHT,
+      strokeWidth: DEFAULT_STROKE_WIDTH,
+      fontColor, strokeColor,
+      colorCorrection: cc,
+      styleOverridden: false,
+    } : pair));
+  }, [colorCorrection, defaultFontSize, defaultMaxWidth, fontColor, quickPosition, selectedFontFile, strokeColor]);
+
+  /** Reset ALL pairs to defaults — inherits-from-panel mode restored. */
+  const handleResetAllToDefault = useCallback(() => {
+    const y = POSITION_Y_MAP[quickPosition] ?? 50;
+    const cc = getColorCorrectionOrNull(colorCorrection);
+    setPairs((p) => p.map((pair) => ({
+      ...pair,
+      x: 50, y,
+      fontSize: defaultFontSize || 32,
+      fontFile: selectedFontFile,
+      maxWidthPct: defaultMaxWidth,
+      lineHeight: DEFAULT_LINE_HEIGHT,
+      strokeWidth: DEFAULT_STROKE_WIDTH,
+      fontColor, strokeColor,
+      colorCorrection: cc,
+      styleOverridden: false,
+    })));
+  }, [colorCorrection, defaultFontSize, defaultMaxWidth, fontColor, quickPosition, selectedFontFile, strokeColor]);
 
   const setPairDimensions = useCallback((i: number, vw: number, vh: number) => {
     const cardW = getCardWidth();
@@ -1046,7 +1123,7 @@ export function BurnPage() {
         <div className="mt-1 mb-1 text-[10px] text-muted-foreground">
           {selectedFolders.length}/{groupedFolders.length} selected
         </div>
-        <div className="mb-4 min-h-[72px] max-h-56 shrink-0 overflow-y-auto rounded-md border-2 border-border bg-background">
+        <div className="mb-4 min-h-[72px] max-h-56 shrink-0 overflow-y-auto rounded-md border border-border bg-background">
           {groupedFolders.length === 0 ? (
             <div className="px-2 py-3 text-xs text-muted-foreground italic">No videos in project</div>
           ) : (
@@ -1432,14 +1509,37 @@ export function BurnPage() {
         ) : null}
 
         {error ? (
-          <Card className="mt-3 border-destructive bg-red-50">
-            <CardContent className="max-h-48 overflow-y-auto py-2 text-xs text-red-800 whitespace-pre-wrap break-all select-all">{error}</CardContent>
+          <Card className="mt-3 border-destructive/40 bg-destructive/10">
+            <CardContent className="max-h-48 overflow-y-auto py-2 text-xs text-destructive whitespace-pre-wrap break-all select-all">{error}</CardContent>
           </Card>
         ) : null}
       </aside>
 
       {/* Main content */}
       <main className="min-h-0 overflow-y-auto bg-background p-6">
+        {carryoverHint && !hasPairs ? (
+          <Card className="mb-4 border-primary/40 bg-primary/5">
+            <CardContent className="flex items-center justify-between gap-4 py-3">
+              <div className="flex flex-col gap-0.5">
+                <span className="text-sm font-heading text-foreground">
+                  {carryoverHint.videoCount > 0
+                    ? `${carryoverHint.videoCount} video${carryoverHint.videoCount === 1 ? '' : 's'} carried over`
+                    : 'Caption source carried over'}
+                </span>
+                <span className="text-xs text-muted-foreground">
+                  Click Align &amp; Preview to use them, or dismiss to start fresh.
+                </span>
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => { consumeBurnSelection(); setCarryoverHint(null); }}
+              >
+                Start fresh
+              </Button>
+            </CardContent>
+          </Card>
+        ) : null}
         {!hasPairs ? (
           <div className="flex h-[60vh] items-center justify-center">
             <EmptyState icon={<FlameIcon size={48} weight="duotone" />} title="No Pairs Yet" description="Pick a video folder and caption source, then hit Align & Preview." />
@@ -1448,8 +1548,34 @@ export function BurnPage() {
           <div className="flex flex-col gap-4">
             <div className="flex items-center justify-between">
               <span className="text-xl font-heading text-foreground">Paired Clips</span>
-              <Badge variant="secondary">{pairs.length} pairs</Badge>
+              <div className="flex items-center gap-2">
+                <Badge variant="secondary">{pairs.length} pairs</Badge>
+                {pairs.some((p) => p.styleOverridden) ? (
+                  <Badge variant="warning">
+                    {pairs.filter((p) => p.styleOverridden).length} overridden
+                  </Badge>
+                ) : null}
+              </div>
             </div>
+
+            <Card className="bg-muted/40">
+              <CardContent className="flex flex-wrap items-center justify-between gap-3 py-3">
+                <div className="flex flex-col gap-0.5">
+                  <span className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Bulk style actions</span>
+                  <span className="text-[11px] text-muted-foreground">
+                    Default Style controls in the sidebar cascade to all <em>Inherits</em> pairs. Overridden pairs hold their custom values until reset.
+                  </span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Button size="sm" variant="outline" onClick={handleApplyCurrentStyleToAll}>
+                    Apply defaults to all
+                  </Button>
+                  <Button size="sm" variant="outline" onClick={handleResetAllToDefault} disabled={!pairs.some((p) => p.styleOverridden)}>
+                    Reset all to default
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
 
             {showExportBar && burnBatchId ? (
               <Card>
@@ -1490,6 +1616,7 @@ export function BurnPage() {
                   onStrokeColorChange={handlePairStrokeColorChange}
                   onPositionChange={handlePairPositionChange}
                   onColorCorrectionChange={handlePairColorCorrectionChange}
+                  onResetToDefault={handlePairResetToDefault}
                   onDimensions={setPairDimensions}
                   onWrapRef={handleWrapRef}
                 />

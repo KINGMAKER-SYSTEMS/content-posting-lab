@@ -115,11 +115,11 @@ export const MOOD_TAGS: MoodTag[] = [
 ];
 
 export const MOOD_COLORS: Record<MoodTag, string> = {
-  sad: "bg-blue-100 text-blue-800 border-blue-300",
-  hype: "bg-red-100 text-red-800 border-red-300",
-  love: "bg-pink-100 text-pink-800 border-pink-300",
-  funny: "bg-yellow-100 text-yellow-800 border-yellow-300",
-  chill: "bg-teal-100 text-teal-800 border-teal-300",
+  sad: "bg-blue-500/15 text-blue-300 border-blue-500/30",
+  hype: "bg-destructive/15 text-destructive border-destructive/30",
+  love: "bg-pink-500/15 text-pink-300 border-pink-500/30",
+  funny: "bg-yellow-500/15 text-yellow-300 border-yellow-500/30",
+  chill: "bg-teal-500/15 text-teal-300 border-teal-500/30",
 };
 
 export interface CaptionResult {

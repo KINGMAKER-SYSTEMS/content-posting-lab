@@ -11,10 +11,10 @@ export interface ToastProps {
 }
 
 const styles: Record<ToastType, string> = {
-  success: 'bg-green-50 border-green-800 text-green-800',
-  error: 'bg-red-50 border-red-800 text-red-800',
-  info: 'bg-secondary text-accent',
-  warning: 'bg-amber-50 border-amber-800 text-amber-800',
+  success: 'bg-emerald-500/15 border-emerald-500/40 text-emerald-300',
+  error: 'bg-destructive/15 border-destructive/40 text-destructive',
+  info: 'bg-card border-border text-foreground',
+  warning: 'bg-amber-500/10 border-amber-500/40 text-amber-200',
 };
 
 const icons: Record<ToastType, ReactNode> = {
@@ -50,7 +50,7 @@ export function Toast({ id, message, type, duration = 3000, onDismiss }: ToastPr
 
   return (
     <div
-      className={`${styles[type]} border-2 px-4 py-3 rounded-[var(--border-radius)] shadow-shadow flex items-center justify-between mb-2 transition-all duration-200`}
+      className={`${styles[type]} border px-4 py-3 rounded-[var(--border-radius)] shadow-[var(--shadow)] flex items-center justify-between mb-2 transition-all duration-200`}
       role="alert"
     >
       <div className="flex items-center">

@@ -17,6 +17,7 @@ interface ProjectSelectorProps {
   onSelect: (project: Project) => void;
   onCreate: (name: string) => Promise<void> | void;
   className?: string;
+  highlightedProjectName?: string | null;
 }
 
 export function ProjectSelector({
@@ -25,6 +26,7 @@ export function ProjectSelector({
   onSelect,
   onCreate,
   className = '',
+  highlightedProjectName = null,
 }: ProjectSelectorProps) {
   const [isCreating, setIsCreating] = useState(false);
   const [newProjectName, setNewProjectName] = useState('');
@@ -52,7 +54,9 @@ export function ProjectSelector({
         <DropdownMenuTrigger asChild>
           <button
             type="button"
-            className="w-full border-2 border-border rounded-[var(--border-radius)] bg-card px-3 py-2 text-left shadow-shadow hover:translate-x-[2px] hover:translate-y-[2px] hover:shadow-[2px_2px_0_0_var(--border)] transition-all duration-100"
+            className={`w-full rounded-md border border-border bg-card px-3 py-2 text-left shadow-sm transition-all duration-[160ms] ease-[var(--ease-standard,cubic-bezier(0.22,0.61,0.36,1))] hover:border-primary/60 ${
+              highlightedProjectName && highlightedProjectName === activeProjectName ? 'brand-ring' : ''
+            }`}
           >
             <div className="text-[10px] uppercase tracking-wider font-bold text-muted-foreground">Active Project</div>
             <div className="truncate text-sm font-bold text-foreground">
