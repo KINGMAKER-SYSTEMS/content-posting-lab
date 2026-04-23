@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { BrowserRouter, Link, useLocation, useNavigate } from 'react-router-dom';
+import { BrowserRouter, Link, useLocation } from 'react-router-dom';
 import { HomePage } from './pages/Home';
 import { CreatePage } from './pages/Create';
 import { CaptionsStagePage } from './pages/CaptionsStage';
@@ -9,6 +9,7 @@ import { useWorkflowStore } from './stores/workflowStore';
 import { type HealthResponse, type Project, type ProjectListResponse } from './types/api';
 import { apiUrl } from './lib/api';
 import { Badge } from '@/components/ui/badge';
+import rtLogo from './assets/brand/logos/logo-horizontal-white.svg';
 
 interface HealthBannerItem {
   id: string;
@@ -18,7 +19,6 @@ interface HealthBannerItem {
 
 function AppShell() {
   const location = useLocation();
-  const navigate = useNavigate();
   const {
     activeProjectName,
     notifications,
@@ -35,6 +35,7 @@ function AppShell() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [healthItems, setHealthItems] = useState<HealthBannerItem[]>([]);
   const [dismissedHealth, setDismissedHealth] = useState<string[]>([]);
+  const [highlightedProject, setHighlightedProject] = useState<string | null>(null);
 
   // Track which top-level stages have been visited for lazy mounting
   const [visitedStages, setVisitedStages] = useState<Set<string>>(new Set(['/']));
@@ -142,16 +143,21 @@ function AppShell() {
   return (
     <div className="min-h-screen bg-background text-foreground font-base">
       {/* ── Header ─────────────────────────────────────────────── */}
-      <header className="border-b-2 border-border bg-card">
+      <header className="border-b border-border bg-card">
         <div className="mx-auto max-w-7xl px-4 py-3">
           {/* Row 1: Logo + Project Selector */}
           <div className="flex items-center justify-between mb-2">
-            <div className="flex items-center gap-3">
-              <div className="h-6 w-6 rounded-[var(--border-radius)] border-2 border-border bg-primary shadow-[2px_2px_0_0_var(--border)]" />
-              <Link to="/" className="text-base font-heading text-foreground hover:text-primary transition-colors">
+            <Link to="/" className="group flex items-center gap-3">
+              <img
+                src={rtLogo}
+                alt="Rising Tides Entertainment"
+                className="h-5 w-auto opacity-95 transition-opacity group-hover:opacity-100"
+              />
+              <span className="h-4 w-px bg-border" aria-hidden="true" />
+              <span className="text-sm font-heading tracking-[0.08em] uppercase text-muted-foreground group-hover:text-foreground transition-colors">
                 Content Posting Lab
-              </Link>
-            </div>
+              </span>
+            </Link>
             <ProjectSelector
               className="w-full min-w-[260px] sm:w-[320px]"
               projects={projects}
@@ -171,16 +177,18 @@ function AppShell() {
                     throw new Error(text || `Failed to create project (${response.status})`);
                   }
                   const payload = await response.json();
+                  await fetchProjects();
                   setActiveProjectName(payload.project.name);
+                  setHighlightedProject(payload.project.name);
+                  window.setTimeout(() => setHighlightedProject((curr) => curr === payload.project.name ? null : curr), 2000);
                   addNotification('success', `Project "${payload.project.name}" created`);
-                  void fetchProjects();
                   window.dispatchEvent(new Event('projects:changed'));
-                  navigate('/');
                 } catch (error) {
                   const message = error instanceof Error ? error.message : 'Failed to create project';
                   addNotification('error', message);
                 }
               }}
+              highlightedProjectName={highlightedProject}
             />
           </div>
 
@@ -191,7 +199,7 @@ function AppShell() {
               to="/"
               className={`relative flex items-center gap-2 px-4 py-2.5 text-sm font-bold transition-colors ${
                 activeStage === 'home'
-                  ? 'text-primary border-b-[3px] border-primary'
+                  ? 'text-foreground after:absolute after:bottom-0 after:left-3 after:right-3 after:h-[2px] after:rounded-full after:bg-[var(--brand-gradient)]'
                   : 'text-muted-foreground hover:text-foreground hover:bg-muted'
               }`}
             >
@@ -203,7 +211,7 @@ function AppShell() {
               to="/create"
               className={`relative flex items-center gap-2 px-4 py-2.5 text-sm font-bold transition-colors ${
                 activeStage === 'create'
-                  ? 'text-primary border-b-[3px] border-primary'
+                  ? 'text-foreground after:absolute after:bottom-0 after:left-3 after:right-3 after:h-[2px] after:rounded-full after:bg-[var(--brand-gradient)]'
                   : 'text-muted-foreground hover:text-foreground hover:bg-muted'
               }`}
             >
@@ -223,7 +231,7 @@ function AppShell() {
               to="/captions"
               className={`relative flex items-center gap-2 px-4 py-2.5 text-sm font-bold transition-colors ${
                 activeStage === 'captions'
-                  ? 'text-primary border-b-[3px] border-primary'
+                  ? 'text-foreground after:absolute after:bottom-0 after:left-3 after:right-3 after:h-[2px] after:rounded-full after:bg-[var(--brand-gradient)]'
                   : 'text-muted-foreground hover:text-foreground hover:bg-muted'
               }`}
             >
@@ -243,7 +251,7 @@ function AppShell() {
               to="/distribute"
               className={`relative flex items-center gap-2 px-4 py-2.5 text-sm font-bold transition-colors ${
                 activeStage === 'distribute'
-                  ? 'text-primary border-b-[3px] border-primary'
+                  ? 'text-foreground after:absolute after:bottom-0 after:left-3 after:right-3 after:h-[2px] after:rounded-full after:bg-[var(--brand-gradient)]'
                   : 'text-muted-foreground hover:text-foreground hover:bg-muted'
               }`}
             >
@@ -255,19 +263,21 @@ function AppShell() {
 
       {/* ── Health warnings ────────────────────────────────────── */}
       {visibleHealthItems.length > 0 && (
-        <div className="border-b-2 border-border bg-muted px-4 py-2">
+        <div className="border-b border-border bg-card px-4 py-2">
           <div className="mx-auto flex max-w-7xl flex-col gap-2">
             {visibleHealthItems.map((item) => (
               <div
                 key={item.id}
-                className={`flex items-start justify-between gap-4 rounded-[var(--border-radius)] border-2 border-border px-3 py-2 text-sm font-base shadow-[2px_2px_0_0_var(--border)] ${
-                  item.tone === 'warn' ? 'bg-amber-100 text-amber-900' : 'bg-secondary text-accent'
+                className={`flex items-start justify-between gap-4 rounded-md border px-3 py-2 text-sm ${
+                  item.tone === 'warn'
+                    ? 'border-destructive/40 bg-destructive/10 text-destructive'
+                    : 'border-border bg-muted text-muted-foreground'
                 }`}
               >
                 <span>{item.message}</span>
                 <button
                   type="button"
-                  className="rounded-[var(--border-radius)] border-2 border-border bg-card px-2 py-0.5 text-xs font-bold text-foreground hover:bg-muted transition-colors"
+                  className="rounded-md border border-border bg-card px-2 py-0.5 text-xs font-bold text-foreground transition-colors hover:border-primary/60 hover:text-primary"
                   onClick={() => setDismissedHealth((prev) => [...prev, item.id])}
                 >
                   Dismiss

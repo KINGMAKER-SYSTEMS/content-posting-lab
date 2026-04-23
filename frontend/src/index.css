@@ -4,80 +4,122 @@
 
 @custom-variant dark (&:is(.dark *));
 
-/* ══════════════════════════════════════════════════════════ */
-/* NEOBRUTALISM — Parchment + Rose/Terra Cotta + Slate Blue  */
-/* Inspired by neobrutalism.dev + weathertorun.app           */
-/* Hard shadows, visible borders, sharp corners, bold type   */
-/*                                                            */
-/* Warm:  #E8B4A0 (rose)  → #D4896E (terra cotta)           */
-/* Cool:  #B5CED6 (light) → #6A9DB5 (mid) → #456E82 (deep) */
-/* Borders: #2A2520 (warm near-black)                        */
-/* Background: #FAF6F1 (warm parchment)                      */
-/* ══════════════════════════════════════════════════════════ */
+/* ═══════════════════════════════════════════════════════════════ */
+/* RISING TIDES — Dark Premium (Brand-Accent Chrome)               */
+/* Dashboard chrome only. Content-output surfaces (Burn preview,   */
+/* overlay renderer, content fonts at /fonts/, ffmpeg pipelines)   */
+/* are SACRED — not themed here and must never be.                 */
+/*                                                                 */
+/* Dark:   #060606 bg · #0A0A0A raised · #141414 card · #2E323C    */
+/* Brand:  #E100C3 magenta → #8500D7 purple (gradient, sparingly)  */
+/* Text:   #FAFCFF primary · #B8B9BB secondary                     */
+/* Border: rgba(255,255,255,0.06/0.10/0.20) low-opacity white      */
+/* ═══════════════════════════════════════════════════════════════ */
+
+/* ─── UI FONT (Poppins) — dashboard chrome ONLY.                   */
+/*    Content fonts (TikTokSans, Montserrat) live at /fonts/       */
+/*    and are served by FastAPI to Burn's html2canvas preview.     */
+/*    Never reference content fonts here; never add Poppins there. */
+
+@font-face {
+  font-family: 'Poppins';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('./assets/brand/fonts/Poppins-Regular.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Poppins';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('./assets/brand/fonts/Poppins-Medium.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Poppins';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url('./assets/brand/fonts/Poppins-SemiBold.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Poppins';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('./assets/brand/fonts/Poppins-Bold.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Poppins';
+  font-style: italic;
+  font-weight: 700;
+  font-display: swap;
+  src: url('./assets/brand/fonts/Poppins-BoldItalic.woff2') format('woff2');
+}
 
 :root {
-  /* Neobrutalism structural tokens */
-  --border-radius: 5px;
-  --box-shadow-x: 4px;
-  --box-shadow-y: 4px;
-  --reverse-box-shadow-x: -4px;
-  --reverse-box-shadow-y: -4px;
+  /* Structural tokens */
+  --border-radius: 8px;
+  --heading-font-weight: 700;
+  --base-font-weight: 400;
 
-  --heading-font-weight: 800;
-  --base-font-weight: 500;
+  /* Brand gradient — used sparingly: primary button bg, active tab, progress */
+  --brand-magenta: #E100C3;
+  --brand-purple: #8500D7;
+  --brand-gradient: linear-gradient(90deg, #E100C3 0%, #8500D7 100%);
 
-  /* Core */
-  --radius: 5px;
-  --background: oklch(96.5% 0.012 80);       /* warm parchment #FAF6F1 */
-  --foreground: oklch(20% 0.01 50);           /* warm near-black #2A2520 */
-  --card: oklch(100% 0 0);                    /* white cards */
-  --card-foreground: oklch(20% 0.01 50);
-  --popover: oklch(100% 0 0);
-  --popover-foreground: oklch(20% 0.01 50);
+  /* Core surfaces */
+  --radius: 8px;
+  --background: #060606;                 /* page */
+  --foreground: #FAFCFF;                 /* primary text */
+  --card: #141414;                       /* elevated surface */
+  --card-foreground: #FAFCFF;
+  --popover: #0A0A0A;
+  --popover-foreground: #FAFCFF;
 
-  /* Primary = Terra cotta / salmon */
-  --primary: oklch(68% 0.1 40);               /* #D4896E terra cotta */
-  --primary-foreground: oklch(100% 0 0);      /* white on terra cotta */
+  /* Primary = brand magenta (buttons, focus ring, accent marks) */
+  --primary: #E100C3;
+  --primary-foreground: #FAFCFF;
 
-  /* Secondary = Light dusty blue */
-  --secondary: oklch(84% 0.04 220);           /* #B5CED6 light dusty blue */
-  --secondary-foreground: oklch(20% 0.01 50);
+  /* Secondary = dark card surface */
+  --secondary: #2E323C;
+  --secondary-foreground: #FAFCFF;
 
-  /* Muted = Warm parchment inset */
-  --muted: oklch(92% 0.01 75);               /* #EDE7DF warm muted */
-  --muted-foreground: oklch(48% 0.02 50);     /* #6B6058 muted text */
+  /* Muted = inset dark well */
+  --muted: #1A1A1A;
+  --muted-foreground: #B8B9BB;
 
-  /* Accent = Deep slate blue */
-  --accent: oklch(52% 0.06 230);              /* #456E82 deep teal-slate */
-  --accent-foreground: oklch(100% 0 0);       /* white on slate */
+  /* Accent = brand purple (gradient partner) */
+  --accent: #8500D7;
+  --accent-foreground: #FAFCFF;
 
-  /* Destructive */
+  /* Destructive — keep existing red */
   --destructive: oklch(0.577 0.245 27.325);
 
-  /* Borders — visible, warm near-black (neobrutalism) */
-  --border: oklch(20% 0.01 50);               /* #2A2520 warm near-black */
-  --input: oklch(20% 0.01 50);
-  --ring: oklch(68% 0.1 40);                  /* terra cotta focus ring */
+  /* Borders — low-opacity white on dark */
+  --border: rgba(255, 255, 255, 0.10);
+  --input: rgba(255, 255, 255, 0.10);
+  --ring: #E100C3;
 
-  /* Neobrutalism shadow — hard, no blur */
-  --shadow: var(--box-shadow-x) var(--box-shadow-y) 0px 0px var(--border);
+  /* Soft deep shadow — NOT hard offset (no more neobrutalism) */
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
 
-  /* Chart = full palette spectrum */
-  --chart-1: oklch(68% 0.1 40);               /* #D4896E terra cotta */
-  --chart-2: oklch(52% 0.06 230);             /* #456E82 deep slate */
-  --chart-3: oklch(78% 0.07 35);              /* #E8B4A0 light rose */
-  --chart-4: oklch(65% 0.06 220);             /* #6A9DB5 mid blue */
-  --chart-5: oklch(84% 0.04 220);             /* #B5CED6 light blue */
+  /* Chart = brand-aligned palette */
+  --chart-1: #E100C3;
+  --chart-2: #8500D7;
+  --chart-3: #6A9DB5;
+  --chart-4: #B8B9BB;
+  --chart-5: #2E323C;
 
-  /* Sidebar */
-  --sidebar: oklch(94% 0.015 75);
-  --sidebar-foreground: oklch(20% 0.01 50);
-  --sidebar-primary: oklch(68% 0.1 40);
-  --sidebar-primary-foreground: oklch(100% 0 0);
-  --sidebar-accent: oklch(84% 0.04 220);
-  --sidebar-accent-foreground: oklch(20% 0.01 50);
-  --sidebar-border: oklch(20% 0.01 50);
-  --sidebar-ring: oklch(68% 0.1 40);
+  /* Sidebar mirrors card/muted */
+  --sidebar: #0A0A0A;
+  --sidebar-foreground: #FAFCFF;
+  --sidebar-primary: #E100C3;
+  --sidebar-primary-foreground: #FAFCFF;
+  --sidebar-accent: #1A1A1A;
+  --sidebar-accent-foreground: #FAFCFF;
+  --sidebar-border: rgba(255, 255, 255, 0.06);
+  --sidebar-ring: #E100C3;
 }
 
 /* ═══ THEME INLINE — Map to Tailwind ═══ */
@@ -85,9 +127,9 @@
 @theme inline {
   --radius-sm: calc(var(--radius) - 2px);
   --radius-md: var(--radius);
-  --radius-lg: calc(var(--radius) + 2px);
-  --radius-xl: calc(var(--radius) + 4px);
-  --radius-2xl: calc(var(--radius) + 6px);
+  --radius-lg: calc(var(--radius) + 4px);
+  --radius-xl: calc(var(--radius) + 6px);
+  --radius-2xl: calc(var(--radius) + 8px);
 
   --color-background: var(--background);
   --color-foreground: var(--foreground);
@@ -121,14 +163,14 @@
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-ring: var(--sidebar-ring);
 
-  /* Neobrutalism spacing tokens */
-  --spacing-boxShadowX: var(--box-shadow-x);
-  --spacing-boxShadowY: var(--box-shadow-y);
-  --spacing-reverseBoxShadowX: var(--reverse-box-shadow-x);
-  --spacing-reverseBoxShadowY: var(--reverse-box-shadow-y);
-
-  /* Neobrutalism shadow */
+  /* Soft shadow token — replaces hard-offset neobrutalism shadow */
   --shadow-shadow: var(--shadow);
+
+  /* Font stacks — Poppins for UI chrome. Burn preview uses its own */
+  /* @font-face injection at Burn.tsx:676 — do not override it.     */
+  --font-base: 'Poppins', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-heading: 'Poppins', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: ui-monospace, 'JetBrains Mono', 'Courier New', monospace;
 
   /* Font weights */
   --font-weight-base: var(--base-font-weight);
@@ -139,11 +181,15 @@
 
 @layer base {
   body {
-    @apply bg-background text-foreground antialiased font-base;
+    @apply bg-background text-foreground antialiased;
+    font-family: var(--font-base);
+    font-weight: var(--base-font-weight);
   }
 
   h1, h2, h3, h4, h5, h6 {
-    @apply text-foreground font-heading tracking-tight;
+    @apply text-foreground tracking-tight;
+    font-family: var(--font-heading);
+    font-weight: var(--heading-font-weight);
   }
 
   * {
@@ -151,19 +197,20 @@
   }
 }
 
-/* ═══════════════════════════════════════════════════════════ */
-/* NEOBRUTALISM COMPONENT OVERRIDES                           */
-/* Hard 2px borders, 4px offset shadows, 5px radius           */
-/* Hover: translate(2px,2px) + shadow shrinks                 */
-/* Active: translate(4px,4px) + shadow disappears             */
-/* ═══════════════════════════════════════════════════════════ */
+/* ═══════════════════════════════════════════════════════════════ */
+/* DARK PREMIUM COMPONENT OVERRIDES                                */
+/* 1px subtle borders · soft shadows · 6-12px radii · no translate */
+/* Transitions: 160ms cubic-bezier, no bounce                      */
+/*                                                                 */
+/* Gradient is RARE — only primary button bg, active tab, progress */
+/* ═══════════════════════════════════════════════════════════════ */
 
 @layer components {
   /* ── Cards ── */
   [data-slot="card"] {
-    border: 2px solid var(--border);
-    border-radius: var(--border-radius);
-    box-shadow: var(--shadow);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
     background: var(--card);
     color: var(--card-foreground);
   }
@@ -174,56 +221,69 @@
 
   /* ── Buttons ── */
   [data-slot="button"] {
-    border: 2px solid var(--border);
-    border-radius: var(--border-radius);
-    box-shadow: var(--shadow);
-    font-weight: 700;
-    transition: transform 0.1s ease, box-shadow 0.1s ease;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    font-weight: 600;
+    transition: background 160ms cubic-bezier(0.22, 0.61, 0.36, 1),
+                box-shadow 160ms cubic-bezier(0.22, 0.61, 0.36, 1),
+                transform 100ms cubic-bezier(0.22, 0.61, 0.36, 1),
+                filter 160ms cubic-bezier(0.22, 0.61, 0.36, 1);
     cursor: pointer;
   }
 
+  /* Primary variant — brand gradient, one of three sanctioned uses */
+  [data-slot="button"].bg-primary,
+  [data-slot="button"][data-variant="default"]:not([data-variant="outline"]):not([data-variant="ghost"]):not([data-variant="secondary"]):not([data-variant="destructive"]) {
+    background: var(--brand-gradient);
+    border-color: transparent;
+    color: var(--primary-foreground);
+    box-shadow: 0 4px 14px rgba(225, 0, 195, 0.35);
+  }
+
   [data-slot="button"]:hover {
-    transform: translate(2px, 2px);
-    box-shadow: 2px 2px 0px 0px var(--border);
+    filter: brightness(1.08);
   }
 
   [data-slot="button"]:active {
-    transform: translate(var(--box-shadow-x), var(--box-shadow-y));
-    box-shadow: none;
+    transform: scale(0.985);
   }
 
   [data-slot="button"]:disabled {
-    box-shadow: none;
     opacity: 0.5;
+    filter: none;
     transform: none;
     cursor: not-allowed;
+    box-shadow: none;
   }
 
   /* ── Badges ── */
   [data-slot="badge"] {
-    border: 2px solid var(--border);
-    border-radius: var(--border-radius);
-    box-shadow: 2px 2px 0px 0px var(--border);
-    font-weight: 700;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    font-weight: 600;
+    box-shadow: none;
   }
 
   /* ── Inputs / Selects / Textareas ── */
   [data-slot="input"],
   [data-slot="textarea"],
   [data-slot="select-trigger"] {
-    border: 2px solid var(--border);
-    border-radius: var(--border-radius);
+    border: 1px solid var(--border);
+    border-radius: 8px;
     background: var(--card);
     color: var(--foreground);
-    font-weight: 500;
-    transition: box-shadow 0.1s ease;
+    font-weight: 400;
+    transition: border-color 160ms cubic-bezier(0.22, 0.61, 0.36, 1),
+                box-shadow 160ms cubic-bezier(0.22, 0.61, 0.36, 1),
+                background 160ms cubic-bezier(0.22, 0.61, 0.36, 1);
   }
 
   [data-slot="input"]:focus,
   [data-slot="textarea"]:focus,
   [data-slot="select-trigger"]:focus,
   [data-slot="select-trigger"][data-state="open"] {
-    box-shadow: var(--shadow);
+    border-color: var(--ring);
+    box-shadow: 0 0 0 3px rgba(225, 0, 195, 0.25);
     outline: none;
   }
 
@@ -239,15 +299,15 @@
 
   /* ── Select dropdowns ── */
   [data-slot="select-content"] {
-    border: 2px solid var(--border);
-    border-radius: var(--border-radius);
-    box-shadow: var(--shadow);
-    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.65);
+    background: var(--popover);
   }
 
   [data-slot="select-item"] {
-    border-radius: calc(var(--border-radius) - 2px);
-    font-weight: 500;
+    border-radius: 6px;
+    font-weight: 400;
   }
 
   [data-slot="select-item"][data-highlighted] {
@@ -256,40 +316,42 @@
 
   /* ── Labels ── */
   [data-slot="label"] {
-    font-weight: 700;
+    font-weight: 600;
     font-size: 0.6875rem;
     text-transform: uppercase;
-    letter-spacing: 0.04em;
-    color: var(--foreground);
+    letter-spacing: 0.06em;
+    color: var(--muted-foreground);
   }
 
-  /* ── Progress ── */
+  /* ── Progress ── sanctioned gradient use */
   [data-slot="progress"] {
-    border: 2px solid var(--border);
-    border-radius: var(--border-radius);
-    height: 12px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    height: 8px;
     background: var(--muted);
+    overflow: hidden;
   }
 
   [data-slot="progress-indicator"] {
-    border-radius: calc(var(--border-radius) - 3px);
+    background: var(--brand-gradient);
+    border-radius: 6px;
   }
 
   /* ── Dialog ── */
   [data-slot="dialog-overlay"] {
-    background: oklch(20% 0.01 50 / 0.5);
+    background: rgba(6, 6, 6, 0.72);
     backdrop-filter: none;
   }
 
   [data-slot="dialog-content"] {
-    border: 2px solid var(--border);
-    border-radius: var(--border-radius);
-    box-shadow: 6px 6px 0px 0px var(--border);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    box-shadow: 0 24px 64px rgba(0, 0, 0, 0.65);
     background: var(--card);
   }
 
   [data-slot="dialog-title"] {
-    font-weight: 800;
+    font-weight: 700;
   }
 
   [data-slot="dialog-description"] {
@@ -298,15 +360,15 @@
 
   /* ── Dropdown menu ── */
   [data-slot="dropdown-menu-content"] {
-    border: 2px solid var(--border);
-    border-radius: var(--border-radius);
-    box-shadow: var(--shadow);
-    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.65);
+    background: var(--popover);
   }
 
   [data-slot="dropdown-menu-item"] {
-    border-radius: calc(var(--border-radius) - 2px);
-    font-weight: 500;
+    border-radius: 6px;
+    font-weight: 400;
   }
 
   [data-slot="dropdown-menu-item"][data-highlighted] {
@@ -315,48 +377,91 @@
 
   [data-slot="dropdown-menu-separator"] {
     background: var(--border);
-    opacity: 0.15;
+    opacity: 0.6;
   }
 
   /* ── Tabs ── */
   [data-slot="tabs-list"] {
-    border: 2px solid var(--border);
-    border-radius: var(--border-radius);
+    border: 1px solid var(--border);
+    border-radius: 8px;
     background: var(--muted);
     padding: 3px;
   }
 
   [data-slot="tabs-trigger"] {
-    border-radius: calc(var(--border-radius) - 2px);
-    font-weight: 700;
-    transition: all 0.1s ease;
+    border-radius: 6px;
+    font-weight: 600;
+    transition: background 160ms cubic-bezier(0.22, 0.61, 0.36, 1),
+                color 160ms cubic-bezier(0.22, 0.61, 0.36, 1);
   }
 
   [data-slot="tabs-trigger"][data-state="active"] {
     background: var(--card);
-    box-shadow: 2px 2px 0px 0px var(--border);
+    color: var(--foreground);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45);
     border: 1px solid var(--border);
   }
 
   /* ── Tooltip ── */
   [data-slot="tooltip-content"] {
-    border: 2px solid var(--border);
-    border-radius: var(--border-radius);
-    box-shadow: 2px 2px 0px 0px var(--border);
-    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.55);
+    background: var(--popover);
     color: var(--foreground);
-    font-weight: 500;
+    font-weight: 400;
   }
 
   /* ── Separator ── */
   [data-slot="separator"] {
     background: var(--border);
-    opacity: 0.15;
+    opacity: 0.6;
   }
 
   /* ── Scroll area ── */
   [data-slot="scroll-area-thumb"] {
-    background: var(--border);
-    border-radius: var(--border-radius);
+    background: rgba(255, 255, 255, 0.20);
+    border-radius: 6px;
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════ */
+/* UTILITIES                                                       */
+/* ═══════════════════════════════════════════════════════════════ */
+
+@layer utilities {
+  /* Brand gradient text — use sparingly for accent words only */
+  .gradient-text {
+    background: var(--brand-gradient);
+    -webkit-background-clip: text;
+            background-clip: text;
+    -webkit-text-fill-color: transparent;
+    color: transparent;
+  }
+
+  /* Brand gradient underline — editorial accent under key phrases */
+  .gradient-underline {
+    background-image: var(--brand-gradient);
+    background-repeat: no-repeat;
+    background-size: 100% 2px;
+    background-position: 0 100%;
+    padding-bottom: 2px;
+  }
+
+  /* Gradient ring — brief highlight for newly-activated items */
+  .brand-ring {
+    box-shadow: 0 0 0 2px var(--background), 0 0 0 4px var(--primary);
+  }
+
+  /* Heartbeat pulse — used on Generate polling indicator */
+  @keyframes brand-heartbeat {
+    0%, 100% { opacity: 0.5; transform: scale(0.85); }
+    50%      { opacity: 1;   transform: scale(1.1); }
+  }
+
+  .heartbeat-dot {
+    background: var(--brand-gradient);
+    border-radius: 9999px;
+    animation: brand-heartbeat 1.4s cubic-bezier(0.22, 0.61, 0.36, 1) infinite;
   }
 }

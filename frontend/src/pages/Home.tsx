@@ -1,5 +1,13 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState, type ComponentType } from 'react';
 import { useNavigate } from 'react-router-dom';
+import {
+  FilmSlateIcon,
+  ScissorsIcon,
+  ChatCircleTextIcon,
+  FlameIcon,
+  FolderOpenIcon,
+  type IconProps,
+} from '@phosphor-icons/react';
 import { apiUrl } from '../lib/api';
 import { useWorkflowStore } from '../stores/workflowStore';
 import { ConfirmModal, EmptyState } from '../components';
@@ -246,30 +254,36 @@ export function HomePage() {
 
   // ── Quick launch cards ──────────────────────────────────────────
 
-  const quickLaunch = [
+  const quickLaunch: Array<{
+    Icon: ComponentType<IconProps>;
+    title: string;
+    desc: string;
+    route: string;
+    badge: string | number | null;
+  }> = [
     {
-      icon: '🎬',
+      Icon: FilmSlateIcon,
       title: 'Generate Video',
       desc: 'AI-powered video creation',
       route: '/create',
       badge: videoRunningCount > 0 ? videoRunningCount : null,
     },
     {
-      icon: '✂️',
+      Icon: ScissorsIcon,
       title: 'Clip Video',
       desc: 'Chop videos into short-form clips',
       route: '/create/clipper',
       badge: null,
     },
     {
-      icon: '💬',
+      Icon: ChatCircleTextIcon,
       title: 'Scrape Captions',
       desc: 'Extract captions from TikTok',
       route: '/captions',
       badge: captionJobActive ? 'LIVE' : null,
     },
     {
-      icon: '🔥',
+      Icon: FlameIcon,
       title: 'Burn Captions',
       desc: 'Overlay captions onto videos',
       route: '/captions/burn',
@@ -291,7 +305,7 @@ export function HomePage() {
     return (
       <div className="mx-auto max-w-7xl p-8">
         <EmptyState
-          icon="📁"
+          icon={<FolderOpenIcon size={48} weight="duotone" />}
           title="No projects yet"
           description="Create your first project to start generating content."
           action={{
@@ -487,7 +501,7 @@ export function HomePage() {
               onClick={() => navigate(card.route)}
               className="group rounded-[var(--border-radius)] border-2 border-border bg-card p-6 shadow-[var(--shadow)] cursor-pointer hover:translate-x-[1px] hover:translate-y-[1px] hover:shadow-[3px_3px_0_0_var(--border)] transition-all text-left"
             >
-              <div className="text-3xl mb-3">{card.icon}</div>
+              <div className="mb-3 text-primary"><card.Icon size={40} weight="duotone" /></div>
               <div className="flex items-center gap-2">
                 <div className="text-lg font-heading text-foreground group-hover:text-primary transition-colors">
                   {card.title}

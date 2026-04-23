@@ -1,4 +1,11 @@
 import { useMemo } from 'react';
+import {
+  CaretUpDownIcon,
+  CaretUpIcon,
+  CaretDownIcon,
+  CheckIcon,
+  XIcon,
+} from '@phosphor-icons/react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -131,8 +138,8 @@ export function RosterTab({
   onRefreshRoster,
 }: RosterTabProps) {
   const sortArrow = (key: SortKey) => {
-    if (sortKey !== key) return <span className="text-muted-foreground/40 ml-1">↕</span>;
-    return <span className="ml-1">{sortDir === 'asc' ? '↑' : '↓'}</span>;
+    if (sortKey !== key) return <CaretUpDownIcon size={12} weight="bold" className="text-muted-foreground/40 ml-1 inline" />;
+    return <span className="ml-1 inline-flex">{sortDir === 'asc' ? <CaretUpIcon size={12} weight="bold" /> : <CaretDownIcon size={12} weight="bold" />}</span>;
   };
 
   const displayPages = useMemo(() => {
@@ -150,7 +157,7 @@ export function RosterTab({
     <div className="space-y-4">
       {/* Not configured warning */}
       {!postizConfigured && (
-        <div className="rounded-[var(--border-radius)] border-2 border-border bg-amber-100 text-amber-900 px-4 py-3 text-sm shadow-[2px_2px_0_0_var(--border)]">
+        <div className="rounded-[var(--border-radius)] border border-amber-500/30 bg-amber-500/10 text-amber-200 px-4 py-3 text-sm">
           <strong>POSTIZ_API_KEY</strong> is not set in your <code>.env</code> file. Add it to enable publishing.
         </div>
       )}
@@ -285,10 +292,10 @@ export function RosterTab({
                                 autoFocus
                               />
                               <Button size="xs" onClick={onCommitEdit} disabled={isSaving}>
-                                {isSaving ? '...' : '✓'}
+                                {isSaving ? '...' : <CheckIcon size={12} weight="bold" />}
                               </Button>
                               <Button size="xs" variant="outline" onClick={onCancelEdit} disabled={isSaving}>
-                                ✕
+                                <XIcon size={12} weight="bold" />
                               </Button>
                             </div>
                           ) : (
@@ -314,11 +321,11 @@ export function RosterTab({
                               <span className="text-xs font-mono truncate max-w-[140px]">{page.email_alias}</span>
                               <button
                                 type="button"
-                                className="text-[10px] text-muted-foreground hover:text-destructive transition-colors shrink-0"
+                                className="text-muted-foreground hover:text-destructive transition-colors shrink-0"
                                 onClick={() => onDeleteEmailAlias(page)}
                                 title="Remove alias"
                               >
-                                ✕
+                                <XIcon size={10} weight="bold" />
                               </button>
                             </div>
                           ) : emailStatus?.configured ? (
@@ -392,11 +399,11 @@ export function RosterTab({
       {/* Destination Address Modal */}
       {showDestModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-          <div className="w-full max-w-md rounded-[var(--border-radius)] border-2 border-border bg-card shadow-[4px_4px_0_0_var(--border)] p-6 space-y-4">
+          <div className="w-full max-w-md rounded-[var(--border-radius)] border border-border bg-card shadow-[0_24px_64px_rgba(0,0,0,0.65)] p-6 space-y-4">
             <div className="flex items-center justify-between">
               <h2 className="text-lg font-heading font-bold">Destination Addresses</h2>
-              <button type="button" className="text-muted-foreground hover:text-foreground text-lg" onClick={() => onShowDestModal(false)}>
-                ✕
+              <button type="button" className="text-muted-foreground hover:text-foreground" onClick={() => onShowDestModal(false)}>
+                <XIcon size={18} weight="bold" />
               </button>
             </div>
 

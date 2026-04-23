@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { FolderOpenIcon, ScissorsIcon, PlayIcon, UploadSimpleIcon } from '@phosphor-icons/react';
 import { apiUrl, staticUrl } from '../lib/api';
 import { EmptyState } from '../components';
 import { useWorkflowStore } from '../stores/workflowStore';
@@ -207,7 +208,7 @@ function TrimTimeline({ file, onChange }: {
         />
         {!playing && (
           <div className="absolute inset-0 flex items-center justify-center bg-black/20">
-            <div className="w-12 h-12 rounded-full bg-black/60 flex items-center justify-center text-white text-xl">&#9654;</div>
+            <div className="w-12 h-12 rounded-full bg-black/60 flex items-center justify-center text-white"><PlayIcon size={24} weight="fill" /></div>
           </div>
         )}
         <div className="absolute bottom-2 right-2 bg-black/70 text-white text-[11px] px-1.5 py-0.5 rounded font-mono">
@@ -742,7 +743,7 @@ export function ClipperPage() {
   if (!activeProjectName) {
     return (
       <div className="flex h-full items-center justify-center">
-        <EmptyState icon="&#128193;" title="No Project Selected" description="Select or create a project to start clipping." />
+        <EmptyState icon={<FolderOpenIcon size={48} weight="duotone" />} title="No Project Selected" description="Select or create a project to start clipping." />
       </div>
     );
   }
@@ -817,7 +818,7 @@ export function ClipperPage() {
                 </div>
               ) : (
                 <>
-                  <div className="text-lg mb-0.5">&#8679;</div>
+                  <div className="mb-0.5 text-muted-foreground"><UploadSimpleIcon size={20} weight="bold" /></div>
                   <div className="text-muted-foreground text-sm">
                     Drop video{hasStaged ? 's to add more' : '(s)'} or <strong className="text-foreground">click to browse</strong>
                   </div>
@@ -1109,7 +1110,7 @@ export function ClipperPage() {
           {/* ── Empty state (ingest) ── */}
           {stage === 'ingest' && !hasStaged && !hasResults && (
             <EmptyState
-              icon="&#9986;"
+              icon={<ScissorsIcon size={48} weight="duotone" />}
               title="No Clips Yet"
               description="Upload video files or paste links. Trim each one, set your desired clip length, then process them all into 9:16 short-form clips."
             />
