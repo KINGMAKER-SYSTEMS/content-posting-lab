@@ -9,6 +9,7 @@ import time
 import uuid
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
 import zipfile
 from zipfile import ZipFile
 
@@ -16,6 +17,7 @@ from fastapi import APIRouter, HTTPException, Query, Request, UploadFile, File, 
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
 from project_manager import PROJECTS_DIR, sanitize_project_name
+import services.r2 as r2
 
 log = logging.getLogger("clipper")
 
@@ -465,6 +467,166 @@ async def _run_pipeline(
 _MAX_UPLOAD_BYTES = 10 * 1024 * 1024 * 1024
 
 
+# ── R2 direct-upload flow ─────────────────────────────────────────────
+# Bypasses the Railway edge proxy entirely for large file uploads.
+# Client:  POST /r2/upload-init → gets presigned PUT URLs
+# Client:  PUT each file directly to R2 (no proxy, no 5-min ceiling)
+# Client:  POST /r2/upload-complete → server downloads R2 → staging → probes
+# Result:  same staged-file response shape as legacy /upload-batch, so
+#          the trim/process-batch frontend flow works unchanged.
+
+
+@router.post("/r2/upload-init")
+async def r2_upload_init(body: dict):
+    """Return one presigned PUT URL per file. Client uploads directly to R2."""
+    if not r2.is_configured():
+        raise HTTPException(503, "R2 storage is not configured on this deployment")
+
+    project = body.get("project", "quick-test")
+    files = body.get("files") or []
+    if not files:
+        raise HTTPException(400, "files[] is required")
+    if len(files) > 20:
+        raise HTTPException(400, "max 20 files per batch")
+
+    sanitized = sanitize_project_name(project)
+    batch_id = uuid.uuid4().hex[:12]
+
+    items = []
+    for i, f in enumerate(files):
+        filename = str(f.get("filename") or f"video_{i}.mp4")
+        content_type = str(f.get("content_type") or "video/mp4")
+        key = r2.upload_key(sanitized, batch_id, i, filename)
+        put_url = r2.presign_put(key, content_type=content_type)
+        items.append({
+            "index": i,
+            "filename": filename,
+            "key": key,
+            "put_url": put_url,
+        })
+
+    return {"batch_id": batch_id, "items": items}
+
+
+@router.post("/r2/upload-complete")
+async def r2_upload_complete(body: dict):
+    """After client PUTs files to R2, this downloads them to staging + probes.
+
+    Body:
+      project: str
+      batch_id: str (from /r2/upload-init)
+      items: [{index, filename, key}]
+    Returns the same {batch_id, files: [...]} shape as /upload-batch.
+    """
+    if not r2.is_configured():
+        raise HTTPException(503, "R2 storage is not configured on this deployment")
+
+    project = body.get("project", "quick-test")
+    batch_id = body.get("batch_id")
+    items = body.get("items") or []
+    if not batch_id:
+        raise HTTPException(400, "batch_id is required")
+    if not items:
+        raise HTTPException(400, "items[] is required")
+
+    sanitized = sanitize_project_name(project)
+    clipper_dir = _get_clipper_dir(project)
+    staging_dir = clipper_dir / f"_staging_{batch_id}"
+    staging_dir.mkdir(parents=True, exist_ok=True)
+
+    files_out: list[dict] = []
+    errors: list[dict] = []
+
+    for item in items:
+        try:
+            index = int(item.get("index", 0))
+        except (TypeError, ValueError):
+            index = 0
+        filename = str(item.get("filename") or f"video_{index}.mp4")
+        key = str(item.get("key") or "")
+        if not key:
+            errors.append({"filename": filename, "error": "missing R2 key"})
+            continue
+
+        orig_ext = (Path(filename).suffix or ".mp4").lower()
+        safe_name = f"src_{index:03d}.mp4"
+        dest = staging_dir / safe_name
+
+        # Pull from R2 to the Railway volume (server-to-server, no edge proxy).
+        if orig_ext == ".mp4":
+            write_path = dest
+        else:
+            write_path = staging_dir / f"_raw_{index:03d}{orig_ext}"
+
+        try:
+            bytes_written = await asyncio.to_thread(r2.download_to_path, key, write_path)
+        except Exception as e:
+            log.error("r2 download failed for key=%s: %s", key, e)
+            errors.append({"filename": filename, "error": f"R2 fetch failed: {e}"})
+            continue
+
+        if bytes_written == 0:
+            write_path.unlink(missing_ok=True)
+            errors.append({"filename": filename, "error": "uploaded file is empty"})
+            continue
+
+        # Non-mp4 → transcode to mp4 for browser compatibility
+        if orig_ext != ".mp4":
+            proc = await asyncio.create_subprocess_exec(
+                "ffmpeg", "-y", "-i", str(write_path),
+                "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+                "-c:a", "aac", "-movflags", "+faststart",
+                str(dest),
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            _, stderr = await proc.communicate()
+            write_path.unlink(missing_ok=True)
+            if proc.returncode != 0:
+                dest.unlink(missing_ok=True)
+                tail = stderr.decode(errors="replace")[-200:]
+                errors.append({"filename": filename, "error": f"transcode failed: {tail.strip()}"})
+                continue
+        else:
+            await _faststart(dest)
+
+        try:
+            info = await _get_video_info(dest)
+        except Exception as e:
+            dest.unlink(missing_ok=True)
+            errors.append({"filename": filename, "error": f"probe failed: {e}"})
+            continue
+
+        if not info.get("duration") or info["duration"] <= 0:
+            dest.unlink(missing_ok=True)
+            errors.append({"filename": filename, "error": "zero-duration video"})
+            continue
+
+        thumb_name = f"thumb_{index:03d}.jpg"
+        thumb_path = staging_dir / thumb_name
+        thumb_ok = await _generate_thumbnail(dest, thumb_path)
+
+        files_out.append({
+            "index": index,
+            "original_name": filename,
+            "path": str(dest),
+            "url": f"/projects/{sanitized}/clips/_staging_{batch_id}/{safe_name}",
+            "thumb_url": f"/projects/{sanitized}/clips/_staging_{batch_id}/{thumb_name}" if thumb_ok else "",
+            "duration": info["duration"],
+            "width": info["width"],
+            "height": info["height"],
+            "r2_key": key,
+        })
+
+    if not files_out and errors:
+        raise HTTPException(400, f"All {len(errors)} files failed: {errors}")
+
+    log.info("r2 upload-complete: project=%s batch=%s ok=%d err=%d",
+             sanitized, batch_id, len(files_out), len(errors))
+
+    return {"batch_id": batch_id, "files": files_out, "errors": errors}
+
+
 @router.post("/upload-stream")
 async def upload_video_stream(request: Request):
     """Streaming upload that bypasses multipart parsing — handles files >3GB.
@@ -889,9 +1051,64 @@ async def trim_batch(body: dict):
     }
 
 
-# ── In-memory job state for process-batch (polling pattern) ─────────────
+# ── Job state for process-batch (polling pattern) ───────────────────────
+# In-memory source of truth, mirrored to disk so jobs survive container restarts
+# and Railway deploys. State is tiny (<100KB), so full-file atomic writes are fine.
 
 _batch_jobs: dict[str, dict] = {}
+_JOBS_LOADED = False
+
+
+def _job_state_path(project: str, job_id: str) -> Path:
+    return _get_clipper_dir(project) / job_id / "_state.json"
+
+
+def _persist_job(job: dict) -> None:
+    """Write current job state to disk atomically. Best-effort — never raises."""
+    try:
+        project = job.get("_project")
+        job_id = job.get("job_id")
+        if not project or not job_id:
+            return
+        path = _job_state_path(project, job_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".json.tmp")
+        # Don't serialize transient runtime refs
+        serialisable = {k: v for k, v in job.items() if not k.startswith("_")}
+        tmp.write_text(json.dumps(serialisable))
+        tmp.replace(path)
+    except Exception as e:
+        log.warning("failed to persist job %s: %s", job.get("job_id"), e)
+
+
+def _load_jobs_from_disk() -> None:
+    """Rehydrate _batch_jobs from every projects/*/clips/*/_state.json."""
+    global _JOBS_LOADED
+    if _JOBS_LOADED:
+        return
+    _JOBS_LOADED = True
+    try:
+        for state_file in PROJECTS_DIR.glob("*/clips/*/_state.json"):
+            try:
+                data = json.loads(state_file.read_text())
+                jid = data.get("job_id")
+                if not jid:
+                    continue
+                # Any job still marked "running" when we load must have been
+                # interrupted by a restart — flip to "interrupted" so the UI
+                # can show a clean error instead of a spinner.
+                if data.get("status") == "running":
+                    data["status"] = "interrupted"
+                    data["error"] = data.get("error") or "Server restarted mid-job — clips may be incomplete"
+                # Remember project so future persists find the right path
+                data["_project"] = state_file.parent.parent.parent.name
+                _batch_jobs[jid] = data
+            except Exception as e:
+                log.warning("skipping bad job state %s: %s", state_file, e)
+        if _batch_jobs:
+            log.info("rehydrated %d batch jobs from disk", len(_batch_jobs))
+    except Exception as e:
+        log.warning("job rehydrate scan failed: %s", e)
 
 
 @router.post("/process-batch")
@@ -922,6 +1139,8 @@ async def process_batch(body: dict):
         else:
             total_clips += max(1, math.floor(trim_duration / clip_length))
 
+    _load_jobs_from_disk()
+    sanitized = sanitize_project_name(project)
     _batch_jobs[job_id] = {
         "job_id": job_id,
         "status": "running",
@@ -932,7 +1151,9 @@ async def process_batch(body: dict):
         "ok_count": 0,
         "clip_length": clip_length,
         "error": None,
+        "_project": sanitized,
     }
+    _persist_job(_batch_jobs[job_id])
 
     asyncio.create_task(_run_batch_job(job_id, project, batch_id, clip_length, sources))
 
@@ -942,10 +1163,12 @@ async def process_batch(body: dict):
 @router.get("/process-batch/{job_id}")
 async def poll_batch(job_id: str):
     """Poll a clip batch job for progress. Returns current state."""
+    _load_jobs_from_disk()
     job = _batch_jobs.get(job_id)
     if not job:
         raise HTTPException(404, "Job not found")
-    return job
+    # Don't leak internal runtime refs
+    return {k: v for k, v in job.items() if not k.startswith("_")}
 
 
 async def _run_batch_job(
@@ -1024,6 +1247,23 @@ async def _run_batch_job(
                 if ok:
                     await _generate_thumbnail(clip_path, thumb_path, seek=actual_clip_len * 0.3)
 
+                # Mirror clip + thumb to R2 for durable downloads (bypasses edge proxy).
+                r2_key: Optional[str] = None
+                if ok and r2.is_configured():
+                    try:
+                        r2_key = r2.clip_key(sanitized, job_id, clip_name)
+                        await asyncio.to_thread(r2.upload_from_path, r2_key, clip_path, "video/mp4")
+                        if thumb_path.exists():
+                            await asyncio.to_thread(
+                                r2.upload_from_path,
+                                r2.clip_key(sanitized, job_id, thumb_name),
+                                thumb_path,
+                                "image/jpeg",
+                            )
+                    except Exception as e:
+                        log.warning("r2 upload failed for clip %s: %s", clip_name, e)
+                        r2_key = None  # fall back to local URL
+
                 result = {
                     "index": clip_counter - 1,
                     "name": clip_name,
@@ -1031,12 +1271,14 @@ async def _run_batch_job(
                     "ok": ok,
                     "url": f"/projects/{sanitized}/clips/{job_id}/{clip_name}" if ok else None,
                     "thumb_url": f"/projects/{sanitized}/clips/{job_id}/{thumb_name}" if ok else None,
+                    "r2_key": r2_key,
                     "start": round(clip_start, 2),
                     "duration": round(actual_clip_len, 2),
                 }
                 results.append(result)
                 job["clips"] = list(results)
                 job["ok_count"] = sum(1 for r in results if r.get("ok"))
+                _persist_job(job)
 
                 log.info("  clip %d/%d: %.1f+%.1fs → %s (%s)",
                          clip_counter, job["total"], clip_start, actual_clip_len, clip_name, "ok" if ok else "FAIL")
@@ -1049,6 +1291,7 @@ async def _run_batch_job(
         job["status"] = "complete"
         job["clips"] = results
         job["ok_count"] = sum(1 for r in results if r.get("ok"))
+        _persist_job(job)
         log.info("batch COMPLETE: %s — %d/%d clips ok", job_id, job["ok_count"], job["total"])
 
     except Exception as e:
@@ -1057,6 +1300,7 @@ async def _run_batch_job(
         traceback.print_exc()
         job["status"] = "error"
         job["error"] = str(e)
+        _persist_job(job)
 
 
 # ── Pipeline for local files ─────────────────────────────────────────
@@ -1287,6 +1531,12 @@ async def delete_clipper_job(job_id: str, project: str = Query(default="quick-te
 
 @router.get("/jobs/{job_id}/download-all")
 async def download_all_clips(job_id: str, project: str = Query(default="quick-test")):
+    """Return presigned R2 URLs for every clip so the browser can download
+    directly from R2 (bypasses the Railway edge proxy and its 5-minute ceiling).
+
+    Falls back to a server-built ZIP if R2 is not configured or clips weren't
+    mirrored — keeps the endpoint working in local dev / pre-R2 jobs.
+    """
     clipper_dir = _get_clipper_dir(project)
     job_dir = clipper_dir / job_id
 
@@ -1297,9 +1547,40 @@ async def download_all_clips(job_id: str, project: str = Query(default="quick-te
     if not clips:
         raise HTTPException(404, "No clips found")
 
+    sanitized = sanitize_project_name(project)
+
+    if r2.is_configured():
+        urls = []
+        missing_in_r2: list[Path] = []
+        for clip in clips:
+            key = r2.clip_key(sanitized, job_id, clip.name)
+            if r2.head(key):
+                urls.append({
+                    "name": clip.name,
+                    "url": r2.presign_get(key, download_as=clip.name),
+                    "size": clip.stat().st_size,
+                })
+            else:
+                missing_in_r2.append(clip)
+
+        # Backfill any clips missing from R2 (older jobs from before mirroring).
+        for clip in missing_in_r2:
+            try:
+                key = r2.clip_key(sanitized, job_id, clip.name)
+                await asyncio.to_thread(r2.upload_from_path, key, clip, "video/mp4")
+                urls.append({
+                    "name": clip.name,
+                    "url": r2.presign_get(key, download_as=clip.name),
+                    "size": clip.stat().st_size,
+                })
+            except Exception as e:
+                log.warning("r2 backfill upload failed for %s: %s", clip.name, e)
+
+        if urls:
+            return {"mode": "r2", "job_id": job_id, "clips": urls}
+
+    # Fallback: server-built ZIP (pre-R2 behaviour).
     zip_path = job_dir / "clips.zip"
-    # Use ZIP_STORED (no compression) — MP4s are already compressed,
-    # deflate just wastes CPU and can time out on large clips
     with ZipFile(zip_path, "w", compression=zipfile.ZIP_STORED) as zf:
         for clip in clips:
             zf.write(clip, clip.name)

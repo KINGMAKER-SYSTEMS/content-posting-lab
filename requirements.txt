@@ -16,5 +16,6 @@ tiktokautouploader
 google-api-python-client
 google-auth
 librosa==0.10.2
+boto3>=1.35
 pytest
 pytest-asyncio
