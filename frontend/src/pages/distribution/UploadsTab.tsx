@@ -2,6 +2,7 @@ import { useMemo } from 'react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { XIcon } from '@phosphor-icons/react';
 import type { UploadJob, RosterPage } from '@/types/api';
 
 export interface UploadsTabProps {
@@ -69,10 +70,10 @@ export function UploadsTab({
             </h2>
             <button
               type="button"
-              className="text-muted-foreground hover:text-foreground text-lg"
+              className="text-muted-foreground hover:text-foreground"
               onClick={onCloseUploadForm}
             >
-              ✕
+              <XIcon size={18} weight="bold" />
             </button>
           </div>
 
