@@ -3,6 +3,7 @@ import { XIcon } from '@phosphor-icons/react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { XIcon } from '@phosphor-icons/react';
 import type { UploadJob, RosterPage } from '@/types/api';
 
 export interface UploadsTabProps {
