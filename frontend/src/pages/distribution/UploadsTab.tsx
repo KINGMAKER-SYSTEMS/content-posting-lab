@@ -63,7 +63,7 @@ export function UploadsTab({
     <div className="space-y-4">
       {/* Upload Form (inline when target selected) */}
       {showUploadForm && uploadTarget && (
-        <div className="rounded-[var(--border-radius)] border-2 border-border bg-card shadow-[2px_2px_0_0_var(--border)] p-6 space-y-4">
+        <div className="rounded-[var(--border-radius)] border border-border bg-card shadow-[var(--shadow)] p-6 space-y-4">
           <div className="flex items-center justify-between">
             <h2 className="text-lg font-heading font-bold">
               Upload to {uploadTarget.name}
@@ -91,7 +91,7 @@ export function UploadsTab({
             <div>
               <label className="text-xs font-bold text-muted-foreground block mb-1">Description</label>
               <textarea
-                className="w-full rounded-[var(--border-radius)] border-2 border-border bg-transparent px-3 py-2 text-sm resize-none h-20"
+                className="w-full rounded-[var(--border-radius)] border border-border bg-transparent px-3 py-2 text-sm resize-none h-20"
                 placeholder="Caption text..."
                 value={uploadDesc}
                 onChange={(e) => onUploadDescChange(e.target.value)}
@@ -138,7 +138,7 @@ export function UploadsTab({
                     type="checkbox"
                     checked={uploadStealth}
                     onChange={(e) => onUploadStealthChange(e.target.checked)}
-                    className="rounded border-2 border-border"
+                    className="rounded border border-border"
                   />
                   <span className="text-xs font-bold">Stealth Mode</span>
                 </label>
@@ -168,7 +168,7 @@ export function UploadsTab({
 
       {/* Upload Queue */}
       {(activeJobs.length > 0 || recentJobs.length > 0) && (
-        <div className="rounded-[var(--border-radius)] border-2 border-border bg-card shadow-[2px_2px_0_0_var(--border)] p-4 space-y-3">
+        <div className="rounded-[var(--border-radius)] border border-border bg-card shadow-[var(--shadow)] p-4 space-y-3">
           <h2 className="text-sm font-heading font-bold">Upload Queue</h2>
 
           {activeJobs.length > 0 && (
@@ -176,7 +176,7 @@ export function UploadsTab({
               {activeJobs.map((job) => (
                 <div
                   key={job.job_id}
-                  className="flex items-center justify-between rounded-[var(--border-radius)] border-2 border-border px-3 py-2"
+                  className="flex items-center justify-between rounded-[var(--border-radius)] border border-border px-3 py-2"
                 >
                   <div className="flex items-center gap-2">
                     <Badge
@@ -233,7 +233,7 @@ export function UploadsTab({
 
       {/* Empty state when no form and no jobs */}
       {!showUploadForm && activeJobs.length === 0 && recentJobs.length === 0 && (
-        <div className="rounded-[var(--border-radius)] border-2 border-border bg-muted px-4 py-8 text-center text-muted-foreground">
+        <div className="rounded-[var(--border-radius)] border border-border bg-muted px-4 py-8 text-center text-muted-foreground">
           No uploads in progress. Click "Upload" on a page in the Roster tab to queue a video.
         </div>
       )}

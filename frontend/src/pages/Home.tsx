@@ -336,7 +336,7 @@ export function HomePage() {
     <div className="mx-auto max-w-7xl p-6 space-y-6">
 
       {/* ── Project Summary ──────────────────────────────────────── */}
-      <Card className="border-primary shadow-[4px_4px_0_0_var(--primary)]">
+      <Card className="border-primary ring-2 ring-primary/40">
         <CardContent className="pt-0">
           <div className="flex items-center justify-between mb-4">
             <div>
@@ -389,15 +389,15 @@ export function HomePage() {
           {/* Stats grid */}
           {activeProject && (
             <div className="grid grid-cols-3 gap-3">
-              <div className="rounded-[var(--border-radius)] border-2 border-border bg-muted p-3 text-center">
+              <div className="rounded-[var(--border-radius)] border border-border bg-muted p-3 text-center">
                 <div className="text-2xl font-heading text-foreground">{activeProject.video_count}</div>
                 <div className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Videos</div>
               </div>
-              <div className="rounded-[var(--border-radius)] border-2 border-border bg-muted p-3 text-center">
+              <div className="rounded-[var(--border-radius)] border border-border bg-muted p-3 text-center">
                 <div className="text-2xl font-heading text-foreground">{activeProject.caption_count}</div>
                 <div className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Captions</div>
               </div>
-              <div className="rounded-[var(--border-radius)] border-2 border-border bg-muted p-3 text-center">
+              <div className="rounded-[var(--border-radius)] border border-border bg-muted p-3 text-center">
                 <div className="text-2xl font-heading text-foreground">{activeProject.burned_count}</div>
                 <div className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Burned</div>
               </div>
@@ -420,7 +420,7 @@ export function HomePage() {
               {projects.map((p) => (
                 <div
                   key={p.name}
-                  className={`flex items-center justify-between rounded-[var(--border-radius)] border-2 border-border p-3 transition-colors ${
+                  className={`flex items-center justify-between rounded-[var(--border-radius)] border border-border p-3 transition-colors ${
                     p.name === activeProjectName ? 'bg-primary/10 border-primary' : 'bg-card hover:bg-muted'
                   }`}
                 >
@@ -443,7 +443,7 @@ export function HomePage() {
                       variant="ghost"
                       size="sm"
                       onClick={() => setProjectToDelete(p)}
-                      className="text-muted-foreground hover:text-destructive hover:bg-red-50 px-2"
+                      className="text-muted-foreground hover:text-destructive hover:bg-destructive/10 px-2"
                     >
                       <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
@@ -463,7 +463,7 @@ export function HomePage() {
           Pipeline Status
         </div>
         {pipelineItems.length === 0 ? (
-          <div className="rounded-[var(--border-radius)] border-2 border-dashed border-border bg-muted p-6 text-center">
+          <div className="rounded-[var(--border-radius)] border border-dashed border-border bg-muted p-6 text-center">
             <div className="text-sm text-muted-foreground">
               Nothing running — start by creating content
             </div>
@@ -475,7 +475,7 @@ export function HomePage() {
                 key={i}
                 type="button"
                 onClick={() => navigate(item.route)}
-                className="flex w-full items-center gap-3 rounded-[var(--border-radius)] border-2 border-border bg-card p-3 shadow-[2px_2px_0_0_var(--border)] hover:bg-muted transition-colors text-left"
+                className="flex w-full items-center gap-3 rounded-[var(--border-radius)] border border-border bg-card p-3 hover:bg-muted transition-colors text-left"
               >
                 <span className="h-2.5 w-2.5 rounded-full bg-green-500 animate-pulse flex-shrink-0" />
                 <span className="text-sm font-base text-foreground flex-1">{item.label}</span>
@@ -499,7 +499,7 @@ export function HomePage() {
               key={card.route}
               type="button"
               onClick={() => navigate(card.route)}
-              className="group rounded-[var(--border-radius)] border-2 border-border bg-card p-6 shadow-[var(--shadow)] cursor-pointer hover:translate-x-[1px] hover:translate-y-[1px] hover:shadow-[3px_3px_0_0_var(--border)] transition-all text-left"
+              className="group rounded-[var(--border-radius)] border border-border bg-card p-6 shadow-[var(--shadow)] cursor-pointer hover:border-primary/40 hover:bg-muted/40 transition-all text-left"
             >
               <div className="mb-3 text-primary"><card.Icon size={40} weight="duotone" /></div>
               <div className="flex items-center gap-2">
@@ -533,7 +533,7 @@ export function HomePage() {
                 key={i}
                 type="button"
                 onClick={() => navigate(item.route)}
-                className="flex w-full items-center gap-3 rounded-[var(--border-radius)] border-2 border-border bg-card p-3 shadow-[2px_2px_0_0_var(--border)] hover:bg-muted transition-colors text-left"
+                className="flex w-full items-center gap-3 rounded-[var(--border-radius)] border border-border bg-card p-3 hover:bg-muted transition-colors text-left"
               >
                 <span className="text-sm font-base text-foreground flex-1">{item.label}</span>
                 <span className="text-xs text-muted-foreground whitespace-nowrap">{timeAgo(item.time)}</span>

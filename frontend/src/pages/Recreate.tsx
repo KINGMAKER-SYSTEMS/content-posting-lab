@@ -340,7 +340,7 @@ export function RecreatePage() {
             )}
           </div>
 
-          <ScrollArea className="h-52 rounded-[var(--border-radius)] border-2 border-border bg-muted p-3 font-mono text-xs text-muted-foreground">
+          <ScrollArea className="h-52 rounded-[var(--border-radius)] border border-border bg-muted p-3 font-mono text-xs text-muted-foreground">
             {logs.length === 0 ? (
               <span className="italic">Waiting to start...</span>
             ) : (
@@ -374,7 +374,7 @@ export function RecreatePage() {
               pastJobs.map((job) => (
                 <div
                   key={job.job_id}
-                  className="group flex items-center gap-2 rounded-[var(--border-radius)] border-2 border-border bg-card px-3 py-2 hover:bg-muted hover:shadow-[2px_2px_0_0_var(--border)] transition-all"
+                  className="group flex items-center gap-2 rounded-[var(--border-radius)] border border-border bg-card px-3 py-2 hover:bg-muted hover:border-primary/30 transition-all"
                 >
                   <button
                     type="button"
@@ -620,7 +620,7 @@ export function RecreatePage() {
                         value={generatedPrompt}
                         onChange={(e) => setGeneratedPrompt(e.target.value)}
                         rows={4}
-                        className="w-full rounded-[var(--border-radius)] border-2 border-border bg-muted p-3 text-sm text-foreground resize-y focus:outline-none focus:ring-2 focus:ring-primary/40 focus:border-primary"
+                        className="w-full rounded-[var(--border-radius)] border border-border bg-muted p-3 text-sm text-foreground resize-y focus:outline-none focus:ring-2 focus:ring-primary/40 focus:border-primary"
                         placeholder="Video generation prompt..."
                       />
                       <div className="flex gap-2">

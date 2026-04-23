@@ -165,7 +165,7 @@ export function RosterTab({
       {postizConfigured && (
         <div className="space-y-4">
           {/* Toolbar */}
-          <div className="flex items-center justify-between rounded-[var(--border-radius)] border-2 border-border bg-muted px-4 py-3">
+          <div className="flex items-center justify-between rounded-[var(--border-radius)] border border-border bg-muted px-4 py-3">
             <div className="flex items-center gap-4 text-sm">
               <span>
                 <span className="font-bold">{rosterPages.length}</span> page{rosterPages.length !== 1 ? 's' : ''}
@@ -188,7 +188,7 @@ export function RosterTab({
               )}
               <label className="text-xs font-bold text-muted-foreground">Filter:</label>
               <select
-                className="rounded-[var(--border-radius)] border-2 border-border bg-card px-2 py-1 text-xs font-bold"
+                className="rounded-[var(--border-radius)] border border-border bg-card px-2 py-1 text-xs font-bold"
                 value={filterProject}
                 onChange={(e) => onFilterProjectChange(e.target.value)}
               >
@@ -206,14 +206,14 @@ export function RosterTab({
 
           {/* Empty state */}
           {rosterPages.length === 0 && !rosterLoading && !syncing && (
-            <div className="rounded-[var(--border-radius)] border-2 border-border bg-muted px-4 py-8 text-center text-muted-foreground">
+            <div className="rounded-[var(--border-radius)] border border-border bg-muted px-4 py-8 text-center text-muted-foreground">
               No pages found. Make sure Postiz is reachable — pages sync automatically.
             </div>
           )}
 
           {/* Data table */}
           {displayPages.length > 0 && (
-            <div className="rounded-[var(--border-radius)] border-2 border-border bg-card shadow-[2px_2px_0_0_var(--border)] overflow-x-auto">
+            <div className="rounded-[var(--border-radius)] border border-border bg-card shadow-[var(--shadow)] overflow-x-auto">
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b-2 border-border bg-muted text-left">
@@ -265,7 +265,7 @@ export function RosterTab({
                         </td>
                         <td className="px-3 py-2">
                           <select
-                            className="rounded-[var(--border-radius)] border-2 border-border bg-card px-2 py-1 text-xs font-bold w-full min-w-[120px]"
+                            className="rounded-[var(--border-radius)] border border-border bg-card px-2 py-1 text-xs font-bold w-full min-w-[120px]"
                             value={page.project ?? ''}
                             onChange={(e) => onAssignProject(page.integration_id, e.target.value || null)}
                           >
@@ -416,7 +416,7 @@ export function RosterTab({
                 <div className="text-sm text-muted-foreground text-center py-3">No destinations yet.</div>
               ) : (
                 destinations.map((dest) => (
-                  <div key={dest.id} className="flex items-center justify-between rounded-[var(--border-radius)] border-2 border-border px-3 py-2">
+                  <div key={dest.id} className="flex items-center justify-between rounded-[var(--border-radius)] border border-border px-3 py-2">
                     <span className="text-sm font-mono">{dest.email}</span>
                     <Badge variant={dest.verified ? 'success' : 'warning'} className="text-[10px]">
                       {dest.verified ? 'Verified' : 'Pending'}

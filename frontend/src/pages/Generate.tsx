@@ -888,7 +888,7 @@ export function GeneratePage() {
       return (
         <div
           key={job.id}
-          className="group flex items-center gap-3 rounded-[var(--border-radius)] border-2 border-border bg-card px-3 py-2 hover:shadow-[2px_2px_0_0_var(--border)] hover:translate-x-[1px] hover:translate-y-[1px] transition-all cursor-pointer"
+          className="group flex items-center gap-3 rounded-[var(--border-radius)] border border-border bg-card px-3 py-2 hover:bg-muted hover:border-primary/30 transition-all cursor-pointer"
           onClick={() => toggleJobExpanded(job.id)}
         >
           <span className="text-xs text-muted-foreground -rotate-90 inline-block">▼</span>
@@ -1012,10 +1012,10 @@ export function GeneratePage() {
               return items.map(({ key, url, file, label, video: v, idx: vIdx }) => (
                 <div
                   key={key}
-                  className={`group/card relative rounded-[var(--border-radius)] overflow-hidden border-2 bg-card transition-all ${
+                  className={`group/card relative rounded-[var(--border-radius)] overflow-hidden border bg-card transition-all ${
                     selectMode && file && selectedVideos.has(file)
-                      ? 'border-primary shadow-[4px_4px_0_0_var(--primary)]'
-                      : 'border-border shadow-[2px_2px_0_0_var(--border)] hover:translate-x-[1px] hover:translate-y-[1px] hover:shadow-[1px_1px_0_0_var(--border)]'
+                      ? 'border-primary ring-2 ring-primary/40'
+                      : 'border-border shadow-[var(--shadow)] hover:border-primary/30'
                   }`}
                   onClick={selectMode && v.status === 'done' && file ? () => toggleVideoSelection(file) : undefined}
                 >
@@ -1186,7 +1186,7 @@ export function GeneratePage() {
           <div>
             <Label>Upload Image or Video (optional)</Label>
             <div
-              className={`relative mt-1 border-2 border-dashed rounded-[var(--border-radius)] p-4 text-center cursor-pointer transition-colors ${
+              className={`relative mt-1 border border-dashed rounded-[var(--border-radius)] p-4 text-center cursor-pointer transition-colors ${
                 dragOver
                   ? 'border-primary bg-primary/5'
                   : mediaFile
@@ -1205,7 +1205,7 @@ export function GeneratePage() {
                 <button
                   type="button"
                   onClick={clearFile}
-                  className="absolute top-1.5 right-1.5 w-5 h-5 rounded-full border-2 border-border bg-card hover:bg-muted text-foreground text-xs flex items-center justify-center"
+                  className="absolute top-1.5 right-1.5 w-5 h-5 rounded-full border border-border bg-card hover:bg-muted text-foreground text-xs flex items-center justify-center"
                 >
                   ×
                 </button>
@@ -1309,8 +1309,8 @@ export function GeneratePage() {
 
               {/* Image required notice for i2v models */}
               {schema.image_required && !mediaFile && (
-                <Card className="border-amber-400 bg-amber-50">
-                  <CardContent className="py-2 text-sm text-amber-800">
+                <Card className="border-amber-500/40 bg-amber-500/10">
+                  <CardContent className="py-2 text-sm text-amber-200">
                     This model requires an image. Upload one above.
                   </CardContent>
                 </Card>
@@ -1321,7 +1321,7 @@ export function GeneratePage() {
                 <div>
                   <Label>Last Frame Image (optional)</Label>
                   <div
-                    className={`relative mt-1 border-2 border-dashed rounded-[var(--border-radius)] p-3 text-center cursor-pointer transition-colors ${
+                    className={`relative mt-1 border border-dashed rounded-[var(--border-radius)] p-3 text-center cursor-pointer transition-colors ${
                       lastImageFile
                         ? 'border-primary bg-primary/10'
                         : 'border-border hover:border-muted-foreground hover:bg-muted'
@@ -1336,7 +1336,7 @@ export function GeneratePage() {
                           setLastImageFile(null);
                           if (lastImageInputRef.current) lastImageInputRef.current.value = '';
                         }}
-                        className="absolute top-1.5 right-1.5 w-5 h-5 rounded-full border-2 border-border bg-card hover:bg-muted text-foreground text-xs flex items-center justify-center"
+                        className="absolute top-1.5 right-1.5 w-5 h-5 rounded-full border border-border bg-card hover:bg-muted text-foreground text-xs flex items-center justify-center"
                       >
                         ×
                       </button>
@@ -1437,8 +1437,8 @@ export function GeneratePage() {
           )}
 
           {error && (
-            <Card className="border-destructive bg-red-50">
-              <CardContent className="py-3 text-sm text-red-800">{error}</CardContent>
+            <Card className="border-destructive/40 bg-destructive/10">
+              <CardContent className="py-3 text-sm text-destructive">{error}</CardContent>
             </Card>
           )}
 
@@ -1449,7 +1449,7 @@ export function GeneratePage() {
             const expected = count * mult;
             if (mult <= 1) return null;
             return (
-              <div className="flex items-center justify-between rounded-[var(--border-radius)] border-2 border-primary/30 bg-primary/5 px-3 py-2 text-xs">
+              <div className="flex items-center justify-between rounded-[var(--border-radius)] border border-primary/30 bg-primary/5 px-3 py-2 text-xs">
                 <span className="text-muted-foreground">
                   {count} × <span className="font-bold text-foreground">{mult}-crop</span>
                 </span>
@@ -1562,7 +1562,7 @@ export function GeneratePage() {
                           key={`${entry.job_id}-${i}`}
                           type="button"
                           onClick={() => applyPromptEntry(entry)}
-                          className="w-full text-left rounded-[var(--border-radius)] px-3 py-2 border-2 border-border bg-card hover:bg-muted hover:shadow-[2px_2px_0_0_var(--border)] transition-all group"
+                          className="w-full text-left rounded-[var(--border-radius)] px-3 py-2 border border-border bg-card hover:bg-muted hover:border-primary/30 transition-all group"
                         >
                           <div className="text-[13px] text-foreground group-hover:text-primary leading-snug line-clamp-2">
                             {entry.prompt}
@@ -1621,7 +1621,7 @@ export function GeneratePage() {
           ) : (
             <div className="space-y-6">
               {liveJobs.length === 0 && archivedJobs.length > 0 && (
-                <div className="rounded-[var(--border-radius)] border-2 border-dashed border-border bg-muted/30 px-4 py-6 text-center text-sm text-muted-foreground">
+                <div className="rounded-[var(--border-radius)] border border-dashed border-border bg-muted/30 px-4 py-6 text-center text-sm text-muted-foreground">
                   All caught up. {archivedJobs.length} archived {archivedJobs.length === 1 ? 'job' : 'jobs'} below.
                 </div>
               )}

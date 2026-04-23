@@ -190,11 +190,11 @@ const PairCard = memo(function PairCard({
 
   return (
     <article
-      className={`relative overflow-hidden rounded-[var(--border-radius)] border-2 bg-card transition-all ${
-        hasBurned ? 'border-green-700 shadow-[3px_3px_0_0_var(--green-700,#15803d)]'
-          : hasError ? 'border-destructive'
-          : selected ? 'border-primary shadow-[4px_4px_0_0_var(--primary)]'
-          : 'border-border hover:translate-x-[1px] hover:translate-y-[1px] hover:shadow-[3px_3px_0_0_var(--border)]'
+      className={`relative overflow-hidden rounded-[var(--border-radius)] border bg-card transition-all ${
+        hasBurned ? 'border-emerald-500/40 ring-2 ring-emerald-500/30'
+          : hasError ? 'border-destructive ring-2 ring-destructive/30'
+          : selected ? 'border-primary ring-2 ring-primary/40'
+          : 'border-border shadow-[var(--shadow)] hover:border-primary/30'
       }`}
       onClick={(e) => {
         const t = e.target as HTMLElement;
@@ -1122,7 +1122,7 @@ export function BurnPage() {
         <div className="mt-1 mb-1 text-[10px] text-muted-foreground">
           {selectedFolders.length}/{groupedFolders.length} selected
         </div>
-        <div className="mb-4 min-h-[72px] max-h-56 shrink-0 overflow-y-auto rounded-md border-2 border-border bg-background">
+        <div className="mb-4 min-h-[72px] max-h-56 shrink-0 overflow-y-auto rounded-md border border-border bg-background">
           {groupedFolders.length === 0 ? (
             <div className="px-2 py-3 text-xs text-muted-foreground italic">No videos in project</div>
           ) : (
@@ -1508,8 +1508,8 @@ export function BurnPage() {
         ) : null}
 
         {error ? (
-          <Card className="mt-3 border-destructive bg-red-50">
-            <CardContent className="max-h-48 overflow-y-auto py-2 text-xs text-red-800 whitespace-pre-wrap break-all select-all">{error}</CardContent>
+          <Card className="mt-3 border-destructive/40 bg-destructive/10">
+            <CardContent className="max-h-48 overflow-y-auto py-2 text-xs text-destructive whitespace-pre-wrap break-all select-all">{error}</CardContent>
           </Card>
         ) : null}
       </aside>

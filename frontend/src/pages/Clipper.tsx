@@ -223,7 +223,7 @@ function TrimTimeline({ file, onChange }: {
           {playing ? '\u23F8' : '\u25B6'}
         </button>
         <div ref={trackRef}
-          className="relative flex-1 h-10 rounded bg-muted border-2 border-border select-none touch-none cursor-pointer"
+          className="relative flex-1 h-10 rounded bg-muted border border-border select-none touch-none cursor-pointer"
           onPointerDown={handleTrackPointerDown} onPointerMove={handlePointerMove}
           onPointerUp={handlePointerUp} onPointerLeave={handlePointerUp}>
           <div className="absolute inset-y-0 left-0 bg-black/30 rounded-l z-[1]" style={{ width: `${pctStart}%` }} />
@@ -300,7 +300,7 @@ function ConfigurePanel({ stagedFiles, clipLength, setClipLength, onProcess, onB
       </div>
 
       {/* Breakdown table */}
-      <div className="border-2 border-border rounded-[var(--border-radius)] overflow-hidden mb-6">
+      <div className="border border-border rounded-[var(--border-radius)] overflow-hidden mb-6">
         <table className="w-full text-sm">
           <thead>
             <tr className="bg-muted border-b-2 border-border">
@@ -781,7 +781,7 @@ export function ClipperPage() {
           <>
             <Label>Upload Videos</Label>
             <div
-              className={`relative mt-1 border-2 border-dashed rounded-[var(--border-radius)] p-4 text-center cursor-pointer transition-colors ${
+              className={`relative mt-1 border border-dashed rounded-[var(--border-radius)] p-4 text-center cursor-pointer transition-colors ${
                 dragOver ? 'border-primary bg-primary/5'
                   : hasStaged ? 'border-primary bg-primary/10'
                     : 'border-border hover:border-muted-foreground hover:bg-muted'
@@ -879,7 +879,7 @@ export function ClipperPage() {
               <p className="text-xs text-muted-foreground italic">No previous jobs.</p>
             ) : pastJobs.map((job) => (
               <div key={job.job_id}
-                className="group flex items-center gap-2 rounded-[var(--border-radius)] border-2 border-border bg-card px-3 py-2 hover:bg-muted hover:shadow-[2px_2px_0_0_var(--border)] transition-all">
+                className="group flex items-center gap-2 rounded-[var(--border-radius)] border border-border bg-card px-3 py-2 hover:bg-muted hover:border-primary/30 transition-all">
                 {renamingJobId === job.job_id ? (
                   <Input
                     value={renameValue}
@@ -934,10 +934,10 @@ export function ClipperPage() {
 
                   return (
                     <div key={file.index}
-                      className={`rounded-[var(--border-radius)] overflow-hidden border-2 bg-card transition-all ${
-                        isExpanded ? 'border-primary shadow-[4px_4px_0_0_var(--primary)] col-span-1'
-                          : trimmed ? 'border-green-700 shadow-[2px_2px_0_0_var(--green-700,#15803d)] hover:translate-x-[1px] hover:translate-y-[1px]'
-                            : 'border-border shadow-[2px_2px_0_0_var(--border)] hover:translate-x-[1px] hover:translate-y-[1px] hover:shadow-[1px_1px_0_0_var(--border)]'
+                      className={`rounded-[var(--border-radius)] overflow-hidden border bg-card transition-all ${
+                        isExpanded ? 'border-primary ring-2 ring-primary/40 col-span-1'
+                          : trimmed ? 'border-emerald-500/40 ring-1 ring-emerald-500/30 hover:border-emerald-500/60'
+                            : 'border-border shadow-[var(--shadow)] hover:border-primary/30'
                       }`}>
                       {/* Header */}
                       <div className="flex items-center justify-between px-3 py-2 border-b border-border">
@@ -1009,7 +1009,7 @@ export function ClipperPage() {
               {processProgress && (
                 <div className="space-y-4">
                   {/* Progress bar */}
-                  <div className="w-full bg-muted rounded-full h-4 border-2 border-border overflow-hidden">
+                  <div className="w-full bg-muted rounded-full h-4 border border-border overflow-hidden">
                     <div
                       className="h-full bg-primary rounded-full transition-all duration-300"
                       style={{ width: `${processProgress.total > 0 ? (processProgress.clip / processProgress.total) * 100 : 0}%` }}
@@ -1079,7 +1079,7 @@ export function ClipperPage() {
               <div className="grid grid-cols-[repeat(auto-fill,minmax(180px,1fr))] gap-3">
                 {resultClips.filter((c) => c.ok && c.url).map((clip) => (
                   <div key={clip.index}
-                    className="rounded-[var(--border-radius)] overflow-hidden border-2 border-border bg-card shadow-[2px_2px_0_0_var(--border)] hover:translate-x-[1px] hover:translate-y-[1px] hover:shadow-[1px_1px_0_0_var(--border)] transition-all">
+                    className="rounded-[var(--border-radius)] overflow-hidden border border-border bg-card shadow-[var(--shadow)] hover:border-primary/30 transition-all">
                     <div className="relative bg-muted aspect-[9/16]">
                       {clip.thumbUrl ? (
                         <img src={staticUrl(clip.thumbUrl)} alt={clip.name}

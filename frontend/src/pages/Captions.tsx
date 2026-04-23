@@ -470,7 +470,7 @@ export function CaptionsPage() {
             </Badge>
           </div>
 
-          <ScrollArea className="h-64 rounded-[var(--border-radius)] border-2 border-border bg-muted p-3 font-mono text-xs text-muted-foreground">
+          <ScrollArea className="h-64 rounded-[var(--border-radius)] border border-border bg-muted p-3 font-mono text-xs text-muted-foreground">
             {logs.length === 0 ? (
               <span className="italic">Waiting to start...</span>
             ) : (
@@ -561,8 +561,8 @@ export function CaptionsPage() {
                     return (
                       <div
                         key={`grid-${row.index}`}
-                        className={`relative aspect-[9/16] overflow-hidden rounded-[var(--border-radius)] border-2 transition-all ${
-                          isError ? 'border-destructive' : isDone ? 'border-green-700' : isScanning ? 'border-primary shadow-[3px_3px_0_0_var(--primary)]' : 'border-border'
+                        className={`relative aspect-[9/16] overflow-hidden rounded-[var(--border-radius)] border transition-all ${
+                          isError ? 'border-destructive ring-2 ring-destructive/30' : isDone ? 'border-emerald-500/40 ring-1 ring-emerald-500/30' : isScanning ? 'border-primary ring-2 ring-primary/40' : 'border-border'
                         }`}
                       >
                         {showSkeleton ? (
@@ -632,7 +632,7 @@ export function CaptionsPage() {
                     </Card>
                   ) : null}
 
-                  <div className="overflow-x-auto rounded-[var(--border-radius)] border-2 border-border">
+                  <div className="overflow-x-auto rounded-[var(--border-radius)] border border-border">
                     <table className="w-full min-w-[760px] border-collapse text-sm">
                       <thead>
                         <tr className="bg-muted">
@@ -651,9 +651,9 @@ export function CaptionsPage() {
                             <tr key={`table-${row.index}`} className="border-b border-border last:border-b-0 hover:bg-muted/50">
                               <td className="px-3 py-2 align-top">
                                 {row.b64 ? (
-                                  <img src={`data:image/jpeg;base64,${row.b64}`} alt="Frame" className="h-[88px] w-[50px] rounded-[var(--border-radius)] border-2 border-border object-cover" />
+                                  <img src={`data:image/jpeg;base64,${row.b64}`} alt="Frame" className="h-[88px] w-[50px] rounded-[var(--border-radius)] border border-border object-cover" />
                                 ) : (
-                                  <div className="h-[88px] w-[50px] rounded-[var(--border-radius)] border-2 border-border bg-muted" />
+                                  <div className="h-[88px] w-[50px] rounded-[var(--border-radius)] border border-border bg-muted" />
                                 )}
                               </td>
                               <td className="max-w-[200px] truncate px-3 py-2 align-top text-xs text-muted-foreground">
@@ -792,7 +792,7 @@ function CaptionHistory({
             batches.map((batch) => (
               <div
                 key={batch.username}
-                className="rounded-[var(--border-radius)] border-2 border-border bg-card p-2.5 hover:shadow-[2px_2px_0_0_var(--border)] transition-all"
+                className="rounded-[var(--border-radius)] border border-border bg-card p-2.5 hover:border-primary/30 hover:bg-muted/40 transition-all"
               >
                 <div className="flex items-center justify-between mb-1">
                   {renamingId === batch.username ? (
