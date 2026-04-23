@@ -2,7 +2,6 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { FolderOpenIcon, FlameIcon } from '@phosphor-icons/react';
 import { apiUrl, staticUrl } from '../lib/api';
 import { EmptyState, LazyVideo, ProgressBar } from '../components';
-import { FolderOpenIcon, FlameIcon } from '@phosphor-icons/react';
 import { AssignToPagesDialog } from '../components/AssignToPagesDialog';
 import { useWorkflowStore } from '../stores/workflowStore';
 import { captureTextOverlay as captureTextOverlayShared, fontFamilyName } from '../lib/textOverlay';
