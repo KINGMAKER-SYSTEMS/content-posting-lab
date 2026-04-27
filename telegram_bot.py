@@ -55,6 +55,13 @@ _schedule_task: asyncio.Task | None = None
 _notion_sync_task: asyncio.Task | None = None
 _pyro: "PyroClient | None" = None  # Pyrogram MTProto client
 
+# Sounds bot — separate, isolated, send-only.
+# - Token comes from SOUNDS_BOT_TOKEN env var only (never from config or UI)
+# - No polling, no event handlers, no inventory, no forwarding
+# - Used exclusively by the Sound Assignments feature
+# - Reads the same telegram_config.json (chat_ids, sounds_topic_ids) but never writes to it
+_sounds_bot: Bot | None = None
+
 # How often to poll Notion for new sounds (seconds)
 NOTION_SYNC_INTERVAL = int(os.getenv("NOTION_SYNC_INTERVAL", "900"))  # 15 min default
 
@@ -195,6 +202,89 @@ def get_bot() -> Bot | None:
 def get_pyro():
     """Return the active Pyrogram client or None."""
     return _pyro
+
+
+# ---------------------------------------------------------------------------
+# Sounds bot — isolated, send-only
+# ---------------------------------------------------------------------------
+
+
+async def start_sounds_bot() -> bool:
+    """Start the sounds bot if SOUNDS_BOT_TOKEN env var is set.
+
+    Returns True if started, False if no token (silent skip — not an error).
+    No polling, no dispatcher, no event handlers — purely a send client.
+    Safe to call multiple times; will replace any existing session.
+    """
+    global _sounds_bot
+
+    token = os.getenv("SOUNDS_BOT_TOKEN", "").strip()
+    if not token:
+        logger.info("sounds bot: SOUNDS_BOT_TOKEN not set, skipping")
+        return False
+
+    if _sounds_bot is not None:
+        try:
+            await _sounds_bot.session.close()
+        except Exception:
+            pass
+        _sounds_bot = None
+
+    try:
+        _sounds_bot = Bot(token=token)
+        me = await _sounds_bot.get_me()
+        logger.info("sounds bot started as @%s (send-only)", me.username)
+        return True
+    except Exception as exc:
+        logger.error("sounds bot failed to start: %s", exc)
+        if _sounds_bot is not None:
+            try:
+                await _sounds_bot.session.close()
+            except Exception:
+                pass
+            _sounds_bot = None
+        return False
+
+
+async def stop_sounds_bot() -> None:
+    """Cleanly shut down the sounds bot session."""
+    global _sounds_bot
+    if _sounds_bot is not None:
+        try:
+            await _sounds_bot.session.close()
+        except Exception:
+            pass
+        _sounds_bot = None
+
+
+def get_sounds_bot() -> Bot | None:
+    """Return the active sounds Bot instance or None."""
+    return _sounds_bot
+
+
+async def sounds_send_text_to_topic(
+    chat_id: int,
+    topic_id: int | None,
+    text: str,
+) -> int:
+    """Send text via the sounds bot. topic_id=None sends to General topic."""
+    if _sounds_bot is None:
+        raise RuntimeError("Sounds bot is not running (SOUNDS_BOT_TOKEN not set?)")
+    msg = await _sounds_bot.send_message(
+        chat_id=chat_id,
+        message_thread_id=topic_id,
+        text=text,
+    )
+    return msg.message_id
+
+
+async def sounds_create_forum_topic(chat_id: int, name: str) -> int:
+    """Create a forum topic via the sounds bot. Used to auto-create the
+    Campaign Sounds topic on first send if missing."""
+    if _sounds_bot is None:
+        raise RuntimeError("Sounds bot is not running")
+    result = await _sounds_bot.create_forum_topic(chat_id=chat_id, name=name)
+    return result.message_thread_id
 
 
 # ---------------------------------------------------------------------------

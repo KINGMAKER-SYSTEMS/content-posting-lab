@@ -118,7 +118,12 @@ async def lifespan(app: FastAPI):
 
     # Start Telegram bot if token configured
     from services.telegram import get_bot_token as get_tg_token
-    from telegram_bot import start_bot as start_tg_bot, stop_bot as stop_tg_bot
+    from telegram_bot import (
+        start_bot as start_tg_bot,
+        stop_bot as stop_tg_bot,
+        start_sounds_bot,
+        stop_sounds_bot,
+    )
 
     tg_token = get_tg_token()
     if tg_token:
@@ -130,11 +135,25 @@ async def lifespan(app: FastAPI):
     else:
         log.info("telegram bot: no token configured")
 
+    # Start sounds bot (independent of main bot — send-only)
+    try:
+        started = await start_sounds_bot()
+        if started:
+            log.info("sounds bot: started")
+        else:
+            log.info("sounds bot: not configured (SOUNDS_BOT_TOKEN missing)")
+    except Exception as e:
+        log.error("sounds bot: failed (%s)", e)
+
     yield
 
     # Stop Telegram bot
     try:
         await stop_tg_bot()
+    except Exception:
+        pass
+    try:
+        await stop_sounds_bot()
     except Exception:
         pass
     log.info("Content Posting Lab shutting down...")

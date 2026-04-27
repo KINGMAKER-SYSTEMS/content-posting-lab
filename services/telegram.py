@@ -46,6 +46,7 @@ def _empty_config() -> dict:
         "posters": {},
         "inventory": {},
         "sounds": [],
+        "page_playlists": {},
         "schedule": {
             "enabled": False,
             "forward_time": "09:00",
@@ -524,3 +525,203 @@ def set_last_run(timestamp: str) -> None:
     config = load_config()
     config.setdefault("schedule", _empty_config()["schedule"])["last_run"] = timestamp
     save_config(config)
+
+
+# ---------------------------------------------------------------------------
+# Page Playlists
+# ---------------------------------------------------------------------------
+# Maps a page integration_id to an ordered list of sound IDs (from sounds[]).
+# Used by the Sound Assignments feature: each page has a playlist of songs to
+# post; posters receive a per-page-grouped daily message containing every song
+# assigned to every page they own.
+#
+# A poster owns a page (1 page → 1 poster). Inactive sounds in a page's
+# playlist are kept (so toggling a sound on/off doesn't lose assignments) but
+# are skipped by the message builder.
+
+def get_page_playlist(integration_id: str) -> list[str]:
+    """Return the ordered list of sound IDs assigned to a page. Empty if unset."""
+    config = load_config()
+    playlists = config.get("page_playlists", {})
+    return list(playlists.get(integration_id, []))
+
+
+def get_all_page_playlists() -> dict[str, list[str]]:
+    """Return the full {integration_id: [sound_id, ...]} map."""
+    config = load_config()
+    return dict(config.get("page_playlists", {}))
+
+
+def set_page_playlist(integration_id: str, sound_ids: list[str]) -> list[str]:
+    """Replace a page's playlist with the given sound IDs (preserves order, dedups).
+
+    Silently drops sound IDs that don't exist in the sounds[] pool to keep the
+    playlist coherent. Returns the saved list.
+    """
+    config = load_config()
+    valid_ids = {s.get("id") for s in config.get("sounds", []) if s.get("id")}
+
+    seen: set[str] = set()
+    cleaned: list[str] = []
+    for sid in sound_ids:
+        if sid and sid in valid_ids and sid not in seen:
+            seen.add(sid)
+            cleaned.append(sid)
+
+    config.setdefault("page_playlists", {})[integration_id] = cleaned
+    save_config(config)
+    return cleaned
+
+
+def add_song_to_page(integration_id: str, sound_id: str) -> list[str]:
+    """Append a sound to a page's playlist (idempotent). Returns updated list.
+
+    Raises ValueError if sound_id is not in the sounds[] pool.
+    """
+    config = load_config()
+    valid_ids = {s.get("id") for s in config.get("sounds", []) if s.get("id")}
+    if sound_id not in valid_ids:
+        raise ValueError(f"Sound {sound_id} not in pool")
+
+    playlists = config.setdefault("page_playlists", {})
+    current = list(playlists.get(integration_id, []))
+    if sound_id not in current:
+        current.append(sound_id)
+        playlists[integration_id] = current
+        save_config(config)
+    return current
+
+
+def remove_song_from_page(integration_id: str, sound_id: str) -> list[str]:
+    """Remove a sound from a page's playlist. Returns updated list (empty if page absent)."""
+    config = load_config()
+    playlists = config.setdefault("page_playlists", {})
+    current = list(playlists.get(integration_id, []))
+    if sound_id in current:
+        current.remove(sound_id)
+        playlists[integration_id] = current
+        save_config(config)
+    return current
+
+
+def clear_page_playlist(integration_id: str) -> bool:
+    """Remove a page's playlist entry entirely. Returns True if it existed."""
+    config = load_config()
+    playlists = config.setdefault("page_playlists", {})
+    if integration_id in playlists:
+        del playlists[integration_id]
+        save_config(config)
+        return True
+    return False
+
+
+def resolve_playlist_sounds(integration_id: str, active_only: bool = True) -> list[dict]:
+    """Resolve a page's playlist into full sound dicts in order.
+
+    When active_only=True, inactive sounds are filtered out (used by the
+    message builder so deactivated campaigns don't appear in sends).
+    When active_only=False, all sounds are returned with their active flag
+    intact (used by the UI so users can see and remove inactive entries).
+    """
+    config = load_config()
+    sound_ids = config.get("page_playlists", {}).get(integration_id, [])
+    if not sound_ids:
+        return []
+    by_id = {s.get("id"): s for s in config.get("sounds", []) if s.get("id")}
+    out: list[dict] = []
+    for sid in sound_ids:
+        sound = by_id.get(sid)
+        if sound is None:
+            continue
+        if active_only and not sound.get("active", True):
+            continue
+        out.append(sound)
+    return out
+
+
+def build_poster_message(poster_id: str, page_name_lookup: dict[str, str]) -> dict:
+    """Build the personalized daily message for a poster.
+
+    Walks the poster's page_ids[], resolves each page's playlist (active sounds
+    only), and formats a message grouped by page name.
+
+    Args:
+        poster_id: The poster slug
+        page_name_lookup: {integration_id: page_name} from the roster — passed
+            in so the service layer doesn't need to import services.roster.
+
+    Returns:
+        {
+            "poster_id": str,
+            "poster_name": str,
+            "text": str,                # the actual message text to send
+            "page_count": int,          # how many of the poster's pages have songs
+            "song_count": int,          # total active songs in the message
+            "sections": [               # structured for UI preview rendering
+                {
+                    "integration_id": str,
+                    "page_name": str,
+                    "songs": [{"id": str, "label": str, "url": str}, ...],
+                },
+                ...
+            ],
+            "skipped_pages": [          # pages owned but with empty/all-inactive playlists
+                {"integration_id": str, "page_name": str},
+                ...
+            ],
+        }
+    """
+    from datetime import datetime
+
+    poster = get_poster(poster_id)
+    if poster is None:
+        raise ValueError(f"Poster {poster_id} not found")
+
+    page_ids: list[str] = list(poster.get("page_ids", []))
+
+    sections: list[dict] = []
+    skipped_pages: list[dict] = []
+    total_songs = 0
+
+    for page_id in page_ids:
+        page_name = page_name_lookup.get(page_id, page_id)
+        sounds = resolve_playlist_sounds(page_id, active_only=True)
+        if not sounds:
+            skipped_pages.append({"integration_id": page_id, "page_name": page_name})
+            continue
+        sections.append({
+            "integration_id": page_id,
+            "page_name": page_name,
+            "songs": [
+                {
+                    "id": s.get("id", ""),
+                    "label": s.get("label", ""),
+                    "url": s.get("url", ""),
+                }
+                for s in sounds
+            ],
+        })
+        total_songs += len(sounds)
+
+    today = datetime.now().strftime("%B %d, %Y")
+    lines = [f"\U0001f3b5 Today's Sound Assignments — {today}", ""]
+    if not sections:
+        lines.append("No active sounds assigned to your pages today.")
+    else:
+        for section in sections:
+            lines.append(f"\U0001f4f1 {section['page_name']}")
+            for song in section["songs"]:
+                lines.append(f"  • {song['label']}")
+                if song["url"]:
+                    lines.append(f"    {song['url']}")
+            lines.append("")
+
+    return {
+        "poster_id": poster_id,
+        "poster_name": poster.get("name", poster_id),
+        "text": "\n".join(lines).rstrip() + "\n",
+        "page_count": len(sections),
+        "song_count": total_songs,
+        "sections": sections,
+        "skipped_pages": skipped_pages,
+    }
