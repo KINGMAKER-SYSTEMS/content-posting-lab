@@ -1,407 +1,294 @@
 # Content Posting Lab
 
-Unified local webapp for TikTok-style video generation, caption scraping, video clipping, and caption burning. Single FastAPI backend + React/TypeScript frontend, served from one process.
+> **Last updated:** 2026-04-27
+> **Status:** Deployed to Railway. Active development on Telegram distribution and Sound Assignments.
 
-## How to Run
+## What This Is
 
-```bash
-# Backend + built frontend (production mode)
-python app.py
-# → http://127.0.0.1:8000
+Internal tooling for Rising Tides — a social media marketing agency running TikTok/Instagram UGC influencer campaigns. The lab covers the full content production + distribution loop:
 
-# Frontend dev mode (hot reload, proxies API to :8000)
-cd frontend && npm run dev
-# → http://localhost:5173
-```
+1. **Generate** AI videos
+2. **Scrape** TikTok captions for inspiration
+3. **Clip** long-form videos into 9:16 shorts
+4. **Burn** captions onto videos
+5. **Distribute** via Telegram (to internal posters) and Postiz (publishing)
+6. **Manage** the page roster, posters, and sound library
 
-Both modes require the backend running. In dev mode, Vite proxies `/api/*` and `/ws/*` to `localhost:8000`.
+It is **not** a single-user local tool — despite the original positioning. It is **deployed**, **multi-user**, and stores persistent data on a Railway volume.
 
-## Architecture Overview
+## Live Deployment
+
+| Component | URL |
+|---|---|
+| Backend + frontend (single FastAPI process) | https://risingtides-content-lab-production.up.railway.app |
+| Railway volume (persistent state) | `RAILWAY_VOLUME_MOUNT_PATH` (typically `/app/projects`) |
+
+Local dev: `python app.py` on port 8000. Frontend dev mode: `cd frontend && npm run dev` on port 5173 with Vite proxy.
+
+## Architecture
 
 ```
 python app.py (port 8000)
-├── FastAPI backend
-│   ├── /api/video/*      → routers/video.py      (video generation)
-│   ├── /api/captions/*   → routers/captions.py    (caption scraping via WebSocket)
-│   ├── /api/clipper/*    → routers/clipper.py     (video clipping via SSE)
-│   ├── /api/burn/*       → routers/burn.py        (caption burning via WebSocket)
-│   ├── /api/projects/*   → routers/projects.py    (project CRUD)
-│   └── /api/health       → app.py                 (system health check)
-├── Static file mounts
-│   ├── /fonts/           → fonts/
-│   ├── /output/          → output/
-│   ├── /projects/        → projects/
-│   ├── /caption-output/  → caption_output/
-│   └── /burn-output/     → burn_output/
-└── SPA fallback          → frontend/dist/index.html
+└── FastAPI (single process)
+    ├── Lifespan: starts Telegram bot if token configured
+    ├── Routers (all under /api/*):
+    │   ├── /api/video/*       → AI video generation
+    │   ├── /api/captions/*    → TikTok caption scraping (WebSocket)
+    │   ├── /api/clipper/*     → 9:16 video clipping (SSE + WebSocket)
+    │   ├── /api/burn/*        → Caption burning (WebSocket)
+    │   ├── /api/projects/*    → Project CRUD
+    │   ├── /api/recreate/*    → Recreate workflow (WebSocket)
+    │   ├── /api/postiz/*      → Postiz publishing integration
+    │   ├── /api/roster/*      → Page roster (Postiz integrations)
+    │   ├── /api/slideshow/*   → Slideshow renderer
+    │   ├── /api/telegram/*    → Telegram bot, posters, sounds, distribution
+    │   ├── /api/email/*       → Email routing rules (Cloudflare)
+    │   ├── /api/upload/*      → TikTok/IG direct upload jobs
+    │   ├── /api/drive/*       → Google Drive integration
+    │   └── /api/debug/*       → Logs and diagnostics
+    ├── Static mounts: /fonts, /projects, /output, /caption-output, /burn-output
+    └── SPA fallback: serves frontend/dist/index.html
 
-React frontend (frontend/dist/ or dev server on :5173)
-├── App.tsx               → Shell with CSS-based tab switching (all pages always mounted)
-├── pages/Generate.tsx    → Video generation UI
-├── pages/Captions.tsx    → Caption scraping UI
-├── pages/Clipper.tsx     → Video clipping UI
-├── pages/Burn.tsx        → Caption burning UI
-└── pages/Projects.tsx    → Project management UI
+frontend (React 19 + Vite + Tailwind v4 + shadcn/ui)
+└── Pages: Home, Generate, Captions, CaptionsStage, Clipper, Burn,
+          Recreate, Slideshow, Create, Distribution
 ```
 
-## Hard Constraints
+## Persistent State (Railway Volume)
 
-- **NO database** — filesystem + in-memory only. No SQLite, no Postgres.
-- **NO authentication** — single-user local tool.
-- **NO new video providers** — migrate existing 9, don't add new ones.
-- **NO backend logic rewrites** — provider integrations and ffmpeg pipelines are final.
-- **NO mobile responsive** — desktop-first.
-- **NO component library** (shadcn/Radix/Chakra) — Tailwind CSS directly.
-- **ZERO feature drops** — every control, endpoint, and UX flow from the legacy 3-server system must work identically.
+All runtime config and data lives on the Railway volume, mounted at `RAILWAY_VOLUME_MOUNT_PATH`. Falls back to repo root locally.
 
-## Project Structure
+| File | Purpose |
+|---|---|
+| `telegram_config.json` | Bot token, staging group, posters, page assignments, sounds, schedule, inventory |
+| `page_roster.json` | Postiz integrations + project + Drive folder mappings |
+| `email_rules.json` | Email routing rules |
+| `projects/` | Per-project videos, clips, captions, burns |
 
-All data is organized per-project under `projects/{name}/`:
-```
-projects/{name}/
-├── videos/         ← generated MP4s land here
-├── captions/       ← scraped caption frames + CSVs
-├── clips/          ← clipped video segments (per job_id subdirs)
-├── burned/         ← final burned MP4s
-└── prompts.json    ← prompt history (auto-saved on generate)
-```
+These files are the source of truth at runtime. Railway env vars override stored values where applicable (e.g., `TELEGRAM_BOT_TOKEN` env beats stored token).
 
-The `project_manager.py` module handles all project CRUD, path resolution, and filesystem safety (sanitization, path traversal blocking).
+## Source of Truth Boundaries
 
-## Backend
+| System | Owns |
+|---|---|
+| Postiz | Social platform integrations (TikTok/IG accounts) |
+| Page roster (`page_roster.json`) | Maps Postiz integration IDs → projects → Drive folders |
+| Campaign Hub (separate service) | Active campaign list, financial data, creator roster |
+| Notion CRM | Client relationships, TikTok Sound Links per campaign |
+| Telegram config (`telegram_config.json`) | Posters, staging group, sounds pool, inventory, schedule |
 
-### Entry Point — `app.py` (174 lines)
+The lab does **not** own active-campaign status — Campaign Hub does. The lab pulls active campaigns from Hub when syncing the sound library.
 
-- FastAPI with lifespan handler (creates output dirs, ensures default project)
-- CORS for localhost dev servers
-- Mounts 5 routers + static file directories
-- SPA fallback serves `frontend/dist/index.html` for all non-API routes
-- Health check at `/api/health` (ffmpeg, yt-dlp, provider key status)
+## Telegram Distribution System
 
-### Router: Video Generation — `routers/video.py` (191 lines)
+The Telegram pipeline is a major feature. Three group types:
 
-Generates AI videos from text prompts using multiple providers.
+1. **Staging group** (one shared group with topics-per-page) — content arrives here first
+2. **Poster groups** (one supergroup per poster, with topics-per-page they own) — content forwards here
+3. **Campaign Sounds topic** (per-poster) — daily sound link assignments
 
-**Endpoints:**
-- `GET /api/video/providers` — list available providers (filtered by which API keys are set)
-- `POST /api/video/generate` — submit a generation job (multipart form: prompt, provider, count, duration, aspect_ratio, resolution, optional media file)
-- `GET /api/video/jobs/{job_id}` — poll job status
-- `GET /api/video/jobs/{job_id}/download-all` — ZIP download of all completed videos
-- `GET /api/video/prompts?project=` — get prompt history for a project
-- `DELETE /api/video/prompts?project=` — clear prompt history
+### Posters (8 currently)
 
-**State:** In-memory `jobs` dict. Prompt history persisted to `projects/{name}/prompts.json` (max 200 entries).
+Each poster is a person who manages a set of pages. They have:
+- A dedicated Telegram supergroup (forum-enabled)
+- A "Campaign Sounds" topic in their group for sound assignments
+- Topics per page they own (mirroring staging group structure)
+- A `page_ids[]` list — which pages they run (1 page → 1 poster)
 
-**Flow:** POST /generate → creates job → spawns async tasks via `providers.base.generate_one()` → each task polls the provider API → downloads MP4 → optionally crops via ffmpeg → writes to `projects/{name}/videos/`.
+Default posters seeded on first boot: Seffra, Gigi, Johnny Balik, Sam Hudgen, Jake Balik, Eric Cromartie, John Smathers. Seeno was added manually.
 
-### Router: Caption Scraping — `routers/captions.py` (282 lines)
+### Sound library
 
-Scrapes TikTok profiles to extract burned-in caption text from their videos.
+A pool of TikTok sound URLs synced from:
+- **Campaign Hub** → which campaigns are active (`completion_status != "completed"`)
+- **Notion CRM** → the TikTok Sound Link for each campaign
+- **AI fuzzy matching** (GPT-4.1-mini) → bridges name spelling differences between systems
 
-**Endpoints:**
-- `WebSocket /api/captions/ws/{job_id}` — real-time scraping pipeline
-- `GET /api/captions/export/{username}?project=` — download captions CSV
+Sync endpoint: `POST /api/telegram/sounds/sync`. Returns matched/unmatched/AI counts and surfaces campaigns whose Notion entry can't be found.
 
-**WebSocket protocol:** Client sends `{"action": "start", "profile_url": "...", "max_videos": 20, "sort": "latest", "project": "..."}`. Server streams events:
-1. `status` — progress text
-2. `urls_collected` — found N video URLs
-3. `downloading` / `frame_ready` / `frame_error` — per-video frame extraction
-4. `ocr_starting` / `ocr_started` / `ocr_done` — GPT-4.1 vision OCR per frame
-5. `all_complete` — final results array + CSV path
-6. `error` — pipeline failure
+### Bot lifecycle
 
-**Pipeline:** yt-dlp video listing → thumbnail download (batches of 5) → GPT-4.1 vision OCR (batches of 10) → write CSV to `projects/{name}/captions/`.
+- **aiogram** — primary bot (send, receive, forum topic management)
+- **pyrogram** (optional) — used for topic discovery (lists all forum topics in a group)
+- Bot token: `TELEGRAM_BOT_TOKEN` env var > `telegram_config.json` stored value
+- Auto-starts in `app.py` lifespan if token present
 
-### Router: Video Clipper — `routers/clipper.py` (1071 lines)
+## Backend File Map
 
-Downloads or accepts uploaded videos and chops them into 9:16 short-form clips using ffmpeg.
+### Routers (`routers/`)
 
-**Endpoints:**
-- `POST /api/clipper/upload` — single file upload (multipart form)
-- `POST /api/clipper/upload-stream` — streaming raw binary upload (handles files >3GB)
-- `POST /api/clipper/upload-batch` — multi-file upload with thumbnail generation + video probing
-- `POST /api/clipper/download-url` — download video from URL (TikTok, YouTube, etc.) into staging
-- `POST /api/clipper/trim-batch` — trim staged videos with custom start/end times
-- `POST /api/clipper/process-batch` — process staged videos into clips (SSE streaming response)
-- `GET /api/clipper/jobs?project=` — list completed clip jobs
-- `DELETE /api/clipper/jobs/{job_id}?project=` — delete a clip job
-- `GET /api/clipper/jobs/{job_id}/download-all?project=` — ZIP download of all clips in a job
-- `WebSocket /api/clipper/ws/{job_id}` — real-time clip pipeline (URL download + clip)
+| File | Lines | Endpoints | Purpose |
+|---|---|---|---|
+| `video.py` | 963 | 6 | AI video generation (9 providers) |
+| `captions.py` | 397 | 2 | TikTok caption scraping (WebSocket) |
+| `clipper.py` | 1592 | 10 | 9:16 video clipping (SSE + WebSocket) |
+| `burn.py` | 1030 | 9 | Caption burning (WebSocket) |
+| `projects.py` | 252 | 5 | Project CRUD |
+| `recreate.py` | 416 | 4 | Recreate workflow (caption→prompt→video) |
+| `postiz.py` | 211 | 5 | Postiz integration: status, integrations, videos, upload, posts |
+| `roster.py` | 351 | 7 | Page roster: list, project filter, set, delete, dedup, sync |
+| `slideshow.py` | 992 | 23 | Slideshow renderer (images, audio, formats) |
+| `telegram.py` | 1541 | 30+ | Bot, staging, posters, sounds, schedule, inventory |
+| `email_routing.py` | 203 | 8 | Cloudflare email routing rules |
+| `upload.py` | 180 | 8 | TikTok/IG direct uploads |
+| `gdrive.py` | 161 | 7 | Google Drive folder ops |
+| `debug.py` | 192 | 7 | Logs, errors, health, diagnostics |
 
-**Pipeline (process-batch, SSE):** Upload/download → stage files with thumbnails → user trims in/out points per source → configure clip length → `POST /process-batch` returns `text/event-stream` with events:
-1. `plan` — job_id, total clip count
-2. `progress` — clip N of M, source name, encoding status
-3. `clip_done` — individual clip result (url, thumbnail, duration)
-4. `complete` — all clips finished, summary
+### Services (`services/`)
 
-**Clip process:** For each source, calculates segments based on clip length → ffmpeg crops to 9:16 (center crop if wider, top/bottom crop if taller) → re-encodes to H.264 with high quality (CRF 16, 8-20M bitrate) → generates per-clip thumbnails → outputs to `projects/{name}/clips/{job_id}/`.
+| File | Purpose |
+|---|---|
+| `telegram.py` | `telegram_config.json` data access (posters, sounds, staging, schedule) |
+| `roster.py` | `page_roster.json` data access |
+| `notion.py` | Query Notion CRM for campaigns + TikTok Sound Links |
+| `campaign_hub.py` | Hub-as-source-of-truth + Notion sound matching with AI fuzzy fallback |
+| `gdrive.py` | Google Drive API client |
+| `upload.py` | TikTok/IG direct upload service |
+| `email_routing.py` | Cloudflare email routing API client |
+| `r2.py` | Cloudflare R2 storage |
+| `ffmpeg.py` | ffmpeg primitives |
+| `cropper.py` | Video cropping helpers |
+| `captions.py` | Caption extraction helpers |
+| `sound_cache.py` | Cached sound metadata |
 
-**Known issue:** Long ffmpeg encodes can cause SSE connection timeouts (no keepalive between clips).
-
-**Staging:** Uploaded files stored in `projects/{name}/clips/_staging_{batch_id}/`, cleaned up after processing.
-
-### Router: Caption Burning — `routers/burn.py` (765 lines)
-
-Burns caption overlay PNGs onto videos using ffmpeg.
-
-**Endpoints:**
-- `GET /api/burn/videos?project=` — list available videos in project
-- `GET /api/burn/captions?project=` — list caption CSVs in project
-- `GET /api/burn/fonts` — list available font files
-- `GET /api/burn/batches?project=` — list completed burn batches
-- `POST /api/burn/overlay` — render a single text overlay PNG (Pillow)
-- `GET /api/burn/batches/{batch_id}/{filename}` — serve a burned video file
-- `GET /api/burn/batches/{batch_id}/download-all` — ZIP download of batch
-- `DELETE /api/burn/batches/{batch_id}?project=` — delete a burn batch
-- `WebSocket /api/burn/ws` — burn pipeline
-
-**WebSocket protocol:** Client sends `{"pairs": [...], "project": "..."}`. Each pair has `videoPath`, optional `overlayPng` (base64 PNG from html2canvas), optional `colorCorrection`. Server streams:
-1. `burning` — starting item N of M
-2. `burned` — item complete (success/fail)
-3. `complete` — batch finished, all results
-
-**Burn process:** Receives base64 PNG overlay → writes temp file → ffmpeg composites overlay onto video → applies color correction filters → outputs to `projects/{name}/burned/{batch_id}/`.
-
-### Router: Projects — `routers/projects.py` (252 lines)
-
-**Endpoints:**
-- `GET /api/projects/` — list all projects with stats
-- `POST /api/projects/` — create new project
-- `GET /api/projects/{name}` — get single project stats
-- `DELETE /api/projects/{name}` — delete project and all contents
-- `GET /api/projects/{name}/stats` — detailed per-directory stats
-
-### Providers — `providers/` (489 lines total)
-
-Each provider module implements an async generation function called by `providers/base.py:generate_one()`.
-
-| Provider ID | Module | API | Notes |
-|-------------|--------|-----|-------|
-| `grok` | `grok.py` | xAI API | Direct URL return |
-| `rep-minimax` | `replicate.py` | Replicate | MiniMax Hailuo 2.3, polling |
-| `rep-wan` | `replicate.py` | Replicate | Wan 2.1 720p, polling |
-| `rep-kling` | `replicate.py` | Replicate | Kling v2.1, polling |
-| `fal-wan` | `fal.py` | FAL | Wan 2.5, polling |
-| `fal-kling` | `fal.py` | FAL | Kling 2.5 turbo, polling |
-| `fal-ovi` | `fal.py` | FAL | Ovi, polling |
-| `luma` | `luma.py` | Luma API | Ray 2, polling |
-| `sora` | `sora.py` | OpenAI API | Sora 2, polling |
-
-`providers/base.py` (142 lines): `generate_one()` is the universal entry point. Handles provider dispatch, ffmpeg aspect ratio cropping, file download, and error handling.
-
-API keys loaded from `.env`: `XAI_API_KEY`, `FAL_KEY`, `LUMA_API_KEY`, `REPLICATE_API_TOKEN`, `OPENAI_API_KEY`.
-
-### Scraper Utilities — `scraper/` (716 lines total)
+### Core files
 
 | File | Lines | Purpose |
-|------|-------|---------|
-| `frame_extractor.py` | 211 | yt-dlp video listing, thumbnail download, ffmpeg frame extraction |
-| `caption_extractor.py` | 67 | GPT-4.1 vision API call to read captions from a frame image |
-| `ocr_extractor.py` | 100 | Local Tesseract OCR fallback (crops center 60%, binarizes) |
-| `tiktok_scraper.py` | 338 | Playwright browser scraping (alternative to yt-dlp, anti-detection) |
-
-The caption extractor uses `gpt-4.1` (not `gpt-4o` — was changed after model discontinuation). The prompt instructs the model to ignore TikTok UI elements and only extract the burned-in caption overlay text.
+|---|---|---|
+| `app.py` | 276 | FastAPI entry, router registration, lifespan, CORS, request logging |
+| `telegram_bot.py` | 1010 | Bot session, send/forward primitives, topic management, daily batch |
+| `project_manager.py` | ~300 | Project CRUD, path utilities, sanitization |
+| `debug_logger.py` | ~200 | Structured logging setup |
 
 ## Frontend
 
-### Tech Stack
+### Tech stack
+- React 19, TypeScript, Vite 7
+- Tailwind CSS v4 (`@tailwindcss/vite`, lightningcss for oklch→rgb)
+- React Router DOM v7 (URL only, not for mount/unmount)
+- Zustand for global state (`workflowStore`)
+- shadcn/ui components (Button, Card, Badge, Input, etc.)
 
-- React 19, TypeScript, Vite 7.3
-- Tailwind CSS v4.2 (via `@tailwindcss/vite` plugin)
-- React Router DOM v7 (for URL management only — NOT for mount/unmount)
-- Zustand v5 (global state)
-- lightningcss (CSS transformer — converts oklch colors to rgb for browser compatibility)
-- Vitest + Testing Library (unit tests)
+### Page structure (`frontend/src/pages/`)
 
-### Key Architecture Decisions
+| Page | Purpose |
+|---|---|
+| `Home.tsx` | Dashboard / project landing |
+| `Generate.tsx` | AI video generation |
+| `Captions.tsx` | Caption scraping (legacy single-page flow) |
+| `CaptionsStage.tsx` | Caption staging |
+| `Clipper.tsx` | 9:16 video clipping |
+| `Burn.tsx` | Caption burning |
+| `Recreate.tsx` | Recreate workflow |
+| `Slideshow.tsx` | Slideshow renderer |
+| `Create.tsx` | Unified create flow |
+| `Distribution.tsx` | Distribution hub — wraps 4 sub-tabs |
 
-**CSS-based tab switching (NOT React Router routes):** All 5 page components are rendered simultaneously in `App.tsx`. Active tab shown with `display: block`, others hidden with `display: none`. This keeps all components mounted at all times — WebSocket connections stay alive, form state persists, running jobs remain visible when switching tabs. React Router is only used for URL updates and the `useLocation` hook.
+### Distribution sub-tabs (`frontend/src/pages/distribution/`)
 
-```tsx
-// App.tsx — all pages always mounted
-<main>
-  <div style={{ display: pathname === '/' ? 'block' : 'none' }}><ProjectsPage /></div>
-  <div style={{ display: pathname === '/generate' ? 'block' : 'none' }}><GeneratePage /></div>
-  <div style={{ display: pathname === '/captions' ? 'block' : 'none' }}><CaptionsPage /></div>
-  <div style={{ display: pathname === '/clipper' ? 'block' : 'none' }}><ClipperPage /></div>
-  <div style={{ display: pathname === '/burn' ? 'block' : 'none' }}><BurnPage /></div>
-</main>
-```
+| Sub-tab | File | Purpose |
+|---|---|---|
+| Roster | `RosterTab.tsx` | Page roster CRUD, project assignment, Drive folder mapping |
+| Telegram | `TelegramTab.tsx` | Bot config, staging group, posters, page assignment to posters, topic sync |
+| Sounds | `SoundsTab.tsx` | Sound library: sync from Hub/Notion, manual add/edit, forward to posters |
+| Uploads | `UploadsTab.tsx` | TikTok/IG direct upload jobs and status |
 
-**Zustand store for cross-tab state:** `workflowStore.ts` holds active project, notifications, job tracking counts, generate page jobs, and burn selection drafts. Active project is persisted to localStorage.
+### Tab switching
 
-**WebSocket hook:** `useWebSocket.ts` handles connection lifecycle, auto-reconnect with exponential backoff, message queuing, and a `shouldReconnect` callback to prevent reconnect loops after pipeline completion.
+Some pages use CSS-based tab switching (display:none for inactive) to preserve state across tabs. Distribution sub-tabs use URL routing (`/distribute/roster`, `/distribute/telegram`, etc.).
 
-### File Map
+## Environment Variables
 
-| File | Lines | Purpose |
-|------|-------|---------|
-| `App.tsx` | 310 | Shell — header, project selector, tab nav, CSS tab switching, health banner, toasts |
-| `pages/Generate.tsx` | 644 | Video generation — provider select, prompt input, form controls, job cards with status polling, video preview/download, prompt history sidebar |
-| `pages/Captions.tsx` | 837 | Caption scraping — TikTok username input, WebSocket pipeline, real-time log, frame thumbnails, results table with CSV export |
-| `pages/Clipper.tsx` | 1047 | Video clipping — multi-file upload/URL ingest, per-source trim timeline, clip length config, SSE processing with live progress, results grid, send-to-burn integration |
-| `pages/Burn.tsx` | 1261 | Caption burning — video browser, caption source selector, html2canvas overlay rendering, color correction sliders, burn pipeline via WebSocket, batch management |
-| `pages/Projects.tsx` | 316 | Project list — stats cards, create/delete, project grid |
-| `stores/workflowStore.ts` | 218 | Zustand global state — active project, notifications, job counts, generate jobs, burn selections |
-| `hooks/useWebSocket.ts` | 208 | WebSocket with reconnect, message queue, start payload memory, shouldReconnect guard |
-| `types/api.ts` | 242 | TypeScript interfaces for all API requests/responses/WebSocket events |
-| `components/` | 11 files | ConfirmModal, EmptyState, ErrorBoundary, FileBrowser, ProgressBar, ProjectSelector, StatusChip, TabNav, Toast, ToastContainer |
+### Required
 
-### Generate Page Details
+| Variable | Purpose |
+|---|---|
+| `OPENAI_API_KEY` | Sora 2 generation, GPT-4.1 caption OCR, GPT-4.1-mini sound matching |
 
-- Fetches `/api/video/providers` on mount to populate provider dropdown
-- Form fields: prompt (textarea), provider, count (1-50), duration (5/10s), aspect ratio (16:9/9:16/1:1), resolution (480p/720p/1080p)
-- Submits via `POST /api/video/generate` (multipart form, supports optional image upload)
-- Jobs tracked in zustand `generateJobs` array — survives tab switches
-- Module-level `activePolls` Set drives polling loops (`GET /api/video/jobs/{id}`) — survives component re-renders
-- Each job card shows per-video status chips, progress count, video preview (inline `<video>` tag), individual + batch download
-- Prompt history in collapsible left sidebar — fetched from `/api/video/prompts`, click to fill form
+### AI providers (set those you use)
 
-### Captions Page Details
+| Variable | Provider |
+|---|---|
+| `XAI_API_KEY` | Grok |
+| `FAL_KEY` | FAL (Wan, Kling, Ovi) |
+| `LUMA_API_KEY` | Luma Dream Machine |
+| `REPLICATE_API_TOKEN` | Replicate (MiniMax, Wan, Kling) |
 
-- Input: TikTok username (with or without `@` prefix)
-- Controls: max videos (1-100), sort order (latest/popular)
-- WebSocket connects to `/api/captions/ws/{jobId}` on scrape start
-- Real-time log panel shows pipeline events as they stream
-- Frame thumbnails displayed as base64 images from `frame_ready` events
-- Results table shows video ID, extracted caption text, status
-- CSV export via `/api/captions/export/{username}`
-- `shouldReconnect` guard prevents reconnect loop after `all_complete`
+### Integrations
 
-### Clipper Page Details
+| Variable | Purpose |
+|---|---|
+| `TELEGRAM_BOT_TOKEN` | Telegram bot (overrides stored token) |
+| `NOTION_API_KEY` | Notion CRM access |
+| `NOTION_CAMPAIGNS_DB` | Notion campaigns database ID |
+| `NOTION_SOUND_CUTOFF` | Filter Notion campaigns by created_time (default `2026-03-01`) |
+| `CAMPAIGN_HUB_URL` | Campaign Hub base URL (default deployed URL) |
+| `POSTIZ_API_KEY` | Postiz API |
+| `R2_ACCESS_KEY` / `R2_SECRET_KEY` / `R2_BUCKET` | Cloudflare R2 |
+| `GOOGLE_OAUTH_*` | Google Drive OAuth |
+| `CLOUDFLARE_*` | Email routing |
 
-- Multi-step wizard: Ingest → Trim → Configure → Processing → Results
-- **Ingest:** Drag-and-drop file upload (XHR with progress tracking) or paste URL (uses yt-dlp via `/api/clipper/download-url`)
-- **Trim:** Per-file trim timeline with video preview, draggable in/out handles, keyboard shortcuts (Space: play/pause, I/O: set in/out, Arrow keys: seek)
-- **Configure:** Set output clip length (1-60s), shows breakdown table of sources × clips
-- **Processing:** SSE stream from `POST /api/clipper/process-batch` — progress bar, live thumbnail grid as clips complete
-- **Results:** Grid of completed clips with thumbnails, individual download, ZIP download, "Use in Burn" button (primes burn selection via zustand)
-- Staging state persisted to localStorage (survives tab switches and page reloads, cleared on new batch)
-- Past jobs sidebar: list previous clip jobs, view results, download ZIPs, delete
+### Infrastructure
 
-### Burn Page Details
+| Variable | Purpose |
+|---|---|
+| `RAILWAY_VOLUME_MOUNT_PATH` | Volume mount path (set by Railway) |
+| `CORS_ORIGINS` | Additional CORS origins (comma-separated) |
+| `PORT` | Auto-set by Railway |
 
-- Left panel: video browser (tree view of project videos), caption source selector (from scraped CSVs)
-- Center: pairing interface — maps videos to captions with drag/reorder
-- Right panel: overlay preview with html2canvas rendering, color correction sliders (brightness, contrast, saturation, sharpness, shadow, temperature, tint, fade)
-- Font selector from `/api/burn/fonts`
-- Burns via WebSocket `/api/burn/ws` — sends pairs with base64 PNG overlays
-- Batch management: list previous burns, download ZIPs, delete batches
-- Sequential processing (one video at a time) due to ffmpeg resource constraints
+## Key Technical Decisions
 
-## Directory Layout
+- **`telegram_config.json` and `page_roster.json` are the live DB.** Atomic writes (tmp + rename). They live on the Railway volume so they survive deploys and restarts.
+- **Bot token priority: env var > stored config.** Lets ops override without redeploys.
+- **Source-of-truth split for sounds:** Campaign Hub owns "what's active," Notion owns "what's the URL," AI bridges naming differences.
+- **Forum topics for organization.** Both staging group and poster groups use Telegram forum topics — one topic per page. Posters' Sound Assignment topics are separate.
+- **Append-only topic mappings by default.** Topic creation never overwrites existing mappings unless `force=True` is explicitly passed (prevents accidental remapping bugs).
+- **In-memory job state** — restart loses background job tracking, but files on disk and Telegram messages survive.
+- **Single FastAPI process** — frontend served from same origin as API in production. No separate Node server.
 
-```
-content-posting-lab/
-├── app.py                     # Unified FastAPI entry point (port 8000)
-├── project_manager.py         # Project CRUD, path utils, sanitization
-├── routers/
-│   ├── video.py               # Video generation router
-│   ├── captions.py            # Caption scraping router (WebSocket)
-│   ├── clipper.py             # Video clipping router (SSE + WebSocket)
-│   ├── burn.py                # Caption burning router (WebSocket)
-│   └── projects.py            # Project management router
-├── providers/
-│   ├── base.py                # generate_one() universal entry, ffmpeg crop
-│   ├── grok.py                # xAI Grok provider
-│   ├── fal.py                 # FAL providers (Wan, Kling, Ovi)
-│   ├── replicate.py           # Replicate providers (MiniMax, Wan, Kling)
-│   ├── luma.py                # Luma Dream Machine provider
-│   └── sora.py                # OpenAI Sora 2 provider
-├── scraper/
-│   ├── frame_extractor.py     # yt-dlp listing + thumbnail download
-│   ├── caption_extractor.py   # GPT-4.1 vision OCR
-│   ├── ocr_extractor.py       # Tesseract OCR fallback
-│   └── tiktok_scraper.py      # Playwright browser scraping (alternative)
-├── frontend/
-│   ├── src/
-│   │   ├── App.tsx            # Shell + CSS tab switching
-│   │   ├── pages/
-│   │   │   ├── Generate.tsx   # Video generation UI (644 lines)
-│   │   │   ├── Captions.tsx   # Caption scraping UI (837 lines)
-│   │   │   ├── Clipper.tsx    # Video clipping UI (1047 lines)
-│   │   │   ├── Burn.tsx       # Caption burning UI (1261 lines)
-│   │   │   └── Projects.tsx   # Project management UI (316 lines)
-│   │   ├── stores/
-│   │   │   └── workflowStore.ts  # Zustand global state
-│   │   ├── hooks/
-│   │   │   ├── useWebSocket.ts   # WebSocket with reconnect
-│   │   │   └── useProject.ts     # Project hook
-│   │   ├── types/api.ts       # All TypeScript API contracts
-│   │   └── components/        # 11 shared UI components
-│   ├── package.json           # React 19, Tailwind v4, Vite 7.3, Zustand 5
-│   └── vite.config.ts         # lightningcss, dev proxy to :8000
-├── tests/                     # Backend tests (11 tests)
-├── fonts/                     # TikTokSans + Montserrat
-├── projects/                  # Per-project data (videos, captions, burned)
-├── static/                    # Legacy UIs (reference only, do not modify)
-├── .env                       # API keys (gitignored)
-└── requirements.txt           # Python deps
-```
+## Conventions
 
-## Testing
+- **All async** — FastAPI throughout, no sync I/O in routes
+- **Project-scoped data** — most endpoints accept `?project=` query param
+- **WebSocket for real-time** — captions, burn, clipper-pipeline; HTTP polling for video gen; SSE for clipper-batch
+- **Atomic JSON writes** — every config save uses tmp file + rename
+- **No DB ORM** — JSON files on volume; switch to Postgres if scale demands
 
-```bash
-# Frontend (18 tests)
-cd frontend && npm test
+## What NOT To Do
 
-# Backend (11 tests)
-python -m pytest tests/ -v
-```
+- Don't break the bot token priority (env over config)
+- Don't write to `telegram_config.json` non-atomically (use `save_config`)
+- Don't overwrite existing topic mappings without `force=True`
+- Don't bypass `services.telegram` — go through the data layer, not raw JSON
+- Don't add destructive bot operations (delete + repost) — append-only sends are safer
+- Don't auto-trigger forwards or sends on app startup — manual or schedule-driven only
 
-**Frontend tests:** `App.test.tsx` (3), `Generate.test.tsx` (3), `Captions.test.tsx` (5), `Burn.test.tsx` (4), `Projects.test.tsx` (3)
+## Pending Work / Known Issues
 
-**Backend tests:** `test_smoke.py` (2), `test_projects_api.py` (3), `test_video_api.py` (2), `test_burn_and_captions_api.py` (2), `e2e/test_smoke.py` (2)
-
-All 29 tests pass. Build (`npm run build`) is clean.
-
-## Prerequisites
-
-```bash
-pip install -r requirements.txt
-brew install ffmpeg tesseract    # system deps (macOS)
-```
-
-**System dependencies:**
-- `ffmpeg` + `ffprobe` on PATH (video processing — all three workflows)
-- `yt-dlp` on PATH (TikTok video listing and thumbnail download)
-- `tesseract` on PATH (optional OCR fallback)
-
-**API keys in `.env`:**
-- `XAI_API_KEY` — Grok video generation
-- `FAL_KEY` — FAL providers (Wan, Kling, Ovi)
-- `LUMA_API_KEY` — Luma Dream Machine
-- `REPLICATE_API_TOKEN` — Replicate providers (MiniMax, Wan, Kling)
-- `OPENAI_API_KEY` — Sora 2 video generation AND GPT-4.1 caption OCR
-
-## Legacy Files (DO NOT MODIFY)
-
-The old 3-server system files are still in the repo for reference:
-- `server.py` — original video generation server (port 8000)
-- `caption_server.py` — original caption scraper (port 8001)
-- `burn_server.py` — original caption burn server (port 8002)
-- `static/index.html` — legacy generate UI
-- `static/captions/index.html` — legacy captions UI
-- `static/burn/index.html` — legacy burn UI
-
-These are the authoritative reference for feature parity. If the new app behaves differently from these files, the new app has a bug.
-
-## Conventions and Gotchas
-
-- **All async** — FastAPI throughout, no sync blocking.
-- **In-memory job state** — restart loses job tracking (files on disk survive).
-- **No inter-server HTTP** — burn router reads video/caption directories directly via filesystem.
-- **WebSocket for real-time** — captions and burn use WebSocket streaming. Video generation uses HTTP polling. Clipper uses SSE (Server-Sent Events) via `StreamingResponse` for process-batch progress.
-- **Project-scoped everything** — all endpoints accept `?project=` query param. Frontend sends active project name with every request.
-- **Font:** `fonts/TikTokSans16pt-Bold.ttf` is the default burn font. White text with black stroke.
-- **Color correction** in burn uses ffmpeg `eq` and `colorbalance` filters — the sliders in the UI map directly to ffmpeg filter params.
-- **Tailwind v4 uses oklch colors** — lightningcss in vite.config.ts converts these to rgb at build time for browser compatibility.
-- **Tab switching preserves all state** — components never unmount. CSS display toggling, not React Router mount/unmount.
+- **Bot occasionally exhibited destructive delete-and-repost behavior in inventory tracking.** Bot is currently kept stopped between deploys for safety. Investigation pending.
+- **5 active campaigns unmatched** in latest sound sync (Liam St John, In Color, Alex Nicol, Gregory Alan Isakov, Matilda Lyn) — either missing TikTok Sound Links in Notion or names differ enough that AI matcher fails.
+- **Sound Assignments feature** — in development. Per-page sound playlists, with sends grouped per poster by their pages. UI lives in Campaign Hub (separate repo); lab provides backend data + endpoints + send primitives.
 
 ## Dev Workflow
 
-1. **Generate videos** — Generate tab. Pick provider, write prompt, set params, generate. Videos saved to `projects/{name}/videos/`.
-2. **Scrape captions** — Captions tab. Enter TikTok username, scrape and extract captions via GPT-4.1 vision. CSVs saved to `projects/{name}/captions/`.
-3. **Clip videos** — Clipper tab. Upload or paste URLs, trim in/out points, set clip length, process into 9:16 clips. Output in `projects/{name}/clips/`. Can send clips directly to Burn.
-4. **Burn captions onto videos** — Burn tab. Pair videos with captions, customize overlay, burn. Output in `projects/{name}/burned/`.
-5. Result: final captioned videos ready to post.
+```bash
+# Backend (also serves built frontend)
+python app.py
+# → http://127.0.0.1:8000
+
+# Frontend dev (hot reload)
+cd frontend && npm run dev
+# → http://localhost:5173 (proxies /api/*, /ws/* to :8000)
+
+# Tests
+python -m pytest tests/ -v
+cd frontend && npm test
+```
+
+System deps: `ffmpeg`, `yt-dlp`, `tesseract` on PATH.
+
+## Legacy / Reference
+
+Old 3-server system files (kept for parity reference, do not modify):
+- `server.py`, `caption_server.py`, `burn_server.py`
+- `static/index.html`, `static/captions/index.html`, `static/burn/index.html`

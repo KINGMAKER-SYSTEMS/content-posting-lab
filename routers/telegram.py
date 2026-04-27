@@ -6,6 +6,7 @@ sound library, and scheduled forwarding batches.
 
 import asyncio
 import logging
+import os
 import re
 from pathlib import Path
 
@@ -14,15 +15,20 @@ from pydantic import BaseModel
 
 from services.telegram import (
     add_inventory_item,
+    add_song_to_page,
     add_sound,
     assign_page_to_poster,
+    build_poster_message,
     clear_all_sounds,
     clear_bot_token,
+    clear_page_playlist,
     clear_scan_inventory,
     get_all_inventory_summary,
+    get_all_page_playlists,
     get_bot_token,
     get_inventory,
     get_last_forwarded_id,
+    get_page_playlist,
     get_pending_inventory,
     get_poster,
     get_poster_for_page,
@@ -34,11 +40,14 @@ from services.telegram import (
     mark_forwarded,
     remove_inventory_item,
     remove_poster,
+    remove_song_from_page,
     remove_sound,
     remove_staging_topic,
+    resolve_playlist_sounds,
     set_bot_token,
     set_last_forwarded_id,
     set_last_run,
+    set_page_playlist,
     set_poster,
     set_poster_topic,
     set_schedule,
@@ -183,11 +192,15 @@ async def telegram_status():
             "inventory_forwarded": inv.get("forwarded", 0),
         }
 
+    sounds_bot = _tg_bot.get_sounds_bot()
+
     return {
         "bot_configured": bool(get_bot_token()),
         "bot_running": bot is not None,
         "pyrogram_available": _tg_bot.get_pyro() is not None,
         "bot_username": config.get("bot_username"),
+        "sounds_bot_configured": bool(os.getenv("SOUNDS_BOT_TOKEN", "").strip()),
+        "sounds_bot_running": sounds_bot is not None,
         "staging_group": {
             "chat_id": staging.get("chat_id"),
             "name": staging.get("name"),
@@ -1539,3 +1552,259 @@ async def trigger_batch_run():
     _require_bot()
     result = await _tg_bot.run_daily_batch()
     return result
+
+
+# ── Sound Assignments (per-page playlists → per-poster personalized sends) ──
+#
+# Data model: each page (integration_id) has an ordered list of sound IDs from
+# the existing sounds[] pool. Posters own pages 1:1, so each poster's daily
+# message is built by walking their page_ids[] and grouping songs by page.
+#
+# The send target is the poster's "Campaign Sounds" topic (sounds_topic_id).
+# Auto-creates that topic if missing — same behavior as forward_sounds_to_poster.
+
+
+class PagePlaylistReplaceRequest(BaseModel):
+    sound_ids: list[str]
+
+
+class PagePlaylistAddRequest(BaseModel):
+    sound_id: str
+
+
+def _page_name_lookup() -> dict[str, str]:
+    """Build {integration_id: display_name} map from the roster."""
+    return {
+        p.get("integration_id", ""): _page_display_name(p)
+        for p in list_all_pages()
+        if p.get("integration_id")
+    }
+
+
+def _require_sounds_bot():
+    """Raise 503 if the sounds bot isn't running.
+
+    The sounds bot is independent of the main bot — it's purely for the
+    Sound Assignments feature and reads SOUNDS_BOT_TOKEN env var only.
+    """
+    if _tg_bot.get_sounds_bot() is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Sounds bot is not running (SOUNDS_BOT_TOKEN not set?)",
+        )
+
+
+async def _ensure_sounds_topic_via_sounds_bot(poster_id: str, poster: dict) -> int | None:
+    """Get or create the Campaign Sounds topic using the SOUNDS bot.
+
+    The sounds bot creates the topic itself so that:
+    1. The new feature is fully self-contained (no main-bot dependency)
+    2. The new bot has clear ownership of the topic going forward
+    Returns topic_id or None on failure.
+    """
+    sounds_topic_id = poster.get("sounds_topic_id")
+    if sounds_topic_id:
+        return int(sounds_topic_id)
+
+    chat_id = poster.get("chat_id")
+    if not chat_id:
+        return None
+
+    try:
+        tid = await _tg_bot.sounds_create_forum_topic(int(chat_id), "Campaign Sounds")
+        set_poster_sounds_topic(poster_id, tid)
+        logger.info("sounds-bot auto-created Campaign Sounds topic_id=%s for %s", tid, poster_id)
+        return tid
+    except Exception as exc:
+        logger.warning("sounds-bot failed to create Campaign Sounds topic for %s: %s", poster_id, exc)
+        return None
+
+
+@router.get("/pages/{integration_id}/playlist")
+async def get_page_playlist_endpoint(integration_id: str):
+    """Return a page's playlist with sound details.
+
+    Includes inactive sounds so the UI can surface them as struck-through.
+    """
+    sound_ids = get_page_playlist(integration_id)
+    sounds_full = resolve_playlist_sounds(integration_id, active_only=False)
+    return {
+        "integration_id": integration_id,
+        "sound_ids": sound_ids,
+        "sounds": sounds_full,
+    }
+
+
+@router.put("/pages/{integration_id}/playlist")
+async def set_page_playlist_endpoint(integration_id: str, req: PagePlaylistReplaceRequest):
+    """Replace a page's playlist wholesale. Order preserved, dedups, drops invalid IDs."""
+    saved = set_page_playlist(integration_id, req.sound_ids)
+    return {
+        "integration_id": integration_id,
+        "sound_ids": saved,
+        "sounds": resolve_playlist_sounds(integration_id, active_only=False),
+    }
+
+
+@router.post("/pages/{integration_id}/playlist/songs")
+async def add_song_endpoint(integration_id: str, req: PagePlaylistAddRequest):
+    """Append a sound to a page's playlist (idempotent)."""
+    try:
+        saved = add_song_to_page(integration_id, req.sound_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {
+        "integration_id": integration_id,
+        "sound_ids": saved,
+        "sounds": resolve_playlist_sounds(integration_id, active_only=False),
+    }
+
+
+@router.delete("/pages/{integration_id}/playlist/songs/{sound_id}")
+async def remove_song_endpoint(integration_id: str, sound_id: str):
+    """Remove a sound from a page's playlist."""
+    saved = remove_song_from_page(integration_id, sound_id)
+    return {
+        "integration_id": integration_id,
+        "sound_ids": saved,
+        "sounds": resolve_playlist_sounds(integration_id, active_only=False),
+    }
+
+
+@router.delete("/pages/{integration_id}/playlist")
+async def clear_page_playlist_endpoint(integration_id: str):
+    """Remove a page's playlist entry entirely."""
+    existed = clear_page_playlist(integration_id)
+    return {"ok": True, "existed": existed}
+
+
+@router.get("/playlists")
+async def list_all_playlists():
+    """Return every page playlist — handy for the UI to load all at once."""
+    return get_all_page_playlists()
+
+
+@router.get("/posters/{poster_id}/preview")
+async def preview_poster_send(poster_id: str):
+    """Build the personalized message a poster would receive — no send."""
+    try:
+        return build_poster_message(poster_id, _page_name_lookup())
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+
+@router.post("/sound-assignments/send/{poster_id}")
+async def send_assignments_to_poster(poster_id: str):
+    """Send the personalized daily message to a single poster's Sounds topic.
+
+    Uses the SOUNDS bot (separate, isolated from the main bot). Auto-creates
+    the Campaign Sounds topic if missing. Skips entirely if the poster has no
+    active songs assigned across any of their pages.
+    """
+    _require_sounds_bot()
+
+    poster = get_poster(poster_id)
+    if poster is None:
+        raise HTTPException(status_code=404, detail="Poster not found")
+
+    poster_chat_id = poster.get("chat_id")
+    if not poster_chat_id:
+        raise HTTPException(status_code=400, detail="Poster has no chat_id")
+
+    sounds_topic_id = await _ensure_sounds_topic_via_sounds_bot(poster_id, poster)
+    if not sounds_topic_id:
+        raise HTTPException(status_code=502, detail="Failed to create Campaign Sounds topic")
+
+    message = build_poster_message(poster_id, _page_name_lookup())
+
+    if message["song_count"] == 0:
+        return {
+            "ok": True,
+            "sent": False,
+            "reason": "no_songs",
+            "poster_id": poster_id,
+            "preview": message,
+        }
+
+    try:
+        await _tg_bot.sounds_send_text_to_topic(
+            chat_id=int(poster_chat_id),
+            topic_id=int(sounds_topic_id),
+            text=message["text"],
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Send failed: {exc}")
+
+    return {
+        "ok": True,
+        "sent": True,
+        "poster_id": poster_id,
+        "song_count": message["song_count"],
+        "page_count": message["page_count"],
+        "skipped_pages": message["skipped_pages"],
+    }
+
+
+@router.post("/sound-assignments/send-all")
+async def send_assignments_to_all_posters():
+    """Send personalized daily messages to every poster's Sounds topic.
+
+    Uses the SOUNDS bot (separate, isolated). Sequential with a small delay
+    between posters to stay under Telegram rate limits. Auto-creates Campaign
+    Sounds topics for posters that don't have one. Skips posters with zero
+    active songs across all their pages.
+    """
+    _require_sounds_bot()
+
+    page_names = _page_name_lookup()
+    posters = list_posters()
+
+    sent: list[dict] = []
+    skipped: list[dict] = []
+    errors: list[dict] = []
+
+    for poster in posters:
+        poster_id = poster.get("poster_id", "")
+        poster_chat_id = poster.get("chat_id")
+        if not poster_id or not poster_chat_id:
+            skipped.append({"poster_id": poster_id, "reason": "missing_chat_id"})
+            continue
+
+        try:
+            message = build_poster_message(poster_id, page_names)
+        except ValueError as exc:
+            errors.append({"poster_id": poster_id, "error": str(exc)})
+            continue
+
+        if message["song_count"] == 0:
+            skipped.append({"poster_id": poster_id, "reason": "no_songs"})
+            continue
+
+        sounds_topic_id = await _ensure_sounds_topic_via_sounds_bot(poster_id, poster)
+        if not sounds_topic_id:
+            errors.append({"poster_id": poster_id, "error": "topic_create_failed"})
+            continue
+
+        try:
+            await _tg_bot.sounds_send_text_to_topic(
+                chat_id=int(poster_chat_id),
+                topic_id=int(sounds_topic_id),
+                text=message["text"],
+            )
+            sent.append({
+                "poster_id": poster_id,
+                "song_count": message["song_count"],
+                "page_count": message["page_count"],
+            })
+        except Exception as exc:
+            errors.append({"poster_id": poster_id, "error": str(exc)[:200]})
+
+        await asyncio.sleep(0.5)
+
+    return {
+        "ok": True,
+        "sent": sent,
+        "skipped": skipped,
+        "errors": errors,
+        "total_posters": len(posters),
+    }
