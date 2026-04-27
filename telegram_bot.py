@@ -267,13 +267,20 @@ async def sounds_send_text_to_topic(
     topic_id: int | None,
     text: str,
 ) -> int:
-    """Send text via the sounds bot. topic_id=None sends to General topic."""
+    """Send text via the sounds bot. topic_id=None sends to General topic.
+
+    Uses HTML parse_mode so the sound-assignments message can render song
+    names as clickable links. disable_web_page_preview keeps the message
+    compact -- otherwise Telegram embeds a preview card per URL.
+    """
     if _sounds_bot is None:
         raise RuntimeError("Sounds bot is not running (SOUNDS_BOT_TOKEN not set?)")
     msg = await _sounds_bot.send_message(
         chat_id=chat_id,
         message_thread_id=topic_id,
         text=text,
+        parse_mode="HTML",
+        disable_web_page_preview=True,
     )
     return msg.message_id
 

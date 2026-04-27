@@ -5,6 +5,7 @@ staging group settings, poster assignments, content inventory, sounds,
 and forwarding schedule.
 """
 
+import html
 import json
 import time
 import uuid
@@ -704,16 +705,21 @@ def build_poster_message(poster_id: str, page_name_lookup: dict[str, str]) -> di
         total_songs += len(sounds)
 
     today = datetime.now().strftime("%B %d, %Y")
-    lines = [f"\U0001f3b5 Today's Sound Assignments — {today}", ""]
+    # Message uses Telegram HTML parse_mode so song names are clickable links.
+    # Labels are escaped because titles contain &, <, etc.
+    lines = [f"\U0001f3b5 <b>Today's Sound Assignments — {today}</b>", ""]
     if not sections:
         lines.append("No active sounds assigned to your pages today.")
     else:
         for section in sections:
-            lines.append(f"\U0001f4f1 {section['page_name']}")
+            lines.append(f"\U0001f4f1 <b>{html.escape(section['page_name'])}</b>")
             for song in section["songs"]:
-                lines.append(f"  • {song['label']}")
-                if song["url"]:
-                    lines.append(f"    {song['url']}")
+                label = html.escape(song["label"])
+                url = song["url"]
+                if url:
+                    lines.append(f"  • <a href=\"{html.escape(url, quote=True)}\">{label}</a>")
+                else:
+                    lines.append(f"  • {label}")
             lines.append("")
 
     return {
