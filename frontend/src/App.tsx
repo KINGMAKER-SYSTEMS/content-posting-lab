@@ -5,6 +5,8 @@ import { HomePage } from './pages/Home';
 import { CreatePage } from './pages/Create';
 import { CaptionsStagePage } from './pages/CaptionsStage';
 import { DistributionPage } from './pages/Distribution';
+import { PipelinePage } from './pages/Pipeline';
+import { PipelineWorkspacePage } from './pages/PipelineWorkspace';
 import { ProjectSelector, ToastContainer } from './components';
 import { BrandLogo } from './components/BrandLogo';
 import { useTheme } from './components/ThemeProvider';
@@ -42,6 +44,7 @@ function AppShell() {
 
   // Track which top-level stages have been visited for lazy mounting
   const [visitedStages, setVisitedStages] = useState<Set<string>>(new Set(['/']));
+  const [pipelineNewCount, setPipelineNewCount] = useState<number>(0);
 
   const visibleHealthItems = useMemo(
     () => healthItems.filter((item) => !dismissedHealth.includes(item.id)),
@@ -109,11 +112,32 @@ function AppShell() {
       if (location.pathname.startsWith('/create')) key = '/create';
       else if (location.pathname.startsWith('/captions')) key = '/captions';
       else if (location.pathname.startsWith('/distribute')) key = '/distribute';
+      else if (location.pathname.startsWith('/pipeline')) key = '/pipeline';
       else key = '/';
       if (prev.has(key)) return prev;
       return new Set([...prev, key]);
     });
   }, [location.pathname]);
+
+  // Poll pipeline for "Pending Setup" badge count
+  useEffect(() => {
+    let cancelled = false;
+    const refresh = async () => {
+      try {
+        const resp = await fetch(apiUrl('/api/pipeline/stages'));
+        if (!resp.ok) return;
+        const data = await resp.json();
+        if (cancelled) return;
+        const stage = (data.stages || []).find((s: { status: string }) => s.status === 'New — Pending Setup');
+        setPipelineNewCount(stage?.count ?? 0);
+      } catch {
+        // ignore
+      }
+    };
+    void refresh();
+    const t = window.setInterval(refresh, 60_000);
+    return () => { cancelled = true; window.clearInterval(t); };
+  }, []);
 
   useEffect(() => {
     const onProjectsChanged = () => void fetchProjects();
@@ -140,6 +164,7 @@ function AppShell() {
     if (location.pathname.startsWith('/create')) return 'create';
     if (location.pathname.startsWith('/captions')) return 'captions';
     if (location.pathname.startsWith('/distribute')) return 'distribute';
+    if (location.pathname.startsWith('/pipeline')) return 'pipeline';
     return 'home';
   }, [location.pathname]);
 
@@ -267,6 +292,26 @@ function AppShell() {
             >
               Distribute
             </Link>
+
+            {/* Pipeline */}
+            <Link
+              to="/pipeline"
+              className={`relative flex items-center gap-2 px-4 py-2.5 text-sm font-bold transition-colors ${
+                activeStage === 'pipeline'
+                  ? 'text-foreground after:absolute after:bottom-0 after:left-3 after:right-3 after:h-[2px] after:rounded-full after:bg-[var(--brand-gradient)]'
+                  : 'text-muted-foreground hover:text-foreground hover:bg-muted'
+              }`}
+            >
+              Pipeline
+              {pipelineNewCount > 0 && (
+                <Badge
+                  variant={activeStage === 'pipeline' ? 'default' : 'warning'}
+                  className="text-[10px] px-1.5 py-0 shadow-none"
+                >
+                  {pipelineNewCount}
+                </Badge>
+              )}
+            </Link>
           </div>
         </div>
       </header>
@@ -327,6 +372,24 @@ function AppShell() {
             <DistributionPage />
           </div>
         )}
+
+        {/* Pipeline stage — Kanban view OR per-page workspace */}
+        {visitedStages.has('/pipeline') && (() => {
+          const path = location.pathname;
+          const workspaceMatch = path.match(/^\/pipeline\/(.+)$/);
+          if (activeStage === 'pipeline' && workspaceMatch) {
+            return (
+              <div>
+                <PipelineWorkspacePage />
+              </div>
+            );
+          }
+          return (
+            <div style={{ display: activeStage === 'pipeline' ? 'block' : 'none' }}>
+              <PipelinePage />
+            </div>
+          );
+        })()}
       </main>
     </div>
   );

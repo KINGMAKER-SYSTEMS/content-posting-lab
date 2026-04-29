@@ -494,8 +494,110 @@ export interface RosterPage {
   email_alias: string | null;
   email_rule_id: string | null;
   fwd_destination: string | null;
+  // Notion-sourced fields (canonical when source === "notion")
+  source?: 'notion' | 'postiz' | null;
+  tiktok_url?: string | null;
+  signup_email?: string | null;
+  fwd_address?: string | null;
+  password?: string | null;
+  poster_name?: string | null;
+  group?: string | null;
+  group_label?: string | null;
+  account_type?: string | null;
+  notes?: string | null;
+  notion_page_id?: string | null;
+  // Pipeline-canonical (Notion):
+  status?: PageStatus | string | null;
+  pipeline?: 'Flow Stage' | 'King Maker Tech' | string | null;
+  page_type?: 'Lyric' | 'UGC' | 'Artist Burner' | string | null;
+  sounds_reference?: string | null;
+  go_live_date?: string | null;
+  // R2 storage (replaces Drive for new pipeline accounts):
+  r2_prefix?: string | null;
+  r2_bucket?: string | null;
   added_at: string;
   updated_at: string;
+}
+
+export type PageStatus =
+  | 'New — Pending Setup'
+  | 'In Production'
+  | 'Delivered to Poster'
+  | 'Live'
+  | 'Complete';
+
+export interface PipelineStage {
+  status: PageStatus;
+  count: number;
+  pages: RosterPage[];
+}
+
+export interface PipelineStagesResponse {
+  stages: PipelineStage[];
+  unassigned: RosterPage[];
+  total_pages: number;
+}
+
+export interface PipelineSetupStep {
+  ok: boolean;
+  reason?: string;
+  skipped?: boolean;
+  [k: string]: unknown;
+}
+
+export interface PipelineSetupResult {
+  integration_id: string;
+  steps: Record<string, PipelineSetupStep>;
+  completed: boolean;
+  page?: RosterPage;
+}
+
+export interface PipelineHealth {
+  integration_id: string;
+  drive_count: number;
+  drive_target: number;
+  telegram_topic_present: boolean;
+  telegram_topic_name: string | null;
+  cookie_status: string;
+  has_email_alias: boolean;
+  has_drive_folder: boolean;
+}
+
+export interface WorkspaceR2Object {
+  key: string;
+  size: number;
+  last_modified: string | null;
+  filename: string;
+}
+
+export interface PipelineWorkspace {
+  page: RosterPage;
+  r2: {
+    configured: boolean;
+    prefix: string | null;
+    bucket: string | null;
+    objects: WorkspaceR2Object[];
+    object_count: number;
+    target: number;
+    error?: string;
+  };
+  telegram: {
+    topic_present: boolean;
+    topic_id: number | null;
+    topic_name: string | null;
+    poster_id: string | null;
+    poster_name: string | null;
+    chat_id: number | null;
+  };
+  cookie_status: string;
+}
+
+export interface NotionPagesSyncResponse {
+  added: number;
+  updated: number;
+  total_in_notion: number;
+  errors: string[];
+  pages: RosterPage[];
 }
 
 export interface RosterResponse {

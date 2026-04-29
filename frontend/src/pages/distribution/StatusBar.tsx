@@ -6,9 +6,7 @@ import type {
   TelegramStatus,
   TelegramSound,
   TelegramBatchResult,
-  PostizStatusResponse,
   EmailStatusResponse,
-  DriveStatusResponse,
   UploadQueueStats,
 } from '@/types/api';
 
@@ -28,9 +26,7 @@ export interface StatusBarProps {
   onClearToken: () => void;
 
   // Services
-  postizStatus: PostizStatusResponse | null;
   emailStatus: EmailStatusResponse | null;
-  driveStatus: DriveStatusResponse | null;
 
   // Schedule
   scheduleEnabled: boolean;
@@ -57,9 +53,7 @@ export function StatusBar({
   onTokenInputChange,
   onSaveToken,
   onClearToken,
-  postizStatus,
   emailStatus,
-  driveStatus,
   scheduleEnabled,
   onScheduleEnabledChange,
   forwardTime,
@@ -124,25 +118,13 @@ export function StatusBar({
         <CardContent className="space-y-3 p-4">
           <p className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Services</p>
           <div className="flex flex-wrap items-center gap-2">
-            {postizStatus ? (
-              <Badge variant={postizStatus.configured && postizStatus.reachable ? 'success' : 'destructive'}>
-                {postizStatus.configured
-                  ? postizStatus.reachable
-                    ? 'Postiz'
-                    : 'Postiz Down'
-                  : 'Postiz Off'}
-              </Badge>
+            {status?.notion_configured ? (
+              <Badge variant="success">Notion</Badge>
             ) : (
-              <Badge variant="secondary">Postiz...</Badge>
-            )}
-            {driveStatus?.configured && (
-              <Badge variant="success">Drive</Badge>
+              <Badge variant="destructive">Notion Off</Badge>
             )}
             {emailStatus?.configured && (
               <Badge variant="info">{emailStatus.domain}</Badge>
-            )}
-            {status?.notion_configured && (
-              <Badge variant="info">Notion</Badge>
             )}
           </div>
           {status?.staging_group?.chat_id && (

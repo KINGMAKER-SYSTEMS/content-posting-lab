@@ -95,6 +95,94 @@ def clip_key(project: str, job_id: str, clip_name: str) -> str:
     return f"clips/{project}/{job_id}/{clip_name}"
 
 
+# Pipeline accounts: accounts/{integration_id}/{filename}
+# Each account gets a logical "folder" (just a key prefix in S3 land).
+# To "create" the folder we drop a zero-byte marker so it shows up in
+# bucket browsers and so listing works against an otherwise-empty prefix.
+
+def account_prefix(integration_id: str) -> str:
+    return f"accounts/{integration_id}/"
+
+
+def account_key(integration_id: str, filename: str) -> str:
+    safe = filename.replace("/", "_").replace("\\", "_")
+    return f"accounts/{integration_id}/{safe}"
+
+
+def create_account_prefix(integration_id: str) -> dict:
+    """Drop a zero-byte `.placeholder` marker under accounts/{id}/ so the
+    'folder' is visible. Returns {prefix, marker_key, public_url_template}.
+
+    Idempotent — if the marker already exists nothing changes.
+    """
+    prefix = account_prefix(integration_id)
+    marker = f"{prefix}.placeholder"
+
+    if head(marker) is None:
+        client().put_object(
+            Bucket=_bucket(),
+            Key=marker,
+            Body=b"",
+            ContentType="text/plain",
+        )
+
+    return {
+        "prefix": prefix,
+        "marker_key": marker,
+        "bucket": _bucket(),
+    }
+
+
+def list_account_objects(integration_id: str, max_keys: int = 1000) -> list[dict]:
+    """List all real (non-placeholder) objects under an account prefix."""
+    prefix = account_prefix(integration_id)
+    c = client()
+    items: list[dict] = []
+    token = None
+    while True:
+        kwargs = {"Bucket": _bucket(), "Prefix": prefix, "MaxKeys": max_keys}
+        if token:
+            kwargs["ContinuationToken"] = token
+        resp = c.list_objects_v2(**kwargs)
+        for obj in resp.get("Contents", []):
+            key = obj["Key"]
+            if key.endswith("/.placeholder"):
+                continue
+            items.append({
+                "key": key,
+                "size": obj.get("Size", 0),
+                "last_modified": obj.get("LastModified").isoformat() if obj.get("LastModified") else None,
+                "filename": key.rsplit("/", 1)[-1],
+            })
+        if not resp.get("IsTruncated"):
+            break
+        token = resp.get("NextContinuationToken")
+        if len(items) >= max_keys:
+            break
+    return items
+
+
+def count_account_objects(integration_id: str) -> int:
+    """Lightweight count of real (non-placeholder) objects under an account prefix."""
+    prefix = account_prefix(integration_id)
+    c = client()
+    total = 0
+    token = None
+    while True:
+        kwargs = {"Bucket": _bucket(), "Prefix": prefix, "MaxKeys": 1000}
+        if token:
+            kwargs["ContinuationToken"] = token
+        resp = c.list_objects_v2(**kwargs)
+        for obj in resp.get("Contents", []):
+            if obj["Key"].endswith("/.placeholder"):
+                continue
+            total += 1
+        if not resp.get("IsTruncated"):
+            break
+        token = resp.get("NextContinuationToken")
+    return total
+
+
 # ── Presigned URLs ──────────────────────────────────────────────────────
 
 def presign_put(key: str, content_type: str = "application/octet-stream", ttl: int = UPLOAD_TTL) -> str:
