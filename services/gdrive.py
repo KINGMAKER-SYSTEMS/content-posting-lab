@@ -109,6 +109,34 @@ def get_folder_info(folder_id: str) -> dict | None:
         return None
 
 
+def create_folder(name: str, parent_id: str | None = None) -> dict | None:
+    """Create a new folder in Drive.
+
+    Returns {id, name, webViewLink} or None on failure.
+    If parent_id is None, creates in My Drive root.
+    """
+    svc = get_service()
+    if svc is None:
+        return None
+
+    body: dict = {
+        "name": name,
+        "mimeType": "application/vnd.google-apps.folder",
+    }
+    if parent_id:
+        body["parents"] = [parent_id]
+
+    try:
+        created = (
+            svc.files()
+            .create(body=body, fields="id, name, webViewLink")
+            .execute()
+        )
+        return created
+    except Exception:
+        return None
+
+
 def upload_file(folder_id: str, file_path: str, mime_type: str = "video/mp4") -> dict | None:
     """Upload a local file to a Drive folder.
 

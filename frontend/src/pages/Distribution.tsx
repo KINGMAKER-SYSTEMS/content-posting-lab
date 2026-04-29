@@ -10,13 +10,11 @@ import type {
   TelegramBatchResult,
   NotionSyncResult,
   RosterPage,
-  PostizStatusResponse,
   EmailStatusResponse,
   EmailDestination,
   AutoCreateEmailResponse,
   UploadJob,
   CookieStatus,
-  DriveStatusResponse,
 } from '@/types/api';
 
 import { StatusBar } from './distribution/StatusBar';
@@ -24,6 +22,7 @@ import { RosterTab } from './distribution/RosterTab';
 import { TelegramTab } from './distribution/TelegramTab';
 import { SoundsTab } from './distribution/SoundsTab';
 import { UploadsTab } from './distribution/UploadsTab';
+import { EmailTab } from './distribution/EmailTab';
 
 // ---------------------------------------------------------------------------
 // Helpers (shared across tabs)
@@ -57,6 +56,7 @@ type SortDir = 'asc' | 'desc';
 // Sub-tab definitions
 const SUB_TABS = [
   { id: 'roster', label: 'Roster' },
+  { id: 'email', label: 'Email' },
   { id: 'telegram', label: 'Telegram' },
   { id: 'sounds', label: 'Sounds' },
   { id: 'uploads', label: 'Uploads' },
@@ -68,6 +68,7 @@ function pathToSubTab(pathname: string): SubTabId {
   if (pathname.startsWith('/distribute/telegram')) return 'telegram';
   if (pathname.startsWith('/distribute/sounds')) return 'sounds';
   if (pathname.startsWith('/distribute/uploads')) return 'uploads';
+  if (pathname.startsWith('/distribute/email')) return 'email';
   return 'roster';
 }
 
@@ -144,7 +145,6 @@ export function DistributionPage() {
   // PUBLISH STATE
   // =========================================================================
 
-  const [postizStatus, setPostizStatus] = useState<PostizStatusResponse | null>(null);
   const [syncing, setSyncing] = useState(false);
   const hasSyncedRef = useRef(false);
 
@@ -158,9 +158,6 @@ export function DistributionPage() {
   const [cookieStatuses, setCookieStatuses] = useState<Record<string, string>>({});
   const [loggingIn, setLoggingIn] = useState<string | null>(null);
 
-  const [driveStatus, setDriveStatus] = useState<DriveStatusResponse | null>(null);
-  const [driveInventory, setDriveInventory] = useState<Record<string, number>>({});
-
   const [showUploadForm, setShowUploadForm] = useState(false);
   const [uploadTarget, setUploadTarget] = useState<RosterPage | null>(null);
   const [uploadDesc, setUploadDesc] = useState('');
@@ -169,10 +166,6 @@ export function DistributionPage() {
   const [uploadSchedule, setUploadSchedule] = useState('');
   const [uploadStealth, setUploadStealth] = useState(true);
   const [submittingUpload, setSubmittingUpload] = useState(false);
-
-  const [editingCell, setEditingCell] = useState<{ id: string; field: 'drive_folder_url' } | null>(null);
-  const [editValue, setEditValue] = useState('');
-  const [savingId, setSavingId] = useState<string | null>(null);
 
   const [sortKey, setSortKey] = useState<SortKey>('name');
   const [sortDir, setSortDir] = useState<SortDir>('asc');
@@ -273,21 +266,6 @@ export function DistributionPage() {
   // PUBLISH DATA FETCHING
   // =========================================================================
 
-  const fetchPostizStatus = useCallback(async () => {
-    try {
-      const resp = await fetch(apiUrl('/api/postiz/status'));
-      const ct = resp.headers.get('content-type') ?? '';
-      if (!ct.includes('application/json')) throw new Error('Not JSON');
-      const data = (await resp.json()) as PostizStatusResponse;
-      setPostizStatus(data);
-      return data;
-    } catch {
-      const fallback: PostizStatusResponse = { configured: false, reachable: false };
-      setPostizStatus(fallback);
-      return fallback;
-    }
-  }, []);
-
   const fetchEmailStatus = useCallback(async () => {
     try {
       const resp = await fetch(apiUrl('/api/email/status'));
@@ -331,24 +309,6 @@ export function DistributionPage() {
       }
       setCookieStatuses(statuses);
     } catch { /* ignore */ }
-  }, []);
-
-  const fetchDriveStatus = useCallback(async () => {
-    try {
-      const resp = await fetch(apiUrl('/api/drive/status'));
-      if (!resp.ok) return;
-      const data = (await resp.json()) as DriveStatusResponse;
-      setDriveStatus(data);
-      if (data.configured) {
-        const invResp = await fetch(apiUrl('/api/drive/inventory'));
-        if (invResp.ok) {
-          const invData = await invResp.json();
-          setDriveInventory(invData.inventory ?? {});
-        }
-      }
-    } catch {
-      setDriveStatus({ configured: false });
-    }
   }, []);
 
   const fetchUploadJobs = useCallback(async () => {
@@ -407,18 +367,13 @@ export function DistributionPage() {
     hasSyncedRef.current = true;
 
     void (async () => {
-      const status = await fetchPostizStatus();
+      // Notion is the source of truth. /api/roster/sync redirects there.
       void fetchEmailStatus();
       void fetchCookies();
       void fetchUploadJobs();
-      void fetchDriveStatus();
-      if (status.configured && status.reachable) {
-        await syncFromPostiz();
-      } else {
-        await fetchRoster();
-      }
+      await syncFromPostiz();
     })();
-  }, [isVisible, fetchPostizStatus, fetchEmailStatus, fetchCookies, fetchUploadJobs, fetchDriveStatus, fetchRoster, syncFromPostiz]);
+  }, [isVisible, fetchEmailStatus, fetchCookies, fetchUploadJobs, syncFromPostiz]);
 
   // Poll upload jobs while queue is active
   useEffect(() => {
@@ -559,6 +514,69 @@ export function DistributionPage() {
   const clearPageSelection = useCallback((posterId: string) => {
     setPosterSelectedPages((prev) => ({ ...prev, [posterId]: new Set() }));
   }, []);
+
+  // Notion Master Pages sync — pulls account roster from Notion DB
+  const [pagesNotionSyncing, setPagesNotionSyncing] = useState(false);
+  const [pagesNotionSummary, setPagesNotionSummary] = useState<{ added: number; updated: number; total: number } | null>(null);
+  const syncFromNotion = useCallback(async () => {
+    setPagesNotionSyncing(true);
+    try {
+      const resp = await fetch(apiUrl('/api/roster/sync-notion'), { method: 'POST' });
+      if (!resp.ok) {
+        const text = await resp.text();
+        throw new Error(text || `Notion sync failed (${resp.status})`);
+      }
+      const data = await resp.json();
+      storeSetRosterPages(data.pages ?? []);
+      setPagesNotionSummary({
+        added: data.added ?? 0,
+        updated: data.updated ?? 0,
+        total: data.total_in_notion ?? 0,
+      });
+      addNotification('success', `Notion sync: +${data.added} new, ${data.updated} updated (${data.total_in_notion} in DB)`);
+      if (data.errors?.length > 0) {
+        addNotification('error', `${data.errors.length} sync errors — check logs`);
+      }
+    } catch (err) {
+      addNotification('error', err instanceof Error ? err.message : 'Notion sync failed');
+    } finally {
+      setPagesNotionSyncing(false);
+    }
+  }, [storeSetRosterPages, addNotification]);
+
+  // Email-tab single-page assign that immediately syncs the topic.
+  // Safe because we only ever send one page_id at a time (the warning in
+  // routers/telegram.py:726-727 is about batch races, not single assigns).
+  const [assignChainLoading, setAssignChainLoading] = useState<string | null>(null);
+  const assignPosterAndSyncTopics = useCallback(async (page: RosterPage, posterId: string) => {
+    setAssignChainLoading(page.integration_id);
+    try {
+      // 1. Assign the page to the poster
+      const assignRes = await fetch(apiUrl(`/api/telegram/posters/${encodeURIComponent(posterId)}/pages`), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ page_ids: [page.integration_id], page_names: { [page.integration_id]: page.name } }),
+      });
+      if (!assignRes.ok) {
+        const text = await assignRes.text();
+        throw new Error(text || `Assign failed (${assignRes.status})`);
+      }
+
+      // 2. Sync topics — creates the forum topic in the poster's group
+      const syncRes = await fetch(apiUrl(`/api/telegram/posters/${encodeURIComponent(posterId)}/sync-topics`), { method: 'POST' });
+      if (!syncRes.ok) {
+        const text = await syncRes.text();
+        throw new Error(text || `Topic sync failed (${syncRes.status})`);
+      }
+
+      addNotification('success', `${page.name} assigned · topic synced`);
+      await refreshTelegram();
+    } catch (err) {
+      addNotification('error', err instanceof Error ? err.message : 'Assign + sync failed');
+    } finally {
+      setAssignChainLoading(null);
+    }
+  }, [addNotification, refreshTelegram]);
 
   const handleAssignPages = useCallback(async (posterId: string) => {
     const selected = posterSelectedPages[posterId];
@@ -779,22 +797,6 @@ export function DistributionPage() {
     } catch (err) { addNotification('error', err instanceof Error ? err.message : 'Assignment failed'); }
   }, [rosterPages, storeSetRosterPages, addNotification]);
 
-  const saveDriveFolder = useCallback(async (integrationId: string, url: string) => {
-    setSavingId(integrationId);
-    try {
-      const resp = await fetch(apiUrl(`/api/roster/${integrationId}`), {
-        method: 'PUT', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ drive_folder_url: url }),
-      });
-      if (!resp.ok) { const text = await resp.text(); throw new Error(text || `Failed (${resp.status})`); }
-      const data = await resp.json();
-      storeSetRosterPages(rosterPages.map((p) => (p.integration_id === integrationId ? data.page : p)));
-      setEditingCell(null);
-      addNotification('success', 'Drive folder linked');
-    } catch (err) { addNotification('error', err instanceof Error ? err.message : 'Failed to save'); }
-    finally { setSavingId(null); }
-  }, [rosterPages, storeSetRosterPages, addNotification]);
-
   const createEmailAlias = useCallback(async (page: RosterPage) => {
     if (verifiedDestinations.length === 0) {
       addNotification('error', 'No verified destination addresses. Add one first.');
@@ -892,17 +894,6 @@ export function DistributionPage() {
     });
   }, []);
 
-  const startEdit = useCallback((page: RosterPage) => {
-    setEditingCell({ id: page.integration_id, field: 'drive_folder_url' });
-    setEditValue(page.drive_folder_url ?? '');
-  }, []);
-
-  const cancelEdit = useCallback(() => { setEditingCell(null); setEditValue(''); }, []);
-  const commitEdit = useCallback(() => {
-    if (!editingCell) return;
-    void saveDriveFolder(editingCell.id, editValue);
-  }, [editingCell, editValue, saveDriveFolder]);
-
   // =========================================================================
   // RENDER
   // =========================================================================
@@ -932,9 +923,7 @@ export function DistributionPage() {
         onTokenInputChange={setTokenInput}
         onSaveToken={handleSaveToken}
         onClearToken={handleClearToken}
-        postizStatus={postizStatus}
         emailStatus={emailStatus}
-        driveStatus={driveStatus}
         scheduleEnabled={scheduleEnabled}
         onScheduleEnabledChange={setScheduleEnabled}
         forwardTime={forwardTime}
@@ -968,7 +957,7 @@ export function DistributionPage() {
             rosterPages={rosterPages}
             rosterLoading={rosterLoading}
             syncing={syncing}
-            postizConfigured={postizStatus?.configured ?? false}
+            postizConfigured={true /* Notion is now source of truth — postizConfigured semantically means "roster sync configured" */}
             sortKey={sortKey}
             sortDir={sortDir}
             onToggleSort={toggleSort}
@@ -992,15 +981,6 @@ export function DistributionPage() {
             cookieStatuses={cookieStatuses}
             loggingIn={loggingIn}
             onTriggerLogin={triggerLogin}
-            driveStatus={driveStatus}
-            driveInventory={driveInventory}
-            editingCell={editingCell}
-            editValue={editValue}
-            savingId={savingId}
-            onStartEdit={startEdit}
-            onCancelEdit={cancelEdit}
-            onCommitEdit={commitEdit}
-            onEditValueChange={setEditValue}
             uploadStats={uploadStats}
             queuedPerAccount={queuedPerAccount}
             onOpenUploadForm={(page) => {
@@ -1010,6 +990,30 @@ export function DistributionPage() {
             }}
             onAssignProject={assignProject}
             onRefreshRoster={fetchRoster}
+          />
+        )}
+      </div>
+
+      <div style={{ display: activeSubTab === 'email' ? 'block' : 'none' }}>
+        {visitedSubTabs.has('email') && (
+          <EmailTab
+            rosterPages={rosterPages}
+            posters={posters}
+            emailStatus={emailStatus}
+            destinations={destinations}
+            verifiedDestinations={verifiedDestinations}
+            newDestEmail={newDestEmail}
+            onNewDestEmailChange={setNewDestEmail}
+            addingDest={addingDest}
+            onAddDestination={addDestination}
+            creatingEmailFor={creatingEmailFor}
+            onCreateEmailAlias={createEmailAlias}
+            onDeleteEmailAlias={deleteEmailAlias}
+            assignChainLoading={assignChainLoading}
+            onAssignPosterAndSync={assignPosterAndSyncTopics}
+            notionSyncing={pagesNotionSyncing}
+            onSyncFromNotion={syncFromNotion}
+            notionSyncSummary={pagesNotionSummary}
           />
         )}
       </div>

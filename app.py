@@ -22,11 +22,11 @@ from routers.clipper import router as clipper_router
 from routers.debug import router as debug_router
 from routers.projects import list_all_projects, router as projects_router
 from routers.recreate import router as recreate_router
-from routers.postiz import router as postiz_router
 from routers.roster import router as roster_router
 from routers.slideshow import router as slideshow_router
 from routers.telegram import router as telegram_router
 from routers.email_routing import router as email_router
+from routers.pipeline import router as pipeline_router
 from routers.upload import router as upload_router
 from routers.gdrive import router as gdrive_router
 from routers.video import router as video_router
@@ -209,11 +209,11 @@ app.include_router(burn_router, prefix="/api/burn", tags=["burn"])
 app.include_router(projects_router, prefix="/api/projects", tags=["projects"])
 app.include_router(recreate_router, prefix="/api/recreate", tags=["recreate"])
 app.include_router(clipper_router, prefix="/api/clipper", tags=["clipper"])
-app.include_router(postiz_router, prefix="/api/postiz", tags=["postiz"])
 app.include_router(roster_router, prefix="/api/roster", tags=["roster"])
 app.include_router(slideshow_router, prefix="/api/slideshow", tags=["slideshow"])
 app.include_router(telegram_router, prefix="/api/telegram", tags=["telegram"])
 app.include_router(email_router, prefix="/api/email", tags=["email"])
+app.include_router(pipeline_router, prefix="/api/pipeline", tags=["pipeline"])
 app.include_router(upload_router, prefix="/api/upload", tags=["upload"])
 app.include_router(gdrive_router, prefix="/api/drive", tags=["drive"])
 
@@ -233,7 +233,25 @@ async def health_check():
         "ffmpeg": ffmpeg_ok,
         "ytdlp": ytdlp_ok,
         "providers": providers,
-        "postiz": bool(os.getenv("POSTIZ_API_KEY")),
+        "notion_pages": bool(
+            os.getenv("NOTION_API_KEY") and os.getenv("NOTION_PAGES_DB")
+        ),
+        "cf_email": bool(
+            os.getenv("CF_API_TOKEN")
+            and os.getenv("CF_ZONE_ID")
+            and os.getenv("CF_EMAIL_DOMAIN")
+        ),
+        "r2": bool(
+            os.getenv("R2_ACCESS_KEY_ID")
+            and os.getenv("R2_BUCKET")
+            and os.getenv("R2_ENDPOINT")
+        ),
+        "slack": bool(os.getenv("SLACK_WEBHOOK_URL")),
+        "email_send": bool(
+            os.getenv("RESEND_API_KEY")
+            and os.getenv("EMAIL_FROM")
+            and os.getenv("EMAIL_HANDOFF_TO")
+        ),
     }
 
 

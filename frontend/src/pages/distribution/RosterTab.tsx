@@ -3,7 +3,6 @@ import {
   CaretUpDownIcon,
   CaretUpIcon,
   CaretDownIcon,
-  CheckIcon,
   XIcon,
 } from '@phosphor-icons/react';
 import { Badge } from '@/components/ui/badge';
@@ -13,7 +12,6 @@ import type {
   RosterPage,
   EmailStatusResponse,
   EmailDestination,
-  DriveStatusResponse,
   UploadQueueStats,
 } from '@/types/api';
 
@@ -71,19 +69,6 @@ export interface RosterTabProps {
   loggingIn: string | null;
   onTriggerLogin: (accountName: string) => void;
 
-  // Drive
-  driveStatus: DriveStatusResponse | null;
-  driveInventory: Record<string, number>;
-
-  // Inline edit
-  editingCell: { id: string; field: 'drive_folder_url' } | null;
-  editValue: string;
-  savingId: string | null;
-  onStartEdit: (page: RosterPage) => void;
-  onCancelEdit: () => void;
-  onCommitEdit: () => void;
-  onEditValueChange: (v: string) => void;
-
   // Upload
   uploadStats: UploadQueueStats | null;
   queuedPerAccount: Record<string, number>;
@@ -122,15 +107,6 @@ export function RosterTab({
   cookieStatuses,
   loggingIn,
   onTriggerLogin,
-  driveStatus,
-  driveInventory,
-  editingCell,
-  editValue,
-  savingId,
-  onStartEdit,
-  onCancelEdit,
-  onCommitEdit,
-  onEditValueChange,
   uploadStats,
   queuedPerAccount,
   onOpenUploadForm,
@@ -158,11 +134,11 @@ export function RosterTab({
       {/* Not configured warning */}
       {!postizConfigured && (
         <div className="rounded-[var(--border-radius)] border border-amber-500/30 bg-amber-500/10 text-amber-200 px-4 py-3 text-sm">
-          <strong>POSTIZ_API_KEY</strong> is not set in your <code>.env</code> file. Add it to enable publishing.
+          Notion not configured — set <strong>NOTION_API_KEY</strong> and <strong>NOTION_PAGES_DB</strong> in <code>.env</code> to sync the roster.
         </div>
       )}
 
-      {postizConfigured && (
+      {true && (
         <div className="space-y-4">
           {/* Toolbar */}
           <div className="flex items-center justify-between rounded-[var(--border-radius)] border border-border bg-muted px-4 py-3">
@@ -207,7 +183,7 @@ export function RosterTab({
           {/* Empty state */}
           {rosterPages.length === 0 && !rosterLoading && !syncing && (
             <div className="rounded-[var(--border-radius)] border border-border bg-muted px-4 py-8 text-center text-muted-foreground">
-              No pages found. Make sure Postiz is reachable — pages sync automatically.
+              No pages found. Click "Sync from Notion" or check NOTION_API_KEY / NOTION_PAGES_DB.
             </div>
           )}
 
@@ -227,7 +203,7 @@ export function RosterTab({
                     <th className="px-3 py-2 font-bold cursor-pointer select-none hover:text-primary transition-colors" onClick={() => onToggleSort('project')}>
                       Project {sortArrow('project')}
                     </th>
-                    <th className="px-3 py-2 font-bold">Drive Folder</th>
+                    <th className="px-3 py-2 font-bold">Storage</th>
                     <th className="px-3 py-2 font-bold">Email</th>
                     <th className="px-3 py-2 font-bold">Cookie</th>
                     <th className="px-3 py-2 font-bold">Queue</th>
@@ -235,15 +211,12 @@ export function RosterTab({
                 </thead>
                 <tbody className="divide-y divide-border">
                   {displayPages.map((page) => {
-                    const isEditing = editingCell?.id === page.integration_id;
-                    const isSaving = savingId === page.integration_id;
                     const isActive = page.project === activeProjectName;
                     const isCreatingEmail = creatingEmailFor === page.integration_id;
                     const cookieStatus = cookieStatuses[page.name] ?? 'missing';
                     const cookieBadge = COOKIE_BADGE[cookieStatus] ?? COOKIE_BADGE.missing;
                     const isLoggingIn = loggingIn === page.name;
                     const queueCount = queuedPerAccount[page.name] ?? 0;
-                    const driveCount = driveInventory[page.integration_id] ?? 0;
 
                     return (
                       <tr
@@ -275,44 +248,20 @@ export function RosterTab({
                             ))}
                           </select>
                         </td>
-                        <td className="px-3 py-2 min-w-[200px]">
-                          {isEditing ? (
-                            <div className="flex items-center gap-1">
-                              <Input
-                                type="text"
-                                className="text-xs h-7 flex-1"
-                                placeholder="Paste Drive folder URL..."
-                                value={editValue}
-                                onChange={(e) => onEditValueChange(e.target.value)}
-                                onKeyDown={(e) => {
-                                  if (e.key === 'Enter') onCommitEdit();
-                                  if (e.key === 'Escape') onCancelEdit();
-                                }}
-                                disabled={isSaving}
-                                autoFocus
-                              />
-                              <Button size="xs" onClick={onCommitEdit} disabled={isSaving}>
-                                {isSaving ? '...' : <CheckIcon size={12} weight="bold" />}
-                              </Button>
-                              <Button size="xs" variant="outline" onClick={onCancelEdit} disabled={isSaving}>
-                                <XIcon size={12} weight="bold" />
-                              </Button>
+                        <td className="px-3 py-2 min-w-[140px]">
+                          {page.r2_prefix ? (
+                            <div className="flex items-center gap-1.5">
+                              <Badge variant="success" className="text-[10px] shrink-0">R2</Badge>
+                              <span className="text-[10px] text-muted-foreground font-mono truncate max-w-[100px]" title={`${page.r2_bucket}/${page.r2_prefix}`}>
+                                {page.r2_prefix}
+                              </span>
+                            </div>
+                          ) : page.drive_folder_id ? (
+                            <div className="flex items-center gap-1.5" title={page.drive_folder_url ?? page.drive_folder_id}>
+                              <Badge variant="secondary" className="text-[10px] shrink-0">Drive (legacy)</Badge>
                             </div>
                           ) : (
-                            <div className="flex items-center gap-1.5 cursor-pointer group" onClick={() => onStartEdit(page)}>
-                              {page.drive_folder_id ? (
-                                <>
-                                  <Badge variant="success" className="text-[10px] shrink-0">Linked</Badge>
-                                  <span className="text-[10px] text-muted-foreground font-mono truncate max-w-[120px]">
-                                    {page.drive_folder_id}
-                                  </span>
-                                </>
-                              ) : (
-                                <span className="text-xs text-muted-foreground group-hover:text-primary transition-colors">
-                                  Click to link...
-                                </span>
-                              )}
-                            </div>
+                            <span className="text-xs text-muted-foreground/40">—</span>
                           )}
                         </td>
                         <td className="px-3 py-2 min-w-[180px]">
@@ -360,19 +309,10 @@ export function RosterTab({
                         </td>
                         <td className="px-3 py-2">
                           <div className="flex items-center gap-1.5">
-                            {page.drive_folder_id && driveStatus?.configured ? (
-                              <Badge
-                                variant={driveCount > 0 ? 'info' : 'secondary'}
-                                className="text-[10px]"
-                                title={`${driveCount} video${driveCount !== 1 ? 's' : ''} in Drive`}
-                              >
-                                {driveCount}
-                              </Badge>
+                            {queueCount > 0 ? (
+                              <Badge variant="active" className="text-[10px]" title="Uploading to TikTok">{queueCount}</Badge>
                             ) : (
                               <span className="text-xs text-muted-foreground/40">—</span>
-                            )}
-                            {queueCount > 0 && (
-                              <Badge variant="active" className="text-[10px]" title="Uploading to TikTok">{queueCount}</Badge>
                             )}
                             {cookieStatus === 'valid' && (
                               <Button

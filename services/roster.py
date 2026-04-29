@@ -65,6 +65,27 @@ def set_page(integration_id: str, data: dict) -> dict:
         "email_alias": data.get("email_alias", existing.get("email_alias")),
         "email_rule_id": data.get("email_rule_id", existing.get("email_rule_id")),
         "fwd_destination": data.get("fwd_destination", existing.get("fwd_destination")),
+        # Notion-sourced fields (canonical when source == "notion")
+        "source": data.get("source", existing.get("source")),
+        "tiktok_url": data.get("tiktok_url", existing.get("tiktok_url")),
+        "signup_email": data.get("signup_email", existing.get("signup_email")),
+        "fwd_address": data.get("fwd_address", existing.get("fwd_address")),
+        "password": data.get("password", existing.get("password")),
+        "poster_name": data.get("poster_name", existing.get("poster_name")),
+        "group": data.get("group", existing.get("group")),
+        "group_label": data.get("group_label", existing.get("group_label")),
+        "account_type": data.get("account_type", existing.get("account_type")),
+        "notes": data.get("notes", existing.get("notes")),
+        "notion_page_id": data.get("notion_page_id", existing.get("notion_page_id")),
+        # Pipeline-canonical (Notion):
+        "status": data.get("status", existing.get("status")),
+        "pipeline": data.get("pipeline", existing.get("pipeline")),
+        "page_type": data.get("page_type", existing.get("page_type")),
+        "sounds_reference": data.get("sounds_reference", existing.get("sounds_reference")),
+        "go_live_date": data.get("go_live_date", existing.get("go_live_date")),
+        # R2 storage (replaces Drive for new pipeline accounts):
+        "r2_prefix": data.get("r2_prefix", existing.get("r2_prefix")),
+        "r2_bucket": data.get("r2_bucket", existing.get("r2_bucket")),
         "added_at": existing.get("added_at", now),
         "updated_at": now,
     }

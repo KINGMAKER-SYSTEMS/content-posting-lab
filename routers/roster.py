@@ -39,15 +39,6 @@ def _normalize_name(name: str) -> str:
 
 router = APIRouter()
 
-POSTIZ_BASE = "https://api.postiz.com/public/v1"
-
-
-def _postiz_key() -> str:
-    key = os.getenv("POSTIZ_API_KEY", "")
-    if not key:
-        raise HTTPException(status_code=503, detail="POSTIZ_API_KEY not configured")
-    return key
-
 
 # ── Roster CRUD ────────────────────────────────────────────────────────────
 
@@ -287,65 +278,68 @@ async def dedup_roster():
 # ── Sync with Postiz ──────────────────────────────────────────────────────
 
 
+@router.get("/sync-notion/status")
+async def notion_sync_status():
+    """Check if Notion Master Pages sync is configured."""
+    from services.notion_pages import is_configured
+    return {"configured": is_configured()}
+
+
+@router.post("/sync-notion")
+async def sync_from_notion():
+    """Pull account roster from Notion Master Pages DB.
+
+    Notion is the source of truth for: username, signup email, password,
+    forwarding address, poster name, group, account type, TikTok URL.
+    Roster JSON keeps app-only fields (project, drive folder, CF email alias).
+    """
+    from services.notion_pages import is_configured, sync_into_roster
+
+    if not is_configured():
+        raise HTTPException(
+            status_code=503,
+            detail="Notion not configured — set NOTION_API_KEY and NOTION_PAGES_DB",
+        )
+
+    try:
+        return await sync_into_roster()
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(
+            status_code=exc.response.status_code,
+            detail=f"Notion API error: {exc.response.text[:500]}",
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Notion sync failed: {exc}")
+
+
 @router.post("/sync")
 async def sync_integrations():
-    """Fetch integrations from Postiz and merge into the roster.
+    """[DEPRECATED] Postiz sync — kept as alias to /sync-notion for backwards compat.
 
-    New integrations are added (unassigned). Existing entries keep their
-    project and drive_folder assignments. Returns the updated roster.
+    Notion is now the source of truth. The legacy 'Sync from Postiz' button
+    transparently routes here, which redirects to the Notion sync.
     """
-    async with httpx.AsyncClient(timeout=15) as client:
-        resp = await client.get(
-            f"{POSTIZ_BASE}/integrations",
-            headers={
-                "Authorization": _postiz_key(),
-                "Content-Type": "application/json",
-            },
+    from services.notion_pages import is_configured, sync_into_roster
+
+    if not is_configured():
+        raise HTTPException(
+            status_code=503,
+            detail="Notion not configured — set NOTION_API_KEY and NOTION_PAGES_DB",
         )
-        if resp.status_code != 200:
-            raise HTTPException(
-                status_code=resp.status_code,
-                detail=f"Postiz API error: {resp.text[:500]}",
-            )
 
-    integrations = resp.json()
-    if not isinstance(integrations, list):
-        integrations = integrations.get("integrations", [])
-
-    roster = load_roster()
-    added = 0
-
-    remote_ids = set()
-    for ig in integrations:
-        ig_id = ig.get("id", "")
-        if not ig_id:
-            continue
-        remote_ids.add(ig_id)
-
-        if ig_id not in roster["pages"]:
-            added += 1
-
-        # Merge: keep existing project/drive assignments, update name/provider/picture
-        existing = roster["pages"].get(ig_id, {})
-        set_page(ig_id, {
-            "name": ig.get("name", existing.get("name", "")),
-            "provider": ig.get("providerIdentifier", ig.get("provider", existing.get("provider", ""))),
-            "picture": ig.get("picture", existing.get("picture")),
-            "project": existing.get("project"),
-            "drive_folder_url": existing.get("drive_folder_url"),
-            "drive_folder_id": existing.get("drive_folder_id"),
-        })
-
-    # Count removed (in roster but not in Postiz anymore)
-    roster = load_roster()  # re-read after set_page calls
-    removed = 0
-    for ig_id in list(roster["pages"].keys()):
-        if ig_id not in remote_ids:
-            removed += 1
-            # Don't auto-delete — just flag. User can manually remove.
-
-    return {
-        "added": added,
-        "removed": removed,
-        "pages": list_all_pages(),
-    }
+    try:
+        result = await sync_into_roster()
+        # Match legacy response shape so old callers don't break
+        return {
+            "added": result.get("added", 0),
+            "removed": 0,  # Notion-driven — we don't auto-remove anything
+            "updated": result.get("updated", 0),
+            "pages": result.get("pages", []),
+        }
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(
+            status_code=exc.response.status_code,
+            detail=f"Notion API error: {exc.response.text[:500]}",
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Notion sync failed: {exc}")
