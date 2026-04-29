@@ -542,6 +542,7 @@ function IntakeModal({
   const [submitting, setSubmitting] = useState(false);
   const [emailAlias, setEmailAlias] = useState<string | null>(null);
   const [fwdDestination, setFwdDestination] = useState<string | null>(null);
+  const [emailLocal, setEmailLocal] = useState('');
   const [form, setForm] = useState({
     account_username: '',
     label_artist: '',
@@ -570,7 +571,10 @@ function IntakeModal({
       const resp = await fetch(apiUrl('/api/pipeline/mint-alias'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pipeline: form.pipeline_choice }),
+        body: JSON.stringify({
+          pipeline: form.pipeline_choice,
+          desired_local: emailLocal.trim() || null,
+        }),
       });
       if (!resp.ok) {
         const text = await resp.text();
@@ -681,49 +685,69 @@ function IntakeModal({
           </button>
         </div>
 
-        {step === 1 && (
-          <div className="p-6 space-y-4">
-            <Field label="Which pipeline owns this account?" required>
-              <select
-                className="w-full h-9 px-3 rounded-md border border-border bg-background text-sm"
-                value={form.pipeline_choice}
-                onChange={(e) => update('pipeline_choice', e.target.value)}
-              >
-                <option value="">— pick one —</option>
-                {PIPELINE_OPTIONS.map((p) => (
-                  <option key={p} value={p}>{p}</option>
-                ))}
-              </select>
-              <p className="text-[11px] text-muted-foreground mt-1">
-                Verification emails forward to: <span className="font-mono text-foreground">
-                  {form.pipeline_choice === 'Flow Stage' ? 'jay@risingtidesent.com'
-                    : form.pipeline_choice === 'King Maker Tech' ? 'glitch@risingtidesent.com'
-                    : '— pick a pipeline —'}
-                </span>
-              </p>
-            </Field>
+        {step === 1 && (() => {
+          const sanitized = emailLocal.trim().toLowerCase().replace(/[^a-z0-9._-]/g, '-').replace(/^-+|-+$/g, '');
+          const previewEmail = sanitized ? `${sanitized}@risingtidesviral.com` : 'acct-{random}@risingtidesviral.com';
+          return (
+            <div className="p-6 space-y-4">
+              <Field label="Which pipeline owns this account?" required>
+                <select
+                  className="w-full h-9 px-3 rounded-md border border-border bg-background text-sm"
+                  value={form.pipeline_choice}
+                  onChange={(e) => update('pipeline_choice', e.target.value)}
+                >
+                  <option value="">— pick one —</option>
+                  {PIPELINE_OPTIONS.map((p) => (
+                    <option key={p} value={p}>{p}</option>
+                  ))}
+                </select>
+                <p className="text-[11px] text-muted-foreground mt-1">
+                  Verification emails forward to: <span className="font-mono text-foreground">
+                    {form.pipeline_choice === 'Flow Stage' ? 'jay@risingtidesent.com'
+                      : form.pipeline_choice === 'King Maker Tech' ? 'glitch@risingtidesent.com'
+                      : '— pick a pipeline —'}
+                  </span>
+                </p>
+              </Field>
 
-            <div className="rounded-md border border-border bg-muted/30 p-4 space-y-3">
-              <div className="text-sm">
-                <span className="font-bold">When you click "Mint Email + Open TikTok":</span>
+              <Field label="Email name (optional — leave blank for random)">
+                <input
+                  type="text"
+                  className="w-full h-9 px-3 rounded-md border border-border bg-background text-sm font-mono"
+                  placeholder="e.g. samb-truck-04 or warner-april-3"
+                  value={emailLocal}
+                  onChange={(e) => setEmailLocal(e.target.value)}
+                />
+                <p className="text-[11px] text-muted-foreground mt-1">
+                  Will become: <span className="font-mono text-foreground">{previewEmail}</span>
+                  {sanitized && sanitized !== emailLocal.trim().toLowerCase() && (
+                    <span className="ml-2 text-warning">(special chars get cleaned)</span>
+                  )}
+                </p>
+              </Field>
+
+              <div className="rounded-md border border-border bg-muted/30 p-4 space-y-3">
+                <div className="text-sm">
+                  <span className="font-bold">When you click "Mint Email + Open TikTok":</span>
+                </div>
+                <ol className="text-xs text-muted-foreground space-y-1 list-decimal list-inside">
+                  <li>Backend creates the Cloudflare alias <span className="font-mono">{previewEmail}</span> forwarding to the right person</li>
+                  <li>Email gets copied to your clipboard</li>
+                  <li>TikTok signup opens in a new tab</li>
+                  <li>You paste email + use password <span className="font-mono text-foreground">Risingtides123$</span></li>
+                  <li>Pick any TikTok handle that's available</li>
+                  <li>Come back here → fill out the rest of the form (step 2)</li>
+                </ol>
               </div>
-              <ol className="text-xs text-muted-foreground space-y-1 list-decimal list-inside">
-                <li>Backend generates a random Cloudflare alias (e.g. <span className="font-mono">acct-7gx2k4mz@risingtidesviral.com</span>) forwarding to the right person</li>
-                <li>Email gets copied to your clipboard</li>
-                <li>TikTok signup opens in a new tab</li>
-                <li>You paste email + use password <span className="font-mono text-foreground">Risingtides123$</span></li>
-                <li>Pick any TikTok handle that's available</li>
-                <li>Come back here → fill out the rest of the form (step 2)</li>
-              </ol>
-            </div>
 
-            <div className="flex justify-center">
-              <Button size="lg" onClick={mintAndGo} disabled={minting || !form.pipeline_choice} className="w-full">
-                {minting ? 'Minting...' : '🔑 Mint Email + Open TikTok'}
-              </Button>
+              <div className="flex justify-center">
+                <Button size="lg" onClick={mintAndGo} disabled={minting || !form.pipeline_choice} className="w-full">
+                  {minting ? 'Minting...' : '🔑 Mint Email + Open TikTok'}
+                </Button>
+              </div>
             </div>
-          </div>
-        )}
+          );
+        })()}
 
         {step === 2 && (
         <div className="p-4 space-y-3">

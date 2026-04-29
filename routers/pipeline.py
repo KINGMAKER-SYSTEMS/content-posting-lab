@@ -89,10 +89,13 @@ def _random_alias_local() -> str:
 async def _mint_random_alias(
     pipeline: str | None = None,
     destination_override: str | None = None,
+    desired_local: str | None = None,
 ) -> dict[str, Any]:
-    """Mint a CF email alias with a random local-part. The user goes to
-    TikTok with this email, picks whatever handle is available, and we
-    record the actual handle later when the form is submitted.
+    """Mint a CF email alias.
+
+    If `desired_local` is given, uses that as the local-part (e.g. "samb-truck-04"
+    becomes "samb-truck-04@risingtidesviral.com"). If it collides with an
+    existing alias, returns 409. Otherwise generates a random "acct-XXXX" local.
 
     Destination routing:
       - If destination_override is provided, use it (must be verified on CF)
@@ -156,19 +159,35 @@ async def _mint_random_alias(
         for m in r.get("matchers", [])
     }
 
-    alias_local = _random_alias_local()
-    full_alias = f"{alias_local}@{cfg['domain']}"
-    attempts = 0
-    while full_alias in existing_aliases and attempts < 5:
+    # Resolve the local-part: user-chosen (sanitized) takes priority,
+    # else generate a random one with retry-on-collision.
+    if desired_local and desired_local.strip():
+        alias_local = _slug_alias(desired_local)
+        if not alias_local:
+            raise HTTPException(
+                status_code=400,
+                detail="Email name must contain at least one alphanumeric character",
+            )
+        full_alias = f"{alias_local}@{cfg['domain']}"
+        if full_alias in existing_aliases:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Email '{full_alias}' is already taken — pick a different name",
+            )
+    else:
         alias_local = _random_alias_local()
         full_alias = f"{alias_local}@{cfg['domain']}"
-        attempts += 1
+        attempts = 0
+        while full_alias in existing_aliases and attempts < 5:
+            alias_local = _random_alias_local()
+            full_alias = f"{alias_local}@{cfg['domain']}"
+            attempts += 1
 
-    if full_alias in existing_aliases:
-        raise HTTPException(
-            status_code=500,
-            detail="Couldn't find a free random alias after 5 tries (very rare — try again)",
-        )
+        if full_alias in existing_aliases:
+            raise HTTPException(
+                status_code=500,
+                detail="Couldn't find a free random alias after 5 tries (very rare — try again)",
+            )
 
     try:
         rule = await cf_create_rule(alias_local, destination)
@@ -290,6 +309,10 @@ class MintAliasRequest(BaseModel):
     # Optional — routes the forwarding destination based on which pipeline
     # owns this account. Flow Stage → Jay, King Maker → Glitch.
     pipeline: str | None = None
+    # Optional — if provided, this becomes the local-part of the email
+    # (e.g. "samb-truck-04" → "samb-truck-04@risingtidesviral.com").
+    # If omitted, a random "acct-XXXXXXXX" local is generated.
+    desired_local: str | None = None
 
 
 class MintAliasResponse(BaseModel):
@@ -299,15 +322,19 @@ class MintAliasResponse(BaseModel):
 
 @router.post("/mint-alias")
 async def mint_random_alias_endpoint(req: MintAliasRequest | None = None) -> MintAliasResponse:
-    """Step 1 of intake: mint a random CF email alias before user goes to TikTok.
+    """Step 1 of intake: mint a CF email alias before user goes to TikTok.
 
-    This decouples the email from the TikTok handle. User can pick whatever
+    This decouples the email from the TikTok handle — the user picks whatever
     handle is available on TikTok; we just need to give them an email to sign
     up with. The forwarding destination is chosen based on pipeline so that
     TikTok verification emails go to the right person (Jay vs Glitch).
+
+    The user can also specify a custom name (`desired_local`) so emails are
+    human-readable in the inbox (e.g. "samb-truck-04@..." instead of random).
     """
     pipeline = (req.pipeline if req else None) or None
-    info = await _mint_random_alias(pipeline=pipeline)
+    desired_local = (req.desired_local if req else None) or None
+    info = await _mint_random_alias(pipeline=pipeline, desired_local=desired_local)
     return MintAliasResponse(alias=info["alias"], destination=info["destination"])
 
 
