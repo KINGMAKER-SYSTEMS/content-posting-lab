@@ -40,7 +40,7 @@ const STAGE_META: Record<PageStatus, {
   'New — Pending Setup': {
     short: 'Pending Setup',
     tone: 'warn',
-    description: 'Run setup chain: mint email + Drive + assign poster + create topic',
+    description: 'Email minted + TikTok account being built — once the handle is set, Run Setup attaches Drive + poster + Telegram topic',
   },
   'In Production': {
     short: 'In Production',
@@ -191,9 +191,9 @@ export function PipelinePage() {
             New sales only. Existing operational pages live on the{' '}
             <a href="/distribute" className="text-foreground font-bold hover:underline">Roster</a> tab.
             <br />
-            Eric submits intake → card appears in <span className="font-bold">Pending Setup</span> →{' '}
+            Step 1 mints the email + logs the row in Notion. Step 2 fills in the TikTok handle once the account exists. Then{' '}
             <span className="text-foreground font-bold">Run Setup</span>{' '}
-            chains email + Drive + poster + Telegram.
+            chains Drive + poster + Telegram topic.
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -529,6 +529,57 @@ const GROUP_LABEL_OPTIONS = [
 ] as const;
 const ACCOUNT_TYPE_OPTIONS = ['TRUCK', 'POV', 'Coffee', 'slideshow', 'silhouette', 'meme'] as const;
 
+// Persistent intake state — survives tab close / browser crash mid-flow.
+// Keyed off the email alias since that's the immutable identity for the row.
+const INTAKE_STORAGE_KEY = 'pipeline.intake.inflight';
+
+type InflightIntake = {
+  step: 1 | 2;
+  emailAlias: string | null;
+  fwdDestination: string | null;
+  notionPageId: string | null;
+  emailLocal: string;
+  form: {
+    account_username: string;
+    label_artist: string;
+    pipeline_choice: string;
+    page_type: string;
+    sounds_reference: string;
+    notes: string;
+    poster: string;
+    go_live_date: string;
+    group: string;
+    group_label: string;
+    account_type: string;
+  };
+};
+
+function loadInflight(): InflightIntake | null {
+  try {
+    const raw = localStorage.getItem(INTAKE_STORAGE_KEY);
+    if (!raw) return null;
+    return JSON.parse(raw) as InflightIntake;
+  } catch {
+    return null;
+  }
+}
+
+function saveInflight(state: InflightIntake) {
+  try {
+    localStorage.setItem(INTAKE_STORAGE_KEY, JSON.stringify(state));
+  } catch {
+    // Storage full / disabled — non-fatal
+  }
+}
+
+function clearInflight() {
+  try {
+    localStorage.removeItem(INTAKE_STORAGE_KEY);
+  } catch {
+    // ignore
+  }
+}
+
 function IntakeModal({
   onClose,
   onSubmitted,
@@ -537,13 +588,15 @@ function IntakeModal({
   onSubmitted: () => void;
 }) {
   const { addNotification } = useWorkflowStore();
-  const [step, setStep] = useState<1 | 2>(1);
+  const inflight = loadInflight();
+  const [step, setStep] = useState<1 | 2>(inflight?.step ?? 1);
   const [minting, setMinting] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-  const [emailAlias, setEmailAlias] = useState<string | null>(null);
-  const [fwdDestination, setFwdDestination] = useState<string | null>(null);
-  const [emailLocal, setEmailLocal] = useState('');
-  const [form, setForm] = useState({
+  const [emailAlias, setEmailAlias] = useState<string | null>(inflight?.emailAlias ?? null);
+  const [fwdDestination, setFwdDestination] = useState<string | null>(inflight?.fwdDestination ?? null);
+  const [notionPageId, setNotionPageId] = useState<string | null>(inflight?.notionPageId ?? null);
+  const [emailLocal, setEmailLocal] = useState(inflight?.emailLocal ?? '');
+  const [form, setForm] = useState(inflight?.form ?? {
     account_username: '',
     label_artist: '',
     pipeline_choice: '',
@@ -557,10 +610,15 @@ function IntakeModal({
     account_type: '',
   });
 
+  // Persist state any time it changes — survives tab close / phone handoff
+  useEffect(() => {
+    saveInflight({ step, emailAlias, fwdDestination, notionPageId, emailLocal, form });
+  }, [step, emailAlias, fwdDestination, notionPageId, emailLocal, form]);
+
   const update = (field: keyof typeof form, value: string) =>
     setForm((prev) => ({ ...prev, [field]: value }));
 
-  // Step 1: mint email + open TikTok
+  // Step 1: mint email (also creates placeholder Notion row) + open TikTok
   const mintAndGo = async () => {
     if (!form.pipeline_choice) {
       addNotification('error', 'Pick Flow Stage or King Maker first — that decides who gets the verification emails');
@@ -584,6 +642,7 @@ function IntakeModal({
       const email = result.alias as string;
       setEmailAlias(email);
       setFwdDestination(result.destination as string);
+      setNotionPageId((result.notion_page_id as string | null) ?? null);
 
       // Copy to clipboard + open TikTok in new tab
       try {
@@ -628,6 +687,7 @@ function IntakeModal({
       const payload: Record<string, string | null> = {
         email_alias: emailAlias,
         fwd_destination: fwdDestination,
+        notion_page_id: notionPageId,
       };
       Object.entries(form).forEach(([k, v]) => {
         payload[k] = v.trim() || null;
@@ -644,8 +704,9 @@ function IntakeModal({
       const result = await resp.json();
       addNotification('success', `${form.account_username} added to pipeline`);
       if (!result.synced) {
-        addNotification('error', 'Row created but sync failed — click "Sync from Notion" to refresh');
+        addNotification('error', 'Row updated but sync failed — click "Sync from Notion" to refresh');
       }
+      clearInflight();
       onSubmitted();
     } catch (err) {
       addNotification('error', err instanceof Error ? err.message : 'Submit failed');
@@ -670,20 +731,43 @@ function IntakeModal({
             </h2>
             <p className="text-xs text-muted-foreground">
               {step === 1
-                ? <>Step 1 mints a fresh email + opens TikTok. Sign up there w that email + password <span className="font-mono text-foreground">Risingtides123$</span>, pick whatever handle's available, then come back for step 2.</>
-                : <>Use password <span className="font-mono text-foreground">Risingtides123$</span> on TikTok. Once you've got the account, fill in the actual handle below.</>
+                ? <>Step 1 mints a fresh email and logs the intake row in Notion immediately, then opens TikTok. Sign up there w that email + password <span className="font-mono text-foreground">Risingtides123$</span>, pick whatever handle's available, then come back for step 2.</>
+                : <>Use password <span className="font-mono text-foreground">Risingtides123$</span> on TikTok. Once you've got the account, fill in the actual handle below — your row is already in Notion, we're just patching it.</>
               }
             </p>
           </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="text-muted-foreground hover:text-foreground"
-            aria-label="Close"
-          >
-            <XCircleIcon size={20} weight="bold" />
-          </button>
+          <div className="flex items-center gap-2">
+            {(emailAlias || notionPageId) && (
+              <button
+                type="button"
+                onClick={() => {
+                  if (confirm('Discard this in-progress intake? The Notion row + email alias will stay (you can clean them up in Notion later) but the form draft will be cleared.')) {
+                    clearInflight();
+                    onClose();
+                  }
+                }}
+                className="text-xs text-muted-foreground hover:text-destructive"
+              >
+                Discard draft
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={onClose}
+              className="text-muted-foreground hover:text-foreground"
+              aria-label="Close"
+            >
+              <XCircleIcon size={20} weight="bold" />
+            </button>
+          </div>
         </div>
+        {inflight && (emailAlias || notionPageId) && (
+          <div className="mx-4 mt-3 rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-xs text-foreground">
+            <span className="font-semibold">Resuming in-progress intake.</span>{' '}
+            Email <span className="font-mono">{emailAlias}</span> already minted{notionPageId ? ' and Notion row created' : ''}.
+            Finish step 2 below, or click "Discard draft" to start over.
+          </div>
+        )}
 
         {step === 1 && (() => {
           const sanitized = emailLocal.trim().toLowerCase().replace(/[^a-z0-9._-]/g, '-').replace(/^-+|-+$/g, '');
@@ -702,11 +786,8 @@ function IntakeModal({
                   ))}
                 </select>
                 <p className="text-[11px] text-muted-foreground mt-1">
-                  Verification emails forward to: <span className="font-mono text-foreground">
-                    {form.pipeline_choice === 'Flow Stage' ? 'jay@risingtidesent.com'
-                      : form.pipeline_choice === 'King Maker Tech' ? 'glitch@risingtidesent.com'
-                      : '— pick a pipeline —'}
-                  </span>
+                  Verification emails forward to: <span className="font-mono text-foreground">henry@risingtidesent.com</span>
+                  {' '}(Henry handles all account setup; handoff to Jay/Glitch is a separate manual step)
                 </p>
               </Field>
 
