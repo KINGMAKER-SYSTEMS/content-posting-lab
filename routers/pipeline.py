@@ -7,7 +7,6 @@ changes also write back to Notion.
 """
 
 import logging
-import os
 from datetime import datetime, timezone
 from typing import Any
 
@@ -16,7 +15,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from services import r2
-from services.slack import post_flow_stage_handoff, is_configured as slack_configured
+from services.slack import post_pipeline_handoff, is_configured as slack_configured
 from services.email_send import destination_for_pipeline
 from services.email_routing import (
     create_rule as cf_create_rule,
@@ -27,6 +26,7 @@ from services.notion_pages import (
     create_intake_page,
     is_configured as notion_configured,
     sync_into_roster,
+    update_intake_page,
     update_page_drive_folder,
     update_page_email_fields,
     update_page_status,
@@ -201,89 +201,6 @@ async def _mint_random_alias(
     }
 
 
-async def _mint_email_for_username(username: str, pipeline: str | None = None) -> dict[str, Any]:
-    """[LEGACY] Mint a CF email alias from a username slug. Kept for the
-    Run Setup chain's fallback path on legacy/migrated pages that didn't
-    go through the new intake flow. New intakes should use _mint_random_alias.
-
-    Forwarding destination routes by pipeline (Flow Stage → Jay,
-    King Maker → Glitch) — same as _mint_random_alias.
-    """
-    cfg = cf_get_config()
-    if not cfg["configured"]:
-        raise HTTPException(
-            status_code=503,
-            detail="CF Email Routing not configured",
-        )
-
-    alias_local = _slug_alias(username)
-    full_alias = f"{alias_local}@{cfg['domain']}"
-
-    # Pull verified destinations
-    try:
-        async with httpx.AsyncClient(timeout=15) as client:
-            resp = await client.get(
-                f"https://api.cloudflare.com/client/v4/accounts/{cfg['account_id']}/email/routing/addresses",
-                headers={"Authorization": f"Bearer {cfg['token']}"},
-            )
-            resp.raise_for_status()
-            dests = resp.json().get("result", [])
-        verified = [d for d in dests if d.get("verified")]
-        if not verified:
-            raise HTTPException(
-                status_code=503,
-                detail="No verified destination addresses on Cloudflare",
-            )
-        verified_emails = {d["email"].lower() for d in verified}
-    except HTTPException:
-        raise
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"CF destinations fetch failed: {exc}")
-
-    desired = destination_for_pipeline(pipeline)
-    if desired:
-        if desired.lower() not in verified_emails:
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    f"Destination '{desired}' is not verified on Cloudflare. "
-                    f"Add it at Cloudflare → Email → Email Routing → Destination Addresses, "
-                    f"verify the link, then try again."
-                ),
-            )
-        destination = desired
-    else:
-        destination = verified[0]["email"]
-
-    # Collision check
-    try:
-        existing_rules = await cf_list_rules()
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"CF rules list failed: {exc}")
-
-    if any(
-        m.get("value") == full_alias
-        for r in existing_rules
-        for m in r.get("matchers", [])
-    ):
-        raise HTTPException(
-            status_code=409,
-            detail=f"Alias {full_alias} already exists on Cloudflare",
-        )
-
-    # Create the rule
-    try:
-        rule = await cf_create_rule(alias_local, destination)
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"CF rule create failed: {exc}")
-
-    return {
-        "alias": full_alias,
-        "rule_id": rule.get("id", ""),
-        "destination": destination,
-    }
-
-
 # ── Stages overview ──────────────────────────────────────────────────────────
 
 
@@ -293,6 +210,9 @@ class IntakeRequest(BaseModel):
     # signup. Frontend passes it back here so we don't re-mint on submit.
     email_alias: str | None = None
     fwd_destination: str | None = None
+    # If step 1 already created the Notion row, this is its id. Step 2 will
+    # patch that row instead of creating a new one — no orphans.
+    notion_page_id: str | None = None
     label_artist: str | None = None
     pipeline_choice: str | None = None  # "Flow Stage" | "King Maker Tech"
     page_type: str | None = None        # "Lyric page" | "UGC page" | "Artist burner page"
@@ -318,32 +238,66 @@ class MintAliasRequest(BaseModel):
 class MintAliasResponse(BaseModel):
     alias: str
     destination: str
+    notion_page_id: str | None = None
 
 
 @router.post("/mint-alias")
 async def mint_random_alias_endpoint(req: MintAliasRequest | None = None) -> MintAliasResponse:
-    """Step 1 of intake: mint a CF email alias before user goes to TikTok.
+    """Step 1 of intake: mint a CF email alias AND create a placeholder Notion row.
 
-    This decouples the email from the TikTok handle — the user picks whatever
-    handle is available on TikTok; we just need to give them an email to sign
-    up with. The forwarding destination is chosen based on pipeline so that
-    TikTok verification emails go to the right person (Jay vs Glitch).
+    Why we create the Notion row here (not at submit time): if the user bounces
+    off mid-flow (browser tab dies, QR-code phone handoff, etc.), the alias
+    would otherwise be orphaned with no record anywhere. By writing the Notion
+    row immediately, the page lands in "New — Pending Setup" with the email
+    attached — even if step 2 never happens, the data is recoverable.
 
-    The user can also specify a custom name (`desired_local`) so emails are
+    The forwarding destination routes by pipeline (Flow Stage → Jay,
+    King Maker → Glitch) so TikTok verification emails go to the right person.
+
+    User can also specify a custom name (`desired_local`) so emails are
     human-readable in the inbox (e.g. "samb-truck-04@..." instead of random).
     """
     pipeline = (req.pipeline if req else None) or None
     desired_local = (req.desired_local if req else None) or None
     info = await _mint_random_alias(pipeline=pipeline, desired_local=desired_local)
-    return MintAliasResponse(alias=info["alias"], destination=info["destination"])
+
+    notion_page_id: str | None = None
+    if notion_configured():
+        # Use the email local-part as the placeholder Account Username so the
+        # row has a title (Notion requires it). Step 2 overwrites this with
+        # the real TikTok handle.
+        placeholder_handle = info["alias"].split("@", 1)[0]
+        try:
+            created = await create_intake_page(
+                account_username=placeholder_handle,
+                pipeline_choice=pipeline,
+                email=info["alias"],
+                fwd_address=info["alias"],
+                password=DEFAULT_INTAKE_PASSWORD,
+            )
+            notion_page_id = created.get("id")
+        except Exception as exc:
+            # Don't fail the whole mint — the alias is real and usable. Frontend
+            # can recover by submitting step 2 with the alias and we'll create
+            # the row at that point. Surface the error for visibility.
+            logger.warning("Notion placeholder create failed during mint: %s", exc)
+
+    return MintAliasResponse(
+        alias=info["alias"],
+        destination=info["destination"],
+        notion_page_id=notion_page_id,
+    )
 
 
 @router.post("/intake")
 async def submit_intake(req: IntakeRequest):
-    """Create a new Master Pages row from the intake form.
+    """Step 2 of intake: fill in TikTok handle + page details.
 
-    Sets Status = 'New — Pending Setup' so it lands in lane 1 of the Pipeline.
-    Then re-syncs the roster so the new card shows up immediately.
+    If `notion_page_id` is provided (step 1 already created the placeholder
+    row), this PATCHES that row with the real handle and details. Otherwise
+    it falls back to creating a new row (covers the legacy single-shot flow).
+
+    Either way, status stays "New — Pending Setup" so it lands in lane 1.
     """
     if not notion_configured():
         raise HTTPException(
@@ -358,6 +312,7 @@ async def submit_intake(req: IntakeRequest):
     # now as a fallback (covers cases where step 1 was skipped or failed).
     email_alias = (req.email_alias or "").strip()
     fwd_destination = (req.fwd_destination or "").strip()
+    notion_page_id = (req.notion_page_id or "").strip()
     rule_id = ""
 
     if not email_alias:
@@ -372,22 +327,41 @@ async def submit_intake(req: IntakeRequest):
             raise HTTPException(status_code=500, detail=f"Email mint failed: {exc}")
 
     try:
-        created = await create_intake_page(
-            account_username=req.account_username,
-            label_artist=req.label_artist,
-            pipeline_choice=req.pipeline_choice,
-            page_type=req.page_type,
-            sounds_reference=req.sounds_reference,
-            notes=req.notes,
-            poster=req.poster,
-            go_live_date=req.go_live_date,
-            group=req.group,
-            group_label=req.group_label,
-            account_type=req.account_type,
-            email=email_alias,
-            fwd_address=email_alias,  # alias forwards itself
-            password=DEFAULT_INTAKE_PASSWORD,
-        )
+        if notion_page_id:
+            # Patch the placeholder row from step 1 with the real handle + details.
+            await update_intake_page(
+                notion_page_id,
+                account_username=req.account_username,
+                label_artist=req.label_artist,
+                pipeline_choice=req.pipeline_choice,
+                page_type=req.page_type,
+                sounds_reference=req.sounds_reference,
+                notes=req.notes,
+                poster=req.poster,
+                go_live_date=req.go_live_date,
+                group=req.group,
+                group_label=req.group_label,
+                account_type=req.account_type,
+            )
+            created_id = notion_page_id
+        else:
+            created = await create_intake_page(
+                account_username=req.account_username,
+                label_artist=req.label_artist,
+                pipeline_choice=req.pipeline_choice,
+                page_type=req.page_type,
+                sounds_reference=req.sounds_reference,
+                notes=req.notes,
+                poster=req.poster,
+                go_live_date=req.go_live_date,
+                group=req.group,
+                group_label=req.group_label,
+                account_type=req.account_type,
+                email=email_alias,
+                fwd_address=email_alias,
+                password=DEFAULT_INTAKE_PASSWORD,
+            )
+            created_id = created.get("id", "")
     except httpx.HTTPStatusError as exc:
         raise HTTPException(
             status_code=exc.response.status_code,
@@ -403,7 +377,7 @@ async def submit_intake(req: IntakeRequest):
     except Exception as exc:
         return {
             "ok": True,
-            "notion_page_id": created.get("id"),
+            "notion_page_id": created_id,
             "email_alias": email_alias,
             "fwd_destination": fwd_destination or email_alias,
             "synced": False,
@@ -425,7 +399,7 @@ async def submit_intake(req: IntakeRequest):
 
     return {
         "ok": True,
-        "notion_page_id": created.get("id"),
+        "notion_page_id": created_id,
         "email_alias": email_alias,
         "fwd_destination": fwd_destination or email_alias,
         "synced": True,
@@ -508,30 +482,45 @@ async def run_setup(integration_id: str, req: SetupRequest | None = None):
     }
     req = req or SetupRequest()
 
-    # ── Step 1: Cloudflare email alias ───────────────────────────────────
-    # Email is normally minted at intake (so user can sign up TikTok immediately).
-    # This step is a fallback for legacy pages or pages that didn't go through intake.
-    if page.get("email_alias"):
-        result["steps"]["cf_alias"] = {"ok": True, "skipped": True, "alias": page["email_alias"]}
-    else:
-        try:
-            email_info = await _mint_email_for_username(
-                page.get("name") or integration_id,
-                pipeline=page.get("pipeline"),
-            )
-            set_page(integration_id, {
-                "email_alias": email_info["alias"],
-                "email_rule_id": email_info["rule_id"],
-                "fwd_destination": email_info["destination"],
-            })
-            result["steps"]["cf_alias"] = {
-                "ok": True,
-                "alias": email_info["alias"],
-                "destination": email_info["destination"],
-            }
-        except HTTPException as e:
-            result["steps"]["cf_alias"] = {"ok": False, "reason": str(e.detail)}
-            raise
+    # ── Step 1: Verify the Cloudflare email alias exists ─────────────────
+    # Email is ALWAYS minted at intake (step 1 of /mint-alias creates both
+    # the CF rule and the Notion row). If it's missing here, that's a real
+    # bug — fail loud instead of silently re-minting from username, which
+    # has historically clobbered the real signup email.
+    #
+    # Skip-check prefers `email_alias` (roster-cached) but falls back to
+    # `signup_email` (Notion-canonical) when the roster cache is empty
+    # (e.g. after a Notion → roster sync rehydration).
+    cf_cfg = cf_get_config()
+    cf_domain = cf_cfg.get("domain", "")
+    existing_alias = (page.get("email_alias") or "").strip()
+    signup_email = (page.get("signup_email") or "").strip()
+
+    if not existing_alias and cf_domain and signup_email.lower().endswith(f"@{cf_domain.lower()}"):
+        existing_alias = signup_email
+        set_page(integration_id, {
+            "email_alias": signup_email,
+            "fwd_destination": page.get("fwd_destination") or signup_email,
+        })
+
+    if not existing_alias:
+        result["steps"]["cf_alias"] = {
+            "ok": False,
+            "reason": (
+                "Page has no email_alias or signup_email. Re-mint via the "
+                "intake form (Pipeline → New Sale Intake) — Run Setup does "
+                "NOT mint emails to avoid clobbering real signup addresses."
+            ),
+        }
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Page {integration_id} has no email — go through the intake "
+                f"form to mint one. Run Setup will not mint."
+            ),
+        )
+
+    result["steps"]["cf_alias"] = {"ok": True, "skipped": True, "alias": existing_alias}
 
     # ── Step 2: Write email back to Notion (shared — both pipelines need this) ─
     fresh = get_page(integration_id) or {}
@@ -560,14 +549,15 @@ async def run_setup(integration_id: str, req: SetupRequest | None = None):
 
     if pipeline == "Flow Stage":
         # Flow Stage handles delivery externally via Jay's tooling.
-        # Notion row + email is the handoff. Plus we ping Slack so Jay
-        # knows immediately without watching Notion.
+        # Notion row + Slack handoff is everything Jay needs.
+        # Verification codes during account setup go to Henry — Jay just
+        # gets the credentials when handoff fires.
         fresh_for_slack = get_page(integration_id) or {}
 
         # ── Slack handoff (optional) ─────────────────────────────────
         if slack_configured():
             try:
-                slack_result = await post_flow_stage_handoff(fresh_for_slack)
+                slack_result = await post_pipeline_handoff(fresh_for_slack)
                 result["steps"]["slack_handoff"] = slack_result
             except Exception as exc:
                 result["steps"]["slack_handoff"] = {"ok": False, "error": str(exc)}
@@ -575,13 +565,8 @@ async def run_setup(integration_id: str, req: SetupRequest | None = None):
             result["steps"]["slack_handoff"] = {
                 "ok": False,
                 "skipped": True,
-                "reason": "SLACK_WEBHOOK_URL not configured",
+                "reason": "No Slack webhook configured for Flow Stage",
             }
-
-        # NOTE: Jay gets notified via the Cloudflare email forwarding
-        # destination — TikTok verification emails sent to the alias
-        # land in jay@risingtidesent.com directly. No separate handoff
-        # email needed.
 
         # ── Status flip ──────────────────────────────────────────────
         if notion_pid and notion_configured():
@@ -712,10 +697,22 @@ async def run_setup(integration_id: str, req: SetupRequest | None = None):
         set_page(integration_id, {"status": "In Production"})
         result["steps"]["status_flip"] = {"ok": True, "new_status": "In Production", "local_only": True}
 
-    # NOTE: Glitch gets notified via the Cloudflare email forwarding
-    # destination — TikTok verification emails sent to the alias land
-    # in glitch@risingtidesent.com directly. He also has the Pipeline
-    # tab to open the workspace and start dropping content.
+    # ── Step 8 (KM): Slack handoff to Glitch ────────────────────────────
+    # Verification codes go to Henry; this Slack ping is how Glitch knows
+    # there's a new King Maker page ready for him to start dropping content.
+    fresh_for_slack = get_page(integration_id) or {}
+    if slack_configured():
+        try:
+            slack_result = await post_pipeline_handoff(fresh_for_slack)
+            result["steps"]["slack_handoff"] = slack_result
+        except Exception as exc:
+            result["steps"]["slack_handoff"] = {"ok": False, "error": str(exc)}
+    else:
+        result["steps"]["slack_handoff"] = {
+            "ok": False,
+            "skipped": True,
+            "reason": "No Slack webhook configured for King Maker",
+        }
 
     result["completed"] = True
     result["page"] = get_page(integration_id)

@@ -1,38 +1,29 @@
 """
 Pipeline → Cloudflare email forwarding destination resolver.
 
-When a new page is minted, its CF email alias forwards to a destination
-based on which pipeline owns it:
+ALL new page email aliases forward to a single intake address — Henry
+handles the TikTok account setup (verification codes, login flows, 2FA),
+then either keeps it or hands off to Jay/Glitch for ongoing operations.
 
-  Flow Stage    → jay@risingtidesent.com   (EMAIL_HANDOFF_TO_FLOW_STAGE)
-  King Maker    → glitch@risingtidesent.com (EMAIL_HANDOFF_TO_KING_MAKER)
+Centralizing on one inbox means:
+  - Henry can always log in to any account during setup, no per-pipeline routing
+  - Verification codes never get lost between Jay's / Glitch's inboxes
+  - Handoff to Flow Stage / King Maker is a separate manual step, not coupled
+    to the email mint
 
-This means TikTok signup emails / verification codes land directly in
-Jay's or Glitch's inbox — no extra outbound email infrastructure.
-
-Both addresses MUST be added + verified in Cloudflare Email Routing →
-Destination Addresses before mint will succeed for that pipeline.
-
-Env vars (override defaults):
-  EMAIL_HANDOFF_TO_FLOW_STAGE — defaults to jay@risingtidesent.com
-  EMAIL_HANDOFF_TO_KING_MAKER — defaults to glitch@risingtidesent.com
+Env var (override default):
+  EMAIL_HANDOFF_DEFAULT — defaults to henry@risingtidesent.com
 """
 
 import os
 
-DEFAULT_FLOW_STAGE = "jay@risingtidesent.com"
-DEFAULT_KING_MAKER = "glitch@risingtidesent.com"
+DEFAULT_DESTINATION = "henry@risingtidesent.com"
 
 
 def destination_for_pipeline(pipeline: str | None) -> str | None:
-    """Return the verified CF destination address for the given pipeline.
+    """Return the verified CF destination address for new aliases.
 
-    Returns None if pipeline is empty/unknown — caller falls back to the
-    first verified destination on the CF account.
+    Pipeline arg is accepted for backwards compatibility but ignored —
+    all aliases now route to a single intake inbox regardless of pipeline.
     """
-    p = (pipeline or "").strip().lower()
-    if p == "flow stage":
-        return os.getenv("EMAIL_HANDOFF_TO_FLOW_STAGE", DEFAULT_FLOW_STAGE).strip() or None
-    if p in ("king maker tech", "king maker", "kingmaker", "kingmaker tech"):
-        return os.getenv("EMAIL_HANDOFF_TO_KING_MAKER", DEFAULT_KING_MAKER).strip() or None
-    return None
+    return os.getenv("EMAIL_HANDOFF_DEFAULT", DEFAULT_DESTINATION).strip() or None

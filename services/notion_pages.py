@@ -386,3 +386,54 @@ async def update_page_email_fields(
     if not props:
         return {}
     return await _patch_page(notion_page_id, props)
+
+
+async def update_intake_page(
+    notion_page_id: str,
+    *,
+    account_username: str | None = None,
+    label_artist: str | None = None,
+    pipeline_choice: str | None = None,
+    page_type: str | None = None,
+    sounds_reference: str | None = None,
+    notes: str | None = None,
+    poster: str | None = None,
+    go_live_date: str | None = None,
+    group: str | None = None,
+    group_label: str | None = None,
+    account_type: str | None = None,
+) -> dict[str, Any]:
+    """Patch an in-flight intake row with the rest of the form details.
+
+    Used in step 2 of the intake flow: step 1 creates the row with just the
+    email + placeholder username, step 2 fills in the actual TikTok handle
+    and page details after the user finishes signup.
+    """
+    props: dict[str, Any] = {}
+    if account_username and account_username.strip():
+        props["Account Username"] = {
+            "title": [{"type": "text", "text": {"content": account_username.strip()}}]
+        }
+    if label_artist:
+        props["Label / Artist"] = {"rich_text": [{"type": "text", "text": {"content": label_artist}}]}
+    if pipeline_choice:
+        props["Pipeline"] = {"select": {"name": pipeline_choice}}
+    if page_type:
+        props["Page Type"] = {"select": {"name": page_type}}
+    if sounds_reference:
+        props["Sounds Reference"] = {"url": sounds_reference}
+    if notes:
+        props["Notes"] = {"rich_text": [{"type": "text", "text": {"content": notes}}]}
+    if poster:
+        props["Poster"] = {"rich_text": [{"type": "text", "text": {"content": poster}}]}
+    if go_live_date:
+        props["Go-Live Date"] = {"date": {"start": go_live_date}}
+    if group:
+        props["Group"] = {"select": {"name": group}}
+    if group_label:
+        props["Group "] = {"select": {"name": group_label}}
+    if account_type:
+        props["Account Type"] = {"select": {"name": account_type}}
+    if not props:
+        return {}
+    return await _patch_page(notion_page_id, props)
