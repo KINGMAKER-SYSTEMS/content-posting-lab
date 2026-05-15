@@ -216,11 +216,16 @@ async def get_thumbnail(video_url: str, dest: Path) -> Path:
 async def download_video(
     video_url: str, dest: Path, cookies_file: Path | None = None
 ) -> Path:
-    """Download a TikTok video using yt-dlp. Returns path to the mp4."""
+    """Download a TikTok video using yt-dlp. Returns path to the mp4.
+
+    Tries strategies in order: explicit cookies file, then browser cookies
+    (chrome, safari, firefox, edge), then no auth. TikTok/YouTube increasingly
+    require cookies to download.
+    """
     _check_deps()
     dest.parent.mkdir(parents=True, exist_ok=True)
 
-    cmd = [
+    base_cmd = [
         "yt-dlp",
         "--no-warnings",
         "--no-playlist",
@@ -232,28 +237,42 @@ async def download_video(
         str(dest),
         "--no-check-certificates",
     ]
+
+    # Build auth strategies in order of preference.
+    strategies: list[tuple[str, list[str]]] = []
     if cookies_file and cookies_file.exists():
-        cmd += ["--cookies", str(cookies_file)]
-    else:
-        cmd = _add_cookies(cmd)
-    cmd.append(video_url)
+        strategies.append(("cookies-file", ["--cookies", str(cookies_file)]))
+    env_cookies = get_cookies_path()
+    if env_cookies is not None and env_cookies.exists():
+        strategies.append(("cookies-from-env", ["--cookies", str(env_cookies)]))
+    for browser in ("chrome", "safari", "firefox", "edge", "brave"):
+        strategies.append((f"cookies-from-{browser}", ["--cookies-from-browser", browser]))
+    strategies.append(("no-auth", []))
 
-    proc = await asyncio.create_subprocess_exec(
-        *cmd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    stdout, stderr = await proc.communicate()
+    last_err = ""
+    for label, extra in strategies:
+        cmd = base_cmd + extra + [video_url]
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await proc.communicate()
 
-    if proc.returncode != 0:
-        err = stderr.decode(errors="replace").strip()
-        raise RuntimeError(f"yt-dlp failed ({proc.returncode}): {err[-300:]}")
+        if proc.returncode == 0:
+            if dest.exists():
+                return dest
+            for variant in dest.parent.glob(f"{dest.stem}*"):
+                return variant
+            last_err = f"{label}: completed but output not found"
+            continue
 
-    if dest.exists():
-        return dest
-    for variant in dest.parent.glob(f"{dest.stem}*"):
-        return variant
-    raise RuntimeError(f"yt-dlp completed but output not found at {dest}")
+        last_err = f"{label}: {stderr.decode(errors='replace').strip()[-200:]}"
+        # If this error isn't about auth/cookies, no point trying other auth strategies.
+        if "cookies" not in last_err.lower() and "sign in" not in last_err.lower() and "authenticat" not in last_err.lower():
+            break
+
+    raise RuntimeError(f"yt-dlp failed: {last_err[-300:]}")
 
 
 async def extract_frame(
