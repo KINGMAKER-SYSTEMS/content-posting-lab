@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ArrowRightIcon, FolderOpenIcon, FilmSlateIcon } from '@phosphor-icons/react';
 import { apiUrl, wsUrl } from '../lib/api';
-import { EmptyState } from '../components';
+import { EmptyState, YtdlpCookiesControl } from '../components';
 import { useWebSocket, type WebSocketStatus } from '../hooks/useWebSocket';
 import { useWorkflowStore } from '../stores/workflowStore';
 import { Button } from '@/components/ui/button';
@@ -290,7 +290,10 @@ export function RecreatePage() {
 
         <div className="space-y-4">
           <div>
-            <Label htmlFor="recreate-url">TikTok Video URL</Label>
+            <div className="flex items-center justify-between">
+              <Label htmlFor="recreate-url">TikTok Video URL</Label>
+              <YtdlpCookiesControl onNotify={addNotification} />
+            </div>
             <Input
               id="recreate-url"
               value={videoUrl}

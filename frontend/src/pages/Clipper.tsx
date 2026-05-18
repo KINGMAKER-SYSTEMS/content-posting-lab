@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { apiUrl, staticUrl } from '../lib/api';
-import { EmptyState } from '../components';
+import { EmptyState, YtdlpCookiesControl } from '../components';
 import { useWorkflowStore } from '../stores/workflowStore';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -962,7 +962,10 @@ export function ClipperPage() {
 
             {/* URL input */}
             <div className="mt-3">
-              <Label>Or paste a video link</Label>
+              <div className="flex items-center justify-between">
+                <Label>Or paste a video link</Label>
+                <YtdlpCookiesControl onNotify={addNotification} />
+              </div>
               <div className="mt-1 flex gap-2">
                 <Input type="url" placeholder="https://www.tiktok.com/..."
                   value={videoUrl} onChange={(e) => setVideoUrl(e.target.value)}
