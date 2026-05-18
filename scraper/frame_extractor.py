@@ -8,32 +8,59 @@ import tempfile
 from pathlib import Path
 
 # ── Cookies support ──────────────────────────────────────────────────
-# If YTDLP_COOKIES env var is set (base64-encoded Netscape cookies.txt),
-# decode it to a temp file on first access.
+# Resolution order (first hit wins):
+#   1. YTDLP_COOKIES_FILE env var — explicit path to a cookies.txt
+#   2. YTDLP_COOKIES env var — base64-encoded cookies.txt (decoded to temp file)
+#   3. cookies.txt on the Railway volume (RAILWAY_VOLUME_MOUNT_PATH/cookies.txt)
+#   4. cookies.txt in CWD (local dev)
 _cookies_path: Path | None = None
+
+
+def _volume_cookies_path() -> Path:
+    """Path where uploaded cookies.txt is persisted on the Railway volume."""
+    base = os.getenv("RAILWAY_VOLUME_MOUNT_PATH", "")
+    if base and Path(base).exists():
+        return Path(base) / "cookies.txt"
+    return Path(__file__).resolve().parent.parent / "cookies.txt"
 
 
 def get_cookies_path() -> Path | None:
     global _cookies_path
-    if _cookies_path is not None:
-        return _cookies_path if _cookies_path.exists() else None
-    raw = os.getenv("YTDLP_COOKIES")
-    if not raw:
-        # Also check for a plain file at a known path
-        fallback = Path("cookies.txt")
-        if fallback.exists():
-            _cookies_path = fallback
-            return _cookies_path
-        return None
-    try:
-        data = base64.b64decode(raw)
-        fd, path = tempfile.mkstemp(suffix=".txt", prefix="ytdlp_cookies_")
-        os.write(fd, data)
-        os.close(fd)
-        _cookies_path = Path(path)
+    if _cookies_path is not None and _cookies_path.exists():
         return _cookies_path
-    except Exception:
-        return None
+    _cookies_path = None
+
+    explicit = os.getenv("YTDLP_COOKIES_FILE")
+    if explicit:
+        p = Path(explicit)
+        if p.exists():
+            _cookies_path = p
+            return _cookies_path
+
+    raw = os.getenv("YTDLP_COOKIES")
+    if raw:
+        try:
+            data = base64.b64decode(raw)
+            fd, path = tempfile.mkstemp(suffix=".txt", prefix="ytdlp_cookies_")
+            os.write(fd, data)
+            os.close(fd)
+            _cookies_path = Path(path)
+            return _cookies_path
+        except Exception:
+            pass
+
+    for candidate in (_volume_cookies_path(), Path("cookies.txt")):
+        if candidate.exists():
+            _cookies_path = candidate
+            return _cookies_path
+
+    return None
+
+
+def reset_cookies_cache() -> None:
+    """Drop the cached cookies path so the next call re-resolves from disk/env."""
+    global _cookies_path
+    _cookies_path = None
 
 
 def _add_cookies(cmd: list[str]) -> list[str]:
@@ -240,16 +267,21 @@ async def download_video(
 
     # Build auth strategies in order of preference.
     strategies: list[tuple[str, list[str]]] = []
+    cookies_source: str | None = None
     if cookies_file and cookies_file.exists():
         strategies.append(("cookies-file", ["--cookies", str(cookies_file)]))
+        cookies_source = "explicit cookies_file arg"
     env_cookies = get_cookies_path()
     if env_cookies is not None and env_cookies.exists():
         strategies.append(("cookies-from-env", ["--cookies", str(env_cookies)]))
+        if cookies_source is None:
+            cookies_source = str(env_cookies)
     for browser in ("chrome", "safari", "firefox", "edge", "brave"):
         strategies.append((f"cookies-from-{browser}", ["--cookies-from-browser", browser]))
     strategies.append(("no-auth", []))
 
     last_err = ""
+    saw_auth_error = False
     for label, extra in strategies:
         cmd = base_cmd + extra + [video_url]
         proc = await asyncio.create_subprocess_exec(
@@ -268,11 +300,34 @@ async def download_video(
             continue
 
         last_err = f"{label}: {stderr.decode(errors='replace').strip()[-200:]}"
-        # If this error isn't about auth/cookies, no point trying other auth strategies.
-        if "cookies" not in last_err.lower() and "sign in" not in last_err.lower() and "authenticat" not in last_err.lower():
+        low = last_err.lower()
+        is_auth = (
+            "cookies" in low
+            or "sign in" in low
+            or "authenticat" in low
+            or "login required" in low
+        )
+        if is_auth:
+            saw_auth_error = True
+        else:
+            # Non-auth failure — other auth strategies won't help.
             break
 
-    raise RuntimeError(f"yt-dlp failed: {last_err[-300:]}")
+    if saw_auth_error and cookies_source is None:
+        hint = (
+            " No cookies configured. On Railway, upload a cookies.txt via "
+            "POST /api/clipper/cookies (or set YTDLP_COOKIES_FILE / YTDLP_COOKIES). "
+            "See yt-dlp FAQ for exporting cookies."
+        )
+    elif saw_auth_error and cookies_source:
+        hint = (
+            f" Cookies were tried from {cookies_source} but yt-dlp still rejected them — "
+            "they may be expired. Re-export a fresh cookies.txt while logged in."
+        )
+    else:
+        hint = ""
+
+    raise RuntimeError(f"yt-dlp failed: {last_err[-300:]}{hint}")
 
 
 async def extract_frame(

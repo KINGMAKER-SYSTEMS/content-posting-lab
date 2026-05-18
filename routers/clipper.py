@@ -1590,3 +1590,90 @@ async def download_all_clips(job_id: str, project: str = Query(default="quick-te
         media_type="application/zip",
         filename=f"{job_id}.zip",
     )
+
+
+# ── yt-dlp cookies management ────────────────────────────────────────
+# Lets ops upload a cookies.txt to the Railway volume without redeploying.
+
+def _cookies_volume_path() -> Path:
+    import os
+    base = os.getenv("RAILWAY_VOLUME_MOUNT_PATH", "")
+    if base and Path(base).exists():
+        return Path(base) / "cookies.txt"
+    return Path(__file__).resolve().parent.parent / "cookies.txt"
+
+
+@router.get("/cookies/status")
+async def cookies_status():
+    """Report which yt-dlp cookies source is currently active, if any."""
+    import os
+    from scraper.frame_extractor import get_cookies_path
+
+    path = get_cookies_path()
+    volume_path = _cookies_volume_path()
+
+    source = None
+    if path is not None:
+        if os.getenv("YTDLP_COOKIES_FILE") and str(path) == os.getenv("YTDLP_COOKIES_FILE"):
+            source = "env:YTDLP_COOKIES_FILE"
+        elif path.name.startswith("ytdlp_cookies_") and "/tmp" in str(path):
+            source = "env:YTDLP_COOKIES"
+        elif path == volume_path:
+            source = "volume"
+        else:
+            source = "cwd"
+
+    return {
+        "configured": path is not None,
+        "source": source,
+        "path": str(path) if path else None,
+        "size_bytes": path.stat().st_size if path and path.exists() else 0,
+        "volume_path": str(volume_path),
+        "volume_writable": volume_path.parent.exists(),
+    }
+
+
+@router.post("/cookies")
+async def cookies_upload(file: UploadFile = File(...)):
+    """Upload a Netscape-format cookies.txt to the persistent volume.
+
+    Replaces any existing file. Takes effect immediately for new downloads.
+    """
+    from scraper.frame_extractor import reset_cookies_cache
+
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(400, "Empty file")
+    if len(raw) > 2 * 1024 * 1024:
+        raise HTTPException(400, "File too large (max 2MB)")
+
+    # Light sanity check — Netscape format starts with "# Netscape" header
+    # or has tab-separated cookie lines. Accept both; just verify it's text.
+    try:
+        text = raw.decode("utf-8", errors="strict")
+    except UnicodeDecodeError:
+        raise HTTPException(400, "File must be UTF-8 text (Netscape cookies.txt)")
+    if "\t" not in text and not text.lstrip().startswith("#"):
+        raise HTTPException(400, "Does not look like a Netscape cookies.txt file")
+
+    dest = _cookies_volume_path()
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dest.with_suffix(".txt.tmp")
+    tmp.write_bytes(raw)
+    tmp.replace(dest)
+    reset_cookies_cache()
+
+    return {"ok": True, "path": str(dest), "size_bytes": dest.stat().st_size}
+
+
+@router.delete("/cookies")
+async def cookies_delete():
+    """Remove the cookies.txt from the volume. Env-var sources are unaffected."""
+    from scraper.frame_extractor import reset_cookies_cache
+
+    dest = _cookies_volume_path()
+    existed = dest.exists()
+    if existed:
+        dest.unlink()
+    reset_cookies_cache()
+    return {"ok": True, "deleted": existed}

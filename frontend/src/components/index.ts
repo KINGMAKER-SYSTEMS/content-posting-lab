@@ -9,3 +9,4 @@ export * from './ConfirmModal';
 export * from './ProjectSelector';
 export * from './TabNav';
 export * from './LazyVideo';
+export * from './YtdlpCookiesControl';
