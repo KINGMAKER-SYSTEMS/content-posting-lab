@@ -225,6 +225,13 @@ def set_poster(poster_id: str, data: dict) -> dict:
         "page_ids": data.get("page_ids", existing.get("page_ids", [])),
         "topics": data.get("topics", existing.get("topics", {})),
         "sounds_topic_id": data.get("sounds_topic_id", existing.get("sounds_topic_id")),
+        # Telegram Mini App identity: which Telegram user(s) act as this poster.
+        "telegram_user_ids": data.get(
+            "telegram_user_ids", existing.get("telegram_user_ids", [])
+        ),
+        "telegram_username": data.get(
+            "telegram_username", existing.get("telegram_username")
+        ),
         "added_at": existing.get("added_at", now),
         "updated_at": now,
     }
@@ -294,6 +301,73 @@ def set_poster_topic(poster_id: str, integration_id: str, topic_id: int, topic_n
     poster["updated_at"] = _now()
     save_config(config)
     return poster
+
+
+def bind_user_to_poster(
+    poster_id: str, user_id: int, username: str | None = None
+) -> dict:
+    """Link a Telegram user id (and optional @username) to a poster.
+
+    Used by the Mini App so an incoming `initData` can be resolved to the
+    poster that user acts as. Append-only on user_ids; safe to call repeatedly.
+    """
+    config = load_config()
+    poster = config.get("posters", {}).get(poster_id)
+    if poster is None:
+        raise ValueError(f"Poster {poster_id} not found")
+    uid = int(user_id)
+    ids = poster.setdefault("telegram_user_ids", [])
+    if uid not in ids:
+        ids.append(uid)
+    if username:
+        poster["telegram_username"] = username.lstrip("@")
+    poster["updated_at"] = _now()
+    save_config(config)
+    return poster
+
+
+def unbind_user_from_poster(poster_id: str, user_id: int) -> dict:
+    """Remove a Telegram user id from a poster. Returns the updated poster."""
+    config = load_config()
+    poster = config.get("posters", {}).get(poster_id)
+    if poster is None:
+        raise ValueError(f"Poster {poster_id} not found")
+    uid = int(user_id)
+    ids = poster.get("telegram_user_ids", [])
+    if uid in ids:
+        ids.remove(uid)
+    poster["updated_at"] = _now()
+    save_config(config)
+    return poster
+
+
+def get_poster_for_user(
+    user_id: int | None = None, username: str | None = None
+) -> dict | None:
+    """Resolve a Telegram user to the poster they act as.
+
+    Matching priority:
+      1) explicit telegram_user_ids binding (strongest)
+      2) telegram_username match (case-insensitive, @ stripped)
+    Returns the poster dict or None.
+    """
+    config = load_config()
+    posters = list(config.get("posters", {}).values())
+
+    if user_id is not None:
+        uid = int(user_id)
+        for poster in posters:
+            if uid in (poster.get("telegram_user_ids") or []):
+                return poster
+
+    if username:
+        uname = username.lstrip("@").lower()
+        for poster in posters:
+            stored = (poster.get("telegram_username") or "").lstrip("@").lower()
+            if stored and stored == uname:
+                return poster
+
+    return None
 
 
 def get_poster_for_page(integration_id: str) -> dict | None:
