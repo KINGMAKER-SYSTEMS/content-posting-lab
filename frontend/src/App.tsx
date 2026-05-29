@@ -5,6 +5,7 @@ import { HomePage } from './pages/Home';
 import { CreatePage } from './pages/Create';
 import { CaptionsStagePage } from './pages/CaptionsStage';
 import { DistributionPage } from './pages/Distribution';
+import { MiniApp } from './pages/MiniApp';
 import { PipelinePage } from './pages/Pipeline';
 import { PipelineWorkspacePage } from './pages/PipelineWorkspace';
 import { ProjectSelector, ToastContainer } from './components';
@@ -396,6 +397,10 @@ function AppShell() {
 }
 
 function App() {
+  // The Telegram Mini App renders standalone (no admin shell) under /m.
+  if (typeof window !== 'undefined' && window.location.pathname.startsWith('/m')) {
+    return <MiniApp />;
+  }
   return (
     <BrowserRouter>
       <AppShell />
