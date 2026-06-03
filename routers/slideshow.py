@@ -990,3 +990,393 @@ async def delete_format(name: str, project: str):
         raise HTTPException(status_code=404, detail="Format not found")
     fmt_path.unlink()
     return {"deleted": safe_name}
+
+
+# ════════════════════════════════════════════════════════════════════════
+# Agent-facing: B-roll Overlay Montage
+#
+# A single-pass render that composites a fast-cut photo montage on top of a
+# b-roll base layer at controllable opacity. Designed to be driven entirely
+# by agents — every spec is dialable via the request body, with sane
+# defaults. The b-roll can come from anywhere an agent can reach: a project
+# video filename, an absolute path on the volume, or a URL (fetched with
+# yt-dlp, falling back to a direct download). Composes with the clipper —
+# point it at a clip the clipper produced, or a YouTube/TikTok URL directly.
+#
+# GET  /api/slideshow/broll-montage/spec   → self-describing parameter schema
+# POST /api/slideshow/broll-montage        → start render, returns {job_id}
+# GET  /api/slideshow/job/{job_id}         → poll status (shared with v2)
+# ════════════════════════════════════════════════════════════════════════
+
+WIDTH, HEIGHT = 1080, 1920
+
+# How the photo montage is blended over the b-roll base.
+#   normal  → flat alpha (colorchannelmixer aa); photos sit at `opacity`
+#   screen  → lighten/light-leak; only brighter photo pixels punch through
+#   overlay → contrast-y blend (ffmpeg blend=all_mode=overlay)
+#   multiply, lighten, darken, addition → passthrough to ffmpeg blend modes
+_BLEND_MODES = {
+    "normal", "screen", "overlay", "multiply",
+    "lighten", "darken", "addition",
+}
+
+
+class BrollMontageRequest(BaseModel):
+    project: str
+    # Photo set: explicit filenames in the project's slideshow-images dir.
+    # If omitted, ALL images in that dir are used.
+    images: list[str] | None = None
+
+    # B-roll base layer — one of these (filename takes precedence, then
+    # path, then url). At least one is required.
+    broll_filename: str | None = None   # in project's videos/ dir
+    broll_path: str | None = None       # absolute path on the volume
+    broll_url: str | None = None        # fetched via yt-dlp / direct download
+
+    # Output spec
+    duration: float = 8.0               # seconds
+    # Cut speed — supply EITHER (photo_fps wins if both given):
+    photo_fps: float | None = None      # photo cuts per second (e.g. 5.5)
+    shuffle_speed: float | None = None  # seconds per photo (e.g. 0.18)
+
+    # Blend
+    opacity: float = 0.40               # photo montage opacity over b-roll
+    blend_mode: str = "normal"
+
+    # Layout / motion
+    output_fps: int = 30                # encode framerate of the final video
+    seed: int | None = None             # photo shuffle seed; None = random each call
+    shuffle: bool = True                # shuffle photo order (False = as-given)
+    broll_loop: bool = True             # loop b-roll if shorter than duration
+    broll_start: float = 0.0            # seek into b-roll before using it
+
+    # Audio (optional) — a filename in the project's slideshow-audio dir
+    audio: str | None = None
+
+    # Encode quality
+    crf: int = 18
+
+
+def _resolve_broll(req: BrollMontageRequest, tmp: Path) -> Path:
+    """Resolve the b-roll source to a local file path.
+
+    Precedence: broll_filename (project videos dir) → broll_path (absolute)
+    → broll_url (yt-dlp, then direct download fallback). Raises ValueError
+    with an agent-readable message on any failure.
+    """
+    # 1) Project video filename
+    if req.broll_filename:
+        if not _SAFE_FILENAME_RE.match(req.broll_filename):
+            raise ValueError(f"Invalid broll_filename: {req.broll_filename}")
+        video_dir = get_project_video_dir(req.project)
+        candidate = video_dir / req.broll_filename
+        try:
+            candidate.resolve().relative_to(video_dir.resolve())
+        except ValueError:
+            raise ValueError(f"broll_filename escapes project dir: {req.broll_filename}")
+        if not candidate.exists():
+            raise ValueError(f"broll_filename not found in project videos: {req.broll_filename}")
+        return candidate
+
+    # 2) Absolute path on the volume
+    if req.broll_path:
+        p = Path(req.broll_path)
+        if not p.is_absolute():
+            raise ValueError("broll_path must be absolute")
+        if not p.exists():
+            raise ValueError(f"broll_path does not exist: {req.broll_path}")
+        if p.suffix.lower() not in VALID_VIDEO_EXTENSIONS:
+            raise ValueError(f"broll_path is not a recognized video: {p.suffix}")
+        return p
+
+    # 3) URL — try yt-dlp first (handles YouTube/TikTok/etc), then direct curl
+    if req.broll_url:
+        url = req.broll_url
+        if not re.match(r"^https?://", url):
+            raise ValueError("broll_url must be http(s)")
+        out_stub = tmp / "broll_src"
+
+        # yt-dlp path (mirrors services/sound_cache.py flags + cookies)
+        ytdlp_cmd = [
+            "yt-dlp",
+            "--no-warnings",
+            "--no-playlist",
+            "--no-check-certificates",
+            "-f", "bv*+ba/b",
+            "-o", f"{out_stub}.%(ext)s",
+        ]
+        try:
+            from scraper.frame_extractor import get_cookies_path
+            cookies = get_cookies_path()
+            if cookies:
+                ytdlp_cmd += ["--cookies", str(cookies)]
+        except Exception:
+            pass
+        ytdlp_cmd.append(url)
+
+        r = subprocess.run(ytdlp_cmd, capture_output=True, timeout=180)
+        if r.returncode == 0:
+            files = [p for p in tmp.iterdir() if p.stem == "broll_src"]
+            if files:
+                return files[0]
+
+        # Direct download fallback (plain CDN mp4 links)
+        dl = out_stub.with_suffix(".mp4")
+        r2 = subprocess.run(
+            ["curl", "-sL", "--max-time", "120",
+             "-A", "Mozilla/5.0", "-o", str(dl), url],
+            capture_output=True, timeout=130,
+        )
+        if r2.returncode == 0 and dl.exists() and dl.stat().st_size > 10000:
+            return dl
+
+        err = r.stderr.decode(errors="replace")[-400:]
+        raise ValueError(f"Could not fetch broll_url via yt-dlp or direct download. {err}")
+
+    raise ValueError("Provide one of: broll_filename, broll_path, broll_url")
+
+
+def _build_broll_montage_cmd(
+    photos: list[Path],
+    broll: Path,
+    output_path: Path,
+    *,
+    duration: float,
+    seg_dur: float,
+    opacity: float,
+    blend_mode: str,
+    output_fps: int,
+    seed: int | None,
+    shuffle: bool,
+    broll_loop: bool,
+    broll_start: float,
+    audio_path: Path | None,
+    crf: int,
+) -> tuple[list[str], int]:
+    """Build the single-pass ffmpeg command. Returns (cmd, num_segments).
+
+    Ported from the verified prototype: b-roll base (input 0), photo montage
+    concat'd at the cut cadence, blended over the base, optional audio mux.
+    """
+    order = list(photos)
+    if shuffle:
+        random.Random(seed).shuffle(order)
+
+    n = max(1, round(duration / seg_dur))
+    seq = [order[i % len(order)] for i in range(n)]
+
+    inputs: list[str] = []
+    parts: list[str] = []
+
+    # input 0 = b-roll base
+    base_in: list[str] = []
+    if broll_loop:
+        base_in += ["-stream_loop", "-1"]
+    if broll_start > 0:
+        base_in += ["-ss", f"{broll_start}"]
+    base_in += ["-t", f"{duration}", "-i", str(broll)]
+    inputs += base_in
+    parts.append(
+        f"[0:v]scale={WIDTH}:{HEIGHT}:force_original_aspect_ratio=increase,"
+        f"crop={WIDTH}:{HEIGHT},setsar=1,fps={output_fps},"
+        f"trim=duration={duration},setpts=PTS-STARTPTS[base]"
+    )
+
+    # photo inputs → montage
+    for i, p in enumerate(seq):
+        idx = i + 1
+        inputs += ["-loop", "1", "-t", f"{seg_dur:.4f}", "-i", str(p)]
+        parts.append(
+            f"[{idx}:v]scale={WIDTH}:{HEIGHT}:force_original_aspect_ratio=increase,"
+            f"crop={WIDTH}:{HEIGHT},setsar=1,fps={output_fps}[p{i}]"
+        )
+    concat_in = "".join(f"[p{i}]" for i in range(len(seq)))
+    parts.append(f"{concat_in}concat=n={len(seq)}:v=1:a=0[montage]")
+    parts.append(f"[montage]trim=duration={duration},setpts=PTS-STARTPTS[m]")
+
+    # blend montage over base
+    if blend_mode == "normal":
+        parts.append(f"[m]format=yuva420p,colorchannelmixer=aa={opacity}[ma]")
+        parts.append(f"[base][ma]overlay=0:0:format=auto[out]")
+    else:
+        # ffmpeg blend modes; opacity applied via blend's all_opacity
+        parts.append(
+            f"[base][m]blend=all_mode={blend_mode}:all_opacity={opacity}[out]"
+        )
+
+    filter_complex = ";".join(parts)
+
+    cmd = [
+        "ffmpeg", "-y",
+        *inputs,
+    ]
+    # optional audio: add as another input and map it
+    audio_map: list[str] = []
+    if audio_path is not None:
+        cmd += ["-i", str(audio_path)]
+        audio_idx = len(seq) + 1  # base(0) + photos(1..n) → audio is next
+        audio_map = ["-map", f"{audio_idx}:a", "-c:a", "aac", "-b:a", "192k", "-shortest"]
+
+    cmd += [
+        "-filter_complex", filter_complex,
+        "-map", "[out]",
+        *audio_map,
+        "-t", f"{duration}",
+        "-c:v", "libx264", "-crf", str(crf), "-preset", "fast",
+        "-pix_fmt", "yuv420p",
+        "-r", str(output_fps),
+        "-movflags", "+faststart",
+        str(output_path),
+    ]
+    return cmd, len(seq)
+
+
+def _run_broll_montage(job_id: str, req: BrollMontageRequest):
+    """Synchronous render — runs in thread pool."""
+    tmp_dir = None
+    try:
+        jobs[job_id] = {"status": "running", "progress": 5, "message": "Resolving inputs..."}
+        tmp_dir = tempfile.mkdtemp(prefix="broll_montage_")
+        tmp = Path(tmp_dir)
+
+        images_dir = get_project_slideshow_images_dir(req.project)
+
+        # Resolve photo set
+        if req.images:
+            photos = [_validate_image(img, images_dir) for img in req.images]
+        else:
+            photos = sorted(images_dir.glob("*.jpg")) + sorted(images_dir.glob("*.jpeg")) \
+                + sorted(images_dir.glob("*.png")) + sorted(images_dir.glob("*.webp"))
+        if not photos:
+            raise RuntimeError("No photos found. Upload to slideshow-images or pass `images`.")
+
+        # Cut cadence: photo_fps wins, else shuffle_speed, else default 5.5fps
+        if req.photo_fps and req.photo_fps > 0:
+            seg_dur = 1.0 / req.photo_fps
+        elif req.shuffle_speed and req.shuffle_speed > 0:
+            seg_dur = req.shuffle_speed
+        else:
+            seg_dur = 1.0 / 5.5
+        seg_dur = max(0.02, min(seg_dur, req.duration))  # clamp sane
+
+        if req.blend_mode not in _BLEND_MODES:
+            raise RuntimeError(f"blend_mode must be one of {sorted(_BLEND_MODES)}")
+
+        # Resolve b-roll
+        jobs[job_id] = {"status": "running", "progress": 20, "message": "Fetching b-roll..."}
+        broll = _resolve_broll(req, tmp)
+
+        # Resolve audio (optional)
+        audio_path: Path | None = None
+        if req.audio:
+            audio_dir = get_project_slideshow_audio_dir(req.project)
+            cand = audio_dir / req.audio
+            if cand.exists():
+                audio_path = cand
+
+        output_dir = get_project_slideshow_dir(req.project)
+        output_name = f"broll_montage_{job_id[:8]}.mp4"
+        output_path = output_dir / output_name
+
+        jobs[job_id] = {"status": "running", "progress": 40, "message": "Rendering montage..."}
+        cmd, nseg = _build_broll_montage_cmd(
+            photos, broll, output_path,
+            duration=req.duration, seg_dur=seg_dur,
+            opacity=req.opacity, blend_mode=req.blend_mode,
+            output_fps=req.output_fps, seed=req.seed, shuffle=req.shuffle,
+            broll_loop=req.broll_loop, broll_start=req.broll_start,
+            audio_path=audio_path, crf=req.crf,
+        )
+        result = subprocess.run(cmd, capture_output=True, timeout=600)
+        if result.returncode != 0:
+            stderr = result.stderr.decode(errors="replace")[-2000:]
+            raise RuntimeError(f"FFmpeg failed: {stderr}")
+
+        jobs[job_id] = {
+            "status": "complete",
+            "progress": 100,
+            "message": f"Done: {output_name}",
+            "output": output_name,
+            "path": str(output_path.relative_to(output_dir.parent.parent.parent)),
+            "spec": {
+                "photos": len(photos),
+                "segments": nseg,
+                "seg_dur_ms": round(seg_dur * 1000),
+                "effective_fps": round(1.0 / seg_dur, 2),
+                "opacity": req.opacity,
+                "blend_mode": req.blend_mode,
+                "duration": req.duration,
+            },
+        }
+    except (ValueError, RuntimeError) as e:
+        jobs[job_id] = {"status": "error", "progress": 0, "message": str(e)}
+    except Exception as e:  # noqa: BLE001 — surface anything to the agent
+        jobs[job_id] = {"status": "error", "progress": 0, "message": f"Unexpected: {e}"}
+    finally:
+        if tmp_dir:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+@router.get("/broll-montage/spec")
+async def broll_montage_spec():
+    """Self-describing parameter schema so agents can discover every knob."""
+    return {
+        "endpoint": "POST /api/slideshow/broll-montage",
+        "description": (
+            "Composite a fast-cut photo montage over a b-roll base layer at "
+            "controllable opacity. 9:16 vertical. Returns {job_id}; poll "
+            "GET /api/slideshow/job/{job_id} until status is 'complete' or 'error'."
+        ),
+        "parameters": {
+            "project": {"type": "string", "required": True, "desc": "Project name (scopes photos/output)."},
+            "images": {"type": "list[str]", "required": False, "default": "all images in slideshow-images",
+                       "desc": "Filenames in the project's slideshow-images dir. Omit to use all."},
+            "broll_filename": {"type": "string", "required": False, "desc": "B-roll in the project's videos/ dir."},
+            "broll_path": {"type": "string", "required": False, "desc": "Absolute path to a b-roll video on the volume."},
+            "broll_url": {"type": "string", "required": False,
+                          "desc": "URL fetched via yt-dlp (YouTube/TikTok/etc), falling back to direct download. Compose with the clipper."},
+            "_broll_note": "Provide exactly one b-roll source. Precedence: filename > path > url.",
+            "duration": {"type": "float", "default": 8.0, "desc": "Output length in seconds."},
+            "photo_fps": {"type": "float", "default": None, "desc": "Photo cuts per second (e.g. 5.5). Wins over shuffle_speed."},
+            "shuffle_speed": {"type": "float", "default": None, "desc": "Seconds per photo (e.g. 0.18). Used if photo_fps absent."},
+            "_cadence_note": "If neither photo_fps nor shuffle_speed given, defaults to 5.5 fps.",
+            "opacity": {"type": "float", "default": 0.40, "desc": "Photo montage opacity over the b-roll (0..1)."},
+            "blend_mode": {"type": "string", "default": "normal", "enum": sorted(_BLEND_MODES),
+                           "desc": "normal=flat alpha; screen=light-leak; others=ffmpeg blend modes."},
+            "output_fps": {"type": "int", "default": 30, "desc": "Encode framerate of the final video."},
+            "seed": {"type": "int", "default": None, "desc": "Photo shuffle seed. None = random each call."},
+            "shuffle": {"type": "bool", "default": True, "desc": "Shuffle photo order. False = use images order as given."},
+            "broll_loop": {"type": "bool", "default": True, "desc": "Loop b-roll if shorter than duration."},
+            "broll_start": {"type": "float", "default": 0.0, "desc": "Seek into b-roll (seconds) before using."},
+            "audio": {"type": "string", "default": None, "desc": "Filename in the project's slideshow-audio dir to mux."},
+            "crf": {"type": "int", "default": 18, "desc": "x264 quality (lower=better, 18 visually lossless)."},
+        },
+        "blend_modes": sorted(_BLEND_MODES),
+        "defaults_example": {
+            "project": "my-project",
+            "broll_url": "https://www.youtube.com/watch?v=...",
+            "photo_fps": 5.5,
+            "opacity": 0.40,
+            "duration": 8.0,
+        },
+    }
+
+
+@router.post("/broll-montage")
+async def start_broll_montage(req: BrollMontageRequest):
+    # Validate b-roll source presence early (clear 400 instead of async error)
+    if not (req.broll_filename or req.broll_path or req.broll_url):
+        raise HTTPException(
+            status_code=400,
+            detail="Provide one b-roll source: broll_filename, broll_path, or broll_url.",
+        )
+    if req.opacity < 0 or req.opacity > 1:
+        raise HTTPException(status_code=400, detail="opacity must be between 0 and 1.")
+    if req.duration <= 0 or req.duration > 120:
+        raise HTTPException(status_code=400, detail="duration must be between 0 and 120 seconds.")
+
+    job_id = str(uuid.uuid4())
+    jobs[job_id] = {"status": "pending", "progress": 0, "message": "Queued..."}
+    loop = asyncio.get_event_loop()
+    loop.run_in_executor(None, _run_broll_montage, job_id, req)
+    return {"job_id": job_id}
