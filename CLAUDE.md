@@ -84,7 +84,8 @@ All runtime config and data lives on the Railway volume, mounted at `RAILWAY_VOL
 | File | Purpose |
 |---|---|
 | `telegram_config.json` | Bot token, staging group, posters, page assignments, sounds, schedule, inventory |
-| `page_roster.json` | Postiz integrations + project + Drive folder mappings |
+| `page_roster.json` | Postiz integrations + project + Drive folder mappings (Master Pages cache) |
+| `content_requests.json` | Mini App content-request queue (poster → agent) |
 | `email_rules.json` | Email routing rules |
 | `projects/` | Per-project videos, clips, captions, burns |
 
@@ -136,6 +137,33 @@ Sync endpoint: `POST /api/telegram/sounds/sync`. Returns matched/unmatched/AI co
 - Bot token: `TELEGRAM_BOT_TOKEN` env var > `telegram_config.json` stored value
 - Auto-starts in `app.py` lifespan if token present
 
+## Telegram Mini App (per-poster client)
+
+A lightweight client posters open from Telegram — served standalone by the SPA
+under any `/m*` path (no admin shell). It re-federates content delivery from
+**per-page** to **per-poster**: a poster sees the union of content across all
+the pages they run, and can request more from the attached agent.
+
+- **Which pages a poster runs** comes from the **Notion Master Pages** roster
+  (`page_roster.json`, synced from `NOTION_PAGES_DB`): each page's `poster_name`
+  is resolved to a registered poster via `services/poster_router.py`. Pages on
+  the poster's `page_ids` are unioned in as a manual override.
+- **Content** = rendered videos from each page's `project` folder, served via
+  the `/projects` static mount. Aggregation lives in `services/poster_content.py`
+  (read-only; it does **not** send anything — existing per-page forwarding is
+  untouched).
+- **Auth**: Telegram `initData` is HMAC-validated against the bot token
+  (`services/miniapp_auth.py`), then the Telegram user is resolved to a poster
+  via `telegram_user_ids` / `telegram_username` bindings on the poster record.
+  Bind a user with `POST /api/telegram/posters/{poster_id}/users`.
+- **Content requests** live in `content_requests.json` (`services/content_requests.py`).
+  Posters file them via `POST /api/miniapp/requests`; the external agent reads
+  the queue via `GET /api/miniapp/agent/requests` and marks them
+  `in_progress`/`fulfilled` via `PATCH /api/miniapp/agent/requests/{id}`
+  (gated by `X-Agent-Key` when `MINIAPP_AGENT_KEY` is set).
+- Local dev without Telegram: run with `MINIAPP_DEV_AUTH=1` and open
+  `/m?dev=<poster_id>` (sends an `X-Dev-Poster-Id` header).
+
 ## Backend File Map
 
 ### Routers (`routers/`)
@@ -151,7 +179,8 @@ Sync endpoint: `POST /api/telegram/sounds/sync`. Returns matched/unmatched/AI co
 | `postiz.py` | 211 | 5 | Postiz integration: status, integrations, videos, upload, posts |
 | `roster.py` | 351 | 7 | Page roster: list, project filter, set, delete, dedup, sync |
 | `slideshow.py` | 992 | 23 | Slideshow renderer (images, audio, formats) |
-| `telegram.py` | 1541 | 30+ | Bot, staging, posters, sounds, schedule, inventory |
+| `telegram.py` | 1541 | 30+ | Bot, staging, posters, sounds, schedule, inventory, user binding |
+| `miniapp.py` | ~190 | 6 | Telegram Mini App: per-poster content + content-request intake (initData auth) |
 | `email_routing.py` | 203 | 8 | Cloudflare email routing rules |
 | `upload.py` | 180 | 8 | TikTok/IG direct uploads |
 | `gdrive.py` | 161 | 7 | Google Drive folder ops |
@@ -161,8 +190,11 @@ Sync endpoint: `POST /api/telegram/sounds/sync`. Returns matched/unmatched/AI co
 
 | File | Purpose |
 |---|---|
-| `telegram.py` | `telegram_config.json` data access (posters, sounds, staging, schedule) |
+| `telegram.py` | `telegram_config.json` data access (posters, sounds, staging, schedule, user bindings) |
 | `roster.py` | `page_roster.json` data access |
+| `poster_content.py` | Per-poster content federation: resolve a poster → their Master-Pages → rendered videos |
+| `content_requests.py` | `content_requests.json` data access — Mini App content-request intake queue |
+| `miniapp_auth.py` | Telegram Mini App `initData` HMAC validation + user→poster resolution |
 | `notion.py` | Query Notion CRM for campaigns + TikTok Sound Links |
 | `campaign_hub.py` | Hub-as-source-of-truth + Notion sound matching with AI fuzzy fallback |
 | `gdrive.py` | Google Drive API client |
@@ -244,7 +276,11 @@ Some pages use CSS-based tab switching (display:none for inactive) to preserve s
 | `TELEGRAM_BOT_TOKEN` | Telegram bot (overrides stored token) |
 | `NOTION_API_KEY` | Notion CRM access |
 | `NOTION_CAMPAIGNS_DB` | Notion campaigns database ID |
+| `NOTION_PAGES_DB` | Notion Master Pages database ID (account roster + Poster assignment) |
 | `NOTION_SOUND_CUTOFF` | Filter Notion campaigns by created_time (default `2026-03-01`) |
+| `MINIAPP_INITDATA_MAX_AGE` | Max age (s) of Mini App `initData` auth_date; `0` disables (default `86400`) |
+| `MINIAPP_AGENT_KEY` | If set, Mini App agent endpoints require matching `X-Agent-Key` |
+| `MINIAPP_DEV_AUTH` | `1` enables the `X-Dev-Poster-Id` bypass — **local dev only** |
 | `CAMPAIGN_HUB_URL` | Campaign Hub base URL (default deployed URL) |
 | `POSTIZ_API_KEY` | Postiz API |
 | `R2_ACCESS_KEY` / `R2_SECRET_KEY` / `R2_BUCKET` | Cloudflare R2 |

@@ -25,6 +25,7 @@ from routers.recreate import router as recreate_router
 from routers.roster import router as roster_router
 from routers.slideshow import router as slideshow_router
 from routers.telegram import router as telegram_router
+from routers.miniapp import router as miniapp_router
 from routers.email_routing import router as email_router
 from routers.pipeline import router as pipeline_router
 from routers.upload import router as upload_router
@@ -212,6 +213,7 @@ app.include_router(clipper_router, prefix="/api/clipper", tags=["clipper"])
 app.include_router(roster_router, prefix="/api/roster", tags=["roster"])
 app.include_router(slideshow_router, prefix="/api/slideshow", tags=["slideshow"])
 app.include_router(telegram_router, prefix="/api/telegram", tags=["telegram"])
+app.include_router(miniapp_router, prefix="/api/miniapp", tags=["miniapp"])
 app.include_router(email_router, prefix="/api/email", tags=["email"])
 app.include_router(pipeline_router, prefix="/api/pipeline", tags=["pipeline"])
 app.include_router(upload_router, prefix="/api/upload", tags=["upload"])

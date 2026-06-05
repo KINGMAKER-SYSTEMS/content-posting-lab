@@ -18,6 +18,7 @@ from services.telegram import (
     add_song_to_page,
     add_sound,
     assign_page_to_poster,
+    bind_user_to_poster,
     build_poster_message,
     clear_all_sounds,
     clear_bot_token,
@@ -56,6 +57,7 @@ from services.telegram import (
     toggle_sound,
     set_poster_sounds_topic,
     unassign_page_from_poster,
+    unbind_user_from_poster,
     update_sound,
 )
 from services.roster import list_all_pages
@@ -692,6 +694,42 @@ async def delete_poster(poster_id: str):
         raise HTTPException(status_code=404, detail="Poster not found")
     remove_poster(poster_id)
     return {"ok": True}
+
+
+class BindUserRequest(BaseModel):
+    user_id: int
+    username: str | None = None
+
+
+@router.post("/posters/{poster_id}/users")
+async def bind_poster_user(poster_id: str, req: BindUserRequest):
+    """Link a Telegram user id (and optional @username) to a poster.
+
+    Lets the Mini App resolve an incoming `initData` to this poster. The user
+    id is the numeric Telegram id (from the WebApp `initDataUnsafe.user.id`).
+    """
+    if not get_poster(poster_id):
+        raise HTTPException(status_code=404, detail="Poster not found")
+    poster = bind_user_to_poster(poster_id, req.user_id, req.username)
+    return {
+        "ok": True,
+        "poster_id": poster_id,
+        "telegram_user_ids": poster.get("telegram_user_ids", []),
+        "telegram_username": poster.get("telegram_username"),
+    }
+
+
+@router.delete("/posters/{poster_id}/users/{user_id}")
+async def unbind_poster_user(poster_id: str, user_id: int):
+    """Unlink a Telegram user id from a poster."""
+    if not get_poster(poster_id):
+        raise HTTPException(status_code=404, detail="Poster not found")
+    poster = unbind_user_from_poster(poster_id, user_id)
+    return {
+        "ok": True,
+        "poster_id": poster_id,
+        "telegram_user_ids": poster.get("telegram_user_ids", []),
+    }
 
 
 @router.post("/posters/reset-defaults")
