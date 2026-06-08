@@ -32,9 +32,10 @@ from pydantic import BaseModel, Field, field_validator
 
 # ─────────────────────────── shared value types ───────────────────────────
 class VideoFormat(str, Enum):
-    ROUNDUP = "roundup"      # multi-story news brief
-    DEEPDIVE = "deepdive"    # single tool, 3 facets
-    LORE = "lore"            # single-subject origin story, 6 beats
+    ROUNDUP = "roundup"      # PULSE: multi-story news brief (the daily driver, 10-12min, 2 mid-rolls)
+    DEEPDIVE = "deepdive"    # single tool, result-first → mechanism → verdict (8-10min, 1 mid-roll)
+    LORE = "lore"            # single-subject origin story, 6-beat documentary (12-18min, highest RPM)
+    SHORT = "short"          # top-of-funnel ≤100s, no ads, drives the long-form (March-2025: loop=view)
 
 
 class Source(BaseModel):
