@@ -12,16 +12,31 @@ Endpoints:
 import asyncio
 import json
 import logging
+import os
 import time
 
-from fastapi import APIRouter, Query, Request
+from fastapi import APIRouter, Query, Request, Header, HTTPException, Depends
 from fastapi.responses import StreamingResponse
 
 import debug_logger
 
 log = logging.getLogger("debug")
 
-router = APIRouter()
+
+def _gate_debug(x_agent_key: str | None = Header(default=None)) -> None:
+    """Gate ALL debug endpoints behind MINIAPP_AGENT_KEY when configured. These expose internal
+    logs/errors/health/the ring buffer — they must not be public in prod (the ring buffer also
+    carried recoverable API-key fragments before the app.py logging was scrubbed). Open when the
+    key is unset, consistent with the rest of the app's auth posture."""
+    expected = os.getenv("MINIAPP_AGENT_KEY", "").strip()
+    if not expected:
+        return
+    if not x_agent_key or x_agent_key.strip() != expected:
+        raise HTTPException(status_code=401, detail="invalid or missing agent key")
+
+
+# router-level dependency → applies to every debug route (logs, stream, jobs, errors, health, clear)
+router = APIRouter(dependencies=[Depends(_gate_debug)])
 
 
 @router.get("/logs")

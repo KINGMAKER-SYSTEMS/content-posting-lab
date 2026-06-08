@@ -31,6 +31,8 @@ from routers.pipeline import router as pipeline_router
 from routers.upload import router as upload_router
 from routers.gdrive import router as gdrive_router
 from routers.video import router as video_router
+from routers.agenticnews import router as agenticnews_router
+import services.agenticnews as agenticnews_db
 
 load_dotenv()
 
@@ -97,7 +99,10 @@ def _log_startup_validation(ffmpeg_ok: bool, ytdlp_ok: bool):
     for name in ("XAI_API_KEY", "REPLICATE_API_TOKEN", "OPENAI_API_KEY"):
         val = os.getenv(name, "")
         if val:
-            log.debug("%s: len=%d, starts=%s..., ends=...%s", name, len(val), val[:10], val[-4:])
+            # SECURITY: do NOT log any key material. /api/debug/logs is unauthenticated and returns
+            # the ring buffer — logging the prefix/suffix (starts=<10>/ends=<4>) leaked recoverable
+            # key fragments. Presence + length only; never the characters.
+            log.debug("%s: present (len=%d)", name, len(val))
         else:
             log.warning("%s: NOT SET", name)
 
@@ -112,6 +117,15 @@ async def lifespan(app: FastAPI):
     Path("burn_output").mkdir(parents=True, exist_ok=True)
     PROJECTS_DIR.mkdir(parents=True, exist_ok=True)
     ensure_default_project()
+
+    # AgenticBuilderNews workspace DB + autonomous factory
+    try:
+        await agenticnews_db.init_db()
+        import services.abn_factory as abn_factory
+        await abn_factory.start_factory()
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(f"agenticnews init failed: {e}")
 
     ffmpeg_ok = _check_ffmpeg()
     ytdlp_ok = _check_ytdlp()
@@ -217,6 +231,7 @@ app.include_router(miniapp_router, prefix="/api/miniapp", tags=["miniapp"])
 app.include_router(email_router, prefix="/api/email", tags=["email"])
 app.include_router(pipeline_router, prefix="/api/pipeline", tags=["pipeline"])
 app.include_router(upload_router, prefix="/api/upload", tags=["upload"])
+app.include_router(agenticnews_router, prefix="/api/agenticnews", tags=["agenticnews"])
 app.include_router(gdrive_router, prefix="/api/drive", tags=["drive"])
 
 
@@ -258,6 +273,27 @@ async def health_check():
 
 
 app.mount("/fonts", StaticFiles(directory="fonts", check_dir=False), name="fonts")
+# AgenticBuilderNews: rendered assets + the workspace SPA
+app.mount(
+    "/agenticnews-assets",
+    StaticFiles(directory=str(agenticnews_db.ASSETS_DIR), check_dir=False),
+    name="agenticnews-assets",
+)
+
+
+@app.get("/workspace", include_in_schema=False)
+async def serve_workspace():
+    wp = Path(__file__).resolve().parent / "yt-pipeline" / "workspace.html"
+    if wp.exists():
+        return FileResponse(wp, media_type="text/html")
+    return FileResponse(Path(__file__).resolve().parent / "yt-pipeline" / "dashboard.html", media_type="text/html")
+
+
+@app.get("/factory", include_in_schema=False)
+async def serve_factory():
+    return FileResponse(Path(__file__).resolve().parent / "yt-pipeline" / "factory.html", media_type="text/html")
+
+
 app.mount(
     "/projects",
     StaticFiles(directory="projects", check_dir=False),
