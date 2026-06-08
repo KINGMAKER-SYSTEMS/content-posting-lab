@@ -75,20 +75,28 @@ def hero_number(text: str) -> str:
 
 
 def hero_number_label(text: str, stat: str) -> str:
-    """A short clean label for under the hero number — the noun the stat describes, not the
-    whole sentence. Falls back to a trimmed clause."""
-    # the words right AFTER the stat are usually what it measures (e.g. "token context window")
+    """A short clean label for under the hero number — the noun/phrase the stat MEASURES (e.g.
+    'token context window', 'faster on Apple silicon'), never a truncated full sentence with an
+    em-dash. Always derived from the words immediately around the stat."""
+    text = text.replace("—", " ").replace("–", " ")     # never let an em-dash into the label
     idx = text.lower().find(stat.lower())
     if idx >= 0:
-        tail = text[idx + len(stat):].strip(" ,.")
-        tail = re.split(r'[.,;]', tail)[0].strip()
+        # words AFTER the stat are usually what it measures
+        tail = re.split(r'[.,;]', text[idx + len(stat):])[0].strip(" ,.-")
         words = tail.split()
-        if 1 <= len(words) <= 6:
+        if 2 <= len(words) <= 6:
             return tail
-        if words:
+        if len(words) > 6:
             return " ".join(words[:5])
-    # else: the clause containing the stat, trimmed
-    return re.split(r'[.,;]', text)[0].strip()[:48]
+        # tail too short — try the words BEFORE the stat (e.g. "cuts cost by 60%")
+        head = re.split(r'[.,;]', text[:idx])[-1].strip(" ,.-")
+        hwords = head.split()
+        if 2 <= len(hwords) <= 6:
+            return head
+        if len(hwords) > 6:
+            return " ".join(hwords[-5:])
+    # last resort: a short generic label rather than a truncated negative sentence fragment
+    return "by the numbers"
 _VS_RE = re.compile(r'\b(vs\.?|versus|compared to|beats|outperforms|faster than|cheaper than|'
                     r'better than|instead of|replaces?)\b', re.I)
 # capture the thing AFTER the comparison word — the real competitor to put on the vs card
