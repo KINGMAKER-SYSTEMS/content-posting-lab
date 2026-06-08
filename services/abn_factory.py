@@ -1434,7 +1434,14 @@ def _v2_scene_cards(ep_id, seg_index, seg):
                         continue
                     p = _v2cards.number_card(h, hero_number_label(sc.text, h), nm, ASSETS, _FONTS_DIR)
                 elif sh.shot_type == "vs_card":
-                    p = _v2cards.vs_card(tool, "the alternative", nm, ASSETS, _FONTS_DIR)
+                    from factory.formats.scenes import comparison_target
+                    rival = comparison_target(sc.text)
+                    if not rival:
+                        # no real competitor named → a generic "the alternative" card is slop;
+                        # render the take/quote instead so the scene still gets a designed visual.
+                        p = _v2cards.quote_card(sc.text, nm, ASSETS, _FONTS_DIR)
+                    else:
+                        p = _v2cards.vs_card(tool, rival, nm, ASSETS, _FONTS_DIR)
                 elif sh.shot_type == "quote_card":
                     p = _v2cards.quote_card(sc.text, nm, ASSETS, _FONTS_DIR)
                 elif sh.shot_type in ("diagram", "diagram_card"):

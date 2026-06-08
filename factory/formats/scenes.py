@@ -91,6 +91,41 @@ def hero_number_label(text: str, stat: str) -> str:
     return re.split(r'[.,;]', text)[0].strip()[:48]
 _VS_RE = re.compile(r'\b(vs\.?|versus|compared to|beats|outperforms|faster than|cheaper than|'
                     r'better than|instead of|replaces?)\b', re.I)
+# capture the thing AFTER the comparison word — the real competitor to put on the vs card
+_VS_TARGET_RE = re.compile(
+    r'\b(?:vs\.?|versus|compared to|beats|outperforms|faster than|cheaper than|better than|'
+    r'instead of|replaces?)\s+(?:the\s+|a\s+|an\s+)?'
+    # capture up to ~4 words, stopping at the first preposition/conjunction/clause word
+    r'((?:(?!\b(?:on|at|in|for|by|with|which|that|and|but|so|because|when|where|to|of|from)\b)'
+    r'[A-Za-z][\w.\-]*\s*){1,4})', re.I)
+
+# generic non-competitors that should NOT be put on a vs card (no real named rival)
+_VS_GENERIC = {"old model", "old one", "the old model", "last one", "last version", "previous one",
+               "one giant model", "giant model", "everything else", "the rest", "others", "it",
+               "this", "that", "them", "one", "before"}
+
+
+def comparison_target(text: str) -> str:
+    """Pull the real competitor named after a comparison word ('faster than GPT-4' → 'GPT-4',
+    'beats LangChain' → 'LangChain'). Returns '' for generic non-rivals ('the old model') so the
+    caller renders something else instead of a meaningless 'X vs the alternative' card."""
+    m = _VS_TARGET_RE.search(text or "")
+    if not m:
+        return ""
+    t = re.sub(r'\s+', ' ', m.group(1)).strip(" .,").strip()
+    tl = t.lower()
+    if len(t) < 2 or tl in _VS_GENERIC:
+        return ""
+    # generic if it CONTAINS a non-rival phrase (over-capture like 'old model it is') or has no
+    # capitalized/proper-noun token (real competitors are named: GPT-4, LangChain, Cursor...)
+    if any(g in tl for g in ("old model", "giant model", "old one", "last one", "last version", "previous")):
+        return ""
+    if not re.search(r'[A-Z0-9]', t):           # no proper-noun/version token → not a named rival
+        return ""
+    # trim to the proper-noun core (first 1-3 tokens that look named)
+    toks = t.split()
+    keep = [w for w in toks if re.search(r'[A-Z0-9]', w) or w.lower() in ("the", "ai")][:3]
+    return " ".join(keep) if keep else t
 _MECH_RE = re.compile(r'\b(how it works|under the hood|works by|the way it|the trick is|'
                       r'mechanism|architecture|pipeline|it routes|it embeds|the model|algorithm|'
                       r'internally|the process)\b', re.I)
