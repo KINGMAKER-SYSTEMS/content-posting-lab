@@ -1859,11 +1859,16 @@ async def _render_remotion(ep_id, timeline):
         bedfile = ASSETS / Path(bed).name
         if bedfile.exists():
             ducked = ASSETS / f"{ep_id}_ducked.mp4"
-            # [0:a]=baked VO/SFX (the sidechain key), [1:a]=music looped; duck music by the VO, then mix
+            # [0:a]=baked VO/SFX (the sidechain key), [1:a]=music looped; duck music by the VO, mix,
+            # THEN loudnorm to -14 LUFS. CRITICAL ORDER FIX: the duck pass runs AFTER the normalize
+            # pass and overwrites the file, so the loudness normalization MUST live here (the last
+            # audio stage) — otherwise the ducked re-mix shipped quiet (~-22 dB, caught on a real
+            # episode) because it undid the normalize pass's loudnorm.
             dcmd = (f'ffmpeg -y -i {shlex.quote(str(out))} -stream_loop -1 -i {shlex.quote(str(bedfile))} '
-                    f'-filter_complex "[1:a]volume=0.22[m];[m][0:a]sidechaincompress=threshold=0.03:ratio=8:attack=20:release=300[ duck];'
-                    f'[0:a][duck]amix=inputs=2:duration=first:dropout_transition=0:weights=1 0.9[a]" '
-                    f'-map 0:v -map "[a]" -c:v copy -c:a aac -shortest {shlex.quote(str(ducked))} 2>&1')
+                    f'-filter_complex "[1:a]volume=0.22[m];[m][0:a]sidechaincompress=threshold=0.03:ratio=8:attack=20:release=300[duck];'
+                    f'[0:a][duck]amix=inputs=2:duration=first:dropout_transition=0:weights=1 0.9[mix];'
+                    f'[mix]loudnorm=I=-14:TP=-1.5:LRA=11[a]" '
+                    f'-map 0:v -map "[a]" -c:v copy -c:a aac -b:a 192k -shortest {shlex.quote(str(ducked))} 2>&1')
             dc, dlog = await _sh(dcmd, timeout=300)
             if dc == 0 and ducked.exists():
                 ducked.replace(out)
