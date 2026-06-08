@@ -24,6 +24,7 @@ import DeleteOutlineIcon from '@mui/icons-material/DeleteOutlined';
 import AddCommentIcon from '@mui/icons-material/AddComment';
 import UndoIcon from '@mui/icons-material/Undo';
 import { Stage, Layer, Line, Circle, Arrow } from 'react-konva';
+import WaveSurfer from 'wavesurfer.js';
 import { apiUrl, staticUrl } from '../lib/api';
 
 type Shot = { src?: string; startSec?: number; durationSec?: number };
@@ -81,6 +82,8 @@ export function EditorBayPage() {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const stageWrapRef = useRef<HTMLDivElement | null>(null);
   const [stageSize, setStageSize] = useState({ w: 960, h: 540 });
+  const waveRef = useRef<HTMLDivElement | null>(null);
+  const wsRef = useRef<WaveSurfer | null>(null);
 
   // ---- load ----
   useEffect(() => {
@@ -133,10 +136,43 @@ export function EditorBayPage() {
     return () => ro.disconnect();
   }, [data]);
 
+  // ---- VO waveform (rendered from the FINAL episode mp4 audio, not the per-segment wavs, which are
+  //      GC'd after the episode completes). Read-only visual reference; the <video> stays the player.
+  useEffect(() => {
+    if (!data || !waveRef.current) return;
+    let ws: WaveSurfer | null = null;
+    try {
+      ws = WaveSurfer.create({
+        container: waveRef.current,
+        url: staticUrl(data.videoUrl),       // mp4 audio track
+        height: 18,
+        waveColor: '#3a4658',
+        progressColor: '#94a3b8',
+        cursorColor: 'transparent',
+        interact: true,                       // click the waveform to seek
+        normalize: true,
+        barWidth: 1,
+        barGap: 1,
+      });
+      ws.setMuted(true);                      // the <video> is the sound source; waveform is silent
+      ws.on('interaction', (sec: number) => seekRef.current(sec));
+      wsRef.current = ws;
+    } catch { /* waveform is non-essential — never block the bay */ }
+    return () => { try { ws?.destroy(); } catch {} wsRef.current = null; };
+  }, [data]);
+
+  // keep the waveform cursor in sync with the video without re-creating it
+  useEffect(() => {
+    const ws = wsRef.current;
+    if (ws && duration) { try { ws.setTime(t); } catch {} }
+  }, [t, duration]);
+
   const seek = useCallback((sec: number) => {
     const v = videoRef.current;
     if (v) { v.currentTime = Math.max(0, Math.min(sec, duration || sec)); setT(v.currentTime); }
   }, [duration]);
+  const seekRef = useRef(seek);
+  useEffect(() => { seekRef.current = seek; }, [seek]);
 
   const togglePlay = () => {
     const v = videoRef.current;
@@ -325,7 +361,9 @@ export function EditorBayPage() {
                 <Box key={tr.key} sx={{ display: 'flex', alignItems: 'center', height: 26 }}>
                   <Typography variant="caption" sx={{ width: 92, flexShrink: 0, color: tr.color, fontWeight: 600 }}>{tr.label}</Typography>
                   <Box sx={{ position: 'relative', flex: 1, height: 18, bgcolor: '#0b0e14', borderRadius: 0.5 }}>
-                    {tr.blocks.map((b, i) => (
+                    {/* VO lane = live waveform from the episode mp4 audio (click to seek) */}
+                    {tr.key === 'vo' && <Box ref={waveRef} sx={{ position: 'absolute', inset: 0 }} />}
+                    {tr.key !== 'vo' && tr.blocks.map((b, i) => (
                       <Tooltip key={i} title={`${tr.label} @ ${fmt(b.start)}${b.label ? ` — ${b.label}` : ''}`}>
                         <Box
                           onClick={() => { seek(b.start); setTool('none'); }}
