@@ -28,9 +28,22 @@ from collections import deque
 
 import services.agenticnews as db
 
+# v2 anti-slop visual system: deconstruct VO into scenes → designed cards instead of blog
+# screenshots. Imported defensively so a v2 issue can never break the running v1 producer.
+try:
+    from factory.formats.scenes import tag_scenes, direct_visuals, hero_number, hero_number_label
+    from factory.formats.types import SceneRole
+    from factory.formats import cards as _v2cards
+    _V2_VISUALS = True
+except Exception as _v2e:  # pragma: no cover
+    _V2_VISUALS = False
+
 ASSETS = db.ASSETS_DIR
 VOICE = str(ASSETS / "john_voice.safetensors")
 WPM = 195
+_FONTS_DIR = Path(__file__).resolve().parent.parent / "fonts"
+# v2 visuals on by default; ABN_V2_VISUALS=0 falls back to the legacy screenshot chain.
+_USE_V2_VISUALS = os.getenv("ABN_V2_VISUALS", "1") == "1"
 SEG_WORDS = 200           # ~63s spoken per segment — longer beats for depth + the 11min ad-RPM target
 N_SEGMENTS = 11           # target episode size: 11 stories × ~63s + sting ≈ 11-12min
 
@@ -1392,6 +1405,58 @@ def _disk(url_path):
     return f"/agenticnews-assets/{name}"
 
 
+def _v2_scene_cards(ep_id, seg_index, seg):
+    """Generate v2 DESIGNED CARDS for a segment's scenes — the anti-slop replacement for the
+    blog-screenshot visual. Deconstructs the VO into scenes, picks a shot per scene from the
+    format catalog, and renders the designed cards (number/vs/quote/diagram). Returns an ordered
+    list of /agenticnews-assets/ urls for the designed frames, or [] if v2 is off/unavailable.
+
+    Best-effort: any failure returns [] so the legacy visual still renders (never breaks a render)."""
+    if not (_V2_VISUALS and _USE_V2_VISUALS):
+        return []
+    try:
+        from factory.formats import get_format
+        from factory.contracts.stages import VideoFormat
+        # all current production is roundup-style segments → PULSE catalog
+        spec = get_format(VideoFormat.ROUNDUP)
+        scenes = tag_scenes(seg.get("script", ""), segment_index=seg_index,
+                            is_first_segment=(seg_index == 0), is_last_segment=False)
+        shots = direct_visuals(scenes, spec)
+        title = seg.get("title", "") or ""
+        tool = re.split(r'\s+[—–:]\s+', title)[0][:24] if title else "this"
+        out = []
+        for sc, sh in zip(scenes, shots):
+            nm = f"{ep_id}_s{seg_index}_v2sc{sc.index}"
+            try:
+                if sh.shot_type == "number_card":
+                    h = hero_number(sc.text)
+                    if not h:
+                        continue
+                    p = _v2cards.number_card(h, hero_number_label(sc.text, h), nm, ASSETS, _FONTS_DIR)
+                elif sh.shot_type == "vs_card":
+                    p = _v2cards.vs_card(tool, "the alternative", nm, ASSETS, _FONTS_DIR)
+                elif sh.shot_type == "quote_card":
+                    p = _v2cards.quote_card(sc.text, nm, ASSETS, _FONTS_DIR)
+                elif sh.shot_type in ("diagram", "diagram_card"):
+                    p = _v2cards.diagram_card(f"How {tool} works",
+                                              [s.strip() for s in re.split(r'[.;]', sc.text) if s.strip()][:4],
+                                              nm, ASSETS, _FONTS_DIR)
+                else:
+                    continue
+                out.append(f"/agenticnews-assets/{Path(p).name}")
+            except Exception as ce:
+                BUS.emit("editor-agent", "error", f"v2 card {sh.shot_type} failed (non-fatal): {ce!r}"[:120],
+                         episode_id=ep_id)
+        if out:
+            BUS.emit("editor-agent", "v2.cards", f"seg {seg_index+1}: {len(out)} designed cards (no blog-screenshot slop)",
+                     episode_id=ep_id)
+        return out
+    except Exception as e:
+        BUS.emit("editor-agent", "error", f"v2 visuals failed (non-fatal, legacy fallback): {e!r}"[:120],
+                 episode_id=ep_id)
+        return []
+
+
 def _build_timeline(ep_id, ep_idx, segments, animated_bg=None):
     fps, total = 30, 0.0
     tsegs = []
@@ -1401,6 +1466,21 @@ def _build_timeline(ep_id, ep_idx, segments, animated_bg=None):
     for seg_index, seg in enumerate(segments):
         kws = _extract_keywords(seg["script"], seg["words"], tool_name=seg.get("title"), seg_duration=seg.get("duration", 0.0))
         shots = _plan_shots(seg["duration"], seg.get("screenshot"), seg["card"], seg["words"], kws, seg["source_url"], seg.get("demo"), seg.get("ui"), seg_index=seg_index)
+        # V2 ANTI-SLOP: replace the 'artifact' shots (which were blog/page SCREENSHOTS — the slop)
+        # with DESIGNED CARDS from the v2 scene→catalog system. Keeps all the timing/Ken-Burns/
+        # highlight logic; only swaps the SOURCE image from a scrolled blog to a designed frame.
+        v2_cards = _v2_scene_cards(ep_id, seg_index, seg)
+        if v2_cards:
+            ci = 0
+            for sh in shots:
+                if sh.get("type") == "artifact":
+                    card_url = v2_cards[ci % len(v2_cards)]; ci += 1
+                    cf = ASSETS / Path(card_url).name
+                    if cf.exists() and cf.stat().st_size > 1024:
+                        sh["src"] = _disk(card_url)
+                        # designed cards read best with a gentle hold, not an aggressive Ken-Burns
+                        sh["kenBurns"] = {"startScale": 1.0, "endScale": 1.05, "startX": .5,
+                                          "startY": .5, "endX": .5, "endY": .5, "easing": "easeOut"}
         # MOTION UPGRADE: swap flat title-card 'artifact' shots for an animated brand b-roll — and
         # ROTATE through distinct bgs so we never repeat the same clip across the episode.
         if bg_list:

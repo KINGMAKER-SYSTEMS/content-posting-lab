@@ -117,18 +117,22 @@ def _classify(text: str, is_first: bool, is_last: bool) -> SceneRole:
 
 
 def _split_sentences(script: str) -> list[str]:
-    """Split VO into sentences, then group into ~2-sentence scenes (≈20-30s of speech each)."""
+    """Split VO into sentences, grouped into scenes. More scenes = more visual variety = the
+    anti-slop goal, so we keep most sentences as their own scene. Only group when sentences are
+    SHORT (<10 words each), so a long segment doesn't fragment into a visual every 3 seconds but a
+    3-sentence segment still yields ~3 scenes instead of collapsing to 1."""
     parts = re.split(r'(?<=[.!?])\s+', script.strip())
     parts = [p.strip() for p in parts if p.strip()]
     scenes, cur = [], []
     for s in parts:
         cur.append(s)
-        # group ~2 sentences per scene (a scene ≈ one idea, ~20-40s)
-        if len(cur) >= 2:
+        words = sum(len(x.split()) for x in cur)
+        # close a scene once it has enough substance for a shot (~12+ words) OR holds 2 sentences
+        if words >= 12 or len(cur) >= 2:
             scenes.append(" ".join(cur)); cur = []
     if cur:
-        if scenes:
-            scenes[-1] = scenes[-1] + " " + " ".join(cur)   # fold a lone trailing sentence back
+        if scenes and sum(len(x.split()) for x in cur) < 6:
+            scenes[-1] = scenes[-1] + " " + " ".join(cur)   # fold a tiny trailing fragment back
         else:
             scenes.append(" ".join(cur))
     return scenes or [script.strip()]
