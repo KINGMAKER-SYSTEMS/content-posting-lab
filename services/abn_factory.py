@@ -1947,7 +1947,9 @@ async def _render_remotion(ep_id, timeline):
             if _d and _d >= MIN_EPISODE_SEC and _pf.strip().startswith("yuv420p"):
                 BUS.emit("editor-agent", "render.reuse",
                          f"reusing existing complete {_d:.0f}s render (skip redundant re-render)", episode_id=ep_id)
-                return f"/agenticnews-assets/{out.name}"
+                # return the SAME (path, dur) 2-tuple shape the caller unpacks — a bare string here
+                # would break `mp4, dur = await _render_remotion(...)` and trigger the retry/double-render.
+                return f"/agenticnews-assets/{out.name}", _d
         except Exception:
             pass   # unreadable/partial → fall through and render fresh
     # --crf 23 ≈ visually-lossless for this flat-graphics content but ~half the file size of Remotion's
