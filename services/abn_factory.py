@@ -1433,6 +1433,39 @@ def _hook_line(cold_open_text: str) -> str:
     return (line or pick[:48]).upper()
 
 
+def _diagram_steps(text: str) -> list:
+    """Extract real short mechanism steps for a diagram card. Filters out CTAs/questions/filler
+    (e.g. 'Want to see how it works in real') so a diagram never shows a junk single box. Returns
+    [] if there aren't clean steps (caller then falls back to a quote card)."""
+    raw = [s.strip() for s in re.split(r'[.;]|\bthen\b|\bnext\b|->|→', text) if s.strip()]
+    steps = []
+    for s in raw:
+        sl = s.lower()
+        # skip CTAs, questions, meta-filler — not mechanism steps
+        if "?" in s or re.search(r'\b(want to|subscribe|comment|let me know|stay tuned|in real|'
+                                 r'check out|link below|honestly|basically|imagine)\b', sl):
+            continue
+        words = s.split()
+        if 2 <= len(words) <= 9:                 # a step is a short action phrase
+            steps.append(s[:34])
+        if len(steps) >= 4:
+            break
+    return steps
+
+
+def _quote_text(text: str) -> str:
+    """A clean COMPLETE quote for a quote card — never truncated mid-sentence, no em-dash pile-ups.
+    Takes the first 1-2 whole sentences that fit, dropping a trailing partial."""
+    text = text.replace("—", ", ").replace("–", ", ")
+    sents = [s.strip() for s in re.split(r'(?<=[.!?])\s+', text.strip()) if s.strip()]
+    out = ""
+    for s in sents:
+        if len(out) + len(s) + 1 > 100 and out:   # quote card holds ~4 short lines ≈ 100 chars
+            break
+        out = (out + " " + s).strip()
+    return out or (sents[0] if sents else text)[:100]
+
+
 def _v2_scene_cards(ep_id, seg_index, seg):
     """Generate v2 DESIGNED CARDS for a segment's scenes — the anti-slop replacement for the
     blog-screenshot visual. Deconstructs the VO into scenes, picks a shot per scene from the
@@ -1482,11 +1515,14 @@ def _v2_scene_cards(ep_id, seg_index, seg):
                     else:
                         p = _v2cards.vs_card(tool, rival, nm, ASSETS, _FONTS_DIR)
                 elif sh.shot_type == "quote_card":
-                    p = _v2cards.quote_card(sc.text, nm, ASSETS, _FONTS_DIR)
+                    p = _v2cards.quote_card(_quote_text(sc.text), nm, ASSETS, _FONTS_DIR)
                 elif sh.shot_type in ("diagram", "diagram_card"):
-                    p = _v2cards.diagram_card(f"How {tool} works",
-                                              [s.strip() for s in re.split(r'[.;]', sc.text) if s.strip()][:4],
-                                              nm, ASSETS, _FONTS_DIR)
+                    steps = _diagram_steps(sc.text)
+                    if len(steps) >= 2:
+                        p = _v2cards.diagram_card(f"How {tool} works", steps, nm, ASSETS, _FONTS_DIR)
+                    else:
+                        # not a real multi-step mechanism → a 1-box diagram is broken; quote instead
+                        p = _v2cards.quote_card(_quote_text(sc.text), nm, ASSETS, _FONTS_DIR)
                 else:
                     continue
                 out.append(f"/agenticnews-assets/{Path(p).name}")
