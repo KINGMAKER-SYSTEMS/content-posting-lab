@@ -154,6 +154,64 @@ async def get_project_stats(name: str):
     }
 
 
+_VIDEO_EXTS = {".mp4", ".mov", ".webm"}
+
+
+@router.get("/{name}/videos")
+async def list_project_videos(name: str):
+    """List every playable clip in a project as ready-to-use URLs.
+
+    Unlike `/stats` (which only counts the top level of `videos/`), this walks
+    the `videos/` and `burned/` trees RECURSIVELY — generated clips land in nested
+    provider/prompt subfolders (e.g. `videos/<provider>/<prompt>/clip.mp4`), so a
+    flat listing reports zero. Each item's `url` is the public path served by the
+    `/projects` static mount, so callers (e.g. the Slack content-agent) can fetch
+    the bytes directly or hand the URL to a client.
+
+    Returns newest-first. `kind` distinguishes raw `videos/` clips from
+    caption-`burned/` ones.
+    """
+    try:
+        sanitized = sanitize_project_name(name)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    project_path = PROJECTS_DIR / sanitized
+    if not project_path.exists():
+        raise HTTPException(status_code=404, detail=f"Project '{name}' not found")
+
+    items: list[dict] = []
+    # Generated clips land in `videos/`, clipper output in `clips/`, captioned
+    # renders in `burned/` — all nested under provider/prompt subfolders.
+    for kind in ("videos", "clips", "burned"):
+        root = project_path / kind
+        if not root.exists():
+            continue
+        for f in root.rglob("*"):
+            if not f.is_file() or f.suffix.lower() not in _VIDEO_EXTS:
+                continue
+            stat = f.stat()
+            # Public URL = /projects/ + path relative to PROJECTS_DIR (the static
+            # mount root). Posix separators so it's a valid URL on every platform.
+            rel = f.relative_to(PROJECTS_DIR).as_posix()
+            items.append(
+                {
+                    "name": f.name,
+                    "kind": kind,
+                    "url": f"/projects/{rel}",
+                    "size_bytes": stat.st_size,
+                    "modified": datetime.fromtimestamp(stat.st_mtime).isoformat(),
+                    "modified_ts": stat.st_mtime,
+                }
+            )
+
+    items.sort(key=lambda v: v["modified_ts"], reverse=True)
+    for v in items:
+        del v["modified_ts"]  # internal sort key, not part of the response shape
+
+    return {"name": sanitized, "count": len(items), "videos": items}
+
+
 LEGACY_PROJECT_NAME = "legacy-imports"
 
 
