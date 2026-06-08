@@ -651,6 +651,49 @@ def _get_whisper():
     return _WHISPER_MODEL
 
 
+# Brand names Whisper mis-splits or mis-cases in the karaoke captions (caught on real episodes:
+# 'open ai' for 'OpenAI'). Two-word merges + single-word casing fixes, applied to the word list.
+_BRAND_MERGE = {("open", "ai"): "OpenAI", ("lang", "chain"): "LangChain", ("git", "hub"): "GitHub",
+                ("chat", "gpt"): "ChatGPT", ("hugging", "face"): "Hugging Face",
+                ("anth", "ropic"): "Anthropic", ("co", "pilot"): "Copilot"}
+_BRAND_CASE = {"openai": "OpenAI", "langchain": "LangChain", "github": "GitHub", "chatgpt": "ChatGPT",
+               "anthropic": "Anthropic", "copilot": "Copilot", "llama": "Llama", "gpt": "GPT",
+               "mcp": "MCP", "rag": "RAG", "ollama": "Ollama", "vllm": "vLLM", "ai": "AI"}
+
+
+def _fix_brand_words(words):
+    """Correct brand-name splits/casing in Whisper word-timestamps so captions read 'OpenAI', not
+    'open ai'. Merges a split pair into one word (keeping the combined timespan) + fixes casing."""
+    if not words:
+        return words
+    out = []
+    i = 0
+    while i < len(words):
+        w = words[i]
+        cur = re.sub(r'[^a-z]', '', (w.get("w") or "").lower())
+        raw_nxt = (words[i + 1].get("w") or "") if i + 1 < len(words) else ""
+        nxt = re.sub(r'[^a-z]', '', raw_nxt.lower())
+        # tolerate a trailing possessive/plural on the 2nd word ('AIs'/'AI's' -> 'ais' -> 'ai')
+        nxt_base = re.sub(r's$', '', nxt) if nxt.endswith("s") and (cur, re.sub(r's$', '', nxt)) in _BRAND_MERGE else nxt
+        merged = _BRAND_MERGE.get((cur, nxt)) or _BRAND_MERGE.get((cur, nxt_base))
+        if merged:
+            # preserve a possessive 's (OpenAI's) if the original 2nd word had one
+            if re.search(r"['’]s\b|s\b", raw_nxt) and nxt_base != nxt:
+                merged += "'s" if "'" in raw_nxt or "’" in raw_nxt else "s"
+            out.append({"w": merged, "s": w["s"], "e": words[i + 1]["e"]})
+            i += 2
+            continue
+        # single-word casing fix (preserve any trailing punctuation Whisper attached)
+        base = re.sub(r'[^a-z]', '', (w.get("w") or "").lower())
+        if base in _BRAND_CASE:
+            punct = re.sub(r'[\w]', '', w.get("w") or "")   # trailing , . etc.
+            out.append({"w": _BRAND_CASE[base] + punct, "s": w["s"], "e": w["e"]})
+        else:
+            out.append(w)
+        i += 1
+    return out
+
+
 def _align_sync(wav_path):
     try:
         m = _get_whisper()
@@ -659,7 +702,7 @@ def _align_sync(wav_path):
         for s in segs:
             for w in (s.words or []):
                 words.append({"w": (w.word or "").strip(), "s": round(float(w.start), 2), "e": round(float(w.end), 2)})
-        return words
+        return _fix_brand_words(words)
     except Exception:
         return []
 
