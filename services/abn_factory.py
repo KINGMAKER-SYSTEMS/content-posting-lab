@@ -2195,6 +2195,8 @@ async def produce_one_episode(force_deepdive=False, force_lore=None):
         # strip the LLM's guessed chapter lines, splice in real ones before the Tags: block
         seo = package["seo"]
         seo = _re.sub(r'(?m)^\s*\d+:\d{2}\s*[—-].*$', '', seo)  # remove fake "M:SS — ..." lines
+        seo = _re.sub(r'[ \t]{2,}', ' ', seo)                   # collapse double-spaces (blemish in shipped desc)
+        seo = _re.sub(r'(?m)[ \t]+$', '', seo)                  # strip trailing whitespace per line
         seo = _re.sub(r'\n{3,}', '\n\n', seo).strip()
         if "Tags:" in seo:
             head, tags = seo.split("Tags:", 1)
