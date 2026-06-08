@@ -46,7 +46,11 @@ def capture_sync(url: str, name: str, seconds: float = 8.0) -> str | None:
                 txt = ""
             bot_signals = ("verify you are human", "performing security verification",
                            "checking your browser", "are you a robot", "enable javascript and cookies",
-                           "ddos protection by", "just a moment")
+                           "ddos protection by", "just a moment",
+                           # a bare Cloudflare "Verifying..." challenge widget slipped through (caught on
+                           # a real frame: a 'Verifying... CLOUDFLARE' bot-wall rendered as the b-roll).
+                           "verifying...", "verifying you are", "needs to review the security",
+                           "cloudflare", "cf-challenge", "cf_chl", "ray id", "attention required")
             # ERROR-PAGE detection — a 504/502/timeout/down page is worthless footage and was leaking
             # into episodes as slop (a '504 Gateway Time-out' frame appeared at the open). Bail the
             # same way so the pipeline falls back to a designed card.
@@ -55,7 +59,10 @@ def capture_sync(url: str, name: str, seconds: float = 8.0) -> str | None:
                              "this page isn't working", "took too long to respond", "site can't be reached",
                              "page not found", "404 not found", "internal server error", "error 500",
                              "temporarily unavailable", "origin server")
-            if any(sig in txt for sig in bot_signals) or any(sig in txt for sig in error_signals):
+            # NEAR-EMPTY page: a bot-wall/challenge often renders its content in an iframe, leaving the
+            # body with almost no text — that's worthless footage (a blank/near-blank scroll). Bail.
+            near_empty = len(txt.strip()) < 40
+            if near_empty or any(sig in txt for sig in bot_signals) or any(sig in txt for sig in error_signals):
                 ctx.close(); browser.close()
                 for f in rec_dir.glob("*"):
                     try: f.unlink()
