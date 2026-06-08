@@ -1,0 +1,214 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>ABN Editor Bay</title>
+<style>
+  :root{ --bg:#0b0e14; --panel:#11151f; --line:#1e2433; --txt:#e7ecf3; --mut:#9fb3c8; --cyan:#7fd2ff; --red:#ff3b3b; }
+  *{ box-sizing:border-box; }
+  html,body{ margin:0; height:100%; background:var(--bg); color:var(--txt); font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,sans-serif; }
+  #app{ display:flex; flex-direction:column; height:100vh; }
+  header{ display:flex; align-items:center; gap:12px; padding:10px 16px; background:var(--panel); border-bottom:1px solid var(--line); }
+  header h1{ font-size:15px; margin:0; font-weight:700; }
+  header h1 .t{ color:var(--cyan); }
+  .chip{ background:var(--line); color:var(--mut); border-radius:12px; padding:3px 10px; font-size:12px; }
+  .main{ display:flex; flex:1; min-height:0; }
+  .left{ flex:1; display:flex; flex-direction:column; min-width:0; padding:16px; gap:12px; }
+  .stage{ position:relative; background:#000; border-radius:10px; overflow:hidden; aspect-ratio:16/9; max-height:52vh; }
+  .stage video{ width:100%; height:100%; object-fit:contain; display:block; }
+  .stage canvas{ position:absolute; inset:0; width:100%; height:100%; }
+  .transport{ display:flex; align-items:center; gap:10px; }
+  button.icon{ background:var(--line); color:var(--cyan); border:none; border-radius:8px; width:38px; height:34px; font-size:16px; cursor:pointer; }
+  button.tool{ background:var(--bg); color:var(--mut); border:1px solid var(--line); border-radius:8px; height:34px; padding:0 10px; cursor:pointer; font-size:13px; }
+  button.tool.on{ color:var(--red); border-color:var(--red); background:#1a1216; }
+  .time{ font-variant-numeric:tabular-nums; font-size:12px; color:var(--mut); width:96px; }
+  input[type=range]{ flex:1; accent-color:var(--cyan); }
+  .tracks{ background:var(--panel); border-radius:10px; padding:8px; flex:1; min-height:0; overflow:auto; position:relative; }
+  .trk{ display:flex; align-items:center; height:26px; }
+  .trk .lbl{ width:96px; flex:0 0 96px; font-size:12px; font-weight:600; }
+  .trk .lane{ position:relative; flex:1; height:18px; background:var(--bg); border-radius:3px; }
+  .blk{ position:absolute; top:0; height:100%; border-radius:3px; opacity:.55; cursor:pointer; }
+  .blk:hover{ opacity:1; }
+  #playhead{ position:absolute; top:8px; width:2px; background:#fff; pointer-events:none; z-index:5; }
+  .right{ width:340px; flex:0 0 340px; background:var(--panel); border-left:1px solid var(--line); display:flex; flex-direction:column; }
+  .right .pad{ padding:14px; }
+  .right h2{ font-size:12px; color:var(--mut); margin:0 0 8px; letter-spacing:.04em; }
+  textarea{ width:100%; min-height:54px; background:var(--bg); color:var(--txt); border:1px solid var(--line); border-radius:8px; padding:8px; font:inherit; font-size:13px; resize:vertical; }
+  .btnrow{ display:flex; gap:8px; margin-top:8px; }
+  .btnrow button{ flex:1; height:32px; border-radius:8px; border:none; cursor:pointer; font-size:13px; font-weight:600; }
+  .pin{ background:var(--cyan); color:var(--bg); }
+  .frame{ background:transparent; color:var(--red); border:1px solid var(--red) !important; }
+  .hint{ font-size:11px; color:#5b6678; margin-top:6px; }
+  .notes{ overflow-y:auto; border-top:1px solid var(--line); flex:1; }
+  .note{ padding:10px 14px; border-bottom:1px solid var(--line); }
+  .note .meta{ display:flex; gap:8px; align-items:center; margin-bottom:6px; }
+  .tchip{ background:var(--bg); color:var(--cyan); border-radius:10px; padding:2px 8px; font-size:11px; cursor:pointer; font-variant-numeric:tabular-nums; }
+  .kchip{ background:var(--line); border-radius:10px; padding:2px 8px; font-size:11px; }
+  .note img{ width:100%; border-radius:6px; margin-bottom:6px; cursor:pointer; }
+  .note .body{ font-size:13px; white-space:pre-wrap; }
+  .note .del{ float:right; color:#5b6678; cursor:pointer; background:none; border:none; font-size:14px; }
+  .center{ display:grid; place-items:center; height:100vh; color:var(--mut); }
+</style>
+</head>
+<body>
+<div id="app"><div class="center" id="boot">Loading editor…</div></div>
+
+<script>
+const $ = (s,r=document)=>r.querySelector(s);
+const fmt = s => { s=Math.max(0,s||0); return Math.floor(s/60)+':'+String(Math.floor(s%60)).padStart(2,'0'); };
+const TRACKS = [
+  {key:'hook',  label:'Hook',         color:'#ef4444', m:s=>s.includes('hook')},
+  {key:'card',  label:'Cards',        color:'#7fd2ff', m:s=>/_(number|vs|quote|diagram)\b|v2sc/.test(s) && !s.includes('hook')},
+  {key:'demo',  label:'Demo',         color:'#a78bfa', m:s=>s.includes('demo')},
+  {key:'ui',    label:'B-roll / UI',  color:'#34d399', m:s=>s.includes('_ui')||s.includes('broll')||s.includes('_bg')},
+  {key:'lower', label:'Lower-thirds', color:'#fbbf24', m:()=>false},
+  {key:'vo',    label:'VO / Captions',color:'#60a5fa', m:()=>false},
+];
+
+const epId = location.pathname.split('/').filter(Boolean).pop();
+let DATA=null, notes=[], total=1, tool='none', shapes=[], drawing=false;
+
+async function boot(){
+  try{
+    const r = await fetch('/api/agenticnews/editor/'+epId);
+    if(!r.ok) throw new Error('load '+r.status);
+    DATA = await r.json();
+    notes = DATA.notes||[];
+    total = DATA.duration || (DATA.timeline&&DATA.timeline.totalSec) || 1;
+    render();
+  }catch(e){ $('#app').innerHTML = '<div class="center">Could not load <b style="color:#fff;margin:0 6px">'+epId+'</b> — '+e.message+'</div>'; }
+}
+
+function segStarts(){ const segs=(DATA.timeline&&DATA.timeline.segments)||[]; let a=0; return segs.map(s=>{const st=a; a+=s.durationSec||0; return st;}); }
+
+function buildBlocks(){
+  const segs=(DATA.timeline&&DATA.timeline.segments)||[]; const starts=segStarts();
+  return TRACKS.map(tr=>{
+    const blocks=[];
+    segs.forEach((seg,i)=>{
+      const base=starts[i];
+      if(tr.key==='lower'){ (seg.lowerThirds||[]).forEach(lt=>blocks.push({start:base+lt.startSec,dur:lt.durationSec,label:lt.headline||''})); }
+      else if(tr.key==='vo'){ if(seg.durationSec) blocks.push({start:base,dur:seg.durationSec,label:''}); }
+      else { (seg.shots||[]).forEach(sh=>{ const src=sh.src||''; if(tr.m(src)) blocks.push({start:base+(sh.startSec||0),dur:sh.durationSec||0,label:''}); }); }
+    });
+    return {...tr, blocks};
+  });
+}
+
+function render(){
+  total = DATA.duration || total;
+  $('#app').innerHTML = `
+  <header>
+    <h1>Editor Bay · <span class="t">${(DATA.title||epId).replace(/</g,'&lt;')}</span></h1>
+    <span class="chip">${DATA.stage||''}</span>
+    <span class="chip" id="cnt">${fmt(total)} · ${notes.length} notes</span>
+  </header>
+  <div class="main">
+    <div class="left">
+      <div class="stage" id="stage">
+        <video id="vid" src="${DATA.videoUrl}" preload="metadata"></video>
+        <canvas id="cv"></canvas>
+      </div>
+      <div class="transport">
+        <button class="icon" id="play">▶</button>
+        <span class="time" id="t">0:00 / ${fmt(total)}</span>
+        <input type="range" id="seek" min="0" max="${total}" step="0.1" value="0" />
+        <button class="tool" data-tool="draw">✎</button>
+        <button class="tool" data-tool="circle">◯</button>
+        <button class="tool" data-tool="arrow">↗</button>
+        <button class="tool" id="undo">↶ undo</button>
+      </div>
+      <div class="tracks" id="tracks"></div>
+    </div>
+    <div class="right">
+      <div class="pad">
+        <h2>EDIT NOTES @ <span id="nt">0:00</span></h2>
+        <textarea id="draft" placeholder="What needs fixing here? (rooted at this timestamp)"></textarea>
+        <div class="btnrow">
+          <button class="pin" id="pin">📌 Pin note</button>
+          <button class="frame" id="fnote">✎ Frame note</button>
+        </div>
+        <div class="hint">Pin = timestamp + comment. Frame = pause, draw on the frame, then save.</div>
+      </div>
+      <div class="notes" id="notes"></div>
+    </div>
+  </div>`;
+  paintTracks(); wireEvents(); paintNotes();
+}
+
+function paintTracks(){
+  const tb=buildBlocks(); const el=$('#tracks');
+  el.innerHTML = tb.map(tr=>`
+    <div class="trk"><div class="lbl" style="color:${tr.color}">${tr.label}</div>
+      <div class="lane" data-lane="${tr.key}">
+        ${tr.blocks.map(b=>`<div class="blk" title="${tr.label} @ ${fmt(b.start)}${b.label?' — '+b.label.replace(/"/g,''):''}"
+            style="left:${(b.start/total)*100}%;width:${Math.max(0.4,(b.dur/total)*100)}%;background:${tr.color}"
+            data-seek="${b.start}"></div>`).join('')}
+      </div></div>`).join('') + `<div id="playhead" style="height:${tb.length*26}px;top:8px;left:96px"></div>`;
+  el.querySelectorAll('.blk').forEach(b=>b.onclick=()=>seek(parseFloat(b.dataset.seek)));
+}
+
+let vid, cv, ctx;
+function wireEvents(){
+  vid=$('#vid'); cv=$('#cv'); ctx=cv.getContext('2d');
+  const resize=()=>{ const r=$('#stage').getBoundingClientRect(); cv.width=r.width; cv.height=r.height; redraw(); };
+  new ResizeObserver(resize).observe($('#stage')); resize();
+  vid.addEventListener('loadedmetadata',()=>{ total=vid.duration||total; $('#seek').max=total; });
+  vid.addEventListener('timeupdate',()=>updT(vid.currentTime));
+  $('#play').onclick=()=>{ if(vid.paused){setTool('none');vid.play();$('#play').textContent='⏸';} else {vid.pause();$('#play').textContent='▶';} };
+  $('#seek').oninput=e=>seek(parseFloat(e.target.value));
+  $('#stage').onclick=e=>{ if(tool==='none'){ vid.paused?(vid.play(),$('#play').textContent='⏸'):(vid.pause(),$('#play').textContent='▶'); } };
+  document.querySelectorAll('.tool[data-tool]').forEach(b=>b.onclick=()=>setTool(b.dataset.tool===tool?'none':b.dataset.tool));
+  $('#undo').onclick=()=>{ shapes.pop(); redraw(); };
+  $('#pin').onclick=()=>save('pin');
+  $('#fnote').onclick=()=>save('frame');
+  cv.onmousedown=down; cv.onmousemove=move; cv.onmouseup=()=>drawing=false; cv.onmouseleave=()=>drawing=false;
+}
+function setTool(t){ tool=t; document.querySelectorAll('.tool[data-tool]').forEach(b=>b.classList.toggle('on',b.dataset.tool===t)); cv.style.pointerEvents=t==='none'?'none':'auto'; cv.style.cursor=t==='none'?'default':'crosshair'; if(t!=='none'&&vid){vid.pause();$('#play').textContent='▶';} }
+function pos(e){ const r=cv.getBoundingClientRect(); return {x:(e.clientX-r.left)*(cv.width/r.width), y:(e.clientY-r.top)*(cv.height/r.height)}; }
+function down(e){ if(tool==='none')return; drawing=true; const p=pos(e); if(tool==='draw')shapes.push({t:'line',pts:[p.x,p.y]}); else if(tool==='circle')shapes.push({t:'circle',x:p.x,y:p.y,r:2}); else shapes.push({t:'arrow',pts:[p.x,p.y,p.x,p.y]}); }
+function move(e){ if(!drawing)return; const p=pos(e),s=shapes[shapes.length-1]; if(!s)return; if(s.t==='line')s.pts.push(p.x,p.y); else if(s.t==='circle')s.r=Math.hypot(p.x-s.x,p.y-s.y); else s.pts=[s.pts[0],s.pts[1],p.x,p.y]; redraw(); }
+function redraw(){ if(!ctx)return; ctx.clearRect(0,0,cv.width,cv.height); ctx.strokeStyle='#ff3b3b'; ctx.fillStyle='#ff3b3b'; ctx.lineWidth=4; ctx.lineCap='round';
+  for(const s of shapes){ ctx.beginPath();
+    if(s.t==='line'){ ctx.moveTo(s.pts[0],s.pts[1]); for(let i=2;i<s.pts.length;i+=2)ctx.lineTo(s.pts[i],s.pts[i+1]); ctx.stroke(); }
+    else if(s.t==='circle'){ ctx.arc(s.x,s.y,s.r,0,7); ctx.stroke(); }
+    else if(s.t==='arrow'){ ctx.moveTo(s.pts[0],s.pts[1]); ctx.lineTo(s.pts[2],s.pts[3]); ctx.stroke();
+      const a=Math.atan2(s.pts[3]-s.pts[1],s.pts[2]-s.pts[0]); ctx.beginPath(); ctx.moveTo(s.pts[2],s.pts[3]); ctx.lineTo(s.pts[2]-14*Math.cos(a-0.4),s.pts[3]-14*Math.sin(a-0.4)); ctx.lineTo(s.pts[2]-14*Math.cos(a+0.4),s.pts[3]-14*Math.sin(a+0.4)); ctx.closePath(); ctx.fill(); } } }
+
+let cur=0;
+function updT(t){ cur=t; $('#t').textContent=fmt(t)+' / '+fmt(total); $('#nt').textContent=fmt(t); $('#seek').value=t; const ph=$('#playhead'); if(ph) ph.style.left='calc(96px + '+(t/total)*100+'% * (100% - 96px) / 100%)'; }
+function seek(s){ if(vid){ vid.currentTime=Math.max(0,Math.min(s,total)); updT(vid.currentTime); } }
+
+function captureFrame(){ try{ const c=document.createElement('canvas'); c.width=480; c.height=Math.round(480*(vid.videoHeight/vid.videoWidth||0.5625)); const x=c.getContext('2d'); x.drawImage(vid,0,0,c.width,c.height); const sx=c.width/cv.width, sy=c.height/cv.height; x.strokeStyle='#ff3b3b'; x.fillStyle='#ff3b3b'; x.lineWidth=3; x.lineCap='round'; for(const s of shapes){ x.beginPath(); if(s.t==='line'){x.moveTo(s.pts[0]*sx,s.pts[1]*sy); for(let i=2;i<s.pts.length;i+=2)x.lineTo(s.pts[i]*sx,s.pts[i+1]*sy);} else if(s.t==='circle'){x.arc(s.x*sx,s.y*sy,s.r*sx,0,7);} else {x.moveTo(s.pts[0]*sx,s.pts[1]*sy); x.lineTo(s.pts[2]*sx,s.pts[3]*sy);} x.stroke(); } return c.toDataURL('image/jpeg',0.7); }catch(e){ return null; } }
+
+async function save(kind){
+  const text=$('#draft').value.trim();
+  if(!text && (kind==='pin' || shapes.length===0)) return;
+  const note={ t:Math.round(cur*100)/100, kind, text, createdAt:new Date().toISOString() };
+  if(kind==='frame'){ note.frameImg=captureFrame(); }
+  notes.push(note); notes.sort((a,b)=>a.t-b.t);
+  $('#draft').value=''; shapes=[]; redraw(); setTool('none'); paintNotes(); $('#cnt').textContent=fmt(total)+' · '+notes.length+' notes';
+  try{ const r=await fetch('/api/agenticnews/editor/'+epId+'/notes',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(note)}); const o=await r.json(); if(o&&o.note&&o.note.id){ note.id=o.note.id; } }catch(e){}
+}
+async function del(n){ notes=notes.filter(x=>x!==n); paintNotes(); $('#cnt').textContent=fmt(total)+' · '+notes.length+' notes'; if(n.id){ try{ await fetch('/api/agenticnews/editor/'+epId+'/notes/'+n.id,{method:'DELETE'}); }catch(e){} } }
+
+function paintNotes(){
+  const el=$('#notes');
+  if(!notes.length){ el.innerHTML='<div class="note" style="color:#5b6678">No notes yet</div>'; return; }
+  el.innerHTML='';
+  notes.forEach(n=>{
+    const d=document.createElement('div'); d.className='note';
+    d.innerHTML=`<button class="del">✕</button>
+      <div class="meta"><span class="tchip">${fmt(n.t)}</span><span class="kchip" style="color:${n.kind==='frame'?'#ff3b3b':'#9fb3c8'}">${n.kind==='frame'?'✎ frame':'📌 pin'}</span></div>
+      ${n.frameImg?`<img src="${n.frameImg}">`:''}<div class="body">${(n.text||'').replace(/</g,'&lt;')}</div>`;
+    d.querySelector('.tchip').onclick=()=>seek(n.t);
+    if(n.frameImg) d.querySelector('img').onclick=()=>seek(n.t);
+    d.querySelector('.del').onclick=()=>del(n);
+    el.appendChild(d);
+  });
+}
+boot();
+</script>
+</body>
+</html>

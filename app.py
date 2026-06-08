@@ -294,6 +294,14 @@ async def serve_factory():
     return FileResponse(Path(__file__).resolve().parent / "yt-pipeline" / "factory.html", media_type="text/html")
 
 
+# ABN Editor Bay — STANDALONE review cockpit for YouTube episodes (no content-lab SPA; single HTML
+# file like /factory). /abn-editor lists nothing; /abn-editor/<ep_id> opens the bay for that episode.
+@app.get("/abn-editor", include_in_schema=False)
+@app.get("/abn-editor/{ep_id}", include_in_schema=False)
+async def serve_abn_editor(ep_id: str = ""):
+    return FileResponse(Path(__file__).resolve().parent / "yt-pipeline" / "editor.html", media_type="text/html")
+
+
 app.mount(
     "/projects",
     StaticFiles(directory="projects", check_dir=False),
