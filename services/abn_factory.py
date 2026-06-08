@@ -827,22 +827,16 @@ async def _real_demo(repo_url: str, name: str):
         # The tape runs in repo_dir (already cloned). Every command here is READ-ONLY inspection.
         # We re-show the clone command for narrative honesty, but point it at the already-fetched
         # copy via `echo` of the real result so we don't re-hit the network in the footage.
+        # FAST TO PAYOFF: the demo previously spent ~6s typing a header + a 'git clone' comment line
+        # before any real output — a near-empty terminal for the whole opening (caught on a real frame).
+        # Cut the ceremony: a SHORT header (faster typing) then go straight to the real `ls` output so
+        # the repo contents (the actual proof) fill the screen quickly.
         body = [
             f"Output {out.name}",
             "Set Width 1920", "Set Height 1080", "Set FontSize 30",
-            "Set TypingSpeed 28ms", 'Set Theme "Dracula"', "Set Padding 40",
-            f'Type "# AgenticBuilderNews — real repo, real output: {owner_repo}"', "Enter", "Sleep 600ms",
-            # narrative clone: type the command for the viewer, but DON'T execute a real second clone
-            # (the repo is already fetched above; re-running streams pages of progress that collide with
-            # the next command). A trailing " #" comments it out so the shell shows it but runs nothing,
-            # then we print one clean completion line. The REAL output comes from ls/tree/log/README below.
-            # NOTE: leading '#' so the shell does NOT execute a real second clone (which streams pages of
-            # progress that collide with the next command). It still DISPLAYS the clone command verbatim.
-            # Keep echo args UNQUOTED — VHS's tape parser chokes on nested escaped quotes in Type "...".
-            # show the clone command as a comment (no real second clone), then go straight to the REAL
-            # ls output — the actual repo contents are the proof, no need for a fake echo confirmation line.
-            f'Type "# $ git clone {clone_url}"', "Enter", "Sleep 900ms",
-            'Type "ls"', "Enter", "Sleep 2000ms",
+            "Set TypingSpeed 18ms", 'Set Theme "Dracula"', "Set Padding 40",
+            f'Type "# {owner_repo}"', "Enter", "Sleep 300ms",
+            'Type "ls"', "Enter", "Sleep 2200ms",
         ]
         # show the project structure (one level, dirs first) — real `ls`/`tree` output
         if shutil.which("tree"):
@@ -1411,7 +1405,9 @@ def _plan_shots(duration, screenshot, card, words, keywords, source_url, demo=No
 
     # ── Live code demo (close) ────────────────────────────────────────────────────────────────────
     if has_demo:
-        DEMO_LEADIN = 3.0  # skip the comment-header typing intro — open on real code
+        # With the trimmed ceremony (short header + ls), real `ls` output appears by ~2.5s. Lead-in
+        # of 2.5s opens the demo on actual repo content, not the typing warm-up.
+        DEMO_LEADIN = 2.5
         for j, (ds, de, off) in enumerate(_chop(demo_start, round(duration, 2), target=6.0, max_n=4, lead=DEMO_LEADIN)):
             m = pick()
             # demo is a terminal — keep moves subtler (scale toward 1.0) but still rotate direction
