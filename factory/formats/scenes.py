@@ -103,12 +103,24 @@ def hero_number_label(text: str, stat: str) -> str:
         # drop a trailing dangling connective ('of', 'for', 'with', 'on' with nothing meaningful after)
         while words and words[-1].lower() in ("of", "for", "with", "on", "to", "in", "and", "the", "a"):
             words.pop()
-        if 1 <= len(words) <= 5:
-            return " ".join(words)
-        if len(words) > 5:
-            return " ".join(words[:3])    # tight noun phrase, never a run-on
-        # tail too short — try the words BEFORE the stat (e.g. "cuts cost by 60%")
+        # REJECT a label that's ONLY a weak adverb — it describes HOW, not WHAT the number measures
+        # ('$200 billion / PRIVATELY' meant nothing; '40% / RECENTLY' too). Fall through to the words
+        # BEFORE the stat (the verb/noun: 'valued at', 'raised', 'cuts cost') instead.
+        _ADV_ONLY = {"privately", "recently", "already", "now", "today", "currently", "reportedly",
+                     "officially", "publicly", "globally", "again", "soon", "yet", "still", "here",
+                     "this", "year", "month", "week"}
+        # strip a leading weak adverb ('privately this year' -> drop -> fall back to the head verb)
+        while words and words[0].lower() in _ADV_ONLY:
+            words.pop(0)
+        if words:
+            if 1 <= len(words) <= 5:
+                return " ".join(words)
+            if len(words) > 5:
+                return " ".join(words[:3])    # tight noun phrase, never a run-on
+        # tail too short OR adverb-only — try the words BEFORE the stat (e.g. "cuts cost by 60%")
         head = re.split(r'[.,;]', text[:idx])[-1].strip(" ,.-")
+        # strip a trailing connective the stat hung off ('valued at' keeps, 'raised' keeps)
+        head = re.sub(r'\s+(at|to|of|by|for|around|about|over|under|nearly)\s*$', '', head, flags=re.I).strip()
         hwords = head.split()
         if 2 <= len(hwords) <= 6:
             return head
