@@ -1708,6 +1708,13 @@ def _build_timeline(ep_id, ep_idx, segments, animated_bg=None):
                         sh["type"] = "broll"; sh["src"] = _disk(bg); sh["muteSource"] = True
                         sh["clipStartSec"] = 0.5  # skip any i2v warm-up frame
         pops = [{"word": k["text"], "s": k["s"], "atSec": k["s"], "durationSec": min(2.4, k["e"] - k["s"] + 1.5), "color": k["color"]} for k in kws]
+        # DON'T POP OVER A DESIGNED CARD: a number/vs/diagram/quote/hook card IS the visual emphasis;
+        # a keyword-pop box layered on it is redundant clutter (caught on a real frame: a '4x' pop box
+        # stacked on the '4x' number card). Drop pops that fall inside a designed-card shot window.
+        _card_windows = [(sh.get("startSec", 0), sh.get("endSec", 0)) for sh in shots
+                         if "v2sc" in (sh.get("src") or "")]
+        if _card_windows:
+            pops = [p for p in pops if not any(cs <= p["s"] < ce for cs, ce in _card_windows)]
         # KEEP THE HOOK CLEAN: on seg 0, suppress keyword-pops only during the OPENING hook window
         # (the first ~12s) so the opening statement stands alone (a 'real-world' highlight box layered
         # on the hook cluttered the most important frame — caught on a real render). Capped at 12s so
