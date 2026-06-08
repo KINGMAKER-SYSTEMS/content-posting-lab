@@ -1653,6 +1653,11 @@ def _build_timeline(ep_id, ep_idx, segments, animated_bg=None):
             if hook_starts and min(hook_starts) <= 0.5:        # hook owns the open
                 clean_until = 12.0
                 pops = [p for p in pops if p["s"] >= clean_until]
+                # also strip per-SHOT highlight boxes in the hook window — pops aren't the only path
+                # to a box over the hook (a 'end-to-end' highlight box survived the pop-only filter).
+                for sh in shots:
+                    if sh.get("startSec", 0) < clean_until and sh.get("highlight"):
+                        sh.pop("highlight", None)
         # CAPTION best-practices (format-aware, not the old hardcoded 4s-on-every-segment template):
         # - DON'T put a lower-third over the first-5s HOOK (seg 0) — it competes with the hook card.
         # - vary timing/hold per segment so it never reads formulaic (lead the audio slightly, per research).
