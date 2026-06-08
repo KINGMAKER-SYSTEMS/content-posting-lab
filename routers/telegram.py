@@ -10,7 +10,7 @@ import os
 import re
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Header
 from pydantic import BaseModel
 
 from services.telegram import (
@@ -701,13 +701,27 @@ class BindUserRequest(BaseModel):
     username: str | None = None
 
 
+def _require_admin_key(x_agent_key: str | None) -> None:
+    """Gate poster-binding (admin) endpoints behind MINIAPP_AGENT_KEY when configured. Binding a
+    Telegram id to a poster grants that user the poster's Mini App content — it must NOT be public
+    (was unauthenticated: anyone could bind themselves to any poster and read its content)."""
+    expected = os.getenv("MINIAPP_AGENT_KEY", "").strip()
+    if not expected:
+        return  # not configured → open, consistent with the rest of the app's auth posture
+    if not x_agent_key or x_agent_key.strip() != expected:
+        raise HTTPException(status_code=401, detail="invalid or missing agent key")
+
+
 @router.post("/posters/{poster_id}/users")
-async def bind_poster_user(poster_id: str, req: BindUserRequest):
+async def bind_poster_user(poster_id: str, req: BindUserRequest,
+                           x_agent_key: str | None = Header(default=None)):
     """Link a Telegram user id (and optional @username) to a poster.
 
     Lets the Mini App resolve an incoming `initData` to this poster. The user
     id is the numeric Telegram id (from the WebApp `initDataUnsafe.user.id`).
+    Gated by X-Agent-Key (admin op — binding controls who can read a poster's content).
     """
+    _require_admin_key(x_agent_key)
     if not get_poster(poster_id):
         raise HTTPException(status_code=404, detail="Poster not found")
     poster = bind_user_to_poster(poster_id, req.user_id, req.username)
@@ -720,8 +734,10 @@ async def bind_poster_user(poster_id: str, req: BindUserRequest):
 
 
 @router.delete("/posters/{poster_id}/users/{user_id}")
-async def unbind_poster_user(poster_id: str, user_id: int):
-    """Unlink a Telegram user id from a poster."""
+async def unbind_poster_user(poster_id: str, user_id: int,
+                             x_agent_key: str | None = Header(default=None)):
+    """Unlink a Telegram user id from a poster. Gated by X-Agent-Key (admin op)."""
+    _require_admin_key(x_agent_key)
     if not get_poster(poster_id):
         raise HTTPException(status_code=404, detail="Poster not found")
     poster = unbind_user_from_poster(poster_id, user_id)
