@@ -202,7 +202,10 @@ def diagram_card(title: str, steps: list[str], name: str, assets_dir: Path, font
         parts.append(f'-gravity northwest -font {shlex.quote(disp)} -fill "{BRAND_WHITE}" -pointsize 40 '
                      f'-annotate +620+{y+34} {shlex.quote(lab)} ')
         if i < len(steps) - 1:
-            parts.append(f'-gravity north -fill "{accent}" -pointsize 44 -annotate +0+{y+108} "v" ')
+            # a real drawn down-chevron in the gap between boxes (was a literal lowercase 'v' that
+            # read like a typo). Centered at x=960, in the ~40px gap below this box.
+            ay = y + 110 + 8   # just below the box bottom
+            parts.append(f'-fill "{accent}" -draw "polygon 940,{ay} 980,{ay} 960,{ay+22}" ')
         y += 150
     parts.append(f'-font {shlex.quote(disp)} -fill "#3a4254" -pointsize 26 -gravity south -annotate +0+50 "{WATERMARK}" ')
     parts.append(shlex.quote(str(out)))
