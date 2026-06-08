@@ -1532,11 +1532,21 @@ def _build_timeline(ep_id, ep_idx, segments, animated_bg=None):
                         sh["type"] = "broll"; sh["src"] = _disk(bg); sh["muteSource"] = True
                         sh["clipStartSec"] = 0.5  # skip any i2v warm-up frame
         pops = [{"word": k["text"], "s": k["s"], "atSec": k["s"], "durationSec": min(2.4, k["e"] - k["s"] + 1.5), "color": k["color"]} for k in kws]
+        # CAPTION best-practices (format-aware, not the old hardcoded 4s-on-every-segment template):
+        # - DON'T put a lower-third over the first-5s HOOK (seg 0) — it competes with the hook card.
+        # - vary timing/hold per segment so it never reads formulaic (lead the audio slightly, per research).
+        # - lead the audio by ~0.2s; hold a touch longer on longer segments.
+        lower_thirds = []
+        if seg_index != 0:                                   # hook segment opens clean — no lower-third
+            lt_start = round(0.6 + (seg_index % 3) * 0.25, 2)  # slight stagger so it's not identical each time
+            lt_hold = 3.5 if seg.get("duration", 60) < 70 else 4.2
+            lower_thirds = [{"startSec": lt_start, "durationSec": lt_hold,
+                             "headline": _clip(seg["title"], 64), "sourceUrl": seg["source_url"]}]
         tsegs.append({
             "segmentId": seg["segment_id"], "title": seg["title"], "sourceUrl": seg["source_url"],
             "shots": shots, "wordTimestamps": seg["words"], "keywordPops": pops,
             "audio": {"vo": {"src": _disk(seg["vo_path"]), "duration": seg["duration"]}},
-            "lowerThirds": [{"startSec": 0.5, "durationSec": 4.0, "headline": _clip(seg["title"], 72), "sourceUrl": seg["source_url"]}],
+            "lowerThirds": lower_thirds,
             "durationSec": seg["duration"],
         })
         total += seg["duration"]
