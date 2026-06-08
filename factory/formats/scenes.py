@@ -89,16 +89,24 @@ def hero_number_label(text: str, stat: str) -> str:
         # words AFTER the stat are usually what it measures — but CUT at a clause-boundary word so the
         # label is a tight noun phrase ('tokens'), not a run-on ('tokens huge for complex tasks').
         tail = re.split(r'[.,;]', text[idx + len(stat):])[0].strip(" ,.-")
-        tail = re.split(r'\s+(?:huge|big|massive|which|that|so|but|now|enough|making|meaning|'
-                        r'compared|than)\b', tail, 1, flags=re.I)[0].strip()
-        words = tail.split()
+        # cut at a clause-boundary word so the label stays a tight noun phrase ('developers'), not a
+        # run-on into the next clause ('developers weekly to write code faster'). Includes 'to'+verb
+        # infinitives and 'per/every/while/when' adverbials that start a new descriptive clause.
+        _BOUND = (r'huge|big|massive|which|that|so|but|now|enough|making|meaning|compared|than|to|per|'
+                  r'every|while|when|after|before|using|because|since|in order|across|on every|for each')
+        cut = re.split(r'\s+(?:' + _BOUND + r')\b', tail, 1, flags=re.I)[0].strip()
+        # if the boundary word was at the very START (cut → empty), the tail is itself a clause
+        # ('per query across the board'); keep just its first 2 words as the noun phrase instead.
+        if not cut:
+            cut = " ".join(tail.split()[:2])
+        words = cut.split()
         # drop a trailing dangling connective ('of', 'for', 'with', 'on' with nothing meaningful after)
         while words and words[-1].lower() in ("of", "for", "with", "on", "to", "in", "and", "the", "a"):
             words.pop()
-        if 1 <= len(words) <= 6:
+        if 1 <= len(words) <= 5:
             return " ".join(words)
-        if len(words) > 6:
-            return " ".join(words[:5])
+        if len(words) > 5:
+            return " ".join(words[:3])    # tight noun phrase, never a run-on
         # tail too short — try the words BEFORE the stat (e.g. "cuts cost by 60%")
         head = re.split(r'[.,;]', text[:idx])[-1].strip(" ,.-")
         hwords = head.split()
