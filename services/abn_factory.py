@@ -334,6 +334,24 @@ def _score(it):
                                           "open-source", "open source", "api", "agent", "model")) else 0
     drama = 2 if any(k in t for k in ("rogue", "deleted", "hit piece", "silently", "secretly", "without asking", "scam")) else 0
     recency = 2 if any(k in t for k in ("just", "now", "today", "this week")) else 0
+    # SEARCHABILITY (the 100k-subs lever): boost household-name tools/products people actually search,
+    # PENALIZE obscure fringe repos (rllm, ntsc-rs, awesome-* lists) that nobody searches — the niche
+    # drift that was filling episodes. The scout can only pick from what scoring floats up.
+    SEARCHABLE = ("gpt", "chatgpt", "claude", "gemini", "llama", "cursor", "copilot", "openai",
+                  "anthropic", "perplexity", "midjourney", "sora", "grok", "deepseek", "mistral",
+                  "hugging face", "huggingface", "ollama", "langchain", "notion", "github", "vscode")
+    searchable = 4 if any(k in t for k in SEARCHABLE) else 0
+    # obscure-repo markers: a lowercase-hyphenated repo name ('open-multi-agent', 'ntsc-rs'),
+    # an 'awesome-' list, or a tiny star count → niche, hard to discover.
+    obscure = 0
+    title0 = it.get("title", "")
+    head = title0.split("—")[0].split(":")[0].strip()
+    if re.match(r'^[a-z][a-z0-9]*(-[a-z0-9]+){1,}$', head):     # lowercase-hyphenated repo name
+        obscure += 3
+    if "awesome-" in t or t.startswith("awesome "):
+        obscure += 4
+    if it.get("evergreen") and it.get("pts", 0) < 3 and not searchable:  # low-star evergreen repo
+        obscure += 2
     # FLYWHEEL negative signal: deprioritize stories similar to ones the operator rejected
     penalty = 0
     try:
@@ -341,7 +359,7 @@ def _score(it):
         penalty = min(4, mem.rejection_penalty(it["title"]))  # cap so one bad topic doesn't nuke a whole vein
     except Exception:
         pass
-    return it["pts"] / 100 + lab + shipping + drama + recency - penalty
+    return it["pts"] / 100 + lab + shipping + drama + recency + searchable - obscure - penalty
 
 
 # ---------------- SCRIPT (ollama, fallback template) ----------------
