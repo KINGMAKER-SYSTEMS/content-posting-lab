@@ -2194,10 +2194,18 @@ async def produce_one_episode(force_deepdive=False, force_lore=None):
     arts = {"assembly": True, "assembly_path": mp4, "package": package}
     if cloud_url:
         arts["cloud_url"] = cloud_url
+    # PROMOTE the titler's best candidate to the episode TITLE — was shipping the generic
+    # "AgenticBuilderNews — Episode N" placeholder while the engaging searchable titles sat unused in
+    # the package (an RPM/CTR leak: the good title never becomes the YouTube title). lead_title is the
+    # rotated best candidate already used for the thumbnail; clean it for use as the title.
+    final_title = re.sub(r'^\s*(title\s*[:\-]\s*|\d+[\).]\s*)', '', (lead_title or "").strip(), flags=re.I)
+    final_title = final_title.strip(' "\'')[:100] or f"AgenticBuilderNews — Episode {ep_idx}"
     await db.update_video(ep_id, {"stage": "review",
+                                  "title": final_title,
                                   "artifacts": arts,
                                   "timeline": {"segments": [{k: s[k] for k in ("segment_id", "title", "script", "vo_path", "duration", "screenshot", "card")} for s in segments]},
                                   "duration": dur})
+    BUS.emit("expert-team", "title.set", f"episode title → {final_title[:60]}", episode_id=ep_id)
     # FLYWHEEL: mark these stories produced (rendered) so freshness only blocks REAL episodes
     try:
         import services.abn_memory as mem
