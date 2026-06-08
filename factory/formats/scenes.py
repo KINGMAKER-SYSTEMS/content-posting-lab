@@ -121,7 +121,7 @@ _VS_RE = re.compile(r'\b(vs\.?|versus|compared to|beats|outperforms|faster than|
 # capture the thing AFTER the comparison word — the real competitor to put on the vs card
 _VS_TARGET_RE = re.compile(
     r'\b(?:vs\.?|versus|compared to|beats|outperforms|faster than|cheaper than|better than|'
-    r'instead of|replaces?)\s+(?:the\s+|a\s+|an\s+)?'
+    r'instead of|replaces?|challenges?|rivals?|takes on|competes with|goes up against)\s+(?:the\s+|a\s+|an\s+)?'
     # capture up to ~4 words, stopping at the first preposition/conjunction/clause word
     r'((?:(?!\b(?:on|at|in|for|by|with|which|that|and|but|so|because|when|where|to|of|from)\b)'
     r'[A-Za-z][\w.\-]*\s*){1,4})', re.I)
@@ -133,7 +133,12 @@ _VS_GENERIC = {"old model", "old one", "the old model", "last one", "last versio
                # generic tech nouns that aren't a NAMED competitor (e.g. 'cheaper than the API')
                "api", "apis", "sdk", "cli", "ui", "the api", "the sdk", "the cli", "the model",
                "the tool", "the framework", "the library", "the competition", "the alternative",
-               "the rest of them", "the others", "the field", "the market", "the status quo"}
+               "the rest of them", "the others", "the field", "the market", "the status quo",
+               # bare CATEGORY words — not a named rival ('Microsoft vs AI' is a non-comparison).
+               # A vs card needs two comparable ENTITIES, not an entity vs a whole category.
+               "ai", "ml", "llm", "llms", "agents", "ai agents", "tech", "technology", "software",
+               "everyone", "everyone else", "the industry", "humans", "developers", "the cloud",
+               "cloud", "open source", "open-source", "closed source", "big tech", "the big players"}
 
 
 def comparison_target(text: str) -> str:
@@ -155,7 +160,7 @@ def comparison_target(text: str) -> str:
         return ""
     # trim to the proper-noun core (first 1-3 tokens that look named)
     toks = t.split()
-    keep = [w for w in toks if re.search(r'[A-Z0-9]', w) or w.lower() in ("the", "ai")][:3]
+    keep = [w for w in toks if re.search(r'[A-Z0-9]', w) or w.lower() == "the"][:3]
     return " ".join(keep) if keep else t
 _MECH_RE = re.compile(r'\b(how it works|under the hood|works by|the way it|the trick is|'
                       r'mechanism|architecture|pipeline|it routes|it embeds|the model|algorithm|'
