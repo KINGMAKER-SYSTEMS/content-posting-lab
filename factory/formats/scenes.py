@@ -198,6 +198,11 @@ def direct_visuals(scenes: list[Scene], spec: FormatSpec) -> list[PlannedShot]:
     """
     planned: list[PlannedShot] = []
     last_type = None
+    quote_count = 0
+    # cap quote cards at ~40% of scenes so a claim/take-heavy script doesn't become 8 identical
+    # centered-quote cards (caught on a real episode: 8/12 cards were quotes). Excess quotes rotate
+    # to a designed title_card / brand_broll for visual variety.
+    quote_cap = max(2, int(len(scenes) * 0.4)) if scenes else 0
     for sc in scenes:
         prefs = spec.shot_preferences.get(sc.role) or ("title_card", "brand_broll")
         # a number_card with no extractable hero stat would render an empty card — drop it from
@@ -206,6 +211,13 @@ def direct_visuals(scenes: list[Scene], spec: FormatSpec) -> list[PlannedShot]:
             prefs = tuple(p for p in prefs if p not in ("number_card", "data_card")) or ("title_card",)
         # pick the first preference that isn't an immediate repeat (variety = the anti-slop rule)
         primary = next((p for p in prefs if p != last_type), prefs[0])
+        # QUOTE-CAP: if we've already hit the quote budget, rotate this quote to an alternative
+        # designed shot so the episode doesn't read as a wall of identical quote cards.
+        if primary == "quote_card" and quote_count >= quote_cap:
+            primary = next((p for p in ("title_card", "brand_broll", "diagram") if p != last_type),
+                           "title_card")
+        if primary == "quote_card":
+            quote_count += 1
         fallbacks = tuple(p for p in prefs if p != primary) + ("title_card", "brand_broll")
         planned.append(PlannedShot(
             scene_index=sc.index, role=sc.role, shot_type=primary,
