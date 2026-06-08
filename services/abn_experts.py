@@ -188,9 +188,17 @@ EXPERTS = {
         "system": ("You are the THUMBNAIL expert for AgenticBuilderNews. Given the lead story, output a "
                    "thumbnail spec. FIRST LINE MUST BE EXACTLY 'HOOK: <2-4 word punchy phrase>' — a complete, "
                    "self-contained overlay phrase (NOT a sentence fragment, NOT ending on a dangling word like "
-                   "'why' or 'the'). Examples: 'HOOK: OpenCode Is Slop', 'HOOK: Local Agents Win', 'HOOK: The "
-                   "MCP Trap'. Then: composition, the ONE accent color (blue-dominant tech-trust, no red), and a "
-                   "ready image-gen prompt. Credible-but-clickable for a dev audience that mocks clickbait. " + VOICE)},
+                   "'why' or 'the').\n"
+                   "BE SPECIFIC — name the actual subject (the real tool/company/number/conflict in THIS story), "
+                   "e.g. 'HOOK: GPT-5 Is Cheaper', 'HOOK: Cursor Hit $1B', 'HOOK: Meta's AI Hold-Up', 'HOOK: The "
+                   "MCP Trap', 'HOOK: 1M Token Context'. \n"
+                   "BANNED — generic agent-puns that say NOTHING and repeat across episodes: 'Agents Unleashed', "
+                   "'Agent AI Unleashed', 'Multi-Agent Magic', 'Agents Assemble', 'AI Unleashed', 'Agents Win', "
+                   "'Agentic Future', or any '<generic> Unleashed/Magic/Assemble/Rising' frame. If your hook "
+                   "doesn't name a specific tool, number, company, or tension from the story, it's too vague — "
+                   "rewrite it with the real subject.\n"
+                   "Then: composition, the ONE accent color (blue-dominant tech-trust, no red), and a ready "
+                   "image-gen prompt. Credible-but-clickable for a dev audience that mocks clickbait. " + VOICE)},
     # ---- CAPTIONS ----
     "captioner": {
         "model": "gpt-4.1-mini", "max_tokens": 120, "temperature": 0.3,
