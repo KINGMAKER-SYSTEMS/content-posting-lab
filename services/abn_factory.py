@@ -2357,10 +2357,22 @@ async def _gc_segments(keep_recent=12):
             # prune: STALE segment cards (>2h — never the fresh in-flight ones now lighting up the board);
             # archived old scheduled/live; rejected 'revision' episodes; episodes stuck mid-production
             stale_seg = (kind == "segment" and now - v.get("created_at", now) > STALE)
+            # DEAD REVIEW ROW: a 'review' episode whose rendered mp4 was already GC'd from disk is a
+            # stale board card pointing at a deleted file — trying to review/publish it fails. Drop it.
+            dead_review = False
+            if kind == "episode" and stage == "review":
+                _ap = (v.get("data", {}) or {}).get("artifacts", {}).get("assembly_path", "") if isinstance(v.get("data"), dict) else ""
+                if not _ap:
+                    _ap = (v.get("artifacts", {}) or {}).get("assembly_path", "")
+                if _ap:
+                    _mp4 = ASSETS / Path(str(_ap)).name
+                    # only prune if it's also archived (old) — never a fresh review awaiting a human
+                    dead_review = (not _mp4.exists()) and (v.get("id") in archive)
             if (stale_seg
                     or (v.get("id") in archive and stage in ("scheduled", "live"))
                     or (kind == "episode" and stage == "revision")
-                    or stale_inflight):
+                    or stale_inflight
+                    or dead_review):
                 await db.delete_video(v["id"]); n += 1
         if n:
             BUS.emit("system", "gc", f"auto-pruned {n} board cards (segments, revision orphans, stale cards)")
