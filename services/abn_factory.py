@@ -384,18 +384,57 @@ def _llm_script_sync(title, is_hook, research="", words=SEG_WORDS, deep=False):
         return None
 
 
+def _fetch_source_text(url: str, limit: int = 2500) -> str:
+    """Fetch the REAL source text so the researcher works from facts, not training-data guesses (the
+    root of vague scripts + missing numbers). For a GitHub repo, pull the raw README (where the real
+    specs/numbers live); for an article, pull the page and strip tags. Best-effort, short timeout."""
+    if not url:
+        return ""
+    try:
+        import urllib.request as _u
+        # GitHub repo → raw README (real specs, version, benchmarks)
+        m = re.search(r'github\.com/([^/]+)/([^/#?]+)', url)
+        if m:
+            owner, repo = m.group(1), m.group(2).replace(".git", "")
+            for branch in ("main", "master"):
+                for fn in ("README.md", "readme.md", "README.rst"):
+                    raw = f"https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{fn}"
+                    try:
+                        with _u.urlopen(raw, timeout=8) as r:
+                            txt = r.read(40000).decode("utf-8", "ignore")
+                        if txt.strip():
+                            txt = re.sub(r'<[^>]+>', '', txt)
+                            txt = re.sub(r'\[!\[[^\]]*\]\([^)]*\)\]\([^)]*\)', '', txt)  # badges
+                            txt = re.sub(r'!\[[^\]]*\]\([^)]*\)', '', txt)               # images
+                            return re.sub(r'\n{3,}', '\n\n', txt).strip()[:limit]
+                    except Exception:
+                        continue
+        # generic page → text
+        req = _u.Request(url, headers={"User-Agent": "Mozilla/5.0 (AgenticBuilderNews research)"})
+        with _u.urlopen(req, timeout=8) as r:
+            html = r.read(120000).decode("utf-8", "ignore")
+        html = re.sub(r'(?is)<(script|style|nav|footer|header)[^>]*>.*?</\1>', ' ', html)
+        text = re.sub(r'<[^>]+>', ' ', html)
+        text = re.sub(r'\s+', ' ', text).strip()
+        return text[:limit]
+    except Exception:
+        return ""
+
+
 def _research_sync(title, url, angle=None):
-    """Deep-dive via the RESEARCHER EXPERT. For a deepdive FACET, pass `angle` so each of the 3 facets
-    researches its OWN sub-topic (mechanism vs verdict vs problem) → distinct briefs → non-repeating
-    scripts. Without an angle, researches the tool overall."""
+    """Deep-dive via the RESEARCHER EXPERT, GROUNDED in the real fetched source (README/page) so the
+    brief carries REAL facts + numbers, not training-data guesses. For a deepdive FACET, pass `angle`
+    so each of the 3 facets researches its OWN sub-topic → distinct briefs → non-repeating scripts."""
     try:
         import services.abn_experts as experts
+        src = _fetch_source_text(url)
+        src_block = f"\n\nREAL SOURCE (the actual README/page — extract facts + NUMBERS from THIS, don't guess):\n{src}" if src else ""
         if angle:
             q = (f"AI/dev tool: \"{title}\" (source: {url}). This is ONE facet of a deep-dive. Research "
                  f"ONLY this specific angle in depth — ignore the tool's general pitch: {angle}. Give the "
-                 f"mechanism, numbers, and tradeoffs SPECIFIC to this angle.")
+                 f"mechanism, numbers, and tradeoffs SPECIFIC to this angle.{src_block}")
         else:
-            q = f"AI/dev item: \"{title}\" (source: {url}). What's the core concept + the story angle a builder needs?"
+            q = f"AI/dev item: \"{title}\" (source: {url}). What's the core concept + the story angle a builder needs?{src_block}"
         return experts.ask("researcher", q) or ""
     except Exception:
         return ""
