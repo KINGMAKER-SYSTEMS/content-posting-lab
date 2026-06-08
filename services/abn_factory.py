@@ -1835,16 +1835,21 @@ async def _render_remotion(ep_id, timeline):
     # macOS native players choke a few seconds in and quit — and YouTube re-encodes it
     # with shifted colors. Force standard yuv420p limited (TV) range so the file plays
     # everywhere. Cheap re-encode (flat graphics + crf 20 ≈ visually identical).
+    # Also NORMALIZE LOUDNESS here (same pass, ~free): the per-chunk VO was -16 LUFS but the final
+    # baked mix (VO + ducked music) drifts quiet (~-24 dB mean — caught on a real episode). A quiet
+    # video sounds weak next to other channels in the feed and loses viewers. Bring the whole episode
+    # to YouTube's ~-14 LUFS target with a true-peak limiter so it's competitively loud + clip-safe.
     norm = ASSETS / f"{ep_id}_norm.mp4"
     ncmd = (f'ffmpeg -y -i {shlex.quote(str(out))} '
             f'-vf format=yuv420p -colorspace bt709 -color_primaries bt709 '
             f'-color_trc bt709 -color_range tv '
-            f'-c:v libx264 -crf 20 -preset veryfast -c:a copy '
+            f'-af loudnorm=I=-14:TP=-1.5:LRA=11 '
+            f'-c:v libx264 -crf 20 -preset veryfast -c:a aac -b:a 192k '
             f'-movflags +faststart {shlex.quote(str(norm))} 2>&1')
     nc, nlog = await _sh(ncmd, timeout=600)
     if nc == 0 and norm.exists():
         norm.replace(out)
-        BUS.emit("editor-agent", "render.normalize", "pixel format → yuv420p (Apple/YouTube-safe)", episode_id=ep_id)
+        BUS.emit("editor-agent", "render.normalize", "pixel→yuv420p + audio→-14 LUFS (YouTube-loud)", episode_id=ep_id)
     else:
         BUS.emit("editor-agent", "error", f"normalize pass failed (non-fatal): {nlog[-120:]}", episode_id=ep_id)
     # POST PASS: real sidechain ducking. Remotion bakes the VO+SFX; mix the music bed UNDER it with
