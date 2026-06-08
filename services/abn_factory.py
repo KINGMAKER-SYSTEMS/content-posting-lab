@@ -1444,7 +1444,10 @@ def _v2_scene_cards(ep_id, seg_index, seg):
                             is_first_segment=(seg_index == 0), is_last_segment=False)
         shots = direct_visuals(scenes, spec)
         title = seg.get("title", "") or ""
-        tool = re.split(r'\s+[—–:]\s+', title)[0][:24] if title else "this"
+        # clean tool name for the vs-card left side: take the first segment of the title, and if it's
+        # a slash-joined list ('Anthropic/OpenAI') keep only the FIRST name so the card reads cleanly.
+        tool = re.split(r'\s+[—–:]\s+', title)[0].strip() if title else "this"
+        tool = re.split(r'\s*/\s*', tool)[0].strip()[:24] or "this"
         out = []
         for sc, sh in zip(scenes, shots):
             nm = f"{ep_id}_s{seg_index}_v2sc{sc.index}"

@@ -102,7 +102,11 @@ _VS_TARGET_RE = re.compile(
 # generic non-competitors that should NOT be put on a vs card (no real named rival)
 _VS_GENERIC = {"old model", "old one", "the old model", "last one", "last version", "previous one",
                "one giant model", "giant model", "everything else", "the rest", "others", "it",
-               "this", "that", "them", "one", "before"}
+               "this", "that", "them", "one", "before",
+               # generic tech nouns that aren't a NAMED competitor (e.g. 'cheaper than the API')
+               "api", "apis", "sdk", "cli", "ui", "the api", "the sdk", "the cli", "the model",
+               "the tool", "the framework", "the library", "the competition", "the alternative",
+               "the rest of them", "the others", "the field", "the market", "the status quo"}
 
 
 def comparison_target(text: str) -> str:
