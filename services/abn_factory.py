@@ -1451,7 +1451,12 @@ def _hook_line(cold_open_text: str) -> str:
                   r'raised|now has|just got|added|introduced)\b\s*', '', pick, count=1, flags=re.I) or pick
     pick = re.sub(r'^(a |an |the |its |their )?(model |tool |startup |company )?(with |that has |featuring )?(a |an |the )?',
                   '', pick, count=1, flags=re.I) or pick
-    words = re.sub(r'[^\w\s%$.\-]', '', pick).split()
+    # normalize joiners to SPACES before stripping punctuation, else 'chatbots—they're' fuses into
+    # 'CHATBOTSTHEYRE' (a mashed word on the hook card — caught on a real render). em/en-dash and
+    # slashes become spaces; apostrophes are dropped in-place ("they're"->"theyre", not "they re").
+    pick = pick.replace("'", "").replace("’", "")
+    pick = re.sub(r'[—–/\-]', ' ', pick)
+    words = re.sub(r'[^\w\s%$.]', '', pick).split()
     line = " ".join(words[:8]).strip()
     return (line or pick[:48]).upper()
 
