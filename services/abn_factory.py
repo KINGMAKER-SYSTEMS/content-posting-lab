@@ -1462,13 +1462,20 @@ def _hook_line(cold_open_text: str) -> str:
     # normalize joiners to SPACES before stripping punctuation, else 'chatbots—they're' fuses into
     # 'CHATBOTSTHEYRE' (a mashed word on the hook card — caught on a real render). em/en-dash and
     # slashes become spaces; apostrophes are dropped in-place ("they're"->"theyre", not "they re").
+    # CUT at the first CLAUSE BOUNDARY so the hook is a complete thought, not a sentence fragment.
+    # 'prototypes — they're becoming X' must cut at 'prototypes', not run into the next clause and
+    # leave a dangling "...PROTOTYPES THEYRE" (caught on a real hook card). The em-dash/comma already
+    # marks the boundary; also break before a clause-starting pronoun+verb.
+    pick = re.split(r'\s*[—–,;]\s*', pick)[0]
+    pick = re.sub(r"\b(they'?re|theyre|it'?s|its|that'?s|thats|here'?s|heres|which|who)\b.*$", "", pick, flags=re.I).strip() or pick
     pick = pick.replace("'", "").replace("’", "")
     pick = re.sub(r'[—–/\-]', ' ', pick)
     words = re.sub(r'[^\w\s%$.]', '', pick).split()[:8]
     # don't END the hook on a dangling conjunction/preposition/article — "...OUT OF LABS AND" leaves
     # the viewer hanging on a connective instead of a punch. Trim trailing weak words.
     _WEAK_TAIL = {"and", "or", "but", "the", "a", "an", "of", "to", "with", "for", "in", "on", "at",
-                  "by", "from", "as", "is", "are", "that", "this", "its", "their", "into", "than"}
+                  "by", "from", "as", "is", "are", "that", "this", "its", "their", "into", "than",
+                  "theyre", "thats", "heres", "just", "no", "not", "still", "now"}
     while words and words[-1].lower() in _WEAK_TAIL:
         words.pop()
     line = " ".join(words).strip()
