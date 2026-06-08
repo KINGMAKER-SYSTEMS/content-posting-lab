@@ -1593,12 +1593,16 @@ def _hook_line(cold_open_text: str) -> str:
     # marks the boundary; also break before a clause-starting pronoun+verb.
     pick = re.split(r'\s*[—–,;]\s*', pick)[0]
     pick = re.sub(r"\b(they'?re|theyre|it'?s|its|that'?s|thats|here'?s|heres|which|who)\b.*$", "", pick, flags=re.I).strip() or pick
-    pick = pick.replace("'", "").replace("’", "")
+    # normalize curly apostrophes to straight; KEEP a possessive 's (Microsoft's -> MICROSOFT'S, not
+    # MICROSOFTS — caught on a real hook), drop only OTHER apostrophes (contractions like don't->dont,
+    # stray quotes) so words don't fuse or carry a stray mark.
+    pick = pick.replace("’", "'")
+    pick = re.sub(r"'(?!s\b)", "", pick)
     # split on em/en-dash and slash only — NOT hyphens, which belong to model names (GPT-5, Llama-4,
     # Claude-3). A '[—–/\-]' replace turned 'GPT-5' into 'GPT 5' (caught on a real hook). Keep hyphens.
     pick = re.sub(r'\s*[—–]\s*|\s*/\s*', ' ', pick)
-    # keep hyphens (model names) but drop other punctuation incl. trailing periods (no '.' on a hook)
-    words = re.sub(r'[^\w\s%$-]', '', pick).split()[:8]
+    # keep hyphens (model names) + the possessive apostrophe; drop other punct incl. trailing periods
+    words = re.sub(r"[^\w\s%$'-]", '', pick).split()[:8]
     # don't END the hook on a dangling conjunction/preposition/article — "...OUT OF LABS AND" leaves
     # the viewer hanging on a connective instead of a punch. Trim trailing weak words.
     _WEAK_TAIL = {"and", "or", "but", "the", "a", "an", "of", "to", "with", "for", "in", "on", "at",
