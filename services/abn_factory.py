@@ -1319,8 +1319,15 @@ def _plan_shots(duration, screenshot, card, words, keywords, source_url, demo=No
     pick = _kb_picker(seed=seg_index)  # shared across UI + artifacts + demo so moves never repeat
 
     # RHYTHM VARIATION: nudge the structural split per segment so the episode isn't templated.
-    # UI moat still dominates the open (~40-50%); demo still closes; artifacts fill the middle.
-    ui_frac = (0.40, 0.45, 0.50)[seg_index % 3]
+    # V2 ANTI-SLOP: the UI webpage scroll-capture WAS taking 40-50% of every segment — a scrolling
+    # blog/page for half the runtime, the exact slop John flagged. When v2 designed cards are on,
+    # demote the UI capture to a brief ~3s "here's the source" cutaway so the DESIGNED CARDS (which
+    # fill the artifact middle) become the dominant visual instead of the page scroll.
+    _v2_on = (_V2_VISUALS and _USE_V2_VISUALS)
+    if _v2_on and has_ui and duration > 6:
+        ui_frac = min(0.12, 3.0 / duration)        # ~3s source cutaway, not 40-50%
+    else:
+        ui_frac = (0.40, 0.45, 0.50)[seg_index % 3]
     demo_frac = (0.68, 0.72, 0.70)[seg_index % 3]
     ui_end = round(duration * ui_frac, 2) if has_ui else 0.0
     demo_start = round(duration * demo_frac, 2) if has_demo else duration
