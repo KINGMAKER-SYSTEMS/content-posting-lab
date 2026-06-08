@@ -1629,6 +1629,15 @@ def _build_timeline(ep_id, ep_idx, segments, animated_bg=None):
                         sh["type"] = "broll"; sh["src"] = _disk(bg); sh["muteSource"] = True
                         sh["clipStartSec"] = 0.5  # skip any i2v warm-up frame
         pops = [{"word": k["text"], "s": k["s"], "atSec": k["s"], "durationSec": min(2.4, k["e"] - k["s"] + 1.5), "color": k["color"]} for k in kws]
+        # KEEP THE HOOK CLEAN: on seg 0, suppress keyword-pops only during the OPENING hook window
+        # (the first ~12s) so the opening statement stands alone (a 'real-world' highlight box layered
+        # on the hook cluttered the most important frame — caught on a real render). Capped at 12s so
+        # pops still fire across the rest of the segment (variety preserved).
+        if seg_index == 0:
+            hook_starts = [sh.get("startSec", 0) for sh in shots if "hook" in (sh.get("src") or "")]
+            if hook_starts and min(hook_starts) <= 0.5:        # hook owns the open
+                clean_until = 12.0
+                pops = [p for p in pops if p["s"] >= clean_until]
         # CAPTION best-practices (format-aware, not the old hardcoded 4s-on-every-segment template):
         # - DON'T put a lower-third over the first-5s HOOK (seg 0) — it competes with the hook card.
         # - vary timing/hold per segment so it never reads formulaic (lead the audio slightly, per research).
