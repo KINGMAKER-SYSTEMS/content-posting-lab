@@ -97,6 +97,23 @@ def capture_sync(url: str, name: str, seconds: float = 8.0) -> str | None:
         try: rec_dir.rmdir()
         except Exception: pass
         if out_mp4.exists():
+            # BLANK-PAGE guard: a page that rendered near-white/empty (no visible content) is worthless
+            # footage the text-based bot-wall check misses (caught on a real frame: a ~243-brightness
+            # near-white UI clip). Sample a mid-frame's avg brightness; if it's near-white, bail so the
+            # pipeline falls back to a designed card instead of showing a blank scroll.
+            try:
+                import subprocess as _sp
+                probe = _sp.run(["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                                 "-of", "csv=p=0", str(out_mp4)], capture_output=True, text=True, timeout=20)
+                mid = max(0.5, (float(probe.stdout.strip() or 1)) / 2)
+                raw = _sp.run(["ffmpeg", "-v", "error", "-ss", str(mid), "-i", str(out_mp4),
+                               "-frames:v", "1", "-vf", "scale=20:20,format=gray", "-f", "rawvideo", "-"],
+                              capture_output=True, timeout=20).stdout
+                if raw and (sum(raw) / len(raw)) >= 240:   # near-white = blank/empty page
+                    out_mp4.unlink()
+                    return None
+            except Exception:
+                pass   # if the check itself fails, keep the clip (don't drop good footage on a probe error)
             return f"/agenticnews-assets/{out_mp4.name}"
     except Exception:
         return None
