@@ -120,11 +120,15 @@ EXPERTS = {
                    "should feel they're watching ONE argument unfold, not 7 recaps.\n"
                    "BANNED OPENING — DO NOT start with 'AI agents are...', 'AI agents aren't...', 'AI agents are "
                    "breaking out', 'AI agents are going mainstream', or any 'AI agents are/aren't [verb]' frame. "
-                   "Every episode has used that and it reads as a stale template. OPEN A DIFFERENT WAY each time: "
-                   "lead with a concrete NUMBER or fact ('Anthropic just spent X...'), a sharp QUESTION ('What "
-                   "happens when...'), a bold CLAIM about a named tool, a surprising CONTRAST, or a specific "
-                   "moment — NOT a generic 'AI agents are' statement. The first 5 words decide if they keep "
-                   "watching; make them specific and fresh. "
+                   "Every episode has used that and it reads as a stale template.\n"
+                   "THE FIRST 8 WORDS MUST NAME THE CONCRETE SUBJECT — a real tool, company, number, or person "
+                   "from the stories (the thumbnail/hook card is built from them). 'OpenAI just shipped...', "
+                   "'Microsoft's Scout agent...', 'A million tokens...', 'GPT-5 is...'. BANNED vague-abstraction "
+                   "openers that name nothing: 'a new kind of X', 'the future of X', 'something big is happening', "
+                   "'there's a shift', 'a quiet revolution', 'the next era'. If the first sentence doesn't contain "
+                   "a proper noun or a number, REWRITE it. Open a DIFFERENT way each episode — number, sharp "
+                   "question, bold claim about a NAMED tool, surprising contrast, specific moment — but always "
+                   "CONCRETE. The first 5 words decide if they keep watching. "
                    "Output ONLY the spoken cold-open words. " + VOICE)},
     # ---- SCRIPTWRITING ----
     "scriptwriter": {
