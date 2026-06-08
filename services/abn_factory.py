@@ -1563,6 +1563,23 @@ def _build_timeline(ep_id, ep_idx, segments, animated_bg=None):
                         # designed cards read best with a gentle hold, not an aggressive Ken-Burns
                         sh["kenBurns"] = {"startScale": 1.0, "endScale": 1.05, "startX": .5,
                                           "startY": .5, "endX": .5, "endY": .5, "easing": "easeOut"}
+            # FIRST-5-SECONDS: on the OPENING segment, the HOOK card must be the very FIRST thing on
+            # screen (0:00) — not 3s of webpage scroll THEN the hook. Find the hook shot and move it to
+            # the front, shifting the brief UI cutaway to after it. The hook is the whole point of the open.
+            if seg_index == 0:
+                hook_shots = [sh for sh in shots if "hook" in (sh.get("src") or "")]
+                if hook_shots:
+                    h = hook_shots[0]
+                    others = [sh for sh in shots if sh is not h]
+                    # rebuild timing so the hook owns 0.0s onward; everything else shifts after it
+                    hook_len = max(2.5, h.get("endSec", 3) - h.get("startSec", 0))
+                    h["startSec"], h["endSec"] = 0.0, round(hook_len, 2)
+                    shots = [h] + others
+                    cursor = h["endSec"]
+                    for sh in others:
+                        d = max(2.0, sh.get("endSec", 0) - sh.get("startSec", 0))
+                        sh["startSec"], sh["endSec"] = round(cursor, 2), round(cursor + d, 2)
+                        cursor += d
         # MOTION UPGRADE: swap flat title-card 'artifact' shots for an animated brand b-roll — and
         # ROTATE through distinct bgs so we never repeat the same clip across the episode.
         if bg_list:
