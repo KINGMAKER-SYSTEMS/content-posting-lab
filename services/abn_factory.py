@@ -240,14 +240,22 @@ def _scrape_sync():
     return uniq
 
 
-# stale / evergreen topics to EXCLUDE — we want current events, not explainers
+# stale / evergreen topics to EXCLUDE — we want current AI-builder events, not explainers
 STALE_PAT = re.compile(r'\b(explained|visualization|inevitabilism|introduction|guide|tutorial|'
                        r'what is|how to|learning to|fundamentals|101|deep dive into|history of|'
                        r'ask hn|show hn|launch hn)\b', re.I)
+# RETRO / OLD-TECH drift — this is an AI-builder NEWS channel; a 1997/retro topic is off-brand stale
+# (the titler produced 'making a game in visual studio 1997' — caught on a real episode). Filter
+# vintage years + retro hardware/era keywords. Years 2018+ are fine (recent AI era).
+_RETRO_PAT = re.compile(r'\b(19\d{2}|200\d|201[0-7])\b|'                       # pre-2018 years
+                        r'\b(commodore|amiga|ms-?dos|windows 9[58]|windows xp|floppy|dial-?up|'
+                        r'visual studio 199\d|turbo pascal|geocities|netscape|vintage|retro|'
+                        r'nostalgia|back in the day|old-?school)\b', re.I)
 
 
 def _is_stale(it):
-    return bool(STALE_PAT.search(it["title"]))
+    t = it.get("title", "")
+    return bool(STALE_PAT.search(t)) or bool(_RETRO_PAT.search(t))
 
 
 LABS = ("openai", "anthropic", "claude", "gpt", "chatgpt", "gemini", "google deepmind",
