@@ -123,4 +123,16 @@ def capture_sync(url: str, name: str, seconds: float = 8.0) -> str | None:
             return f"/agenticnews-assets/{out_mp4.name}"
     except Exception:
         return None
+    finally:
+        # ALWAYS remove the playwright recording temp dir — multiple bail paths (no-webm, blank-guard,
+        # outer except) previously left empty _rec_<name>/ dirs orphaned on the volume (caught in an SOP
+        # sweep: 4 empty _rec_ dirs accumulated). finally guarantees cleanup regardless of exit path.
+        try:
+            if rec_dir.exists():
+                for _f in rec_dir.glob("*"):
+                    try: _f.unlink()
+                    except Exception: pass
+                rec_dir.rmdir()
+        except Exception:
+            pass
     return None
