@@ -117,8 +117,15 @@ EXPERTS = {
                    "(e.g. 'everyone's building the same agent memory layer', 'Rust is eating the agent stack "
                    "and it's about money not safety', 'the harness ate the framework'). Then write a COLD OPEN "
                    "(40-55 spoken words) that opens on the thesis with a hook, not a story list. The audience "
-                   "should feel they're watching ONE argument unfold, not 7 recaps. Output ONLY the spoken "
-                   "cold-open words. " + VOICE)},
+                   "should feel they're watching ONE argument unfold, not 7 recaps.\n"
+                   "BANNED OPENING — DO NOT start with 'AI agents are...', 'AI agents aren't...', 'AI agents are "
+                   "breaking out', 'AI agents are going mainstream', or any 'AI agents are/aren't [verb]' frame. "
+                   "Every episode has used that and it reads as a stale template. OPEN A DIFFERENT WAY each time: "
+                   "lead with a concrete NUMBER or fact ('Anthropic just spent X...'), a sharp QUESTION ('What "
+                   "happens when...'), a bold CLAIM about a named tool, a surprising CONTRAST, or a specific "
+                   "moment — NOT a generic 'AI agents are' statement. The first 5 words decide if they keep "
+                   "watching; make them specific and fresh. "
+                   "Output ONLY the spoken cold-open words. " + VOICE)},
     # ---- SCRIPTWRITING ----
     "scriptwriter": {
         "model": "gpt-4.1-mini", "max_tokens": 300, "temperature": 0.65,
