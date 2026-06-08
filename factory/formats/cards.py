@@ -76,12 +76,17 @@ def number_card(value: str, label: str, name: str, assets_dir: Path, fonts_dir: 
     out = assets_dir / f"{name}_number.png"
     big = _font(fonts_dir, "TikTokSans16pt-Black.ttf", "Montserrat-ExtraBold.ttf")
     sub = _font(fonts_dir, "TikTokSans-Bold.ttf", "Montserrat-ExtraBold.ttf")
-    val = _clean(value, 14)
+    val = _clean(value, 16)
     lab = _clean(label, 48).upper()
+    # ADAPTIVE hero size: a fixed 300pt overflowed the frame for long values like '4,096 tokens'
+    # (the number got clipped at both edges — caught on a real card). Scale down as the value gets
+    # longer so it always fits inside ~1680px of the 1920 frame.
+    n = len(val)
+    psize = 300 if n <= 5 else (240 if n <= 8 else (180 if n <= 11 else 132))
     cmd = (_base() +
            f'-gravity center -font {shlex.quote(big)} '
            f'-fill black -annotate +6-30 {shlex.quote(val)} '                       # shadow
-           f'-fill "{accent}" -pointsize 300 -annotate +0-36 {shlex.quote(val)} '   # hero number
+           f'-fill "{accent}" -pointsize {psize} -annotate +0-36 {shlex.quote(val)} '   # hero number (adaptive)
            f'-font {shlex.quote(sub)} -fill "{BRAND_WHITE}" -pointsize 54 -annotate +0+150 {shlex.quote(lab)} '
            f'-fill "{accent}" -draw "rectangle 860,250 1060,258" '                   # accent rule
            f'-font {shlex.quote(sub)} -fill "#3a4254" -pointsize 26 -gravity south -annotate +0+50 "{WATERMARK}" '
