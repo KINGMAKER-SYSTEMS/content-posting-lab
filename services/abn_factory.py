@@ -1931,6 +1931,25 @@ async def _render_remotion(ep_id, timeline):
     props = ASSETS / f"{ep_id}_timeline.json"
     props.write_text(json.dumps(timeline))
     out = ASSETS / f"{ep_id}_episode.mp4"
+    # RE-RENDER GUARD: if this episode's mp4 already exists AND is a complete, long-enough video, REUSE
+    # it instead of re-rendering from scratch. A post-render hiccup (e.g. normalize/duck throwing) could
+    # re-enter this function for the same ep_id — observed a single episode rendering TWICE (~2x compute,
+    # 35-min total, 12 chrome workers re-burning on an already-rendered mp4). Skipping a valid existing
+    # render makes re-entry cheap. (A short/partial leftover is ignored and re-rendered.)
+    if out.exists():
+        try:
+            _d = await _dur(out)
+            # only reuse a FULLY-PROCESSED render: long enough AND already normalized to yuv420p (the
+            # normalize pass converts yuvj420p->yuv420p). A raw/partial leftover (yuvj420p, the pre-
+            # normalize first-render output) is NOT reused — it'd skip loudnorm/duck — so render fresh.
+            _pc, _pf = await _sh(f'ffprobe -v error -select_streams v -show_entries stream=pix_fmt '
+                                 f'-of csv=p=0 {shlex.quote(str(out))}', timeout=20)
+            if _d and _d >= MIN_EPISODE_SEC and _pf.strip().startswith("yuv420p"):
+                BUS.emit("editor-agent", "render.reuse",
+                         f"reusing existing complete {_d:.0f}s render (skip redundant re-render)", episode_id=ep_id)
+                return f"/agenticnews-assets/{out.name}"
+        except Exception:
+            pass   # unreadable/partial → fall through and render fresh
     # --crf 23 ≈ visually-lossless for this flat-graphics content but ~half the file size of Remotion's
     # default high bitrate (episodes were 200MB+ → disk exhaustion on a 24/7 system). Big disk-saver.
     # Concurrency: each Remotion chrome worker spawns its OWN threads, so it's NOT one-core-per-worker.
