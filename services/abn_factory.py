@@ -686,7 +686,13 @@ _BRAND_CASE = {"openai": "OpenAI", "langchain": "LangChain", "github": "GitHub",
 # became Thropix/Thropic/Thropics/Anthropics 25x). Map a regex of the garble → the correct brand. These
 # patterns are NOT real English words, so correcting them can't clobber legitimate text.
 _BRAND_GARBLE = [
-    (re.compile(r"^an?thropi[ckx]s?$", re.I), "Anthropic"),     # thropic/thropix/anthropics/thropics
+    (re.compile(r"^(an|a)?thropi[ckxq]s?$", re.I), "Anthropic"),  # thropic/Thropic/thropix/anthropics
+                                                                  # FIX: 'an' prefix is fully optional —
+                                                                  # bare 'Thropic' (no leading a) is the
+                                                                  # actual garble Whisper emits, and the
+                                                                  # old '^an?thropi' REQUIRED the 'a', so
+                                                                  # 'Thropic' slipped through onto a real
+                                                                  # caption ('And Thropic just open...').
     (re.compile(r"^o?pen-?ai$", re.I), "OpenAI"),               # penai / open-ai stragglers
     (re.compile(r"^(co-?pilot|copilots)$", re.I), "Copilot"),
     (re.compile(r"^(lang-?chain|langchains)$", re.I), "LangChain"),
