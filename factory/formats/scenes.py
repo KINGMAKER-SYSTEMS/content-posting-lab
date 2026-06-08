@@ -86,11 +86,17 @@ def hero_number_label(text: str, stat: str) -> str:
     text = text.replace("—", " ").replace("–", " ")     # never let an em-dash into the label
     idx = text.lower().find(stat.lower())
     if idx >= 0:
-        # words AFTER the stat are usually what it measures
+        # words AFTER the stat are usually what it measures — but CUT at a clause-boundary word so the
+        # label is a tight noun phrase ('tokens'), not a run-on ('tokens huge for complex tasks').
         tail = re.split(r'[.,;]', text[idx + len(stat):])[0].strip(" ,.-")
+        tail = re.split(r'\s+(?:huge|big|massive|which|that|so|but|now|enough|making|meaning|'
+                        r'compared|than)\b', tail, 1, flags=re.I)[0].strip()
         words = tail.split()
-        if 2 <= len(words) <= 6:
-            return tail
+        # drop a trailing dangling connective ('of', 'for', 'with', 'on' with nothing meaningful after)
+        while words and words[-1].lower() in ("of", "for", "with", "on", "to", "in", "and", "the", "a"):
+            words.pop()
+        if 1 <= len(words) <= 6:
+            return " ".join(words)
         if len(words) > 6:
             return " ".join(words[:5])
         # tail too short — try the words BEFORE the stat (e.g. "cuts cost by 60%")
