@@ -1,5 +1,5 @@
 import { AbsoluteFill, Sequence, interpolate, spring, useCurrentFrame, useVideoConfig, Easing } from "remotion";
-import { useMemo } from "react";
+import { useMemo, Fragment } from "react";
 import { abnTokens } from "../brand/abnTokens";
 
 type Word = { w: string; s: number; e: number };
@@ -71,14 +71,20 @@ const Page: React.FC<{ pg: { start: number; toks: Word[] }; accent: string; durF
           const scale = interpolate(lit, [0, 1], [1, 1.08]);
           // cross-fade white → accent. lerp via opacity-stacked spans would be heavier; a
           // mix-friendly approach: layer accent text over white and fade the accent in.
+          // Render each word as an inline-block (needed for the per-word scale) followed by a REAL
+          // space text node. Margin alone let adjacent words visually touch when a glyph overhangs its
+          // box (caught on a real frame: "Microsoft'sScout" fused). The explicit space guarantees a gap.
           return (
-            <span key={i} style={{ position: "relative", display: "inline-block",
-              margin: "0 .18em", transform: `scale(${scale})`, willChange: "transform" }}>
-              <span style={{ color: "#fff" }}>{t.w.trim()}</span>
-              <span style={{ position: "absolute", left: 0, top: 0, color: accent,
-                opacity: lit, textShadow: `0 0 ${interpolate(lit, [0, 1], [0, 18])}px ${accent}66` }}
-                aria-hidden>{t.w.trim()}</span>
-            </span>
+            <Fragment key={i}>
+              <span style={{ position: "relative", display: "inline-block",
+                margin: "0 .06em", transform: `scale(${scale})`, willChange: "transform" }}>
+                <span style={{ color: "#fff" }}>{t.w.trim()}</span>
+                <span style={{ position: "absolute", left: 0, top: 0, color: accent,
+                  opacity: lit, textShadow: `0 0 ${interpolate(lit, [0, 1], [0, 18])}px ${accent}66` }}
+                  aria-hidden>{t.w.trim()}</span>
+              </span>
+              {i < pg.toks.length - 1 ? " " : ""}
+            </Fragment>
           );
         })}
       </div>
