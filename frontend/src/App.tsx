@@ -8,6 +8,7 @@ import { DistributionPage } from './pages/Distribution';
 import { MiniApp } from './pages/MiniApp';
 import { PipelinePage } from './pages/Pipeline';
 import { PipelineWorkspacePage } from './pages/PipelineWorkspace';
+import { EditorBayPage } from './pages/EditorBay';
 import { ProjectSelector, ToastContainer } from './components';
 import { BrandLogo } from './components/BrandLogo';
 import { useTheme } from './components/ThemeProvider';
@@ -400,6 +401,10 @@ function App() {
   // The Telegram Mini App renders standalone (no admin shell) under /m.
   if (typeof window !== 'undefined' && window.location.pathname.startsWith('/m')) {
     return <MiniApp />;
+  }
+  // The Editor Bay renders standalone (full-screen review tool, no admin shell) under /editor/<epId>.
+  if (typeof window !== 'undefined' && window.location.pathname.startsWith('/editor/')) {
+    return <EditorBayPage />;
   }
   return (
     <BrowserRouter>
