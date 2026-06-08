@@ -1603,7 +1603,10 @@ def _hook_line(cold_open_text: str) -> str:
     if not sents:
         return "THE AI STORY YOU MISSED"
     stat = next((s for s in sents if re.search(r'\$?\d|\b(million|billion|x|percent|%)\b', s, re.I)), None)
-    pick = stat or sents[0]
+    # SKIP a one-word/too-short leading sentence ('Scout.') — it makes a useless 1-word hook ('SCOUT').
+    # Pick the first SUBSTANTIVE sentence (>=4 words) for the most important frame in the video.
+    substantive = next((s for s in sents if len(s.split()) >= 4), None)
+    pick = stat or substantive or sents[0]
     # strip the subject+verb lead-in so the hook opens on the PAYLOAD ("one million token context",
     # not "Anthropic just shipped a model with a one million token context"). Cut everything up to
     # and including the action verb, then any residual "a/an/the ... with" connective.
