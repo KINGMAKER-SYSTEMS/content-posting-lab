@@ -823,6 +823,33 @@ async def _real_demo(repo_url: str, name: str):
             for p in repo_dir.iterdir():
                 if p.is_file() and p.name.lower().startswith("readme"):
                     readme = p.name; break
+        # PRE-CLEAN the README to plain prose in Python (avoids fragile in-tape sed escaping). Strips
+        # HTML tags, badge/image lines, markdown markup (**/*/`/#), and flattens [text](url)->text so
+        # VHS just cats clean readable text instead of noisy markdown source (caught on a real frame).
+        readme_clean = None
+        if readme:
+            try:
+                raw = (repo_dir / readme).read_text(errors="ignore").splitlines()
+                out_lines = []
+                for ln in raw:
+                    s = ln.strip()
+                    if not s or s.startswith("<") or "![" in s or s.startswith("[!["):
+                        continue
+                    s = re.sub(r'<[^>]+>', '', s)                       # HTML tags
+                    s = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', s)      # [text](url) -> text
+                    s = s.replace("**", "").replace("`", "")
+                    s = re.sub(r'(?<!\w)\*(?!\w)', '', s)               # stray bullets/emphasis
+                    s = re.sub(r'^#+\s*', '', s)                        # headers
+                    s = s.strip()
+                    if s:
+                        out_lines.append(s)
+                    if len(out_lines) >= 16:
+                        break
+                if out_lines:
+                    (repo_dir / "_readme.clean.txt").write_text("\n".join(out_lines) + "\n")
+                    readme_clean = "_readme.clean.txt"
+            except Exception:
+                readme_clean = None
         owner_repo = clone_url.rsplit("/", 2)[-2] + "/" + clone_url.rsplit("/", 1)[-1].replace(".git", "")
         # The tape runs in repo_dir (already cloned). Every command here is READ-ONLY inspection.
         # We re-show the clone command for narrative honesty, but point it at the already-fetched
@@ -843,8 +870,10 @@ async def _real_demo(repo_url: str, name: str):
             body += ['Type "tree -L 1 -C"', "Enter", "Sleep 2200ms"]
         # real recent history — proves it's a live repo, not a mockup
         body += ['Type "git log --oneline -5"', "Enter", "Sleep 2200ms"]
-        # real README head — the actual words the maintainers wrote
-        if readme:
+        # real README head — clean prose (pre-stripped of markdown/HTML above), just cat it.
+        if readme_clean:
+            body += [f'Type "cat {readme_clean}"', "Enter", "Sleep 3400ms"]
+        elif readme:
             pager = "bat --style=plain --color=always --line-range :22" if shutil.which("bat") else "head -22"
             body += [f'Type "{pager} {readme}"', "Enter", "Sleep 3200ms"]
         tape.write_text("\n".join(body) + "\n")
