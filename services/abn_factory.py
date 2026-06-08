@@ -1880,12 +1880,12 @@ async def _render_remotion(ep_id, timeline):
     out = ASSETS / f"{ep_id}_episode.mp4"
     # --crf 23 ≈ visually-lossless for this flat-graphics content but ~half the file size of Remotion's
     # default high bitrate (episodes were 200MB+ → disk exhaustion on a 24/7 system). Big disk-saver.
-    # Concurrency scales render throughput near-linearly for this flat-graphics content. Use most
-    # of the box (cores-2, leaving headroom for the FastAPI app + OS) instead of a hardcoded 4 —
-    # on a 10-core machine that roughly halves render time (the throughput bottleneck for a 24/7
-    # channel). Overridable via ABN_RENDER_CONCURRENCY.
+    # Concurrency: each Remotion chrome worker spawns its OWN threads, so it's NOT one-core-per-worker.
+    # cores-2 (=8 on a 10-core box) oversubscribed badly — observed load 25-33 on 10 cores, which SLOWED
+    # renders to 17+min via contention (a regression). Use ~HALF the cores (cores//2, min 3) so workers
+    # don't thrash and the FastAPI app keeps headroom. Overridable via ABN_RENDER_CONCURRENCY.
     try:
-        _cc = int(os.getenv("ABN_RENDER_CONCURRENCY") or max(2, (os.cpu_count() or 4) - 2))
+        _cc = int(os.getenv("ABN_RENDER_CONCURRENCY") or max(3, (os.cpu_count() or 4) // 2))
     except (TypeError, ValueError):
         _cc = 4
     cmd = (f'cd {shlex.quote(str(REMOTION_DIR))} && npx remotion render Episode {shlex.quote(str(out))} '
