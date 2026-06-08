@@ -1527,6 +1527,19 @@ def _diagram_steps(text: str) -> list:
     return steps
 
 
+def _statement(text: str) -> str:
+    """A short bold STATEMENT (≤8 words) from a scene for a hook-style statement card — the quote-cap
+    rotation target + the vs/diagram no-data fallback. Takes the punchiest opening clause, trimmed."""
+    s = re.split(r'\s*[—–,;]\s*', (text or "").strip())[0]
+    s = re.sub(r"['’]", "", s)
+    words = re.sub(r'[^\w\s%$.]', '', s).split()[:8]
+    _WEAK = {"and", "or", "but", "the", "a", "an", "of", "to", "with", "for", "in", "on", "is", "are",
+             "that", "this", "its", "their", "than", "just", "no", "not", "so", "as", "it"}
+    while words and words[-1].lower() in _WEAK:
+        words.pop()
+    return (" ".join(words) or s[:48]).upper()
+
+
 def _quote_text(text: str) -> str:
     """A clean COMPLETE quote for a quote card — never truncated mid-sentence, no em-dash pile-ups.
     Takes the first 1-2 whole sentences that fit, dropping a trailing partial."""
@@ -1540,15 +1553,20 @@ def _quote_text(text: str) -> str:
     return out or (sents[0] if sents else text)[:100]
 
 
-def _v2_scene_cards(ep_id, seg_index, seg):
+def _v2_scene_cards(ep_id, seg_index, seg, ep_budget=None):
     """Generate v2 DESIGNED CARDS for a segment's scenes — the anti-slop replacement for the
     blog-screenshot visual. Deconstructs the VO into scenes, picks a shot per scene from the
     format catalog, and renders the designed cards (number/vs/quote/diagram). Returns an ordered
     list of /agenticnews-assets/ urls for the designed frames, or [] if v2 is off/unavailable.
 
+    ep_budget is a mutable dict tracking EPISODE-WIDE card counts so the quote-cap holds across ALL
+    segments (the per-segment direct_visuals cap reset each segment → 9/11 quotes in a real render).
+
     Best-effort: any failure returns [] so the legacy visual still renders (never breaks a render)."""
     if not (_V2_VISUALS and _USE_V2_VISUALS):
         return []
+    if ep_budget is None:
+        ep_budget = {}
     try:
         from factory.formats import get_format
         from factory.contracts.stages import VideoFormat
@@ -1557,6 +1575,20 @@ def _v2_scene_cards(ep_id, seg_index, seg):
         scenes = tag_scenes(seg.get("script", ""), segment_index=seg_index,
                             is_first_segment=(seg_index == 0), is_last_segment=False)
         shots = direct_visuals(scenes, spec)
+        # EPISODE-WIDE quote-cap: direct_visuals caps quotes per-SEGMENT, but across 8 segments the
+        # episode can still be ~80% quotes. Enforce an episode budget here — once we've shipped enough
+        # quote cards (~40% of all scenes seen), rotate further quotes to title_card / brand_broll.
+        ep_budget["scenes"] = ep_budget.get("scenes", 0) + len(scenes)
+        ep_budget.setdefault("quotes", 0)
+        _alt = iter(("title_card", "diagram", "brand_broll", "title_card"))
+        for sh in shots:
+            if sh.shot_type == "quote_card":
+                # allow quotes up to ~45% of all scenes seen so far (min 1 per segment for a real take)
+                cap = max(1, int(ep_budget["scenes"] * 0.45))
+                if ep_budget["quotes"] >= cap:
+                    sh.shot_type = next(_alt, "title_card")
+                else:
+                    ep_budget["quotes"] += 1
         title = seg.get("title", "") or ""
         # clean tool name for the vs-card left side: take the first segment of the title, and if it's
         # a slash-joined list ('Anthropic/OpenAI') keep only the FIRST name so the card reads cleanly.
@@ -1583,9 +1615,9 @@ def _v2_scene_cards(ep_id, seg_index, seg):
                     from factory.formats.scenes import comparison_target
                     rival = comparison_target(sc.text)
                     if not rival:
-                        # no real competitor named → a generic "the alternative" card is slop;
-                        # render the take/quote instead so the scene still gets a designed visual.
-                        p = _v2cards.quote_card(sc.text, nm, ASSETS, _FONTS_DIR)
+                        # no real competitor named → render a bold STATEMENT card (hook style), not
+                        # another quote (vs/diagram falling back to quote was a big quote-skew source).
+                        p = _v2cards.hook_card(_statement(sc.text), nm, ASSETS, _FONTS_DIR, accent=_v2cards.BRAND_CYAN)
                     else:
                         p = _v2cards.vs_card(tool, rival, nm, ASSETS, _FONTS_DIR)
                 elif sh.shot_type == "quote_card":
@@ -1595,8 +1627,12 @@ def _v2_scene_cards(ep_id, seg_index, seg):
                     if len(steps) >= 2:
                         p = _v2cards.diagram_card(f"How {tool} works", steps, nm, ASSETS, _FONTS_DIR)
                     else:
-                        # not a real multi-step mechanism → a 1-box diagram is broken; quote instead
-                        p = _v2cards.quote_card(_quote_text(sc.text), nm, ASSETS, _FONTS_DIR)
+                        # no real multi-step mechanism → a bold STATEMENT card, not another quote
+                        p = _v2cards.hook_card(_statement(sc.text), nm, ASSETS, _FONTS_DIR, accent=_v2cards.BRAND_CYAN)
+                elif sh.shot_type in ("title_card", "brand_broll"):
+                    # quote-cap rotation target: a bold cyan STATEMENT card (hook generator) — visually
+                    # distinct from the centered pull-quote, so the episode isn't a wall of quotes.
+                    p = _v2cards.hook_card(_statement(sc.text), nm, ASSETS, _FONTS_DIR, accent=_v2cards.BRAND_CYAN)
                 else:
                     continue
                 out.append(f"/agenticnews-assets/{Path(p).name}")
@@ -1619,13 +1655,14 @@ def _build_timeline(ep_id, ep_idx, segments, animated_bg=None):
     # animated_bg may be a single url (legacy) or a LIST of distinct bgs to rotate through (no repeats)
     bg_list = animated_bg if isinstance(animated_bg, list) else ([animated_bg] if animated_bg else [])
     bg_i = 0
+    _ep_card_budget = {}   # EPISODE-WIDE card counts (e.g. quote-cap) shared across all segments
     for seg_index, seg in enumerate(segments):
         kws = _extract_keywords(seg["script"], seg["words"], tool_name=seg.get("title"), seg_duration=seg.get("duration", 0.0))
         shots = _plan_shots(seg["duration"], seg.get("screenshot"), seg["card"], seg["words"], kws, seg["source_url"], seg.get("demo"), seg.get("ui"), seg_index=seg_index)
         # V2 ANTI-SLOP: replace the 'artifact' shots (which were blog/page SCREENSHOTS — the slop)
         # with DESIGNED CARDS from the v2 scene→catalog system. Keeps all the timing/Ken-Burns/
         # highlight logic; only swaps the SOURCE image from a scrolled blog to a designed frame.
-        v2_cards = _v2_scene_cards(ep_id, seg_index, seg)
+        v2_cards = _v2_scene_cards(ep_id, seg_index, seg, ep_budget=_ep_card_budget)
         if v2_cards:
             ci = 0
             for sh in shots:
