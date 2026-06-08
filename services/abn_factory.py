@@ -103,6 +103,27 @@ STATE = {"running": False, "stage": "idle", "actor": "-", "episode_id": None,
 _PAUSE = asyncio.Event(); _PAUSE.set()  # set = running, clear = paused
 
 
+def _download(url: str, dest, timeout: int = 60) -> bool:
+    """Download a URL to dest WITH a timeout. urllib.request.urlretrieve takes no timeout, so a hung
+    CDN download blocks an episode FOREVER (a real freeze risk on voice/b-roll/image fetches). This
+    wraps urlopen with a socket timeout and streams to disk. Returns True on success."""
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as r, open(dest, "wb") as fh:
+            while True:
+                chunk = r.read(65536)
+                if not chunk:
+                    break
+                fh.write(chunk)
+        return Path(dest).exists() and Path(dest).stat().st_size > 0
+    except Exception:
+        try:
+            if Path(dest).exists() and Path(dest).stat().st_size == 0:
+                Path(dest).unlink()
+        except Exception:
+            pass
+        return False
+
+
 def _set(stage, actor, detail, episode_id=None):
     STATE.update(stage=stage, actor=actor, detail=detail)
     if episode_id:
@@ -484,7 +505,8 @@ def _chatterbox_one(chunk, out: Path, _minting: bool = False):
         u = r.get("output"); u = (u[0] if isinstance(u, list) and u else u)
         if not isinstance(u, str):
             return False
-        urllib.request.urlretrieve(u, str(out))
+        if not _download(u, str(out), timeout=90):
+            return False
         return out.exists() and out.stat().st_size > 1024
     except Exception:
         return False
@@ -919,7 +941,7 @@ def _wan_i2v_sync(image_url, name):
             if p.get("status") == "succeeded":
                 out = p.get("output"); u = out[0] if isinstance(out, list) else out
                 dest = ASSETS / f"{name}_broll.mp4"
-                urllib.request.urlretrieve(u, str(dest))
+                _download(u, str(dest), timeout=90)
                 return f"/agenticnews-assets/{dest.name}" if dest.exists() else None
             if p.get("status") in ("failed", "canceled"):
                 return None
@@ -991,7 +1013,7 @@ async def _grow_bg_library(want=1):
         dest = _BG_LIB_DIR / f"broll_{have + made:02d}.mp4"
         try:
             if isinstance(clip_url, str) and clip_url.startswith("http"):
-                await asyncio.to_thread(urllib.request.urlretrieve, clip_url, str(dest))
+                await asyncio.to_thread(_download, clip_url, str(dest), 90)
             else:  # already a local /agenticnews-assets path
                 src = ASSETS / Path(str(clip_url)).name
                 if src.exists():
@@ -1041,7 +1063,8 @@ def _bg_is_clean(still_url, name) -> bool:
     import shutil, subprocess, urllib.request, re
     try:
         p = ASSETS / f"{name}_still.png"
-        urllib.request.urlretrieve(still_url, str(p))
+        if not _download(still_url, str(p), timeout=60):
+            return True  # OCR check can't run on a failed download — don't block (matches prior behavior)
         if not shutil.which("tesseract"):
             return True  # no OCR available — don't block the pipeline
         r = subprocess.run(["tesseract", str(p), "-", "--psm", "11"],
@@ -1092,7 +1115,7 @@ async def _thumbnail(ep_id, lead_title, thumb_spec):
     out = ASSETS / f"{ep_id}_thumb.png"
     if bg_url:
         try:
-            urllib.request.urlretrieve(bg_url, str(bg))
+            _download(bg_url, str(bg), timeout=60)
         except Exception:
             bg = None
     if not (bg and bg.exists()):
