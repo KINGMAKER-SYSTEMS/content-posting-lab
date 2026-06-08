@@ -1664,6 +1664,11 @@ def _build_timeline(ep_id, ep_idx, segments, animated_bg=None):
             lt_hold = 3.5 if seg.get("duration", 60) < 70 else 4.2
             lower_thirds = [{"startSec": lt_start, "durationSec": lt_hold,
                              "headline": _clip(seg["title"], 64), "sourceUrl": seg["source_url"]}]
+            # DEDUP: drop keyword-pops whose text already appears in the lower-third headline — showing
+            # the same tool name as BOTH a pop AND the lower-third is redundant clutter (caught on a
+            # real frame: 'agent-governance-toolkit' popped while the lower-third said the same thing).
+            lt_text = lower_thirds[0]["headline"].lower()
+            pops = [p for p in pops if p["word"].lower() not in lt_text]
         tsegs.append({
             "segmentId": seg["segment_id"], "title": seg["title"], "sourceUrl": seg["source_url"],
             "shots": shots, "wordTimestamps": seg["words"], "keywordPops": pops,
