@@ -66,11 +66,16 @@ def hero_number(text: str) -> str:
     m = _STAT_RE.search(text)
     if m:
         return re.sub(r'\s+', ' ', m.group(0)).strip()
-    # last resort: a bare number, but skip obvious version strings (X.Y after a product word)
+    # last resort: a bare number, but skip (a) version strings (X.Y after a product word) and
+    # (b) bare YEARS (1900-2099) — a year alone is not a meaningful hero stat ('2023' rendered as a
+    # number card with a sentence-fragment label — caught on a real card).
     for mm in re.finditer(r'\b\d[\d,.]*\b', text):
+        tok = mm.group(0)
+        if re.fullmatch(r'(19|20)\d\d', tok):          # bare year → not a stat
+            continue
         before = text[max(0, mm.start() - 14):mm.start()].lower()
         if not re.search(r'(opus|gpt|claude|llama|gemini|v|version|model)\s*$', before):
-            return mm.group(0)
+            return tok
     return ""
 
 
