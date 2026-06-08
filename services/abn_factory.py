@@ -682,6 +682,16 @@ _BRAND_MERGE = {("open", "ai"): "OpenAI", ("lang", "chain"): "LangChain", ("git"
 _BRAND_CASE = {"openai": "OpenAI", "langchain": "LangChain", "github": "GitHub", "chatgpt": "ChatGPT",
                "anthropic": "Anthropic", "copilot": "Copilot", "llama": "Llama", "gpt": "GPT",
                "mcp": "MCP", "rag": "RAG", "ollama": "Ollama", "vllm": "vLLM", "ai": "AI"}
+# ASR GARBLES — Whisper consistently mangles a few proper nouns (caught across 5 episodes: 'Anthropic'
+# became Thropix/Thropic/Thropics/Anthropics 25x). Map a regex of the garble → the correct brand. These
+# patterns are NOT real English words, so correcting them can't clobber legitimate text.
+_BRAND_GARBLE = [
+    (re.compile(r"^an?thropi[ckx]s?$", re.I), "Anthropic"),     # thropic/thropix/anthropics/thropics
+    (re.compile(r"^o?pen-?ai$", re.I), "OpenAI"),               # penai / open-ai stragglers
+    (re.compile(r"^(co-?pilot|copilots)$", re.I), "Copilot"),
+    (re.compile(r"^(lang-?chain|langchains)$", re.I), "LangChain"),
+    (re.compile(r"^(g-?p-?t|gpts)$", re.I), "GPT"),
+]
 
 
 def _fix_brand_words(words):
@@ -706,10 +716,22 @@ def _fix_brand_words(words):
             out.append({"w": merged, "s": w["s"], "e": words[i + 1]["e"]})
             i += 2
             continue
-        # single-word casing fix (preserve any trailing punctuation Whisper attached)
-        base = re.sub(r'[^a-z]', '', (w.get("w") or "").lower())
-        if base in _BRAND_CASE:
-            punct = re.sub(r'[\w]', '', w.get("w") or "")   # trailing , . etc.
+        raw = w.get("w") or ""
+        # possessive/punct suffix to carry across a correction ("Thropic's" -> "Anthropic's")
+        suffix = ""
+        m_poss = re.search(r"(['’]s)\b", raw)
+        if m_poss:
+            suffix = "'s"
+        trail = re.sub(r"[\w'’]", "", raw)                  # trailing , . etc.
+        core = re.sub(r"['’]s\b", "", raw)                  # strip possessive for matching
+        core_alpha = re.sub(r'[^a-zA-Z]', '', core)
+        # ASR-garble fix FIRST (Thropix -> Anthropic), then plain casing fix
+        garbled = next((fix for pat, fix in _BRAND_GARBLE if pat.match(core_alpha)), None)
+        base = core_alpha.lower()
+        if garbled:
+            out.append({"w": garbled + suffix + trail, "s": w["s"], "e": w["e"]})
+        elif base in _BRAND_CASE:
+            punct = re.sub(r'[\w]', '', raw)
             out.append({"w": _BRAND_CASE[base] + punct, "s": w["s"], "e": w["e"]})
         else:
             out.append(w)
