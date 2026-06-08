@@ -1568,15 +1568,21 @@ def _diagram_steps(text: str) -> list:
 
 def _statement(text: str) -> str:
     """A short bold STATEMENT (≤8 words) from a scene for a hook-style statement card — the quote-cap
-    rotation target + the vs/diagram no-data fallback. Takes the punchiest opening clause, trimmed."""
+    rotation target + the vs/diagram no-data fallback. Strips filler lead-ins + trailing punctuation
+    so it reads as a punchy complete thought, not a mid-sentence fragment ('AND THAT IS WHY IT...')."""
     s = re.split(r'\s*[—–,;]\s*', (text or "").strip())[0]
     s = re.sub(r"['’]", "", s)
-    words = re.sub(r'[^\w\s%$.]', '', s).split()[:8]
+    # strip filler OPENERS so the statement leads on substance, not a connective/setup phrase
+    s = re.sub(r'^\s*(and|but|so|then|also|plus)\b\s+', '', s, flags=re.I)
+    s = re.sub(r'^\s*(this matters because|that is why|thats why|here is why|heres why|the point is|'
+               r'what this means is|in other words|basically|honestly|the thing is)\b\s*', '', s, flags=re.I)
+    s = re.sub(r'^\s*(it is|its|it|this is|this|that is|that)\b\s+', '', s, flags=re.I)
+    words = re.sub(r'[^\w\s%$]', '', s).split()[:8]    # drop '.' too — no trailing period on a card
     _WEAK = {"and", "or", "but", "the", "a", "an", "of", "to", "with", "for", "in", "on", "is", "are",
-             "that", "this", "its", "their", "than", "just", "no", "not", "so", "as", "it"}
+             "that", "this", "its", "their", "than", "just", "no", "not", "so", "as", "it", "you"}
     while words and words[-1].lower() in _WEAK:
         words.pop()
-    return (" ".join(words) or s[:48]).upper()
+    return (" ".join(words) or re.sub(r'[.\s]+$', '', s)[:48]).upper()
 
 
 def _quote_text(text: str) -> str:
