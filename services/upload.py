@@ -41,8 +41,15 @@ def _load_jobs() -> list[dict]:
 
 
 def _save_jobs(jobs: list[dict]) -> None:
-    with open(UPLOAD_JOBS_FILE, "w") as f:
+    # ATOMIC write (tmp + rename) — the rest of the app's data layer uses this; a raw open('w')+dump
+    # left the upload-job queue truncated/wiped if the process crashed mid-write (a P0). Write to a
+    # temp file, flush+fsync, then atomically rename over the target so a reader never sees a partial.
+    tmp = f"{UPLOAD_JOBS_FILE}.tmp"
+    with open(tmp, "w") as f:
         json.dump(jobs, f, indent=2, default=str)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, UPLOAD_JOBS_FILE)
 
 
 def _update_job(job_id: str, updates: dict) -> dict | None:
