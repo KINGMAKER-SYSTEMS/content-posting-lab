@@ -140,6 +140,42 @@ def quote_card(quote: str, name: str, assets_dir: Path, fonts_dir: Path,
     return _run(cmd, out)
 
 
+def hook_card(hook_text: str, name: str, assets_dir: Path, fonts_dir: Path,
+              accent: str = BRAND_RED) -> Path:
+    """The FIRST-5-SECONDS hook frame — the most important visual in the whole episode.
+
+    A big, bold, high-contrast statement card built from the cold-open's striking fact, designed to
+    STOP the scroll (research: ~70% retention at 0:30 triggers promotion; 55% leave by 60s). Red
+    accent by default for max energy, large centered text, a top 'eyebrow' kicker. Visually
+    distinct from the calmer mid-video cards so the open reads as a deliberate hook."""
+    out = assets_dir / f"{name}_hook.png"
+    disp = _font(fonts_dir, "TikTokSans16pt-Black.ttf", "Montserrat-ExtraBold.ttf")
+    # punchy: keep it short, wrap to ~18 chars/line so it reads HUGE
+    words = _clean(hook_text, 90).split()
+    lines, cur = [], ""
+    for w in words:
+        if len(cur) + len(w) + 1 > 18 and cur:
+            lines.append(cur); cur = w
+        else:
+            cur = (cur + " " + w).strip()
+    if cur:
+        lines.append(cur)
+    text = "\n".join(lines[:3])
+    cmd = (_base() +
+           # energetic glow wash + a bold top kicker bar
+           f'\\( -size 1920x1080 radial-gradient:rgba\\(255,43,47,0.10\\)-none \\) -compose over -composite '
+           f'-gravity north -fill "{accent}" -draw "rectangle 810,210 1110,222" '
+           f'-font {shlex.quote(disp)} -fill "{accent}" -pointsize 34 -annotate +0+150 "AGENTIC BUILDER NEWS" '
+           # the hook line, huge, centered. A dark STROKE (not an offset shadow) gives clean contrast
+           # on any background without the doubled-ghost the offset shadow produced.
+           f'-gravity center -font {shlex.quote(disp)} -pointsize 104 -interline-spacing 8 '
+           f'-stroke black -strokewidth 6 -fill "{BRAND_WHITE}" -annotate +0+0 {shlex.quote(text)} '
+           f'-stroke none -fill "{BRAND_WHITE}" -annotate +0+0 {shlex.quote(text)} '
+           f'-font {shlex.quote(disp)} -fill "#3a4254" -pointsize 26 -gravity south -annotate +0+50 "{WATERMARK}" '
+           f'{shlex.quote(str(out))}')
+    return _run(cmd, out)
+
+
 def diagram_card(title: str, steps: list[str], name: str, assets_dir: Path, fonts_dir: Path,
                  accent: str = BRAND_CYAN) -> Path:
     """A simple captioned mechanism panel: title + up to 4 stacked step boxes with arrows.

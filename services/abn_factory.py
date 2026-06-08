@@ -1405,6 +1405,27 @@ def _disk(url_path):
     return f"/agenticnews-assets/{name}"
 
 
+def _hook_line(cold_open_text: str) -> str:
+    """Pull the PUNCHIEST fragment from the cold-open VO for the first-5s hook card — the payload,
+    not the throat-clearing. Prefers the clause carrying a stat, stripped of lead-in filler so it
+    reads big and lands fast ('one million token context', not 'Anthropic just shipped a model with')."""
+    sents = [s.strip() for s in re.split(r'(?<=[.!?])\s+', (cold_open_text or "").strip()) if s.strip()]
+    if not sents:
+        return "THE AI STORY YOU MISSED"
+    stat = next((s for s in sents if re.search(r'\$?\d|\b(million|billion|x|percent|%)\b', s, re.I)), None)
+    pick = stat or sents[0]
+    # strip the subject+verb lead-in so the hook opens on the PAYLOAD ("one million token context",
+    # not "Anthropic just shipped a model with a one million token context"). Cut everything up to
+    # and including the action verb, then any residual "a/an/the ... with" connective.
+    pick = re.sub(r'^.*?\b(shipped|launched|released|dropped|unveiled|announced|built|made|hit|reached|'
+                  r'raised|now has|just got|added|introduced)\b\s*', '', pick, count=1, flags=re.I) or pick
+    pick = re.sub(r'^(a |an |the |its |their )?(model |tool |startup |company )?(with |that has |featuring )?(a |an |the )?',
+                  '', pick, count=1, flags=re.I) or pick
+    words = re.sub(r'[^\w\s%$.\-]', '', pick).split()
+    line = " ".join(words[:8]).strip()
+    return (line or pick[:48]).upper()
+
+
 def _v2_scene_cards(ep_id, seg_index, seg):
     """Generate v2 DESIGNED CARDS for a segment's scenes — the anti-slop replacement for the
     blog-screenshot visual. Deconstructs the VO into scenes, picks a shot per scene from the
@@ -1428,6 +1449,14 @@ def _v2_scene_cards(ep_id, seg_index, seg):
         for sc, sh in zip(scenes, shots):
             nm = f"{ep_id}_s{seg_index}_v2sc{sc.index}"
             try:
+                # FIRST-5-SECONDS HOOK: the very first scene of the episode (seg 0, scene 0) gets a
+                # dedicated bold HOOK card built from the cold-open's striking fact — the single most
+                # important visual for retention. Distinct, high-energy, not a calm mid-video card.
+                if seg_index == 0 and sc.index == 0:
+                    hk = _hook_line(sc.text)
+                    p = _v2cards.hook_card(hk, nm, ASSETS, _FONTS_DIR)
+                    out.append(f"/agenticnews-assets/{Path(p).name}")
+                    continue
                 if sh.shot_type == "number_card":
                     h = hero_number(sc.text)
                     if not h:
