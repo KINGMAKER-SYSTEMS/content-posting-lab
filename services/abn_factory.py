@@ -44,15 +44,20 @@ WPM = 195
 _FONTS_DIR = Path(__file__).resolve().parent.parent / "fonts"
 # v2 visuals on by default; ABN_V2_VISUALS=0 falls back to the legacy screenshot chain.
 _USE_V2_VISUALS = os.getenv("ABN_V2_VISUALS", "1") == "1"
-SEG_WORDS = 200           # ~63s spoken per segment — longer beats for depth + the 11min ad-RPM target
-N_SEGMENTS = 11           # target episode size: 11 stories × ~63s + sting ≈ 11-12min
+SEG_WORDS = 200           # script-length hint to the LLM. NOTE: the cloned TTS actually speaks ~140 wpm
+                          # (measured), so a 200-word segment runs ~85-90s, NOT the ~63s a naive 195-wpm
+                          # estimate implies. Timing everywhere uses the MEASURED VO duration, so this
+                          # mismatch is cosmetic — but it's why episodes land ~15-16min, not 11-12 (below).
+N_SEGMENTS = 11           # target episode size. 11 stories × ~86s actual + sting ≈ 15-16min. Longer than
+                          # the old "11-12min" comment claimed, but VALID + RPM-positive (more mid-roll
+                          # inventory) and clears every gate. Keep high — do NOT trim for "shorter".
 
 # ─────────────────────── HARD VALUATION GATES (non-negotiable) ───────────────────────
 # These are ENFORCED parameters, not aspirations. An episode that violates a gate does NOT
 # reach 'review' — it is rejected/looped. This is the contract that defines "satisfactory work".
 MIN_EPISODE_SEC = 600     # 10:00 HARD FLOOR. Render shorter than this is auto-rejected (RPM/mid-roll).
 MIN_SEGMENTS    = 8       # floor on segment count so we START long enough to clear MIN_EPISODE_SEC.
-                          # 8 × ~63s ≈ 8.4min of VO + cold-open + sting → clears 10min with captions/pacing.
+                          # 8 × ~86s actual ≈ 11.5min of VO + cold-open + sting → comfortably clears 10min.
 
 # Rotating subjects for the autonomous LORE format (every 6th episode) — origin stories builders care about
 _LORE_SUBJECTS = [
