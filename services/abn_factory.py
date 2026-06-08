@@ -1699,7 +1699,21 @@ def _quote_text(text: str) -> str:
     m = re.match(r"^[^:]{3,40}:\s+(.{20,})$", out)
     if m:
         out = m.group(1).strip()
-    return (out[:1].upper() + out[1:]) if out else (sents[0] if sents else text)[:100]
+    # FIT THE CARD: the quote card wraps ~26 chars/line and shows only 4 lines (~100 chars). A longer
+    # quote gets chopped MID-SENTENCE by the renderer ('...the real story is' — caught on a real card).
+    # Trim to a COMPLETE phrase that fits: cut at the last clause boundary (comma) under the cap, else
+    # the last whole word, and drop any dangling connective so it never ends on 'is/the/and'.
+    CAP = 96
+    if len(out) > CAP:
+        head = out[:CAP]
+        cut = head.rfind(", ")
+        out = (head[:cut] if cut >= 40 else head[:head.rfind(" ")]).strip().rstrip(",")
+        _wk = {"is", "are", "the", "a", "an", "and", "or", "but", "of", "to", "on", "in", "for", "with", "as", "that", "this"}
+        ws = out.split()
+        while ws and ws[-1].lower() in _wk:
+            ws.pop()
+        out = " ".join(ws)
+    return (out[:1].upper() + out[1:]) if out else (sents[0] if sents else text)[:96]
 
 
 def _v2_scene_cards(ep_id, seg_index, seg, ep_budget=None):
