@@ -2475,9 +2475,10 @@ async def _gc_segments(keep_recent=12):
             # stale board card pointing at a deleted file — trying to review/publish it fails. Drop it.
             dead_review = False
             if kind == "episode" and stage == "review":
-                _ap = (v.get("data", {}) or {}).get("artifacts", {}).get("assembly_path", "") if isinstance(v.get("data"), dict) else ""
-                if not _ap:
-                    _ap = (v.get("artifacts", {}) or {}).get("assembly_path", "")
+                # db.list_videos() merges the JSON `data` blob to the TOP LEVEL (no nested 'data'
+                # key), so artifacts/assembly_path live at v["artifacts"]. (The old nested lookup was
+                # dead code that always missed.) Read the real location directly.
+                _ap = (v.get("artifacts") or {}).get("assembly_path", "")
                 if _ap:
                     _mp4 = ASSETS / Path(str(_ap)).name
                     # only prune if it's also archived (old) — never a fresh review awaiting a human
