@@ -1456,8 +1456,14 @@ def _hook_line(cold_open_text: str) -> str:
     # slashes become spaces; apostrophes are dropped in-place ("they're"->"theyre", not "they re").
     pick = pick.replace("'", "").replace("’", "")
     pick = re.sub(r'[—–/\-]', ' ', pick)
-    words = re.sub(r'[^\w\s%$.]', '', pick).split()
-    line = " ".join(words[:8]).strip()
+    words = re.sub(r'[^\w\s%$.]', '', pick).split()[:8]
+    # don't END the hook on a dangling conjunction/preposition/article — "...OUT OF LABS AND" leaves
+    # the viewer hanging on a connective instead of a punch. Trim trailing weak words.
+    _WEAK_TAIL = {"and", "or", "but", "the", "a", "an", "of", "to", "with", "for", "in", "on", "at",
+                  "by", "from", "as", "is", "are", "that", "this", "its", "their", "into", "than"}
+    while words and words[-1].lower() in _WEAK_TAIL:
+        words.pop()
+    line = " ".join(words).strip()
     return (line or pick[:48]).upper()
 
 
