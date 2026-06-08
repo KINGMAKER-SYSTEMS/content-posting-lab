@@ -1864,13 +1864,26 @@ def _build_timeline(ep_id, ep_idx, segments, animated_bg=None):
         if seg_index != 0:                                   # hook segment opens clean — no lower-third
             lt_start = round(0.6 + (seg_index % 3) * 0.25, 2)  # slight stagger so it's not identical each time
             lt_hold = 3.5 if seg.get("duration", 60) < 70 else 4.2
-            lower_thirds = [{"startSec": lt_start, "durationSec": lt_hold,
-                             "headline": _clip(seg["title"], 64), "sourceUrl": seg["source_url"]}]
+            lt_end = lt_start + lt_hold
+            # DON'T render a lower-third over a DESIGNED CARD (number/quote/vs/diagram) — they're both
+            # center/lower text and COLLIDE (caught on a real frame: a number card's label sat under an
+            # overlapping lower-third headline). If a v2sc card occupies the lower-third window, skip it.
+            card_clash = any(
+                "v2sc" in (sh.get("src") or "")
+                and sh.get("startSec", 0) < lt_end
+                and sh.get("startSec", 0) + sh.get("durationSec", 0) > lt_start
+                for sh in shots)
+            if card_clash:
+                lower_thirds = []
+            else:
+                lower_thirds = [{"startSec": lt_start, "durationSec": lt_hold,
+                                 "headline": _clip(seg["title"], 64), "sourceUrl": seg["source_url"]}]
             # DEDUP: drop keyword-pops whose text already appears in the lower-third headline — showing
             # the same tool name as BOTH a pop AND the lower-third is redundant clutter (caught on a
             # real frame: 'agent-governance-toolkit' popped while the lower-third said the same thing).
-            lt_text = lower_thirds[0]["headline"].lower()
-            pops = [p for p in pops if p["word"].lower() not in lt_text]
+            if lower_thirds:                                  # may be empty when suppressed by a card clash
+                lt_text = lower_thirds[0]["headline"].lower()
+                pops = [p for p in pops if p["word"].lower() not in lt_text]
         tsegs.append({
             "segmentId": seg["segment_id"], "title": seg["title"], "sourceUrl": seg["source_url"],
             "shots": shots, "wordTimestamps": seg["words"], "keywordPops": pops,
