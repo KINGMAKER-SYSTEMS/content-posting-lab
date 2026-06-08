@@ -1668,7 +1668,16 @@ def _quote_text(text: str) -> str:
         if len(out) + len(s) + 1 > 100 and out:   # quote card holds ~4 short lines ≈ 100 chars
             break
         out = (out + " " + s).strip()
-    return out or (sents[0] if sents else text)[:100]
+    out = out or (sents[0] if sents else text)[:100]
+    # strip a filler LEAD-IN so the quote opens on substance, not throat-clearing ('But here's the
+    # catch: it's mainly...' -> 'it's mainly...'). Caught on a real quote card.
+    out = re.sub(r"^\s*(but|and|so|now|well|look|honestly|the thing is|here'?s the (catch|thing|kicker)|"
+                 r"that said|of course|in fact|frankly)\b[\s:,—-]*", "", out, flags=re.I).strip()
+    # also drop a leading 'X:' preamble clause if a substantive clause follows it
+    m = re.match(r"^[^:]{3,40}:\s+(.{20,})$", out)
+    if m:
+        out = m.group(1).strip()
+    return (out[:1].upper() + out[1:]) if out else (sents[0] if sents else text)[:100]
 
 
 def _v2_scene_cards(ep_id, seg_index, seg, ep_budget=None):
