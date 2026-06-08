@@ -1786,7 +1786,13 @@ def _v2_scene_cards(ep_id, seg_index, seg, ep_budget=None):
                     else:
                         p = _v2cards.vs_card(tool, rival, nm, ASSETS, _FONTS_DIR)
                 elif sh.shot_type == "quote_card":
-                    p = _v2cards.quote_card(_quote_text(sc.text), nm, ASSETS, _FONTS_DIR)
+                    _qt = _quote_text(sc.text)
+                    # FLOOR: a quote card needs a substantive quote. A tiny fragment ('The catch?') leaves
+                    # the card mostly empty (caught on a real card) — render a bold STATEMENT instead.
+                    if len(_qt) < 24 or len(_qt.split()) < 4:
+                        p = _v2cards.hook_card(_statement(sc.text), nm, ASSETS, _FONTS_DIR, accent=_v2cards.BRAND_CYAN)
+                    else:
+                        p = _v2cards.quote_card(_qt, nm, ASSETS, _FONTS_DIR)
                 elif sh.shot_type in ("diagram", "diagram_card"):
                     steps = _diagram_steps(sc.text)
                     if len(steps) >= 2:
