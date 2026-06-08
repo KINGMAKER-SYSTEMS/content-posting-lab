@@ -1576,17 +1576,19 @@ def _v2_scene_cards(ep_id, seg_index, seg, ep_budget=None):
                             is_first_segment=(seg_index == 0), is_last_segment=False)
         shots = direct_visuals(scenes, spec)
         # EPISODE-WIDE quote-cap: direct_visuals caps quotes per-SEGMENT, but across 8 segments the
-        # episode can still be ~80% quotes. Enforce an episode budget here — once we've shipped enough
-        # quote cards (~40% of all scenes seen), rotate further quotes to title_card / brand_broll.
+        # episode can still be ~80% quotes. Enforce an episode budget — cap quotes at ~30% of all
+        # scenes (loose 45% left a quote-heavy script still mostly quotes), and rotate the EXCESS
+        # through VARIED alternatives (statement/diagram) so it isn't one new monotony.
         ep_budget["scenes"] = ep_budget.get("scenes", 0) + len(scenes)
         ep_budget.setdefault("quotes", 0)
-        _alt = iter(("title_card", "diagram", "brand_broll", "title_card"))
+        ep_budget.setdefault("rot", 0)
+        _ALT_CYCLE = ("title_card", "diagram", "title_card")   # statement, diagram, statement, ...
+        cap = max(1, int(ep_budget["scenes"] * 0.30))           # quotes ≤ ~30% of all scenes seen
         for sh in shots:
             if sh.shot_type == "quote_card":
-                # allow quotes up to ~45% of all scenes seen so far (min 1 per segment for a real take)
-                cap = max(1, int(ep_budget["scenes"] * 0.45))
                 if ep_budget["quotes"] >= cap:
-                    sh.shot_type = next(_alt, "title_card")
+                    sh.shot_type = _ALT_CYCLE[ep_budget["rot"] % len(_ALT_CYCLE)]
+                    ep_budget["rot"] += 1
                 else:
                     ep_budget["quotes"] += 1
         title = seg.get("title", "") or ""
