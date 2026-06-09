@@ -2173,11 +2173,17 @@ async def _render_remotion(ep_id, timeline, force=False):
             # pass and overwrites the file, so the loudness normalization MUST live here (the last
             # audio stage) — otherwise the ducked re-mix shipped quiet (~-22 dB, caught on a real
             # episode) because it undid the normalize pass's loudnorm.
+            # CRITICAL: the duck pass is the LAST video stage. '-c:v copy' here passed the upstream pixel
+            # format straight through — so if the normalize pass hiccuped, the episode SHIPPED yuvj420p and
+            # FAILED the hard yuv420p gate (caught on ep_d640a3eb: 16.2min but yuvj420p). Re-encode the video
+            # to yuv420p here too (belt-and-suspenders) so the gate holds regardless of the normalize pass.
             dcmd = (f'ffmpeg -y -i {shlex.quote(str(out))} -stream_loop -1 -i {shlex.quote(str(bedfile))} '
                     f'-filter_complex "[1:a]volume=0.22[m];[m][0:a]sidechaincompress=threshold=0.03:ratio=8:attack=20:release=300[duck];'
                     f'[0:a][duck]amix=inputs=2:duration=first:dropout_transition=0:weights=1 0.9[mix];'
                     f'[mix]loudnorm=I=-14:TP=-1.5:LRA=11[a]" '
-                    f'-map 0:v -map "[a]" -c:v copy -c:a aac -b:a 192k -shortest {shlex.quote(str(ducked))} 2>&1')
+                    f'-map 0:v -map "[a]" -vf format=yuv420p -colorspace bt709 -color_primaries bt709 '
+                    f'-color_trc bt709 -color_range tv -c:v libx264 -crf 20 -preset veryfast '
+                    f'-c:a aac -b:a 192k -shortest {shlex.quote(str(ducked))} 2>&1')
             dc, dlog = await _sh(dcmd, timeout=300)
             if dc == 0 and ducked.exists():
                 ducked.replace(out)
