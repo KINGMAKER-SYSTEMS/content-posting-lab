@@ -2668,7 +2668,18 @@ async def produce_one_episode(force_deepdive=False, force_lore=None):
     except Exception:
         _title_pb = ""
     _pkg_ctx = {"titler": _title_pb, "thumbnailer": _title_pb}
-    pkg_results = await asyncio.gather(*[asyncio.to_thread(experts.ask, k, f"Episode stories: {stories}", _pkg_ctx.get(k, "")) for k in pkg_keys])
+    # BOUNDED packaging: the render is DONE and valid by now — the post-render packaging (titler/seo/thumb/
+    # comment experts) must NOT be able to wedge the episode short of 'review'. Seen on real episodes
+    # (ep_e4c90a5e, ep_f361b430): a hung experts.ask thread (or a slow competitor scrape) left the mp4
+    # complete but the episode stuck pre-review for 30+ min until the watchdog killed it. Cap the whole
+    # packaging gather at 120s; on timeout, ship empty package fields and proceed to review anyway.
+    try:
+        pkg_results = await asyncio.wait_for(
+            asyncio.gather(*[asyncio.to_thread(experts.ask, k, f"Episode stories: {stories}", _pkg_ctx.get(k, "")) for k in pkg_keys]),
+            timeout=120)
+    except asyncio.TimeoutError:
+        pkg_results = ["" for _ in pkg_keys]
+        BUS.emit("editor-agent", "error", "packaging timed out (120s) — shipping to review without it", episode_id=ep_id)
     package = {k: (v or "") for k, v in zip(pkg_keys, pkg_results)}
     # REAL chapters from actual segment durations — the SEO expert guesses timestamps that don't land on
     # segment boundaries (broken YouTube chapters). Replace its chapter block with true cumulative times.

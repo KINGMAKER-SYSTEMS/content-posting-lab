@@ -71,10 +71,13 @@ def refresh(force: bool = False) -> dict:
 
 
 def _load() -> dict:
+    # CACHE-ONLY: never trigger a live yt-dlp scrape here. title_playbook()/hook_playbook() are called in
+    # the post-render packaging path; a blocking 7-channel scrape there wedged episodes pre-review. If the
+    # cache is missing, return the static FINDINGS (still useful) and let a separate refresh() repopulate.
     try:
         return json.loads(INTEL_FILE.read_text())
     except Exception:
-        return refresh()
+        return {"videos": [], "findings": FINDINGS}
 
 
 def title_playbook(limit: int = 16) -> str:
