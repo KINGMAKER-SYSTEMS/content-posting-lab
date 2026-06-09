@@ -70,8 +70,12 @@ def capture_sync(url: str, name: str, seconds: float = 8.0) -> str | None:
                 try: rec_dir.rmdir()
                 except Exception: pass
                 return None  # let the pipeline fall back to screenshot/Flux b-roll
-            # smooth scroll top → bottom over ~seconds
-            height = page.evaluate("document.body.scrollHeight") or 2000
+            # smooth scroll over ~seconds — but only through the TOP, READABLE portion of the page
+            # (repo name, hero description, first section). Scrolling the FULL page on a long README
+            # drags through walls of tiny unreadable body text (caught on a real frame). Cap the depth
+            # to ~2.2 viewports so the shot stays on the legible hero/intro, not deep body paragraphs.
+            full = page.evaluate("document.body.scrollHeight") or 2000
+            height = min(full, int(1080 * 2.2))
             steps = max(20, int(seconds * 12))
             for i in range(steps):
                 y = int((i / steps) * max(0, height - 1080))
