@@ -2310,7 +2310,17 @@ async def produce_one_episode(force_deepdive=False, force_lore=None):
             BUS.emit("narrator-agent", "memory.proven", f"seeded with {len(wins)} proven theses", episode_id=ep_id)
     except Exception:
         pass
-    cold_open = await asyncio.to_thread(experts.ask, "narrator", f"Episode stories:\n{story_list}{proven}\n\nFind the connecting thesis and write the cold-open.")
+    # COMPETITOR INTEL: feed the narrator the real hook rule distilled from top AI channels' actual
+    # openings (e.g. 'I've read the 244-page report Anthropic put out') so the hook MODELS proven
+    # winners instead of guessing. Falls back silently if the intel isn't available.
+    try:
+        import services.abn_competitors as _comp
+        _hook_pb = _comp.hook_playbook()
+    except Exception:
+        _hook_pb = ""
+    cold_open = await asyncio.to_thread(experts.ask, "narrator",
+                                        f"Episode stories:\n{story_list}{proven}\n\nFind the connecting thesis and write the cold-open.",
+                                        _hook_pb)
     if cold_open:
         BUS.emit("narrator-agent", "narrative.thesis", f"cold-open: {cold_open[:70]}", episode_id=ep_id, data={"cold_open": cold_open})
     # FLYWHEEL: record this episode's stories + thesis into self-refinement memory
@@ -2545,7 +2555,14 @@ async def produce_one_episode(force_deepdive=False, force_lore=None):
     import services.abn_experts as experts
     stories = " | ".join(s["title"][:60] for s in segments)
     pkg_keys = ["titler", "seo", "thumbnailer", "commenter"]
-    pkg_results = await asyncio.gather(*[asyncio.to_thread(experts.ask, k, f"Episode stories: {stories}") for k in pkg_keys])
+    # COMPETITOR INTEL: feed the titler/thumbnailer the REAL top-performing competitor titles to model.
+    try:
+        import services.abn_competitors as _comp
+        _title_pb = _comp.title_playbook()
+    except Exception:
+        _title_pb = ""
+    _pkg_ctx = {"titler": _title_pb, "thumbnailer": _title_pb}
+    pkg_results = await asyncio.gather(*[asyncio.to_thread(experts.ask, k, f"Episode stories: {stories}", _pkg_ctx.get(k, "")) for k in pkg_keys])
     package = {k: (v or "") for k, v in zip(pkg_keys, pkg_results)}
     # REAL chapters from actual segment durations — the SEO expert guesses timestamps that don't land on
     # segment boundaries (broken YouTube chapters). Replace its chapter block with true cumulative times.
