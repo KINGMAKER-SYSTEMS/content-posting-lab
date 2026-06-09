@@ -68,6 +68,7 @@ import random as _random
 # The factory sets this once so every card's _base() can find the cinematic background pool without
 # threading assets_dir through all 4 generators. (Cards stay pure/unit-testable; default None = gradient.)
 _ASSETS_DIR = None
+_LAST_BG = None   # last cinematic background used — avoid back-to-back repeats
 
 
 def _bg_pool(assets_dir=None):
@@ -86,7 +87,12 @@ def _base(size="1920x1080", assets_dir=None) -> str:
     so cards aren't a flat-blue PowerPoint slide; falls back to the brand gradient if none generated."""
     pool = _bg_pool(assets_dir or _ASSETS_DIR)
     if pool:
-        bg = _random.choice(pool)
+        # NO consecutive repeat — pure random can show the same background on back-to-back cards (looks
+        # like a stuck slide). Pick one different from the last used, cycling through the pool's variety.
+        global _LAST_BG
+        choices = [p for p in pool if str(p) != _LAST_BG] or pool
+        bg = _random.choice(choices)
+        _LAST_BG = str(bg)
         # scale-to-fill + DARKEN (multiply a 58% black veil) so white card text stays readable over it,
         # then a subtle bottom-vignette. This is the anti-PowerPoint background.
         return (f'magick \\( {shlex.quote(str(bg))} -resize {size}^ -gravity center -extent {size} \\) '
