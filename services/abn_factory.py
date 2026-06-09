@@ -1081,6 +1081,32 @@ async def _card(headline, sub, name):
 
 
 # ---------------- THUMBNAIL (Flux-generated background + bold text overlay — the real deal) ----------------
+def _codex_image(prompt: str, out_name: str, size: str = "1536x1024") -> str | None:
+    """Generate a cinematic image via Codex's built-in image_gen tool (runs on the ChatGPT PRO plan —
+    NO API key, no metered billing) and copy it into ASSETS as <out_name>.png. Returns the asset path
+    or None. Strategy: snapshot ~/.codex/generated_images before, run `codex exec`, grab the NEW png."""
+    import subprocess, shutil, glob as _glob
+    gen_dir = Path(os.path.expanduser(os.getenv("CODEX_HOME", "~/.codex"))) / "generated_images"
+    before = set(_glob.glob(str(gen_dir / "*" / "ig_*.png")))
+    full = (f"Use the image_gen tool to generate a {size} image. {prompt} "
+            f"No text, no words, no watermark, no logos. Reply only with the saved file path.")
+    try:
+        subprocess.run(["codex", "exec", "--skip-git-repo-check", full],
+                       capture_output=True, text=True, timeout=180)
+    except Exception:
+        return None
+    after = set(_glob.glob(str(gen_dir / "*" / "ig_*.png")))
+    new = sorted(after - before, key=lambda p: os.path.getmtime(p), reverse=True)
+    if not new:
+        return None
+    dest = ASSETS / f"{out_name}.png"
+    try:
+        shutil.copy(new[0], dest)
+        return f"/agenticnews-assets/{dest.name}"
+    except Exception:
+        return None
+
+
 def _flux_sync(prompt):
     """Generate a real cinematic image via Replicate Flux (raw HTTP, no lib). Returns image URL."""
     tok = os.getenv("REPLICATE_API_TOKEN")
