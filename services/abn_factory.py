@@ -1724,8 +1724,16 @@ def _hook_line(cold_open_text: str) -> str:
     # the viewer hanging on a connective instead of a punch. Trim trailing weak words.
     _WEAK_TAIL = {"and", "or", "but", "the", "a", "an", "of", "to", "with", "for", "in", "on", "at",
                   "by", "from", "as", "is", "are", "that", "this", "its", "their", "into", "than",
-                  "theyre", "thats", "heres", "just", "no", "not", "still", "now"}
-    while words and words[-1].lower() in _WEAK_TAIL:
+                  "theyre", "thats", "heres", "just", "no", "not", "still", "now",
+                  # interrogative/relative lead-ins that DANGLE when the 8-word cap cuts before the
+                  # payoff ('...JUST SHOWED WHY' / '...EXPLAINS HOW' — caught on a real hook card).
+                  "why", "how", "what", "when", "where", "whether", "if", "because", "so"}
+    # also a trailing HYPHENATED MODIFIER that obviously needs a noun ('AI-POWERED', 'CLOUD-BASED',
+    # 'OPEN-SOURCE') — it dangles the same way ('...WHY AI-POWERED' has no subject). Caught on the
+    # most-important frame (the first-5s hook). Trim it, then re-trim any weak word it exposes.
+    _DANGLE_MOD = re.compile(r"-(powered|based|driven|ready|grade|native|first|backed|scale|level|"
+                             r"source|sized|focused|enabled|fueled|class)$", re.I)
+    while words and (words[-1].lower() in _WEAK_TAIL or _DANGLE_MOD.search(words[-1])):
         words.pop()
     line = " ".join(words).strip()
     return (line or pick[:48]).upper()
