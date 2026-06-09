@@ -1689,6 +1689,39 @@ def _statement(text: str) -> str:
     return (" ".join(words) or re.sub(r'[.\s]+$', '', s)[:48]).upper()
 
 
+# Parent company ↔ its products — a vs card pitting one against the other is nonsense ('iPhone vs Apple').
+_OWNS = {
+    "microsoft": {"mai-code", "mai code", "copilot", "github copilot", "phi", "azure", "vs code", "vscode", "bing"},
+    "google":    {"gemini", "deepmind", "vertex", "bard", "tensorflow", "android"},
+    "openai":    {"gpt", "chatgpt", "codex", "sora", "dall-e", "dalle", "whisper"},
+    "anthropic": {"claude", "mythos"},
+    "meta":      {"llama", "pytorch", "react"},
+    "amazon":    {"aws", "bedrock", "titan", "q"},
+    "apple":     {"mlx", "siri", "core ml", "coreml"},
+}
+
+
+def _entity_family(name: str) -> str:
+    """Map a tool/company name to its parent family ('mai-code'->'microsoft', 'gemini'->'google',
+    'microsoft'->'microsoft'). Returns the name itself if it's not in a known family."""
+    n = (name or "").strip().lower()
+    for parent, kids in _OWNS.items():
+        if n == parent or any(k in n for k in kids):
+            return parent
+    return n
+
+
+def _same_entity(a: str, b: str) -> bool:
+    """True if a and b are the same company/product, one contains the other, OR they belong to the
+    same parent family — so a 'vs' between them is meaningless (Microsoft vs MAI-Code, GPT vs OpenAI)."""
+    x, y = (a or "").strip().lower(), (b or "").strip().lower()
+    if not x or not y:
+        return False
+    if x == y or x in y or y in x:
+        return True
+    return _entity_family(x) == _entity_family(y)
+
+
 def _quote_text(text: str) -> str:
     """A clean COMPLETE quote for a quote card — never truncated mid-sentence, no em-dash pile-ups.
     Takes the first 1-2 whole sentences that fit, dropping a trailing partial."""
@@ -1788,6 +1821,11 @@ def _v2_scene_cards(ep_id, seg_index, seg, ep_budget=None):
                 elif sh.shot_type == "vs_card":
                     from factory.formats.scenes import comparison_target
                     rival = comparison_target(sc.text)
+                    if rival and _same_entity(tool, rival):
+                        # NOT a real matchup — the 'rival' is the tool itself or its PARENT company
+                        # (caught on a real card: 'MAI-Code-1-Flash VS Microsoft' — Microsoft MAKES
+                        # MAI-Code; you can't pit a product against its own maker). Drop to a statement.
+                        rival = ""
                     if not rival:
                         # no real competitor named → render a bold STATEMENT card (hook style), not
                         # another quote (vs/diagram falling back to quote was a big quote-skew source).
