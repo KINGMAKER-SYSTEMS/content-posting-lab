@@ -1747,6 +1747,13 @@ def _quote_text(text: str) -> str:
     m = re.match(r"^[^:]{3,40}:\s+(.{20,})$", out)
     if m:
         out = m.group(1).strip()
+    # DROP a leading CONDITIONAL/dependent clause so the quote leads with the PAYOFF, not a dangling
+    # setup. 'If you want to build AI tools..., this is the one to watch' -> 'this is the one to watch'
+    # (caught on a real card where the fit-trim cut the payoff, leaving the bare 'If you want to...').
+    cm = re.match(r"^\s*(if|when|whenever|because|since|while|although|though|unless|as)\b[^,]{6,80},\s+(.{12,})$",
+                  out, flags=re.I)
+    if cm:
+        out = cm.group(2).strip()
     # FIT THE CARD: the quote card wraps ~26 chars/line and shows only 4 lines (~100 chars). A longer
     # quote gets chopped MID-SENTENCE by the renderer ('...the real story is' — caught on a real card).
     # Trim to a COMPLETE phrase that fits: cut at the last clause boundary (comma) under the cap, else
