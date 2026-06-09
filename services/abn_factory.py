@@ -72,6 +72,14 @@ def _ensure_card_backgrounds(want: int = 6):
         pass
 
 ASSETS = db.ASSETS_DIR
+# Point the card generator at the cinematic-background pool at MODULE LOAD — so EVERY path (the loop AND
+# a direct produce_one_episode from force_ep.py, which bypasses start_factory) composites cards over real
+# backgrounds, not the flat gradient. (Was only set in start_factory → forced episodes missed it.)
+if _V2_VISUALS:
+    try:
+        _v2cards._ASSETS_DIR = str(ASSETS)
+    except Exception:
+        pass
 VOICE = str(ASSETS / "john_voice.safetensors")
 WPM = 195
 _FONTS_DIR = Path(__file__).resolve().parent.parent / "fonts"
