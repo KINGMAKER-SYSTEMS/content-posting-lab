@@ -1992,7 +1992,7 @@ def _build_timeline(ep_id, ep_idx, segments, animated_bg=None):
             "totalSec": round(total, 2), "segments": tsegs, "musicBed": bed, "sfx": sfx, "logo": logo}
 
 
-async def _render_remotion(ep_id, timeline):
+async def _render_remotion(ep_id, timeline, force=False):
     if not (REMOTION_DIR / "node_modules").exists():
         raise RuntimeError("remotion not installed")
     props = ASSETS / f"{ep_id}_timeline.json"
@@ -2003,7 +2003,9 @@ async def _render_remotion(ep_id, timeline):
     # re-enter this function for the same ep_id — observed a single episode rendering TWICE (~2x compute,
     # 35-min total, 12 chrome workers re-burning on an already-rendered mp4). Skipping a valid existing
     # render makes re-entry cheap. (A short/partial leftover is ignored and re-rendered.)
-    if out.exists():
+    # force=True (operator edits from the editor bay) ALWAYS re-renders — the timeline just changed, so
+    # reusing the old mp4 would silently ship the unedited video.
+    if out.exists() and not force:
         try:
             _d = await _dur(out)
             # only reuse a FULLY-PROCESSED render: long enough AND already normalized to yuv420p (the

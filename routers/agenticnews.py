@@ -628,3 +628,107 @@ async def editor_delete_note(ep_id: str, note_id: str):
     data[rid] = [n for n in data.get(rid, []) if n.get("id") != note_id]
     _save_review_notes(data)
     return {"ok": True, "epId": rid, "removed": before - len(data[rid])}
+
+
+# ── EDITOR REFINER — apply per-asset edits + re-render ─────────────────────────────────────────
+# Each edit targets one timeline shot (by src or id) with an action:
+#   {"action":"delete", "src": "..."}                      → drop the shot from timeline.json
+#   {"action":"retext", "src": "..._number.png",
+#       "value":"60%","label":"cheaper"}                   → regenerate that card PNG with new text
+#   {"action":"retext", "src":"..._hook.png","text":"..."} → regenerate hook/quote/statement card
+# After applying, the episode re-renders from the modified timeline (only the touched assets change).
+import asyncio as _asyncio
+import re as _re2
+
+_CARD_KIND = _re2.compile(r'_(number|vs|quote|diagram|hook)\.png$')
+# hold background re-render tasks so they aren't GC'd mid-flight (the fire-and-forget pitfall)
+_RERENDER_TASKS: set = set()
+
+
+def _regen_card(src: str, edit: dict) -> bool:
+    """Regenerate ONE designed-card PNG in place from the edit's new text. Returns True on success."""
+    name = Path(src).name
+    m = _CARD_KIND.search(name)
+    if not m:
+        return False
+    kind = m.group(1)
+    stem = name[: m.start()]          # 'ep_x_s1_v2sc2' — the card generator writes back to this stem
+    cards = factory._v2cards
+    A, F = factory.ASSETS, factory._FONTS_DIR
+    txt = (edit.get("text") or "").strip()
+    try:
+        if kind == "number":
+            cards.number_card(edit.get("value", txt), edit.get("label", ""), stem, A, F)
+        elif kind == "vs":
+            cards.vs_card(edit.get("left", txt), edit.get("right", ""), stem, A, F)
+        elif kind == "quote":
+            cards.quote_card(txt, stem, A, F)
+        elif kind == "diagram":
+            steps = [s.strip() for s in (edit.get("steps") or txt.split("\n")) if s.strip()]
+            cards.diagram_card(edit.get("title", "How it works"), steps or [txt], stem, A, F)
+        else:  # hook / statement
+            cards.hook_card(txt, stem, A, F, accent=cards.BRAND_CYAN if edit.get("statement") else cards.BRAND_RED)
+        return True
+    except Exception:
+        return False
+
+
+@router.post("/editor/{ep_id}/apply")
+async def editor_apply(ep_id: str, body: dict = Body(...)):
+    """Apply the operator's edits to the timeline + regenerate touched cards, then re-render the episode.
+    body = {"edits":[{action, src/id, ...}]}. Returns immediately; re-render runs in the background."""
+    v = await _find_video(ep_id)
+    if not v:
+        raise HTTPException(status_code=404, detail="episode not found")
+    rid = v.get("id", ep_id)
+    tl_file = db.ASSETS_DIR / f"{rid}_timeline.json"
+    if not tl_file.exists():
+        raise HTTPException(status_code=404, detail="timeline not found")
+    timeline = _json.loads(tl_file.read_text())
+    edits = body.get("edits", [])
+    applied = {"deleted": 0, "retext": 0, "skipped": 0}
+
+    for e in edits:
+        target = e.get("src") or e.get("id")
+        action = e.get("action")
+        if not target or not action:
+            applied["skipped"] += 1
+            continue
+        for seg in timeline.get("segments", []):
+            shots = seg.get("shots", [])
+            if action == "delete":
+                n0 = len(shots)
+                seg["shots"] = [s for s in shots if s.get("src") != target and s.get("id") != target]
+                applied["deleted"] += n0 - len(seg["shots"])
+            elif action == "retext":
+                for s in shots:
+                    if s.get("src") == target or s.get("id") == target:
+                        if _regen_card(s.get("src", ""), e):
+                            applied["retext"] += 1
+                        else:
+                            applied["skipped"] += 1
+
+    # atomic write of the modified timeline
+    tmp = tl_file.with_suffix(".json.tmp"); tmp.write_text(_json.dumps(timeline)); tmp.replace(tl_file)
+
+    # re-render in the background (the re-render guard reuses nothing here — timeline changed)
+    import logging as _logging
+    _log = _logging.getLogger("editor")
+    async def _rerender():
+        try:
+            _log.info("editor re-render START %s (%d edits)", rid, len(edits))
+            factory.BUS.emit("operator", "editor.apply", f"applying {len(edits)} edits + re-rendering", episode_id=rid)
+            await factory._render_remotion(rid, timeline, force=True)  # force: timeline changed, never reuse
+            _log.info("editor re-render DONE %s", rid)
+            factory.BUS.emit("operator", "editor.rerendered", "episode re-rendered from operator edits", episode_id=rid)
+        except Exception as ex:
+            import traceback
+            _log.error("editor re-render FAILED %s: %s", rid, traceback.format_exc()[-500:])
+            factory.BUS.emit("operator", "error", f"re-render failed: {str(ex)[:160]}", episode_id=rid)
+        finally:
+            _RERENDER_TASKS.discard(_t)
+    # RETAIN the task — a bare create_task with no reference can be garbage-collected before it runs.
+    _t = _asyncio.create_task(_rerender())
+    _RERENDER_TASKS.add(_t)
+
+    return {"ok": True, "epId": rid, "applied": applied, "rerendering": True}

@@ -88,9 +88,9 @@ function buildBlocks(){
     const blocks=[];
     segs.forEach((seg,i)=>{
       const base=starts[i];
-      if(tr.key==='lower'){ (seg.lowerThirds||[]).forEach(lt=>blocks.push({start:base+lt.startSec,dur:lt.durationSec,label:lt.headline||''})); }
-      else if(tr.key==='vo'){ if(seg.durationSec) blocks.push({start:base,dur:seg.durationSec,label:''}); }
-      else { (seg.shots||[]).forEach(sh=>{ const src=sh.src||''; if(tr.m(src)) blocks.push({start:base+(sh.startSec||0),dur:sh.durationSec||0,label:''}); }); }
+      if(tr.key==='lower'){ (seg.lowerThirds||[]).forEach(lt=>blocks.push({start:base+lt.startSec,dur:lt.durationSec,label:lt.headline||'',kind:'lower',editable:false})); }
+      else if(tr.key==='vo'){ if(seg.durationSec) blocks.push({start:base,dur:seg.durationSec,label:'',kind:'vo',editable:false}); }
+      else { (seg.shots||[]).forEach(sh=>{ const src=sh.src||''; if(tr.m(src)){ const cm=src.match(/_(number|vs|quote|diagram|hook)\.png$/); blocks.push({start:base+(sh.startSec||0),dur:sh.durationSec||0,label:'',src:src,id:sh.id,kind:cm?cm[1]:(tr.key),editable:!!cm||tr.key==='ui'||tr.key==='demo'}); } }); }
     });
     return {...tr, blocks};
   });
@@ -129,24 +129,83 @@ function render(){
           <button class="pin" id="pin">📌 Pin note</button>
           <button class="frame" id="fnote">✎ Frame note</button>
         </div>
-        <div class="hint">Pin = timestamp + comment. Frame = pause, draw on the frame, then save.</div>
+        <div class="hint">Click a timeline block to edit/delete that asset. Pin/Frame for general notes.</div>
+        <div id="queuebox" style="margin-top:10px"></div>
       </div>
       <div class="notes" id="notes"></div>
     </div>
-  </div>`;
-  paintTracks(); wireEvents(); paintNotes();
+  </div>
+  <div id="panel"></div>`;
+  paintTracks(); wireEvents(); paintNotes(); paintQueue();
 }
 
+// ── per-asset edit queue (applied on Submit) ──
+let editQueue = [];   // [{action, src, id, kind, value/label/text, note}]
+function paintQueue(){
+  const el=$('#queuebox'); if(!el) return;
+  if(!editQueue.length){ el.innerHTML=''; return; }
+  el.innerHTML = `<div style="font-size:12px;color:var(--cyan);font-weight:700;margin-bottom:6px">PENDING EDITS (${editQueue.length})</div>`
+    + editQueue.map((e,i)=>`<div style="font-size:12px;color:var(--mut);padding:4px 0;border-bottom:1px solid var(--line)">
+        ${e.action==='delete'?'🗑 delete':'✎ '+(e.kind||'card')} @ ${fmt(e.start||0)} ${e.text?('— '+e.text.slice(0,28)):''}
+        <button onclick="dropEdit(${i})" style="float:right;background:none;border:none;color:#5b6678;cursor:pointer">✕</button></div>`).join('')
+    + `<button id="submitEdits" style="width:100%;margin-top:8px;height:34px;border:none;border-radius:8px;background:#22c55e;color:#04210f;font-weight:700;cursor:pointer">Submit ${editQueue.length} edits → re-render</button>`;
+  $('#submitEdits').onclick=submitEdits;
+}
+window.dropEdit=i=>{ editQueue.splice(i,1); paintQueue(); };
+
+function openPanel(block){
+  if(!block.editable){ seek(block.start); return; }
+  const isCard = /^(number|vs|quote|diagram|hook)$/.test(block.kind);
+  const p=$('#panel');
+  p.innerHTML = `<div style="position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:50;display:grid;place-items:center" id="pov">
+    <div style="background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px;width:420px" onclick="event.stopPropagation()">
+      <div style="font-size:13px;color:var(--mut);margin-bottom:10px">Edit <b style="color:var(--cyan)">${block.kind}</b> @ ${fmt(block.start)}</div>
+      ${isCard?`<label style="font-size:12px;color:var(--mut)">Type the corrected text</label>
+      <textarea id="newtext" placeholder="e.g. \$200 billion · raised" style="width:100%;background:var(--bg);color:var(--txt);border:1px solid var(--line);border-radius:8px;padding:8px;margin:4px 0 12px;font:inherit"></textarea>`:''}
+      <label style="font-size:12px;color:var(--mut)">…or describe what's wrong (factory regenerates it)</label>
+      <textarea id="whatswrong" placeholder="e.g. this label is meaningless / wrong rival / overflows the frame" style="width:100%;background:var(--bg);color:var(--txt);border:1px solid var(--line);border-radius:8px;padding:8px;margin:4px 0 12px;font:inherit"></textarea>
+      <div style="display:flex;gap:8px">
+        <button id="qChange" style="flex:1;height:34px;border:none;border-radius:8px;background:var(--cyan);color:var(--bg);font-weight:700;cursor:pointer">✎ Queue change</button>
+        <button id="qDelete" style="flex:1;height:34px;border:1px solid var(--red);border-radius:8px;background:transparent;color:var(--red);font-weight:700;cursor:pointer">🗑 Delete this</button>
+        <button id="qCancel" style="height:34px;border:1px solid var(--line);border-radius:8px;background:transparent;color:var(--mut);cursor:pointer;padding:0 12px">Cancel</button>
+      </div>
+    </div></div>`;
+  const close=()=>{ p.innerHTML=''; };
+  $('#pov').onclick=close; $('#qCancel').onclick=close;
+  $('#qDelete').onclick=()=>{ editQueue.push({action:'delete',src:block.src,id:block.id,kind:block.kind,start:block.start}); paintQueue(); close(); };
+  $('#qChange').onclick=()=>{
+    const nt=(($('#newtext')||{}).value||'').trim(), ww=($('#whatswrong').value||'').trim();
+    if(!nt && !ww) return;
+    const e={action:'retext',src:block.src,id:block.id,kind:block.kind,start:block.start, note:ww, text:nt||ww};
+    if(block.kind==='number'){ const parts=(nt||ww).split('·'); e.value=(parts[0]||'').trim(); e.label=(parts[1]||'').trim(); }
+    if(block.kind==='vs'){ const parts=(nt||ww).split(/vs|·/i); e.left=(parts[0]||'').trim(); e.right=(parts[1]||'').trim(); }
+    editQueue.push(e); paintQueue(); close();
+  };
+  if($('#newtext')) $('#newtext').focus();
+}
+
+async function submitEdits(){
+  if(!editQueue.length) return;
+  $('#submitEdits').textContent='Submitting…'; $('#submitEdits').disabled=true;
+  try{
+    const r=await fetch('/api/agenticnews/editor/'+epId+'/apply',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({edits:editQueue})});
+    const o=await r.json();
+    $('#queuebox').innerHTML=`<div style="font-size:13px;color:#22c55e;font-weight:700">✓ Submitted — ${o.applied.retext} regenerated, ${o.applied.deleted} deleted. Re-rendering… reload in a few min.</div>`;
+    editQueue=[];
+  }catch(e){ $('#queuebox').innerHTML='<div style="color:var(--red)">Submit failed: '+e.message+'</div>'; }
+}
+
+let _blockData=[];
 function paintTracks(){
-  const tb=buildBlocks(); const el=$('#tracks');
+  const tb=buildBlocks(); const el=$('#tracks'); _blockData=[];
   el.innerHTML = tb.map(tr=>`
     <div class="trk"><div class="lbl" style="color:${tr.color}">${tr.label}</div>
       <div class="lane" data-lane="${tr.key}">
-        ${tr.blocks.map(b=>`<div class="blk" title="${tr.label} @ ${fmt(b.start)}${b.label?' — '+b.label.replace(/"/g,''):''}"
-            style="left:${(b.start/total)*100}%;width:${Math.max(0.4,(b.dur/total)*100)}%;background:${tr.color}"
-            data-seek="${b.start}"></div>`).join('')}
+        ${tr.blocks.map(b=>{ const bi=_blockData.push(b)-1; return `<div class="blk" title="${tr.label} @ ${fmt(b.start)}${b.editable?' — click to edit':''}${b.label?' — '+b.label.replace(/"/g,''):''}"
+            style="left:${(b.start/total)*100}%;width:${Math.max(0.4,(b.dur/total)*100)}%;background:${tr.color};${b.editable?'box-shadow:inset 0 0 0 1px rgba(255,255,255,.25)':''}"
+            data-bi="${bi}"></div>`; }).join('')}
       </div></div>`).join('') + `<div id="playhead" style="height:${tb.length*26}px;top:8px;left:96px"></div>`;
-  el.querySelectorAll('.blk').forEach(b=>b.onclick=()=>seek(parseFloat(b.dataset.seek)));
+  el.querySelectorAll('.blk').forEach(b=>b.onclick=()=>{ const blk=_blockData[+b.dataset.bi]; seek(blk.start); openPanel(blk); });
 }
 
 let vid, cv, ctx;
