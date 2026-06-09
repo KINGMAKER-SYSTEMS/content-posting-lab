@@ -10,7 +10,13 @@ Runs in a thread (sync Playwright) so it never blocks the event loop.
 """
 from __future__ import annotations
 import os
+import re
 from pathlib import Path
+
+
+def _re_i(label: str):
+    """Case-insensitive whole-label regex for Playwright get_by_role(name=…)."""
+    return re.compile(r"^\s*" + re.escape(label) + r"\s*$", re.I)
 
 _VOL = os.getenv("RAILWAY_VOLUME_MOUNT_PATH")
 _BASE = Path(_VOL) if _VOL and Path(_VOL).exists() else Path(__file__).resolve().parent.parent
@@ -39,6 +45,17 @@ def capture_sync(url: str, name: str, seconds: float = 8.0) -> str | None:
             page = ctx.new_page()
             page.goto(url, wait_until="domcontentloaded", timeout=20000)
             page.wait_for_timeout(1200)  # let it settle / images load
+            # DISMISS cookie/consent banners — they're UI clutter in the b-roll (caught on a real frame:
+            # an 'ACCEPT ALL / REJECT ALL' bar at the bottom of a captured page). Click a consent button
+            # to clear it before recording. Try common labels; privacy-preserving order (reject first).
+            for _label in ("Reject all", "Reject", "Decline", "Decline all", "Only necessary",
+                           "Accept all", "Accept", "I agree", "Got it", "OK"):
+                try:
+                    btn = page.get_by_role("button", name=_re_i(_label)).first
+                    if btn.is_visible(timeout=400):
+                        btn.click(timeout=600); page.wait_for_timeout(300); break
+                except Exception:
+                    continue
             # bot-wall detection — Cloudflare/captcha pages are worthless footage, bail out
             try:
                 txt = (page.inner_text("body") or "").lower()[:600]
