@@ -136,7 +136,14 @@ def capture_sync(url: str, name: str, seconds: float = 8.0) -> str | None:
                     vals = list(raw)
                     darkest = min(vals)          # a page with ANY text/UI has a dark cell here
                     spread = max(vals) - darkest
-                    if darkest >= 248 and spread <= 6:   # flat near-white everywhere = genuinely blank
+                    mean = sum(vals) / len(vals)
+                    # BAIL if the page is washed-out near-white. Two cases, both = worthless footage:
+                    #  (a) flat near-white everywhere (darkest>=248, spread<=6) — a pure blank page; OR
+                    #  (b) overall near-white with only faint content (mean>=248) — caught on a real frame:
+                    #      a clip at darkest=244/spread=11/mean=255 looked blank. A REAL light page (GitHub
+                    #      with code) has mean far lower (~120) because dark text drags it down — so a
+                    #      mean>=248 cutoff catches washed-out pages without touching legible light pages.
+                    if (darkest >= 248 and spread <= 6) or mean >= 248:
                         out_mp4.unlink()
                         return None
             except Exception:
