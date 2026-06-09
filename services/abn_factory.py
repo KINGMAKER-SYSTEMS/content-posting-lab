@@ -2822,7 +2822,15 @@ async def run_factory_loop():
                     lore_subject = _LORE_SUBJECTS[(ecount // 6) % len(_LORE_SUBJECTS)]
             except Exception:
                 pass
-            result = await produce_one_episode(force_lore=lore_subject)
+            # WATCHDOG: a full episode (research → render → review) completes in ~20-25 min. Cap it at
+            # 45 min so a HANG in the post-render path (observed: an episode rendered a complete mp4 then
+            # wedged before reaching review, DB stuck at 'scripting', process at 0% CPU forever) force-
+            # fails instead of blocking the loop indefinitely. The orphaned mp4/row get GC'd.
+            try:
+                result = await asyncio.wait_for(produce_one_episode(force_lore=lore_subject), timeout=45 * 60)
+            except asyncio.TimeoutError:
+                result = None
+                BUS.emit("system", "error", "episode produce exceeded 45min watchdog — force-failed, moving on")
             # workshop cadence: short pause between episodes to keep the line hot; longer only when
             # there's genuinely no fresh material (None) so we don't spin on an empty feed.
             await asyncio.sleep(15 if result else 300)
