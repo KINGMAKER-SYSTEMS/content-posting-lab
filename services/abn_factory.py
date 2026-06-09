@@ -750,10 +750,19 @@ def _fix_brand_words(words):
     return out
 
 
+# ROOT-CAUSE bias for the transcriber: feed Whisper the domain's proper nouns as an initial_prompt so
+# it transcribes them CORRECTLY instead of mis-hearing them (Anthropic->Thropic/Tropic, OpenAI->open ai,
+# GPT, Claude, Gemini...). This reduces brand garbles at the SOURCE; _fix_brand_words stays as a net.
+_WHISPER_VOCAB = ("This is a tech news segment about AI tools and companies including OpenAI, Anthropic, "
+                  "Claude, GPT, Gemini, Google, Microsoft, Meta, Llama, Mistral, Cursor, Copilot, GitHub, "
+                  "LangChain, Ollama, Hugging Face, Perplexity, MCP, and Codex.")
+
+
 def _align_sync(wav_path):
     try:
         m = _get_whisper()
-        segs, _ = m.transcribe(str(wav_path), word_timestamps=True, language="en")
+        segs, _ = m.transcribe(str(wav_path), word_timestamps=True, language="en",
+                               initial_prompt=_WHISPER_VOCAB)
         words = []
         for s in segs:
             for w in (s.words or []):
