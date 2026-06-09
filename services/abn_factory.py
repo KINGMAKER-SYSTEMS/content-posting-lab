@@ -1727,7 +1727,13 @@ def _hook_line(cold_open_text: str) -> str:
                   "theyre", "thats", "heres", "just", "no", "not", "still", "now",
                   # interrogative/relative lead-ins that DANGLE when the 8-word cap cuts before the
                   # payoff ('...JUST SHOWED WHY' / '...EXPLAINS HOW' — caught on a real hook card).
-                  "why", "how", "what", "when", "where", "whether", "if", "because", "so"}
+                  "why", "how", "what", "when", "where", "whether", "if", "because", "so",
+                  # copulas/auxiliaries/adverbs that leave the hook hanging mid-predicate when the cap
+                  # cuts right after them ('...MUST NOW BE', '...IS ENTIRELY', '...WILL') — caught while
+                  # fixing the AI-POWERED dangle: trimming the modifier exposed a weak copula tail.
+                  "be", "been", "being", "was", "were", "will", "would", "can", "could", "should",
+                  "must", "may", "might", "has", "have", "had", "very", "entirely", "fundamentally",
+                  "really", "actually", "basically", "literally", "more", "most", "much", "also"}
     # also a trailing HYPHENATED MODIFIER that obviously needs a noun ('AI-POWERED', 'CLOUD-BASED',
     # 'OPEN-SOURCE') — it dangles the same way ('...WHY AI-POWERED' has no subject). Caught on the
     # most-important frame (the first-5s hook). Trim it, then re-trim any weak word it exposes.
