@@ -1720,7 +1720,15 @@ def _hook_line(cold_open_text: str) -> str:
     # leave a dangling "...PROTOTYPES THEYRE" (caught on a real hook card). The em-dash/comma already
     # marks the boundary; also break before a clause-starting pronoun+verb.
     pick = re.split(r'\s*[—–,;]\s*', pick)[0]
-    pick = re.sub(r"\b(they'?re|theyre|it'?s|its|that'?s|thats|here'?s|heres|which|who)\b.*$", "", pick, flags=re.I).strip() or pick
+    # Cut a dangling clause that starts with a pronoun+verb ('...prototypes they're becoming X'). CRITICAL:
+    # do NOT strip bare possessive 'its' — 'Anthropic open-sourced ITS entire agent evaluation harness' is
+    # one clause where 'its' is a determiner, and stripping it left a 2-word hook 'ANTHROPIC OPEN-SOURCED'
+    # (caught stress-testing real cold-opens). Only strip CONTRACTIONS (they're/it's/that's/here's) and
+    # relative pronouns (which/who) that genuinely begin a new clause — never possessive its/their.
+    # NOTE: 'it'?s' would match bare possessive 'its' (the '?' makes the apostrophe optional) — that ate
+    # 'its entire agent evaluation harness' down to a 2-word hook. Match the CONTRACTION 'it's' ONLY
+    # (require the apostrophe via "it['’]s"); never the possessive determiner 'its'.
+    pick = re.sub(r"\b(they['’]re|theyre|it['’]s|that['’]s|thats|here['’]s|heres|which|who)\b.*$", "", pick, flags=re.I).strip() or pick
     # normalize curly apostrophes to straight; KEEP a possessive 's (Microsoft's -> MICROSOFT'S, not
     # MICROSOFTS — caught on a real hook), drop only OTHER apostrophes (contractions like don't->dont,
     # stray quotes) so words don't fuse or carry a stray mark.
