@@ -1694,13 +1694,24 @@ def _hook_line(cold_open_text: str) -> str:
     # Pick the first SUBSTANTIVE sentence (>=4 words) for the most important frame in the video.
     substantive = next((s for s in sents if len(s.split()) >= 4), None)
     pick = stat or substantive or sents[0]
-    # strip the subject+verb lead-in so the hook opens on the PAYLOAD ("one million token context",
-    # not "Anthropic just shipped a model with a one million token context"). Cut everything up to
-    # and including the action verb, then any residual "a/an/the ... with" connective.
-    pick = re.sub(r'^.*?\b(shipped|launched|released|dropped|unveiled|announced|built|made|hit|reached|'
-                  r'raised|now has|just got|added|introduced)\b\s*', '', pick, count=1, flags=re.I) or pick
-    pick = re.sub(r'^(a |an |the |its |their )?(model |tool |startup |company )?(with |that has |featuring )?(a |an |the )?',
-                  '', pick, count=1, flags=re.I) or pick
+    # Strip the subject+verb lead-in so the hook opens on the PAYLOAD ("one million token context", not
+    # "Anthropic just shipped a model with a one million token context"). BUT only when stripping yields
+    # a STRONG payload — otherwise we throw away a newsworthy named subject and leave a headless fragment.
+    # Caught on a real hook: "Microsoft's Scout agent just raised the bar for AI-powered hacking" became
+    # "BAR FOR AI-POWERED HACKING" (lost the subject — who raised it?). So: only strip if what FOLLOWS the
+    # verb starts with a number/stat OR an article+noun+'with' payload; if it would leave a bare
+    # preposition fragment ('the bar for...', 'a way to...'), keep the original (the subject IS the hook).
+    _stripped = re.sub(r'^.*?\b(shipped|launched|released|dropped|unveiled|announced|built|made|hit|reached|'
+                       r'raised|now has|just got|added|introduced)\b\s*', '', pick, count=1, flags=re.I)
+    _payload_ok = bool(re.match(r'^\s*(\$?\d|a |an |the )?(\w+\s+)?(with |that has |featuring )', _stripped, re.I) or
+                       re.match(r'^\s*\$?\d', _stripped))
+    _leaves_prep_fragment = bool(re.match(r'^\s*(the |a |an )?\w+\s+(for|to|of|in|on|with|at|by)\b', _stripped, re.I)) \
+        and not re.search(r'\$?\d|\b(million|billion|percent|%)\b', _stripped, re.I)
+    if _stripped and _payload_ok and not _leaves_prep_fragment:
+        pick = _stripped
+        pick = re.sub(r'^(a |an |the |its |their )?(model |tool |startup |company )?(with |that has |featuring )?(a |an |the )?',
+                      '', pick, count=1, flags=re.I) or pick
+    # else: keep the full sentence — its named subject is the clickable hook
     # normalize joiners to SPACES before stripping punctuation, else 'chatbots—they're' fuses into
     # 'CHATBOTSTHEYRE' (a mashed word on the hook card — caught on a real render). em/en-dash and
     # slashes become spaces; apostrophes are dropped in-place ("they're"->"theyre", not "they re").
