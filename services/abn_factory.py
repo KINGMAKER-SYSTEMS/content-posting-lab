@@ -38,6 +38,39 @@ try:
 except Exception as _v2e:  # pragma: no cover
     _V2_VISUALS = False
 
+
+def _ensure_card_backgrounds(want: int = 6):
+    """Keep a pool of cinematic GPT-image backgrounds (via Codex, PRO plan) in card_backgrounds/ so the
+    designed cards composite text over REAL imagery instead of a flat blue gradient. Cheap: generated
+    once and reused across episodes; tops up the pool toward `want`. Sets cards._ASSETS_DIR so _base()
+    can find them. Best-effort — if codex is unavailable, cards fall back to the gradient."""
+    if not _V2_VISUALS:
+        return
+    try:
+        _v2cards._ASSETS_DIR = str(ASSETS)
+        bgdir = ASSETS / "card_backgrounds"
+        bgdir.mkdir(exist_ok=True)
+        have = [p for p in bgdir.glob("bg_*.png") if not p.name.startswith("._")]
+        prompts = [
+            "Cinematic dark tech background: deep navy and cyan, abstract circuit-board light traces and glowing nodes, depth of field, atmospheric.",
+            "Cinematic dark background: flowing neural-network nodes and data streams, navy to crimson, particles, depth, moody.",
+            "Cinematic abstract server-room / data-center bokeh, deep blue, soft glowing lights, shallow depth of field, dark and premium.",
+            "Cinematic dark gradient with subtle floating geometric tech shapes and faint grid, navy and teal, atmospheric, minimal.",
+            "Cinematic dark AI cityscape from above at night, blue and magenta light trails, depth, futuristic, no text.",
+            "Cinematic abstract holographic data visualization, dark background, cyan and red glowing lines, depth, premium tech mood.",
+        ]
+        import shutil as _sh
+        idx = len(have)
+        while idx < want and idx < len(prompts):
+            rel = _codex_image(prompts[idx], f"_tmp_bg_{idx}")
+            if rel:
+                src = ASSETS / Path(rel).name
+                if src.exists():
+                    src.replace(bgdir / f"bg_{idx:02d}.png")
+            idx += 1
+    except Exception:
+        pass
+
 ASSETS = db.ASSETS_DIR
 VOICE = str(ASSETS / "john_voice.safetensors")
 WPM = 195
@@ -2903,6 +2936,14 @@ _task = None
 
 async def start_factory():
     global _task
+    # point the cards at the cinematic-background pool immediately (uses any already-generated bgs),
+    # then top up the pool in the background (Codex/PRO image_gen — never blocks factory startup).
+    if _V2_VISUALS:
+        try:
+            _v2cards._ASSETS_DIR = str(ASSETS)
+            asyncio.create_task(asyncio.to_thread(_ensure_card_backgrounds))
+        except Exception:
+            pass
     if _task is None or _task.done():
         _task = asyncio.create_task(run_factory_loop())
     return _task

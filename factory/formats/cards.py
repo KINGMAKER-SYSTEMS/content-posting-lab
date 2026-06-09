@@ -63,8 +63,35 @@ def _run(cmd: str, out: Path) -> Path:
     return out
 
 
-def _base(size="1920x1080") -> str:
-    """The shared brand backdrop: dark gradient + soft radial glow."""
+import random as _random
+
+# The factory sets this once so every card's _base() can find the cinematic background pool without
+# threading assets_dir through all 4 generators. (Cards stay pure/unit-testable; default None = gradient.)
+_ASSETS_DIR = None
+
+
+def _bg_pool(assets_dir=None):
+    """Cinematic background images (generated via GPT-image) the cards composite text OVER instead of a
+    flat blue slide. Lives in <assets>/card_backgrounds/. Empty => cards fall back to the gradient."""
+    if assets_dir is None:
+        return []
+    d = Path(assets_dir) / "card_backgrounds"
+    if not d.exists():
+        return []
+    return [p for p in d.glob("*.png") if not p.name.startswith("._")]
+
+
+def _base(size="1920x1080", assets_dir=None) -> str:
+    """The shared backdrop. Prefers a REAL cinematic GPT-image background (darkened for text legibility)
+    so cards aren't a flat-blue PowerPoint slide; falls back to the brand gradient if none generated."""
+    pool = _bg_pool(assets_dir or _ASSETS_DIR)
+    if pool:
+        bg = _random.choice(pool)
+        # scale-to-fill + DARKEN (multiply a 58% black veil) so white card text stays readable over it,
+        # then a subtle bottom-vignette. This is the anti-PowerPoint background.
+        return (f'magick \\( {shlex.quote(str(bg))} -resize {size}^ -gravity center -extent {size} \\) '
+                f'\\( -size {size} xc:"rgba(8,9,11,0.58)" \\) -compose over -composite '
+                f'\\( -size {size} gradient:none-"rgba(0,0,0,0.5)" \\) -compose over -composite ')
     return (f'magick -size {size} gradient:"{BRAND_BG_TOP}"-"{BRAND_BG_BOT}" '
             f'\\( -size {size} radial-gradient:rgba\\(110,139,255,0.16\\)-none \\) '
             f'-compose over -composite ')
