@@ -1948,6 +1948,16 @@ def _v2_scene_cards(ep_id, seg_index, seg, ep_budget=None):
                 elif sh.shot_type == "vs_card":
                     from factory.formats.scenes import comparison_target
                     rival = comparison_target(sc.text)
+                    # GUARD the LEFT entity too: 'tool' is the title's first segment, which can be a
+                    # verb-phrase fragment ('Use your' -> 'Use your VS SSD' is meaningless — caught on a
+                    # real card). A real vs needs a NOUN/entity on the left, not an imperative/fragment.
+                    # If the left isn't usable, drop to a statement (same as the rival guard).
+                    _tool_bad = (not tool or tool.lower() in ("this", "it", "they")
+                                 or bool(re.match(r"^(use|get|make|try|see|build|run|find|how|what|why|when|"
+                                                  r"why|your|the|a|an|this|that|these|those)\b", tool.strip(), re.I))
+                                 or len(tool.split()) > 3)
+                    if _tool_bad:
+                        rival = ""   # force the statement fallback below
                     if rival and _same_entity(tool, rival):
                         # NOT a real matchup — the 'rival' is the tool itself or its PARENT company
                         # (caught on a real card: 'MAI-Code-1-Flash VS Microsoft' — Microsoft MAKES
