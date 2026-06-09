@@ -1,6 +1,6 @@
 import { AbsoluteFill, Sequence, interpolate, spring, useCurrentFrame, useVideoConfig, Easing } from "remotion";
 import { useMemo, Fragment } from "react";
-import { abnTokens } from "../brand/abnTokens";
+import { abnTokens, typeStyle } from "../brand/abnTokens";
 
 type Word = { w: string; s: number; e: number };
 const STROKE =
@@ -27,7 +27,7 @@ const Page: React.FC<{ pg: { start: number; toks: Word[] }; accent: string; durF
   const absSec = pg.start + frame / fps;
 
   // Page-level entrance: soft spring up + fade (no hard pop). Springs settle ~12f.
-  const enter = spring({ frame, fps, config: { damping: 200, stiffness: 140, mass: 0.6 } });
+  const enter = spring({ frame, fps, config: abnTokens.motion.springs.caption });
   const enterY = interpolate(enter, [0, 1], [26, 0]);
   const enterOpacity = interpolate(enter, [0, 1], [0, 1]);
   // Page-level exit: ease out over the last ~8 frames so pages don't snap off-screen.
@@ -40,14 +40,16 @@ const Page: React.FC<{ pg: { start: number; toks: Word[] }; accent: string; durF
   const opacity = Math.min(enterOpacity, exitOpacity);
 
   return (
-    <AbsoluteFill style={{ justifyContent: "flex-end", alignItems: "center", paddingBottom: 150 }}>
-      {/* captions use the DISPLAY font (TikTok Sans) to MATCH the designed cards + lower-thirds —
-          one typeface channel-wide. Mixing caption font (was Inter) with card font (TikTok Sans)
-          read as 'switching fonts mid-video', which the retention research flags as a watch-time hit. */}
-      <div style={{ fontFamily: abnTokens.fonts.display, fontSize: 70, fontWeight: 800,
-        textAlign: "center", whiteSpace: "pre-wrap", lineHeight: 1.2, maxWidth: "82%",
+    <AbsoluteFill style={{ justifyContent: "flex-end", alignItems: "center",
+      paddingBottom: abnTokens.safeZones.longform.captionBottom, zIndex: abnTokens.layers.captions }}>
+      {/* DISPLAY font (TikTok Sans, now genuinely loaded via brand/fonts.ts) to MATCH the designed
+          cards + lower-thirds — one typeface channel-wide. type.caption bakes the video rules:
+          1.25 lineHeight (dark-bg halo compensation) + slight-tight tracking. */}
+      <div style={{ ...typeStyle(abnTokens.type.caption),
+        textAlign: "center", whiteSpace: "pre-wrap", maxWidth: "82%",
         textShadow: STROKE,
-        background: "rgba(8,11,15,0.62)", padding: "14px 30px", borderRadius: 16,
+        background: "rgba(8,11,15,0.62)", padding: `${abnTokens.space.md}px ${abnTokens.space.xl}px`,
+        borderRadius: abnTokens.radius.md,
         boxShadow: "0 0 40px 30px rgba(8,11,15,0.45)",
         opacity, transform: `translateY(${enterY}px)`, willChange: "transform, opacity" }}>
         {pg.toks.map((t, i) => {
@@ -77,7 +79,9 @@ const Page: React.FC<{ pg: { start: number; toks: Word[] }; accent: string; durF
           return (
             <Fragment key={i}>
               <span style={{ position: "relative", display: "inline-block",
-                margin: "0 .06em", transform: `scale(${scale})`, willChange: "transform" }}>
+                // .09em: at the karaoke crossover BOTH adjacent words sit at scale 1.08 and each
+                // overhangs ~3px into the shared gap — .06em let them visually kiss at 68px.
+                margin: "0 .09em", transform: `scale(${scale})`, willChange: "transform" }}>
                 <span style={{ color: "#fff" }}>{t.w.trim()}</span>
                 <span style={{ position: "absolute", left: 0, top: 0, color: accent,
                   opacity: lit, textShadow: `0 0 ${interpolate(lit, [0, 1], [0, 18])}px ${accent}66` }}

@@ -4,7 +4,7 @@ import { fade } from "@remotion/transitions/fade";
 import { KenBurnsArtifact } from "./components/KenBurnsArtifact";
 import { KaraokeCaptions } from "./components/KaraokeCaptions";
 import { LowerThird, TitleCard } from "./components/Overlays";
-import { abnGradient, abnTokens } from "./brand/abnTokens";
+import { abnGradient, abnTokens, typeStyle } from "./brand/abnTokens";
 
 // assets are served by the lab over HTTP; remotion headless reads them via the URL.
 const ASSET_BASE = (typeof process !== "undefined" && process.env && process.env.ABN_ASSET_BASE) || "http://localhost:8000";
@@ -62,13 +62,13 @@ const LogoSting: React.FC<{ logo: string; accent: string }> = ({ logo, accent })
   const frame = useCurrentFrame();
   const { fps, durationInFrames } = useVideoConfig();
   // Soft, no-bounce spring entrance — logo eases up from 0.6→1 and fades in together.
-  const s = spring({ frame, fps, config: { damping: 18, mass: 0.8, stiffness: 120 } });
+  const s = spring({ frame, fps, config: abnTokens.motion.springs.settle });
   const scale = interpolate(s, [0, 1], [0.62, 1]);
   const logoOpacity = interpolate(frame, [0, fps * 0.35], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp", easing: Easing.out(Easing.cubic) });
   // Gentle breathing glow pulse.
   const glow = interpolate(Math.sin((frame / fps) * Math.PI * 1.2), [-1, 1], [12, 34]);
   // Tagline eases up + rises, instead of a linear cut-in.
-  const nameSpring = spring({ frame: frame - Math.round(fps * 0.5), fps, config: { damping: 22, mass: 0.7, stiffness: 110 } });
+  const nameSpring = spring({ frame: frame - Math.round(fps * 0.5), fps, config: abnTokens.motion.springs.settle });
   const nameOpacity = interpolate(nameSpring, [0, 1], [0, 1]);
   const nameRise = interpolate(nameSpring, [0, 1], [14, 0]);
   const fadeOut = interpolate(frame, [durationInFrames - fps * 0.4, durationInFrames], [1, 0], { extrapolateLeft: "clamp", extrapolateRight: "clamp", easing: Easing.in(Easing.cubic) });
@@ -77,7 +77,7 @@ const LogoSting: React.FC<{ logo: string; accent: string }> = ({ logo, accent })
   return (
     <AbsoluteFill style={{ background: abnGradient.darkField, justifyContent: "center", alignItems: "center", opacity: fadeOut }}>
       <Img src={f(logo)} style={{ width: 760, maxWidth: "62%", height: "auto", transform: `scale(${scale})`, opacity: logoOpacity, filter: `drop-shadow(0 0 ${glow}px ${accent})`, willChange: "transform, opacity" }} />
-      <div style={{ marginTop: 18, fontFamily: abnTokens.fonts.mono, fontSize: 22, letterSpacing: "0.04em", color: accent, opacity: nameOpacity, transform: `translateY(${nameRise}px)` }}>the agentic builder brief</div>
+      <div style={{ ...typeStyle(abnTokens.type.micro), marginTop: abnTokens.space.md + 2, color: accent, opacity: nameOpacity, transform: `translateY(${nameRise}px)` }}>the agentic builder brief</div>
     </AbsoluteFill>
   );
 };
@@ -93,7 +93,7 @@ export const Episode: React.FC<any> = (props) => {
             hook, so the logo intro is kept short (was 2.2s) and hands off to the hook card fast
             (lands by ~1.3s) for maximum opening impact. */}
         {props.logo ? [
-          <TransitionSeries.Sequence key="sting" durationInFrames={Math.round(fps * 1.2)}>
+          <TransitionSeries.Sequence key="sting" durationInFrames={Math.round(fps * abnTokens.motion.logoStingSec)}>
             <LogoSting logo={props.logo} accent={accent} />
           </TransitionSeries.Sequence>,
           <TransitionSeries.Transition key="sting-t" presentation={fade()} timing={linearTiming({ durationInFrames: 9, easing: Easing.inOut(Easing.cubic) })} />,
@@ -112,7 +112,7 @@ export const Episode: React.FC<any> = (props) => {
             const isActBreak = i === 0 || i === segs.length - 2;
             nodes.push(
               <TransitionSeries.Transition key={`t${i}`} presentation={fade()}
-                timing={linearTiming({ durationInFrames: isActBreak ? 18 : 10, easing: Easing.inOut(Easing.cubic) })} />
+                timing={linearTiming({ durationInFrames: isActBreak ? abnTokens.motion.fadeActBreakFrames : abnTokens.motion.fadeNormalFrames, easing: Easing.inOut(Easing.cubic) })} />
             );
           }
           return nodes;
