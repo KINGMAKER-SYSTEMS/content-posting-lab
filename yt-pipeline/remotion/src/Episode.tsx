@@ -3,7 +3,7 @@ import { TransitionSeries, linearTiming } from "@remotion/transitions";
 import { fade } from "@remotion/transitions/fade";
 import { KenBurnsArtifact } from "./components/KenBurnsArtifact";
 import { KaraokeCaptions } from "./components/KaraokeCaptions";
-import { KeywordCard, LowerThird, TitleCard } from "./components/Overlays";
+import { LowerThird, TitleCard } from "./components/Overlays";
 import { abnGradient, abnTokens } from "./brand/abnTokens";
 
 // assets are served by the lab over HTTP; remotion headless reads them via the URL.
@@ -25,7 +25,9 @@ const SegmentRenderer: React.FC<{ seg: any; accent: string }> = ({ seg, accent }
         const { fps } = useVideoConfig();
         const from = Math.round((sh.startSec || 0) * fps);
         const dur = Math.max(1, Math.round(((sh.endSec || 0) - (sh.startSec || 0)) * fps));
-        const boxes = sh.highlight ? [{ ...sh.highlight, atSec: 0.2 }] : [];
+        // keyword-highlight boxes KILLED — they rendered as floating rectangles with truncated/garbage
+        // labels ('Can', 'top-tier') boxing random caption text = pure clutter slop. Removed.
+        const boxes: any[] = [];
         const isCard = (sh.src || "").includes("_card");
         const isVideo = sh.type === "broll" || sh.type === "code" || sh.type === "screenrec";
         return (
@@ -43,10 +45,7 @@ const SegmentRenderer: React.FC<{ seg: any; accent: string }> = ({ seg, accent }
       <AbsoluteFill style={{ background: "radial-gradient(ellipse at center, rgba(0,0,0,0) 45%, rgba(0,0,0,0.22) 100%)", pointerEvents: "none" }} />
       {/* caption layer */}
       <KaraokeCaptions words={seg.wordTimestamps || []} accent={accent} />
-      {/* keyword pops */}
-      {(seg.keywordPops || []).map((k: any, i: number) => (
-        <KeywordCard key={i} text={k.word} atSec={k.atSec ?? k.s ?? 0} durationSec={k.durationSec} color={k.color || accent} />
-      ))}
+      {/* keyword pops KILLED — floating tagged rectangles ('Can'/'top-tier' boxing random text) = slop */}
       {/* lower thirds */}
       {(seg.lowerThirds || []).map((l: any, i: number) => (
         <LowerThird key={i} headline={l.headline || seg.title} sourceUrl={l.sourceUrl}
