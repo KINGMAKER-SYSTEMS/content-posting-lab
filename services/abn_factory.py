@@ -733,6 +733,11 @@ def _fix_brand_words(words):
         core_alpha = re.sub(r'[^a-zA-Z]', '', core)
         # ASR-garble fix FIRST (Thropix -> Anthropic), then plain casing fix
         garbled = next((fix for pat, fix in _BRAND_GARBLE if pat.match(core_alpha)), None)
+        # SPECIAL CASE: capitalized 'Tropic's'/'Tropics' (no h) is the garbled-Anthropic Whisper emits
+        # in AI-news context — caught on a real caption ('and Tropic's'). Match the RAW word (case-
+        # sensitive) so lowercase 'tropics'/'tropical' (real words) are NEVER touched.
+        if not garbled and re.match(r"^Tropic(['’]s|s)?$", core if core else raw):
+            garbled = "Anthropic"
         base = core_alpha.lower()
         if garbled:
             out.append({"w": garbled + suffix + trail, "s": w["s"], "e": w["e"]})
