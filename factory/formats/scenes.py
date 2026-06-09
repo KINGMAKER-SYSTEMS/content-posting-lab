@@ -173,7 +173,14 @@ def comparison_target(text: str) -> str:
     # trim to the proper-noun core (first 1-3 tokens that look named)
     toks = t.split()
     keep = [w for w in toks if re.search(r'[A-Z0-9]', w) or w.lower() == "the"][:3]
-    return " ".join(keep) if keep else t
+    result = " ".join(keep) if keep else t
+    # FINAL GUARD: a capitalized PRONOUN ('It', 'This', 'That') is not a rival — it passed the proper-
+    # noun check only because of its capital letter (caught on a real card: 'MAI-Code-1-Flash VS It').
+    # Also reject if what's left is a single common word, not a named product.
+    if result.lower().strip(" .,") in ("it", "this", "that", "they", "them", "these", "those",
+                                       "the", "one", "everyone", "everything", "us", "we", "you"):
+        return ""
+    return result
 _MECH_RE = re.compile(r'\b(how it works|under the hood|works by|the way it|the trick is|'
                       r'mechanism|architecture|pipeline|it routes|it embeds|the model|algorithm|'
                       r'internally|the process)\b', re.I)
