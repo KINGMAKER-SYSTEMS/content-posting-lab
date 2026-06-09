@@ -1662,9 +1662,15 @@ def _diagram_steps(text: str) -> list:
         if "?" in s or re.search(r'\b(want to|subscribe|comment|let me know|stay tuned|in real|'
                                  r'check out|link below|honestly|basically|imagine)\b', sl):
             continue
+        # skip NAMING clauses ('it's called X', 'it is named Y') — a diagram shows HOW it works, not
+        # what it's called (caught on a real card: 'It's called the Defending Code Ref').
+        if re.search(r"^(it'?s |it is |this is )?(called|named|known as|dubbed)\b", sl):
+            continue
         words = s.split()
         if 2 <= len(words) <= 9:                 # a step is a short action phrase
-            steps.append(s[:34])
+            # clip to <=34 chars at a WORD boundary — never mid-word ('Reference'->'Ref', caught on a card)
+            step = s if len(s) <= 34 else s[:34].rsplit(" ", 1)[0]
+            steps.append(step.strip())
         if len(steps) >= 4:
             break
     return steps
