@@ -1,0 +1,343 @@
+<!doctype html>
+<!-- ABN ZINE-SLAM — Basquiat/punk-zine kinetic typography. 16:9 seekable composition.
+     Contract: window.duration + window.seek(t). Every visual state is pure f(t).
+     No CSS animations, no wall clock, no runtime randomness — all jitter is constant
+     or derived from Math.sin(t). Brand atoms: yt-pipeline/remotion/DESIGN.md.
+
+     ══════════════════ PARAMETRIZATION (replace these in const P below) ══════════════════
+     P.kicker      — mono masthead line, top-left            e.g. "ABN ZINE — BUILDER NEWS — NO.047"
+     P.w1 .. w5    — headline words that slam in one-by-one. w5 is the RED payoff word
+                     (gets the gold scribble underline + overprint ghosts). Keep w5 short.
+     P.panelTitle  — mono label on the torn paper panel      e.g. "OBITUARIES"
+     P.items[3]    — three lines on the torn panel; each gets X-ed out in red, then the
+                     whole panel gets the big X. Keep each ≤ 14 chars.
+     P.payoffLead  — first words of the payoff line (white)  e.g. "OWN THE"
+     P.payoffKey   — final payoff word — gets the hand-drawn red circle. Keep ≤ 7 chars.
+     P.source      — mono source line, bottom-left           e.g. "SRC: THEINFORMATION.COM — 06.09"
+     P.ghost       — giant outlined background word (usually same as w5)
+     window.duration — 12s default; timeline constants live in the TL object.
+     ═══════════════════════════════════════════════════════════════════════════════════ -->
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<style>
+  @font-face { font-family: "ABN Display"; src: url("fonts/TikTokSans36pt-Black.ttf"); font-weight: 900; }
+  @font-face { font-family: "ABN Text"; src: url("fonts/TikTokSans16pt-Bold.ttf"); font-weight: 700; }
+  :root {
+    --void:#030405; --stage:#080B0F; --panel:#0D1117;
+    --red:#FF2B2F; --red-dark:#9F0711; --cyan:#7FD2FF; --blue:#16A7FF;
+    --white:#F4F7FB; --mid:#8F99A7; --ink:#CBD7E1; --gold:#FFCD38; --paper:#F2E9D8;
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html, body { width:1920px; height:1080px; overflow:hidden; background:var(--stage); }
+  body { font-family:"ABN Display","Arial Black",sans-serif; color:var(--white); position:relative; }
+
+  /* ── stage gets the slam shake; bleed is deliberate ── */
+  #stage { position:absolute; inset:0; }
+
+  /* ink stains + newsprint field */
+  #stains { position:absolute; inset:-100px;
+    background:
+      radial-gradient(620px 480px at 6% -4%,  rgba(159,7,17,0.20), transparent 70%),
+      radial-gradient(540px 460px at 102% 16%, rgba(22,167,255,0.07), transparent 70%),
+      radial-gradient(700px 560px at 84% 108%, rgba(159,7,17,0.13), transparent 70%); }
+  #newsprint { position:absolute; inset:0; opacity:0.5;
+    background:
+      repeating-linear-gradient(0deg, rgba(244,247,251,0.014) 0 1px, transparent 1px 4px),
+      radial-gradient(rgba(244,247,251,0.030) 1px, transparent 1.4px);
+    background-size:auto, 7px 7px; }
+  #noise { position:absolute; inset:0; opacity:0.10; mix-blend-mode:overlay;
+    background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='280' height='280'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>"); }
+  #flash { position:absolute; inset:0; background:var(--red); opacity:0; }
+
+  /* giant outlined ghost word — deliberate bleed */
+  #ghost { position:absolute; left:560px; top:-30px; font-size:600px; letter-spacing:-0.03em;
+    color:transparent; -webkit-text-stroke:3px rgba(244,247,251,0.085); white-space:nowrap;
+    transform:rotate(7deg); }
+
+  #kicker { position:absolute; left:132px; top:124px; font-family:"SF Mono",Menlo,monospace;
+    font-size:26px; font-weight:700; letter-spacing:0.08em; color:var(--red); }
+  #kicker b { color:var(--mid); font-weight:400; }
+
+  /* slammed words: each is a block of 3 stacked copies (cyan ghost / red ghost / main) */
+  .word { position:absolute; white-space:nowrap; letter-spacing:-0.03em; line-height:0.92; }
+  .word .gc, .word .gr, .word .main { display:block; }
+  .word .main { position:relative; z-index:2; } /* overprint plates stay UNDER the main pass */
+  .word .gc, .word .gr { position:absolute; left:0; top:0; mix-blend-mode:screen; z-index:1; }
+  .word .gc { color:var(--cyan); opacity:0.40; }
+  .word .gr { color:var(--red);  opacity:0.42; }
+
+  #w1 { left:148px;  top:170px; font-size:108px; }
+  #w2 { left:336px;  top:128px; font-size:226px; }
+  #w3 { left:150px;  top:368px; font-size:172px; }
+  #w4 { left:560px;  top:392px; font-size:138px; color:var(--mid); }
+  #w5 { left:116px;  top:518px; font-size:330px; color:var(--red); }
+  #w5 .gc { opacity:0.5; }
+
+  /* gold scribble underline lives inside w5, stretches with the word */
+  #scribble { position:absolute; left:1%; bottom:-42px; width:97%; height:64px; overflow:visible; }
+  #scribble path { fill:none; stroke:var(--gold); stroke-width:11; stroke-linecap:round; opacity:0.92; }
+
+  /* torn paper panel */
+  #panelWrap { position:absolute; left:1216px; top:158px; width:560px; }
+  #panel { background:var(--paper); color:#10141A; padding:44px 46px 50px; position:relative;
+    clip-path:polygon(0% 2.2%, 5% 0.4%, 12% 1.8%, 21% 0.2%, 30% 2.4%, 41% 0.6%, 52% 2.6%,
+      63% 0.4%, 73% 2%, 84% 0.2%, 93% 2.2%, 100% 0.8%, 99.2% 11%, 100% 22%, 98.4% 33%,
+      100% 45%, 98.8% 57%, 100% 68%, 98.2% 80%, 100% 91%, 98.8% 100%, 88% 98.4%, 77% 100%,
+      65% 98.2%, 52% 100%, 39% 98.6%, 27% 100%, 15% 98.2%, 5% 100%, 0% 97.6%, 1.4% 87%,
+      0% 75%, 1.6% 62%, 0.2% 50%, 1.4% 38%, 0% 26%, 1.6% 13%); }
+  #panelShadow { filter:drop-shadow(14px 22px 26px rgba(0,0,0,0.65)); }
+  #panelTitle { font-family:"SF Mono",Menlo,monospace; font-size:24px; font-weight:700;
+    letter-spacing:0.22em; color:var(--red-dark); margin-bottom:26px; }
+  .item { position:relative; font-size:57px; letter-spacing:-0.02em; line-height:1.0;
+    padding:17px 0; white-space:nowrap; }
+  .item svg { position:absolute; left:-2%; top:8%; width:104%; height:84%; overflow:visible; }
+  .item svg path { fill:none; stroke:var(--red); stroke-width:9; stroke-linecap:round; opacity:0.9; }
+  #bigX { position:absolute; inset:-6% -4%; overflow:visible; }
+  #bigX path { fill:none; stroke:var(--red); stroke-width:17; stroke-linecap:round; opacity:0.92; }
+
+  /* payoff row + ink splat + hand-drawn circle */
+  #payoff { position:absolute; left:912px; top:822px; white-space:nowrap; }
+  #payoffLead { display:inline-block; font-size:106px; letter-spacing:-0.03em; }
+  #payoffKeyWrap { display:inline-block; position:relative; margin-left:30px; }
+  #payoffKey { font-size:106px; letter-spacing:-0.03em; color:var(--cyan); }
+  #circle { position:absolute; left:-10%; top:-30%; width:120%; height:160%; overflow:visible; }
+  #circle path { fill:none; stroke:var(--red); stroke-width:10; stroke-linecap:round; opacity:0.95; }
+  #splat { position:absolute; left:790px; top:706px; width:520px; height:390px; }
+  #splat path { fill:var(--red-dark); opacity:0.55; }
+
+  #source { position:absolute; left:132px; bottom:128px; font-family:"SF Mono",Menlo,monospace;
+    font-size:24px; font-weight:700; letter-spacing:0.07em; color:var(--cyan); }
+  #stamp { position:absolute; right:130px; top:116px; background:var(--red); color:var(--void);
+    font-size:42px; letter-spacing:-0.01em; padding:10px 22px 12px; transform:rotate(-4deg); }
+  #vignette { position:absolute; inset:0; pointer-events:none;
+    background:radial-gradient(ellipse at center, rgba(0,0,0,0) 42%, rgba(0,0,0,0.30) 100%); }
+</style>
+</head>
+<body>
+<div id="stage">
+  <div id="stains"></div>
+  <div id="newsprint"></div>
+  <div id="ghost"></div>
+
+  <div id="kicker"></div>
+
+  <div class="word" id="w1"><span class="gc"></span><span class="gr"></span><span class="main"></span></div>
+  <div class="word" id="w2"><span class="gc"></span><span class="gr"></span><span class="main"></span></div>
+  <div class="word" id="w3"><span class="gc"></span><span class="gr"></span><span class="main"></span></div>
+  <div class="word" id="w4"><span class="gc"></span><span class="gr"></span><span class="main"></span></div>
+  <div class="word" id="w5"><span class="gc"></span><span class="gr"></span><span class="main"></span>
+    <svg id="scribble" viewBox="0 0 760 64" preserveAspectRatio="none">
+      <path pathLength="100" d="M8,30 C120,8 260,46 380,24 C500,4 620,42 748,16 M16,48 C150,26 300,58 430,38 C560,18 660,52 752,36"/>
+    </svg>
+  </div>
+
+  <div id="panelWrap"><div id="panelShadow"><div id="panel">
+    <div id="panelTitle"></div>
+    <div class="item" id="it0"><span></span>
+      <svg viewBox="0 0 480 64" preserveAspectRatio="none"><path pathLength="100" d="M6,40 C120,26 250,42 360,28 C420,22 458,30 474,24"/></svg></div>
+    <div class="item" id="it1"><span></span>
+      <svg viewBox="0 0 480 64" preserveAspectRatio="none"><path pathLength="100" d="M8,26 C140,44 260,22 380,38 C430,44 460,34 472,40"/></svg></div>
+    <div class="item" id="it2"><span></span>
+      <svg viewBox="0 0 480 64" preserveAspectRatio="none"><path pathLength="100" d="M5,36 C130,20 240,46 350,26 C410,18 452,34 475,28"/></svg></div>
+    <svg id="bigX" viewBox="0 0 480 420" preserveAspectRatio="none">
+      <path id="bigX1" pathLength="100" d="M18,16 C160,140 320,280 462,402"/>
+      <path id="bigX2" pathLength="100" d="M460,20 C330,150 160,290 22,398"/>
+    </svg>
+  </div></div></div>
+
+  <svg id="splat" viewBox="0 0 560 420">
+    <path d="M280,40 C350,30 420,70 440,130 C500,140 530,200 490,250 C520,300 470,360 410,345
+             C390,400 300,410 260,370 C190,400 110,370 105,310 C40,300 25,230 75,195
+             C50,140 95,80 160,90 C190,45 240,48 280,40 Z
+             M505,110 a16,16 0 1,0 0.1,0 Z M60,120 a11,11 0 1,0 0.1,0 Z
+             M520,330 a13,13 0 1,0 0.1,0 Z M150,30 a9,9 0 1,0 0.1,0 Z"/>
+  </svg>
+
+  <div id="payoff">
+    <span id="payoffLead"></span><span id="payoffKeyWrap"><span id="payoffKey"></span>
+      <svg id="circle" viewBox="0 0 400 160" preserveAspectRatio="none">
+        <path pathLength="100" d="M205,18 C320,8 390,44 384,84 C378,128 288,152 194,146
+          C98,140 16,116 16,76 C16,38 98,14 232,12 C314,11 372,32 378,62"/>
+      </svg>
+    </span>
+  </div>
+
+  <div id="source"></div>
+  <div id="stamp">ABN</div>
+  <div id="flash"></div>
+</div>
+<div id="noise"></div>
+<div id="vignette"></div>
+
+<script>
+  // ═══════ PARAMS — replace these strings ═══════
+  const P = {
+    kicker: "ABN ZINE <b>— BUILDER NEWS — NO.047</b>",
+    w1: "THE", w2: "WRAPPER", w3: "ERA", w4: "IS", w5: "DEAD.",
+    panelTitle: "OBITUARIES",
+    items: ["GPT SKINS", "PROMPT SITES", "THIN SHIMS"],
+    payoffLead: "OWN THE", payoffKey: "STACK",
+    source: "SRC: THEINFORMATION.COM — 06.09",
+    ghost: "DEAD.",
+  };
+  window.duration = 12;
+
+  // ═══════ timeline (s) — words back-dated so FRAME 0 is the full slammed headline ═══════
+  const TL = {
+    w1: -0.90, w2: -0.68, w3: -0.46, w4: -0.30, w5: -0.42,
+    scribble: [0.45, 0.85],
+    panel: 1.70,
+    items: [2.30, 2.70, 3.10],
+    xs:    [3.90, 4.45, 5.00],
+    bigX:  [5.80, 0.65],
+    splat: 6.80, payoff: 7.10,
+    circle:[8.00, 1.25],
+    stamp: 9.80,
+  };
+  // constant jitter per word: [restRot, kickRot, wobbleSeed, wobbleAmp]
+  const J = {
+    w1:[-6.0,  9, 0.7, 0.5], w2:[-2.2, -7, 1.9, 0.4], w3:[ 1.6,  8, 3.1, 0.5],
+    w4:[ 4.5, -10, 4.3, 0.7], w5:[-2.4,  6, 5.6, 0.35],
+  };
+
+  const $ = (id) => document.getElementById(id);
+  const clamp = (v,a=0,b=1) => Math.max(a, Math.min(b, v));
+  const seg = (t,s,d) => clamp((t-s)/d);
+  const eoc = (p) => 1 - Math.pow(1-p, 3);
+  const backOut = (p,c=1.4) => 1 + (c+1)*Math.pow(p-1,3) + c*Math.pow(p-1,2);
+
+  // populate copy
+  $("kicker").innerHTML = P.kicker;
+  for (const k of ["w1","w2","w3","w4","w5"]) {
+    const el = $(k);
+    el.querySelector(".main").textContent = P[k];
+    el.querySelector(".gc").textContent = P[k];
+    el.querySelector(".gr").textContent = P[k];
+  }
+  $("ghost").textContent = P.ghost;
+  $("panelTitle").textContent = P.panelTitle;
+  P.items.forEach((s,i) => $("it"+i).querySelector("span").textContent = s);
+  $("payoffLead").textContent = P.payoffLead;
+  $("payoffKey").textContent = P.payoffKey;
+  $("source").textContent = P.source;
+
+  // RE-FLOW the headline for arbitrary param words. The pixel offsets above were tuned to
+  // "THE WRAPPER / ERA IS / DEAD." — parameterized words of different widths collided
+  // ("THIN" overlapped "GPT" on a real fill). Layout is deterministic (same fonts, same
+  // strings, same engine) so measuring once at load keeps the seek contract intact.
+  // Line 1: w1 (small lead) then w2 (big) side-by-side. Line 2: w3 then w4. w5 stays put.
+  document.fonts.ready.then(() => {}); // fonts are local file:// — loaded synchronously by render time
+  {
+    const px = (el) => el.getBoundingClientRect().width;
+    $("w2").style.left = (148 + px($("w1")) + 38) + "px";
+    $("w4").style.left = (150 + px($("w3")) + 44) + "px";
+    // line 1 must clear the torn OBITUARIES panel (it owns x≈1280+ in the upper band) —
+    // shrink w2 until the line fits inside 1240px, not the full frame width
+    let guard = 0;
+    while (148 + px($("w1")) + 38 + px($("w2")) > 1240 && guard++ < 12) {
+      const cur = parseFloat(getComputedStyle($("w2")).fontSize);
+      $("w2").style.fontSize = (cur * 0.92) + "px";
+    }
+    guard = 0;
+    while (150 + px($("w3")) + 44 + px($("w4")) > 1880 && guard++ < 12) {
+      const cur = parseFloat(getComputedStyle($("w3")).fontSize);
+      $("w3").style.fontSize = (cur * 0.92) + "px";
+      $("w4").style.left = (150 + px($("w3")) + 44) + "px";
+    }
+    // keep the payoff word inside frame too
+    guard = 0;
+    while (116 + px($("w5")) > 1820 && guard++ < 12) {
+      const cur = parseFloat(getComputedStyle($("w5")).fontSize);
+      $("w5").style.fontSize = (cur * 0.92) + "px";
+    }
+  }
+
+  function drawPath(el, p) { // pathLength=100 normalized draw-on
+    el.style.strokeDasharray = 100;
+    el.style.strokeDashoffset = 100 * (1 - clamp(p));
+    el.style.opacity = p <= 0 ? 0 : "";
+  }
+
+  window.seek = function seek(t) {
+    t = clamp(t, 0, window.duration);
+
+    // ── word slams: scale overshoot + rotation kick + live wobble + overprint jitter ──
+    for (const k of ["w1","w2","w3","w4","w5"]) {
+      const el = $(k), [rot, kick, seed, wob] = J[k];
+      const p = seg(t, TL[k], 0.38);
+      const b = backOut(p);
+      const sc = p <= 0 ? 3 : 2.5 + (1 - 2.5) * b;
+      const r = rot + (1 - eoc(p)) * kick + Math.sin(t * 1.9 + seed) * wob;
+      el.style.opacity = clamp(p * 5);
+      el.style.transform = `rotate(${r}deg) scale(${sc})`;
+      // overprint misregistration — red/cyan plates never quite line up
+      const gx = 5 + Math.sin(t * 8.7 + seed) * 2.5, gy = 3.5 + Math.cos(t * 7.3 + seed) * 2;
+      el.querySelector(".gc").style.transform = `translate(${-gx}px, ${gy * 0.7}px)`;
+      el.querySelector(".gr").style.transform = `translate(${gx * 0.8}px, ${-gy}px)`;
+    }
+
+    // gold scribble under the payoff word
+    drawPath($("scribble").querySelector("path"), seg(t, TL.scribble[0], TL.scribble[1]));
+
+    // ── torn panel slam ──
+    const pp = seg(t, TL.panel, 0.45), pb = backOut(pp);
+    const pw = $("panelWrap");
+    pw.style.opacity = clamp(pp * 5);
+    pw.style.transform = `rotate(${2.6 + (1 - eoc(pp)) * -9 + Math.sin(t * 1.4 + 2) * 0.3}deg)
+      scale(${pp <= 0 ? 2.6 : 2.2 + (1 - 2.2) * pb}) translateY(${(1 - eoc(pp)) * -60}px)`;
+
+    // panel items stamp in, then get struck through, then the whole list gets the X
+    P.items.forEach((_, i) => {
+      const ip = seg(t, TL.items[i], 0.3);
+      const item = $("it" + i);
+      item.style.opacity = clamp(ip * 5);
+      item.style.transform = `scale(${ip <= 0 ? 1.8 : 1.6 + (1 - 1.6) * backOut(ip)})
+        rotate(${(i % 2 ? 1 : -1) * (1 - eoc(ip)) * 4}deg)`;
+      drawPath(item.querySelector("path"), seg(t, TL.xs[i], 0.35));
+    });
+    drawPath($("bigX1"), seg(t, TL.bigX[0], TL.bigX[1] * 0.5));
+    drawPath($("bigX2"), seg(t, TL.bigX[0] + TL.bigX[1] * 0.5, TL.bigX[1] * 0.5));
+
+    // ── ink splat + payoff + hand-drawn circle ──
+    const sp = seg(t, TL.splat, 0.4);
+    $("splat").style.opacity = clamp(sp * 6);
+    $("splat").style.transform = `rotate(${-8 + eoc(sp) * 8}deg) scale(${sp <= 0 ? 0.2 : 0.3 + backOut(sp) * 0.7})`;
+    const yp = seg(t, TL.payoff, 0.4), yb = backOut(yp);
+    const po = $("payoff");
+    po.style.opacity = clamp(yp * 5);
+    po.style.transform = `rotate(${-1.6 + (1 - eoc(yp)) * 7 + Math.sin(t * 1.7 + 1.2) * 0.3}deg)
+      scale(${yp <= 0 ? 2.4 : 2.2 + (1 - 2.2) * yb})`;
+    drawPath($("circle").querySelector("path"), seg(t, TL.circle[0], TL.circle[1]));
+
+    // stamp + source
+    const st = seg(t, TL.stamp, 0.35);
+    $("stamp").style.opacity = clamp(st * 6);
+    $("stamp").style.transform = `rotate(${-4 + (1 - eoc(st)) * 10}deg) scale(${st <= 0 ? 2 : 1.9 + (1 - 1.9) * backOut(st)})`;
+    $("source").style.opacity = seg(t, 1.4, 0.5);
+
+    // ── slam shake: every hit jolts the whole stage, decaying — pure f(t) ──
+    let dx = 0, dy = 0, dr = 0;
+    const hits = [[TL.w5 + 0.30, 16], [TL.panel + 0.34, 9], [TL.payoff + 0.30, 12], [TL.stamp + 0.26, 7],
+                  [TL.w2 + 0.30, 8], [TL.bigX[0] + 0.5, 6]];
+    for (const [ht, amp] of hits) {
+      if (t > ht) {
+        const e = Math.exp(-(t - ht) * 9);
+        dx += amp * e * Math.sin((t - ht) * 62);
+        dy += amp * 0.6 * e * Math.cos((t - ht) * 51);
+        dr += 0.25 * e * Math.sin((t - ht) * 40);
+      }
+    }
+    $("stage").style.transform = `translate(${dx}px, ${dy}px) rotate(${dr}deg)`;
+
+    // red flash on the DEAD. land
+    const fl = t - (TL.w5 + 0.3);
+    $("flash").style.opacity = fl > 0 ? 0.16 * Math.exp(-fl * 7) : 0;
+
+    // ghost word breath
+    $("ghost").style.transform = `rotate(${7 + Math.sin(t * 0.5) * 0.6}deg) translateY(${Math.sin(t * 0.7) * 8}px)`;
+  };
+  window.seek(0);
+</script>
+</body>
+</html>

@@ -876,55 +876,107 @@ _REPO = Path(__file__).resolve().parent.parent
 _KINETIC_TPL = _REPO / "tools/seekable-html-video/templates/builder-news-explainer/index.html"
 
 
-def _kinetic_scenes(title, script):
-    """Graph for a ~10s news insert: hook (title) → 3-4 fact bullets → takeaway. Bullets/takeaway
-    come from the scriptwriter expert (tiny JSON ask) with a deterministic fallback."""
-    bullets, take = [], ""
+_KINETIC_DIR = _REPO / "tools/seekable-html-video/templates"
+
+
+def _kinetic_params(title, script, source_url):
+    """Art-direct the insert: pick a template + fill its `const P` params from the segment script.
+    LLM (scriptwriter expert) with a deterministic fallback. Returns (template_name, P_dict)."""
+    dom = re.sub(r'^https?://(www\.)?', '', source_url or "").split("/")[0][:34] or "agenticbuildernews"
+    src_line = f"SRC: {dom.upper()}"
+    d = {}
     try:
         import services.abn_experts as experts
         raw = experts.ask("scriptwriter",
-            "From this spoken script, extract JSON only: {\"bullets\": [3-4 punchy noun-phrase facts, "
-            "max 5 words each], \"takeaway\": \"one builder takeaway, max 8 words\"}.\n\nScript:\n" + (script or "")[:1200])
+            "You are art-directing a 12s kinetic-typography insert for a tech-news video. From the "
+            "script below return JSON ONLY:\n"
+            "{\"template\": \"stat\"|\"zine\",   // stat IF the script's most striking fact is a NUMBER, else zine\n"
+            " \"claim\": \"setup line, ≤6 words, ALL CAPS\",  \"statValue\": int, \"statPrefix\": \"\"|\"$\", "
+            "\"statSuffix\": \"%\"|\"B\"|\"M\"|\"X\"|\"\", \"statKicker\": \"payoff line ≤6 words ALL CAPS\",\n"
+            " \"w\": [exactly 5 SINGLE WORDS that read IN ORDER as one punchy verdict sentence — "
+            "like [\"THE\",\"WRAPPER\",\"ERA\",\"IS\",\"DEAD.\"] — w5 is the one-word payoff ending in '.'],\n"
+            " \"panelTitle\": \"≤11-char mono label e.g. OBITUARIES, THE OLD WAY\", "
+            "\"items\": [3 things being replaced/killed, ≤14 chars each],\n"
+            " \"payoffLead\": \"first words of final line ≤10 chars\", \"payoffKey\": \"circled word ≤7 chars\"}\n\n"
+            f"Story: {title}\nScript:\n{(script or '')[:1200]}")
         d = json.loads(re.search(r'\{.*\}', raw or "", re.S).group(0))
-        bullets = [str(b)[:42] for b in (d.get("bullets") or [])][:4]
-        take = str(d.get("takeaway") or "")[:60]
     except Exception:
-        pass
-    if not bullets:
-        sents = [x.strip() for x in re.split(r'(?<=[.!?])\s+', script or "") if 12 < len(x.strip()) < 60][:4]
-        bullets = [s.rstrip(".!?") for s in sents] or [title[:42]]
-    if not take:
-        take = "Here's why builders care."
-    # split title into two display lines at the word midpoint
-    w = title.split()
-    mid = max(1, len(w) // 2)
-    l1, l2 = " ".join(w[:mid])[:34], " ".join(w[mid:])[:34]
-    return [
-        {"l1": l1, "l2": l2, "sub": "", "cards": False, "checks": False, "accent2": False},
-        {"l1": "The facts.", "l2": "", "sub": "", "cards": False, "checks": True, "accent2": False, "bullets": bullets},
-        {"l1": take[:30], "l2": take[30:60], "sub": "", "cards": False, "checks": True, "accent2": True, "bullets": bullets},
-    ]
+        d = {}
+    # deterministic stat detection — the GATE for stat-shrine. The LLM alone once chose a shrine
+    # to the number "3" (no unit, no meaning). A number is shrine-worthy only if the script
+    # literally contains value+unit (%, x, $, B/M) — otherwise it's a zine story.
+    m = re.search(r'(\$?)(\d+(?:\.\d+)?)\s*(%|x|billion|million|B\b|M\b)', script or "", re.I)
+    tpl = "stat" if (m and d.get("template") != "zine") else "zine"
+    if tpl == "stat":
+        sfx = {"billion": "B", "million": "M", "x": "X"}.get(str(d.get("statSuffix", "")).lower(),
+                                                            str(d.get("statSuffix", "%"))[:2])
+        try:
+            val = int(float(d.get("statValue")))
+        except (TypeError, ValueError):
+            val = int(float(m.group(2))) if m else 0
+        if val <= 0:
+            tpl = "zine"  # a shrine to zero is a zine story after all
+        else:
+            return "stat-shrine", {
+                "claim": str(d.get("claim") or title)[:44].upper(),
+                "statValue": val, "statSuffix": sfx,
+                "statPrefix": str(d.get("statPrefix", ""))[:1],
+                "kicker": str(d.get("statKicker") or "AND BUILDERS FEEL IT.")[:44].upper(),
+                "edition": "ED.047 — SILKSCREEN PROOF", "source": src_line,
+            }
+    # one TOKEN per slot — the layout composes 5 single words ("THE WRAPPER / ERA IS / DEAD.");
+    # a phrase in a slot ("PROMPT SITES") breaks the composition (caught on a real render)
+    w = [str(x).upper().split()[0] for x in (d.get("w") or []) if str(x).strip()][:5]
+    # word-salad guard: repeated tokens ("THIN PROMPT GPT THIN DEAD") mean the LLM filled slots
+    # with phrase fragments — the title is a better sentence than a shuffled keyword bag
+    if len(w) == 5 and len(set(w[:4])) < 4:
+        w = []
+    if len(w) < 5:
+        tw = [x.upper() for x in re.sub(r'[^A-Za-z0-9 ]', '', title).split()][:4]
+        while len(tw) < 4:
+            tw.append("NOW")
+        w = tw + ["LIVE."]
+    if not w[4].endswith("."):
+        w[4] += "."
+    items = [str(x)[:14].upper() for x in (d.get("items") or [])][:3] or ["THE OLD WAY", "MANUAL OPS", "GUESSWORK"]
+    while len(items) < 3:
+        items.append("THE OLD WAY")
+
+    def word_trim(s, limit):
+        """Trim to limit WITHOUT chopping mid-word ('BUILDERS WHO'[:10] = 'BUILDERS W' shipped
+        a real frame reading 'BUILDERS W OWN'). Drop trailing partial words instead."""
+        s = str(s).strip()
+        if len(s) <= limit:
+            return s
+        cut = s[:limit]
+        return (cut.rsplit(" ", 1)[0] if " " in cut else cut).strip()
+
+    return "zine-slam", {
+        "kicker": "ABN ZINE <b>— BUILDER NEWS</b>",
+        "w1": word_trim(w[0], 12), "w2": word_trim(w[1], 12), "w3": word_trim(w[2], 12),
+        "w4": word_trim(w[3], 12), "w5": word_trim(w[4], 10) or "LIVE.",
+        "panelTitle": word_trim((d.get("panelTitle") or "THE OLD WAY").upper(), 11),
+        "items": items,
+        "payoffLead": word_trim((d.get("payoffLead") or "OWN THE").upper(), 12),
+        "payoffKey": word_trim((d.get("payoffKey") or "STACK").upper(), 7),
+        "source": src_line, "ghost": word_trim(w[4], 10),
+    }
 
 
 async def _kinetic_insert(title, script, source_url, sid):
-    """Render a seekable-HTML kinetic insert for this segment → ASSETS/<sid>_kinetic.mp4 (served path)."""
-    if not _KINETIC_TPL.exists():
+    """Render an art-directed seekable-HTML kinetic insert → {"src": served_mp4, "dur": seconds}.
+    Templates: stat-shrine (number worship) / zine-slam (verdict typography). The corporate
+    builder-news-explainer is dead as an insert — John: "looks like a training video"."""
+    tpl_name, P = await asyncio.to_thread(_kinetic_params, title, script, source_url)
+    tpl_file = _KINETIC_DIR / tpl_name / "index.html"
+    if not tpl_file.exists():
         return None
-    scenes = await asyncio.to_thread(_kinetic_scenes, title, script)
-    dur = 10
-    html = _KINETIC_TPL.read_text()
-    # fonts resolve relative to the template; the filled copy lives in ASSETS → absolute file:// URLs
-    html = html.replace('url("fonts/', f'url("file://{_KINETIC_TPL.parent}/fonts/')
-    html = re.sub(r'const SCENES = \[.*?\n  \];', "const SCENES = " + json.dumps(scenes) + ";", html, flags=re.S)
-    html = html.replace("window.duration = 12;", f"window.duration = {dur};")
-    html = html.replace("theverge.com/meta-muse-spark-delay",
-                        re.sub(r'^https?://', '', source_url or "")[:48] or "agenticbuildernews")
-    # scene timing: 0-3 hook / 3-6.5 facts / 6.5-10 takeaway (template's sceneAt uses 3 and 7)
-    html = html.replace("t < 3 ? 0 : t < 7 ? 1 : 2", "t < 3 ? 0 : t < 6.5 ? 1 : 2").replace("[0, 3, 7]", "[0, 3, 6.5]")
-    # bullets are per-graph now — patch the static <li> list from scene data
-    li = "".join(f'<li><span class="dot"></span>{b}</li>' for b in (scenes[1].get("bullets") or []))
-    html = re.sub(r'<ul id="checks"[^>]*>.*?</ul>',
-                  f'<ul id="checks" style="display:none">{li}</ul>', html, flags=re.S)
+    html = tpl_file.read_text()
+    html = html.replace('url("fonts/', f'url("file://{tpl_file.parent}/fonts/')
+    pjs = "const P = {" + ",".join(f"{k}: {json.dumps(v)}" for k, v in P.items()) + "};"
+    html, nsub = re.subn(r'const P = \{.*?\};', lambda _: pjs, html, count=1, flags=re.S)
+    if not nsub:
+        return None
     src_html = ASSETS / f"{sid}_kinetic.html"
     src_html.write_text(html)
     out = ASSETS / f"{sid}_kinetic.mp4"
@@ -935,7 +987,8 @@ async def _kinetic_insert(title, script, source_url, sid):
     src_html.unlink(missing_ok=True)
     if code != 0 or not out.exists() or out.stat().st_size < 50_000:
         return None
-    return f"/agenticnews-assets/{sid}_kinetic.mp4"
+    dur = await _dur(out)
+    return {"src": f"/agenticnews-assets/{sid}_kinetic.mp4", "dur": float(dur or 11.0), "template": tpl_name}
 
 
 # ---------------- SOURCE SCREENSHOT ----------------
@@ -1736,9 +1789,13 @@ def _plan_shots(duration, screenshot, card, words, keywords, source_url, demo=No
     # takes the FIRST middle beat as a full-bleed animated sequence (it carries its own motion —
     # no Ken-Burns, no frame). The remaining middle shrinks accordingly.
     src_domain = re.sub(r'^https?://(www\.)?', '', source_url or "").split("/")[0][:34]
-    if kinetic and artifact_dur > 6:
-        k_len = round(min(10.0, artifact_dur * 0.55), 2)
-        shots.append({"id": "kin0", "type": "kinetic", "src": kinetic, "startSec": round(artifact_start, 2),
+    kin_src = kinetic.get("src") if isinstance(kinetic, dict) else kinetic
+    kin_dur = float(kinetic.get("dur", 11.0)) if isinstance(kinetic, dict) else 10.0
+    # the insert's payoff lands in its final seconds — run it FULL length or not at all
+    # (cutting a zine-slam before the circled payoff word is worse than no insert)
+    if kin_src and artifact_dur >= kin_dur + 2.0:
+        k_len = round(kin_dur, 2)
+        shots.append({"id": "kin0", "type": "kinetic", "src": kin_src, "startSec": round(artifact_start, 2),
                       "endSec": round(artifact_start + k_len, 2), "muteSource": True})
         artifact_start = round(artifact_start + k_len, 2)
         artifact_dur = max(0.0, demo_start - artifact_start)

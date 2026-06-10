@@ -1,0 +1,258 @@
+<!doctype html>
+<!-- ABN STAT-SHRINE — Warhol silkscreen number worship. 16:9 seekable composition.
+     Contract: window.duration + window.seek(t). Every visual state is pure f(t).
+     No CSS animations, no wall clock, no runtime randomness. Brand atoms per
+     yt-pipeline/remotion/DESIGN.md. The grid behind is six halftone "prints" of the
+     FINAL number (the editions already know the answer); the live center counter
+     catches up to them, then the kicker lands.
+
+     ══════════════════ PARAMETRIZATION (replace these in const P below) ══════════════════
+     P.claim       — setup line, top center                  e.g. "CLAUDE'S AGENT TEAMS NOW WRITE"
+     P.statValue   — the number the counter lands on (int)   e.g. 90
+     P.statSuffix  — unit glued to the number                e.g. "%", "B", "X", "M"
+     P.statPrefix  — optional prefix                         e.g. "$" (empty string if none)
+     P.kicker      — payoff line, bottom center              e.g. "OF ITS OWN PRODUCTION CODE."
+     P.edition     — mono proof label, bottom-left           e.g. "ED.047 — SILKSCREEN PROOF"
+     P.source      — mono source line, bottom-right          e.g. "SRC: ANTHROPIC.COM/NEWS"
+     window.duration — 11s. Count runs 0 → statValue over COUNT_DUR, lands with a pop.
+     ═══════════════════════════════════════════════════════════════════════════════════ -->
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<style>
+  @font-face { font-family: "ABN Display"; src: url("fonts/TikTokSans36pt-Black.ttf"); font-weight: 900; }
+  @font-face { font-family: "ABN Text"; src: url("fonts/TikTokSans16pt-Bold.ttf"); font-weight: 700; }
+  :root {
+    --void:#030405; --stage:#080B0F; --panel:#0D1117;
+    --red:#FF2B2F; --red-dark:#9F0711; --cyan:#7FD2FF; --blue:#16A7FF;
+    --white:#F4F7FB; --mid:#8F99A7; --ink:#CBD7E1; --gold:#FFCD38;
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html, body { width:1920px; height:1080px; overflow:hidden; background:var(--void); }
+  body { font-family:"ABN Display","Arial Black",sans-serif; color:var(--white); position:relative; }
+
+  /* ── Warhol edition grid: six halftone prints of the final number ── */
+  .cell { position:absolute; overflow:hidden; display:flex; align-items:center; justify-content:center;
+    border:1px solid rgba(244,247,251,0.05); }
+  .cell .num { font-size:330px; letter-spacing:-0.03em; font-variant-numeric:tabular-nums;
+    white-space:nowrap; position:relative;
+    -webkit-mask-image:radial-gradient(circle, #000 34%, transparent 43%);
+    mask-image:radial-gradient(circle, #000 34%, transparent 43%); }
+  .cell .num .mis { position:absolute; left:0; top:0; mix-blend-mode:screen; }
+  /* per-cell ink + screen pitch — silkscreen pulls never match */
+  .c-red  { background:rgba(159,7,17,0.30); }   .c-red  .num { color:rgba(255,43,47,0.98); }
+  .c-cyan { background:rgba(22,167,255,0.13); } .c-cyan .num { color:rgba(127,210,255,0.92); }
+  .c-gold { background:rgba(255,205,56,0.10); } .c-gold .num { color:rgba(255,205,56,0.85); }
+  .c-red  .num .mis { color:rgba(127,210,255,0.45); }
+  .c-cyan .num .mis { color:rgba(255,43,47,0.45); }
+  .c-gold .num .mis { color:rgba(255,43,47,0.40); }
+  .p9  .num { -webkit-mask-size:9px 9px;   mask-size:9px 9px; }
+  .p12 .num { -webkit-mask-size:13px 13px; mask-size:13px 13px; }
+  .p15 .num { -webkit-mask-size:17px 17px; mask-size:17px 17px; }
+
+  #noise { position:absolute; inset:0; opacity:0.09; mix-blend-mode:overlay; z-index:6;
+    background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='280' height='280'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>"); }
+  #vignette { position:absolute; inset:0; pointer-events:none; z-index:7;
+    background:radial-gradient(ellipse at center, rgba(0,0,0,0) 38%, rgba(0,0,0,0.34) 100%); }
+
+  /* ── the live shrine number ── */
+  #halo { position:absolute; left:50%; top:474px; width:1500px; height:820px; z-index:3;
+    transform:translate(-50%,-50%);
+    background:radial-gradient(closest-side, rgba(3,4,5,0.86), rgba(3,4,5,0.5) 55%, transparent 74%); }
+  #altar { position:absolute; left:0; right:0; top:296px; text-align:center; z-index:4; }
+  #statBig { display:inline-block; font-size:480px; line-height:0.95; letter-spacing:-0.03em;
+    font-variant-numeric:tabular-nums; white-space:nowrap;
+    text-shadow:12px 14px 0 rgba(159,7,17,0.85), -6px -6px 0 rgba(22,167,255,0.28); }
+  #burst { position:absolute; left:50%; top:50%; width:1400px; height:760px;
+    transform:translate(-50%,-50%); overflow:visible; z-index:3; }
+  #burst line { stroke:var(--gold); stroke-width:14; stroke-linecap:round; }
+  #echo { position:absolute; left:0; right:0; top:296px; text-align:center; z-index:4;
+    font-size:480px; line-height:0.95; letter-spacing:-0.03em; font-variant-numeric:tabular-nums;
+    color:transparent; -webkit-text-stroke:4px rgba(255,43,47,0.8); white-space:nowrap; }
+
+  #claim { position:absolute; left:0; right:0; top:156px; text-align:center; z-index:5;
+    font-size:62px; letter-spacing:-0.02em;
+    text-shadow:0 4px 22px rgba(3,4,5,0.9), 0 0 8px rgba(3,4,5,0.8); }
+  #kickerWrap { position:absolute; left:0; right:0; top:868px; text-align:center; z-index:5; }
+  #kicker { display:inline-block; position:relative; font-size:74px; letter-spacing:-0.02em;
+    padding:2px 28px; }
+  #kickerBar { position:absolute; inset:6% 0; background:var(--red); z-index:-1;
+    transform-origin:left center;
+    clip-path:polygon(0% 12%, 4% 2%, 15% 8%, 28% 0%, 42% 9%, 57% 2%, 71% 10%, 85% 3%, 96% 9%,
+      100% 18%, 99% 50%, 100% 82%, 95% 95%, 82% 89%, 68% 99%, 53% 91%, 38% 100%, 24% 92%,
+      10% 99%, 1% 90%, 0% 55%); }
+
+  /* print-proof chrome */
+  .crop { position:absolute; width:46px; height:46px; z-index:5;
+    border:0 solid rgba(244,247,251,0.34); }
+  #cropTL { left:44px;  top:44px;    border-left-width:3px; border-top-width:3px; }
+  #cropTR { right:44px; top:44px;    border-right-width:3px; border-top-width:3px; }
+  #cropBL { left:44px;  bottom:44px; border-left-width:3px; border-bottom-width:3px; }
+  #cropBR { right:44px; bottom:44px; border-right-width:3px; border-bottom-width:3px; }
+  #chips { position:absolute; left:132px; top:104px; display:flex; gap:14px; align-items:center; z-index:5;
+    font-family:"SF Mono",Menlo,monospace; font-size:22px; font-weight:700; letter-spacing:0.06em; color:var(--mid);
+    background:rgba(3,4,5,0.78); padding:9px 16px; }
+  #chips i { width:26px; height:26px; display:inline-block; }
+  #source { position:absolute; right:132px; top:108px; z-index:5;
+    font-family:"SF Mono",Menlo,monospace; font-size:24px; font-weight:700;
+    letter-spacing:0.07em; color:var(--cyan); background:rgba(3,4,5,0.78); padding:9px 16px; }
+</style>
+</head>
+<body>
+  <!-- edition grid: x, y, w, h, rot, ink, pitch set inline; numbers filled from P -->
+  <div class="cell c-red p12"  id="cell0" style="left:-60px;  top:-40px;  width:700px; height:560px; transform:rotate(-1.6deg);"><div class="num"><span class="mis"></span><span class="v"></span></div></div>
+  <div class="cell c-cyan p9"  id="cell1" style="left:610px;  top:-70px;  width:700px; height:520px; transform:rotate(1.1deg);"><div class="num"><span class="mis"></span><span class="v"></span></div></div>
+  <div class="cell c-gold p15" id="cell2" style="left:1280px; top:-40px;  width:740px; height:560px; transform:rotate(-0.8deg);"><div class="num"><span class="mis"></span><span class="v"></span></div></div>
+  <div class="cell c-cyan p15" id="cell3" style="left:-70px;  top:560px;  width:720px; height:580px; transform:rotate(0.9deg);"><div class="num"><span class="mis"></span><span class="v"></span></div></div>
+  <div class="cell c-gold p9"  id="cell4" style="left:620px;  top:590px;  width:680px; height:560px; transform:rotate(-1.2deg);"><div class="num"><span class="mis"></span><span class="v"></span></div></div>
+  <div class="cell c-red p12"  id="cell5" style="left:1270px; top:560px;  width:760px; height:580px; transform:rotate(1.4deg);"><div class="num"><span class="mis"></span><span class="v"></span></div></div>
+
+  <div id="echo"></div>
+  <div id="halo"></div>
+  <svg id="burst"></svg>
+  <div id="altar"><div id="statBig"></div></div>
+
+  <div id="claim"></div>
+  <div id="kickerWrap"><span id="kicker"><span id="kickerBar"></span><span id="kickerTxt"></span></span></div>
+
+  <div class="crop" id="cropTL"></div><div class="crop" id="cropTR"></div>
+  <div class="crop" id="cropBL"></div><div class="crop" id="cropBR"></div>
+  <div id="chips">
+    <i style="background:var(--red)"></i><i style="background:var(--cyan)"></i>
+    <i style="background:var(--gold)"></i><i style="background:var(--white)"></i>
+    <span id="edition"></span>
+  </div>
+  <div id="source"></div>
+
+  <div id="noise"></div>
+  <div id="vignette"></div>
+
+<script>
+  // ═══════ PARAMS — replace these ═══════
+  const P = {
+    claim: "CLAUDE'S AGENT TEAMS NOW WRITE",
+    statValue: 90, statSuffix: "%", statPrefix: "",
+    kicker: "OF THEIR OWN PRODUCTION CODE.",
+    edition: "ED.047 — SILKSCREEN PROOF",
+    source: "SRC: ANTHROPIC.COM/NEWS",
+  };
+  window.duration = 11;
+
+  const COUNT_START = 0.45, COUNT_DUR = 3.0;          // counter run
+  const LAND = COUNT_START + COUNT_DUR;               // 3.45 — the pop
+  const KICKER_T = LAND + 0.75;                       // kicker slams after the land
+  const ECHO_T = 7.0;                                 // Warhol echo ring
+
+  const $ = (id) => document.getElementById(id);
+  const clamp = (v,a=0,b=1) => Math.max(a, Math.min(b, v));
+  const seg = (t,s,d) => clamp((t-s)/d);
+  const eoc = (p) => 1 - Math.pow(1-p, 3);
+  const eoQuart = (p) => 1 - Math.pow(1-p, 4);
+  const backOut = (p,c=1.5) => 1 + (c+1)*Math.pow(p-1,3) + c*Math.pow(p-1,2);
+  const fmt = (v) => P.statPrefix + v + P.statSuffix;
+
+  // populate copy
+  $("claim").textContent = P.claim;
+  $("kickerTxt").textContent = P.kicker;
+  $("edition").textContent = P.edition;
+  $("source").textContent = P.source;
+  const cells = [...document.querySelectorAll(".cell")];
+  cells.forEach((c) => {
+    c.querySelector(".v").textContent = fmt(P.statValue);
+    c.querySelector(".mis").textContent = fmt(P.statValue);
+  });
+
+  // burst ticks around the land moment — constant geometry
+  const TICKS = 10;
+  for (let i = 0; i < TICKS; i++) {
+    const a = (i / TICKS) * Math.PI * 2 + 0.31;
+    const l = document.createElementNS("http://www.w3.org/2000/svg", "line");
+    l.dataset.a = a;
+    $("burst").appendChild(l);
+  }
+  const burstLines = [...$("burst").querySelectorAll("line")];
+
+  // constant per-cell motion seeds
+  const SEED = [0.7, 1.9, 3.1, 4.3, 5.6, 6.8];
+
+  window.seek = function seek(t) {
+    t = clamp(t, 0, window.duration);
+
+    // counter: eased count-up, lands exactly on statValue
+    const cp = eoQuart(seg(t, COUNT_START, COUNT_DUR));
+    const val = Math.round(cp * P.statValue);
+    $("statBig").textContent = fmt(val);
+    $("echo").textContent = fmt(P.statValue);
+
+    // land pop on the big number + slow worship breath after
+    const sincePop = t - LAND;
+    const pop = sincePop > 0 ? 0.085 * Math.exp(-sincePop * 5) * Math.cos(sincePop * 18) : 0;
+    const breath = sincePop > 0 ? 1 + Math.sin(t * 1.3) * 0.006 : 1;
+    $("statBig").style.transform = `scale(${(1 + pop) * breath})`;
+    // pre-land shiver — the number fights to get out
+    const shiver = cp < 1 ? Math.sin(t * 31) * 2.5 * (1 - cp * 0.7) : 0;
+    $("altar").style.transform = `translateY(${shiver}px)`;
+
+    // burst ticks: fire at LAND, shoot outward and fade
+    const bp = seg(t, LAND, 0.55);
+    burstLines.forEach((l) => {
+      const a = Number(l.dataset.a);
+      const r0 = 330 + eoc(bp) * 240, r1 = r0 + 60 * (1 - bp * 0.5);
+      l.setAttribute("x1", 700 + Math.cos(a) * r0); l.setAttribute("y1", 380 + Math.sin(a) * r0 * 0.62);
+      l.setAttribute("x2", 700 + Math.cos(a) * r1); l.setAttribute("y2", 380 + Math.sin(a) * r1 * 0.62);
+      l.style.opacity = bp <= 0 ? 0 : (1 - bp) * 0.95;
+    });
+
+    // Warhol echo: outlined copy blooms out of the number at ECHO_T (and a soft repeat)
+    let echoO = 0, echoS = 1;
+    for (const et of [ECHO_T, ECHO_T + 1.6]) {
+      const ep = seg(t, et, 1.1);
+      if (ep > 0 && ep < 1) { echoO = (1 - ep) * 0.55; echoS = 1 + eoc(ep) * 0.45; }
+    }
+    $("echo").style.opacity = echoO;
+    $("echo").style.transform = `scale(${echoS})`;
+
+    // edition grid: back-dated staggered pulls (all in by t=0), then drift like loose prints
+    cells.forEach((c, i) => {
+      const p = seg(t, -1.0 + i * 0.14, 0.5);
+      const drift = Math.sin(t * 0.55 + SEED[i]) * 7;
+      const driftY = Math.cos(t * 0.42 + SEED[i] * 1.3) * 5;
+      c.style.opacity = clamp(p * 4) * (0.92 + Math.sin(t * 0.8 + SEED[i]) * 0.08);
+      c.style.marginLeft = `${drift}px`; c.style.marginTop = `${driftY + (1 - eoc(p)) * 40}px`;
+      // misprint plate slips a few px, jittering — screens never register
+      const mx = 9 + Math.sin(t * 4.6 + SEED[i]) * 3, my = 6 + Math.cos(t * 3.9 + SEED[i]) * 2.5;
+      const mis = c.querySelector(".mis");
+      mis.style.transform = `translate(${i % 2 ? mx : -mx}px, ${i % 2 ? -my : my}px)`;
+      // cell 3 slipped in the press — its number sits visibly off-grid
+      if (i === 3) c.querySelector(".num").style.transform = `translateY(44px) rotate(3.6deg)`;
+    });
+
+    // claim (back-dated) + kicker slam with rough red bar sweep
+    const clp = seg(t, -0.35, 0.5);
+    $("claim").style.opacity = clamp(clp * 4);
+    $("claim").style.transform = `translateY(${(1 - eoc(clp)) * -30}px)`;
+    const kp = seg(t, KICKER_T, 0.4);
+    const kw = $("kickerWrap");
+    kw.style.opacity = clamp(kp * 5);
+    kw.style.transform = `scale(${kp <= 0 ? 1.8 : 1.7 + (1 - 1.7) * backOut(kp)}) rotate(${(1 - eoc(kp)) * -3}deg)`;
+    $("kickerBar").style.transform = `scaleX(${eoc(seg(t, KICKER_T + 0.15, 0.45))})`;
+
+    // chrome fades in early; chips pulse very slightly with the breath
+    const ch = seg(t, 0.6, 0.5);
+    $("chips").style.opacity = ch; $("source").style.opacity = ch;
+
+    // land shake on the whole stage
+    let dx = 0, dy = 0;
+    for (const [ht, amp] of [[LAND, 13], [KICKER_T + 0.28, 8]]) {
+      if (t > ht) {
+        const e = Math.exp(-(t - ht) * 8);
+        dx += amp * e * Math.sin((t - ht) * 58);
+        dy += amp * 0.7 * e * Math.cos((t - ht) * 47);
+      }
+    }
+    document.body.style.transform = `translate(${dx}px, ${dy}px)`;
+  };
+  window.seek(0);
+</script>
+</body>
+</html>
