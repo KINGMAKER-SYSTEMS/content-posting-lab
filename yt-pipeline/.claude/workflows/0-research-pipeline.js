@@ -12,9 +12,11 @@ export const meta = {
 }
 
 const REPO = '/Users/risingtidesdev/dev/content-posting-lab'
-const EP = REPO + '/yt-pipeline/drafts/ep-workflows-over-prompts'
+const EP_SLUG = (args && args.slug) || 'ep-workflows-over-prompts'
+const EP = REPO + '/yt-pipeline/drafts/' + EP_SLUG
+const INTEL = REPO + '/yt-pipeline/drafts/creator-intel'
 
-const BRIEF = `EPISODE BRIEF — "Workflows over System Prompts": why programmatically LOCKED values (orchestration scripts, JSON schemas as contracts/ledgers, deterministic control flow) beat prompt-tuning for agent quality. Cover: how frontier coding agents (OpenAI Codex / GPT-5.x-codex line and Anthropic's Fable 5 / Claude Code) orchestrate deep, long autonomous runs; compiled techniques like /loop, /goal (stop-hook conditions), and ralph-loop (persistent re-prompt loops with state files); JSON schemas as ledgers and contracts between pipeline stages (structured outputs that downstream stages can trust); why "the prompt is not the program — the workflow is". The audience: builders who ship agentic systems (the ABN audience). Register: technical wire-service, proof-first, no hype.`
+const BRIEF = (args && args.brief) || `EPISODE BRIEF — "Workflows over System Prompts": why programmatically LOCKED values (orchestration scripts, JSON schemas as contracts/ledgers, deterministic control flow) beat prompt-tuning for agent quality. Cover: how frontier coding agents (OpenAI Codex / GPT-5.x-codex line and Anthropic's Fable 5 / Claude Code) orchestrate deep, long autonomous runs; compiled techniques like /loop, /goal (stop-hook conditions), and ralph-loop (persistent re-prompt loops with state files); JSON schemas as ledgers and contracts between pipeline stages (structured outputs that downstream stages can trust); why "the prompt is not the program — the workflow is". The audience: builders who ship agentic systems (the ABN audience). Register: technical wire-service, proof-first, no hype.`
 
 const CREATOR_SCHEMA = {
   type: 'object', required: ['creators'],
@@ -73,7 +75,7 @@ const CLUSTERS = [
   'smaller fast-rising agentic-AI channels from the last 6 months (find 3-4 yourself via search)',
 ]
 const intel = await parallel(CLUSTERS.map((c, i) => () =>
-  agent(`Research these YouTube creators in the AI/dev-builder niche: ${c}. Use web search. For EACH creator: scale (subs/views ballpark), content formats (length, structure, cadence), recurring subjects in the last ~3 months, title patterns (give 3-4 REAL recent titles verbatim), hook patterns (how their first 10 seconds work), and a one-line "what works" verdict. We make ABN (Agentic Builder News) — daily AI-builder news, 10-14min episodes — and are planning an episode on: ${BRIEF.slice(0, 400)}... Note anything these creators have ALREADY done on workflows/agent-orchestration topics (so we can differentiate). Write your full notes to ${EP}/intel/cluster${i + 1}.md (mkdir -p first).`,
+  agent(`Research these YouTube creators in the AI/dev-builder niche: ${c}. Use web search. For EACH creator: scale (subs/views ballpark), content formats (length, structure, cadence), recurring subjects in the last ~3 months, title patterns (give 3-4 REAL recent titles verbatim), hook patterns (how their first 10 seconds work), and a one-line "what works" verdict. We make ABN (Agentic Builder News) — daily AI-builder news, 10-14min episodes — and are planning an episode on: ${BRIEF.slice(0, 400)}... Note anything these creators have ALREADY done on workflows/agent-orchestration topics (so we can differentiate). CACHE: if ${INTEL}/cluster${i + 1}.md already exists AND its dated header is under 30 days old, read it, return its structured digest, and skip the live research entirely. Otherwise research live and write your full notes to ${INTEL}/cluster${i + 1}.md (mkdir -p first) with a first line '<!-- researched: <today's date> -->'.`,
     { label: `intel:${i + 1}`, phase: 'CreatorIntel', schema: CREATOR_SCHEMA })
 ))
 
