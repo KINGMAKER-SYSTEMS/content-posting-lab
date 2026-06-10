@@ -2965,8 +2965,10 @@ async def run_factory_loop():
             # continuously. The review backlog is managed by the GC (prunes old ones); each new episode
             # is fresh material to workshop + harvest segments/shorts from. Only auto-publish if creds exist.
             if pending_eps:
-                # cap the backlog so disk/board don't run away, but never STOP producing
-                if len(pending_eps) > 12:
+                # Backlog cap. Was 12 — which, combined with the freshness-ledger bug (timestamps
+                # never refreshed on re-render), let the loop flood review with duplicate episodes
+                # overnight. Until auto-publish is live there is zero value in >4 unreviewed eps.
+                if len(pending_eps) > 4:
                     STATE.update(stage="idle", actor="-", detail=f"{len(pending_eps)} episodes in review — letting GC catch up")
                     await asyncio.sleep(120)
                     continue
