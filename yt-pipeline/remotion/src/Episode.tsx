@@ -3,6 +3,7 @@ import { TransitionSeries, linearTiming } from "@remotion/transitions";
 import { fade } from "@remotion/transitions/fade";
 import { KenBurnsArtifact } from "./components/KenBurnsArtifact";
 import { KaraokeCaptions } from "./components/KaraokeCaptions";
+import { FramedClip } from "./components/FramedClip";
 import { LowerThird, TitleCard } from "./components/Overlays";
 import { abnGradient, abnTokens, typeStyle } from "./brand/abnTokens";
 
@@ -17,12 +18,12 @@ const f = (path: string) => {
 };
 
 const SegmentRenderer: React.FC<{ seg: any; accent: string }> = ({ seg, accent }) => {
+  const { fps } = useVideoConfig();
   const shots = seg.shots || [];
   return (
     <AbsoluteFill style={{ background: abnTokens.colors.nearBlack }}>
       {/* shot layer: each shot is its own sub-sequence inside the segment */}
       {shots.map((sh: any, i: number) => {
-        const { fps } = useVideoConfig();
         const from = Math.round((sh.startSec || 0) * fps);
         const dur = Math.max(1, Math.round(((sh.endSec || 0) - (sh.startSec || 0)) * fps));
         // keyword-highlight boxes KILLED — they rendered as floating rectangles with truncated/garbage
@@ -30,9 +31,25 @@ const SegmentRenderer: React.FC<{ seg: any; accent: string }> = ({ seg, accent }
         const boxes: any[] = [];
         const isCard = (sh.src || "").includes("_card");
         const isVideo = sh.type === "broll" || sh.type === "code" || sh.type === "screenrec";
+        // NEW shot treatments (additive — old timelines without these fields render identically):
+        // "kinetic" = pre-rendered motion-graphics mp4, full-bleed (motion is baked in, no kenBurns).
+        // frame:"clip" = the layered-theatrics treatment: media floats as a framed clip over an
+        // animated bg layer (sh.bgSrc b-roll, or breathing darkField gradient) — see FramedClip.
+        const isKinetic = sh.type === "kinetic";
+        const isFramed = sh.frame === "clip";
         return (
           <Sequence key={i} from={from} durationInFrames={dur}>
-            {isVideo
+            {isKinetic
+              ? <AbsoluteFill style={{ background: abnTokens.colors.voidBlack }}>
+                  <OffthreadVideo src={f(sh.src)} muted startFrom={Math.round((sh.clipStartSec || 0) * fps)}
+                    style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                </AbsoluteFill>
+              : isFramed
+              ? <FramedClip src={f(sh.src)} isVideo={isVideo} shotIndex={i}
+                  bgSrc={sh.bgSrc ? f(sh.bgSrc) : undefined} sourceChip={sh.sourceChip}
+                  kenBurns={sh.kenBurns} muteSource={sh.muteSource}
+                  startFromFrames={Math.round((sh.clipStartSec || 0) * fps)} />
+              : isVideo
               ? <AbsoluteFill style={{ background: abnTokens.colors.panelBlack }}><OffthreadVideo src={f(sh.src)} muted={sh.muteSource !== false} startFrom={Math.round((sh.clipStartSec || 0) * fps)} style={{ width: "100%", height: "100%", objectFit: "contain", transform: sh.kenBurns ? `scale(${(sh.kenBurns.startScale||1)})` : undefined }} /></AbsoluteFill>
               : isCard
               ? <TitleCard headline={seg.title?.slice(0, 60) || ""} accent={accent} />
