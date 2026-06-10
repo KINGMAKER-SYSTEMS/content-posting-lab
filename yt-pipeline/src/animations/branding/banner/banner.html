@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  @font-face {
+    font-family: 'TikTok Sans 36';
+    src: url("../../fonts/TikTokSans36pt-Black.ttf");
+    font-weight: 900;
+  }
+  @font-face {
+    font-family: 'TikTok Sans 16';
+    src: url("../../fonts/TikTokSans16pt-Bold.ttf");
+    font-weight: 700;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 2560px; height: 1440px; background: #030405; overflow: hidden; }
+  .stage { position: relative; width: 2560px; height: 1440px; background: #030405; }
+
+  /* full-bleed atmosphere — all of this may be cropped on any device, nothing critical here */
+  .glow-red { position: absolute; left: -300px; bottom: -400px; width: 1400px; height: 1200px;
+    background: radial-gradient(closest-side, rgba(159,7,17,0.42), rgba(159,7,17,0.0) 70%); }
+  .glow-cyan { position: absolute; right: -350px; top: -450px; width: 1300px; height: 1100px;
+    background: radial-gradient(closest-side, rgba(22,167,255,0.16), rgba(22,167,255,0.0) 70%); }
+  .gridlines { position: absolute; inset: 0; opacity: 0.05;
+    background-image: linear-gradient(rgba(127,210,255,0.5) 1px, transparent 1px),
+                      linear-gradient(90deg, rgba(127,210,255,0.5) 1px, transparent 1px);
+    background-size: 160px 160px; }
+  .grain { position: absolute; inset: 0; opacity: 0.05;
+    background-image: repeating-conic-gradient(rgba(244,247,251,0.6) 0 0.0001%, transparent 0 0.0003%);
+    mix-blend-mode: overlay; }
+  .ghost { position: absolute; right: 120px; bottom: -90px; font-family: 'TikTok Sans 36'; font-weight: 900;
+    font-size: 560px; letter-spacing: -0.03em; color: transparent;
+    -webkit-text-stroke: 2px rgba(127,210,255,0.07); }
+
+  /* SAFE ZONE: centered 1546x423 — every critical element lives inside this box */
+  .safe { position: absolute; left: 507px; top: 508.5px; width: 1546px; height: 423px;
+    display: flex; align-items: center; justify-content: center; gap: 64px; padding: 0 56px; }
+
+  .anvil { width: 240px; height: 240px; flex: 0 0 auto; }
+
+  .words { display: flex; flex-direction: column; align-items: flex-start; }
+  .line1 { font-family: 'TikTok Sans 36'; font-weight: 900; font-size: 110px; letter-spacing: -0.025em;
+    line-height: 1.02; color: #F4F7FB; }
+  .line1 .red { color: #FF2B2F; }
+  .rule { width: 100%; height: 3px; margin: 22px 0 18px;
+    background: linear-gradient(90deg, #FF2B2F 0%, #9F0711 55%, transparent 100%); }
+  .tagline { font-family: 'SF Mono', Menlo, monospace; font-weight: 400; font-size: 27px;
+    letter-spacing: 0.05em; color: #8F99A7; white-space: nowrap; }
+  .tagline .cy { color: #7FD2FF; }
+</style>
+</head>
+<body>
+<div class="stage">
+  <div class="glow-red"></div>
+  <div class="glow-cyan"></div>
+  <div class="gridlines"></div>
+  <div class="ghost">ABN</div>
+
+  <div class="safe">
+    <svg class="anvil" viewBox="0 0 100 100">
+      <path fill="#FF2B2F" d="M14 28 L14 36 L30 36 L30 30 L38 30 L38 28 L86 28 L86 36
+        Q78 42 70 44 Q62 46 60 52 L60 64 L66 70 L70 70 L74 76 L26 76 L30 70 L34 70 L40 64 L40 52
+        Q38 46 30 44 Q20 42 14 36 Z"/>
+      <path fill="#030405" d="M50 38 Q56 46 56 52 Q56 59 50 59 Q44 59 44 52 Q44 46 50 38 Z"/>
+      <path fill="#FF2B2F" d="M50 46 Q53 50 53 53 Q53 56 50 56 Q47 56 47 53 Q47 50 50 46 Z"/>
+    </svg>
+    <div class="words">
+      <div class="line1">AGENTIC BUILDER <span class="red">NEWS</span></div>
+      <div class="rule"></div>
+      <div class="tagline">DAILY AI-BUILDER INTEL <span class="cy">//</span> AGENTS · MODELS · TOOLS <span class="cy">//</span> SHIP FASTER</div>
+    </div>
+  </div>
+
+  <div class="grain"></div>
+</div>
+<script>
+  window.duration = 1;
+  window.seek = function (t) {};
+  window.seek(0);
+</script>
+</body>
+</html>

@@ -1,0 +1,245 @@
+<!doctype html>
+<!-- ABN CHANNEL INTRO — broadcast cold-open ident, 7.00s, palm-muted-guitar beat grid.
+     Contract: window.duration + window.seek(t); seek(0) on load; EVERY visual state is pure f(t).
+     CSS keyframes are finite (7s x 1, fill both, paused) and driven by negative animationDelay in seek(t).
+     Brand: yt-pipeline/remotion/DESIGN.md — voidBlack/forgeRed/signalCyan/steelWhite, one accent voice per element. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<style>
+  @font-face { font-family: 'TikTok Sans 36'; font-weight: 900;
+    src: url('../../fonts/TikTokSans36pt-Black.ttf') format('truetype'); }
+  @font-face { font-family: 'TikTok Sans 16'; font-weight: 700;
+    src: url('../../fonts/TikTokSans16pt-Bold.ttf') format('truetype'); }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 1920px; height: 1080px; overflow: hidden; background: #030405; }
+
+  .stage { position: relative; width: 1920px; height: 1080px; overflow: hidden;
+    background:
+      radial-gradient(1200px 760px at 50% 44%, #080B0F 0%, #030405 78%); }
+
+  /* ===== ambient layers (CSS keyframes: finite, fill both, paused, negative-delay driven) ===== */
+  .glow-red { position: absolute; left: -420px; bottom: -480px; width: 1250px; height: 1050px;
+    background: radial-gradient(closest-side, rgba(159,7,17,0.34), rgba(255,43,47,0.10) 52%, transparent 72%);
+    animation: glowDriftA 7s linear 1 both paused; }
+  .glow-cyan { position: absolute; right: -460px; top: -500px; width: 1200px; height: 1020px;
+    background: radial-gradient(closest-side, rgba(22,167,255,0.16), rgba(127,210,255,0.05) 55%, transparent 74%);
+    animation: glowDriftB 7s linear 1 both paused; }
+  @keyframes glowDriftA {
+    0%   { transform: translate(0px, 0px) scale(1);    opacity: 0.75; }
+    55%  { transform: translate(70px, -46px) scale(1.07); opacity: 1; }
+    100% { transform: translate(110px, -70px) scale(1.10); opacity: 0.95; } }
+  @keyframes glowDriftB {
+    0%   { transform: translate(0px, 0px) scale(1);    opacity: 0.7; }
+    60%  { transform: translate(-80px, 52px) scale(1.06); opacity: 1; }
+    100% { transform: translate(-120px, 80px) scale(1.09); opacity: 0.9; } }
+
+  .ghost { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -52%);
+    font-family: 'TikTok Sans 36'; font-weight: 900; font-size: 640px; letter-spacing: -0.03em;
+    color: transparent; -webkit-text-stroke: 2px rgba(244,247,251,0.055); user-select: none;
+    animation: ghostDrift 7s linear 1 both paused; }
+  @keyframes ghostDrift {
+    0%   { transform: translate(-50%, -52%) scale(1.00); }
+    100% { transform: translate(-50%, -52%) scale(1.055); } }
+
+  .grain { position: absolute; inset: -80px; opacity: 0.07; pointer-events: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='220' height='220'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='220' height='220' filter='url(%23n)' opacity='0.85'/%3E%3C/svg%3E");
+    animation: grainJit 7s steps(14) 1 both paused; }
+  @keyframes grainJit {
+    0% { transform: translate(0,0); } 100% { transform: translate(-72px, 56px); } }
+
+  /* ===== broadcast chrome (faint, present at frame 0) ===== */
+  .hair { position: absolute; left: 120px; right: 120px; height: 1px;
+    background: rgba(244,247,251,0.10); }
+  .hair.top { top: 70px; } .hair.bot { bottom: 70px; }
+  .chrome-tl { position: absolute; top: 38px; left: 120px;
+    font-family: 'SF Mono', Menlo, monospace; font-size: 21px; letter-spacing: 0.06em;
+    color: #8F99A7; opacity: 0.55; }
+  .chrome-tl .cy { color: #7FD2FF; }
+  .chrome-tr { position: absolute; top: 36px; right: 120px; display: flex; align-items: center; gap: 12px;
+    font-family: 'TikTok Sans 16'; font-weight: 700; font-size: 21px; letter-spacing: 0.05em;
+    color: #8F99A7; opacity: 0.6; }
+  .chrome-tr .dot { width: 11px; height: 11px; border-radius: 50%; background: #FF2B2F; }
+  .beatrail { position: absolute; left: 120px; right: 120px; bottom: 70px; height: 1px; }
+  .beatrail .tick { position: absolute; bottom: 0; width: 2px; height: 9px;
+    background: rgba(143,153,167,0.30); }
+
+  /* ===== the lockup ===== */
+  .lockup { position: absolute; inset: 0; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; }
+  .anvil { width: 252px; height: 252px; margin-bottom: 18px;
+    filter: drop-shadow(0 0 34px rgba(255,43,47,0.38)); }
+  .wordline { display: flex; gap: 34px; align-items: baseline;
+    font-family: 'TikTok Sans 36'; font-weight: 900; font-size: 136px;
+    letter-spacing: -0.025em; line-height: 1.04; color: #F4F7FB; }
+  .wordline .w { display: inline-block; will-change: transform, opacity, filter; }
+  .wordline .news { color: #FF2B2F; text-shadow: 0 0 44px rgba(255,43,47,0.35); }
+  .rule { width: 960px; height: 3px; margin-top: 30px; transform-origin: 50% 50%;
+    background: linear-gradient(90deg, transparent 0%, #FF2B2F 22%, #9F0711 78%, transparent 100%); }
+  .tagline { margin-top: 26px; font-family: 'SF Mono', Menlo, monospace; font-size: 31px;
+    letter-spacing: 0.30em; color: #8F99A7; height: 40px; white-space: pre; }
+  .tagline .cursor { display: inline-block; width: 17px; height: 31px; margin-left: 6px;
+    background: #7FD2FF; vertical-align: -3px; box-shadow: 0 0 16px rgba(127,210,255,0.55); }
+
+  /* ===== impact flash ===== */
+  .flash { position: absolute; inset: 0; pointer-events: none; mix-blend-mode: screen;
+    background: radial-gradient(900px 640px at 50% 48%, rgba(255,43,47,0.55), rgba(159,7,17,0.18) 55%, transparent 78%);
+    opacity: 0; }
+  .vignette { position: absolute; inset: 0; pointer-events: none;
+    background: radial-gradient(1400px 900px at 50% 50%, transparent 58%, rgba(3,4,5,0.42) 100%); }
+</style>
+</head>
+<body>
+<div class="stage" id="stage">
+  <div class="glow-red"  id="glowRed"  data-amb></div>
+  <div class="glow-cyan" id="glowCyan" data-amb></div>
+  <div class="ghost" data-amb>ABN</div>
+
+  <div class="lockup" id="lockup">
+    <svg class="anvil" id="anvil" viewBox="0 0 100 100">
+      <path fill="#FF2B2F" d="M14 28 L14 36 L30 36 L30 30 L38 30 L38 28 L86 28 L86 36
+        Q78 42 70 44 Q62 46 60 52 L60 64 L66 70 L70 70 L74 76 L26 76 L30 70 L34 70 L40 64 L40 52
+        Q38 46 30 44 Q20 42 14 36 Z"/>
+      <path fill="#030405" d="M50 38 Q56 46 56 52 Q56 59 50 59 Q44 59 44 52 Q44 46 50 38 Z"/>
+      <path fill="#FF2B2F" d="M50 46 Q53 50 53 53 Q53 56 50 56 Q47 56 47 53 Q47 50 50 46 Z"/>
+    </svg>
+    <div class="wordline">
+      <span class="w" id="wAgentic">AGENTIC</span>
+      <span class="w" id="wBuilder">BUILDER</span>
+      <span class="w news" id="wNews">NEWS</span>
+    </div>
+    <div class="rule" id="rule"></div>
+    <div class="tagline"><span id="tagText"></span><span class="cursor" id="cursor"></span></div>
+  </div>
+
+  <div class="hair top"></div>
+  <div class="hair bot"></div>
+  <div class="chrome-tl">ABN <span class="cy">//</span> CHANNEL IDENT <span class="cy">//</span> 07.0s</div>
+  <div class="chrome-tr"><span class="dot" id="liveDot"></span><span>DAILY BRIEFING</span></div>
+  <div class="beatrail" id="beatrail"></div>
+
+  <div class="grain" data-amb></div>
+  <div class="vignette"></div>
+  <div class="flash" id="flash"></div>
+</div>
+
+<script>
+  const P = {
+    dur: 7.0,
+    beats: [0.50, 0.93, 1.42, 1.86, 2.33, 2.80, 3.24, 3.71, 4.19, 4.64, 5.11, 5.57, 6.04, 6.51, 6.95],
+    // choreography anchors (impact lands exactly ON the beat; slam scales in over `pre` BEFORE it)
+    tAnvil: 0.50, tAgentic: 0.93, tBuilder: 1.42, tNews: 1.86, tRule: 2.33,
+    typeStart: 2.80, typeEnd: 4.64,        // tagline types beat-to-beat through the ride
+    settleAt: 6.04,                        // last second = held lockup (crossfade target)
+    pre: 0.12,                             // slam anticipation window
+    tag: 'DAILY AI-BUILDER INTEL',
+    shakeFreq: 13, shakeDecay: 9.5, flashDecay: 11
+  };
+
+  const $ = (id) => document.getElementById(id);
+  const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+  const seg = (t, t0, d) => clamp((t - t0) / d, 0, 1);
+  const easeOutCubic = (p) => 1 - Math.pow(1 - p, 3);
+
+  // decaying impact oscillation, zero before t0 — pure f(t)
+  function impulse(t, t0, amp) {
+    if (t < t0) return 0;
+    const dt = t - t0;
+    return amp * Math.exp(-dt * P.shakeDecay) * Math.sin(dt * Math.PI * 2 * P.shakeFreq);
+  }
+  // decaying flash, zero before t0 — pure f(t)
+  function flashAt(t, t0, peak) {
+    if (t < t0) return 0;
+    return peak * Math.exp(-(t - t0) * P.flashDecay);
+  }
+  // slam: anticipation scale-in over `pre` seconds so scale==1 lands exactly ON the beat,
+  // then a tiny squash ring-down after impact
+  function slam(el, t, t0, big) {
+    const p = easeOutCubic(seg(t, t0 - P.pre, P.pre));
+    const ring = t > t0 ? (big ? 0.05 : 0.03) * Math.exp(-(t - t0) * 8) * Math.sin((t - t0) * 26) : 0;
+    const sc = (1 + (1 - p) * (big ? 1.6 : 1.25)) * (1 + ring);
+    el.style.opacity = clamp(p * 2.6, 0, 1);
+    el.style.transform = `scale(${sc})`;
+    el.style.filter = p < 1 ? `blur(${(1 - p) * 14}px)` : 'none';
+  }
+
+  // beat rail ticks
+  (function buildRail() {
+    const rail = $('beatrail'), W = 1920 - 240;
+    P.beats.forEach((b) => {
+      const el = document.createElement('div');
+      el.className = 'tick';
+      el.style.left = `${(b / P.dur) * W}px`;
+      rail.appendChild(el);
+    });
+  })();
+  const ticks = document.querySelectorAll('#beatrail .tick');
+  const ambients = document.querySelectorAll('[data-amb]');
+
+  window.duration = P.dur;
+
+  window.seek = function seek(t) {
+    t = clamp(t, 0, P.dur);
+
+    // ambient CSS keyframes: paused, scrubbed via negative delay
+    ambients.forEach((el) => { el.style.animationDelay = `${-t}s`; });
+
+    // ---- slams on the beat grid ----
+    slam($('anvil'),    t, P.tAnvil,   false);
+    slam($('wAgentic'), t, P.tAgentic, false);
+    slam($('wBuilder'), t, P.tBuilder, false);
+    slam($('wNews'),    t, P.tNews,    true);   // forgeRed, biggest hit
+
+    // rule sweep lands on beat 5
+    const rp = easeOutCubic(seg(t, P.tRule - P.pre, P.pre + 0.10));
+    $('rule').style.transform = `scaleX(${rp})`;
+    $('rule').style.opacity = rp;
+
+    // ---- impulse shake on the whole lockup (sum of hits) ----
+    const sh = impulse(t, P.tAnvil, 11) + impulse(t, P.tAgentic, 7) +
+               impulse(t, P.tBuilder, 7) + impulse(t, P.tNews, 19) + impulse(t, P.tRule, 4);
+    $('lockup').style.transform = `translate(${sh * 0.35}px, ${sh}px) rotate(${sh * 0.012}deg)`;
+
+    // ---- red impact flash (editorial voice only) ----
+    const fl = flashAt(t, P.tAnvil, 0.42) + flashAt(t, P.tAgentic, 0.16) +
+               flashAt(t, P.tBuilder, 0.16) + flashAt(t, P.tNews, 0.62) + flashAt(t, P.tRule, 0.10);
+    $('flash').style.opacity = clamp(fl, 0, 0.7);
+
+    // ---- tagline types beat-to-beat (2.80 -> 4.64), completion ON beat 10 ----
+    const tp = seg(t, P.typeStart, P.typeEnd - P.typeStart);
+    const n = Math.floor(tp * P.tag.length + 1e-6);
+    $('tagText').textContent = P.tag.slice(0, n);
+    // cursor: hidden pre-type, solid while typing, finite blink after, gone by settle
+    const cur = $('cursor');
+    let curOn = 0;
+    if (t >= P.typeStart - 0.3 && t < P.typeEnd) curOn = 1;
+    else if (t >= P.typeEnd && t < 5.8) curOn = (Math.floor((t - P.typeEnd) / 0.235) % 2 === 0) ? 1 : 0;
+    else if (t >= 5.8) curOn = clamp(1 - seg(t, 5.8, 0.35), 0, 1) * 0.0; // settled lockup: cursor gone
+    cur.style.opacity = curOn;
+
+    // ---- beat rail: each tick lights signalCyan as its beat lands, with decay ----
+    ticks.forEach((el, i) => {
+      const b = P.beats[i];
+      const hit = t < b ? 0 : Math.exp(-(t - b) * 3.2);
+      el.style.background = hit > 0.02
+        ? `rgba(127,210,255,${0.25 + hit * 0.75})`
+        : (t > b ? 'rgba(127,210,255,0.25)' : 'rgba(143,153,167,0.30)');
+      el.style.height = `${9 + hit * 9}px`;
+      el.style.boxShadow = hit > 0.05 ? `0 0 ${10 * hit}px rgba(127,210,255,${hit * 0.8})` : 'none';
+    });
+
+    // ---- live dot breath (alert voice, subtle) ----
+    $('liveDot').style.opacity = 0.55 + 0.45 * (0.5 + 0.5 * Math.sin(t * 4.4));
+
+    // ---- final settle: anvil glow eases up slightly into the held lockup ----
+    const settle = seg(t, P.settleAt - 0.4, 0.6);
+    $('anvil').style.filter = (t > P.tAnvil)
+      ? `drop-shadow(0 0 ${34 + settle * 10}px rgba(255,43,47,${0.38 + settle * 0.08}))`
+      : $('anvil').style.filter;
+  };
+
+  window.seek(0);
+</script>
+</body>
+</html>
