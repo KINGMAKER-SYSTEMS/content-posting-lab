@@ -48,10 +48,18 @@ def record_episode(ep_id: str, titles: list[str], thesis: str = "", approved: bo
     # only mark titles "seen" once an episode RENDERS (rendered=True) — never on scrape/abort,
     # so the freshness filter can't starve the pipeline by eating un-produced candidates.
     if rendered:
-        existing = {s["t"] for s in m.get("seen_titles", []) if isinstance(s, dict)}
+        # REFRESH the timestamp when a title is already in the ledger — the old skip-if-present
+        # logic meant a story kept its FIRST ts forever, so once that aged past the 36h freshness
+        # window the story became eternally "fresh" and the factory looped the same episode all
+        # night (8 dupes of the VSCode-token story, 06-08→06-09).
+        by_key = {s["t"]: s for s in m.get("seen_titles", []) if isinstance(s, dict)}
         for t in titles:
             key = _norm(t)
-            if key and key not in existing:
+            if not key:
+                continue
+            if key in by_key:
+                by_key[key]["ts"] = time.time()
+            else:
                 m.setdefault("seen_titles", []).append({"t": key, "ts": time.time()})
         m["seen_titles"] = m["seen_titles"][-150:]
     if approved and thesis:

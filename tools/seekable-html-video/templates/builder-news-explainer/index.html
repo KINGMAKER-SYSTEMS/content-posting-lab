@@ -1,0 +1,164 @@
+<!doctype html>
+<!-- ABN Builder News Explainer — canonical 16:9 seekable composition.
+     Contract: window.duration + window.seek(t). Every visual state is pure f(t).
+     Brand atoms come from yt-pipeline/remotion/DESIGN.md (Forge Signal): nearBlack stage,
+     forgeRed = editorial voice, signalCyan = data/source voice, TikTok Sans display.
+     Layout per the 16:9 handoff: headline left 60-70%, status/data card right 30-40%,
+     progress bar bottom, source line lower-left. 160px safe margins. -->
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<style>
+  @font-face { font-family: "ABN Display"; src: url("fonts/TikTokSans36pt-Black.ttf"); font-weight: 900; }
+  @font-face { font-family: "ABN Text"; src: url("fonts/TikTokSans16pt-Bold.ttf"); font-weight: 700; }
+  :root {
+    --void: #030405; --stage: #080B0F; --panel: #0D1117;
+    --red: #FF2B2F; --red-dark: #9F0711; --cyan: #7FD2FF; --blue: #16A7FF;
+    --white: #F4F7FB; --mid: #8F99A7; --ink: #CBD7E1;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 1920px; height: 1080px; overflow: hidden; background: var(--stage); }
+  body { font-family: "ABN Display", "Arial Black", sans-serif; color: var(--white); position: relative; }
+
+  /* ambient background depth — decoratives share one slow breath, all driven from t */
+  .glow { position: absolute; border-radius: 50%; filter: blur(120px); }
+  #glowA { width: 900px; height: 900px; left: -260px; top: -300px; background: rgba(255,43,47,0.10); }
+  #glowB { width: 760px; height: 760px; right: -200px; bottom: -260px; background: rgba(22,167,255,0.10); }
+  .hairline { position: absolute; height: 1px; background: rgba(143,153,167,0.22); left: 160px; right: 160px; }
+  #ruleTop { top: 120px; } #ruleBottom { bottom: 132px; }
+  #vignette { position: absolute; inset: 0; pointer-events: none;
+    background: radial-gradient(ellipse at center, rgba(0,0,0,0) 45%, rgba(0,0,0,0.26) 100%); }
+
+  /* two-zone stage inside 160px safe margins */
+  #left { position: absolute; left: 160px; top: 220px; width: 1080px; }
+  #kicker { font-family: "SF Mono", Menlo, monospace; font-size: 26px; font-weight: 700;
+    letter-spacing: 0.08em; color: var(--red); margin-bottom: 28px; }
+  .line { overflow: hidden; }
+  .line > span { display: block; font-size: 118px; line-height: 1.04; letter-spacing: -0.025em; }
+  #sub { font-family: "ABN Text", Arial, sans-serif; font-size: 38px; line-height: 1.3;
+    color: var(--ink); margin-top: 36px; max-width: 920px; letter-spacing: -0.01em; }
+
+  #right { position: absolute; right: 160px; top: 250px; width: 480px; }
+  .card { background: linear-gradient(135deg, rgba(21,32,49,0.88), rgba(5,7,10,0.86));
+    border: 1px solid rgba(127,210,255,0.18); border-radius: 14px; padding: 30px 32px; margin-bottom: 22px; }
+  .card .tag { font-family: "SF Mono", Menlo, monospace; font-size: 22px; letter-spacing: 0.06em; color: var(--mid); }
+  .card .val { font-size: 44px; letter-spacing: -0.02em; margin-top: 8px; }
+  .ok  .val { color: var(--cyan); }
+  .bad .val { color: var(--red); }
+
+  #checks { list-style: none; }
+  #checks li { font-family: "ABN Text", Arial, sans-serif; font-size: 34px; color: var(--ink);
+    padding: 14px 0; border-bottom: 1px solid rgba(143,153,167,0.16); display: flex; gap: 18px; align-items: center; }
+  #checks .dot { width: 14px; height: 14px; border-radius: 50%; background: var(--red); flex: none; }
+
+  #source { position: absolute; left: 160px; bottom: 160px; font-family: "SF Mono", Menlo, monospace;
+    font-size: 24px; letter-spacing: 0.06em; color: var(--cyan); }
+  #progress { position: absolute; left: 0; bottom: 0; height: 8px; background: var(--red); width: 0; }
+  #brandbug { position: absolute; right: 160px; bottom: 152px; font-family: "SF Mono", Menlo, monospace;
+    font-size: 22px; letter-spacing: 0.04em; color: var(--mid); }
+</style>
+</head>
+<body>
+  <div class="glow" id="glowA"></div><div class="glow" id="glowB"></div>
+  <div class="hairline" id="ruleTop"></div><div class="hairline" id="ruleBottom"></div>
+
+  <div id="left">
+    <div id="kicker">BUILDER NEWS</div>
+    <div class="line"><span id="l1">The model is live.</span></div>
+    <div class="line"><span id="l2">The API is not.</span></div>
+    <div id="sub"></div>
+  </div>
+
+  <div id="right">
+    <div class="card ok"><div class="tag">MODEL WEIGHTS</div><div class="val">SHIPPED</div></div>
+    <div class="card bad"><div class="tag">PUBLIC API</div><div class="val">DELAYED</div></div>
+    <ul id="checks" style="display:none">
+      <li><span class="dot"></span>access</li>
+      <li><span class="dot"></span>pricing</li>
+      <li><span class="dot"></span>rate limits</li>
+      <li><span class="dot"></span>docs + uptime</li>
+    </ul>
+  </div>
+
+  <div id="source">theverge.com/meta-muse-spark-delay</div>
+  <div id="brandbug">AGENTIC BUILDER NEWS</div>
+  <div id="vignette"></div>
+  <div id="progress"></div>
+
+<script>
+  window.duration = 12;
+  const $ = (id) => document.getElementById(id);
+  const clamp = (v, a = 0, b = 1) => Math.max(a, Math.min(b, v));
+  const smooth = (v) => { v = clamp(v); return v * v * (3 - 2 * v); };
+  const seg = (t, s, d) => clamp((t - s) / d);
+
+  // scenes: hook 0-3 / builder angle 3-7 / takeaway 7-12 (locks for the final 1.5s)
+  const SCENES = [
+    { l1: "The model is live.",  l2: "The API is not.",  sub: "",
+      cards: true,  checks: false, accent2: false },
+    { l1: "Builders need the",   l2: "product surface.", sub: "Access, pricing, rate limits, docs, uptime — a model without them is a demo.",
+      cards: false, checks: true,  accent2: false },
+    { l1: "Build portable.",     l2: "Swap when it’s real.", sub: "Wrap providers behind one interface. Keep fallbacks hot. Move the day the API lands.",
+      cards: false, checks: true,  accent2: true },
+  ];
+  const sceneAt = (t) => (t < 3 ? 0 : t < 7 ? 1 : 2);
+  const sceneStart = [0, 3, 7];
+
+  window.seek = function seek(t) {
+    t = clamp(t, 0, window.duration);
+    const si = sceneAt(t);
+    const sc = SCENES[si];
+    const p = smooth(seg(t, sceneStart[si], 0.7)); // per-scene entrance progress
+
+    // headline: two staggered line wipes (time is hierarchy — line 1 first).
+    // Scene 0 wipes are back-dated so FRAME 0 already shows the hook — a blank first
+    // frame fails the QA checklist and kills the thumbnail/hover preview.
+    $("l1").textContent = sc.l1; $("l2").textContent = sc.l2;
+    const lead = si === 0 ? 0.35 : 0;
+    const w1 = smooth(seg(t, sceneStart[si] - lead, 0.55));
+    const w2 = smooth(seg(t, sceneStart[si] - lead + 0.12, 0.55));
+    $("l1").style.transform = `translateY(${(1 - w1) * 110}%)`;
+    $("l2").style.transform = `translateY(${(1 - w2) * 110}%)`;
+    $("l2").style.color = si === 0 ? "var(--red)" : (sc.accent2 ? "var(--cyan)" : "var(--white)");
+
+    // subhead fades up after the headline settles
+    const ps = smooth(seg(t, sceneStart[si] + 0.5, 0.5));
+    $("sub").textContent = sc.sub;
+    $("sub").style.opacity = sc.sub ? ps : 0;
+    $("sub").style.transform = `translateY(${(1 - ps) * 18}px)`;
+
+    // right zone: status cards (scene 0) vs checklist (scenes 1-2)
+    const cards = document.querySelectorAll(".card");
+    cards.forEach((c, i) => {
+      const cp = smooth(seg(t, 0.5 + i * 0.18, 0.5)) * (sc.cards ? 1 : 1 - smooth(seg(t, 3, 0.4)));
+      c.style.opacity = cp;
+      c.style.transform = `translateX(${(1 - cp) * 60}px)`;
+      c.style.display = cp <= 0.001 ? "none" : "block";
+    });
+    const checks = $("checks");
+    checks.style.display = sc.checks ? "block" : "none";
+    if (sc.checks) {
+      checks.querySelectorAll("li").forEach((li, i) => {
+        const lp = smooth(seg(t, 3.4 + i * 0.25, 0.4));
+        li.style.opacity = lp;
+        li.style.transform = `translateX(${(1 - lp) * 40}px)`;
+        // takeaway scene: blockers flip to resolved (cyan) one by one
+        li.querySelector(".dot").style.background =
+          smooth(seg(t, 7.3 + i * 0.2, 0.3)) > 0.5 ? "var(--cyan)" : "var(--red)";
+      });
+    }
+
+    // ambient breath — one shared slow motion across all decoratives
+    const breath = Math.sin(t * 0.9) * 0.5 + 0.5;
+    $("glowA").style.transform = `scale(${1 + breath * 0.08}) translateY(${breath * 14}px)`;
+    $("glowB").style.transform = `scale(${1 + (1 - breath) * 0.08})`;
+
+    // chrome
+    $("progress").style.width = `${(t / window.duration) * 100}%`;
+    const srcIn = smooth(seg(t, 0.8, 0.5));
+    $("source").style.opacity = srcIn; $("brandbug").style.opacity = srcIn;
+  };
+  window.seek(0);
+</script>
+</body>
+</html>

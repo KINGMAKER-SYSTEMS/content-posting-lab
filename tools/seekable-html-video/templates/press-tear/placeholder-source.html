@@ -1,0 +1,53 @@
+<!doctype html>
+<!-- Source art for assets/clip-default.png — the default press clipping.
+     Re-render after editing:
+       cd tools/seekable-html-video/templates/press-tear
+       NODE_PATH=../../../../frontend/node_modules node -e "
+         const { chromium } = require('playwright');
+         (async () => {
+           const b = await chromium.launch();
+           const p = await b.newPage({ viewport: { width: 1180, height: 860 } });
+           await p.goto('file://' + process.cwd() + '/placeholder-source.html');
+           await p.evaluate(() => document.fonts.ready);
+           await p.screenshot({ path: 'assets/clip-default.png' });
+           await b.close();
+         })();"
+     KEEP THE QUOTE SENTENCE in the .quote band (~55-64% down the image) — the
+     marker sweep + grease circle in index.html are aimed at that band. -->
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<style>
+  @font-face { font-family: "ABN Display"; src: url("fonts/TikTokSans36pt-Black.ttf"); font-weight: 900; }
+  @font-face { font-family: "ABN Text"; src: url("fonts/TikTokSans16pt-Bold.ttf"); font-weight: 700; }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html, body { width:1180px; height:860px; overflow:hidden; background:#F4EFE3; }
+  body { font-family:"ABN Text", Arial, sans-serif; color:#171C23; padding:58px 64px; }
+  .masthead { display:flex; justify-content:space-between; align-items:baseline;
+    border-bottom:5px solid #171C23; padding-bottom:14px; }
+  .masthead h1 { font-family:"ABN Display","Arial Black",sans-serif; font-size:44px; letter-spacing:-0.01em; }
+  .masthead span { font-family:"SF Mono",Menlo,monospace; font-size:19px; color:#6B6253; letter-spacing:0.06em; }
+  .tag { font-family:"SF Mono",Menlo,monospace; font-size:20px; font-weight:700; color:#9F0711;
+    letter-spacing:0.18em; margin:26px 0 12px; }
+  h2 { font-family:"ABN Display","Arial Black",sans-serif; font-size:62px; line-height:1.04;
+    letter-spacing:-0.02em; margin-bottom:18px; }
+  .byline { font-family:"SF Mono",Menlo,monospace; font-size:19px; color:#6B6253; margin-bottom:26px; }
+  p { font-size:26px; line-height:1.5; color:#3B4049; margin-bottom:20px; }
+  .quote { font-weight:700; color:#171C23; }
+</style>
+</head>
+<body>
+  <div class="masthead"><h1>THE TERMINAL WIRE</h1><span>TUE · JUN 09 · 2026</span></div>
+  <div class="tag">EXCLUSIVE — PLATFORMS</div>
+  <h2>OpenAI quietly turns on its agent runtime for every account</h2>
+  <div class="byline">By R. Okafor &amp; J. Lindqvist — 06:12 ET</div>
+  <p>The company flipped the switch without a keynote, a blog post, or so much as a
+  changelog entry. Internal dashboards seen by The Terminal Wire show the staged
+  rollout that began Friday night accelerating through the weekend.</p>
+  <p class="quote">By morning the rollout had reached 100% of accounts — without a
+  single public announcement.</p>
+  <p>Developers discovered the change when long-running agent jobs stopped returning
+  quota errors. Pricing pages still describe the runtime as "research preview," and
+  three teams told us their existing orchestration stacks broke silently overnight.</p>
+</body>
+</html>

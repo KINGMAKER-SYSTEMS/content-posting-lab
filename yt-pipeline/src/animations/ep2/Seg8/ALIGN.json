@@ -1,0 +1,16 @@
+{
+  "segment": 8,
+  "videos": [
+    { "video": "Video1", "voStart": 0.0,  "voEnd": 15.9  },
+    { "video": "Video2", "voStart": 16.2, "voEnd": 27.7  },
+    { "video": "Video3", "voStart": 28.0, "voEnd": 42.1  },
+    { "video": "Video4", "voStart": 42.1, "voEnd": 62.2  },
+    { "video": "Video5", "voStart": 71.3, "voEnd": 83.72 }
+  ],
+  "coverageSec": 74.02,
+  "segmentDurSec": 83.72,
+  "coveragePct": 88.4,
+  "iterations": 11,
+  "fixPassDate": "2026-06-11",
+  "fixPassNotes": "Audit rejection remediation: V1 GATE6+GATE4 (overflow+stacking), V3 src attribution, V4 GATE5+GATE4minor (washout+verbatim decay)"
+}

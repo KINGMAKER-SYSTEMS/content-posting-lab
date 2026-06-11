@@ -836,6 +836,161 @@ async def _align(wav_name):
     return out
 
 
+def _script_align(words, script):
+    """Make captions SCRIPT-TRUE. Whisper re-transcribing our own TTS audio re-introduced typos
+    and brand garbles into the on-screen captions ('rendering captions from the voiceover instead
+    of the actual script' — John). We WROTE the words; whisper's only job is timing. Align whisper
+    tokens to script tokens (difflib on normalized forms) and take the TEXT from the script while
+    keeping whisper's timestamps. Unequal runs distribute script tokens across the whisper span."""
+    if not words or not script:
+        return words
+    import difflib, re
+    script_toks = script.split()
+    norm = lambda w: re.sub(r"[^a-z0-9]", "", w.lower())
+    sm = difflib.SequenceMatcher(a=[norm(w["w"]) for w in words],
+                                 b=[norm(t) for t in script_toks], autojunk=False)
+    out = []
+    for op, a0, a1, b0, b1 in sm.get_opcodes():
+        if op == "equal":
+            for k in range(a1 - a0):
+                out.append({**words[a0 + k], "w": script_toks[b0 + k]})
+        elif op == "replace":
+            span = words[a0:a1]
+            toks = script_toks[b0:b1]
+            s, e = span[0]["s"], span[-1]["e"]
+            step = (e - s) / max(1, len(toks))
+            for k, t in enumerate(toks):
+                out.append({"w": t, "s": round(s + k * step, 2), "e": round(s + (k + 1) * step, 2)})
+        elif op == "delete":
+            # whisper-only tokens (hallucinated/filler) — drop; the script didn't say them
+            continue
+        # 'insert' (script words whisper never heard): no timing to anchor — skip rather than flash
+    return out or words
+
+
+# ---------------- KINETIC HTML INSERT (seekable-html-video) ----------------
+# "this is what i want to see more of in these videos" (John, on the 16:9 explainer). Per-segment
+# kinetic typography inserts rendered by tools/seekable-html-video — deterministic browser motion
+# graphics on the brand system, mixed in WITH screen recordings and cards, replacing static holds.
+_REPO = Path(__file__).resolve().parent.parent
+_KINETIC_TPL = _REPO / "tools/seekable-html-video/templates/builder-news-explainer/index.html"
+
+
+_KINETIC_DIR = _REPO / "tools/seekable-html-video/templates"
+
+
+def _kinetic_params(title, script, source_url):
+    """Art-direct the insert: pick a template + fill its `const P` params from the segment script.
+    LLM (scriptwriter expert) with a deterministic fallback. Returns (template_name, P_dict)."""
+    dom = re.sub(r'^https?://(www\.)?', '', source_url or "").split("/")[0][:34] or "agenticbuildernews"
+    src_line = f"SRC: {dom.upper()}"
+    d = {}
+    try:
+        import services.abn_experts as experts
+        raw = experts.ask("scriptwriter",
+            "You are art-directing a 12s kinetic-typography insert for a tech-news video. From the "
+            "script below return JSON ONLY:\n"
+            "{\"template\": \"stat\"|\"zine\",   // stat IF the script's most striking fact is a NUMBER, else zine\n"
+            " \"claim\": \"setup line, ≤6 words, ALL CAPS\",  \"statValue\": int, \"statPrefix\": \"\"|\"$\", "
+            "\"statSuffix\": \"%\"|\"B\"|\"M\"|\"X\"|\"\", \"statKicker\": \"payoff line ≤6 words ALL CAPS\",\n"
+            " \"w\": [exactly 5 SINGLE WORDS that read IN ORDER as one punchy verdict sentence — "
+            "like [\"THE\",\"WRAPPER\",\"ERA\",\"IS\",\"DEAD.\"] — w5 is the one-word payoff ending in '.'],\n"
+            " \"panelTitle\": \"≤11-char mono label e.g. OBITUARIES, THE OLD WAY\", "
+            "\"items\": [3 things being replaced/killed, ≤14 chars each],\n"
+            " \"payoffLead\": \"first words of final line ≤10 chars\", \"payoffKey\": \"circled word ≤7 chars\"}\n\n"
+            f"Story: {title}\nScript:\n{(script or '')[:1200]}")
+        d = json.loads(re.search(r'\{.*\}', raw or "", re.S).group(0))
+    except Exception:
+        d = {}
+    # deterministic stat detection — the GATE for stat-shrine. The LLM alone once chose a shrine
+    # to the number "3" (no unit, no meaning). A number is shrine-worthy only if the script
+    # literally contains value+unit (%, x, $, B/M) — otherwise it's a zine story.
+    m = re.search(r'(\$?)(\d+(?:\.\d+)?)\s*(%|x|billion|million|B\b|M\b)', script or "", re.I)
+    tpl = "stat" if (m and d.get("template") != "zine") else "zine"
+    if tpl == "stat":
+        sfx = {"billion": "B", "million": "M", "x": "X"}.get(str(d.get("statSuffix", "")).lower(),
+                                                            str(d.get("statSuffix", "%"))[:2])
+        try:
+            val = int(float(d.get("statValue")))
+        except (TypeError, ValueError):
+            val = int(float(m.group(2))) if m else 0
+        if val <= 0:
+            tpl = "zine"  # a shrine to zero is a zine story after all
+        else:
+            return "stat-shrine", {
+                "claim": str(d.get("claim") or title)[:44].upper(),
+                "statValue": val, "statSuffix": sfx,
+                "statPrefix": str(d.get("statPrefix", ""))[:1],
+                "kicker": str(d.get("statKicker") or "AND BUILDERS FEEL IT.")[:44].upper(),
+                "edition": "ED.047 — SILKSCREEN PROOF", "source": src_line,
+            }
+    # one TOKEN per slot — the layout composes 5 single words ("THE WRAPPER / ERA IS / DEAD.");
+    # a phrase in a slot ("PROMPT SITES") breaks the composition (caught on a real render)
+    w = [str(x).upper().split()[0] for x in (d.get("w") or []) if str(x).strip()][:5]
+    # word-salad guard: repeated tokens ("THIN PROMPT GPT THIN DEAD") mean the LLM filled slots
+    # with phrase fragments — the title is a better sentence than a shuffled keyword bag
+    if len(w) == 5 and len(set(w[:4])) < 4:
+        w = []
+    if len(w) < 5:
+        tw = [x.upper() for x in re.sub(r'[^A-Za-z0-9 ]', '', title).split()][:4]
+        while len(tw) < 4:
+            tw.append("NOW")
+        w = tw + ["LIVE."]
+    if not w[4].endswith("."):
+        w[4] += "."
+    items = [str(x)[:14].upper() for x in (d.get("items") or [])][:3] or ["THE OLD WAY", "MANUAL OPS", "GUESSWORK"]
+    while len(items) < 3:
+        items.append("THE OLD WAY")
+
+    def word_trim(s, limit):
+        """Trim to limit WITHOUT chopping mid-word ('BUILDERS WHO'[:10] = 'BUILDERS W' shipped
+        a real frame reading 'BUILDERS W OWN'). Drop trailing partial words instead."""
+        s = str(s).strip()
+        if len(s) <= limit:
+            return s
+        cut = s[:limit]
+        return (cut.rsplit(" ", 1)[0] if " " in cut else cut).strip()
+
+    return "zine-slam", {
+        "kicker": "ABN ZINE <b>— BUILDER NEWS</b>",
+        "w1": word_trim(w[0], 12), "w2": word_trim(w[1], 12), "w3": word_trim(w[2], 12),
+        "w4": word_trim(w[3], 12), "w5": word_trim(w[4], 10) or "LIVE.",
+        "panelTitle": word_trim((d.get("panelTitle") or "THE OLD WAY").upper(), 11),
+        "items": items,
+        "payoffLead": word_trim((d.get("payoffLead") or "OWN THE").upper(), 12),
+        "payoffKey": word_trim((d.get("payoffKey") or "STACK").upper(), 7),
+        "source": src_line, "ghost": word_trim(w[4], 10),
+    }
+
+
+async def _kinetic_insert(title, script, source_url, sid):
+    """Render an art-directed seekable-HTML kinetic insert → {"src": served_mp4, "dur": seconds}.
+    Templates: stat-shrine (number worship) / zine-slam (verdict typography). The corporate
+    builder-news-explainer is dead as an insert — John: "looks like a training video"."""
+    tpl_name, P = await asyncio.to_thread(_kinetic_params, title, script, source_url)
+    tpl_file = _KINETIC_DIR / tpl_name / "index.html"
+    if not tpl_file.exists():
+        return None
+    html = tpl_file.read_text()
+    html = html.replace('url("fonts/', f'url("file://{tpl_file.parent}/fonts/')
+    pjs = "const P = {" + ",".join(f"{k}: {json.dumps(v)}" for k, v in P.items()) + "};"
+    html, nsub = re.subn(r'const P = \{.*?\};', lambda _: pjs, html, count=1, flags=re.S)
+    if not nsub:
+        return None
+    src_html = ASSETS / f"{sid}_kinetic.html"
+    src_html.write_text(html)
+    out = ASSETS / f"{sid}_kinetic.mp4"
+    code, log = await _sh(
+        f'cd {shlex.quote(str(_REPO))} && NODE_PATH=frontend/node_modules node '
+        f'tools/seekable-html-video/render_seekable.cjs --input {shlex.quote(str(src_html))} '
+        f'--output {shlex.quote(str(out))} --fps 24 --cleanup-frames', timeout=360)
+    src_html.unlink(missing_ok=True)
+    if code != 0 or not out.exists() or out.stat().st_size < 50_000:
+        return None
+    dur = await _dur(out)
+    return {"src": f"/agenticnews-assets/{sid}_kinetic.mp4", "dur": float(dur or 11.0), "template": tpl_name}
+
+
 # ---------------- SOURCE SCREENSHOT ----------------
 def _shot_blank_sync(png_path):
     """True if the image is near-blank (a flagship-killer: blank gradient or mostly-white CAPTCHA page).
@@ -1554,6 +1709,11 @@ def _chop(t0, t1, target=6.0, max_n=6, lead=0.0):
         s = round(t0 + j * slot, 2)
         e = round(t0 + (j + 1) * slot, 2) if j < n - 1 else round(t1, 2)
         out.append((s, e, round(lead + j * slot, 2)))
+    # NO MICRO-BEATS (John: "0.7 sec screen recording... way too short"): a tail fragment under
+    # 3.5s reads as a glitch, not a beat — merge it into the previous window instead.
+    if len(out) > 1 and (out[-1][1] - out[-1][0]) < 3.5:
+        s, _, off = out[-2]
+        out[-2:] = [(s, out[-1][1], off)]
     return out
 
 
@@ -1567,7 +1727,8 @@ def _hi_box(kw):
     return {**box, "color": kw["color"], "opacity": .85, "borderWidth": 3, "label": kw["text"]}
 
 
-def _plan_shots(duration, screenshot, card, words, keywords, source_url, demo=None, ui=None, seg_index=0):
+def _plan_shots(duration, screenshot, card, words, keywords, source_url, demo=None, ui=None, seg_index=0,
+                kinetic=None, bgs=None):
     """Mixed-media: live UI scroll → Ken-Burns artifact punch-ins → live CODE DEMO. New visual every 4-7s.
 
     Dynamism rules (the variety pass John asked for):
@@ -1587,13 +1748,15 @@ def _plan_shots(duration, screenshot, card, words, keywords, source_url, demo=No
     pick = _kb_picker(seed=seg_index)  # shared across UI + artifacts + demo so moves never repeat
 
     # RHYTHM VARIATION: nudge the structural split per segment so the episode isn't templated.
-    # V2 ANTI-SLOP: the UI webpage scroll-capture WAS taking 40-50% of every segment — a scrolling
-    # blog/page for half the runtime, the exact slop John flagged. When v2 designed cards are on,
-    # demote the UI capture to a brief ~3s "here's the source" cutaway so the DESIGNED CARDS (which
-    # fill the artifact middle) become the dominant visual instead of the page scroll.
+    # MIX REBALANCE (John, 06-09): "static slideshows" — he wants MORE live screen recording
+    # (browser + terminal), with designed cards as punctuation, not the main course. The earlier
+    # anti-slop pass over-corrected UI capture down to a 3s cutaway, which left Ken-Burns stills
+    # carrying most of the runtime. New split: browser capture gets a real ~22-30% share again
+    # (it's a SCREEN RECORDING — exactly the texture he asked for), demo keeps its block, and the
+    # artifact middle shrinks to cards-as-accents.
     _v2_on = (_V2_VISUALS and _USE_V2_VISUALS)
     if _v2_on and has_ui and duration > 6:
-        ui_frac = min(0.12, 3.0 / duration)        # ~3s source cutaway, not 40-50%
+        ui_frac = (0.26, 0.30, 0.22)[seg_index % 3]
     else:
         ui_frac = (0.40, 0.45, 0.50)[seg_index % 3]
     demo_frac = (0.68, 0.72, 0.70)[seg_index % 3]
@@ -1618,18 +1781,33 @@ def _plan_shots(duration, screenshot, card, words, keywords, source_url, demo=No
                     "muteSource": True, "clipStartSec": off, "kenBurns": pick()}
             kw = kw_in(us, ue)
             if kw:
-                shot["highlight"] = _hi_box(kw)
+                pass  # keyword highlight boxes 100% DEADED (John, 06-09) — emphasis lives in the karaoke captions
             shots.append(shot)
 
+    # ── KINETIC INSERT beat (seekable-html motion graphics) opens the middle ────────────────────
+    # "this is what i want to see more of": when this segment has a rendered kinetic insert, it
+    # takes the FIRST middle beat as a full-bleed animated sequence (it carries its own motion —
+    # no Ken-Burns, no frame). The remaining middle shrinks accordingly.
+    src_domain = re.sub(r'^https?://(www\.)?', '', source_url or "").split("/")[0][:34]
+    kin_src = kinetic.get("src") if isinstance(kinetic, dict) else kinetic
+    kin_dur = float(kinetic.get("dur", 11.0)) if isinstance(kinetic, dict) else 10.0
+    # the insert's payoff lands in its final seconds — run it FULL length or not at all
+    # (cutting a zine-slam before the circled payoff word is worse than no insert)
+    if kin_src and artifact_dur >= kin_dur + 2.0:
+        k_len = round(kin_dur, 2)
+        shots.append({"id": "kin0", "type": "kinetic", "src": kin_src, "startSec": round(artifact_start, 2),
+                      "endSec": round(artifact_start + k_len, 2), "muteSource": True})
+        artifact_start = round(artifact_start + k_len, 2)
+        artifact_dur = max(0.0, demo_start - artifact_start)
+
     # ── Artifact middle (Ken-Burns on stills/cards) ──────────────────────────────────────────────
-    # when artifacts carry the WHOLE segment (no UI/demo) allow more windows so we don't sit on 8s holds.
-    art_cap = 5 if (has_ui or has_demo) else 8
-    n = max(2, min(art_cap, int(artifact_dur / 5.5))) if artifact_dur > 0 else 0
+    # PACING LAW (John, 06-09): beats run 4-6s, hard cap ~7s. The old art_cap=5 let a 50s middle
+    # become 5×10s static holds — "13 seconds of static fucking bullshit". Window count now scales
+    # with duration so slots land ~5s, capped only by sanity (12).
+    import math
+    n = min(12, max(2, math.ceil(artifact_dur / 5.0))) if artifact_dur > 0 else 0
     if n:
         slot = artifact_dur / n
-        if slot > 8.0:                       # keep middle beats under the cap too
-            import math
-            n = min(art_cap, math.ceil(artifact_dur / 6.5)); slot = artifact_dur / n
         windows = [(round(artifact_start + i * slot, 2), round(artifact_start + (i + 1) * slot, 2)) for i in range(n)]
         windows[-1] = (windows[-1][0], round(demo_start, 2))
         # CARD PLACEMENT varies per segment: center-ish on some, near-end on others — not always slot 0.
@@ -1641,9 +1819,13 @@ def _plan_shots(duration, screenshot, card, words, keywords, source_url, demo=No
             kb = ({"startScale": 1.0, "endScale": 1.04, "startX": .5, "startY": .5,
                    "endX": .5, "endY": .5, "easing": "easeOut"} if is_card else pick())
             shot = {"id": f"shot{i}", "type": "artifact", "src": _disk(src), "startSec": s, "endSec": e, "kenBurns": kb}
-            kw = kw_in(s, e)
-            if kw and not is_card:
-                shot["highlight"] = _hi_box(kw)
+            # LAYERED THEATRICS: a bare source SCREENSHOT never runs full-bleed-static anymore —
+            # it renders as a floating PRESS CLIPPING (framed, source chip) over an animated
+            # brand background. Designed cards keep full-bleed (they ARE designed frames).
+            if not is_card and screenshot and src == screenshot and bgs:
+                shot["frame"] = "clip"
+                shot["bgSrc"] = bgs[(seg_index + i) % len(bgs)]
+                shot["sourceChip"] = src_domain
             shots.append(shot)
 
     # ── Live code demo (close) ────────────────────────────────────────────────────────────────────
@@ -1660,7 +1842,7 @@ def _plan_shots(duration, screenshot, card, words, keywords, source_url, demo=No
                     "muteSource": True, "clipStartSec": off, "kenBurns": kb}
             kw = kw_in(ds, de)
             if kw:
-                shot["highlight"] = _hi_box(kw)
+                pass  # keyword highlight boxes 100% DEADED (John, 06-09) — emphasis lives in the karaoke captions
             shots.append(shot)
     return shots
 
@@ -2013,7 +2195,8 @@ def _build_timeline(ep_id, ep_idx, segments, animated_bg=None):
     _ep_card_budget = {}   # EPISODE-WIDE card counts (e.g. quote-cap) shared across all segments
     for seg_index, seg in enumerate(segments):
         kws = _extract_keywords(seg["script"], seg["words"], tool_name=seg.get("title"), seg_duration=seg.get("duration", 0.0))
-        shots = _plan_shots(seg["duration"], seg.get("screenshot"), seg["card"], seg["words"], kws, seg["source_url"], seg.get("demo"), seg.get("ui"), seg_index=seg_index)
+        shots = _plan_shots(seg["duration"], seg.get("screenshot"), seg["card"], seg["words"], kws, seg["source_url"], seg.get("demo"), seg.get("ui"), seg_index=seg_index,
+                            kinetic=seg.get("kinetic"), bgs=bg_list or None)
         # V2 ANTI-SLOP: replace the 'artifact' shots (which were blog/page SCREENSHOTS — the slop)
         # with DESIGNED CARDS from the v2 scene→catalog system. Keeps all the timing/Ken-Burns/
         # highlight logic; only swaps the SOURCE image from a scrolled blog to a designed frame.
@@ -2021,6 +2204,10 @@ def _build_timeline(ep_id, ep_idx, segments, animated_bg=None):
         if v2_cards:
             ci = 0
             for sh in shots:
+                # framed press-clipping shots keep their REAL screenshot — swapping in a designed
+                # card would put a card inside a clip frame with a bogus source chip
+                if sh.get("frame") == "clip":
+                    continue
                 if sh.get("type") == "artifact":
                     card_url = v2_cards[ci % len(v2_cards)]; ci += 1
                     cf = ASSETS / Path(card_url).name
@@ -2112,7 +2299,9 @@ def _build_timeline(ep_id, ep_idx, segments, animated_bg=None):
                 pops = [p for p in pops if p["word"].lower() not in lt_text]
         tsegs.append({
             "segmentId": seg["segment_id"], "title": seg["title"], "sourceUrl": seg["source_url"],
-            "shots": shots, "wordTimestamps": seg["words"], "keywordPops": pops,
+            # keywordPops 100% DEADED (John, 06-09): the floating labeled rectangles were broken-looking
+            # clutter no real channel uses. Keyword emphasis = the karaoke caption highlight.
+            "shots": shots, "wordTimestamps": seg["words"], "keywordPops": [],
             "audio": {"vo": {"src": _disk(seg["vo_path"]), "duration": seg["duration"]}},
             "lowerThirds": lower_thirds,
             "durationSec": seg["duration"],
@@ -2516,6 +2705,7 @@ async def produce_one_episode(force_deepdive=False, force_lore=None):
         # alignment (karaoke captions) is an ENHANCEMENT — never let it kill the segment
         try:
             words = await _align(sid)
+            words = _script_align(words, s["script"])  # captions show what we WROTE, timed by whisper
         except Exception as ex:
             words = []
             BUS.emit("vo-agent", "error", f"seg {i+1}: align failed (non-fatal, no captions) — {ex!r}"[:120], episode_id=ep_id, segment_id=sid)
@@ -2564,7 +2754,16 @@ async def produce_one_episode(force_deepdive=False, force_lore=None):
                 demo = await _try(_code_demo(it["title"], s.get("script", ""), sid), "code-demo")
                 if demo:
                     BUS.emit("editor-agent", "code.demo", f"seg {i+1}: code demo rendered (VHS)", episode_id=ep_id, segment_id=sid, artifact_url=demo, data={"type": "code"})
-        return {**s, "screenshot": shot, "card": card, "demo": demo, "ui": ui}
+        # KINETIC INSERT (every ~3rd segment ≈ 3-4/episode, bounded render cost): deterministic
+        # browser motion-graphics beat (hook → facts → takeaway) — the seekable-html explainer
+        # texture John explicitly asked to mix into episodes.
+        kinetic = None
+        if i % 3 == 1:
+            BUS.emit("editor-agent", "kinetic.start", f"seg {i+1}: rendering kinetic insert (seekable-html)", episode_id=ep_id, segment_id=sid)
+            kinetic = await _try(_kinetic_insert(it["title"], s.get("script", ""), url, sid), "kinetic-insert")
+            if kinetic:
+                BUS.emit("editor-agent", "kinetic.done", f"seg {i+1}: kinetic insert rendered", episode_id=ep_id, segment_id=sid, artifact_url=kinetic, data={"type": "kinetic"})
+        return {**s, "screenshot": shot, "card": card, "demo": demo, "ui": ui, "kinetic": kinetic}
 
     # WAVE 1 — research + script, all segments concurrently
     _set("scripting", "script-agent", f"WAVE 1: research+script {len(picks)} segments in parallel", ep_id)
@@ -2965,8 +3164,10 @@ async def run_factory_loop():
             # continuously. The review backlog is managed by the GC (prunes old ones); each new episode
             # is fresh material to workshop + harvest segments/shorts from. Only auto-publish if creds exist.
             if pending_eps:
-                # cap the backlog so disk/board don't run away, but never STOP producing
-                if len(pending_eps) > 12:
+                # Backlog cap. Was 12 — which, combined with the freshness-ledger bug (timestamps
+                # never refreshed on re-render), let the loop flood review with duplicate episodes
+                # overnight. Until auto-publish is live there is zero value in >4 unreviewed eps.
+                if len(pending_eps) > 4:
                     STATE.update(stage="idle", actor="-", detail=f"{len(pending_eps)} episodes in review — letting GC catch up")
                     await asyncio.sleep(120)
                     continue
@@ -2997,6 +3198,102 @@ async def run_factory_loop():
         except Exception as e:
             BUS.emit("factory", "error", f"loop error: {e}")
             await asyncio.sleep(30)
+
+
+# ---------------- REVISUALIZE (redo visuals, keep script + VO) ----------------
+async def revisualize_episode(ep_id):
+    """Re-skin an already-rendered episode with the NEW visual grammar (pacing law, framed press
+    clippings over animated bgs, kinetic inserts, no keyword rectangles) while keeping the ENTIRE
+    original audio mix (VO + bed + ducking + loudnorm) — 'redo all these stories with the script
+    and VO we already have' (John, 06-09).
+
+    Method: same segment durations + same transitions ⇒ identical internal timing ⇒ the original
+    mp4's audio track muxes straight onto the new video. The logo sting is DROPPED from the
+    re-render (sting length varied across old renders); the audio is front-trimmed by the measured
+    duration delta so VO/caption sync is exact arithmetic, not guesswork."""
+    tlf = ASSETS / f"{ep_id}_timeline.json"
+    orig = ASSETS / f"{ep_id}_episode.mp4"
+    if not tlf.exists() or not orig.exists():
+        raise RuntimeError(f"{ep_id}: missing timeline or mp4")
+    # keep the pristine original timeline once (idempotent re-runs)
+    bak = ASSETS / f"{ep_id}_timeline.orig.json"
+    if not bak.exists():
+        bak.write_text(tlf.read_text())
+    tl = json.loads(bak.read_text())
+    d_orig = await _dur(orig)
+
+    # 1) preserve the finished audio mix before anything overwrites the mp4
+    aud = ASSETS / f"{ep_id}_origaudio.m4a"
+    code, log = await _sh(f'ffmpeg -y -i {shlex.quote(str(orig))} -vn -c:a copy {shlex.quote(str(aud))}', timeout=120)
+    if code != 0 or not aud.exists():
+        raise RuntimeError(f"{ep_id}: audio extract failed: {log[-200:]}")
+
+    # 2) rebuild each segment's visuals from assets already on disk + fresh kinetic inserts
+    bgs = await _animated_bg(ep_id, n=4)
+    segments = []
+    for i, seg in enumerate(tl.get("segments", [])):
+        sid = Path((seg.get("audio") or {}).get("vo", {}).get("src", "")).stem or seg.get("segmentId") or f"{ep_id}_s{i}"
+        words = seg.get("wordTimestamps") or []
+        transcript = " ".join(w.get("w", "") for w in words)
+        have = lambda n: (ASSETS / n).exists() and (ASSETS / n).stat().st_size > 1024
+        ui = f"/agenticnews-assets/{sid}_ui.mp4" if have(f"{sid}_ui.mp4") else None
+        demo = f"/agenticnews-assets/{sid}_demo.mp4" if have(f"{sid}_demo.mp4") else None
+        shotpng = f"/agenticnews-assets/{sid}_src.png" if have(f"{sid}_src.png") else None
+        card = f"/agenticnews-assets/{sid}_card.png" if have(f"{sid}_card.png") else (shotpng or "")
+        kinetic = None
+        if i % 3 == 1 and transcript:
+            try:
+                kinetic = await _kinetic_insert(seg.get("title", ""), transcript, seg.get("sourceUrl", ""), sid)
+            except Exception as ex:
+                BUS.emit("editor-agent", "error", f"revis seg {i+1}: kinetic failed (non-fatal) {ex!r}"[:120], episode_id=ep_id)
+        segments.append({"segment_id": seg.get("segmentId") or sid, "title": seg.get("title", ""),
+                         "source_url": seg.get("sourceUrl", ""), "script": transcript, "words": words,
+                         "duration": seg.get("durationSec", 0), "vo_path": f"/agenticnews-assets/{sid}.wav",
+                         "screenshot": shotpng, "card": card, "demo": demo, "ui": ui, "kinetic": kinetic})
+    new_tl = _build_timeline(ep_id, 0, segments, animated_bg=bgs)
+    # original audio carries VO/bed/sfx — render the new video SILENT and drop the sting
+    new_tl["logo"] = None
+    new_tl["musicBed"] = None
+    new_tl["sfx"] = None
+    for s in new_tl["segments"]:
+        s["audio"] = {}
+    new_tl["title"] = tl.get("title", new_tl.get("title"))
+
+    # 3) silent video render (direct remotion call — _render_remotion's loudnorm assumes audio)
+    props = ASSETS / f"{ep_id}_timeline.json"
+    props.write_text(json.dumps(new_tl))
+    vid = ASSETS / f"{ep_id}_revis.mp4"
+    try:
+        _cc = int(os.getenv("ABN_RENDER_CONCURRENCY") or max(3, (os.cpu_count() or 4) // 2))
+    except (TypeError, ValueError):
+        _cc = 4
+    BUS.emit("editor-agent", "remotion.start", f"REVISUALIZE render ({ep_id})", episode_id=ep_id)
+    code, log = await _sh(f'cd {shlex.quote(str(REMOTION_DIR))} && npx remotion render Episode {shlex.quote(str(vid))} '
+                          f'--props={shlex.quote(str(props))} --codec=h264 --crf 23 --concurrency={_cc} --log=error 2>&1',
+                          timeout=1800)
+    if code != 0 or not vid.exists():
+        raise RuntimeError(f"{ep_id}: remotion exit {code}: {log[-300:]}")
+
+    # 4) mux: front-trim the original audio by the measured delta (= the dropped sting), normalize px
+    d_new = await _dur(vid)
+    trim = max(0.0, round((d_orig or 0) - (d_new or 0), 2))
+    out = ASSETS / f"{ep_id}_episode.mp4"
+    code, log = await _sh(
+        f'ffmpeg -y -i {shlex.quote(str(vid))} -ss {trim} -i {shlex.quote(str(aud))} '
+        f'-map 0:v -map 1:a -vf format=yuv420p -colorspace bt709 -color_primaries bt709 '
+        f'-color_trc bt709 -color_range tv -c:v libx264 -crf 20 -preset veryfast '
+        f'-c:a copy -shortest -movflags +faststart {shlex.quote(str(out))}', timeout=900)
+    vid.unlink(missing_ok=True)
+    if code != 0:
+        raise RuntimeError(f"{ep_id}: mux failed: {log[-300:]}")
+    d_final = await _dur(out)
+    BUS.emit("editor-agent", "revis.done",
+             f"{ep_id} revisualized: {d_final:.0f}s (audio trim {trim}s, kinetic inserts in)", episode_id=ep_id)
+    try:
+        await db.update_video(ep_id, {"stage": "review", "note": "revisualized: new visual grammar"})
+    except Exception:
+        pass
+    return f"/agenticnews-assets/{out.name}", d_final
 
 
 _task = None

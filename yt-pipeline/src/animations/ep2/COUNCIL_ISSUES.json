@@ -1,0 +1,50 @@
+{
+ "0": [
+  "23.1-27.1s near-black void (4.0s) flowing straight into a 27.1-31.6s full freeze (4.5s) \u2014 ~8.5s combined low-energy hole in the cold open; frame at 31s is the HARNESS-FRAMED card occupying only the top third, bottom two-thirds empty",
+  "39.1-42.75s near-black (3.6s) overlapping freeze 41.6-45.7s (4.0s) \u2014 second ~6.6s void-then-park span before the 1-minute mark",
+  "Additional 3.5s+ full freezes at 34.1-37.8s and 52.9-56.7s \u2014 no motion above -50dB noise floor, not Ken-Burns"
+ ],
+ "1": [
+  "34.1-40.9s single 6.75s full freeze \u2014 'HUMAN-ENGINEERED workflow STRUCTURE' text block parked left-of-center, right half and bottom ~60% of frame empty the whole hold",
+  "Three more 4s+ freezes: 27.3-31.5s (4.2s), 44.3-48.5s (4.2s), 59.8-64.5s (4.7s) \u2014 19.8s total frozen (22% of segment)"
+ ],
+ "2": [
+  "23.5-29.1s near-black (5.5s) merging into freeze 27.5-31.1s \u2014 ~7.6s slump; frame at 29s is a timeline with a single node ('GPT-5-Codex / Sept 15 2025') and ~90% empty frame",
+  "56.7-61.2s simultaneous black+freeze (4.5s) \u2014 another single-node timeline beat parked in void",
+  "70.3-75.9s full freeze (5.6s); plus 4.5s freeze at 34.1-38.6s \u2014 timeline builds node-by-node with ~4-5s dead holds between pops"
+ ],
+ "3": [
+  "58.5-77.3s: ~18.8s near-continuous static wall (freezes of 4.8s/4.5s/4.4s/3.5s separated only by single-frame card-pop blips) \u2014 SUBAGENTS/AGENT TEAMS/TOKEN COUNTDOWN stack reveals one card every ~4.7s and is otherwise motionless; frame at 60s is one card + ~60% empty frame. That is 24% of the segment parked back-to-back",
+  "43.4-48.8s full freeze (5.4s)",
+  "14.75-18.25s and 26.0-29.5s freezes (3.5s each) \u2014 borderline but stack up in a 79s segment that is 37.6% frozen overall (worst ratio after s7)"
+ ],
+ "4": [
+  "19.2-24.8s (draft ~378-384s \u2014 the spotted t=380 void, diagnosed): 'Every iteration re-feeds four locked files:' card chrome renders ~3-5s BEFORE its first list item lands \u2014 frame at draft t=380 is a headline + completely empty rounded box, >80% of frame dark void; list not fully populated until ~25s. Tighten container-to-first-item gap to <1s or hold the container off-screen until items are ready",
+  "66.0-77.4s: 11.4s near-black span (longest void in the episode) \u2014 AMNESIA beat terminal card opens EMPTY except the title word 'Anthropic's', drips one text line per ~4s, bottom ~70% of frame pure void the entire 11s; overlaps full freeze 69.1-74.0s",
+  "34.1-38.9s near-black (4.75s) \u2014 same empty-card-before-content pattern",
+  "48.2-51.8s freeze (3.6s, borderline)"
+ ],
+ "5": [
+  "Segment opens on the empty-container pattern: schema.json card renders empty at t=0 (junction frame confirms), freeze 7.4-11.25s (3.9s), then 14.75-22.8s ~8s near-static with one blip \u2014 first 23s of the segment have almost no motion",
+  "33.6-37.2s near-black (3.6s) and 54.7-57.0s near-black (2.3s)",
+  "89.3-93.5s simultaneous black+freeze (4.2s) \u2014 energy dies into a void with ~9s of segment still to run",
+  "43.0-47.7s full freeze (4.7s)"
+ ],
+ "6": [
+  "13.7-18.5s: 4.8s simultaneous near-black + full freeze \u2014 screen drops to near-empty right after the dense 7.8x scoreboard beat; one surgical fix, segment is otherwise the strongest (12% frozen, boards are dense full-frame)",
+  "22.2-26.5s freeze (4.4s) and 65.0-68.9s freeze (4.0s) \u2014 parked but content-dense; lower priority"
+ ],
+ "7": [
+  "WORST SEGMENT: 45.3s of 91.1s frozen (49.7%) \u2014 needs a rebuild pass, not nicks",
+  "28.9-41.0s: 12.1s hold where the only change is the terminal card popping at 36.3s; frames 29-36 are the 'Geocodio's Weekend Build' title alone in the top-left with ~85% of the frame empty",
+  "66.8-80.3s: 13.5s fully-parked 12-Factor Agents infographic (one card pop at 74.8s) \u2014 dense frame but zero motion for 13s straight",
+  "87.0-90.9s static to segment end + text COLLISION: 'Stay close.' headline renders on top of the 'one refactor cut a test suite / 4 min -> 2 sec' stat block \u2014 overlapping glyphs, the red '4' sits inside 'Stay'; this broken frame is also what the s7->s8 junction hands off from (draft ~743-749s near-black)",
+  "Four more 3.5-4.6s freezes: 11.4-15.7, 18.1-21.6, 41.9-45.6, 61.7-66.1"
+ ],
+ "8": [
+  "0-6.7s: segment OPENS on a near-black void \u2014 single dim caption line ('WHEN OPENAI'S HARNESS TEAM HIT FAILURES,') in >85% empty frame, fully frozen 0-5.1s; the takeaway segment cold-opens on a dead wall (audio is fine \u2014 VO starts immediately \u2014 but video is parked)",
+  "8.25-13.7s freeze (5.4s) and 22.5-27.8s freeze (5.25s) \u2014 first 28s of the segment contain ~17s of full freeze",
+  "42.1-46.3s (4.25s) and 48.4-53.7s (5.3s) freezes \u2014 25.3s total frozen (30%)",
+  "s8_cut.mp4 47.8-52.4s: METR half-life table (FAILURE MODE / SUCCESS / DRIVER) pops in as a single block between 47.80 and 48.20 on the 'constant' beat (48.08); SUCCESS row 'DECAYING EXPONENTIALLY' leads its VO phrase 'success decaying exponentially' (50.34-51.76) by ~2.5s and DRIVER row 'TASK LENGTH' leads 'task length' (52.16-52.42) by ~4s. Word-landing proof fails: 'exponentially' (t=51.10) already fully rendered at 50.30 (t-0.8); table region verified empty at 47.30 and fully populated at 48.20. Fix: reveal rows on their own beats (s4 73.0-74.3 and s6 66.2-67.3 prove the streaming reveal pattern works elsewhere in this episode)."
+ ]
+}
