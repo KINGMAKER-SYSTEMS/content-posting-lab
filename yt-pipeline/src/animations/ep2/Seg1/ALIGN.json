@@ -1,0 +1,35 @@
+{
+  "segment": 1,
+  "videos": [
+    {
+      "name": "Video1",
+      "concept": "TUNING THE WRONG LAYER — thesis slam with METR data card",
+      "voStart": 0.0,
+      "voEnd": 10.0
+    },
+    {
+      "name": "Video2",
+      "concept": "A COIN FLIP — METR verdict + verbatim quote word-by-word reveal",
+      "voStart": 18.0,
+      "voEnd": 31.5
+    },
+    {
+      "name": "Video3",
+      "concept": "HUMAN-ENGINEERED WORKFLOW STRUCTURE + 5 Anthropic patterns node graph",
+      "voStart": 31.5,
+      "voEnd": 48.5
+    },
+    {
+      "name": "Video4",
+      "concept": "Berkeley MAST data wall — 1,642 traces, 14 failure modes, 43% system design",
+      "voStart": 55.5,
+      "voEnd": 69.8
+    },
+    {
+      "name": "Video5",
+      "concept": "THE PROMPT IS NOT THE PROGRAM — kinetic thesis finale slam",
+      "voStart": 84.0,
+      "voEnd": 90.92
+    }
+  ]
+}
