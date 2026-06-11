@@ -18,6 +18,8 @@ const INTEL = REPO + '/yt-pipeline/drafts/creator-intel'
 
 const BRIEF = (args && args.brief) || `EPISODE BRIEF — "Workflows over System Prompts": why programmatically LOCKED values (orchestration scripts, JSON schemas as contracts/ledgers, deterministic control flow) beat prompt-tuning for agent quality. Cover: how frontier coding agents (OpenAI Codex / GPT-5.x-codex line and Anthropic's Fable 5 / Claude Code) orchestrate deep, long autonomous runs; compiled techniques like /loop, /goal (stop-hook conditions), and ralph-loop (persistent re-prompt loops with state files); JSON schemas as ledgers and contracts between pipeline stages (structured outputs that downstream stages can trust); why "the prompt is not the program — the workflow is". The audience: builders who ship agentic systems (the ABN audience). Register: technical wire-service, proof-first, no hype.`
 
+const STRUCTURE = (args && args.structure) || 'Segment 0 = cold open (the hook + the single most striking number); then thematic segments per the brief; end with a takeaway segment.'
+
 const CREATOR_SCHEMA = {
   type: 'object', required: ['creators'],
   properties: { creators: { type: 'array', items: { type: 'object',
@@ -109,7 +111,7 @@ const winner = allAngles.find(a => a.title === ranked[0][0]) || allAngles[0]
 log(`Winning angle: "${winner.title}" (${ranked[0][1]} pts)`)
 
 phase('Research')
-const FACETS = [
+const FACETS = (args && args.facets) || [
   'OpenAI Codex (GPT-5.x-codex line, including any 5.5-class release): long autonomous runs, orchestration features, harness/compile patterns, real numbers (run lengths, PR counts, benchmarks), official docs + engineering posts',
   'Anthropic Fable 5 and Claude Code: agentic orchestration (subagents, workflows, hooks, background tasks), long-run autonomy, structured outputs, official docs + announcements',
   'Compiled control-flow techniques in agent CLIs: loop commands, goal/stop-hook conditions, ralph-loop pattern (Geoffrey Huntley lineage), state files, why re-prompting with locked state beats one big prompt — find the actual origins and real usage reports',
@@ -132,7 +134,7 @@ log(`Dossier: ${keptCount} verified claims across ${verified.length} facets`)
 
 phase('Outline')
 const dossierText = verified.map(d => `## ${d.facet}\n${d.kept.map(k => `- ${k.claim} [${k.source}] ${k.number || ''}`).join('\n')}`).join('\n\n')
-const outline = await agent(`${BRIEF}\n\nWINNING ANGLE: "${winner.title}" — ${winner.angle}\nHOOK: ${winner.hook}\n\nVERIFIED DOSSIER (use ONLY these facts; every keyFact must trace to one):\n${dossierText}\n\nCompose the episode outline: 8-9 segments, ~10-13 min total at ~145 spoken wpm (targetWords 130-170 per segment). Segment 0 = cold open (the hook + the single most striking number). Then: the thesis (workflows over prompts), the Codex story, the Fable/Claude Code story, the compiled-techniques segment (/loop, /goal, ralph-loop — explain mechanics concretely), the schema-as-ledger segment, the evidence segment (numbers, with the honest counter-case), the how-to-start segment, the takeaway. Each segment: title, hook line, 4-6 keyFacts (verbatim from dossier with their numbers), sources, seoKeywords, targetWords. ALSO write the outline as readable markdown to ${EP}/OUTLINE.md and the JSON to ${EP}/outline.json — this file is the LEDGER the script stage reads.`,
+const outline = await agent(`${BRIEF}\n\nWINNING ANGLE: "${winner.title}" — ${winner.angle}\nHOOK: ${winner.hook}\n\nVERIFIED DOSSIER (use ONLY these facts; every keyFact must trace to one):\n${dossierText}\n\nCompose the episode outline (~10-13 min total at ~145 spoken wpm (targetWords 130-170 per segment). ${STRUCTURE} Each segment: title, hook line, 4-6 keyFacts (verbatim from dossier with their numbers), sources, seoKeywords, targetWords. ALSO write the outline as readable markdown to ${EP}/OUTLINE.md and the JSON to ${EP}/outline.json — this file is the LEDGER the script stage reads.`,
   { label: 'outline', phase: 'Outline', model: 'fable', schema: OUTLINE_SCHEMA })
 
 if (!outline) throw new Error('outline failed')
