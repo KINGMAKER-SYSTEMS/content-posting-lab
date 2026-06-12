@@ -22,6 +22,7 @@ from fastapi.responses import JSONResponse
 
 import services.agenticnews as db
 import services.abn_factory as factory
+import services.editor_timeline as editor_timeline
 from fastapi.responses import StreamingResponse
 
 router = APIRouter()
@@ -533,6 +534,60 @@ async def get_stats():
         "active_jobs": len([j for j in jobs if j["status"] in ("queued", "running")]),
         "by_lane": {l: len([v for v in vids if v.get("lane") == l]) for l in ("today", "week", "backlog")},
     }
+
+
+# ============ EDITOR BAY V2 — commanded timeline core ============
+def _editor_timeline_store() -> editor_timeline.TimelineStore:
+    return editor_timeline.TimelineStore(db.ASSETS_DIR / "editor_timelines")
+
+
+@router.post("/editor-timelines", status_code=201)
+async def editor_timeline_create(body: dict = Body(...)):
+    project_id = body.get("projectId")
+    if not project_id:
+        raise HTTPException(status_code=400, detail="projectId is required")
+    project = editor_timeline.new_project(
+        project_id,
+        source_episode_id=body.get("sourceEpisodeId"),
+        title=body.get("title", ""),
+        fps=int(body.get("fps") or 30),
+        width=int(body.get("width") or 1920),
+        height=int(body.get("height") or 1080),
+    )
+    return _editor_timeline_store().save(project)
+
+
+@router.post("/editor-timelines/{project_id}/import-abn", status_code=201)
+async def editor_timeline_import_abn(project_id: str, body: dict = Body(...)):
+    source = body.get("timeline")
+    if not isinstance(source, dict):
+        raise HTTPException(status_code=400, detail="timeline object is required")
+    project = editor_timeline.project_from_abn_timeline(
+        project_id,
+        source,
+        source_episode_id=body.get("sourceEpisodeId"),
+    )
+    return _editor_timeline_store().save(project)
+
+
+@router.get("/editor-timelines/{project_id}")
+async def editor_timeline_load(project_id: str):
+    try:
+        return _editor_timeline_store().load(project_id)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="editor timeline not found")
+
+
+@router.post("/editor-timelines/{project_id}/commands")
+async def editor_timeline_command(project_id: str, command: dict = Body(...)):
+    try:
+        return _editor_timeline_store().apply_command(project_id, command)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="editor timeline not found")
+    except editor_timeline.RevisionConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except editor_timeline.CommandValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 # ============ EDITOR BAY — review + visual/temporal edit notes ============
