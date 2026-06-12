@@ -1,436 +1,789 @@
-/**
- * EditorBay — a review scratchpad for rendered episodes (NOT an NLE).
- *
- * The operator scrubs the rendered episode, sees the ATOMIC timeline layers (cards / VO / captions /
- * lower-thirds / b-roll / demos) as tracks, and drops edit notes rooted in visual + temporal context:
- *   - FRAME notes: pause → draw (circle/arrow/scribble) on the frozen frame + a comment.
- *   - PIN notes: click a track region (e.g. a number card at 9:03) → a pin + a comment.
- * Both land in one shared notes rail and POST to /api/agenticnews/editor/:epId/notes, which the
- * editors/factory read. Built with MUI + react-konva (frame draw) + wavesurfer (VO track) — all
- * portable to an OpenCut-style fork (same React/Zustand/Tailwind-adjacent stack).
- */
-import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
+import { useCallback, useEffect, useMemo, useState, type PointerEvent, type ReactNode } from 'react';
 import {
-  Box, AppBar, Toolbar, Typography, IconButton, Slider, Drawer, List, ListItem,
-  ListItemText, TextField, Button, Chip, Divider, Tooltip, ToggleButton,
-  ToggleButtonGroup, CircularProgress, Paper,
-} from '@mui/material';
-import PlayArrowIcon from '@mui/icons-material/PlayArrow';
-import PauseIcon from '@mui/icons-material/Pause';
-import GestureIcon from '@mui/icons-material/Gesture';
-import RadioButtonUncheckedIcon from '@mui/icons-material/RadioButtonUnchecked';
-import NorthEastIcon from '@mui/icons-material/NorthEast';
-import DeleteOutlineIcon from '@mui/icons-material/DeleteOutlined';
-import AddCommentIcon from '@mui/icons-material/AddComment';
-import UndoIcon from '@mui/icons-material/Undo';
-import { Stage, Layer, Line, Circle, Arrow } from 'react-konva';
-import WaveSurfer from 'wavesurfer.js';
+  Eye,
+  EyeOff,
+  Flag,
+  MessageSquarePlus,
+  Pause,
+  Play,
+  RefreshCw,
+  Scissors,
+  SkipForward,
+  Volume2,
+  VolumeX,
+} from 'lucide-react';
 import { apiUrl, staticUrl } from '../lib/api';
 
-type Shot = { src?: string; startSec?: number; durationSec?: number };
-type Word = { w: string; s: number; e: number };
-type LowerThird = { startSec: number; durationSec: number; headline?: string };
-type Segment = {
-  segmentId?: string; title?: string; durationSec?: number;
-  shots?: Shot[]; wordTimestamps?: Word[]; lowerThirds?: LowerThird[];
-};
-type Timeline = { segments?: Segment[]; totalSec?: number; musicBed?: string };
-type Note = {
-  id?: string; t: number; kind: 'frame' | 'pin'; track?: string; text: string;
-  frameImg?: string; shapes?: any[]; createdAt?: string;
-};
-type EditorData = {
-  epId: string; title: string; stage: string; duration: number;
-  videoUrl: string; timeline: Timeline; notes: Note[];
+type AssetKind = 'image' | 'video' | 'audio' | 'title' | string;
+
+interface EditorAsset {
+  id: string;
+  type: AssetKind;
+  src: string;
+  metadata?: Record<string, unknown>;
+}
+
+interface EditorTrack {
+  id: string;
+  kind: string;
+  name: string;
+  index: number;
+  locked?: boolean;
+}
+
+interface EditorClip {
+  id: string;
+  assetId: string;
+  trackId: string;
+  kind: string;
+  start: number;
+  duration: number;
+  sourceStart: number;
+  enabled: boolean;
+  muted: boolean;
+  volume: number;
+  transform: {
+    x?: number;
+    y?: number;
+    scale?: number;
+    opacity?: number;
+  };
+  effects?: unknown[];
+  keyframes?: unknown[];
+  metadata?: Record<string, unknown>;
+}
+
+interface EditorMarker {
+  id: string;
+  time: number;
+  label: string;
+  metadata?: Record<string, unknown>;
+}
+
+interface EditorNote {
+  id: string;
+  target: {
+    clipId?: string;
+    time?: number;
+    frame?: number;
+    trackId?: string;
+  };
+  text: string;
+  suggestedCommand?: unknown;
+  metadata?: Record<string, unknown>;
+}
+
+interface EditorProject {
+  schema: string;
+  projectId: string;
+  title: string;
+  fps: number;
+  width: number;
+  height: number;
+  revision: number;
+  assets: Record<string, EditorAsset>;
+  tracks: Record<string, EditorTrack>;
+  clips: Record<string, EditorClip>;
+  markers: Record<string, EditorMarker>;
+  notes: Record<string, EditorNote>;
+  renderCache?: {
+    video?: { video?: string; duration?: number; backend?: string };
+    frames?: Record<string, { frame?: string; at?: number; backend?: string }>;
+  };
+}
+
+interface CommandBody {
+  op: string;
+  actor: 'human';
+  expectedRevision: number;
+  payload: Record<string, unknown>;
+}
+
+interface DragState {
+  clipId: string;
+  originX: number;
+  originStart: number;
+  trackWidth: number;
+}
+
+const timeScale = 80;
+
+const fmt = (seconds: number) => {
+  const safe = Number.isFinite(seconds) && seconds > 0 ? seconds : 0;
+  const mins = Math.floor(safe / 60);
+  const secs = Math.floor(safe % 60);
+  const tenths = Math.floor((safe % 1) * 10);
+  return `${mins}:${secs.toString().padStart(2, '0')}.${tenths}`;
 };
 
-// atomic track lanes, in render order (top = closest to viewer)
-const TRACKS = [
-  { key: 'hook', label: 'Hook', color: '#ef4444', match: (s: string) => s.includes('hook') },
-  { key: 'card', label: 'Cards', color: '#7fd2ff', match: (s: string) => /_(number|vs|quote|diagram)\b|v2sc/.test(s) && !s.includes('hook') },
-  { key: 'demo', label: 'Demo', color: '#a78bfa', match: (s: string) => s.includes('demo') },
-  { key: 'ui', label: 'B-roll / UI', color: '#34d399', match: (s: string) => s.includes('_ui') || s.includes('broll') || s.includes('_bg') },
-  { key: 'lower', label: 'Lower-thirds', color: '#fbbf24', match: () => false }, // populated from lowerThirds[]
-  { key: 'vo', label: 'VO / Captions', color: '#94a3b8', match: () => false }, // populated from wordTimestamps[]
-] as const;
+const roundTime = (value: number) => Math.round(Math.max(0, value) * 100) / 100;
 
-const fmt = (s: number) => {
-  if (!isFinite(s) || s < 0) s = 0;
-  const m = Math.floor(s / 60);
-  const sec = Math.floor(s % 60);
-  return `${m}:${sec.toString().padStart(2, '0')}`;
+const projectIdFromPath = () => {
+  const match = window.location.pathname.match(/^\/editor\/(.+)$/);
+  return match ? decodeURIComponent(match[1]) : '';
 };
+
+const objectValues = <T,>(record: Record<string, T> | undefined): T[] => Object.values(record || {});
 
 export function EditorBayPage() {
-  const epId = useMemo(() => {
-    const m = window.location.pathname.match(/^\/editor\/(.+)$/);
-    return m ? decodeURIComponent(m[1]) : '';
-  }, []);
-
-  const [data, setData] = useState<EditorData | null>(null);
+  const projectId = useMemo(projectIdFromPath, []);
+  const [project, setProject] = useState<EditorProject | null>(null);
+  const [selectedClipId, setSelectedClipId] = useState<string>('');
+  const [currentTime, setCurrentTime] = useState(0);
+  const [noteText, setNoteText] = useState('');
+  const [markerLabel, setMarkerLabel] = useState('Review marker');
+  const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
-  const [err, setErr] = useState('');
+  const [busyOp, setBusyOp] = useState('');
   const [playing, setPlaying] = useState(false);
-  const [t, setT] = useState(0);
-  const [duration, setDuration] = useState(0);
-  const [notes, setNotes] = useState<Note[]>([]);
-  const [draft, setDraft] = useState('');
-  const [tool, setTool] = useState<'none' | 'draw' | 'circle' | 'arrow'>('none');
-  const [shapes, setShapes] = useState<any[]>([]);
-  const [drawing, setDrawing] = useState(false);
+  const [previewFrame, setPreviewFrame] = useState('');
+  const [drag, setDrag] = useState<DragState | null>(null);
+  const [draftTiming, setDraftTiming] = useState({
+    start: '0',
+    duration: '1',
+    sourceStart: '0',
+    x: '0.5',
+    y: '0.5',
+    scale: '1',
+    opacity: '1',
+    volume: '1',
+  });
 
-  const videoRef = useRef<HTMLVideoElement | null>(null);
-  const stageWrapRef = useRef<HTMLDivElement | null>(null);
-  const [stageSize, setStageSize] = useState({ w: 960, h: 540 });
-  const waveRef = useRef<HTMLDivElement | null>(null);
-  const wsRef = useRef<WaveSurfer | null>(null);
+  const tracks = useMemo(
+    () => objectValues(project?.tracks).sort((a, b) => a.index - b.index || a.id.localeCompare(b.id)),
+    [project],
+  );
+  const clips = useMemo(
+    () => objectValues(project?.clips).sort((a, b) => a.start - b.start || a.id.localeCompare(b.id)),
+    [project],
+  );
+  const markers = useMemo(
+    () => objectValues(project?.markers).sort((a, b) => a.time - b.time || a.id.localeCompare(b.id)),
+    [project],
+  );
+  const notes = useMemo(
+    () => objectValues(project?.notes).sort((a, b) => (a.target.time || 0) - (b.target.time || 0) || a.id.localeCompare(b.id)),
+    [project],
+  );
 
-  // ---- load ----
-  useEffect(() => {
-    if (!epId) { setErr('No episode id in URL (expected /editor/<epId>)'); setLoading(false); return; }
-    (async () => {
-      try {
-        const res = await fetch(apiUrl(`/api/agenticnews/editor/${epId}`));
-        if (!res.ok) throw new Error(`load failed (${res.status})`);
-        const d: EditorData = await res.json();
-        setData(d);
-        setNotes(d.notes || []);
-        setDuration(d.duration || d.timeline?.totalSec || 0);
-      } catch (e: any) {
-        setErr(e?.message || 'failed to load');
-      } finally {
-        setLoading(false);
+  const selectedClip = selectedClipId ? project?.clips[selectedClipId] : undefined;
+  const selectedAsset = selectedClip ? project?.assets[selectedClip.assetId] : undefined;
+  const duration = useMemo(() => {
+    const clipEnd = clips.reduce((max, clip) => Math.max(max, clip.start + clip.duration), 0);
+    const markerEnd = markers.reduce((max, marker) => Math.max(max, marker.time), 0);
+    return Math.max(6, Math.ceil(Math.max(clipEnd, markerEnd) + 1));
+  }, [clips, markers]);
+  const timelineWidth = Math.max(720, duration * timeScale);
+  const visibleFrame = previewFrame || project?.renderCache?.frames?.[currentTime.toFixed(2)]?.frame || project?.renderCache?.frames?.[currentTime.toFixed(1)]?.frame || '';
+  const videoPath = project?.renderCache?.video?.video || '';
+
+  const loadProject = useCallback(async () => {
+    if (!projectId) {
+      setError('Missing editor project id.');
+      setLoading(false);
+      return;
+    }
+    setError('');
+    setLoading(true);
+    try {
+      const response = await fetch(apiUrl(`/api/agenticnews/editor-timelines/${projectId}`));
+      if (!response.ok) throw new Error(`timeline load failed (${response.status})`);
+      const next = await response.json() as EditorProject;
+      setProject(next);
+      const firstClip = objectValues(next.clips).sort((a, b) => a.start - b.start)[0];
+      if (firstClip) {
+        setSelectedClipId((current) => current && next.clips[current] ? current : firstClip.id);
+        setCurrentTime((current) => current || firstClip.start);
       }
-    })();
-  }, [epId]);
+    } catch (err) {
+      setProject(null);
+      setError(err instanceof Error ? err.message : 'timeline load failed');
+    } finally {
+      setLoading(false);
+    }
+  }, [projectId]);
 
-  // ---- video time sync ----
   useEffect(() => {
-    const v = videoRef.current;
-    if (!v) return;
-    const onTime = () => setT(v.currentTime);
-    const onMeta = () => setDuration(v.duration || duration);
-    const onPlay = () => setPlaying(true);
-    const onPause = () => setPlaying(false);
-    v.addEventListener('timeupdate', onTime);
-    v.addEventListener('loadedmetadata', onMeta);
-    v.addEventListener('play', onPlay);
-    v.addEventListener('pause', onPause);
-    return () => {
-      v.removeEventListener('timeupdate', onTime);
-      v.removeEventListener('loadedmetadata', onMeta);
-      v.removeEventListener('play', onPlay);
-      v.removeEventListener('pause', onPause);
-    };
-  }, [data, duration]);
+    void loadProject();
+  }, [loadProject]);
 
-  // ---- responsive konva stage over the video ----
   useEffect(() => {
-    const el = stageWrapRef.current;
-    if (!el) return;
-    const ro = new ResizeObserver(() => {
-      const r = el.getBoundingClientRect();
-      setStageSize({ w: r.width, h: r.height });
+    if (!selectedClip) return;
+    setDraftTiming({
+      start: String(roundTime(selectedClip.start)),
+      duration: String(roundTime(selectedClip.duration)),
+      sourceStart: String(roundTime(selectedClip.sourceStart || 0)),
+      x: String(selectedClip.transform?.x ?? 0.5),
+      y: String(selectedClip.transform?.y ?? 0.5),
+      scale: String(selectedClip.transform?.scale ?? 1),
+      opacity: String(selectedClip.transform?.opacity ?? 1),
+      volume: String(selectedClip.volume ?? 1),
     });
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, [data]);
+  }, [selectedClip]);
 
-  // ---- VO waveform (rendered from the FINAL episode mp4 audio, not the per-segment wavs, which are
-  //      GC'd after the episode completes). Read-only visual reference; the <video> stays the player.
   useEffect(() => {
-    if (!data || !waveRef.current) return;
-    let ws: WaveSurfer | null = null;
-    try {
-      ws = WaveSurfer.create({
-        container: waveRef.current,
-        url: staticUrl(data.videoUrl),       // mp4 audio track
-        height: 18,
-        waveColor: '#3a4658',
-        progressColor: '#94a3b8',
-        cursorColor: 'transparent',
-        interact: true,                       // click the waveform to seek
-        normalize: true,
-        barWidth: 1,
-        barGap: 1,
-      });
-      ws.setMuted(true);                      // the <video> is the sound source; waveform is silent
-      ws.on('interaction', (sec: number) => seekRef.current(sec));
-      wsRef.current = ws;
-    } catch { /* waveform is non-essential — never block the bay */ }
-    return () => { try { ws?.destroy(); } catch {} wsRef.current = null; };
-  }, [data]);
-
-  // keep the waveform cursor in sync with the video without re-creating it
-  useEffect(() => {
-    const ws = wsRef.current;
-    if (ws && duration) { try { ws.setTime(t); } catch {} }
-  }, [t, duration]);
-
-  const seek = useCallback((sec: number) => {
-    const v = videoRef.current;
-    if (v) { v.currentTime = Math.max(0, Math.min(sec, duration || sec)); setT(v.currentTime); }
-  }, [duration]);
-  const seekRef = useRef(seek);
-  useEffect(() => { seekRef.current = seek; }, [seek]);
-
-  const togglePlay = () => {
-    const v = videoRef.current;
-    if (!v) return;
-    if (v.paused) { setTool('none'); v.play(); } else v.pause();
-  };
-
-  // ---- konva drawing ----
-  const annotating = tool !== 'none';
-  useEffect(() => { if (annotating && videoRef.current) videoRef.current.pause(); }, [annotating]);
-
-  const onStageDown = (e: any) => {
-    if (!annotating) return;
-    const pos = e.target.getStage().getPointerPosition();
-    setDrawing(true);
-    if (tool === 'draw') setShapes((s) => [...s, { type: 'line', points: [pos.x, pos.y] }]);
-    else if (tool === 'circle') setShapes((s) => [...s, { type: 'circle', x: pos.x, y: pos.y, r: 2 }]);
-    else if (tool === 'arrow') setShapes((s) => [...s, { type: 'arrow', points: [pos.x, pos.y, pos.x, pos.y] }]);
-  };
-  const onStageMove = (e: any) => {
-    if (!drawing || !annotating) return;
-    const pos = e.target.getStage().getPointerPosition();
-    setShapes((s) => {
-      const last = s[s.length - 1];
-      if (!last) return s;
-      const copy = s.slice(0, -1);
-      if (last.type === 'line') copy.push({ ...last, points: [...last.points, pos.x, pos.y] });
-      else if (last.type === 'circle') copy.push({ ...last, r: Math.hypot(pos.x - last.x, pos.y - last.y) });
-      else if (last.type === 'arrow') copy.push({ ...last, points: [last.points[0], last.points[1], pos.x, pos.y] });
-      return copy;
-    });
-  };
-  const onStageUp = () => setDrawing(false);
-
-  // capture the frozen frame + drawings as a data URL thumbnail
-  const captureFrame = useCallback((): string | undefined => {
-    const v = videoRef.current;
-    if (!v) return undefined;
-    try {
-      const c = document.createElement('canvas');
-      c.width = 480; c.height = Math.round(480 * (v.videoHeight / v.videoWidth || 0.5625));
-      const ctx = c.getContext('2d');
-      if (!ctx) return undefined;
-      ctx.drawImage(v, 0, 0, c.width, c.height);
-      // overlay the konva shapes scaled to the thumbnail
-      const sx = c.width / stageSize.w, sy = c.height / stageSize.h;
-      ctx.strokeStyle = '#ff3b3b'; ctx.lineWidth = 3; ctx.lineCap = 'round';
-      for (const sh of shapes) {
-        ctx.beginPath();
-        if (sh.type === 'line' && sh.points.length >= 2) {
-          ctx.moveTo(sh.points[0] * sx, sh.points[1] * sy);
-          for (let i = 2; i < sh.points.length; i += 2) ctx.lineTo(sh.points[i] * sx, sh.points[i + 1] * sy);
-        } else if (sh.type === 'circle') {
-          ctx.arc(sh.x * sx, sh.y * sy, sh.r * sx, 0, Math.PI * 2);
-        } else if (sh.type === 'arrow') {
-          ctx.moveTo(sh.points[0] * sx, sh.points[1] * sy);
-          ctx.lineTo(sh.points[2] * sx, sh.points[3] * sy);
+    if (!playing) return;
+    const timer = window.setInterval(() => {
+      setCurrentTime((time) => {
+        const next = roundTime(time + 0.1);
+        if (next > duration) {
+          setPlaying(false);
+          return duration;
         }
-        ctx.stroke();
-      }
-      return c.toDataURL('image/jpeg', 0.7);
-    } catch { return undefined; }
-  }, [shapes, stageSize]);
-
-  // ---- save a note ----
-  const saveNote = async (kind: 'frame' | 'pin', track?: string) => {
-    if (!data) return;
-    const note: Note = {
-      t: Math.round(t * 100) / 100,
-      kind,
-      track,
-      text: draft.trim(),
-      createdAt: new Date().toISOString(),
-      ...(kind === 'frame' ? { frameImg: captureFrame(), shapes } : {}),
-    };
-    // optimistic
-    setNotes((n) => [...n, note].sort((a, b) => a.t - b.t));
-    setDraft(''); setShapes([]); setTool('none');
-    try {
-      const res = await fetch(apiUrl(`/api/agenticnews/editor/${data.epId}/notes`), {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(note),
+        return next;
       });
-      const out = await res.json();
-      if (out?.note?.id) setNotes((n) => n.map((x) => (x === note ? out.note : x)));
-    } catch { /* keep optimistic */ }
+    }, 100);
+    return () => window.clearInterval(timer);
+  }, [duration, playing]);
+
+  const applyCommand = useCallback(async (op: string, payload: Record<string, unknown>) => {
+    if (!project) return null;
+    const command: CommandBody = {
+      op,
+      actor: 'human',
+      expectedRevision: project.revision,
+      payload,
+    };
+    setBusyOp(op);
+    setError('');
+    try {
+      const response = await fetch(apiUrl(`/api/agenticnews/editor-timelines/${project.projectId}/commands`), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(command),
+      });
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}));
+        throw new Error(body.detail || `command failed (${response.status})`);
+      }
+      const next = await response.json() as EditorProject;
+      setProject(next);
+      return next;
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'command failed');
+      return null;
+    } finally {
+      setBusyOp('');
+    }
+  }, [project]);
+
+  const selectClip = (clip: EditorClip) => {
+    setSelectedClipId(clip.id);
+    setCurrentTime(roundTime(clip.start));
   };
 
-  const deleteNote = async (note: Note) => {
-    setNotes((n) => n.filter((x) => x !== note));
-    if (data && note.id) {
-      try { await fetch(apiUrl(`/api/agenticnews/editor/${data.epId}/notes/${note.id}`), { method: 'DELETE' }); } catch {}
+  const moveSelected = async (delta: number) => {
+    if (!selectedClip) return;
+    const nextStart = roundTime(selectedClip.start + delta);
+    const updated = await applyCommand('clip.move', { clipId: selectedClip.id, start: nextStart });
+    if (updated) setCurrentTime(nextStart);
+  };
+
+  const applyTiming = async () => {
+    if (!selectedClip) return;
+    const start = roundTime(Number(draftTiming.start));
+    const durationValue = Math.max(0.1, roundTime(Number(draftTiming.duration)));
+    const sourceStart = roundTime(Number(draftTiming.sourceStart));
+    const updated = await applyCommand('clip.trim', {
+      clipId: selectedClip.id,
+      start,
+      duration: durationValue,
+      sourceStart,
+    });
+    if (updated) setCurrentTime(start);
+  };
+
+  const applyTransform = async () => {
+    if (!selectedClip) return;
+    await applyCommand('clip.transform', {
+      clipId: selectedClip.id,
+      transform: {
+        x: Number(draftTiming.x),
+        y: Number(draftTiming.y),
+        scale: Number(draftTiming.scale),
+        opacity: Number(draftTiming.opacity),
+      },
+    });
+    if ((project?.tracks[selectedClip.trackId]?.kind || '').includes('audio') || selectedAsset?.type === 'audio') {
+      await applyCommand('clip.volume', { clipId: selectedClip.id, volume: Number(draftTiming.volume) });
     }
   };
 
-  if (loading) return <Box sx={{ display: 'grid', placeItems: 'center', height: '100vh', bgcolor: '#0b0e14' }}><CircularProgress /></Box>;
-  if (err) return <Box sx={{ display: 'grid', placeItems: 'center', height: '100vh', bgcolor: '#0b0e14', color: '#fff' }}><Typography>{err}</Typography></Box>;
-  if (!data) return null;
-
-  const segs = data.timeline?.segments || [];
-  // segment start offsets (cumulative) for absolute timeline placement
-  let acc = 0;
-  const segStarts = segs.map((s) => { const st = acc; acc += s.durationSec || 0; return st; });
-  const total = duration || acc || 1;
-
-  // build per-track absolute blocks
-  const trackBlocks = TRACKS.map((tr) => {
-    const blocks: { start: number; dur: number; label: string }[] = [];
-    segs.forEach((seg, i) => {
-      const base = segStarts[i];
-      if (tr.key === 'lower') {
-        (seg.lowerThirds || []).forEach((lt) => blocks.push({ start: base + lt.startSec, dur: lt.durationSec, label: lt.headline || '' }));
-      } else if (tr.key === 'vo') {
-        if (seg.durationSec) blocks.push({ start: base, dur: seg.durationSec, label: '' });
-      } else {
-        (seg.shots || []).forEach((sh) => {
-          const src = sh.src || '';
-          if (tr.match(src)) blocks.push({ start: base + (sh.startSec || 0), dur: sh.durationSec || 0, label: '' });
-        });
-      }
+  const splitSelected = async () => {
+    if (!selectedClip) return;
+    const at = Math.min(selectedClip.start + selectedClip.duration - 0.1, Math.max(selectedClip.start + 0.1, currentTime));
+    await applyCommand('clip.split', {
+      clipId: selectedClip.id,
+      at: roundTime(at),
+      newClipId: `${selectedClip.id}_split_${Date.now().toString(36)}`,
     });
-    return { ...tr, blocks };
-  });
+  };
+
+  const toggleEnabled = async () => {
+    if (!selectedClip) return;
+    await applyCommand(selectedClip.enabled ? 'clip.hide' : 'clip.show', { clipId: selectedClip.id });
+  };
+
+  const toggleMuted = async () => {
+    if (!selectedClip) return;
+    await applyCommand(selectedClip.muted ? 'clip.unmute' : 'clip.mute', { clipId: selectedClip.id });
+  };
+
+  const addMarker = async () => {
+    await applyCommand('marker.add', {
+      time: roundTime(currentTime),
+      label: markerLabel.trim() || 'Review marker',
+      metadata: { source: 'editor-bay' },
+    });
+  };
+
+  const addClipNote = async () => {
+    if (!selectedClip || !noteText.trim()) return;
+    const time = roundTime(currentTime);
+    const nextStart = roundTime(selectedClip.start + 0.5);
+    const updated = await applyCommand('note.add', {
+      target: { clipId: selectedClip.id, time, frame: time },
+      text: noteText.trim(),
+      suggestedCommand: {
+        op: 'clip.move',
+        payload: { clipId: selectedClip.id, start: nextStart },
+      },
+      metadata: { source: 'editor-bay', assetId: selectedClip.assetId },
+    });
+    if (updated) setNoteText('');
+  };
+
+  const renderFrame = async () => {
+    if (!project) return;
+    setBusyOp('render.frame');
+    setError('');
+    try {
+      const response = await fetch(apiUrl(`/api/agenticnews/editor-render/${project.projectId}/frame`), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ at: roundTime(currentTime) }),
+      });
+      if (!response.ok) throw new Error(`frame render failed (${response.status})`);
+      const result = await response.json() as { frame?: string };
+      if (result.frame) setPreviewFrame(result.frame);
+      await loadProject();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'frame render failed');
+    } finally {
+      setBusyOp('');
+    }
+  };
+
+  const startDrag = (clip: EditorClip, event: PointerEvent<HTMLButtonElement>) => {
+    const track = event.currentTarget.parentElement;
+    if (!track) return;
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+    setDrag({
+      clipId: clip.id,
+      originX: event.clientX,
+      originStart: clip.start,
+      trackWidth: track.clientWidth || timelineWidth,
+    });
+    selectClip(clip);
+  };
+
+  const updateDrag = (event: PointerEvent<HTMLButtonElement>) => {
+    if (!drag || drag.clipId !== selectedClipId) return;
+    const deltaPx = event.clientX - drag.originX;
+    const secondsPerPixel = duration / drag.trackWidth;
+    setCurrentTime(roundTime(drag.originStart + deltaPx * secondsPerPixel));
+  };
+
+  const endDrag = async (event: PointerEvent<HTMLButtonElement>) => {
+    if (!drag || drag.clipId !== selectedClipId) return;
+    event.currentTarget.releasePointerCapture?.(event.pointerId);
+    const deltaPx = event.clientX - drag.originX;
+    const secondsPerPixel = duration / drag.trackWidth;
+    const nextStart = roundTime(drag.originStart + deltaPx * secondsPerPixel);
+    setDrag(null);
+    if (Math.abs(nextStart - drag.originStart) >= 0.05) {
+      await applyCommand('clip.move', { clipId: drag.clipId, start: nextStart });
+    }
+  };
+
+  if (loading) {
+    return (
+      <div className="grid min-h-screen place-items-center bg-[#080a0f] text-slate-200">
+        <div className="text-sm font-semibold text-slate-400">Loading editor timeline</div>
+      </div>
+    );
+  }
+
+  if (error && !project) {
+    return (
+      <div className="grid min-h-screen place-items-center bg-[#080a0f] px-6 text-slate-100">
+        <div className="max-w-md rounded-md border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-100">
+          {error}
+        </div>
+      </div>
+    );
+  }
+
+  if (!project) return null;
 
   return (
-    <Box sx={{ height: '100vh', display: 'flex', flexDirection: 'column', bgcolor: '#0b0e14', color: '#e7ecf3' }}>
-      <AppBar position="static" sx={{ bgcolor: '#11151f', boxShadow: 'none', borderBottom: '1px solid #1e2433' }}>
-        <Toolbar variant="dense">
-          <Typography variant="subtitle1" sx={{ flexGrow: 1, fontWeight: 700 }}>
-            Editor Bay · <span style={{ color: '#7fd2ff' }}>{data.title || data.epId}</span>
-          </Typography>
-          <Chip size="small" label={data.stage} sx={{ mr: 1, bgcolor: '#1e2433', color: '#9fb3c8' }} />
-          <Chip size="small" label={`${fmt(total)} · ${notes.length} notes`} sx={{ bgcolor: '#1e2433', color: '#9fb3c8' }} />
-        </Toolbar>
-      </AppBar>
+    <div className="min-h-screen bg-[#080a0f] text-slate-100">
+      <header className="border-b border-white/10 bg-[#11151d]">
+        <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
+          <div>
+            <div className="flex items-center gap-3">
+              <h1 className="text-base font-semibold tracking-normal">{project.title || project.projectId}</h1>
+              <span className="rounded border border-white/10 bg-white/5 px-2 py-0.5 text-xs font-semibold text-slate-300">
+                rev {project.revision}
+              </span>
+              <span className="rounded border border-white/10 bg-white/5 px-2 py-0.5 text-xs text-slate-400">
+                {clips.length} clips
+              </span>
+            </div>
+            <div className="mt-1 text-xs text-slate-500">
+              {project.projectId} · {project.width}x{project.height} · {project.fps} fps
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setPlaying((value) => !value)}
+              className="inline-flex h-9 items-center gap-2 rounded-md border border-white/10 bg-white/5 px-3 text-sm font-semibold text-slate-100 hover:border-cyan-400/50"
+            >
+              {playing ? <Pause size={16} /> : <Play size={16} />}
+              {playing ? 'Pause' : 'Play'}
+            </button>
+            <button
+              type="button"
+              onClick={renderFrame}
+              disabled={busyOp === 'render.frame'}
+              className="inline-flex h-9 items-center gap-2 rounded-md bg-cyan-400 px-3 text-sm font-semibold text-slate-950 hover:bg-cyan-300 disabled:cursor-wait disabled:opacity-60"
+            >
+              <RefreshCw size={16} />
+              Render frame
+            </button>
+          </div>
+        </div>
+      </header>
 
-      <Box sx={{ display: 'flex', flex: 1, minHeight: 0 }}>
-        {/* LEFT: player + draw overlay + scrubber + tracks */}
-        <Box sx={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0, p: 2, gap: 1.5 }}>
-          <Box ref={stageWrapRef} sx={{ position: 'relative', bgcolor: '#000', borderRadius: 2, overflow: 'hidden', aspectRatio: '16/9', maxHeight: '52vh' }}>
-            <video
-              ref={videoRef}
-              src={staticUrl(data.videoUrl)}
-              style={{ width: '100%', height: '100%', display: 'block', objectFit: 'contain' }}
-              onClick={() => !annotating && togglePlay()}
+      {error && (
+        <div className="border-b border-red-500/20 bg-red-500/10 px-4 py-2 text-sm text-red-100">
+          {error}
+        </div>
+      )}
+
+      <main className="grid min-h-[calc(100vh-65px)] grid-cols-1 lg:grid-cols-[minmax(0,1fr)_360px]">
+        <section className="flex min-w-0 flex-col">
+          <div className="grid min-h-[300px] grid-cols-1 gap-4 border-b border-white/10 p-4 xl:grid-cols-[minmax(320px,0.75fr)_minmax(320px,1fr)]">
+            <div className="flex min-h-[260px] items-center justify-center overflow-hidden rounded-md border border-white/10 bg-black">
+              {visibleFrame ? (
+                <img
+                  src={staticUrl(visibleFrame)}
+                  alt="Rendered preview frame"
+                  className="h-full max-h-[360px] w-full object-contain"
+                />
+              ) : videoPath ? (
+                <video
+                  src={staticUrl(videoPath)}
+                  controls
+                  className="h-full max-h-[360px] w-full object-contain"
+                />
+              ) : (
+                <div className="text-center text-sm text-slate-500">
+                  <div className="text-slate-300">{fmt(currentTime)}</div>
+                  <div>No preview render cached</div>
+                </div>
+              )}
+            </div>
+
+            <div className="min-w-0 rounded-md border border-white/10 bg-[#0c1017] p-3">
+              <div className="mb-3 flex items-center justify-between">
+                <div>
+                  <div className="text-sm font-semibold">Inspector</div>
+                  <div className="text-xs text-slate-500">{selectedClip?.id || 'Select a clip'}</div>
+                </div>
+                {selectedClip && (
+                  <span className="rounded bg-white/5 px-2 py-1 text-xs text-slate-400">
+                    {selectedAsset?.type || selectedClip.kind}
+                  </span>
+                )}
+              </div>
+
+              {selectedClip ? (
+                <div className="space-y-3">
+                  <div className="grid grid-cols-3 gap-2">
+                    <LabeledInput label="Start" value={draftTiming.start} onChange={(value) => setDraftTiming((draft) => ({ ...draft, start: value }))} />
+                    <LabeledInput label="Duration" value={draftTiming.duration} onChange={(value) => setDraftTiming((draft) => ({ ...draft, duration: value }))} />
+                    <LabeledInput label="Source" value={draftTiming.sourceStart} onChange={(value) => setDraftTiming((draft) => ({ ...draft, sourceStart: value }))} />
+                  </div>
+                  <div className="grid grid-cols-5 gap-2">
+                    <LabeledInput label="X" value={draftTiming.x} onChange={(value) => setDraftTiming((draft) => ({ ...draft, x: value }))} />
+                    <LabeledInput label="Y" value={draftTiming.y} onChange={(value) => setDraftTiming((draft) => ({ ...draft, y: value }))} />
+                    <LabeledInput label="Scale" value={draftTiming.scale} onChange={(value) => setDraftTiming((draft) => ({ ...draft, scale: value }))} />
+                    <LabeledInput label="Opacity" value={draftTiming.opacity} onChange={(value) => setDraftTiming((draft) => ({ ...draft, opacity: value }))} />
+                    <LabeledInput label="Volume" value={draftTiming.volume} onChange={(value) => setDraftTiming((draft) => ({ ...draft, volume: value }))} />
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <ActionButton label="Apply timing" onClick={applyTiming} disabled={Boolean(busyOp)} />
+                    <ActionButton label="Apply properties" onClick={applyTransform} disabled={Boolean(busyOp)} />
+                    <ActionButton label="Nudge clip later" icon={<SkipForward size={15} />} onClick={() => moveSelected(0.5)} disabled={Boolean(busyOp)} />
+                    <ActionButton label="Split at playhead" icon={<Scissors size={15} />} onClick={splitSelected} disabled={Boolean(busyOp)} />
+                    <ActionButton
+                      label={selectedClip.enabled ? 'Hide clip' : 'Show clip'}
+                      icon={selectedClip.enabled ? <EyeOff size={15} /> : <Eye size={15} />}
+                      onClick={toggleEnabled}
+                      disabled={Boolean(busyOp)}
+                    />
+                    <ActionButton
+                      label={selectedClip.muted ? 'Unmute clip' : 'Mute clip'}
+                      icon={selectedClip.muted ? <Volume2 size={15} /> : <VolumeX size={15} />}
+                      onClick={toggleMuted}
+                      disabled={Boolean(busyOp)}
+                    />
+                  </div>
+                </div>
+              ) : (
+                <div className="rounded border border-dashed border-white/10 p-4 text-sm text-slate-500">
+                  Select a clip on the timeline.
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="border-b border-white/10 bg-[#0b0f16] px-4 py-3">
+            <div className="mb-2 flex items-center justify-between text-xs text-slate-500">
+              <span>{fmt(currentTime)}</span>
+              <span>{fmt(duration)}</span>
+            </div>
+            <input
+              aria-label="Timeline playhead"
+              type="range"
+              min={0}
+              max={duration}
+              step={0.1}
+              value={Math.min(currentTime, duration)}
+              onChange={(event) => setCurrentTime(roundTime(Number(event.currentTarget.value)))}
+              className="w-full accent-cyan-400"
             />
-            {annotating && (
-              <Stage
-                width={stageSize.w} height={stageSize.h}
-                style={{ position: 'absolute', inset: 0, cursor: 'crosshair' }}
-                onMouseDown={onStageDown} onMouseMove={onStageMove} onMouseUp={onStageUp}
-                onTouchStart={onStageDown} onTouchMove={onStageMove} onTouchEnd={onStageUp}
-              >
-                <Layer>
-                  {shapes.map((sh, i) => {
-                    if (sh.type === 'line') return <Line key={i} points={sh.points} stroke="#ff3b3b" strokeWidth={4} lineCap="round" lineJoin="round" tension={0.4} />;
-                    if (sh.type === 'circle') return <Circle key={i} x={sh.x} y={sh.y} radius={sh.r} stroke="#ff3b3b" strokeWidth={4} />;
-                    if (sh.type === 'arrow') return <Arrow key={i} points={sh.points} stroke="#ff3b3b" fill="#ff3b3b" strokeWidth={4} pointerLength={14} pointerWidth={14} />;
-                    return null;
-                  })}
-                </Layer>
-              </Stage>
-            )}
-          </Box>
+          </div>
 
-          {/* transport */}
-          <Box sx={{ display: 'flex', flexDirection: 'row', gap: 1, alignItems: 'center' }}>
-            <IconButton onClick={togglePlay} sx={{ color: '#7fd2ff' }}>{playing ? <PauseIcon /> : <PlayArrowIcon />}</IconButton>
-            <Typography variant="caption" sx={{ width: 90, fontVariantNumeric: 'tabular-nums' }}>{fmt(t)} / {fmt(total)}</Typography>
-            <Slider size="small" min={0} max={total} step={0.1} value={Math.min(t, total)}
-              onChange={(_, v) => seek(v as number)}
-              sx={{ color: '#7fd2ff', mx: 1 }} />
-            <Divider orientation="vertical" flexItem sx={{ borderColor: '#1e2433' }} />
-            <ToggleButtonGroup size="small" exclusive value={tool} onChange={(_, v) => setTool(v || 'none')}
-              sx={{ '& .MuiToggleButton-root': { color: '#9fb3c8', borderColor: '#1e2433' }, '& .Mui-selected': { color: '#ff3b3b !important', bgcolor: '#1e2433 !important' } }}>
-              <ToggleButton value="draw"><Tooltip title="Scribble"><GestureIcon fontSize="small" /></Tooltip></ToggleButton>
-              <ToggleButton value="circle"><Tooltip title="Circle"><RadioButtonUncheckedIcon fontSize="small" /></Tooltip></ToggleButton>
-              <ToggleButton value="arrow"><Tooltip title="Arrow"><NorthEastIcon fontSize="small" /></Tooltip></ToggleButton>
-            </ToggleButtonGroup>
-            {shapes.length > 0 && <IconButton size="small" onClick={() => setShapes((s) => s.slice(0, -1))} sx={{ color: '#9fb3c8' }}><UndoIcon fontSize="small" /></IconButton>}
-          </Box>
-
-          {/* ATOMIC TIMELINE TRACKS — click a block to pin a note at that time */}
-          <Paper sx={{ bgcolor: '#11151f', p: 1, borderRadius: 2, overflowX: 'auto', flex: 1, minHeight: 0 }}>
-            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5 }}>
-              {trackBlocks.map((tr) => (
-                <Box key={tr.key} sx={{ display: 'flex', alignItems: 'center', height: 26 }}>
-                  <Typography variant="caption" sx={{ width: 92, flexShrink: 0, color: tr.color, fontWeight: 600 }}>{tr.label}</Typography>
-                  <Box sx={{ position: 'relative', flex: 1, height: 18, bgcolor: '#0b0e14', borderRadius: 0.5 }}>
-                    {/* VO lane = live waveform from the episode mp4 audio (click to seek) */}
-                    {tr.key === 'vo' && <Box ref={waveRef} sx={{ position: 'absolute', inset: 0 }} />}
-                    {tr.key !== 'vo' && tr.blocks.map((b, i) => (
-                      <Tooltip key={i} title={`${tr.label} @ ${fmt(b.start)}${b.label ? ` — ${b.label}` : ''}`}>
-                        <Box
-                          onClick={() => { seek(b.start); setTool('none'); }}
-                          sx={{
-                            position: 'absolute', top: 0, height: '100%', borderRadius: 0.5, cursor: 'pointer',
-                            left: `${(b.start / total) * 100}%`, width: `${Math.max(0.4, (b.dur / total) * 100)}%`,
-                            bgcolor: tr.color, opacity: 0.55, '&:hover': { opacity: 1 },
-                          }}
-                        />
-                      </Tooltip>
-                    ))}
-                  </Box>
-                </Box>
+          <div className="min-h-0 flex-1 overflow-auto bg-[#090c12] p-4">
+            <div className="relative" style={{ width: timelineWidth + 160 }}>
+              <TimeRuler duration={duration} />
+              {markers.map((marker) => (
+                <button
+                  type="button"
+                  key={marker.id}
+                  onClick={() => setCurrentTime(roundTime(marker.time))}
+                  className="absolute top-7 z-20 h-[calc(100%-28px)] w-px bg-amber-300/70"
+                  style={{ left: 160 + marker.time * timeScale }}
+                  title={`${marker.label} @ ${fmt(marker.time)}`}
+                >
+                  <span className="absolute -left-2 -top-4 rounded bg-amber-300 px-1 text-[10px] font-bold text-slate-950">
+                    {marker.label}
+                  </span>
+                </button>
               ))}
-              {/* playhead */}
-              <Box sx={{ position: 'relative', height: 0 }}>
-                <Box sx={{ position: 'absolute', top: -((TRACKS.length) * 26 + 4), left: `calc(92px + ${(t / total) * 100}% * (100% - 92px) / 100%)`, width: 2, height: TRACKS.length * 26, bgcolor: '#fff', pointerEvents: 'none' }} />
-              </Box>
-            </Box>
-          </Paper>
-        </Box>
+              <div
+                className="pointer-events-none absolute top-7 z-30 h-[calc(100%-28px)] w-px bg-white"
+                style={{ left: 160 + currentTime * timeScale }}
+              />
+              <div className="space-y-2 pt-7">
+                {tracks.map((track) => {
+                  const trackClips = clips.filter((clip) => clip.trackId === track.id);
+                  return (
+                    <div key={track.id} className="grid h-16 grid-cols-[150px_minmax(720px,1fr)] gap-2">
+                      <div className="flex flex-col justify-center rounded-md border border-white/10 bg-[#11151d] px-3">
+                        <div className="truncate text-sm font-semibold">{track.name}</div>
+                        <div className="text-xs text-slate-500">{track.kind}</div>
+                      </div>
+                      <div className="relative overflow-hidden rounded-md border border-white/10 bg-[#0d121a]">
+                        <div className="absolute inset-0 bg-[linear-gradient(90deg,rgba(255,255,255,0.05)_1px,transparent_1px)] bg-[length:80px_100%]" />
+                        {track.kind === 'audio' && (
+                          <div className="absolute inset-x-0 top-1/2 h-4 -translate-y-1/2 opacity-60">
+                            <div className="h-full bg-[repeating-linear-gradient(90deg,rgba(125,211,252,0.25)_0_3px,transparent_3px_8px)]" />
+                          </div>
+                        )}
+                        {trackClips.map((clip) => {
+                          const asset = project.assets[clip.assetId];
+                          const selected = clip.id === selectedClipId;
+                          const ghostStart = drag?.clipId === clip.id ? currentTime : clip.start;
+                          return (
+                            <button
+                              type="button"
+                              key={clip.id}
+                              aria-label={`${clip.id} ${track.name}`}
+                              onClick={() => selectClip(clip)}
+                              onPointerDown={(event) => startDrag(clip, event)}
+                              onPointerMove={updateDrag}
+                              onPointerUp={endDrag}
+                              className={`absolute top-2 h-12 rounded-md border px-2 text-left text-xs shadow-sm transition ${
+                                selected
+                                  ? 'border-cyan-300 bg-cyan-300 text-slate-950'
+                                  : clip.enabled
+                                    ? 'border-cyan-400/30 bg-cyan-400/20 text-cyan-50 hover:bg-cyan-400/30'
+                                    : 'border-slate-500/30 bg-slate-700/20 text-slate-500'
+                              }`}
+                              style={{
+                                left: ghostStart * timeScale,
+                                width: Math.max(36, clip.duration * timeScale),
+                              }}
+                            >
+                              <span className="block truncate font-semibold">{clip.id}</span>
+                              <span className="block truncate opacity-75">{asset?.type || clip.kind} · {fmt(clip.start)}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        </section>
 
-        {/* RIGHT: notes rail */}
-        <Drawer variant="permanent" anchor="right" slotProps={{ paper: { sx: { width: 340, bgcolor: '#11151f', borderColor: '#1e2433', color: '#e7ecf3', position: 'relative' } } }} sx={{ width: 340, flexShrink: 0 }}>
-          <Box sx={{ p: 1.5 }}>
-            <Typography variant="subtitle2" sx={{ mb: 1, color: '#9fb3c8' }}>EDIT NOTES @ {fmt(t)}</Typography>
-            <TextField
-              fullWidth multiline minRows={2} size="small" placeholder="What needs fixing here? (rooted at this timestamp)"
-              value={draft} onChange={(e) => setDraft(e.target.value)}
-              sx={{ mb: 1, '& .MuiInputBase-root': { bgcolor: '#0b0e14', color: '#e7ecf3' }, '& fieldset': { borderColor: '#1e2433' } }}
-            />
-            <Box sx={{ display: 'flex', flexDirection: 'row', gap: 1 }}>
-              <Button fullWidth size="small" variant="contained" startIcon={<AddCommentIcon />} disabled={!draft.trim()}
-                onClick={() => saveNote('pin')} sx={{ bgcolor: '#7fd2ff', color: '#0b0e14', '&:hover': { bgcolor: '#5bc0f0' } }}>
-                Pin note
-              </Button>
-              <Button fullWidth size="small" variant="outlined" startIcon={<GestureIcon />} disabled={!draft.trim() && shapes.length === 0}
-                onClick={() => saveNote('frame')} sx={{ color: '#ff3b3b', borderColor: '#ff3b3b' }}>
-                Frame note
-              </Button>
-            </Box>
-            <Typography variant="caption" sx={{ color: '#5b6678', display: 'block', mt: 0.5 }}>
-              Pin = timestamp + comment. Frame = pause, draw on the frame, then save.
-            </Typography>
-          </Box>
-          <Divider sx={{ borderColor: '#1e2433' }} />
-          <List dense sx={{ overflowY: 'auto' }}>
-            {notes.length === 0 && <ListItem><ListItemText primary="No notes yet" sx={{ color: '#5b6678' }} /></ListItem>}
-            {notes.map((n, i) => (
-              <ListItem key={n.id || i} alignItems="flex-start"
-                secondaryAction={<IconButton edge="end" size="small" onClick={() => deleteNote(n)} sx={{ color: '#5b6678' }}><DeleteOutlineIcon fontSize="small" /></IconButton>}
-                sx={{ borderBottom: '1px solid #1e2433' }}>
-                <Box sx={{ width: '100%' }}>
-                  <Box sx={{ display: 'flex', flexDirection: 'row', gap: 1, alignItems: 'center', mb: 0.5 }}>
-                    <Chip size="small" label={fmt(n.t)} onClick={() => seek(n.t)}
-                      sx={{ bgcolor: '#0b0e14', color: '#7fd2ff', cursor: 'pointer', height: 20, fontVariantNumeric: 'tabular-nums' }} />
-                    <Chip size="small" label={n.kind === 'frame' ? '✎ frame' : `📌 ${n.track || 'pin'}`}
-                      sx={{ bgcolor: '#1e2433', color: n.kind === 'frame' ? '#ff3b3b' : '#9fb3c8', height: 20 }} />
-                  </Box>
-                  {n.frameImg && <img src={n.frameImg} alt="" style={{ width: '100%', borderRadius: 6, marginBottom: 6, cursor: 'pointer' }} onClick={() => seek(n.t)} />}
-                  <Typography variant="body2" sx={{ color: '#e7ecf3', whiteSpace: 'pre-wrap' }}>{n.text}</Typography>
-                </Box>
-              </ListItem>
-            ))}
-          </List>
-        </Drawer>
-      </Box>
-    </Box>
+        <aside className="border-t border-white/10 bg-[#11151d] lg:border-l lg:border-t-0">
+          <div className="space-y-4 p-4">
+            <div>
+              <div className="mb-2 flex items-center justify-between">
+                <h2 className="text-sm font-semibold">Notes</h2>
+                <span className="text-xs text-slate-500">{notes.length}</span>
+              </div>
+              <label className="block text-xs font-semibold text-slate-400" htmlFor="editor-note-text">
+                Note text
+              </label>
+              <textarea
+                id="editor-note-text"
+                value={noteText}
+                onChange={(event) => setNoteText(event.currentTarget.value)}
+                className="mt-1 min-h-24 w-full resize-none rounded-md border border-white/10 bg-[#090c12] px-3 py-2 text-sm text-slate-100 outline-none focus:border-cyan-400"
+                placeholder="Add an exact clip/time note"
+              />
+              <button
+                type="button"
+                onClick={addClipNote}
+                disabled={!selectedClip || !noteText.trim() || Boolean(busyOp)}
+                className="mt-2 inline-flex h-9 w-full items-center justify-center gap-2 rounded-md bg-cyan-400 text-sm font-semibold text-slate-950 hover:bg-cyan-300 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <MessageSquarePlus size={16} />
+                Add clip note
+              </button>
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-slate-400" htmlFor="editor-marker-label">
+                Marker label
+              </label>
+              <input
+                id="editor-marker-label"
+                value={markerLabel}
+                onChange={(event) => setMarkerLabel(event.currentTarget.value)}
+                className="mt-1 h-9 w-full rounded-md border border-white/10 bg-[#090c12] px-3 text-sm text-slate-100 outline-none focus:border-cyan-400"
+              />
+              <button
+                type="button"
+                onClick={addMarker}
+                disabled={Boolean(busyOp)}
+                className="mt-2 inline-flex h-9 w-full items-center justify-center gap-2 rounded-md border border-white/10 bg-white/5 text-sm font-semibold text-slate-100 hover:border-amber-300/60 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <Flag size={16} />
+                Add marker
+              </button>
+            </div>
+          </div>
+
+          <div className="border-t border-white/10">
+            {notes.length === 0 ? (
+              <div className="p-4 text-sm text-slate-500">No notes on this timeline.</div>
+            ) : (
+              <div className="divide-y divide-white/10">
+                {notes.map((note) => (
+                  <button
+                    type="button"
+                    key={note.id}
+                    onClick={() => {
+                      if (note.target.clipId) setSelectedClipId(note.target.clipId);
+                      setCurrentTime(roundTime(note.target.time || 0));
+                    }}
+                    className="block w-full p-4 text-left hover:bg-white/5"
+                  >
+                    <div className="mb-1 flex items-center justify-between gap-2">
+                      <span className="text-xs font-semibold text-cyan-300">{fmt(note.target.time || 0)}</span>
+                      <span className="truncate text-xs text-slate-500">{note.target.clipId || note.target.trackId || 'frame'}</span>
+                    </div>
+                    <div className="text-sm text-slate-200">{note.text}</div>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        </aside>
+      </main>
+    </div>
+  );
+}
+
+function TimeRuler({ duration }: { duration: number }) {
+  const ticks = [];
+  for (let time = 0; time <= duration; time += 1) ticks.push(time);
+  return (
+    <div className="absolute left-[160px] right-0 top-0 h-7">
+      {ticks.map((time) => (
+        <div
+          key={time}
+          className="absolute top-0 h-7 border-l border-white/10 pl-1 text-[10px] text-slate-500"
+          style={{ left: time * timeScale }}
+        >
+          {fmt(time)}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function LabeledInput({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <label className="block">
+      <span className="mb-1 block text-[11px] font-semibold text-slate-500">{label}</span>
+      <input
+        value={value}
+        onChange={(event) => onChange(event.currentTarget.value)}
+        className="h-8 w-full rounded-md border border-white/10 bg-[#090c12] px-2 text-xs text-slate-100 outline-none focus:border-cyan-400"
+      />
+    </label>
+  );
+}
+
+function ActionButton({
+  label,
+  icon,
+  onClick,
+  disabled,
+}: {
+  label: string;
+  icon?: ReactNode;
+  onClick: () => void;
+  disabled?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      onClick={onClick}
+      disabled={disabled}
+      className="inline-flex h-9 items-center justify-center gap-2 rounded-md border border-white/10 bg-white/5 px-3 text-xs font-semibold text-slate-100 hover:border-cyan-400/50 disabled:cursor-not-allowed disabled:opacity-50"
+    >
+      {icon}
+      {label}
+    </button>
   );
 }
