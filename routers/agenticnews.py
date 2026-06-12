@@ -22,6 +22,7 @@ from fastapi.responses import JSONResponse
 
 import services.agenticnews as db
 import services.abn_factory as factory
+import services.editor_render as editor_render
 import services.editor_timeline as editor_timeline
 from fastapi.responses import StreamingResponse
 
@@ -541,6 +542,17 @@ def _editor_timeline_store() -> editor_timeline.TimelineStore:
     return editor_timeline.TimelineStore(db.ASSETS_DIR / "editor_timelines")
 
 
+def _editor_render_dir() -> Path:
+    path = db.ASSETS_DIR / "editor_renders"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _editor_render_output(project_id: str, suffix: str) -> Path:
+    safe_id = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in project_id).strip("_")
+    return _editor_render_dir() / f"{safe_id or 'project'}{suffix}"
+
+
 @router.post("/editor-timelines", status_code=201)
 async def editor_timeline_create(body: dict = Body(...)):
     project_id = body.get("projectId")
@@ -588,6 +600,55 @@ async def editor_timeline_command(project_id: str, command: dict = Body(...)):
         raise HTTPException(status_code=409, detail=str(exc))
     except editor_timeline.CommandValidationError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+
+
+# ============ EDITOR BAY V2 — render backend spike ============
+@router.get("/editor-render/capabilities")
+async def editor_render_capabilities():
+    return editor_render.detect_render_backends()
+
+
+@router.post("/editor-render/{project_id}/render")
+async def editor_render_project(project_id: str):
+    store = _editor_timeline_store()
+    try:
+        project = store.load(project_id)
+        renderer = editor_render.choose_renderer(_editor_render_dir(), asset_root=db.ASSETS_DIR)
+        result = renderer.render(project, output_path=_editor_render_output(project_id, ".mp4"))
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="editor timeline not found")
+    except editor_render.RenderError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    project.setdefault("renderCache", {})["video"] = result
+    store.save(project)
+    return result
+
+
+@router.post("/editor-render/{project_id}/frame")
+async def editor_render_frame(project_id: str, body: dict = Body(default_factory=dict)):
+    store = _editor_timeline_store()
+    try:
+        at = max(0.0, float(body.get("at", 0)))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="at must be numeric")
+
+    try:
+        project = store.load(project_id)
+        renderer = editor_render.choose_renderer(_editor_render_dir(), asset_root=db.ASSETS_DIR)
+        result = renderer.render_frame(
+            project,
+            at=at,
+            output_path=_editor_render_output(project_id, f"_{at:.2f}.png"),
+        )
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="editor timeline not found")
+    except editor_render.RenderError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    project.setdefault("renderCache", {}).setdefault("frames", {})[f"{at:.2f}"] = result
+    store.save(project)
+    return result
 
 
 # ============ EDITOR BAY — review + visual/temporal edit notes ============
