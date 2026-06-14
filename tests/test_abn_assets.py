@@ -106,3 +106,41 @@ def test_is_managed(gw):
     inside = gw.asset_path("ep_648e806a", "card", "s0")
     assert gw.is_managed(inside)
     assert not gw.is_managed(gw.ASSETS_DIR / "ep_648e806a_s0_card.png")  # flat legacy = unmanaged
+
+
+# --- flat-slug bridge (the abn_factory refactor entrypoint) ---------------------
+
+@pytest.mark.parametrize("flat,ep,rest", [
+    ("ep_648e806a_s0", "ep_648e806a", "s0"),
+    ("ep_648e806a_s10", "ep_648e806a", "s10"),
+    ("rec_ep_6a09fa6f_s3", "rec_ep_6a09fa6f", "s3"),
+    ("ep_648e806a", "ep_648e806a", ""),          # episode-level: bare ep_id
+    ("ep5", "ep5", ""),                           # legacy short form
+])
+def test_split_slug(gw, flat, ep, rest):
+    assert gw.split_slug(flat) == (ep, rest)
+
+
+def test_split_slug_rejects_naked_name(gw):
+    with pytest.raises(gw.AssetPathError):
+        gw.split_slug("just_a_name")             # no ep_id prefix
+
+
+def test_asset_path_from_slug_segment(gw):
+    # the factory's `sid = f"{ep_id}_s{i}"` -> a card lands in css/ as s0_card.png
+    p = gw.asset_path_from_slug("ep_648e806a_s0", "card")
+    assert p.parent.name == "css"
+    assert p.parent.parent.name == "ep_648e806a"
+    assert p.name == "s0_card.png"
+
+
+def test_asset_path_from_slug_episode_level(gw):
+    # an episode-level slug (bare ep_id) yields the kind's default name
+    p = gw.asset_path_from_slug("ep_648e806a", "thumb")
+    assert p.parent.name == "renders"
+    assert p.name == "thumb.png"
+
+
+def test_asset_url_from_slug(gw):
+    url = gw.asset_url_from_slug("ep_648e806a_s1", "kinetic")
+    assert url == "/agenticnews-assets/ep_648e806a/css/s1_kinetic.mp4"

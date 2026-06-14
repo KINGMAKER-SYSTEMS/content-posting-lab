@@ -199,6 +199,47 @@ def asset_path(
     return d / fname
 
 
+# Pull the episode id off the FRONT of a flat factory slug. The factory builds
+# per-segment slugs as ``{ep_id}_s{N}`` (abn_factory: ``sid = f"{ep_id}_s{i}"``) and
+# episode-level slugs as the bare ``{ep_id}``. This recovers (ep_id, remainder) so a
+# call site that only has the flat slug can still route through the gateway WITHOUT
+# threading ep_id through every signature. Remainder is the per-segment tail ('s0',
+# 's3') or '' for an episode-level asset.
+_EP_PREFIX_RE = re.compile(r"^((?:rec_)?ep_[0-9a-f]{6,}|ep\d+)(?:_(.+))?$")
+
+
+def split_slug(flat_slug: str) -> tuple[str, str]:
+    """('ep_648e806a_s0') -> ('ep_648e806a', 's0');  ('ep_648e806a') -> ('ep_648e806a', '').
+    Raises AssetPathError if no episode id is on the front (so a stray name can't sneak
+    through as if it were episode-scoped)."""
+    m = _EP_PREFIX_RE.match(str(flat_slug).strip())
+    if not m:
+        raise AssetPathError(
+            f"slug {flat_slug!r} has no episode id prefix. Factory slugs must start with "
+            f"'ep_<hex>' (e.g. 'ep_648e806a_s0'). Pass an explicit ep_id to asset_path() "
+            f"instead if this isn't episode-scoped."
+        )
+    return m.group(1), (m.group(2) or "")
+
+
+def asset_path_from_slug(flat_slug: str, kind: str, *, ext: Optional[str] = None) -> Path:
+    """Gateway entry for call sites that only hold a flat ``{ep_id}_s{N}`` slug.
+    Splits the ep_id off the front and routes through asset_path(). The per-segment
+    remainder ('s0') becomes the asset slug; an episode-level slug (bare ep_id) yields
+    the kind's singleton/default name.
+
+        asset_path_from_slug('ep_648e806a_s0', 'card')   -> .../ep_648e806a/css/s0_card.png
+        asset_path_from_slug('ep_648e806a',    'thumb')  -> .../ep_648e806a/renders/thumb.png
+    """
+    ep_id, rest = split_slug(flat_slug)
+    return asset_path(ep_id, kind, rest or None, ext=ext)
+
+
+def asset_url_from_slug(flat_slug: str, kind: str, *, ext: Optional[str] = None) -> str:
+    """URL twin of asset_path_from_slug — what goes into timelines/props."""
+    return _rel_url(asset_path_from_slug(flat_slug, kind, ext=ext))
+
+
 def _rel_url(p: Path) -> str:
     return URL_PREFIX + str(p.relative_to(ASSETS_DIR))
 

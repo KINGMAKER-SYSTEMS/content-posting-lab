@@ -64,7 +64,9 @@ def _ensure_card_backgrounds(want: int = 6):
         while idx < want and idx < len(prompts):
             rel = _codex_image(prompts[idx], f"_tmp_bg_{idx}")
             if rel:
-                src = ASSETS / Path(rel).name
+                # rel is a /agenticnews-assets/<subpath> URL — resolve through ASSETS (it now
+                # lands in _scratch/, not the root) before promoting the keeper into the bg pool.
+                src = ASSETS / rel.removeprefix("/agenticnews-assets/")
                 if src.exists():
                     src.replace(bgdir / f"bg_{idx:02d}.png")
             idx += 1
@@ -72,6 +74,96 @@ def _ensure_card_backgrounds(want: int = 6):
         pass
 
 ASSETS = db.ASSETS_DIR
+
+# The asset-path GATEWAY (services/abn_assets) is the ONLY sanctioned way to build a
+# write path under the asset store — it enforces the per-episode folder schema so every
+# generated layer lands in {ep_id}/{footage,css,remotion,broll,audio,renders}/ instead
+# of the old flat dump. Factory slugs are `{ep_id}_s{N}`, so *_from_slug splits the
+# ep_id off the front; _asset_url turns a managed path back into its /agenticnews-assets/ URL.
+from services.abn_assets import (  # noqa: E402
+    asset_path, asset_url, asset_path_from_slug, asset_url_from_slug,
+    shared_path, published_path, split_slug, URL_PREFIX,
+)
+
+
+def _asset_url(path: Path) -> str:
+    """Absolute managed asset path -> its /agenticnews-assets/ URL (what goes in timelines)."""
+    return URL_PREFIX + str(Path(path).resolve().relative_to(ASSETS.resolve()))
+
+
+def _resolve_asset(url_or_path) -> Path:
+    """Inverse of _asset_url: a /agenticnews-assets/<subpath> URL (or bare name / abs path) -> the
+    on-disk Path under ASSETS. PRESERVES SUBDIRS — flattening to basename was silently dropping the
+    per-episode subdir, so a migrated asset read back as missing. Legacy flat names still resolve via
+    the back-compat symlinks the migration left at the old paths."""
+    s = str(url_or_path or "")
+    if s.startswith(URL_PREFIX):
+        return ASSETS / s[len(URL_PREFIX):]
+    p = Path(s)
+    if p.is_absolute():
+        return p
+    return ASSETS / s  # bare relative name → under the store root (legacy symlink covers old flat names)
+
+
+def _normalize_asset_path(path: Path) -> Path:
+    try:
+        return path.expanduser().resolve(strict=False)
+    except Exception:
+        return path
+
+
+def _editor_timeline_asset_paths() -> set[Path]:
+    """Return asset paths that are still referenced by Editor Bay timelines."""
+
+    paths: set[Path] = set()
+    timeline_dir = ASSETS / "editor_timelines"
+    asset_root = _normalize_asset_path(ASSETS)
+    try:
+        timeline_paths = list(timeline_dir.glob("*.json"))
+    except Exception:
+        return paths
+
+    def collect(value):
+        if isinstance(value, dict):
+            for child in value.values():
+                collect(child)
+            return
+        if isinstance(value, list):
+            for child in value:
+                collect(child)
+            return
+        if not isinstance(value, str):
+            return
+        if value.startswith("/agenticnews-assets/"):
+            paths.add(_normalize_asset_path(ASSETS / value.removeprefix("/agenticnews-assets/")))
+            return
+        path = Path(value)
+        if path.is_absolute():
+            normalized = _normalize_asset_path(path)
+            try:
+                normalized.relative_to(asset_root)
+            except ValueError:
+                return
+            paths.add(normalized)
+
+    for timeline_path in timeline_paths:
+        try:
+            collect(json.loads(timeline_path.read_text()))
+        except Exception:
+            continue
+    return paths
+
+
+def _editor_timeline_asset_names() -> set[str]:
+    """Return asset basenames that are still referenced by Editor Bay timelines."""
+
+    return {path.name for path in _editor_timeline_asset_paths()}
+
+
+def _is_editor_timeline_protected_asset(path: Path, protected_paths: set[Path]) -> bool:
+    return _normalize_asset_path(path) in protected_paths
+
+
 # Point the card generator at the cinematic-background pool at MODULE LOAD — so EVERY path (the loop AND
 # a direct produce_one_episode from force_ep.py, which bypasses start_factory) composites cards over real
 # backgrounds, not the flat gradient. (Was only set in start_factory → forced episodes missed it.)
@@ -80,15 +172,12 @@ if _V2_VISUALS:
         _v2cards._ASSETS_DIR = str(ASSETS)
     except Exception:
         pass
-VOICE = str(ASSETS / "john_voice.safetensors")
 WPM = 195
 _FONTS_DIR = Path(__file__).resolve().parent.parent / "fonts"
 # v2 visuals on by default; ABN_V2_VISUALS=0 falls back to the legacy screenshot chain.
 _USE_V2_VISUALS = os.getenv("ABN_V2_VISUALS", "1") == "1"
-SEG_WORDS = 200           # script-length hint to the LLM. NOTE: the cloned TTS actually speaks ~140 wpm
-                          # (measured), so a 200-word segment runs ~85-90s, NOT the ~63s a naive 195-wpm
-                          # estimate implies. Timing everywhere uses the MEASURED VO duration, so this
-                          # mismatch is cosmetic — but it's why episodes land ~15-16min, not 11-12 (below).
+SEG_WORDS = 200           # script-length hint to the LLM. Timing everywhere uses measured VO duration,
+                          # because actual TTS pace varies by engine/voice.
 N_SEGMENTS = 11           # target episode size. 11 stories × ~86s actual + sting ≈ 15-16min. Longer than
                           # the old "11-12min" comment claimed, but VALID + RPM-positive (more mid-roll
                           # inventory) and clears every gate. Keep high — do NOT trim for "shorter".
@@ -516,182 +605,33 @@ async def _script_segment(title, url, idx, is_hook, research="", deep=False):
     return txt
 
 
-# ---------------- VO (Chatterbox on Replicate, Pocket-TTS fallback) ----------------
-# Chatterbox (resemble-ai/chatterbox) is an expressive, emotion-controllable TTS that
-# delivers the dry-confident-energetic tech-narrator tonality we want (think Fireship /
-# ThePrimeagen energy) — measurably more pitch movement and natural phrasing than the
-# flat Pocket-TTS baseline. We try it first and fall back to Pocket-TTS if anything fails,
-# because the VO is essential: a missing wav kills the segment (whisper alignment reads it).
+# ---------------- VO (local Pocket-TTS, built-in English voice — the ONLY narrator) ----------------
+# The channel narrator is local Pocket-TTS with its built-in English voice. That is the only
+# supported VO. There is no voice clone and no cloud TTS: the old john_voice.safetensors clone
+# and the Replicate/Chatterbox path were both rejected narrators and have been removed. Do not
+# reintroduce a custom voice file or a cloud TTS engine.
 #
-# Tunable via env (sane defaults baked in):
-#   ABN_TTS                — "chatterbox" (default) | "pocket" to force the local fallback
-#   ABN_CHATTERBOX_VERSION — pinned model version hash
-#   ABN_TTS_EXAGGERATION   — 0.5 neutral; ~0.6 = energetic-but-stable (default 0.6)
-#   ABN_TTS_CFG            — CFG/pace weight; lower = faster, snappier (default 0.4)
-#   ABN_TTS_TEMPERATURE    — sampling temperature (default 0.8)
-# Voice consistency: drop a short reference clip at agenticnews_assets/john_voice_ref.wav
-# (or set ABN_VOICE_REF) and every segment clones it for a consistent narrator across the
-# episode. Without it, Chatterbox uses its built-in voice (still consistent run-to-run).
-_CHATTERBOX_VERSION = os.getenv(
-    "ABN_CHATTERBOX_VERSION",
-    "1b8422bc49635c20d0a84e387ed20879c0dd09254ecdb4e75dc4bec10ff94e97")
-VOICE_REF = os.getenv("ABN_VOICE_REF", str(ASSETS / "john_voice_ref.wav"))
+# Tunable via env (sane default baked in):
+#   ABN_POCKET_LANGUAGE — Pocket-TTS language/model, default english_2026-04
 
 
-def _chatterbox_chunks(text, max_words=55):
-    """Split into sentence-grouped chunks ≤max_words. Chatterbox REPEATS/loops on long input
-    (>~60 words), so we synth per-chunk then concat — fixes the 'or just mentioned or just
-    mentioned' stutter seen on full 200-word scripts."""
-    import re
-    sents = re.split(r'(?<=[.!?])\s+', (text or "").strip())
-    chunks, cur, n = [], [], 0
-    for s in sents:
-        w = len(s.split())
-        if cur and n + w > max_words:
-            chunks.append(" ".join(cur)); cur, n = [], 0
-        cur.append(s); n += w
-    if cur:
-        chunks.append(" ".join(cur))
-    return chunks or [text]
-
-
-# Phrase used to MINT the channel's single locked narrator the first time we ever synth.
-# Chatterbox with no audio_prompt invents a NEW random speaker per call — that is the
-# "5-6 different voices in one episode" bug. The fix: synth this once (seeded), cache it to
-# VOICE_REF, then clone EVERY subsequent chunk from it. One narrator, channel-wide, forever.
-_VOICE_SEED_PHRASE = ("Welcome back to Agentic Builder News. Today we are breaking down the "
-                      "tools, the releases, and the moves that actually matter for people building "
-                      "with AI right now. Let's get into it.")
-
-
-def _ensure_voice_ref() -> Path | None:
-    """Guarantee a single locked narrator reference clip exists. Mints one (seeded, no ref)
-    on first use, caches to VOICE_REF. Returns the path, or None if minting failed."""
-    ref = Path(VOICE_REF)
-    if ref.exists() and ref.stat().st_size > 1024:
-        return ref
-    # mint the founding narrator clip — seeded so it is reproducible, NO audio_prompt (this
-    # one call is allowed to invent the voice; every future call clones THIS clip).
-    if _chatterbox_one(_VOICE_SEED_PHRASE, ref, _minting=True):
-        return ref if (ref.exists() and ref.stat().st_size > 1024) else None
-    return None
-
-
-def _chatterbox_one(chunk, out: Path, _minting: bool = False):
-    """Synth ONE short chunk via Replicate Chatterbox → wav at `out`. True/False.
-
-    Unless minting the founding reference, ALWAYS clones the locked narrator (VOICE_REF) so
-    every chunk/segment/episode is the same voice."""
-    tok = os.getenv("REPLICATE_API_TOKEN")
-    if not tok:
-        return False
-    try:
-        inp = {"prompt": chunk,
-               "exaggeration": float(os.getenv("ABN_TTS_EXAGGERATION", "0.6")),
-               "cfg_weight": float(os.getenv("ABN_TTS_CFG", "0.4")),
-               "temperature": float(os.getenv("ABN_TTS_TEMPERATURE", "0.8")), "seed": 7}
-        # clone the locked narrator on EVERY real chunk. Only the founding mint skips this.
-        ref = Path(VOICE_REF)
-        if not _minting and not ref.exists():
-            minted = _ensure_voice_ref()
-            ref = minted if minted else ref
-        if not _minting and ref.exists():
-            import base64
-            ext = ref.suffix.lstrip(".") or "wav"
-            inp["audio_prompt"] = f"data:audio/{ext};base64," + base64.b64encode(ref.read_bytes()).decode()
-        body = {"version": _CHATTERBOX_VERSION, "input": inp}
-        req = urllib.request.Request("https://api.replicate.com/v1/predictions",
-            data=json.dumps(body).encode(),
-            headers={"Authorization": f"Bearer {tok}", "Content-Type": "application/json", "Prefer": "wait"})
-        r = json.load(urllib.request.urlopen(req, timeout=180))
-        if r.get("status") not in ("succeeded", "failed", "canceled"):
-            get_url = (r.get("urls") or {}).get("get")
-            for _ in range(40):
-                time.sleep(2)
-                r = json.load(urllib.request.urlopen(urllib.request.Request(get_url, headers={"Authorization": f"Bearer {tok}"}), timeout=30))
-                if r.get("status") in ("succeeded", "failed", "canceled"):
-                    break
-        if r.get("status") != "succeeded":
-            return False
-        u = r.get("output"); u = (u[0] if isinstance(u, list) and u else u)
-        if not isinstance(u, str):
-            return False
-        if not _download(u, str(out), timeout=90):
-            return False
-        return out.exists() and out.stat().st_size > 1024
-    except Exception:
-        return False
-
-
-def _chatterbox_sync(text, out: Path):
-    """Chunked + normalized Chatterbox TTS → 24kHz mono wav at `out`. Chunks long text (avoids the
-    repetition bug), concats, then normalizes to fix the 0dB clipping. False → caller falls back."""
-    import subprocess
-    chunks = _chatterbox_chunks(text)
-    parts = []
-    try:
-        for i, ch in enumerate(chunks):
-            p = out.with_name(f"{out.stem}_c{i}.wav")
-            if not _chatterbox_one(ch, p):
-                for q in parts:
-                    try: q.unlink()
-                    except Exception: pass
-                return False
-            parts.append(p)
-        raw = out.with_name(f"{out.stem}_raw.wav")
-        if len(parts) == 1:
-            parts[0].rename(raw)
-        else:
-            # use ABSOLUTE paths (no cwd) so the concat list resolves regardless of working dir
-            listf = out.with_name(f"{out.stem}_list.txt")
-            listf.write_text("".join(f"file '{p.resolve()}'\n" for p in parts))
-            subprocess.run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(listf),
-                            "-c", "copy", str(raw)], capture_output=True, timeout=120)
-            try: listf.unlink()
-            except Exception: pass
-        if not raw.exists():
-            return False
-        # NORMALIZE: fix the 0dB clipping — target -16 LUFS w/ a true-peak limiter, resample 24k mono
-        subprocess.run(["ffmpeg", "-y", "-i", str(raw), "-af",
-                        "loudnorm=I=-16:TP=-1.5:LRA=11,aresample=24000", "-ac", "1", str(out)],
-                       capture_output=True, timeout=120)
-        for q in parts + [raw]:
-            try: q.unlink()
-            except Exception: pass
-        return out.exists() and out.stat().st_size > 1024
-    except Exception:
-        for q in parts:
-            try: q.unlink()
-            except Exception: pass
-        return False
+def _pocket_tts_command(text: str, out: Path) -> list[str]:
+    language = os.getenv("ABN_POCKET_LANGUAGE", "english_2026-04").strip()
+    cmd = ["pocket-tts", "generate", "--text", text, "--output-path", str(out), "--quiet"]
+    if language:
+        cmd += ["--language", language]
+    return cmd
 
 
 async def _voice(text, name):
-    out = ASSETS / f"{name}.wav"
-    engine = os.getenv("ABN_TTS", "chatterbox").lower()
-
-    # 1) Preferred: expressive Chatterbox (skipped if forced to pocket)
-    if engine != "pocket":
-        ok = await asyncio.to_thread(_chatterbox_sync, text, out)
-        if ok and out.exists():
-            dur = await _dur(out)
-            if dur > 0:
-                return f"/agenticnews-assets/{out.name}", dur
-        # chatterbox failed/empty — clear any partial file before falling back
-        try:
-            out.unlink(missing_ok=True)
-        except Exception:
-            pass
-
-    # 2) Fallback: local Pocket-TTS (essential — VO must exist for whisper alignment)
-    cmd = f'pocket-tts generate --text {shlex.quote(text)} --output-path {shlex.quote(str(out))} --quiet'
-    if Path(VOICE).exists():
-        cmd += f' --voice {shlex.quote(VOICE)}'
+    # Local Pocket-TTS, built-in English voice — the channel's only narrator (no clone, no cloud).
+    out = asset_path_from_slug(name, "voice")
+    cmd = shlex.join(_pocket_tts_command(text, out))
     code, log = await _sh(cmd, timeout=300)
     if code != 0 or not out.exists():
         raise RuntimeError(f"tts: {log[-200:]}")
     dur = await _dur(out)
-    return f"/agenticnews-assets/{out.name}", dur
+    return _asset_url(out), dur
 
 
 async def _dur(path):
@@ -814,16 +754,24 @@ def _align_sync(wav_path):
 
 
 async def _align(wav_name):
-    wav = ASSETS / f"{wav_name}.wav"
+    # wav_name is the segment slug ('{ep_id}_s{i}'); the voice wav now lives at the gateway
+    # path {ep_id}/audio/s{i}_voice.wav. Resolve it there (fall back to the legacy flat path,
+    # which the migration left as a back-compat symlink, so in-flight episodes still align).
+    wav = asset_path_from_slug(wav_name, "voice")
+    if not wav.exists():
+        legacy = ASSETS / f"{wav_name}.wav"
+        if legacy.exists():
+            wav = legacy
     words = await asyncio.to_thread(_align_sync, wav)
     if words:
         return words
-    # fallback: openai-whisper CLI (slow) if faster-whisper unavailable
-    outdir = ASSETS / "align"; outdir.mkdir(exist_ok=True)
+    # fallback: openai-whisper CLI (slow) if faster-whisper unavailable. Alignment json -> audio layer.
+    out_json = asset_path_from_slug(wav_name, "align")
+    outdir = out_json.parent
     cmd = (f'whisper {shlex.quote(str(wav))} --model tiny.en --word_timestamps True '
            f'--output_format json --output_dir {shlex.quote(str(outdir))} --language en 2>/dev/null')
     await _sh(cmd, timeout=300)
-    jf = outdir / f"{wav_name}.json"
+    jf = outdir / f"{wav.stem}.json"
     out = []
     if jf.exists():
         try:
@@ -977,9 +925,11 @@ async def _kinetic_insert(title, script, source_url, sid):
     html, nsub = re.subn(r'const P = \{.*?\};', lambda _: pjs, html, count=1, flags=re.S)
     if not nsub:
         return None
-    src_html = ASSETS / f"{sid}_kinetic.html"
+    # intermediate html -> per-episode scratch (reaped freely); final mp4 -> css layer
+    src_html = asset_path_from_slug(sid, "scratch", ext="html")
+    src_html = src_html.with_name(f"{sid}_kinetic.html")
     src_html.write_text(html)
-    out = ASSETS / f"{sid}_kinetic.mp4"
+    out = asset_path_from_slug(sid, "kinetic")
     code, log = await _sh(
         f'cd {shlex.quote(str(_REPO))} && NODE_PATH=frontend/node_modules node '
         f'tools/seekable-html-video/render_seekable.cjs --input {shlex.quote(str(src_html))} '
@@ -988,7 +938,7 @@ async def _kinetic_insert(title, script, source_url, sid):
     if code != 0 or not out.exists() or out.stat().st_size < 50_000:
         return None
     dur = await _dur(out)
-    return {"src": f"/agenticnews-assets/{sid}_kinetic.mp4", "dur": float(dur or 11.0), "template": tpl_name}
+    return {"src": _asset_url(out), "dur": float(dur or 11.0), "template": tpl_name}
 
 
 # ---------------- SOURCE SCREENSHOT ----------------
@@ -1014,7 +964,7 @@ async def _shot_is_usable(png: Path):
 async def _screenshot(url, name):
     """Capture the source page as the on-screen artifact (the trust signal). Validates the result —
     rejects CAPTCHA/bot-walls and near-blank frames (caller falls back to animated b-roll)."""
-    out = ASSETS / f"{name}_src.png"
+    out = asset_path_from_slug(name, "src")
     # CAPTCHA/bot-wall guard: pull the page text first; bail if it's a verification wall
     bot_signals = ("verify you are human", "performing security verification", "checking your browser",
                    "enable javascript and cookies", "cloudflare", "are you a robot", "access denied",
@@ -1042,7 +992,7 @@ async def _screenshot(url, name):
                 try: out.unlink()
                 except Exception: pass
                 return None
-            return f"/agenticnews-assets/{out.name}"
+            return _asset_url(out)
     return None
 
 
@@ -1064,23 +1014,27 @@ async def _code_demo(title, brief, name):
     lines = [l.strip() for l in code.splitlines() if l.strip() and not l.strip().startswith("```")][:6]
     if not lines:
         return None
-    tape = ASSETS / f"{name}.tape"
-    out = ASSETS / f"{name}_demo.mp4"
+    out = asset_path_from_slug(name, "demo")
+    # tape + snippet are throwaway intermediates -> per-episode scratch/
+    tape = asset_path_from_slug(name, "scratch", ext="tape").with_name(f"{name}.tape")
     # write the snippet to a file and DISPLAY it with bat (syntax-highlighted) — no execution,
     # so we never get 'command not found' errors. This shows clean code, not a broken shell.
-    snippet = ASSETS / f"{name}_snippet.py"
+    snippet = asset_path_from_slug(name, "scratch", ext="py").with_name(f"{name}_snippet.py")
     snippet.write_text("\n".join(lines) + "\n")
     bat = "bat" if Path("/opt/homebrew/bin/bat").exists() else "cat"
+    # VHS has a path-parse bug on absolute Output, so we cd to a working dir and use a relative
+    # Output, then move the result to the gateway path. snippet is shown by absolute path (bat is fine).
+    workdir = out.parent
     body = [f"Output {out.name}", "Set Width 1920", "Set Height 1080", "Set FontSize 34",
             "Set TypingSpeed 42ms", "Set Theme \"Dracula\"",
             'Type "# AgenticBuilderNews — live build"', "Enter", "Sleep 500ms",
             # type the bat command that renders the code, then run it ONCE (bat just prints, never errors)
-            f'Type "{bat} --style=numbers --color=always {snippet.name}"', "Enter", "Sleep 2500ms"]
+            f'Type "{bat} --style=numbers --color=always {shlex.quote(str(snippet))}"', "Enter", "Sleep 2500ms"]
     tape.write_text("\n".join(body) + "\n")
-    # VHS must run with cwd in ASSETS (relative Output) to avoid the path-parse bug
-    code_, log = await _sh(f'cd {shlex.quote(str(ASSETS))} && vhs {shlex.quote(tape.name)} 2>&1', timeout=120)
+    # cwd = the renders/footage subdir so the relative `Output {out.name}` lands at `out`.
+    code_, log = await _sh(f'cd {shlex.quote(str(workdir))} && vhs {shlex.quote(str(tape))} 2>&1', timeout=120)
     if out.exists():
-        return f"/agenticnews-assets/{out.name}"
+        return _asset_url(out)
     return None
 
 
@@ -1144,8 +1098,8 @@ async def _real_demo(repo_url: str, name: str):
     import tempfile, shutil
     workdir = Path(tempfile.mkdtemp(prefix=f"abn_demo_{name}_"))
     repo_dir = workdir / "repo"
-    out = ASSETS / f"{name}_demo.mp4"
-    tape = ASSETS / f"{name}_real.tape"
+    out = asset_path_from_slug(name, "demo")
+    tape = asset_path_from_slug(name, "scratch", ext="tape").with_name(f"{name}_real.tape")
     try:
         # PRE-CLONE OUT OF BAND so a clone failure (404/private/timeout) cleanly falls back to the
         # scripted demo, AND so the VHS recording opens on already-fetched code (no dead wait on the
@@ -1230,7 +1184,7 @@ async def _real_demo(repo_url: str, name: str):
         if produced.exists():
             shutil.move(str(produced), str(out))
         if out.exists():
-            return f"/agenticnews-assets/{out.name}"
+            return _asset_url(out)
         return None
     except Exception:
         return None
@@ -1249,7 +1203,7 @@ async def _real_demo(repo_url: str, name: str):
 
 # ---------------- TITLE CARD ----------------
 async def _card(headline, sub, name):
-    out = ASSETS / f"{name}_card.png"
+    out = asset_path_from_slug(name, "card")
     base = str(Path(__file__).resolve().parent.parent / "fonts")
     font = f"{base}/TikTokSans16pt-Black.ttf"
     if not Path(font).exists():
@@ -1273,7 +1227,7 @@ async def _card(headline, sub, name):
     code, log = await _sh(cmd, timeout=60)
     if code != 0 or not out.exists():
         raise RuntimeError(f"card: {log[-200:]}")
-    return f"/agenticnews-assets/{out.name}"
+    return _asset_url(out)
 
 
 # ---------------- THUMBNAIL (Flux-generated background + bold text overlay — the real deal) ----------------
@@ -1295,10 +1249,14 @@ def _codex_image(prompt: str, out_name: str, size: str = "1536x1024") -> str | N
     new = sorted(after - before, key=lambda p: os.path.getmtime(p), reverse=True)
     if not new:
         return None
-    dest = ASSETS / f"{out_name}.png"
+    # NOT episode-scoped (out_name is e.g. '_tmp_bg_0' / a thumb-bg name) — cross-episode
+    # generation intermediate. Lands in _scratch/ (reapable), then the caller copies the
+    # keeper into card_backgrounds/ or the broll library.
+    dest = (ASSETS / "_scratch" / f"{out_name}.png")
+    dest.parent.mkdir(parents=True, exist_ok=True)
     try:
         shutil.copy(new[0], dest)
-        return f"/agenticnews-assets/{dest.name}"
+        return f"/agenticnews-assets/_scratch/{dest.name}"
     except Exception:
         return None
 
@@ -1340,9 +1298,12 @@ def _wan_i2v_sync(image_url, name):
             p = json.load(urllib.request.urlopen(urllib.request.Request(get_url, headers={"Authorization": f"Bearer {tok}"}), timeout=30))
             if p.get("status") == "succeeded":
                 out = p.get("output"); u = out[0] if isinstance(out, list) else out
-                dest = ASSETS / f"{name}_broll.mp4"
+                # library b-roll generation (name is 'libgenN', not episode-scoped) — write the
+                # raw clip to _scratch/; the caller copies the keeper into broll_library/.
+                dest = ASSETS / "_scratch" / f"{name}_broll.mp4"
+                dest.parent.mkdir(parents=True, exist_ok=True)
                 _download(u, str(dest), timeout=90)
-                return f"/agenticnews-assets/{dest.name}" if dest.exists() else None
+                return f"/agenticnews-assets/_scratch/{dest.name}" if dest.exists() else None
             if p.get("status") in ("failed", "canceled"):
                 return None
     except Exception:
@@ -1414,8 +1375,8 @@ async def _grow_bg_library(want=1):
         try:
             if isinstance(clip_url, str) and clip_url.startswith("http"):
                 await asyncio.to_thread(_download, clip_url, str(dest), 90)
-            else:  # already a local /agenticnews-assets path
-                src = ASSETS / Path(str(clip_url)).name
+            else:  # already a local /agenticnews-assets path (now under _scratch/)
+                src = ASSETS / str(clip_url).removeprefix("/agenticnews-assets/")
                 if src.exists():
                     await asyncio.to_thread(lambda: dest.write_bytes(src.read_bytes()))
             if dest.exists() and dest.stat().st_size > 4096:
@@ -1462,7 +1423,9 @@ def _bg_is_clean(still_url, name) -> bool:
     a clean bg OCRs to near-nothing. Best-effort: if OCR is unavailable, don't block (return True)."""
     import shutil, subprocess, urllib.request, re
     try:
-        p = ASSETS / f"{name}_still.png"
+        # throwaway OCR probe (name is 'libgenN', not episode-scoped) -> _scratch/
+        p = ASSETS / "_scratch" / f"{name}_still.png"
+        p.parent.mkdir(parents=True, exist_ok=True)
         if not _download(still_url, str(p), timeout=60):
             return True  # OCR check can't run on a failed download — don't block (matches prior behavior)
         if not shutil.which("tesseract"):
@@ -1511,8 +1474,8 @@ async def _thumbnail(ep_id, lead_title, thumb_spec):
                  f"electric cyan and red accents, cinematic lighting, high contrast, depth of field, "
                  f"NO text, NO words, professional, related to: {lead_title[:80]}")
     bg_url = await asyncio.to_thread(_flux_sync, bg_prompt)
-    bg = ASSETS / f"{ep_id}_thumb_bg.png"
-    out = ASSETS / f"{ep_id}_thumb.png"
+    bg = asset_path(ep_id, "thumb_bg")
+    out = asset_path(ep_id, "thumb")
     if bg_url:
         try:
             _download(bg_url, str(bg), timeout=60)
@@ -1538,7 +1501,7 @@ async def _thumbnail(ep_id, lead_title, thumb_spec):
     )
     code, log = await _sh(cmd, timeout=60)
     if code == 0 and out.exists():
-        return f"/agenticnews-assets/{out.name}"
+        return _asset_url(out)
     return None
 
 
@@ -1739,12 +1702,14 @@ def _plan_shots(duration, screenshot, card, words, keywords, source_url, demo=No
       • Keyword pops attach a tight highlight box to WHICHEVER beat the keyword is spoken in (UI,
         artifact, or demo) — emphasis lands on the spoken word, not only when it falls in the middle.
       • Hard 4–7s pacing (≤8s) on every beat via _chop."""
-    if screenshot and not (ASSETS / Path(screenshot).name).exists():
+    # existence checks must resolve the FULL subpath (assets live in per-episode subdirs now);
+    # flattening to basename would read every migrated asset as missing and silently blank the segment.
+    if screenshot and not _resolve_asset(screenshot).exists():
         screenshot = None
-    if not (card and (ASSETS / Path(card).name).exists()):
+    if not (card and _resolve_asset(card).exists()):
         card = screenshot
-    has_demo = demo and (ASSETS / Path(demo).name).exists()
-    has_ui = ui and (ASSETS / Path(ui).name).exists()
+    has_demo = demo and _resolve_asset(demo).exists()
+    has_ui = ui and _resolve_asset(ui).exists()
     pick = _kb_picker(seed=seg_index)  # shared across UI + artifacts + demo so moves never repeat
 
     # RHYTHM VARIATION: nudge the structural split per segment so the episode isn't templated.
@@ -2111,22 +2076,26 @@ def _v2_scene_cards(ep_id, seg_index, seg, ep_budget=None):
         tool = re.split(r'\s+[—–:]\s+', title)[0].strip() if title else "this"
         tool = re.split(r'\s*/\s*', tool)[0].strip()[:24] or "this"
         out = []
+        # v2 cards are a css-layer asset: write them straight into {ep_id}/css/ by handing cards.py
+        # the gateway subdir as its assets_dir. The filename carries only the segment-local slug
+        # (the ep_id is already the parent dir), and _asset_url builds the in-schema URL.
+        css_dir = asset_path(ep_id, "card", f"s{seg_index}").parent  # -> {ep_id}/css/ (dir created)
         for sc, sh in zip(scenes, shots):
-            nm = f"{ep_id}_s{seg_index}_v2sc{sc.index}"
+            nm = f"s{seg_index}_v2sc{sc.index}"
             try:
                 # FIRST-5-SECONDS HOOK: the very first scene of the episode (seg 0, scene 0) gets a
                 # dedicated bold HOOK card built from the cold-open's striking fact — the single most
                 # important visual for retention. Distinct, high-energy, not a calm mid-video card.
                 if seg_index == 0 and sc.index == 0:
                     hk = _hook_line(sc.text)
-                    p = _v2cards.hook_card(hk, nm, ASSETS, _FONTS_DIR)
-                    out.append(f"/agenticnews-assets/{Path(p).name}")
+                    p = _v2cards.hook_card(hk, nm, css_dir, _FONTS_DIR)
+                    out.append(_asset_url(p))
                     continue
                 if sh.shot_type == "number_card":
                     h = hero_number(sc.text)
                     if not h:
                         continue
-                    p = _v2cards.number_card(h, hero_number_label(sc.text, h), nm, ASSETS, _FONTS_DIR)
+                    p = _v2cards.number_card(h, hero_number_label(sc.text, h), nm, css_dir, _FONTS_DIR)
                 elif sh.shot_type == "vs_card":
                     from factory.formats.scenes import comparison_target
                     rival = comparison_target(sc.text)
@@ -2148,31 +2117,31 @@ def _v2_scene_cards(ep_id, seg_index, seg, ep_budget=None):
                     if not rival:
                         # no real competitor named → render a bold STATEMENT card (hook style), not
                         # another quote (vs/diagram falling back to quote was a big quote-skew source).
-                        p = _v2cards.hook_card(_statement(sc.text), nm, ASSETS, _FONTS_DIR, accent=_v2cards.BRAND_CYAN)
+                        p = _v2cards.hook_card(_statement(sc.text), nm, css_dir, _FONTS_DIR, accent=_v2cards.BRAND_CYAN)
                     else:
-                        p = _v2cards.vs_card(tool, rival, nm, ASSETS, _FONTS_DIR)
+                        p = _v2cards.vs_card(tool, rival, nm, css_dir, _FONTS_DIR)
                 elif sh.shot_type == "quote_card":
                     _qt = _quote_text(sc.text)
                     # FLOOR: a quote card needs a substantive quote. A tiny fragment ('The catch?') leaves
                     # the card mostly empty (caught on a real card) — render a bold STATEMENT instead.
                     if len(_qt) < 24 or len(_qt.split()) < 4:
-                        p = _v2cards.hook_card(_statement(sc.text), nm, ASSETS, _FONTS_DIR, accent=_v2cards.BRAND_CYAN)
+                        p = _v2cards.hook_card(_statement(sc.text), nm, css_dir, _FONTS_DIR, accent=_v2cards.BRAND_CYAN)
                     else:
-                        p = _v2cards.quote_card(_qt, nm, ASSETS, _FONTS_DIR)
+                        p = _v2cards.quote_card(_qt, nm, css_dir, _FONTS_DIR)
                 elif sh.shot_type in ("diagram", "diagram_card"):
                     steps = _diagram_steps(sc.text)
                     if len(steps) >= 2:
-                        p = _v2cards.diagram_card(f"How {tool} works", steps, nm, ASSETS, _FONTS_DIR)
+                        p = _v2cards.diagram_card(f"How {tool} works", steps, nm, css_dir, _FONTS_DIR)
                     else:
                         # no real multi-step mechanism → a bold STATEMENT card, not another quote
-                        p = _v2cards.hook_card(_statement(sc.text), nm, ASSETS, _FONTS_DIR, accent=_v2cards.BRAND_CYAN)
+                        p = _v2cards.hook_card(_statement(sc.text), nm, css_dir, _FONTS_DIR, accent=_v2cards.BRAND_CYAN)
                 elif sh.shot_type in ("title_card", "brand_broll"):
                     # quote-cap rotation target: a bold cyan STATEMENT card (hook generator) — visually
                     # distinct from the centered pull-quote, so the episode isn't a wall of quotes.
-                    p = _v2cards.hook_card(_statement(sc.text), nm, ASSETS, _FONTS_DIR, accent=_v2cards.BRAND_CYAN)
+                    p = _v2cards.hook_card(_statement(sc.text), nm, css_dir, _FONTS_DIR, accent=_v2cards.BRAND_CYAN)
                 else:
                     continue
-                out.append(f"/agenticnews-assets/{Path(p).name}")
+                out.append(_asset_url(p))
             except Exception as ce:
                 BUS.emit("editor-agent", "error", f"v2 card {sh.shot_type} failed (non-fatal): {ce!r}"[:120],
                          episode_id=ep_id)
@@ -2210,7 +2179,7 @@ def _build_timeline(ep_id, ep_idx, segments, animated_bg=None):
                     continue
                 if sh.get("type") == "artifact":
                     card_url = v2_cards[ci % len(v2_cards)]; ci += 1
-                    cf = ASSETS / Path(card_url).name
+                    cf = _resolve_asset(card_url)
                     if cf.exists() and cf.stat().st_size > 1024:
                         sh["src"] = _disk(card_url)
                         # designed cards read best with a gentle hold, not an aggressive Ken-Burns
@@ -2243,7 +2212,7 @@ def _build_timeline(ep_id, ep_idx, segments, animated_bg=None):
                     # DEFENSE-IN-DEPTH: only swap in the b-roll if the file ACTUALLY exists on disk.
                     # A missing clip in the timeline = Remotion 404 = the whole render dies silently.
                     # If it's gone, leave the original card shot (always present) — never inject a 404.
-                    bgfile = ASSETS / Path(str(bg)).name if "broll_library" not in str(bg) else ASSETS / "broll_library" / Path(str(bg)).name
+                    bgfile = _resolve_asset(bg)  # preserves broll_library/ (and any) subdir
                     if bgfile.exists() and bgfile.stat().st_size > 4096:
                         sh["type"] = "broll"; sh["src"] = _disk(bg); sh["muteSource"] = True
                         sh["clipStartSec"] = 0.5  # skip any i2v warm-up frame
@@ -2321,9 +2290,9 @@ def _build_timeline(ep_id, ep_idx, segments, animated_bg=None):
 async def _render_remotion(ep_id, timeline, force=False):
     if not (REMOTION_DIR / "node_modules").exists():
         raise RuntimeError("remotion not installed")
-    props = ASSETS / f"{ep_id}_timeline.json"
+    props = asset_path(ep_id, "timeline")
     props.write_text(json.dumps(timeline))
-    out = ASSETS / f"{ep_id}_episode.mp4"
+    out = asset_path(ep_id, "episode")
     # RE-RENDER GUARD: if this episode's mp4 already exists AND is a complete, long-enough video, REUSE
     # it instead of re-rendering from scratch. A post-render hiccup (e.g. normalize/duck throwing) could
     # re-enter this function for the same ep_id — observed a single episode rendering TWICE (~2x compute,
@@ -2344,7 +2313,7 @@ async def _render_remotion(ep_id, timeline, force=False):
                          f"reusing existing complete {_d:.0f}s render (skip redundant re-render)", episode_id=ep_id)
                 # return the SAME (path, dur) 2-tuple shape the caller unpacks — a bare string here
                 # would break `mp4, dur = await _render_remotion(...)` and trigger the retry/double-render.
-                return f"/agenticnews-assets/{out.name}", _d
+                return _asset_url(out), _d
         except Exception:
             pass   # unreadable/partial → fall through and render fresh
     # --crf 23 ≈ visually-lossless for this flat-graphics content but ~half the file size of Remotion's
@@ -2372,7 +2341,7 @@ async def _render_remotion(ep_id, timeline, force=False):
     # baked mix (VO + ducked music) drifts quiet (~-24 dB mean — caught on a real episode). A quiet
     # video sounds weak next to other channels in the feed and loses viewers. Bring the whole episode
     # to YouTube's ~-14 LUFS target with a true-peak limiter so it's competitively loud + clip-safe.
-    norm = ASSETS / f"{ep_id}_norm.mp4"
+    norm = asset_path(ep_id, "assembled", "norm")  # renders/ intermediate, replaced into `out`
     ncmd = (f'ffmpeg -y -i {shlex.quote(str(out))} '
             f'-vf format=yuv420p -colorspace bt709 -color_primaries bt709 '
             f'-color_trc bt709 -color_range tv '
@@ -2389,9 +2358,9 @@ async def _render_remotion(ep_id, timeline, force=False):
     # sidechaincompress keyed off the VO so music auto-dips when narration plays (pro audio, not a flat bed).
     bed = timeline.get("musicBed")
     if bed:
-        bedfile = ASSETS / Path(bed).name
+        bedfile = ASSETS / str(bed).removeprefix("/agenticnews-assets/") if str(bed).startswith("/agenticnews-assets/") else ASSETS / Path(bed).name
         if bedfile.exists():
-            ducked = ASSETS / f"{ep_id}_ducked.mp4"
+            ducked = asset_path(ep_id, "assembled", "ducked")  # renders/ intermediate, replaced into `out`
             # [0:a]=baked VO/SFX (the sidechain key), [1:a]=music looped; duck music by the VO, mix,
             # THEN loudnorm to -14 LUFS. CRITICAL ORDER FIX: the duck pass runs AFTER the normalize
             # pass and overwrites the file, so the loudness normalization MUST live here (the last
@@ -2414,7 +2383,7 @@ async def _render_remotion(ep_id, timeline, force=False):
                 BUS.emit("editor-agent", "audio.duck", "music ducked under VO (sidechaincompress)", episode_id=ep_id)
             else:
                 BUS.emit("editor-agent", "error", f"duck pass failed (non-fatal): {dlog[-120:]}", episode_id=ep_id)
-    return f"/agenticnews-assets/{out.name}", await _dur(out)
+    return _asset_url(out), await _dur(out)
 
 
 # ---------------- ASSEMBLE (ffmpeg, real multi-segment) ----------------
@@ -2426,11 +2395,13 @@ async def _assemble_episode(ep_id, segments):
         # deep-dive/animated segments may have no screenshot AND no card — fall back to the animated
         # bg or the logo so a visual always exists (was crashing on Path(None) → "no segment clips").
         visual = s.get("screenshot") or s.get("card") or s.get("ui") or "/agenticnews-assets/abn_logo.png"
-        vis = ASSETS / Path(visual).name
+        # assets now live in per-episode subdirs — resolve the FULL subpath from the URL, don't
+        # flatten to basename (that silently dropped the subdir → every visual missing → logo fallback).
+        vis = _resolve_asset(visual)
         if not vis.exists():
             vis = ASSETS / "abn_logo.png"
-        wav = ASSETS / Path(s["vo_path"]).name
-        clip = ASSETS / f"{ep_id}_seg{i}.mp4"
+        wav = _resolve_asset(s["vo_path"])
+        clip = asset_path(ep_id, "scratch", f"seg{i}", ext="mp4")  # per-episode concat intermediate
         # build a drawtext karaoke-ish caption (current sentence) + Ken-Burns zoom
         cap = s.get("script", "").replace(":", " ").replace("'", "")[:120]
         cap = re.sub(r'[^\w \-.,]', '', cap)
@@ -2449,9 +2420,9 @@ async def _assemble_episode(ep_id, segments):
     if not seg_clips:
         raise RuntimeError("no segment clips")
     # concat
-    listf = ASSETS / f"{ep_id}_list.txt"
+    listf = asset_path(ep_id, "scratch", "list", ext="txt")  # concat manifest intermediate
     listf.write_text("".join(f"file '{c}'\n" for c in seg_clips))
-    final = ASSETS / f"{ep_id}_episode.mp4"
+    final = asset_path(ep_id, "episode")
     code, log = await _sh(
         f'ffmpeg -y -f concat -safe 0 -i {shlex.quote(str(listf))} -c copy {shlex.quote(str(final))}', timeout=180)
     if code != 0 or not final.exists():
@@ -2460,7 +2431,7 @@ async def _assemble_episode(ep_id, segments):
             f'ffmpeg -y -f concat -safe 0 -i {shlex.quote(str(listf))} -c:v libx264 -pix_fmt yuv420p -c:a aac {shlex.quote(str(final))}', timeout=300)
         if code != 0 or not final.exists():
             raise RuntimeError(f"concat: {log[-200:]}")
-    return f"/agenticnews-assets/{final.name}", await _dur(final)
+    return _asset_url(final), await _dur(final)
 
 
 # ---------------- THE RUN LOOP ----------------
@@ -2582,7 +2553,9 @@ async def produce_one_episode(force_deepdive=False, force_lore=None):
                 line = line.strip()
                 if line.upper().startswith("BEAT:"):
                     beats.append(line[5:].strip())
-            beats = beats[:6]
+            beats = beats[:9]  # lore beats run ~85-90s each; 6 lands ~8:40 (under the 600s floor).
+                               # Allow up to 9 so a lore episode can clear MIN_EPISODE_SEC like a
+                               # roundup does via MIN_SEGMENTS=8.
             if len(beats) >= 4:
                 picks = [{"title": f"{lore_subject}: {b.split('—')[0].strip()[:40]}",
                           "url": "", "_facet": b, "_lore": True} for b in beats]
@@ -3006,7 +2979,7 @@ def _offload_episode(ep_id):
         import services.r2 as r2
         if not r2.is_configured():
             return None
-        mp4 = ASSETS / f"{ep_id}_episode.mp4"
+        mp4 = asset_path(ep_id, "episode")
         if not mp4.exists():
             return None
         key = f"agenticnews/episodes/{ep_id}_episode.mp4"
@@ -3021,6 +2994,28 @@ def _offload_episode(ep_id):
         return None
 
 
+def _gc_unsafe(f: Path) -> bool:
+    """MIGRATION SAFETY GUARD (interim, until the GC refactor lands). The legacy GC globs the flat
+    store root by `ep_*` patterns and unlinks by age. After the per-episode migration those globs now
+    also match (a) the REAL `ep_<id>/` schema directories and (b) the back-compat SYMLINKS the
+    migration left at old flat paths. Unlinking a symlink orphans the real render; "unlinking" a
+    directory is worse. So the GC must NEVER touch either until it's rewritten to reap only
+    scratch/ + tombstone-to-_trash. Returns True = DO NOT DELETE this path.
+
+    - real schema dir (ep_<id>/, _shared, _published, ...) -> protect (whole-episode loss otherwise)
+    - a symlink -> protect (it points INTO the schema; deleting it orphans the real keeper)
+    - a path that resolves under a managed schema location -> protect
+    """
+    try:
+        if f.is_symlink() or f.is_dir():
+            return True
+        # if the real target lives under a per-episode schema dir or a managed top, don't touch it
+        from services.abn_assets import is_managed
+        return is_managed(f)
+    except Exception:
+        return True  # uncertain -> protect (fail safe, never fail destructive)
+
+
 def purge_disk(intermediate_age_s=1800, keep_episodes=4, low_disk_gb=2.0):
     """Free disk: drop spent per-segment intermediates older than N seconds + (if low) trim old episodes.
     Callable from the factory loop AND the manual /gc endpoint. Returns MB freed."""
@@ -3028,11 +3023,14 @@ def purge_disk(intermediate_age_s=1800, keep_episodes=4, low_disk_gb=2.0):
     freed = 0
     try:
         now = time.time()
+        protected_paths = _editor_timeline_asset_paths()
         patterns = ("*_s*.wav", "*_demo.mp4", "*_bg*.mp4", "*_src.png", "*_snippet.py",
                     "*.tape", "*_raw.wav", "*_c[0-9].wav", "*_ducked.mp4", "*_list.txt")
         for pat in patterns:
             for f in ASSETS.glob(pat):
                 try:
+                    if _gc_unsafe(f) or _is_editor_timeline_protected_asset(f, protected_paths):
+                        continue
                     if now - f.stat().st_mtime > intermediate_age_s:
                         freed += f.stat().st_size; f.unlink()
                 except Exception:
@@ -3040,8 +3038,12 @@ def purge_disk(intermediate_age_s=1800, keep_episodes=4, low_disk_gb=2.0):
         if _sh2.disk_usage(str(ASSETS)).free / 1e9 < low_disk_gb:
             epmp4s = sorted(ASSETS.glob("ep_*_episode.mp4"), key=lambda p: p.stat().st_mtime, reverse=True)
             for old in epmp4s[keep_episodes:]:
-                try: freed += old.stat().st_size; old.unlink()
-                except Exception: pass
+                try:
+                    if _gc_unsafe(old) or _is_editor_timeline_protected_asset(old, protected_paths):
+                        continue
+                    freed += old.stat().st_size; old.unlink()
+                except Exception:
+                    pass
     except Exception:
         pass
     return freed // 1024 // 1024
@@ -3073,7 +3075,7 @@ async def _gc_segments(keep_recent=12):
                 # dead code that always missed.) Read the real location directly.
                 _ap = (v.get("artifacts") or {}).get("assembly_path", "")
                 if _ap:
-                    _mp4 = ASSETS / Path(str(_ap)).name
+                    _mp4 = _resolve_asset(_ap)  # preserve subpath — a migrated mp4 isn't "missing"
                     # only prune if it's also archived (old) — never a fresh review awaiting a human
                     dead_review = (not _mp4.exists()) and (v.get("id") in archive)
             if (stale_seg
@@ -3089,6 +3091,7 @@ async def _gc_segments(keep_recent=12):
         # files whose ep_id is no longer tracked in the DB AND whose file is older than 6h (safety window).
         try:
             live_ids = {v.get("id") for v in await db.list_videos() if v.get("kind") == "episode"}
+            protected_paths = _editor_timeline_asset_paths()
             cutoff = now - 6 * 3600
             freed, dn = 0, 0
             for f in ASSETS.glob("ep_*"):
@@ -3096,6 +3099,8 @@ async def _gc_segments(keep_recent=12):
                 if not m or m.group(1) in live_ids:
                     continue
                 try:
+                    if _gc_unsafe(f) or _is_editor_timeline_protected_asset(f, protected_paths):
+                        continue
                     if f.stat().st_mtime < cutoff:
                         freed += f.stat().st_size; f.unlink(); dn += 1
                 except Exception:
@@ -3110,11 +3115,14 @@ async def _gc_segments(keep_recent=12):
         try:
             import shutil as _sh2
             inter_freed = inter_n = 0
+            protected_paths = _editor_timeline_asset_paths()
             patterns = ("*_s*.wav", "*_demo.mp4", "*_bg*.mp4", "*_src.png", "*_snippet.py",
                         "*.tape", "*_raw.wav", "*_c[0-9].wav", "*_ducked.mp4", "*_list.txt")
             for pat in patterns:
                 for f in ASSETS.glob(pat):
                     try:
+                        if _gc_unsafe(f) or _is_editor_timeline_protected_asset(f, protected_paths):
+                            continue
                         if now - f.stat().st_mtime > 1800:  # 30min
                             inter_freed += f.stat().st_size; f.unlink(); inter_n += 1
                     except Exception:
@@ -3126,8 +3134,12 @@ async def _gc_segments(keep_recent=12):
             if free_gb < 2.0:
                 epmp4s = sorted(ASSETS.glob("ep_*_episode.mp4"), key=lambda p: p.stat().st_mtime, reverse=True)
                 for old in epmp4s[4:]:
-                    try: old.unlink()
-                    except Exception: pass
+                    try:
+                        if _gc_unsafe(old) or _is_editor_timeline_protected_asset(old, protected_paths):
+                            continue
+                        old.unlink()
+                    except Exception:
+                        pass
                 BUS.emit("system", "gc", f"low disk ({free_gb:.1f}GB) — trimmed old episodes to last 4")
         except Exception:
             pass
@@ -3211,19 +3223,19 @@ async def revisualize_episode(ep_id):
     mp4's audio track muxes straight onto the new video. The logo sting is DROPPED from the
     re-render (sting length varied across old renders); the audio is front-trimmed by the measured
     duration delta so VO/caption sync is exact arithmetic, not guesswork."""
-    tlf = ASSETS / f"{ep_id}_timeline.json"
-    orig = ASSETS / f"{ep_id}_episode.mp4"
+    tlf = asset_path(ep_id, "timeline")
+    orig = asset_path(ep_id, "episode")
     if not tlf.exists() or not orig.exists():
         raise RuntimeError(f"{ep_id}: missing timeline or mp4")
-    # keep the pristine original timeline once (idempotent re-runs)
-    bak = ASSETS / f"{ep_id}_timeline.orig.json"
+    # keep the pristine original timeline once (idempotent re-runs) — renders/ singleton
+    bak = asset_path(ep_id, "assembled", "timeline.orig", ext="json")
     if not bak.exists():
         bak.write_text(tlf.read_text())
     tl = json.loads(bak.read_text())
     d_orig = await _dur(orig)
 
-    # 1) preserve the finished audio mix before anything overwrites the mp4
-    aud = ASSETS / f"{ep_id}_origaudio.m4a"
+    # 1) preserve the finished audio mix before anything overwrites the mp4 (renders/ keeper)
+    aud = asset_path(ep_id, "assembled", "origaudio", ext="m4a")
     code, log = await _sh(f'ffmpeg -y -i {shlex.quote(str(orig))} -vn -c:a copy {shlex.quote(str(aud))}', timeout=120)
     if code != 0 or not aud.exists():
         raise RuntimeError(f"{ep_id}: audio extract failed: {log[-200:]}")
@@ -3235,20 +3247,33 @@ async def revisualize_episode(ep_id):
         sid = Path((seg.get("audio") or {}).get("vo", {}).get("src", "")).stem or seg.get("segmentId") or f"{ep_id}_s{i}"
         words = seg.get("wordTimestamps") or []
         transcript = " ".join(w.get("w", "") for w in words)
-        have = lambda n: (ASSETS / n).exists() and (ASSETS / n).stat().st_size > 1024
-        ui = f"/agenticnews-assets/{sid}_ui.mp4" if have(f"{sid}_ui.mp4") else None
-        demo = f"/agenticnews-assets/{sid}_demo.mp4" if have(f"{sid}_demo.mp4") else None
-        shotpng = f"/agenticnews-assets/{sid}_src.png" if have(f"{sid}_src.png") else None
-        card = f"/agenticnews-assets/{sid}_card.png" if have(f"{sid}_card.png") else (shotpng or "")
+        # discover each segment's existing assets THROUGH THE GATEWAY (schema paths), falling back to
+        # the legacy flat name (kept as a back-compat symlink by the migration) so episodes rendered
+        # before the migration still re-skin. `have(kind, legacy)` returns the schema URL or None.
+        def have(kind, legacy):
+            p = asset_path_from_slug(sid, kind)
+            if p.exists() and p.stat().st_size > 1024:
+                return _asset_url(p)
+            lp = ASSETS / legacy
+            if lp.exists() and lp.stat().st_size > 1024:
+                return f"/agenticnews-assets/{legacy}"
+            return None
+        ui = have("ui", f"{sid}_ui.mp4")
+        demo = have("demo", f"{sid}_demo.mp4")
+        shotpng = have("src", f"{sid}_src.png")
+        card = have("card", f"{sid}_card.png") or (shotpng or "")
         kinetic = None
         if i % 3 == 1 and transcript:
             try:
                 kinetic = await _kinetic_insert(seg.get("title", ""), transcript, seg.get("sourceUrl", ""), sid)
             except Exception as ex:
                 BUS.emit("editor-agent", "error", f"revis seg {i+1}: kinetic failed (non-fatal) {ex!r}"[:120], episode_id=ep_id)
+        # vo_path: prefer the schema voice asset; fall back to the legacy flat wav (symlinked).
+        _vo = asset_path_from_slug(sid, "voice")
+        vo_url = _asset_url(_vo) if _vo.exists() else f"/agenticnews-assets/{sid}.wav"
         segments.append({"segment_id": seg.get("segmentId") or sid, "title": seg.get("title", ""),
                          "source_url": seg.get("sourceUrl", ""), "script": transcript, "words": words,
-                         "duration": seg.get("durationSec", 0), "vo_path": f"/agenticnews-assets/{sid}.wav",
+                         "duration": seg.get("durationSec", 0), "vo_path": vo_url,
                          "screenshot": shotpng, "card": card, "demo": demo, "ui": ui, "kinetic": kinetic})
     new_tl = _build_timeline(ep_id, 0, segments, animated_bg=bgs)
     # original audio carries VO/bed/sfx — render the new video SILENT and drop the sting
@@ -3260,9 +3285,9 @@ async def revisualize_episode(ep_id):
     new_tl["title"] = tl.get("title", new_tl.get("title"))
 
     # 3) silent video render (direct remotion call — _render_remotion's loudnorm assumes audio)
-    props = ASSETS / f"{ep_id}_timeline.json"
+    props = asset_path(ep_id, "timeline")
     props.write_text(json.dumps(new_tl))
-    vid = ASSETS / f"{ep_id}_revis.mp4"
+    vid = asset_path(ep_id, "scratch", "revis", ext="mp4")  # intermediate, unlinked after mux
     try:
         _cc = int(os.getenv("ABN_RENDER_CONCURRENCY") or max(3, (os.cpu_count() or 4) // 2))
     except (TypeError, ValueError):
@@ -3277,7 +3302,7 @@ async def revisualize_episode(ep_id):
     # 4) mux: front-trim the original audio by the measured delta (= the dropped sting), normalize px
     d_new = await _dur(vid)
     trim = max(0.0, round((d_orig or 0) - (d_new or 0), 2))
-    out = ASSETS / f"{ep_id}_episode.mp4"
+    out = asset_path(ep_id, "episode")
     code, log = await _sh(
         f'ffmpeg -y -i {shlex.quote(str(vid))} -ss {trim} -i {shlex.quote(str(aud))} '
         f'-map 0:v -map 1:a -vf format=yuv420p -colorspace bt709 -color_primaries bt709 '
@@ -3293,7 +3318,7 @@ async def revisualize_episode(ep_id):
         await db.update_video(ep_id, {"stage": "review", "note": "revisualized: new visual grammar"})
     except Exception:
         pass
-    return f"/agenticnews-assets/{out.name}", d_final
+    return _asset_url(out), d_final
 
 
 _task = None
