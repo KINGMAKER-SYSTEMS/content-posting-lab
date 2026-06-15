@@ -275,3 +275,180 @@ def test_assemble_episode_raises_on_zero_segments(monkeypatch, tmp_path):
     monkeypatch.setattr(abn_factory, "_sh", boom_sh)
     with pytest.raises(RuntimeError, match="no segment clips"):
         asyncio.run(abn_factory._assemble_episode("ep_a111111", []))
+
+
+# ---------------- _plan_shots: segment mixing, rhythm variation, Ken-Burns ----------------
+#
+# _plan_shots is the shot-composition engine (≈130 lines, previously untested). It:
+#   * seeds per-segment RHYTHM variation by `seg_index % 3` (the UI/demo split, the card slot),
+#     so no two segments are templated;
+#   * shares ONE _kb_picker per segment so consecutive Ken-Burns moves never repeat their
+#     direction (the "every shot is the same slow push-in" defect John flagged);
+#   * drops UI/demo beats whose source asset is missing/corrupt, and falls back card→screenshot;
+#   * mixes live UI broll → Ken-Burns artifact middle → live demo broll.
+# Every existence check goes through _resolve_asset, so the only thing we stub is which asset
+# paths "exist" — no disk, no ffmpeg, no Remotion.
+
+def _present_assets(monkeypatch, present):
+    """Make _resolve_asset(url).exists() return True iff `url` is in `present` (a set of strings)."""
+    present = set(present)
+
+    class _P:
+        def __init__(self, s):
+            self._s = s
+
+        def exists(self):
+            return self._s in present
+
+    monkeypatch.setattr(abn_factory, "_resolve_asset", lambda x: _P(str(x)))
+
+
+def _full_segment(monkeypatch, seg_index, duration=60.0):
+    """Plan one segment with all four asset types present (ui + screenshot + card + demo)."""
+    paths = {
+        "screenshot": "/agenticnews-assets/ep_a111111/shot.png",
+        "card": "/agenticnews-assets/ep_a111111/card.png",
+        "ui": "/agenticnews-assets/ep_a111111/ui.mp4",
+        "demo": "/agenticnews-assets/ep_a111111/demo.mp4",
+    }
+    _present_assets(monkeypatch, paths.values())
+    return abn_factory._plan_shots(
+        duration, paths["screenshot"], paths["card"], words=[], keywords=[],
+        source_url="https://github.com/foo/bar", demo=paths["demo"], ui=paths["ui"],
+        seg_index=seg_index,
+    )
+
+
+def test_plan_shots_mixes_ui_artifact_demo_in_order(monkeypatch):
+    """A full segment composites three beats in order: live UI broll (open) → Ken-Burns artifact
+    middle → live code-demo broll (close). The shot ids encode the beat (ui*/shot*/demo*)."""
+    shots = _full_segment(monkeypatch, seg_index=0)
+    kinds = []
+    for s in shots:
+        if s["id"].startswith("ui"):
+            kinds.append("ui")
+        elif s["id"].startswith("demo"):
+            kinds.append("demo")
+        elif s["type"] == "artifact":
+            kinds.append("artifact")
+    # all three beat kinds present, and they never interleave (UI block, then artifacts, then demo)
+    assert set(kinds) == {"ui", "artifact", "demo"}
+    assert kinds == sorted(kinds, key=["ui", "artifact", "demo"].index)
+    # shots are time-ordered and non-overlapping; every beat is capped at the editing ceiling (~8s)
+    for a, b in zip(shots, shots[1:]):
+        assert a["endSec"] <= b["startSec"] + 0.01
+    for s in shots:
+        assert s["endSec"] - s["startSec"] <= 8.0 + 0.01
+
+
+def test_plan_shots_rhythm_variation_differs_per_segment(monkeypatch):
+    """REGRESSION (seg_index % 3 seeding): the UI/demo structural split must differ across the three
+    consecutive segments so the episode isn't templated. We pin that ui_end AND demo_start each take
+    distinct values for seg 0/1/2 — if the (0.26,0.30,0.22)/(0.68,0.72,0.70) tuples ever collapse to a
+    constant, this fails."""
+    ui_ends, demo_starts = [], []
+    for seg in (0, 1, 2):
+        shots = _full_segment(monkeypatch, seg_index=seg)
+        ui_ends.append(max(s["endSec"] for s in shots if s["id"].startswith("ui")))
+        demo_starts.append(min(s["startSec"] for s in shots if s["id"].startswith("demo")))
+    # no two segments share a UI split, and no two share a demo start → nothing is templated
+    assert len(set(ui_ends)) == 3, f"UI split repeated across segments: {ui_ends}"
+    assert len(set(demo_starts)) == 3, f"demo start repeated across segments: {demo_starts}"
+
+
+def test_plan_shots_card_placement_varies_by_segment_parity(monkeypatch):
+    """The designed card gets a gentle still-hold (startScale 1.0 → 1.04) and is placed at a DIFFERENT
+    artifact slot depending on segment parity: center-ish (n//2) on even segments, near-end (n-1) on
+    odd. This is the 'card position shifts between segments' rule — pin that even vs odd land the hold
+    in different positions within the artifact run."""
+    def card_slot(seg_index):
+        shots = _full_segment(monkeypatch, seg_index=seg_index)
+        arts = [s for s in shots if s["type"] == "artifact"]
+        held = [i for i, s in enumerate(arts)
+                if s["kenBurns"]["startScale"] == 1.0 and s["kenBurns"]["endScale"] == 1.04]
+        assert len(held) == 1, f"expected exactly one still-held card, got {held}"
+        return held[0], len(arts)
+
+    even_slot, even_n = card_slot(0)   # even seg → n//2
+    odd_slot, odd_n = card_slot(1)     # odd seg  → n-1 (end)
+    assert even_slot == even_n // 2
+    assert odd_slot == odd_n - 1
+    assert even_slot != odd_slot       # parity genuinely moves the card
+
+
+def test_plan_shots_ken_burns_moves_never_repeat_direction_in_a_segment(monkeypatch):
+    """The shared per-segment picker guarantees consecutive shots never reuse the same camera GESTURE.
+    Designed cards are deliberately exempt (they take a fixed still-hold), so we check the LIVE moves:
+    no two adjacent live Ken-Burns shots share an identical move (which would mean a repeated zoom)."""
+    shots = _full_segment(monkeypatch, seg_index=0)
+    live = []
+    for s in shots:
+        kb = s.get("kenBurns")
+        if not kb:
+            continue
+        # skip the still-held designed card (the one intentionally-static hold)
+        if kb.get("startScale") == 1.0 and kb.get("endScale") == 1.04 and kb.get("startX") == 0.5:
+            continue
+        live.append((kb["startScale"], kb["endScale"], kb["startX"], kb["startY"], kb["endX"], kb["endY"]))
+    assert len(live) >= 4
+    for a, b in zip(live, live[1:]):
+        assert a != b, "two consecutive Ken-Burns shots used an identical move (no variation)"
+
+
+def test_plan_shots_drops_missing_ui_and_demo_and_falls_back_to_card(monkeypatch):
+    """Missing/corrupt assets (existence check fails): a screenshot/ui/demo that doesn't resolve on
+    disk must be dropped — NO ui*/demo* broll shots are emitted — and the artifact middle still renders,
+    sourcing the one surviving card (screenshot was nulled, so each artifact falls back to the card)."""
+    card = "/agenticnews-assets/ep_a111111/card.png"
+    _present_assets(monkeypatch, {card})  # only the card exists; screenshot/ui/demo are all missing
+    shots = abn_factory._plan_shots(
+        40.0, "/agenticnews-assets/ep_a111111/missing_shot.png", card, words=[], keywords=[],
+        source_url="https://x", demo="/agenticnews-assets/ep_a111111/missing_demo.mp4",
+        ui="/agenticnews-assets/ep_a111111/missing_ui.mp4", seg_index=0,
+    )
+    assert shots, "a segment with a valid card must still produce shots"
+    assert all(s["type"] == "artifact" for s in shots), "no UI/demo broll should survive missing assets"
+    assert not any(s["id"].startswith(("ui", "demo")) for s in shots)
+    # screenshot was missing → nulled → every artifact sources the surviving card (not a dead path)
+    assert {s["src"] for s in shots} == {card}
+
+
+def test_plan_shots_survives_all_assets_missing(monkeypatch):
+    """Degenerate: even with NOTHING on disk (card→screenshot fallback both None), _plan_shots must not
+    crash — it emits Ken-Burns artifact beats with a null src for the compiler to skip, rather than
+    raising mid-pipeline."""
+    _present_assets(monkeypatch, set())  # nothing exists
+    shots = abn_factory._plan_shots(
+        20.0, None, None, words=[], keywords=[], source_url="https://x", seg_index=1,
+    )
+    assert shots and all(s["type"] == "artifact" for s in shots)
+    assert {s.get("src") for s in shots} == {None}
+
+
+def test_kb_picker_alternates_direction_no_two_consecutive_same(monkeypatch):
+    """Unit-pin the heart of Ken-Burns variation: the picker must never hand out two consecutive moves
+    with the SAME direction tag (in/out/pan). We map each returned move back to its _KB_MOVES direction
+    and assert adjacency never collides — over a long run that exercises the rotation wrap-around."""
+    pick = abn_factory._kb_picker(seed=0)
+    # build a reverse lookup from a move's geometry → its direction tag (field index 7)
+    dir_of = {}
+    for m in abn_factory._KB_MOVES:
+        dir_of[(m[0], m[1], m[2], m[3], m[4], m[5], m[6])] = m[7]
+
+    dirs = []
+    for _ in range(40):
+        kb = pick()
+        key = (kb["startScale"], kb["endScale"], kb["startX"], kb["startY"], kb["endX"], kb["endY"], kb["easing"])
+        dirs.append(dir_of[key])
+    for a, b in zip(dirs, dirs[1:]):
+        assert a != b, f"picker served two consecutive {a!r} moves — directions must alternate"
+    # and it genuinely uses more than one direction (not stuck on a single gesture)
+    assert len(set(dirs)) >= 2
+
+
+def test_kb_picker_seed_changes_first_move(monkeypatch):
+    """The seed (segment index) rotates the picker's starting point so different segments don't all
+    open on the identical first move."""
+    first0 = abn_factory._kb_picker(seed=0)()
+    first1 = abn_factory._kb_picker(seed=1)()
+    assert first0 != first1
