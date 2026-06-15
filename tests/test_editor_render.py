@@ -1083,3 +1083,65 @@ def test_windowed_clips_leading_clip_no_front_trim_leaves_keyframes_untouched():
     # No shift performed -> the keyframe list passes through by reference.
     assert clip["keyframes"] is original_tracks
     assert clip["keyframes"][0]["points"][0]["t"] == pytest.approx(0.5)
+
+
+def _single_audio_clip_project(tmp_path):
+    """A minimal one-audio-clip project whose asset exists on disk, so the
+    _mux_timeline_audio guards (ffmpeg present, clip present, asset exists) all
+    pass and execution reaches the subprocess.run call."""
+    tone = tmp_path / "tone.wav"
+    tone.write_bytes(b"")  # only .exists() is checked before the (mocked) ffmpeg run
+    project = timeline.new_project("mux_errpath", width=96, height=64, fps=12)
+    project["assets"]["tone"] = {"id": "tone", "type": "audio", "src": str(tone)}
+    project["clips"]["tone"] = {
+        "id": "tone", "assetId": "tone", "trackId": "audio_1", "kind": "music",
+        "start": 0, "duration": 1.0, "sourceStart": 0, "enabled": True,
+        "muted": False, "volume": 1, "transform": {},
+    }
+    return project
+
+
+def test_open_shot_audio_mux_raises_render_error_on_timeout(tmp_path, monkeypatch):
+    """services/editor_render.py:808-809 — a TimeoutExpired from the ffmpeg mux
+    subprocess is re-raised as RenderError, not allowed to escape raw. Mock
+    subprocess.run so the timeout path is deterministic and ffmpeg-independent."""
+    project = _single_audio_clip_project(tmp_path)
+    video = tmp_path / "silent_video.mp4"
+    video.write_bytes(b"")
+
+    monkeypatch.setattr(editor_render.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+
+    def _timeout(*args, **kwargs):
+        raise subprocess.TimeoutExpired(cmd="ffmpeg", timeout=900)
+
+    monkeypatch.setattr(editor_render.subprocess, "run", _timeout)
+
+    with pytest.raises(editor_render.RenderError) as excinfo:
+        editor_render._mux_timeline_audio(project, video, duration=1.0, asset_root=None)
+    assert "timed out" in str(excinfo.value)
+    # Original mp4 must be left intact (the temp replace is never reached).
+    assert video.exists()
+
+
+def test_open_shot_audio_mux_raises_render_error_on_nonzero_returncode(tmp_path, monkeypatch):
+    """services/editor_render.py:810-811 — a non-zero ffmpeg return code surfaces
+    its stderr tail as a RenderError. Mock subprocess.run to fail without touching
+    real ffmpeg, and confirm the failed temp output never clobbers the source."""
+    project = _single_audio_clip_project(tmp_path)
+    video = tmp_path / "silent_video.mp4"
+    video.write_bytes(b"original-bytes")
+
+    monkeypatch.setattr(editor_render.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+
+    class _Failed:
+        returncode = 1
+        stderr = "ffmpeg: invalid filtergraph boom"
+        stdout = ""
+
+    monkeypatch.setattr(editor_render.subprocess, "run", lambda *a, **k: _Failed())
+
+    with pytest.raises(editor_render.RenderError) as excinfo:
+        editor_render._mux_timeline_audio(project, video, duration=1.0, asset_root=None)
+    assert "invalid filtergraph boom" in str(excinfo.value)
+    # temp_output.replace(output) is past the raise, so the source is untouched.
+    assert video.read_bytes() == b"original-bytes"
