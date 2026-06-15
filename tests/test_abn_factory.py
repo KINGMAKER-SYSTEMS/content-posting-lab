@@ -1166,3 +1166,74 @@ def test_build_timeline_suppresses_lower_third_on_hook_segment_only(monkeypatch)
     assert tl["segments"][0]["lowerThirds"] == [], "seg 0 must open clean — no lower-third over the hook"
     lt = tl["segments"][1]["lowerThirds"]
     assert lt and lt[0]["headline"] and lt[0]["sourceUrl"] == "https://github.com/foo/bar"
+
+
+# ---------------- produce_one_episode: orchestration EARLY-EXIT / back-off paths ----------------
+#
+# produce_one_episode (the factory entry point) opens with two news-supply gates BEFORE it ever
+# spends a render: (1) an empty scrape idles the factory, (2) a thin-news day tops up with evergreen
+# deep-dives and, only if STILL below the segment floor, backs off rather than ship a stub episode.
+# These early-exit paths drive the freshness ledger, the evergreen progressive-relaxation loop, and
+# the live STATE/event side-effects, yet had zero coverage. Each test stubs the scrape + evergreen +
+# freshness leaves so it never hits the network, an LLM, a render, or the SQLite DB (the early
+# returns happen before db.create_video is reached).
+
+
+def _stub_memory_fresh(monkeypatch):
+    """Neutralize the freshness ledger so it never touches the real DB: nothing is 'recently used'."""
+    import services.abn_memory as mem
+    monkeypatch.setattr(mem, "is_recently_used", lambda title, *a, **k: False, raising=False)
+
+
+def test_produce_one_episode_idles_when_no_stories_scraped(monkeypatch):
+    """The very first gate: an empty scrape must idle the factory and return None — no episode card
+    is created, no render is attempted. (services/abn_factory.py ~2487.) A regression here would let
+    the loop spin on a thin-news cycle instead of backing off cleanly."""
+    monkeypatch.setattr(abn_factory, "_scrape_sync", lambda: [])
+
+    async def boom_create(*a, **k):  # the idle return fires BEFORE any episode row is created
+        raise AssertionError("created an episode despite zero scraped stories")
+
+    monkeypatch.setattr(abn_factory.db, "create_video", boom_create)
+
+    seen = {e["id"] for e in abn_factory.BUS.replay()}
+    result = asyncio.run(abn_factory.produce_one_episode())
+
+    assert result is None
+    assert abn_factory.STATE["stage"] == "idle"
+    # the idle transition was announced on the bus (stage.idle from the scraper agent)
+    new = [e for e in abn_factory.BUS.replay() if e["id"] not in seen]
+    assert any(e["stage"] == "idle" for e in new), "an empty scrape must emit an idle stage event"
+
+
+def test_produce_one_episode_backs_off_when_below_floor_after_evergreen(monkeypatch):
+    """Thin-news back-off: when the scrape returns fewer than the segment floor (MIN_SEGMENTS) AND
+    the evergreen top-up can't make up the gap, produce_one_episode must idle + back off (return
+    None) rather than ship a too-short stub episode. This drives the evergreen progressive-relaxation
+    loop (12h → 3h → 0 windows) AND the floor gate (services/abn_factory.py ~2510-2534). We give it 2
+    fresh stories, an empty evergreen pool, and a default roundup (no force) so the floor stays at
+    MIN_SEGMENTS — 2 < floor → back off. db.create_video must never be reached."""
+    _stub_memory_fresh(monkeypatch)
+    thin = [
+        {"title": "Anthropic ships a thing", "url": "https://example.com/a", "pts": 120, "source_signal": "lab"},
+        {"title": "OpenAI ships another", "url": "https://example.com/b", "pts": 90, "source_signal": "lab"},
+    ]
+    monkeypatch.setattr(abn_factory, "_scrape_sync", lambda: list(thin))
+    monkeypatch.setattr(abn_factory, "_evergreen_topics", lambda n: [])  # nothing to top up with
+
+    async def boom_create(*a, **k):  # the floor back-off fires BEFORE the episode row is created
+        raise AssertionError("created an episode despite news below the segment floor")
+
+    monkeypatch.setattr(abn_factory.db, "create_video", boom_create)
+
+    assert len(thin) < abn_factory.MIN_SEGMENTS, "fixture must sit below the floor for this gate to fire"
+
+    seen = {e["id"] for e in abn_factory.BUS.replay()}
+    result = asyncio.run(abn_factory.produce_one_episode())
+
+    assert result is None
+    assert abn_factory.STATE["stage"] == "idle"
+    # the thin-news back-off announces itself (news.thin) so the gap is observable, not silent
+    new = [e for e in abn_factory.BUS.replay() if e["id"] not in seen]
+    assert any(e["action"] == "news.thin" for e in new), \
+        "a sub-floor news day (post-evergreen) must emit a news.thin back-off event"
