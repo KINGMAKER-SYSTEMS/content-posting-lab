@@ -445,3 +445,174 @@ def test_tools_tts_success_attaches_artifact_to_video(client, monkeypatch):
     )
     assert v["artifacts"]["vo"] is True
     assert v["artifacts"]["vo_path"] == f"/agenticnews-assets/{vid}.wav"
+
+
+# --------------------------------------------------------- tools/* more 400/500
+def test_tools_cards_rejects_when_render_fails_without_video(client, monkeypatch):
+    """/tools/cards 500 path when no video_id is attached: a non-zero magick exit
+    surfaces as a 500 and nothing is auto-attached (no card to a phantom video)."""
+    import routers.agenticnews as r
+
+    async def fake_sh(cmd, timeout=60):
+        return 127, "magick: not found"
+
+    monkeypatch.setattr(r, "_sh", fake_sh)
+    resp = client.post("/api/agenticnews/tools/cards", json={"title": "HI", "name": "loose"})
+    assert resp.status_code == 500
+    assert "card failed" in resp.json()["detail"]
+
+
+def test_tools_assemble_rejects_missing_vo_only(client):
+    """assemble needs BOTH card_path and vo_path — supplying only one is a 400."""
+    r = client.post(
+        "/api/agenticnews/tools/assemble",
+        json={"name": "clip", "card_path": "/agenticnews-assets/x_card.png"},
+    )
+    assert r.status_code == 400
+    assert "need card_path and vo_path" in r.json()["detail"]
+
+
+# --------------------------------------------------------- publish-package 404
+def test_publish_package_missing_episode_returns_404(client):
+    r = client.get("/api/agenticnews/episodes/ep_nope/publish-package")
+    assert r.status_code == 404
+    assert "episode not found" in r.json()["detail"]
+
+
+# --------------------------------------------------- editor-timelines create/import
+def test_editor_timeline_create_requires_project_id(client):
+    """POST /editor-timelines with no projectId is a 400 (line 1414)."""
+    r = client.post("/api/agenticnews/editor-timelines", json={"title": "x"})
+    assert r.status_code == 400
+    assert "projectId is required" in r.json()["detail"]
+
+
+def test_editor_timeline_create_rejects_demo_project(client):
+    """Demo/sandbox project ids are disabled — a 'demo*' id is a 400 (line 584)."""
+    r = client.post(
+        "/api/agenticnews/editor-timelines", json={"projectId": "demo-playground"}
+    )
+    assert r.status_code == 400
+    assert "demo editor timelines are disabled" in r.json()["detail"]
+
+
+def test_editor_timeline_import_abn_requires_timeline_object(client):
+    """import-abn needs a `timeline` dict in the body — a missing/non-dict value is 400 (line 1432)."""
+    r = client.post(
+        "/api/agenticnews/editor-timelines/ep_real1/import-abn",
+        json={"sourceEpisodeId": "ep_real1"},
+    )
+    assert r.status_code == 400
+    assert "timeline object is required" in r.json()["detail"]
+
+
+# ------------------------------------------------------ editor-timelines commands
+def _make_editor_project(client, project_id="ep_cmd1"):
+    """Create a real (non-demo) editor timeline and return (id, revision)."""
+    resp = client.post(
+        "/api/agenticnews/editor-timelines", json={"projectId": project_id}
+    )
+    assert resp.status_code == 201, resp.text
+    return project_id, int(resp.json()["revision"])
+
+
+def test_editor_command_missing_project_returns_404(client):
+    """Applying a command to a project that was never created is a 404 (line 1480)."""
+    r = client.post(
+        "/api/agenticnews/editor-timelines/ep_ghost/commands",
+        json={"op": "marker.add", "expectedRevision": 0, "payload": {}},
+    )
+    assert r.status_code == 404
+    assert "editor timeline not found" in r.json()["detail"]
+
+
+def test_editor_command_revision_conflict_returns_409(client):
+    """A command whose expectedRevision is stale is a 409 RevisionConflict (line 1482)."""
+    pid, rev = _make_editor_project(client, "ep_conflict")
+    r = client.post(
+        f"/api/agenticnews/editor-timelines/{pid}/commands",
+        json={"op": "marker.add", "expectedRevision": rev + 5, "payload": {}},
+    )
+    assert r.status_code == 409
+
+
+def test_editor_command_missing_expected_revision_returns_400(client):
+    """A command with no expectedRevision is a CommandValidationError -> 400 (line 1484)."""
+    pid, _rev = _make_editor_project(client, "ep_norev")
+    r = client.post(
+        f"/api/agenticnews/editor-timelines/{pid}/commands",
+        json={"op": "marker.add", "payload": {}},
+    )
+    assert r.status_code == 400
+
+
+def test_editor_command_unsupported_op_returns_400(client):
+    """An unrecognised op is a CommandValidationError -> 400 (line 1484)."""
+    pid, rev = _make_editor_project(client, "ep_badop")
+    r = client.post(
+        f"/api/agenticnews/editor-timelines/{pid}/commands",
+        json={"op": "not.a.real.op", "expectedRevision": rev, "payload": {}},
+    )
+    assert r.status_code == 400
+
+
+def test_editor_command_rejects_demo_project(client):
+    """Commands against a demo project id are rejected with a 400 before any store hit."""
+    r = client.post(
+        "/api/agenticnews/editor-timelines/demo-x/commands",
+        json={"op": "marker.add", "expectedRevision": 0, "payload": {}},
+    )
+    assert r.status_code == 400
+    assert "demo editor timelines are disabled" in r.json()["detail"]
+
+
+# ----------------------------------------------- editor-timelines revert-last
+def test_editor_revert_last_requires_expected_revision(client):
+    """revert-last with no expectedRevision in the body is a 400 (line 1491)."""
+    pid, _rev = _make_editor_project(client, "ep_revert1")
+    r = client.post(
+        f"/api/agenticnews/editor-timelines/{pid}/commands/revert-last", json={}
+    )
+    assert r.status_code == 400
+    assert "expectedRevision is required" in r.json()["detail"]
+
+
+def test_editor_revert_last_non_integer_expected_revision_returns_400(client):
+    """A non-integer expectedRevision is coerced and fails as a 400 (line 1508)."""
+    pid, _rev = _make_editor_project(client, "ep_revert2")
+    r = client.post(
+        f"/api/agenticnews/editor-timelines/{pid}/commands/revert-last",
+        json={"expectedRevision": "not-a-number"},
+    )
+    assert r.status_code == 400
+
+
+def test_editor_revert_last_missing_project_returns_404(client):
+    """revert-last on a project that doesn't exist is a 404 (line 1503)."""
+    r = client.post(
+        "/api/agenticnews/editor-timelines/ep_no_such/commands/revert-last",
+        json={"expectedRevision": 0},
+    )
+    assert r.status_code == 404
+
+
+def test_editor_revert_last_nothing_to_revert_returns_400(client):
+    """A fresh project has an empty command log; reverting is a CommandValidationError -> 400 (line 1506)."""
+    pid, rev = _make_editor_project(client, "ep_revert3")
+    r = client.post(
+        f"/api/agenticnews/editor-timelines/{pid}/commands/revert-last",
+        json={"expectedRevision": rev},
+    )
+    assert r.status_code == 400
+
+
+# --------------------------------------------------------- editor-render 400
+def test_editor_render_rejects_non_numeric_start(client):
+    """start/duration must be numeric — a non-numeric value is a 400 (line 1538)."""
+    pid, _rev = _make_editor_project(client, "ep_render1")
+    r = client.post(
+        f"/api/agenticnews/editor-render/{pid}/render",
+        json={"start": "soon", "duration": 5},
+    )
+    assert r.status_code == 400
+    assert "must be numeric" in r.json()["detail"]
