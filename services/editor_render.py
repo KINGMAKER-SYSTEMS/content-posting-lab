@@ -24,6 +24,19 @@ class RenderError(RuntimeError):
     """Raised when a render backend cannot produce an artifact."""
 
 
+def _num(value: Any, default: float) -> float:
+    """Coerce a JSON-sourced transform/opacity value to float, falling back to
+    ``default`` for garbage (``None``, ``"foo"``, NaN/inf). Frontend transforms
+    arrive as untrusted JSON; a poisoned ``opacity``/``scale``/``x``/``y`` must
+    not crash filter-graph construction with a bare ``ValueError`` (which escapes
+    ``render()`` as an uncaught 500). ponytail: one coercion, sane default."""
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return default
+    return out if math.isfinite(out) else default
+
+
 def detect_render_backends() -> dict[str, dict[str, Any]]:
     openshot_module, openshot_reason, openshot_path = _import_openshot()
     ffmpeg = shutil.which("ffmpeg")
@@ -477,10 +490,10 @@ class FFmpegLayeredRenderer:
         height: int,
     ) -> str:
         transform = clip.get("transform") or {}
-        opacity = float(transform.get("opacity", 1.0))
-        scale = max(0.01, float(transform.get("scale", 1.0)))
-        duration = float(clip.get("duration") or 0)
-        source_start = float(clip.get("sourceStart") or 0)
+        opacity = min(1.0, max(0.0, _num(transform.get("opacity"), 1.0)))
+        scale = max(0.01, _num(transform.get("scale"), 1.0))
+        duration = _num(clip.get("duration"), 0.0)
+        source_start = _num(clip.get("sourceStart"), 0.0)
         asset_type = asset.get("type")
         if asset_type == "video":
             trim = f"trim=start={source_start:.3f}:duration={duration:.3f},setpts=PTS-STARTPTS,"
@@ -753,12 +766,29 @@ def _windowed_clips(project: dict[str, Any], *, window_start: float, duration: f
             continue
         overlap_start = max(clip_start, window_start)
         overlap_end = min(clip_end, window_end)
+        front_trim = max(0.0, window_start - clip_start)
         next_clip = dict(clip)
         next_clip["start"] = overlap_start - window_start
         next_clip["duration"] = max(0.001, overlap_end - overlap_start)
-        next_clip["sourceStart"] = float(clip.get("sourceStart") or 0) + max(0.0, window_start - clip_start)
+        next_clip["sourceStart"] = float(clip.get("sourceStart") or 0) + front_trim
+        # Keyframe point `t` is seconds relative to the clip start. Trimming the
+        # clip's front by `front_trim` shifts that origin, so each point must move
+        # down by the same amount (clamped at 0) or its animation fires too late.
+        if front_trim and clip.get("keyframes"):
+            next_clip["keyframes"] = _shift_keyframes(clip["keyframes"], -front_trim)
         windowed.append(next_clip)
     return windowed
+
+
+def _shift_keyframes(keyframes: list[dict[str, Any]], delta: float) -> list[dict[str, Any]]:
+    shifted: list[dict[str, Any]] = []
+    for track in keyframes:
+        points = [
+            {**point, "t": max(0.0, float(point.get("t") or 0.0) + delta)}
+            for point in (track.get("points") or [])
+        ]
+        shifted.append({**track, "points": points})
+    return shifted
 
 
 def _render_scope_project(project: dict[str, Any], *, window_start: float, duration: float | None) -> dict[str, Any]:
@@ -778,8 +808,8 @@ def _render_scope_project(project: dict[str, Any], *, window_start: float, durat
 
 def _overlay_expr(clip: dict[str, Any]) -> tuple[str, str]:
     transform = clip.get("transform") or {}
-    x = float(transform.get("x", 0.5))
-    y = float(transform.get("y", 0.5))
+    x = _num(transform.get("x"), 0.5)
+    y = _num(transform.get("y"), 0.5)
     return f"(main_w-overlay_w)*{x:.6f}", f"(main_h-overlay_h)*{y:.6f}"
 
 

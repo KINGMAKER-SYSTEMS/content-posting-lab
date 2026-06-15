@@ -385,6 +385,86 @@ def test_ffmpeg_renderer_skips_text_only_lower_third_without_crashing(tmp_path):
     assert all(m["assetId"] != "lt" for m in result["missingAssets"])  # not reported missing
 
 
+def test_ffmpeg_renderer_raises_render_error_on_unreadable_visual_src(tmp_path):
+    """_resolve_src points at a file that does not exist on disk. The build step
+    must record it in missingAssets and render() must raise RenderError (the
+    production fail-closed contract) rather than feed a phantom -i input to ffmpeg."""
+    project = _project_with_card("missing_visual", tmp_path / "does_not_exist.png", x=0.0)
+    renderer = editor_render.FFmpegLayeredRenderer(tmp_path / "renders")
+    with pytest.raises(editor_render.RenderError) as excinfo:
+        renderer.render(project, output_path=tmp_path / "renders" / "missing_visual.mp4")
+    assert "missing assets" in str(excinfo.value)
+    assert "does_not_exist.png" in str(excinfo.value)
+
+
+def test_ffmpeg_renderer_raises_render_error_on_missing_audio_asset(tmp_path):
+    """An audio clip whose src file is absent is a missing asset too — the audio
+    branch of the build loop must funnel it to the same missingAssets gate so the
+    render fails closed instead of silently dropping the voiceover."""
+    red = _solid_png(tmp_path / "red.png", "red")
+    project = _project_with_card("missing_audio", red, x=0.0)
+    project["assets"]["vo"] = {"id": "vo", "type": "audio", "src": str(tmp_path / "ghost.wav")}
+    project["clips"]["vo_clip"] = {
+        "id": "vo_clip", "assetId": "vo", "trackId": "audio_1", "kind": "voiceover",
+        "start": 0.0, "duration": 1.0, "sourceStart": 0.0,
+        "enabled": True, "muted": False, "volume": 1.0, "transform": {},
+    }
+    renderer = editor_render.FFmpegLayeredRenderer(tmp_path / "renders")
+    with pytest.raises(editor_render.RenderError) as excinfo:
+        renderer.render(project, output_path=tmp_path / "renders" / "missing_audio.mp4")
+    assert "ghost.wav" in str(excinfo.value)
+
+
+def test_ffmpeg_renderer_tolerates_malformed_transform_and_opacity(tmp_path):
+    """Transforms arrive as untrusted frontend JSON. A poisoned opacity/scale/x/y
+    (non-numeric, NaN, out-of-range) previously raised a bare ValueError out of
+    _visual_filter/_overlay_expr that escaped render() as an uncaught 500. The
+    renderer must coerce to sane defaults and still produce a valid mp4."""
+    red = _solid_png(tmp_path / "red.png", "red")
+    project = _project_with_card("bad_transform", red, x=0.0)
+    project["clips"]["card_clip"]["transform"] = {
+        "x": "left", "y": None, "scale": "huge", "opacity": "opaque",
+    }
+    renderer = editor_render.FFmpegLayeredRenderer(tmp_path / "renders")
+    result = renderer.render(project, output_path=tmp_path / "renders" / "bad_transform.mp4")
+    assert Path(result["video"]).exists()
+    assert _probe_duration(Path(result["video"])) >= 0.9
+
+
+def test_ffmpeg_renderer_mixes_overlapping_audio_clips_without_crashing(tmp_path):
+    """Two audio clips whose timelines overlap must both survive the amix filter
+    (line 450). Overlapping ranges are the common case (music bed under VO); the
+    mix must stay audible across the overlap window rather than dropping a stream."""
+    red = _solid_png(tmp_path / "red.png", "red")
+    first = tmp_path / "first.wav"
+    second = tmp_path / "second.wav"
+    for path, frequency in ((first, 440), (second, 880)):
+        subprocess.run(
+            ["ffmpeg", "-y", "-f", "lavfi", "-i",
+             f"sine=frequency={frequency}:duration=1", "-ac", "1", "-ar", "48000", str(path)],
+            check=True, capture_output=True, text=True,
+        )
+    project = _project_with_card("overlap_audio", red, x=0.0)
+    project["assets"]["bed"] = {"id": "bed", "type": "audio", "src": str(first)}
+    project["assets"]["vo"] = {"id": "vo", "type": "audio", "src": str(second)}
+    project["clips"]["bed_clip"] = {
+        "id": "bed_clip", "assetId": "bed", "trackId": "audio_1", "kind": "music",
+        "start": 0.0, "duration": 1.0, "sourceStart": 0.0,
+        "enabled": True, "muted": False, "volume": 1.0, "transform": {},
+    }
+    project["clips"]["vo_clip"] = {
+        **project["clips"]["bed_clip"],
+        "id": "vo_clip", "assetId": "vo", "trackId": "audio_2", "kind": "voiceover",
+        "start": 0.5,  # overlaps bed_clip's [0,1] window
+    }
+    renderer = editor_render.FFmpegLayeredRenderer(tmp_path / "renders")
+    output = tmp_path / "renders" / "overlap_audio.mp4"
+    result = renderer.render(project, output_path=output)
+    assert Path(result["video"]).exists()
+    assert result["missingAssets"] == []
+    assert _mean_volume(output, start=0.6, duration=0.3) > -40  # both streams audible in overlap
+
+
 def test_moving_clip_changes_preview_without_regenerating_asset(tmp_path):
     red = _solid_png(tmp_path / "red.png", "red")
     renderer = editor_render.FFmpegLayeredRenderer(tmp_path / "renders")
