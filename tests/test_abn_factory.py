@@ -1515,3 +1515,78 @@ def test_offload_happy_path_emits_offload_not_error(monkeypatch, tmp_path):
     assert result == "https://cdn.example/agenticnews/episodes/ep_a11111_episode.mp4"
     assert any(a[:2] == ("system", "offload") for (a, k) in events), "success must log the offload"
     assert not any(a[:2] == ("system", "error") for (a, k) in events), "no error on the success path"
+
+
+# ---------------- AUTO-PUBLISH: missing abn_youtube must alert ONCE, not spam ----------------
+
+async def _drive_loop_cycles(monkeypatch, n_cycles, pending_eps):
+    """Run run_factory_loop for ~n_cycles with every heavy collaborator stubbed, capturing every
+    BUS.emit. produce_one_episode and the GC are no-ops; sleeps are skipped; list_videos always
+    returns the given pending episodes (in 'review', kind 'episode'). The loop is cancelled after
+    n_cycles real iterations so it can't run forever."""
+    events = []
+    monkeypatch.setattr(abn_factory.BUS, "emit",
+                        lambda *a, **k: events.append((a, k)) or {"id": len(events)})
+
+    # keep STATE hermetic across tests (the once-only warn flag lives here)
+    abn_factory.STATE.pop("_ytmod_warned", None)
+
+    async def fake_list_videos(stage=None):
+        return list(pending_eps) if stage == "review" else []
+    monkeypatch.setattr(abn_factory.db, "list_videos", fake_list_videos)
+
+    async def fake_gc(*a, **k):
+        return None
+    monkeypatch.setattr(abn_factory, "_gc_segments", fake_gc)
+
+    calls = {"n": 0}
+
+    async def fake_produce(*a, **k):
+        calls["n"] += 1
+        if calls["n"] >= n_cycles:
+            raise asyncio.CancelledError  # break out of the while True after n cycles
+        return None
+    monkeypatch.setattr(abn_factory, "produce_one_episode", fake_produce)
+
+    async def fake_sleep(*a, **k):
+        return None
+    monkeypatch.setattr(abn_factory.asyncio, "sleep", fake_sleep)
+
+    # abn_memory.stats is touched for the lore-rotation branch; keep it cheap + deterministic
+    import services.abn_memory as _mm
+    monkeypatch.setattr(_mm, "stats", lambda: {"episodes": 0})
+
+    await abn_factory.run_factory_loop()
+    return events
+
+
+@pytest.mark.asyncio
+async def test_missing_abn_youtube_alerts_once_not_per_cycle(monkeypatch):
+    """The auto-publish loop tries `import services.abn_youtube`, which does not exist. With an
+    episode waiting in review the operator MUST be told the feature is broken — but exactly once,
+    as a distinct 'unavailable' alert, not a generic per-cycle 'error' that buries the signal in
+    the 600-entry ring buffer."""
+    import importlib.util
+    assert importlib.util.find_spec("services.abn_youtube") is None, \
+        "test premise: abn_youtube is genuinely absent"
+
+    pending = [{"id": "ep_pub01", "kind": "episode", "stage": "review"}]
+    events = await _drive_loop_cycles(monkeypatch, n_cycles=3, pending_eps=pending)
+
+    unavailable = [(a, k) for (a, k) in events if a[:2] == ("publisher", "unavailable")]
+    assert len(unavailable) == 1, "must alert exactly once across multiple cycles, not every cycle"
+    assert "abn_youtube" in unavailable[0][0][2], "alert must name the missing module"
+
+    publish_errors = [(a, k) for (a, k) in events if a[:2] == ("publisher", "error")]
+    assert not publish_errors, "missing module is a config state, not a swallowed runtime error"
+
+
+@pytest.mark.asyncio
+async def test_no_publisher_noise_when_no_pending_episodes(monkeypatch):
+    """When nothing is waiting in review, the loop must not touch the publisher at all — no import
+    attempt, hence no 'unavailable' alert and no 'error'. (Guards the regression where the import
+    fired every cycle even with an empty board.)"""
+    events = await _drive_loop_cycles(monkeypatch, n_cycles=3, pending_eps=[])
+
+    assert not [(a, k) for (a, k) in events if a[0] == "publisher"], \
+        "an empty review board must produce zero publisher events"

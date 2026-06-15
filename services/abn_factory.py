@@ -3260,17 +3260,32 @@ async def run_factory_loop():
             # (private by default) — fully autonomous, no human in the loop. Dormant until configured.
             review = await db.list_videos(stage="review")
             pending_eps = [v for v in review if v.get("kind") == "episode"]
-            try:
-                import services.abn_youtube as ytmod
-                if pending_eps and ytmod.is_configured():
-                    for e in pending_eps:
-                        _set("publishing", "publisher", f"auto-publishing {e['id']} to YouTube", e["id"])
-                        import urllib.request as _u
-                        _u.urlopen(_u.Request("http://127.0.0.1:8000/api/agenticnews/episodes/" + e["id"] + "/publish",
-                                              data=b"{}", headers={"Content-Type": "application/json"}, method="POST"), timeout=300)
-                    pending_eps = []  # cleared via publish
-            except Exception as ex:
-                BUS.emit("publisher", "error", f"auto-publish: {ex}", )
+            # Only touch the publisher when there's actually something to publish — otherwise the
+            # missing-module ModuleNotFoundError fires every single cycle and gets swallowed silently.
+            if pending_eps:
+                try:
+                    import services.abn_youtube as ytmod
+                except ModuleNotFoundError:
+                    # The auto-publish feature is unimplemented (services/abn_youtube.py absent). This
+                    # is a config/build state, not a runtime error — surface it ONCE so the operator
+                    # knows the feature is broken rather than burying it in per-cycle error spam.
+                    if not STATE.get("_ytmod_warned"):
+                        STATE["_ytmod_warned"] = True
+                        BUS.emit("publisher", "unavailable",
+                                 f"auto-publish disabled: services/abn_youtube.py not installed — "
+                                 f"{len(pending_eps)} episode(s) waiting in review will NOT auto-publish")
+                    ytmod = None
+                if ytmod is not None:
+                    try:
+                        if ytmod.is_configured():
+                            for e in pending_eps:
+                                _set("publishing", "publisher", f"auto-publishing {e['id']} to YouTube", e["id"])
+                                import urllib.request as _u
+                                _u.urlopen(_u.Request("http://127.0.0.1:8000/api/agenticnews/episodes/" + e["id"] + "/publish",
+                                                      data=b"{}", headers={"Content-Type": "application/json"}, method="POST"), timeout=300)
+                            pending_eps = []  # cleared via publish
+                    except Exception as ex:
+                        BUS.emit("publisher", "error", f"auto-publish: {ex}")
             # WORKSHOP MODE: do NOT park at "awaiting approval" — keep cooking modular segments/episodes
             # continuously. The review backlog is managed by the GC (prunes old ones); each new episode
             # is fresh material to workshop + harvest segments/shorts from. Only auto-publish if creds exist.
