@@ -372,3 +372,56 @@ def test_openshot_renders_real_two_layer_timeline_to_valid_mp4(tmp_path):
     assert Path(result["video"]).exists()
     assert _probe_duration(output) >= 0.9
     assert _mean_volume(output, start=0.1, duration=0.6) > -30  # audio actually present
+
+
+def _full_frame_project(project_id: str, asset_path: Path, *, width: int, height: int) -> dict:
+    """Image clip scaled to fill the whole canvas. A full-frame solid plate makes the
+    dominant pixel color invariant to the small scaling/codec differences between the two
+    backends, so any sampled point is a clean cross-renderer parity check."""
+    project = _project_with_card(project_id, asset_path, x=0.5)
+    project["width"] = width
+    project["height"] = height
+    # scale the native 32px plate up to cover the canvas (OpenShot scale_x/scale_y vs
+    # the ffmpeg fallback's scale=iw*s:ih*s both read clip.transform.scale).
+    project["clips"]["card_clip"]["transform"]["scale"] = max(width, height) / 32.0
+    return project
+
+
+def test_ffmpeg_and_openshot_render_frame_exact_parity(tmp_path):
+    """Frame-exact parity regression: the SAME project rendered through the real OpenShot
+    backend and through the ffmpeg-layered fallback must land the same pixels. A full-frame
+    blue plate is sampled at several points; both renderers must agree within a tolerance
+    that absorbs codec rounding but would catch a real positioning/scaling/composite drift
+    (the kind the 'ffmpeg-fallback frame parity' work guards). Skips where libopenshot is
+    not installed so it pins the parity contract on boxes that have it without breaking CI."""
+    if not editor_render._import_openshot()[0]:
+        pytest.skip("libopenshot Python bindings not importable here")
+
+    width, height = 96, 64
+    blue = _solid_png(tmp_path / "blue.png", "blue", size="32x32")
+    project = _full_frame_project("parity", blue, width=width, height=height)
+
+    openshot_frame = editor_render.OpenShotRenderer(tmp_path / "os").render_frame(
+        project, at=0.5, output_path=tmp_path / "os" / "frame.png"
+    )
+    ffmpeg_frame = editor_render.FFmpegLayeredRenderer(tmp_path / "ff").render_frame(
+        project, at=0.5, output_path=tmp_path / "ff" / "frame.png"
+    )
+
+    os_png = Path(openshot_frame["frame"])
+    ff_png = Path(ffmpeg_frame["frame"])
+    assert os_png.exists() and ff_png.exists()
+
+    # Same response contract from both backends (missingAssets parity).
+    assert openshot_frame["missingAssets"] == ffmpeg_frame["missingAssets"] == []
+
+    # Sample the same points in both frames; the full-frame plate is blue everywhere.
+    sample_points = [(8, 8), (width // 2, height // 2), (width - 8, height - 8)]
+    for x, y in sample_points:
+        os_rgb = _sample_rgb(os_png, x, y)
+        ff_rgb = _sample_rgb(ff_png, x, y)
+        # Both must read as a blue plate (B dominant) ...
+        assert os_rgb[2] > 150 and ff_rgb[2] > 150, (x, y, os_rgb, ff_rgb)
+        # ... and agree channel-for-channel within codec-rounding tolerance.
+        for channel, (a, b) in enumerate(zip(os_rgb, ff_rgb)):
+            assert abs(a - b) <= 24, (x, y, channel, os_rgb, ff_rgb)
