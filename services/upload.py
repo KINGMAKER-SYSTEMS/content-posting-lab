@@ -16,6 +16,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from services.json_store import atomic_load, atomic_save
+
 UPLOAD_JOBS_FILE = "upload_jobs.json"
 COOKIE_DIR = "."  # TK_cookies_{account}.json stored in project root
 MAX_CONCURRENT = 1
@@ -31,25 +33,14 @@ _queue_running = False
 # ── Job persistence ──────────────────────────────────────────────────────────
 
 def _load_jobs() -> list[dict]:
-    if not os.path.exists(UPLOAD_JOBS_FILE):
-        return []
-    try:
-        with open(UPLOAD_JOBS_FILE, "r") as f:
-            return json.load(f)
-    except (json.JSONDecodeError, IOError):
-        return []
+    return atomic_load(UPLOAD_JOBS_FILE, default=[])
 
 
 def _save_jobs(jobs: list[dict]) -> None:
-    # ATOMIC write (tmp + rename) — the rest of the app's data layer uses this; a raw open('w')+dump
-    # left the upload-job queue truncated/wiped if the process crashed mid-write (a P0). Write to a
-    # temp file, flush+fsync, then atomically rename over the target so a reader never sees a partial.
-    tmp = f"{UPLOAD_JOBS_FILE}.tmp"
-    with open(tmp, "w") as f:
-        json.dump(jobs, f, indent=2, default=str)
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(tmp, UPLOAD_JOBS_FILE)
+    # ATOMIC write (tmp + rename) via the shared store — a raw open('w')+dump left the upload-job
+    # queue truncated/wiped if the process crashed mid-write (a P0). default=str keeps datetimes
+    # serializable.
+    atomic_save(UPLOAD_JOBS_FILE, jobs, default=str)
 
 
 def _update_job(job_id: str, updates: dict) -> dict | None:

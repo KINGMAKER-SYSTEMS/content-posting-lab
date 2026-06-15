@@ -4,11 +4,12 @@ Manages the page_roster.json file that maps Postiz integrations to projects
 and Google Drive folders.
 """
 
-import json
 import os
 import re
 import time
 from pathlib import Path
+
+from services.json_store import atomic_load, atomic_save
 
 BASE_DIR = Path(__file__).parent.parent
 _VOLUME_PATH = os.getenv("RAILWAY_VOLUME_MOUNT_PATH", "")
@@ -24,22 +25,15 @@ def _empty_roster() -> dict:
 
 def load_roster() -> dict:
     """Load roster from disk. Returns empty structure if file missing or corrupt."""
-    if not ROSTER_PATH.exists():
+    data = atomic_load(ROSTER_PATH, default=None)
+    if not isinstance(data, dict) or "pages" not in data:
         return _empty_roster()
-    try:
-        data = json.loads(ROSTER_PATH.read_text(encoding="utf-8"))
-        if not isinstance(data, dict) or "pages" not in data:
-            return _empty_roster()
-        return data
-    except (json.JSONDecodeError, OSError):
-        return _empty_roster()
+    return data
 
 
 def save_roster(data: dict) -> None:
     """Atomic write: write to tmp file then rename."""
-    tmp = ROSTER_PATH.with_suffix(".tmp")
-    tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
-    tmp.rename(ROSTER_PATH)
+    atomic_save(ROSTER_PATH, data)
 
 
 def get_page(integration_id: str) -> dict | None:

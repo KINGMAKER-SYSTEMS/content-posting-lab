@@ -7,11 +7,12 @@ acts on them, and marks them fulfilled. Stored as a JSON file on the Railway
 volume with atomic writes, mirroring the telegram/roster data layers.
 """
 
-import json
 import os
 import time
 import uuid
 from pathlib import Path
+
+from services.json_store import atomic_load, atomic_save
 
 BASE_DIR = Path(__file__).parent.parent
 _VOLUME_PATH = os.getenv("RAILWAY_VOLUME_MOUNT_PATH", "")
@@ -32,22 +33,15 @@ def _empty() -> dict:
 
 def load_requests() -> dict:
     """Load the request store. Returns empty structure if missing or corrupt."""
-    if not REQUESTS_PATH.exists():
+    data = atomic_load(REQUESTS_PATH, default=None)
+    if not isinstance(data, dict) or "requests" not in data:
         return _empty()
-    try:
-        data = json.loads(REQUESTS_PATH.read_text(encoding="utf-8"))
-        if not isinstance(data, dict) or "requests" not in data:
-            return _empty()
-        return data
-    except (json.JSONDecodeError, OSError):
-        return _empty()
+    return data
 
 
 def save_requests(data: dict) -> None:
     """Atomic write: tmp file then rename."""
-    tmp = REQUESTS_PATH.with_suffix(".tmp")
-    tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
-    tmp.rename(REQUESTS_PATH)
+    atomic_save(REQUESTS_PATH, data)
 
 
 def add_request(

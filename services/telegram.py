@@ -6,12 +6,13 @@ and forwarding schedule.
 """
 
 import html
-import json
 import time
 import uuid
 from pathlib import Path
 
 import os
+
+from services.json_store import atomic_load, atomic_save
 
 BASE_DIR = Path(__file__).parent.parent
 
@@ -89,20 +90,15 @@ def load_config() -> dict:
     """Load config from disk. Auto-seeds with defaults on first boot."""
     if not CONFIG_PATH.exists():
         return _seed_config()
-    try:
-        data = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-        if not isinstance(data, dict) or "version" not in data:
-            return _empty_config()
-        return data
-    except (json.JSONDecodeError, OSError):
+    data = atomic_load(CONFIG_PATH, default=None)
+    if not isinstance(data, dict) or "version" not in data:
         return _empty_config()
+    return data
 
 
 def save_config(data: dict) -> None:
     """Atomic write: write to tmp file then rename."""
-    tmp = CONFIG_PATH.with_suffix(".tmp")
-    tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
-    tmp.rename(CONFIG_PATH)
+    atomic_save(CONFIG_PATH, data)
 
 
 def get_bot_token() -> str | None:
