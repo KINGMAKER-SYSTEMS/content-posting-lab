@@ -165,10 +165,40 @@ def test_clip_keyframe_envelope_translates_to_multipoint_openshot_keyframes(tmp_
     clip = openshot_bridge.timeline_json(project)["clips"][0]
 
     points = clip["volume"]["Points"]
-    assert [p["co"]["X"] for p in points] == [1.0, 31.0, 61.0]  # t*30fps + 1
+    # X = (sourceStart 0.25 + t) * 30fps + 1 — trimmed clips offset by sourceStart
+    assert [p["co"]["X"] for p in points] == [8.5, 38.5, 68.5]
     assert [round(p["co"]["Y"], 2) for p in points] == [100.0, 22.0, 100.0]  # 0..1 -> 0..100
     assert points[0]["interpolation"] == openshot_bridge.LINEAR
     assert points[1]["interpolation"] == openshot_bridge.CONSTANT
+
+
+def test_keyframe_X_offsets_by_sourceStart_for_trimmed_clips(tmp_path):
+    """A keyframe at editor t maps to source frame (sourceStart + t)*fps + 1.
+    A clip trimmed to sourceStart=5.0 must fire its t=1.0 keyframe at frame 181,
+    not 31, so the envelope lands at the right source frame."""
+    project = _project(tmp_path / "card.png")
+    project["clips"]["card_clip"]["sourceStart"] = 5.0
+    project["clips"]["card_clip"]["keyframes"] = [
+        {"property": "opacity", "points": [{"t": 0.0, "value": 0.0}, {"t": 1.0, "value": 1.0}]},
+    ]
+
+    clip = openshot_bridge.timeline_json(project)["clips"][0]
+
+    # (5.0 + 0.0)*30 + 1 = 151 ; (5.0 + 1.0)*30 + 1 = 181
+    assert [p["co"]["X"] for p in clip["alpha"]["Points"]] == [151.0, 181.0]
+
+
+def test_keyframe_X_with_no_trim_keeps_plain_t_times_fps(tmp_path):
+    """sourceStart=0 (untrimmed) keeps the original t*fps + 1 mapping."""
+    project = _project(tmp_path / "card.png")
+    project["clips"]["card_clip"]["sourceStart"] = 0.0
+    project["clips"]["card_clip"]["keyframes"] = [
+        {"property": "opacity", "points": [{"t": 0.0, "value": 0.0}, {"t": 1.0, "value": 1.0}]},
+    ]
+
+    clip = openshot_bridge.timeline_json(project)["clips"][0]
+
+    assert [p["co"]["X"] for p in clip["alpha"]["Points"]] == [1.0, 31.0]
 
 
 def test_clip_keyframe_opacity_and_scale_map_to_alpha_and_both_scale_axes(tmp_path):

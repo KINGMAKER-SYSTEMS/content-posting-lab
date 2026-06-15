@@ -288,7 +288,7 @@ def clip_json(project: dict[str, Any], clip: dict[str, Any], *, asset_root: Path
     }
     # Per-keyframe envelopes (dynamic volume/opacity/scale/position/rotation)
     # override the flat single-point defaults above. Empty / absent -> flat.
-    payload.update(_keyframe_overrides(clip.get("keyframes"), fps=fps))
+    payload.update(_keyframe_overrides(clip.get("keyframes"), fps=fps, source_start=source_start))
     return payload
 
 
@@ -426,7 +426,7 @@ _KEYFRAME_PROPERTY_MAP: dict[str, tuple[tuple[str, ...], Any]] = {
 }
 
 
-def _keyframe_overrides(keyframes: Any, *, fps: int) -> dict[str, Any]:
+def _keyframe_overrides(keyframes: Any, *, fps: int, source_start: float = 0.0) -> dict[str, Any]:
     if not keyframes:
         return {}
     out: dict[str, Any] = {}
@@ -438,7 +438,10 @@ def _keyframe_overrides(keyframes: Any, *, fps: int) -> dict[str, Any]:
         keys, transform = mapping
         points = [
             {
-                "co": {"X": float(point.get("t") or 0.0) * fps + 1.0, "Y": transform(point.get("value"))},
+                # `t` is editor time relative to clip start; OpenShot keyframe X is
+                # a frame number in the clip's source-reader space, so trimmed clips
+                # (sourceStart > 0) must offset by source_start (matches start/end).
+                "co": {"X": (source_start + float(point.get("t") or 0.0)) * fps + 1.0, "Y": transform(point.get("value"))},
                 "interpolation": _INTERPOLATION_MAP.get(str(point.get("interp") or "linear"), LINEAR),
             }
             for point in (track or {}).get("points") or []
