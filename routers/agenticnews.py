@@ -588,7 +588,16 @@ def _reject_demo_editor_project(project_id: str) -> None:
 
 
 def _timeline_file_for_episode(episode_id: str) -> Path:
-    return db.ASSETS_DIR / f"{episode_id}_timeline.json"
+    # Read the timeline the factory ACTUALLY wrote: the schema path {ep_id}/timeline.json
+    # (via the gateway), not the flat {ep_id}_timeline.json legacy name — which now only
+    # exists as a back-compat symlink the migration left behind. Fall back to the flat path
+    # only for a non-episode id (gateway returns None) or an episode not yet migrated to the
+    # schema, so the cutover stays read-safe.
+    schema = abn_assets.episode_singleton_path(episode_id, "timeline")
+    flat = db.ASSETS_DIR / f"{episode_id}_timeline.json"
+    if schema is not None and (schema.exists() or not flat.exists()):
+        return schema
+    return flat
 
 
 async def _load_real_abn_timeline(project_id: str) -> tuple[str, dict]:
@@ -670,7 +679,14 @@ def _plan_editor_source_materialization(
     *,
     materialize: bool = False,
 ) -> list[dict[str, str]]:
-    episode_video = db.ASSETS_DIR / f"{episode_id}_episode.mp4"
+    # Read the render the factory wrote at the schema path {ep_id}/renders/episode.mp4 (via the
+    # gateway), not the flat {ep_id}_episode.mp4 legacy name (now a back-compat symlink only).
+    # Non-episode id -> gateway returns None -> flat fallback; un-migrated episode -> flat fallback.
+    _schema_video = abn_assets.episode_singleton_path(episode_id, "episode")
+    if _schema_video is not None and _schema_video.exists():
+        episode_video = _schema_video
+    else:
+        episode_video = db.ASSETS_DIR / f"{episode_id}_episode.mp4"
     if not episode_video.exists():
         return []
 
@@ -1632,11 +1648,18 @@ async def editor_load(ep_id: str):
         raise HTTPException(status_code=404, detail="episode not found")
     rid = v.get("id", ep_id)
     arts = v.get("artifacts", {}) or {}
-    video_url = arts.get("assembly_path") or f"/agenticnews-assets/{rid}_episode.mp4"
+    # Point the player at the render the factory wrote (schema {ep_id}/renders/episode.mp4)
+    # when it exists, not the flat {ep_id}_episode.mp4 legacy URL (a back-compat symlink only).
+    _schema_video = abn_assets.episode_singleton_path(rid, "episode")
+    if _schema_video is not None and _schema_video.exists():
+        _episode_url = f"/agenticnews-assets/{_schema_video.relative_to(db.ASSETS_DIR)}"
+    else:
+        _episode_url = f"/agenticnews-assets/{rid}_episode.mp4"
+    video_url = arts.get("assembly_path") or _episode_url
     # Prefer the FULL on-disk timeline.json (per-segment shots[]/wordTimestamps[]/lowerThirds[] — the
     # atomic layers the editor bay renders as tracks). The DB copy is trimmed to keep rows small.
     timeline = v.get("timeline", {}) or {}
-    _tl_file = db.ASSETS_DIR / f"{rid}_timeline.json"
+    _tl_file = _timeline_file_for_episode(rid)
     if _tl_file.exists():
         try:
             full = _json.loads(_tl_file.read_text())
@@ -1736,7 +1759,10 @@ async def editor_apply(ep_id: str, body: dict = Body(...)):
     if not v:
         raise HTTPException(status_code=404, detail="episode not found")
     rid = v.get("id", ep_id)
-    tl_file = db.ASSETS_DIR / f"{rid}_timeline.json"
+    # Read-modify-write the timeline at the schema path {ep_id}/timeline.json the factory wrote
+    # (resolved via the gateway) so the re-render below picks up the same file. Falls back to the
+    # flat legacy path only for a non-episode/un-migrated id (see _timeline_file_for_episode).
+    tl_file = _timeline_file_for_episode(rid)
     if not tl_file.exists():
         raise HTTPException(status_code=404, detail="timeline not found")
     timeline = _json.loads(tl_file.read_text())

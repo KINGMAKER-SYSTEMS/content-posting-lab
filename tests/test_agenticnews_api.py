@@ -334,6 +334,53 @@ def test_tools_assemble_episode_name_routes_through_asset_gateway(client, monkey
     assert not (db.ASSETS_DIR / "ep_648e806a_s0_assembled.mp4").exists()
 
 
+def test_editor_load_reads_timeline_and_render_from_schema_path(client):
+    """editor_load must read the timeline + render the factory ACTUALLY wrote — the schema
+    paths {ep}/timeline.json and {ep}/renders/episode.mp4 (resolved via the abn_assets
+    gateway) — NOT the flat {ep}_timeline.json / {ep}_episode.mp4 legacy names. This is the
+    flat-path retirement: reads no longer depend on the migration's back-compat symlinks."""
+    ep = "ep_648e806a"
+    # seed a video whose id IS the episode id (the factory invariant)
+    assert client.post("/api/agenticnews/videos",
+                       json={"id": ep, "title": "Schema Read", "stage": "review"}).status_code == 200
+    # write the timeline + render where the FACTORY writes them: the schema paths.
+    tl = abn_assets.asset_path(ep, "timeline")
+    tl.write_text('{"segments": [{"id": "s0", "durationSec": 4}], "totalSec": 4}')
+    render = abn_assets.asset_path(ep, "episode")
+    render.write_bytes(b"\x00\x00\x00\x18ftyp")
+    # NOTHING is written at the flat legacy names — if the read used them it would 404/miss.
+    assert not (db.ASSETS_DIR / f"{ep}_timeline.json").exists()
+    assert not (db.ASSETS_DIR / f"{ep}_episode.mp4").exists()
+
+    resp = client.get(f"/api/agenticnews/editor/{ep}")
+    assert resp.status_code == 200
+    body = resp.json()
+    # the full on-disk timeline (with segments[]) came from the schema path
+    assert body["timeline"].get("segments"), "timeline must be read from {ep}/timeline.json"
+    assert body["timeline"]["segments"][0]["id"] == "s0"
+    # the player URL points at the schema render, carrying the full subpath
+    assert body["videoUrl"] == f"/agenticnews-assets/{ep}/renders/episode.mp4"
+
+
+def test_editor_load_falls_back_to_flat_render_url_when_unmigrated(client):
+    """An episode that hasn't been migrated to the schema yet (only a flat {ep}_episode.mp4
+    exists) must still resolve — the read falls back to the flat legacy URL rather than
+    pointing at a non-existent schema render."""
+    ep = "ep_7a15b8c3"
+    assert client.post("/api/agenticnews/videos",
+                       json={"id": ep, "title": "Unmigrated", "stage": "review",
+                             "timeline": {"segments": [{"id": "s0", "durationSec": 3}]}}
+                       ).status_code == 200
+    # no schema render — only the flat legacy file exists
+    flat_render = db.ASSETS_DIR / f"{ep}_episode.mp4"
+    flat_render.write_bytes(b"\x00\x00\x00\x18ftyp")
+    assert not (abn_assets.episode_singleton_path(ep, "episode")).exists()  # schema render absent
+
+    resp = client.get(f"/api/agenticnews/editor/{ep}")
+    assert resp.status_code == 200
+    assert resp.json()["videoUrl"] == f"/agenticnews-assets/{ep}_episode.mp4"
+
+
 def test_episode_qa_closes_props_file_handle(client, monkeypatch, tmp_path):
     """Regression: episode_qa read the render-props json with a bare open() passed
     straight into json.load(), leaking the file descriptor on every call (the

@@ -146,6 +146,36 @@ def test_asset_url_from_slug(gw):
     assert url == "/agenticnews-assets/ep_648e806a/css/s1_kinetic.mp4"
 
 
+# --- episode_singleton_path: the READ resolver that retires the flat episode paths ----
+# The factory WRITES the timeline/render through asset_path (schema {ep}/timeline.json,
+# {ep}/renders/episode.mp4). The editor-bay READS used to rebuild flat {ep}_timeline.json /
+# {ep}_episode.mp4 strings, resolving only via the migration's back-compat symlinks. This
+# resolver returns the canonical schema path so reads no longer depend on the symlinks.
+
+def test_episode_singleton_path_matches_factory_write_path(gw):
+    # the resolver must point at EXACTLY where asset_path() (the factory's writer) lands
+    assert gw.episode_singleton_path("ep_648e806a", "timeline") == gw.asset_path("ep_648e806a", "timeline")
+    assert gw.episode_singleton_path("ep_648e806a", "episode") == gw.asset_path("ep_648e806a", "episode")
+
+
+def test_episode_singleton_path_is_read_safe_no_mkdir(gw):
+    # a GET must not create the episode dir as a side effect (asset_path does; this must not)
+    p = gw.episode_singleton_path("ep_deadbeef", "timeline")
+    assert p == gw.ASSETS_DIR / "ep_deadbeef" / "timeline.json"
+    assert not p.parent.exists(), "read resolver must not mkdir the episode dir"
+
+
+def test_episode_singleton_path_returns_none_for_non_episode_id(gw):
+    # a bare/ad-hoc id (no ep_ prefix) -> None, so the caller keeps its flat fallback
+    assert gw.episode_singleton_path("clip", "timeline") is None
+    assert gw.episode_singleton_path("vid_abc123", "episode") is None
+
+
+def test_episode_singleton_path_rejects_non_singleton_kind(gw):
+    with pytest.raises(gw.AssetPathError):
+        gw.episode_singleton_path("ep_648e806a", "card")
+
+
 # --- scratch_path: the sanctioned replacement for `.with_name()` on scratch ------
 # abn_factory writes throwaway .tape / snippet.py / intermediate .html files. These
 # used to be built as `asset_path_from_slug(slug,"scratch").with_name(name)`, which
@@ -355,3 +385,31 @@ def test_tombstone_refuses_missing_path(gw):
     sd.mkdir(parents=True)
     with pytest.raises(gw.AssetPathError):
         gw.tombstone(sd / "never_existed.bin")
+
+
+# --- migration <-> gateway <-> read-resolver: the flat-path retirement contract -----
+# The migration moves flat {ep}_timeline.json / {ep}_episode.mp4 into the schema and leaves
+# a back-compat symlink. The point of this ticket: those flat reads can now be retired because
+# episode_singleton_path() resolves to EXACTLY where the migration put the file. This pins that
+# the producer (migration) and the consumer (read-resolver) agree on the on-disk location.
+
+def test_migration_lands_episode_singletons_where_read_resolver_looks(gw):
+    import scripts.migrate_abn_assets as M
+    importlib.reload(M)  # rebind the script's captured ASSETS_DIR to gw's temp dir
+
+    ep = "ep_648e806a"
+    flat_tl = gw.ASSETS_DIR / f"{ep}_timeline.json"
+    flat_ep = gw.ASSETS_DIR / f"{ep}_episode.mp4"
+    flat_tl.write_text('{"segments": [1]}')
+    flat_ep.write_bytes(b"mp4data")
+
+    M.apply(M.plan(None))
+
+    # the migration's destination is EXACTLY what the read-resolver returns
+    assert gw.episode_singleton_path(ep, "timeline") == gw.ASSETS_DIR / ep / "timeline.json"
+    assert gw.episode_singleton_path(ep, "episode") == gw.ASSETS_DIR / ep / "renders" / "episode.mp4"
+    assert gw.episode_singleton_path(ep, "timeline").read_text() == '{"segments": [1]}'
+    assert gw.episode_singleton_path(ep, "episode").exists()
+    # the flat name survives only as a back-compat symlink into the schema (on its way out)
+    assert flat_tl.is_symlink() and flat_ep.is_symlink()
+    assert flat_tl.resolve() == gw.episode_singleton_path(ep, "timeline").resolve()

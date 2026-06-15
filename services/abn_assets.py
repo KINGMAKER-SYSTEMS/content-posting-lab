@@ -277,6 +277,34 @@ def asset_url(ep_id: str, kind: str, slug: Optional[str] = None, *, ext: Optiona
     return _rel_url(asset_path(ep_id, kind, slug, ext=ext))
 
 
+def episode_singleton_path(ep_id: str, kind: str) -> Optional[Path]:
+    """READ resolver for an episode-level singleton (``timeline`` / ``episode`` / ``manifest``).
+
+    Returns the canonical SCHEMA path the factory writes to — ``{ep_id}/timeline.json`` or
+    ``{ep_id}/renders/episode.mp4`` — so a GET reads the same file the producer wrote, NOT
+    the flat ``{ep_id}_timeline.json`` legacy name (which now only exists as a back-compat
+    symlink the migration left, on its way out).
+
+    Unlike :func:`asset_path` this NEVER creates a directory (it's a read) and NEVER raises:
+    a non-episode id (a bare ``clip`` / a video id with no ``ep_`` prefix) returns ``None`` so
+    the caller can keep its own flat fallback for genuinely-unscoped ad-hoc renders. This is
+    the last call-site needed to retire the flat episode-read paths in routers/agenticnews.py.
+    """
+    if kind not in ("timeline", "episode", "manifest"):
+        raise AssetPathError(
+            f"episode_singleton_path only resolves episode-level singletons "
+            f"(timeline/episode/manifest), not {kind!r}."
+        )
+    try:
+        ep_id = _validate_ep(ep_id)
+    except AssetPathError:
+        return None
+    subdir, default_ext = KINDS[kind]
+    if subdir == ".":
+        return ASSETS_DIR / ep_id / f"{kind}.{default_ext}"
+    return ASSETS_DIR / ep_id / subdir / f"{kind}.{default_ext}"
+
+
 def shared_path(category: str, name: str) -> Path:
     """Path for a cross-episode shared asset (logos, beds, broll library, card bgs).
     Lives under _shared/<category>/."""
