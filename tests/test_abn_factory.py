@@ -277,6 +277,52 @@ def test_assemble_episode_raises_on_zero_segments(monkeypatch, tmp_path):
         asyncio.run(abn_factory._assemble_episode("ep_a111111", []))
 
 
+def test_assemble_episode_uses_reencode_fallback_when_copy_concat_fails(monkeypatch, tmp_path):
+    """`_assemble_episode` has two concat paths: a fast stream-copy (`-c copy`) and a slow
+    re-encode fallback (`libx264`). When the copy-concat fails (heterogeneous segment streams —
+    the normal case for ABN's mixed asset layers), the function MUST fall back to re-encoding
+    rather than raising. This pins that fallback branch (services/abn_factory.py ~2467-2472).
+
+    The stub `_sh` dispatches on the command: per-segment encodes and the ffprobe duration probe
+    succeed; the `-c copy` concat fails (no output file written) so `final.exists()` is False and
+    the fallback fires; the `libx264` concat succeeds and writes the final episode. We assert the
+    fallback actually ran and the function returns the managed URL + measured duration."""
+    import shlex
+
+    monkeypatch.setattr(abn_factory, "ASSETS", tmp_path)
+    monkeypatch.setattr(abn_assets, "ASSETS_DIR", tmp_path)
+
+    calls = {"copy_concat": 0, "reencode_concat": 0}
+
+    async def routed_sh(cmd, timeout=600):
+        if cmd.startswith("ffprobe"):
+            return 0, "12.5\n"  # _dur probe on the final episode
+        # the ffmpeg output path is always the last shell-quoted token of the command
+        out = shlex.split(cmd)[-1]
+        if "-f concat" in cmd and "-c copy" in cmd:
+            calls["copy_concat"] += 1
+            return 1, "ffmpeg: do not output non monotonically increasing dts / copy failed"
+        if "-f concat" in cmd and "libx264" in cmd:
+            calls["reencode_concat"] += 1
+            from pathlib import Path
+            Path(out).write_bytes(b"\x00final-mp4")  # re-encode succeeds → final exists
+            return 0, ""
+        # per-segment encode: succeeds and writes the intermediate clip
+        from pathlib import Path
+        Path(out).write_bytes(b"\x00seg-mp4")
+        return 0, ""
+
+    monkeypatch.setattr(abn_factory, "_sh", routed_sh)
+
+    segments = [{"script": "hi", "vo_path": "/agenticnews-assets/ep_a111111_s0.wav", "screenshot": None}]
+    url, dur = asyncio.run(abn_factory._assemble_episode("ep_a111111", segments))
+
+    assert calls["copy_concat"] == 1, "fast copy-concat should have been attempted first"
+    assert calls["reencode_concat"] == 1, "re-encode fallback must run after copy-concat fails"
+    assert url and isinstance(url, str)
+    assert dur == 12.5  # duration came from the ffprobe stub on the fallback-produced final
+
+
 # ---------------- _render_remotion: error recovery + fallback re-encode ----------------
 #
 # _render_remotion shells out to the Remotion CLI to produce the full episode mp4, then runs a
