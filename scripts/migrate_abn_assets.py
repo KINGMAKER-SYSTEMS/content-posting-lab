@@ -32,6 +32,7 @@ import re
 import shutil
 import sys
 from pathlib import Path
+from typing import Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -72,6 +73,29 @@ def _route_loose(name: str) -> tuple[str, str]:
     return ("scratch", "_scratch")
 
 
+# The pre-schema factory wrote VO as the BARE ``{ep_id}_s{N}.wav`` (abn_factory:
+# ``out = ASSETS / f"{name}.wav"`` with ``name = "{ep_id}_s{i}"``) — no ``_voice`` word.
+# ``classify`` reads the kind off the last ``_``-token, so a bare voice file lands on
+# kind ``s{N}`` -> ``scratch`` (the GC may freely reap scratch). That both (a) loses the
+# only copy of original VO and (b) leaves the back-compat symlink pointing into scratch,
+# so once the GC reaps it ``abn_factory._align``'s legacy fallback dangles and in-flight
+# alignment silently returns []. Detect that exact shape here and route it to the same
+# ``audio/s{N}_voice.wav`` the runtime gateway produces, so the symlink + copy survive GC.
+_BARE_VOICE_RE = re.compile(
+    r"^((?:rec_)?ep_[0-9a-f]{6,}|ep\d+)_(s\d+)\.wav$", re.I
+)
+
+
+def _voice_override(name: str) -> Optional[Path]:
+    """If ``name`` is a bare legacy VO file, return its correct ``audio/`` destination;
+    else None. PURE (no mkdir) so ``plan()`` stays side-effect-free — mirrors what the
+    gateway's ``asset_path(ep, 'voice', 's{N}')`` produces: ``{ep}/audio/s{N}_voice.wav``."""
+    m = _BARE_VOICE_RE.match(name)
+    if not m:
+        return None
+    return episode_dir(m.group(1)) / "audio" / f"{m.group(2)}_voice.wav"
+
+
 def plan(only_ep: str | None) -> list[tuple[Path, Path, str]]:
     """Build (src, dst, reason) triples. Pure — touches nothing."""
     moves: list[tuple[Path, Path, str]] = []
@@ -89,6 +113,12 @@ def plan(only_ep: str | None) -> list[tuple[Path, Path, str]]:
             continue
         # already a symlink we created on a prior run? skip.
         if f.is_symlink():
+            continue
+        # bare legacy VO (``{ep}_s{N}.wav``) must beat classify(), which would route it to
+        # scratch (reapable) and strand the back-compat symlink _align() depends on.
+        vo = _voice_override(f.name)
+        if vo is not None and (not only_ep or vo.parent.parent.name == only_ep):
+            moves.append((f, vo, f"ep voice -> {vo.relative_to(ASSETS_DIR)}"))
             continue
         c = classify(f.name)
         if c:
@@ -155,16 +185,63 @@ def apply(moves: list[tuple[Path, Path, str]]) -> None:
           f"{skipped} already-migrated, {failed} failed.")
 
 
+def verify_voice_symlinks(only_ep: str | None = None) -> list[tuple[str, str]]:
+    """Post-migration audit for the back-compat VO symlinks ``abn_factory._align`` falls
+    back to. Scans ASSETS_DIR for every legacy flat VO name (``{ep}_s{N}.wav``) and confirms
+    the flat path is a SYMLINK resolving to an ``audio/`` target that actually exists — so an
+    in-flight episode that still hits ``_align``'s ``ASSETS / f"{wav_name}.wav"`` fallback finds
+    a real file. (``plan()`` is no help here: it SKIPS symlinks, so a migrated dir has zero
+    voice moves left to inspect; this audit must look at the flat names on disk directly.)
+
+    Returns a list of ``(flat_name, reason)`` problems; empty == all good. Reasons:
+      * ``not-symlink`` — flat path is still a real file (migration never linked it; the
+                          original copy may not have been routed to ``audio/`` at all).
+      * ``dangling``    — symlink present but its target file doesn't exist (GC ate the copy
+                          or it was misrouted to scratch and reaped — ``_align`` silently fails).
+      * ``not-audio``   — symlink resolves OUTSIDE ``audio/`` (e.g. into reapable ``scratch/``),
+                          so the only VO copy is exposed to episode-pruning GC.
+    Pure read-only — never writes or deletes.
+    """
+    problems: list[tuple[str, str]] = []
+    for f in sorted(ASSETS_DIR.iterdir()):
+        m = _BARE_VOICE_RE.match(f.name)
+        if not m:
+            continue
+        if only_ep and m.group(1) != only_ep:
+            continue
+        if not f.is_symlink():
+            problems.append((f.name, "not-symlink"))
+            continue
+        target = f.resolve()
+        if not target.exists():
+            problems.append((f.name, "dangling"))
+        elif target.parent.name != "audio":
+            problems.append((f.name, "not-audio"))
+    return problems
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--apply", action="store_true", help="actually copy+symlink (default: dry run)")
     ap.add_argument("--ep", default=None, help="migrate only this episode id")
     ap.add_argument("--report", action="store_true", help="classification summary only")
+    ap.add_argument("--verify", action="store_true",
+                    help="audit back-compat VO symlinks (abn_factory._align fallback); exit 1 if any broken")
     args = ap.parse_args()
 
     print(f"ASSETS_DIR = {ASSETS_DIR}")
     if not ASSETS_DIR.exists():
         sys.exit(f"ASSETS_DIR does not exist: {ASSETS_DIR}")
+
+    if args.verify:
+        problems = verify_voice_symlinks(args.ep)
+        if not problems:
+            print("VO symlink audit: OK — every legacy flat VO path resolves to an audio/ file.")
+            return
+        print(f"VO symlink audit: {len(problems)} BROKEN — _align fallback will fail for these:")
+        for name, reason in problems:
+            print(f"  !! {name}  [{reason}]")
+        sys.exit(1)
 
     moves = plan(args.ep)
     if args.report:
