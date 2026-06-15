@@ -23,6 +23,20 @@ def test_burn_overlay_rejects_path_traversal(sync_client):
     assert resp.json().get("error") == "Invalid path"
 
 
+def test_legacy_burn_ws_route_removed(sync_client):
+    """The legacy /api/burn/ws WebSocket endpoint was removed; nothing serves it."""
+    routes = [getattr(r, "path", None) for r in sync_client.app.routes]
+    assert "/api/burn/ws" not in routes
+
+    # Attempting to open the WS connection must fail (no route to accept it).
+    import pytest
+    from starlette.websockets import WebSocketDisconnect
+
+    with pytest.raises((WebSocketDisconnect, Exception)):
+        with sync_client.websocket_connect("/api/burn/ws"):
+            pass
+
+
 def test_burn_list_endpoints(sync_client):
     created = sync_client.post("/api/projects", json={"name": "Burn Suite"})
     assert created.status_code == 201

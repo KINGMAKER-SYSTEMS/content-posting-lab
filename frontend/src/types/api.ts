@@ -253,12 +253,6 @@ export interface BatchesResponse {
   batches: BurnBatch[];
 }
 
-// WebSocket event for burn server (legacy)
-export type BurnWSMessage =
-  | { event: "burning"; index: number; total: number }
-  | { event: "burned"; index: number; total: number; result: BurnResult }
-  | { event: "complete"; batch_id: string; results: BurnResult[] };
-
 export interface BurnOverlayRequest {
   batchId: string;
   index: number;
