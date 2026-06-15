@@ -229,6 +229,96 @@ def test_gc_segments_disk_phase_tombstones_scratch_and_spares_schema(store, monk
     assert (store / "_trash" / "ep_dead00" / "scratch" / "s0_demo.mp4").exists(), "scratch reap must tombstone"
 
 
+# --- migration completes the flat dump into the schema (+ back-compat symlinks the GC spares) ----
+
+
+def _migrator(store, monkeypatch):
+    """Import the one-time migration script pointed at the throwaway store. It binds
+    ASSETS_DIR / episode_dir / classify from services.abn_assets at import time, so we
+    patch the module's own globals after the abn_assets.ASSETS_DIR monkeypatch (the
+    `store` fixture already did that) to keep plan()/apply() on the throwaway store."""
+    from scripts import migrate_abn_assets as m
+
+    monkeypatch.setattr(m, "ASSETS_DIR", store)
+    monkeypatch.setattr(m, "episode_dir", lambda ep_id: store / ep_id)
+    return m
+
+
+def test_migration_moves_flat_dump_into_schema_with_backcompat_symlinks(store, monkeypatch):
+    """The whole point of the ticket: running --apply turns a flat ep_*_kind.ext dump into the
+    per-episode schema, COPIES (never moves) each file to its typed subdir, and leaves a symlink at
+    the OLD flat path so in-flight timelines/renders keep resolving. Nothing is destroyed."""
+    m = _migrator(store, monkeypatch)
+
+    flat = {
+        "ep_a111111_s0_card.png": (b"card-bytes", "ep_a111111/css/s0_card.png"),
+        "ep_a111111_s3_ui.mp4": (b"ui-bytes", "ep_a111111/footage/s3_ui.mp4"),
+        "ep_a111111_s0_voice.wav": (b"vo-bytes", "ep_a111111/audio/s0_voice.wav"),
+        "ep_a111111_episode.mp4": (b"render-bytes", "ep_a111111/renders/episode.mp4"),
+        "ep_a111111_timeline.json": (b"{}", "ep_a111111/timeline.json"),
+    }
+    for name, (body, _dst) in flat.items():
+        (store / name).write_bytes(body)
+
+    m.apply(m.plan(None))
+
+    for name, (body, dst_rel) in flat.items():
+        dst = store / dst_rel
+        assert dst.is_file() and dst.read_bytes() == body, f"{name} not copied to {dst_rel}"
+        old = store / name
+        assert old.is_symlink(), f"{name} flat path must become a back-compat symlink"
+        assert old.resolve() == dst.resolve(), f"{name} symlink must point at the migrated file"
+
+
+def test_migration_is_idempotent_and_heals_partial_runs(store, monkeypatch):
+    """Re-running --apply must not duplicate or corrupt, AND must finish a crashed run: a file that
+    was copied to the schema but never got its back-compat symlink (interrupted mid-apply) is healed
+    into a symlink on the next run — so 'migration incomplete' can't persist."""
+    m = _migrator(store, monkeypatch)
+
+    # simulate a crash AFTER copy, BEFORE symlink: dst exists, flat src is still a real file.
+    (store / "ep_a111111" / "css").mkdir(parents=True)
+    (store / "ep_a111111" / "css" / "s0_card.png").write_bytes(b"card-bytes")
+    flat = store / "ep_a111111_s0_card.png"
+    flat.write_bytes(b"card-bytes")  # un-symlinked leftover from the interrupted run
+
+    m.apply(m.plan(None))
+
+    assert flat.is_symlink(), "a copied-but-unlinked flat file must be healed into a symlink"
+    assert flat.resolve() == (store / "ep_a111111" / "css" / "s0_card.png").resolve()
+
+    # second full re-run is a no-op: still exactly one symlink, still resolves, no .part/.link litter.
+    m.apply(m.plan(None))
+    assert flat.is_symlink()
+    assert not list(store.glob("*.part")) and not list(store.glob("*.link"))
+
+
+def test_gc_spares_symlinks_a_real_migration_leaves(store, monkeypatch):
+    """End-to-end: migrate the flat dump, then run the disk GC. Every back-compat symlink the
+    migration left must survive (deleting one orphans a live render reference) and every migrated
+    schema file must survive — only an aged scratch intermediate is reaped. This is the invariant the
+    ticket says was unproven until migration was actually run."""
+    m = _migrator(store, monkeypatch)
+    for name, body in {
+        "ep_a111111_episode.mp4": b"render",
+        "ep_a111111_s0_voice.wav": b"vo",
+    }.items():
+        (store / name).write_bytes(body)
+    m.apply(m.plan(None))
+    scratch_f = _scratch(store, "ep_a111111", "s0_raw.wav")
+
+    usage = namedtuple("usage", ("total", "used", "free"))
+    monkeypatch.setattr(shutil, "disk_usage", lambda _: usage(100, 0, 100 * 1e9))
+    abn_factory.purge_disk(intermediate_age_s=1, keep_episodes=99, low_disk_gb=0)
+
+    for name in ("ep_a111111_episode.mp4", "ep_a111111_s0_voice.wav"):
+        assert (store / name).is_symlink(), f"GC deleted back-compat symlink {name}"
+        assert (store / name).resolve().exists(), f"GC orphaned symlink {name}"
+    assert (store / "ep_a111111" / "renders" / "episode.mp4").exists()
+    assert (store / "ep_a111111" / "audio" / "s0_voice.wav").exists()
+    assert not scratch_f.exists(), "GC should still reap the aged scratch intermediate"
+
+
 # --- gateway-level tombstone contract (the new safe-delete primitive) ---------------------------
 
 
