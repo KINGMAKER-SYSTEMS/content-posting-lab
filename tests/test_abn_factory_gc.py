@@ -311,6 +311,38 @@ def test_old_episode_renders_excludes_reserved_top_dirs_and_symlinks(store):
     assert trashed not in found, "a tombstoned _trash/ render must never be re-enumerated for re-trim"
 
 
+def test_old_episode_renders_skips_non_mp4_render_files(store):
+    """Belt-and-suspenders: even if the render slot somehow held a non-.mp4 file (a stray
+    'episode' with no extension, or 'episode.txt'), the enumerator must NOT offer it as a
+    low-disk tombstone candidate — is_file()+not is_symlink() alone would pass it. We force the
+    candidate basename to a non-mp4 name to prove the suffix guard rejects it, then restore the
+    real 'episode.mp4' to confirm the same dir IS enumerated when the extension is correct.
+
+    NOTE: we save/restore Path.__truediv__ in a finally (not monkeypatch.undo) on purpose —
+    undo() would also tear down the `store` fixture's ASSETS redirect and send the enumerator at
+    the real volume."""
+    d = store / "ep_a111111" / "renders"
+    d.mkdir(parents=True)
+    (d / "episode.txt").write_bytes(b"not a render")
+
+    # Point the enumerator's hardcoded candidate at the wrong-extension file.
+    real_join = Path.__truediv__
+
+    def fake_join(self, other):
+        if other == "episode.mp4":
+            return real_join(self, "episode.txt")
+        return real_join(self, other)
+
+    Path.__truediv__ = fake_join
+    try:
+        assert abn_factory._old_episode_renders() == [], "a non-.mp4 render file must never be a GC candidate"
+    finally:
+        Path.__truediv__ = real_join
+
+    (d / "episode.mp4").write_bytes(b"the real render")
+    assert (d / "episode.mp4") in abn_factory._old_episode_renders(), "a real .mp4 render must still enumerate"
+
+
 # --- gateway-level tombstone_render contract (the render safe-delete primitive) -----------------
 
 

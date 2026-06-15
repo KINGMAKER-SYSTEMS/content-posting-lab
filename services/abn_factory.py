@@ -3115,7 +3115,11 @@ def _old_episode_renders():
                 continue
             mp4 = child / "renders" / "episode.mp4"
             try:
-                if mp4.is_file() and not mp4.is_symlink():
+                # Belt-and-suspenders: only enumerate a real .mp4 render. The path is constructed
+                # with a hardcoded basename, but guard the extension anyway so a non-render file
+                # (e.g. 'episode' / 'episode.txt') can never be selected for tombstoning under low
+                # disk — is_file()+not is_symlink() alone wouldn't catch that.
+                if mp4.suffix == ".mp4" and mp4.is_file() and not mp4.is_symlink():
                     out.append(mp4)
             except OSError:
                 pass
