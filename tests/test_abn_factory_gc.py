@@ -674,3 +674,44 @@ def test_migrated_asset_url_roundtrips_back_to_disk(migrate_store, monkeypatch):
     assert resolved == dst, "gateway URL must resolve to the migrated destination"
     assert resolved.exists(), "migrated file is unreadable via the gateway URL (read-as-missing bug)"
     assert resolved.read_bytes() == b"card-bytes"
+
+
+# --- _cross_scratch_path: the gateway chokepoint for cross-episode _scratch/ writes -------------
+#
+# _codex_image / _wan_i2v_sync / _bg_is_clean used to hand-build `ASSETS / "_scratch" / name` +
+# os.mkdir and write through it directly (shutil.copy / urllib download), bypassing the runtime
+# write-path validation the asset gateway exists to enforce (abn_assets line 14). An off-schema
+# name slipping through there would be unrecognised by the GC (disk-fill / corruption risk). These
+# tests pin that all three now funnel through one validated chokepoint that the GC reaps.
+
+
+def test_cross_scratch_path_lands_in_managed_reapable_scratch(store):
+    """A cross-episode scratch name routes to _scratch/, the gateway recognises it as managed, and
+    the GC's reapable set includes it — so nothing written here is an unreapable stray."""
+    p = abn_factory._cross_scratch_path("_tmp_bg_0.png")
+    assert p == store / "_scratch" / "_tmp_bg_0.png"
+    assert p.parent.is_dir(), "chokepoint must create the _scratch/ dir"
+    assert abn_assets.is_managed(p), "write path must be gateway-managed (the runtime guard)"
+    p.write_bytes(b"x")
+    assert p.resolve() in {f.resolve() for f in abn_assets.reapable_scratch()}, (
+        "GC must recognise the cross-scratch write as reapable"
+    )
+
+
+def test_cross_scratch_path_url_roundtrips_to_disk(store):
+    """The /agenticnews-assets/_scratch/<name> URL the helper feeds back to callers (and that
+    _grow_bg_library strips with removeprefix) must resolve to the exact file on disk."""
+    p = abn_factory._cross_scratch_path("libgen3_broll.mp4")
+    url = abn_factory._asset_url(p)
+    assert url == "/agenticnews-assets/_scratch/libgen3_broll.mp4"
+    assert abn_factory._resolve_asset(url) == p
+
+
+@pytest.mark.parametrize("bad", ["../evil.png", "a/b.png", "a\\b.png", ".hidden", "..", ""])
+def test_cross_scratch_path_rejects_off_schema_names(store, bad):
+    """Traversal, slashes, leading dot and empty all RAISE before any directory is created or any
+    byte is written — the off-schema path is rejected at runtime, never reaching disk."""
+    with pytest.raises(ValueError):
+        abn_factory._cross_scratch_path(bad)
+    # the reject path must not have created a _scratch/ dir as a side effect for a traversal name
+    assert not (store / "_scratch" / bad).exists()

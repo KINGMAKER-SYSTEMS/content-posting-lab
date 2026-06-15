@@ -104,7 +104,7 @@ ASSETS = db.ASSETS_DIR
 from services.abn_assets import (  # noqa: E402
     asset_path, asset_url, asset_path_from_slug, asset_url_from_slug,
     scratch_path, shared_path, published_path, split_slug, URL_PREFIX,
-    reapable_scratch, tombstone, tombstone_render,
+    reapable_scratch, tombstone, tombstone_render, is_managed,
 )
 from services.json_store import atomic_save  # noqa: E402
 from services.fsutil import safe_unlink  # noqa: E402
@@ -121,6 +121,38 @@ def _cards_assets_dir() -> str:
 def _asset_url(path: Path) -> str:
     """Absolute managed asset path -> its /agenticnews-assets/ URL (what goes in timelines)."""
     return URL_PREFIX + str(Path(path).resolve().relative_to(ASSETS.resolve()))
+
+
+# Validation close to the gateway's _SLUG_RE: a flat basename — alphanumerics, dot, dash,
+# underscore; no leading dot, no slashes, no traversal. (A leading underscore is allowed here,
+# unlike the per-episode slug rule, because real cross-scratch names like '_tmp_bg_0' carry one.)
+# Same closed shape abn_assets enforces, so a bad name can't slip a stray file into the store.
+_SCRATCH_NAME_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._-]*$")
+
+
+def _cross_scratch_path(name: str) -> Path:
+    """Gateway-routed write path for a CROSS-EPISODE throwaway intermediate under ``_scratch/``
+    (a Codex/Flux generation copy, a wan-i2v library clip, an OCR probe still — none episode-scoped).
+
+    The asset gateway only hands out PER-EPISODE scratch (``scratch_path`` requires an ``ep_id``
+    prefix), so these library/probe intermediates have no episode to scope to. Rather than hand-build
+    ``ASSETS / "_scratch" / name`` + ``mkdir`` at each call site (bypassing the runtime write-path
+    check the gateway exists to enforce — abn_assets line 14), funnel all of them through this ONE
+    chokepoint: validate the basename against the same closed shape the gateway uses, build the path,
+    and assert the gateway itself recognises it as managed (``_scratch`` is a MANAGED_TOP dir + a
+    reapable GC root). An off-schema name RAISES before any bytes are written, so the GC can never be
+    handed an unreapable stray. Returns the absolute Path with its parent created."""
+    name = str(name).strip()
+    if not _SCRATCH_NAME_RE.match(name) or "/" in name or "\\" in name:
+        raise ValueError(
+            f"bad cross-scratch filename {name!r}. Use a flat basename "
+            f"(alphanumerics, dot, dash, underscore; no slashes, no leading dot, no traversal)."
+        )
+    dest = ASSETS / "_scratch" / name
+    if not is_managed(dest):
+        raise ValueError(f"refusing off-schema cross-scratch write {dest}")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    return dest
 
 
 def _resolve_asset(url_or_path) -> Path:
@@ -1285,13 +1317,13 @@ def _codex_image(prompt: str, out_name: str, size: str = "1536x1024") -> str | N
     if not new:
         return None
     # NOT episode-scoped (out_name is e.g. '_tmp_bg_0' / a thumb-bg name) — cross-episode
-    # generation intermediate. Lands in _scratch/ (reapable), then the caller copies the
-    # keeper into card_backgrounds/ or the broll library.
-    dest = (ASSETS / "_scratch" / f"{out_name}.png")
-    dest.parent.mkdir(parents=True, exist_ok=True)
+    # generation intermediate. Routed through the gateway chokepoint so the _scratch/ write
+    # path is validated at runtime (reapable), then the caller copies the keeper into
+    # card_backgrounds/ or the broll library.
     try:
+        dest = _cross_scratch_path(f"{out_name}.png")
         shutil.copy(new[0], dest)
-        return f"/agenticnews-assets/_scratch/{dest.name}"
+        return _asset_url(dest)
     except Exception:
         return None
 
@@ -1334,11 +1366,11 @@ def _wan_i2v_sync(image_url, name):
             if p.get("status") == "succeeded":
                 out = p.get("output"); u = out[0] if isinstance(out, list) else out
                 # library b-roll generation (name is 'libgenN', not episode-scoped) — write the
-                # raw clip to _scratch/; the caller copies the keeper into broll_library/.
-                dest = ASSETS / "_scratch" / f"{name}_broll.mp4"
-                dest.parent.mkdir(parents=True, exist_ok=True)
+                # raw clip to _scratch/ through the gateway chokepoint (validated, reapable); the
+                # caller copies the keeper into broll_library/.
+                dest = _cross_scratch_path(f"{name}_broll.mp4")
                 _download(u, str(dest), timeout=90)
-                return f"/agenticnews-assets/_scratch/{dest.name}" if dest.exists() else None
+                return _asset_url(dest) if dest.exists() else None
             if p.get("status") in ("failed", "canceled"):
                 return None
     except Exception:
@@ -1458,9 +1490,9 @@ def _bg_is_clean(still_url, name) -> bool:
     a clean bg OCRs to near-nothing. Best-effort: if OCR is unavailable, don't block (return True)."""
     import shutil, subprocess, urllib.request, re
     try:
-        # throwaway OCR probe (name is 'libgenN', not episode-scoped) -> _scratch/
-        p = ASSETS / "_scratch" / f"{name}_still.png"
-        p.parent.mkdir(parents=True, exist_ok=True)
+        # throwaway OCR probe (name is 'libgenN', not episode-scoped) -> _scratch/ via the gateway
+        # chokepoint, so the probe's write path is validated/reapable like every other asset write.
+        p = _cross_scratch_path(f"{name}_still.png")
         if not _download(still_url, str(p), timeout=60):
             return True  # OCR check can't run on a failed download — don't block (matches prior behavior)
         if not shutil.which("tesseract"):
