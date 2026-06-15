@@ -107,6 +107,7 @@ from services.abn_assets import (  # noqa: E402
     reapable_scratch, tombstone, tombstone_render,
 )
 from services.json_store import atomic_save  # noqa: E402
+from services.fsutil import safe_unlink  # noqa: E402
 
 
 def _cards_assets_dir() -> str:
@@ -1020,13 +1021,11 @@ async def _screenshot(url, name):
             low = (txt or "").lower()
             if any(s in low for s in bot_signals) and len(low) < 4000:
                 BUS.emit("editor-agent", "shot.reject", "screenshot was a bot-wall/CAPTCHA — discarded")
-                try: out.unlink()
-                except Exception: pass
+                safe_unlink(out)
                 return None
             if not await _shot_is_usable(out):
                 BUS.emit("editor-agent", "shot.reject", "screenshot near-blank — discarded")
-                try: out.unlink()
-                except Exception: pass
+                safe_unlink(out)
                 return None
             return _asset_url(out)
     return None

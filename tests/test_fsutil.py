@@ -43,3 +43,19 @@ def test_double_unlink_is_idempotent(tmp_path):
     assert safe_unlink(f) is True
     # Second call: file already gone, no exception, returns False.
     assert safe_unlink(f) is False
+
+
+def test_abn_factory_uses_safe_unlink_in_screenshot():
+    """Regression: abn_factory._screenshot must use the shared helper, not the
+    bare ``try: out.unlink() / except Exception: pass`` cleanup blocks that
+    safe_unlink was created to replace (the two bot-wall/near-blank discards)."""
+    import inspect
+
+    import services.abn_factory as af
+
+    src = inspect.getsource(af._screenshot)
+    # The bare pattern is gone...
+    assert ".unlink()" not in src
+    assert "except Exception: pass" not in src
+    # ...replaced by the shared helper on the rejected screenshot.
+    assert src.count("safe_unlink(out)") == 2
