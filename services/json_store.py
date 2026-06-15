@@ -14,8 +14,29 @@ crashed mid-write (a P0). Do not weaken it.
 
 import json
 import os
+import threading
 from pathlib import Path
 from typing import Any, Callable
+
+# Per-path reentrant locks so a load-modify-save transaction can be serialized.
+# atomic_save only atomizes the write; it does NOT stop two concurrent
+# read-modify-write callers from clobbering each other (TOCTOU). The setters in
+# services/telegram.py run as sync calls from async routers (FastAPI's sync
+# threadpool, the bot thread, asyncio.to_thread), so the racing callers share a
+# process — a threading lock is enough. Reentrant so a transaction that calls
+# another transaction on the same file doesn't self-deadlock.
+_LOCKS: dict[str, threading.RLock] = {}
+_LOCKS_GUARD = threading.Lock()
+
+
+def lock_for(path: Path | str) -> threading.RLock:
+    """Return the process-wide reentrant lock guarding mutations to ``path``."""
+    key = str(Path(path))
+    with _LOCKS_GUARD:
+        lock = _LOCKS.get(key)
+        if lock is None:
+            lock = _LOCKS[key] = threading.RLock()
+        return lock
 
 
 def atomic_load(path: Path | str, *, default: Any = None) -> Any:

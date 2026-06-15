@@ -8,11 +8,13 @@ and forwarding schedule.
 import html
 import time
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
+from typing import Iterator
 
 import os
 
-from services.json_store import atomic_load, atomic_save
+from services.json_store import atomic_load, atomic_save, lock_for
 
 BASE_DIR = Path(__file__).parent.parent
 
@@ -101,6 +103,26 @@ def save_config(data: dict) -> None:
     atomic_save(CONFIG_PATH, data)
 
 
+@contextmanager
+def mutate_config() -> Iterator[dict]:
+    """Load the config, yield it for in-place mutation, then save it — under a lock.
+
+    Closes the load-modify-save (TOCTOU) race: atomic_save only atomizes the
+    write, so two concurrent setters that each load → mutate → save could lose
+    one set of changes. Holding CONFIG_PATH's reentrant lock across the whole
+    transaction serializes them. Reentrant, so a setter that calls another
+    setter inside the block won't deadlock.
+
+    Usage:
+        with mutate_config() as config:
+            config["posters"][pid] = ...
+    """
+    with lock_for(CONFIG_PATH):
+        config = load_config()
+        yield config
+        save_config(config)
+
+
 def get_bot_token() -> str | None:
     """Return the bot token. Env var TELEGRAM_BOT_TOKEN takes priority over config file."""
     env_token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
@@ -112,17 +134,15 @@ def get_bot_token() -> str | None:
 
 def set_bot_token(token: str) -> None:
     """Store a bot token."""
-    config = load_config()
-    config["bot_token"] = token
-    save_config(config)
+    with mutate_config() as config:
+        config["bot_token"] = token
 
 
 def clear_bot_token() -> None:
     """Remove the bot token and username."""
-    config = load_config()
-    config["bot_token"] = None
-    config["bot_username"] = None
-    save_config(config)
+    with mutate_config() as config:
+        config["bot_token"] = None
+        config["bot_username"] = None
 
 
 # ---------------------------------------------------------------------------
@@ -137,15 +157,14 @@ def get_staging_group() -> dict:
 
 def set_staging_group(chat_id: int, name: str) -> dict:
     """Set the staging group chat ID and name. Clears topics if group changes."""
-    config = load_config()
-    old_chat_id = config["staging_group"].get("chat_id")
-    config["staging_group"]["chat_id"] = chat_id
-    config["staging_group"]["name"] = name
-    # Clear stale topic mappings when switching to a different group
-    if old_chat_id is not None and old_chat_id != chat_id:
-        config["staging_group"]["topics"] = {}
-    save_config(config)
-    return config["staging_group"]
+    with mutate_config() as config:
+        old_chat_id = config["staging_group"].get("chat_id")
+        config["staging_group"]["chat_id"] = chat_id
+        config["staging_group"]["name"] = name
+        # Clear stale topic mappings when switching to a different group
+        if old_chat_id is not None and old_chat_id != chat_id:
+            config["staging_group"]["topics"] = {}
+        return config["staging_group"]
 
 
 def set_staging_topic(integration_id: str, topic_id: int, topic_name: str, force: bool = False) -> dict:
@@ -153,27 +172,29 @@ def set_staging_topic(integration_id: str, topic_id: int, topic_name: str, force
 
     APPEND-ONLY by default: refuses to overwrite an existing mapping unless force=True.
     """
-    config = load_config()
-    existing = config["staging_group"]["topics"].get(integration_id)
-    if existing and not force:
+    with lock_for(CONFIG_PATH):
+        config = load_config()
+        existing = config["staging_group"]["topics"].get(integration_id)
+        if existing and not force:
+            return config["staging_group"]
+        config["staging_group"]["topics"][integration_id] = {
+            "topic_id": topic_id,
+            "topic_name": topic_name,
+        }
+        save_config(config)
         return config["staging_group"]
-    config["staging_group"]["topics"][integration_id] = {
-        "topic_id": topic_id,
-        "topic_name": topic_name,
-    }
-    save_config(config)
-    return config["staging_group"]
 
 
 def remove_staging_topic(integration_id: str) -> bool:
     """Remove a topic mapping. Returns True if it existed."""
-    config = load_config()
-    topics = config["staging_group"].get("topics", {})
-    if integration_id not in topics:
-        return False
-    del topics[integration_id]
-    save_config(config)
-    return True
+    with lock_for(CONFIG_PATH):
+        config = load_config()
+        topics = config["staging_group"].get("topics", {})
+        if integration_id not in topics:
+            return False
+        del topics[integration_id]
+        save_config(config)
+        return True
 
 
 def get_last_forwarded_id(integration_id: str) -> int:
@@ -185,11 +206,12 @@ def get_last_forwarded_id(integration_id: str) -> int:
 
 def set_last_forwarded_id(integration_id: str, message_id: int) -> None:
     """Update the last forwarded message_id for a staging topic."""
-    config = load_config()
-    topic = config["staging_group"].get("topics", {}).get(integration_id)
-    if topic is not None:
-        topic["last_forwarded_id"] = message_id
-        save_config(config)
+    with lock_for(CONFIG_PATH):
+        config = load_config()
+        topic = config["staging_group"].get("topics", {}).get(integration_id)
+        if topic is not None:
+            topic["last_forwarded_id"] = message_id
+            save_config(config)
 
 
 # ---------------------------------------------------------------------------
@@ -210,72 +232,70 @@ def get_poster(poster_id: str) -> dict | None:
 
 def set_poster(poster_id: str, data: dict) -> dict:
     """Create or update a poster. Auto-sets added_at/updated_at. Returns saved entry."""
-    config = load_config()
-    existing = config.get("posters", {}).get(poster_id, {})
-    now = _now()
+    with mutate_config() as config:
+        existing = config.get("posters", {}).get(poster_id, {})
+        now = _now()
 
-    entry = {
-        "poster_id": poster_id,
-        "name": data.get("name", existing.get("name", "")),
-        "chat_id": data.get("chat_id", existing.get("chat_id")),
-        "page_ids": data.get("page_ids", existing.get("page_ids", [])),
-        "topics": data.get("topics", existing.get("topics", {})),
-        "sounds_topic_id": data.get("sounds_topic_id", existing.get("sounds_topic_id")),
-        # Telegram Mini App identity: which Telegram user(s) act as this poster.
-        "telegram_user_ids": data.get(
-            "telegram_user_ids", existing.get("telegram_user_ids", [])
-        ),
-        "telegram_username": data.get(
-            "telegram_username", existing.get("telegram_username")
-        ),
-        "added_at": existing.get("added_at", now),
-        "updated_at": now,
-    }
+        entry = {
+            "poster_id": poster_id,
+            "name": data.get("name", existing.get("name", "")),
+            "chat_id": data.get("chat_id", existing.get("chat_id")),
+            "page_ids": data.get("page_ids", existing.get("page_ids", [])),
+            "topics": data.get("topics", existing.get("topics", {})),
+            "sounds_topic_id": data.get("sounds_topic_id", existing.get("sounds_topic_id")),
+            # Telegram Mini App identity: which Telegram user(s) act as this poster.
+            "telegram_user_ids": data.get(
+                "telegram_user_ids", existing.get("telegram_user_ids", [])
+            ),
+            "telegram_username": data.get(
+                "telegram_username", existing.get("telegram_username")
+            ),
+            "added_at": existing.get("added_at", now),
+            "updated_at": now,
+        }
 
-    config.setdefault("posters", {})[poster_id] = entry
-    save_config(config)
-    return entry
+        config.setdefault("posters", {})[poster_id] = entry
+        return entry
 
 
 def remove_poster(poster_id: str) -> bool:
     """Remove a poster. Returns True if it existed."""
-    config = load_config()
-    posters = config.get("posters", {})
-    if poster_id not in posters:
-        return False
-    del posters[poster_id]
-    save_config(config)
-    return True
+    with lock_for(CONFIG_PATH):
+        config = load_config()
+        posters = config.get("posters", {})
+        if poster_id not in posters:
+            return False
+        del posters[poster_id]
+        save_config(config)
+        return True
 
 
 def assign_page_to_poster(poster_id: str, integration_id: str) -> dict:
     """Add a page to a poster's page_ids list. Returns updated poster."""
-    config = load_config()
-    poster = config.get("posters", {}).get(poster_id)
-    if poster is None:
-        raise ValueError(f"Poster {poster_id} not found")
-    if integration_id not in poster.get("page_ids", []):
-        poster.setdefault("page_ids", []).append(integration_id)
-    poster["updated_at"] = _now()
-    save_config(config)
-    return poster
+    with mutate_config() as config:
+        poster = config.get("posters", {}).get(poster_id)
+        if poster is None:
+            raise ValueError(f"Poster {poster_id} not found")
+        if integration_id not in poster.get("page_ids", []):
+            poster.setdefault("page_ids", []).append(integration_id)
+        poster["updated_at"] = _now()
+        return poster
 
 
 def unassign_page_from_poster(poster_id: str, integration_id: str) -> dict:
     """Remove a page from a poster's page_ids and topics. Returns updated poster."""
-    config = load_config()
-    poster = config.get("posters", {}).get(poster_id)
-    if poster is None:
-        raise ValueError(f"Poster {poster_id} not found")
-    page_ids = poster.get("page_ids", [])
-    if integration_id in page_ids:
-        page_ids.remove(integration_id)
-    topics = poster.get("topics", {})
-    if integration_id in topics:
-        del topics[integration_id]
-    poster["updated_at"] = _now()
-    save_config(config)
-    return poster
+    with mutate_config() as config:
+        poster = config.get("posters", {}).get(poster_id)
+        if poster is None:
+            raise ValueError(f"Poster {poster_id} not found")
+        page_ids = poster.get("page_ids", [])
+        if integration_id in page_ids:
+            page_ids.remove(integration_id)
+        topics = poster.get("topics", {})
+        if integration_id in topics:
+            del topics[integration_id]
+        poster["updated_at"] = _now()
+        return poster
 
 
 def set_poster_topic(poster_id: str, integration_id: str, topic_id: int, topic_name: str, force: bool = False) -> dict:
@@ -283,20 +303,21 @@ def set_poster_topic(poster_id: str, integration_id: str, topic_id: int, topic_n
 
     APPEND-ONLY by default: refuses to overwrite an existing mapping unless force=True.
     """
-    config = load_config()
-    poster = config.get("posters", {}).get(poster_id)
-    if poster is None:
-        raise ValueError(f"Poster {poster_id} not found")
-    existing = poster.get("topics", {}).get(integration_id)
-    if existing and not force:
+    with lock_for(CONFIG_PATH):
+        config = load_config()
+        poster = config.get("posters", {}).get(poster_id)
+        if poster is None:
+            raise ValueError(f"Poster {poster_id} not found")
+        existing = poster.get("topics", {}).get(integration_id)
+        if existing and not force:
+            return poster
+        poster.setdefault("topics", {})[integration_id] = {
+            "topic_id": topic_id,
+            "topic_name": topic_name,
+        }
+        poster["updated_at"] = _now()
+        save_config(config)
         return poster
-    poster.setdefault("topics", {})[integration_id] = {
-        "topic_id": topic_id,
-        "topic_name": topic_name,
-    }
-    poster["updated_at"] = _now()
-    save_config(config)
-    return poster
 
 
 def bind_user_to_poster(
@@ -307,34 +328,32 @@ def bind_user_to_poster(
     Used by the Mini App so an incoming `initData` can be resolved to the
     poster that user acts as. Append-only on user_ids; safe to call repeatedly.
     """
-    config = load_config()
-    poster = config.get("posters", {}).get(poster_id)
-    if poster is None:
-        raise ValueError(f"Poster {poster_id} not found")
-    uid = int(user_id)
-    ids = poster.setdefault("telegram_user_ids", [])
-    if uid not in ids:
-        ids.append(uid)
-    if username:
-        poster["telegram_username"] = username.lstrip("@")
-    poster["updated_at"] = _now()
-    save_config(config)
-    return poster
+    with mutate_config() as config:
+        poster = config.get("posters", {}).get(poster_id)
+        if poster is None:
+            raise ValueError(f"Poster {poster_id} not found")
+        uid = int(user_id)
+        ids = poster.setdefault("telegram_user_ids", [])
+        if uid not in ids:
+            ids.append(uid)
+        if username:
+            poster["telegram_username"] = username.lstrip("@")
+        poster["updated_at"] = _now()
+        return poster
 
 
 def unbind_user_from_poster(poster_id: str, user_id: int) -> dict:
     """Remove a Telegram user id from a poster. Returns the updated poster."""
-    config = load_config()
-    poster = config.get("posters", {}).get(poster_id)
-    if poster is None:
-        raise ValueError(f"Poster {poster_id} not found")
-    uid = int(user_id)
-    ids = poster.get("telegram_user_ids", [])
-    if uid in ids:
-        ids.remove(uid)
-    poster["updated_at"] = _now()
-    save_config(config)
-    return poster
+    with mutate_config() as config:
+        poster = config.get("posters", {}).get(poster_id)
+        if poster is None:
+            raise ValueError(f"Poster {poster_id} not found")
+        uid = int(user_id)
+        ids = poster.get("telegram_user_ids", [])
+        if uid in ids:
+            ids.remove(uid)
+        poster["updated_at"] = _now()
+        return poster
 
 
 def get_poster_for_user(
@@ -377,14 +396,13 @@ def get_poster_for_page(integration_id: str) -> dict | None:
 
 def set_poster_sounds_topic(poster_id: str, topic_id: int) -> dict:
     """Set the sounds topic ID for a poster. Returns updated poster."""
-    config = load_config()
-    poster = config.get("posters", {}).get(poster_id)
-    if poster is None:
-        raise ValueError(f"Poster {poster_id} not found")
-    poster["sounds_topic_id"] = topic_id
-    poster["updated_at"] = _now()
-    save_config(config)
-    return poster
+    with mutate_config() as config:
+        poster = config.get("posters", {}).get(poster_id)
+        if poster is None:
+            raise ValueError(f"Poster {poster_id} not found")
+        poster["sounds_topic_id"] = topic_id
+        poster["updated_at"] = _now()
+        return poster
 
 
 # ---------------------------------------------------------------------------
@@ -393,19 +411,18 @@ def set_poster_sounds_topic(poster_id: str, topic_id: int) -> dict:
 
 def add_inventory_item(integration_id: str, item: dict) -> dict:
     """Append an item to a page's inventory list. Returns the item with generated ID."""
-    config = load_config()
-    inventory = config.setdefault("inventory", {})
-    page_items = inventory.setdefault(integration_id, [])
+    with mutate_config() as config:
+        inventory = config.setdefault("inventory", {})
+        page_items = inventory.setdefault(integration_id, [])
 
-    entry = {
-        "id": _gen_id(),
-        "added_at": _now(),
-        "forwarded": {},
-        **item,
-    }
-    page_items.append(entry)
-    save_config(config)
-    return entry
+        entry = {
+            "id": _gen_id(),
+            "added_at": _now(),
+            "forwarded": {},
+            **item,
+        }
+        page_items.append(entry)
+        return entry
 
 
 def get_inventory(integration_id: str) -> list:
@@ -441,56 +458,56 @@ def get_pending_inventory(integration_id: str) -> list:
 
 def mark_forwarded(integration_id: str, item_id: str, poster_id: str, message_id: int) -> dict | None:
     """Mark an inventory item as forwarded. Returns updated item or None if not found."""
-    config = load_config()
-    items = config.get("inventory", {}).get(integration_id, [])
-    for item in items:
-        if item.get("id") == item_id:
-            item["forwarded"] = {
-                "poster_id": poster_id,
-                "message_id": message_id,
-                "forwarded_at": _now(),
-            }
-            save_config(config)
-            return item
-    return None
+    with lock_for(CONFIG_PATH):
+        config = load_config()
+        items = config.get("inventory", {}).get(integration_id, [])
+        for item in items:
+            if item.get("id") == item_id:
+                item["forwarded"] = {
+                    "poster_id": poster_id,
+                    "message_id": message_id,
+                    "forwarded_at": _now(),
+                }
+                save_config(config)
+                return item
+        return None
 
 
 def remove_inventory_item(integration_id: str, item_id: str) -> bool:
     """Remove an inventory item. Returns True if it existed."""
-    config = load_config()
-    items = config.get("inventory", {}).get(integration_id, [])
-    for idx, item in enumerate(items):
-        if item.get("id") == item_id:
-            items.pop(idx)
-            save_config(config)
-            return True
-    return False
+    with lock_for(CONFIG_PATH):
+        config = load_config()
+        items = config.get("inventory", {}).get(integration_id, [])
+        for idx, item in enumerate(items):
+            if item.get("id") == item_id:
+                items.pop(idx)
+                save_config(config)
+                return True
+        return False
 
 
 def clear_all_inventory() -> int:
     """Wipe ALL inventory across all pages. Returns total items removed."""
-    config = load_config()
-    inventory = config.get("inventory", {})
-    total = sum(len(items) for items in inventory.values())
-    config["inventory"] = {}
-    save_config(config)
-    return total
+    with mutate_config() as config:
+        inventory = config.get("inventory", {})
+        total = sum(len(items) for items in inventory.values())
+        config["inventory"] = {}
+        return total
 
 
 def clear_scan_inventory() -> int:
     """Remove only inventory items added by scan (source='scan'). Returns count removed."""
-    config = load_config()
-    inventory = config.get("inventory", {})
-    removed = 0
-    for integration_id in list(inventory.keys()):
-        items = inventory[integration_id]
-        before = len(items)
-        inventory[integration_id] = [i for i in items if i.get("source") != "scan"]
-        removed += before - len(inventory[integration_id])
-        if not inventory[integration_id]:
-            del inventory[integration_id]
-    save_config(config)
-    return removed
+    with mutate_config() as config:
+        inventory = config.get("inventory", {})
+        removed = 0
+        for integration_id in list(inventory.keys()):
+            items = inventory[integration_id]
+            before = len(items)
+            inventory[integration_id] = [i for i in items if i.get("source") != "scan"]
+            removed += before - len(inventory[integration_id])
+            if not inventory[integration_id]:
+                del inventory[integration_id]
+        return removed
 
 
 # ---------------------------------------------------------------------------
@@ -499,11 +516,10 @@ def clear_scan_inventory() -> int:
 
 def clear_all_sounds() -> int:
     """Remove all sounds. Returns count removed."""
-    config = load_config()
-    count = len(config.get("sounds", []))
-    config["sounds"] = []
-    save_config(config)
-    return count
+    with mutate_config() as config:
+        count = len(config.get("sounds", []))
+        config["sounds"] = []
+        return count
 
 
 def list_sounds(active_only: bool = True) -> list[dict]:
@@ -517,54 +533,56 @@ def list_sounds(active_only: bool = True) -> list[dict]:
 
 def add_sound(url: str, label: str) -> dict:
     """Add a new sound entry. Returns the created sound."""
-    config = load_config()
-    entry = {
-        "id": _gen_id(),
-        "url": url,
-        "label": label,
-        "active": True,
-        "added_at": _now(),
-    }
-    config.setdefault("sounds", []).append(entry)
-    save_config(config)
-    return entry
+    with mutate_config() as config:
+        entry = {
+            "id": _gen_id(),
+            "url": url,
+            "label": label,
+            "active": True,
+            "added_at": _now(),
+        }
+        config.setdefault("sounds", []).append(entry)
+        return entry
 
 
 def remove_sound(sound_id: str) -> bool:
     """Remove a sound. Returns True if it existed."""
-    config = load_config()
-    sounds = config.get("sounds", [])
-    for idx, sound in enumerate(sounds):
-        if sound.get("id") == sound_id:
-            sounds.pop(idx)
-            save_config(config)
-            return True
-    return False
+    with lock_for(CONFIG_PATH):
+        config = load_config()
+        sounds = config.get("sounds", [])
+        for idx, sound in enumerate(sounds):
+            if sound.get("id") == sound_id:
+                sounds.pop(idx)
+                save_config(config)
+                return True
+        return False
 
 
 def toggle_sound(sound_id: str, active: bool) -> dict | None:
     """Set a sound's active flag. Returns updated sound or None if not found."""
-    config = load_config()
-    for sound in config.get("sounds", []):
-        if sound.get("id") == sound_id:
-            sound["active"] = active
-            save_config(config)
-            return sound
-    return None
+    with lock_for(CONFIG_PATH):
+        config = load_config()
+        for sound in config.get("sounds", []):
+            if sound.get("id") == sound_id:
+                sound["active"] = active
+                save_config(config)
+                return sound
+        return None
 
 
 def update_sound(sound_id: str, url: str | None = None, label: str | None = None) -> dict | None:
     """Update a sound's url and/or label. Returns updated sound or None if not found."""
-    config = load_config()
-    for sound in config.get("sounds", []):
-        if sound.get("id") == sound_id:
-            if url is not None:
-                sound["url"] = url
-            if label is not None:
-                sound["label"] = label
-            save_config(config)
-            return sound
-    return None
+    with lock_for(CONFIG_PATH):
+        config = load_config()
+        for sound in config.get("sounds", []):
+            if sound.get("id") == sound_id:
+                if url is not None:
+                    sound["url"] = url
+                if label is not None:
+                    sound["label"] = label
+                save_config(config)
+                return sound
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -579,23 +597,21 @@ def get_schedule() -> dict:
 
 def set_schedule(enabled: bool | None = None, forward_time: str | None = None, timezone: str | None = None) -> dict:
     """Update schedule fields (only provided ones). Returns updated schedule."""
-    config = load_config()
-    schedule = config.setdefault("schedule", _empty_config()["schedule"])
-    if enabled is not None:
-        schedule["enabled"] = enabled
-    if forward_time is not None:
-        schedule["forward_time"] = forward_time
-    if timezone is not None:
-        schedule["timezone"] = timezone
-    save_config(config)
-    return schedule
+    with mutate_config() as config:
+        schedule = config.setdefault("schedule", _empty_config()["schedule"])
+        if enabled is not None:
+            schedule["enabled"] = enabled
+        if forward_time is not None:
+            schedule["forward_time"] = forward_time
+        if timezone is not None:
+            schedule["timezone"] = timezone
+        return schedule
 
 
 def set_last_run(timestamp: str) -> None:
     """Record when the schedule last ran."""
-    config = load_config()
-    config.setdefault("schedule", _empty_config()["schedule"])["last_run"] = timestamp
-    save_config(config)
+    with mutate_config() as config:
+        config.setdefault("schedule", _empty_config()["schedule"])["last_run"] = timestamp
 
 
 # ---------------------------------------------------------------------------
@@ -629,19 +645,18 @@ def set_page_playlist(integration_id: str, sound_ids: list[str]) -> list[str]:
     Silently drops sound IDs that don't exist in the sounds[] pool to keep the
     playlist coherent. Returns the saved list.
     """
-    config = load_config()
-    valid_ids = {s.get("id") for s in config.get("sounds", []) if s.get("id")}
+    with mutate_config() as config:
+        valid_ids = {s.get("id") for s in config.get("sounds", []) if s.get("id")}
 
-    seen: set[str] = set()
-    cleaned: list[str] = []
-    for sid in sound_ids:
-        if sid and sid in valid_ids and sid not in seen:
-            seen.add(sid)
-            cleaned.append(sid)
+        seen: set[str] = set()
+        cleaned: list[str] = []
+        for sid in sound_ids:
+            if sid and sid in valid_ids and sid not in seen:
+                seen.add(sid)
+                cleaned.append(sid)
 
-    config.setdefault("page_playlists", {})[integration_id] = cleaned
-    save_config(config)
-    return cleaned
+        config.setdefault("page_playlists", {})[integration_id] = cleaned
+        return cleaned
 
 
 def add_song_to_page(integration_id: str, sound_id: str) -> list[str]:
@@ -649,41 +664,44 @@ def add_song_to_page(integration_id: str, sound_id: str) -> list[str]:
 
     Raises ValueError if sound_id is not in the sounds[] pool.
     """
-    config = load_config()
-    valid_ids = {s.get("id") for s in config.get("sounds", []) if s.get("id")}
-    if sound_id not in valid_ids:
-        raise ValueError(f"Sound {sound_id} not in pool")
+    with lock_for(CONFIG_PATH):
+        config = load_config()
+        valid_ids = {s.get("id") for s in config.get("sounds", []) if s.get("id")}
+        if sound_id not in valid_ids:
+            raise ValueError(f"Sound {sound_id} not in pool")
 
-    playlists = config.setdefault("page_playlists", {})
-    current = list(playlists.get(integration_id, []))
-    if sound_id not in current:
-        current.append(sound_id)
-        playlists[integration_id] = current
-        save_config(config)
-    return current
+        playlists = config.setdefault("page_playlists", {})
+        current = list(playlists.get(integration_id, []))
+        if sound_id not in current:
+            current.append(sound_id)
+            playlists[integration_id] = current
+            save_config(config)
+        return current
 
 
 def remove_song_from_page(integration_id: str, sound_id: str) -> list[str]:
     """Remove a sound from a page's playlist. Returns updated list (empty if page absent)."""
-    config = load_config()
-    playlists = config.setdefault("page_playlists", {})
-    current = list(playlists.get(integration_id, []))
-    if sound_id in current:
-        current.remove(sound_id)
-        playlists[integration_id] = current
-        save_config(config)
-    return current
+    with lock_for(CONFIG_PATH):
+        config = load_config()
+        playlists = config.setdefault("page_playlists", {})
+        current = list(playlists.get(integration_id, []))
+        if sound_id in current:
+            current.remove(sound_id)
+            playlists[integration_id] = current
+            save_config(config)
+        return current
 
 
 def clear_page_playlist(integration_id: str) -> bool:
     """Remove a page's playlist entry entirely. Returns True if it existed."""
-    config = load_config()
-    playlists = config.setdefault("page_playlists", {})
-    if integration_id in playlists:
-        del playlists[integration_id]
-        save_config(config)
-        return True
-    return False
+    with lock_for(CONFIG_PATH):
+        config = load_config()
+        playlists = config.setdefault("page_playlists", {})
+        if integration_id in playlists:
+            del playlists[integration_id]
+            save_config(config)
+            return True
+        return False
 
 
 def resolve_playlist_sounds(integration_id: str, active_only: bool = True) -> list[dict]:
