@@ -642,6 +642,39 @@ def test_open_shot_audio_mux_raises_on_missing_audio_asset(tmp_path):
     assert not video.with_name("silent_video.audio-mux.mp4").exists()
 
 
+def test_open_shot_audio_mux_raises_render_error_on_corrupt_audio_real_ffmpeg(tmp_path):
+    """End-to-end fail-closed proof against REAL ffmpeg (not a mocked subprocess):
+    an audio asset that exists on disk but is undecodable garbage passes the
+    .exists() guard, then makes the filter_complex/atrim graph fail at decode time.
+    The non-zero returncode branch (editor_render.py:855) must surface ffmpeg's
+    stderr as RenderError, leave the original mp4 byte-identical, and never swap in
+    the .audio-mux temp. This is the edge case the mocked timeout/returncode tests
+    can't cover: that the live ffmpeg invocation actually exits non-zero here."""
+    video = tmp_path / "silent_video.mp4"
+    subprocess.run(
+        ["ffmpeg", "-y", "-f", "lavfi", "-i", "color=c=black:s=96x64:r=12:d=2",
+         "-c:v", "libx264", "-pix_fmt", "yuv420p", str(video)],
+        check=True, capture_output=True, text=True,
+    )
+    original = video.read_bytes()
+
+    corrupt = tmp_path / "corrupt.wav"  # exists, but not real audio
+    corrupt.write_bytes(b"this is not audio data at all, only garbage bytes")
+    project = timeline.new_project("audio_mux_corrupt", width=96, height=64, fps=12)
+    project["assets"]["bad"] = {"id": "bad", "type": "audio", "src": str(corrupt)}
+    project["clips"]["bad"] = {
+        "id": "bad", "assetId": "bad", "trackId": "audio_1", "kind": "voiceover",
+        "start": 0.0, "duration": 1.0, "sourceStart": 0.0, "enabled": True,
+        "muted": False, "volume": 1.0, "transform": {},
+    }
+
+    with pytest.raises(editor_render.RenderError):
+        editor_render._mux_timeline_audio(project, video, duration=2.0, asset_root=None)
+    # source untouched + no temp swap left behind on the real-ffmpeg failure path.
+    assert video.read_bytes() == original
+    assert not video.with_name("silent_video.audio-mux.mp4").exists()
+
+
 def test_volume_filter_builds_keyframe_expression_when_envelope_present():
     """A `volume` keyframe track must compile to a time-varying ffmpeg expression
     (eval=frame), not the flat `volume=` that silently flattened ducking envelopes.
