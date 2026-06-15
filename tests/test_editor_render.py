@@ -107,6 +107,30 @@ def _sample_rgb(path: Path, x: int, y: int) -> tuple[int, int, int]:
     return tuple(result.stdout[:3])
 
 
+def _frame_png_at(src: Path, dest: Path, *, at: float) -> Path:
+    """Extract the first frame at or after `at` to a PNG (robust on this ffmpeg:
+    mid-stream -ss piping drops the single frame, a file-target select does not)."""
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-y",
+            "-v",
+            "error",
+            "-i",
+            str(src),
+            "-vf",
+            f"select='gte(t,{at})'",
+            "-vframes",
+            "1",
+            str(dest),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return dest
+
+
 def _project_with_card(project_id: str, asset_path: Path, *, x: float = 0.0) -> dict:
     project = timeline.new_project(project_id, width=96, height=64, fps=12)
     project["assets"]["card"] = {
@@ -220,6 +244,58 @@ def test_render_scope_project_defaults_duration_to_remaining_timeline():
     clip = next(iter(scoped["clips"].values()))
     assert clip["start"] == pytest.approx(0.0)
     assert clip["duration"] == pytest.approx(6.0)         # 10 - 4 remaining seconds
+
+
+def test_ffmpeg_fallback_warns_on_dropped_effects_and_keyframes(tmp_path):
+    """The ffmpeg fallback can't composite crossfade/color effects or keyframe
+    envelopes (OpenShot-only). It must SURFACE that as a structured warning, not
+    drop them in silence — that silent drop was the bug this slice fixes."""
+    red = _solid_png(tmp_path / "red.png", "red")
+    project = _project_with_card("warn_fixture", red, x=0.0)
+    project["clips"]["card_clip"]["effects"] = [
+        {"id": "fx_cf", "type": "crossfade", "params": {"duration": 0.3}},
+        {"id": "fx_br", "type": "brightness", "params": {"value": 0.2}},
+    ]
+    project["clips"]["card_clip"]["keyframes"] = [
+        {"property": "opacity", "points": [
+            {"t": 0.0, "value": 0.0, "interp": "linear"},
+            {"t": 1.0, "value": 1.0, "interp": "linear"},
+        ]},
+    ]
+    renderer = editor_render.FFmpegLayeredRenderer(tmp_path / "renders")
+    result = renderer.render(project, output_path=tmp_path / "renders" / "warn_fixture.mp4")
+
+    assert Path(result["video"]).exists()  # still renders
+    names = {(w["kind"], w["name"]) for w in result["warnings"]}
+    assert ("effect", "crossfade") in names
+    assert ("effect", "brightness") in names
+    assert ("keyframe", "opacity") in names
+    # frame previews carry the same warning contract
+    frame = renderer.render_frame(project, at=0.5, output_path=tmp_path / "renders" / "warn.png")
+    assert any(w["name"] == "crossfade" for w in frame["warnings"])
+
+
+def test_ffmpeg_fallback_applies_native_fadein_without_warning(tmp_path):
+    """fadeIn/fadeOut are the one effect ffmpeg reproduces natively (the `fade`
+    filter). A 0.5s fadeIn on a 1s red card must (a) NOT warn and (b) actually
+    ramp alpha — the start of the clip is near-black (faded out) and ramps up to
+    full red by the end."""
+    red = _solid_png(tmp_path / "red.png", "red", size="96x64")
+    project = _project_with_card("fade_fixture", red, x=0.0)
+    project["clips"]["card_clip"]["effects"] = [
+        {"id": "fx_in", "type": "fadeIn", "params": {"duration": 0.5}},
+    ]
+    renderer = editor_render.FFmpegLayeredRenderer(tmp_path / "renders")
+    result = renderer.render(project, output_path=tmp_path / "renders" / "fade_fixture.mp4")
+    assert result["warnings"] == []  # fadeIn is honored natively, not dropped
+
+    video = Path(result["video"])
+    early = _frame_png_at(video, tmp_path / "early.png", at=0.0)
+    late = _frame_png_at(video, tmp_path / "late.png", at=0.9)
+    early_red = _sample_rgb(early, 10, 10)[0]
+    late_red = _sample_rgb(late, 10, 10)[0]
+    assert early_red < late_red  # red ramps up from black as the fade-in progresses
+    assert late_red > 150
 
 
 def test_backend_detection_prefers_openshot_but_reports_local_blocker():

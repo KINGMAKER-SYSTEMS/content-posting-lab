@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import logging
 import math
 import os
 import shutil
@@ -18,6 +19,8 @@ from pathlib import Path
 from typing import Any
 
 import services.openshot_bridge as openshot_bridge
+
+log = logging.getLogger("editor_render")
 
 
 class RenderError(RuntimeError):
@@ -35,6 +38,47 @@ def _num(value: Any, default: float) -> float:
     except (TypeError, ValueError):
         return default
     return out if math.isfinite(out) else default
+
+
+# Effects the ffmpeg fallback can reproduce natively. fadeIn/fadeOut map to
+# ffmpeg's `fade`/`afade` filters (the same in/out semantics OpenShot's Fade
+# uses). Everything else (crossfade, color filters) and every keyframe envelope
+# is OpenShot-only; the fallback can't composite them, so it must SAY SO rather
+# than silently drop them (the whole point of this slice).
+_FFMPEG_NATIVE_EFFECTS = {"fadeIn", "fadeOut"}
+
+
+def _ffmpeg_unsupported_drops(clip: dict[str, Any]) -> list[dict[str, str]]:
+    """List the per-clip effects/keyframes the ffmpeg fallback cannot honor.
+
+    OpenShot renders these; ffmpeg can't (without reinventing the compiler), so
+    we surface a structured warning instead of dropping them in silence."""
+
+    drops: list[dict[str, str]] = []
+    clip_id = str(clip.get("id") or "")
+    for effect in clip.get("effects") or []:
+        effect_type = str((effect or {}).get("type") or "")
+        if effect_type in _FFMPEG_NATIVE_EFFECTS:
+            continue
+        drops.append({"clipId": clip_id, "kind": "effect", "name": effect_type})
+    for track in clip.get("keyframes") or []:
+        if not (track or {}).get("points"):
+            continue
+        drops.append({"clipId": clip_id, "kind": "keyframe", "name": str((track or {}).get("property") or "")})
+    return drops
+
+
+def _fade_window(clip: dict[str, Any], direction: str) -> float | None:
+    """Return the fadeIn/fadeOut duration (seconds) declared on a clip, if any."""
+
+    best: float | None = None
+    for effect in clip.get("effects") or []:
+        if str((effect or {}).get("type") or "") != direction:
+            continue
+        seconds = float(((effect or {}).get("params") or {}).get("duration") or 0.0)
+        if seconds > 0 and (best is None or seconds > best):
+            best = seconds
+    return best
 
 
 def detect_render_backends() -> dict[str, dict[str, Any]]:
@@ -319,7 +363,7 @@ class FFmpegLayeredRenderer:
         window_start = max(0.0, float(start))
         remaining = max(0.1, project_duration - window_start)
         render_duration = remaining if duration is None else max(0.1, min(float(duration), remaining))
-        cmd, missing_assets = self._build_video_command(
+        cmd, missing_assets, warnings = self._build_video_command(
             project,
             output,
             duration=render_duration,
@@ -327,6 +371,8 @@ class FFmpegLayeredRenderer:
         )
         if missing_assets:
             raise RenderError(f"render blocked by missing assets: {json.dumps(missing_assets)}")
+        if warnings:
+            log.warning("ffmpeg fallback cannot honor %s; rendered without them", json.dumps(warnings))
         _run(cmd)
         return {
             "backend": self.backend,
@@ -334,6 +380,7 @@ class FFmpegLayeredRenderer:
             "start": window_start,
             "duration": _probe_duration(self.ffprobe, output),
             "missingAssets": missing_assets,
+            "warnings": warnings,
         }
 
     def render_frame(
@@ -359,12 +406,16 @@ class FFmpegLayeredRenderer:
         _run(cmd)
         # Parity with the OpenShot backend: the frame response must carry
         # missingAssets so callers see the same contract regardless of which
-        # renderer (OpenShot vs ffmpeg-layered fallback) is selected.
+        # renderer (OpenShot vs ffmpeg-layered fallback) is selected. Carry the
+        # dropped-effect/keyframe warnings through too — a preview frame that
+        # silently lacks the fades/effects the OpenShot path would show is a lie
+        # without this signal.
         return {
             "backend": self.backend,
             "frame": str(frame),
             "at": at,
             "missingAssets": render_result.get("missingAssets", []),
+            "warnings": render_result.get("warnings", []),
         }
 
     def _build_video_command(
@@ -374,7 +425,7 @@ class FFmpegLayeredRenderer:
         *,
         duration: float,
         window_start: float = 0.0,
-    ) -> tuple[list[str], list[dict[str, str]]]:
+    ) -> tuple[list[str], list[dict[str, str]], list[dict[str, str]]]:
         width = int(project.get("width") or 1920)
         height = int(project.get("height") or 1080)
         fps = int(project.get("fps") or 30)
@@ -382,6 +433,11 @@ class FFmpegLayeredRenderer:
         clips = _windowed_clips(project, window_start=window_start, duration=duration)
         visual_clips = [clip for clip in clips if _asset_type(assets, clip) in {"image", "video", "title"}]
         audio_clips = [clip for clip in clips if _asset_type(assets, clip) == "audio"]
+        # Collect every effect/keyframe the fallback can't reproduce so the result
+        # carries a warning instead of dropping them silently (the ticket's core).
+        warnings: list[dict[str, str]] = []
+        for clip in clips:
+            warnings.extend(_ffmpeg_unsupported_drops(clip))
 
         cmd: list[str] = [
             self.ffmpeg,
@@ -454,9 +510,17 @@ class FFmpegLayeredRenderer:
             volume = float(clip.get("volume") or 1.0)
             muted = bool(clip.get("muted"))
             volume = 0.0 if muted else volume
+            afades = ""
+            a_fade_in = _fade_window(clip, "fadeIn")
+            if a_fade_in is not None and duration_sec > 0:
+                afades += f"afade=t=in:st=0:d={min(a_fade_in, duration_sec):.3f},"
+            a_fade_out = _fade_window(clip, "fadeOut")
+            if a_fade_out is not None and duration_sec > 0:
+                a_out_d = min(a_fade_out, duration_sec)
+                afades += f"afade=t=out:st={max(0.0, duration_sec - a_out_d):.3f}:d={a_out_d:.3f},"
             filters.append(
                 f"[{input_index}:a]atrim=start={source_start:.3f}:duration={duration_sec:.3f},"
-                f"asetpts=PTS-STARTPTS,volume={volume:.3f},adelay={delay_ms}:all=1[{label}]"
+                f"asetpts=PTS-STARTPTS,volume={volume:.3f},{afades}adelay={delay_ms}:all=1[{label}]"
             )
             audio_labels.append(f"[{label}]")
         if audio_labels:
@@ -478,7 +542,7 @@ class FFmpegLayeredRenderer:
                 str(output),
             ]
         )
-        return cmd, missing_assets
+        return cmd, missing_assets, warnings
 
     def _visual_filter(
         self,
@@ -499,11 +563,24 @@ class FFmpegLayeredRenderer:
             trim = f"trim=start={source_start:.3f}:duration={duration:.3f},setpts=PTS-STARTPTS,"
         else:
             trim = ""
+        # fadeIn/fadeOut are the one effect ffmpeg reproduces natively: a `fade`
+        # on the rgba alpha (alpha=1) ramps the overlay's transparency, matching
+        # OpenShot's Fade. Timings are clip-relative (input PTS start at 0 after
+        # trim/loop). Crossfade + color filters + keyframes stay OpenShot-only and
+        # are reported via warnings, not faked here.
+        fades = ""
+        fade_in = _fade_window(clip, "fadeIn")
+        if fade_in is not None and duration > 0:
+            fades += f"fade=t=in:alpha=1:st=0:d={min(fade_in, duration):.3f},"
+        fade_out = _fade_window(clip, "fadeOut")
+        if fade_out is not None and duration > 0:
+            out_d = min(fade_out, duration)
+            fades += f"fade=t=out:alpha=1:st={max(0.0, duration - out_d):.3f}:d={out_d:.3f},"
         # The fallback keeps graphics at native size by default. Full-frame video clips
         # can opt in later via track-specific policies in the renderer slice.
         return (
             f"[{input_index}:v]{trim}scale=iw*{scale:.4f}:ih*{scale:.4f},"
-            f"format=rgba,colorchannelmixer=aa={opacity:.4f}[{label}]"
+            f"format=rgba,colorchannelmixer=aa={opacity:.4f},{fades}null[{label}]"
         )
 
     def _resolve_src(self, src: str) -> Path:
