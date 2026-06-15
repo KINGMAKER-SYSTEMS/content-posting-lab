@@ -703,3 +703,32 @@ def test_editor_render_rejects_non_numeric_start(client):
     )
     assert r.status_code == 400
     assert "must be numeric" in r.json()["detail"]
+
+
+# --------------------------------------------------- publish-package (no abn_youtube)
+def test_publish_package_survives_missing_youtube_module(client):
+    """services/abn_youtube.py does not exist yet (the whole publish path is dormant
+    until OAuth creds + that module are built). GET /publish-package must still return
+    200 with the dormant blockers, not 500 with a ModuleNotFoundError. Regression for
+    `_publish_blockers` importing a missing module unguarded."""
+    vid = client.post(
+        "/api/agenticnews/videos", json={"title": "Publish me", "kind": "episode"}
+    ).json()["id"]
+    r = client.get(f"/api/agenticnews/episodes/{vid}/publish-package")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ready"] is False
+    assert any("YouTube OAuth not configured" in b for b in body["blockers"])
+
+
+def test_publish_endpoint_blocks_instead_of_500_when_youtube_missing(client):
+    """POST /publish imports the same missing module — it must report blocked, not 500."""
+    vid = client.post(
+        "/api/agenticnews/videos", json={"title": "Publish me", "kind": "episode"}
+    ).json()["id"]
+    r = client.post(f"/api/agenticnews/episodes/{vid}/publish", json={})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is False
+    assert body["blocked"] is True
+    assert body["blockers"]

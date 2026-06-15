@@ -473,9 +473,16 @@ async def publish_package(ep_id: str):
 
 
 def _publish_blockers():
-    import services.abn_youtube as yt
+    # The whole publish path is dormant until services/abn_youtube.py + OAuth creds
+    # exist. A missing module is just the earliest flavor of "not configured" — treat
+    # it as such instead of letting ModuleNotFoundError 500 the publish-package GET.
+    try:
+        import services.abn_youtube as yt
+        configured = yt.is_configured()
+    except ModuleNotFoundError:
+        configured = False
     b = []
-    if not yt.is_configured():
+    if not configured:
         b.append("YouTube OAuth not configured (set YT_CLIENT_ID / YT_CLIENT_SECRET / YT_REFRESH_TOKEN)")
         b.append("YouTube channel @agenticbuildernews not yet created (handle confirmed free)")
     return b
@@ -484,8 +491,12 @@ def _publish_blockers():
 @router.post("/episodes/{ep_id}/publish")
 async def publish_episode(ep_id: str, body: dict = Body(default={})):
     """The publish flip — uploads an episode to YouTube. Dormant until OAuth creds exist."""
-    import services.abn_youtube as yt
-    if not yt.is_configured():
+    try:
+        import services.abn_youtube as yt
+        configured = yt.is_configured()
+    except ModuleNotFoundError:
+        configured = False
+    if not configured:
         return {"ok": False, "blocked": True, "blockers": _publish_blockers()}
     pkg = await publish_package(ep_id)  # reuse the package builder
     if not pkg.get("ready"):
