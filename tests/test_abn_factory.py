@@ -1411,3 +1411,68 @@ def test_codex_image_ignores_preexisting_images(monkeypatch, tmp_path):
 
     monkeypatch.setattr(_subprocess, "run", lambda *a, **k: None)  # writes nothing new
     assert _REAL_CODEX_IMAGE("bg", "_tmp_bg_4") is None
+
+
+# ---------------- OFFLOAD: R2 upload failure must ALERT, not silently no-op ----------------
+
+def _offload_env(monkeypatch, tmp_path, *, configured=True, upload=None):
+    """Wire _offload_episode for testing: point ASSETS at tmp, create a real episode mp4, and
+    stub services.r2 (is_configured + upload_from_path). Returns the list that BUS.emit appends to.
+    `upload` is the upload_from_path body (default no-op success); pass a raiser to simulate failure."""
+    import services.r2 as r2
+    monkeypatch.setattr(abn_factory, "ASSETS", tmp_path)
+    monkeypatch.setattr(abn_assets, "ASSETS_DIR", tmp_path)
+    # a real on-disk episode mp4 at the schema path so the file-exists guard passes
+    mp4 = abn_factory.asset_path("ep_a11111", "episode")
+    mp4.parent.mkdir(parents=True, exist_ok=True)
+    mp4.write_bytes(b"\x00" * (3 * 1024 * 1024))
+
+    monkeypatch.setattr(r2, "is_configured", lambda: configured)
+    monkeypatch.setattr(r2, "upload_from_path", upload or (lambda *a, **k: None))
+    monkeypatch.setattr(r2, "public_url", lambda key: f"https://cdn.example/{key}", raising=False)
+
+    events = []
+    monkeypatch.setattr(abn_factory.BUS, "emit",
+                        lambda *a, **k: events.append((a, k)))
+    return events
+
+
+def test_offload_emits_system_error_on_r2_upload_failure(monkeypatch, tmp_path):
+    """The whole point of offload is the durable fix for the recurring disk wall. If R2 is
+    configured and the mp4 exists but the upload throws (bad creds / denied bucket / network),
+    the old code returned None silently and disk filled with NO signal. It must now fire a
+    'system'/'error' alert so the failure is visible."""
+    def boom(*a, **k):
+        raise PermissionError("AccessDenied: bucket policy forbids PutObject")
+    events = _offload_env(monkeypatch, tmp_path, configured=True, upload=boom)
+
+    result = abn_factory._offload_episode("ep_a11111")
+
+    assert result is None  # still graceful to the caller
+    errors = [(a, k) for (a, k) in events if a[:2] == ("system", "error")]
+    assert errors, "a persistent R2 upload failure must emit a system/error alert, not be swallowed"
+    actor_action, kwargs = errors[0]
+    assert "ep_a11111" in actor_action[2], "alert should name the episode that failed to offload"
+    assert kwargs.get("episode_id") == "ep_a11111"
+
+
+def test_offload_no_alert_when_r2_not_configured(monkeypatch, tmp_path):
+    """When R2 simply isn't configured, offload is a graceful no-op — that is NOT a failure and
+    must NOT raise a false alarm. Returns None with no system/error event."""
+    events = _offload_env(monkeypatch, tmp_path, configured=False)
+
+    assert abn_factory._offload_episode("ep_a11111") is None
+    assert not [e for (a, k) in events for e in [None] if a[:2] == ("system", "error")], \
+        "unconfigured R2 is expected, not an error"
+
+
+def test_offload_happy_path_emits_offload_not_error(monkeypatch, tmp_path):
+    """Successful upload emits the 'offload' breadcrumb and returns a URL — and crucially does NOT
+    emit a system/error (guards against the alert firing on the success path)."""
+    events = _offload_env(monkeypatch, tmp_path, configured=True)
+
+    result = abn_factory._offload_episode("ep_a11111")
+
+    assert result == "https://cdn.example/agenticnews/episodes/ep_a11111_episode.mp4"
+    assert any(a[:2] == ("system", "offload") for (a, k) in events), "success must log the offload"
+    assert not any(a[:2] == ("system", "error") for (a, k) in events), "no error on the success path"

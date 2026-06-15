@@ -3079,7 +3079,12 @@ def _offload_episode(ep_id):
             url = None
         BUS.emit("system", "offload", f"episode {ep_id} → R2 cloud ({mp4.stat().st_size//1024//1024}MB)", episode_id=ep_id)
         return url or key
-    except Exception:
+    except Exception as e:
+        # R2 is configured + the mp4 exists, so this is a REAL upload failure (bad creds, denied
+        # bucket, network) — NOT the graceful no-op above. Silently returning None here defeats the
+        # whole point of offload (the durable fix for the recurring disk wall): episodes never leave
+        # disk and it fills with no signal. Surface it as a system error so an alert fires.
+        BUS.emit("system", "error", f"episode {ep_id} R2 offload FAILED ({type(e).__name__}: {e}) — disk will fill", episode_id=ep_id)
         return None
 
 
