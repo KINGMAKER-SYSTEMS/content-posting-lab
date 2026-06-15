@@ -440,6 +440,101 @@ def test_render_remotion_reuses_existing_complete_render(monkeypatch, tmp_path):
     assert url.startswith("/agenticnews-assets/")
 
 
+def test_render_remotion_force_rerenders_despite_complete_render(monkeypatch, tmp_path):
+    """force=True (operator edit from the editor bay) MUST bypass the reuse guard: even though a
+    pre-existing complete render is on disk (>= 10min AND yuv420p — the SAME shape the reuse path
+    accepts), the Remotion CLI MUST be re-invoked so the freshly-edited timeline actually ships.
+    Reusing the stale mp4 here would silently re-publish the unedited video."""
+    monkeypatch.setattr(abn_factory, "ASSETS", tmp_path)
+    monkeypatch.setattr(abn_assets, "ASSETS_DIR", tmp_path)
+    _stub_remotion_dir(monkeypatch, tmp_path)
+
+    out = abn_assets.asset_path("ep_a111111", "episode")
+    out.write_bytes(b"\x00stale-render")            # a complete, reuse-eligible render already exists
+
+    rendered = {"n": 0}
+
+    async def fake_sh(cmd, timeout=600):
+        if "npx remotion render" in cmd:
+            rendered["n"] += 1
+            out.write_bytes(b"\x00fresh-render")     # remotion re-renders the edited timeline
+            return 0, "rendered"
+        return 0, "yuv420p"                          # ffprobe pix_fmt + normalize/duck passes
+
+    async def fake_dur(path):
+        return 900.0                                 # long + would otherwise satisfy the reuse guard
+
+    monkeypatch.setattr(abn_factory, "_sh", fake_sh)
+    monkeypatch.setattr(abn_factory, "_dur", fake_dur)
+
+    url, dur = asyncio.run(
+        abn_factory._render_remotion("ep_a111111", {"musicBed": None}, force=True))
+    assert rendered["n"] == 1, "force=True must re-invoke Remotion, not reuse the existing render"
+    assert url.startswith("/agenticnews-assets/")
+
+
+def test_render_remotion_does_not_reuse_unnormalized_render(monkeypatch, tmp_path):
+    """Reuse-guard NEGATIVE case: a leftover mp4 that is long enough but still yuvj420p (the raw,
+    pre-normalize FIRST-render output) MUST NOT be reused — reusing it would skip the loudnorm/duck
+    normalize pass. The guard falls through and renders fresh."""
+    monkeypatch.setattr(abn_factory, "ASSETS", tmp_path)
+    monkeypatch.setattr(abn_assets, "ASSETS_DIR", tmp_path)
+    _stub_remotion_dir(monkeypatch, tmp_path)
+
+    out = abn_assets.asset_path("ep_a111111", "episode")
+    out.write_bytes(b"\x00raw-unnormalized")        # long enough but NOT yet normalized to yuv420p
+
+    rendered = {"n": 0}
+
+    async def fake_sh(cmd, timeout=600):
+        if "npx remotion render" in cmd:
+            rendered["n"] += 1
+            out.write_bytes(b"\x00fresh-render")
+            return 0, "rendered"
+        if "pix_fmt" in cmd:
+            return 0, "yuvj420p"                     # raw JPEG-range fmt → must NOT be reused
+        return 0, "ok"                               # normalize/duck passes
+
+    async def fake_dur(path):
+        return 900.0                                 # plenty long; only the pix_fmt fails the guard
+
+    monkeypatch.setattr(abn_factory, "_sh", fake_sh)
+    monkeypatch.setattr(abn_factory, "_dur", fake_dur)
+
+    asyncio.run(abn_factory._render_remotion("ep_a111111", {"musicBed": None}, force=False))
+    assert rendered["n"] == 1, "a yuvj420p (un-normalized) leftover must be re-rendered, not reused"
+
+
+def test_render_remotion_does_not_reuse_short_render(monkeypatch, tmp_path):
+    """Reuse-guard NEGATIVE case: a leftover mp4 that is already yuv420p but UNDER the 10-min
+    MIN_EPISODE_SEC floor (a partial/aborted render) MUST NOT be reused — it would ship a short
+    episode that fails the RPM/mid-roll floor. The guard falls through and renders fresh."""
+    monkeypatch.setattr(abn_factory, "ASSETS", tmp_path)
+    monkeypatch.setattr(abn_assets, "ASSETS_DIR", tmp_path)
+    _stub_remotion_dir(monkeypatch, tmp_path)
+
+    out = abn_assets.asset_path("ep_a111111", "episode")
+    out.write_bytes(b"\x00short-partial")           # normalized fmt but too short
+
+    rendered = {"n": 0}
+
+    async def fake_sh(cmd, timeout=600):
+        if "npx remotion render" in cmd:
+            rendered["n"] += 1
+            out.write_bytes(b"\x00fresh-render")
+            return 0, "rendered"
+        return 0, "yuv420p"                          # correct fmt; only the duration fails the guard
+
+    async def fake_dur(path):
+        return abn_factory.MIN_EPISODE_SEC - 1.0     # just under the 10-min floor
+
+    monkeypatch.setattr(abn_factory, "_sh", fake_sh)
+    monkeypatch.setattr(abn_factory, "_dur", fake_dur)
+
+    asyncio.run(abn_factory._render_remotion("ep_a111111", {"musicBed": None}, force=False))
+    assert rendered["n"] == 1, "a sub-floor (short) leftover must be re-rendered, not reused"
+
+
 # ---------------- _plan_shots: segment mixing, rhythm variation, Ken-Burns ----------------
 #
 # _plan_shots is the shot-composition engine (≈130 lines, previously untested). It:
