@@ -513,6 +513,16 @@ def _import_openshot():
     except Exception as exc:
         return None, f"Python bindings failed to import: {exc}", Path(spec.origin).parent if spec.origin else None
 
+    # Disable libopenshot's ZMQ debug logger. It binds a fixed TCP port (5556) the first
+    # time a render runs; with multiple in-process renders (e.g. the test suite, or parallel
+    # cycle gates) the singleton contends on that port and a later render blocks forever.
+    # We don't consume its debug stream, so turn it off — this was the root cause of the
+    # suite hang and the prod-cycle gate livelock. ponytail: one call kills the port bind.
+    try:
+        openshot.ZmqLogger.Instance().Enable(False)
+    except Exception:
+        pass  # logger API absent on some builds -> nothing to disable, safe to ignore
+
     return openshot, "available", Path(spec.origin).parent if spec.origin else None
 
 

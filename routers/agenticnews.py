@@ -26,6 +26,7 @@ from fastapi.responses import JSONResponse
 
 import services.agenticnews as db
 import services.abn_factory as factory
+import services.abn_assets as abn_assets
 import services.openshot_bridge as openshot_bridge
 import services.editor_render as editor_render
 import services.editor_timeline as editor_timeline
@@ -274,7 +275,14 @@ async def tool_cards(body: dict = Body(...)):
     title = body.get("title", "AGENTICBUILDERNEWS")
     sub = body.get("subtitle", "")
     foot = body.get("footer", "AgenticBuilderNews")
-    out = db.ASSETS_DIR / f"{name}_card.png"
+    # Episode-scoped cards (name == 'ep_<hex>[_sN]') route through the asset gateway so
+    # they land in {ep_id}/css/ instead of colliding in the flat ASSETS_DIR root. A bare
+    # default ('card') or a video id (no ep_ prefix) has nowhere to be scoped, so fall
+    # back to the legacy flat path for those ad-hoc/test renders.
+    try:
+        out = abn_assets.asset_path_from_slug(name, "card")
+    except abn_assets.AssetPathError:
+        out = db.ASSETS_DIR / f"{name}_card.png"
     font = "/System/Library/Fonts/Helvetica.ttc"
     cmd = (
         f'magick -size 1920x1080 xc:"#08090b" -gravity center '
@@ -287,7 +295,9 @@ async def tool_cards(body: dict = Body(...)):
     code, log = await _sh(cmd, timeout=60)
     if code != 0 or not out.exists():
         raise HTTPException(500, f"card failed: {log[-500:]}")
-    rel = f"/agenticnews-assets/{out.name}"
+    # Carry the full subpath (ep_x/css/...) so the URL resolves back to the SAME file —
+    # not a basename that collides across episodes in the flat root.
+    rel = f"/agenticnews-assets/{out.relative_to(db.ASSETS_DIR)}"
     if vid:  # auto-attach so caller can't desync the path
         await db.update_video(vid, {"artifacts": {"thumbnail": True, "thumbnail_path": rel}})
     return {"ok": True, "path": rel}
@@ -302,8 +312,11 @@ async def tool_assemble(body: dict = Body(...)):
     vo = body.get("vo_path")
     if not card or not vo:
         raise HTTPException(400, "need card_path and vo_path")
-    cardf = db.ASSETS_DIR / Path(card).name
-    vof = db.ASSETS_DIR / Path(vo).name
+    # Resolve the FULL subpath off the /agenticnews-assets/ URL (ep_x/css/sN_card.png),
+    # not just the basename — otherwise scoped cards/VO read the wrong file (or nothing)
+    # when two episodes share a card name.
+    cardf = _asset_path_from_url(card)
+    vof = _asset_path_from_url(vo)
     out = db.ASSETS_DIR / f"{name}_assembled.mp4"
     cmd = (
         f'ffmpeg -y -loop 1 -i {shlex.quote(str(cardf))} -i {shlex.quote(str(vof))} '
