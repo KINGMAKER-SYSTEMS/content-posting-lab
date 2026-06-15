@@ -5,7 +5,6 @@ import base64
 import json
 import logging
 import os
-import shutil
 import time
 from pathlib import Path
 
@@ -14,6 +13,7 @@ from fastapi import APIRouter, HTTPException, Query, Request, WebSocket, WebSock
 from pydantic import BaseModel
 
 from project_manager import get_project_recreate_dir
+from services.fsutil import safe_rmtree
 
 log = logging.getLogger("recreate")
 log.setLevel(logging.DEBUG)
@@ -407,6 +407,6 @@ async def delete_recreate_job(
     if not job_dir.exists() or not job_dir.is_dir():
         raise HTTPException(404, "Job not found")
 
-    shutil.rmtree(job_dir, ignore_errors=True)
+    safe_rmtree(job_dir)
     log.info("deleted job %s", job_id[:8])
     return {"deleted": True, "job_id": job_id}

@@ -29,6 +29,7 @@ from project_manager import (
 from services import sound_cache
 from services.captions import scan_project_captions
 from services.cropper import crop_to_916
+from services.fsutil import safe_rmtree
 
 router = APIRouter(tags=["slideshow"])
 
@@ -679,7 +680,7 @@ def _run_render_v2(job_id: str, body: RenderV2Request):
         jobs[job_id] = {"status": "error", "progress": 0, "message": str(e)}
     finally:
         if tmp_dir:
-            shutil.rmtree(tmp_dir, ignore_errors=True)
+            safe_rmtree(tmp_dir)
 
 
 @router.post("/render-v2")
@@ -883,7 +884,7 @@ def _run_meme_batch(job_id: str, body: MemeRenderRequest):
                     "error": str(e),
                 }
             finally:
-                shutil.rmtree(tmp_dir, ignore_errors=True)
+                safe_rmtree(tmp_dir)
                 tmp_dir = None
 
             jobs[job_id]["completed"] = sum(
@@ -1314,7 +1315,7 @@ def _run_broll_montage(job_id: str, req: BrollMontageRequest):
         jobs[job_id] = {"status": "error", "progress": 0, "message": f"Unexpected: {e}"}
     finally:
         if tmp_dir:
-            shutil.rmtree(tmp_dir, ignore_errors=True)
+            safe_rmtree(tmp_dir)
 
 
 @router.get("/broll-montage/spec")

@@ -3,7 +3,7 @@
 import os
 from pathlib import Path
 
-from services.fsutil import safe_unlink
+from services.fsutil import safe_rmtree, safe_unlink
 
 
 def test_removes_existing_file(tmp_path):
@@ -92,3 +92,79 @@ def test_burn_download_zip_uses_safe_unlink():
     assert "os.unlink(tmp_path)" not in src
     # ...and both cleanup paths (except + finally) go through the helper.
     assert src.count("safe_unlink(tmp_path)") == 2
+
+
+# --- safe_rmtree --------------------------------------------------------------
+
+
+def test_rmtree_removes_existing_tree(tmp_path):
+    d = tmp_path / "stage"
+    (d / "sub").mkdir(parents=True)
+    (d / "sub" / "f.txt").write_text("hi")
+    assert d.exists()
+    assert safe_rmtree(d) is True
+    assert not d.exists()
+
+
+def test_rmtree_accepts_str_path(tmp_path):
+    d = tmp_path / "stage"
+    d.mkdir()
+    assert safe_rmtree(str(d)) is True
+    assert not d.exists()
+
+
+def test_rmtree_missing_dir_is_swallowed(tmp_path):
+    missing = tmp_path / "never-existed"
+    # Must not raise — this replaces shutil.rmtree(..., ignore_errors=True).
+    assert safe_rmtree(missing) is False
+
+
+def test_rmtree_on_file_is_swallowed_and_logged(tmp_path, caplog):
+    # rmtree on a plain file raises NotADirectoryError (an OSError) — the helper
+    # swallows it, reports failure, and logs a warning instead of exploding a
+    # finally block.
+    f = tmp_path / "not-a-dir.txt"
+    f.write_text("x")
+    with caplog.at_level("WARNING", logger="fsutil"):
+        assert safe_rmtree(f) is False
+    assert f.exists()
+    assert any("safe_rmtree failed" in r.message for r in caplog.records)
+
+
+def test_rmtree_double_call_is_idempotent(tmp_path):
+    d = tmp_path / "stage"
+    d.mkdir()
+    assert safe_rmtree(d) is True
+    # Second call: dir already gone, no exception, returns False.
+    assert safe_rmtree(d) is False
+
+
+def test_clipper_uses_safe_rmtree():
+    """Regression: every staging/job cleanup in routers.clipper must go through
+    safe_rmtree, not bare shutil.rmtree (including the one site that wrapped it
+    in a redundant try/except Exception: pass)."""
+    import routers.clipper as clipper
+
+    src = Path(clipper.__file__).read_text()
+    assert "shutil.rmtree" not in src
+    assert src.count("safe_rmtree(") == 4
+
+
+def test_slideshow_uses_safe_rmtree():
+    """Regression: the three tmp_dir cleanups in routers.slideshow must use the
+    shared helper. shutil stays imported only for shutil.move."""
+    import routers.slideshow as slideshow
+
+    src = Path(slideshow.__file__).read_text()
+    assert "shutil.rmtree" not in src
+    assert src.count("safe_rmtree(") == 3
+
+
+def test_recreate_uses_safe_rmtree():
+    """Regression: the delete-job cleanup in routers.recreate must use the
+    shared helper."""
+    import routers.recreate as recreate
+
+    src = Path(recreate.__file__).read_text()
+    assert "shutil.rmtree" not in src
+    assert src.count("safe_rmtree(") == 1

@@ -4,7 +4,6 @@ import asyncio
 import json
 import logging
 import math
-import shutil
 import time
 import uuid
 from datetime import datetime
@@ -18,6 +17,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
 from project_manager import PROJECTS_DIR, sanitize_project_name
 import services.r2 as r2
+from services.fsutil import safe_rmtree
 
 log = logging.getLogger("clipper")
 
@@ -922,10 +922,7 @@ async def upload_batch(
 
     # If every file failed, remove the empty staging dir and 4xx out so the UI shows toast
     if not results and errors:
-        try:
-            shutil.rmtree(staging_dir, ignore_errors=True)
-        except Exception:
-            pass
+        safe_rmtree(staging_dir)
         detail = "; ".join(f"{e['name']}: {e['reason']}" for e in errors)
         raise HTTPException(status_code=400, detail=f"All uploads failed — {detail}")
 
@@ -1040,7 +1037,7 @@ async def trim_batch(body: dict):
     # Clean up staging dir
     staging_dir = clipper_dir / f"_staging_{batch_id}"
     if staging_dir.exists():
-        shutil.rmtree(staging_dir, ignore_errors=True)
+        safe_rmtree(staging_dir)
         log.info("cleaned up staging dir: %s", staging_dir)
 
     return {
@@ -1286,7 +1283,7 @@ async def _run_batch_job(
         # Clean up staging dir
         staging_dir = clipper_dir / f"_staging_{batch_id}"
         if staging_dir.exists():
-            shutil.rmtree(staging_dir, ignore_errors=True)
+            safe_rmtree(staging_dir)
 
         job["status"] = "complete"
         job["clips"] = results
@@ -1524,7 +1521,7 @@ async def delete_clipper_job(job_id: str, project: str = Query(default="quick-te
     if not job_dir.exists() or not job_dir.is_dir():
         raise HTTPException(404, "Job not found")
 
-    shutil.rmtree(job_dir, ignore_errors=True)
+    safe_rmtree(job_dir)
     log.info("deleted job %s", job_id[:8])
     return {"deleted": True, "job_id": job_id}
 
