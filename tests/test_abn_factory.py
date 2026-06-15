@@ -569,6 +569,59 @@ def test_kb_picker_seed_changes_first_move(monkeypatch):
     first0 = abn_factory._kb_picker(seed=0)()
     first1 = abn_factory._kb_picker(seed=1)()
     assert first0 != first1
+
+
+# ---------------- TIMELINE WRITE: must be atomic (crash-safe), not a truncating write ----------------
+#
+# timeline.json is the ground-truth render props. It used to be written with
+# `props.write_text(json.dumps(timeline))` — a raw, non-atomic sync write. A crash mid-write
+# (kill/OOM/ENOSPC/power-loss) truncates the file, leaving the timeline unreadable for the next
+# render. The write now routes through services.json_store.atomic_save (tmp + fsync + rename), so a
+# reader never sees a partial file and a prior good timeline survives a failed write.
+
+def test_render_remotion_writes_timeline_atomically(monkeypatch, tmp_path):
+    """_render_remotion must persist timeline.json via atomic_save: after the call the file is valid
+    JSON (never truncated) and NO `.tmp` sidecar is left behind. A partial write here would corrupt
+    the render's ground-truth props."""
+    monkeypatch.setattr(abn_factory, "ASSETS", tmp_path)
+    monkeypatch.setattr(abn_assets, "ASSETS_DIR", tmp_path)
+    # _render_remotion bails unless remotion's node_modules exists; fake that check without installing
+    # remotion, and make the render shell out fail so we exercise ONLY the timeline write.
+    monkeypatch.setattr(abn_factory, "REMOTION_DIR", tmp_path)
+    (tmp_path / "node_modules").mkdir()
+
+    async def fail_sh(*a, **k):
+        return 1, "render skipped in test"
+
+    async def fake_dur(path):
+        return 0.0
+
+    monkeypatch.setattr(abn_factory, "_sh", fail_sh)
+    monkeypatch.setattr(abn_factory, "_dur", fake_dur)
+
+    ep_id = "ep_a111111"
+    timeline = {"fps": 30, "segments": [{"segmentId": "s0", "durationSec": 7.5}], "title": "t"}
+    # the stubbed render fails after the write → RuntimeError; the WRITE is what we're pinning
+    with pytest.raises(RuntimeError):
+        asyncio.run(abn_factory._render_remotion(ep_id, timeline, force=True))
+
+    props = abn_assets.asset_path(ep_id, "timeline")
+    assert props.exists(), "timeline.json was not written"
+    import json as _json
+    assert _json.loads(props.read_text()) == timeline, "timeline.json is not the exact payload"
+    # the atomic write must leave no tmp sidecar (a leftover means a non-atomic/raw write)
+    assert not list(props.parent.glob("*.tmp")), "atomic_save left a .tmp sidecar behind"
+
+
+def test_timeline_write_does_not_route_through_raw_write_text():
+    """Guard rail: the timeline persistence in abn_factory must go through atomic_save, NOT a raw
+    `write_text(json.dumps(...))`. This pins the fix so the non-atomic write can't silently return."""
+    import inspect
+    src = inspect.getsource(abn_factory._render_remotion)
+    assert "atomic_save" in src, "_render_remotion must persist the timeline via atomic_save"
+    assert "write_text(json.dumps" not in src, "_render_remotion still does a raw truncating write"
+
+
 # ---------------- _chop WINDOWING: caps, micro-beat merge, contiguity ----------------
 #
 # _chop(t0, t1, target, max_n, lead) splits a span into N sub-shots, each ~target seconds,

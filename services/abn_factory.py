@@ -106,6 +106,7 @@ from services.abn_assets import (  # noqa: E402
     scratch_path, shared_path, published_path, split_slug, URL_PREFIX,
     reapable_scratch, tombstone, tombstone_render,
 )
+from services.json_store import atomic_save  # noqa: E402
 
 
 def _cards_assets_dir() -> str:
@@ -2323,7 +2324,7 @@ async def _render_remotion(ep_id, timeline, force=False):
     if not (REMOTION_DIR / "node_modules").exists():
         raise RuntimeError("remotion not installed")
     props = asset_path(ep_id, "timeline")
-    props.write_text(json.dumps(timeline))
+    atomic_save(props, timeline)
     out = asset_path(ep_id, "episode")
     # RE-RENDER GUARD: if this episode's mp4 already exists AND is a complete, long-enough video, REUSE
     # it instead of re-rendering from scratch. A post-render hiccup (e.g. normalize/duck throwing) could
@@ -3296,7 +3297,7 @@ async def revisualize_episode(ep_id):
 
     # 3) silent video render (direct remotion call — _render_remotion's loudnorm assumes audio)
     props = asset_path(ep_id, "timeline")
-    props.write_text(json.dumps(new_tl))
+    atomic_save(props, new_tl)
     vid = asset_path(ep_id, "scratch", "revis", ext="mp4")  # intermediate, unlinked after mux
     try:
         _cc = int(os.getenv("ABN_RENDER_CONCURRENCY") or max(3, (os.cpu_count() or 4) // 2))
