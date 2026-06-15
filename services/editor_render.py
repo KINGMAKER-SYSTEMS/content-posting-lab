@@ -382,7 +382,16 @@ class FFmpegLayeredRenderer:
         missing_assets: list[dict[str, str]] = []
         for clip in visual_clips + audio_clips:
             asset = assets.get(clip.get("assetId")) or {}
-            src = self._resolve_src(asset.get("src", ""))
+            raw_src = str(asset.get("src") or "").strip()
+            if not raw_src:
+                # Text-only placeholder (e.g. a lower-third whose headline lives in
+                # metadata, not a media file). OpenShot's bridge renders these via a
+                # DummyReader (blank); the ffmpeg fallback must likewise skip it, not
+                # feed Path("")==='.' (a directory) as a phantom -i input and crash.
+                # ponytail: skip-to-blank parity with the OpenShot path; live text
+                # rendering (drawtext from metadata) can replace this when needed.
+                continue
+            src = self._resolve_src(raw_src)
             if not src.exists():
                 missing_assets.append({
                     "clipId": str(clip.get("id") or ""),

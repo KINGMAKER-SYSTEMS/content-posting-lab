@@ -275,6 +275,28 @@ def test_ffmpeg_renderer_exports_layered_mp4_and_preview_frame(tmp_path):
     assert _sample_rgb(Path(frame["frame"]), 10, 10)[0] > 180
 
 
+def test_ffmpeg_renderer_skips_text_only_lower_third_without_crashing(tmp_path):
+    """A lower-third clip has an empty src (its headline lives in metadata). The empty
+    src resolves to Path('')=='.' which 'exists' as a directory, so it slipped the
+    missing-asset gate and was fed to ffmpeg as a phantom -i input -> crash. The renderer
+    must skip text-only placeholders (parity with OpenShot's DummyReader) and still
+    render the real card."""
+    red = _solid_png(tmp_path / "red.png", "red")
+    project = _project_with_card("lt_fixture", red, x=0.0)
+    project["assets"]["lt"] = {"id": "lt", "type": "title", "src": "",
+                               "metadata": {"text": "BREAKING NEWS"}}
+    project["clips"]["lt_clip"] = {
+        "id": "lt_clip", "assetId": "lt", "trackId": "titles_1", "kind": "lower_third",
+        "start": 0.0, "duration": 1.0, "sourceStart": 0.0,
+        "enabled": True, "muted": False, "volume": 1.0,
+        "transform": {"x": 0.5, "y": 0.8, "scale": 1.0, "opacity": 1.0},
+    }
+    renderer = editor_render.FFmpegLayeredRenderer(tmp_path / "renders")
+    result = renderer.render(project, output_path=tmp_path / "renders" / "lt_fixture.mp4")
+    assert Path(result["video"]).exists()                 # render succeeded, no phantom-input crash
+    assert all(m["assetId"] != "lt" for m in result["missingAssets"])  # not reported missing
+
+
 def test_moving_clip_changes_preview_without_regenerating_asset(tmp_path):
     red = _solid_png(tmp_path / "red.png", "red")
     renderer = editor_render.FFmpegLayeredRenderer(tmp_path / "renders")
