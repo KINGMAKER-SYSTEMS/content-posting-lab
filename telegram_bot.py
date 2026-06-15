@@ -787,62 +787,40 @@ async def _scan_topic_fallback(
     integration_id: str,
     next_topic_id: int | None = None,
 ) -> dict:
-    """Fallback scan using aiogram forward approach (less reliable)."""
-    if _bot is None:
-        raise RuntimeError("Bot is not running")
+    """Disabled fallback scan — returns an "unavailable" result, does nothing.
 
-    try:
-        marker = await _bot.send_message(
-            chat_id=chat_id, message_thread_id=topic_id, text="📊",
-        )
-    except Exception as exc:
-        return {"found": 0, "skipped_existing": 0, "total_scanned": 0, "error": str(exc)[:200]}
+    ROOT CAUSE of the "destructive delete-and-repost" behavior documented in
+    CLAUDE.md lives in the OLD body of this function (see git history). When the
+    safe Pyrogram MTProto scanner was unavailable, this fallback brute-forced a
+    topic by, for every message id in a range, *forwarding the message back into
+    the same staging group* (`forward_message(chat_id=chat_id, from_chat_id=
+    chat_id, ...)`) purely to read its media, then `delete_message`-ing the copy.
 
-    marker_id = marker.message_id
-    try:
-        await _bot.delete_message(chat_id=chat_id, message_id=marker_id)
-    except Exception:
-        pass
+    That is the literal "repost then delete" pattern, and it orphans content:
+    - the forward is a visible duplicate that flickers into the group (spamming
+      posters watching the topic) before the delete lands;
+    - if the bot crashes, hits a rate limit, or lacks delete permission between
+      the forward and the delete, the forwarded copy is stranded with no
+      inventory record pointing at it — inventory and the actual group diverge.
 
-    end_id = next_topic_id if next_topic_id else marker_id
-    existing = get_inventory(integration_id)
-    existing_msg_ids = {item.get("message_id") for item in existing}
-
-    found = 0
-    skipped = 0
-    scanned = 0
-
-    for msg_id in range(topic_id + 1, end_id):
-        scanned += 1
-        if msg_id in existing_msg_ids:
-            skipped += 1
-            continue
-        try:
-            fwd = await _bot.forward_message(
-                chat_id=chat_id, from_chat_id=chat_id, message_id=msg_id,
-            )
-            media_type = file_id = file_name = None
-            if fwd.video:
-                media_type, file_id, file_name = "video", fwd.video.file_id, fwd.video.file_name
-            elif fwd.document:
-                media_type, file_id, file_name = "document", fwd.document.file_id, fwd.document.file_name
-            try:
-                await _bot.delete_message(chat_id=chat_id, message_id=fwd.message_id)
-            except Exception:
-                pass
-            if media_type and file_id:
-                add_inventory_item(integration_id, {
-                    "file_id": file_id, "file_name": file_name or f"{media_type}_{msg_id}",
-                    "media_type": media_type, "caption": fwd.caption,
-                    "message_id": msg_id, "chat_id": chat_id, "source": "scan",
-                })
-                found += 1
-        except Exception:
-            pass
-        if scanned % 15 == 0:
-            await asyncio.sleep(1)
-
-    return {"found": found, "skipped_existing": skipped, "total_scanned": scanned}
+    The fix is to NOT do that. Inventory is maintained going forward by the live
+    `_handle_media` handler (append-only, dedup-guarded), and the accurate
+    backfill path is `_scan_topic_pyrogram`, which only reads. If Pyrogram is not
+    configured we simply report the scan as unavailable rather than mutate the
+    group. No content is ever forwarded or deleted here.
+    """
+    logger.warning(
+        "scan_topic fallback requested for topic %s (page %s) but the safe "
+        "Pyrogram scanner is unavailable; skipping (no destructive forward/"
+        "delete probe). Set TELEGRAM_SESSION_STRING to enable real scanning.",
+        topic_id, integration_id[:12],
+    )
+    return {
+        "found": 0,
+        "skipped_existing": 0,
+        "total_scanned": 0,
+        "error": "scan unavailable: pyrogram not configured (TELEGRAM_SESSION_STRING)",
+    }
 
 
 async def send_text_to_topic(
