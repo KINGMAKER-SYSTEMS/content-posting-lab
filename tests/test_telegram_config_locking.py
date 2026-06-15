@@ -142,3 +142,36 @@ def test_lock_for_distinct_paths_distinct_locks(tmp_path, monkeypatch):
     a = json_store.lock_for(tmp_path / "a.json")
     b = json_store.lock_for(tmp_path / "b.json")
     assert a is not b
+
+
+# --- write-failure (not just TOCTOU) regressions for the config layer -------
+
+
+def test_save_failure_does_not_corrupt_config_on_disk(isolated_config, monkeypatch):
+    """If the atomic write fails mid-flight, the last-good config survives.
+
+    The locking tests above cover lost *content* updates; this covers a *write*
+    failure (e.g. fsync/replace erroring on the volume). A failed save must raise
+    and leave the prior on-disk config intact and loadable — never truncated.
+    """
+    tg.set_poster("p1", {"name": "One", "chat_id": -1})
+
+    real_fsync = json_store.os.fsync
+    fail = {"on": True}
+
+    def maybe_boom(fd):
+        if fail["on"]:
+            raise OSError("simulated fsync failure")
+        return real_fsync(fd)
+
+    monkeypatch.setattr(json_store.os, "fsync", maybe_boom)
+    with pytest.raises(OSError):
+        tg.set_poster("p2", {"name": "Two", "chat_id": -2})
+
+    # restore fsync (config path patch stays), reload from disk:
+    # p1 still there, p2's failed write left no trace
+    fail["on"] = False
+    config = tg.load_config()
+    assert config["posters"]["p1"]["name"] == "One"
+    assert "p2" not in config["posters"]
+    assert not list(isolated_config.parent.glob("*.tmp")), "tmp leaked after failed save"

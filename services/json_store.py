@@ -59,11 +59,28 @@ def atomic_save(
     """Atomically write ``data`` as JSON to ``path`` (tmp file, fsync, then rename).
 
     ``default`` is the json.dump fallback serializer (e.g. ``str`` for datetimes).
+
+    The tmp file gets a unique per-writer suffix (pid+thread) so two concurrent
+    ``atomic_save`` calls on the same path don't share one tmp and clobber/race
+    each other's bytes — without it the second caller's ``os.replace`` could hit
+    a half-written or already-renamed-away tmp. On any failure (serialize, fsync,
+    replace) the tmp is removed so it never leaks or poisons a later save; the
+    pre-existing ``path`` is left untouched because the write went to tmp first.
     """
     p = Path(path)
-    tmp = p.with_suffix(p.suffix + ".tmp")
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False, default=default)
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(tmp, p)
+    tmp = p.with_suffix(f"{p.suffix}.{os.getpid()}.{threading.get_ident()}.tmp")
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False, default=default)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, p)
+    except BaseException:
+        # ponytail: best-effort cleanup; a crash between fsync and replace can
+        # still orphan a tmp, but a stale tmp never breaks atomic_load (it reads
+        # `path`, not the tmp) and the unique suffix keeps it out of the way.
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
