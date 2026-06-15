@@ -387,7 +387,9 @@ async def episode_qa(ep_id: str):
     mp4 = _os.path.join(assets, f"{ep_id}_episode.mp4")
     checks, props = {}, None
     if _os.path.exists(props_path):
-        try: props = _json.load(open(props_path))
+        try:
+            with open(props_path) as _f:
+                props = _json.load(_f)
         except Exception: props = None
     # video present + audio leveled
     checks["video_rendered"] = _os.path.exists(mp4)
