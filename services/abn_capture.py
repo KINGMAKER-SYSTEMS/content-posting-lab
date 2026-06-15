@@ -13,6 +13,8 @@ import os
 import re
 from pathlib import Path
 
+from services.abn_assets import asset_path_from_slug, asset_url_from_slug
+
 
 def _re_i(label: str):
     """Case-insensitive whole-label regex for Playwright get_by_role(name=…)."""
@@ -48,14 +50,21 @@ ASSETS.mkdir(parents=True, exist_ok=True)
 
 
 def capture_sync(url: str, name: str, seconds: float = 8.0) -> str | None:
-    """Open url, scroll it smoothly top→bottom while recording. Returns /agenticnews-assets/<name>_ui.mp4 or None."""
+    """Open url, scroll it smoothly top→bottom while recording. ``name`` is the flat factory
+    slug (``{ep_id}_s{N}``); the asset is written through the abn_assets gateway to the
+    episode-scoped ``{ep_id}/footage/s{N}_ui.mp4``. Returns its /agenticnews-assets/ URL or None."""
     try:
         from playwright.sync_api import sync_playwright
     except Exception:
         return None
-    rec_dir = ASSETS / f"_rec_{name}"
+    # Route the final asset through the abn_assets GATEWAY — it validates ep_id/kind and
+    # enforces the per-episode {ep_id}/footage/s{N}_ui.mp4 layout. A flat ASSETS/{name}_ui.mp4
+    # write silently re-introduces the orphan-file blast radius the schema exists to prevent.
+    out_mp4 = asset_path_from_slug(name, "ui")  # .../{ep_id}/footage/s{N}_ui.mp4 (dir created)
+    # keep the Playwright recording temp dir episode-scoped too (sibling of the final mp4),
+    # so no flat _rec_<name>/ dir lands at the unmanaged ASSETS root.
+    rec_dir = out_mp4.parent / f"_rec_{name}"
     rec_dir.mkdir(exist_ok=True)
-    out_mp4 = ASSETS / f"{name}_ui.mp4"
     try:
         with sync_playwright() as p:
             browser = p.chromium.launch(args=["--hide-scrollbars", "--disable-gpu"])
@@ -163,7 +172,7 @@ def capture_sync(url: str, name: str, seconds: float = 8.0) -> str | None:
                         return None
             except Exception:
                 pass   # if the check itself fails, keep the clip (don't drop good footage on a probe error)
-            return f"/agenticnews-assets/{out_mp4.name}"
+            return asset_url_from_slug(name, "ui")  # /agenticnews-assets/{ep_id}/footage/s{N}_ui.mp4
     except Exception:
         return None
     finally:
