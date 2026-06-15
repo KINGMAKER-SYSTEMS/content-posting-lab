@@ -333,7 +333,7 @@ class FFmpegLayeredRenderer:
         frame = Path(output_path) if output_path else self.output_dir / f"{project['projectId']}_{at:.2f}.png"
         frame.parent.mkdir(parents=True, exist_ok=True)
         temp_video = frame.with_suffix(".preview.mp4")
-        self.render(project, output_path=temp_video, start=max(0.0, float(at)), duration=0.25)
+        render_result = self.render(project, output_path=temp_video, start=max(0.0, float(at)), duration=0.25)
         cmd = [
             self.ffmpeg,
             "-y",
@@ -344,7 +344,15 @@ class FFmpegLayeredRenderer:
             str(frame),
         ]
         _run(cmd)
-        return {"backend": self.backend, "frame": str(frame), "at": at}
+        # Parity with the OpenShot backend: the frame response must carry
+        # missingAssets so callers see the same contract regardless of which
+        # renderer (OpenShot vs ffmpeg-layered fallback) is selected.
+        return {
+            "backend": self.backend,
+            "frame": str(frame),
+            "at": at,
+            "missingAssets": render_result.get("missingAssets", []),
+        }
 
     def _build_video_command(
         self,
