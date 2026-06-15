@@ -546,3 +546,42 @@ def test_chop_lead_offset_tracks_continuous_source():
     assert out[0][2] == 1.5  # first shot offset == lead
     slot = 12.0 / 2
     assert out[1][2] == pytest.approx(1.5 + slot, abs=0.01)  # next shot advances one slot
+
+
+# ------------- _best_effort_update: swallow DB contention, SURFACE real bugs -------------
+# These pin the contract of the board-state helper that replaced three bare
+# `try: db.update_video(...) except Exception: pass` swallow blocks. The point of the
+# refactor: tolerable sqlite contention stays silent, but a real bug (AttributeError,
+# NameError, TypeError…) must no longer hide — it gets logged, not swallowed in silence.
+import sqlite3
+
+
+def test_best_effort_update_calls_db_on_happy_path(monkeypatch):
+    seen = {}
+
+    async def fake_update(vid, patch):
+        seen["args"] = (vid, patch)
+        return {"id": vid}
+
+    monkeypatch.setattr(abn_factory.db, "update_video", fake_update)
+    asyncio.run(abn_factory._best_effort_update("s1", {"stage": "scripting"}))
+    assert seen["args"] == ("s1", {"stage": "scripting"})
+
+
+def test_best_effort_update_swallows_sqlite_error_silently(monkeypatch):
+    async def boom(vid, patch):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(abn_factory.db, "update_video", boom)
+    asyncio.run(abn_factory._best_effort_update("s1", {"stage": "assets"}))
+
+
+def test_best_effort_update_logs_unexpected_error_instead_of_hiding_it(monkeypatch, caplog):
+    async def real_bug(vid, patch):
+        raise AttributeError("'NoneType' object has no attribute 'execute'")  # a genuine bug
+
+    monkeypatch.setattr(abn_factory.db, "update_video", real_bug)
+    with caplog.at_level("ERROR", logger=abn_factory.__name__):
+        asyncio.run(abn_factory._best_effort_update("s1", {"stage": "voicing"}))
+    assert any("unexpected error updating video" in r.message for r in caplog.records)
+    assert any(r.exc_info for r in caplog.records)  # logged with traceback (logger.exception)

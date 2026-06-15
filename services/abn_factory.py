@@ -21,12 +21,30 @@ import json
 import time
 import asyncio
 import shlex
+import sqlite3
+import logging
 import urllib.request
 import urllib.parse
 from pathlib import Path
 from collections import deque
 
 import services.agenticnews as db
+
+_log = logging.getLogger(__name__)
+
+
+async def _best_effort_update(vid: str, patch: dict) -> None:
+    """Best-effort board-state update. Tolerates DB contention (sqlite3.Error,
+    e.g. 'database is locked') silently — these state writes are non-essential.
+    Any OTHER exception (AttributeError, NameError, TypeError…) is a real bug
+    that must surface, so we log it instead of swallowing it in a bare except.
+    """
+    try:
+        await db.update_video(vid, patch)
+    except sqlite3.Error:
+        pass
+    except Exception:
+        _log.exception("unexpected error updating video %s with %r", vid, patch)
 
 # v2 anti-slop visual system: deconstruct VO into scenes → designed cards instead of blog
 # screenshots. Imported defensively so a v2 issue can never break the running v1 producer.
@@ -2647,8 +2665,7 @@ async def produce_one_episode(force_deepdive=False, force_lore=None):
                      f"\n\nYou are writing ONE BEAT of a continuous documentary-style origin story about "
                      f"{lore_subject}. This beat: {it['_facet']}. Pick up the narrative thread, advance the "
                      f"story, use real names/dates/numbers (never invent them). No 'in this video' framing.")
-        try: await db.update_video(sid, {"stage": "scripting"})
-        except Exception: pass
+        await _best_effort_update(sid, {"stage": "scripting"})
         BUS.emit("script-agent", "script.start", f"seg {i+1}: scriptwriter drafting", episode_id=ep_id, segment_id=sid)
         # segment 0 opens with the NARRATIVE cold-open (thesis), then its story beat.
         # deepdive + lore episodes script each beat DEEPER (single-topic long format).
@@ -2667,8 +2684,7 @@ async def produce_one_episode(force_deepdive=False, force_lore=None):
                 script = script.rstrip() + (" That's the rundown. Which of these are you actually "
                     "shipping with? Drop it in the comments. Subscribe for the daily agentic-builder brief.")
         BUS.emit("script-agent", "script.done", f"seg {i+1} script ({len(script.split())}w)", episode_id=ep_id, segment_id=sid, data={"script": script})
-        try: await db.update_video(sid, {"stage": "voicing", "hook": script[:80]})
-        except Exception: pass
+        await _best_effort_update(sid, {"stage": "voicing", "hook": script[:80]})
         return {"i": i, "sid": sid, "it": it, "script": script}
 
     async def _wave2_voice(s):
@@ -2676,8 +2692,7 @@ async def produce_one_episode(force_deepdive=False, force_lore=None):
         BUS.emit("vo-agent", "vo.start", f"seg {i+1}: voicing", episode_id=ep_id, segment_id=sid)
         vo_path, dur = await _voice(s["script"], sid)  # VO is essential — if this fails the segment can't exist
         BUS.emit("vo-agent", "vo.done", f"seg {i+1}: {dur:.0f}s VO", episode_id=ep_id, segment_id=sid, artifact_url=vo_path, data={"duration": dur})
-        try: await db.update_video(sid, {"stage": "assets"})
-        except Exception: pass
+        await _best_effort_update(sid, {"stage": "assets"})
         # alignment (karaoke captions) is an ENHANCEMENT — never let it kill the segment
         try:
             words = await _align(sid)
