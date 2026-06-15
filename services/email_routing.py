@@ -92,41 +92,6 @@ async def create_rule(alias: str, destination: str) -> dict:
         return data.get("result", {})
 
 
-async def update_rule(rule_id: str, alias: str, destination: str, enabled: bool = True) -> dict:
-    """Update an existing email routing rule."""
-    cfg = _config()
-    if not cfg["configured"]:
-        raise ValueError("CF Email Routing not configured")
-
-    payload = {
-        "actions": [
-            {
-                "type": "forward",
-                "value": [destination],
-            }
-        ],
-        "matchers": [
-            {
-                "type": "literal",
-                "field": "to",
-                "value": f"{alias}@{cfg['domain']}",
-            }
-        ],
-        "enabled": enabled,
-        "name": f"Roster: {alias}",
-    }
-
-    async with httpx.AsyncClient(timeout=15) as client:
-        resp = await client.put(
-            f"{CF_API}/zones/{cfg['zone_id']}/email/routing/rules/{rule_id}",
-            headers=_headers(cfg["token"]),
-            json=payload,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        return data.get("result", {})
-
-
 async def delete_rule(rule_id: str) -> bool:
     """Delete an email routing rule."""
     cfg = _config()

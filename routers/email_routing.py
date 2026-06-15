@@ -14,7 +14,6 @@ from services.email_routing import (
     get_config,
     list_destinations,
     list_rules,
-    update_rule,
 )
 from services.roster import set_page, get_page
 
@@ -42,62 +41,6 @@ async def email_status():
 
 
 # ── Rules ────────────────────────────────────────────────────────────────────
-
-
-@router.get("/rules")
-async def get_rules():
-    """List all email routing rules."""
-    _require_configured()
-    try:
-        rules = await list_rules()
-        return {"rules": rules}
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=str(e))
-
-
-class CreateRuleRequest(BaseModel):
-    alias: str
-    destination: str
-    integration_id: str | None = None
-
-
-@router.post("/rules")
-async def create_email_rule(req: CreateRuleRequest):
-    """Create a new email routing rule and optionally link to roster page."""
-    cfg = _require_configured()
-    try:
-        rule = await create_rule(req.alias, req.destination)
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=str(e))
-
-    # Link to roster page if integration_id provided
-    if req.integration_id:
-        page = get_page(req.integration_id)
-        if page:
-            set_page(req.integration_id, {
-                "email_alias": f"{req.alias}@{cfg['domain']}",
-                "email_rule_id": rule.get("id", ""),
-                "fwd_destination": req.destination,
-            })
-
-    return {"rule": rule}
-
-
-class UpdateRuleRequest(BaseModel):
-    alias: str
-    destination: str
-    enabled: bool = True
-
-
-@router.put("/rules/{rule_id}")
-async def update_email_rule(rule_id: str, req: UpdateRuleRequest):
-    """Update an existing email routing rule."""
-    _require_configured()
-    try:
-        rule = await update_rule(rule_id, req.alias, req.destination, req.enabled)
-        return {"rule": rule}
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=str(e))
 
 
 @router.delete("/rules/{rule_id}")
