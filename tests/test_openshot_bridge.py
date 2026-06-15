@@ -195,6 +195,31 @@ def test_empty_keyframes_keep_the_flat_default_keyframe(tmp_path):
     assert clip["scale_x"]["Points"] == [{"co": {"X": 1.0, "Y": 0.8}, "interpolation": openshot_bridge.CONSTANT}]
 
 
+def test_clip_keyframe_position_and_rotation_envelopes_and_bezier_interp(tmp_path):
+    """x/y position envelopes go through the same 0..1 -> -1..1 _location transform
+    as the flat default, rotation passes through, and a `bezier` interp point maps
+    to OpenShot's BEZIER code (0). These props + interp had no envelope coverage —
+    a regression in the per-property transform or interp map would only bite at
+    render time."""
+    project = _project(tmp_path / "card.png")
+    project["clips"]["card_clip"]["keyframes"] = [
+        {"property": "x", "points": [{"t": 0.0, "value": 0.0}, {"t": 1.0, "value": 1.0}]},
+        {"property": "y", "points": [{"t": 0.0, "value": 0.5, "interp": "bezier"}]},
+        {"property": "rotation", "points": [{"t": 0.0, "value": 0.0}, {"t": 1.0, "value": 90.0}]},
+    ]
+
+    clip = openshot_bridge.timeline_json(project)["clips"][0]
+
+    # x: 0.0 -> -1.0 (left edge), 1.0 -> 1.0 (right edge); frames are t*30 + 1
+    assert [p["co"]["X"] for p in clip["location_x"]["Points"]] == [1.0, 31.0]
+    assert [p["co"]["Y"] for p in clip["location_x"]["Points"]] == [-1.0, 1.0]
+    # y: 0.5 -> 0.0 (center), single bezier point
+    assert clip["location_y"]["Points"][0]["co"]["Y"] == 0.0
+    assert clip["location_y"]["Points"][0]["interpolation"] == openshot_bridge._INTERPOLATION_MAP["bezier"]
+    # rotation passes through untransformed
+    assert [p["co"]["Y"] for p in clip["rotation"]["Points"]] == [0.0, 90.0]
+
+
 def test_clip_effects_translate_to_openshot_effect_objects(tmp_path):
     """A clip's editor effects become libopenshot Effect JSON objects on the clip:
     fades map to the Fade class with a direction + keyframed duration; color filters
