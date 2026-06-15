@@ -134,6 +134,94 @@ def _project_with_card(project_id: str, asset_path: Path, *, x: float = 0.0) -> 
     return project
 
 
+def _window_project(*clips: dict) -> dict:
+    """Minimal project dict for exercising the pure windowing helpers
+    (_windowed_clips / _render_scope_project). No assets/ffmpeg needed."""
+    return {
+        "projectId": "win",
+        "fps": 12,
+        "tracks": {"graphics_1": {"id": "graphics_1", "index": 0}},
+        "clips": {c["id"]: c for c in clips},
+    }
+
+
+def _wclip(clip_id: str, *, start: float, duration: float, source_start: float = 0.0,
+           enabled: bool = True) -> dict:
+    return {
+        "id": clip_id,
+        "assetId": clip_id,
+        "trackId": "graphics_1",
+        "kind": "artifact",
+        "start": start,
+        "duration": duration,
+        "sourceStart": source_start,
+        "enabled": enabled,
+    }
+
+
+def test_windowed_clips_trims_clip_overlapping_window_start():
+    # clip spans [1, 5); window is [2, 6). Front 1s is before the window and must be cut.
+    project = _window_project(_wclip("a", start=1.0, duration=4.0, source_start=10.0))
+    out = editor_render._windowed_clips(project, window_start=2.0, duration=4.0)
+
+    assert len(out) == 1
+    clip = out[0]
+    assert clip["start"] == pytest.approx(0.0)            # rebased to window origin
+    assert clip["duration"] == pytest.approx(3.0)         # only [2,5) survives
+    assert clip["sourceStart"] == pytest.approx(11.0)     # 10 + (2 - 1) skipped second
+
+
+def test_windowed_clips_trims_clip_overlapping_window_end():
+    # clip spans [1, 6); window is [0, 4). Tail past window_end must be cut, source untouched.
+    project = _window_project(_wclip("a", start=1.0, duration=5.0, source_start=3.0))
+    out = editor_render._windowed_clips(project, window_start=0.0, duration=4.0)
+
+    assert len(out) == 1
+    clip = out[0]
+    assert clip["start"] == pytest.approx(1.0)            # clip starts 1s into the window
+    assert clip["duration"] == pytest.approx(3.0)         # only [1,4) survives
+    assert clip["sourceStart"] == pytest.approx(3.0)      # no front trim -> no source shift
+
+
+def test_windowed_clips_drops_clips_fully_outside_window():
+    project = _window_project(
+        _wclip("before", start=0.0, duration=1.0),   # ends at window_start boundary
+        _wclip("inside", start=2.0, duration=1.0),
+        _wclip("after", start=5.0, duration=1.0),    # starts at window_end boundary
+    )
+    out = editor_render._windowed_clips(project, window_start=1.0, duration=4.0)
+
+    assert [c["id"] for c in out] == ["inside"]          # [1,5): boundary-touching clips excluded
+
+
+def test_windowed_clips_excludes_disabled_clips():
+    project = _window_project(
+        _wclip("on", start=0.0, duration=4.0),
+        _wclip("off", start=0.0, duration=4.0, enabled=False),
+    )
+    out = editor_render._windowed_clips(project, window_start=0.0, duration=4.0)
+
+    assert [c["id"] for c in out] == ["on"]
+
+
+def test_render_scope_project_returns_original_when_no_windowing():
+    project = _window_project(_wclip("a", start=0.0, duration=4.0))
+    # window_start <= 0 and duration None -> identity (no copy, no scoping work)
+    assert editor_render._render_scope_project(project, window_start=0.0, duration=None) is project
+
+
+def test_render_scope_project_defaults_duration_to_remaining_timeline():
+    # full timeline is [0, 10); scoping from 4 with no explicit duration -> [4, 10).
+    project = _window_project(_wclip("a", start=0.0, duration=10.0))
+    scoped = editor_render._render_scope_project(project, window_start=4.0, duration=None)
+
+    assert scoped is not project                          # scoped without mutating the input
+    assert project["clips"]["a"]["start"] == 0.0          # original untouched
+    clip = next(iter(scoped["clips"].values()))
+    assert clip["start"] == pytest.approx(0.0)
+    assert clip["duration"] == pytest.approx(6.0)         # 10 - 4 remaining seconds
+
+
 def test_backend_detection_prefers_openshot_but_reports_local_blocker():
     capabilities = editor_render.detect_render_backends()
 
