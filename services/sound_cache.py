@@ -20,6 +20,7 @@ from pathlib import Path
 
 from project_manager import get_global_sounds_dir
 from services.campaign_hub import fetch_campaign_detail, find_campaign_by_label
+from services.json_store import atomic_save
 
 log = logging.getLogger("sound_cache")
 
@@ -105,7 +106,10 @@ async def prepare_sound(telegram_sound_id: str, label: str) -> dict:
             "label": label,
             "slug": slug,
         }
-        beats_path.write_text(json.dumps(metadata, indent=2))
+        # Atomic write (tmp + fsync + os.replace): a bare write_text left
+        # beats.json truncated if the process crashed mid-write, breaking the
+        # json.loads() cache-hit path above on the next prepare_sound() call.
+        atomic_save(beats_path, metadata)
         log.info(
             "sound cached: sound_id=%s bpm=%.1f duration=%.1fs beats=%d",
             tiktok_sound_id, beats_data["bpm"], beats_data["duration"],
