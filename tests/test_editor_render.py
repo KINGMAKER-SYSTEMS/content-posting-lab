@@ -545,6 +545,39 @@ def test_open_shot_audio_mux_keeps_later_timeline_audio_clips(tmp_path):
     assert _mean_volume(video, start=1.1, duration=0.4) > -30
 
 
+def test_open_shot_audio_mux_applies_audio_fadein(tmp_path):
+    """The OpenShot mux path must honor fadeIn/fadeOut effects the same way the
+    ffmpeg-layered fallback does. Without the fade the head of the clip is at
+    full level; with it the ramped head is audibly quieter than the body.
+    """
+    video = tmp_path / "silent_video.mp4"
+    tone = tmp_path / "tone.wav"
+    subprocess.run(
+        ["ffmpeg", "-y", "-f", "lavfi", "-i", "color=c=black:s=96x64:r=12:d=2",
+         "-c:v", "libx264", "-pix_fmt", "yuv420p", str(video)],
+        check=True, capture_output=True, text=True,
+    )
+    subprocess.run(
+        ["ffmpeg", "-y", "-f", "lavfi", "-i", "sine=frequency=440:duration=2.0",
+         "-ac", "1", "-ar", "48000", str(tone)],
+        check=True, capture_output=True, text=True,
+    )
+    project = timeline.new_project("audio_fade", width=96, height=64, fps=12)
+    project["assets"]["tone"] = {"id": "tone", "type": "audio", "src": str(tone)}
+    project["clips"]["tone"] = {
+        "id": "tone", "assetId": "tone", "trackId": "audio_1", "kind": "music",
+        "start": 0, "duration": 2.0, "sourceStart": 0, "enabled": True,
+        "muted": False, "volume": 1, "transform": {},
+        "effects": [{"id": "fx_in", "type": "fadeIn", "params": {"duration": 1.0}}],
+    }
+
+    assert editor_render._mux_timeline_audio(project, video, duration=2.0, asset_root=None) is True
+
+    head = _mean_volume(video, start=0.0, duration=0.25)
+    body = _mean_volume(video, start=1.2, duration=0.4)
+    assert head < body - 6  # fadeIn ramp keeps the head well below steady level
+
+
 def test_ffmpeg_renderer_exports_layered_mp4_and_preview_frame(tmp_path):
     red = _solid_png(tmp_path / "red.png", "red")
     project = _project_with_card("render_fixture", red, x=0.0)

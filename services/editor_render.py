@@ -760,10 +760,22 @@ def _mux_timeline_audio(
         source_start = max(0.0, float(clip.get("sourceStart") or 0))
         clip_duration = max(0.001, float(clip.get("duration") or duration))
         volume = max(0.0, float(clip.get("volume") or 1.0))
+        # Apply fadeIn/fadeOut the same way the ffmpeg-layered fallback does, so
+        # OpenShot-muxed audio honors crossfade/ducking effects instead of
+        # silently dropping them. Timings are clip-relative (PTS reset to 0 by
+        # asetpts), inserted between volume and the timeline adelay offset.
+        afades = ""
+        a_fade_in = _fade_window(clip, "fadeIn")
+        if a_fade_in is not None:
+            afades += f"afade=t=in:st=0:d={min(a_fade_in, clip_duration):.3f},"
+        a_fade_out = _fade_window(clip, "fadeOut")
+        if a_fade_out is not None:
+            a_out_d = min(a_fade_out, clip_duration)
+            afades += f"afade=t=out:st={max(0.0, clip_duration - a_out_d):.3f}:d={a_out_d:.3f},"
         filters.append(
             f"[{input_index}:a]atrim=start={source_start:.3f}:duration={clip_duration:.3f},"
             f"asetpts=PTS-STARTPTS,aresample=48000,aformat=channel_layouts=stereo,"
-            f"volume={volume:.4f},adelay={delay_ms}:all=1[{label}]"
+            f"volume={volume:.4f},{afades}adelay={delay_ms}:all=1[{label}]"
         )
         labels.append(f"[{label}]")
 
