@@ -166,7 +166,13 @@ def _editor_timeline_asset_paths() -> set[Path]:
         if not isinstance(value, str):
             return
         if value.startswith("/agenticnews-assets/"):
-            paths.add(_normalize_asset_path(ASSETS / value.removeprefix("/agenticnews-assets/")))
+            # Strip a ?query / #fragment cache-buster (the editor persists render-cache
+            # URLs like "…/episode.mp4?rev=3"); the static mount ignores it, so the real
+            # file on disk is "episode.mp4". Without this strip the protected path becomes
+            # "episode.mp4?rev=3", never matches the keeper, and the GC tombstones a render
+            # an Editor Bay timeline still references.
+            rel = value.removeprefix("/agenticnews-assets/").split("?", 1)[0].split("#", 1)[0]
+            paths.add(_normalize_asset_path(ASSETS / rel))
             return
         path = Path(value)
         if path.is_absolute():

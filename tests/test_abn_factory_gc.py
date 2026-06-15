@@ -120,6 +120,39 @@ def test_purge_disk_preserves_editor_timeline_referenced_scratch(store):
     assert not unreferenced.exists(), "GC should reap the unreferenced scratch file"
 
 
+def test_protection_scan_strips_cachebuster_query_on_agenticnews_url(store):
+    """A /agenticnews-assets/ render URL persisted by the editor with a ?rev=N cache-buster
+    (EditorBay uses these — see EditorBay.test.tsx) must still protect the real file. The static
+    mount ignores the query, so the keeper on disk is 'episode.mp4', not 'episode.mp4?rev=3'.
+    Without stripping the query the protection path never matches and the GC tombstones a render
+    an Editor Bay timeline still references — the exact schema-rooted miss this audit hunts for."""
+    d = store / "ep_q00000" / "renders"
+    d.mkdir(parents=True)
+    keeper = d / "episode.mp4"
+    keeper.write_bytes(b"render")
+    old = time.time() - 9000
+    os.utime(keeper, (old, old))
+    rel = keeper.relative_to(store)
+    (store / "editor_timelines" / "ep_q00000.json").write_text(
+        f'{{"renderCache": {{"video": {{"path": "/agenticnews-assets/{rel}?rev=3"}}}}}}'
+    )
+
+    protected = abn_factory._editor_timeline_asset_paths()
+    assert abn_factory._is_editor_timeline_protected_asset(keeper, protected), (
+        "cache-busted /agenticnews-assets/ URL must resolve to the real file and protect it"
+    )
+
+    usage = namedtuple("usage", ("total", "used", "free"))
+    _orig = shutil.disk_usage
+    shutil.disk_usage = lambda _: usage(100, 100, 0)  # critically low → render trim fires
+    try:
+        abn_factory.purge_disk(intermediate_age_s=99999, keep_episodes=0, low_disk_gb=999)
+    finally:
+        shutil.disk_usage = _orig
+
+    assert keeper.exists(), "GC trimmed a render referenced by a ?rev= cache-busted timeline URL"
+
+
 def test_purge_disk_trims_old_episode_renders_under_low_disk(store):
     """Under low disk the GC trims the OLDEST real episode renders (keep N) by TOMBSTONING them to
     _trash/ (recoverable safe-delete, NOT unlink — a buggy trim must never be permanent data loss),
