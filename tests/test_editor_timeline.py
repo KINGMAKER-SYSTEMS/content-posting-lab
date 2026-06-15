@@ -2034,19 +2034,15 @@ def test_abn_import_ducking_envelope_and_shot_effect_round_trip_to_openshot(tmp_
     assert shot_oj["effects"][0]["fade"] == "in"
 
 
-def test_abn_import_does_not_yet_promote_shot_level_effects_or_keyframes():
-    """Pin the known fidelity boundary so it can never regress to a SILENT discard.
+def test_abn_import_promotes_shot_level_effects_and_keyframes():
+    """Shot-level effects/kenBurns are wired onto the active clip fields on import.
 
-    abn_factory shots can carry per-shot envelopes (e.g. `kenBurns`) and could carry an
-    `effects` list. project_from_abn_timeline does NOT yet promote those onto the active
-    clip.effects / clip.keyframes fields that openshot_bridge reads — so they would not
-    reach the compiler on import alone (an editor command must attach them; see the
-    round-trip test above). The raw shot is preserved losslessly under
-    clip.metadata.shot, so the data is never destroyed — it is just not wired through.
-
-    If a future change teaches the importer to carry shot effects/keyframes, this test
-    will fail loudly and must be updated intentionally, rather than the promotion landing
-    silently with no coverage.
+    abn_factory shots carry per-shot envelopes (e.g. `kenBurns`) and can carry an
+    `effects` list. project_from_abn_timeline now promotes those onto the active
+    clip.effects / clip.keyframes fields that openshot_bridge reads, so factory
+    crossfades and Ken-Burns reach the compiler on import alone — no extra editor
+    command required. The raw shot is still preserved losslessly under
+    clip.metadata.shot, so re-import remains lossless.
     """
     abn_timeline = {
         "episodeId": "ep_shot_fx",
@@ -2064,7 +2060,14 @@ def test_abn_import_does_not_yet_promote_shot_level_effects_or_keyframes():
                         "effects": [
                             {"id": "xf", "type": "crossfade", "params": {"duration": 0.5}}
                         ],
-                        "kenBurns": {"startScale": 1.0, "endScale": 1.1},
+                        "kenBurns": {
+                            "startScale": 1.0,
+                            "endScale": 1.1,
+                            "startX": 0.5,
+                            "endX": 0.5,  # no pan on X -> no track
+                            "startY": 0.4,
+                            "endY": 0.6,  # pans on Y -> a track
+                        },
                     }
                 ],
             }
@@ -2074,10 +2077,22 @@ def test_abn_import_does_not_yet_promote_shot_level_effects_or_keyframes():
     project = timeline.project_from_abn_timeline("proj_shot_fx", abn_timeline)
     clip = next(c for c in project["clips"].values() if c["kind"] == "artifact")
 
-    # Current behaviour: shot-level effects/keyframes are NOT promoted to active fields.
-    assert clip["effects"] == []
-    assert clip["keyframes"] == []
-    # ...but the raw shot (and everything on it) is retained, so nothing is lost.
+    # Effects are promoted (and validated) onto the active field.
+    assert [e["type"] for e in clip["effects"]] == ["crossfade"]
+    assert clip["effects"][0]["id"] == "xf"
+    assert clip["effects"][0]["params"]["duration"] == 0.5
+
+    # kenBurns becomes 2-point linear scale + y keyframe tracks spanning the clip;
+    # the static X axis (start == end) is omitted.
+    tracks = {t["property"]: t for t in clip["keyframes"]}
+    assert set(tracks) == {"scale", "y"}
+    scale_pts = tracks["scale"]["points"]
+    assert [p["t"] for p in scale_pts] == [0.0, 2.0]
+    assert [p["value"] for p in scale_pts] == [1.0, 1.1]
+    assert all(p["interp"] == "linear" for p in scale_pts)
+    assert [p["value"] for p in tracks["y"]["points"]] == [0.4, 0.6]
+
+    # ...and the raw shot (and everything on it) is still retained, so nothing is lost.
     assert clip["metadata"]["shot"]["effects"][0]["type"] == "crossfade"
     assert clip["metadata"]["shot"]["kenBurns"]["endScale"] == 1.1
 
@@ -2310,3 +2325,70 @@ def test_clip_split_partitions_multitrack_keyframes_and_straddling_effects(tmp_p
     # fadeIn anchors to the head, fadeOut to the tail.
     assert {e["id"] for e in head["effects"]} == {"fi"}
     assert {e["id"] for e in tail["effects"]} == {"fo"}
+
+
+def test_abn_import_skips_unsupported_shot_effects_without_aborting():
+    """An effect outside EFFECT_TYPES is skipped, not fatal; import still succeeds."""
+    abn_timeline = {
+        "episodeId": "ep_bad_fx",
+        "segments": [
+            {
+                "segmentId": "s0",
+                "durationSec": 2.0,
+                "shots": [
+                    {
+                        "id": "card",
+                        "src": "/agenticnews-assets/card.png",
+                        "startSec": 0.0,
+                        "durationSec": 2.0,
+                        "type": "artifact",
+                        "effects": [
+                            {"id": "good", "type": "fadeIn", "params": {"duration": 0.3}},
+                            {"id": "bad", "type": "glitch", "params": {}},
+                        ],
+                    }
+                ],
+            }
+        ],
+    }
+
+    project = timeline.project_from_abn_timeline("proj_bad_fx", abn_timeline)
+    clip = next(c for c in project["clips"].values() if c["kind"] == "artifact")
+
+    # Only the supported effect survives; the unknown one is dropped, not raised.
+    assert [e["type"] for e in clip["effects"]] == ["fadeIn"]
+    assert clip["keyframes"] == []
+
+
+def test_abn_import_promoted_keyframes_reach_openshot_bridge():
+    """The promoted scale keyframe shows up as a real multi-Point envelope in the
+    compiler JSON — proving the wiring actually reaches OpenShot, not just the model."""
+    from services import openshot_bridge
+
+    abn_timeline = {
+        "episodeId": "ep_kb_bridge",
+        "segments": [
+            {
+                "segmentId": "s0",
+                "durationSec": 2.0,
+                "shots": [
+                    {
+                        "id": "card",
+                        "src": "/agenticnews-assets/card.png",
+                        "startSec": 0.0,
+                        "durationSec": 2.0,
+                        "type": "artifact",
+                        "kenBurns": {"startScale": 1.0, "endScale": 1.2},
+                    }
+                ],
+            }
+        ],
+    }
+
+    project = timeline.project_from_abn_timeline("proj_kb_bridge", abn_timeline)
+    clip = next(c for c in project["clips"].values() if c["kind"] == "artifact")
+
+    oj = openshot_bridge.clip_json(project, clip)
+    scale_points = oj["scale_x"]["Points"]
+    assert [round(p["co"]["Y"], 3) for p in scale_points] == [1.0, 1.2]
+    assert len(scale_points) == 2

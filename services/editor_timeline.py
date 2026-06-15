@@ -119,7 +119,7 @@ def project_from_abn_timeline(
             }
             start = cursor + float(shot.get("startSec") or 0)
             clip_duration = _shot_duration(segment, shots, shot_index, duration)
-            project["clips"][clip_id] = _clip(
+            clip = _clip(
                 clip_id,
                 asset_id,
                 _track_for_asset(kind, shot.get("type")),
@@ -129,6 +129,13 @@ def project_from_abn_timeline(
                 source_start=float(shot.get("clipStartSec") or 0),
                 metadata={"segmentId": segment_id, "shot": shot},
             )
+            # Promote shot-level effects/kenBurns onto the active clip fields the
+            # compiler reads (clip.effects / clip.keyframes). The raw shot stays in
+            # metadata.shot for lossless re-import; this just wires it through so
+            # factory crossfades and Ken-Burns reach OpenShot without an extra edit.
+            clip["effects"] = _shot_effects(shot)
+            clip["keyframes"] = _ken_burns_keyframes(shot.get("kenBurns"), clip_duration)
+            project["clips"][clip_id] = clip
 
         vo = ((segment.get("audio") or {}).get("vo") or {})
         if vo.get("src"):
@@ -336,6 +343,65 @@ def _clip(
         "keyframes": [],
         "metadata": metadata or {},
     }
+
+
+def _shot_effects(shot: dict[str, Any]) -> list[dict[str, Any]]:
+    """Promote an ABN shot's `effects` to validated active clip effects.
+
+    The shot effect shape already matches the editor effect contract, so each is
+    run through `_validated_effect`. Any effect outside the supported vocabulary
+    (EFFECT_TYPES) is skipped rather than aborting the import — the raw shot is
+    still preserved under clip.metadata.shot, so nothing is lost.
+    """
+
+    out: list[dict[str, Any]] = []
+    for effect in shot.get("effects") or []:
+        try:
+            out.append(_validated_effect(effect))
+        except CommandValidationError:
+            continue
+    return out
+
+
+def _ken_burns_keyframes(ken_burns: Any, duration: float) -> list[dict[str, Any]]:
+    """Translate an ABN `kenBurns` envelope to editor scale/x/y keyframe tracks.
+
+    kenBurns = {startScale,endScale,startX,startY,endX,endY,easing}. Only axes that
+    actually move (start != end) become tracks, each a 2-point linear envelope from
+    clip start (t=0) to clip end (t=duration). openshot_bridge maps scale/x/y to the
+    OpenShot scale_x/scale_y/location_x/location_y Point lists.
+    """
+
+    if not isinstance(ken_burns, dict):
+        return []
+    span = max(0.0, float(duration))
+    tracks: list[dict[str, Any]] = []
+    for prop, start_key, end_key in (
+        ("scale", "startScale", "endScale"),
+        ("x", "startX", "endX"),
+        ("y", "startY", "endY"),
+    ):
+        if start_key not in ken_burns and end_key not in ken_burns:
+            continue
+        start_val = ken_burns.get(start_key, ken_burns.get(end_key))
+        end_val = ken_burns.get(end_key, ken_burns.get(start_key))
+        try:
+            start_f = float(start_val)
+            end_f = float(end_val)
+        except (TypeError, ValueError):
+            continue
+        if start_f == end_f:
+            continue
+        tracks.append(
+            {
+                "property": prop,
+                "points": [
+                    {"t": 0.0, "value": start_f, "interp": "linear"},
+                    {"t": span, "value": end_f, "interp": "linear"},
+                ],
+            }
+        )
+    return tracks
 
 
 class TimelineStore:
