@@ -261,3 +261,47 @@ def test_is_editor_timeline_protected_asset_standalone(monkeypatch, tmp_path):
     noncanonical = assets / "sub" / ".." / "ep_a111111_s0.wav"
     (assets / "sub").mkdir()
     assert abn_factory._is_editor_timeline_protected_asset(noncanonical, protected) is True
+
+
+def test_gc_segments_never_unlinks_schema_dirs_or_symlinks(monkeypatch, tmp_path):
+    """The disk-GC inside _gc_segments globs ASSETS for `ep_*`, which matches not just flat
+    `ep_<id>_*.mp4` files but also DIRECTORIES (per-episode `ep_<id>/` schema dirs) and SYMLINKS
+    by name. unlink() on a directory would be whole-episode loss; on a symlink it orphans the real
+    keeper it points at. The structural guard must skip both so an orphaned (not-in-DB) schema dir
+    or back-compat symlink survives, while genuine homeless flat junk is still reaped."""
+    assets = tmp_path / "assets"
+    assets.mkdir(parents=True)
+
+    # an orphaned (id not in live_ids) DIRECTORY whose name matches the `ep_*` glob AND the
+    # `(ep_[0-9a-f]+)_` regex -> must NOT be unlinked
+    schema_dir = assets / "ep_dead00_v2"
+    (schema_dir / "renders").mkdir(parents=True)
+    keeper = schema_dir / "renders" / "episode.mp4"
+    keeper.write_bytes(b"whole episode render")
+
+    # an orphaned SYMLINK at an old flat path, pointing at the keeper -> must NOT be unlinked
+    flat_link = assets / "ep_dead00_episode.mp4"
+    flat_link.symlink_to(keeper)
+
+    # genuine homeless flat junk (orphan id, real regular file) -> SHOULD still be reaped
+    junk = assets / "ep_cafe00_episode.mp4"
+    junk.write_bytes(b"junk")
+
+    old = time.time() - (7 * 3600)  # older than the 6h safety window
+    os.utime(schema_dir, (old, old))
+    os.utime(keeper, (old, old))
+    os.utime(flat_link, (old, old), follow_symlinks=False)
+    os.utime(junk, (old, old))
+
+    async def list_videos(*args, **kwargs):
+        return []  # nothing tracked -> every ep_* id is an orphan candidate
+
+    monkeypatch.setattr(abn_factory, "ASSETS", assets)
+    monkeypatch.setattr(abn_factory.db, "list_videos", list_videos)
+
+    asyncio.run(abn_factory._gc_segments(keep_recent=0))
+
+    assert schema_dir.is_dir(), "GC unlinked a schema directory (whole-episode loss)"
+    assert keeper.exists(), "GC destroyed a render inside a schema dir"
+    assert flat_link.is_symlink(), "GC deleted a symlink (orphans the real keeper it points at)"
+    assert not junk.exists(), "GC should still reap genuine homeless flat junk"

@@ -3094,6 +3094,13 @@ async def _gc_segments(keep_recent=12):
             cutoff = now - 6 * 3600
             freed, dn = 0, 0
             for f in ASSETS.glob("ep_*"):
+                # STRUCTURAL GUARD: `ep_*` matches DIRECTORIES (e.g. per-episode `ep_<id>/` schema
+                # dirs) and SYMLINKS by name, not just flat `ep_<id>_*.mp4` files. unlink() on a dir
+                # would be whole-episode loss; on a symlink it orphans the real keeper it points at.
+                # Only ever reap a real, regular flat file — never a dir or a link — so this GC can't
+                # eat a schema dir/symlink even if an entry's type races or is corrupted.
+                if f.is_dir() or f.is_symlink():
+                    continue
                 m = re.match(r'(ep_[0-9a-f]+)_', f.name)
                 if not m or m.group(1) in live_ids:
                     continue
