@@ -1606,3 +1606,145 @@ def test_openshot_subprocess_raises_render_error_when_child_emits_no_result(monk
     with pytest.raises(editor_render.RenderError) as excinfo:
         renderer.render({"projectId": "p"}, output_path=tmp_path / "renders" / "empty.mp4", start=0, duration=1)
     assert "produced no render result" in str(excinfo.value)
+
+
+# ---------------------------------------------------------------------------
+# OpenShot audio-mux gating. The external ffmpeg mix (editor_render.py L334) must
+# run ONLY when OpenShot wrote SILENT video (ffmpeg present -> mix_audio_externally).
+# When ffmpeg is absent OpenShot already wrote its own in-engine AAC stream, and
+# unconditionally calling _mux_timeline_audio would raise "ffmpeg is required",
+# throwing away a perfectly valid OpenShot render. These pin both branches with a
+# FAKE openshot module so they run with no libopenshot and no ffmpeg dependency.
+# ---------------------------------------------------------------------------
+
+
+class _FakeWriter:
+    def __init__(self, _path):
+        self.audio_enabled = None
+
+    def SetVideoOptions(self, *a, **k):
+        pass
+
+    def SetAudioOptions(self, has_audio, *a, **k):
+        self.audio_enabled = has_audio
+
+    def Open(self):
+        pass
+
+    def WriteFrame(self, _frame):
+        pass
+
+    def Close(self):
+        pass
+
+
+class _FakeFraction:
+    def __init__(self, num, den):
+        self.num, self.den = num, den
+
+
+def _fake_openshot():
+    import types
+
+    mod = types.SimpleNamespace()
+    mod.FFmpegWriter = _FakeWriter
+    mod.Fraction = _FakeFraction
+    return mod
+
+
+def _audio_project(tmp_path):
+    tone = tmp_path / "tone.wav"
+    tone.write_bytes(b"")  # only existence is checked before any (skipped) mux
+    project = timeline.new_project("mux_gate", width=96, height=64, fps=12)
+    project["assets"]["tone"] = {"id": "tone", "type": "audio", "src": str(tone)}
+    project["clips"]["tone"] = {
+        "id": "tone", "assetId": "tone", "trackId": "audio_1", "kind": "voiceover",
+        "start": 0.0, "duration": 1.0, "sourceStart": 0.0, "enabled": True,
+        "muted": False, "volume": 1.0, "transform": {},
+    }
+    return project
+
+
+def _build_fake_openshot_renderer(tmp_path, monkeypatch):
+    """An OpenShotRenderer whose native bits are faked: the writer is a no-op,
+    _timeline returns a stub, and _probe_duration is stubbed — so render() exercises
+    the real audio-mux gating logic with no libopenshot and no ffmpeg."""
+    fake = _fake_openshot()
+    monkeypatch.setattr(editor_render, "_import_openshot", lambda: (fake, "available", None))
+    renderer = editor_render.OpenShotRenderer(tmp_path / "renders")
+
+    class _StubTimeline:
+        def GetFrame(self, _n):
+            return object()
+
+        def Close(self):
+            pass
+
+    monkeypatch.setattr(renderer, "_timeline", lambda _p: _StubTimeline())
+    monkeypatch.setattr(editor_render, "_probe_duration", lambda *_a, **_k: 1.0)
+    return renderer
+
+
+def test_openshot_render_skips_external_mux_when_ffmpeg_absent(tmp_path, monkeypatch):
+    """The gap the ticket flags: with audio present but ffmpeg ABSENT, OpenShot
+    writes its own in-engine AAC stream (SetAudioOptions enabled). render() must NOT
+    then call the ffmpeg mux — which would raise 'ffmpeg is required' and discard a
+    valid render. Assert audioMuxed is False and _mux_timeline_audio is never hit."""
+    monkeypatch.setattr(editor_render.shutil, "which", lambda name: None)  # no ffmpeg/ffprobe
+
+    def _boom(*a, **k):
+        raise AssertionError("_mux_timeline_audio must NOT run when ffmpeg is absent")
+
+    monkeypatch.setattr(editor_render, "_mux_timeline_audio", _boom)
+
+    renderer = _build_fake_openshot_renderer(tmp_path, monkeypatch)
+    project = _audio_project(tmp_path)
+    output = tmp_path / "renders" / "out.mp4"
+
+    result = renderer.render(project, output_path=output)
+
+    assert result["audioMuxed"] is False  # in-engine audio, no external mux
+    assert result["backend"] == "openshot"
+
+
+def test_openshot_render_muxes_externally_when_ffmpeg_present(tmp_path, monkeypatch):
+    """The other branch: ffmpeg present -> OpenShot wrote SILENT video, so render()
+    DOES call the deterministic external mix. Stub the mux to confirm it ran and its
+    True return flows out as audioMuxed."""
+    monkeypatch.setattr(editor_render.shutil, "which", lambda name: "/usr/bin/" + name)
+
+    calls: list[float] = []
+
+    def _spy(project, output, *, duration, asset_root):
+        calls.append(duration)
+        return True
+
+    monkeypatch.setattr(editor_render, "_mux_timeline_audio", _spy)
+
+    renderer = _build_fake_openshot_renderer(tmp_path, monkeypatch)
+    project = _audio_project(tmp_path)
+    output = tmp_path / "renders" / "out.mp4"
+
+    result = renderer.render(project, output_path=output)
+
+    assert calls, "external mux must run when ffmpeg is present (silent OpenShot video)"
+    assert result["audioMuxed"] is True
+
+
+def test_openshot_render_silent_project_never_muxes(tmp_path, monkeypatch):
+    """A project with no audio clips must never touch the mux path regardless of
+    ffmpeg presence — audioMuxed stays False and _mux_timeline_audio is not called."""
+    monkeypatch.setattr(editor_render.shutil, "which", lambda name: "/usr/bin/" + name)
+    monkeypatch.setattr(
+        editor_render, "_mux_timeline_audio",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("no audio -> no mux")),
+    )
+
+    renderer = _build_fake_openshot_renderer(tmp_path, monkeypatch)
+    red = _solid_png(tmp_path / "red.png", "red", size="96x64")
+    project = _project_with_card("silent", red, x=0.0)
+    output = tmp_path / "renders" / "silent.mp4"
+
+    result = renderer.render(project, output_path=output)
+
+    assert result["audioMuxed"] is False

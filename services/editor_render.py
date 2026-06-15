@@ -330,8 +330,12 @@ class OpenShotRenderer:
             except Exception:
                 pass
 
+        # Only mux the deterministic ffmpeg timeline mix when OpenShot was told to
+        # write SILENT video (mix_audio_externally). When ffmpeg is absent OpenShot
+        # already wrote its own in-engine AAC stream from the Timeline, and the mux
+        # path would only raise (it needs ffmpeg) — throwing away a valid render.
         audio_muxed = False
-        if _project_has_audio(render_project):
+        if mix_audio_externally:
             audio_muxed = _mux_timeline_audio(
                 render_project,
                 output,
