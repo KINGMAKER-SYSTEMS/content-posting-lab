@@ -240,6 +240,33 @@ def asset_url_from_slug(flat_slug: str, kind: str, *, ext: Optional[str] = None)
     return _rel_url(asset_path_from_slug(flat_slug, kind, ext=ext))
 
 
+def scratch_path(flat_slug: str, filename: str) -> Path:
+    """Gateway path for a SPECIFICALLY-NAMED throwaway intermediate under
+    ``{ep_id}/scratch/`` (a .tape, a snippet .py, an intermediate .html).
+
+    Use this instead of ``asset_path_from_slug(slug, "scratch").with_name(...)``:
+    ``Path.with_name`` rebuilds the filename OUTSIDE the gateway, re-introducing the
+    exact unchecked-name hole this module exists to close (line 14: the write path
+    itself must be rejected at runtime when off-schema). ``filename`` is the full
+    basename and is validated through the same ``_SLUG_RE`` as every other slug, so
+    ``'..'``, ``'../evil'``, leading dots, slashes and null bytes all RAISE here.
+
+        scratch_path('ep_648e806a_s0', 'ep_648e806a_s0.tape')
+            -> .../ep_648e806a/scratch/ep_648e806a_s0.tape
+    """
+    ep_id, _rest = split_slug(flat_slug)
+    name = str(filename).strip()
+    if not _SLUG_RE.match(name) or "/" in name or "\\" in name:
+        raise AssetPathError(
+            f"bad scratch filename {name!r}. Use a flat basename like "
+            f"'{flat_slug}.tape' (alphanumerics, dot, dash, underscore; no slashes, "
+            f"no leading dot, no traversal). Do NOT hand-build a path with .with_name()."
+        )
+    d = episode_dir(ep_id) / "scratch"
+    d.mkdir(parents=True, exist_ok=True)
+    return d / name
+
+
 def _rel_url(p: Path) -> str:
     return URL_PREFIX + str(p.relative_to(ASSETS_DIR))
 

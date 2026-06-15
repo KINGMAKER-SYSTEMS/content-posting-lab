@@ -144,3 +144,50 @@ def test_asset_path_from_slug_episode_level(gw):
 def test_asset_url_from_slug(gw):
     url = gw.asset_url_from_slug("ep_648e806a_s1", "kinetic")
     assert url == "/agenticnews-assets/ep_648e806a/css/s1_kinetic.mp4"
+
+
+# --- scratch_path: the sanctioned replacement for `.with_name()` on scratch ------
+# abn_factory writes throwaway .tape / snippet.py / intermediate .html files. These
+# used to be built as `asset_path_from_slug(slug,"scratch").with_name(name)`, which
+# rebuilds the basename OUTSIDE the gateway and skips slug validation. scratch_path
+# re-validates the full filename so an off-schema name is rejected at the write call.
+
+def test_scratch_path_layout(gw):
+    p = gw.scratch_path("ep_648e806a_s0", "ep_648e806a_s0.tape")
+    assert p.name == "ep_648e806a_s0.tape"
+    assert p.parent.name == "scratch"
+    assert p.parent.parent.name == "ep_648e806a"      # episode dir directly under ASSETS_DIR
+    assert p.parent.parent.parent == gw.ASSETS_DIR
+    assert p.parent.is_dir()                            # gateway creates the dir
+
+
+@pytest.mark.parametrize("flat,fname", [
+    ("ep_648e806a_s0", "ep_648e806a_s0_kinetic.html"),
+    ("ep_648e806a_s3", "ep_648e806a_s3_snippet.py"),
+    ("ep_648e806a_s3", "ep_648e806a_s3_real.tape"),
+])
+def test_scratch_path_real_factory_names(gw, flat, fname):
+    # the exact names abn_factory builds at its four scratch call-sites all validate
+    p = gw.scratch_path(flat, fname)
+    assert p.name == fname and p.parent.name == "scratch"
+
+
+@pytest.mark.parametrize("payload", [
+    "../../etc/passwd",          # path traversal
+    "..",                        # escape scratch/ via parent dir
+    "foo/bar.tape",              # embedded slash
+    "foo\\bar.tape",             # windows-style separator
+    ".hidden.tape",             # leading dot
+    "a\x00b.tape",               # null byte
+    "",                          # empty
+])
+def test_scratch_path_rejects_off_schema_name(gw, payload):
+    # this is the bug the ticket closes: a caller-controlled name that .with_name()
+    # would have silently accepted MUST raise at the gateway instead.
+    with pytest.raises(gw.AssetPathError):
+        gw.scratch_path("ep_648e806a_s0", payload)
+
+
+def test_scratch_path_requires_episode_prefix(gw):
+    with pytest.raises(gw.AssetPathError):
+        gw.scratch_path("just_a_name", "x.tape")   # no ep_id on the front

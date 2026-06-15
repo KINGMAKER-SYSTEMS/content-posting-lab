@@ -82,7 +82,7 @@ ASSETS = db.ASSETS_DIR
 # ep_id off the front; _asset_url turns a managed path back into its /agenticnews-assets/ URL.
 from services.abn_assets import (  # noqa: E402
     asset_path, asset_url, asset_path_from_slug, asset_url_from_slug,
-    shared_path, published_path, split_slug, URL_PREFIX,
+    scratch_path, shared_path, published_path, split_slug, URL_PREFIX,
 )
 
 
@@ -926,8 +926,7 @@ async def _kinetic_insert(title, script, source_url, sid):
     if not nsub:
         return None
     # intermediate html -> per-episode scratch (reaped freely); final mp4 -> css layer
-    src_html = asset_path_from_slug(sid, "scratch", ext="html")
-    src_html = src_html.with_name(f"{sid}_kinetic.html")
+    src_html = scratch_path(sid, f"{sid}_kinetic.html")
     src_html.write_text(html)
     out = asset_path_from_slug(sid, "kinetic")
     code, log = await _sh(
@@ -1016,10 +1015,10 @@ async def _code_demo(title, brief, name):
         return None
     out = asset_path_from_slug(name, "demo")
     # tape + snippet are throwaway intermediates -> per-episode scratch/
-    tape = asset_path_from_slug(name, "scratch", ext="tape").with_name(f"{name}.tape")
+    tape = scratch_path(name, f"{name}.tape")
     # write the snippet to a file and DISPLAY it with bat (syntax-highlighted) — no execution,
     # so we never get 'command not found' errors. This shows clean code, not a broken shell.
-    snippet = asset_path_from_slug(name, "scratch", ext="py").with_name(f"{name}_snippet.py")
+    snippet = scratch_path(name, f"{name}_snippet.py")
     snippet.write_text("\n".join(lines) + "\n")
     bat = "bat" if Path("/opt/homebrew/bin/bat").exists() else "cat"
     # VHS has a path-parse bug on absolute Output, so we cd to a working dir and use a relative
@@ -1099,7 +1098,7 @@ async def _real_demo(repo_url: str, name: str):
     workdir = Path(tempfile.mkdtemp(prefix=f"abn_demo_{name}_"))
     repo_dir = workdir / "repo"
     out = asset_path_from_slug(name, "demo")
-    tape = asset_path_from_slug(name, "scratch", ext="tape").with_name(f"{name}_real.tape")
+    tape = scratch_path(name, f"{name}_real.tape")
     try:
         # PRE-CLONE OUT OF BAND so a clone failure (404/private/timeout) cleanly falls back to the
         # scripted demo, AND so the VHS recording opens on already-fetched code (no dead wait on the
