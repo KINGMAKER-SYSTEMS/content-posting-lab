@@ -1018,10 +1018,11 @@ def _mutate_clip(project: dict[str, Any], op: str, clip: dict[str, Any], payload
 # with t <= offset and the second (tail) clip keeps points at t >= offset rebased to
 # t -= offset. Boundary value is preserved on both sides so the envelope is continuous.
 
-# Effects anchored to a clip boundary: fadeIn lives at the head, fadeOut at the tail.
-# Everything else (brightness, saturation, crossfade) applies to the whole clip and
-# is copied to both halves.
-_HEAD_ANCHORED_EFFECTS = frozenset({"fadeIn"})
+# Effects anchored to a clip boundary: fadeIn/crossfade live at the head, fadeOut at
+# the tail. fadeIn and crossfade are both start-anchored (both map to OpenShot's `in`
+# Fade, see openshot_bridge._FADE_DIRECTION_MAP). Everything else (brightness,
+# saturation) applies to the whole clip and is copied to both halves.
+_HEAD_ANCHORED_EFFECTS = frozenset({"fadeIn", "crossfade"})
 _TAIL_ANCHORED_EFFECTS = frozenset({"fadeOut"})
 
 

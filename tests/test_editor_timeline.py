@@ -1452,12 +1452,23 @@ def test_split_partitions_and_rebases_keyframes_and_effects(tmp_path):
             "payload": {"clipId": "c1", "effect": {"id": "fo", "type": "fadeOut", "params": {"duration": 1.0}}},
         },
     )
+    # crossfade is start-anchored too (maps to OpenShot's `in` Fade): it must follow
+    # fadeIn onto the head and NOT be cloned onto the tail with the parent's timing.
+    store.apply_command(
+        "proj_split_anim",
+        {
+            "op": "clip.effect.add",
+            "actor": "agent",
+            "expectedRevision": 4,
+            "payload": {"clipId": "c1", "effect": {"id": "xf", "type": "crossfade", "params": {"duration": 1.0}}},
+        },
+    )
     store.apply_command(
         "proj_split_anim",
         {
             "op": "clip.keyframes",
             "actor": "agent",
-            "expectedRevision": 4,
+            "expectedRevision": 5,
             "payload": {
                 "clipId": "c1",
                 "keyframes": [
@@ -1480,7 +1491,7 @@ def test_split_partitions_and_rebases_keyframes_and_effects(tmp_path):
         {
             "op": "clip.split",
             "actor": "human",
-            "expectedRevision": 5,
+            "expectedRevision": 6,
             "payload": {"clipId": "c1", "at": 8.0, "newClipId": "c1_tail"},
         },
     )
@@ -1492,8 +1503,9 @@ def test_split_partitions_and_rebases_keyframes_and_effects(tmp_path):
     assert head["duration"] == 8.0
     assert (tail["start"], tail["duration"]) == (8.0, 2.0)
 
-    # Boundary-anchored effects: head keeps fadeIn only, tail keeps fadeOut only.
-    assert [e["id"] for e in head["effects"]] == ["fi"]
+    # Boundary-anchored effects: head keeps the start-anchored fadeIn + crossfade,
+    # tail keeps the end-anchored fadeOut only.
+    assert [e["id"] for e in head["effects"]] == ["fi", "xf"]
     assert [e["id"] for e in tail["effects"]] == ["fo"]
 
     # Head envelope keeps only points up to the split (t <= 8); the t=9.5 point is gone.
