@@ -191,3 +191,167 @@ def test_scratch_path_rejects_off_schema_name(gw, payload):
 def test_scratch_path_requires_episode_prefix(gw):
     with pytest.raises(gw.AssetPathError):
         gw.scratch_path("just_a_name", "x.tape")   # no ep_id on the front
+
+
+# --- GC reapable surface: scratch_dirs / reapable_scratch ------------------------
+# These are the ONLY paths the garbage collector may delete. The gateway-level
+# contract (independent of abn_factory's GC loop) is that the reapable set is exactly
+# the regular files under per-episode {ep}/scratch/ + cross-episode _scratch/, with
+# directories and (critically) symlinks excluded — a symlink under scratch/ can point
+# INTO the schema, and following it would orphan a real keeper.
+
+def _scratch(gw, ep_id, name, body=b"intermediate"):
+    d = gw.episode_dir(ep_id) / "scratch"
+    d.mkdir(parents=True, exist_ok=True)
+    f = d / name
+    f.write_bytes(body)
+    return f
+
+
+def test_scratch_dirs_collects_per_episode_and_cross_episode(gw):
+    a = _scratch(gw, "ep_a111111", "s0.bin")
+    b = _scratch(gw, "ep_b222222", "s1.bin")
+    cross = gw.ASSETS_DIR / "_scratch"
+    cross.mkdir()
+    (cross / "fluxtest.png").write_bytes(b"probe")
+    dirs = {d.resolve() for d in gw.scratch_dirs()}
+    assert a.parent.resolve() in dirs
+    assert b.parent.resolve() in dirs
+    assert cross.resolve() in dirs
+    # a non-episode top dir with a scratch/ child is NOT a reapable root
+    bogus = gw.ASSETS_DIR / "_shared" / "scratch"
+    bogus.mkdir(parents=True)
+    assert bogus.resolve() not in {d.resolve() for d in gw.scratch_dirs()}
+
+
+def test_reapable_scratch_recurses_and_includes_only_regular_files(gw):
+    top = _scratch(gw, "ep_a111111", "top.bin")
+    nested = gw.episode_dir("ep_a111111") / "scratch" / "sub"
+    nested.mkdir()
+    deep = nested / "deep.bin"
+    deep.write_bytes(b"y")
+    cross = gw.ASSETS_DIR / "_scratch"
+    cross.mkdir()
+    cf = cross / "fluxtest.png"
+    cf.write_bytes(b"probe")
+    got = {p.resolve() for p in gw.reapable_scratch()}
+    assert got == {top.resolve(), deep.resolve(), cf.resolve()}
+    # the recursed-into subdir itself is never a reap candidate (only its files)
+    assert nested.resolve() not in got
+
+
+def test_reapable_scratch_excludes_symlinks_even_dangling(gw):
+    """A symlink under scratch/ is excluded whether it resolves or dangles. A live symlink
+    can point INTO the schema (renders/audio); reaping it would orphan the real keeper. A
+    broken symlink makes is_file() raise on some platforms — that OSError must be swallowed,
+    not crash the whole GC enumeration."""
+    real = _scratch(gw, "ep_a111111", "real.bin")
+    keeper_dir = gw.episode_dir("ep_a111111") / "renders"
+    keeper_dir.mkdir(parents=True)
+    keeper = keeper_dir / "episode.mp4"
+    keeper.write_bytes(b"the real render")
+    sd = real.parent
+    (sd / "live.mp4").symlink_to(keeper)        # symlink INTO the schema
+    (sd / "dead.mp4").symlink_to(sd / "gone.bin")  # dangling symlink
+    got = {p.resolve() for p in gw.reapable_scratch()}
+    assert got == {real.resolve()}, "only the regular file is reapable; both symlinks excluded"
+    assert keeper.exists(), "enumeration must never follow a symlink to a keeper"
+
+
+def test_reapable_scratch_empty_when_no_scratch_roots(gw):
+    # episode exists but has no scratch/ dir, and there's no _scratch/ — nothing reapable
+    gw.asset_path("ep_a111111", "card", "s0")  # creates css/ only
+    assert gw.reapable_scratch() == []
+
+
+# --- tombstone(): the safe-delete primitive (move to _trash/, never unlink) ------
+
+def test_tombstone_moves_scratch_file_to_trash_and_returns_size(gw):
+    f = _scratch(gw, "ep_a111111", "s0_raw.wav", body=b"data!!")
+    size = gw.tombstone(f)
+    assert size == 6
+    assert not f.exists()
+    dest = gw.ASSETS_DIR / "_trash" / "ep_a111111" / "scratch" / "s0_raw.wav"
+    assert dest.exists() and dest.read_bytes() == b"data!!"
+
+
+def test_tombstone_reaps_cross_episode_scratch(gw):
+    cross = gw.ASSETS_DIR / "_scratch"
+    cross.mkdir()
+    f = cross / "fluxtest_probe.png"
+    f.write_bytes(b"probe")
+    gw.tombstone(f)
+    assert not f.exists()
+    assert (gw.ASSETS_DIR / "_trash" / "_scratch" / "fluxtest_probe.png").exists()
+
+
+def test_tombstone_collision_suffixes_instead_of_clobbering(gw):
+    f1 = _scratch(gw, "ep_a111111", "s0_raw.wav", body=b"first")
+    gw.tombstone(f1)
+    f2 = _scratch(gw, "ep_a111111", "s0_raw.wav", body=b"second")
+    gw.tombstone(f2)
+    trashed = list((gw.ASSETS_DIR / "_trash" / "ep_a111111" / "scratch").glob("s0_raw*"))
+    assert len(trashed) == 2, "second reap of same rel path must suffix, not overwrite"
+    bodies = {t.read_bytes() for t in trashed}
+    assert bodies == {b"first", b"second"}
+
+
+def test_tombstone_refuses_symlink_under_scratch(gw):
+    """The exact origaudio-loss class hazard: a symlink under scratch/ pointing at a real
+    keeper must RAISE, not be tombstoned (which would move/orphan the keeper reference)."""
+    keeper_dir = gw.episode_dir("ep_a111111") / "renders"
+    keeper_dir.mkdir(parents=True)
+    keeper = keeper_dir / "episode.mp4"
+    keeper.write_bytes(b"render")
+    sd = gw.episode_dir("ep_a111111") / "scratch"
+    sd.mkdir(parents=True)
+    link = sd / "link.mp4"
+    link.symlink_to(keeper)
+    with pytest.raises(gw.AssetPathError):
+        gw.tombstone(link)
+    assert link.is_symlink() and keeper.exists()
+
+
+def test_tombstone_refuses_directory(gw):
+    sd = gw.episode_dir("ep_a111111") / "scratch"
+    sd.mkdir(parents=True)
+    with pytest.raises(gw.AssetPathError):
+        gw.tombstone(sd)
+    assert sd.is_dir()
+
+
+def test_tombstone_refuses_non_scratch_schema_files(gw):
+    """A render, an audio VO, and a footage capture all live under the schema but OUTSIDE a
+    reapable scratch root — tombstone() must RAISE so a buggy GC call can't turn into
+    whole-episode loss."""
+    render = gw.asset_path("ep_a111111", "episode")
+    render.write_bytes(b"render")
+    vo = gw.asset_path("ep_a111111", "voice", "s0")
+    vo.write_bytes(b"vo")
+    ui = gw.asset_path("ep_a111111", "ui", "s3")
+    ui.write_bytes(b"capture")
+    for keeper in (render, vo, ui):
+        with pytest.raises(gw.AssetPathError):
+            gw.tombstone(keeper)
+        assert keeper.exists()
+
+
+def test_tombstone_refuses_off_store_path(gw, tmp_path):
+    outside = tmp_path.parent / "elsewhere.bin"
+    outside.write_bytes(b"x")
+    try:
+        with pytest.raises(gw.AssetPathError):
+            gw.tombstone(outside)
+        assert outside.exists()
+    finally:
+        outside.unlink()
+
+
+def test_tombstone_refuses_missing_path(gw):
+    """Race window: a scratch file the caller already enumerated can vanish before the reap
+    (another GC pass, a crash, a manual rm). A path that is no longer a regular file must
+    RAISE AssetPathError, not silently 'succeed' or corrupt _trash/."""
+    sd = gw.episode_dir("ep_a111111") / "scratch"
+    sd.mkdir(parents=True)
+    with pytest.raises(gw.AssetPathError):
+        gw.tombstone(sd / "never_existed.bin")
