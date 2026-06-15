@@ -7,6 +7,7 @@ import pytest
 
 from services import editor_timeline as timeline
 from services import editor_render
+from services import openshot_bridge
 
 
 pytestmark = pytest.mark.skipif(
@@ -1214,6 +1215,35 @@ def _full_envelope_project(*, source_start: float = 0.0) -> dict:
     return project
 
 
+# --- render-fidelity: a SINGLE clip carrying keyframes + effects + a non-default
+# transform all at once must round-trip into the OpenShot timeline JSON that
+# OpenShotRenderer.render feeds to Timeline.SetJson (editor_render.py L335). The
+# existing bridge tests each exercise one dimension in isolation; the factory
+# composites clips that animate, fade, AND are repositioned simultaneously, and
+# that combination had no regression coverage. timeline_json() is the exact
+# compiler contract, so assert it directly (no libopenshot needed -> never skips).
+
+def _fidelity_project() -> dict:
+    """A 96x64@12fps project whose one clip is trimmed (sourceStart=1.0),
+    repositioned/scaled, fades in, AND animates opacity 0->1 — every render
+    dimension active on the same clip."""
+    project = timeline.new_project("fidelity", width=96, height=64, fps=12)
+    project["assets"]["card"] = {"id": "card", "type": "image", "src": "/tmp/card.png", "metadata": {}}
+    project["clips"]["card_clip"] = {
+        "id": "card_clip", "assetId": "card", "trackId": "graphics_1", "kind": "artifact",
+        "start": 0.0, "duration": 2.0, "sourceStart": 1.0,
+        "enabled": True, "muted": False, "volume": 1.0,
+        "transform": {"x": 0.25, "y": 0.75, "scale": 0.5, "opacity": 1.0},
+        "effects": [{"id": "fx_in", "type": "fadeIn", "params": {"duration": 0.5}}],
+        "keyframes": [{"property": "opacity", "points": [
+            {"t": 0.0, "value": 0.0, "interp": "linear"},
+            {"t": 2.0, "value": 1.0, "interp": "linear"},
+        ]}],
+        "metadata": {},
+    }
+    return project
+
+
 def test_open_shot_audio_mux_raises_render_error_on_timeout(tmp_path, monkeypatch):
     """services/editor_render.py:808-809 — a TimeoutExpired from the ffmpeg mux
     subprocess is re-raised as RenderError, not allowed to escape raw. Mock
@@ -1325,3 +1355,72 @@ def test_render_scope_windowing_feeds_shifted_envelope_into_bridge_json():
     # the source project envelope is untouched (scoping deep-copies, no aliasing)
     assert project["clips"]["c1"]["keyframes"][0]["points"][0]["t"] == pytest.approx(0.0)
     assert project["clips"]["c1"]["sourceStart"] == pytest.approx(1.0)
+
+
+def test_keyframes_effects_and_transform_coexist_in_one_openshot_clip_json():
+    """Round-trip fidelity for the combined case. The exported OpenShot clip must
+    carry, on the SAME clip object: (1) the transform — centered location_x/y and
+    the non-1.0 scale on both axes; (2) the fadeIn effect as a Fade(in) object;
+    (3) the opacity keyframe ENVELOPE on `alpha`, which must OVERRIDE the flat
+    transform-derived alpha (multi-point, source-frame-offset by sourceStart).
+    A regression that lets any one dimension clobber another renders the clip
+    wrong with no error — exactly the silent-corruption class this suite guards."""
+    project = _fidelity_project()
+    exported = openshot_bridge.timeline_json(project)
+    (clip,) = exported["clips"]
+
+    # (1) transform survived: centered x/y ((v-0.5)*2) and scale on both axes.
+    assert clip["location_x"]["Points"][0]["co"]["Y"] == pytest.approx(-0.5)   # x=0.25 -> -0.5
+    assert clip["location_y"]["Points"][0]["co"]["Y"] == pytest.approx(0.5)    # y=0.75 -> 0.5
+    assert clip["scale_x"]["Points"][0]["co"]["Y"] == pytest.approx(0.5)
+    assert clip["scale_y"]["Points"][0]["co"]["Y"] == pytest.approx(0.5)
+
+    # (2) the fadeIn effect rode along as a Fade(in) object, not dropped.
+    (effect,) = clip["effects"]
+    assert effect["type"] == "Fade" and effect["fade"] == "in"
+    assert effect["duration"]["Points"][0]["co"]["Y"] == pytest.approx(0.5)
+
+    # (3) the opacity envelope OVERRODE the flat alpha: a real 2-point keyframe on
+    # `alpha`, each X offset into source-reader space by sourceStart=1.0 (frame
+    # (sourceStart + t)*fps + 1), Y clamped to 0..1. This is the dimension most
+    # likely to be clobbered by the transform's flat alpha default.
+    alpha_points = clip["alpha"]["Points"]
+    assert len(alpha_points) == 2                                   # envelope, not the flat 1-pt default
+    assert alpha_points[0]["co"]["X"] == pytest.approx(1.0 * 12 + 1.0)   # (1.0+0.0)*12+1 = 13
+    assert alpha_points[0]["co"]["Y"] == pytest.approx(0.0)
+    assert alpha_points[1]["co"]["X"] == pytest.approx(3.0 * 12 + 1.0)   # (1.0+2.0)*12+1 = 37
+    assert alpha_points[1]["co"]["Y"] == pytest.approx(1.0)
+
+    # source trim survived alongside everything else (start/end in reader space).
+    assert clip["start"] == pytest.approx(1.0)
+    assert clip["end"] == pytest.approx(3.0)
+
+
+def test_combined_keyframes_effects_transform_render_to_valid_frame_through_openshot(tmp_path):
+    """End-to-end on a box that has libopenshot: the SAME combined clip (keyframes
+    + fadeIn + non-default transform) must render to a real frame through the prod
+    OpenShot path, not just translate to correct JSON. Pins the full compiler path
+    for the combined case; skips cleanly where the bindings are absent (CI)."""
+    if not editor_render._import_openshot()[0]:
+        pytest.skip("libopenshot Python bindings not importable here")
+
+    white = _solid_png(tmp_path / "card.png", "white", size="96x64")
+    project = _fidelity_project()
+    project["assets"]["card"]["src"] = str(white)
+    project.update({"sampleRate": 48000, "channels": 2, "channelLayout": 3})
+
+    renderer = editor_render.OpenShotRenderer(tmp_path / "renders")
+    output = tmp_path / "renders" / "fidelity.mp4"
+    result = renderer.render(project, output_path=output)
+
+    assert result["backend"] == "openshot"
+    assert result["missingAssets"] == []
+    assert Path(result["video"]).exists()
+    assert _probe_duration(output) >= 1.8                # full 2s clip rendered
+
+    # the opacity envelope (0 at head, 1 at tail) actually animated through the
+    # combined clip: a late frame is brighter than an early one.
+    early = _frame_png_at(output, tmp_path / "early.png", at=0.1)
+    late = _frame_png_at(output, tmp_path / "late.png", at=1.9)
+    # sample the clip's repositioned/scaled region near frame center.
+    assert _sample_rgb(late, 48, 32)[0] >= _sample_rgb(early, 48, 32)[0]
