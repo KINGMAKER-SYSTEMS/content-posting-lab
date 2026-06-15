@@ -2080,3 +2080,91 @@ def test_abn_import_does_not_yet_promote_shot_level_effects_or_keyframes():
     # ...but the raw shot (and everything on it) is retained, so nothing is lost.
     assert clip["metadata"]["shot"]["effects"][0]["type"] == "crossfade"
     assert clip["metadata"]["shot"]["kenBurns"]["endScale"] == 1.1
+
+
+def test_validated_effect_accepts_every_effect_type_at_its_param_bounds():
+    """Each EFFECT_TYPES entry must round-trip cleanly at both inclusive bounds.
+
+    Guards the closed effect vocabulary (fadeIn/fadeOut/crossfade/brightness/
+    saturation) and the numeric param ranges that translate 1:1 to OpenShot
+    effect JSON. Bounds are inclusive, so low and high must both pass.
+    """
+
+    for effect_type, spec in timeline.EFFECT_TYPES.items():
+        assert len(spec) == 1, "test assumes one param per effect type"
+        (param_name, (low, high)), = spec.items()
+        for bound in (low, high):
+            out = timeline._validated_effect(
+                {"id": f"fx_{effect_type}", "type": effect_type,
+                 "params": {param_name: bound}}
+            )
+            assert out == {
+                "id": f"fx_{effect_type}",
+                "type": effect_type,
+                "params": {param_name: bound},
+            }
+
+
+@pytest.mark.parametrize(
+    "effect_type,param_name,value",
+    [
+        ("fadeIn", "duration", 600.0001),   # above duration high
+        ("fadeOut", "duration", -0.0001),   # below duration low
+        ("crossfade", "duration", 601.0),
+        ("brightness", "value", 1.0001),    # above brightness high
+        ("brightness", "value", -1.0001),   # below brightness low
+        ("saturation", "value", 4.0001),    # above saturation high
+        ("saturation", "value", -0.0001),   # below saturation low (0..4)
+    ],
+)
+def test_validated_effect_rejects_out_of_bounds_param(effect_type, param_name, value):
+    with pytest.raises(timeline.CommandValidationError,
+                       match=f"effect.{param_name} must be between"):
+        timeline._validated_effect(
+            {"id": "fx1", "type": effect_type, "params": {param_name: value}}
+        )
+
+
+def test_validated_effect_rejects_unknown_type():
+    with pytest.raises(timeline.CommandValidationError,
+                       match="unsupported effect type: zoomBlur"):
+        timeline._validated_effect(
+            {"id": "fx1", "type": "zoomBlur", "params": {}}
+        )
+
+
+def test_validated_effect_rejects_unknown_param():
+    with pytest.raises(timeline.CommandValidationError,
+                       match="unsupported effect params"):
+        timeline._validated_effect(
+            {"id": "fx1", "type": "fadeIn",
+             "params": {"duration": 0.5, "easing": "linear"}}
+        )
+
+
+def test_validated_effect_rejects_missing_declared_param():
+    with pytest.raises(timeline.CommandValidationError,
+                       match="effect param required: duration"):
+        timeline._validated_effect(
+            {"id": "fx1", "type": "fadeIn", "params": {}}
+        )
+
+
+def test_validated_effect_rejects_non_numeric_param():
+    with pytest.raises(timeline.CommandValidationError,
+                       match="effect.value must be numeric"):
+        timeline._validated_effect(
+            {"id": "fx1", "type": "brightness", "params": {"value": "bright"}}
+        )
+
+
+def test_validated_effect_requires_an_id_and_object_shape():
+    with pytest.raises(timeline.CommandValidationError, match="effect must be an object"):
+        timeline._validated_effect("fadeIn")
+    with pytest.raises(timeline.CommandValidationError, match="effect id is required"):
+        timeline._validated_effect({"type": "fadeIn", "params": {"duration": 0.5}})
+    # effectId is an accepted alias for id, and stringifies on the way out.
+    out = timeline._validated_effect(
+        {"effectId": 7, "type": "fadeIn", "params": {"duration": 0.5}}
+    )
+    assert out["id"] == "7"
