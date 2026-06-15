@@ -277,6 +277,39 @@ def test_build_video_command_records_missing_asset_without_raising(tmp_path):
     assert not any(str(tmp_path / "gone.png") == arg for arg in cmd)
 
 
+def test_missing_assets_flags_agenticnews_url_when_episode_subdir_absent(tmp_path):
+    """Per-episode asset schema (commit cb5c98f5) stores assets under
+    /agenticnews-assets/<episode>/file. _missing_assets must resolve that URL
+    against asset_root and report it missing when the subdir doesn't exist —
+    otherwise render() ships a phantom -i input and ffmpeg fails late."""
+    asset_root = tmp_path / "agenticnews_assets"
+    asset_root.mkdir()
+    # episode subdir "ep99" was never created — the URL points into a hole.
+    project = _project_with_card("missing_subdir", tmp_path / "ignored.png")
+    project["assets"]["card"]["src"] = "/agenticnews-assets/ep99/card.png"
+
+    missing = editor_render._missing_assets(project, asset_root)
+
+    assert [m["assetId"] for m in missing] == ["card"]
+    # the recorded src is the fully-resolved per-episode path under asset_root,
+    # not the raw URL — proves the subdir was joined before the existence check.
+    assert missing[0]["src"] == str(asset_root / "ep99" / "card.png")
+    assert missing[0]["clipId"] == "card_clip"
+
+
+def test_missing_assets_accepts_agenticnews_url_when_episode_subdir_present(tmp_path):
+    """The same URL resolves clean when the per-episode subdir holds the file:
+    no false positive, so render() is not blocked on a present asset."""
+    asset_root = tmp_path / "agenticnews_assets"
+    episode_dir = asset_root / "ep99"
+    episode_dir.mkdir(parents=True)
+    _solid_png(episode_dir / "card.png", "blue")
+    project = _project_with_card("present_subdir", tmp_path / "ignored.png")
+    project["assets"]["card"]["src"] = "/agenticnews-assets/ep99/card.png"
+
+    assert editor_render._missing_assets(project, asset_root) == []
+
+
 def test_build_video_command_adds_audio_map_and_amix(tmp_path):
     """With an audio clip present the command must map a mixed [a] stream and encode
     it (aac, -shortest). A dropped audio map silently ships a silent render."""
