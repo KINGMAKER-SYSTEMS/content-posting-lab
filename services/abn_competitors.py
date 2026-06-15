@@ -10,12 +10,11 @@ playbook()/topic_signals() into their prompts.
 """
 from __future__ import annotations
 import os
-import json
 import subprocess
 import time
 from pathlib import Path
 
-from services.json_store import atomic_save
+from services.json_store import atomic_load, atomic_save
 
 _VOL = os.getenv("ABN_ASSETS_DIR") or os.getenv("RAILWAY_VOLUME_MOUNT_PATH")
 _BASE = Path(_VOL) if _VOL and Path(_VOL).exists() else Path(__file__).resolve().parent.parent / "agenticnews_assets"
@@ -54,13 +53,10 @@ FINDINGS = {
 
 
 def refresh(force: bool = False) -> dict:
-    if not force and INTEL_FILE.exists():
-        try:
-            blob = json.loads(INTEL_FILE.read_text())
-            if blob.get("ts") and (time.time() - blob["ts"]) < _CACHE_TTL:
-                return blob
-        except Exception:
-            pass
+    if not force:
+        blob = atomic_load(INTEL_FILE, default={})
+        if blob.get("ts") and (time.time() - blob["ts"]) < _CACHE_TTL:
+            return blob
     videos = []
     for h in COMPETITORS:
         videos.extend(_scrape_channel(h))
@@ -78,10 +74,7 @@ def _load() -> dict:
     # CACHE-ONLY: never trigger a live yt-dlp scrape here. title_playbook()/hook_playbook() are called in
     # the post-render packaging path; a blocking 7-channel scrape there wedged episodes pre-review. If the
     # cache is missing, return the static FINDINGS (still useful) and let a separate refresh() repopulate.
-    try:
-        return json.loads(INTEL_FILE.read_text())
-    except Exception:
-        return {"videos": [], "findings": FINDINGS}
+    return atomic_load(INTEL_FILE, default={"videos": [], "findings": FINDINGS})
 
 
 def title_playbook(limit: int = 16) -> str:

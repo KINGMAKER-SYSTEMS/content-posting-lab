@@ -136,6 +136,45 @@ def test_refresh_partial_channel_failure_keeps_good_videos(intel, monkeypatch):
     assert "good winner" in ac.topic_signals()
 
 
+def test_load_routes_through_atomic_load(intel, monkeypatch):
+    # _load() must read via the shared atomic_load util (specific exception handling),
+    # not a bare json.loads/except that swallows every error including real bugs.
+    seen = {}
+
+    def _spy(path, *, default=None):
+        seen["path"] = path
+        seen["default"] = default
+        return {"videos": [{"channel": "X", "title": "spied"}], "findings": ac.FINDINGS}
+
+    monkeypatch.setattr(ac, "atomic_load", _spy)
+    out = ac._load()
+    assert seen["path"] == intel
+    # missing/corrupt falls back to the static FINDINGS, never crashes downstream.
+    assert seen["default"] == {"videos": [], "findings": ac.FINDINGS}
+    assert out["videos"] == [{"channel": "X", "title": "spied"}]
+
+
+def test_load_degrades_on_corrupt_intel_file(tmp_path, monkeypatch):
+    # A truncated/garbage intel file must degrade to the static FINDINGS via atomic_load,
+    # so the titler/narrator still get usable rules instead of an exception.
+    bad = tmp_path / "competitor_intel.json"
+    bad.write_text("{not valid json", encoding="utf-8")
+    monkeypatch.setattr(ac, "INTEL_FILE", bad)
+    assert ac._load() == {"videos": [], "findings": ac.FINDINGS}
+    assert ac.topic_signals() == []
+    assert ac.title_playbook() == ""
+    assert ac.FINDINGS["hook_rule"] in ac.hook_playbook()
+
+
+def test_refresh_ignores_corrupt_cache_and_rescrapes(intel):
+    # A corrupt cache must not short-circuit refresh(): atomic_load returns the {} default,
+    # {}.get("ts") is falsy, so refresh falls through to a fresh scrape (force not needed).
+    intel.write_text("garbage{", encoding="utf-8")
+    blob = ac.refresh(force=False)
+    assert blob["videos"], "corrupt cache should be ignored and channels re-scraped"
+    assert json.loads(intel.read_text()) == blob
+
+
 def test_refresh_writes_intel_atomically_via_shared_store(tmp_path, monkeypatch):
     """refresh() must persist competitor_intel.json through the shared atomic_save
     util (tmp + fsync + replace) so a crash mid-write can't truncate the intel cache."""
