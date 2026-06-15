@@ -1482,6 +1482,11 @@ async def editor_timeline_command(project_id: str, command: dict = Body(...)):
         raise HTTPException(status_code=409, detail=str(exc))
     except editor_timeline.CommandValidationError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+    except ValueError as exc:
+        # A non-integer expectedRevision (or other int() conversion failure) reaches
+        # apply_command before our validators run; surface it as a clean 400 rather
+        # than leaking an opaque 500 to live editor-bay clients.
+        raise HTTPException(status_code=400, detail="expectedRevision must be an integer") from exc
 
 
 @router.post("/editor-timelines/{project_id}/commands/revert-last")

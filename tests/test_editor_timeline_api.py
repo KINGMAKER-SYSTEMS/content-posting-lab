@@ -1077,6 +1077,136 @@ def test_editor_timeline_revert_last_note_preserves_render_cache(sync_client, mo
     assert saved["renderCache"]["video"]["video"] == str(cached_video)
 
 
+def test_editor_timeline_command_rejects_invalid_payload_with_400(sync_client, monkeypatch, tmp_path):
+    """An unsupported op / bad payload surfaces editor_timeline.CommandValidationError
+    as a 400 with the validation reason, not an opaque 500."""
+    monkeypatch.setattr(agenticnews_router.db, "ASSETS_DIR", tmp_path)
+    created = sync_client.post(
+        "/api/agenticnews/editor-timelines",
+        json={"projectId": "bad_op_proj", "title": "Bad Op"},
+    )
+    assert created.status_code == 201
+
+    response = sync_client.post(
+        "/api/agenticnews/editor-timelines/bad_op_proj/commands",
+        json={"op": "clip.teleport", "actor": "agent", "expectedRevision": 0, "payload": {}},
+    )
+
+    assert response.status_code == 400
+    assert "unsupported command op: clip.teleport" in response.json()["detail"]
+
+
+def test_editor_timeline_command_rejects_non_integer_revision_with_400(sync_client, monkeypatch, tmp_path):
+    """A non-integer expectedRevision triggers an int() ValueError inside apply_command;
+    the router must map it to a clean 400, not leak a 500."""
+    monkeypatch.setattr(agenticnews_router.db, "ASSETS_DIR", tmp_path)
+    created = sync_client.post(
+        "/api/agenticnews/editor-timelines",
+        json={"projectId": "bad_rev_proj", "title": "Bad Revision"},
+    )
+    assert created.status_code == 201
+
+    response = sync_client.post(
+        "/api/agenticnews/editor-timelines/bad_rev_proj/commands",
+        json={
+            "op": "asset.import",
+            "actor": "agent",
+            "expectedRevision": "not-a-number",
+            "payload": {"assetId": "a1", "type": "image", "src": "/x.png"},
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "expectedRevision must be an integer"
+
+
+def test_editor_timeline_command_missing_project_returns_404(sync_client, monkeypatch, tmp_path):
+    """A command against a project that was never created hits store.load()'s
+    FileNotFoundError and must come back as a 404, not a 500."""
+    monkeypatch.setattr(agenticnews_router.db, "ASSETS_DIR", tmp_path)
+
+    response = sync_client.post(
+        "/api/agenticnews/editor-timelines/never_created/commands",
+        json={
+            "op": "asset.import",
+            "actor": "agent",
+            "expectedRevision": 0,
+            "payload": {"assetId": "a1", "type": "image", "src": "/x.png"},
+        },
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "editor timeline not found"
+
+
+def test_editor_timeline_revert_last_requires_expected_revision(sync_client, monkeypatch, tmp_path):
+    """revert-last without expectedRevision is rejected up front with a 400."""
+    monkeypatch.setattr(agenticnews_router.db, "ASSETS_DIR", tmp_path)
+    created = sync_client.post(
+        "/api/agenticnews/editor-timelines",
+        json={"projectId": "undo_no_rev", "title": "No Rev"},
+    )
+    assert created.status_code == 201
+
+    response = sync_client.post(
+        "/api/agenticnews/editor-timelines/undo_no_rev/commands/revert-last",
+        json={"actor": "human"},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "expectedRevision is required"
+
+
+def test_editor_timeline_revert_last_rejects_non_integer_revision(sync_client, monkeypatch, tmp_path):
+    """A non-integer expectedRevision on revert-last fails the int() cast and maps to 400."""
+    monkeypatch.setattr(agenticnews_router.db, "ASSETS_DIR", tmp_path)
+    created = sync_client.post(
+        "/api/agenticnews/editor-timelines",
+        json={"projectId": "undo_bad_rev", "title": "Bad Rev"},
+    )
+    assert created.status_code == 201
+
+    response = sync_client.post(
+        "/api/agenticnews/editor-timelines/undo_bad_rev/commands/revert-last",
+        json={"actor": "human", "expectedRevision": "abc"},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "expectedRevision must be an integer"
+
+
+def test_editor_timeline_revert_last_with_no_commands_returns_400(sync_client, monkeypatch, tmp_path):
+    """Reverting a freshly-created project (empty command log) raises
+    CommandValidationError, surfaced as a 400 with the reason."""
+    monkeypatch.setattr(agenticnews_router.db, "ASSETS_DIR", tmp_path)
+    created = sync_client.post(
+        "/api/agenticnews/editor-timelines",
+        json={"projectId": "undo_empty", "title": "Empty Log"},
+    )
+    assert created.status_code == 201
+
+    response = sync_client.post(
+        "/api/agenticnews/editor-timelines/undo_empty/commands/revert-last",
+        json={"actor": "human", "expectedRevision": 0},
+    )
+
+    assert response.status_code == 400
+    assert "no command to revert" in response.json()["detail"]
+
+
+def test_editor_timeline_revert_last_missing_project_returns_404(sync_client, monkeypatch, tmp_path):
+    """revert-last against a non-existent project must be a 404, not a 500."""
+    monkeypatch.setattr(agenticnews_router.db, "ASSETS_DIR", tmp_path)
+
+    response = sync_client.post(
+        "/api/agenticnews/editor-timelines/never_created/commands/revert-last",
+        json={"actor": "human", "expectedRevision": 0},
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "editor timeline not found"
+
+
 def test_editor_timeline_api_rejects_demo_timeline_ids(sync_client, monkeypatch, tmp_path):
     monkeypatch.setattr(agenticnews_router.db, "ASSETS_DIR", tmp_path)
 
