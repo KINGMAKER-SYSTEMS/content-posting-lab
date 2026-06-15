@@ -1485,3 +1485,49 @@ def test_clip_keyframes_command_rejects_bad_property_and_interp(tmp_path):
         )
 
     assert store.load("proj_keyframes_bad")["revision"] == 2  # nothing committed
+
+
+def test_crossfade_and_saturation_effects_validate_and_persist(tmp_path):
+    """crossfade (transition) and saturation (color filter) are in the closed
+    effect vocabulary but were untested. Confirm both pass validation, clamp
+    params, and persist exactly — the editor side of the round-trip whose
+    OpenShot translation lives in test_openshot_bridge."""
+    store = timeline.TimelineStore(tmp_path)
+    _seed_project_with_clip(store, "proj_xfade_sat")  # clip c1 at revision 2
+
+    project = store.apply_command(
+        "proj_xfade_sat",
+        {
+            "op": "clip.effect.add",
+            "actor": "agent",
+            "expectedRevision": 2,
+            "payload": {"clipId": "c1", "id": "xf", "type": "crossfade", "params": {"duration": 0.75}},
+        },
+    )
+    project = store.apply_command(
+        "proj_xfade_sat",
+        {
+            "op": "clip.effect.add",
+            "actor": "agent",
+            "expectedRevision": 3,
+            "payload": {"clipId": "c1", "id": "sat", "type": "saturation", "params": {"value": 1.4}},
+        },
+    )
+
+    assert project["clips"]["c1"]["effects"] == [
+        {"id": "xf", "type": "crossfade", "params": {"duration": 0.75}},
+        {"id": "sat", "type": "saturation", "params": {"value": 1.4}},
+    ]
+
+    # saturation is bounded 0..4; out-of-range is rejected without advancing revision
+    with pytest.raises(timeline.CommandValidationError, match="effect.value must be between"):
+        store.apply_command(
+            "proj_xfade_sat",
+            {
+                "op": "clip.effect.add",
+                "actor": "agent",
+                "expectedRevision": 4,
+                "payload": {"clipId": "c1", "id": "sat2", "type": "saturation", "params": {"value": 9}},
+            },
+        )
+    assert store.load("proj_xfade_sat")["revision"] == 4

@@ -248,6 +248,62 @@ def test_clip_with_no_effects_exports_empty_effects_list(tmp_path):
     assert openshot_bridge.timeline_json(project)["clips"][0]["effects"] == []
 
 
+def test_crossfade_transition_exports_as_inward_fade(tmp_path):
+    """A crossfade transition carries into OpenShot as the Fade class with an
+    inward direction and a keyframed duration — the clip-boundary compositing
+    that the abn_factory music-bed ducking / cut-stitching depends on."""
+    project = _project(tmp_path / "card.png")
+    project["clips"]["card_clip"]["effects"] = [
+        {"id": "fxX", "type": "crossfade", "params": {"duration": 0.75}},
+    ]
+
+    clip = openshot_bridge.timeline_json(project)["clips"][0]
+
+    (xfade,) = clip["effects"]
+    assert xfade["id"] == "fxX"
+    assert xfade["type"] == "Fade"
+    assert xfade["fade"] == "in"
+    assert xfade["duration"]["Points"][0]["co"]["Y"] == 0.75
+
+
+def test_saturation_effect_exports_as_saturation_class(tmp_path):
+    """Saturation is the second color filter in the closed effect vocabulary; it
+    maps to its own OpenShot Saturation class with a keyframed value."""
+    project = _project(tmp_path / "card.png")
+    project["clips"]["card_clip"]["effects"] = [
+        {"id": "sat1", "type": "saturation", "params": {"value": 1.4}},
+    ]
+
+    clip = openshot_bridge.timeline_json(project)["clips"][0]
+
+    (sat,) = clip["effects"]
+    assert sat["type"] == "Saturation"
+    assert sat["saturation"]["Points"][0]["co"]["Y"] == 1.4
+
+
+def test_keyframe_position_and_rotation_envelopes_carry_their_transforms(tmp_path):
+    """An x/y position envelope animates location_x/location_y through the same
+    centered ((v-0.5)*2) transform the flat default uses, and a rotation envelope
+    animates rotation 1:1 — so a panning/spinning clip round-trips into OpenShot."""
+    project = _project(tmp_path / "card.png")
+    project["clips"]["card_clip"]["keyframes"] = [
+        {"property": "x", "points": [{"t": 0.0, "value": 0.0}, {"t": 1.0, "value": 1.0}]},
+        {"property": "y", "points": [{"t": 0.0, "value": 0.5}, {"t": 1.0, "value": 0.25}]},
+        {"property": "rotation", "points": [{"t": 0.0, "value": 0.0}, {"t": 1.0, "value": 90.0}]},
+    ]
+
+    clip = openshot_bridge.timeline_json(project)["clips"][0]
+
+    # x: 0.0 -> -1.0, 1.0 -> 1.0  (centered then doubled)
+    assert [p["co"]["Y"] for p in clip["location_x"]["Points"]] == [-1.0, 1.0]
+    # y: 0.5 -> 0.0, 0.25 -> -0.5
+    assert [p["co"]["Y"] for p in clip["location_y"]["Points"]] == [0.0, -0.5]
+    # rotation passes through unchanged
+    assert [p["co"]["Y"] for p in clip["rotation"]["Points"]] == [0.0, 90.0]
+    # frame X = t*fps + 1 for every envelope
+    assert [p["co"]["X"] for p in clip["location_x"]["Points"]] == [1.0, 31.0]
+
+
 def test_effect_add_command_exports_update_action_with_effects(tmp_path):
     """clip.effect.add flows through the generic clip.* update path: the resulting
     OpenShot UpdateAction carries the full clip JSON with the new effects array."""
