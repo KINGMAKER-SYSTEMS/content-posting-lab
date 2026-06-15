@@ -243,8 +243,9 @@ def test_clip_keyframe_position_and_rotation_envelopes_and_bezier_interp(tmp_pat
 
     clip = openshot_bridge.timeline_json(project)["clips"][0]
 
-    # x: 0.0 -> -1.0 (left edge), 1.0 -> 1.0 (right edge); frames are t*30 + 1
-    assert [p["co"]["X"] for p in clip["location_x"]["Points"]] == [1.0, 31.0]
+    # x: 0.0 -> -1.0 (left edge), 1.0 -> 1.0 (right edge); frames are
+    # (sourceStart 0.25 + t)*30 + 1 — trimmed clips offset keyframe X by sourceStart
+    assert [p["co"]["X"] for p in clip["location_x"]["Points"]] == [8.5, 38.5]
     assert [p["co"]["Y"] for p in clip["location_x"]["Points"]] == [-1.0, 1.0]
     # y: 0.5 -> 0.0 (center), single bezier point
     assert clip["location_y"]["Points"][0]["co"]["Y"] == 0.0
@@ -333,8 +334,8 @@ def test_keyframe_position_and_rotation_envelopes_carry_their_transforms(tmp_pat
     assert [p["co"]["Y"] for p in clip["location_y"]["Points"]] == [0.0, -0.5]
     # rotation passes through unchanged
     assert [p["co"]["Y"] for p in clip["rotation"]["Points"]] == [0.0, 90.0]
-    # frame X = t*fps + 1 for every envelope
-    assert [p["co"]["X"] for p in clip["location_x"]["Points"]] == [1.0, 31.0]
+    # frame X = (sourceStart 0.25 + t)*fps + 1 for every envelope (trimmed-clip offset)
+    assert [p["co"]["X"] for p in clip["location_x"]["Points"]] == [8.5, 38.5]
 
 
 def test_effect_add_command_exports_update_action_with_effects(tmp_path):
