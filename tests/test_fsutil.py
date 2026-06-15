@@ -76,3 +76,19 @@ def test_video_download_handlers_use_safe_unlink():
         assert "os.unlink(" not in src, f"{fn.__name__} still uses bare os.unlink"
         # ...every temp cleanup goes through the swallowing helper.
         assert "safe_unlink(tmp_path)" in src
+
+
+def test_burn_download_zip_uses_safe_unlink():
+    """Regression: the ZIP-build exception handler in burn.download_burn_zip
+    must clean up its tempfile via the shared helper, not a bare os.unlink
+    that explodes if the temp file is already gone. The streaming finally
+    block already uses safe_unlink — the except branch must match it."""
+    import inspect
+
+    import routers.burn as burn
+
+    src = inspect.getsource(burn.download_burn_zip)
+    # The bare unlink on the tmp ZIP is gone...
+    assert "os.unlink(tmp_path)" not in src
+    # ...and both cleanup paths (except + finally) go through the helper.
+    assert src.count("safe_unlink(tmp_path)") == 2

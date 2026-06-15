@@ -809,7 +809,7 @@ async def download_burn_zip(
             for mp4 in mp4s:
                 zf.write(mp4, mp4.name)
     except Exception:
-        os.unlink(tmp_path)
+        safe_unlink(tmp_path)
         raise
 
     zip_size = os.path.getsize(tmp_path)
