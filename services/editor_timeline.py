@@ -188,6 +188,10 @@ def project_from_abn_timeline(
             start=0,
             duration=float(abn_timeline.get("totalSec") or cursor or 0.1),
             kind="music_bed",
+            # ponytail: bed imports pre-ducked to the factory's 0.22 convention
+            # (abn_factory sidechain duck pass) so music sits under VO, not over it.
+            # A full keyframed ducking envelope can replace this flat gain later if needed.
+            volume=0.22,
             metadata={"role": "music_bed"},
         )
     return project
@@ -311,6 +315,7 @@ def _clip(
     duration: float,
     kind: str,
     source_start: float = 0.0,
+    volume: float = 1.0,
     metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return {
@@ -323,7 +328,7 @@ def _clip(
         "sourceStart": float(source_start),
         "enabled": True,
         "muted": False,
-        "volume": 1.0,
+        "volume": float(volume),
         "transform": {"x": 0.5, "y": 0.5, "scale": 1.0, "opacity": 1.0},
         "effects": [],
         "keyframes": [],

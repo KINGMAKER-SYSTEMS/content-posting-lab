@@ -95,6 +95,20 @@ def test_import_preserves_production_source_for_openshot():
     assert openshot_bridge._asset_type(broll) == "video"
 
 
+def test_music_bed_imports_pre_ducked_under_vo():
+    """The music bed must import ducked (0.22, the factory convention) so a render has
+    music UNDER the VO, not competing with it at full volume. VO stays at 1.0."""
+    project = timeline.project_from_abn_timeline("p", {
+        "episodeId": "e", "totalSec": 4.0, "musicBed": "/agenticnews-assets/bed.mp3",
+        "segments": [{"segmentId": "s0", "durationSec": 4.0, "shots": [],
+                      "audio": {"vo": {"src": "/agenticnews-assets/vo.wav", "duration": 4.0}}}],
+    })
+    bed = next(c for c in project["clips"].values() if c["kind"] == "music_bed")
+    vo = next(c for c in project["clips"].values() if c["kind"] == "voiceover")
+    assert bed["volume"] == 0.22
+    assert vo["volume"] == 1.0
+
+
 def test_import_infers_missing_shot_durations_from_next_boundary():
     project = timeline.project_from_abn_timeline(
         "proj_boundaries",
