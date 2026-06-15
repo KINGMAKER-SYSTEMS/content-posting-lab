@@ -13,6 +13,7 @@ from io import BytesIO
 from pathlib import Path
 
 from googleapiclient.discovery import build
+from googleapiclient.errors import Error as GoogleApiError
 from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
 from google.oauth2.service_account import Credentials
 
@@ -30,7 +31,9 @@ def _get_credentials() -> Credentials | None:
             raw = base64.b64decode(b64)
             info = json.loads(raw)
             return Credentials.from_service_account_info(info, scopes=SCOPES)
-        except Exception:
+        except (ValueError, KeyError):
+            # base64/JSON decode failures and malformed service-account info
+            # (json.JSONDecodeError and binascii.Error both subclass ValueError)
             return None
 
     # Local: file path
@@ -38,7 +41,8 @@ def _get_credentials() -> Credentials | None:
     if fpath and os.path.exists(fpath):
         try:
             return Credentials.from_service_account_file(fpath, scopes=SCOPES)
-        except Exception:
+        except (OSError, ValueError, KeyError):
+            # unreadable file, bad JSON, or malformed service-account info
             return None
 
     return None
@@ -105,7 +109,7 @@ def get_folder_info(folder_id: str) -> dict | None:
             .get(fileId=folder_id, fields="id, name, mimeType")
             .execute()
         )
-    except Exception:
+    except (GoogleApiError, OSError):
         return None
 
 
@@ -133,7 +137,7 @@ def create_folder(name: str, parent_id: str | None = None) -> dict | None:
             .execute()
         )
         return created
-    except Exception:
+    except (GoogleApiError, OSError):
         return None
 
 
@@ -174,7 +178,7 @@ def delete_file(file_id: str) -> bool:
     try:
         svc.files().delete(fileId=file_id).execute()
         return True
-    except Exception:
+    except (GoogleApiError, OSError):
         return False
 
 
@@ -192,7 +196,7 @@ def download_file(file_id: str, dest_path: str) -> bool:
             while not done:
                 _, done = downloader.next_chunk()
         return True
-    except Exception:
+    except (GoogleApiError, OSError):
         return False
 
 
