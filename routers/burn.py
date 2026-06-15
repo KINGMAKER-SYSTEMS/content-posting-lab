@@ -30,6 +30,7 @@ from project_manager import (
 )
 from services.captions import scan_project_captions
 from services.ffmpeg import TIKTOK_ENCODE_ARGS, build_cc_filter
+from services.fsutil import safe_unlink
 
 log = logging.getLogger("burn")
 
@@ -429,8 +430,8 @@ async def _burn_video(
         return output_path
 
     finally:
-        if overlay_path and os.path.exists(overlay_path):
-            os.unlink(overlay_path)
+        if overlay_path:
+            safe_unlink(overlay_path)
 
 
 # ── API Routes ───────────────────────────────────────────────────────
@@ -824,10 +825,7 @@ async def download_burn_zip(
                         break
                     yield chunk
         finally:
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
+            safe_unlink(tmp_path)
 
     return StreamingResponse(
         _stream_chunks(),

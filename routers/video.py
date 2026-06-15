@@ -20,6 +20,7 @@ from project_manager import PROJECTS_DIR, get_project_video_dir
 from providers import PROVIDERS
 from providers.base import API_KEYS, generate_one
 from services.ffmpeg import is_default_cc, run_color_correct
+from services.fsutil import safe_unlink
 
 log = logging.getLogger("video")
 
@@ -609,10 +610,7 @@ async def download_all(job_id: str):
                 while chunk := f.read(1024 * 1024):
                     yield chunk
         finally:
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
+            safe_unlink(tmp_path)
 
     return StreamingResponse(
         _stream(),
@@ -679,10 +677,7 @@ async def bulk_download(body: dict):
                 while chunk := f.read(1024 * 1024):
                     yield chunk
         finally:
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
+            safe_unlink(tmp_path)
 
     return StreamingResponse(
         _stream(),
@@ -778,10 +773,7 @@ async def color_correct_one(body: dict):
             await run_color_correct(str(src), tmp_path, cc, scale=None)
         out_size = os.path.getsize(tmp_path)
     except Exception as e:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
+        safe_unlink(tmp_path)
         log.error("color-correct failed project=%s path=%s: %s", project, path, e)
         raise HTTPException(status_code=500, detail=f"ffmpeg failed: {str(e)[-500:]}")
 
@@ -791,10 +783,7 @@ async def color_correct_one(body: dict):
                 while chunk := f.read(1024 * 1024):
                     yield chunk
         finally:
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
+            safe_unlink(tmp_path)
 
     return StreamingResponse(
         _stream(),
@@ -918,10 +907,7 @@ async def color_correct_bulk(body: dict):
                 if errors:
                     zf.writestr("_errors.txt", "\n".join(errors) + "\n")
         except Exception:
-            try:
-                os.unlink(zip_path)
-            except OSError:
-                pass
+            safe_unlink(zip_path)
             raise
 
         zip_size = os.path.getsize(zip_path)
@@ -935,16 +921,10 @@ async def color_correct_bulk(body: dict):
                     while chunk := f.read(1024 * 1024):
                         yield chunk
             finally:
-                try:
-                    os.unlink(zip_path)
-                except OSError:
-                    pass
+                safe_unlink(zip_path)
                 # temp per-item encodes also get cleaned up here
                 for p in tmpfiles:
-                    try:
-                        os.unlink(p)
-                    except OSError:
-                        pass
+                    safe_unlink(p)
 
         return StreamingResponse(
             _stream(),
@@ -956,15 +936,9 @@ async def color_correct_bulk(body: dict):
         )
     except HTTPException:
         for p in tmpfiles:
-            try:
-                os.unlink(p)
-            except OSError:
-                pass
+            safe_unlink(p)
         raise
     except Exception:
         for p in tmpfiles:
-            try:
-                os.unlink(p)
-            except OSError:
-                pass
+            safe_unlink(p)
         raise
