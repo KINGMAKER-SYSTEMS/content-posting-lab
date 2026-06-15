@@ -28,6 +28,8 @@ def _load() -> dict:
 def _save(m: dict) -> None:
     # Go through the shared atomic writer (tmp + flush + fsync + rename) — a kernel crash
     # mid-write must not leave abn_memory.json truncated (the flywheel's episode history).
+    # A prior raw tmp.write_text()+replace (no fsync) left upload_jobs truncated on crash (P0);
+    # episode memory carried the same risk. See services/json_store.atomic_save.
     atomic_save(MEM_PATH, m)
 
 
