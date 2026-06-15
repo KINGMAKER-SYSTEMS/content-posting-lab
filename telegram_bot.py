@@ -493,12 +493,21 @@ async def forward_new_messages(
     to_chat_id: int,
     to_topic_id: int,
     after_message_id: int = 0,
+    on_forward=None,
 ) -> dict:
     """Forward all messages in a staging topic that are newer than after_message_id.
 
     Strategy: send a temporary marker message to the staging topic to discover
     the current max message_id, then try to forward every ID in the range
     (after_message_id+1 .. marker-1). Non-existent IDs are silently skipped.
+
+    Crash-safety: ``on_forward(message_id)`` is invoked synchronously after each
+    *successful* forward so the caller can persist its high-water mark
+    incrementally. Without it, the high-water mark is only durable once the whole
+    loop returns — and a crash / rate-limit / lost-permission partway through
+    strands the already-forwarded messages and makes the next run re-forward the
+    same range (duplicate reposts into the poster group). This is the live-path
+    instance of the "destructive repost / orphan-content" inventory bug.
 
     Returns {forwarded: int, last_message_id: int, errors: int}.
     """
@@ -525,6 +534,7 @@ async def forward_new_messages(
     forwarded = 0
     errors = 0
     last_success_id = after_message_id
+    blocked = False  # a transient/permission failure on a real message occurred
 
     # Try each message_id in the range
     for msg_id in range(after_message_id + 1, marker_id):
@@ -537,19 +547,68 @@ async def forward_new_messages(
             )
             forwarded += 1
             last_success_id = msg_id
-        except Exception:
-            # Message doesn't exist, was deleted, or is a service message — skip
+            # Checkpoint the high-water mark after every successful forward so a
+            # crash mid-loop resumes here instead of re-forwarding the range.
+            if on_forward is not None:
+                try:
+                    on_forward(msg_id)
+                except Exception:
+                    logger.exception("on_forward checkpoint failed for msg %s", msg_id)
+        except Exception as exc:
             errors += 1
+            # Most "failures" here are benign: that message id simply doesn't
+            # exist in this topic (service messages, edits, gaps — message_ids
+            # are chat-global, not per-topic), so skipping and advancing past
+            # them is correct. But a *transient* failure on a real message
+            # (rate-limit / flood / lost send-permission) must NOT be leapfrogged
+            # — advancing the high-water mark past it orphans that content (the
+            # content half of the inventory bug). Detect those and stop advancing.
+            if _is_blocking_forward_error(exc):
+                logger.warning("blocking forward error at msg %s: %s", msg_id, exc)
+                blocked = True
+                break
 
         # Small delay to avoid rate limits
         if forwarded % 10 == 0 and forwarded > 0:
             await asyncio.sleep(1)
 
+    # If a real (non-"not found") failure stopped us, the durable high-water mark
+    # is the last id we ACTUALLY forwarded, so the failed id is retried next run.
+    # Otherwise every skip was a nonexistent id and we can safely advance to the
+    # scan ceiling (marker_id - 1) — the original, idempotent behavior.
+    last_message_id = last_success_id if blocked else marker_id - 1
     return {
         "forwarded": forwarded,
-        "last_message_id": marker_id - 1,
+        "last_message_id": last_message_id,
         "errors": errors,
     }
+
+
+# Substrings identifying a Telegram error that means "this real message could
+# not be forwarded right now" (vs. "this id doesn't exist"). Forwarding must NOT
+# advance its high-water mark past one of these, or the message is orphaned.
+_BLOCKING_FORWARD_ERROR_SIGNS = (
+    "too many requests",
+    "retry after",
+    "flood",
+    "forbidden",
+    "not enough rights",
+    "have no rights",
+    "chat write forbidden",
+    "bot was kicked",
+    "bot is not a member",
+)
+
+
+def _is_blocking_forward_error(exc: Exception) -> bool:
+    """True if `exc` is a transient/permission failure on a real message.
+
+    Rate-limit, flood, and permission errors must cap the forward high-water mark
+    (the message is real and unforwarded). A plain "message to forward not found"
+    is benign and returns False so the scan keeps advancing past nonexistent ids.
+    """
+    msg = str(exc).lower()
+    return any(sign in msg for sign in _BLOCKING_FORWARD_ERROR_SIGNS)
 
 
 async def discover_topics(
@@ -1008,6 +1067,8 @@ async def run_daily_batch() -> dict:
                     to_chat_id=poster_chat_id,
                     to_topic_id=int(poster_topic_id),
                     after_message_id=after_id,
+                    # Checkpoint per-forward so a crash mid-batch never re-forwards.
+                    on_forward=lambda mid, _pid=page_id: set_last_forwarded_id(_pid, mid),
                 )
 
                 if result["last_message_id"] > after_id:

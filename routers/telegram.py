@@ -1279,9 +1279,12 @@ async def forward_all_new(integration_id: str):
         to_chat_id=poster_chat_id,
         to_topic_id=poster_topic_id,
         after_message_id=after_id,
+        # Persist the high-water mark after every successful forward so a crash
+        # mid-batch never re-forwards (duplicate-repost) the same messages.
+        on_forward=lambda mid: set_last_forwarded_id(integration_id, mid),
     )
 
-    # Update the high-water mark
+    # Settle the high-water mark to the scan ceiling (covers trailing skipped ids)
     if result["last_message_id"] > after_id:
         set_last_forwarded_id(integration_id, result["last_message_id"])
 
