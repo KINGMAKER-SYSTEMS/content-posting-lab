@@ -1347,6 +1347,111 @@ def test_split_outside_clip_bounds_is_rejected(tmp_path):
     assert set(loaded["clips"]) == {"c1"}
 
 
+def test_split_partitions_and_rebases_keyframes_and_effects(tmp_path):
+    """clip.split must not blindly clone animation onto the tail half.
+
+    A clip [0, 10) with a fadeIn (head-anchored), a fadeOut (tail-anchored) and a
+    volume envelope is split at t=8.0. The head keeps fadeIn and only the points up
+    to the split (t <= 8); the tail keeps fadeOut and rebases its points to its new
+    t=0 (t >= 8 → t -= 8). Without this, the tail clip fires the parent's keyframes
+    at the wrong absolute times and inherits a fadeIn it should not have.
+    """
+    store = timeline.TimelineStore(tmp_path)
+    store.save(timeline.new_project("proj_split_anim"))
+    store.apply_command(
+        "proj_split_anim",
+        {
+            "op": "asset.import",
+            "actor": "agent",
+            "expectedRevision": 0,
+            "payload": {"assetId": "a1", "type": "video", "src": "/a.mp4"},
+        },
+    )
+    store.apply_command(
+        "proj_split_anim",
+        {
+            "op": "clip.create",
+            "actor": "agent",
+            "expectedRevision": 1,
+            "payload": {
+                "clipId": "c1",
+                "assetId": "a1",
+                "trackId": "video_1",
+                "start": 0.0,
+                "duration": 10.0,
+            },
+        },
+    )
+    store.apply_command(
+        "proj_split_anim",
+        {
+            "op": "clip.effect.add",
+            "actor": "agent",
+            "expectedRevision": 2,
+            "payload": {"clipId": "c1", "effect": {"id": "fi", "type": "fadeIn", "params": {"duration": 1.0}}},
+        },
+    )
+    store.apply_command(
+        "proj_split_anim",
+        {
+            "op": "clip.effect.add",
+            "actor": "agent",
+            "expectedRevision": 3,
+            "payload": {"clipId": "c1", "effect": {"id": "fo", "type": "fadeOut", "params": {"duration": 1.0}}},
+        },
+    )
+    store.apply_command(
+        "proj_split_anim",
+        {
+            "op": "clip.keyframes",
+            "actor": "agent",
+            "expectedRevision": 4,
+            "payload": {
+                "clipId": "c1",
+                "keyframes": [
+                    {
+                        "property": "opacity",
+                        "points": [
+                            {"t": 0.0, "value": 1.0, "interp": "linear"},
+                            {"t": 7.5, "value": 0.5, "interp": "linear"},
+                            {"t": 8.0, "value": 0.4, "interp": "linear"},
+                            {"t": 9.5, "value": 0.0, "interp": "linear"},
+                        ],
+                    }
+                ],
+            },
+        },
+    )
+
+    project = store.apply_command(
+        "proj_split_anim",
+        {
+            "op": "clip.split",
+            "actor": "human",
+            "expectedRevision": 5,
+            "payload": {"clipId": "c1", "at": 8.0, "newClipId": "c1_tail"},
+        },
+    )
+
+    head = project["clips"]["c1"]
+    tail = project["clips"]["c1_tail"]
+
+    # Geometry split as before.
+    assert head["duration"] == 8.0
+    assert (tail["start"], tail["duration"]) == (8.0, 2.0)
+
+    # Boundary-anchored effects: head keeps fadeIn only, tail keeps fadeOut only.
+    assert [e["id"] for e in head["effects"]] == ["fi"]
+    assert [e["id"] for e in tail["effects"]] == ["fo"]
+
+    # Head envelope keeps only points up to the split (t <= 8); the t=9.5 point is gone.
+    assert [p["t"] for p in head["keyframes"][0]["points"]] == [0.0, 7.5, 8.0]
+    # Tail envelope keeps points at/after the split, rebased to its new t=0.
+    assert [p["t"] for p in tail["keyframes"][0]["points"]] == [0.0, 1.5]
+    assert tail["keyframes"][0]["points"][0]["value"] == 0.4  # the boundary point anchors the tail
+    assert tail["keyframes"][0]["points"][1]["value"] == 0.0  # was t=9.5 on the parent
+
+
 def test_unsupported_op_is_rejected(tmp_path):
     store = timeline.TimelineStore(tmp_path)
     store.save(timeline.new_project("proj_bad_op"))
