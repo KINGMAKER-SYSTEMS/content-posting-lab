@@ -15,6 +15,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import services.agenticnews as db
+import services.abn_assets as abn_assets
 from app import app
 
 
@@ -26,6 +27,9 @@ def abn_db(tmp_path, monkeypatch):
     assets.mkdir()
     monkeypatch.setattr(db, "DB_PATH", tmp_path / "abn_test.db")
     monkeypatch.setattr(db, "ASSETS_DIR", assets)
+    # abn_assets captured ASSETS_DIR by value at import (`from ... import ASSETS_DIR`),
+    # so the gateway must be repointed at the temp dir too or it writes to the real volume.
+    monkeypatch.setattr(abn_assets, "ASSETS_DIR", assets)
     monkeypatch.setattr(db, "_conn", None)  # force a fresh connection on the temp path
     db._init_sync()
     yield db
@@ -257,6 +261,77 @@ def test_tools_cards_surfaces_render_failure(client, monkeypatch):
     )
     assert resp.status_code == 500
     assert "card failed" in resp.json()["detail"]
+
+
+def test_tools_tts_episode_name_routes_through_asset_gateway(client, monkeypatch):
+    """An episode-scoped name ('ep_<hex>_sN') must land under {ep_id}/audio/ via the
+    services/abn_assets.py gateway — NOT flat in the ASSETS_DIR root where the glob GC
+    has eaten original VO. Pins the hard gate: asset writes go through the gateway."""
+    import routers.agenticnews as r
+
+    captured = {}
+
+    async def fake_sh(cmd, timeout=300):
+        # the gateway-resolved out path is embedded in the pocket-tts --output-path arg;
+        # recover it and drop a file so the out.exists() guard passes
+        out = db.ASSETS_DIR / "ep_648e806a" / "audio" / "s0_voice.wav"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_bytes(b"RIFF")
+        captured["wrote"] = out
+        return 0, "ok"
+
+    monkeypatch.setattr(r, "_sh", fake_sh)
+    resp = client.post(
+        "/api/agenticnews/tools/tts",
+        json={"text": "voiceover", "name": "ep_648e806a_s0"},
+    )
+    assert resp.status_code == 200
+    # URL carries the FULL episode subpath, not a colliding basename
+    assert resp.json()["path"] == "/agenticnews-assets/ep_648e806a/audio/s0_voice.wav"
+    assert captured["wrote"].exists()
+    # nothing was written flat in the ASSETS_DIR root
+    assert not (db.ASSETS_DIR / "ep_648e806a_s0.wav").exists()
+
+
+def test_tools_tts_non_episode_name_falls_back_to_flat(client, monkeypatch):
+    """A bare/ad-hoc name (no ep_ prefix) has nowhere to be scoped, so it falls back to
+    the legacy flat path — the gateway raises AssetPathError and is caught."""
+    import routers.agenticnews as r
+
+    async def fake_sh(cmd, timeout=300):
+        out = db.ASSETS_DIR / "vo.wav"
+        out.write_bytes(b"RIFF")
+        return 0, "ok"
+
+    monkeypatch.setattr(r, "_sh", fake_sh)
+    resp = client.post("/api/agenticnews/tools/tts", json={"text": "hi", "name": "vo"})
+    assert resp.status_code == 200
+    assert resp.json()["path"] == "/agenticnews-assets/vo.wav"
+
+
+def test_tools_assemble_episode_name_routes_through_asset_gateway(client, monkeypatch):
+    """An episode-scoped name must land under {ep_id}/renders/ via the gateway, with the
+    URL carrying the full subpath so it resolves back to the same file."""
+    import routers.agenticnews as r
+
+    async def fake_sh(cmd, timeout=300):
+        out = db.ASSETS_DIR / "ep_648e806a" / "renders" / "s0_assembled.mp4"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_bytes(b"\x00\x00\x00\x18ftyp")
+        return 0, "ok"
+
+    monkeypatch.setattr(r, "_sh", fake_sh)
+    resp = client.post(
+        "/api/agenticnews/tools/assemble",
+        json={
+            "name": "ep_648e806a_s0",
+            "card_path": "/agenticnews-assets/ep_648e806a/css/s0_card.png",
+            "vo_path": "/agenticnews-assets/ep_648e806a/audio/s0_voice.wav",
+        },
+    )
+    assert resp.status_code == 200
+    assert resp.json()["path"] == "/agenticnews-assets/ep_648e806a/renders/s0_assembled.mp4"
+    assert not (db.ASSETS_DIR / "ep_648e806a_s0_assembled.mp4").exists()
 
 
 def test_tools_tts_success_attaches_artifact_to_video(client, monkeypatch):

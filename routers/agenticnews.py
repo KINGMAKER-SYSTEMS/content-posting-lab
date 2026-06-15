@@ -255,13 +255,22 @@ async def tool_tts(body: dict = Body(...)):
         raise HTTPException(400, "no text")
     vid = body.get("video_id")
     name = body.get("name") or (vid or "vo")
-    out = db.ASSETS_DIR / f"{name}.wav"
+    # Episode-scoped VO (name == 'ep_<hex>[_sN]') routes through the asset gateway so it
+    # lands in {ep_id}/audio/ instead of colliding in the flat ASSETS_DIR root — where the
+    # glob GC has eaten original VO wavs. A bare default ('vo') or a video id (no ep_ prefix)
+    # has nowhere to be scoped, so fall back to the legacy flat path for those ad-hoc renders.
+    try:
+        out = abn_assets.asset_path_from_slug(name, "voice")
+    except abn_assets.AssetPathError:
+        out = db.ASSETS_DIR / f"{name}.wav"
     # Pocket-TTS built-in English voice only — the channel's single narrator (no clone, no cloud).
     cmd = f'pocket-tts generate --text {shlex.quote(text)} --output-path {shlex.quote(str(out))} --quiet'
     code, log = await _sh(cmd, timeout=600)
     if code != 0 or not out.exists():
         raise HTTPException(500, f"tts failed: {log[-500:]}")
-    rel = f"/agenticnews-assets/{out.name}"
+    # Carry the full subpath (ep_x/audio/...) so the URL resolves back to the SAME file —
+    # not a basename that collides across episodes in the flat root.
+    rel = f"/agenticnews-assets/{out.relative_to(db.ASSETS_DIR)}"
     if vid:
         await db.update_video(vid, {"artifacts": {"vo": True, "vo_path": rel}})
     return {"ok": True, "path": rel}
@@ -317,7 +326,13 @@ async def tool_assemble(body: dict = Body(...)):
     # when two episodes share a card name.
     cardf = _asset_path_from_url(card)
     vof = _asset_path_from_url(vo)
-    out = db.ASSETS_DIR / f"{name}_assembled.mp4"
+    # Episode-scoped assemblies (name == 'ep_<hex>[_sN]') route through the asset gateway so
+    # they land in {ep_id}/renders/ instead of the flat ASSETS_DIR root. A bare default ('clip')
+    # or a video id (no ep_ prefix) falls back to the legacy flat path for those ad-hoc renders.
+    try:
+        out = abn_assets.asset_path_from_slug(name, "assembled")
+    except abn_assets.AssetPathError:
+        out = db.ASSETS_DIR / f"{name}_assembled.mp4"
     cmd = (
         f'ffmpeg -y -loop 1 -i {shlex.quote(str(cardf))} -i {shlex.quote(str(vof))} '
         f'-filter_complex "[0:v]scale=1920:1080,zoompan=z=\'min(zoom+0.0006,1.1)\':d=99999:s=1920x1080:fps=25[v]" '
@@ -326,7 +341,8 @@ async def tool_assemble(body: dict = Body(...)):
     code, log = await _sh(cmd, timeout=300)
     if code != 0 or not out.exists():
         raise HTTPException(500, f"assemble failed: {log[-600:]}")
-    rel = f"/agenticnews-assets/{out.name}"
+    # Carry the full subpath (ep_x/renders/...) so the URL resolves back to the SAME file.
+    rel = f"/agenticnews-assets/{out.relative_to(db.ASSETS_DIR)}"
     if vid:
         await db.update_video(vid, {"artifacts": {"assembly": True, "assembly_path": rel}, "stage": "review"})
     return {"ok": True, "path": rel}
