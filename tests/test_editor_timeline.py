@@ -2546,3 +2546,143 @@ def test_abn_import_promoted_keyframes_reach_openshot_bridge():
     scale_points = oj["scale_x"]["Points"]
     assert [round(p["co"]["Y"], 3) for p in scale_points] == [1.0, 1.2]
     assert len(scale_points) == 2
+
+
+def _abn_timeline_single_artifact(*, episode_id, shot_id, src, seg_duration, title=""):
+    """A minimal one-segment ABN timeline with a single artifact shot + VO.
+
+    Shot ids are stable, so re-importing with the same shot id reproduces the same
+    clip id (see _stable_id) — that's what lets a human edit's command replay onto
+    the freshly re-rendered structure.
+    """
+    return {
+        "episodeId": episode_id,
+        "title": title,
+        "fps": 30,
+        "width": 1920,
+        "height": 1080,
+        "totalSec": seg_duration,
+        "segments": [
+            {
+                "segmentId": "s0",
+                "durationSec": seg_duration,
+                "shots": [
+                    {"id": shot_id, "src": src, "startSec": 0.0, "durationSec": 2.0, "type": "artifact"}
+                ],
+                "audio": {"vo": {"src": "/agenticnews-assets/vo_s0.wav", "duration": seg_duration}},
+            }
+        ],
+    }
+
+
+def test_reimport_replays_edits_onto_freshly_rendered_abn_structure():
+    """The critical update path: a re-rendered ABN episode is re-imported and the human's
+    command-log edits (a clip move + a marker) replay on top, so a factory re-run doesn't
+    silently lose work done since the last import.
+    """
+    abn_v1 = _abn_timeline_single_artifact(
+        episode_id="ep_reimport", shot_id="shot_a",
+        src="/agenticnews-assets/card_a.png", seg_duration=4.0,
+    )
+    project = timeline.project_from_abn_timeline(
+        "proj_reimport", abn_v1, source_episode_id="ep_reimport"
+    )
+    clip_id = next(c["id"] for c in project["clips"].values() if c["kind"] == "artifact")
+
+    # Human moves the artifact clip and drops a review marker — these live in the command log.
+    project = timeline.apply_command(
+        project,
+        {"op": "clip.move", "actor": "human", "expectedRevision": project["revision"],
+         "payload": {"clipId": clip_id, "start": 3.5}},
+    )
+    project = timeline.apply_command(
+        project,
+        {"op": "marker.add", "actor": "human", "expectedRevision": project["revision"],
+         "payload": {"markerId": "m1", "time": 1.0, "label": "beat"}},
+    )
+    assert project["revision"] == 2
+
+    # Factory re-renders the same episode (same shot id -> same stable clip id) with a longer segment.
+    abn_v2 = _abn_timeline_single_artifact(
+        episode_id="ep_reimport", shot_id="shot_a",
+        src="/agenticnews-assets/card_a.png", seg_duration=5.0, title="v2",
+    )
+    migrated = timeline.reimport_abn_timeline_preserving_commands(
+        project, abn_v2, source_episode_id="ep_reimport"
+    )
+
+    # The human's move replayed cleanly onto the re-imported clip.
+    assert migrated["clips"][clip_id]["start"] == 3.5
+    assert migrated["revision"] == 2
+    # The marker was carried over (markers/notes merge in addition to the command replay).
+    assert "m1" in migrated["markers"]
+    # Fresh structure from v2 came through, and nothing was lost to a warning.
+    assert migrated["title"] == "v2"
+    assert migrated["metadata"]["migrationWarnings"] == []
+    assert migrated["metadata"]["migratedFromRevision"] == 2
+    # Re-stamped so the router's _needs_abn_import_migration gate won't loop.
+    assert migrated["metadata"]["abnImportVersion"] == timeline.ABN_IMPORT_VERSION
+
+
+def test_reimport_records_a_warning_instead_of_crashing_when_a_render_drops_an_edited_clip():
+    """If the factory re-render removes a shot a human had edited, the replayed command
+    can't find its clip. The re-import must record that as a migrationWarning and keep
+    going — never raise — so a single stale edit can't abort the whole update and lose
+    every other edit.
+    """
+    abn_v1 = _abn_timeline_single_artifact(
+        episode_id="ep_drop", shot_id="shot_x",
+        src="/agenticnews-assets/x.png", seg_duration=6.0,
+    )
+    project = timeline.project_from_abn_timeline("proj_drop", abn_v1, source_episode_id="ep_drop")
+    clip_id = next(c["id"] for c in project["clips"].values() if c["kind"] == "artifact")
+    project = timeline.apply_command(
+        project,
+        {"id": "cmd_mv", "op": "clip.move", "actor": "human",
+         "expectedRevision": project["revision"], "payload": {"clipId": clip_id, "start": 2.0}},
+    )
+
+    # Re-render replaces shot_x with shot_y, so the edited clip id no longer exists.
+    abn_v2 = _abn_timeline_single_artifact(
+        episode_id="ep_drop", shot_id="shot_y",
+        src="/agenticnews-assets/y.png", seg_duration=6.0,
+    )
+    migrated = timeline.reimport_abn_timeline_preserving_commands(project, abn_v2)
+
+    # No crash; the orphaned edit is surfaced as a warning, not silently swallowed.
+    warnings = migrated["metadata"]["migrationWarnings"]
+    assert len(warnings) == 1
+    assert warnings[0]["commandId"] == "cmd_mv"
+    assert warnings[0]["op"] == "clip.move"
+    assert "clip does not exist" in warnings[0]["reason"]
+    # The failed replay left the revision at the fresh-import baseline.
+    assert clip_id not in migrated["clips"]
+    assert migrated["revision"] == 0
+
+
+def test_reimport_is_idempotent_for_the_router_migration_gate():
+    """routers/agenticnews._needs_abn_import_migration re-imports whenever abnImportVersion
+    is stale. After one re-import the version is current, so a second pass over the SAME
+    timeline reproduces the same state and doesn't re-loop or re-apply the command log.
+    """
+    abn = _abn_timeline_single_artifact(
+        episode_id="ep_idem", shot_id="shot_a",
+        src="/agenticnews-assets/a.png", seg_duration=4.0,
+    )
+    project = timeline.project_from_abn_timeline("proj_idem", abn, source_episode_id="ep_idem")
+    clip_id = next(c["id"] for c in project["clips"].values() if c["kind"] == "artifact")
+    project = timeline.apply_command(
+        project,
+        {"op": "clip.move", "actor": "human", "expectedRevision": project["revision"],
+         "payload": {"clipId": clip_id, "start": 1.25}},
+    )
+
+    once = timeline.reimport_abn_timeline_preserving_commands(project, abn)
+    twice = timeline.reimport_abn_timeline_preserving_commands(once, abn)
+
+    # The gate is satisfied after the first pass...
+    assert once["metadata"]["abnImportVersion"] == timeline.ABN_IMPORT_VERSION
+    # ...and a second re-import over the same timeline is stable (edit still applied once).
+    assert twice["clips"][clip_id]["start"] == 1.25
+    assert twice["revision"] == once["revision"]
+    assert twice["metadata"]["migrationWarnings"] == []
