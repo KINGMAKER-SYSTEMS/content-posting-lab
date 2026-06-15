@@ -358,6 +358,55 @@ def test_editor_render_frame_skips_cache_when_revision_changes_during_render(syn
     assert "renderCache" not in loaded.json()
 
 
+def test_editor_render_api_surfaces_subprocess_render_error_as_500(sync_client, monkeypatch, tmp_path):
+    """Router 1559-1560 / 1597-1598 — a RenderError raised by the renderer for a
+    non-missing-asset reason (e.g. an OpenShot subprocess crash or ffmpeg timeout)
+    surfaces as HTTP 500 with the error detail, on BOTH the render and frame
+    endpoints, instead of escaping as an uncaught 500/empty body."""
+    monkeypatch.setattr(agenticnews_router.db, "ASSETS_DIR", tmp_path)
+
+    created = sync_client.post(
+        "/api/agenticnews/editor-timelines",
+        json={"projectId": "render_subproc_err", "title": "Render Subproc Err", "width": 32, "height": 32, "fps": 8},
+    )
+    assert created.status_code == 201
+
+    class ExplodingRenderer:
+        def render(self, project, *, output_path, start=0, duration=None):
+            raise agenticnews_router.editor_render.RenderError(
+                "OpenShot subprocess failed (-6): libopenshot aborted"
+            )
+
+        def render_frame(self, project, *, at, output_path):
+            raise agenticnews_router.editor_render.RenderError(
+                "render command timed out: ffmpeg -y -i ... ..."
+            )
+
+    monkeypatch.setattr(
+        agenticnews_router.editor_render,
+        "choose_renderer",
+        lambda *args, **kwargs: ExplodingRenderer(),
+    )
+
+    rendered = sync_client.post(
+        "/api/agenticnews/editor-render/render_subproc_err/render",
+        json={"duration": 0.25},
+    )
+    assert rendered.status_code == 500
+    assert "OpenShot subprocess failed" in rendered.json()["detail"]
+
+    frame = sync_client.post(
+        "/api/agenticnews/editor-render/render_subproc_err/frame",
+        json={"at": 0},
+    )
+    assert frame.status_code == 500
+    assert "timed out" in frame.json()["detail"]
+
+    # A failed render must not leave a render-cache entry behind.
+    loaded = sync_client.get("/api/agenticnews/editor-timelines/render_subproc_err")
+    assert "renderCache" not in loaded.json()
+
+
 def _solid_png(path: Path) -> None:
     subprocess.run(
         [

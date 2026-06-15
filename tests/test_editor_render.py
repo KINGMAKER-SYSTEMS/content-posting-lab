@@ -1529,3 +1529,80 @@ def test_ffmpeg_fallback_on_abn_imported_timeline_skips_text_layer_and_warns(tmp
     assert ("keyframe", "volume") in names             # ducking envelope can't be faked
     # the command is buildable and routes the resolved media through -i inputs
     assert str(broll) in cmd and str(bedf) in cmd and str(vo) in cmd
+
+
+# ---------------------------------------------------------------------------
+# RenderError exception paths not otherwise pinned: the ffmpeg-layered `_run`
+# helper (timeout + non-zero exit, lines 990-993) and the OpenShot subprocess
+# wrapper's child-failure branches (lines 247, 249). All mocked at the stdlib
+# boundary so they are deterministic and need no real ffmpeg/libopenshot.
+# ---------------------------------------------------------------------------
+
+
+def test_run_raises_render_error_on_ffmpeg_timeout(monkeypatch):
+    """editor_render._run:990-991 — a TimeoutExpired from the layered ffmpeg
+    render subprocess is re-raised as RenderError carrying the command head, not
+    allowed to escape raw as a 500."""
+
+    def _timeout(*args, **kwargs):
+        raise subprocess.TimeoutExpired(cmd="ffmpeg", timeout=60)
+
+    monkeypatch.setattr(editor_render.subprocess, "run", _timeout)
+
+    with pytest.raises(editor_render.RenderError) as excinfo:
+        editor_render._run(["ffmpeg", "-y", "-i", "in.mp4", "out.mp4"])
+    assert "timed out" in str(excinfo.value)
+
+
+def test_run_raises_render_error_on_nonzero_exit(monkeypatch):
+    """editor_render._run:992-993 — a non-zero ffmpeg exit surfaces its stderr
+    tail as a RenderError."""
+
+    class _Failed:
+        returncode = 1
+        stderr = "ffmpeg: layered render boom"
+        stdout = ""
+
+    monkeypatch.setattr(editor_render.subprocess, "run", lambda *a, **k: _Failed())
+
+    with pytest.raises(editor_render.RenderError) as excinfo:
+        editor_render._run(["ffmpeg", "-y", "out.mp4"])
+    assert "layered render boom" in str(excinfo.value)
+
+
+def test_openshot_subprocess_raises_render_error_when_child_fails_without_artifact(monkeypatch, tmp_path):
+    """editor_render.OpenShotSubprocessRenderer._run_child:246-247 — a non-zero
+    child exit with NO salvageable artifact on disk is a hard RenderError carrying
+    the exit code and stderr tail (the salvage branch at 240-245 is skipped because
+    the output path never gets written)."""
+
+    class _Completed:
+        returncode = -6  # SIGABRT from a native libopenshot crash
+        stdout = ""
+        stderr = "libopenshot aborted before writing output"
+
+    monkeypatch.setattr(editor_render.subprocess, "run", lambda *a, **k: _Completed())
+
+    renderer = editor_render.OpenShotSubprocessRenderer(tmp_path / "renders")
+    with pytest.raises(editor_render.RenderError) as excinfo:
+        renderer.render({"projectId": "p"}, output_path=tmp_path / "renders" / "never.mp4", start=0, duration=1)
+    assert "OpenShot subprocess failed (-6)" in str(excinfo.value)
+    assert "libopenshot aborted" in str(excinfo.value)
+
+
+def test_openshot_subprocess_raises_render_error_when_child_emits_no_result(monkeypatch, tmp_path):
+    """editor_render.OpenShotSubprocessRenderer._run_child:248-249 — a clean exit
+    (returncode 0) whose stdout carries no parseable JSON render result is a
+    RenderError, not a silent None return."""
+
+    class _Completed:
+        returncode = 0
+        stdout = "warming up...\nnot json at all\n"
+        stderr = ""
+
+    monkeypatch.setattr(editor_render.subprocess, "run", lambda *a, **k: _Completed())
+
+    renderer = editor_render.OpenShotSubprocessRenderer(tmp_path / "renders")
+    with pytest.raises(editor_render.RenderError) as excinfo:
+        renderer.render({"projectId": "p"}, output_path=tmp_path / "renders" / "empty.mp4", start=0, duration=1)
+    assert "produced no render result" in str(excinfo.value)
