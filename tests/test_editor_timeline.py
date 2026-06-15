@@ -718,6 +718,101 @@ def test_split_marker_note_and_property_commands(tmp_path):
     assert project["notes"]["n1"]["suggestedCommand"]["op"] == "clip.move"
 
 
+def test_split_preserves_keyframes_and_effects_on_both_halves(tmp_path):
+    store = timeline.TimelineStore(tmp_path)
+    project = timeline.new_project("proj_split_kf")
+    store.save(project)
+    commands = [
+        {
+            "op": "asset.import",
+            "actor": "agent",
+            "expectedRevision": 0,
+            "payload": {"assetId": "a1", "type": "video", "src": "/a.mp4"},
+        },
+        {
+            "op": "clip.create",
+            "actor": "agent",
+            "expectedRevision": 1,
+            "payload": {
+                "clipId": "c1",
+                "assetId": "a1",
+                "trackId": "video_1",
+                "start": 10.0,
+                "duration": 6.0,
+            },
+        },
+        {
+            # opacity ramp across the whole clip: 0 at t=0, 1 at t=2 (the split
+            # point), 0.5 at t=5 (clip-local seconds).
+            "op": "clip.keyframes",
+            "actor": "human",
+            "expectedRevision": 2,
+            "payload": {
+                "clipId": "c1",
+                "keyframes": [
+                    {
+                        "property": "opacity",
+                        "points": [
+                            {"t": 0.0, "value": 0.0, "interp": "linear"},
+                            {"t": 2.0, "value": 1.0, "interp": "linear"},
+                            {"t": 5.0, "value": 0.5, "interp": "linear"},
+                        ],
+                    }
+                ],
+            },
+        },
+        {
+            "op": "clip.effect.add",
+            "actor": "human",
+            "expectedRevision": 3,
+            "payload": {"clipId": "c1", "effect": {"id": "fx_in", "type": "fadeIn", "params": {"duration": 0.5}}},
+        },
+        {
+            "op": "clip.effect.add",
+            "actor": "human",
+            "expectedRevision": 4,
+            "payload": {"clipId": "c1", "effect": {"id": "fx_out", "type": "fadeOut", "params": {"duration": 0.5}}},
+        },
+        {
+            "op": "clip.effect.add",
+            "actor": "human",
+            "expectedRevision": 5,
+            "payload": {"clipId": "c1", "effect": {"id": "fx_bri", "type": "brightness", "params": {"value": 0.2}}},
+        },
+        {
+            # split 2s into the clip (timeline t=12.0)
+            "op": "clip.split",
+            "actor": "human",
+            "expectedRevision": 6,
+            "payload": {"clipId": "c1", "at": 12.0, "newClipId": "c1_b"},
+        },
+    ]
+    for command in commands:
+        project = store.apply_command("proj_split_kf", command)
+
+    head = project["clips"]["c1"]
+    tail = project["clips"]["c1_b"]
+
+    # Head keeps only the points up to the split (t <= 2), unshifted.
+    head_pts = head["keyframes"][0]["points"]
+    assert [(p["t"], p["value"]) for p in head_pts] == [(0.0, 0.0), (2.0, 1.0)]
+
+    # Tail rebases to its own t=0 at the split: t=2 -> 0, t=5 -> 3.
+    tail_pts = tail["keyframes"][0]["points"]
+    assert [(p["t"], p["value"]) for p in tail_pts] == [(0.0, 1.0), (3.0, 0.5)]
+
+    # fadeIn stays at the head, fadeOut moves to the tail, brightness is whole-clip.
+    assert {e["id"] for e in head["effects"]} == {"fx_in", "fx_bri"}
+    assert {e["id"] for e in tail["effects"]} == {"fx_out", "fx_bri"}
+
+    # Replay reproduces the same partitioned envelopes deterministically.
+    rebuilt = timeline.replay_project(project)
+    assert rebuilt["clips"]["c1"]["keyframes"] == head["keyframes"]
+    assert rebuilt["clips"]["c1_b"]["keyframes"] == tail["keyframes"]
+    assert rebuilt["clips"]["c1"]["effects"] == head["effects"]
+    assert rebuilt["clips"]["c1_b"]["effects"] == tail["effects"]
+
+
 def test_clip_hide_show_mute_unmute_toggle_enabled_and_muted_flags(tmp_path):
     """The four UI visibility/audio toggles flip exactly the `enabled`/`muted`
     booleans and leave every other clip field untouched."""

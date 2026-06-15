@@ -436,6 +436,16 @@ def apply_command(project: dict[str, Any], command: dict[str, Any]) -> dict[str,
             **(second.get("metadata") or {}),
             "splitFrom": clip["id"],
         }
+        # Keyframe `t` is clip-local seconds, so the split-off clip's envelope must
+        # be rebased to its new t=0 (the split point); the first clip keeps only the
+        # points before the split. Without this the second clip fires the parent's
+        # keyframes at the wrong times. (CON ticket: split must preserve animation.)
+        clip["keyframes"] = _keyframes_before(clip.get("keyframes"), split_offset)
+        second["keyframes"] = _keyframes_after(second.get("keyframes"), split_offset)
+        # Boundary-anchored effects (fadeIn at the head, fadeOut at the tail) belong
+        # only to the half that owns that boundary; whole-clip effects stay on both.
+        clip["effects"] = _effects_for_split_half(clip.get("effects"), "head")
+        second["effects"] = _effects_for_split_half(second.get("effects"), "tail")
         clip["duration"] = split_offset
         project["clips"][second["id"]] = second
         after["clip"] = copy.deepcopy(clip)
@@ -935,6 +945,48 @@ def _mutate_clip(project: dict[str, Any], op: str, clip: dict[str, Any], payload
         if len(kept) == len(effects):
             raise CommandValidationError(f"effect does not exist: {effect_id}")
         clip["effects"] = kept
+
+
+# clip.split helpers. Keyframe `t` is clip-local seconds (see _validated_keyframes),
+# so splitting a clip at `offset` seconds means the first (head) clip keeps points
+# with t <= offset and the second (tail) clip keeps points at t >= offset rebased to
+# t -= offset. Boundary value is preserved on both sides so the envelope is continuous.
+
+# Effects anchored to a clip boundary: fadeIn lives at the head, fadeOut at the tail.
+# Everything else (brightness, saturation, crossfade) applies to the whole clip and
+# is copied to both halves.
+_HEAD_ANCHORED_EFFECTS = frozenset({"fadeIn"})
+_TAIL_ANCHORED_EFFECTS = frozenset({"fadeOut"})
+
+
+def _keyframes_before(tracks: Any, offset: float) -> list[dict[str, Any]]:
+    """Trim a keyframe envelope to the head half of a split (t <= offset)."""
+    out: list[dict[str, Any]] = []
+    for track in tracks or []:
+        points = [p for p in (track.get("points") or []) if p["t"] <= offset]
+        if points:
+            out.append({**track, "points": points})
+    return out
+
+
+def _keyframes_after(tracks: Any, offset: float) -> list[dict[str, Any]]:
+    """Rebase a keyframe envelope to the tail half of a split (t >= offset → t -= offset)."""
+    out: list[dict[str, Any]] = []
+    for track in tracks or []:
+        points = [
+            {**p, "t": p["t"] - offset}
+            for p in (track.get("points") or [])
+            if p["t"] >= offset
+        ]
+        if points:
+            out.append({**track, "points": points})
+    return out
+
+
+def _effects_for_split_half(effects: Any, half: str) -> list[dict[str, Any]]:
+    """Keep a boundary-anchored effect only on the half that owns its boundary."""
+    drop = _TAIL_ANCHORED_EFFECTS if half == "head" else _HEAD_ANCHORED_EFFECTS
+    return [copy.deepcopy(e) for e in (effects or []) if e.get("type") not in drop]
 
 
 # Editor-property names a clip-level keyframe track may animate. These map 1:1 to
