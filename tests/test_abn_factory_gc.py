@@ -7,6 +7,7 @@ from collections import namedtuple
 
 import pytest
 
+from scripts import migrate_abn_assets
 from services import abn_factory
 from services import abn_assets
 
@@ -120,8 +121,9 @@ def test_purge_disk_preserves_editor_timeline_referenced_scratch(store):
 
 
 def test_purge_disk_trims_old_episode_renders_under_low_disk(store):
-    """Under low disk the GC trims the OLDEST real episode renders (keep N), and never touches a
-    render still referenced by an Editor Bay timeline."""
+    """Under low disk the GC trims the OLDEST real episode renders (keep N) by TOMBSTONING them to
+    _trash/ (recoverable safe-delete, NOT unlink — a buggy trim must never be permanent data loss),
+    and never touches a render still referenced by an Editor Bay timeline."""
     def render(ep_id, age_s):
         d = store / ep_id / "renders"
         d.mkdir(parents=True)
@@ -150,6 +152,55 @@ def test_purge_disk_trims_old_episode_renders_under_low_disk(store):
     assert keep_referenced.exists(), "GC trimmed a timeline-referenced render under low disk"
     assert not drop_old.exists(), "GC should trim the oldest unreferenced render under low disk"
     assert fresh.exists(), "GC trimmed a fresh render it should have kept"
+    # the trimmed render must be RECOVERABLE from _trash/, not destroyed (the whole point of the fix)
+    trashed = store / "_trash" / "ep_drop0" / "renders" / "episode.mp4"
+    assert trashed.exists(), "trimmed render must be tombstoned to _trash/, not unlinked"
+    assert trashed.read_bytes() == b"render", "tombstoned render content must be intact"
+
+
+# --- gateway-level tombstone_render contract (the render safe-delete primitive) -----------------
+
+
+def test_tombstone_render_moves_render_to_trash(store):
+    """A real episode render is MOVED to _trash/ (recoverable), and its bytes are returned as freed."""
+    d = store / "ep_a111111" / "renders"
+    d.mkdir(parents=True)
+    render = d / "episode.mp4"
+    render.write_bytes(b"the real render")
+    size = abn_factory.tombstone_render(render)
+    assert size == len(b"the real render")
+    assert not render.exists()
+    dest = store / "_trash" / "ep_a111111" / "renders" / "episode.mp4"
+    assert dest.exists() and dest.read_bytes() == b"the real render"
+
+
+def test_tombstone_render_refuses_non_render_paths(store):
+    """tombstone_render() is the physical enforcement point for the low-disk trim: handed a scratch
+    file, an audio VO, a footage capture, a symlink, a dir, a reserved-top file, or an off-store
+    path, it RAISES rather than deleting — so a buggy disk-trim caller can't cause data loss outside
+    an episode's renders/."""
+    epdir = store / "ep_a111111"
+    (epdir / "renders").mkdir(parents=True)
+    render = epdir / "renders" / "episode.mp4"
+    render.write_bytes(b"render")
+    (epdir / "audio").mkdir()
+    vo = epdir / "audio" / "s0_voice.wav"
+    vo.write_bytes(b"vo")
+    (epdir / "footage").mkdir()
+    ui = epdir / "footage" / "s3_ui.mp4"
+    ui.write_bytes(b"capture")
+    scratch_f = _scratch(store, "ep_a111111", "s0_raw.wav")
+    link = store / "ep_a111111_episode.mp4"
+    link.symlink_to(render)
+    # a file under a RESERVED top dir that happens to sit in a renders/ subdir — must still RAISE
+    (store / "_shared" / "renders").mkdir(parents=True)
+    reserved = store / "_shared" / "renders" / "episode.mp4"
+    reserved.write_bytes(b"shared")
+
+    for bad in (vo, ui, scratch_f, link, epdir, reserved, store / "outside.txt"):
+        with pytest.raises(abn_assets.AssetPathError):
+            abn_factory.tombstone_render(bad)
+    assert vo.exists() and ui.exists() and scratch_f.exists() and link.is_symlink() and reserved.exists()
 
 
 def test_gc_segments_disk_phase_tombstones_scratch_and_spares_schema(store, monkeypatch):
@@ -181,6 +232,96 @@ def test_gc_segments_disk_phase_tombstones_scratch_and_spares_schema(store, monk
     assert flat_link.is_symlink(), "GC deleted a back-compat symlink"
     assert not scratch_f.exists(), "GC should have reaped the aged scratch intermediate"
     assert (store / "_trash" / "ep_dead00" / "scratch" / "s0_demo.mp4").exists(), "scratch reap must tombstone"
+
+
+# --- migration completes the flat dump into the schema (+ back-compat symlinks the GC spares) ----
+
+
+def _migrator(store, monkeypatch):
+    """Import the one-time migration script pointed at the throwaway store. It binds
+    ASSETS_DIR / episode_dir / classify from services.abn_assets at import time, so we
+    patch the module's own globals after the abn_assets.ASSETS_DIR monkeypatch (the
+    `store` fixture already did that) to keep plan()/apply() on the throwaway store."""
+    from scripts import migrate_abn_assets as m
+
+    monkeypatch.setattr(m, "ASSETS_DIR", store)
+    monkeypatch.setattr(m, "episode_dir", lambda ep_id: store / ep_id)
+    return m
+
+
+def test_migration_moves_flat_dump_into_schema_with_backcompat_symlinks(store, monkeypatch):
+    """The whole point of the ticket: running --apply turns a flat ep_*_kind.ext dump into the
+    per-episode schema, COPIES (never moves) each file to its typed subdir, and leaves a symlink at
+    the OLD flat path so in-flight timelines/renders keep resolving. Nothing is destroyed."""
+    m = _migrator(store, monkeypatch)
+
+    flat = {
+        "ep_a111111_s0_card.png": (b"card-bytes", "ep_a111111/css/s0_card.png"),
+        "ep_a111111_s3_ui.mp4": (b"ui-bytes", "ep_a111111/footage/s3_ui.mp4"),
+        "ep_a111111_s0_voice.wav": (b"vo-bytes", "ep_a111111/audio/s0_voice.wav"),
+        "ep_a111111_episode.mp4": (b"render-bytes", "ep_a111111/renders/episode.mp4"),
+        "ep_a111111_timeline.json": (b"{}", "ep_a111111/timeline.json"),
+    }
+    for name, (body, _dst) in flat.items():
+        (store / name).write_bytes(body)
+
+    m.apply(m.plan(None))
+
+    for name, (body, dst_rel) in flat.items():
+        dst = store / dst_rel
+        assert dst.is_file() and dst.read_bytes() == body, f"{name} not copied to {dst_rel}"
+        old = store / name
+        assert old.is_symlink(), f"{name} flat path must become a back-compat symlink"
+        assert old.resolve() == dst.resolve(), f"{name} symlink must point at the migrated file"
+
+
+def test_migration_is_idempotent_and_heals_partial_runs(store, monkeypatch):
+    """Re-running --apply must not duplicate or corrupt, AND must finish a crashed run: a file that
+    was copied to the schema but never got its back-compat symlink (interrupted mid-apply) is healed
+    into a symlink on the next run — so 'migration incomplete' can't persist."""
+    m = _migrator(store, monkeypatch)
+
+    # simulate a crash AFTER copy, BEFORE symlink: dst exists, flat src is still a real file.
+    (store / "ep_a111111" / "css").mkdir(parents=True)
+    (store / "ep_a111111" / "css" / "s0_card.png").write_bytes(b"card-bytes")
+    flat = store / "ep_a111111_s0_card.png"
+    flat.write_bytes(b"card-bytes")  # un-symlinked leftover from the interrupted run
+
+    m.apply(m.plan(None))
+
+    assert flat.is_symlink(), "a copied-but-unlinked flat file must be healed into a symlink"
+    assert flat.resolve() == (store / "ep_a111111" / "css" / "s0_card.png").resolve()
+
+    # second full re-run is a no-op: still exactly one symlink, still resolves, no .part/.link litter.
+    m.apply(m.plan(None))
+    assert flat.is_symlink()
+    assert not list(store.glob("*.part")) and not list(store.glob("*.link"))
+
+
+def test_gc_spares_symlinks_a_real_migration_leaves(store, monkeypatch):
+    """End-to-end: migrate the flat dump, then run the disk GC. Every back-compat symlink the
+    migration left must survive (deleting one orphans a live render reference) and every migrated
+    schema file must survive — only an aged scratch intermediate is reaped. This is the invariant the
+    ticket says was unproven until migration was actually run."""
+    m = _migrator(store, monkeypatch)
+    for name, body in {
+        "ep_a111111_episode.mp4": b"render",
+        "ep_a111111_s0_voice.wav": b"vo",
+    }.items():
+        (store / name).write_bytes(body)
+    m.apply(m.plan(None))
+    scratch_f = _scratch(store, "ep_a111111", "s0_raw.wav")
+
+    usage = namedtuple("usage", ("total", "used", "free"))
+    monkeypatch.setattr(shutil, "disk_usage", lambda _: usage(100, 0, 100 * 1e9))
+    abn_factory.purge_disk(intermediate_age_s=1, keep_episodes=99, low_disk_gb=0)
+
+    for name in ("ep_a111111_episode.mp4", "ep_a111111_s0_voice.wav"):
+        assert (store / name).is_symlink(), f"GC deleted back-compat symlink {name}"
+        assert (store / name).resolve().exists(), f"GC orphaned symlink {name}"
+    assert (store / "ep_a111111" / "renders" / "episode.mp4").exists()
+    assert (store / "ep_a111111" / "audio" / "s0_voice.wav").exists()
+    assert not scratch_f.exists(), "GC should still reap the aged scratch intermediate"
 
 
 # --- gateway-level tombstone contract (the new safe-delete primitive) ---------------------------
@@ -301,3 +442,83 @@ def test_is_editor_timeline_protected_asset_standalone(monkeypatch, tmp_path):
     noncanonical = assets / "sub" / ".." / "ep_a111111_s0.wav"
     (assets / "sub").mkdir()
     assert abn_factory._is_editor_timeline_protected_asset(noncanonical, protected) is True
+
+
+# --- migration <-> gateway vocabulary parity (the silent "read as missing" class) ----------------
+
+
+@pytest.fixture()
+def migrate_store(tmp_path, monkeypatch):
+    """Point the gateway AND the migration script at one throwaway store. The migrator binds
+    ASSETS_DIR by value at import time, so patch its module global too (episode_dir reads the live
+    abn_assets.ASSETS_DIR, so patching that redirects it)."""
+    assets = tmp_path / "assets"
+    assets.mkdir()
+    monkeypatch.setattr(abn_assets, "ASSETS_DIR", assets)
+    monkeypatch.setattr(migrate_abn_assets, "ASSETS_DIR", assets)
+    return assets
+
+
+def _migratable_kinds():
+    """Every real per-segment kind: skip the scratch bucket and the episode-root singletons
+    (timeline/manifest) — those have no legacy `{ep}_s0_{kind}` flat form to migrate."""
+    for kind, (subdir, ext) in abn_assets.KINDS.items():
+        if subdir in ("scratch", "."):
+            continue
+        yield kind, subdir, ext
+
+
+def test_migration_destinations_match_gateway_kind_subdirs(migrate_store):
+    """Every file migrate_abn_assets.plan() moves must land in the SAME subdir the runtime
+    gateway (abn_assets.asset_path) would write that kind to. If the migrator classified a file
+    into a subdir the gateway doesn't use for that kind, a timeline URL built by the gateway would
+    point at an empty dir and the read would treat the asset as missing — with no error. This test
+    is the parity gate that test_resolve_asset_subpath_url_preserves_subdir (subpath contract) and
+    the GC contract tests do not cover."""
+    ep = "ep_a111111"
+    # one flat legacy file per real kind: the exact `{ep}_s{N}_{kind}.{ext}` form the factory dumped
+    flat_names = {}
+    for kind, _subdir, ext in _migratable_kinds():
+        flat = migrate_store / f"{ep}_s0_{kind}.{ext or 'bin'}"
+        flat.write_bytes(b"x")
+        flat_names[flat.name] = kind
+
+    moves = migrate_abn_assets.plan(only_ep=ep)
+    by_src = {src.name: dst for src, dst, _reason in moves}
+
+    # nothing dropped on the floor: every legacy file got a planned destination
+    assert set(by_src) == set(flat_names), "plan() must produce a move for every episode-scoped file"
+
+    for fname, kind in flat_names.items():
+        dst = by_src[fname]
+        gateway_subdir = abn_assets.asset_path(ep, kind, "s0").parent.name
+        assert dst.parent.name == gateway_subdir, (
+            f"migration put {kind!r} in {dst.parent.name!r} but the gateway writes it to "
+            f"{gateway_subdir!r} — a timeline read of the gateway URL would see this as missing"
+        )
+        # and the migrated path is actually UNDER this episode's dir (not a shared/scratch escape)
+        assert dst.parent.parent.name == ep
+
+
+def test_migrated_asset_url_roundtrips_back_to_disk(migrate_store, monkeypatch):
+    """End-to-end: a legacy `{ep}_s0_card.png` migrates to .../{ep}/css/s0_card.png, and the URL
+    the gateway builds for that same (ep, kind, slug) resolves (via _resolve_asset) back to the
+    migrated file on disk. This is the concrete failure the parity gate guards against — a subdir
+    mismatch would make this round-trip miss."""
+    monkeypatch.setattr(abn_factory, "ASSETS", migrate_store)
+    ep = "ep_a111111"
+    flat = migrate_store / f"{ep}_s0_card.png"
+    flat.write_bytes(b"card-bytes")
+
+    (src, dst, _reason), = (
+        m for m in migrate_abn_assets.plan(only_ep=ep) if m[0].name == flat.name
+    )
+    # simulate the migration copy landing the bytes at the planned destination
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    dst.write_bytes(flat.read_bytes())
+
+    url = abn_assets.asset_url(ep, "card", "s0")
+    resolved = abn_factory._resolve_asset(url)
+    assert resolved == dst, "gateway URL must resolve to the migrated destination"
+    assert resolved.exists(), "migrated file is unreadable via the gateway URL (read-as-missing bug)"
+    assert resolved.read_bytes() == b"card-bytes"

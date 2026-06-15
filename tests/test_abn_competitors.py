@@ -57,6 +57,85 @@ def test_uses_atomic_save_for_fsync(intel, monkeypatch):
     assert calls.get("data") == blob
 
 
+def test_topic_signals_returns_titles_from_cache(intel):
+    # Populate the intel cache, then the SCOUT signal must be the cached titles.
+    ac.refresh(force=True)
+    signals = ac.topic_signals()
+    assert signals  # not empty
+    assert all(isinstance(s, str) for s in signals)
+    # Every competitor's stubbed headline shows up as a bare title string.
+    assert f"{ac.COMPETITORS[0]} headline" in signals
+    assert len(signals) == len(ac.COMPETITORS)
+
+
+def test_topic_signals_respects_limit(intel):
+    ac.refresh(force=True)
+    # limit caps how many demand signals the scout sees.
+    assert len(ac.topic_signals(limit=2)) == 2
+    assert ac.topic_signals(limit=0) == []
+
+
+def test_topic_signals_empty_when_no_cache(tmp_path, monkeypatch):
+    # No intel file on disk → _load() falls back to static FINDINGS (no videos),
+    # so the scout gets an empty signal list rather than crashing.
+    missing = tmp_path / "competitor_intel.json"
+    monkeypatch.setattr(ac, "INTEL_FILE", missing)
+    assert ac.topic_signals() == []
+
+
+def test_scrape_channel_swallows_failure(monkeypatch):
+    # yt-dlp blowing up (timeout, missing binary, network) must degrade to []
+    # per-channel — never propagate and wedge a refresh.
+    def boom(*a, **kw):
+        raise OSError("yt-dlp not found")
+
+    monkeypatch.setattr(ac.subprocess, "run", boom)
+    assert ac._scrape_channel("AnyChannel") == []
+
+
+def test_scrape_channel_parses_and_skips_blank_lines(monkeypatch):
+    # stdout lines become {channel,title} dicts; blank/whitespace lines are dropped.
+    class _Done:
+        stdout = "First Title\n\n  Second Title  \n   \n"
+
+    monkeypatch.setattr(ac.subprocess, "run", lambda *a, **kw: _Done())
+    rows = ac._scrape_channel("Chan")
+    assert rows == [
+        {"channel": "Chan", "title": "First Title"},
+        {"channel": "Chan", "title": "Second Title"},
+    ]
+
+
+def test_refresh_survives_all_channels_failing(intel, monkeypatch):
+    # If EVERY channel scrape fails, refresh() still returns a well-formed blob
+    # (empty videos, intact findings) and persists it — no exception escapes.
+    monkeypatch.setattr(ac, "_scrape_channel", lambda h, n=8: [])
+    blob = ac.refresh(force=True)
+    assert blob["videos"] == []
+    assert blob["findings"] == ac.FINDINGS
+    assert blob["channels"] == ac.COMPETITORS
+    # downstream scout signal is empty but does not raise.
+    assert ac.topic_signals() == []
+    # and the (empty) blob still round-trips from disk.
+    assert json.loads(intel.read_text()) == blob
+
+
+def test_refresh_partial_channel_failure_keeps_good_videos(intel, monkeypatch):
+    # One channel dies, the rest succeed → refresh keeps the survivors' titles
+    # instead of throwing the whole batch away.
+    monkeypatch.setattr(ac, "COMPETITORS", ["good", "bad"])
+
+    def scrape(h, n=8):
+        if h == "bad":
+            return []  # _scrape_channel already converts its own failure to []
+        return [{"channel": h, "title": f"{h} winner"}]
+
+    monkeypatch.setattr(ac, "_scrape_channel", scrape)
+    blob = ac.refresh(force=True)
+    assert blob["videos"] == [{"channel": "good", "title": "good winner"}]
+    assert "good winner" in ac.topic_signals()
+
+
 def test_refresh_writes_intel_atomically_via_shared_store(tmp_path, monkeypatch):
     """refresh() must persist competitor_intel.json through the shared atomic_save
     util (tmp + fsync + replace) so a crash mid-write can't truncate the intel cache."""

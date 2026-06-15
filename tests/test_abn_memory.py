@@ -107,3 +107,86 @@ def test_record_episode_persists_via_save(mem):
     saved = json.loads(mem.read_text(encoding="utf-8"))
     assert any(s["t"] for s in saved["seen_titles"])
     assert abn_memory.is_recently_used("A New Agent Framework Ships") is True
+
+
+# --- rejection ledger (record_rejection / rejection_penalty) -----------------
+# The flywheel learns what to AVOID from rejected episodes. A corrupt or wrongly
+# weighted ledger could make the scorer loop bad stories forever, so pin the
+# accumulation, stopword filtering, persistence, and crash-safety behaviors.
+
+def test_record_rejection_accumulates_keywords(mem):
+    abn_memory.record_rejection(["Replicate pricing surprise"])
+    abn_memory.record_rejection(["Replicate outage again"])
+    rej = json.loads(mem.read_text(encoding="utf-8"))["rejected_keywords"]
+    # "replicate" appears in both rejected episodes -> count 2
+    assert rej["replicate"] == 2
+    assert rej["pricing"] == 1
+    assert rej["outage"] == 1
+
+
+def test_record_rejection_skips_stopwords_and_short_words(mem):
+    abn_memory.record_rejection(["This agent tool with code"])
+    rej = json.loads(mem.read_text(encoding="utf-8")).get("rejected_keywords", {})
+    # every word here is a stopword or <4 chars after the regex floor -> nothing logged
+    assert rej == {}
+
+
+def test_rejection_penalty_sums_overlapping_keywords(mem):
+    abn_memory.record_rejection(["Replicate pricing meltdown"])
+    abn_memory.record_rejection(["Replicate latency spike"])
+    # "replicate" was rejected twice; "pricing" once -> 2 + 1 = 3
+    assert abn_memory.rejection_penalty("Replicate pricing news") == 3
+    # unrelated story shares no rejected keywords
+    assert abn_memory.rejection_penalty("Lottie animation release") == 0
+
+
+def test_rejection_penalty_empty_ledger_is_zero(mem):
+    assert abn_memory.rejection_penalty("anything at all") == 0
+
+
+def test_record_rejection_bounds_ledger_to_200_keys(mem):
+    # Build a clearly-dominant keyword FIRST (high count), then flood with many
+    # distinct count-1 keywords. The trim keeps the top-200 by count, so the
+    # high-count keyword must survive while the ledger stays bounded.
+    for _ in range(50):
+        abn_memory.record_rejection(["dominant"])
+    abn_memory.record_rejection([f"keyword{i:04d}" for i in range(250)])
+    rej = json.loads(mem.read_text(encoding="utf-8"))["rejected_keywords"]
+    assert len(rej) <= 200
+    # the most-rejected keyword must survive the count-desc trim
+    assert rej["dominant"] == 50
+
+
+def test_record_rejection_survives_corrupt_ledger(mem):
+    """A truncated/corrupt abn_memory.json must not crash the rejection logger;
+    _load falls back to a clean default and the rejection still records."""
+    mem.write_text("{ this is not json", encoding="utf-8")
+    abn_memory.record_rejection(["Replicate pricing surprise"])
+    rej = json.loads(mem.read_text(encoding="utf-8"))["rejected_keywords"]
+    assert rej["replicate"] == 1
+
+
+# --- scoring helpers (overexposed_topics / winning_theses) -------------------
+
+def test_overexposed_topics_respects_threshold(mem):
+    abn_memory._save({
+        "episodes": [], "seen_titles": [], "approved_theses": [],
+        "topic_counts": {"agents": 6, "claude": 7, "lottie": 2},
+    })
+    assert abn_memory.overexposed_topics() == {"agents", "claude"}
+    # custom threshold narrows the set (>=7 only)
+    assert abn_memory.overexposed_topics(threshold=7) == {"claude"}
+    # ...and widens it (>=2 catches lottie too)
+    assert abn_memory.overexposed_topics(threshold=2) == {"agents", "claude", "lottie"}
+
+
+def test_winning_theses_returns_recent_tail(mem):
+    abn_memory._save({
+        "episodes": [], "seen_titles": [], "topic_counts": {},
+        "approved_theses": ["t1", "t2", "t3", "t4", "t5", "t6"],
+    })
+    # default n=5 -> most recent five, in order
+    assert abn_memory.winning_theses() == ["t2", "t3", "t4", "t5", "t6"]
+    assert abn_memory.winning_theses(2) == ["t5", "t6"]
+    # n larger than the ledger just returns everything (no padding/crash)
+    assert abn_memory.winning_theses(99) == ["t1", "t2", "t3", "t4", "t5", "t6"]

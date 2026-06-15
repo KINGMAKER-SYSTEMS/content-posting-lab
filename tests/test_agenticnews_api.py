@@ -334,6 +334,44 @@ def test_tools_assemble_episode_name_routes_through_asset_gateway(client, monkey
     assert not (db.ASSETS_DIR / "ep_648e806a_s0_assembled.mp4").exists()
 
 
+def test_episode_qa_closes_props_file_handle(client, monkeypatch, tmp_path):
+    """Regression: episode_qa read the render-props json with a bare open() passed
+    straight into json.load(), leaking the file descriptor on every call (the
+    'too many open files' failure mode under load). Wrap the builtin open so we can
+    assert every handle the endpoint opens for the props file is closed by the time
+    the response comes back."""
+    import builtins
+    import routers.agenticnews as r
+
+    # point the endpoint's asset resolver at a temp 'agenticnews_assets' dir
+    assets = tmp_path / "agenticnews_assets"
+    assets.mkdir()
+    monkeypatch.setenv("RAILWAY_VOLUME_MOUNT_PATH", str(tmp_path))
+    props = assets / "ep_qa_test_timeline.json"
+    props.write_text(
+        '{"segments": [{"title": "Foo"}, {"title": "Bar"}, {"title": "Baz"}],'
+        ' "musicBed": "bed.wav", "sfx": []}'
+    )
+
+    opened = []
+    real_open = builtins.open
+
+    def tracking_open(file, *a, **k):
+        fh = real_open(file, *a, **k)
+        if str(file) == str(props):
+            opened.append(fh)
+        return fh
+
+    monkeypatch.setattr(r, "open", tracking_open, raising=False)
+
+    resp = client.get("/api/agenticnews/episodes/ep_qa_test/qa")
+    assert resp.status_code == 200
+    assert resp.json()["props_found"] is True
+    # the props file was actually read, and every handle opened for it is closed
+    assert opened, "endpoint never opened the props file"
+    assert all(fh.closed for fh in opened), "leaked an open file handle for props"
+
+
 def test_tools_tts_success_attaches_artifact_to_video(client, monkeypatch):
     """On a successful render the VO path is auto-attached to the linked card so the
     caller can't desync it. Stub the shell-out AND drop a real output file so the

@@ -385,9 +385,40 @@ def tombstone(path: Path | str) -> int:
         raise AssetPathError(
             f"refusing to tombstone {rel} — GC may only reap scratch/ (per-episode) and _scratch/."
         )
+    return _move_to_trash(p, rel)
+
+
+def tombstone_render(path: Path | str) -> int:
+    """SAFE-DELETE for a real episode RENDER under low disk (spec line 33): move ``path`` into
+    ``_trash/`` instead of unlinking it, so a mistaken low-disk trim is recoverable rather than
+    permanent data loss. Returns the byte size moved.
+
+    Mirror of ``tombstone()`` but for the renders/ surface — exactly what ``_old_episode_renders()``
+    enumerates (``<ep_dir>/renders/episode.mp4`` under any episode dir, including legacy short ids).
+    Refuses anything that is NOT a regular file at ``<ep_dir>/renders/*``: audio, footage, scratch,
+    symlinks, a bare top-level file, and any reserved top dir (``_shared``/``_published``/``_trash``/
+    ``_scratch``) all RAISE — so a buggy disk-trim caller physically cannot turn this into loss
+    outside an episode's renders/."""
+    p = Path(path)
+    try:
+        if p.is_symlink() or not p.is_file():
+            raise AssetPathError(f"refusing to tombstone non-regular-file {p}")
+        rel = p.resolve().relative_to(ASSETS_DIR.resolve())
+    except (ValueError, OSError) as e:
+        raise AssetPathError(f"refusing to tombstone off-store render {p}: {e}")
+    parts = rel.parts
+    if not (len(parts) >= 2 and parts[1] == "renders" and not parts[0].startswith("_")):
+        raise AssetPathError(
+            f"refusing to tombstone {rel} — render safe-delete may only reap <ep_dir>/renders/."
+        )
+    return _move_to_trash(p, rel)
+
+
+def _move_to_trash(p: Path, rel: Path) -> int:
+    """Move ``p`` to ``_trash/<rel>``, mirroring the relative path so collisions across episodes
+    can't clobber and a human can see where a tombstoned file came from. Suffix on basename
+    collision. Returns the byte size moved. (Shared by tombstone + tombstone_render.)"""
     size = p.stat().st_size
-    # mirror the relative path under _trash/ so collisions across episodes can't clobber,
-    # and a human can see where a tombstoned file came from. Suffix on basename collision.
     dest = ASSETS_DIR / "_trash" / rel
     dest.parent.mkdir(parents=True, exist_ok=True)
     if dest.exists():

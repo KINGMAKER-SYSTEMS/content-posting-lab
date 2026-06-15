@@ -83,7 +83,7 @@ ASSETS = db.ASSETS_DIR
 from services.abn_assets import (  # noqa: E402
     asset_path, asset_url, asset_path_from_slug, asset_url_from_slug,
     scratch_path, shared_path, published_path, split_slug, URL_PREFIX,
-    reapable_scratch, tombstone,
+    reapable_scratch, tombstone, tombstone_render,
 )
 
 
@@ -1665,7 +1665,10 @@ def _chop(t0, t1, target=6.0, max_n=6, lead=0.0):
     import math
     n = max(1, min(max_n, round(span / target)))
     if span / n > 8.0:                     # never let a single sub-shot run past ~8s
-        n = min(max_n, math.ceil(span / 7.0))
+        # The 8s rule is a HARD editing rule and wins over the soft max_n preference: re-clamping
+        # back under max_n here would silently re-create the >8s shot we just rejected (e.g. a 50s
+        # span at max_n=6 → 8.33s/shot). Let the cap recompute raise N above max_n when they conflict.
+        n = math.ceil(span / 7.0)
     slot = span / n
     out = []
     for j in range(n):
@@ -3016,8 +3019,9 @@ def _old_episode_renders():
 def purge_disk(intermediate_age_s=1800, keep_episodes=4, low_disk_gb=2.0):
     """Free disk by reaping ONLY per-episode scratch/ + cross-episode _scratch/ (the schema's
     reapable surface — abn_assets spec lines 27, 32), tombstoning to _trash/ instead of unlinking.
-    Under low disk, also trim the oldest real episode renders. Callable from the factory loop AND
-    the manual /gc endpoint. Returns MB freed.
+    Under low disk, also trim the oldest real episode renders — TOMBSTONED to _trash/ via
+    tombstone_render(), never unlinked, so a buggy disk-trim is recoverable, not permanent data
+    loss. Callable from the factory loop AND the manual /gc endpoint. Returns MB freed.
 
     The per-episode schema makes this safe by construction: the GC never enumerates schema dirs,
     renders, audio, or back-compat symlinks, so there is no flat-glob blast radius to guard against
@@ -3040,7 +3044,7 @@ def purge_disk(intermediate_age_s=1800, keep_episodes=4, low_disk_gb=2.0):
                 try:
                     if _is_editor_timeline_protected_asset(old, protected_paths):
                         continue
-                    freed += old.stat().st_size; old.unlink()
+                    freed += tombstone_render(old)  # safe-delete → _trash/, recoverable (not unlink)
                 except Exception:
                     pass
     except Exception:
@@ -3106,14 +3110,15 @@ async def _gc_segments(keep_recent=12):
                     pass
             if inter_n:
                 BUS.emit("system", "gc", f"freed {inter_freed//1024//1024}MB — tombstoned {inter_n} spent scratch intermediates")
-            # FREE-SPACE GUARD: if disk is critically low, also drop the oldest real episode renders (keep 4)
+            # FREE-SPACE GUARD: if disk is critically low, tombstone the oldest real episode renders
+            # (keep 4) → _trash/ via tombstone_render(), recoverable safe-delete, never unlink.
             free_gb = _sh2.disk_usage(str(ASSETS)).free / 1e9
             if free_gb < 2.0:
                 for old in _old_episode_renders()[4:]:
                     try:
                         if _is_editor_timeline_protected_asset(old, protected_paths):
                             continue
-                        old.unlink()
+                        tombstone_render(old)  # safe-delete → _trash/, recoverable (not unlink)
                     except Exception:
                         pass
                 BUS.emit("system", "gc", f"low disk ({free_gb:.1f}GB) — trimmed old episodes to last 4")

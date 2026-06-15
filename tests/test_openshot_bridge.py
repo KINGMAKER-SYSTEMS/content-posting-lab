@@ -508,6 +508,156 @@ def test_command_log_keeps_split_batches_unflattened(tmp_path):
     assert [a["type"] for a in flat] == ["update", "insert"]
 
 
+# ---------------------------------------------------------------------------
+# Isolated unit coverage for the four core translation functions —
+# source_media_type, clip_json, reader_json, effect_json — called DIRECTLY with
+# hand-built dicts rather than through timeline_json. A regression in clip
+# transform coercion or effect class mapping silently corrupts the OpenShot
+# payload (the clip/effect skips render with no error), so these paths need
+# point-blank tests, not just transitive integration coverage.
+# ---------------------------------------------------------------------------
+
+
+def test_source_media_type_maps_the_closed_source_vocabulary():
+    """Every production source in the closed SOURCE_TYPES vocab resolves to its
+    libopenshot media kind. video-producing sources (remotion/webscroll/css/broll)
+    collapse to "video"; still->image; vo/bed->audio. This is the single source of
+    truth for "what kind of footage exists" — a wrong mapping mislabels has_audio/
+    has_video and picks the wrong reader."""
+    assert openshot_bridge.source_media_type("remotion") == "video"
+    assert openshot_bridge.source_media_type("webscroll") == "video"
+    assert openshot_bridge.source_media_type("css") == "video"
+    assert openshot_bridge.source_media_type("broll") == "video"
+    assert openshot_bridge.source_media_type("still") == "image"
+    assert openshot_bridge.source_media_type("vo") == "audio"
+    assert openshot_bridge.source_media_type("bed") == "audio"
+    # every key in the closed vocab maps to exactly its declared media kind
+    for source, entry in openshot_bridge.SOURCE_TYPES.items():
+        assert openshot_bridge.source_media_type(source) == entry["media"]
+
+
+def test_source_media_type_is_case_insensitive_and_passes_unknowns_through():
+    """Source lookup lowercases input; an unknown/empty source falls through
+    unchanged so a raw media `type` still works downstream."""
+    assert openshot_bridge.source_media_type("REMOTION") == "video"
+    assert openshot_bridge.source_media_type("WebScroll") == "video"
+    # unknown source returns itself (not an error, not a default media kind)
+    assert openshot_bridge.source_media_type("mystery") == "mystery"
+    assert openshot_bridge.source_media_type("") == ""
+    assert openshot_bridge.source_media_type(None) == ""
+
+
+def test_clip_json_coerces_negative_scale_to_zero_and_zeroes_disabled_opacity():
+    """Direct clip_json: a negative scale is clamped to 0 (L237) and a disabled
+    clip is forced to alpha 0 regardless of its transform.opacity (L238). A
+    regression here corrupts the transform and the clip renders wrong/invisible."""
+    project = {"fps": 30, "assets": {}, "tracks": {}}
+    clip = {
+        "id": "c1",
+        "assetId": "missing",
+        "trackId": "",
+        "start": 0.0,
+        "duration": 2.0,
+        "enabled": False,
+        "transform": {"scale": -5.0, "opacity": 0.9},
+    }
+
+    payload = openshot_bridge.clip_json(project, clip)
+
+    # negative scale clamped to 0 on both axes
+    assert payload["scale_x"]["Points"][0]["co"]["Y"] == 0.0
+    assert payload["scale_y"]["Points"][0]["co"]["Y"] == 0.0
+    # disabled clip -> alpha 0 even though transform.opacity is 0.9
+    assert payload["alpha"]["Points"][0]["co"]["Y"] == 0.0
+
+
+def test_clip_json_mutes_volume_and_defaults_geometry():
+    """A muted clip zeroes volume regardless of its volume field; an enabled clip
+    with no transform keeps the centered/full-scale defaults."""
+    project = {"fps": 30, "assets": {}, "tracks": {}}
+    muted = openshot_bridge.clip_json(
+        project,
+        {"id": "m", "assetId": "a", "trackId": "", "start": 0, "duration": 1, "muted": True, "volume": 1.0},
+    )
+    assert muted["volume"]["Points"][0]["co"]["Y"] == 0.0
+
+    plain = openshot_bridge.clip_json(
+        project,
+        {"id": "p", "assetId": "a", "trackId": "", "start": 0, "duration": 1},
+    )
+    # default transform: full scale, centered (0.5 -> 0.0), full alpha
+    assert plain["scale_x"]["Points"][0]["co"]["Y"] == 1.0
+    assert plain["location_x"]["Points"][0]["co"]["Y"] == 0.0
+    assert plain["alpha"]["Points"][0]["co"]["Y"] == 1.0
+    assert plain["volume"]["Points"][0]["co"]["Y"] == 100.0  # editor 1.0 -> openshot 100
+
+
+def test_reader_json_selects_reader_class_by_media_kind():
+    """reader_json picks DummyReader when there's no src, FFmpegReader for
+    video/audio assets, and QtImageReader for images. A wrong reader class makes
+    libopenshot fail to open the asset."""
+    project = {"width": 1920, "height": 1080, "fps": 30}
+
+    no_src = openshot_bridge.reader_json(project, {"id": "x", "src": ""}, duration=2.0)
+    assert no_src["type"] == "DummyReader"
+
+    video = openshot_bridge.reader_json(project, {"id": "v", "src": "/clip.mp4", "type": "video"}, duration=2.0)
+    assert video["type"] == "FFmpegReader"
+    assert video["has_video"] is True and video["has_audio"] is False
+
+    audio = openshot_bridge.reader_json(project, {"id": "a", "src": "/vo.wav", "type": "audio"}, duration=2.0)
+    assert audio["type"] == "FFmpegReader"
+    assert audio["has_audio"] is True and audio["has_video"] is False
+
+    image = openshot_bridge.reader_json(project, {"id": "i", "src": "/card.png", "type": "image"}, duration=2.0)
+    assert image["type"] == "QtImageReader"
+
+
+def test_reader_json_resolves_source_tagged_assets_and_video_length():
+    """An asset's production `source` (remotion->video) wins over its raw type for
+    reader selection, and video_length is duration*fps (floored at 1 frame)."""
+    project = {"width": 1280, "height": 720, "fps": 24}
+    asset = {"id": "shot", "src": "/term.mp4", "source": "remotion"}
+
+    reader = openshot_bridge.reader_json(project, asset, duration=3.0)
+
+    assert reader["type"] == "FFmpegReader"  # remotion -> video -> FFmpegReader
+    assert reader["has_video"] is True
+    assert reader["fps"] == {"num": 24, "den": 1}
+    assert reader["video_length"] == int(3.0 * 24)
+    # zero-ish duration still yields at least one frame
+    assert openshot_bridge.reader_json(project, asset, duration=0.0)["video_length"] == 1
+
+
+def test_effect_json_maps_classes_and_falls_through_for_unknown_types():
+    """effect_json maps the closed editor effect vocab to libopenshot classes and
+    falls through with the raw type for anything unknown (so nothing is silently
+    dropped). A bad class name makes OpenShot skip the effect at render with no
+    error — exactly the silent-corruption case this pins down."""
+    fade_in = openshot_bridge.effect_json({"id": "f1", "type": "fadeIn", "params": {"duration": 0.5}}, fps=30)
+    assert fade_in["type"] == "Fade"
+    assert fade_in["fade"] == "in"
+    assert fade_in["duration"]["Points"][0]["co"]["Y"] == 0.5
+
+    fade_out = openshot_bridge.effect_json({"id": "f2", "type": "fadeOut", "params": {}}, fps=30)
+    assert fade_out["fade"] == "out"
+    assert fade_out["duration"]["Points"][0]["co"]["Y"] == 0.0  # missing param -> 0
+
+    bright = openshot_bridge.effect_json({"id": "b", "type": "brightness", "params": {"value": -0.3}}, fps=30)
+    assert bright["type"] == "Brightness"
+    assert bright["brightness"]["Points"][0]["co"]["Y"] == -0.3
+    assert bright["contrast"]["Points"][0]["co"]["Y"] == 0.0
+
+    sat = openshot_bridge.effect_json({"id": "s", "type": "saturation", "params": {"value": 1.4}}, fps=30)
+    assert sat["type"] == "Saturation"
+    assert sat["saturation"]["Points"][0]["co"]["Y"] == 1.4
+
+    # unknown type falls through with the raw type and no class-specific props
+    unknown = openshot_bridge.effect_json({"id": "u", "type": "kaleidoscope", "params": {}}, fps=30)
+    assert unknown["type"] == "kaleidoscope"
+    assert unknown == {"id": "u", "type": "kaleidoscope"}
+
+
 # ── repo-hygiene guard ────────────────────────────────────────────────────────
 # openshot_bridge.py is imported at app load (routers/agenticnews.py). It was once
 # untracked and nearly lost; a clean checkout that's missing it raises

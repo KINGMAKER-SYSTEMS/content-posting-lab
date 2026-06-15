@@ -760,10 +760,22 @@ def _mux_timeline_audio(
         source_start = max(0.0, float(clip.get("sourceStart") or 0))
         clip_duration = max(0.001, float(clip.get("duration") or duration))
         volume = max(0.0, float(clip.get("volume") or 1.0))
+        # Apply fadeIn/fadeOut the same way the ffmpeg-layered fallback does, so
+        # OpenShot-muxed audio honors crossfade/ducking effects instead of
+        # silently dropping them. Timings are clip-relative (PTS reset to 0 by
+        # asetpts), inserted between volume and the timeline adelay offset.
+        afades = ""
+        a_fade_in = _fade_window(clip, "fadeIn")
+        if a_fade_in is not None:
+            afades += f"afade=t=in:st=0:d={min(a_fade_in, clip_duration):.3f},"
+        a_fade_out = _fade_window(clip, "fadeOut")
+        if a_fade_out is not None:
+            a_out_d = min(a_fade_out, clip_duration)
+            afades += f"afade=t=out:st={max(0.0, clip_duration - a_out_d):.3f}:d={a_out_d:.3f},"
         filters.append(
             f"[{input_index}:a]atrim=start={source_start:.3f}:duration={clip_duration:.3f},"
             f"asetpts=PTS-STARTPTS,aresample=48000,aformat=channel_layouts=stereo,"
-            f"volume={volume:.4f},adelay={delay_ms}:all=1[{label}]"
+            f"volume={volume:.4f},{afades}adelay={delay_ms}:all=1[{label}]"
         )
         labels.append(f"[{label}]")
 
@@ -846,15 +858,50 @@ def _windowed_clips(project: dict[str, Any], *, window_start: float, duration: f
         front_trim = max(0.0, window_start - clip_start)
         next_clip = dict(clip)
         next_clip["start"] = overlap_start - window_start
-        next_clip["duration"] = max(0.001, overlap_end - overlap_start)
+        windowed_duration = max(0.001, overlap_end - overlap_start)
+        next_clip["duration"] = windowed_duration
         next_clip["sourceStart"] = float(clip.get("sourceStart") or 0) + front_trim
         # Keyframe point `t` is seconds relative to the clip start. Trimming the
         # clip's front by `front_trim` shifts that origin, so each point must move
         # down by the same amount (clamped at 0) or its animation fires too late.
         if front_trim and clip.get("keyframes"):
             next_clip["keyframes"] = _shift_keyframes(clip["keyframes"], -front_trim)
+        # Effects with a `duration` param (fadeIn/fadeOut) assume the ORIGINAL clip
+        # length. A windowed clip is shorter, so the param must be re-fit to the new
+        # window or it overruns it (a 1s fadeOut on a clip windowed to 2s is fine; on
+        # one windowed to 0.5s it would silence the whole clip). fadeIn is also
+        # start-anchored, so a front trim eats into it. Adjust both renderers' shared
+        # source-of-truth here so OpenShot (effects array) and ffmpeg (_fade_window)
+        # stay in sync.
+        if clip.get("effects") and (front_trim or windowed_duration < clip_duration):
+            next_clip["effects"] = _refit_effects(clip["effects"], front_trim, windowed_duration)
         windowed.append(next_clip)
     return windowed
+
+
+def _refit_effects(
+    effects: list[dict[str, Any]], front_trim: float, windowed_duration: float
+) -> list[dict[str, Any]]:
+    """Re-fit duration-bearing effects onto a windowed (shortened) clip.
+
+    fadeIn is start-anchored: a front trim of `front_trim` removes that much of its
+    ramp. fadeOut is end-anchored: a front trim leaves it alone, but neither fade may
+    be longer than the windowed clip. Effects with no `duration` param pass through."""
+
+    refit: list[dict[str, Any]] = []
+    for effect in effects:
+        effect = effect or {}
+        params = effect.get("params") or {}
+        original = params.get("duration")
+        if original is None:
+            refit.append(effect)
+            continue
+        new_duration = float(original)
+        if str(effect.get("type") or "") == "fadeIn":
+            new_duration -= front_trim
+        new_duration = max(0.0, min(new_duration, windowed_duration))
+        refit.append({**effect, "params": {**params, "duration": new_duration}})
+    return refit
 
 
 def _shift_keyframes(keyframes: list[dict[str, Any]], delta: float) -> list[dict[str, Any]]:

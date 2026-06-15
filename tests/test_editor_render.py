@@ -183,6 +183,131 @@ def _wclip(clip_id: str, *, start: float, duration: float, source_start: float =
     }
 
 
+def _renderer(tmp_path) -> "editor_render.FFmpegLayeredRenderer":
+    return editor_render.FFmpegLayeredRenderer(tmp_path / "renders")
+
+
+# --- direct unit tests for _visual_filter (no ffmpeg execution) ---
+# _visual_filter builds the per-clip filter-graph segment. A typo here silently
+# drops effects/keyframes or truncates the render, so assert the string directly
+# rather than only through an end-to-end render.
+
+def test_visual_filter_video_clip_emits_trim_branch(tmp_path):
+    """A video asset must be source-trimmed (sourceStart..+duration) and PTS-reset
+    so the overlay starts at the clip's in-point; image/title assets skip trim."""
+    r = _renderer(tmp_path)
+    clip = {"id": "c", "assetId": "v", "duration": 2.0, "sourceStart": 1.5, "transform": {}}
+    out = r._visual_filter(3, clip, {"type": "video"}, "lbl", 1920, 1080)
+    assert out.startswith("[3:v]trim=start=1.500:duration=2.000,setpts=PTS-STARTPTS,")
+    assert out.endswith("null[lbl]")
+
+
+def test_visual_filter_image_clip_skips_trim(tmp_path):
+    """An image/title asset is a still fed via -loop; trimming it would be a no-op
+    that ffmpeg rejects, so the filter must NOT contain a trim= segment."""
+    r = _renderer(tmp_path)
+    clip = {"id": "c", "assetId": "i", "duration": 1.0, "sourceStart": 0.0, "transform": {}}
+    out = r._visual_filter(1, clip, {"type": "image"}, "lbl", 1920, 1080)
+    assert "trim=" not in out
+    assert out.startswith("[1:v]scale=")
+
+
+def test_visual_filter_clamps_opacity_and_scale_into_string(tmp_path):
+    """Out-of-range opacity clamps to [0,1] and scale to a >0 floor, landing in the
+    colorchannelmixer/scale terms — an unclamped value produces an invalid filter
+    that ffmpeg rejects and the whole render fails."""
+    r = _renderer(tmp_path)
+    clip = {"id": "c", "assetId": "i", "duration": 1.0, "sourceStart": 0.0,
+            "transform": {"opacity": 5.0, "scale": -3.0}}
+    out = r._visual_filter(1, clip, {"type": "image"}, "lbl", 1920, 1080)
+    assert "colorchannelmixer=aa=1.0000" in out   # opacity 5.0 -> clamped to 1.0
+    assert "scale=iw*0.0100:ih*0.0100" in out      # scale -3.0 -> clamped to 0.01 floor
+
+
+def test_visual_filter_zero_duration_clip_omits_fades(tmp_path):
+    """A zero-duration clip (e.g. a degenerate window slice) must NOT emit a
+    fade=...:d=0 term — ffmpeg treats d<=0 as invalid and aborts the render. The
+    `duration > 0` guard in _visual_filter is what prevents that; pin it."""
+    r = _renderer(tmp_path)
+    clip = {"id": "z", "assetId": "v", "duration": 0.0, "sourceStart": 0.0, "transform": {},
+            "effects": [{"type": "fadeIn", "params": {"duration": 0.5}},
+                        {"type": "fadeOut", "params": {"duration": 0.5}}]}
+    out = r._visual_filter(2, clip, {"type": "video"}, "lbl", 1920, 1080)
+    assert "fade=" not in out  # no fade term at all for a zero-length clip
+
+
+# --- direct unit tests for _build_video_command (no ffmpeg execution) ---
+
+def test_build_video_command_loops_image_over_black_base(tmp_path):
+    """The command must open a black lavfi base layer at the project size/fps and
+    feed each still image with `-loop 1 -t <dur>` (a still without -loop yields a
+    single-frame input that truncates the overlay). Assert the constructed argv."""
+    red = _solid_png(tmp_path / "red.png", "red")
+    project = _project_with_card("cmd_img", red, x=0.0)
+    r = _renderer(tmp_path)
+    cmd, missing, warnings = r._build_video_command(
+        project, tmp_path / "out.mp4", duration=1.0, window_start=0.0
+    )
+    assert missing == [] and warnings == []
+    assert "lavfi" in cmd
+    assert "color=c=black:s=96x64:r=12:d=1.000" in cmd
+    # still image is looped for the clip duration
+    loop_i = cmd.index("-loop")
+    assert cmd[loop_i:loop_i + 5] == ["-loop", "1", "-t", "1.000", "-i"]
+    # exactly one mapped video output, libx264 + yuv420p, no audio map
+    assert cmd[cmd.index("-map") + 1] == "[v]"
+    assert "-c:v" in cmd and cmd[cmd.index("-c:v") + 1] == "libx264"
+    assert "yuv420p" in cmd
+    assert "[a]" not in cmd
+
+
+def test_build_video_command_records_missing_asset_without_raising(tmp_path):
+    """_build_video_command itself must NOT raise on a missing source — it records
+    the gap in `missing_assets` and skips feeding a phantom -i input. render() is
+    the layer that fails closed on a non-empty missing list; the builder stays pure
+    so callers can inspect the gaps."""
+    project = _project_with_card("cmd_missing", tmp_path / "gone.png", x=0.0)
+    r = _renderer(tmp_path)
+    cmd, missing, warnings = r._build_video_command(
+        project, tmp_path / "out.mp4", duration=1.0, window_start=0.0
+    )
+    assert [m["assetId"] for m in missing] == ["card"]
+    assert "gone.png" in missing[0]["src"]
+    # the missing source was skipped, not fed as an input
+    assert not any(str(tmp_path / "gone.png") == arg for arg in cmd)
+
+
+def test_build_video_command_adds_audio_map_and_amix(tmp_path):
+    """With an audio clip present the command must map a mixed [a] stream and encode
+    it (aac, -shortest). A dropped audio map silently ships a silent render."""
+    red = _solid_png(tmp_path / "red.png", "red")
+    voice = tmp_path / "vo.wav"
+    subprocess.run(
+        ["ffmpeg", "-y", "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
+         "-ac", "1", "-ar", "48000", str(voice)],
+        check=True, capture_output=True, text=True,
+    )
+    project = _project_with_card("cmd_audio", red, x=0.0)
+    project["assets"]["vo"] = {"id": "vo", "type": "audio", "src": str(voice)}
+    project["clips"]["vo_clip"] = {
+        "id": "vo_clip", "assetId": "vo", "trackId": "audio_1", "kind": "voiceover",
+        "start": 0.0, "duration": 1.0, "sourceStart": 0.0,
+        "enabled": True, "muted": False, "volume": 1.0, "transform": {},
+    }
+    r = _renderer(tmp_path)
+    cmd, missing, warnings = r._build_video_command(
+        project, tmp_path / "out.mp4", duration=1.0, window_start=0.0
+    )
+    assert missing == []
+    filter_arg = cmd[cmd.index("-filter_complex") + 1]
+    assert "amix=inputs=1" in filter_arg
+    # both [v] and [a] are mapped, audio encoded as aac with -shortest
+    maps = [cmd[i + 1] for i, a in enumerate(cmd) if a == "-map"]
+    assert "[v]" in maps and "[a]" in maps
+    assert "-c:a" in cmd and cmd[cmd.index("-c:a") + 1] == "aac"
+    assert "-shortest" in cmd
+
+
 def test_windowed_clips_trims_clip_overlapping_window_start():
     # clip spans [1, 5); window is [2, 6). Front 1s is before the window and must be cut.
     project = _window_project(_wclip("a", start=1.0, duration=4.0, source_start=10.0))
@@ -418,6 +543,39 @@ def test_open_shot_audio_mux_keeps_later_timeline_audio_clips(tmp_path):
 
     assert _mean_volume(video, start=0.1, duration=0.4) > -30
     assert _mean_volume(video, start=1.1, duration=0.4) > -30
+
+
+def test_open_shot_audio_mux_applies_audio_fadein(tmp_path):
+    """The OpenShot mux path must honor fadeIn/fadeOut effects the same way the
+    ffmpeg-layered fallback does. Without the fade the head of the clip is at
+    full level; with it the ramped head is audibly quieter than the body.
+    """
+    video = tmp_path / "silent_video.mp4"
+    tone = tmp_path / "tone.wav"
+    subprocess.run(
+        ["ffmpeg", "-y", "-f", "lavfi", "-i", "color=c=black:s=96x64:r=12:d=2",
+         "-c:v", "libx264", "-pix_fmt", "yuv420p", str(video)],
+        check=True, capture_output=True, text=True,
+    )
+    subprocess.run(
+        ["ffmpeg", "-y", "-f", "lavfi", "-i", "sine=frequency=440:duration=2.0",
+         "-ac", "1", "-ar", "48000", str(tone)],
+        check=True, capture_output=True, text=True,
+    )
+    project = timeline.new_project("audio_fade", width=96, height=64, fps=12)
+    project["assets"]["tone"] = {"id": "tone", "type": "audio", "src": str(tone)}
+    project["clips"]["tone"] = {
+        "id": "tone", "assetId": "tone", "trackId": "audio_1", "kind": "music",
+        "start": 0, "duration": 2.0, "sourceStart": 0, "enabled": True,
+        "muted": False, "volume": 1, "transform": {},
+        "effects": [{"id": "fx_in", "type": "fadeIn", "params": {"duration": 1.0}}],
+    }
+
+    assert editor_render._mux_timeline_audio(project, video, duration=2.0, asset_root=None) is True
+
+    head = _mean_volume(video, start=0.0, duration=0.25)
+    body = _mean_volume(video, start=1.2, duration=0.4)
+    assert head < body - 6  # fadeIn ramp keeps the head well below steady level
 
 
 def test_ffmpeg_renderer_exports_layered_mp4_and_preview_frame(tmp_path):
@@ -658,3 +816,201 @@ def test_windowed_clip_shifts_keyframe_times_when_front_trimmed():
     original = project["clips"]["card_clip"]["keyframes"][0]["points"]
     assert original[0]["t"] == pytest.approx(0.5)
     assert original[1]["t"] == pytest.approx(3.0)
+
+
+def test_opacity_keyframe_envelope_actually_animates_through_openshot(tmp_path):
+    """End-to-end: a clip with an opacity envelope (0 -> 1 over its duration) must RENDER
+    the fade through OpenShot, not just translate to correct JSON. Sample an early frame
+    (low opacity -> dark bg shows through) vs a late frame (high opacity -> card visible).
+    Pins the keyframe-envelope render contract; skips where libopenshot isn't installed."""
+    if not editor_render._import_openshot()[0]:
+        pytest.skip("libopenshot Python bindings not importable here")
+
+    white = _solid_png(tmp_path / "white.png", "white", size="64x48")
+    project = timeline.new_project("kf_render", width=64, height=48, fps=12)
+    project["assets"]["c"] = {"id": "c", "type": "image", "src": str(white)}
+    project["clips"]["c1"] = {
+        "id": "c1", "assetId": "c", "trackId": "graphics_1", "kind": "artifact",
+        "start": 0.0, "duration": 2.0, "sourceStart": 0.0,
+        "enabled": True, "muted": False, "volume": 1.0,
+        "transform": {"x": 0.5, "y": 0.5, "scale": 3.0, "opacity": 1.0}, "effects": [],
+        "keyframes": [{"property": "opacity", "points": [
+            {"t": 0.0, "value": 0.0, "interp": "linear"},
+            {"t": 2.0, "value": 1.0, "interp": "linear"},
+        ]}],
+        "metadata": {},
+    }
+    project.update({"sampleRate": 48000, "channels": 2, "channelLayout": 3})
+
+    renderer = editor_render.OpenShotRenderer(tmp_path)
+
+    def _luma(at: float) -> int:
+        frame = renderer.render_frame(project, at=at, output_path=tmp_path / f"f{at}.png")
+        out = subprocess.run(
+            ["ffmpeg", "-v", "error", "-i", str(frame["frame"]), "-vf", "crop=1:1:32:24",
+             "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "gray", "-"],
+            check=True, capture_output=True,
+        )
+        return out.stdout[0] if out.stdout else -1
+
+    early = _luma(0.2)   # low opacity -> mostly black background
+    late = _luma(1.8)    # high opacity -> white card visible
+    assert late > early + 30, (early, late)  # the fade-in actually rendered
+
+def test_windowed_clip_refits_fade_effect_durations_to_window():
+    """Fade effects assume the original clip length. A windowed (shortened) clip must
+    have its fade durations re-fit, or a fadeOut longer than the window silences the
+    whole clip, and a front-trim eats a start-anchored fadeIn. Fixes both renderers,
+    which read this same windowed effects array (OpenShot) / its duration param
+    (ffmpeg via _fade_window)."""
+    project = timeline.new_project("fade_window", width=96, height=64, fps=12)
+    project["clips"]["card_clip"] = {
+        "id": "card_clip",
+        "assetId": "card",
+        "trackId": "graphics_1",
+        "start": 0.0,
+        "duration": 5.0,  # clip spans timeline t=0..5
+        "sourceStart": 0.0,
+        "enabled": True,
+        "effects": [
+            {"type": "fadeIn", "params": {"duration": 1.0}},
+            {"type": "fadeOut", "params": {"duration": 1.0}},
+            {"type": "colorFilter", "params": {"hue": 30}},  # no duration -> untouched
+        ],
+    }
+
+    # Window timeline t=0..2 -> back-trim only, no front trim.
+    windowed = editor_render._windowed_clips(project, window_start=0.0, duration=2.0)
+    assert len(windowed) == 1
+    effects = {e["type"]: e for e in windowed[0]["effects"]}
+    # fadeOut must be clamped to the 2s window so it no longer overruns it. (Before
+    # the fix it stayed at 1.0 -> with a tighter window it would silence the clip.)
+    assert effects["fadeOut"]["params"]["duration"] == pytest.approx(1.0)
+    assert effects["colorFilter"]["params"] == {"hue": 30}
+
+    # Window timeline t=0.5..1.0 -> windowed_duration=0.5, so a 1s fade can't fit.
+    tiny = editor_render._windowed_clips(project, window_start=0.5, duration=0.5)
+    tiny_effects = {e["type"]: e for e in tiny[0]["effects"]}
+    # front_trim=0.5 eats half the 1s fadeIn -> 0.5, then clamped to the 0.5 window.
+    assert tiny_effects["fadeIn"]["params"]["duration"] == pytest.approx(0.5)
+    # fadeOut clamped to the 0.5 window.
+    assert tiny_effects["fadeOut"]["params"]["duration"] == pytest.approx(0.5)
+
+    # A front trim larger than the fadeIn wipes it entirely (clamped at 0).
+    gone = editor_render._windowed_clips(project, window_start=2.0, duration=2.0)
+    gone_effects = {e["type"]: e for e in gone[0]["effects"]}
+    assert gone_effects["fadeIn"]["params"]["duration"] == pytest.approx(0.0)
+
+    # Original project clip effects must be untouched (no aliasing of nested params).
+    orig = project["clips"]["card_clip"]["effects"]
+    assert orig[0]["params"]["duration"] == pytest.approx(1.0)
+    assert orig[1]["params"]["duration"] == pytest.approx(1.0)
+def _kf_clip(clip_id: str, *, start: float, duration: float, source_start: float,
+             tracks: list[dict]) -> dict:
+    """A windowing fixture clip that carries keyframe tracks."""
+    clip = _wclip(clip_id, start=start, duration=duration, source_start=source_start)
+    clip["keyframes"] = tracks
+    return clip
+
+
+def test_render_scope_project_carries_shifted_keyframes_into_scoped_clips():
+    """The commit's render path goes through _render_scope_project, not
+    _windowed_clips directly. A front-trimmed clip's keyframe `t` must arrive
+    shifted inside scoped["clips"] (what the renderer actually feeds OpenShot),
+    and sourceStart must shift in lockstep — the windowing<->keyframe interaction
+    the ticket flags as under-tested."""
+    project = _window_project(
+        _kf_clip(
+            "a",
+            start=2.0,
+            duration=6.0,            # clip spans timeline t=2..8
+            source_start=4.0,
+            tracks=[{"property": "opacity", "points": [
+                {"t": 1.0, "value": 0.0},   # before window -> clamps to 0
+                {"t": 4.0, "value": 1.0},   # 4 - 3 = 1.0 after shift
+            ]}],
+        )
+    )
+    # Window timeline t=5..8 -> front_trim = 5 - 2 = 3.0s.
+    scoped = editor_render._render_scope_project(project, window_start=5.0, duration=3.0)
+
+    assert scoped is not project
+    clip = scoped["clips"]["a"]
+    assert clip["start"] == pytest.approx(0.0)
+    assert clip["sourceStart"] == pytest.approx(7.0)        # 4 + 3 front-trim
+    points = clip["keyframes"][0]["points"]
+    assert points[0]["t"] == pytest.approx(0.0)             # 1.0 - 3.0 clamped
+    assert points[1]["t"] == pytest.approx(1.0)             # 4.0 - 3.0
+    # Source project keyframes untouched (deep copy, no aliasing).
+    assert project["clips"]["a"]["keyframes"][0]["points"][0]["t"] == pytest.approx(1.0)
+
+
+def test_windowed_clips_keyframe_exactly_on_window_start_lands_at_zero():
+    """Boundary case: a keyframe whose `t` equals the front-trim amount lands
+    exactly at 0 (the new window origin) — not negative, not clamped away from a
+    real value. The reveal that was scheduled at the cut must fire at frame 0."""
+    project = _window_project(
+        _kf_clip(
+            "a",
+            start=1.0,
+            duration=5.0,            # clip spans t=1..6
+            source_start=0.0,
+            tracks=[{"property": "scale", "points": [
+                {"t": 2.0, "value": 1.0},   # at window start exactly -> t == front_trim
+                {"t": 4.0, "value": 1.5},
+            ]}],
+        )
+    )
+    # Window t=3..6 -> front_trim = 3 - 1 = 2.0s, equal to the first point's t.
+    windowed = editor_render._windowed_clips(project, window_start=3.0, duration=3.0)
+
+    points = windowed[0]["keyframes"][0]["points"]
+    assert points[0]["t"] == pytest.approx(0.0)             # 2.0 - 2.0, lands on origin
+    assert points[1]["t"] == pytest.approx(2.0)             # 4.0 - 2.0
+
+
+def test_windowed_clips_shifts_every_keyframe_track_independently():
+    """Front-trim must shift ALL keyframe tracks on a clip (opacity, scale, x, y),
+    not just the first. A clip with multiple animated properties must keep every
+    envelope aligned after windowing."""
+    project = _window_project(
+        _kf_clip(
+            "a",
+            start=0.0,
+            duration=10.0,
+            source_start=0.0,
+            tracks=[
+                {"property": "opacity", "points": [{"t": 5.0, "value": 1.0}]},
+                {"property": "scale", "points": [{"t": 6.0, "value": 2.0}]},
+                {"property": "x", "points": [{"t": 7.0, "value": 0.3}]},
+            ],
+        )
+    )
+    # Window t=4..10 -> front_trim = 4.0s applied to every track.
+    windowed = editor_render._windowed_clips(project, window_start=4.0, duration=6.0)
+    tracks = {t["property"]: t["points"][0]["t"] for t in windowed[0]["keyframes"]}
+
+    assert tracks["opacity"] == pytest.approx(1.0)          # 5 - 4
+    assert tracks["scale"] == pytest.approx(2.0)            # 6 - 4
+    assert tracks["x"] == pytest.approx(3.0)                # 7 - 4
+
+
+def test_windowed_clips_leading_clip_no_front_trim_leaves_keyframes_untouched():
+    """A clip that starts at/after the window origin has no front-trim, so its
+    keyframes must pass through identically (the shift branch is skipped) and the
+    original keyframe list object is reused, not needlessly deep-copied."""
+    original_tracks = [{"property": "opacity", "points": [
+        {"t": 0.5, "value": 0.0}, {"t": 2.0, "value": 1.0},
+    ]}]
+    project = _window_project(
+        _kf_clip("a", start=2.0, duration=4.0, source_start=1.5, tracks=original_tracks)
+    )
+    # Window t=0..8: clip starts 2s in, no front-trim (window_start=0 <= clip start).
+    windowed = editor_render._windowed_clips(project, window_start=0.0, duration=8.0)
+
+    clip = windowed[0]
+    assert clip["start"] == pytest.approx(2.0)              # rebased onto window origin (==0)
+    assert clip["sourceStart"] == pytest.approx(1.5)        # untouched, no front-trim
+    # No shift performed -> the keyframe list passes through by reference.
+    assert clip["keyframes"] is original_tracks
+    assert clip["keyframes"][0]["points"][0]["t"] == pytest.approx(0.5)

@@ -107,12 +107,30 @@ def plan(only_ep: str | None) -> list[tuple[Path, Path, str]]:
     return moves
 
 
+def _relink(src: Path, dst: Path) -> None:
+    """Replace the flat regular file ``src`` with a back-compat symlink -> ``dst``.
+    Atomic-ish: link is built next to src then renamed over it, so a crash never
+    leaves src missing (the original copy already lives at dst)."""
+    link_tmp = src.with_name(src.name + ".link")
+    if link_tmp.is_symlink() or link_tmp.exists():
+        link_tmp.unlink()
+    link_tmp.symlink_to(dst)
+    os.replace(link_tmp, src)  # replaces the regular file with the symlink
+
+
 def apply(moves: list[tuple[Path, Path, str]]) -> None:
-    done = skipped = failed = 0
+    done = relinked = skipped = failed = 0
     for src, dst, reason in moves:
         try:
             if dst.exists() and dst.stat().st_size == src.stat().st_size:
-                skipped += 1
+                # already copied. A prior run may have crashed BEFORE leaving the
+                # back-compat symlink, so src is still a real file pointing nowhere
+                # in the schema — heal it so a re-run completes the migration.
+                if not src.is_dir() and not src.is_symlink():
+                    _relink(src, dst)
+                    relinked += 1
+                else:
+                    skipped += 1
                 continue
             dst.parent.mkdir(parents=True, exist_ok=True)
             if src.is_dir():
@@ -128,13 +146,13 @@ def apply(moves: list[tuple[Path, Path, str]]) -> None:
                 continue
             os.replace(tmp, dst)
             # leave a symlink at the old flat path so old references keep resolving.
-            src.unlink()
-            src.symlink_to(dst)
+            _relink(src, dst)
             done += 1
         except Exception as e:  # noqa: BLE001
             print(f"  !! FAILED {src.name}: {e}")
             failed += 1
-    print(f"\nApplied: {done} copied+linked, {skipped} already-migrated, {failed} failed.")
+    print(f"\nApplied: {done} copied+linked, {relinked} re-linked (heal), "
+          f"{skipped} already-migrated, {failed} failed.")
 
 
 def main() -> None:
