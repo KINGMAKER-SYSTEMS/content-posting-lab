@@ -711,3 +711,34 @@ def test_app_imported_python_modules_are_all_tracked():
         "app-imported python modules are NOT git-tracked (clean checkout would "
         f"ModuleNotFoundError): {untracked}"
     )
+
+
+def test_asset_src_resolution_is_consolidated(tmp_path):
+    """All three former copies of /agenticnews-assets/ resolution now route through
+    the one canonical resolver (openshot_bridge._resolve_asset_src). Pin that the
+    bridge resolver, editor_render's Path wrapper, and the ffmpeg fallback's method
+    agree on every branch so they can never silently diverge again."""
+    from services import editor_render
+
+    asset_url = "/agenticnews-assets/card.png"
+    passthrough = str(tmp_path / "vo.wav")
+    expected = str(tmp_path / "card.png")
+
+    # Canonical resolver (str -> str), accepts Path or str asset_root.
+    assert openshot_bridge._resolve_asset_src(asset_url, asset_root=tmp_path) == expected
+    assert openshot_bridge._resolve_asset_src(asset_url, asset_root=str(tmp_path)) == expected
+    # No asset_root and non-asset srcs pass straight through.
+    assert openshot_bridge._resolve_asset_src(asset_url, asset_root=None) == asset_url
+    assert openshot_bridge._resolve_asset_src(passthrough, asset_root=tmp_path) == passthrough
+
+    # editor_render's Path-typed wrapper must agree, returning a Path for the same inputs.
+    assert editor_render._resolve_asset_src(asset_url, tmp_path) == Path(expected)
+    assert editor_render._resolve_asset_src(asset_url, None) == Path(asset_url)
+    assert editor_render._resolve_asset_src(passthrough, tmp_path) == Path(passthrough)
+
+    # The ffmpeg fallback's method delegates to the same wrapper via self.asset_root.
+    renderer = editor_render.FFmpegLayeredRenderer(tmp_path / "renders", asset_root=tmp_path)
+    assert renderer._resolve_src(asset_url) == Path(expected)
+    assert renderer._resolve_src(passthrough) == Path(passthrough)
+    rootless = editor_render.FFmpegLayeredRenderer(tmp_path / "renders")
+    assert rootless._resolve_src(asset_url) == Path(asset_url)

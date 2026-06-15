@@ -584,9 +584,7 @@ class FFmpegLayeredRenderer:
         )
 
     def _resolve_src(self, src: str) -> Path:
-        if src.startswith("/agenticnews-assets/") and self.asset_root:
-            return self.asset_root / src.removeprefix("/agenticnews-assets/")
-        return Path(src)
+        return _resolve_asset_src(src, self.asset_root)
 
 
 def _import_openshot():
@@ -831,9 +829,12 @@ def _missing_assets(project: dict[str, Any], asset_root: Path | None) -> list[di
 
 
 def _resolve_asset_src(src: str, asset_root: Path | None) -> Path:
-    if src.startswith("/agenticnews-assets/") and asset_root:
-        return asset_root / src.removeprefix("/agenticnews-assets/")
-    return Path(src)
+    """Path-typed view of the canonical ``/agenticnews-assets/`` resolver.
+
+    The single source of truth is ``openshot_bridge._resolve_asset_src`` (str ->
+    str); this wrapper exists only because the ffmpeg fallback's callers need a
+    ``Path`` to call ``.exists()`` on. ponytail: one resolver, one coercion."""
+    return Path(openshot_bridge._resolve_asset_src(src, asset_root=asset_root))
 
 
 def _fps(project: dict[str, Any]) -> float:
