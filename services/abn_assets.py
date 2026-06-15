@@ -169,6 +169,15 @@ def asset_path(
         )
     subdir, default_ext = KINDS[kind]
     ext = (ext if ext is not None else default_ext).lstrip(".")
+    # ext is caller-controlled and gets concatenated straight into the basename, so an
+    # ext like 'png/../../evil' would carry a path separator + traversal and land the asset
+    # OUTSIDE the episode dir (or the whole asset store) — the exact off-schema escape this
+    # gateway exists to close. Allow only a plain alphanumeric extension (or empty for scratch).
+    if ext and not re.fullmatch(r"[A-Za-z0-9]+", ext):
+        raise AssetPathError(
+            f"bad extension {ext!r}. Use a plain extension like 'png'/'mp4'/'json' "
+            f"(alphanumerics only; no dots, slashes, or path traversal)."
+        )
 
     # singleton episode-root files (timeline.json, manifest.json): name is the kind itself
     if subdir == ".":

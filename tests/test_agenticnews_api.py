@@ -334,6 +334,68 @@ def test_tools_assemble_episode_name_routes_through_asset_gateway(client, monkey
     assert not (db.ASSETS_DIR / "ep_648e806a_s0_assembled.mp4").exists()
 
 
+def test_tools_cards_non_episode_name_falls_back_to_flat(client, monkeypatch):
+    """tool_cards must catch the gateway's AssetPathError for a non-episode name and fall
+    back to the flat ``{name}_card.png`` — the catch at routers/agenticnews.py:293 was
+    untested for cards. A bare 'card' has no ep_ prefix, so split_slug raises and we fall back."""
+    import routers.agenticnews as r
+
+    async def fake_sh(cmd, timeout=60):
+        out = db.ASSETS_DIR / "card_card.png"
+        out.write_bytes(b"\x89PNG")
+        return 0, "ok"
+
+    monkeypatch.setattr(r, "_sh", fake_sh)
+    resp = client.post("/api/agenticnews/tools/cards", json={"title": "HELLO"})
+    assert resp.status_code == 200
+    assert resp.json()["path"] == "/agenticnews-assets/card_card.png"
+
+
+def test_tools_cards_episode_name_routes_through_asset_gateway(client, monkeypatch):
+    """An episode-scoped card name lands under {ep_id}/css/ via the gateway (the success
+    side of the line-293 catch), URL carrying the full subpath."""
+    import routers.agenticnews as r
+
+    async def fake_sh(cmd, timeout=60):
+        out = db.ASSETS_DIR / "ep_648e806a" / "css" / "s0_card.png"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_bytes(b"\x89PNG")
+        return 0, "ok"
+
+    monkeypatch.setattr(r, "_sh", fake_sh)
+    resp = client.post(
+        "/api/agenticnews/tools/cards",
+        json={"title": "HELLO", "name": "ep_648e806a_s0"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["path"] == "/agenticnews-assets/ep_648e806a/css/s0_card.png"
+    assert not (db.ASSETS_DIR / "ep_648e806a_s0_card.png").exists()
+
+
+def test_tools_assemble_non_episode_name_falls_back_to_flat(client, monkeypatch):
+    """tool_assemble must catch the gateway's AssetPathError for a non-episode name and fall
+    back to the flat ``{name}_assembled.mp4`` (the catch at routers/agenticnews.py:334 was
+    untested for the fallback branch). 'clip' has no ep_ prefix, so split_slug raises."""
+    import routers.agenticnews as r
+
+    async def fake_sh(cmd, timeout=300):
+        out = db.ASSETS_DIR / "clip_assembled.mp4"
+        out.write_bytes(b"\x00\x00\x00\x18ftyp")
+        return 0, "ok"
+
+    monkeypatch.setattr(r, "_sh", fake_sh)
+    resp = client.post(
+        "/api/agenticnews/tools/assemble",
+        json={
+            "name": "clip",
+            "card_path": "/agenticnews-assets/card_card.png",
+            "vo_path": "/agenticnews-assets/vo.wav",
+        },
+    )
+    assert resp.status_code == 200
+    assert resp.json()["path"] == "/agenticnews-assets/clip_assembled.mp4"
+
+
 def test_editor_load_reads_timeline_and_render_from_schema_path(client):
     """editor_load must read the timeline + render the factory ACTUALLY wrote — the schema
     paths {ep}/timeline.json and {ep}/renders/episode.mp4 (resolved via the abn_assets

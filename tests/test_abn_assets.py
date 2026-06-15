@@ -68,6 +68,100 @@ def test_path_traversal_slug_raises(gw):
         gw.asset_path("ep_648e806a", "card", "../../etc/passwd")
 
 
+# --- AssetPathError surface: every off-schema episode id is rejected ----------------
+# These are the exact malformed ids that could otherwise "bypass the gateway and land
+# assets in unexpected locations" — the GC depends on a clean per-episode schema, so a
+# stray id MUST raise rather than mkdir an off-schema dir. _validate_ep() is the choke
+# point (asset_path / episode_dir / asset_url all route through it).
+
+@pytest.mark.parametrize("ep_id", [
+    "",                       # empty
+    "not-an-episode",         # arbitrary string
+    "EP_648E806A",            # uppercase hex (regex is lowercase-only)
+    "ep_648e8",               # too-short hex (<6)
+    "ep_",                    # no hex at all
+    "ep_xyz123",              # non-hex chars
+    "ep_648e806a_s0",         # the FLAT factory slug — NOT a bare ep_id (must go via split_slug)
+    "ep_648e806a/../x",       # path traversal embedded in the id
+    "../ep_648e806a",         # leading traversal
+    "rec_648e806a",           # 'rec_' without the 'ep_'
+])
+def test_off_schema_episode_id_raises(gw, ep_id):
+    with pytest.raises(gw.AssetPathError):
+        gw.episode_dir(ep_id)
+    with pytest.raises(gw.AssetPathError):
+        gw.asset_path(ep_id, "card", "s0")
+
+
+@pytest.mark.parametrize("ep_id", [
+    "ep_648e806a",            # canonical factory id
+    "rec_ep_6a09fa6f",        # recreate id
+    "ep_648e80",              # exactly 6 hex (min)
+    "ep5",                    # legacy short form
+    "  ep_648e806a  ",        # surrounding whitespace is stripped, then valid
+])
+def test_on_schema_episode_id_accepted(gw, ep_id):
+    # the valid forms must NOT raise (guards against an over-tight regex regression)
+    p = gw.asset_path(ep_id, "card", "s0")
+    assert p.parent.name == "css"
+
+
+# --- the ext escape hole: a caller-controlled extension must not carry a path -------
+# ext is concatenated straight into the basename. Before the guard, ext='png/../../evil'
+# (or worse) walked OUT of the episode dir and even out of the whole asset store, defeating
+# the schema the GC relies on. These pin that an off-schema ext raises AssetPathError.
+
+@pytest.mark.parametrize("ext", [
+    "png/../../evil",                              # separator + traversal within the store
+    "png/../../../../../../../../tmp/abn_pwned",   # escape the asset store entirely
+    "p/n/g",                                       # embedded slashes
+    "png\\evil",                                   # windows-style separator
+    "png.",                                        # trailing dot (would yield a dotfile-ish name)
+    "p ng",                                        # embedded space
+])
+def test_off_schema_ext_raises(gw, ext):
+    with pytest.raises(gw.AssetPathError):
+        gw.asset_path("ep_648e806a", "card", "s0", ext=ext)
+
+
+def test_ext_escape_cannot_leave_asset_store(gw):
+    # the concrete attack: prove the resulting path (if it didn't raise) would escape.
+    # With the guard in place it raises; assert that, then assert the legit ext still works.
+    with pytest.raises(gw.AssetPathError):
+        gw.asset_path("ep_648e806a", "card", "s0", ext="png/../../../../tmp/x")
+    ok = gw.asset_path("ep_648e806a", "card", "s0", ext="png")
+    assert ok.resolve().is_relative_to(gw.ASSETS_DIR.resolve())
+    assert ok.name == "s0_card.png"
+
+
+# --- episode_singleton_path: off-schema kind raises; off-schema id returns None ------
+# It's a READ resolver: a non-singleton kind is a programming error (RAISE), but a
+# non-episode id is a legit ad-hoc render the caller falls back on (None, never raise).
+
+@pytest.mark.parametrize("kind", ["card", "scratch", "voice", "ui", "frobnicate"])
+def test_episode_singleton_path_raises_on_non_singleton_kind(gw, kind):
+    with pytest.raises(gw.AssetPathError):
+        gw.episode_singleton_path("ep_648e806a", kind)
+
+
+@pytest.mark.parametrize("bad_id", ["clip", "vid_abc123", "not-an-ep", ""])
+def test_episode_singleton_path_returns_none_on_off_schema_id(gw, bad_id):
+    # off-schema id swallows the AssetPathError internally and returns None (no raise)
+    assert gw.episode_singleton_path(bad_id, "timeline") is None
+
+
+# --- split_slug: a flat slug with no episode prefix must raise -----------------------
+@pytest.mark.parametrize("flat", [
+    "just_a_name",            # no ep_ prefix at all
+    "video_abc",              # id-shaped but not an ep
+    "EP_648E806A_s0",         # uppercase — not matched by the lowercase-hex prefix
+    "",                       # empty
+])
+def test_split_slug_raises_on_missing_prefix(gw, flat):
+    with pytest.raises(gw.AssetPathError):
+        gw.split_slug(flat)
+
+
 def test_shared_categories(gw):
     p = gw.shared_path("audio", "bed_v2.mp3")
     assert p.parent.name == "audio" and p.parent.parent.name == "_shared"
