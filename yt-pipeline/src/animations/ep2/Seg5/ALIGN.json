@@ -1,0 +1,19 @@
+{
+  "segment": 5,
+  "videos": [
+    { "video": "Video1", "voStart": 3.96, "voEnd": 14.40 },
+    { "video": "Video2", "voStart": 14.72, "voEnd": 28.56 },
+    { "video": "Video3", "voStart": 33.56, "voEnd": 47.68 },
+    { "video": "Video4", "voStart": 54.70, "voEnd": 66.34 },
+    { "video": "Video5", "voStart": 89.32, "voEnd": 98.84 }
+  ],
+  "lastFixPass": {
+    "date": "2026-06-11",
+    "scope": "composition/sizing only — VO windows unchanged",
+    "changes": {
+      "Video2": "pre-rolled empty ladder scaffold (riser+boxes+tracks+slots) so frame 0 and the 0-3.9s pre-first-number stretch are composed",
+      "Video4": "hero 'KEEPS TWO LEDGERS' 64px->60px to clear x=1264 in the 9:16 crop; Progress Ledger 'step status'->'per-step' (verbatim)",
+      "Video5": "verdict 'THE CONTRACT' 88px->76px + recentered to fit the 608px column"
+    }
+  }
+}

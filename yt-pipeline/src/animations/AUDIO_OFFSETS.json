@@ -1,0 +1,128 @@
+[
+ {
+  "segment": 0,
+  "audioStart": 0.94,
+  "expected": 0.0,
+  "drift": 1.5,
+  "matchScore": "8/8",
+  "firstWords": "Microsoft's Scout agent just turned",
+  "anchorWord": "Microsoft's",
+  "matchedWords": 248,
+  "p90residual": 0.06
+ },
+ {
+  "segment": 1,
+  "audioStart": 105.12,
+  "expected": 104.76,
+  "drift": 1.16,
+  "matchScore": "8/8",
+  "firstWords": "Microsoft just dropped MAI Code",
+  "anchorWord": "Microsoft",
+  "matchedWords": 196,
+  "p90residual": 0.06
+ },
+ {
+  "segment": 2,
+  "audioStart": 189.38,
+  "expected": 189.36,
+  "drift": 0.54,
+  "matchScore": "8/8",
+  "firstWords": "What if you could skip",
+  "anchorWord": "What",
+  "matchedWords": 172,
+  "p90residual": 0.06
+ },
+ {
+  "segment": 3,
+  "audioStart": 264.28,
+  "expected": 264.6,
+  "drift": 0.32,
+  "matchScore": "8/8",
+  "firstWords": "Did Claude, the AI coding",
+  "anchorWord": "Did",
+  "matchedWords": 191,
+  "p90residual": 0.05
+ },
+ {
+  "segment": 4,
+  "audioStart": 344.38,
+  "expected": 345.04,
+  "drift": -0.36,
+  "matchScore": "8/8",
+  "firstWords": "What if AI wrote every",
+  "anchorWord": "What",
+  "matchedWords": 201,
+  "p90residual": 0.04
+ },
+ {
+  "segment": 5,
+  "audioStart": 429.6,
+  "expected": 430.6,
+  "drift": -0.6,
+  "matchScore": "7/8",
+  "firstWords": "And Thropic just dropped an",
+  "anchorWord": "just",
+  "matchedWords": 207,
+  "p90residual": 0.04
+ },
+ {
+  "segment": 6,
+  "audioStart": 519.14,
+  "expected": 520.48,
+  "drift": -1.76,
+  "matchScore": "8/8",
+  "firstWords": "The NSA is using Anthropic's",
+  "anchorWord": "The",
+  "matchedWords": 199,
+  "p90residual": 0.06
+ },
+ {
+  "segment": 7,
+  "piecewise": [
+   {
+    "gridFrom": 21.84,
+    "gridTo": 30.0,
+    "audioOffset": 585.46
+   },
+   {
+    "gridFrom": 30.0,
+    "gridTo": 80.16,
+    "audioOffset": 606.47
+   }
+  ],
+  "note": "grid drops ~24s of spoken VO (origaudio 612.6-636.6); head anchored on distinctive words: Microsoft, dropped, Scout,, agent"
+ },
+ {
+  "segment": 8,
+  "audioStart": 686.3,
+  "expected": 688.32,
+  "drift": -1.3,
+  "matchScore": "6/8",
+  "firstWords": "chat GPT's 175 billion parameters",
+  "anchorWord": "175",
+  "matchedWords": 190,
+  "p90residual": 0.06
+ },
+ {
+  "segment": 9,
+  "audioStart": 773.78,
+  "expected": 776.12,
+  "drift": -1.74,
+  "matchScore": "8/8",
+  "firstWords": "What if your Nvidia GPUs",
+  "anchorWord": "What",
+  "matchedWords": 204,
+  "p90residual": 0.04
+ },
+ {
+  "segment": 10,
+  "audioStart": 857.5,
+  "expected": 860.44,
+  "drift": -2.5,
+  "matchScore": "8/8",
+  "firstWords": "Programmers are now writing documentation,",
+  "anchorWord": "Programmers",
+  "matchedWords": 202,
+  "p90residual": 0.06
+ }
+]

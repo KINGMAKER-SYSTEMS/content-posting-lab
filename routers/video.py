@@ -219,6 +219,7 @@ PROVIDER_SCHEMAS: dict[str, dict] = {
             "frames_per_second": {"type": "range", "min": 5, "max": 30, "default": 16, "step": 1, "label": "FPS"},
             "go_fast": {"type": "toggle", "default": True, "label": "Go Fast"},
             "interpolate_output": {"type": "toggle", "default": True, "label": "Interpolate to 30fps"},
+            "negative_prompt": {"type": "text", "default": "", "label": "Negative Prompt", "placeholder": "motion, morphing, text, extra vehicles..."},
             "lora_weights_transformer": {"type": "text", "default": "", "label": "LoRA Weights URL", "placeholder": "https://huggingface.co/.../lora.safetensors"},
             "lora_scale_transformer": {"type": "range", "min": 0, "max": 2, "default": 1, "step": 0.1, "label": "LoRA Scale"},
         },
@@ -232,6 +233,7 @@ PROVIDER_SCHEMAS: dict[str, dict] = {
             "sample_shift": {"type": "range", "min": 1, "max": 20, "default": 5, "step": 1, "label": "Sample Shift"},
             "frames_per_second": {"type": "range", "min": 5, "max": 24, "default": 16, "step": 1, "label": "FPS"},
             "go_fast": {"type": "toggle", "default": False, "label": "Go Fast"},
+            "negative_prompt": {"type": "text", "default": "", "label": "Negative Prompt", "placeholder": "motion, morphing, text, extra vehicles..."},
         },
     },
     "pruna-pvideo": {
@@ -255,6 +257,7 @@ PROVIDER_SCHEMAS: dict[str, dict] = {
             "frames_per_second": {"type": "range", "min": 5, "max": 30, "default": 16, "step": 1, "label": "FPS"},
             "go_fast": {"type": "toggle", "default": True, "label": "Go Fast"},
             "interpolate_output": {"type": "toggle", "default": False, "label": "Interpolate to 30fps"},
+            "negative_prompt": {"type": "text", "default": "", "label": "Negative Prompt", "placeholder": "motion, morphing, text, extra vehicles..."},
             "lora_weights_transformer": {"type": "text", "default": "", "label": "LoRA Weights URL", "placeholder": "https://huggingface.co/.../lora.safetensors"},
             "lora_scale_transformer": {"type": "range", "min": 0, "max": 2, "default": 1, "step": 0.1, "label": "LoRA Scale"},
         },
@@ -319,6 +322,7 @@ async def generate_video(
     lora_scale_transformer: float | None = Form(None),
     lora_weights_transformer_2: str | None = Form(None),
     lora_scale_transformer_2: float | None = Form(None),
+    negative_prompt: str | None = Form(None),
     crop_mode: str | None = Form(None),
 ):
     if provider not in PROVIDERS:
@@ -361,6 +365,7 @@ async def generate_video(
         ("lora_scale_transformer", lora_scale_transformer),
         ("lora_weights_transformer_2", lora_weights_transformer_2),
         ("lora_scale_transformer_2", lora_scale_transformer_2),
+        ("negative_prompt", negative_prompt.strip() if negative_prompt else None),
         ("crop_mode", crop_mode),
     ]:
         if val is not None:
@@ -380,6 +385,7 @@ async def generate_video(
         "provider": provider,
         "count": count,
         "crop_mode": crop_mode if crop_mode and crop_mode != "none" else None,
+        "negative_prompt": extra.get("negative_prompt"),
         "project": project,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "videos": [{"index": i, "status": "queued"} for i in range(count)],
@@ -394,6 +400,7 @@ async def generate_video(
             "duration": duration,
             "aspect_ratio": aspect_ratio,
             "resolution": resolution,
+            "negative_prompt": extra.get("negative_prompt"),
             "has_media": image_data_uri is not None,
             "job_id": job_id,
             "timestamp": datetime.now(timezone.utc).isoformat(),

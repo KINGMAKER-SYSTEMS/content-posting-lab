@@ -1,0 +1,8929 @@
+[
+ {
+  "i": 0,
+  "title": "1-Click GitHub Token Stealing via a VSCode Bug",
+  "url": "https://blog.ammaraskar.com/github-token-stealing/",
+  "durationSec": 104.76,
+  "script": "Microsoft's Scout agent just turned AI coding into a double -edged sword. It powers rapid development, but also sharpened cyber -attack tools. From VS Code token hacks to Anthropic's mythos weaponized by the NSA, AI' autonomous coding leap is rewriting how software gets built and exploited in real time. One click on a malicious link in VS Code's web editor, GitHub .dev, and hackers grab your full GitHub access token. That token isn't just for one repo -it. Unwatched read -and -write access to every single repo you own, including private ones. Here's how it happens. VS Code runs about a million lines of TypeScript inside your browser using iframes to isolate code, but a bug let malicious JavaScript inside those iframes slip past the sandbox and steal your OAuth token. No installs, no extra permissions, just click, and boom, your keys are out. For anyone using GitHub' web editor, this means your entire code base, your private projects, even company IP, could be at risk from a single careless click. The good news, VS Code patched this within weeks after responsible disclosure, but it's a sharp reminder that browser -based IDE's handling powerful tokens need airtight sandboxing and strict OAuth scopes. Builders, here's the takeaway. Always update your tools and treat links with caution. Your GitHub token is your master key, and this bug showed how fast it can slip away if you're not careful. Next up, we'll break down how OAuth tokens work and why sandboxing is harder than it looks.",
+  "words": [
+   {
+    "w": "Microsoft's",
+    "t": 0.0
+   },
+   {
+    "w": "Scout",
+    "t": 1.32
+   },
+   {
+    "w": "agent",
+    "t": 1.66
+   },
+   {
+    "w": "just",
+    "t": 2.08
+   },
+   {
+    "w": "turned",
+    "t": 2.44
+   },
+   {
+    "w": "AI",
+    "t": 2.8
+   },
+   {
+    "w": "coding",
+    "t": 3.2
+   },
+   {
+    "w": "into",
+    "t": 3.64
+   },
+   {
+    "w": "a",
+    "t": 4.02
+   },
+   {
+    "w": "double",
+    "t": 4.4
+   },
+   {
+    "w": "-edged",
+    "t": 4.5
+   },
+   {
+    "w": "sword.",
+    "t": 4.8
+   },
+   {
+    "w": "It",
+    "t": 5.62
+   },
+   {
+    "w": "powers",
+    "t": 5.82
+   },
+   {
+    "w": "rapid",
+    "t": 6.2
+   },
+   {
+    "w": "development,",
+    "t": 6.64
+   },
+   {
+    "w": "but",
+    "t": 7.26
+   },
+   {
+    "w": "also",
+    "t": 7.54
+   },
+   {
+    "w": "sharpened",
+    "t": 8.02
+   },
+   {
+    "w": "cyber",
+    "t": 8.56
+   },
+   {
+    "w": "-attack",
+    "t": 8.9
+   },
+   {
+    "w": "tools.",
+    "t": 9.18
+   },
+   {
+    "w": "From",
+    "t": 10.06
+   },
+   {
+    "w": "VS",
+    "t": 10.38
+   },
+   {
+    "w": "Code",
+    "t": 10.68
+   },
+   {
+    "w": "token",
+    "t": 10.98
+   },
+   {
+    "w": "hacks",
+    "t": 11.38
+   },
+   {
+    "w": "to",
+    "t": 11.62
+   },
+   {
+    "w": "Anthropic's",
+    "t": 11.98
+   },
+   {
+    "w": "mythos",
+    "t": 12.76
+   },
+   {
+    "w": "weaponized",
+    "t": 13.2
+   },
+   {
+    "w": "by",
+    "t": 13.8
+   },
+   {
+    "w": "the",
+    "t": 14.06
+   },
+   {
+    "w": "NSA,",
+    "t": 14.2
+   },
+   {
+    "w": "AI'",
+    "t": 15.14
+   },
+   {
+    "w": "autonomous",
+    "t": 15.74
+   },
+   {
+    "w": "coding",
+    "t": 16.24
+   },
+   {
+    "w": "leap",
+    "t": 16.66
+   },
+   {
+    "w": "is",
+    "t": 16.96
+   },
+   {
+    "w": "rewriting",
+    "t": 17.48
+   },
+   {
+    "w": "how",
+    "t": 17.9
+   },
+   {
+    "w": "software",
+    "t": 18.34
+   },
+   {
+    "w": "gets",
+    "t": 18.66
+   },
+   {
+    "w": "built",
+    "t": 19.1
+   },
+   {
+    "w": "and",
+    "t": 19.46
+   },
+   {
+    "w": "exploited",
+    "t": 19.92
+   },
+   {
+    "w": "in",
+    "t": 20.38
+   },
+   {
+    "w": "real",
+    "t": 20.9
+   },
+   {
+    "w": "time.",
+    "t": 21.18
+   },
+   {
+    "w": "One",
+    "t": 21.6
+   },
+   {
+    "w": "click",
+    "t": 22.46
+   },
+   {
+    "w": "on",
+    "t": 22.84
+   },
+   {
+    "w": "a",
+    "t": 23.04
+   },
+   {
+    "w": "malicious",
+    "t": 23.28
+   },
+   {
+    "w": "link",
+    "t": 23.6
+   },
+   {
+    "w": "in",
+    "t": 24.08
+   },
+   {
+    "w": "VS",
+    "t": 24.38
+   },
+   {
+    "w": "Code's",
+    "t": 24.7
+   },
+   {
+    "w": "web",
+    "t": 25.12
+   },
+   {
+    "w": "editor,",
+    "t": 25.32
+   },
+   {
+    "w": "GitHub",
+    "t": 26.06
+   },
+   {
+    "w": ".dev,",
+    "t": 26.3
+   },
+   {
+    "w": "and",
+    "t": 27.36
+   },
+   {
+    "w": "hackers",
+    "t": 27.8
+   },
+   {
+    "w": "grab",
+    "t": 28.08
+   },
+   {
+    "w": "your",
+    "t": 28.48
+   },
+   {
+    "w": "full",
+    "t": 28.86
+   },
+   {
+    "w": "GitHub",
+    "t": 29.22
+   },
+   {
+    "w": "access",
+    "t": 29.68
+   },
+   {
+    "w": "token.",
+    "t": 30.14
+   },
+   {
+    "w": "That",
+    "t": 30.86
+   },
+   {
+    "w": "token",
+    "t": 31.16
+   },
+   {
+    "w": "isn't",
+    "t": 31.54
+   },
+   {
+    "w": "just",
+    "t": 31.98
+   },
+   {
+    "w": "for",
+    "t": 32.38
+   },
+   {
+    "w": "one",
+    "t": 32.8
+   },
+   {
+    "w": "repo",
+    "t": 33.1
+   },
+   {
+    "w": "-it.",
+    "t": 33.4
+   },
+   {
+    "w": "Unwatched",
+    "t": 34.14
+   },
+   {
+    "w": "read",
+    "t": 34.56
+   },
+   {
+    "w": "-and",
+    "t": 34.9
+   },
+   {
+    "w": "-write",
+    "t": 34.98
+   },
+   {
+    "w": "access",
+    "t": 35.22
+   },
+   {
+    "w": "to",
+    "t": 35.72
+   },
+   {
+    "w": "every",
+    "t": 36.04
+   },
+   {
+    "w": "single",
+    "t": 36.48
+   },
+   {
+    "w": "repo",
+    "t": 36.88
+   },
+   {
+    "w": "you",
+    "t": 37.32
+   },
+   {
+    "w": "own,",
+    "t": 37.52
+   },
+   {
+    "w": "including",
+    "t": 38.58
+   },
+   {
+    "w": "private",
+    "t": 38.58
+   },
+   {
+    "w": "ones.",
+    "t": 38.92
+   },
+   {
+    "w": "Here's",
+    "t": 39.42
+   },
+   {
+    "w": "how",
+    "t": 40.48
+   },
+   {
+    "w": "it",
+    "t": 40.62
+   },
+   {
+    "w": "happens.",
+    "t": 40.82
+   },
+   {
+    "w": "VS",
+    "t": 41.76
+   },
+   {
+    "w": "Code",
+    "t": 42.08
+   },
+   {
+    "w": "runs",
+    "t": 42.4
+   },
+   {
+    "w": "about",
+    "t": 42.7
+   },
+   {
+    "w": "a",
+    "t": 43.08
+   },
+   {
+    "w": "million",
+    "t": 43.22
+   },
+   {
+    "w": "lines",
+    "t": 43.52
+   },
+   {
+    "w": "of",
+    "t": 43.92
+   },
+   {
+    "w": "TypeScript",
+    "t": 44.14
+   },
+   {
+    "w": "inside",
+    "t": 44.76
+   },
+   {
+    "w": "your",
+    "t": 45.28
+   },
+   {
+    "w": "browser",
+    "t": 45.6
+   },
+   {
+    "w": "using",
+    "t": 46.0
+   },
+   {
+    "w": "iframes",
+    "t": 46.54
+   },
+   {
+    "w": "to",
+    "t": 47.28
+   },
+   {
+    "w": "isolate",
+    "t": 47.56
+   },
+   {
+    "w": "code,",
+    "t": 48.0
+   },
+   {
+    "w": "but",
+    "t": 48.84
+   },
+   {
+    "w": "a",
+    "t": 49.02
+   },
+   {
+    "w": "bug",
+    "t": 49.26
+   },
+   {
+    "w": "let",
+    "t": 49.58
+   },
+   {
+    "w": "malicious",
+    "t": 49.96
+   },
+   {
+    "w": "JavaScript",
+    "t": 50.44
+   },
+   {
+    "w": "inside",
+    "t": 51.12
+   },
+   {
+    "w": "those",
+    "t": 51.76
+   },
+   {
+    "w": "iframes",
+    "t": 52.18
+   },
+   {
+    "w": "slip",
+    "t": 52.82
+   },
+   {
+    "w": "past",
+    "t": 53.14
+   },
+   {
+    "w": "the",
+    "t": 53.42
+   },
+   {
+    "w": "sandbox",
+    "t": 53.8
+   },
+   {
+    "w": "and",
+    "t": 54.04
+   },
+   {
+    "w": "steal",
+    "t": 54.72
+   },
+   {
+    "w": "your",
+    "t": 55.04
+   },
+   {
+    "w": "OAuth",
+    "t": 55.36
+   },
+   {
+    "w": "token.",
+    "t": 55.7
+   },
+   {
+    "w": "No",
+    "t": 56.54
+   },
+   {
+    "w": "installs,",
+    "t": 56.72
+   },
+   {
+    "w": "no",
+    "t": 57.58
+   },
+   {
+    "w": "extra",
+    "t": 57.82
+   },
+   {
+    "w": "permissions,",
+    "t": 58.06
+   },
+   {
+    "w": "just",
+    "t": 58.84
+   },
+   {
+    "w": "click,",
+    "t": 59.12
+   },
+   {
+    "w": "and",
+    "t": 59.64
+   },
+   {
+    "w": "boom,",
+    "t": 59.82
+   },
+   {
+    "w": "your",
+    "t": 60.42
+   },
+   {
+    "w": "keys",
+    "t": 60.5
+   },
+   {
+    "w": "are",
+    "t": 60.74
+   },
+   {
+    "w": "out.",
+    "t": 61.0
+   },
+   {
+    "w": "For",
+    "t": 61.62
+   },
+   {
+    "w": "anyone",
+    "t": 61.84
+   },
+   {
+    "w": "using",
+    "t": 62.22
+   },
+   {
+    "w": "GitHub'",
+    "t": 62.66
+   },
+   {
+    "w": "web",
+    "t": 63.18
+   },
+   {
+    "w": "editor,",
+    "t": 63.38
+   },
+   {
+    "w": "this",
+    "t": 64.2
+   },
+   {
+    "w": "means",
+    "t": 64.26
+   },
+   {
+    "w": "your",
+    "t": 64.58
+   },
+   {
+    "w": "entire",
+    "t": 64.86
+   },
+   {
+    "w": "code",
+    "t": 65.38
+   },
+   {
+    "w": "base,",
+    "t": 65.68
+   },
+   {
+    "w": "your",
+    "t": 66.22
+   },
+   {
+    "w": "private",
+    "t": 66.46
+   },
+   {
+    "w": "projects,",
+    "t": 66.86
+   },
+   {
+    "w": "even",
+    "t": 67.88
+   },
+   {
+    "w": "company",
+    "t": 68.22
+   },
+   {
+    "w": "IP,",
+    "t": 68.64
+   },
+   {
+    "w": "could",
+    "t": 69.18
+   },
+   {
+    "w": "be",
+    "t": 69.58
+   },
+   {
+    "w": "at",
+    "t": 69.76
+   },
+   {
+    "w": "risk",
+    "t": 70.0
+   },
+   {
+    "w": "from",
+    "t": 70.28
+   },
+   {
+    "w": "a",
+    "t": 70.58
+   },
+   {
+    "w": "single",
+    "t": 70.88
+   },
+   {
+    "w": "careless",
+    "t": 71.16
+   },
+   {
+    "w": "click.",
+    "t": 71.56
+   },
+   {
+    "w": "The",
+    "t": 72.44
+   },
+   {
+    "w": "good",
+    "t": 72.56
+   },
+   {
+    "w": "news,",
+    "t": 72.82
+   },
+   {
+    "w": "VS",
+    "t": 73.7
+   },
+   {
+    "w": "Code",
+    "t": 73.82
+   },
+   {
+    "w": "patched",
+    "t": 74.16
+   },
+   {
+    "w": "this",
+    "t": 74.56
+   },
+   {
+    "w": "within",
+    "t": 74.98
+   },
+   {
+    "w": "weeks",
+    "t": 75.42
+   },
+   {
+    "w": "after",
+    "t": 75.78
+   },
+   {
+    "w": "responsible",
+    "t": 76.3
+   },
+   {
+    "w": "disclosure,",
+    "t": 76.86
+   },
+   {
+    "w": "but",
+    "t": 77.7
+   },
+   {
+    "w": "it's",
+    "t": 77.98
+   },
+   {
+    "w": "a",
+    "t": 78.24
+   },
+   {
+    "w": "sharp",
+    "t": 78.38
+   },
+   {
+    "w": "reminder",
+    "t": 78.66
+   },
+   {
+    "w": "that",
+    "t": 79.14
+   },
+   {
+    "w": "browser",
+    "t": 79.56
+   },
+   {
+    "w": "-based",
+    "t": 79.98
+   },
+   {
+    "w": "IDE's",
+    "t": 80.34
+   },
+   {
+    "w": "handling",
+    "t": 81.32
+   },
+   {
+    "w": "powerful",
+    "t": 81.6
+   },
+   {
+    "w": "tokens",
+    "t": 82.08
+   },
+   {
+    "w": "need",
+    "t": 82.58
+   },
+   {
+    "w": "airtight",
+    "t": 83.04
+   },
+   {
+    "w": "sandboxing",
+    "t": 83.62
+   },
+   {
+    "w": "and",
+    "t": 84.48
+   },
+   {
+    "w": "strict",
+    "t": 84.8
+   },
+   {
+    "w": "OAuth",
+    "t": 85.14
+   },
+   {
+    "w": "scopes.",
+    "t": 85.72
+   },
+   {
+    "w": "Builders,",
+    "t": 86.68
+   },
+   {
+    "w": "here's",
+    "t": 87.32
+   },
+   {
+    "w": "the",
+    "t": 87.64
+   },
+   {
+    "w": "takeaway.",
+    "t": 87.82
+   },
+   {
+    "w": "Always",
+    "t": 89.02
+   },
+   {
+    "w": "update",
+    "t": 89.32
+   },
+   {
+    "w": "your",
+    "t": 89.7
+   },
+   {
+    "w": "tools",
+    "t": 90.04
+   },
+   {
+    "w": "and",
+    "t": 90.46
+   },
+   {
+    "w": "treat",
+    "t": 90.86
+   },
+   {
+    "w": "links",
+    "t": 91.16
+   },
+   {
+    "w": "with",
+    "t": 91.44
+   },
+   {
+    "w": "caution.",
+    "t": 91.7
+   },
+   {
+    "w": "Your",
+    "t": 92.64
+   },
+   {
+    "w": "GitHub",
+    "t": 92.88
+   },
+   {
+    "w": "token",
+    "t": 93.16
+   },
+   {
+    "w": "is",
+    "t": 93.6
+   },
+   {
+    "w": "your",
+    "t": 93.84
+   },
+   {
+    "w": "master",
+    "t": 94.12
+   },
+   {
+    "w": "key,",
+    "t": 94.4
+   },
+   {
+    "w": "and",
+    "t": 94.94
+   },
+   {
+    "w": "this",
+    "t": 95.08
+   },
+   {
+    "w": "bug",
+    "t": 95.36
+   },
+   {
+    "w": "showed",
+    "t": 95.66
+   },
+   {
+    "w": "how",
+    "t": 95.92
+   },
+   {
+    "w": "fast",
+    "t": 96.24
+   },
+   {
+    "w": "it",
+    "t": 96.54
+   },
+   {
+    "w": "can",
+    "t": 96.68
+   },
+   {
+    "w": "slip",
+    "t": 96.96
+   },
+   {
+    "w": "away",
+    "t": 97.1
+   },
+   {
+    "w": "if",
+    "t": 97.46
+   },
+   {
+    "w": "you're",
+    "t": 97.68
+   },
+   {
+    "w": "not",
+    "t": 97.96
+   },
+   {
+    "w": "careful.",
+    "t": 98.02
+   },
+   {
+    "w": "Next",
+    "t": 98.36
+   },
+   {
+    "w": "up,",
+    "t": 99.2
+   },
+   {
+    "w": "we'll",
+    "t": 99.74
+   },
+   {
+    "w": "break",
+    "t": 99.94
+   },
+   {
+    "w": "down",
+    "t": 100.16
+   },
+   {
+    "w": "how",
+    "t": 100.5
+   },
+   {
+    "w": "OAuth",
+    "t": 100.78
+   },
+   {
+    "w": "tokens",
+    "t": 101.28
+   },
+   {
+    "w": "work",
+    "t": 101.62
+   },
+   {
+    "w": "and",
+    "t": 102.04
+   },
+   {
+    "w": "why",
+    "t": 102.38
+   },
+   {
+    "w": "sandboxing",
+    "t": 102.72
+   },
+   {
+    "w": "is",
+    "t": 103.42
+   },
+   {
+    "w": "harder",
+    "t": 103.74
+   },
+   {
+    "w": "than",
+    "t": 103.92
+   },
+   {
+    "w": "it",
+    "t": 104.14
+   },
+   {
+    "w": "looks.",
+    "t": 104.34
+   }
+  ]
+ },
+ {
+  "i": 1,
+  "title": "MAI-Code-1-Flash",
+  "url": "https://microsoft.ai/news/introducingmai-code-1-flash/",
+  "durationSec": 84.6,
+  "script": "Microsoft just dropped MAI code 1. Flash, an AI coding model built to handle huge code bases fast. It reads up to 32 ,000 tokens at once. That's about 20 ,000 words of code. That means it can understand your entire project context without missing a beat. It spits out code suggestions in under 100 milliseconds, so there's almost zero waiting. With 12 billion parameters, it balances muscle and speed, trained on tons of real world code in many languages. For developers, this is a big deal. No more chopping your project into tiny bits or waiting ages for AI help. Faster completions mean quicker builds and fewer bugs slipping through. It's built to fit right into pro workflows, making AI coding assistants less of a toy and more of a serious teammate. Launched by Microsoft's super intelligence team in June 2026, it's designed for folks already comfortable with AI tools but craving speed and reliability. The bottom line? MAI code 1. Flash isn't just faster AI. It's a smarter way to code at scale. Want your AI to keep up with your brain and your whole project? This might finally do it. It's a good way to do it, but it's a good way to do it.",
+  "words": [
+   {
+    "w": "Microsoft",
+    "t": 0.0
+   },
+   {
+    "w": "just",
+    "t": 0.76
+   },
+   {
+    "w": "dropped",
+    "t": 1.52
+   },
+   {
+    "w": "MAI",
+    "t": 1.96
+   },
+   {
+    "w": "code",
+    "t": 2.68
+   },
+   {
+    "w": "1.",
+    "t": 3.04
+   },
+   {
+    "w": "Flash,",
+    "t": 4.06
+   },
+   {
+    "w": "an",
+    "t": 4.76
+   },
+   {
+    "w": "AI",
+    "t": 5.0
+   },
+   {
+    "w": "coding",
+    "t": 5.34
+   },
+   {
+    "w": "model",
+    "t": 5.7
+   },
+   {
+    "w": "built",
+    "t": 6.02
+   },
+   {
+    "w": "to",
+    "t": 6.44
+   },
+   {
+    "w": "handle",
+    "t": 6.72
+   },
+   {
+    "w": "huge",
+    "t": 7.0
+   },
+   {
+    "w": "code",
+    "t": 7.48
+   },
+   {
+    "w": "bases",
+    "t": 7.74
+   },
+   {
+    "w": "fast.",
+    "t": 8.14
+   },
+   {
+    "w": "It",
+    "t": 9.04
+   },
+   {
+    "w": "reads",
+    "t": 9.24
+   },
+   {
+    "w": "up",
+    "t": 9.52
+   },
+   {
+    "w": "to",
+    "t": 9.76
+   },
+   {
+    "w": "32",
+    "t": 10.22
+   },
+   {
+    "w": ",000",
+    "t": 10.76
+   },
+   {
+    "w": "tokens",
+    "t": 11.2
+   },
+   {
+    "w": "at",
+    "t": 11.56
+   },
+   {
+    "w": "once.",
+    "t": 12.02
+   },
+   {
+    "w": "That's",
+    "t": 12.66
+   },
+   {
+    "w": "about",
+    "t": 12.94
+   },
+   {
+    "w": "20",
+    "t": 13.2
+   },
+   {
+    "w": ",000",
+    "t": 13.68
+   },
+   {
+    "w": "words",
+    "t": 14.02
+   },
+   {
+    "w": "of",
+    "t": 14.32
+   },
+   {
+    "w": "code.",
+    "t": 14.58
+   },
+   {
+    "w": "That",
+    "t": 15.14
+   },
+   {
+    "w": "means",
+    "t": 15.4
+   },
+   {
+    "w": "it",
+    "t": 15.7
+   },
+   {
+    "w": "can",
+    "t": 15.92
+   },
+   {
+    "w": "understand",
+    "t": 16.18
+   },
+   {
+    "w": "your",
+    "t": 16.62
+   },
+   {
+    "w": "entire",
+    "t": 16.98
+   },
+   {
+    "w": "project",
+    "t": 17.52
+   },
+   {
+    "w": "context",
+    "t": 18.1
+   },
+   {
+    "w": "without",
+    "t": 18.72
+   },
+   {
+    "w": "missing",
+    "t": 19.12
+   },
+   {
+    "w": "a",
+    "t": 19.42
+   },
+   {
+    "w": "beat.",
+    "t": 19.66
+   },
+   {
+    "w": "It",
+    "t": 20.16
+   },
+   {
+    "w": "spits",
+    "t": 20.44
+   },
+   {
+    "w": "out",
+    "t": 20.68
+   },
+   {
+    "w": "code",
+    "t": 21.0
+   },
+   {
+    "w": "suggestions",
+    "t": 21.3
+   },
+   {
+    "w": "in",
+    "t": 21.9
+   },
+   {
+    "w": "under",
+    "t": 22.26
+   },
+   {
+    "w": "100",
+    "t": 22.62
+   },
+   {
+    "w": "milliseconds,",
+    "t": 23.2
+   },
+   {
+    "w": "so",
+    "t": 24.12
+   },
+   {
+    "w": "there's",
+    "t": 24.3
+   },
+   {
+    "w": "almost",
+    "t": 24.68
+   },
+   {
+    "w": "zero",
+    "t": 25.06
+   },
+   {
+    "w": "waiting.",
+    "t": 25.52
+   },
+   {
+    "w": "With",
+    "t": 25.82
+   },
+   {
+    "w": "12",
+    "t": 27.14
+   },
+   {
+    "w": "billion",
+    "t": 27.94
+   },
+   {
+    "w": "parameters,",
+    "t": 28.36
+   },
+   {
+    "w": "it",
+    "t": 29.44
+   },
+   {
+    "w": "balances",
+    "t": 29.54
+   },
+   {
+    "w": "muscle",
+    "t": 30.02
+   },
+   {
+    "w": "and",
+    "t": 30.64
+   },
+   {
+    "w": "speed,",
+    "t": 31.0
+   },
+   {
+    "w": "trained",
+    "t": 31.9
+   },
+   {
+    "w": "on",
+    "t": 31.92
+   },
+   {
+    "w": "tons",
+    "t": 32.3
+   },
+   {
+    "w": "of",
+    "t": 32.6
+   },
+   {
+    "w": "real",
+    "t": 32.9
+   },
+   {
+    "w": "world",
+    "t": 33.12
+   },
+   {
+    "w": "code",
+    "t": 33.5
+   },
+   {
+    "w": "in",
+    "t": 33.86
+   },
+   {
+    "w": "many",
+    "t": 34.18
+   },
+   {
+    "w": "languages.",
+    "t": 34.48
+   },
+   {
+    "w": "For",
+    "t": 35.48
+   },
+   {
+    "w": "developers,",
+    "t": 35.7
+   },
+   {
+    "w": "this",
+    "t": 36.48
+   },
+   {
+    "w": "is",
+    "t": 36.82
+   },
+   {
+    "w": "a",
+    "t": 37.1
+   },
+   {
+    "w": "big",
+    "t": 37.16
+   },
+   {
+    "w": "deal.",
+    "t": 37.44
+   },
+   {
+    "w": "No",
+    "t": 38.28
+   },
+   {
+    "w": "more",
+    "t": 38.48
+   },
+   {
+    "w": "chopping",
+    "t": 38.72
+   },
+   {
+    "w": "your",
+    "t": 38.98
+   },
+   {
+    "w": "project",
+    "t": 39.28
+   },
+   {
+    "w": "into",
+    "t": 39.66
+   },
+   {
+    "w": "tiny",
+    "t": 39.96
+   },
+   {
+    "w": "bits",
+    "t": 40.4
+   },
+   {
+    "w": "or",
+    "t": 40.74
+   },
+   {
+    "w": "waiting",
+    "t": 41.22
+   },
+   {
+    "w": "ages",
+    "t": 41.58
+   },
+   {
+    "w": "for",
+    "t": 42.02
+   },
+   {
+    "w": "AI",
+    "t": 42.42
+   },
+   {
+    "w": "help.",
+    "t": 42.72
+   },
+   {
+    "w": "Faster",
+    "t": 43.92
+   },
+   {
+    "w": "completions",
+    "t": 43.94
+   },
+   {
+    "w": "mean",
+    "t": 44.62
+   },
+   {
+    "w": "quicker",
+    "t": 45.0
+   },
+   {
+    "w": "builds",
+    "t": 45.32
+   },
+   {
+    "w": "and",
+    "t": 45.74
+   },
+   {
+    "w": "fewer",
+    "t": 46.08
+   },
+   {
+    "w": "bugs",
+    "t": 46.48
+   },
+   {
+    "w": "slipping",
+    "t": 46.88
+   },
+   {
+    "w": "through.",
+    "t": 47.22
+   },
+   {
+    "w": "It's",
+    "t": 50.14
+   },
+   {
+    "w": "built",
+    "t": 50.88
+   },
+   {
+    "w": "to",
+    "t": 51.16
+   },
+   {
+    "w": "fit",
+    "t": 51.42
+   },
+   {
+    "w": "right",
+    "t": 51.74
+   },
+   {
+    "w": "into",
+    "t": 52.06
+   },
+   {
+    "w": "pro",
+    "t": 52.46
+   },
+   {
+    "w": "workflows,",
+    "t": 52.86
+   },
+   {
+    "w": "making",
+    "t": 53.88
+   },
+   {
+    "w": "AI",
+    "t": 54.06
+   },
+   {
+    "w": "coding",
+    "t": 54.54
+   },
+   {
+    "w": "assistants",
+    "t": 54.88
+   },
+   {
+    "w": "less",
+    "t": 55.5
+   },
+   {
+    "w": "of",
+    "t": 55.86
+   },
+   {
+    "w": "a",
+    "t": 56.04
+   },
+   {
+    "w": "toy",
+    "t": 56.24
+   },
+   {
+    "w": "and",
+    "t": 56.48
+   },
+   {
+    "w": "more",
+    "t": 56.94
+   },
+   {
+    "w": "of",
+    "t": 57.2
+   },
+   {
+    "w": "a",
+    "t": 57.46
+   },
+   {
+    "w": "serious",
+    "t": 57.58
+   },
+   {
+    "w": "teammate.",
+    "t": 57.96
+   },
+   {
+    "w": "Launched",
+    "t": 58.98
+   },
+   {
+    "w": "by",
+    "t": 59.26
+   },
+   {
+    "w": "Microsoft's",
+    "t": 59.5
+   },
+   {
+    "w": "super",
+    "t": 60.42
+   },
+   {
+    "w": "intelligence",
+    "t": 60.64
+   },
+   {
+    "w": "team",
+    "t": 61.1
+   },
+   {
+    "w": "in",
+    "t": 61.54
+   },
+   {
+    "w": "June",
+    "t": 61.76
+   },
+   {
+    "w": "2026,",
+    "t": 62.1
+   },
+   {
+    "w": "it's",
+    "t": 63.68
+   },
+   {
+    "w": "designed",
+    "t": 63.98
+   },
+   {
+    "w": "for",
+    "t": 64.26
+   },
+   {
+    "w": "folks",
+    "t": 64.56
+   },
+   {
+    "w": "already",
+    "t": 64.86
+   },
+   {
+    "w": "comfortable",
+    "t": 65.4
+   },
+   {
+    "w": "with",
+    "t": 65.84
+   },
+   {
+    "w": "AI",
+    "t": 66.26
+   },
+   {
+    "w": "tools",
+    "t": 66.56
+   },
+   {
+    "w": "but",
+    "t": 67.02
+   },
+   {
+    "w": "craving",
+    "t": 67.56
+   },
+   {
+    "w": "speed",
+    "t": 67.86
+   },
+   {
+    "w": "and",
+    "t": 68.54
+   },
+   {
+    "w": "reliability.",
+    "t": 68.84
+   },
+   {
+    "w": "The",
+    "t": 70.0
+   },
+   {
+    "w": "bottom",
+    "t": 70.0
+   },
+   {
+    "w": "line?",
+    "t": 70.32
+   },
+   {
+    "w": "MAI",
+    "t": 72.06
+   },
+   {
+    "w": "code",
+    "t": 72.62
+   },
+   {
+    "w": "1.",
+    "t": 72.98
+   },
+   {
+    "w": "Flash",
+    "t": 74.14
+   },
+   {
+    "w": "isn't",
+    "t": 74.4
+   },
+   {
+    "w": "just",
+    "t": 75.02
+   },
+   {
+    "w": "faster",
+    "t": 75.16
+   },
+   {
+    "w": "AI.",
+    "t": 75.58
+   },
+   {
+    "w": "It's",
+    "t": 76.44
+   },
+   {
+    "w": "a",
+    "t": 76.54
+   },
+   {
+    "w": "smarter",
+    "t": 76.76
+   },
+   {
+    "w": "way",
+    "t": 76.94
+   },
+   {
+    "w": "to",
+    "t": 77.24
+   },
+   {
+    "w": "code",
+    "t": 77.48
+   },
+   {
+    "w": "at",
+    "t": 77.74
+   },
+   {
+    "w": "scale.",
+    "t": 78.08
+   },
+   {
+    "w": "Want",
+    "t": 79.02
+   },
+   {
+    "w": "your",
+    "t": 79.22
+   },
+   {
+    "w": "AI",
+    "t": 79.5
+   },
+   {
+    "w": "to",
+    "t": 79.74
+   },
+   {
+    "w": "keep",
+    "t": 80.02
+   },
+   {
+    "w": "up",
+    "t": 80.24
+   },
+   {
+    "w": "with",
+    "t": 80.44
+   },
+   {
+    "w": "your",
+    "t": 80.58
+   },
+   {
+    "w": "brain",
+    "t": 80.8
+   },
+   {
+    "w": "and",
+    "t": 81.04
+   },
+   {
+    "w": "your",
+    "t": 81.2
+   },
+   {
+    "w": "whole",
+    "t": 81.4
+   },
+   {
+    "w": "project?",
+    "t": 81.68
+   },
+   {
+    "w": "This",
+    "t": 82.7
+   },
+   {
+    "w": "might",
+    "t": 83.02
+   },
+   {
+    "w": "finally",
+    "t": 83.42
+   },
+   {
+    "w": "do",
+    "t": 83.78
+   },
+   {
+    "w": "it.",
+    "t": 84.14
+   },
+   {
+    "w": "It's",
+    "t": 84.42
+   },
+   {
+    "w": "a",
+    "t": 84.42
+   },
+   {
+    "w": "good",
+    "t": 84.42
+   },
+   {
+    "w": "way",
+    "t": 84.42
+   },
+   {
+    "w": "to",
+    "t": 84.42
+   },
+   {
+    "w": "do",
+    "t": 84.42
+   },
+   {
+    "w": "it,",
+    "t": 84.42
+   },
+   {
+    "w": "but",
+    "t": 84.42
+   },
+   {
+    "w": "it's",
+    "t": 84.42
+   },
+   {
+    "w": "a",
+    "t": 84.42
+   },
+   {
+    "w": "good",
+    "t": 84.42
+   },
+   {
+    "w": "way",
+    "t": 84.42
+   },
+   {
+    "w": "to",
+    "t": 84.42
+   },
+   {
+    "w": "do",
+    "t": 84.46
+   },
+   {
+    "w": "it.",
+    "t": 84.46
+   }
+  ]
+ },
+ {
+  "i": 2,
+  "title": "I design with Claude more than Figma now",
+  "url": "https://blog.janestreet.com/i-design-with-claude-code-more-than-figma-now-index/",
+  "durationSec": 75.24,
+  "script": "What if you could skip Figma entirely and build real working prototypes with AI? One software designer did just that using Claude, an AI assistant from Anthropic. Instead of making static mockups, they type plain language problems right inside their coding environment. Claude then generates and refines actual code on the fly. Over 50 quick tweaks later, the prototype evolves without the usual back and forth between design and engineering. This slash is days or even weeks off the development cycle. No more juggling Figma files, spec docs, or design proposals that often get lost in translation. For builders who code, this means faster iteration and less wasted effort. Testing features in real code, not pictures. But heads up, if you're a pure visual designer, this approach might feel too code heavy. The real win here is cutting straight to functional prototypes that run instantly. For anyone comfortable with code, Claude powered design could reshape how you build. Next up, we'll dive into how Claude handles complex UI tweaks without breaking a sweat.",
+  "words": [
+   {
+    "w": "What",
+    "t": 0.0
+   },
+   {
+    "w": "if",
+    "t": 0.66
+   },
+   {
+    "w": "you",
+    "t": 0.86
+   },
+   {
+    "w": "could",
+    "t": 1.02
+   },
+   {
+    "w": "skip",
+    "t": 1.36
+   },
+   {
+    "w": "Figma",
+    "t": 1.66
+   },
+   {
+    "w": "entirely",
+    "t": 2.04
+   },
+   {
+    "w": "and",
+    "t": 2.82
+   },
+   {
+    "w": "build",
+    "t": 3.34
+   },
+   {
+    "w": "real",
+    "t": 3.78
+   },
+   {
+    "w": "working",
+    "t": 4.22
+   },
+   {
+    "w": "prototypes",
+    "t": 4.7
+   },
+   {
+    "w": "with",
+    "t": 5.16
+   },
+   {
+    "w": "AI?",
+    "t": 5.58
+   },
+   {
+    "w": "One",
+    "t": 6.76
+   },
+   {
+    "w": "software",
+    "t": 7.08
+   },
+   {
+    "w": "designer",
+    "t": 7.48
+   },
+   {
+    "w": "did",
+    "t": 7.98
+   },
+   {
+    "w": "just",
+    "t": 8.34
+   },
+   {
+    "w": "that",
+    "t": 8.68
+   },
+   {
+    "w": "using",
+    "t": 9.02
+   },
+   {
+    "w": "Claude,",
+    "t": 9.48
+   },
+   {
+    "w": "an",
+    "t": 10.28
+   },
+   {
+    "w": "AI",
+    "t": 10.54
+   },
+   {
+    "w": "assistant",
+    "t": 10.84
+   },
+   {
+    "w": "from",
+    "t": 11.24
+   },
+   {
+    "w": "Anthropic.",
+    "t": 11.64
+   },
+   {
+    "w": "Instead",
+    "t": 12.98
+   },
+   {
+    "w": "of",
+    "t": 13.16
+   },
+   {
+    "w": "making",
+    "t": 13.38
+   },
+   {
+    "w": "static",
+    "t": 13.84
+   },
+   {
+    "w": "mockups,",
+    "t": 14.22
+   },
+   {
+    "w": "they",
+    "t": 15.14
+   },
+   {
+    "w": "type",
+    "t": 15.24
+   },
+   {
+    "w": "plain",
+    "t": 15.64
+   },
+   {
+    "w": "language",
+    "t": 16.1
+   },
+   {
+    "w": "problems",
+    "t": 16.5
+   },
+   {
+    "w": "right",
+    "t": 17.0
+   },
+   {
+    "w": "inside",
+    "t": 17.4
+   },
+   {
+    "w": "their",
+    "t": 17.8
+   },
+   {
+    "w": "coding",
+    "t": 18.12
+   },
+   {
+    "w": "environment.",
+    "t": 18.36
+   },
+   {
+    "w": "Claude",
+    "t": 19.76
+   },
+   {
+    "w": "then",
+    "t": 19.76
+   },
+   {
+    "w": "generates",
+    "t": 20.12
+   },
+   {
+    "w": "and",
+    "t": 20.6
+   },
+   {
+    "w": "refines",
+    "t": 20.96
+   },
+   {
+    "w": "actual",
+    "t": 21.52
+   },
+   {
+    "w": "code",
+    "t": 22.16
+   },
+   {
+    "w": "on",
+    "t": 22.58
+   },
+   {
+    "w": "the",
+    "t": 22.84
+   },
+   {
+    "w": "fly.",
+    "t": 23.08
+   },
+   {
+    "w": "Over",
+    "t": 24.62
+   },
+   {
+    "w": "50",
+    "t": 25.3
+   },
+   {
+    "w": "quick",
+    "t": 25.9
+   },
+   {
+    "w": "tweaks",
+    "t": 26.24
+   },
+   {
+    "w": "later,",
+    "t": 26.58
+   },
+   {
+    "w": "the",
+    "t": 27.32
+   },
+   {
+    "w": "prototype",
+    "t": 27.5
+   },
+   {
+    "w": "evolves",
+    "t": 27.98
+   },
+   {
+    "w": "without",
+    "t": 28.6
+   },
+   {
+    "w": "the",
+    "t": 29.14
+   },
+   {
+    "w": "usual",
+    "t": 29.4
+   },
+   {
+    "w": "back",
+    "t": 29.78
+   },
+   {
+    "w": "and",
+    "t": 30.12
+   },
+   {
+    "w": "forth",
+    "t": 30.34
+   },
+   {
+    "w": "between",
+    "t": 30.6
+   },
+   {
+    "w": "design",
+    "t": 31.04
+   },
+   {
+    "w": "and",
+    "t": 31.54
+   },
+   {
+    "w": "engineering.",
+    "t": 31.86
+   },
+   {
+    "w": "This",
+    "t": 32.78
+   },
+   {
+    "w": "slash",
+    "t": 33.04
+   },
+   {
+    "w": "is",
+    "t": 33.32
+   },
+   {
+    "w": "days",
+    "t": 33.64
+   },
+   {
+    "w": "or",
+    "t": 34.0
+   },
+   {
+    "w": "even",
+    "t": 34.3
+   },
+   {
+    "w": "weeks",
+    "t": 34.7
+   },
+   {
+    "w": "off",
+    "t": 35.0
+   },
+   {
+    "w": "the",
+    "t": 35.36
+   },
+   {
+    "w": "development",
+    "t": 35.54
+   },
+   {
+    "w": "cycle.",
+    "t": 35.98
+   },
+   {
+    "w": "No",
+    "t": 36.76
+   },
+   {
+    "w": "more",
+    "t": 36.98
+   },
+   {
+    "w": "juggling",
+    "t": 37.26
+   },
+   {
+    "w": "Figma",
+    "t": 37.64
+   },
+   {
+    "w": "files,",
+    "t": 38.18
+   },
+   {
+    "w": "spec",
+    "t": 38.9
+   },
+   {
+    "w": "docs,",
+    "t": 39.14
+   },
+   {
+    "w": "or",
+    "t": 39.66
+   },
+   {
+    "w": "design",
+    "t": 39.86
+   },
+   {
+    "w": "proposals",
+    "t": 40.24
+   },
+   {
+    "w": "that",
+    "t": 40.7
+   },
+   {
+    "w": "often",
+    "t": 41.16
+   },
+   {
+    "w": "get",
+    "t": 41.34
+   },
+   {
+    "w": "lost",
+    "t": 41.64
+   },
+   {
+    "w": "in",
+    "t": 41.96
+   },
+   {
+    "w": "translation.",
+    "t": 42.3
+   },
+   {
+    "w": "For",
+    "t": 42.78
+   },
+   {
+    "w": "builders",
+    "t": 43.64
+   },
+   {
+    "w": "who",
+    "t": 43.98
+   },
+   {
+    "w": "code,",
+    "t": 44.3
+   },
+   {
+    "w": "this",
+    "t": 45.0
+   },
+   {
+    "w": "means",
+    "t": 45.18
+   },
+   {
+    "w": "faster",
+    "t": 45.58
+   },
+   {
+    "w": "iteration",
+    "t": 46.04
+   },
+   {
+    "w": "and",
+    "t": 46.6
+   },
+   {
+    "w": "less",
+    "t": 47.08
+   },
+   {
+    "w": "wasted",
+    "t": 47.38
+   },
+   {
+    "w": "effort.",
+    "t": 47.72
+   },
+   {
+    "w": "Testing",
+    "t": 48.98
+   },
+   {
+    "w": "features",
+    "t": 48.98
+   },
+   {
+    "w": "in",
+    "t": 49.48
+   },
+   {
+    "w": "real",
+    "t": 49.92
+   },
+   {
+    "w": "code,",
+    "t": 50.22
+   },
+   {
+    "w": "not",
+    "t": 50.76
+   },
+   {
+    "w": "pictures.",
+    "t": 51.04
+   },
+   {
+    "w": "But",
+    "t": 51.82
+   },
+   {
+    "w": "heads",
+    "t": 52.14
+   },
+   {
+    "w": "up,",
+    "t": 52.42
+   },
+   {
+    "w": "if",
+    "t": 52.86
+   },
+   {
+    "w": "you're",
+    "t": 52.98
+   },
+   {
+    "w": "a",
+    "t": 53.32
+   },
+   {
+    "w": "pure",
+    "t": 53.34
+   },
+   {
+    "w": "visual",
+    "t": 53.64
+   },
+   {
+    "w": "designer,",
+    "t": 54.04
+   },
+   {
+    "w": "this",
+    "t": 54.94
+   },
+   {
+    "w": "approach",
+    "t": 55.14
+   },
+   {
+    "w": "might",
+    "t": 55.46
+   },
+   {
+    "w": "feel",
+    "t": 55.88
+   },
+   {
+    "w": "too",
+    "t": 56.18
+   },
+   {
+    "w": "code",
+    "t": 56.58
+   },
+   {
+    "w": "heavy.",
+    "t": 56.88
+   },
+   {
+    "w": "The",
+    "t": 57.62
+   },
+   {
+    "w": "real",
+    "t": 57.92
+   },
+   {
+    "w": "win",
+    "t": 58.24
+   },
+   {
+    "w": "here",
+    "t": 58.56
+   },
+   {
+    "w": "is",
+    "t": 58.9
+   },
+   {
+    "w": "cutting",
+    "t": 59.12
+   },
+   {
+    "w": "straight",
+    "t": 59.44
+   },
+   {
+    "w": "to",
+    "t": 59.9
+   },
+   {
+    "w": "functional",
+    "t": 60.16
+   },
+   {
+    "w": "prototypes",
+    "t": 60.58
+   },
+   {
+    "w": "that",
+    "t": 61.12
+   },
+   {
+    "w": "run",
+    "t": 61.56
+   },
+   {
+    "w": "instantly.",
+    "t": 61.88
+   },
+   {
+    "w": "For",
+    "t": 62.4
+   },
+   {
+    "w": "anyone",
+    "t": 63.34
+   },
+   {
+    "w": "comfortable",
+    "t": 63.92
+   },
+   {
+    "w": "with",
+    "t": 64.32
+   },
+   {
+    "w": "code,",
+    "t": 64.7
+   },
+   {
+    "w": "Claude",
+    "t": 65.8
+   },
+   {
+    "w": "powered",
+    "t": 65.82
+   },
+   {
+    "w": "design",
+    "t": 66.26
+   },
+   {
+    "w": "could",
+    "t": 66.76
+   },
+   {
+    "w": "reshape",
+    "t": 67.24
+   },
+   {
+    "w": "how",
+    "t": 67.84
+   },
+   {
+    "w": "you",
+    "t": 68.12
+   },
+   {
+    "w": "build.",
+    "t": 68.38
+   },
+   {
+    "w": "Next",
+    "t": 69.18
+   },
+   {
+    "w": "up,",
+    "t": 69.34
+   },
+   {
+    "w": "we'll",
+    "t": 69.88
+   },
+   {
+    "w": "dive",
+    "t": 70.1
+   },
+   {
+    "w": "into",
+    "t": 70.34
+   },
+   {
+    "w": "how",
+    "t": 70.66
+   },
+   {
+    "w": "Claude",
+    "t": 71.12
+   },
+   {
+    "w": "handles",
+    "t": 71.48
+   },
+   {
+    "w": "complex",
+    "t": 71.9
+   },
+   {
+    "w": "UI",
+    "t": 72.6
+   },
+   {
+    "w": "tweaks",
+    "t": 73.16
+   },
+   {
+    "w": "without",
+    "t": 73.64
+   },
+   {
+    "w": "breaking",
+    "t": 74.24
+   },
+   {
+    "w": "a",
+    "t": 74.56
+   },
+   {
+    "w": "sweat.",
+    "t": 74.86
+   }
+  ]
+ },
+ {
+  "i": 3,
+  "title": "Did Claude increase bugs in rsync?",
+  "url": "https://alexispurslane.github.io/rsync-analysis/",
+  "durationSec": 80.44,
+  "script": "Did Claude, the AI coding assistant, actually cause more bugs in our sync? That's the question this deep dive answers with real data. Researchers compared bug counts per lines of code from our sync releases before and after Claude started helping out. They didn't just eyeball averages. They used smart statistics to see if post -cloud bug rates were unusually high compared to the entire history of our sync. The result? Post -cloud bugs fall right inside normal variability. In other words, no clear sign Claude made things worse. This matters if you're a developer wondering whether AI helpers like Claude actually hurt or help your code quality. The fear is real. Some say AI code might sneak in more bugs. But here, with the respected project and solid stats, that worry doesn't hold up. The sample size is still small, so it's not a free pass. But it's a reality check against hype and panic. For builders, the takeaway is simple. AI coding assistants like Claude don't automatically increase bugs. Use them thoughtfully, but don't blame AI without data. Next up, we'll look at how this stacks against other AI tools in real world coding. information.",
+  "words": [
+   {
+    "w": "Did",
+    "t": 0.0
+   },
+   {
+    "w": "Claude,",
+    "t": 0.6
+   },
+   {
+    "w": "the",
+    "t": 1.3
+   },
+   {
+    "w": "AI",
+    "t": 1.5
+   },
+   {
+    "w": "coding",
+    "t": 1.96
+   },
+   {
+    "w": "assistant,",
+    "t": 2.26
+   },
+   {
+    "w": "actually",
+    "t": 3.16
+   },
+   {
+    "w": "cause",
+    "t": 3.68
+   },
+   {
+    "w": "more",
+    "t": 4.06
+   },
+   {
+    "w": "bugs",
+    "t": 4.48
+   },
+   {
+    "w": "in",
+    "t": 4.84
+   },
+   {
+    "w": "our",
+    "t": 5.16
+   },
+   {
+    "w": "sync?",
+    "t": 5.46
+   },
+   {
+    "w": "That's",
+    "t": 6.18
+   },
+   {
+    "w": "the",
+    "t": 6.54
+   },
+   {
+    "w": "question",
+    "t": 6.68
+   },
+   {
+    "w": "this",
+    "t": 7.0
+   },
+   {
+    "w": "deep",
+    "t": 7.44
+   },
+   {
+    "w": "dive",
+    "t": 7.76
+   },
+   {
+    "w": "answers",
+    "t": 8.12
+   },
+   {
+    "w": "with",
+    "t": 8.48
+   },
+   {
+    "w": "real",
+    "t": 8.86
+   },
+   {
+    "w": "data.",
+    "t": 9.2
+   },
+   {
+    "w": "Researchers",
+    "t": 10.72
+   },
+   {
+    "w": "compared",
+    "t": 10.72
+   },
+   {
+    "w": "bug",
+    "t": 11.28
+   },
+   {
+    "w": "counts",
+    "t": 11.76
+   },
+   {
+    "w": "per",
+    "t": 12.12
+   },
+   {
+    "w": "lines",
+    "t": 12.46
+   },
+   {
+    "w": "of",
+    "t": 12.7
+   },
+   {
+    "w": "code",
+    "t": 12.96
+   },
+   {
+    "w": "from",
+    "t": 13.3
+   },
+   {
+    "w": "our",
+    "t": 13.74
+   },
+   {
+    "w": "sync",
+    "t": 14.02
+   },
+   {
+    "w": "releases",
+    "t": 14.24
+   },
+   {
+    "w": "before",
+    "t": 14.72
+   },
+   {
+    "w": "and",
+    "t": 15.34
+   },
+   {
+    "w": "after",
+    "t": 15.68
+   },
+   {
+    "w": "Claude",
+    "t": 16.14
+   },
+   {
+    "w": "started",
+    "t": 16.46
+   },
+   {
+    "w": "helping",
+    "t": 16.78
+   },
+   {
+    "w": "out.",
+    "t": 17.08
+   },
+   {
+    "w": "They",
+    "t": 17.98
+   },
+   {
+    "w": "didn't",
+    "t": 18.22
+   },
+   {
+    "w": "just",
+    "t": 18.52
+   },
+   {
+    "w": "eyeball",
+    "t": 18.88
+   },
+   {
+    "w": "averages.",
+    "t": 19.34
+   },
+   {
+    "w": "They",
+    "t": 20.24
+   },
+   {
+    "w": "used",
+    "t": 20.42
+   },
+   {
+    "w": "smart",
+    "t": 20.86
+   },
+   {
+    "w": "statistics",
+    "t": 21.26
+   },
+   {
+    "w": "to",
+    "t": 21.76
+   },
+   {
+    "w": "see",
+    "t": 22.12
+   },
+   {
+    "w": "if",
+    "t": 22.38
+   },
+   {
+    "w": "post",
+    "t": 22.62
+   },
+   {
+    "w": "-cloud",
+    "t": 23.0
+   },
+   {
+    "w": "bug",
+    "t": 23.38
+   },
+   {
+    "w": "rates",
+    "t": 23.74
+   },
+   {
+    "w": "were",
+    "t": 23.98
+   },
+   {
+    "w": "unusually",
+    "t": 24.4
+   },
+   {
+    "w": "high",
+    "t": 24.98
+   },
+   {
+    "w": "compared",
+    "t": 25.62
+   },
+   {
+    "w": "to",
+    "t": 26.02
+   },
+   {
+    "w": "the",
+    "t": 26.32
+   },
+   {
+    "w": "entire",
+    "t": 26.8
+   },
+   {
+    "w": "history",
+    "t": 27.04
+   },
+   {
+    "w": "of",
+    "t": 27.5
+   },
+   {
+    "w": "our",
+    "t": 27.86
+   },
+   {
+    "w": "sync.",
+    "t": 28.22
+   },
+   {
+    "w": "The",
+    "t": 28.84
+   },
+   {
+    "w": "result?",
+    "t": 29.0
+   },
+   {
+    "w": "Post",
+    "t": 29.36
+   },
+   {
+    "w": "-cloud",
+    "t": 30.26
+   },
+   {
+    "w": "bugs",
+    "t": 30.64
+   },
+   {
+    "w": "fall",
+    "t": 30.96
+   },
+   {
+    "w": "right",
+    "t": 31.48
+   },
+   {
+    "w": "inside",
+    "t": 31.76
+   },
+   {
+    "w": "normal",
+    "t": 32.32
+   },
+   {
+    "w": "variability.",
+    "t": 32.76
+   },
+   {
+    "w": "In",
+    "t": 33.86
+   },
+   {
+    "w": "other",
+    "t": 33.92
+   },
+   {
+    "w": "words,",
+    "t": 34.24
+   },
+   {
+    "w": "no",
+    "t": 34.72
+   },
+   {
+    "w": "clear",
+    "t": 35.1
+   },
+   {
+    "w": "sign",
+    "t": 35.44
+   },
+   {
+    "w": "Claude",
+    "t": 35.86
+   },
+   {
+    "w": "made",
+    "t": 36.24
+   },
+   {
+    "w": "things",
+    "t": 36.58
+   },
+   {
+    "w": "worse.",
+    "t": 36.9
+   },
+   {
+    "w": "This",
+    "t": 38.16
+   },
+   {
+    "w": "matters",
+    "t": 38.46
+   },
+   {
+    "w": "if",
+    "t": 38.86
+   },
+   {
+    "w": "you're",
+    "t": 39.12
+   },
+   {
+    "w": "a",
+    "t": 39.48
+   },
+   {
+    "w": "developer",
+    "t": 39.48
+   },
+   {
+    "w": "wondering",
+    "t": 39.88
+   },
+   {
+    "w": "whether",
+    "t": 40.6
+   },
+   {
+    "w": "AI",
+    "t": 41.08
+   },
+   {
+    "w": "helpers",
+    "t": 41.5
+   },
+   {
+    "w": "like",
+    "t": 41.92
+   },
+   {
+    "w": "Claude",
+    "t": 42.38
+   },
+   {
+    "w": "actually",
+    "t": 42.74
+   },
+   {
+    "w": "hurt",
+    "t": 43.48
+   },
+   {
+    "w": "or",
+    "t": 43.84
+   },
+   {
+    "w": "help",
+    "t": 44.28
+   },
+   {
+    "w": "your",
+    "t": 44.52
+   },
+   {
+    "w": "code",
+    "t": 44.8
+   },
+   {
+    "w": "quality.",
+    "t": 45.08
+   },
+   {
+    "w": "The",
+    "t": 46.02
+   },
+   {
+    "w": "fear",
+    "t": 46.06
+   },
+   {
+    "w": "is",
+    "t": 46.32
+   },
+   {
+    "w": "real.",
+    "t": 46.7
+   },
+   {
+    "w": "Some",
+    "t": 47.32
+   },
+   {
+    "w": "say",
+    "t": 47.54
+   },
+   {
+    "w": "AI",
+    "t": 47.86
+   },
+   {
+    "w": "code",
+    "t": 48.36
+   },
+   {
+    "w": "might",
+    "t": 48.64
+   },
+   {
+    "w": "sneak",
+    "t": 49.04
+   },
+   {
+    "w": "in",
+    "t": 49.3
+   },
+   {
+    "w": "more",
+    "t": 49.58
+   },
+   {
+    "w": "bugs.",
+    "t": 49.86
+   },
+   {
+    "w": "But",
+    "t": 50.64
+   },
+   {
+    "w": "here,",
+    "t": 50.94
+   },
+   {
+    "w": "with",
+    "t": 51.48
+   },
+   {
+    "w": "the",
+    "t": 51.66
+   },
+   {
+    "w": "respected",
+    "t": 52.14
+   },
+   {
+    "w": "project",
+    "t": 52.14
+   },
+   {
+    "w": "and",
+    "t": 52.74
+   },
+   {
+    "w": "solid",
+    "t": 53.08
+   },
+   {
+    "w": "stats,",
+    "t": 53.38
+   },
+   {
+    "w": "that",
+    "t": 54.18
+   },
+   {
+    "w": "worry",
+    "t": 54.56
+   },
+   {
+    "w": "doesn't",
+    "t": 54.88
+   },
+   {
+    "w": "hold",
+    "t": 55.26
+   },
+   {
+    "w": "up.",
+    "t": 55.54
+   },
+   {
+    "w": "The",
+    "t": 55.84
+   },
+   {
+    "w": "sample",
+    "t": 56.92
+   },
+   {
+    "w": "size",
+    "t": 57.22
+   },
+   {
+    "w": "is",
+    "t": 57.7
+   },
+   {
+    "w": "still",
+    "t": 58.08
+   },
+   {
+    "w": "small,",
+    "t": 58.42
+   },
+   {
+    "w": "so",
+    "t": 58.94
+   },
+   {
+    "w": "it's",
+    "t": 59.22
+   },
+   {
+    "w": "not",
+    "t": 59.44
+   },
+   {
+    "w": "a",
+    "t": 59.6
+   },
+   {
+    "w": "free",
+    "t": 59.8
+   },
+   {
+    "w": "pass.",
+    "t": 60.04
+   },
+   {
+    "w": "But",
+    "t": 60.72
+   },
+   {
+    "w": "it's",
+    "t": 61.0
+   },
+   {
+    "w": "a",
+    "t": 61.28
+   },
+   {
+    "w": "reality",
+    "t": 61.68
+   },
+   {
+    "w": "check",
+    "t": 61.76
+   },
+   {
+    "w": "against",
+    "t": 62.24
+   },
+   {
+    "w": "hype",
+    "t": 62.72
+   },
+   {
+    "w": "and",
+    "t": 63.12
+   },
+   {
+    "w": "panic.",
+    "t": 63.44
+   },
+   {
+    "w": "For",
+    "t": 64.2
+   },
+   {
+    "w": "builders,",
+    "t": 64.46
+   },
+   {
+    "w": "the",
+    "t": 65.24
+   },
+   {
+    "w": "takeaway",
+    "t": 65.36
+   },
+   {
+    "w": "is",
+    "t": 65.68
+   },
+   {
+    "w": "simple.",
+    "t": 66.22
+   },
+   {
+    "w": "AI",
+    "t": 67.0
+   },
+   {
+    "w": "coding",
+    "t": 67.24
+   },
+   {
+    "w": "assistants",
+    "t": 67.56
+   },
+   {
+    "w": "like",
+    "t": 68.1
+   },
+   {
+    "w": "Claude",
+    "t": 68.48
+   },
+   {
+    "w": "don't",
+    "t": 68.84
+   },
+   {
+    "w": "automatically",
+    "t": 69.96
+   },
+   {
+    "w": "increase",
+    "t": 69.96
+   },
+   {
+    "w": "bugs.",
+    "t": 70.64
+   },
+   {
+    "w": "Use",
+    "t": 71.7
+   },
+   {
+    "w": "them",
+    "t": 71.7
+   },
+   {
+    "w": "thoughtfully,",
+    "t": 71.96
+   },
+   {
+    "w": "but",
+    "t": 72.64
+   },
+   {
+    "w": "don't",
+    "t": 72.92
+   },
+   {
+    "w": "blame",
+    "t": 73.24
+   },
+   {
+    "w": "AI",
+    "t": 73.64
+   },
+   {
+    "w": "without",
+    "t": 74.08
+   },
+   {
+    "w": "data.",
+    "t": 74.5
+   },
+   {
+    "w": "Next",
+    "t": 75.24
+   },
+   {
+    "w": "up,",
+    "t": 75.5
+   },
+   {
+    "w": "we'll",
+    "t": 75.96
+   },
+   {
+    "w": "look",
+    "t": 76.22
+   },
+   {
+    "w": "at",
+    "t": 76.4
+   },
+   {
+    "w": "how",
+    "t": 76.58
+   },
+   {
+    "w": "this",
+    "t": 76.76
+   },
+   {
+    "w": "stacks",
+    "t": 77.04
+   },
+   {
+    "w": "against",
+    "t": 77.28
+   },
+   {
+    "w": "other",
+    "t": 77.76
+   },
+   {
+    "w": "AI",
+    "t": 78.16
+   },
+   {
+    "w": "tools",
+    "t": 78.48
+   },
+   {
+    "w": "in",
+    "t": 78.82
+   },
+   {
+    "w": "real",
+    "t": 79.14
+   },
+   {
+    "w": "world",
+    "t": 79.38
+   },
+   {
+    "w": "coding.",
+    "t": 79.66
+   },
+   {
+    "w": "information.",
+    "t": 79.98
+   }
+  ]
+ },
+ {
+  "i": 4,
+  "title": "Harness engineering: Leveraging Codex in an agent-first world",
+  "url": "https://openai.com/index/harness-engineering/",
+  "durationSec": 85.56,
+  "script": "What if AI wrote every line of your code for you? That's exactly what harness engineering does using OpenAI's Codex. Instead of typing out functions, engineers now design goals and environments. Codex agents generate the code, test it, fix bugs, and even write documentation all on their own. A tiny team of three engineers oversaw about 1 million lines of AI -written code in just five months. That's roughly 1500 pull requests merged, averaging 325 PRs per engineer each day. Compared to traditional coding, development speed jumped by a factor of 10. This means complex software gets built faster, cheaper, and with fewer people typing endless lines. But it's not about replacing humans. Builders need new skills to steer these AI agents, crafting clear instructions and feedback loops. Think of it like directing a team of coders who never sleep or make syntax errors, but still need your vision. If you're building software, harness engineering changes the game, you focus on design and strategy, not manual coding. It's not magic, it's a smarter way to build where AI handles the grunt work and you call the shots. Want to scale your projects faster? Learning to orchestrate AI agents might be your next best skill. tools.",
+  "words": [
+   {
+    "w": "What",
+    "t": 0.0
+   },
+   {
+    "w": "if",
+    "t": 0.44
+   },
+   {
+    "w": "AI",
+    "t": 0.68
+   },
+   {
+    "w": "wrote",
+    "t": 1.18
+   },
+   {
+    "w": "every",
+    "t": 1.66
+   },
+   {
+    "w": "line",
+    "t": 2.04
+   },
+   {
+    "w": "of",
+    "t": 2.34
+   },
+   {
+    "w": "your",
+    "t": 2.46
+   },
+   {
+    "w": "code",
+    "t": 2.66
+   },
+   {
+    "w": "for",
+    "t": 2.98
+   },
+   {
+    "w": "you?",
+    "t": 3.32
+   },
+   {
+    "w": "That's",
+    "t": 4.06
+   },
+   {
+    "w": "exactly",
+    "t": 4.74
+   },
+   {
+    "w": "what",
+    "t": 4.8
+   },
+   {
+    "w": "harness",
+    "t": 5.04
+   },
+   {
+    "w": "engineering",
+    "t": 5.4
+   },
+   {
+    "w": "does",
+    "t": 5.9
+   },
+   {
+    "w": "using",
+    "t": 6.44
+   },
+   {
+    "w": "OpenAI's",
+    "t": 6.96
+   },
+   {
+    "w": "Codex.",
+    "t": 7.86
+   },
+   {
+    "w": "Instead",
+    "t": 8.9
+   },
+   {
+    "w": "of",
+    "t": 9.1
+   },
+   {
+    "w": "typing",
+    "t": 9.32
+   },
+   {
+    "w": "out",
+    "t": 9.66
+   },
+   {
+    "w": "functions,",
+    "t": 9.98
+   },
+   {
+    "w": "engineers",
+    "t": 10.92
+   },
+   {
+    "w": "now",
+    "t": 11.28
+   },
+   {
+    "w": "design",
+    "t": 11.82
+   },
+   {
+    "w": "goals",
+    "t": 12.26
+   },
+   {
+    "w": "and",
+    "t": 12.76
+   },
+   {
+    "w": "environments.",
+    "t": 13.1
+   },
+   {
+    "w": "Codex",
+    "t": 14.62
+   },
+   {
+    "w": "agents",
+    "t": 14.62
+   },
+   {
+    "w": "generate",
+    "t": 15.18
+   },
+   {
+    "w": "the",
+    "t": 15.6
+   },
+   {
+    "w": "code,",
+    "t": 15.92
+   },
+   {
+    "w": "test",
+    "t": 16.5
+   },
+   {
+    "w": "it,",
+    "t": 16.78
+   },
+   {
+    "w": "fix",
+    "t": 17.46
+   },
+   {
+    "w": "bugs,",
+    "t": 17.48
+   },
+   {
+    "w": "and",
+    "t": 17.98
+   },
+   {
+    "w": "even",
+    "t": 18.3
+   },
+   {
+    "w": "write",
+    "t": 18.58
+   },
+   {
+    "w": "documentation",
+    "t": 18.86
+   },
+   {
+    "w": "all",
+    "t": 19.6
+   },
+   {
+    "w": "on",
+    "t": 20.3
+   },
+   {
+    "w": "their",
+    "t": 20.46
+   },
+   {
+    "w": "own.",
+    "t": 20.68
+   },
+   {
+    "w": "A",
+    "t": 21.58
+   },
+   {
+    "w": "tiny",
+    "t": 21.72
+   },
+   {
+    "w": "team",
+    "t": 21.88
+   },
+   {
+    "w": "of",
+    "t": 22.18
+   },
+   {
+    "w": "three",
+    "t": 22.44
+   },
+   {
+    "w": "engineers",
+    "t": 22.74
+   },
+   {
+    "w": "oversaw",
+    "t": 23.3
+   },
+   {
+    "w": "about",
+    "t": 23.82
+   },
+   {
+    "w": "1",
+    "t": 24.4
+   },
+   {
+    "w": "million",
+    "t": 24.92
+   },
+   {
+    "w": "lines",
+    "t": 25.28
+   },
+   {
+    "w": "of",
+    "t": 25.7
+   },
+   {
+    "w": "AI",
+    "t": 26.06
+   },
+   {
+    "w": "-written",
+    "t": 26.42
+   },
+   {
+    "w": "code",
+    "t": 26.72
+   },
+   {
+    "w": "in",
+    "t": 27.2
+   },
+   {
+    "w": "just",
+    "t": 27.58
+   },
+   {
+    "w": "five",
+    "t": 27.94
+   },
+   {
+    "w": "months.",
+    "t": 28.26
+   },
+   {
+    "w": "That's",
+    "t": 28.68
+   },
+   {
+    "w": "roughly",
+    "t": 29.66
+   },
+   {
+    "w": "1500",
+    "t": 29.7
+   },
+   {
+    "w": "pull",
+    "t": 30.46
+   },
+   {
+    "w": "requests",
+    "t": 30.92
+   },
+   {
+    "w": "merged,",
+    "t": 31.4
+   },
+   {
+    "w": "averaging",
+    "t": 32.52
+   },
+   {
+    "w": "325",
+    "t": 32.52
+   },
+   {
+    "w": "PRs",
+    "t": 33.28
+   },
+   {
+    "w": "per",
+    "t": 34.1
+   },
+   {
+    "w": "engineer",
+    "t": 34.24
+   },
+   {
+    "w": "each",
+    "t": 34.64
+   },
+   {
+    "w": "day.",
+    "t": 35.1
+   },
+   {
+    "w": "Compared",
+    "t": 36.04
+   },
+   {
+    "w": "to",
+    "t": 36.18
+   },
+   {
+    "w": "traditional",
+    "t": 36.54
+   },
+   {
+    "w": "coding,",
+    "t": 36.94
+   },
+   {
+    "w": "development",
+    "t": 37.84
+   },
+   {
+    "w": "speed",
+    "t": 38.04
+   },
+   {
+    "w": "jumped",
+    "t": 38.56
+   },
+   {
+    "w": "by",
+    "t": 38.86
+   },
+   {
+    "w": "a",
+    "t": 39.08
+   },
+   {
+    "w": "factor",
+    "t": 39.46
+   },
+   {
+    "w": "of",
+    "t": 39.54
+   },
+   {
+    "w": "10.",
+    "t": 39.86
+   },
+   {
+    "w": "This",
+    "t": 40.66
+   },
+   {
+    "w": "means",
+    "t": 40.94
+   },
+   {
+    "w": "complex",
+    "t": 41.4
+   },
+   {
+    "w": "software",
+    "t": 41.94
+   },
+   {
+    "w": "gets",
+    "t": 42.52
+   },
+   {
+    "w": "built",
+    "t": 42.94
+   },
+   {
+    "w": "faster,",
+    "t": 43.28
+   },
+   {
+    "w": "cheaper,",
+    "t": 44.22
+   },
+   {
+    "w": "and",
+    "t": 44.54
+   },
+   {
+    "w": "with",
+    "t": 44.82
+   },
+   {
+    "w": "fewer",
+    "t": 45.06
+   },
+   {
+    "w": "people",
+    "t": 45.38
+   },
+   {
+    "w": "typing",
+    "t": 45.8
+   },
+   {
+    "w": "endless",
+    "t": 46.3
+   },
+   {
+    "w": "lines.",
+    "t": 46.66
+   },
+   {
+    "w": "But",
+    "t": 47.68
+   },
+   {
+    "w": "it's",
+    "t": 47.84
+   },
+   {
+    "w": "not",
+    "t": 48.04
+   },
+   {
+    "w": "about",
+    "t": 48.26
+   },
+   {
+    "w": "replacing",
+    "t": 48.6
+   },
+   {
+    "w": "humans.",
+    "t": 48.98
+   },
+   {
+    "w": "Builders",
+    "t": 50.1
+   },
+   {
+    "w": "need",
+    "t": 50.38
+   },
+   {
+    "w": "new",
+    "t": 50.7
+   },
+   {
+    "w": "skills",
+    "t": 50.98
+   },
+   {
+    "w": "to",
+    "t": 51.3
+   },
+   {
+    "w": "steer",
+    "t": 51.64
+   },
+   {
+    "w": "these",
+    "t": 51.88
+   },
+   {
+    "w": "AI",
+    "t": 52.32
+   },
+   {
+    "w": "agents,",
+    "t": 52.7
+   },
+   {
+    "w": "crafting",
+    "t": 53.8
+   },
+   {
+    "w": "clear",
+    "t": 53.8
+   },
+   {
+    "w": "instructions",
+    "t": 54.16
+   },
+   {
+    "w": "and",
+    "t": 54.74
+   },
+   {
+    "w": "feedback",
+    "t": 55.06
+   },
+   {
+    "w": "loops.",
+    "t": 55.42
+   },
+   {
+    "w": "Think",
+    "t": 56.1
+   },
+   {
+    "w": "of",
+    "t": 56.3
+   },
+   {
+    "w": "it",
+    "t": 56.42
+   },
+   {
+    "w": "like",
+    "t": 56.6
+   },
+   {
+    "w": "directing",
+    "t": 56.98
+   },
+   {
+    "w": "a",
+    "t": 57.34
+   },
+   {
+    "w": "team",
+    "t": 57.66
+   },
+   {
+    "w": "of",
+    "t": 57.86
+   },
+   {
+    "w": "coders",
+    "t": 58.12
+   },
+   {
+    "w": "who",
+    "t": 58.56
+   },
+   {
+    "w": "never",
+    "t": 58.84
+   },
+   {
+    "w": "sleep",
+    "t": 59.24
+   },
+   {
+    "w": "or",
+    "t": 59.6
+   },
+   {
+    "w": "make",
+    "t": 60.02
+   },
+   {
+    "w": "syntax",
+    "t": 60.32
+   },
+   {
+    "w": "errors,",
+    "t": 60.76
+   },
+   {
+    "w": "but",
+    "t": 61.56
+   },
+   {
+    "w": "still",
+    "t": 61.94
+   },
+   {
+    "w": "need",
+    "t": 62.3
+   },
+   {
+    "w": "your",
+    "t": 62.58
+   },
+   {
+    "w": "vision.",
+    "t": 62.78
+   },
+   {
+    "w": "If",
+    "t": 63.64
+   },
+   {
+    "w": "you're",
+    "t": 63.8
+   },
+   {
+    "w": "building",
+    "t": 64.26
+   },
+   {
+    "w": "software,",
+    "t": 64.42
+   },
+   {
+    "w": "harness",
+    "t": 65.54
+   },
+   {
+    "w": "engineering",
+    "t": 65.76
+   },
+   {
+    "w": "changes",
+    "t": 66.44
+   },
+   {
+    "w": "the",
+    "t": 66.88
+   },
+   {
+    "w": "game,",
+    "t": 67.12
+   },
+   {
+    "w": "you",
+    "t": 67.78
+   },
+   {
+    "w": "focus",
+    "t": 67.92
+   },
+   {
+    "w": "on",
+    "t": 68.18
+   },
+   {
+    "w": "design",
+    "t": 68.56
+   },
+   {
+    "w": "and",
+    "t": 68.92
+   },
+   {
+    "w": "strategy,",
+    "t": 69.34
+   },
+   {
+    "w": "not",
+    "t": 70.08
+   },
+   {
+    "w": "manual",
+    "t": 70.44
+   },
+   {
+    "w": "coding.",
+    "t": 70.94
+   },
+   {
+    "w": "It's",
+    "t": 72.04
+   },
+   {
+    "w": "not",
+    "t": 72.3
+   },
+   {
+    "w": "magic,",
+    "t": 72.58
+   },
+   {
+    "w": "it's",
+    "t": 73.28
+   },
+   {
+    "w": "a",
+    "t": 73.54
+   },
+   {
+    "w": "smarter",
+    "t": 73.72
+   },
+   {
+    "w": "way",
+    "t": 73.94
+   },
+   {
+    "w": "to",
+    "t": 74.22
+   },
+   {
+    "w": "build",
+    "t": 74.42
+   },
+   {
+    "w": "where",
+    "t": 74.78
+   },
+   {
+    "w": "AI",
+    "t": 75.28
+   },
+   {
+    "w": "handles",
+    "t": 75.8
+   },
+   {
+    "w": "the",
+    "t": 76.18
+   },
+   {
+    "w": "grunt",
+    "t": 76.46
+   },
+   {
+    "w": "work",
+    "t": 76.74
+   },
+   {
+    "w": "and",
+    "t": 77.04
+   },
+   {
+    "w": "you",
+    "t": 77.2
+   },
+   {
+    "w": "call",
+    "t": 77.38
+   },
+   {
+    "w": "the",
+    "t": 77.58
+   },
+   {
+    "w": "shots.",
+    "t": 77.84
+   },
+   {
+    "w": "Want",
+    "t": 78.8
+   },
+   {
+    "w": "to",
+    "t": 79.02
+   },
+   {
+    "w": "scale",
+    "t": 79.2
+   },
+   {
+    "w": "your",
+    "t": 79.4
+   },
+   {
+    "w": "projects",
+    "t": 79.68
+   },
+   {
+    "w": "faster?",
+    "t": 80.12
+   },
+   {
+    "w": "Learning",
+    "t": 81.22
+   },
+   {
+    "w": "to",
+    "t": 81.5
+   },
+   {
+    "w": "orchestrate",
+    "t": 81.9
+   },
+   {
+    "w": "AI",
+    "t": 82.28
+   },
+   {
+    "w": "agents",
+    "t": 82.8
+   },
+   {
+    "w": "might",
+    "t": 83.18
+   },
+   {
+    "w": "be",
+    "t": 83.62
+   },
+   {
+    "w": "your",
+    "t": 83.86
+   },
+   {
+    "w": "next",
+    "t": 84.1
+   },
+   {
+    "w": "best",
+    "t": 84.48
+   },
+   {
+    "w": "skill.",
+    "t": 84.92
+   },
+   {
+    "w": "tools.",
+    "t": 85.18
+   }
+  ]
+ },
+ {
+  "i": 5,
+  "title": "Anthropic's open-source framework for AI-powered vulnerability discovery",
+  "url": "https://github.com/anthropics/defending-code-reference-harness",
+  "durationSec": 89.88,
+  "script": "And Anthropic just dropped an open source pipeline that uses Claude AI to find and fix security bugs in C and C++ code. It runs in five steps. First, it explores your code, then hunts for vulnerabilities, verifies to cut false alarms, reports what it found, and finally suggests patches. It combines Claude's deep code understanding with sandbox testing tools like ASAN to catch tricky memory errors. This means developers can plug in advanced AI -powered security scanning without building everything from scratch. If you're a builder or security engineer, that saves you weeks of work and helps catch bugs before they become costly breaches. The toolkit runs on Claude APIs via platforms like AWS Bedrock or Azure, so it's flexible for different setups. But heads up, it's a reference framework, not a polished product. You'll need to customize and maintain it yourself. For teams wanting something ready made, and Anthropic's hosted Claude security offers full multi -project scanning and patch management. Bottom line, this open source harness is a smart starting point if you want to build your own AI security tools, but don't expect a plug and play fix. Curious how AI can automate vulnerability discovery and patching? Stick around, we'll unpack how this works under the hood next. . . . . .",
+  "words": [
+   {
+    "w": "And",
+    "t": 0.0
+   },
+   {
+    "w": "Anthropic",
+    "t": 0.56
+   },
+   {
+    "w": "just",
+    "t": 0.98
+   },
+   {
+    "w": "dropped",
+    "t": 1.38
+   },
+   {
+    "w": "an",
+    "t": 1.64
+   },
+   {
+    "w": "open",
+    "t": 1.96
+   },
+   {
+    "w": "source",
+    "t": 2.24
+   },
+   {
+    "w": "pipeline",
+    "t": 2.58
+   },
+   {
+    "w": "that",
+    "t": 3.06
+   },
+   {
+    "w": "uses",
+    "t": 3.64
+   },
+   {
+    "w": "Claude",
+    "t": 4.12
+   },
+   {
+    "w": "AI",
+    "t": 4.58
+   },
+   {
+    "w": "to",
+    "t": 5.16
+   },
+   {
+    "w": "find",
+    "t": 5.62
+   },
+   {
+    "w": "and",
+    "t": 6.06
+   },
+   {
+    "w": "fix",
+    "t": 6.32
+   },
+   {
+    "w": "security",
+    "t": 6.72
+   },
+   {
+    "w": "bugs",
+    "t": 7.28
+   },
+   {
+    "w": "in",
+    "t": 7.7
+   },
+   {
+    "w": "C",
+    "t": 8.12
+   },
+   {
+    "w": "and",
+    "t": 8.46
+   },
+   {
+    "w": "C++",
+    "t": 8.7
+   },
+   {
+    "w": "code.",
+    "t": 9.34
+   },
+   {
+    "w": "It",
+    "t": 10.54
+   },
+   {
+    "w": "runs",
+    "t": 10.74
+   },
+   {
+    "w": "in",
+    "t": 11.0
+   },
+   {
+    "w": "five",
+    "t": 11.26
+   },
+   {
+    "w": "steps.",
+    "t": 11.64
+   },
+   {
+    "w": "First,",
+    "t": 12.44
+   },
+   {
+    "w": "it",
+    "t": 13.2
+   },
+   {
+    "w": "explores",
+    "t": 13.24
+   },
+   {
+    "w": "your",
+    "t": 13.48
+   },
+   {
+    "w": "code,",
+    "t": 13.8
+   },
+   {
+    "w": "then",
+    "t": 14.44
+   },
+   {
+    "w": "hunts",
+    "t": 14.7
+   },
+   {
+    "w": "for",
+    "t": 14.96
+   },
+   {
+    "w": "vulnerabilities,",
+    "t": 15.26
+   },
+   {
+    "w": "verifies",
+    "t": 16.62
+   },
+   {
+    "w": "to",
+    "t": 16.94
+   },
+   {
+    "w": "cut",
+    "t": 17.22
+   },
+   {
+    "w": "false",
+    "t": 17.5
+   },
+   {
+    "w": "alarms,",
+    "t": 17.76
+   },
+   {
+    "w": "reports",
+    "t": 18.66
+   },
+   {
+    "w": "what",
+    "t": 18.92
+   },
+   {
+    "w": "it",
+    "t": 19.12
+   },
+   {
+    "w": "found,",
+    "t": 19.3
+   },
+   {
+    "w": "and",
+    "t": 19.98
+   },
+   {
+    "w": "finally",
+    "t": 20.32
+   },
+   {
+    "w": "suggests",
+    "t": 20.7
+   },
+   {
+    "w": "patches.",
+    "t": 21.28
+   },
+   {
+    "w": "It",
+    "t": 22.54
+   },
+   {
+    "w": "combines",
+    "t": 22.86
+   },
+   {
+    "w": "Claude's",
+    "t": 23.28
+   },
+   {
+    "w": "deep",
+    "t": 23.94
+   },
+   {
+    "w": "code",
+    "t": 24.26
+   },
+   {
+    "w": "understanding",
+    "t": 24.54
+   },
+   {
+    "w": "with",
+    "t": 25.18
+   },
+   {
+    "w": "sandbox",
+    "t": 25.6
+   },
+   {
+    "w": "testing",
+    "t": 26.08
+   },
+   {
+    "w": "tools",
+    "t": 26.62
+   },
+   {
+    "w": "like",
+    "t": 27.0
+   },
+   {
+    "w": "ASAN",
+    "t": 27.36
+   },
+   {
+    "w": "to",
+    "t": 27.96
+   },
+   {
+    "w": "catch",
+    "t": 28.38
+   },
+   {
+    "w": "tricky",
+    "t": 28.76
+   },
+   {
+    "w": "memory",
+    "t": 29.18
+   },
+   {
+    "w": "errors.",
+    "t": 29.6
+   },
+   {
+    "w": "This",
+    "t": 29.98
+   },
+   {
+    "w": "means",
+    "t": 30.66
+   },
+   {
+    "w": "developers",
+    "t": 31.06
+   },
+   {
+    "w": "can",
+    "t": 31.48
+   },
+   {
+    "w": "plug",
+    "t": 31.92
+   },
+   {
+    "w": "in",
+    "t": 32.16
+   },
+   {
+    "w": "advanced",
+    "t": 32.42
+   },
+   {
+    "w": "AI",
+    "t": 32.98
+   },
+   {
+    "w": "-powered",
+    "t": 33.46
+   },
+   {
+    "w": "security",
+    "t": 33.78
+   },
+   {
+    "w": "scanning",
+    "t": 34.38
+   },
+   {
+    "w": "without",
+    "t": 34.88
+   },
+   {
+    "w": "building",
+    "t": 35.44
+   },
+   {
+    "w": "everything",
+    "t": 35.82
+   },
+   {
+    "w": "from",
+    "t": 36.24
+   },
+   {
+    "w": "scratch.",
+    "t": 36.64
+   },
+   {
+    "w": "If",
+    "t": 37.5
+   },
+   {
+    "w": "you're",
+    "t": 37.66
+   },
+   {
+    "w": "a",
+    "t": 37.9
+   },
+   {
+    "w": "builder",
+    "t": 38.12
+   },
+   {
+    "w": "or",
+    "t": 38.4
+   },
+   {
+    "w": "security",
+    "t": 38.7
+   },
+   {
+    "w": "engineer,",
+    "t": 39.2
+   },
+   {
+    "w": "that",
+    "t": 40.04
+   },
+   {
+    "w": "saves",
+    "t": 40.28
+   },
+   {
+    "w": "you",
+    "t": 40.56
+   },
+   {
+    "w": "weeks",
+    "t": 40.9
+   },
+   {
+    "w": "of",
+    "t": 41.12
+   },
+   {
+    "w": "work",
+    "t": 41.38
+   },
+   {
+    "w": "and",
+    "t": 41.66
+   },
+   {
+    "w": "helps",
+    "t": 41.94
+   },
+   {
+    "w": "catch",
+    "t": 42.2
+   },
+   {
+    "w": "bugs",
+    "t": 42.54
+   },
+   {
+    "w": "before",
+    "t": 42.88
+   },
+   {
+    "w": "they",
+    "t": 43.24
+   },
+   {
+    "w": "become",
+    "t": 43.44
+   },
+   {
+    "w": "costly",
+    "t": 43.8
+   },
+   {
+    "w": "breaches.",
+    "t": 44.22
+   },
+   {
+    "w": "The",
+    "t": 44.8
+   },
+   {
+    "w": "toolkit",
+    "t": 45.88
+   },
+   {
+    "w": "runs",
+    "t": 46.36
+   },
+   {
+    "w": "on",
+    "t": 46.64
+   },
+   {
+    "w": "Claude",
+    "t": 46.98
+   },
+   {
+    "w": "APIs",
+    "t": 47.34
+   },
+   {
+    "w": "via",
+    "t": 47.96
+   },
+   {
+    "w": "platforms",
+    "t": 48.42
+   },
+   {
+    "w": "like",
+    "t": 48.96
+   },
+   {
+    "w": "AWS",
+    "t": 49.42
+   },
+   {
+    "w": "Bedrock",
+    "t": 50.04
+   },
+   {
+    "w": "or",
+    "t": 50.66
+   },
+   {
+    "w": "Azure,",
+    "t": 51.06
+   },
+   {
+    "w": "so",
+    "t": 51.76
+   },
+   {
+    "w": "it's",
+    "t": 51.86
+   },
+   {
+    "w": "flexible",
+    "t": 52.32
+   },
+   {
+    "w": "for",
+    "t": 52.48
+   },
+   {
+    "w": "different",
+    "t": 52.92
+   },
+   {
+    "w": "setups.",
+    "t": 53.24
+   },
+   {
+    "w": "But",
+    "t": 54.16
+   },
+   {
+    "w": "heads",
+    "t": 54.38
+   },
+   {
+    "w": "up,",
+    "t": 54.62
+   },
+   {
+    "w": "it's",
+    "t": 55.08
+   },
+   {
+    "w": "a",
+    "t": 55.2
+   },
+   {
+    "w": "reference",
+    "t": 55.38
+   },
+   {
+    "w": "framework,",
+    "t": 55.72
+   },
+   {
+    "w": "not",
+    "t": 56.38
+   },
+   {
+    "w": "a",
+    "t": 56.64
+   },
+   {
+    "w": "polished",
+    "t": 56.86
+   },
+   {
+    "w": "product.",
+    "t": 57.08
+   },
+   {
+    "w": "You'll",
+    "t": 57.94
+   },
+   {
+    "w": "need",
+    "t": 58.18
+   },
+   {
+    "w": "to",
+    "t": 58.38
+   },
+   {
+    "w": "customize",
+    "t": 58.74
+   },
+   {
+    "w": "and",
+    "t": 59.08
+   },
+   {
+    "w": "maintain",
+    "t": 59.34
+   },
+   {
+    "w": "it",
+    "t": 59.68
+   },
+   {
+    "w": "yourself.",
+    "t": 59.9
+   },
+   {
+    "w": "For",
+    "t": 60.42
+   },
+   {
+    "w": "teams",
+    "t": 60.98
+   },
+   {
+    "w": "wanting",
+    "t": 61.28
+   },
+   {
+    "w": "something",
+    "t": 61.64
+   },
+   {
+    "w": "ready",
+    "t": 62.08
+   },
+   {
+    "w": "made,",
+    "t": 62.38
+   },
+   {
+    "w": "and",
+    "t": 62.96
+   },
+   {
+    "w": "Anthropic's",
+    "t": 63.0
+   },
+   {
+    "w": "hosted",
+    "t": 63.84
+   },
+   {
+    "w": "Claude",
+    "t": 63.84
+   },
+   {
+    "w": "security",
+    "t": 64.14
+   },
+   {
+    "w": "offers",
+    "t": 64.8
+   },
+   {
+    "w": "full",
+    "t": 65.18
+   },
+   {
+    "w": "multi",
+    "t": 65.58
+   },
+   {
+    "w": "-project",
+    "t": 66.02
+   },
+   {
+    "w": "scanning",
+    "t": 66.42
+   },
+   {
+    "w": "and",
+    "t": 66.94
+   },
+   {
+    "w": "patch",
+    "t": 67.36
+   },
+   {
+    "w": "management.",
+    "t": 67.52
+   },
+   {
+    "w": "Bottom",
+    "t": 68.88
+   },
+   {
+    "w": "line,",
+    "t": 68.9
+   },
+   {
+    "w": "this",
+    "t": 69.82
+   },
+   {
+    "w": "open",
+    "t": 70.1
+   },
+   {
+    "w": "source",
+    "t": 70.42
+   },
+   {
+    "w": "harness",
+    "t": 70.78
+   },
+   {
+    "w": "is",
+    "t": 71.1
+   },
+   {
+    "w": "a",
+    "t": 71.52
+   },
+   {
+    "w": "smart",
+    "t": 71.72
+   },
+   {
+    "w": "starting",
+    "t": 72.1
+   },
+   {
+    "w": "point",
+    "t": 72.46
+   },
+   {
+    "w": "if",
+    "t": 72.78
+   },
+   {
+    "w": "you",
+    "t": 72.96
+   },
+   {
+    "w": "want",
+    "t": 73.16
+   },
+   {
+    "w": "to",
+    "t": 73.38
+   },
+   {
+    "w": "build",
+    "t": 73.54
+   },
+   {
+    "w": "your",
+    "t": 73.8
+   },
+   {
+    "w": "own",
+    "t": 74.08
+   },
+   {
+    "w": "AI",
+    "t": 74.4
+   },
+   {
+    "w": "security",
+    "t": 74.76
+   },
+   {
+    "w": "tools,",
+    "t": 75.2
+   },
+   {
+    "w": "but",
+    "t": 76.16
+   },
+   {
+    "w": "don't",
+    "t": 76.28
+   },
+   {
+    "w": "expect",
+    "t": 76.6
+   },
+   {
+    "w": "a",
+    "t": 77.0
+   },
+   {
+    "w": "plug",
+    "t": 77.32
+   },
+   {
+    "w": "and",
+    "t": 77.54
+   },
+   {
+    "w": "play",
+    "t": 77.78
+   },
+   {
+    "w": "fix.",
+    "t": 78.12
+   },
+   {
+    "w": "Curious",
+    "t": 79.26
+   },
+   {
+    "w": "how",
+    "t": 79.6
+   },
+   {
+    "w": "AI",
+    "t": 80.02
+   },
+   {
+    "w": "can",
+    "t": 80.44
+   },
+   {
+    "w": "automate",
+    "t": 80.82
+   },
+   {
+    "w": "vulnerability",
+    "t": 81.16
+   },
+   {
+    "w": "discovery",
+    "t": 81.9
+   },
+   {
+    "w": "and",
+    "t": 82.72
+   },
+   {
+    "w": "patching?",
+    "t": 83.04
+   },
+   {
+    "w": "Stick",
+    "t": 84.04
+   },
+   {
+    "w": "around,",
+    "t": 84.28
+   },
+   {
+    "w": "we'll",
+    "t": 84.94
+   },
+   {
+    "w": "unpack",
+    "t": 85.14
+   },
+   {
+    "w": "how",
+    "t": 85.5
+   },
+   {
+    "w": "this",
+    "t": 85.72
+   },
+   {
+    "w": "works",
+    "t": 85.94
+   },
+   {
+    "w": "under",
+    "t": 86.26
+   },
+   {
+    "w": "the",
+    "t": 86.58
+   },
+   {
+    "w": "hood",
+    "t": 87.04
+   },
+   {
+    "w": "next.",
+    "t": 87.04
+   },
+   {
+    "w": ".",
+    "t": 87.52
+   },
+   {
+    "w": ".",
+    "t": 88.3
+   },
+   {
+    "w": ".",
+    "t": 88.94
+   },
+   {
+    "w": ".",
+    "t": 89.12
+   },
+   {
+    "w": ".",
+    "t": 89.12
+   }
+  ]
+ },
+ {
+  "i": 6,
+  "title": "NSA using Anthropic's Mythos for cyber attacks",
+  "url": "https://www.ft.com/content/d02d91b3-2636-454e-9442-dc7e69f51815",
+  "durationSec": 87.68,
+  "script": "The NSA is using Anthropic's Mythos AI to plan cyber attacks. Mythos is a huge language model with 75 billion parameters about the same size as GPT -4. It can understand complex language and context which lets the NSA craft super convincing phishing emails and design precise hacking strategies. Instead of manual guesswork, Mythos automates and scales attacks, making them faster and harder to spot. This isn't just theory, it's a real -world use of AI for offense, not just chat or code help, for builders and developers, this is a wake -up call. The AI tools you're excited about can be twisted into cyber weapons by governments or bad actors. It means security teams need to rethink defense, knowing attackers now have AI level creativity and speed on their side. Plus, it raises big questions about AI ethics and control, who decides how these powerful models get used. Here's the bottom line. Mythos was built to be safer, but the NSA's use shows AI safety isn't just about design. It's about who holds the keys. If you build with AI, you have to watch not just what your model can do, but who might turn it against you.",
+  "words": [
+   {
+    "w": "The",
+    "t": 0.0
+   },
+   {
+    "w": "NSA",
+    "t": 0.52
+   },
+   {
+    "w": "is",
+    "t": 0.92
+   },
+   {
+    "w": "using",
+    "t": 1.44
+   },
+   {
+    "w": "Anthropic's",
+    "t": 1.94
+   },
+   {
+    "w": "Mythos",
+    "t": 2.92
+   },
+   {
+    "w": "AI",
+    "t": 3.36
+   },
+   {
+    "w": "to",
+    "t": 3.88
+   },
+   {
+    "w": "plan",
+    "t": 4.26
+   },
+   {
+    "w": "cyber",
+    "t": 4.72
+   },
+   {
+    "w": "attacks.",
+    "t": 5.1
+   },
+   {
+    "w": "Mythos",
+    "t": 6.26
+   },
+   {
+    "w": "is",
+    "t": 6.72
+   },
+   {
+    "w": "a",
+    "t": 7.06
+   },
+   {
+    "w": "huge",
+    "t": 7.22
+   },
+   {
+    "w": "language",
+    "t": 7.64
+   },
+   {
+    "w": "model",
+    "t": 8.12
+   },
+   {
+    "w": "with",
+    "t": 8.48
+   },
+   {
+    "w": "75",
+    "t": 8.84
+   },
+   {
+    "w": "billion",
+    "t": 9.78
+   },
+   {
+    "w": "parameters",
+    "t": 10.38
+   },
+   {
+    "w": "about",
+    "t": 10.92
+   },
+   {
+    "w": "the",
+    "t": 11.7
+   },
+   {
+    "w": "same",
+    "t": 11.98
+   },
+   {
+    "w": "size",
+    "t": 12.22
+   },
+   {
+    "w": "as",
+    "t": 12.58
+   },
+   {
+    "w": "GPT",
+    "t": 13.06
+   },
+   {
+    "w": "-4.",
+    "t": 13.66
+   },
+   {
+    "w": "It",
+    "t": 14.46
+   },
+   {
+    "w": "can",
+    "t": 14.6
+   },
+   {
+    "w": "understand",
+    "t": 14.92
+   },
+   {
+    "w": "complex",
+    "t": 15.48
+   },
+   {
+    "w": "language",
+    "t": 16.02
+   },
+   {
+    "w": "and",
+    "t": 16.58
+   },
+   {
+    "w": "context",
+    "t": 17.02
+   },
+   {
+    "w": "which",
+    "t": 17.52
+   },
+   {
+    "w": "lets",
+    "t": 18.02
+   },
+   {
+    "w": "the",
+    "t": 18.36
+   },
+   {
+    "w": "NSA",
+    "t": 18.58
+   },
+   {
+    "w": "craft",
+    "t": 18.9
+   },
+   {
+    "w": "super",
+    "t": 19.58
+   },
+   {
+    "w": "convincing",
+    "t": 19.98
+   },
+   {
+    "w": "phishing",
+    "t": 20.48
+   },
+   {
+    "w": "emails",
+    "t": 21.0
+   },
+   {
+    "w": "and",
+    "t": 21.56
+   },
+   {
+    "w": "design",
+    "t": 22.1
+   },
+   {
+    "w": "precise",
+    "t": 22.58
+   },
+   {
+    "w": "hacking",
+    "t": 23.24
+   },
+   {
+    "w": "strategies.",
+    "t": 23.68
+   },
+   {
+    "w": "Instead",
+    "t": 24.48
+   },
+   {
+    "w": "of",
+    "t": 25.68
+   },
+   {
+    "w": "manual",
+    "t": 26.02
+   },
+   {
+    "w": "guesswork,",
+    "t": 26.38
+   },
+   {
+    "w": "Mythos",
+    "t": 27.44
+   },
+   {
+    "w": "automates",
+    "t": 27.88
+   },
+   {
+    "w": "and",
+    "t": 28.36
+   },
+   {
+    "w": "scales",
+    "t": 28.72
+   },
+   {
+    "w": "attacks,",
+    "t": 29.0
+   },
+   {
+    "w": "making",
+    "t": 29.96
+   },
+   {
+    "w": "them",
+    "t": 30.06
+   },
+   {
+    "w": "faster",
+    "t": 30.5
+   },
+   {
+    "w": "and",
+    "t": 30.96
+   },
+   {
+    "w": "harder",
+    "t": 31.34
+   },
+   {
+    "w": "to",
+    "t": 31.58
+   },
+   {
+    "w": "spot.",
+    "t": 31.86
+   },
+   {
+    "w": "This",
+    "t": 32.62
+   },
+   {
+    "w": "isn't",
+    "t": 32.84
+   },
+   {
+    "w": "just",
+    "t": 33.18
+   },
+   {
+    "w": "theory,",
+    "t": 33.54
+   },
+   {
+    "w": "it's",
+    "t": 34.06
+   },
+   {
+    "w": "a",
+    "t": 34.36
+   },
+   {
+    "w": "real",
+    "t": 34.62
+   },
+   {
+    "w": "-world",
+    "t": 34.88
+   },
+   {
+    "w": "use",
+    "t": 35.26
+   },
+   {
+    "w": "of",
+    "t": 35.5
+   },
+   {
+    "w": "AI",
+    "t": 35.78
+   },
+   {
+    "w": "for",
+    "t": 36.02
+   },
+   {
+    "w": "offense,",
+    "t": 36.38
+   },
+   {
+    "w": "not",
+    "t": 37.1
+   },
+   {
+    "w": "just",
+    "t": 37.34
+   },
+   {
+    "w": "chat",
+    "t": 37.66
+   },
+   {
+    "w": "or",
+    "t": 37.96
+   },
+   {
+    "w": "code",
+    "t": 38.18
+   },
+   {
+    "w": "help,",
+    "t": 38.46
+   },
+   {
+    "w": "for",
+    "t": 39.0
+   },
+   {
+    "w": "builders",
+    "t": 39.3
+   },
+   {
+    "w": "and",
+    "t": 39.66
+   },
+   {
+    "w": "developers,",
+    "t": 40.0
+   },
+   {
+    "w": "this",
+    "t": 40.94
+   },
+   {
+    "w": "is",
+    "t": 41.08
+   },
+   {
+    "w": "a",
+    "t": 41.38
+   },
+   {
+    "w": "wake",
+    "t": 41.46
+   },
+   {
+    "w": "-up",
+    "t": 41.6
+   },
+   {
+    "w": "call.",
+    "t": 41.82
+   },
+   {
+    "w": "The",
+    "t": 42.64
+   },
+   {
+    "w": "AI",
+    "t": 42.9
+   },
+   {
+    "w": "tools",
+    "t": 43.32
+   },
+   {
+    "w": "you're",
+    "t": 43.64
+   },
+   {
+    "w": "excited",
+    "t": 43.96
+   },
+   {
+    "w": "about",
+    "t": 44.28
+   },
+   {
+    "w": "can",
+    "t": 44.78
+   },
+   {
+    "w": "be",
+    "t": 45.06
+   },
+   {
+    "w": "twisted",
+    "t": 45.38
+   },
+   {
+    "w": "into",
+    "t": 45.64
+   },
+   {
+    "w": "cyber",
+    "t": 46.08
+   },
+   {
+    "w": "weapons",
+    "t": 46.5
+   },
+   {
+    "w": "by",
+    "t": 46.8
+   },
+   {
+    "w": "governments",
+    "t": 47.2
+   },
+   {
+    "w": "or",
+    "t": 47.66
+   },
+   {
+    "w": "bad",
+    "t": 48.08
+   },
+   {
+    "w": "actors.",
+    "t": 48.38
+   },
+   {
+    "w": "It",
+    "t": 49.52
+   },
+   {
+    "w": "means",
+    "t": 49.76
+   },
+   {
+    "w": "security",
+    "t": 50.2
+   },
+   {
+    "w": "teams",
+    "t": 50.64
+   },
+   {
+    "w": "need",
+    "t": 51.16
+   },
+   {
+    "w": "to",
+    "t": 51.46
+   },
+   {
+    "w": "rethink",
+    "t": 51.7
+   },
+   {
+    "w": "defense,",
+    "t": 52.0
+   },
+   {
+    "w": "knowing",
+    "t": 53.16
+   },
+   {
+    "w": "attackers",
+    "t": 53.32
+   },
+   {
+    "w": "now",
+    "t": 53.86
+   },
+   {
+    "w": "have",
+    "t": 54.34
+   },
+   {
+    "w": "AI",
+    "t": 54.46
+   },
+   {
+    "w": "level",
+    "t": 55.04
+   },
+   {
+    "w": "creativity",
+    "t": 55.46
+   },
+   {
+    "w": "and",
+    "t": 56.14
+   },
+   {
+    "w": "speed",
+    "t": 56.86
+   },
+   {
+    "w": "on",
+    "t": 57.14
+   },
+   {
+    "w": "their",
+    "t": 57.36
+   },
+   {
+    "w": "side.",
+    "t": 57.66
+   },
+   {
+    "w": "Plus,",
+    "t": 58.38
+   },
+   {
+    "w": "it",
+    "t": 59.04
+   },
+   {
+    "w": "raises",
+    "t": 59.34
+   },
+   {
+    "w": "big",
+    "t": 59.56
+   },
+   {
+    "w": "questions",
+    "t": 60.0
+   },
+   {
+    "w": "about",
+    "t": 60.42
+   },
+   {
+    "w": "AI",
+    "t": 60.82
+   },
+   {
+    "w": "ethics",
+    "t": 61.24
+   },
+   {
+    "w": "and",
+    "t": 61.6
+   },
+   {
+    "w": "control,",
+    "t": 62.04
+   },
+   {
+    "w": "who",
+    "t": 62.78
+   },
+   {
+    "w": "decides",
+    "t": 62.98
+   },
+   {
+    "w": "how",
+    "t": 63.42
+   },
+   {
+    "w": "these",
+    "t": 63.76
+   },
+   {
+    "w": "powerful",
+    "t": 64.24
+   },
+   {
+    "w": "models",
+    "t": 64.44
+   },
+   {
+    "w": "get",
+    "t": 64.82
+   },
+   {
+    "w": "used.",
+    "t": 65.14
+   },
+   {
+    "w": "Here's",
+    "t": 68.72
+   },
+   {
+    "w": "the",
+    "t": 69.36
+   },
+   {
+    "w": "bottom",
+    "t": 69.6
+   },
+   {
+    "w": "line.",
+    "t": 69.88
+   },
+   {
+    "w": "Mythos",
+    "t": 70.7
+   },
+   {
+    "w": "was",
+    "t": 71.1
+   },
+   {
+    "w": "built",
+    "t": 71.4
+   },
+   {
+    "w": "to",
+    "t": 71.7
+   },
+   {
+    "w": "be",
+    "t": 71.88
+   },
+   {
+    "w": "safer,",
+    "t": 72.16
+   },
+   {
+    "w": "but",
+    "t": 72.78
+   },
+   {
+    "w": "the",
+    "t": 73.1
+   },
+   {
+    "w": "NSA's",
+    "t": 73.58
+   },
+   {
+    "w": "use",
+    "t": 74.04
+   },
+   {
+    "w": "shows",
+    "t": 74.38
+   },
+   {
+    "w": "AI",
+    "t": 74.9
+   },
+   {
+    "w": "safety",
+    "t": 75.4
+   },
+   {
+    "w": "isn't",
+    "t": 75.92
+   },
+   {
+    "w": "just",
+    "t": 76.52
+   },
+   {
+    "w": "about",
+    "t": 76.94
+   },
+   {
+    "w": "design.",
+    "t": 77.24
+   },
+   {
+    "w": "It's",
+    "t": 78.2
+   },
+   {
+    "w": "about",
+    "t": 78.48
+   },
+   {
+    "w": "who",
+    "t": 78.84
+   },
+   {
+    "w": "holds",
+    "t": 79.12
+   },
+   {
+    "w": "the",
+    "t": 79.46
+   },
+   {
+    "w": "keys.",
+    "t": 79.78
+   },
+   {
+    "w": "If",
+    "t": 80.5
+   },
+   {
+    "w": "you",
+    "t": 80.76
+   },
+   {
+    "w": "build",
+    "t": 81.04
+   },
+   {
+    "w": "with",
+    "t": 81.36
+   },
+   {
+    "w": "AI,",
+    "t": 81.66
+   },
+   {
+    "w": "you",
+    "t": 82.38
+   },
+   {
+    "w": "have",
+    "t": 82.56
+   },
+   {
+    "w": "to",
+    "t": 82.8
+   },
+   {
+    "w": "watch",
+    "t": 82.98
+   },
+   {
+    "w": "not",
+    "t": 83.28
+   },
+   {
+    "w": "just",
+    "t": 83.7
+   },
+   {
+    "w": "what",
+    "t": 83.98
+   },
+   {
+    "w": "your",
+    "t": 84.14
+   },
+   {
+    "w": "model",
+    "t": 84.4
+   },
+   {
+    "w": "can",
+    "t": 84.76
+   },
+   {
+    "w": "do,",
+    "t": 85.04
+   },
+   {
+    "w": "but",
+    "t": 85.56
+   },
+   {
+    "w": "who",
+    "t": 85.82
+   },
+   {
+    "w": "might",
+    "t": 86.04
+   },
+   {
+    "w": "turn",
+    "t": 86.34
+   },
+   {
+    "w": "it",
+    "t": 86.52
+   },
+   {
+    "w": "against",
+    "t": 86.76
+   },
+   {
+    "w": "you.",
+    "t": 87.08
+   }
+  ]
+ },
+ {
+  "i": 7,
+  "title": "Microsoft announces Scout, an autonomous AI agent built on OpenClaw",
+  "url": "https://www.computerworld.com/article/4180103/microsoft-unveils-scout-an-autonomous-ai-agent-built-on-openclaw.html",
+  "durationSec": 80.16,
+  "script": "Microsoft just dropped Scout, a new AI agent that thinks on its own. It runs on Open jobs 30 % faster than older Microsoft agents and cut human check -ins by over half. That means less babysitting your AI more time building. For developers, Scout signals a shift. Your AI assistant can now take real initiative, tackling multi -step workflows without constant prompts. Microsoft's bringing Scout to Azure AI in six months, so it'll be easier to plug into your project soon. It's not perfect. Scout still needs clear goals and a good environment to work in, but it's a strong step toward hands -off AI helpers. If you're building apps or automations, Scout shows where smart AI autonomy is headed. The big takeaway? Your AI might soon do more thinking for you, freeing you up to focus on the creative stuff.",
+  "words": [
+   {
+    "w": "Microsoft",
+    "t": 21.84
+   },
+   {
+    "w": "just",
+    "t": 22.52
+   },
+   {
+    "w": "dropped",
+    "t": 22.52
+   },
+   {
+    "w": "Scout,",
+    "t": 22.76
+   },
+   {
+    "w": "a",
+    "t": 26.12
+   },
+   {
+    "w": "new",
+    "t": 26.12
+   },
+   {
+    "w": "AI",
+    "t": 26.12
+   },
+   {
+    "w": "agent",
+    "t": 26.14
+   },
+   {
+    "w": "that",
+    "t": 26.36
+   },
+   {
+    "w": "thinks",
+    "t": 26.7
+   },
+   {
+    "w": "on",
+    "t": 27.4
+   },
+   {
+    "w": "its",
+    "t": 27.4
+   },
+   {
+    "w": "own.",
+    "t": 27.48
+   },
+   {
+    "w": "It",
+    "t": 28.06
+   },
+   {
+    "w": "runs",
+    "t": 28.74
+   },
+   {
+    "w": "on",
+    "t": 28.74
+   },
+   {
+    "w": "Open",
+    "t": 29.26
+   },
+   {
+    "w": "jobs",
+    "t": 29.26
+   },
+   {
+    "w": "30",
+    "t": 29.6
+   },
+   {
+    "w": "%",
+    "t": 30.1
+   },
+   {
+    "w": "faster",
+    "t": 30.6
+   },
+   {
+    "w": "than",
+    "t": 31.0
+   },
+   {
+    "w": "older",
+    "t": 31.28
+   },
+   {
+    "w": "Microsoft",
+    "t": 31.6
+   },
+   {
+    "w": "agents",
+    "t": 32.18
+   },
+   {
+    "w": "and",
+    "t": 32.6
+   },
+   {
+    "w": "cut",
+    "t": 33.12
+   },
+   {
+    "w": "human",
+    "t": 33.48
+   },
+   {
+    "w": "check",
+    "t": 33.84
+   },
+   {
+    "w": "-ins",
+    "t": 34.12
+   },
+   {
+    "w": "by",
+    "t": 34.36
+   },
+   {
+    "w": "over",
+    "t": 34.64
+   },
+   {
+    "w": "half.",
+    "t": 35.02
+   },
+   {
+    "w": "That",
+    "t": 35.74
+   },
+   {
+    "w": "means",
+    "t": 35.94
+   },
+   {
+    "w": "less",
+    "t": 36.44
+   },
+   {
+    "w": "babysitting",
+    "t": 36.84
+   },
+   {
+    "w": "your",
+    "t": 37.42
+   },
+   {
+    "w": "AI",
+    "t": 37.8
+   },
+   {
+    "w": "more",
+    "t": 38.2
+   },
+   {
+    "w": "time",
+    "t": 38.66
+   },
+   {
+    "w": "building.",
+    "t": 39.0
+   },
+   {
+    "w": "For",
+    "t": 40.24
+   },
+   {
+    "w": "developers,",
+    "t": 40.46
+   },
+   {
+    "w": "Scout",
+    "t": 41.44
+   },
+   {
+    "w": "signals",
+    "t": 41.8
+   },
+   {
+    "w": "a",
+    "t": 42.14
+   },
+   {
+    "w": "shift.",
+    "t": 42.44
+   },
+   {
+    "w": "Your",
+    "t": 43.34
+   },
+   {
+    "w": "AI",
+    "t": 43.6
+   },
+   {
+    "w": "assistant",
+    "t": 43.98
+   },
+   {
+    "w": "can",
+    "t": 44.42
+   },
+   {
+    "w": "now",
+    "t": 44.84
+   },
+   {
+    "w": "take",
+    "t": 45.1
+   },
+   {
+    "w": "real",
+    "t": 45.48
+   },
+   {
+    "w": "initiative,",
+    "t": 45.84
+   },
+   {
+    "w": "tackling",
+    "t": 47.32
+   },
+   {
+    "w": "multi",
+    "t": 47.32
+   },
+   {
+    "w": "-step",
+    "t": 47.86
+   },
+   {
+    "w": "workflows",
+    "t": 48.12
+   },
+   {
+    "w": "without",
+    "t": 48.7
+   },
+   {
+    "w": "constant",
+    "t": 49.24
+   },
+   {
+    "w": "prompts.",
+    "t": 49.76
+   },
+   {
+    "w": "Microsoft's",
+    "t": 50.7
+   },
+   {
+    "w": "bringing",
+    "t": 51.26
+   },
+   {
+    "w": "Scout",
+    "t": 51.6
+   },
+   {
+    "w": "to",
+    "t": 51.96
+   },
+   {
+    "w": "Azure",
+    "t": 52.16
+   },
+   {
+    "w": "AI",
+    "t": 52.56
+   },
+   {
+    "w": "in",
+    "t": 53.02
+   },
+   {
+    "w": "six",
+    "t": 53.36
+   },
+   {
+    "w": "months,",
+    "t": 53.72
+   },
+   {
+    "w": "so",
+    "t": 54.28
+   },
+   {
+    "w": "it'll",
+    "t": 54.56
+   },
+   {
+    "w": "be",
+    "t": 54.74
+   },
+   {
+    "w": "easier",
+    "t": 55.02
+   },
+   {
+    "w": "to",
+    "t": 55.24
+   },
+   {
+    "w": "plug",
+    "t": 55.48
+   },
+   {
+    "w": "into",
+    "t": 55.68
+   },
+   {
+    "w": "your",
+    "t": 55.86
+   },
+   {
+    "w": "project",
+    "t": 56.08
+   },
+   {
+    "w": "soon.",
+    "t": 56.48
+   },
+   {
+    "w": "It's",
+    "t": 57.04
+   },
+   {
+    "w": "not",
+    "t": 57.72
+   },
+   {
+    "w": "perfect.",
+    "t": 57.96
+   },
+   {
+    "w": "Scout",
+    "t": 58.86
+   },
+   {
+    "w": "still",
+    "t": 59.12
+   },
+   {
+    "w": "needs",
+    "t": 59.5
+   },
+   {
+    "w": "clear",
+    "t": 59.84
+   },
+   {
+    "w": "goals",
+    "t": 60.2
+   },
+   {
+    "w": "and",
+    "t": 60.66
+   },
+   {
+    "w": "a",
+    "t": 60.98
+   },
+   {
+    "w": "good",
+    "t": 61.16
+   },
+   {
+    "w": "environment",
+    "t": 61.38
+   },
+   {
+    "w": "to",
+    "t": 61.84
+   },
+   {
+    "w": "work",
+    "t": 62.14
+   },
+   {
+    "w": "in,",
+    "t": 62.34
+   },
+   {
+    "w": "but",
+    "t": 62.84
+   },
+   {
+    "w": "it's",
+    "t": 63.02
+   },
+   {
+    "w": "a",
+    "t": 63.26
+   },
+   {
+    "w": "strong",
+    "t": 63.42
+   },
+   {
+    "w": "step",
+    "t": 63.86
+   },
+   {
+    "w": "toward",
+    "t": 64.2
+   },
+   {
+    "w": "hands",
+    "t": 64.6
+   },
+   {
+    "w": "-off",
+    "t": 64.94
+   },
+   {
+    "w": "AI",
+    "t": 65.2
+   },
+   {
+    "w": "helpers.",
+    "t": 65.68
+   },
+   {
+    "w": "If",
+    "t": 66.6
+   },
+   {
+    "w": "you're",
+    "t": 66.74
+   },
+   {
+    "w": "building",
+    "t": 66.94
+   },
+   {
+    "w": "apps",
+    "t": 67.32
+   },
+   {
+    "w": "or",
+    "t": 67.66
+   },
+   {
+    "w": "automations,",
+    "t": 67.96
+   },
+   {
+    "w": "Scout",
+    "t": 69.28
+   },
+   {
+    "w": "shows",
+    "t": 69.36
+   },
+   {
+    "w": "where",
+    "t": 69.7
+   },
+   {
+    "w": "smart",
+    "t": 70.08
+   },
+   {
+    "w": "AI",
+    "t": 70.46
+   },
+   {
+    "w": "autonomy",
+    "t": 70.88
+   },
+   {
+    "w": "is",
+    "t": 71.4
+   },
+   {
+    "w": "headed.",
+    "t": 71.82
+   },
+   {
+    "w": "The",
+    "t": 72.46
+   },
+   {
+    "w": "big",
+    "t": 72.54
+   },
+   {
+    "w": "takeaway?",
+    "t": 72.76
+   },
+   {
+    "w": "Your",
+    "t": 73.74
+   },
+   {
+    "w": "AI",
+    "t": 74.0
+   },
+   {
+    "w": "might",
+    "t": 74.5
+   },
+   {
+    "w": "soon",
+    "t": 74.92
+   },
+   {
+    "w": "do",
+    "t": 75.24
+   },
+   {
+    "w": "more",
+    "t": 75.5
+   },
+   {
+    "w": "thinking",
+    "t": 75.78
+   },
+   {
+    "w": "for",
+    "t": 76.12
+   },
+   {
+    "w": "you,",
+    "t": 76.42
+   },
+   {
+    "w": "freeing",
+    "t": 77.14
+   },
+   {
+    "w": "you",
+    "t": 77.5
+   },
+   {
+    "w": "up",
+    "t": 77.78
+   },
+   {
+    "w": "to",
+    "t": 77.98
+   },
+   {
+    "w": "focus",
+    "t": 78.26
+   },
+   {
+    "w": "on",
+    "t": 78.56
+   },
+   {
+    "w": "the",
+    "t": 78.78
+   },
+   {
+    "w": "creative",
+    "t": 79.04
+   },
+   {
+    "w": "stuff.",
+    "t": 79.36
+   }
+  ]
+ },
+ {
+  "i": 8,
+  "title": "If LLMs Have Human-Like Attributes, Then So Does Age of Empires II",
+  "url": "https://arxiv.org/pdf/2605.31514",
+  "durationSec": 87.8,
+  "script": "If ChatGPT's 175 billion parameters show human -like reasoning, then so does Age of Empires II's AI from 1999. That game's AI runs on scripted yet adaptive strategies, planning moves, and reacting to players in real time. It's not just button -mashing. It's strategic thinking, gold -driven behavior, and learning on the fly. This paper argues that if we credit LLMs like GPT -4 for creativity and problem -solving, we should also credit complex game AI' for similar cognitive skills. Age of Empires II, players and its AI both reach expert level strategy just in a different format. One uses language tokens, the other game states. For AI builders, this flips the script on what counts as intelligent AI. It's not only about language or text generation, but also about adaptive decision -making in dynamic environments. Understanding this broadens how we design AI systems, encouraging cross -domain insights. The takeaway? Intelligence isn't a single thing. It's a spectrum of complex behaviors. So next time you admire GPT -4 smarts, remember, a 1999 game AI was pulling off expert level thinking too. That perspective shift could unlock new ideas for your own AI projects. All right. Thanks.",
+  "words": [
+   {
+    "w": "If",
+    "t": 0.0
+   },
+   {
+    "w": "ChatGPT's",
+    "t": 0.72
+   },
+   {
+    "w": "175",
+    "t": 2.32
+   },
+   {
+    "w": "billion",
+    "t": 2.8
+   },
+   {
+    "w": "parameters",
+    "t": 3.64
+   },
+   {
+    "w": "show",
+    "t": 4.08
+   },
+   {
+    "w": "human",
+    "t": 4.66
+   },
+   {
+    "w": "-like",
+    "t": 4.98
+   },
+   {
+    "w": "reasoning,",
+    "t": 5.3
+   },
+   {
+    "w": "then",
+    "t": 6.16
+   },
+   {
+    "w": "so",
+    "t": 6.4
+   },
+   {
+    "w": "does",
+    "t": 6.6
+   },
+   {
+    "w": "Age",
+    "t": 6.92
+   },
+   {
+    "w": "of",
+    "t": 7.18
+   },
+   {
+    "w": "Empires",
+    "t": 7.4
+   },
+   {
+    "w": "II's",
+    "t": 7.8
+   },
+   {
+    "w": "AI",
+    "t": 8.38
+   },
+   {
+    "w": "from",
+    "t": 8.76
+   },
+   {
+    "w": "1999.",
+    "t": 9.08
+   },
+   {
+    "w": "That",
+    "t": 10.86
+   },
+   {
+    "w": "game's",
+    "t": 11.1
+   },
+   {
+    "w": "AI",
+    "t": 11.66
+   },
+   {
+    "w": "runs",
+    "t": 12.08
+   },
+   {
+    "w": "on",
+    "t": 12.44
+   },
+   {
+    "w": "scripted",
+    "t": 12.8
+   },
+   {
+    "w": "yet",
+    "t": 13.08
+   },
+   {
+    "w": "adaptive",
+    "t": 13.56
+   },
+   {
+    "w": "strategies,",
+    "t": 14.04
+   },
+   {
+    "w": "planning",
+    "t": 15.26
+   },
+   {
+    "w": "moves,",
+    "t": 15.42
+   },
+   {
+    "w": "and",
+    "t": 16.08
+   },
+   {
+    "w": "reacting",
+    "t": 16.26
+   },
+   {
+    "w": "to",
+    "t": 16.6
+   },
+   {
+    "w": "players",
+    "t": 16.94
+   },
+   {
+    "w": "in",
+    "t": 17.24
+   },
+   {
+    "w": "real",
+    "t": 17.48
+   },
+   {
+    "w": "time.",
+    "t": 17.7
+   },
+   {
+    "w": "It's",
+    "t": 18.5
+   },
+   {
+    "w": "not",
+    "t": 18.78
+   },
+   {
+    "w": "just",
+    "t": 19.04
+   },
+   {
+    "w": "button",
+    "t": 19.42
+   },
+   {
+    "w": "-mashing.",
+    "t": 19.72
+   },
+   {
+    "w": "It's",
+    "t": 20.42
+   },
+   {
+    "w": "strategic",
+    "t": 20.74
+   },
+   {
+    "w": "thinking,",
+    "t": 21.08
+   },
+   {
+    "w": "gold",
+    "t": 21.92
+   },
+   {
+    "w": "-driven",
+    "t": 22.26
+   },
+   {
+    "w": "behavior,",
+    "t": 22.46
+   },
+   {
+    "w": "and",
+    "t": 23.2
+   },
+   {
+    "w": "learning",
+    "t": 23.44
+   },
+   {
+    "w": "on",
+    "t": 23.74
+   },
+   {
+    "w": "the",
+    "t": 23.94
+   },
+   {
+    "w": "fly.",
+    "t": 24.1
+   },
+   {
+    "w": "This",
+    "t": 24.4
+   },
+   {
+    "w": "paper",
+    "t": 25.3
+   },
+   {
+    "w": "argues",
+    "t": 25.68
+   },
+   {
+    "w": "that",
+    "t": 26.1
+   },
+   {
+    "w": "if",
+    "t": 26.48
+   },
+   {
+    "w": "we",
+    "t": 26.66
+   },
+   {
+    "w": "credit",
+    "t": 26.86
+   },
+   {
+    "w": "LLMs",
+    "t": 27.18
+   },
+   {
+    "w": "like",
+    "t": 27.84
+   },
+   {
+    "w": "GPT",
+    "t": 28.2
+   },
+   {
+    "w": "-4",
+    "t": 28.78
+   },
+   {
+    "w": "for",
+    "t": 29.16
+   },
+   {
+    "w": "creativity",
+    "t": 29.42
+   },
+   {
+    "w": "and",
+    "t": 30.02
+   },
+   {
+    "w": "problem",
+    "t": 30.58
+   },
+   {
+    "w": "-solving,",
+    "t": 31.08
+   },
+   {
+    "w": "we",
+    "t": 31.76
+   },
+   {
+    "w": "should",
+    "t": 31.86
+   },
+   {
+    "w": "also",
+    "t": 32.14
+   },
+   {
+    "w": "credit",
+    "t": 32.5
+   },
+   {
+    "w": "complex",
+    "t": 32.84
+   },
+   {
+    "w": "game",
+    "t": 33.56
+   },
+   {
+    "w": "AI'",
+    "t": 34.0
+   },
+   {
+    "w": "for",
+    "t": 34.52
+   },
+   {
+    "w": "similar",
+    "t": 34.82
+   },
+   {
+    "w": "cognitive",
+    "t": 35.36
+   },
+   {
+    "w": "skills.",
+    "t": 35.86
+   },
+   {
+    "w": "Age",
+    "t": 37.02
+   },
+   {
+    "w": "of",
+    "t": 37.02
+   },
+   {
+    "w": "Empires",
+    "t": 37.26
+   },
+   {
+    "w": "II,",
+    "t": 37.74
+   },
+   {
+    "w": "players",
+    "t": 38.54
+   },
+   {
+    "w": "and",
+    "t": 38.9
+   },
+   {
+    "w": "its",
+    "t": 39.28
+   },
+   {
+    "w": "AI",
+    "t": 39.6
+   },
+   {
+    "w": "both",
+    "t": 39.94
+   },
+   {
+    "w": "reach",
+    "t": 40.4
+   },
+   {
+    "w": "expert",
+    "t": 40.74
+   },
+   {
+    "w": "level",
+    "t": 41.14
+   },
+   {
+    "w": "strategy",
+    "t": 41.5
+   },
+   {
+    "w": "just",
+    "t": 42.0
+   },
+   {
+    "w": "in",
+    "t": 42.56
+   },
+   {
+    "w": "a",
+    "t": 42.72
+   },
+   {
+    "w": "different",
+    "t": 42.94
+   },
+   {
+    "w": "format.",
+    "t": 43.2
+   },
+   {
+    "w": "One",
+    "t": 43.96
+   },
+   {
+    "w": "uses",
+    "t": 44.06
+   },
+   {
+    "w": "language",
+    "t": 44.38
+   },
+   {
+    "w": "tokens,",
+    "t": 44.86
+   },
+   {
+    "w": "the",
+    "t": 45.52
+   },
+   {
+    "w": "other",
+    "t": 45.7
+   },
+   {
+    "w": "game",
+    "t": 45.94
+   },
+   {
+    "w": "states.",
+    "t": 46.26
+   },
+   {
+    "w": "For",
+    "t": 47.14
+   },
+   {
+    "w": "AI",
+    "t": 47.42
+   },
+   {
+    "w": "builders,",
+    "t": 47.76
+   },
+   {
+    "w": "this",
+    "t": 48.44
+   },
+   {
+    "w": "flips",
+    "t": 48.74
+   },
+   {
+    "w": "the",
+    "t": 48.98
+   },
+   {
+    "w": "script",
+    "t": 49.28
+   },
+   {
+    "w": "on",
+    "t": 49.52
+   },
+   {
+    "w": "what",
+    "t": 49.74
+   },
+   {
+    "w": "counts",
+    "t": 49.96
+   },
+   {
+    "w": "as",
+    "t": 50.26
+   },
+   {
+    "w": "intelligent",
+    "t": 50.84
+   },
+   {
+    "w": "AI.",
+    "t": 51.46
+   },
+   {
+    "w": "It's",
+    "t": 52.64
+   },
+   {
+    "w": "not",
+    "t": 52.92
+   },
+   {
+    "w": "only",
+    "t": 53.14
+   },
+   {
+    "w": "about",
+    "t": 53.42
+   },
+   {
+    "w": "language",
+    "t": 53.76
+   },
+   {
+    "w": "or",
+    "t": 54.12
+   },
+   {
+    "w": "text",
+    "t": 54.38
+   },
+   {
+    "w": "generation,",
+    "t": 54.9
+   },
+   {
+    "w": "but",
+    "t": 55.94
+   },
+   {
+    "w": "also",
+    "t": 56.02
+   },
+   {
+    "w": "about",
+    "t": 56.5
+   },
+   {
+    "w": "adaptive",
+    "t": 56.88
+   },
+   {
+    "w": "decision",
+    "t": 57.42
+   },
+   {
+    "w": "-making",
+    "t": 58.04
+   },
+   {
+    "w": "in",
+    "t": 58.38
+   },
+   {
+    "w": "dynamic",
+    "t": 58.68
+   },
+   {
+    "w": "environments.",
+    "t": 59.28
+   },
+   {
+    "w": "Understanding",
+    "t": 60.9
+   },
+   {
+    "w": "this",
+    "t": 61.16
+   },
+   {
+    "w": "broadens",
+    "t": 61.78
+   },
+   {
+    "w": "how",
+    "t": 62.26
+   },
+   {
+    "w": "we",
+    "t": 62.54
+   },
+   {
+    "w": "design",
+    "t": 62.74
+   },
+   {
+    "w": "AI",
+    "t": 63.2
+   },
+   {
+    "w": "systems,",
+    "t": 63.62
+   },
+   {
+    "w": "encouraging",
+    "t": 64.72
+   },
+   {
+    "w": "cross",
+    "t": 65.28
+   },
+   {
+    "w": "-domain",
+    "t": 65.7
+   },
+   {
+    "w": "insights.",
+    "t": 66.08
+   },
+   {
+    "w": "The",
+    "t": 67.18
+   },
+   {
+    "w": "takeaway?",
+    "t": 67.22
+   },
+   {
+    "w": "Intelligence",
+    "t": 68.14
+   },
+   {
+    "w": "isn't",
+    "t": 68.8
+   },
+   {
+    "w": "a",
+    "t": 69.3
+   },
+   {
+    "w": "single",
+    "t": 69.6
+   },
+   {
+    "w": "thing.",
+    "t": 69.9
+   },
+   {
+    "w": "It's",
+    "t": 70.56
+   },
+   {
+    "w": "a",
+    "t": 70.78
+   },
+   {
+    "w": "spectrum",
+    "t": 70.98
+   },
+   {
+    "w": "of",
+    "t": 71.3
+   },
+   {
+    "w": "complex",
+    "t": 71.62
+   },
+   {
+    "w": "behaviors.",
+    "t": 72.12
+   },
+   {
+    "w": "So",
+    "t": 72.62
+   },
+   {
+    "w": "next",
+    "t": 73.8
+   },
+   {
+    "w": "time",
+    "t": 74.2
+   },
+   {
+    "w": "you",
+    "t": 74.48
+   },
+   {
+    "w": "admire",
+    "t": 74.6
+   },
+   {
+    "w": "GPT",
+    "t": 75.02
+   },
+   {
+    "w": "-4",
+    "t": 75.66
+   },
+   {
+    "w": "smarts,",
+    "t": 76.0
+   },
+   {
+    "w": "remember,",
+    "t": 76.72
+   },
+   {
+    "w": "a",
+    "t": 77.82
+   },
+   {
+    "w": "1999",
+    "t": 77.82
+   },
+   {
+    "w": "game",
+    "t": 78.56
+   },
+   {
+    "w": "AI",
+    "t": 79.24
+   },
+   {
+    "w": "was",
+    "t": 79.72
+   },
+   {
+    "w": "pulling",
+    "t": 80.08
+   },
+   {
+    "w": "off",
+    "t": 80.32
+   },
+   {
+    "w": "expert",
+    "t": 80.72
+   },
+   {
+    "w": "level",
+    "t": 81.12
+   },
+   {
+    "w": "thinking",
+    "t": 81.46
+   },
+   {
+    "w": "too.",
+    "t": 81.84
+   },
+   {
+    "w": "That",
+    "t": 82.6
+   },
+   {
+    "w": "perspective",
+    "t": 82.88
+   },
+   {
+    "w": "shift",
+    "t": 83.52
+   },
+   {
+    "w": "could",
+    "t": 83.82
+   },
+   {
+    "w": "unlock",
+    "t": 84.26
+   },
+   {
+    "w": "new",
+    "t": 84.56
+   },
+   {
+    "w": "ideas",
+    "t": 84.94
+   },
+   {
+    "w": "for",
+    "t": 85.36
+   },
+   {
+    "w": "your",
+    "t": 85.68
+   },
+   {
+    "w": "own",
+    "t": 86.06
+   },
+   {
+    "w": "AI",
+    "t": 86.24
+   },
+   {
+    "w": "projects.",
+    "t": 86.6
+   },
+   {
+    "w": "All",
+    "t": 87.04
+   },
+   {
+    "w": "right.",
+    "t": 87.04
+   },
+   {
+    "w": "Thanks.",
+    "t": 87.14
+   }
+  ]
+ },
+ {
+  "i": 9,
+  "title": "Use your Nvidia GPU's VRAM as swap space on Linux",
+  "url": "https://github.com/c0dejedi/nbd-vram",
+  "durationSec": 84.32,
+  "script": "What if your Nvidia GPUs VRAM could act like extra RAM on Linux? A new tool lets you do exactly that. It grabs up to 7GB of your Nvidia GPUs VRAM, say on an RTX 3070 and turns it into swap space. That means when your 16GB of actual RAM fills up, your system spills over into GPU memory instead of slow SSD swap. It uses Nvidia's CUDA API to copy data back and forth, creating a virtual block device, Linux treats like swap. No tricky kernel modules needed so it works across driver updates and Linux kernels as old as 3 .0. Why does this matter? If you have a laptop with soldered RAM and a powerful Nvidia GPU that mostly idols, you can nearly triple your usable memory without buying anything new. That's a huge deal for AI developers or gamers on Linux who often hit memory limits. It smooths multitasking and lets you handle bigger workloads on tight hardware. The catch, VRAM over PCIe is slower than RAM but way faster than SSD swap so it's not a magic fix but a smart middle ground. If you're comfortable with Linux and CUDA, this trick stretches your memory for free, no hardware upgrades required.",
+  "words": [
+   {
+    "w": "What",
+    "t": 0.0
+   },
+   {
+    "w": "if",
+    "t": 0.78
+   },
+   {
+    "w": "your",
+    "t": 1.0
+   },
+   {
+    "w": "Nvidia",
+    "t": 1.26
+   },
+   {
+    "w": "GPUs",
+    "t": 1.66
+   },
+   {
+    "w": "VRAM",
+    "t": 2.24
+   },
+   {
+    "w": "could",
+    "t": 3.14
+   },
+   {
+    "w": "act",
+    "t": 3.42
+   },
+   {
+    "w": "like",
+    "t": 3.72
+   },
+   {
+    "w": "extra",
+    "t": 4.22
+   },
+   {
+    "w": "RAM",
+    "t": 4.52
+   },
+   {
+    "w": "on",
+    "t": 4.86
+   },
+   {
+    "w": "Linux?",
+    "t": 5.14
+   },
+   {
+    "w": "A",
+    "t": 6.16
+   },
+   {
+    "w": "new",
+    "t": 6.38
+   },
+   {
+    "w": "tool",
+    "t": 6.7
+   },
+   {
+    "w": "lets",
+    "t": 7.08
+   },
+   {
+    "w": "you",
+    "t": 7.36
+   },
+   {
+    "w": "do",
+    "t": 7.58
+   },
+   {
+    "w": "exactly",
+    "t": 7.96
+   },
+   {
+    "w": "that.",
+    "t": 8.4
+   },
+   {
+    "w": "It",
+    "t": 9.38
+   },
+   {
+    "w": "grabs",
+    "t": 9.6
+   },
+   {
+    "w": "up",
+    "t": 9.94
+   },
+   {
+    "w": "to",
+    "t": 10.16
+   },
+   {
+    "w": "7GB",
+    "t": 10.42
+   },
+   {
+    "w": "of",
+    "t": 11.1
+   },
+   {
+    "w": "your",
+    "t": 11.46
+   },
+   {
+    "w": "Nvidia",
+    "t": 11.74
+   },
+   {
+    "w": "GPUs",
+    "t": 12.18
+   },
+   {
+    "w": "VRAM,",
+    "t": 12.84
+   },
+   {
+    "w": "say",
+    "t": 13.88
+   },
+   {
+    "w": "on",
+    "t": 14.28
+   },
+   {
+    "w": "an",
+    "t": 14.46
+   },
+   {
+    "w": "RTX",
+    "t": 14.92
+   },
+   {
+    "w": "3070",
+    "t": 15.22
+   },
+   {
+    "w": "and",
+    "t": 16.22
+   },
+   {
+    "w": "turns",
+    "t": 16.64
+   },
+   {
+    "w": "it",
+    "t": 16.92
+   },
+   {
+    "w": "into",
+    "t": 17.14
+   },
+   {
+    "w": "swap",
+    "t": 17.42
+   },
+   {
+    "w": "space.",
+    "t": 17.72
+   },
+   {
+    "w": "That",
+    "t": 18.46
+   },
+   {
+    "w": "means",
+    "t": 18.7
+   },
+   {
+    "w": "when",
+    "t": 19.0
+   },
+   {
+    "w": "your",
+    "t": 19.2
+   },
+   {
+    "w": "16GB",
+    "t": 19.44
+   },
+   {
+    "w": "of",
+    "t": 20.34
+   },
+   {
+    "w": "actual",
+    "t": 20.64
+   },
+   {
+    "w": "RAM",
+    "t": 21.14
+   },
+   {
+    "w": "fills",
+    "t": 21.5
+   },
+   {
+    "w": "up,",
+    "t": 21.82
+   },
+   {
+    "w": "your",
+    "t": 22.44
+   },
+   {
+    "w": "system",
+    "t": 22.76
+   },
+   {
+    "w": "spills",
+    "t": 23.08
+   },
+   {
+    "w": "over",
+    "t": 23.52
+   },
+   {
+    "w": "into",
+    "t": 23.94
+   },
+   {
+    "w": "GPU",
+    "t": 24.3
+   },
+   {
+    "w": "memory",
+    "t": 24.78
+   },
+   {
+    "w": "instead",
+    "t": 25.42
+   },
+   {
+    "w": "of",
+    "t": 26.0
+   },
+   {
+    "w": "slow",
+    "t": 26.34
+   },
+   {
+    "w": "SSD",
+    "t": 26.74
+   },
+   {
+    "w": "swap.",
+    "t": 27.26
+   },
+   {
+    "w": "It",
+    "t": 27.82
+   },
+   {
+    "w": "uses",
+    "t": 28.44
+   },
+   {
+    "w": "Nvidia's",
+    "t": 28.88
+   },
+   {
+    "w": "CUDA",
+    "t": 29.7
+   },
+   {
+    "w": "API",
+    "t": 29.92
+   },
+   {
+    "w": "to",
+    "t": 30.38
+   },
+   {
+    "w": "copy",
+    "t": 30.8
+   },
+   {
+    "w": "data",
+    "t": 31.22
+   },
+   {
+    "w": "back",
+    "t": 31.52
+   },
+   {
+    "w": "and",
+    "t": 31.92
+   },
+   {
+    "w": "forth,",
+    "t": 32.2
+   },
+   {
+    "w": "creating",
+    "t": 33.24
+   },
+   {
+    "w": "a",
+    "t": 33.24
+   },
+   {
+    "w": "virtual",
+    "t": 33.58
+   },
+   {
+    "w": "block",
+    "t": 34.12
+   },
+   {
+    "w": "device,",
+    "t": 34.48
+   },
+   {
+    "w": "Linux",
+    "t": 35.54
+   },
+   {
+    "w": "treats",
+    "t": 35.66
+   },
+   {
+    "w": "like",
+    "t": 36.16
+   },
+   {
+    "w": "swap.",
+    "t": 36.64
+   },
+   {
+    "w": "No",
+    "t": 37.78
+   },
+   {
+    "w": "tricky",
+    "t": 38.06
+   },
+   {
+    "w": "kernel",
+    "t": 38.42
+   },
+   {
+    "w": "modules",
+    "t": 38.68
+   },
+   {
+    "w": "needed",
+    "t": 39.1
+   },
+   {
+    "w": "so",
+    "t": 39.56
+   },
+   {
+    "w": "it",
+    "t": 39.84
+   },
+   {
+    "w": "works",
+    "t": 40.0
+   },
+   {
+    "w": "across",
+    "t": 40.26
+   },
+   {
+    "w": "driver",
+    "t": 40.7
+   },
+   {
+    "w": "updates",
+    "t": 41.1
+   },
+   {
+    "w": "and",
+    "t": 41.58
+   },
+   {
+    "w": "Linux",
+    "t": 42.08
+   },
+   {
+    "w": "kernels",
+    "t": 42.4
+   },
+   {
+    "w": "as",
+    "t": 42.74
+   },
+   {
+    "w": "old",
+    "t": 43.16
+   },
+   {
+    "w": "as",
+    "t": 43.34
+   },
+   {
+    "w": "3",
+    "t": 43.62
+   },
+   {
+    "w": ".0.",
+    "t": 43.94
+   },
+   {
+    "w": "Why",
+    "t": 44.88
+   },
+   {
+    "w": "does",
+    "t": 45.08
+   },
+   {
+    "w": "this",
+    "t": 45.3
+   },
+   {
+    "w": "matter?",
+    "t": 45.54
+   },
+   {
+    "w": "If",
+    "t": 46.24
+   },
+   {
+    "w": "you",
+    "t": 46.44
+   },
+   {
+    "w": "have",
+    "t": 46.64
+   },
+   {
+    "w": "a",
+    "t": 46.86
+   },
+   {
+    "w": "laptop",
+    "t": 47.12
+   },
+   {
+    "w": "with",
+    "t": 47.26
+   },
+   {
+    "w": "soldered",
+    "t": 47.66
+   },
+   {
+    "w": "RAM",
+    "t": 48.16
+   },
+   {
+    "w": "and",
+    "t": 48.46
+   },
+   {
+    "w": "a",
+    "t": 48.84
+   },
+   {
+    "w": "powerful",
+    "t": 49.06
+   },
+   {
+    "w": "Nvidia",
+    "t": 49.36
+   },
+   {
+    "w": "GPU",
+    "t": 49.9
+   },
+   {
+    "w": "that",
+    "t": 50.46
+   },
+   {
+    "w": "mostly",
+    "t": 50.86
+   },
+   {
+    "w": "idols,",
+    "t": 51.32
+   },
+   {
+    "w": "you",
+    "t": 52.12
+   },
+   {
+    "w": "can",
+    "t": 52.12
+   },
+   {
+    "w": "nearly",
+    "t": 52.34
+   },
+   {
+    "w": "triple",
+    "t": 52.72
+   },
+   {
+    "w": "your",
+    "t": 53.0
+   },
+   {
+    "w": "usable",
+    "t": 53.34
+   },
+   {
+    "w": "memory",
+    "t": 53.64
+   },
+   {
+    "w": "without",
+    "t": 54.12
+   },
+   {
+    "w": "buying",
+    "t": 54.54
+   },
+   {
+    "w": "anything",
+    "t": 54.9
+   },
+   {
+    "w": "new.",
+    "t": 55.3
+   },
+   {
+    "w": "That's",
+    "t": 55.76
+   },
+   {
+    "w": "a",
+    "t": 56.58
+   },
+   {
+    "w": "huge",
+    "t": 56.68
+   },
+   {
+    "w": "deal",
+    "t": 57.0
+   },
+   {
+    "w": "for",
+    "t": 57.28
+   },
+   {
+    "w": "AI",
+    "t": 57.62
+   },
+   {
+    "w": "developers",
+    "t": 57.88
+   },
+   {
+    "w": "or",
+    "t": 58.34
+   },
+   {
+    "w": "gamers",
+    "t": 58.76
+   },
+   {
+    "w": "on",
+    "t": 59.08
+   },
+   {
+    "w": "Linux",
+    "t": 59.4
+   },
+   {
+    "w": "who",
+    "t": 59.68
+   },
+   {
+    "w": "often",
+    "t": 60.22
+   },
+   {
+    "w": "hit",
+    "t": 60.5
+   },
+   {
+    "w": "memory",
+    "t": 60.82
+   },
+   {
+    "w": "limits.",
+    "t": 61.12
+   },
+   {
+    "w": "It",
+    "t": 62.04
+   },
+   {
+    "w": "smooths",
+    "t": 62.08
+   },
+   {
+    "w": "multitasking",
+    "t": 62.92
+   },
+   {
+    "w": "and",
+    "t": 63.4
+   },
+   {
+    "w": "lets",
+    "t": 63.68
+   },
+   {
+    "w": "you",
+    "t": 63.84
+   },
+   {
+    "w": "handle",
+    "t": 64.08
+   },
+   {
+    "w": "bigger",
+    "t": 64.36
+   },
+   {
+    "w": "workloads",
+    "t": 64.74
+   },
+   {
+    "w": "on",
+    "t": 65.38
+   },
+   {
+    "w": "tight",
+    "t": 65.62
+   },
+   {
+    "w": "hardware.",
+    "t": 65.92
+   },
+   {
+    "w": "The",
+    "t": 66.74
+   },
+   {
+    "w": "catch,",
+    "t": 66.94
+   },
+   {
+    "w": "VRAM",
+    "t": 67.78
+   },
+   {
+    "w": "over",
+    "t": 68.2
+   },
+   {
+    "w": "PCIe",
+    "t": 68.64
+   },
+   {
+    "w": "is",
+    "t": 69.24
+   },
+   {
+    "w": "slower",
+    "t": 69.98
+   },
+   {
+    "w": "than",
+    "t": 70.26
+   },
+   {
+    "w": "RAM",
+    "t": 70.54
+   },
+   {
+    "w": "but",
+    "t": 70.92
+   },
+   {
+    "w": "way",
+    "t": 71.36
+   },
+   {
+    "w": "faster",
+    "t": 71.66
+   },
+   {
+    "w": "than",
+    "t": 72.06
+   },
+   {
+    "w": "SSD",
+    "t": 72.44
+   },
+   {
+    "w": "swap",
+    "t": 72.78
+   },
+   {
+    "w": "so",
+    "t": 73.3
+   },
+   {
+    "w": "it's",
+    "t": 73.76
+   },
+   {
+    "w": "not",
+    "t": 73.98
+   },
+   {
+    "w": "a",
+    "t": 74.18
+   },
+   {
+    "w": "magic",
+    "t": 74.46
+   },
+   {
+    "w": "fix",
+    "t": 74.66
+   },
+   {
+    "w": "but",
+    "t": 75.02
+   },
+   {
+    "w": "a",
+    "t": 75.26
+   },
+   {
+    "w": "smart",
+    "t": 75.52
+   },
+   {
+    "w": "middle",
+    "t": 75.86
+   },
+   {
+    "w": "ground.",
+    "t": 76.1
+   },
+   {
+    "w": "If",
+    "t": 77.18
+   },
+   {
+    "w": "you're",
+    "t": 77.4
+   },
+   {
+    "w": "comfortable",
+    "t": 77.9
+   },
+   {
+    "w": "with",
+    "t": 77.98
+   },
+   {
+    "w": "Linux",
+    "t": 78.34
+   },
+   {
+    "w": "and",
+    "t": 78.58
+   },
+   {
+    "w": "CUDA,",
+    "t": 78.84
+   },
+   {
+    "w": "this",
+    "t": 79.64
+   },
+   {
+    "w": "trick",
+    "t": 79.82
+   },
+   {
+    "w": "stretches",
+    "t": 80.14
+   },
+   {
+    "w": "your",
+    "t": 80.54
+   },
+   {
+    "w": "memory",
+    "t": 80.86
+   },
+   {
+    "w": "for",
+    "t": 81.1
+   },
+   {
+    "w": "free,",
+    "t": 81.42
+   },
+   {
+    "w": "no",
+    "t": 82.1
+   },
+   {
+    "w": "hardware",
+    "t": 82.34
+   },
+   {
+    "w": "upgrades",
+    "t": 82.74
+   },
+   {
+    "w": "required.",
+    "t": 83.22
+   }
+  ]
+ },
+ {
+  "i": 10,
+  "title": "Programmers will document for Claude, but not for each other",
+  "url": "https://blog.plover.com/2026/03/09/#documentation-wins-2",
+  "durationSec": 90.08,
+  "script": "Programmers are now writing documentation, not for their teammates, but for AI assistance like Claude. Instead of human readers, these docs are designed so Claude can understand, update, and pass along project context automatically. Imagine a file named CLAUD .MD, sitting in the repo. Claude 1 reads it, figures out what's next, then Claude 2 updates that same file with progress and new notes. Claude 3 picks up the latest version and keeps the chain going. This AI handoff means code knowledge flows smoothly between AI helpers, even when humans aren't around. For builders, this changes everything about collaboration. You don't need to rely on your team to keep docs fresh. The AI keeps your product story alive, reducing confusion, and speeding up handoffs, but there's a catch. If AI isn't available or properly managed, humans may struggle to catch up because docs aren't aimed at them anymore. So the human safety net thins out. The bottom line? If you're building with AI assistance, start writing docs for the AI, not just your coworkers. That's how you keep your code base alive and kicking in 2026's AI first teams. That's the rundown. Which of these are you actually shipping with? Drop it in the comments. Subscribe for the daily, Adgentic Builder Brief.",
+  "words": [
+   {
+    "w": "Programmers",
+    "t": 0.0
+   },
+   {
+    "w": "are",
+    "t": 0.86
+   },
+   {
+    "w": "now",
+    "t": 1.24
+   },
+   {
+    "w": "writing",
+    "t": 1.6
+   },
+   {
+    "w": "documentation,",
+    "t": 1.92
+   },
+   {
+    "w": "not",
+    "t": 3.1
+   },
+   {
+    "w": "for",
+    "t": 3.32
+   },
+   {
+    "w": "their",
+    "t": 3.5
+   },
+   {
+    "w": "teammates,",
+    "t": 3.72
+   },
+   {
+    "w": "but",
+    "t": 4.52
+   },
+   {
+    "w": "for",
+    "t": 4.74
+   },
+   {
+    "w": "AI",
+    "t": 5.08
+   },
+   {
+    "w": "assistance",
+    "t": 5.42
+   },
+   {
+    "w": "like",
+    "t": 5.94
+   },
+   {
+    "w": "Claude.",
+    "t": 6.36
+   },
+   {
+    "w": "Instead",
+    "t": 7.34
+   },
+   {
+    "w": "of",
+    "t": 7.52
+   },
+   {
+    "w": "human",
+    "t": 7.84
+   },
+   {
+    "w": "readers,",
+    "t": 8.2
+   },
+   {
+    "w": "these",
+    "t": 8.9
+   },
+   {
+    "w": "docs",
+    "t": 9.2
+   },
+   {
+    "w": "are",
+    "t": 9.56
+   },
+   {
+    "w": "designed",
+    "t": 9.84
+   },
+   {
+    "w": "so",
+    "t": 10.1
+   },
+   {
+    "w": "Claude",
+    "t": 10.52
+   },
+   {
+    "w": "can",
+    "t": 10.84
+   },
+   {
+    "w": "understand,",
+    "t": 11.24
+   },
+   {
+    "w": "update,",
+    "t": 11.96
+   },
+   {
+    "w": "and",
+    "t": 12.58
+   },
+   {
+    "w": "pass",
+    "t": 12.84
+   },
+   {
+    "w": "along",
+    "t": 13.14
+   },
+   {
+    "w": "project",
+    "t": 13.5
+   },
+   {
+    "w": "context",
+    "t": 14.0
+   },
+   {
+    "w": "automatically.",
+    "t": 14.62
+   },
+   {
+    "w": "Imagine",
+    "t": 15.9
+   },
+   {
+    "w": "a",
+    "t": 16.22
+   },
+   {
+    "w": "file",
+    "t": 16.52
+   },
+   {
+    "w": "named",
+    "t": 16.8
+   },
+   {
+    "w": "CLAUD",
+    "t": 17.28
+   },
+   {
+    "w": ".MD,",
+    "t": 18.28
+   },
+   {
+    "w": "sitting",
+    "t": 19.46
+   },
+   {
+    "w": "in",
+    "t": 19.6
+   },
+   {
+    "w": "the",
+    "t": 19.82
+   },
+   {
+    "w": "repo.",
+    "t": 19.98
+   },
+   {
+    "w": "Claude",
+    "t": 22.04
+   },
+   {
+    "w": "1",
+    "t": 22.72
+   },
+   {
+    "w": "reads",
+    "t": 23.2
+   },
+   {
+    "w": "it,",
+    "t": 23.56
+   },
+   {
+    "w": "figures",
+    "t": 24.38
+   },
+   {
+    "w": "out",
+    "t": 24.38
+   },
+   {
+    "w": "what's",
+    "t": 24.72
+   },
+   {
+    "w": "next,",
+    "t": 25.0
+   },
+   {
+    "w": "then",
+    "t": 25.72
+   },
+   {
+    "w": "Claude",
+    "t": 26.06
+   },
+   {
+    "w": "2",
+    "t": 26.3
+   },
+   {
+    "w": "updates",
+    "t": 26.78
+   },
+   {
+    "w": "that",
+    "t": 27.18
+   },
+   {
+    "w": "same",
+    "t": 27.64
+   },
+   {
+    "w": "file",
+    "t": 27.94
+   },
+   {
+    "w": "with",
+    "t": 28.32
+   },
+   {
+    "w": "progress",
+    "t": 28.66
+   },
+   {
+    "w": "and",
+    "t": 29.16
+   },
+   {
+    "w": "new",
+    "t": 29.64
+   },
+   {
+    "w": "notes.",
+    "t": 29.94
+   },
+   {
+    "w": "Claude",
+    "t": 31.04
+   },
+   {
+    "w": "3",
+    "t": 31.04
+   },
+   {
+    "w": "picks",
+    "t": 31.48
+   },
+   {
+    "w": "up",
+    "t": 31.76
+   },
+   {
+    "w": "the",
+    "t": 32.0
+   },
+   {
+    "w": "latest",
+    "t": 32.14
+   },
+   {
+    "w": "version",
+    "t": 32.34
+   },
+   {
+    "w": "and",
+    "t": 32.8
+   },
+   {
+    "w": "keeps",
+    "t": 33.18
+   },
+   {
+    "w": "the",
+    "t": 33.42
+   },
+   {
+    "w": "chain",
+    "t": 33.76
+   },
+   {
+    "w": "going.",
+    "t": 33.86
+   },
+   {
+    "w": "This",
+    "t": 34.76
+   },
+   {
+    "w": "AI",
+    "t": 35.06
+   },
+   {
+    "w": "handoff",
+    "t": 35.4
+   },
+   {
+    "w": "means",
+    "t": 35.92
+   },
+   {
+    "w": "code",
+    "t": 36.36
+   },
+   {
+    "w": "knowledge",
+    "t": 36.7
+   },
+   {
+    "w": "flows",
+    "t": 37.16
+   },
+   {
+    "w": "smoothly",
+    "t": 37.54
+   },
+   {
+    "w": "between",
+    "t": 38.04
+   },
+   {
+    "w": "AI",
+    "t": 38.58
+   },
+   {
+    "w": "helpers,",
+    "t": 39.0
+   },
+   {
+    "w": "even",
+    "t": 39.72
+   },
+   {
+    "w": "when",
+    "t": 39.98
+   },
+   {
+    "w": "humans",
+    "t": 40.26
+   },
+   {
+    "w": "aren't",
+    "t": 40.62
+   },
+   {
+    "w": "around.",
+    "t": 40.92
+   },
+   {
+    "w": "For",
+    "t": 42.12
+   },
+   {
+    "w": "builders,",
+    "t": 42.32
+   },
+   {
+    "w": "this",
+    "t": 43.08
+   },
+   {
+    "w": "changes",
+    "t": 43.3
+   },
+   {
+    "w": "everything",
+    "t": 43.64
+   },
+   {
+    "w": "about",
+    "t": 44.32
+   },
+   {
+    "w": "collaboration.",
+    "t": 44.78
+   },
+   {
+    "w": "You",
+    "t": 45.98
+   },
+   {
+    "w": "don't",
+    "t": 46.1
+   },
+   {
+    "w": "need",
+    "t": 46.36
+   },
+   {
+    "w": "to",
+    "t": 46.56
+   },
+   {
+    "w": "rely",
+    "t": 46.72
+   },
+   {
+    "w": "on",
+    "t": 46.98
+   },
+   {
+    "w": "your",
+    "t": 47.18
+   },
+   {
+    "w": "team",
+    "t": 47.38
+   },
+   {
+    "w": "to",
+    "t": 47.6
+   },
+   {
+    "w": "keep",
+    "t": 47.78
+   },
+   {
+    "w": "docs",
+    "t": 48.02
+   },
+   {
+    "w": "fresh.",
+    "t": 48.4
+   },
+   {
+    "w": "The",
+    "t": 49.24
+   },
+   {
+    "w": "AI",
+    "t": 49.48
+   },
+   {
+    "w": "keeps",
+    "t": 49.86
+   },
+   {
+    "w": "your",
+    "t": 50.16
+   },
+   {
+    "w": "product",
+    "t": 50.4
+   },
+   {
+    "w": "story",
+    "t": 50.46
+   },
+   {
+    "w": "alive,",
+    "t": 51.22
+   },
+   {
+    "w": "reducing",
+    "t": 52.4
+   },
+   {
+    "w": "confusion,",
+    "t": 52.46
+   },
+   {
+    "w": "and",
+    "t": 53.5
+   },
+   {
+    "w": "speeding",
+    "t": 53.56
+   },
+   {
+    "w": "up",
+    "t": 53.8
+   },
+   {
+    "w": "handoffs,",
+    "t": 54.08
+   },
+   {
+    "w": "but",
+    "t": 55.02
+   },
+   {
+    "w": "there's",
+    "t": 55.2
+   },
+   {
+    "w": "a",
+    "t": 55.5
+   },
+   {
+    "w": "catch.",
+    "t": 55.66
+   },
+   {
+    "w": "If",
+    "t": 56.3
+   },
+   {
+    "w": "AI",
+    "t": 56.58
+   },
+   {
+    "w": "isn't",
+    "t": 56.84
+   },
+   {
+    "w": "available",
+    "t": 57.28
+   },
+   {
+    "w": "or",
+    "t": 57.72
+   },
+   {
+    "w": "properly",
+    "t": 58.18
+   },
+   {
+    "w": "managed,",
+    "t": 58.56
+   },
+   {
+    "w": "humans",
+    "t": 59.28
+   },
+   {
+    "w": "may",
+    "t": 59.5
+   },
+   {
+    "w": "struggle",
+    "t": 59.9
+   },
+   {
+    "w": "to",
+    "t": 60.16
+   },
+   {
+    "w": "catch",
+    "t": 60.42
+   },
+   {
+    "w": "up",
+    "t": 60.64
+   },
+   {
+    "w": "because",
+    "t": 61.04
+   },
+   {
+    "w": "docs",
+    "t": 61.4
+   },
+   {
+    "w": "aren't",
+    "t": 61.74
+   },
+   {
+    "w": "aimed",
+    "t": 62.12
+   },
+   {
+    "w": "at",
+    "t": 62.36
+   },
+   {
+    "w": "them",
+    "t": 62.52
+   },
+   {
+    "w": "anymore.",
+    "t": 62.7
+   },
+   {
+    "w": "So",
+    "t": 63.96
+   },
+   {
+    "w": "the",
+    "t": 64.3
+   },
+   {
+    "w": "human",
+    "t": 64.54
+   },
+   {
+    "w": "safety",
+    "t": 64.86
+   },
+   {
+    "w": "net",
+    "t": 65.22
+   },
+   {
+    "w": "thins",
+    "t": 65.54
+   },
+   {
+    "w": "out.",
+    "t": 65.82
+   },
+   {
+    "w": "The",
+    "t": 66.6
+   },
+   {
+    "w": "bottom",
+    "t": 66.74
+   },
+   {
+    "w": "line?",
+    "t": 67.0
+   },
+   {
+    "w": "If",
+    "t": 67.7
+   },
+   {
+    "w": "you're",
+    "t": 67.94
+   },
+   {
+    "w": "building",
+    "t": 68.2
+   },
+   {
+    "w": "with",
+    "t": 68.54
+   },
+   {
+    "w": "AI",
+    "t": 68.86
+   },
+   {
+    "w": "assistance,",
+    "t": 69.14
+   },
+   {
+    "w": "start",
+    "t": 70.1
+   },
+   {
+    "w": "writing",
+    "t": 70.5
+   },
+   {
+    "w": "docs",
+    "t": 70.92
+   },
+   {
+    "w": "for",
+    "t": 71.34
+   },
+   {
+    "w": "the",
+    "t": 71.62
+   },
+   {
+    "w": "AI,",
+    "t": 71.78
+   },
+   {
+    "w": "not",
+    "t": 72.46
+   },
+   {
+    "w": "just",
+    "t": 72.74
+   },
+   {
+    "w": "your",
+    "t": 73.0
+   },
+   {
+    "w": "coworkers.",
+    "t": 73.22
+   },
+   {
+    "w": "That's",
+    "t": 74.26
+   },
+   {
+    "w": "how",
+    "t": 74.68
+   },
+   {
+    "w": "you",
+    "t": 74.88
+   },
+   {
+    "w": "keep",
+    "t": 75.04
+   },
+   {
+    "w": "your",
+    "t": 75.22
+   },
+   {
+    "w": "code",
+    "t": 75.56
+   },
+   {
+    "w": "base",
+    "t": 75.64
+   },
+   {
+    "w": "alive",
+    "t": 75.92
+   },
+   {
+    "w": "and",
+    "t": 76.5
+   },
+   {
+    "w": "kicking",
+    "t": 77.02
+   },
+   {
+    "w": "in",
+    "t": 77.2
+   },
+   {
+    "w": "2026's",
+    "t": 77.64
+   },
+   {
+    "w": "AI",
+    "t": 78.88
+   },
+   {
+    "w": "first",
+    "t": 79.2
+   },
+   {
+    "w": "teams.",
+    "t": 79.58
+   },
+   {
+    "w": "That's",
+    "t": 80.08
+   },
+   {
+    "w": "the",
+    "t": 80.86
+   },
+   {
+    "w": "rundown.",
+    "t": 81.04
+   },
+   {
+    "w": "Which",
+    "t": 82.0
+   },
+   {
+    "w": "of",
+    "t": 82.1
+   },
+   {
+    "w": "these",
+    "t": 82.28
+   },
+   {
+    "w": "are",
+    "t": 82.58
+   },
+   {
+    "w": "you",
+    "t": 82.7
+   },
+   {
+    "w": "actually",
+    "t": 83.32
+   },
+   {
+    "w": "shipping",
+    "t": 83.4
+   },
+   {
+    "w": "with?",
+    "t": 83.7
+   },
+   {
+    "w": "Drop",
+    "t": 84.48
+   },
+   {
+    "w": "it",
+    "t": 84.74
+   },
+   {
+    "w": "in",
+    "t": 84.98
+   },
+   {
+    "w": "the",
+    "t": 85.12
+   },
+   {
+    "w": "comments.",
+    "t": 85.34
+   },
+   {
+    "w": "Subscribe",
+    "t": 86.96
+   },
+   {
+    "w": "for",
+    "t": 87.38
+   },
+   {
+    "w": "the",
+    "t": 87.78
+   },
+   {
+    "w": "daily,",
+    "t": 88.3
+   },
+   {
+    "w": "Adgentic",
+    "t": 88.3
+   },
+   {
+    "w": "Builder",
+    "t": 88.98
+   },
+   {
+    "w": "Brief.",
+    "t": 89.36
+   }
+  ]
+ }
+]

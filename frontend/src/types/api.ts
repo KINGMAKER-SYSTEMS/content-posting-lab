@@ -253,12 +253,6 @@ export interface BatchesResponse {
   batches: BurnBatch[];
 }
 
-// WebSocket event for burn server (legacy)
-export type BurnWSMessage =
-  | { event: "burning"; index: number; total: number }
-  | { event: "burned"; index: number; total: number; result: BurnResult }
-  | { event: "complete"; batch_id: string; results: BurnResult[] };
-
 export interface BurnOverlayRequest {
   batchId: string;
   index: number;
@@ -325,6 +319,7 @@ export interface Project {
   video_count: number;
   caption_count: number;
   burned_count: number;
+  last_activity?: string | null;
 }
 
 export interface CreateProjectRequest {
@@ -333,6 +328,21 @@ export interface CreateProjectRequest {
 
 export interface ProjectListResponse {
   projects: Project[];
+}
+
+export interface RecentProjectVideo {
+  project: string;
+  name: string;
+  kind: "videos" | "clips" | "burned";
+  path: string;
+  url: string;
+  size_bytes: number;
+  modified: string;
+}
+
+export interface RecentProjectVideosResponse {
+  count: number;
+  videos: RecentProjectVideo[];
 }
 
 export interface CreateProjectResponse {

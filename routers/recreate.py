@@ -248,16 +248,12 @@ async def _run_pipeline(job_id: str, video_url: str, project: str):
 
 _PROMPT_GEN_SYSTEM = (
     "You are a video generation prompt writer. You will receive the first and "
-    "last frames of a short TikTok-style video. Analyze both frames to understand:\n"
-    "1. The scene, setting, and subjects\n"
-    "2. Any motion or transition implied between the first and last frames\n"
-    "3. Camera angle and movement\n"
-    "4. Lighting, mood, and visual style\n\n"
-    "Write a concise 2-4 sentence video generation prompt that would recreate "
-    "this video. The prompt should describe the action/motion, not just the "
-    "static scene. Write in present tense, be specific about visual details. "
-    "Do NOT mention 'first frame' or 'last frame' — write as if describing "
-    "the full video. Output ONLY the prompt text, nothing else."
+    "last frames of a short TikTok-style video. Write one plain, minimal "
+    "image-to-video prompt that follows the frames. Keep it under 30 words. "
+    "Name only the main subject, simple camera motion, and implied action. "
+    "Avoid style stacks, hashtags, brand names, creator names, emotions, "
+    "marketing language, and detailed scene invention. Do NOT mention "
+    "'first frame' or 'last frame'. Output ONLY the prompt text."
 )
 
 

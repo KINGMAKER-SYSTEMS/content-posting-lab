@@ -1,0 +1,10 @@
+{
+  "segment": 6,
+  "videos": [
+    { "video": "Video1", "voStart": 0.0,   "voEnd": 9.10   },
+    { "video": "Video2", "voStart": 13.68, "voEnd": 33.92  },
+    { "video": "Video3", "voStart": 34.06, "voEnd": 46.62  },
+    { "video": "Video4", "voStart": 51.80, "voEnd": 69.94  },
+    { "video": "Video5", "voStart": 94.78, "voEnd": 108.98 }
+  ]
+}

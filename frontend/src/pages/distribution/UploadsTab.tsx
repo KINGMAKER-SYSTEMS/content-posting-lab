@@ -20,6 +20,8 @@ export interface UploadsTabProps {
   onUploadSoundChange: (v: string) => void;
   uploadSchedule: string;
   onUploadScheduleChange: (v: string) => void;
+  uploadScheduleDay: string;
+  onUploadScheduleDayChange: (v: string) => void;
   uploadStealth: boolean;
   onUploadStealthChange: (v: boolean) => void;
   submittingUpload: boolean;
@@ -40,6 +42,8 @@ export function UploadsTab({
   onUploadSoundChange,
   uploadSchedule,
   onUploadScheduleChange,
+  uploadScheduleDay,
+  onUploadScheduleDayChange,
   uploadStealth,
   onUploadStealthChange,
   submittingUpload,
@@ -121,7 +125,7 @@ export function UploadsTab({
               </div>
             </div>
 
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid gap-3 sm:grid-cols-3">
               <div>
                 <label className="text-xs font-bold text-muted-foreground block mb-1">Schedule (HH:MM, optional)</label>
                 <Input
@@ -130,6 +134,18 @@ export function UploadsTab({
                   className="text-sm"
                   value={uploadSchedule}
                   onChange={(e) => onUploadScheduleChange(e.target.value)}
+                />
+              </div>
+              <div>
+                <label className="text-xs font-bold text-muted-foreground block mb-1">Day of Month</label>
+                <Input
+                  type="number"
+                  min="1"
+                  max="31"
+                  placeholder="12"
+                  className="text-sm"
+                  value={uploadScheduleDay}
+                  onChange={(e) => onUploadScheduleDayChange(e.target.value)}
                 />
               </div>
               <div className="flex items-end pb-1">

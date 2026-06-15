@@ -4,12 +4,15 @@ Handles project CRUD operations, path utilities, and filesystem-safe name valida
 """
 
 import re
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
 # Base directory and projects root
 BASE_DIR = Path(__file__).parent
 PROJECTS_DIR = BASE_DIR / "projects"
+VIDEO_EXTENSIONS = {".mp4", ".mov", ".webm", ".mkv"}
+CAPTION_EXTENSIONS = {".csv"}
 
 
 def sanitize_project_name(name: str) -> str:
@@ -97,6 +100,54 @@ def create_project(name: str) -> Path:
     return project_path
 
 
+def _count_files(root: Path, extensions: set[str] | None = None) -> int:
+    if not root.exists():
+        return 0
+
+    count = 0
+    for f in root.rglob("*"):
+        if not f.is_file():
+            continue
+        if extensions is not None and f.suffix.lower() not in extensions:
+            continue
+        count += 1
+    return count
+
+
+def _latest_mtime(*roots: Path) -> float | None:
+    latest = None
+    for root in roots:
+        if not root.exists():
+            continue
+        for f in root.rglob("*"):
+            if not f.is_file():
+                continue
+            mtime = f.stat().st_mtime
+            if latest is None or mtime > latest:
+                latest = mtime
+    return latest
+
+
+def _project_info(project_path: Path) -> dict:
+    videos_dir = project_path / "videos"
+    captions_dir = project_path / "captions"
+    burned_dir = project_path / "burned"
+    clips_dir = project_path / "clips"
+    latest = _latest_mtime(videos_dir, captions_dir, burned_dir, clips_dir)
+
+    return {
+        "name": project_path.name,
+        "path": str(project_path),
+        "video_count": _count_files(videos_dir, VIDEO_EXTENSIONS),
+        "caption_count": _count_files(captions_dir, CAPTION_EXTENSIONS),
+        "burned_count": _count_files(burned_dir, VIDEO_EXTENSIONS),
+        "last_activity": (
+            datetime.fromtimestamp(latest).isoformat() if latest is not None else None
+        ),
+        "_last_activity_ts": latest or 0,
+    }
+
+
 def list_projects() -> list[dict]:
     """
     List all projects with metadata.
@@ -117,25 +168,12 @@ def list_projects() -> list[dict]:
         if not project_dir.is_dir():
             continue
 
-        videos_dir = project_dir / "videos"
-        captions_dir = project_dir / "captions"
-        burned_dir = project_dir / "burned"
+        projects.append(_project_info(project_dir))
 
-        video_count = len(list(videos_dir.glob("*"))) if videos_dir.exists() else 0
-        caption_count = (
-            len(list(captions_dir.glob("*"))) if captions_dir.exists() else 0
-        )
-        burned_count = len(list(burned_dir.glob("*"))) if burned_dir.exists() else 0
-
-        projects.append(
-            {
-                "name": project_dir.name,
-                "path": str(project_dir),
-                "video_count": video_count,
-                "caption_count": caption_count,
-                "burned_count": burned_count,
-            }
-        )
+    projects.sort(key=lambda p: p["name"].lower())
+    projects.sort(key=lambda p: p["_last_activity_ts"], reverse=True)
+    for project in projects:
+        project.pop("_last_activity_ts", None)
 
     return projects
 
@@ -156,21 +194,9 @@ def get_project(name: str) -> Optional[dict]:
     if not project_path.exists():
         return None
 
-    videos_dir = project_path / "videos"
-    captions_dir = project_path / "captions"
-    burned_dir = project_path / "burned"
-
-    video_count = len(list(videos_dir.glob("*"))) if videos_dir.exists() else 0
-    caption_count = len(list(captions_dir.glob("*"))) if captions_dir.exists() else 0
-    burned_count = len(list(burned_dir.glob("*"))) if burned_dir.exists() else 0
-
-    return {
-        "name": project_path.name,
-        "path": str(project_path),
-        "video_count": video_count,
-        "caption_count": caption_count,
-        "burned_count": burned_count,
-    }
+    info = _project_info(project_path)
+    info.pop("_last_activity_ts", None)
+    return info
 
 
 def delete_project(name: str) -> bool:

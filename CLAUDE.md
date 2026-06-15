@@ -3,6 +3,37 @@
 > **Last updated:** 2026-04-27
 > **Status:** Deployed to Railway. Active development on Telegram distribution and Sound Assignments.
 
+## ⚠️ ABN VIDEO PIPELINE — READ BEFORE ANY EPISODE / COMPILE / RENDER WORK
+
+An ABN (Agentic Builder News) episode is **NOT one renderer's output.** It is
+**heterogeneous asset layers composited together.** There are several *source
+types*, and **OpenShot is the compiler** that stacks them. None of the sources is
+"the renderer," none is legacy, none is slop to delete.
+
+| Source type | Produces | Tool |
+|---|---|---|
+| **Remotion** | terminal / code-graphics shots | `yt-pipeline/remotion/` |
+| **Webscroll** | real browser footage of source pages (Playwright; scroll today, → authentic mouse interaction) | `tools/gh-capture/capture_nav.cjs` |
+| **CSS animation** | rasterized seekable-HTML kinetic type/stat/quote cards | `tools/seekable-html-video/render_seekable.cjs` |
+| **B-roll / still** | ambient plates, screenshots, title cards | `broll_library/`, capture |
+| **VO** | narration — **Pocket-TTS built-in English voice ONLY** (no clone, no cloud TTS) | `abn_factory._voice` |
+| **Music bed** | ducked-under-VO track | `branding/` |
+| **➜ OpenShot** | **THE COMPILER — composites all of the above into the final mp4** | `services/openshot_bridge.py` |
+
+**Hard rules — do not break these:**
+1. **Remotion is a live layer source, not "the old pipeline."** It was demoted from
+   compositor to one input. Do **not** rip it out. (This mistake has rebuilt
+   episodes 3× — don't repeat it.)
+2. **OpenShot is the sanctioned compiler.** The closed asset vocabulary lives in
+   code: `services/openshot_bridge.py` → `SOURCE_TYPES`. Tag clips with `source`
+   (`remotion`/`webscroll`/`css`/…). Final episodes flow through the bridge /
+   `services/editor_render.choose_renderer()` (OpenShot, ffmpeg-layered fallback).
+   **Do not invent a fourth ad-hoc ffmpeg build script** — extend the existing path.
+3. **VO is Pocket-TTS built-in voice only.** Guarded by `tests/test_abn_factory_voice.py`.
+
+Full SOP, asset locations, interim `build_epN.py` scripts, and known hazards:
+**`docs/PIPELINE.md`** — read it before touching the pipeline.
+
 ## Team & Repo Routing
 
 **This repo is the canonical home for the `Content-hub` Linear team.** Linear issue prefix: `CON-NNN`.

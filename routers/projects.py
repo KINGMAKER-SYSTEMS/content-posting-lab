@@ -5,7 +5,7 @@ import os
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
 from project_manager import (
@@ -34,13 +34,13 @@ def _get_dir_stats(dir_path: Path) -> dict:
 
     files = []
     total_size = 0
-    for f in sorted(dir_path.iterdir()):
+    for f in sorted(dir_path.rglob("*")):
         if f.is_file():
             stat = f.stat()
             total_size += stat.st_size
             files.append(
                 {
-                    "name": f.name,
+                    "name": f.relative_to(dir_path).as_posix(),
                     "size_bytes": stat.st_size,
                     "modified": datetime.fromtimestamp(stat.st_mtime).isoformat(),
                 }
@@ -51,11 +51,11 @@ def _get_dir_stats(dir_path: Path) -> dict:
 
 def _get_last_activity(project_path: Path) -> str | None:
     latest = None
-    for subdir_name in ("videos", "captions", "burned"):
+    for subdir_name in ("videos", "clips", "captions", "burned"):
         subdir = project_path / subdir_name
         if not subdir.exists():
             continue
-        for f in subdir.iterdir():
+        for f in subdir.rglob("*"):
             if f.is_file():
                 mtime = f.stat().st_mtime
                 if latest is None or mtime > latest:
@@ -92,6 +92,59 @@ async def create_new_project(body: CreateProjectRequest):
 
     project_info = get_project(body.name)
     return {"project": project_info}
+
+
+_VIDEO_EXTS = {".mp4", ".mov", ".webm", ".mkv"}
+
+
+def _iter_project_video_items(project_name: str, project_path: Path) -> list[dict]:
+    items: list[dict] = []
+    # Generated clips land in `videos/`, clipper output in `clips/`, captioned
+    # renders in `burned/` — all nested under provider/prompt subfolders.
+    for kind in ("videos", "clips", "burned"):
+        root = project_path / kind
+        if not root.exists():
+            continue
+        for f in root.rglob("*"):
+            if not f.is_file() or f.suffix.lower() not in _VIDEO_EXTS:
+                continue
+            stat = f.stat()
+            rel = f.relative_to(PROJECTS_DIR).as_posix()
+            items.append(
+                {
+                    "project": project_name,
+                    "name": f.name,
+                    "kind": kind,
+                    "path": rel,
+                    "url": f"/projects/{rel}",
+                    "size_bytes": stat.st_size,
+                    "modified": datetime.fromtimestamp(stat.st_mtime).isoformat(),
+                    "modified_ts": stat.st_mtime,
+                }
+            )
+    return items
+
+
+@router.get("/videos/recent")
+async def list_recent_project_videos(
+    limit: int = Query(120, ge=1, le=500),
+):
+    """List newest playable clips across every project, newest first."""
+    if not PROJECTS_DIR.exists():
+        return {"count": 0, "videos": []}
+
+    items: list[dict] = []
+    for project_dir in PROJECTS_DIR.iterdir():
+        if not project_dir.is_dir():
+            continue
+        items.extend(_iter_project_video_items(project_dir.name, project_dir))
+
+    items.sort(key=lambda v: v["modified_ts"], reverse=True)
+    limited = items[:limit]
+    for v in limited:
+        del v["modified_ts"]
+
+    return {"count": len(items), "videos": limited}
 
 
 @router.get("/{name}")
@@ -153,10 +206,6 @@ async def get_project_stats(name: str):
         ),
     }
 
-
-_VIDEO_EXTS = {".mp4", ".mov", ".webm"}
-
-
 @router.get("/{name}/videos")
 async def list_project_videos(name: str):
     """List every playable clip in a project as ready-to-use URLs.
@@ -180,34 +229,13 @@ async def list_project_videos(name: str):
     if not project_path.exists():
         raise HTTPException(status_code=404, detail=f"Project '{name}' not found")
 
-    items: list[dict] = []
-    # Generated clips land in `videos/`, clipper output in `clips/`, captioned
-    # renders in `burned/` — all nested under provider/prompt subfolders.
-    for kind in ("videos", "clips", "burned"):
-        root = project_path / kind
-        if not root.exists():
-            continue
-        for f in root.rglob("*"):
-            if not f.is_file() or f.suffix.lower() not in _VIDEO_EXTS:
-                continue
-            stat = f.stat()
-            # Public URL = /projects/ + path relative to PROJECTS_DIR (the static
-            # mount root). Posix separators so it's a valid URL on every platform.
-            rel = f.relative_to(PROJECTS_DIR).as_posix()
-            items.append(
-                {
-                    "name": f.name,
-                    "kind": kind,
-                    "url": f"/projects/{rel}",
-                    "size_bytes": stat.st_size,
-                    "modified": datetime.fromtimestamp(stat.st_mtime).isoformat(),
-                    "modified_ts": stat.st_mtime,
-                }
-            )
+    items = _iter_project_video_items(sanitized, project_path)
 
     items.sort(key=lambda v: v["modified_ts"], reverse=True)
     for v in items:
         del v["modified_ts"]  # internal sort key, not part of the response shape
+        v.pop("project", None)
+        v.pop("path", None)
 
     return {"name": sanitized, "count": len(items), "videos": items}
 

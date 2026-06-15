@@ -18,6 +18,29 @@ def _re_i(label: str):
     """Case-insensitive whole-label regex for Playwright get_by_role(name=…)."""
     return re.compile(r"^\s*" + re.escape(label) + r"\s*$", re.I)
 
+
+def _cleanup_dir(path: Path) -> None:
+    """Best-effort remove a temp recording dir: unlink each file, then rmdir.
+
+    Every failure is swallowed — this runs in destructive bail/finally paths where
+    leaving an orphaned _rec_<name>/ dir is the only stake, so a missing dir or a
+    locked file must never raise.
+    """
+    try:
+        if not path.exists():
+            return
+        for f in path.glob("*"):
+            try:
+                f.unlink()
+            except Exception:
+                pass
+        try:
+            path.rmdir()
+        except Exception:
+            pass
+    except Exception:
+        pass
+
 _VOL = os.getenv("RAILWAY_VOLUME_MOUNT_PATH")
 _BASE = Path(_VOL) if _VOL and Path(_VOL).exists() else Path(__file__).resolve().parent.parent
 ASSETS = _BASE / "agenticnews_assets"
@@ -81,11 +104,7 @@ def capture_sync(url: str, name: str, seconds: float = 8.0) -> str | None:
             near_empty = len(txt.strip()) < 40
             if near_empty or any(sig in txt for sig in bot_signals) or any(sig in txt for sig in error_signals):
                 ctx.close(); browser.close()
-                for f in rec_dir.glob("*"):
-                    try: f.unlink()
-                    except Exception: pass
-                try: rec_dir.rmdir()
-                except Exception: pass
+                _cleanup_dir(rec_dir)
                 return None  # let the pipeline fall back to screenshot/Flux b-roll
             # smooth scroll over ~seconds — but only through the TOP, READABLE portion of the page
             # (repo name, hero description, first section). Scrolling the FULL page on a long README
@@ -112,11 +131,7 @@ def capture_sync(url: str, name: str, seconds: float = 8.0) -> str | None:
              "-pix_fmt", "yuv420p", "-an", str(out_mp4)],
             capture_output=True, timeout=120)
         # cleanup
-        for f in rec_dir.glob("*"):
-            try: f.unlink()
-            except Exception: pass
-        try: rec_dir.rmdir()
-        except Exception: pass
+        _cleanup_dir(rec_dir)
         if out_mp4.exists():
             # BLANK-PAGE guard: a page that rendered with NO visible content (blank scroll) is worthless
             # footage the text-based bot-wall check misses. CRITICAL: use the DARKEST region, not the
@@ -155,12 +170,5 @@ def capture_sync(url: str, name: str, seconds: float = 8.0) -> str | None:
         # ALWAYS remove the playwright recording temp dir — multiple bail paths (no-webm, blank-guard,
         # outer except) previously left empty _rec_<name>/ dirs orphaned on the volume (caught in an SOP
         # sweep: 4 empty _rec_ dirs accumulated). finally guarantees cleanup regardless of exit path.
-        try:
-            if rec_dir.exists():
-                for _f in rec_dir.glob("*"):
-                    try: _f.unlink()
-                    except Exception: pass
-                rec_dir.rmdir()
-        except Exception:
-            pass
+        _cleanup_dir(rec_dir)
     return None

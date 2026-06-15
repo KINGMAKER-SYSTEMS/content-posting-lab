@@ -532,3 +532,320 @@
     animation: brand-heartbeat 1.4s cubic-bezier(0.22, 0.61, 0.36, 1) infinite;
   }
 }
+
+/* ═══════════════════════════════════════════════════════════════ */
+/* EDITOR BAY — Liquid Razor chrome                               */
+/* Real editor surfaces only: transport, inspector, notes, timeline */
+/* ═══════════════════════════════════════════════════════════════ */
+
+@layer components {
+  @keyframes liquid-razor-sheen {
+    0%, 18% {
+      background-position: -170% 0, 0 0;
+    }
+    52%, 100% {
+      background-position: 170% 0, 0 0;
+    }
+  }
+
+  .editor-bay {
+    min-height: 100vh;
+    color: #f4f7fb;
+    background:
+      radial-gradient(circle at 11% 5%, rgba(186, 212, 255, 0.08), transparent 25%),
+      radial-gradient(circle at 72% 10%, rgba(138, 180, 255, 0.08), transparent 28%),
+      linear-gradient(135deg, #080a0f 0%, #0b0f16 44%, #07090d 100%);
+    letter-spacing: 0;
+  }
+
+  .editor-chrome-header {
+    border-bottom: 1px solid rgba(185, 207, 235, 0.18);
+    background:
+      linear-gradient(180deg, rgba(24, 30, 39, 0.92), rgba(10, 14, 21, 0.9)),
+      linear-gradient(90deg, rgba(255, 255, 255, 0.08), transparent 40%);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.12),
+      0 18px 38px rgba(0, 0, 0, 0.35);
+    backdrop-filter: blur(18px);
+  }
+
+  .editor-title-metal {
+    color: #d8e0ec;
+    text-shadow:
+      0 1px 0 #ffffff,
+      0 -1px 0 rgba(21, 25, 32, 0.85),
+      0 0 22px rgba(186, 212, 255, 0.22);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  .editor-badge {
+    border: 1px solid rgba(190, 210, 232, 0.22);
+    border-radius: 8px;
+    background:
+      linear-gradient(180deg, rgba(33, 39, 49, 0.9), rgba(9, 12, 18, 0.9));
+    color: #cbd6e4;
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.12),
+      inset 0 -1px 0 rgba(0, 0, 0, 0.8);
+  }
+
+  .editor-panel {
+    position: relative;
+    overflow: hidden;
+    border: 1px solid rgba(181, 204, 232, 0.2);
+    border-radius: 10px;
+    background:
+      linear-gradient(145deg, rgba(22, 28, 37, 0.86), rgba(9, 13, 20, 0.94)),
+      radial-gradient(circle at 50% 0%, rgba(255, 255, 255, 0.08), transparent 48%);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.12),
+      inset 0 -1px 0 rgba(0, 0, 0, 0.7),
+      0 22px 54px rgba(0, 0, 0, 0.42);
+  }
+
+  .editor-panel::before {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    content: "";
+    background:
+      linear-gradient(115deg, transparent 0%, rgba(255, 255, 255, 0.12) 16%, transparent 34%),
+      linear-gradient(180deg, rgba(255, 255, 255, 0.12), transparent 14%);
+    opacity: 0.5;
+  }
+
+  .editor-preview-shell {
+    position: relative;
+    overflow: hidden;
+    border: 1px solid rgba(190, 210, 232, 0.22);
+    border-radius: 10px;
+    background:
+      radial-gradient(circle at 50% 12%, rgba(137, 180, 220, 0.11), transparent 36%),
+      linear-gradient(145deg, #020305, #080b11 54%, #030406);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.12),
+      0 0 0 1px rgba(255, 255, 255, 0.02),
+      0 18px 44px rgba(0, 0, 0, 0.5);
+  }
+
+  .editor-preview-shell::before {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    content: "";
+    background:
+      linear-gradient(110deg, transparent 0%, rgba(255, 255, 255, 0.07) 18%, transparent 35%),
+      radial-gradient(circle at 50% 0%, rgba(160, 196, 232, 0.14), transparent 36%);
+    opacity: 0.8;
+  }
+
+  .editor-transport-button,
+  .editor-action-button {
+    position: relative;
+    overflow: hidden;
+    border: 1px solid rgba(205, 222, 241, 0.28);
+    border-radius: 999px;
+    background:
+      linear-gradient(110deg, transparent 0%, transparent 34%, rgba(255, 255, 255, 0.32) 44%, rgba(152, 173, 194, 0.16) 52%, transparent 64%, transparent 100%),
+      linear-gradient(180deg, rgba(251, 254, 255, 0.34) 0%, rgba(181, 196, 212, 0.2) 17%, rgba(66, 77, 91, 0.38) 48%, rgba(8, 12, 18, 0.86) 100%);
+    background-size: 260% 100%, 100% 100%;
+    color: #edf4fb;
+    white-space: nowrap;
+    box-shadow:
+      inset 0 2px 0 rgba(255, 255, 255, 0.78),
+      inset 0 11px 18px rgba(255, 255, 255, 0.1),
+      inset 0 -1px 0 rgba(0, 0, 0, 0.78),
+      0 0 0 1px rgba(255, 255, 255, 0.04),
+      0 12px 24px rgba(0, 0, 0, 0.32);
+    transition: border-color 160ms ease, box-shadow 160ms ease, filter 160ms ease;
+  }
+
+  .editor-transport-button::before,
+  .editor-action-button::before {
+    position: absolute;
+    inset: 2px 10px auto;
+    height: 38%;
+    pointer-events: none;
+    content: "";
+    border-radius: inherit;
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.86), rgba(255, 255, 255, 0.12));
+    opacity: 0.22;
+  }
+
+  .editor-transport-button::after,
+  .editor-action-button::after {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    content: "";
+    border-radius: inherit;
+    background: linear-gradient(105deg, transparent 0%, transparent 42%, rgba(255, 255, 255, 0.46) 48%, transparent 56%, transparent 100%);
+    transform: translateX(-105%);
+    transition: transform 520ms ease;
+  }
+
+  .editor-transport-button:hover,
+  .editor-action-button:hover {
+    border-color: rgba(224, 240, 255, 0.58);
+    box-shadow:
+      inset 0 2px 0 rgba(255, 255, 255, 0.92),
+      inset 0 11px 20px rgba(255, 255, 255, 0.16),
+      inset 0 -1px 0 rgba(0, 0, 0, 0.82),
+      0 0 18px rgba(216, 237, 255, 0.3),
+      0 12px 24px rgba(0, 0, 0, 0.36);
+    filter: brightness(1.08);
+  }
+
+  .editor-transport-button:hover::after,
+  .editor-action-button:hover::after {
+    transform: translateX(105%);
+  }
+
+  .editor-transport-button:disabled,
+  .editor-action-button:disabled {
+    cursor: not-allowed;
+    opacity: 0.45;
+    filter: none;
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.2),
+      inset 0 -1px 0 rgba(0, 0, 0, 0.7);
+  }
+
+  .editor-primary-button {
+    border-color: rgba(230, 243, 255, 0.72);
+    background:
+      linear-gradient(110deg, transparent 0%, transparent 30%, rgba(255, 255, 255, 0.96) 43%, rgba(182, 202, 222, 0.48) 50%, transparent 62%, transparent 100%),
+      linear-gradient(180deg, #ffffff 0%, #eef5fb 12%, #b9c8d7 35%, #647382 55%, #151a23 100%);
+    background-size: 290% 100%, 100% 100%;
+    color: #070b10;
+    text-shadow: 0 1px 0 rgba(255, 255, 255, 0.62);
+    box-shadow:
+      inset 0 2px 0 rgba(255, 255, 255, 1),
+      inset 0 12px 18px rgba(255, 255, 255, 0.34),
+      inset 0 -2px 0 rgba(0, 0, 0, 0.55),
+      0 0 22px rgba(218, 239, 255, 0.42),
+      0 0 44px rgba(138, 180, 255, 0.22),
+      0 14px 30px rgba(0, 0, 0, 0.38);
+    animation: liquid-razor-sheen 6.5s ease-in-out infinite;
+  }
+
+  .editor-field,
+  .editor-textarea {
+    position: relative;
+    border: 1px solid rgba(189, 209, 232, 0.22);
+    border-radius: 9px;
+    background:
+      linear-gradient(180deg, rgba(255, 255, 255, 0.04), transparent 24%),
+      linear-gradient(180deg, rgba(7, 10, 16, 0.95), rgba(14, 18, 26, 0.9));
+    color: #eef5ff;
+    box-shadow:
+      inset 0 1px 2px rgba(0, 0, 0, 0.82),
+      inset 0 -1px 0 rgba(255, 255, 255, 0.06);
+  }
+
+  .editor-field:focus,
+  .editor-textarea:focus {
+    border-color: rgba(190, 224, 255, 0.9);
+    box-shadow:
+      inset 0 1px 2px rgba(0, 0, 0, 0.82),
+      0 0 0 1px rgba(222, 241, 255, 0.34),
+      0 0 18px rgba(139, 186, 255, 0.42);
+    outline: none;
+  }
+
+  .editor-playhead-range {
+    accent-color: #8ab4ff;
+    filter:
+      drop-shadow(0 0 5px rgba(226, 241, 255, 0.74))
+      drop-shadow(0 0 16px rgba(138, 180, 255, 0.42));
+  }
+
+  .editor-timeline-shell {
+    background:
+      linear-gradient(180deg, rgba(8, 12, 19, 0.96), rgba(5, 8, 13, 0.98));
+  }
+
+  .editor-track-label {
+    border: 1px solid rgba(190, 210, 232, 0.18);
+    border-radius: 9px;
+    background:
+      linear-gradient(145deg, rgba(24, 30, 39, 0.94), rgba(9, 12, 18, 0.96));
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  }
+
+  .editor-track-lane {
+    border: 1px solid rgba(190, 210, 232, 0.14);
+    border-radius: 9px;
+    background:
+      linear-gradient(180deg, rgba(13, 18, 28, 0.92), rgba(8, 11, 17, 0.96));
+  }
+
+  .editor-clip {
+    overflow: hidden;
+    border-radius: 8px;
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.18),
+      inset 0 -1px 0 rgba(0, 0, 0, 0.65),
+      0 8px 18px rgba(0, 0, 0, 0.24);
+  }
+
+  .editor-clip::before {
+    position: absolute;
+    inset: 1px 6px auto;
+    height: 36%;
+    pointer-events: none;
+    content: "";
+    border-radius: inherit;
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.6), transparent);
+    opacity: 0.12;
+  }
+
+  .editor-clip-active {
+    border-color: rgba(231, 244, 255, 0.9);
+    background:
+      linear-gradient(108deg, transparent 0%, transparent 34%, rgba(255, 255, 255, 0.95) 45%, rgba(155, 179, 200, 0.36) 52%, transparent 64%),
+      linear-gradient(180deg, #ffffff 0%, #dceaf4 19%, #91a6ba 44%, #293646 100%);
+    background-size: 270% 100%, 100% 100%;
+    color: #071019;
+    box-shadow:
+      inset 0 2px 0 rgba(255, 255, 255, 0.96),
+      inset 0 12px 16px rgba(255, 255, 255, 0.26),
+      inset 0 -1px 0 rgba(0, 0, 0, 0.5),
+      0 0 24px rgba(220, 240, 255, 0.48),
+      0 0 42px rgba(138, 180, 255, 0.26);
+    animation: liquid-razor-sheen 7.5s ease-in-out infinite;
+  }
+
+  .editor-clip-enabled {
+    border-color: rgba(138, 180, 255, 0.38);
+    background:
+      linear-gradient(180deg, rgba(255, 255, 255, 0.08), transparent 24%),
+      linear-gradient(180deg, rgba(49, 78, 99, 0.58), rgba(14, 59, 71, 0.72));
+    color: #d9f3ff;
+  }
+
+  .editor-clip-disabled {
+    border-color: rgba(133, 145, 162, 0.24);
+    background:
+      linear-gradient(180deg, rgba(34, 39, 48, 0.48), rgba(18, 21, 27, 0.58));
+    color: #697587;
+  }
+
+  .editor-note-item {
+    background: transparent;
+    transition: background 160ms ease, box-shadow 160ms ease;
+  }
+
+  .editor-note-item:hover {
+    background: rgba(178, 210, 255, 0.06);
+    box-shadow: inset 3px 0 0 rgba(138, 180, 255, 0.72);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .editor-primary-button,
+    .editor-clip-active {
+      animation: none;
+    }
+  }
+}

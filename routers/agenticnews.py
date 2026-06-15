@@ -12,19 +12,30 @@ from __future__ import annotations
 
 import os
 import json
+import copy
 import shlex
 import asyncio
 import subprocess
+import shutil
+import textwrap
 import urllib.request
+import urllib.parse
 from pathlib import Path
 from fastapi import APIRouter, HTTPException, Body
 from fastapi.responses import JSONResponse
 
 import services.agenticnews as db
 import services.abn_factory as factory
+import services.openshot_bridge as openshot_bridge
+import services.editor_render as editor_render
+import services.editor_timeline as editor_timeline
 from fastapi.responses import StreamingResponse
 
 router = APIRouter()
+EDITOR_TITLE_ASSET_VERSION = 1
+EDITOR_ALLOW_FLATTENED_SOURCE_MATERIALIZATION = (
+    os.getenv("EDITOR_ALLOW_FLATTENED_SOURCE_MATERIALIZATION", "0") == "1"
+)
 
 
 # ============ FACTORY EVENT STREAM (SSE) ============
@@ -95,7 +106,6 @@ async def reject(body: dict = Body(...)):
         pass
     return v or {}
 
-VOICE_DEFAULT = os.getenv("ABN_VOICE", "")  # path to cloned voice .safetensors, else default
 
 
 # ---------- helpers ----------
@@ -245,10 +255,8 @@ async def tool_tts(body: dict = Body(...)):
     vid = body.get("video_id")
     name = body.get("name") or (vid or "vo")
     out = db.ASSETS_DIR / f"{name}.wav"
-    voice = body.get("voice") or VOICE_DEFAULT
+    # Pocket-TTS built-in English voice only — the channel's single narrator (no clone, no cloud).
     cmd = f'pocket-tts generate --text {shlex.quote(text)} --output-path {shlex.quote(str(out))} --quiet'
-    if voice and Path(voice).exists():
-        cmd += f' --voice {shlex.quote(voice)}'
     code, log = await _sh(cmd, timeout=600)
     if code != 0 or not out.exists():
         raise HTTPException(500, f"tts failed: {log[-500:]}")
@@ -533,6 +541,1022 @@ async def get_stats():
         "active_jobs": len([j for j in jobs if j["status"] in ("queued", "running")]),
         "by_lane": {l: len([v for v in vids if v.get("lane") == l]) for l in ("today", "week", "backlog")},
     }
+
+
+# ============ EDITOR BAY V2 — commanded timeline core ============
+def _editor_timeline_store() -> editor_timeline.TimelineStore:
+    return editor_timeline.TimelineStore(db.ASSETS_DIR / "editor_timelines")
+
+
+def _reject_demo_editor_project(project_id: str) -> None:
+    if project_id.startswith("demo"):
+        raise HTTPException(
+            status_code=400,
+            detail="demo editor timelines are disabled; open a real ABN episode id",
+        )
+
+
+def _timeline_file_for_episode(episode_id: str) -> Path:
+    return db.ASSETS_DIR / f"{episode_id}_timeline.json"
+
+
+async def _load_real_abn_timeline(project_id: str) -> tuple[str, dict]:
+    _reject_demo_editor_project(project_id)
+    timeline_path = _timeline_file_for_episode(project_id)
+
+    if timeline_path.exists():
+        try:
+            timeline = json.loads(timeline_path.read_text())
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"episode timeline is unreadable: {project_id}") from exc
+        if timeline.get("segments"):
+            return project_id, timeline
+
+    video = await _find_video(project_id)
+    episode_id = video.get("id", project_id) if video else project_id
+    if episode_id != project_id:
+        timeline_path = _timeline_file_for_episode(episode_id)
+        if timeline_path.exists():
+            try:
+                timeline = json.loads(timeline_path.read_text())
+            except Exception as exc:
+                raise HTTPException(status_code=500, detail=f"episode timeline is unreadable: {episode_id}") from exc
+            if timeline.get("segments"):
+                return episode_id, timeline
+
+    timeline = (video or {}).get("timeline") or {}
+    if timeline.get("segments"):
+        return episode_id, timeline
+
+    raise HTTPException(status_code=404, detail="real ABN episode timeline not found")
+
+
+async def _load_or_import_real_editor_project(project_id: str) -> dict:
+    _reject_demo_editor_project(project_id)
+    store = _editor_timeline_store()
+    try:
+        project = store.load(project_id)
+        project, changed = _sanitize_render_cache(project)
+        try:
+            episode_id, timeline = await _load_real_abn_timeline(project_id)
+        except HTTPException:
+            episode_id, timeline = project.get("sourceEpisodeId") or project_id, None
+        if timeline:
+            if _needs_abn_import_migration(project):
+                project = editor_timeline.reimport_abn_timeline_preserving_commands(
+                    project,
+                    timeline,
+                    source_episode_id=episode_id,
+                )
+                changed = True
+        return store.save(project) if changed else project
+    except FileNotFoundError:
+        pass
+
+    episode_id, timeline = await _load_real_abn_timeline(project_id)
+    project = editor_timeline.project_from_abn_timeline(
+        episode_id,
+        timeline,
+        source_episode_id=episode_id,
+    )
+    return store.save(project)
+
+
+def _needs_abn_import_migration(project: dict) -> bool:
+    return (
+        (project.get("metadata") or {}).get("abnImportVersion")
+        != editor_timeline.ABN_IMPORT_VERSION
+    )
+
+
+def _materialize_editor_sources(episode_id: str, timeline: dict) -> list[dict[str, str]]:
+    return _plan_editor_source_materialization(episode_id, timeline, materialize=True)
+
+
+def _plan_editor_source_materialization(
+    episode_id: str,
+    timeline: dict,
+    *,
+    materialize: bool = False,
+) -> list[dict[str, str]]:
+    episode_video = db.ASSETS_DIR / f"{episode_id}_episode.mp4"
+    if not episode_video.exists():
+        return []
+
+    materialized: list[dict[str, str]] = []
+    cursor = 0.0
+    planned_copy_targets: set[str] = set()
+    for segment in timeline.get("segments") or []:
+        segment_duration = float(segment.get("durationSec") or 0)
+        if segment_duration <= 0:
+            continue
+
+        vo = ((segment.get("audio") or {}).get("vo") or {})
+        if vo.get("src"):
+            target = _asset_path_from_url(str(vo["src"]))
+            if not target.exists():
+                if EDITOR_ALLOW_FLATTENED_SOURCE_MATERIALIZATION:
+                    if materialize:
+                        _extract_audio_window(episode_video, target, start=cursor, duration=segment_duration)
+                    materialized.append({
+                        "type": "audio",
+                        "path": str(target),
+                        "source": str(episode_video),
+                        "provenance": "derived_from_flattened_episode",
+                        **({} if materialize else {"status": "available", "action": "extract"}),
+                    })
+                else:
+                    materialized.append({
+                        "type": "audio",
+                        "path": str(target),
+                        "source": str(episode_video),
+                        "status": "blocked",
+                        "provenance": "would_derive_from_flattened_episode",
+                        "reason": "flattened source extraction is disabled",
+                    })
+
+        shots = segment.get("shots") or []
+        demo_groups: dict[str, list[tuple[int, dict]]] = {}
+        for shot_index, shot in enumerate(shots):
+            src = str(shot.get("src") or "")
+            if not src:
+                continue
+            target = _asset_path_from_url(src)
+            if target.exists():
+                continue
+            if target.name.endswith("_src.png"):
+                fallback = target.with_name(target.name.replace("_src.png", "_card.png"))
+                target_key = str(target)
+                if fallback.exists() and target_key not in planned_copy_targets:
+                    planned_copy_targets.add(target_key)
+                    if materialize:
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copyfile(fallback, target)
+                    materialized.append({
+                        "type": "image",
+                        "path": str(target),
+                        "source": str(fallback),
+                        "provenance": "copied_from_existing_layer_parent",
+                        **({} if materialize else {"status": "available", "action": "copy"}),
+                    })
+            elif target.name.endswith("_demo.mp4"):
+                demo_groups.setdefault(src, []).append((shot_index, shot))
+
+        for src, source_shots in demo_groups.items():
+            target = _asset_path_from_url(src)
+            if target.exists() or not source_shots:
+                continue
+            if not EDITOR_ALLOW_FLATTENED_SOURCE_MATERIALIZATION:
+                materialized.append({
+                    "type": "video",
+                    "path": str(target),
+                    "source": str(episode_video),
+                    "status": "blocked",
+                    "provenance": "would_derive_from_flattened_episode",
+                    "reason": "flattened source extraction is disabled",
+                })
+                continue
+            base_offset = min(
+                max(0.0, float(shot.get("startSec") or 0) - float(shot.get("clipStartSec") or 0))
+                for _shot_index, shot in source_shots
+            )
+            window_end = max(
+                float(shot.get("clipStartSec") or 0)
+                + _abn_shot_duration(segment, shots, shot_index, segment_duration)
+                for shot_index, shot in source_shots
+            )
+            if materialize:
+                _extract_video_window(
+                    episode_video,
+                    target,
+                    start=cursor + base_offset,
+                    duration=max(0.1, window_end),
+                )
+            materialized.append({
+                "type": "video",
+                "path": str(target),
+                "source": str(episode_video),
+                "provenance": "derived_from_flattened_episode",
+                **({} if materialize else {"status": "available", "action": "extract"}),
+            })
+
+        cursor += segment_duration
+    return materialized
+
+
+def _asset_path_from_url(src: str) -> Path:
+    if src.startswith("/agenticnews-assets/"):
+        return db.ASSETS_DIR / src.removeprefix("/agenticnews-assets/")
+    return Path(src)
+
+
+async def _load_editor_project_for_asset_health(project_id: str) -> tuple[dict, str | None, dict | None, bool]:
+    _reject_demo_editor_project(project_id)
+    store = _editor_timeline_store()
+    try:
+        project = store.load(project_id)
+        try:
+            episode_id, timeline = await _load_real_abn_timeline(project.get("sourceEpisodeId") or project_id)
+        except HTTPException:
+            episode_id, timeline = project.get("sourceEpisodeId") or project_id, None
+        return project, episode_id, timeline, False
+    except FileNotFoundError:
+        episode_id, timeline = await _load_real_abn_timeline(project_id)
+        project = editor_timeline.project_from_abn_timeline(
+            episode_id,
+            timeline,
+            source_episode_id=episode_id,
+        )
+        return project, episode_id, timeline, True
+
+
+def _editor_asset_health(project: dict, materialization_plan: list[dict[str, str]] | None = None) -> dict:
+    assets = project.get("assets") or {}
+    clips = project.get("clips") or {}
+    tracks = project.get("tracks") or {}
+    clip_ids_by_asset: dict[str, list[str]] = {}
+    enabled_clip_ids_by_asset: dict[str, list[str]] = {}
+    missing_clip_assets: list[dict[str, str]] = []
+    missing_clip_tracks: list[dict[str, str]] = []
+
+    for clip in clips.values():
+        clip_id = str(clip.get("id") or "")
+        asset_id = str(clip.get("assetId") or "")
+        track_id = str(clip.get("trackId") or "")
+        if asset_id:
+            clip_ids_by_asset.setdefault(asset_id, []).append(clip_id)
+        if clip.get("enabled", True):
+            if asset_id:
+                enabled_clip_ids_by_asset.setdefault(asset_id, []).append(clip_id)
+            if asset_id not in assets:
+                missing_clip_assets.append({"clipId": clip_id, "assetId": asset_id})
+            if track_id not in tracks:
+                missing_clip_tracks.append({"clipId": clip_id, "trackId": track_id})
+
+    checked_files = 0
+    missing_files: list[dict[str, object]] = []
+    bad_sources: list[dict[str, str]] = []
+    seen_missing: set[tuple[str, str]] = set()
+    for asset_id, asset in assets.items():
+        src = str(asset.get("src") or "")
+        if not src:
+            bad_sources.append({"assetId": str(asset_id), "reason": "empty src"})
+            continue
+        if src.startswith(("http://", "https://", "data:")):
+            bad_sources.append({"assetId": str(asset_id), "src": src, "reason": "non-local src"})
+            continue
+        path = _asset_path_from_url(src)
+        checked_files += 1
+        if path.exists():
+            continue
+        key = (str(asset_id), str(path))
+        if key in seen_missing:
+            continue
+        seen_missing.add(key)
+        missing_files.append({
+            "assetId": str(asset_id),
+            "type": str(asset.get("type") or ""),
+            "src": src,
+            "file": str(path),
+            "clipIds": clip_ids_by_asset.get(str(asset_id), []),
+            "enabledClipIds": enabled_clip_ids_by_asset.get(str(asset_id), []),
+        })
+
+    plan = materialization_plan or []
+    blocked_materializations = [item for item in plan if item.get("status") == "blocked"]
+    copy_candidates = [
+        item
+        for item in plan
+        if item.get("status") == "available" and item.get("provenance") == "copied_from_existing_layer_parent"
+    ]
+    derivative_materializations = [
+        item
+        for item in plan
+        if "flattened_episode" in str(item.get("provenance") or "")
+    ]
+    unique_missing_files = sorted({str(item["file"]) for item in missing_files})
+    render_blockers = [
+        item
+        for item in missing_files
+        if item.get("enabledClipIds")
+    ] + missing_clip_assets + missing_clip_tracks
+    ok = not (bad_sources or missing_files or missing_clip_assets or missing_clip_tracks or blocked_materializations)
+    return {
+        "ok": ok,
+        "renderable": not render_blockers and not blocked_materializations,
+        "projectId": project.get("projectId"),
+        "sourceEpisodeId": project.get("sourceEpisodeId"),
+        "revision": project.get("revision"),
+        "assetCount": len(assets),
+        "clipCount": len(clips),
+        "trackCount": len(tracks),
+        "checkedFiles": checked_files,
+        "missingFiles": missing_files,
+        "uniqueMissingFiles": unique_missing_files,
+        "badSources": bad_sources,
+        "missingClipAssets": missing_clip_assets,
+        "missingClipTracks": missing_clip_tracks,
+        "materializationPlan": plan,
+        "blockedMaterializations": blocked_materializations,
+        "copyCandidates": copy_candidates,
+        "derivativeMaterializations": derivative_materializations,
+    }
+
+
+def _editor_load_mutation_reasons(project: dict, *, imported: bool, materialization_plan: list[dict[str, str]]) -> list[str]:
+    reasons: list[str] = []
+    if imported:
+        reasons.append("would import ABN timeline into editor store")
+    _, cache_changed = _sanitize_render_cache(copy.deepcopy(project))
+    if cache_changed:
+        reasons.append("would sanitize render cache")
+    if _needs_abn_import_migration(project):
+        reasons.append("would migrate ABN import version")
+    return reasons
+
+
+def _abn_shot_duration(segment: dict, shots: list[dict], shot_index: int, segment_duration: float) -> float:
+    shot = shots[shot_index]
+    if shot.get("durationSec") not in {None, ""}:
+        return max(0.001, float(shot.get("durationSec") or 0))
+    start = float(shot.get("startSec") or 0)
+    if shot.get("endSec") not in {None, ""}:
+        return max(0.001, float(shot.get("endSec") or 0) - start)
+    future_starts = [
+        float(next_shot.get("startSec") or 0)
+        for next_shot in shots[shot_index + 1 :]
+        if next_shot.get("src") and float(next_shot.get("startSec") or 0) > start
+    ]
+    end = min(future_starts) if future_starts else segment_duration
+    return max(0.001, end - start)
+
+
+def _extract_audio_window(source: Path, target: Path, *, start: float, duration: float) -> None:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-y",
+            "-v",
+            "error",
+            "-ss",
+            f"{start:.3f}",
+            "-t",
+            f"{duration:.3f}",
+            "-i",
+            str(source),
+            "-vn",
+            "-ac",
+            "2",
+            "-ar",
+            "48000",
+            "-c:a",
+            "pcm_s16le",
+            str(target),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=180,
+    )
+
+
+def _extract_video_window(source: Path, target: Path, *, start: float, duration: float) -> None:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-y",
+            "-v",
+            "error",
+            "-ss",
+            f"{start:.3f}",
+            "-t",
+            f"{duration:.3f}",
+            "-i",
+            str(source),
+            "-an",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            "-movflags",
+            "+faststart",
+            str(target),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=180,
+    )
+
+
+def _materialize_editor_title_assets(project: dict) -> tuple[list[dict[str, str]], bool]:
+    materialized: list[dict[str, str]] = []
+    title_dir = db.ASSETS_DIR / "editor_title_assets"
+    title_dir.mkdir(parents=True, exist_ok=True)
+    width = int(project.get("width") or 1920)
+    height = int(project.get("height") or 1080)
+    project_id = str(project.get("projectId") or "editor")
+    metadata = project.setdefault("metadata", {})
+    stale_title_version = metadata.get("titleAssetVersion") != EDITOR_TITLE_ASSET_VERSION
+    output_changed = False
+
+    for asset in (project.get("assets") or {}).values():
+        if asset.get("type") != "title":
+            continue
+        current_src = str(asset.get("src") or "")
+        current_path = _asset_path_from_url(current_src) if current_src else None
+        if current_path and current_path.exists() and not stale_title_version:
+            continue
+
+        asset_id = str(asset.get("id") or "title")
+        out = title_dir / f"{_safe_file_stem(project_id)}_{_safe_file_stem(asset_id)}.png"
+        metadata = asset.get("metadata") or {}
+        text = str(metadata.get("text") or asset_id).strip()
+        source_url = str(metadata.get("sourceUrl") or "").strip()
+        _render_title_asset_png(out, text=text, source_url=source_url, width=width, height=height)
+        asset["src"] = f"/agenticnews-assets/editor_title_assets/{out.name}"
+        materialized.append({"type": "title", "assetId": asset_id, "path": str(out)})
+        output_changed = True
+
+    if stale_title_version and any(asset.get("type") == "title" for asset in (project.get("assets") or {}).values()):
+        project.setdefault("metadata", {})["titleAssetVersion"] = EDITOR_TITLE_ASSET_VERSION
+        output_changed = True
+
+    return materialized, output_changed
+
+
+def _render_title_asset_png(path: Path, *, text: str, source_url: str, width: int, height: int) -> None:
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"title asset renderer unavailable: {exc}") from exc
+
+    image = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(image)
+    headline_font = _load_title_font(ImageFont, 54, bold=True)
+    source_font = _load_title_font(ImageFont, 28, bold=False)
+    max_text_width = int(width * 0.62)
+    headline_lines = _wrap_title_text(draw, text, headline_font, max_text_width, max_lines=2)
+    source_label = _source_label(source_url)
+    source_lines = _wrap_title_text(draw, source_label, source_font, max_text_width, max_lines=1) if source_label else []
+
+    padding_x = 36
+    padding_y = 26
+    gap = 12 if source_lines else 0
+    headline_height = sum(_text_size(draw, line, headline_font)[1] for line in headline_lines) + max(0, len(headline_lines) - 1) * 8
+    source_height = sum(_text_size(draw, line, source_font)[1] for line in source_lines)
+    box_height = padding_y * 2 + headline_height + gap + source_height
+    box_width = max(
+        620,
+        min(
+            int(width * 0.74),
+            max([_text_size(draw, line, headline_font)[0] for line in headline_lines] + [_text_size(draw, line, source_font)[0] for line in source_lines] + [0])
+            + padding_x * 2
+            + 18,
+        ),
+    )
+    x = 92
+    y = height - box_height - 118
+    draw.rounded_rectangle([x, y, x + box_width, y + box_height], radius=24, fill=(8, 13, 22, 218))
+    draw.rounded_rectangle([x, y, x + 10, y + box_height], radius=5, fill=(34, 211, 238, 255))
+
+    cursor_y = y + padding_y
+    text_x = x + padding_x
+    for line in headline_lines:
+        draw.text((text_x, cursor_y), line, font=headline_font, fill=(245, 248, 252, 255))
+        cursor_y += _text_size(draw, line, headline_font)[1] + 8
+    if source_lines:
+        cursor_y += gap
+        for line in source_lines:
+            draw.text((text_x, cursor_y), line, font=source_font, fill=(125, 211, 252, 235))
+            cursor_y += _text_size(draw, line, source_font)[1]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    image.save(path)
+
+
+def _load_title_font(image_font, size: int, *, bold: bool):
+    candidates = [
+        "/System/Library/Fonts/Supplemental/Arial Bold.ttf" if bold else "/System/Library/Fonts/Supplemental/Arial.ttf",
+        "/System/Library/Fonts/Helvetica.ttc",
+        "/Library/Fonts/Arial Unicode.ttf",
+    ]
+    for candidate in candidates:
+        try:
+            if Path(candidate).exists():
+                return image_font.truetype(candidate, size=size)
+        except Exception:
+            continue
+    return image_font.load_default(size=size)
+
+
+def _wrap_title_text(draw, text: str, font, max_width: int, *, max_lines: int) -> list[str]:
+    words = textwrap.wrap(text.strip(), width=34) or [text.strip() or " "]
+    lines: list[str] = []
+    current = ""
+    for chunk in " ".join(words).split():
+        candidate = f"{current} {chunk}".strip()
+        if current and _text_size(draw, candidate, font)[0] > max_width:
+            lines.append(current)
+            current = chunk
+            if len(lines) >= max_lines:
+                break
+        else:
+            current = candidate
+    if current and len(lines) < max_lines:
+        lines.append(current)
+    if len(lines) == max_lines and len(" ".join(lines)) < len(text.strip()):
+        lines[-1] = lines[-1].rstrip(" .") + "..."
+    return lines or [" "]
+
+
+def _text_size(draw, text: str, font) -> tuple[int, int]:
+    left, top, right, bottom = draw.textbbox((0, 0), text, font=font)
+    return right - left, bottom - top
+
+
+def _source_label(source_url: str) -> str:
+    if not source_url:
+        return ""
+    parsed = urllib.parse.urlparse(source_url)
+    return parsed.netloc or source_url
+
+
+def _safe_file_stem(value: str) -> str:
+    clean = "".join(ch.lower() if ch.isalnum() else "_" for ch in value).strip("_")
+    return "_".join(part for part in clean.split("_") if part)[:96] or "asset"
+
+
+def _sanitize_render_cache(project: dict) -> tuple[dict, bool]:
+    next_project, changed = _strip_source_reference_render_cache(project)
+    next_project, pruned = _prune_missing_render_cache(next_project)
+    next_project, stale = _prune_stale_revision_render_cache(next_project)
+    next_project, stamped = _stamp_legacy_render_cache_revisions(next_project)
+    return next_project, changed or pruned or stale or stamped
+
+
+def _strip_source_reference_render_cache(project: dict) -> tuple[dict, bool]:
+    video = ((project.get("renderCache") or {}).get("video") or {})
+    video_path = str(video.get("video") or "")
+    is_source_reference = video.get("backend") == "abn-source" or video_path.endswith("_episode.mp4")
+    is_window_cache = float(video.get("start") or 0) > 0
+    if not is_window_cache and video.get("duration") is not None:
+        project_duration = max(
+            [float(c.get("start") or 0) + float(c.get("duration") or 0) for c in (project.get("clips") or {}).values()]
+            or [0.0]
+        )
+        is_window_cache = float(video.get("duration") or 0) + 0.05 < project_duration
+    if not is_source_reference and not is_window_cache:
+        return project, False
+    project = copy.deepcopy(project)
+    project.setdefault("renderCache", {}).pop("video", None)
+    return project, True
+
+
+def _prune_missing_render_cache(project: dict) -> tuple[dict, bool]:
+    if "renderCache" not in project:
+        return project, False
+    render_cache = project.get("renderCache") or {}
+    if not isinstance(render_cache, dict):
+        return project, False
+
+    changed = False
+    next_project = copy.deepcopy(project)
+    next_cache = next_project.setdefault("renderCache", {})
+
+    video = next_cache.get("video") or {}
+    if video and not _render_cache_path_exists(str(video.get("video") or "")):
+        next_cache.pop("video", None)
+        changed = True
+
+    windows = next_cache.get("windows") or {}
+    if isinstance(windows, dict):
+        for key, item in list(windows.items()):
+            if not _render_cache_path_exists(str((item or {}).get("video") or "")):
+                windows.pop(key, None)
+                changed = True
+        if not windows and "windows" in next_cache:
+            next_cache.pop("windows", None)
+            changed = True
+
+    frames = next_cache.get("frames") or {}
+    if isinstance(frames, dict):
+        for key, item in list(frames.items()):
+            if not _render_cache_path_exists(str((item or {}).get("frame") or "")):
+                frames.pop(key, None)
+                changed = True
+        if not frames and "frames" in next_cache:
+            next_cache.pop("frames", None)
+            changed = True
+
+    if not next_cache and "renderCache" in next_project:
+        next_project.pop("renderCache", None)
+        changed = True
+
+    return (next_project, True) if changed else (project, False)
+
+
+def _prune_stale_revision_render_cache(project: dict) -> tuple[dict, bool]:
+    if "renderCache" not in project:
+        return project, False
+    render_cache = project.get("renderCache") or {}
+    if not isinstance(render_cache, dict):
+        return project, False
+
+    current_revision = int(project.get("revision") or 0)
+    changed = False
+    next_project = copy.deepcopy(project)
+    next_cache = next_project.setdefault("renderCache", {})
+
+    video = next_cache.get("video") or {}
+    if _render_cache_revision_mismatch(video, current_revision):
+        next_cache.pop("video", None)
+        changed = True
+
+    windows = next_cache.get("windows") or {}
+    if isinstance(windows, dict):
+        for key, item in list(windows.items()):
+            if _render_cache_revision_mismatch(item or {}, current_revision):
+                windows.pop(key, None)
+                changed = True
+        if not windows and "windows" in next_cache:
+            next_cache.pop("windows", None)
+            changed = True
+
+    frames = next_cache.get("frames") or {}
+    if isinstance(frames, dict):
+        for key, item in list(frames.items()):
+            if _render_cache_revision_mismatch(item or {}, current_revision):
+                frames.pop(key, None)
+                changed = True
+        if not frames and "frames" in next_cache:
+            next_cache.pop("frames", None)
+            changed = True
+
+    if not next_cache and "renderCache" in next_project:
+        next_project.pop("renderCache", None)
+        changed = True
+
+    return (next_project, True) if changed else (project, False)
+
+
+def _stamp_legacy_render_cache_revisions(project: dict) -> tuple[dict, bool]:
+    if "renderCache" not in project:
+        return project, False
+    render_cache = project.get("renderCache") or {}
+    if not isinstance(render_cache, dict):
+        return project, False
+
+    current_revision = int(project.get("revision") or 0)
+    changed = False
+    next_project = copy.deepcopy(project)
+    next_cache = next_project.setdefault("renderCache", {})
+
+    video = next_cache.get("video")
+    if isinstance(video, dict) and "revision" not in video:
+        video["revision"] = current_revision
+        changed = True
+
+    windows = next_cache.get("windows") or {}
+    if isinstance(windows, dict):
+        for item in windows.values():
+            if isinstance(item, dict) and "revision" not in item:
+                item["revision"] = current_revision
+                changed = True
+
+    frames = next_cache.get("frames") or {}
+    if isinstance(frames, dict):
+        for item in frames.values():
+            if isinstance(item, dict) and "revision" not in item:
+                item["revision"] = current_revision
+                changed = True
+
+    return (next_project, True) if changed else (project, False)
+
+
+def _refresh_render_cache_revisions(project: dict) -> tuple[dict, bool]:
+    render_cache = project.get("renderCache") or {}
+    if not isinstance(render_cache, dict):
+        return project, False
+
+    current_revision = int(project.get("revision") or 0)
+    changed = False
+    next_project = copy.deepcopy(project)
+    next_cache = next_project.setdefault("renderCache", {})
+
+    entries = [next_cache.get("video")]
+    windows = next_cache.get("windows") or {}
+    if isinstance(windows, dict):
+        entries.extend(windows.values())
+    frames = next_cache.get("frames") or {}
+    if isinstance(frames, dict):
+        entries.extend(frames.values())
+
+    for item in entries:
+        if isinstance(item, dict) and item.get("revision") != current_revision:
+            item["revision"] = current_revision
+            changed = True
+
+    return (next_project, True) if changed else (project, False)
+
+
+def _render_cache_revision_mismatch(entry: dict, current_revision: int) -> bool:
+    if "revision" not in entry:
+        return False
+    try:
+        return int(entry.get("revision")) != current_revision
+    except (TypeError, ValueError):
+        return True
+
+
+def _render_cache_path_exists(path: str) -> bool:
+    if not path:
+        return False
+    if path.startswith("http://") or path.startswith("https://"):
+        return True
+    if path.startswith("/agenticnews-assets/"):
+        return (db.ASSETS_DIR / path.removeprefix("/agenticnews-assets/")).exists()
+    return Path(path).exists()
+
+
+def _command_invalidates_render_cache(op: str) -> bool:
+    return op in {
+        "asset.import",
+        "track.create",
+        "clip.create",
+        "clip.split",
+        "clip.unsplit",
+        "clip.move",
+        "clip.trim",
+        "clip.update",
+        "clip.hide",
+        "clip.show",
+        "clip.mute",
+        "clip.unmute",
+        "clip.transform",
+        "clip.opacity",
+        "clip.volume",
+    }
+
+
+def _sync_render_cache_after_command(store: editor_timeline.EditorTimelineStore, project: dict, op: str) -> dict:
+    if not project.get("renderCache"):
+        return project
+    if _command_invalidates_render_cache(op):
+        project = copy.deepcopy(project)
+        project.pop("renderCache", None)
+        return store.save(project)
+    project, changed = _refresh_render_cache_revisions(project)
+    return store.save(project) if changed else project
+
+
+def _editor_render_dir() -> Path:
+    path = db.ASSETS_DIR / "editor_renders"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _editor_render_output(project_id: str, suffix: str) -> Path:
+    safe_id = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in project_id).strip("_")
+    return _editor_render_dir() / f"{safe_id or 'project'}{suffix}"
+
+
+def _save_render_cache_entry_if_current(
+    store: editor_timeline.TimelineStore,
+    project: dict,
+    *,
+    cache_kind: str,
+    result: dict,
+    key: str | None = None,
+) -> dict:
+    latest = store.load(project["projectId"])
+    base_revision = int(project.get("revision") or 0)
+    current_revision = int(latest.get("revision") or 0)
+    if current_revision != base_revision:
+        return {
+            **result,
+            "revision": base_revision,
+            "cacheSkipped": True,
+            "cacheSkipReason": "timeline revision changed during render",
+            "currentRevision": current_revision,
+        }
+
+    latest = copy.deepcopy(latest)
+    entry = {**result, "revision": base_revision}
+    if cache_kind == "video":
+        latest.setdefault("renderCache", {})["video"] = entry
+    elif cache_kind == "window" and key:
+        windows = latest.setdefault("renderCache", {}).setdefault("windows", {})
+        video_path = str(entry.get("video") or "")
+        if video_path:
+            for existing_key, existing_entry in list(windows.items()):
+                if existing_key != key and str((existing_entry or {}).get("video") or "") == video_path:
+                    windows.pop(existing_key, None)
+        windows[key] = entry
+    elif cache_kind == "frame" and key:
+        latest.setdefault("renderCache", {}).setdefault("frames", {})[key] = entry
+    store.save(latest)
+    return {**result, "revision": base_revision, "cacheSkipped": False}
+
+
+@router.post("/editor-timelines", status_code=201)
+async def editor_timeline_create(body: dict = Body(...)):
+    project_id = body.get("projectId")
+    if not project_id:
+        raise HTTPException(status_code=400, detail="projectId is required")
+    _reject_demo_editor_project(project_id)
+    project = editor_timeline.new_project(
+        project_id,
+        source_episode_id=body.get("sourceEpisodeId"),
+        title=body.get("title", ""),
+        fps=int(body.get("fps") or 30),
+        width=int(body.get("width") or 1920),
+        height=int(body.get("height") or 1080),
+    )
+    return _editor_timeline_store().save(project)
+
+
+@router.post("/editor-timelines/{project_id}/import-abn", status_code=201)
+async def editor_timeline_import_abn(project_id: str, body: dict = Body(...)):
+    _reject_demo_editor_project(project_id)
+    source = body.get("timeline")
+    if not isinstance(source, dict):
+        raise HTTPException(status_code=400, detail="timeline object is required")
+    project = editor_timeline.project_from_abn_timeline(
+        project_id,
+        source,
+        source_episode_id=body.get("sourceEpisodeId"),
+    )
+    return _editor_timeline_store().save(project)
+
+
+@router.get("/editor-timelines/{project_id}")
+async def editor_timeline_load(project_id: str):
+    return await _load_or_import_real_editor_project(project_id)
+
+
+@router.get("/editor-timelines/{project_id}/asset-health")
+async def editor_timeline_asset_health(project_id: str):
+    try:
+        project, episode_id, timeline, imported = await _load_editor_project_for_asset_health(project_id)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="editor timeline not found")
+    materialization_plan = (
+        _plan_editor_source_materialization(episode_id, timeline, materialize=False)
+        if episode_id and timeline
+        else []
+    )
+    health = _editor_asset_health(project, materialization_plan)
+    mutation_reasons = _editor_load_mutation_reasons(
+        project,
+        imported=imported,
+        materialization_plan=materialization_plan,
+    )
+    return {
+        **health,
+        "importedInMemory": imported,
+        "wouldMutateOnLoad": bool(mutation_reasons),
+        "wouldMutateOnLoadReasons": mutation_reasons,
+    }
+
+
+@router.post("/editor-timelines/{project_id}/commands")
+async def editor_timeline_command(project_id: str, command: dict = Body(...)):
+    _reject_demo_editor_project(project_id)
+    try:
+        store = _editor_timeline_store()
+        project = store.apply_command(project_id, command)
+        project = _sync_render_cache_after_command(store, project, str(command.get("op") or ""))
+        return project
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="editor timeline not found")
+    except editor_timeline.RevisionConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except editor_timeline.CommandValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.post("/editor-timelines/{project_id}/commands/revert-last")
+async def editor_timeline_revert_last_command(project_id: str, body: dict = Body(...)):
+    _reject_demo_editor_project(project_id)
+    if body.get("expectedRevision") is None:
+        raise HTTPException(status_code=400, detail="expectedRevision is required")
+    try:
+        store = _editor_timeline_store()
+        project = store.revert_last_command(
+            project_id,
+            actor=str(body.get("actor") or "human"),
+            expected_revision=int(body.get("expectedRevision")),
+        )
+        inverse_op = str(((project.get("commandLog") or [{}])[-1] or {}).get("op") or "")
+        project = _sync_render_cache_after_command(store, project, inverse_op)
+        return project
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="editor timeline not found")
+    except editor_timeline.RevisionConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except editor_timeline.CommandValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="expectedRevision must be an integer") from exc
+
+
+@router.get("/editor-timelines/{project_id}/openshot")
+async def editor_timeline_openshot_export(project_id: str):
+    project = await _load_or_import_real_editor_project(project_id)
+    capabilities = editor_render.detect_render_backends()
+    return {
+        "engineAvailable": capabilities["openshot"]["available"],
+        "engineReason": capabilities["openshot"]["reason"],
+        "timeline": openshot_bridge.timeline_json(project, asset_root=db.ASSETS_DIR),
+        "updateActions": openshot_bridge.flattened_update_actions(project, asset_root=db.ASSETS_DIR),
+    }
+
+
+# ============ EDITOR BAY V2 — render backend spike ============
+@router.get("/editor-render/capabilities")
+async def editor_render_capabilities():
+    return editor_render.detect_render_backends()
+
+
+@router.post("/editor-render/{project_id}/render")
+async def editor_render_project(project_id: str, body: dict = Body(default_factory=dict)):
+    store = _editor_timeline_store()
+    try:
+        start = max(0.0, float(body.get("start", 0) or 0))
+        duration = body.get("duration")
+        duration = None if duration in {None, ""} else max(0.1, float(duration))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="start and duration must be numeric")
+    if start > 0 and duration is None:
+        raise HTTPException(status_code=400, detail="partial render requests require duration")
+
+    try:
+        project = await _load_or_import_real_editor_project(project_id)
+        renderer = editor_render.choose_renderer(_editor_render_dir(), asset_root=db.ASSETS_DIR)
+        is_window_render = start > 0 or duration is not None
+        output_path = (
+            _editor_render_output(project_id, f"_{start:.2f}_{duration:.2f}.mp4")
+            if is_window_render and duration is not None
+            else _editor_render_output(project_id, ".mp4")
+        )
+        result = renderer.render(
+            project,
+            output_path=output_path,
+            start=start,
+            duration=duration,
+        )
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="editor timeline not found")
+    except editor_render.RenderError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    if start > 0 or duration is not None:
+        key = f"{start:.2f}_{result.get('duration', duration or 0):.2f}"
+        return _save_render_cache_entry_if_current(
+            store,
+            project,
+            cache_kind="window",
+            key=key,
+            result=result,
+        )
+    return _save_render_cache_entry_if_current(
+        store,
+        project,
+        cache_kind="video",
+        result=result,
+    )
+
+
+@router.post("/editor-render/{project_id}/frame")
+async def editor_render_frame(project_id: str, body: dict = Body(default_factory=dict)):
+    store = _editor_timeline_store()
+    try:
+        at = max(0.0, float(body.get("at", 0)))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="at must be numeric")
+
+    try:
+        project = await _load_or_import_real_editor_project(project_id)
+        renderer = editor_render.choose_renderer(_editor_render_dir(), asset_root=db.ASSETS_DIR)
+        result = renderer.render_frame(
+            project,
+            at=at,
+            output_path=_editor_render_output(project_id, f"_{at:.2f}.png"),
+        )
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="editor timeline not found")
+    except editor_render.RenderError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    return _save_render_cache_entry_if_current(
+        store,
+        project,
+        cache_kind="frame",
+        key=f"{at:.2f}",
+        result=result,
+    )
 
 
 # ============ EDITOR BAY — review + visual/temporal edit notes ============

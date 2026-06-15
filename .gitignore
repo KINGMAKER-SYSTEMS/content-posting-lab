@@ -22,6 +22,20 @@ telegram_config.json
 
 .DS_Store
 .claude/
+# …but shared project infra under .claude/ IS tracked (workflows, skills, and the
+# asset-schema enforcement hook/settings — these must travel with the repo so every
+# agent/machine gets the same guardrails, not just whoever set them up locally).
+!.claude/
+!.claude/workflows/
+!.claude/workflows/**
+!.claude/skills/
+!.claude/skills/**
+!.claude/hooks/
+!.claude/hooks/**
+!.claude/settings.json
+# personal/local state stays ignored
+.claude/settings.local.json
+.claude/.DS_Store
 .vercel
 
 # Temporary font preview PNGs

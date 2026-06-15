@@ -15,6 +15,7 @@ import type {
   AutoCreateEmailResponse,
   UploadJob,
   CookieStatus,
+  UploadSubmitRequest,
 } from '@/types/api';
 
 import { StatusBar } from './distribution/StatusBar';
@@ -63,6 +64,42 @@ const SUB_TABS = [
 ] as const;
 
 type SubTabId = typeof SUB_TABS[number]['id'];
+
+interface BuildUploadSubmitRequestArgs {
+  videoPath: string;
+  uploadTarget: RosterPage;
+  uploadDesc: string;
+  uploadHashtags: string;
+  uploadSound: string;
+  uploadSchedule: string;
+  uploadScheduleDay: string;
+  uploadStealth: boolean;
+}
+
+export function buildUploadSubmitRequest({
+  videoPath,
+  uploadTarget,
+  uploadDesc,
+  uploadHashtags,
+  uploadSound,
+  uploadSchedule,
+  uploadScheduleDay,
+  uploadStealth,
+}: BuildUploadSubmitRequestArgs): UploadSubmitRequest {
+  const day = uploadScheduleDay.trim();
+
+  return {
+    video_path: videoPath,
+    account_name: uploadTarget.name,
+    description: uploadDesc,
+    hashtags: uploadHashtags.split(',').map((h) => h.trim()).filter(Boolean),
+    sound_name: uploadSound.trim() || null,
+    schedule_time: uploadSchedule.trim() || null,
+    schedule_day: day ? Number(day) : null,
+    stealth: uploadStealth,
+    headless: true,
+  };
+}
 
 function pathToSubTab(pathname: string): SubTabId {
   if (pathname.startsWith('/distribute/telegram')) return 'telegram';
@@ -164,6 +201,7 @@ export function DistributionPage() {
   const [uploadHashtags, setUploadHashtags] = useState('');
   const [uploadSound, setUploadSound] = useState('');
   const [uploadSchedule, setUploadSchedule] = useState('');
+  const [uploadScheduleDay, setUploadScheduleDay] = useState('');
   const [uploadStealth, setUploadStealth] = useState(true);
   const [submittingUpload, setSubmittingUpload] = useState(false);
 
@@ -860,22 +898,27 @@ export function DistributionPage() {
     try {
       const resp = await fetch(apiUrl('/api/upload/submit'), {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          video_path: videoPath, account_name: uploadTarget.name,
-          description: uploadDesc, hashtags: uploadHashtags.split(',').map((h) => h.trim()).filter(Boolean),
-          sound_name: uploadSound || null, stealth: uploadStealth, headless: true,
-        }),
+        body: JSON.stringify(buildUploadSubmitRequest({
+          videoPath,
+          uploadTarget,
+          uploadDesc,
+          uploadHashtags,
+          uploadSound,
+          uploadSchedule,
+          uploadScheduleDay,
+          uploadStealth,
+        })),
       });
       if (!resp.ok) { const text = await resp.text(); throw new Error(text || 'Submit failed'); }
       const data = await resp.json();
       addUploadJob(data.job as UploadJob);
       addNotification('success', `Upload queued for ${uploadTarget.name}`);
       setShowUploadForm(false);
-      setUploadDesc(''); setUploadHashtags(''); setUploadSound(''); setUploadSchedule('');
+      setUploadDesc(''); setUploadHashtags(''); setUploadSound(''); setUploadSchedule(''); setUploadScheduleDay('');
       void fetchUploadJobs();
     } catch (err) { addNotification('error', err instanceof Error ? err.message : 'Submit failed'); }
     finally { setSubmittingUpload(false); }
-  }, [uploadTarget, uploadDesc, uploadHashtags, uploadSound, uploadStealth, addUploadJob, addNotification, fetchUploadJobs]);
+  }, [uploadTarget, uploadDesc, uploadHashtags, uploadSound, uploadSchedule, uploadScheduleDay, uploadStealth, addUploadJob, addNotification, fetchUploadJobs]);
 
   const cancelUploadJob = useCallback(async (jobId: string) => {
     try {
@@ -1110,6 +1153,8 @@ export function DistributionPage() {
             onUploadSoundChange={setUploadSound}
             uploadSchedule={uploadSchedule}
             onUploadScheduleChange={setUploadSchedule}
+            uploadScheduleDay={uploadScheduleDay}
+            onUploadScheduleDayChange={setUploadScheduleDay}
             uploadStealth={uploadStealth}
             onUploadStealthChange={setUploadStealth}
             submittingUpload={submittingUpload}
