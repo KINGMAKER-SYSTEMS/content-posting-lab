@@ -1,15 +1,23 @@
 #!/usr/bin/env python3
-"""Ep2 VO chain: scripts -> pocket-tts (John's voice) -> whisper word grid ->
+"""Ep2 VO chain: scripts -> pocket-tts -> whisper word grid ->
 segments.json ledger. Outputs stay in the repo tree (factory wipes T9)."""
-import json, re, subprocess, sys
+import json, os, re, subprocess, sys
 from pathlib import Path
 
 ROOT = Path('/Users/risingtidesdev/dev/content-posting-lab')
 EP = ROOT / 'yt-pipeline/drafts/ep-workflows-over-prompts'
 OUT = ROOT / 'yt-pipeline/src/animations/ep2'
 VO = OUT / 'vo'
-VOICE = ROOT / 'agenticnews_assets/john_voice.safetensors'
 VO.mkdir(parents=True, exist_ok=True)
+
+
+def pocket_cmd(text, wav):
+    cmd = ['pocket-tts', 'generate', '--text', text, '--output-path', str(wav), '--quiet']
+    language = os.getenv('ABN_POCKET_LANGUAGE', 'english_2026-04').strip()
+    if language:
+        cmd += ['--language', language]
+    # Pocket-TTS built-in English voice only — no clone, no custom voice file.
+    return cmd
 
 outline = json.loads((EP / 'outline.json').read_text())
 seg_titles = {s['index']: s['title'] for s in outline['segments']}
@@ -24,10 +32,7 @@ for i in range(9):
 
     wav = VO / f's{i}.wav'
     if not wav.exists():
-        cmd = ['pocket-tts', 'generate', '--text', body, '--output-path', str(wav), '--quiet']
-        if VOICE.exists():
-            cmd += ['--voice', str(VOICE)]
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+        r = subprocess.run(pocket_cmd(body, wav), capture_output=True, text=True, timeout=600)
         if r.returncode != 0 or not wav.exists():
             print(f's{i} TTS FAILED: {r.stderr[-300:]}'); sys.exit(1)
 

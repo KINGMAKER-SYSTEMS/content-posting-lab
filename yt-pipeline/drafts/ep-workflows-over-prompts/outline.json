@@ -9,7 +9,7 @@
         "Claude Fable 5 launched June 9, 2026 — 'capabilities exceed those of any model we've ever made generally available' — at $10/$50 per million input/output tokens, included on Pro, Max, Team, and seat-based Enterprise plans through June 22.",
         "Anthropic's duration claim is harness-framed, verbatim: 'Run Claude Fable 5 in an agent harness like Claude Code or Claude Managed Agents, and it can work for days at a time: planning across stages, delegating to sub-agents, and checking its own work.' The autonomy verbs are explicitly tied to the harness, not raw model output.",
         "Harness-induced variance in agent benchmark scores is 7.80x larger than model-induced variance (HV 18.48 pp² vs MV 2.37 pp²) — 'Stop Comparing LLM Agents Without Disclosing the Harness,' May 2026.",
-        "Same model, different harness: Claude Opus 4.5 scores 45.9% on SWE-bench Pro under the standardized SEAL scaffold vs 55.4% under Claude Code — a 9.5-point swing with zero model change."
+        "Same model, different harness: Claude Opus 4.5 scores 45.9% on SWE-bench Pro in one harness vs 55.4% under Claude Code — a 9.5-point swing with zero model change."
       ],
       "sources": [
         "https://www.anthropic.com/news/claude-fable-5-mythos-5",
@@ -68,7 +68,7 @@
       "keyFacts": [
         "Slay the Spire eval, verbatim: 'giving it access to persistent file-based memory improved its performance three times more than for Opus 4.8; Fable also reached the game's final act three times more often' — two distinct 3x figures, and the memory uplift is a harness feature, not a weights feature.",
         "Stripe, verbatim: 'In a 50-million-line Ruby codebase, the model performed a codebase-wide migration in a day that would otherwise have taken a whole team over two months by hand.'",
-        "Claude Code hooks: 30 lifecycle events, 5 handler types; exit code 2 is a blocking error whose 'stderr text is fed back to Claude as an error message'; Stop hook exit 2 'Prevents Claude from stopping, continues the conversation' — 'when is the agent done' is decided by deterministic hook code.",
+        "Claude Code hooks: 33 lifecycle events, 5 handler types; exit code 2 is a blocking error whose 'stderr text is fed back to Claude as an error message'; Stop hook exit 2 'Prevents Claude from stopping, continues the conversation' — 'when is the agent done' is decided by deterministic hook code.",
         "Subagents each run in their own context window with a custom system prompt, tool allowlists, and independent permissions; model resolution is deterministic: env var → invocation param → frontmatter → main conversation's model; worktree isolation runs them in temporary git worktrees, auto-cleaned if no changes.",
         "Agent teams (experimental, v2.1.32+): lead + teammates + shared task list + mailbox; 'Task claiming uses file locking to prevent race conditions'; quality gates are hook code — TeammateIdle exit 2 keeps a teammate working, TaskCompleted exit 2 blocks completion.",
         "Task Budgets (beta): the model sees a running token countdown for the whole agentic loop and self-moderates (minimum 20,000 tokens) — distinct from max_tokens, an enforced per-response ceiling the model is NOT aware of."

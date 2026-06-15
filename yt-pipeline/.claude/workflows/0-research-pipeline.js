@@ -12,13 +12,16 @@ export const meta = {
 }
 
 const REPO = '/Users/risingtidesdev/dev/content-posting-lab'
-const EP_SLUG = (args && args.slug) || 'ep-workflows-over-prompts'
+// args may arrive JSON-stringified (burned run wf_61403e3c: args.slug on a string
+// is undefined, so all params silently fell back to ep2 defaults)
+const A = (typeof args === 'string') ? JSON.parse(args) : (args || {})
+const EP_SLUG = A.slug || 'ep-workflows-over-prompts'
 const EP = REPO + '/yt-pipeline/drafts/' + EP_SLUG
 const INTEL = REPO + '/yt-pipeline/drafts/creator-intel'
 
-const BRIEF = (args && args.brief) || `EPISODE BRIEF — "Workflows over System Prompts": why programmatically LOCKED values (orchestration scripts, JSON schemas as contracts/ledgers, deterministic control flow) beat prompt-tuning for agent quality. Cover: how frontier coding agents (OpenAI Codex / GPT-5.x-codex line and Anthropic's Fable 5 / Claude Code) orchestrate deep, long autonomous runs; compiled techniques like /loop, /goal (stop-hook conditions), and ralph-loop (persistent re-prompt loops with state files); JSON schemas as ledgers and contracts between pipeline stages (structured outputs that downstream stages can trust); why "the prompt is not the program — the workflow is". The audience: builders who ship agentic systems (the ABN audience). Register: technical wire-service, proof-first, no hype.`
+const BRIEF = A.brief || `EPISODE BRIEF — "Workflows over System Prompts": why programmatically LOCKED values (orchestration scripts, JSON schemas as contracts/ledgers, deterministic control flow) beat prompt-tuning for agent quality. Cover: how frontier coding agents (OpenAI Codex / GPT-5.x-codex line and Anthropic's Fable 5 / Claude Code) orchestrate deep, long autonomous runs; compiled techniques like /loop, /goal (stop-hook conditions), and ralph-loop (persistent re-prompt loops with state files); JSON schemas as ledgers and contracts between pipeline stages (structured outputs that downstream stages can trust); why "the prompt is not the program — the workflow is". The audience: builders who ship agentic systems (the ABN audience). Register: technical wire-service, proof-first, no hype.`
 
-const STRUCTURE = (args && args.structure) || 'Segment 0 = cold open (the hook + the single most striking number); then thematic segments per the brief; end with a takeaway segment.'
+const STRUCTURE = A.structure || 'Segment 0 = cold open (the hook + the single most striking number); then thematic segments per the brief; end with a takeaway segment.'
 
 const CREATOR_SCHEMA = {
   type: 'object', required: ['creators'],
@@ -111,7 +114,7 @@ const winner = allAngles.find(a => a.title === ranked[0][0]) || allAngles[0]
 log(`Winning angle: "${winner.title}" (${ranked[0][1]} pts)`)
 
 phase('Research')
-const FACETS = (args && args.facets) || [
+const FACETS = A.facets || [
   'OpenAI Codex (GPT-5.x-codex line, including any 5.5-class release): long autonomous runs, orchestration features, harness/compile patterns, real numbers (run lengths, PR counts, benchmarks), official docs + engineering posts',
   'Anthropic Fable 5 and Claude Code: agentic orchestration (subagents, workflows, hooks, background tasks), long-run autonomy, structured outputs, official docs + announcements',
   'Compiled control-flow techniques in agent CLIs: loop commands, goal/stop-hook conditions, ralph-loop pattern (Geoffrey Huntley lineage), state files, why re-prompting with locked state beats one big prompt — find the actual origins and real usage reports',

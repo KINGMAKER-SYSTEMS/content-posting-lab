@@ -1,3 +1,4 @@
+import json
 import time
 import zipfile
 from io import BytesIO
@@ -22,6 +23,8 @@ def test_generate_job_lifecycle_and_download(sync_client, monkeypatch):
         jobs,
         output_dir,
         url_prefix,
+        on_complete=None,
+        **extra,
     ):
         entry = jobs[job_id]["videos"][index]
         filename = f"fake_{index}.mp4"
@@ -29,6 +32,8 @@ def test_generate_job_lifecycle_and_download(sync_client, monkeypatch):
         entry["status"] = "done"
         entry["file"] = filename
         entry["url"] = f"{url_prefix}/{filename}"
+        if on_complete:
+            on_complete(job_id)
 
     monkeypatch.setattr(video_router, "generate_one", fake_generate_one)
 
@@ -82,3 +87,69 @@ def test_generate_rejects_unknown_provider(sync_client):
         },
     )
     assert response.status_code == 400
+
+
+def test_generate_stores_and_passes_negative_prompt(sync_client, monkeypatch, isolated_projects_root):
+    provider_id = "wan-i2v-fast"
+    key_id = video_router.PROVIDERS[provider_id]["key_id"]
+    monkeypatch.setitem(video_router.API_KEYS, key_id, "test-key")
+    captured_extra = {}
+
+    async def fake_generate_one(
+        job_id,
+        index,
+        provider,
+        prompt,
+        aspect_ratio,
+        resolution,
+        duration,
+        image_data_uri,
+        jobs,
+        output_dir,
+        url_prefix,
+        on_complete=None,
+        **extra,
+    ):
+        captured_extra.update(extra)
+        entry = jobs[job_id]["videos"][index]
+        filename = f"fake_{index}.mp4"
+        (output_dir / filename).write_bytes(b"fake video")
+        entry["status"] = "done"
+        entry["file"] = filename
+        entry["url"] = f"{url_prefix}/{filename}"
+        if on_complete:
+            on_complete(job_id)
+
+    monkeypatch.setattr(video_router, "generate_one", fake_generate_one)
+
+    negative_prompt = "driving, tire rotation, camera pan, morphing, extra vehicles"
+    response = sync_client.post(
+        "/api/video/generate",
+        data={
+            "prompt": "Locked-off parked truck shot.",
+            "provider": provider_id,
+            "count": "1",
+            "duration": "5",
+            "aspect_ratio": "9:16",
+            "resolution": "480p",
+            "negative_prompt": f"  {negative_prompt}  ",
+            "project": "video-suite",
+        },
+    )
+    assert response.status_code == 200
+    job_id = response.json()["job_id"]
+
+    final_job = None
+    for _ in range(50):
+        job_response = sync_client.get(f"/api/video/jobs/{job_id}")
+        assert job_response.status_code == 200
+        final_job = job_response.json()
+        if final_job["videos"][0]["status"] == "done":
+            break
+        time.sleep(0.02)
+
+    assert captured_extra["negative_prompt"] == negative_prompt
+    assert final_job["negative_prompt"] == negative_prompt
+
+    prompts = json.loads((isolated_projects_root / "video-suite" / "prompts.json").read_text())
+    assert prompts[0]["negative_prompt"] == negative_prompt

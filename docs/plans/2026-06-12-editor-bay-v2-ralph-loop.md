@@ -160,3 +160,43 @@ No Editor Bay v2 child slice should be marked complete until:
 2. The Linear/PR summary has been posted.
 3. Slice-specific tests, browser checks, or render evidence are included in pass verification.
 4. Any waiver is explicit in the issue and explains why the third clean pass is not required.
+
+## Heartbeat Tick Sub-Agent Workflow
+
+The recurring Editor Bay proof heartbeat is not allowed to be a single narrow button probe.
+Each tick must compile into a controller run plus independent sub-agent lanes. The controller owns
+the live timeline state and is the only lane allowed to mutate `ep_3c114c5c`; side agents inspect,
+review, and propose next risks without touching the real episode unless explicitly promoted.
+
+Controller lane:
+
+- Run the real app target, currently `http://127.0.0.1:8015/editor/ep_3c114c5c`.
+- Snapshot baseline revision, clip count, selected real asset paths, notes, markers, and render cache.
+- Run a reversible compound proof through real UI controls, then undo back to the baseline clip state.
+- Regenerate real OpenShot render windows and validate them with browser playback plus media probes.
+- Stop and restore before reporting if any proof mutation fails.
+
+Required side-agent lanes per tick:
+
+1. UI/UX proof reviewer: inspect the current Editor Bay UI path being exercised and identify selector brittleness, disconnected player/timeline behavior, or fake-state risks. Evidence: exact controls, observed DOM labels, screenshots or browser trace paths.
+2. Render/media reviewer: inspect OpenShot render output, ffprobe metadata, frame nonblank stats, cache revision keys, and asset paths. Evidence: MP4 path, backend, revision, width/height, audio/video streams, frame mean/variance.
+3. Timeline integrity reviewer: inspect command log, undo/revert behavior, cache invalidation, and notes/markers. Evidence: before/after revision deltas, clip summaries, cache keys, and a no-residue assertion.
+4. Next-risk scout: choose the next deeper proof edge from untested surfaces such as trim, split across a later clip, marker/note HITL flow, hidden/muted layer interplay, long-window playback, stale-cache pruning, or concurrent revision rejection. Evidence: ranked risk list with the next concrete proof to run.
+
+Stop conditions for a heartbeat tick:
+
+- Any mutation cannot be undone to the baseline clip state.
+- Notes, markers, or temporary clips remain after cleanup.
+- Render cache revision does not match the final timeline revision.
+- Render output is missing OpenShot backend metadata, has missing assets, lacks audio/video streams, has wrong dimensions, or produces a blank/flat frame.
+- Browser playback uses a stale `?rev=` URL or the video time and timeline playhead do not advance together.
+- A side-agent reports a high-risk regression that the controller has not either fixed or logged as the next blocked proof.
+
+Reusable controller command:
+
+```bash
+node tools/editor_bay_deep_proof.mjs
+```
+
+This command must be treated as the minimum proof bar for the heartbeat controller lane, not as
+the full definition of done for the editor.

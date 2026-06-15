@@ -325,6 +325,7 @@ export interface Project {
   video_count: number;
   caption_count: number;
   burned_count: number;
+  last_activity?: string | null;
 }
 
 export interface CreateProjectRequest {
@@ -333,6 +334,21 @@ export interface CreateProjectRequest {
 
 export interface ProjectListResponse {
   projects: Project[];
+}
+
+export interface RecentProjectVideo {
+  project: string;
+  name: string;
+  kind: "videos" | "clips" | "burned";
+  path: string;
+  url: string;
+  size_bytes: number;
+  modified: string;
+}
+
+export interface RecentProjectVideosResponse {
+  count: number;
+  videos: RecentProjectVideo[];
 }
 
 export interface CreateProjectResponse {

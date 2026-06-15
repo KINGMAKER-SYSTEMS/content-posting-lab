@@ -11,8 +11,9 @@ export const meta = {
 // extraUrl: optional second page worth recording (docs page, examples dir, demo)
 const REPO = '/Users/risingtidesdev/dev/content-posting-lab'
 const CAPTURE = REPO + '/tools/gh-capture/capture_nav.cjs'
-const tools = (args && args.tools) || []
-const OUT = (args && args.outDir) || (REPO + '/yt-pipeline/src/animations/ep3/footage')
+const A = (typeof args === 'string') ? JSON.parse(args) : (args || {})
+const tools = A.tools || []
+const OUT = A.outDir || (REPO + '/yt-pipeline/src/animations/ep3/footage')
 if (!tools.length) throw new Error('args.tools required: [{rank, name, url}]')
 
 const CAP_SCHEMA = {

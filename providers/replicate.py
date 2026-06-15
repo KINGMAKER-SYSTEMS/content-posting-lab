@@ -48,6 +48,9 @@ def _build_wan_t2v_input(prompt: str, params: dict) -> dict:
         "go_fast": params.get("go_fast", True),
         "interpolate_output": params.get("interpolate_output", True),
     }
+    negative_prompt = params.get("negative_prompt")
+    if negative_prompt:
+        inp["negative_prompt"] = negative_prompt
     # Optional LoRA
     lora = params.get("lora_weights_transformer")
     if lora:
@@ -66,7 +69,7 @@ def _build_wan_i2v_input(prompt: str, params: dict) -> dict:
     if not image:
         raise ValueError("Wan I2V requires an image — upload one before generating.")
 
-    return {
+    inp: dict = {
         "prompt": prompt,
         "image": image,
         "resolution": params.get("resolution", "480p"),
@@ -76,6 +79,10 @@ def _build_wan_i2v_input(prompt: str, params: dict) -> dict:
         "sample_shift": params.get("sample_shift", 5),
         "go_fast": params.get("go_fast", False),
     }
+    negative_prompt = params.get("negative_prompt")
+    if negative_prompt:
+        inp["negative_prompt"] = negative_prompt
+    return inp
 
 
 def _build_pvideo_input(prompt: str, params: dict) -> dict:
@@ -125,6 +132,9 @@ def _build_wan_i2v_fast_input(prompt: str, params: dict) -> dict:
         "go_fast": params.get("go_fast", True),
         "interpolate_output": params.get("interpolate_output", False),
     }
+    negative_prompt = params.get("negative_prompt")
+    if negative_prompt:
+        inp["negative_prompt"] = negative_prompt
     # Optional last frame
     last_image = params.get("last_image_data_uri")
     if last_image:

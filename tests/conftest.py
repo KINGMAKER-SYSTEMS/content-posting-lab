@@ -36,6 +36,8 @@ def isolated_projects_root(monkeypatch, tmp_path):
     monkeypatch.setattr(burn_router, "PROJECTS_DIR", projects_dir)
     monkeypatch.setattr(burn_router, "FONT_DIR", base_dir / "fonts")
 
+    monkeypatch.setattr(video_router, "PROJECTS_DIR", projects_dir)
+
     monkeypatch.setattr(app_module, "PROJECTS_DIR", projects_dir)
 
     yield projects_dir
