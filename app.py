@@ -29,7 +29,6 @@ from routers.miniapp import router as miniapp_router
 from routers.email_routing import router as email_router
 from routers.pipeline import router as pipeline_router
 from routers.upload import router as upload_router
-from routers.gdrive import router as gdrive_router
 from routers.video import router as video_router
 from routers.agenticnews import router as agenticnews_router
 import services.agenticnews as agenticnews_db
@@ -232,7 +231,6 @@ app.include_router(email_router, prefix="/api/email", tags=["email"])
 app.include_router(pipeline_router, prefix="/api/pipeline", tags=["pipeline"])
 app.include_router(upload_router, prefix="/api/upload", tags=["upload"])
 app.include_router(agenticnews_router, prefix="/api/agenticnews", tags=["agenticnews"])
-app.include_router(gdrive_router, prefix="/api/drive", tags=["drive"])
 
 
 @app.get("/api/projects", include_in_schema=False)
