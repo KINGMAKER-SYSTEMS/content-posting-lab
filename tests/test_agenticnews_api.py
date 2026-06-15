@@ -452,11 +452,10 @@ def test_episode_qa_closes_props_file_handle(client, monkeypatch, tmp_path):
     import builtins
     import routers.agenticnews as r
 
-    # point the endpoint's asset resolver at a temp 'agenticnews_assets' dir
-    assets = tmp_path / "agenticnews_assets"
-    assets.mkdir()
-    monkeypatch.setenv("RAILWAY_VOLUME_MOUNT_PATH", str(tmp_path))
-    props = assets / "ep_qa_test_timeline.json"
+    # The QA endpoint now routes through the abn_assets gateway (no RAILWAY_VOLUME env
+    # hand-built path). For a non-schema id like 'ep_qa_test' the gateway returns the flat
+    # fallback under db.ASSETS_DIR (the abn_db temp dir) — write the props there.
+    props = db.ASSETS_DIR / "ep_qa_test_timeline.json"
     props.write_text(
         '{"segments": [{"title": "Foo"}, {"title": "Bar"}, {"title": "Baz"}],'
         ' "musicBed": "bed.wav", "sfx": []}'
@@ -479,6 +478,32 @@ def test_episode_qa_closes_props_file_handle(client, monkeypatch, tmp_path):
     # the props file was actually read, and every handle opened for it is closed
     assert opened, "endpoint never opened the props file"
     assert all(fh.closed for fh in opened), "leaked an open file handle for props"
+
+
+def test_episode_qa_reads_schema_paths_not_flat_legacy(client):
+    """The ticket: episode_qa must route through the abn_assets gateway and grade the
+    timeline the factory ACTUALLY wrote at the schema path {ep}/timeline.json — NOT the
+    flat {ep}_timeline.json legacy name. Write the props ONLY at the schema path; if QA
+    used the flat path it would miss them (props_found False)."""
+    ep = "ep_648e806a"
+    assert client.post("/api/agenticnews/videos",
+                       json={"id": ep, "title": "QA schema", "stage": "review"}).status_code == 200
+    # write the render-props where the FACTORY writes it: the gateway schema path.
+    tl = abn_assets.asset_path(ep, "timeline")
+    tl.write_text(
+        '{"segments": [{"title": "Foo"}, {"title": "Bar"}, {"title": "Baz"}],'
+        ' "musicBed": "bed.wav", "sfx": [{"at": 1}]}'
+    )
+    # NOTHING at the flat legacy name — if QA read the flat path it would miss the props.
+    assert not (db.ASSETS_DIR / f"{ep}_timeline.json").exists()
+
+    resp = client.get(f"/api/agenticnews/episodes/{ep}/qa")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["props_found"] is True, "QA did not read the schema timeline.json"
+    assert body["checks"]["has_segments"] is True
+    assert body["checks"]["music_bed"] is True
+    assert body["checks"]["sfx"] is True
 
 
 def test_tools_tts_success_attaches_artifact_to_video(client, monkeypatch):

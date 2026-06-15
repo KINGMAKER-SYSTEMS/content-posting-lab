@@ -379,12 +379,19 @@ async def episode_qa(ep_id: str):
     codifying the manual checks I kept re-deriving. Reads the render-props json (not the stripped DB
     timeline) so it always inspects what Remotion actually used. Returns pass/fail per dimension."""
     import json as _json, os as _os, subprocess as _sp, re as _re
-    base = _os.getenv("RAILWAY_VOLUME_MOUNT_PATH") or "."
-    assets = _os.path.join(base, "agenticnews_assets")
-    if not _os.path.isdir(assets):
-        assets = _os.path.join(_os.path.dirname(_os.path.dirname(__file__)), "agenticnews_assets")
-    props_path = _os.path.join(assets, f"{ep_id}_timeline.json")
-    mp4 = _os.path.join(assets, f"{ep_id}_episode.mp4")
+    # Route through the asset gateway (NOT hand-built flat legacy names): read the timeline
+    # + render the factory ACTUALLY wrote at the schema paths {ep_id}/timeline.json and
+    # {ep_id}/renders/episode.mp4. _timeline_file_for_episode + episode_singleton_path both
+    # fall back to the flat legacy name for non-episode / un-migrated ids, so this stays
+    # read-safe while honoring the gateway hard gate (no GC-eatable hand-built paths).
+    props_path = _timeline_file_for_episode(ep_id)
+    _schema_mp4 = abn_assets.episode_singleton_path(ep_id, "episode")
+    if _schema_mp4 is not None and _schema_mp4.exists():
+        mp4 = _schema_mp4
+    else:
+        mp4 = db.ASSETS_DIR / f"{ep_id}_episode.mp4"
+    props_path = str(props_path)
+    mp4 = str(mp4)
     checks, props = {}, None
     if _os.path.exists(props_path):
         try:
