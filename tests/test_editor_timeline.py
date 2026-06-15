@@ -2168,3 +2168,145 @@ def test_validated_effect_requires_an_id_and_object_shape():
         {"effectId": 7, "type": "fadeIn", "params": {"duration": 0.5}}
     )
     assert out["id"] == "7"
+
+
+# --- clip.split keyframe / effect partitioning edge cases ---
+# These exercise _keyframes_before / _keyframes_after / _effects_for_split_half,
+# the helpers behind clip.split's animation rebasing (commits 537af946, dfa6c6c0).
+
+
+def _kf(prop, *points):
+    return {"property": prop, "points": [{"t": t, "value": v, "interp": "linear"} for t, v in points]}
+
+
+def test_keyframes_before_keeps_boundary_point_on_the_head():
+    # A point sitting exactly on the split offset belongs to the head (t <= offset).
+    tracks = [_kf("volume", (0.0, 1.0), (2.0, 0.5), (4.0, 0.0))]
+    head = timeline._keyframes_before(tracks, 2.0)
+    assert [p["t"] for p in head[0]["points"]] == [0.0, 2.0]
+    assert head[0]["points"][-1]["value"] == 0.5
+
+
+def test_keyframes_after_keeps_boundary_point_rebased_to_zero():
+    # The same boundary point also seeds the tail at t=0, so the envelope is continuous.
+    tracks = [_kf("volume", (0.0, 1.0), (2.0, 0.5), (4.0, 0.0))]
+    tail = timeline._keyframes_after(tracks, 2.0)
+    assert [p["t"] for p in tail[0]["points"]] == [0.0, 2.0]
+    assert tail[0]["points"][0]["value"] == 0.5  # boundary value preserved across the cut
+
+
+def test_keyframes_before_and_after_drop_emptied_tracks():
+    # A track whose points all land on one side must not survive as an empty husk on the other.
+    tracks = [_kf("opacity", (3.0, 0.2), (5.0, 0.9))]
+    assert timeline._keyframes_before(tracks, 1.0) == []      # nothing at t <= 1.0
+    assert timeline._keyframes_after(tracks, 6.0) == []       # nothing at t >= 6.0
+
+
+def test_keyframes_helpers_handle_no_keyframes():
+    # Clips with no envelope (None or []) must not blow up.
+    assert timeline._keyframes_before(None, 2.0) == []
+    assert timeline._keyframes_after([], 2.0) == []
+
+
+def test_effects_for_split_half_anchors_fades_and_copies_whole_clip_effects():
+    effects = [
+        {"id": "fi", "type": "fadeIn", "params": {"duration": 0.5}},
+        {"id": "fo", "type": "fadeOut", "params": {"duration": 0.5}},
+        {"id": "br", "type": "brightness", "params": {"value": 0.2}},
+    ]
+    head = timeline._effects_for_split_half(effects, "head")
+    tail = timeline._effects_for_split_half(effects, "tail")
+    assert {e["id"] for e in head} == {"fi", "br"}   # head keeps fadeIn, drops fadeOut
+    assert {e["id"] for e in tail} == {"fo", "br"}   # tail keeps fadeOut, drops fadeIn
+
+
+def test_effects_for_split_half_deep_copies_so_halves_do_not_alias():
+    effects = [{"id": "br", "type": "brightness", "params": {"value": 0.2}}]
+    head = timeline._effects_for_split_half(effects, "head")
+    head[0]["params"]["value"] = 0.9
+    # Mutating the head's copy must not bleed into the source or the other half.
+    assert effects[0]["params"]["value"] == 0.2
+    assert timeline._effects_for_split_half(effects, "tail")[0]["params"]["value"] == 0.2
+
+
+def test_clip_split_partitions_multitrack_keyframes_and_straddling_effects(tmp_path):
+    """End-to-end: splitting a clip carrying volume+opacity envelopes and both fades
+    routes each track and each anchored effect to the correct half."""
+    store = timeline.TimelineStore(tmp_path)
+    store.save(timeline.new_project("proj_split_edge"))
+    for command in [
+        {
+            "op": "asset.import",
+            "actor": "agent",
+            "expectedRevision": 0,
+            "payload": {"assetId": "a1", "type": "video", "src": "/a.mp4"},
+        },
+        {
+            "op": "clip.create",
+            "actor": "agent",
+            "expectedRevision": 1,
+            "payload": {
+                "clipId": "c1",
+                "assetId": "a1",
+                "trackId": "video_1",
+                "start": 0,
+                "duration": 6,
+            },
+        },
+        {
+            "op": "clip.keyframes",
+            "actor": "agent",
+            "expectedRevision": 2,
+            "payload": {
+                "clipId": "c1",
+                "keyframes": [
+                    {"property": "volume", "points": [
+                        {"t": 0.0, "value": 1.0}, {"t": 3.0, "value": 0.5}, {"t": 6.0, "value": 0.0}]},
+                    {"property": "opacity", "points": [
+                        {"t": 1.0, "value": 0.2}, {"t": 5.0, "value": 0.9}]},
+                ],
+            },
+        },
+        {
+            "op": "clip.effect.add",
+            "actor": "agent",
+            "expectedRevision": 3,
+            "payload": {"clipId": "c1", "effect": {
+                "id": "fi", "type": "fadeIn", "params": {"duration": 0.5}}},
+        },
+        {
+            "op": "clip.effect.add",
+            "actor": "agent",
+            "expectedRevision": 4,
+            "payload": {"clipId": "c1", "effect": {
+                "id": "fo", "type": "fadeOut", "params": {"duration": 0.5}}},
+        },
+        {
+            "op": "clip.split",
+            "actor": "human",
+            "expectedRevision": 5,
+            "payload": {"clipId": "c1", "at": 3.0, "newClipId": "c1_b"},
+        },
+    ]:
+        project = store.apply_command("proj_split_edge", command)
+
+    head = project["clips"]["c1"]
+    tail = project["clips"]["c1_b"]
+
+    head_kf = {t["property"]: t for t in head["keyframes"]}
+    tail_kf = {t["property"]: t for t in tail["keyframes"]}
+
+    # volume crosses the 3.0 boundary: head keeps t<=3 (boundary point included),
+    # tail keeps t>=3 rebased so the cut point lands at t=0 with the same value.
+    assert [p["t"] for p in head_kf["volume"]["points"]] == [0.0, 3.0]
+    assert [p["t"] for p in tail_kf["volume"]["points"]] == [0.0, 3.0]
+    assert tail_kf["volume"]["points"][0]["value"] == 0.5
+
+    # opacity has no point on the boundary: head gets only t=1, tail gets t=5 -> t=2.
+    assert [p["t"] for p in head_kf["opacity"]["points"]] == [1.0]
+    assert "opacity" not in tail_kf or [p["t"] for p in tail_kf["opacity"]["points"]] == [2.0]
+    assert [p["t"] for p in tail_kf["opacity"]["points"]] == [2.0]
+
+    # fadeIn anchors to the head, fadeOut to the tail.
+    assert {e["id"] for e in head["effects"]} == {"fi"}
+    assert {e["id"] for e in tail["effects"]} == {"fo"}
