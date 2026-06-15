@@ -49,6 +49,39 @@ def test_pocket_tts_command_honours_language_env(monkeypatch, tmp_path):
     assert "pocket-tts" == cmd[0]
 
 
+@pytest.mark.parametrize("evil", [
+    "/path/to/evil.safetensors",            # absolute path to a clone weights file
+    "../../etc/passwd",                      # path traversal
+    "english_2026-04/../evil.safetensors",   # smuggle a path behind a valid-looking prefix
+    "model.safetensors",                     # a bare filename (has a '.' extension)
+    "~/john_voice.safetensors",              # home-relative clone file
+    "english 2026-04; rm -rf /",             # shell-ish junk with a space
+    "C:\\models\\evil.bin",                  # windows path
+    "replicate:chatterbox",                 # cloud-engine handle
+])
+def test_pocket_tts_command_rejects_pathlike_language_env(monkeypatch, tmp_path, evil):
+    """LOCKED-VOICE HARD GATE: ABN_POCKET_LANGUAGE is operator-controlled but NEVER trusted
+    verbatim. A path / filename / shell-junk value must be rejected and replaced by the
+    built-in default — it must NOT reach the `--language` flag, which could feed pocket-tts a
+    clone weights file (.safetensors) or a cloud handle and re-narrate the channel."""
+    monkeypatch.setenv("ABN_POCKET_LANGUAGE", evil)
+    cmd = abn_factory._pocket_tts_command("hi", tmp_path / "v.wav")
+
+    # the poisoned value never lands in the command at all
+    assert evil not in cmd
+    # --language falls back to the built-in default, never the attacker value
+    assert cmd[cmd.index("--language") + 1] == "english_2026-04"
+    # belt-and-suspenders: no banned narrator artifact leaked into the joined command
+    joined = " ".join(cmd).lower()
+    for banned in ("safetensors", "replicate", "chatterbox", "elevenlabs", "..", "/etc", "rm -rf"):
+        assert banned not in joined, f"VO command leaked a poisoned language value: {banned!r}"
+
+
+def test_pocket_language_resolves_default_when_env_unset(monkeypatch):
+    monkeypatch.delenv("ABN_POCKET_LANGUAGE", raising=False)
+    assert abn_factory._pocket_language() == "english_2026-04"
+
+
 def test_voice_routes_through_gateway_and_returns_url_and_duration(monkeypatch, tmp_path):
     """_voice must (a) build its output path via the asset gateway (per-episode schema, not a
     flat dump), (b) shell out to the pocket-tts command, (c) return the managed URL + measured

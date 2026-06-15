@@ -707,10 +707,36 @@ async def _script_segment(title, url, idx, is_hook, research="", deep=False):
 #
 # Tunable via env (sane default baked in):
 #   ABN_POCKET_LANGUAGE — Pocket-TTS language/model, default english_2026-04
+# The env value is VALIDATED, never trusted verbatim: an operator (or a poisoned
+# environment) could set ABN_POCKET_LANGUAGE=/path/to/evil.safetensors and turn the
+# narrator command into `pocket-tts ... --language /path/to/evil.safetensors`, smuggling
+# a clone/cloud model file past the locked-voice gate. We accept ONLY a built-in English
+# language CODE; anything with a path separator, file extension, or other junk is rejected
+# and falls back to the default (and is logged).
+_POCKET_DEFAULT_LANGUAGE = "english_2026-04"
+# A built-in language CODE — `english_` followed only by alphanumerics / dash / underscore.
+# This deliberately matches real codes (english_2026-04, english_2025-12) and is permissive
+# enough for test/dev codes (english_test), while rejecting ANY path: a `/`, `\`, `.`, or `~`
+# can't appear, so `/path/to/evil.safetensors` or `model.safetensors` never reach --language.
+_POCKET_LANG_RE = re.compile(r"^english_[A-Za-z0-9_-]+$")
+
+
+def _pocket_language() -> str:
+    """Resolve the validated Pocket-TTS language code. Rejects path-like / off-pattern env
+    values (the locked-voice hard gate) and falls back to the built-in default."""
+    raw = os.getenv("ABN_POCKET_LANGUAGE", _POCKET_DEFAULT_LANGUAGE).strip()
+    if _POCKET_LANG_RE.match(raw):
+        return raw
+    if raw:
+        _log.warning(
+            "ignoring invalid ABN_POCKET_LANGUAGE=%r (not a built-in english_* code); "
+            "using built-in %s", raw, _POCKET_DEFAULT_LANGUAGE,
+        )
+    return _POCKET_DEFAULT_LANGUAGE
 
 
 def _pocket_tts_command(text: str, out: Path) -> list[str]:
-    language = os.getenv("ABN_POCKET_LANGUAGE", "english_2026-04").strip()
+    language = _pocket_language()
     cmd = ["pocket-tts", "generate", "--text", text, "--output-path", str(out), "--quiet"]
     if language:
         cmd += ["--language", language]
