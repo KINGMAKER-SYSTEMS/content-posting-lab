@@ -1022,6 +1022,58 @@ def test_clip_update_rejects_missing_track_id(tmp_path):
     assert loaded["clips"]["c1"]["trackId"] == project["clips"]["c1"]["trackId"]
 
 
+def test_clip_update_moves_clip_to_a_valid_track_through_command_log_round_trip(tmp_path):
+    """clip.update with a valid trackId reassigns the clip's track and the move
+    survives both a save/load and a full command-log replay."""
+    store = timeline.TimelineStore(tmp_path)
+    store.save(timeline.new_project("proj_track_switch"))
+    store.apply_command(
+        "proj_track_switch",
+        {
+            "op": "asset.import",
+            "actor": "agent",
+            "expectedRevision": 0,
+            "payload": {"assetId": "a1", "type": "video", "src": "/a.mp4"},
+        },
+    )
+    project = store.apply_command(
+        "proj_track_switch",
+        {
+            "op": "clip.create",
+            "actor": "agent",
+            "expectedRevision": 1,
+            "payload": {
+                "clipId": "c1",
+                "assetId": "a1",
+                "trackId": "video_1",
+                "start": 0,
+                "duration": 2,
+            },
+        },
+    )
+    assert project["clips"]["c1"]["trackId"] == "video_1"
+
+    project = store.apply_command(
+        "proj_track_switch",
+        {
+            "op": "clip.update",
+            "actor": "agent",
+            "expectedRevision": 2,
+            "payload": {
+                "clipId": "c1",
+                "patch": {"trackId": "graphics_1"},
+            },
+        },
+    )
+    assert project["clips"]["c1"]["trackId"] == "graphics_1"
+
+    loaded = store.load("proj_track_switch")
+    assert loaded["clips"]["c1"]["trackId"] == "graphics_1"
+
+    replayed = timeline.replay_project(loaded)
+    assert replayed["clips"]["c1"]["trackId"] == "graphics_1"
+
+
 def test_invalid_commands_are_rejected_without_mutating_state(tmp_path):
     store = timeline.TimelineStore(tmp_path)
     store.save(timeline.new_project("proj_invalid"))
