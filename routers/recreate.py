@@ -407,6 +407,6 @@ async def delete_recreate_job(
     if not job_dir.exists() or not job_dir.is_dir():
         raise HTTPException(404, "Job not found")
 
-    shutil.rmtree(job_dir)
+    shutil.rmtree(job_dir, ignore_errors=True)
     log.info("deleted job %s", job_id[:8])
     return {"deleted": True, "job_id": job_id}
