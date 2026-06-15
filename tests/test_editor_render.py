@@ -905,3 +905,112 @@ def test_windowed_clip_refits_fade_effect_durations_to_window():
     orig = project["clips"]["card_clip"]["effects"]
     assert orig[0]["params"]["duration"] == pytest.approx(1.0)
     assert orig[1]["params"]["duration"] == pytest.approx(1.0)
+def _kf_clip(clip_id: str, *, start: float, duration: float, source_start: float,
+             tracks: list[dict]) -> dict:
+    """A windowing fixture clip that carries keyframe tracks."""
+    clip = _wclip(clip_id, start=start, duration=duration, source_start=source_start)
+    clip["keyframes"] = tracks
+    return clip
+
+
+def test_render_scope_project_carries_shifted_keyframes_into_scoped_clips():
+    """The commit's render path goes through _render_scope_project, not
+    _windowed_clips directly. A front-trimmed clip's keyframe `t` must arrive
+    shifted inside scoped["clips"] (what the renderer actually feeds OpenShot),
+    and sourceStart must shift in lockstep — the windowing<->keyframe interaction
+    the ticket flags as under-tested."""
+    project = _window_project(
+        _kf_clip(
+            "a",
+            start=2.0,
+            duration=6.0,            # clip spans timeline t=2..8
+            source_start=4.0,
+            tracks=[{"property": "opacity", "points": [
+                {"t": 1.0, "value": 0.0},   # before window -> clamps to 0
+                {"t": 4.0, "value": 1.0},   # 4 - 3 = 1.0 after shift
+            ]}],
+        )
+    )
+    # Window timeline t=5..8 -> front_trim = 5 - 2 = 3.0s.
+    scoped = editor_render._render_scope_project(project, window_start=5.0, duration=3.0)
+
+    assert scoped is not project
+    clip = scoped["clips"]["a"]
+    assert clip["start"] == pytest.approx(0.0)
+    assert clip["sourceStart"] == pytest.approx(7.0)        # 4 + 3 front-trim
+    points = clip["keyframes"][0]["points"]
+    assert points[0]["t"] == pytest.approx(0.0)             # 1.0 - 3.0 clamped
+    assert points[1]["t"] == pytest.approx(1.0)             # 4.0 - 3.0
+    # Source project keyframes untouched (deep copy, no aliasing).
+    assert project["clips"]["a"]["keyframes"][0]["points"][0]["t"] == pytest.approx(1.0)
+
+
+def test_windowed_clips_keyframe_exactly_on_window_start_lands_at_zero():
+    """Boundary case: a keyframe whose `t` equals the front-trim amount lands
+    exactly at 0 (the new window origin) — not negative, not clamped away from a
+    real value. The reveal that was scheduled at the cut must fire at frame 0."""
+    project = _window_project(
+        _kf_clip(
+            "a",
+            start=1.0,
+            duration=5.0,            # clip spans t=1..6
+            source_start=0.0,
+            tracks=[{"property": "scale", "points": [
+                {"t": 2.0, "value": 1.0},   # at window start exactly -> t == front_trim
+                {"t": 4.0, "value": 1.5},
+            ]}],
+        )
+    )
+    # Window t=3..6 -> front_trim = 3 - 1 = 2.0s, equal to the first point's t.
+    windowed = editor_render._windowed_clips(project, window_start=3.0, duration=3.0)
+
+    points = windowed[0]["keyframes"][0]["points"]
+    assert points[0]["t"] == pytest.approx(0.0)             # 2.0 - 2.0, lands on origin
+    assert points[1]["t"] == pytest.approx(2.0)             # 4.0 - 2.0
+
+
+def test_windowed_clips_shifts_every_keyframe_track_independently():
+    """Front-trim must shift ALL keyframe tracks on a clip (opacity, scale, x, y),
+    not just the first. A clip with multiple animated properties must keep every
+    envelope aligned after windowing."""
+    project = _window_project(
+        _kf_clip(
+            "a",
+            start=0.0,
+            duration=10.0,
+            source_start=0.0,
+            tracks=[
+                {"property": "opacity", "points": [{"t": 5.0, "value": 1.0}]},
+                {"property": "scale", "points": [{"t": 6.0, "value": 2.0}]},
+                {"property": "x", "points": [{"t": 7.0, "value": 0.3}]},
+            ],
+        )
+    )
+    # Window t=4..10 -> front_trim = 4.0s applied to every track.
+    windowed = editor_render._windowed_clips(project, window_start=4.0, duration=6.0)
+    tracks = {t["property"]: t["points"][0]["t"] for t in windowed[0]["keyframes"]}
+
+    assert tracks["opacity"] == pytest.approx(1.0)          # 5 - 4
+    assert tracks["scale"] == pytest.approx(2.0)            # 6 - 4
+    assert tracks["x"] == pytest.approx(3.0)                # 7 - 4
+
+
+def test_windowed_clips_leading_clip_no_front_trim_leaves_keyframes_untouched():
+    """A clip that starts at/after the window origin has no front-trim, so its
+    keyframes must pass through identically (the shift branch is skipped) and the
+    original keyframe list object is reused, not needlessly deep-copied."""
+    original_tracks = [{"property": "opacity", "points": [
+        {"t": 0.5, "value": 0.0}, {"t": 2.0, "value": 1.0},
+    ]}]
+    project = _window_project(
+        _kf_clip("a", start=2.0, duration=4.0, source_start=1.5, tracks=original_tracks)
+    )
+    # Window t=0..8: clip starts 2s in, no front-trim (window_start=0 <= clip start).
+    windowed = editor_render._windowed_clips(project, window_start=0.0, duration=8.0)
+
+    clip = windowed[0]
+    assert clip["start"] == pytest.approx(2.0)              # rebased onto window origin (==0)
+    assert clip["sourceStart"] == pytest.approx(1.5)        # untouched, no front-trim
+    # No shift performed -> the keyframe list passes through by reference.
+    assert clip["keyframes"] is original_tracks
+    assert clip["keyframes"][0]["points"][0]["t"] == pytest.approx(0.5)
