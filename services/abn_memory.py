@@ -10,9 +10,10 @@ Persisted as JSON on the volume so it survives restarts. Read each cycle.
 """
 from __future__ import annotations
 import os
-import json
 import time
 from pathlib import Path
+
+from services.json_store import atomic_load, atomic_save
 
 _VOL = os.getenv("RAILWAY_VOLUME_MOUNT_PATH")
 _BASE = Path(_VOL) if _VOL and Path(_VOL).exists() else Path(__file__).resolve().parent.parent
@@ -20,18 +21,14 @@ MEM_PATH = _BASE / "abn_memory.json"
 
 
 def _load() -> dict:
-    if MEM_PATH.exists():
-        try:
-            return json.loads(MEM_PATH.read_text())
-        except Exception:
-            pass
-    return {"episodes": [], "topic_counts": {}, "seen_titles": [], "approved_theses": []}
+    # atomic_load already swallows missing/corrupt files; mirror the prior default shape.
+    return atomic_load(MEM_PATH, default={"episodes": [], "topic_counts": {}, "seen_titles": [], "approved_theses": []})
 
 
 def _save(m: dict) -> None:
-    tmp = MEM_PATH.with_suffix(".tmp")
-    tmp.write_text(json.dumps(m, indent=2))
-    tmp.replace(MEM_PATH)
+    # Go through the shared atomic writer (tmp + flush + fsync + rename) — a kernel crash
+    # mid-write must not leave abn_memory.json truncated (the flywheel's episode history).
+    atomic_save(MEM_PATH, m)
 
 
 def record_episode(ep_id: str, titles: list[str], thesis: str = "", approved: bool = False, rendered: bool = False) -> None:
