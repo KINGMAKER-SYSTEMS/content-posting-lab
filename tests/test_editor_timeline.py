@@ -1586,3 +1586,156 @@ def test_save_uses_atomic_store_and_fsyncs(tmp_path, monkeypatch):
     # ...and the real atomic_save left no stray tmp file and round-trips.
     assert not list(tmp_path.glob("*.tmp"))
     assert store.load("proj_atomic") == project
+
+
+def test_abn_import_ducking_envelope_and_shot_effect_round_trip_to_openshot(tmp_path):
+    """The full ABN -> Editor Bay -> OpenShot fidelity path for a KEYFRAMED ducking
+    envelope and a clip effect.
+
+    test_music_bed_imports_pre_ducked_under_vo() only proves the bed lands at the flat
+    0.22 gain on import. It does NOT prove that a *keyframed* volume envelope (the real
+    sidechain duck: full -> under VO -> back up) survives all the way to the compiler,
+    nor that a crossfade on a shot does. abn_factory's duck pass and clip-boundary
+    crossfades depend on both reaching OpenShot, so this nails the round-trip end to end:
+    import the timeline, attach the envelope + effect through the command core, and
+    assert openshot_bridge emits a multi-point volume keyframe (0..100 scale, correct
+    interpolations) and a Fade effect — not the flat single-point default that a silent
+    discard would leave behind.
+    """
+    from services import openshot_bridge
+
+    abn_timeline = {
+        "episodeId": "ep_round_trip",
+        "totalSec": 4.0,
+        "musicBed": "/agenticnews-assets/bed.mp3",
+        "segments": [
+            {
+                "segmentId": "s0",
+                "durationSec": 4.0,
+                "shots": [
+                    {
+                        "id": "card",
+                        "src": "/agenticnews-assets/card.png",
+                        "startSec": 0.0,
+                        "durationSec": 2.0,
+                        "type": "artifact",
+                    }
+                ],
+                "audio": {"vo": {"src": "/agenticnews-assets/vo.wav", "duration": 4.0}},
+            }
+        ],
+    }
+
+    store = timeline.TimelineStore(tmp_path)
+    project = timeline.project_from_abn_timeline("proj_round_trip", abn_timeline)
+    store.save(project)
+
+    bed_id = next(c["id"] for c in project["clips"].values() if c["kind"] == "music_bed")
+    shot_id = next(c["id"] for c in project["clips"].values() if c["kind"] == "artifact")
+    base_rev = project["revision"]
+
+    # Replace the flat 0.22 gain with a real ducking envelope: full -> ducked under
+    # the VO (constant-held floor) -> back up at the VO tail.
+    project = store.apply_command(
+        "proj_round_trip",
+        {
+            "op": "clip.keyframes",
+            "actor": "agent",
+            "expectedRevision": base_rev,
+            "payload": {
+                "clipId": bed_id,
+                "keyframes": [
+                    {
+                        "property": "volume",
+                        "points": [
+                            {"t": 0.0, "value": 1.0, "interp": "linear"},
+                            {"t": 1.0, "value": 0.22, "interp": "constant"},
+                            {"t": 3.0, "value": 1.0, "interp": "linear"},
+                        ],
+                    }
+                ],
+            },
+        },
+    )
+    # And a clip-boundary crossfade on the shot.
+    project = store.apply_command(
+        "proj_round_trip",
+        {
+            "op": "clip.effect.add",
+            "actor": "agent",
+            "expectedRevision": project["revision"],
+            "payload": {
+                "clipId": shot_id,
+                "id": "xf",
+                "type": "crossfade",
+                "params": {"duration": 0.5},
+            },
+        },
+    )
+
+    bridge = openshot_bridge.timeline_json(project, asset_root=tmp_path)
+    bed_oj = next(c for c in bridge["clips"] if c["id"] == bed_id)
+    shot_oj = next(c for c in bridge["clips"] if c["id"] == shot_id)
+
+    # The ducking envelope is a real multi-point keyframe, NOT the flat single-point
+    # default — values on OpenShot's 0..100 scale, interpolations preserved per point.
+    volume_points = bed_oj["volume"]["Points"]
+    assert [round(p["co"]["Y"], 2) for p in volume_points] == [100.0, 22.0, 100.0]
+    assert [p["interpolation"] for p in volume_points] == [
+        openshot_bridge.LINEAR,
+        openshot_bridge.CONSTANT,
+        openshot_bridge.LINEAR,
+    ]
+
+    # The crossfade survives as an OpenShot Fade effect (not silently dropped).
+    assert [e["type"] for e in shot_oj["effects"]] == ["Fade"]
+    assert shot_oj["effects"][0]["id"] == "xf"
+    assert shot_oj["effects"][0]["fade"] == "in"
+
+
+def test_abn_import_does_not_yet_promote_shot_level_effects_or_keyframes():
+    """Pin the known fidelity boundary so it can never regress to a SILENT discard.
+
+    abn_factory shots can carry per-shot envelopes (e.g. `kenBurns`) and could carry an
+    `effects` list. project_from_abn_timeline does NOT yet promote those onto the active
+    clip.effects / clip.keyframes fields that openshot_bridge reads — so they would not
+    reach the compiler on import alone (an editor command must attach them; see the
+    round-trip test above). The raw shot is preserved losslessly under
+    clip.metadata.shot, so the data is never destroyed — it is just not wired through.
+
+    If a future change teaches the importer to carry shot effects/keyframes, this test
+    will fail loudly and must be updated intentionally, rather than the promotion landing
+    silently with no coverage.
+    """
+    abn_timeline = {
+        "episodeId": "ep_shot_fx",
+        "segments": [
+            {
+                "segmentId": "s0",
+                "durationSec": 4.0,
+                "shots": [
+                    {
+                        "id": "card",
+                        "src": "/agenticnews-assets/card.png",
+                        "startSec": 0.0,
+                        "durationSec": 2.0,
+                        "type": "artifact",
+                        "effects": [
+                            {"id": "xf", "type": "crossfade", "params": {"duration": 0.5}}
+                        ],
+                        "kenBurns": {"startScale": 1.0, "endScale": 1.1},
+                    }
+                ],
+            }
+        ],
+    }
+
+    project = timeline.project_from_abn_timeline("proj_shot_fx", abn_timeline)
+    clip = next(c for c in project["clips"].values() if c["kind"] == "artifact")
+
+    # Current behaviour: shot-level effects/keyframes are NOT promoted to active fields.
+    assert clip["effects"] == []
+    assert clip["keyframes"] == []
+    # ...but the raw shot (and everything on it) is retained, so nothing is lost.
+    assert clip["metadata"]["shot"]["effects"][0]["type"] == "crossfade"
+    assert clip["metadata"]["shot"]["kenBurns"]["endScale"] == 1.1
