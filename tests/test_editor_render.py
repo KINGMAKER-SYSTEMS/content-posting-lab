@@ -641,6 +641,75 @@ def test_open_shot_audio_mux_raises_on_missing_audio_asset(tmp_path):
     assert not video.with_name("silent_video.audio-mux.mp4").exists()
 
 
+def test_volume_filter_builds_keyframe_expression_when_envelope_present():
+    """A `volume` keyframe track must compile to a time-varying ffmpeg expression
+    (eval=frame), not the flat `volume=` that silently flattened ducking envelopes.
+    No keyframes -> the cheap flat filter."""
+    flat = {"volume": 0.8, "keyframes": []}
+    assert editor_render._volume_filter(flat, 0.8) == "volume=0.8000"
+
+    ducked = {
+        "volume": 1.0,
+        "keyframes": [
+            {
+                "property": "volume",
+                "points": [
+                    {"t": 0.0, "value": 1.0},
+                    {"t": 1.0, "value": 0.2},
+                    {"t": 2.0, "value": 1.0},
+                ],
+            }
+        ],
+    }
+    expr = editor_render._volume_filter(ducked, 1.0)
+    assert expr.startswith("volume='") and ":eval=frame" in expr
+    assert "(t-0.0000)" in expr and "(t-1.0000)" in expr  # piecewise segments
+
+
+def test_open_shot_audio_mux_honors_volume_ducking_keyframes(tmp_path):
+    """The mux path must apply a keyframed volume envelope, not flat volume. A
+    music-bed ducking curve (loud head, then ducked under VO) must leave the
+    ducked body audibly quieter than the head — the flat `volume=` path could
+    only ever pin the whole clip to one level, so this would fail without the
+    keyframe-aware filter."""
+    video = tmp_path / "silent_video.mp4"
+    tone = tmp_path / "tone.wav"
+    subprocess.run(
+        ["ffmpeg", "-y", "-f", "lavfi", "-i", "color=c=black:s=96x64:r=12:d=3",
+         "-c:v", "libx264", "-pix_fmt", "yuv420p", str(video)],
+        check=True, capture_output=True, text=True,
+    )
+    subprocess.run(
+        ["ffmpeg", "-y", "-f", "lavfi", "-i", "sine=frequency=440:duration=3.0",
+         "-ac", "1", "-ar", "48000", str(tone)],
+        check=True, capture_output=True, text=True,
+    )
+    project = timeline.new_project("audio_duck", width=96, height=64, fps=12)
+    project["assets"]["tone"] = {"id": "tone", "type": "audio", "src": str(tone)}
+    project["clips"]["tone"] = {
+        "id": "tone", "assetId": "tone", "trackId": "audio_1", "kind": "music",
+        "start": 0, "duration": 3.0, "sourceStart": 0, "enabled": True,
+        "muted": False, "volume": 1, "transform": {},
+        "keyframes": [
+            {
+                "property": "volume",
+                "points": [
+                    {"t": 0.0, "value": 1.0},
+                    {"t": 0.5, "value": 1.0},
+                    {"t": 0.8, "value": 0.05},
+                    {"t": 3.0, "value": 0.05},
+                ],
+            }
+        ],
+    }
+
+    assert editor_render._mux_timeline_audio(project, video, duration=3.0, asset_root=None) is True
+
+    head = _mean_volume(video, start=0.0, duration=0.4)  # full level
+    body = _mean_volume(video, start=1.3, duration=1.0)  # ducked under VO
+    assert body < head - 10  # ducked body well below the loud head
+
+
 def test_ffmpeg_renderer_exports_layered_mp4_and_preview_frame(tmp_path):
     red = _solid_png(tmp_path / "red.png", "red")
     project = _project_with_card("render_fixture", red, x=0.0)

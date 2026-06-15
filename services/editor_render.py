@@ -81,6 +81,51 @@ def _fade_window(clip: dict[str, Any], direction: str) -> float | None:
     return best
 
 
+def _volume_keyframe_points(clip: dict[str, Any]) -> list[tuple[float, float]]:
+    """Sorted (clip-relative seconds, gain) points of the clip's volume envelope.
+
+    Mirrors openshot_bridge's `volume` keyframe track. `t` is clip-relative, which
+    after atrim+asetpts (PTS reset to 0) is exactly the ffmpeg `volume` filter's
+    `t`, so no source_start offset is needed on the mux path."""
+
+    points: list[tuple[float, float]] = []
+    for track in clip.get("keyframes") or []:
+        if str((track or {}).get("property") or "") != "volume":
+            continue
+        for point in (track or {}).get("points") or []:
+            points.append((max(0.0, float(point.get("t") or 0.0)), max(0.0, float(point.get("value") or 0.0))))
+    return sorted(points, key=lambda p: p[0])
+
+
+def _volume_filter(clip: dict[str, Any], base_volume: float) -> str:
+    """ffmpeg `volume` filter honoring a volume keyframe envelope when present.
+
+    OpenShot animates `volume` per-keyframe; the flat `volume=` the mux path used
+    silently flattened ducking envelopes. Build a piecewise-linear `t`-expression
+    (eval=frame) so OpenShot and the mux path apply the same gain over time. The
+    envelope value is scaled by the clip's flat volume so both compose."""
+
+    points = _volume_keyframe_points(clip)
+    if not points:
+        return f"volume={base_volume:.4f}"
+    # Piecewise-linear interpolation between successive points, holding the first
+    # value before the first `t` and the last value after the final `t`. The
+    # smallest threshold must be the OUTERMOST `if` (eval order is outside-in), so
+    # iterate pairs in reverse and wrap each smaller-t1 branch around the rest.
+    expr = f"{points[-1][1]:.4f}"  # default = last value (covers t >= final t)
+    for (t0, v0), (t1, v1) in reversed(list(zip(points, points[1:]))):
+        span = t1 - t0
+        if span <= 0:
+            seg = f"{v1:.4f}"
+        else:
+            slope = (v1 - v0) / span
+            seg = f"({v0:.4f}+({slope:.6f})*(t-{t0:.4f}))"
+        expr = f"if(lt(t,{t1:.4f}),{seg},{expr})"
+    expr = f"if(lt(t,{points[0][0]:.4f}),{points[0][1]:.4f},{expr})"
+    expr = f"({base_volume:.4f})*({expr})"
+    return f"volume='{expr}':eval=frame"
+
+
 def detect_render_backends() -> dict[str, dict[str, Any]]:
     openshot_module, openshot_reason, openshot_path = _import_openshot()
     ffmpeg = shutil.which("ffmpeg")
@@ -773,7 +818,7 @@ def _mux_timeline_audio(
         filters.append(
             f"[{input_index}:a]atrim=start={source_start:.3f}:duration={clip_duration:.3f},"
             f"asetpts=PTS-STARTPTS,aresample=48000,aformat=channel_layouts=stereo,"
-            f"volume={volume:.4f},{afades}adelay={delay_ms}:all=1[{label}]"
+            f"{_volume_filter(clip, volume)},{afades}adelay={delay_ms}:all=1[{label}]"
         )
         labels.append(f"[{label}]")
 
