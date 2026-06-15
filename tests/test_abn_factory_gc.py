@@ -387,6 +387,44 @@ def test_gc_segments_disk_phase_tombstones_scratch_and_spares_schema(store, monk
     assert (store / "_trash" / "ep_dead00" / "scratch" / "s0_demo.mp4").exists(), "scratch reap must tombstone"
 
 
+def test_gc_segments_low_disk_trim_honors_cachebusted_timeline_ref(store, monkeypatch):
+    """End-to-end on the OTHER GC path: the async _gc_segments low-disk render trim must also strip a
+    ?rev= cache-buster off a /agenticnews-assets/ timeline URL and spare the real render. purge_disk()
+    is covered by test_protection_scan_strips_cachebuster_query_on_agenticnews_url, but _gc_segments
+    runs its own protected_paths gate (abn_factory ~3172/3189) and its render trim hardcodes keep-4 —
+    so it needs its own proof that the cache-busted keeper survives even when it's among the oldest."""
+    def render(ep_id, age_s):
+        d = store / ep_id / "renders"
+        d.mkdir(parents=True)
+        f = d / "episode.mp4"
+        f.write_bytes(b"render")
+        t = time.time() - age_s
+        os.utime(f, (t, t))
+        return f
+
+    # 6 renders so the keep-4 trim has 2 victims; the oldest is the cache-busted keeper.
+    keeper = render("ep_keep00", age_s=9000)            # oldest -> first trim victim, but protected
+    drop_old = render("ep_drop00", age_s=8500)          # second-oldest, unreferenced -> trimmed
+    for i, age in enumerate((8000, 7000, 6000, 10)):
+        render(f"ep_fill0{i}", age_s=age)
+    rel = keeper.relative_to(store)
+    (store / "editor_timelines" / "ep_keep00.json").write_text(
+        f'{{"renderCache": {{"video": {{"path": "/agenticnews-assets/{rel}?rev=7"}}}}}}'
+    )
+
+    async def list_videos(*a, **k):
+        return []
+
+    monkeypatch.setattr(abn_factory.db, "list_videos", list_videos)
+    monkeypatch.setattr(shutil, "disk_usage", lambda _: namedtuple("u", "total used free")(100, 100, 0))
+
+    asyncio.run(abn_factory._gc_segments(keep_recent=0))
+
+    assert keeper.exists(), "_gc_segments trimmed a render referenced by a ?rev= cache-busted timeline URL"
+    assert not drop_old.exists(), "_gc_segments should still trim the oldest unreferenced render under low disk"
+    assert (store / "_trash" / "ep_drop00" / "renders" / "episode.mp4").exists(), "trim must tombstone, not unlink"
+
+
 # --- migration completes the flat dump into the schema (+ back-compat symlinks the GC spares) ----
 
 
