@@ -1769,6 +1769,95 @@ def test_clip_keyframes_command_rejects_bad_property_and_interp(tmp_path):
     assert store.load("proj_keyframes_bad")["revision"] == 2  # nothing committed
 
 
+def test_clip_keyframes_multi_track_sorts_each_and_keeps_boundary_values(tmp_path):
+    """Two overlapping tracks (volume + opacity) in one envelope, each with
+    boundary-value t/value pairs and an out-of-order point. Exercises the
+    per-track sort (line 986) independently and confirms boundary numbers
+    (t=0.0, value=0.0, value=1.0) survive validation rather than being
+    rejected or clamped away."""
+    store = timeline.TimelineStore(tmp_path)
+    _project_with_bed_clip(store, "proj_keyframes_multi")
+
+    project = store.apply_command(
+        "proj_keyframes_multi",
+        {
+            "op": "clip.keyframes",
+            "actor": "agent",
+            "expectedRevision": 2,
+            "payload": {
+                "clipId": "bed_clip",
+                "keyframes": [
+                    # volume track: unsorted, includes the 0.0 floor boundary
+                    {
+                        "property": "volume",
+                        "points": [
+                            {"t": 2.0, "value": 1.0, "interp": "linear"},
+                            {"t": 0.0, "value": 0.0, "interp": "constant"},
+                        ],
+                    },
+                    # opacity track: overlaps the same time window as volume,
+                    # includes the 1.0 ceiling boundary and a duplicate-t pair
+                    {
+                        "property": "opacity",
+                        "points": [
+                            {"t": 2.0, "value": 1.0},
+                            {"t": 2.0, "value": 0.5},
+                            {"t": 0.0, "value": 1.0},
+                        ],
+                    },
+                ],
+            },
+        },
+    )
+
+    envelope = project["clips"]["bed_clip"]["keyframes"]
+    # Both tracks persist, in submitted order; each sorted by t independently.
+    assert [t["property"] for t in envelope] == ["volume", "opacity"]
+    vol, opac = envelope
+    assert [p["t"] for p in vol["points"]] == [0.0, 2.0]
+    assert [p["value"] for p in vol["points"]] == [0.0, 1.0]  # 0.0 floor kept
+    assert vol["points"][0]["interp"] == "constant"
+    assert [p["t"] for p in opac["points"]] == [0.0, 2.0, 2.0]  # stable on dup-t
+    assert opac["points"][0]["value"] == 1.0  # 1.0 ceiling kept
+
+
+def test_clip_keyframes_rejects_empty_points_and_non_dict_members(tmp_path):
+    """Envelope structural edges: an empty point list, a non-dict track, and a
+    non-dict point inside an otherwise-valid track must each raise and commit
+    nothing (the envelope is rejected wholesale, not partially applied)."""
+    store = timeline.TimelineStore(tmp_path)
+    _project_with_bed_clip(store, "proj_keyframes_empty")
+
+    def _apply(keyframes):
+        store.apply_command(
+            "proj_keyframes_empty",
+            {
+                "op": "clip.keyframes",
+                "actor": "agent",
+                "expectedRevision": 2,
+                "payload": {"clipId": "bed_clip", "keyframes": keyframes},
+            },
+        )
+
+    with pytest.raises(timeline.CommandValidationError, match="requires points"):
+        _apply([{"property": "volume", "points": []}])
+
+    with pytest.raises(timeline.CommandValidationError, match="track must be an object"):
+        _apply(["volume"])
+
+    with pytest.raises(timeline.CommandValidationError, match="point must be an object"):
+        _apply([{"property": "volume", "points": [{"t": 0, "value": 1}, 0.5]}])
+
+    with pytest.raises(timeline.CommandValidationError, match="keyframes must be a list"):
+        _apply({"property": "volume", "points": [{"t": 0, "value": 1}]})
+
+    # Negative t is rejected by _non_negative even when value is in-range.
+    with pytest.raises(timeline.CommandValidationError):
+        _apply([{"property": "volume", "points": [{"t": -0.1, "value": 1}]}])
+
+    assert store.load("proj_keyframes_empty")["revision"] == 2  # nothing committed
+
+
 def test_crossfade_and_saturation_effects_validate_and_persist(tmp_path):
     """crossfade (transition) and saturation (color filter) are in the closed
     effect vocabulary but were untested. Confirm both pass validation, clamp
