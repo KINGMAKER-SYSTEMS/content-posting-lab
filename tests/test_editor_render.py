@@ -183,6 +183,131 @@ def _wclip(clip_id: str, *, start: float, duration: float, source_start: float =
     }
 
 
+def _renderer(tmp_path) -> "editor_render.FFmpegLayeredRenderer":
+    return editor_render.FFmpegLayeredRenderer(tmp_path / "renders")
+
+
+# --- direct unit tests for _visual_filter (no ffmpeg execution) ---
+# _visual_filter builds the per-clip filter-graph segment. A typo here silently
+# drops effects/keyframes or truncates the render, so assert the string directly
+# rather than only through an end-to-end render.
+
+def test_visual_filter_video_clip_emits_trim_branch(tmp_path):
+    """A video asset must be source-trimmed (sourceStart..+duration) and PTS-reset
+    so the overlay starts at the clip's in-point; image/title assets skip trim."""
+    r = _renderer(tmp_path)
+    clip = {"id": "c", "assetId": "v", "duration": 2.0, "sourceStart": 1.5, "transform": {}}
+    out = r._visual_filter(3, clip, {"type": "video"}, "lbl", 1920, 1080)
+    assert out.startswith("[3:v]trim=start=1.500:duration=2.000,setpts=PTS-STARTPTS,")
+    assert out.endswith("null[lbl]")
+
+
+def test_visual_filter_image_clip_skips_trim(tmp_path):
+    """An image/title asset is a still fed via -loop; trimming it would be a no-op
+    that ffmpeg rejects, so the filter must NOT contain a trim= segment."""
+    r = _renderer(tmp_path)
+    clip = {"id": "c", "assetId": "i", "duration": 1.0, "sourceStart": 0.0, "transform": {}}
+    out = r._visual_filter(1, clip, {"type": "image"}, "lbl", 1920, 1080)
+    assert "trim=" not in out
+    assert out.startswith("[1:v]scale=")
+
+
+def test_visual_filter_clamps_opacity_and_scale_into_string(tmp_path):
+    """Out-of-range opacity clamps to [0,1] and scale to a >0 floor, landing in the
+    colorchannelmixer/scale terms — an unclamped value produces an invalid filter
+    that ffmpeg rejects and the whole render fails."""
+    r = _renderer(tmp_path)
+    clip = {"id": "c", "assetId": "i", "duration": 1.0, "sourceStart": 0.0,
+            "transform": {"opacity": 5.0, "scale": -3.0}}
+    out = r._visual_filter(1, clip, {"type": "image"}, "lbl", 1920, 1080)
+    assert "colorchannelmixer=aa=1.0000" in out   # opacity 5.0 -> clamped to 1.0
+    assert "scale=iw*0.0100:ih*0.0100" in out      # scale -3.0 -> clamped to 0.01 floor
+
+
+def test_visual_filter_zero_duration_clip_omits_fades(tmp_path):
+    """A zero-duration clip (e.g. a degenerate window slice) must NOT emit a
+    fade=...:d=0 term — ffmpeg treats d<=0 as invalid and aborts the render. The
+    `duration > 0` guard in _visual_filter is what prevents that; pin it."""
+    r = _renderer(tmp_path)
+    clip = {"id": "z", "assetId": "v", "duration": 0.0, "sourceStart": 0.0, "transform": {},
+            "effects": [{"type": "fadeIn", "params": {"duration": 0.5}},
+                        {"type": "fadeOut", "params": {"duration": 0.5}}]}
+    out = r._visual_filter(2, clip, {"type": "video"}, "lbl", 1920, 1080)
+    assert "fade=" not in out  # no fade term at all for a zero-length clip
+
+
+# --- direct unit tests for _build_video_command (no ffmpeg execution) ---
+
+def test_build_video_command_loops_image_over_black_base(tmp_path):
+    """The command must open a black lavfi base layer at the project size/fps and
+    feed each still image with `-loop 1 -t <dur>` (a still without -loop yields a
+    single-frame input that truncates the overlay). Assert the constructed argv."""
+    red = _solid_png(tmp_path / "red.png", "red")
+    project = _project_with_card("cmd_img", red, x=0.0)
+    r = _renderer(tmp_path)
+    cmd, missing, warnings = r._build_video_command(
+        project, tmp_path / "out.mp4", duration=1.0, window_start=0.0
+    )
+    assert missing == [] and warnings == []
+    assert "lavfi" in cmd
+    assert "color=c=black:s=96x64:r=12:d=1.000" in cmd
+    # still image is looped for the clip duration
+    loop_i = cmd.index("-loop")
+    assert cmd[loop_i:loop_i + 5] == ["-loop", "1", "-t", "1.000", "-i"]
+    # exactly one mapped video output, libx264 + yuv420p, no audio map
+    assert cmd[cmd.index("-map") + 1] == "[v]"
+    assert "-c:v" in cmd and cmd[cmd.index("-c:v") + 1] == "libx264"
+    assert "yuv420p" in cmd
+    assert "[a]" not in cmd
+
+
+def test_build_video_command_records_missing_asset_without_raising(tmp_path):
+    """_build_video_command itself must NOT raise on a missing source — it records
+    the gap in `missing_assets` and skips feeding a phantom -i input. render() is
+    the layer that fails closed on a non-empty missing list; the builder stays pure
+    so callers can inspect the gaps."""
+    project = _project_with_card("cmd_missing", tmp_path / "gone.png", x=0.0)
+    r = _renderer(tmp_path)
+    cmd, missing, warnings = r._build_video_command(
+        project, tmp_path / "out.mp4", duration=1.0, window_start=0.0
+    )
+    assert [m["assetId"] for m in missing] == ["card"]
+    assert "gone.png" in missing[0]["src"]
+    # the missing source was skipped, not fed as an input
+    assert not any(str(tmp_path / "gone.png") == arg for arg in cmd)
+
+
+def test_build_video_command_adds_audio_map_and_amix(tmp_path):
+    """With an audio clip present the command must map a mixed [a] stream and encode
+    it (aac, -shortest). A dropped audio map silently ships a silent render."""
+    red = _solid_png(tmp_path / "red.png", "red")
+    voice = tmp_path / "vo.wav"
+    subprocess.run(
+        ["ffmpeg", "-y", "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
+         "-ac", "1", "-ar", "48000", str(voice)],
+        check=True, capture_output=True, text=True,
+    )
+    project = _project_with_card("cmd_audio", red, x=0.0)
+    project["assets"]["vo"] = {"id": "vo", "type": "audio", "src": str(voice)}
+    project["clips"]["vo_clip"] = {
+        "id": "vo_clip", "assetId": "vo", "trackId": "audio_1", "kind": "voiceover",
+        "start": 0.0, "duration": 1.0, "sourceStart": 0.0,
+        "enabled": True, "muted": False, "volume": 1.0, "transform": {},
+    }
+    r = _renderer(tmp_path)
+    cmd, missing, warnings = r._build_video_command(
+        project, tmp_path / "out.mp4", duration=1.0, window_start=0.0
+    )
+    assert missing == []
+    filter_arg = cmd[cmd.index("-filter_complex") + 1]
+    assert "amix=inputs=1" in filter_arg
+    # both [v] and [a] are mapped, audio encoded as aac with -shortest
+    maps = [cmd[i + 1] for i, a in enumerate(cmd) if a == "-map"]
+    assert "[v]" in maps and "[a]" in maps
+    assert "-c:a" in cmd and cmd[cmd.index("-c:a") + 1] == "aac"
+    assert "-shortest" in cmd
+
+
 def test_windowed_clips_trims_clip_overlapping_window_start():
     # clip spans [1, 5); window is [2, 6). Front 1s is before the window and must be cut.
     project = _window_project(_wclip("a", start=1.0, duration=4.0, source_start=10.0))
