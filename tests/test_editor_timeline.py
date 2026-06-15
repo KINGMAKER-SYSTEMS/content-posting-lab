@@ -854,3 +854,314 @@ def test_invalid_commands_are_rejected_without_mutating_state(tmp_path):
     assert project["revision"] == 0
     assert project["clips"] == {}
     assert project["commandLog"] == []
+
+
+def _seed_project_with_clip(store, project_id):
+    """Create a project with one imported asset and clip `c1` on video_1 (revision 2)."""
+    store.save(timeline.new_project(project_id))
+    store.apply_command(
+        project_id,
+        {
+            "op": "asset.import",
+            "actor": "agent",
+            "expectedRevision": 0,
+            "payload": {"assetId": "a1", "type": "video", "src": "/a.mp4"},
+        },
+    )
+    return store.apply_command(
+        project_id,
+        {
+            "op": "clip.create",
+            "actor": "agent",
+            "expectedRevision": 1,
+            "payload": {
+                "clipId": "c1",
+                "assetId": "a1",
+                "trackId": "video_1",
+                "start": 0,
+                "duration": 4,
+            },
+        },
+    )
+
+
+@pytest.mark.parametrize(
+    "op,payload",
+    [
+        ("clip.move", {"clipId": "ghost", "start": 1.0}),
+        ("clip.split", {"clipId": "ghost", "at": 1.0}),
+        ("clip.trim", {"clipId": "ghost", "duration": 1.0}),
+        ("clip.mute", {"clipId": "ghost"}),
+        ("clip.transform", {"clipId": "ghost", "transform": {"x": 0.4}}),
+    ],
+)
+def test_clip_operations_on_missing_clip_are_rejected_without_mutating_state(tmp_path, op, payload):
+    """Every clip-targeted op funnels through _require_clip; a missing clipId must
+    raise CommandValidationError and leave the project untouched."""
+    store = timeline.TimelineStore(tmp_path)
+    project = _seed_project_with_clip(store, "proj_missing_clip")
+
+    with pytest.raises(timeline.CommandValidationError, match="clip does not exist: ghost"):
+        store.apply_command(
+            "proj_missing_clip",
+            {"op": op, "actor": "agent", "expectedRevision": 2, "payload": payload},
+        )
+
+    loaded = store.load("proj_missing_clip")
+    assert loaded["revision"] == project["revision"]
+    assert set(loaded["clips"]) == {"c1"}
+
+
+def test_clip_op_without_clip_id_is_rejected(tmp_path):
+    store = timeline.TimelineStore(tmp_path)
+    _seed_project_with_clip(store, "proj_no_clip_id")
+
+    with pytest.raises(timeline.CommandValidationError, match="clipId is required"):
+        store.apply_command(
+            "proj_no_clip_id",
+            {"op": "clip.move", "actor": "agent", "expectedRevision": 2, "payload": {"start": 1.0}},
+        )
+
+    assert store.load("proj_no_clip_id")["revision"] == 2
+
+
+def test_apply_command_rejects_stale_revision_without_mutating(tmp_path):
+    """The RevisionConflict guard in apply_command fires when expectedRevision is behind
+    the live project, and the rejected command never touches state."""
+    store = timeline.TimelineStore(tmp_path)
+    _seed_project_with_clip(store, "proj_stale")  # advances to revision 2
+
+    with pytest.raises(timeline.RevisionConflict, match="expected revision 0, current revision 2"):
+        store.apply_command(
+            "proj_stale",
+            {
+                "op": "clip.move",
+                "actor": "stale-agent",
+                "expectedRevision": 0,
+                "payload": {"clipId": "c1", "start": 2.0},
+            },
+        )
+
+    loaded = store.load("proj_stale")
+    assert loaded["revision"] == 2
+    assert loaded["clips"]["c1"]["start"] == 0
+
+
+def test_apply_command_requires_expected_revision(tmp_path):
+    store = timeline.TimelineStore(tmp_path)
+    store.save(timeline.new_project("proj_no_rev"))
+
+    with pytest.raises(timeline.CommandValidationError, match="expectedRevision is required"):
+        store.apply_command(
+            "proj_no_rev",
+            {"op": "asset.import", "actor": "agent", "payload": {"assetId": "a1", "type": "image", "src": "/a.png"}},
+        )
+
+
+def test_revert_last_command_on_empty_log_is_rejected(tmp_path):
+    store = timeline.TimelineStore(tmp_path)
+    store.save(timeline.new_project("proj_empty_log"))
+
+    with pytest.raises(timeline.CommandValidationError, match="no command to revert"):
+        store.revert_last_command("proj_empty_log", actor="human")
+
+
+def test_revert_last_command_rejects_stale_expected_revision(tmp_path):
+    """revert_last_command has its own RevisionConflict guard separate from apply_command."""
+    store = timeline.TimelineStore(tmp_path)
+    _seed_project_with_clip(store, "proj_revert_stale")  # revision 2
+
+    with pytest.raises(timeline.RevisionConflict, match="expected revision 99, current revision 2"):
+        store.revert_last_command("proj_revert_stale", actor="human", expected_revision=99)
+
+    # nothing reverted: clip.create is still the last log entry
+    assert store.load("proj_revert_stale")["commandLog"][-1]["op"] == "clip.create"
+
+
+def test_revert_of_unrevertable_op_is_rejected(tmp_path):
+    """asset.import has no inverse; reverting it must raise rather than corrupt state."""
+    store = timeline.TimelineStore(tmp_path)
+    store.save(timeline.new_project("proj_unrevertable"))
+    store.apply_command(
+        "proj_unrevertable",
+        {
+            "op": "asset.import",
+            "actor": "agent",
+            "expectedRevision": 0,
+            "payload": {"assetId": "a1", "type": "image", "src": "/a.png"},
+        },
+    )
+
+    with pytest.raises(timeline.CommandValidationError, match="cannot revert command asset.import"):
+        store.revert_last_command("proj_unrevertable", actor="human")
+
+    assert store.load("proj_unrevertable")["revision"] == 1
+
+
+def test_unsplit_requires_original_clip_and_created_clip_id(tmp_path):
+    """The early structural guards in the clip.unsplit branch reject malformed payloads
+    before any _clip_values_match() comparison runs."""
+    store = timeline.TimelineStore(tmp_path)
+    _seed_project_with_clip(store, "proj_unsplit_payload")  # revision 2
+
+    with pytest.raises(timeline.CommandValidationError, match="requires original clip"):
+        store.apply_command(
+            "proj_unsplit_payload",
+            {
+                "op": "clip.unsplit",
+                "actor": "agent",
+                "expectedRevision": 2,
+                "payload": {"createdClipId": "c1_b"},
+            },
+        )
+
+    with pytest.raises(timeline.CommandValidationError, match="requires createdClipId"):
+        store.apply_command(
+            "proj_unsplit_payload",
+            {
+                "op": "clip.unsplit",
+                "actor": "agent",
+                "expectedRevision": 2,
+                "payload": {"clip": {"id": "c1"}},
+            },
+        )
+
+    assert store.load("proj_unsplit_payload")["revision"] == 2
+
+
+def test_unsplit_reverts_command_id_must_point_at_a_split(tmp_path):
+    """A clip.unsplit whose revertsCommandId targets a non-split entry is rejected before
+    mutating clips. The generic _validate_reverts_command_id guard fires first because a
+    clip.move's server inverse is a clip.update, not a clip.unsplit."""
+    store = timeline.TimelineStore(tmp_path)
+    _seed_project_with_clip(store, "proj_unsplit_nonsplit")
+    project = store.apply_command(
+        "proj_unsplit_nonsplit",
+        {
+            "id": "cmd_move",
+            "op": "clip.move",
+            "actor": "human",
+            "expectedRevision": 2,
+            "payload": {"clipId": "c1", "start": 1.0},
+        },
+    )
+
+    with pytest.raises(timeline.CommandValidationError, match="op does not match inverse command"):
+        store.apply_command(
+            "proj_unsplit_nonsplit",
+            {
+                "op": "clip.unsplit",
+                "actor": "agent",
+                "expectedRevision": project["revision"],
+                "revertsCommandId": "cmd_move",
+                "payload": {
+                    "clipId": "c1",
+                    "createdClipId": "c1_b",
+                    "clip": {"id": "c1"},
+                },
+            },
+        )
+
+    assert store.load("proj_unsplit_nonsplit")["revision"] == project["revision"]
+
+
+@pytest.mark.parametrize(
+    "transform,message",
+    [
+        ({"opacity": 1.5}, "transform.opacity must be between 0.0 and 1.0"),
+        ({"opacity": -0.1}, "transform.opacity must be non-negative"),
+        ({"scale": 0}, "transform.scale must be positive"),
+        ({"scale": -2}, "transform.scale must be non-negative"),
+    ],
+)
+def test_clip_transform_rejects_out_of_bounds_values(tmp_path, transform, message):
+    """_validated_transform enforces opacity in [0,1] and scale > 0. Out-of-bounds
+    payloads must be rejected, not clamped, and must not advance the revision."""
+    store = timeline.TimelineStore(tmp_path)
+    project = _seed_project_with_clip(store, "proj_transform_bounds")
+    baseline = project["clips"]["c1"]["transform"]
+
+    with pytest.raises(timeline.CommandValidationError, match=message):
+        store.apply_command(
+            "proj_transform_bounds",
+            {
+                "op": "clip.transform",
+                "actor": "human",
+                "expectedRevision": 2,
+                "payload": {"clipId": "c1", "transform": transform},
+            },
+        )
+
+    loaded = store.load("proj_transform_bounds")
+    assert loaded["revision"] == 2
+    assert loaded["clips"]["c1"]["transform"] == baseline
+
+
+def test_clip_opacity_op_rejects_out_of_range_value(tmp_path):
+    store = timeline.TimelineStore(tmp_path)
+    _seed_project_with_clip(store, "proj_opacity_bounds")
+
+    with pytest.raises(timeline.CommandValidationError, match="opacity must be between 0.0 and 1.0"):
+        store.apply_command(
+            "proj_opacity_bounds",
+            {
+                "op": "clip.opacity",
+                "actor": "human",
+                "expectedRevision": 2,
+                "payload": {"clipId": "c1", "opacity": 2.0},
+            },
+        )
+
+    assert store.load("proj_opacity_bounds")["revision"] == 2
+
+
+def test_clip_volume_op_rejects_negative_value(tmp_path):
+    store = timeline.TimelineStore(tmp_path)
+    _seed_project_with_clip(store, "proj_volume_neg")
+
+    with pytest.raises(timeline.CommandValidationError, match="volume must be non-negative"):
+        store.apply_command(
+            "proj_volume_neg",
+            {
+                "op": "clip.volume",
+                "actor": "human",
+                "expectedRevision": 2,
+                "payload": {"clipId": "c1", "volume": -0.5},
+            },
+        )
+
+    assert store.load("proj_volume_neg")["revision"] == 2
+
+
+def test_split_outside_clip_bounds_is_rejected(tmp_path):
+    """clip.split must reject a split point at or beyond the clip edges."""
+    store = timeline.TimelineStore(tmp_path)
+    _seed_project_with_clip(store, "proj_split_bounds")  # c1 start=0 duration=4
+
+    with pytest.raises(timeline.CommandValidationError, match="split point must be inside the clip"):
+        store.apply_command(
+            "proj_split_bounds",
+            {
+                "op": "clip.split",
+                "actor": "human",
+                "expectedRevision": 2,
+                "payload": {"clipId": "c1", "at": 4.0},
+            },
+        )
+
+    loaded = store.load("proj_split_bounds")
+    assert loaded["revision"] == 2
+    assert set(loaded["clips"]) == {"c1"}
+
+
+def test_unsupported_op_is_rejected(tmp_path):
+    store = timeline.TimelineStore(tmp_path)
+    store.save(timeline.new_project("proj_bad_op"))
+
+    with pytest.raises(timeline.CommandValidationError, match="unsupported command op: clip.teleport"):
+        store.apply_command(
+            "proj_bad_op",
+            {"op": "clip.teleport", "actor": "agent", "expectedRevision": 0, "payload": {}},
+        )
+
+    assert store.load("proj_bad_op")["revision"] == 0
