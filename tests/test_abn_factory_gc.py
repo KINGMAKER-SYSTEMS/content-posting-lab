@@ -152,7 +152,7 @@ def test_purge_disk_trims_old_episode_renders_under_low_disk(store):
     assert keep_referenced.exists(), "GC trimmed a timeline-referenced render under low disk"
     assert not drop_old.exists(), "GC should trim the oldest unreferenced render under low disk"
     assert fresh.exists(), "GC trimmed a fresh render it should have kept"
-    # the trimmed render must be RECOVERABLE from _trash/, not destroyed
+    # the trimmed render must be RECOVERABLE from _trash/, not destroyed (the whole point of the fix)
     trashed = store / "_trash" / "ep_drop0" / "renders" / "episode.mp4"
     assert trashed.exists(), "trimmed render must be tombstoned to _trash/, not unlinked"
     assert trashed.read_bytes() == b"render", "tombstoned render content must be intact"
@@ -176,8 +176,9 @@ def test_tombstone_render_moves_render_to_trash(store):
 
 def test_tombstone_render_refuses_non_render_paths(store):
     """tombstone_render() is the physical enforcement point for the low-disk trim: handed a scratch
-    file, an audio VO, a footage capture, a symlink, a dir, or an off-store path, it RAISES rather
-    than deleting — so a buggy disk-trim caller can't cause data loss outside renders/."""
+    file, an audio VO, a footage capture, a symlink, a dir, a reserved-top file, or an off-store
+    path, it RAISES rather than deleting — so a buggy disk-trim caller can't cause data loss outside
+    an episode's renders/."""
     epdir = store / "ep_a111111"
     (epdir / "renders").mkdir(parents=True)
     render = epdir / "renders" / "episode.mp4"
@@ -191,11 +192,15 @@ def test_tombstone_render_refuses_non_render_paths(store):
     scratch_f = _scratch(store, "ep_a111111", "s0_raw.wav")
     link = store / "ep_a111111_episode.mp4"
     link.symlink_to(render)
+    # a file under a RESERVED top dir that happens to sit in a renders/ subdir — must still RAISE
+    (store / "_shared" / "renders").mkdir(parents=True)
+    reserved = store / "_shared" / "renders" / "episode.mp4"
+    reserved.write_bytes(b"shared")
 
-    for bad in (vo, ui, scratch_f, link, epdir, store / "outside.txt"):
+    for bad in (vo, ui, scratch_f, link, epdir, reserved, store / "outside.txt"):
         with pytest.raises(abn_assets.AssetPathError):
             abn_factory.tombstone_render(bad)
-    assert vo.exists() and ui.exists() and scratch_f.exists() and link.is_symlink()
+    assert vo.exists() and ui.exists() and scratch_f.exists() and link.is_symlink() and reserved.exists()
 
 
 def test_gc_segments_disk_phase_tombstones_scratch_and_spares_schema(store, monkeypatch):
