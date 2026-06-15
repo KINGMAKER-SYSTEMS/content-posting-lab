@@ -1310,11 +1310,13 @@ def _codex_image(prompt: str, out_name: str, size: str = "1536x1024") -> str | N
     try:
         subprocess.run(["codex", "exec", "--skip-git-repo-check", full],
                        capture_output=True, text=True, timeout=180)
-    except Exception:
+    except Exception as e:
+        _log.warning("_codex_image: codex exec failed for %r (%s)", out_name, e)
         return None
     after = set(_glob.glob(str(gen_dir / "*" / "ig_*.png")))
     new = sorted(after - before, key=lambda p: os.path.getmtime(p), reverse=True)
     if not new:
+        _log.warning("_codex_image: codex exec produced no new image for %r", out_name)
         return None
     # NOT episode-scoped (out_name is e.g. '_tmp_bg_0' / a thumb-bg name) — cross-episode
     # generation intermediate. Routed through the gateway chokepoint so the _scratch/ write
@@ -1324,7 +1326,8 @@ def _codex_image(prompt: str, out_name: str, size: str = "1536x1024") -> str | N
         dest = _cross_scratch_path(f"{out_name}.png")
         shutil.copy(new[0], dest)
         return _asset_url(dest)
-    except Exception:
+    except Exception as e:
+        _log.warning("_codex_image: failed to copy %s into _scratch for %r (%s)", new[0], out_name, e)
         return None
 
 

@@ -1303,3 +1303,111 @@ def test_github_repo_rejects_empty_and_incomplete(url):
     """Empty/None/garbage input and an owner-only URL (no repo segment) all return None — the caller
     (_real_demo) then cleanly falls back to the scripted demo instead of cloning junk."""
     assert abn_factory._github_repo(url) is None
+
+
+# ---------------- _codex_image: subprocess timeout + error recovery ----------------
+#
+# _codex_image() shells to `codex exec` (180s timeout) to generate a card background, then grabs
+# the newest png that appeared in ~/.codex/generated_images and copies it into _scratch/. Every
+# error path (timeout, no image produced, copy failure) is swallowed and returns None — which is
+# the CORRECT contract (a failed background must not crash episode assembly; the caller falls back
+# to flux/gradients). These tests pin that contract so a future refactor can't let an exception
+# escape into the pipeline, and confirm each silent path is now logged (no more invisible masking).
+
+import subprocess as _subprocess
+
+# conftest's autouse `no_live_codex_image` fixture replaces abn_factory._codex_image with a no-op
+# lambda for hermeticity (so the app-lifespan warmup never shells to the real Codex). Capture the
+# REAL function here at import time — before any fixture runs — so these tests exercise the actual
+# subprocess/timeout/copy logic, not the stub. (Its closure refs the module globals we monkeypatch.)
+_REAL_CODEX_IMAGE = abn_factory._codex_image
+
+
+def _codex_env(monkeypatch, tmp_path):
+    """Point _codex_image at an isolated CODEX_HOME + ASSETS so it never touches the real
+    ~/.codex or the asset volume. Returns the generated_images subdir the function globs."""
+    codex_home = tmp_path / "codex"
+    gen_dir = codex_home / "generated_images" / "session"
+    gen_dir.mkdir(parents=True)
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    # _codex_image routes its _scratch write through the asset gateway (_cross_scratch_path ->
+    # is_managed), which resolves against abn_assets.ASSETS_DIR — patch BOTH the factory ASSETS and
+    # the gateway ASSETS_DIR at the same throwaway store so the scratch path is recognised as managed.
+    assets = tmp_path / "assets"
+    monkeypatch.setattr(abn_factory, "ASSETS", assets)
+    monkeypatch.setattr(abn_assets, "ASSETS_DIR", assets)
+    return gen_dir
+
+
+def test_codex_image_returns_none_on_timeout(monkeypatch, tmp_path, caplog):
+    """A 180s timeout (codex hung) must be swallowed -> None, and logged so the failure is visible."""
+    _codex_env(monkeypatch, tmp_path)
+
+    def boom(*a, **k):
+        raise _subprocess.TimeoutExpired(cmd="codex", timeout=180)
+
+    monkeypatch.setattr(_subprocess, "run", boom)
+    with caplog.at_level("WARNING"):
+        assert _REAL_CODEX_IMAGE("a cinematic background", "_tmp_bg_0") is None
+    assert any("_codex_image" in r.message for r in caplog.records), "timeout must be logged"
+
+
+def test_codex_image_returns_none_on_subprocess_error(monkeypatch, tmp_path):
+    """Any other subprocess explosion (codex binary missing, OSError) is swallowed -> None."""
+    _codex_env(monkeypatch, tmp_path)
+    monkeypatch.setattr(_subprocess, "run",
+                        lambda *a, **k: (_ for _ in ()).throw(FileNotFoundError("codex")))
+    assert _REAL_CODEX_IMAGE("bg", "_tmp_bg_1") is None
+
+
+def test_codex_image_returns_none_when_no_image_produced(monkeypatch, tmp_path, caplog):
+    """codex exec returned cleanly but wrote no new ig_*.png -> None (nothing to copy)."""
+    gen_dir = _codex_env(monkeypatch, tmp_path)
+    # subprocess "succeeds" but leaves the generated_images dir empty
+    monkeypatch.setattr(_subprocess, "run", lambda *a, **k: None)
+    with caplog.at_level("WARNING"):
+        assert _REAL_CODEX_IMAGE("bg", "_tmp_bg_2") is None
+    assert gen_dir.exists()  # dir untouched
+    assert any("no new image" in r.message for r in caplog.records), "empty result must be logged"
+
+
+def test_codex_image_returns_none_on_copy_failure(monkeypatch, tmp_path, caplog):
+    """A new image WAS produced but the copy into _scratch/ fails -> None (not a crash), logged."""
+    gen_dir = _codex_env(monkeypatch, tmp_path)
+
+    def make_image(*a, **k):
+        (gen_dir / "ig_new.png").write_bytes(b"\x89PNG fake")
+
+    monkeypatch.setattr(_subprocess, "run", make_image)
+    import shutil as _shutil
+    monkeypatch.setattr(_shutil, "copy",
+                        lambda *a, **k: (_ for _ in ()).throw(PermissionError("readonly volume")))
+    with caplog.at_level("WARNING"):
+        assert _REAL_CODEX_IMAGE("bg", "_tmp_bg_3") is None
+    assert any("failed to copy" in r.message for r in caplog.records), "copy failure must be logged"
+
+
+def test_codex_image_happy_path_copies_newest_into_scratch(monkeypatch, tmp_path):
+    """When codex writes a new png, it is copied into _scratch/<out_name>.png and the managed
+    /agenticnews-assets URL is returned. Pins that the success path actually lands the asset."""
+    gen_dir = _codex_env(monkeypatch, tmp_path)
+
+    def make_image(*a, **k):
+        (gen_dir / "ig_pick.png").write_bytes(b"\x89PNG real")
+
+    monkeypatch.setattr(_subprocess, "run", make_image)
+    url = _REAL_CODEX_IMAGE("a deep blue gradient", "_tmp_bg_9")
+
+    assert url == "/agenticnews-assets/_scratch/_tmp_bg_9.png"
+    dest = abn_factory.ASSETS / "_scratch" / "_tmp_bg_9.png"
+    assert dest.exists() and dest.read_bytes() == b"\x89PNG real"
+
+
+def test_codex_image_ignores_preexisting_images(monkeypatch, tmp_path):
+    """The before/after snapshot must ignore images that existed BEFORE the run — only a newly
+    written png counts. If codex produces nothing new, a stale image is not falsely returned."""
+    gen_dir = _codex_env(monkeypatch, tmp_path)
+    (gen_dir / "ig_old.png").write_bytes(b"stale")  # present before the run
+
+    monkeypatch.setattr(_subprocess, "run", lambda *a, **k: None)  # writes nothing new
+    assert _REAL_CODEX_IMAGE("bg", "_tmp_bg_4") is None
