@@ -984,6 +984,50 @@ def test_windowed_clip_shifts_keyframe_times_when_front_trimmed():
     assert original[1]["t"] == pytest.approx(3.0)
 
 
+def test_split_then_window_keeps_volume_envelope_aligned(tmp_path):
+    """The two keyframe-rebasing passes must compose: clip.split rebases the tail
+    envelope to its new t=0 (timeline lines 525-526), then _windowed_clips front-trims
+    and shifts it again (render line 918). A volume ducking envelope on a bed clip must
+    survive both and stay sample-accurate, not double-shift or get dropped."""
+    project = timeline.new_project("split_win", width=96, height=64, fps=12)
+    project["assets"]["bed"] = {"id": "bed", "type": "audio", "src": "/x/bed.mp3"}
+    project["clips"]["bed_clip"] = {
+        "id": "bed_clip", "assetId": "bed", "trackId": "music_1", "kind": "music_bed",
+        "start": 0.0, "duration": 10.0, "sourceStart": 0.0,
+        "enabled": True, "muted": False, "volume": 1.0,
+        "transform": {"x": 0.5, "y": 0.5, "scale": 1.0, "opacity": 1.0}, "effects": [],
+        "keyframes": [{"property": "volume", "points": [
+            {"t": 0.0, "value": 0.6, "interp": "linear"},
+            {"t": 4.0, "value": 0.18, "interp": "linear"},  # duck under VO
+            {"t": 8.0, "value": 0.6, "interp": "linear"},   # back up
+        ]}],
+    }
+
+    # Split at timeline t=4.0: tail clip is rebased so its envelope starts at t=0.
+    split = timeline.apply_command(project, {
+        "op": "clip.split", "actor": "t", "expectedRevision": 0,
+        "payload": {"clipId": "bed_clip", "at": 4.0, "newClipId": "bed_clip_b"},
+    })
+    tail = split["clips"]["bed_clip_b"]
+    tail_pts = tail["keyframes"][0]["points"]
+    # Tail rebased: t=4 -> 0 (the duck floor), t=8 -> 4 (back up).
+    assert [p["t"] for p in tail_pts] == [0.0, 4.0]
+    assert tail_pts[0]["value"] == 0.18
+
+    # Now render-window the tail starting 1s in (window timeline t=5..9 -> front_trim 1s
+    # off the tail, which itself starts at timeline t=4). _windowed_clips must shift the
+    # already-rebased tail envelope down by another 1s.
+    windowed = editor_render._windowed_clips(split, window_start=5.0, duration=4.0)
+    wbed = next(c for c in windowed if c["id"] == "bed_clip_b")
+    wpts = wbed["keyframes"][0]["points"]
+    assert wpts[0]["t"] == pytest.approx(0.0)  # 0.0 - 1.0 clamped to 0
+    assert wpts[1]["t"] == pytest.approx(3.0)  # 4.0 - 1.0
+    assert wpts[0]["value"] == 0.18 and wpts[1]["value"] == 0.6
+    # The ffmpeg mux path reads this same envelope; it must build a keyframe expression,
+    # not the flat fallback, proving the envelope survived both passes intact.
+    assert "if(" in editor_render._volume_filter(wbed, 1.0)
+
+
 def test_opacity_keyframe_envelope_actually_animates_through_openshot(tmp_path):
     """End-to-end: a clip with an opacity envelope (0 -> 1 over its duration) must RENDER
     the fade through OpenShot, not just translate to correct JSON. Sample an early frame

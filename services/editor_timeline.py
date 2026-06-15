@@ -134,7 +134,10 @@ def project_from_abn_timeline(
             # metadata.shot for lossless re-import; this just wires it through so
             # factory crossfades and Ken-Burns reach OpenShot without an extra edit.
             clip["effects"] = _shot_effects(shot)
-            clip["keyframes"] = _ken_burns_keyframes(shot.get("kenBurns"), clip_duration)
+            clip["keyframes"] = _merge_keyframes(
+                _ken_burns_keyframes(shot.get("kenBurns"), clip_duration),
+                _shot_keyframes(shot),
+            )
             project["clips"][clip_id] = clip
 
         vo = ((segment.get("audio") or {}).get("vo") or {})
@@ -182,15 +185,18 @@ def project_from_abn_timeline(
 
     music_bed = abn_timeline.get("musicBed")
     if music_bed:
-        asset_id = _stable_id("asset", "music", Path(str(music_bed)).name)
-        clip_id = _stable_id("clip", "music", Path(str(music_bed)).name)
+        # A bed may be a bare path string (today) or {src, keyframes} (a factory that
+        # attaches its own ducking envelope). Normalize to a src string for the asset.
+        bed_src = music_bed.get("src") if isinstance(music_bed, dict) else music_bed
+        asset_id = _stable_id("asset", "music", Path(str(bed_src)).name)
+        clip_id = _stable_id("clip", "music", Path(str(bed_src)).name)
         project["assets"][asset_id] = {
             "id": asset_id,
             "type": "audio",
-            "src": music_bed,
+            "src": bed_src,
             "metadata": {"role": "music_bed"},
         }
-        project["clips"][clip_id] = _clip(
+        bed_clip = _clip(
             clip_id,
             asset_id,
             "music_1",
@@ -203,6 +209,17 @@ def project_from_abn_timeline(
             volume=0.22,
             metadata={"role": "music_bed"},
         )
+        # If the factory hands us a real keyframed ducking envelope (musicBedKeyframes,
+        # or `keyframes` on a dict-shaped bed) instead of the flat 0.22 gain, promote
+        # it onto the clip so _volume_filter / openshot_bridge animate it. Without this
+        # the envelope is silently dropped (the flat volume wins).
+        bed_keyframes = _validated_keyframes_lenient(
+            abn_timeline.get("musicBedKeyframes")
+            or (music_bed.get("keyframes") if isinstance(music_bed, dict) else None)
+        )
+        if bed_keyframes:
+            bed_clip["keyframes"] = bed_keyframes
+        project["clips"][clip_id] = bed_clip
     return project
 
 
@@ -418,6 +435,53 @@ def _ken_burns_keyframes(ken_burns: Any, duration: float) -> list[dict[str, Any]
             }
         )
     return tracks
+
+
+def _shot_keyframes(shot: dict[str, Any]) -> list[dict[str, Any]]:
+    """Promote an ABN shot's explicit `keyframes` envelope (e.g. a volume ducking
+    track the factory baked) onto the clip.
+
+    `_ken_burns_keyframes` only synthesizes scale/x/y tracks from a `kenBurns` block,
+    so a shot that ships a hand-authored `keyframes` envelope (volume/opacity/...)
+    was previously dropped. Run it through the same lenient validator as the bed so a
+    malformed envelope is skipped — not fatal — since the raw shot is still preserved
+    under clip.metadata.shot for re-import.
+    """
+
+    return _validated_keyframes_lenient(shot.get("keyframes"))
+
+
+def _merge_keyframes(*groups: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Concatenate keyframe-track groups, keeping the first track seen per property.
+
+    kenBurns-derived tracks take precedence over an explicit shot envelope on the
+    same property (kenBurns is the active motion contract); other explicit-only
+    properties (volume/opacity) pass through untouched.
+    """
+
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for group in groups:
+        for track in group or []:
+            prop = str(track.get("property") or "")
+            if prop in seen:
+                continue
+            seen.add(prop)
+            out.append(track)
+    return out
+
+
+def _validated_keyframes_lenient(value: Any) -> list[dict[str, Any]]:
+    """`_validated_keyframes` that drops a bad envelope instead of raising.
+
+    Import is best-effort: a malformed factory envelope must not abort the whole
+    ABN import (the raw shot/bed stays in metadata for re-import), so swallow the
+    CommandValidationError and treat it as "no envelope"."""
+
+    try:
+        return _validated_keyframes(value)
+    except CommandValidationError:
+        return []
 
 
 class TimelineStore:

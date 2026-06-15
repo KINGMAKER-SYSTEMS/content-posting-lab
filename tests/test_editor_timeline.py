@@ -180,6 +180,85 @@ def test_music_bed_imports_pre_ducked_under_vo():
     assert vo["volume"] == 1.0
 
 
+def test_import_promotes_shot_volume_envelope_alongside_ken_burns():
+    """A shot that ships an explicit `keyframes` volume ducking envelope must survive
+    import. Previously line 137 unconditionally overwrote clip.keyframes with only the
+    kenBurns-derived scale/x/y tracks, silently dropping the volume envelope before it
+    could reach _volume_filter / openshot_bridge."""
+    project = timeline.project_from_abn_timeline("p", {
+        "episodeId": "e", "totalSec": 4.0,
+        "segments": [{"segmentId": "s0", "durationSec": 4.0, "shots": [{
+            "id": "shot_a", "src": "/agenticnews-assets/card.png", "type": "artifact",
+            "startSec": 0.0, "durationSec": 4.0,
+            "kenBurns": {"startScale": 1.0, "endScale": 1.1},
+            "keyframes": [{"property": "volume", "points": [
+                {"t": 0.0, "value": 1.0}, {"t": 1.0, "value": 0.22},
+            ]}],
+        }]}],
+    })
+    clip = next(c for c in project["clips"].values() if c["kind"] == "artifact")
+    props = {t["property"]: t for t in clip["keyframes"]}
+    # kenBurns scale track AND the explicit volume envelope both survive.
+    assert "scale" in props
+    assert "volume" in props
+    assert [p["t"] for p in props["volume"]["points"]] == [0.0, 1.0]
+    assert props["volume"]["points"][1]["value"] == 0.22
+
+
+def test_import_drops_malformed_shot_envelope_without_aborting():
+    """A bad shot envelope must be skipped, not fatal — the raw shot is preserved in
+    metadata.shot for re-import, and the rest of the import must still succeed."""
+    project = timeline.project_from_abn_timeline("p", {
+        "episodeId": "e", "totalSec": 4.0,
+        "segments": [{"segmentId": "s0", "durationSec": 4.0, "shots": [{
+            "id": "shot_a", "src": "/agenticnews-assets/card.png", "type": "artifact",
+            "startSec": 0.0, "durationSec": 4.0,
+            "keyframes": [{"property": "warp", "points": [{"t": 0, "value": 1}]}],
+        }]}],
+    })
+    clip = next(c for c in project["clips"].values() if c["kind"] == "artifact")
+    assert clip["keyframes"] == []  # malformed envelope dropped
+    assert clip["metadata"]["shot"]["keyframes"]  # raw shot still preserved
+
+
+def test_import_promotes_dict_music_bed_ducking_envelope():
+    """A {src, keyframes} music bed (a factory that bakes its own ducking envelope)
+    must promote that envelope onto the bed clip instead of dropping it for the flat
+    0.22 gain. The asset src is still the bare path string."""
+    project = timeline.project_from_abn_timeline("p", {
+        "episodeId": "e", "totalSec": 4.0,
+        "musicBed": {"src": "/agenticnews-assets/bed.mp3", "keyframes": [
+            {"property": "volume", "points": [
+                {"t": 0.0, "value": 0.6}, {"t": 1.0, "value": 0.18},
+                {"t": 3.0, "value": 0.6},
+            ]},
+        ]},
+        "segments": [{"segmentId": "s0", "durationSec": 4.0, "shots": []}],
+    })
+    bed = next(c for c in project["clips"].values() if c["kind"] == "music_bed")
+    bed_asset = project["assets"][bed["assetId"]]
+    assert bed_asset["src"] == "/agenticnews-assets/bed.mp3"
+    env = next(t for t in bed["keyframes"] if t["property"] == "volume")
+    assert [p["t"] for p in env["points"]] == [0.0, 1.0, 3.0]
+    assert min(p["value"] for p in env["points"]) == 0.18
+
+
+def test_import_promotes_top_level_music_bed_keyframes_field():
+    """`musicBedKeyframes` at the timeline top level (bed stays a path string) is also
+    promoted onto the bed clip."""
+    project = timeline.project_from_abn_timeline("p", {
+        "episodeId": "e", "totalSec": 4.0,
+        "musicBed": "/agenticnews-assets/bed.mp3",
+        "musicBedKeyframes": [{"property": "volume", "points": [
+            {"t": 0.0, "value": 0.5}, {"t": 2.0, "value": 0.2},
+        ]}],
+        "segments": [{"segmentId": "s0", "durationSec": 4.0, "shots": []}],
+    })
+    bed = next(c for c in project["clips"].values() if c["kind"] == "music_bed")
+    env = next(t for t in bed["keyframes"] if t["property"] == "volume")
+    assert [p["t"] for p in env["points"]] == [0.0, 2.0]
+
+
 def test_import_infers_missing_shot_durations_from_next_boundary():
     project = timeline.project_from_abn_timeline(
         "proj_boundaries",
