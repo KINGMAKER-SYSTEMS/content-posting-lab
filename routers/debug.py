@@ -23,13 +23,25 @@ import debug_logger
 log = logging.getLogger("debug")
 
 
+def _is_deployed() -> bool:
+    """True on Railway (any deployed env). Same signal clipper.py uses to detect prod."""
+    return bool(os.getenv("RAILWAY_ENVIRONMENT") or os.getenv("RAILWAY_SERVICE_ID"))
+
+
 def _gate_debug(x_agent_key: str | None = Header(default=None)) -> None:
-    """Gate ALL debug endpoints behind MINIAPP_AGENT_KEY when configured. These expose internal
+    """Gate ALL debug endpoints behind MINIAPP_AGENT_KEY. These expose internal
     logs/errors/health/the ring buffer — they must not be public in prod (the ring buffer also
-    carried recoverable API-key fragments before the app.py logging was scrubbed). Open when the
-    key is unset, consistent with the rest of the app's auth posture."""
+    carried recoverable API-key fragments before the app.py logging was scrubbed).
+
+    Posture:
+      - key set   → require a matching X-Agent-Key (everywhere).
+      - key unset + deployed (Railway) → fail closed: deny. Never expose debug in prod unguarded.
+      - key unset + local dev → open, for convenience.
+    """
     expected = os.getenv("MINIAPP_AGENT_KEY", "").strip()
     if not expected:
+        if _is_deployed():
+            raise HTTPException(status_code=503, detail="debug endpoints disabled (set MINIAPP_AGENT_KEY)")
         return
     if not x_agent_key or x_agent_key.strip() != expected:
         raise HTTPException(status_code=401, detail="invalid or missing agent key")
