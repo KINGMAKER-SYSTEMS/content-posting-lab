@@ -460,6 +460,127 @@ def test_keyframe_position_and_rotation_envelopes_carry_their_transforms(tmp_pat
     assert [p["co"]["X"] for p in clip["location_x"]["Points"]] == [8.5, 38.5]
 
 
+def test_all_six_keyframe_properties_compose_on_one_clip_without_clobbering(tmp_path):
+    """Every editor keyframe property animated at once must land on its OWN
+    OpenShot key with its own transform — volume->volume, opacity->alpha,
+    scale->scale_x+scale_y, x->location_x, y->location_y, rotation->rotation —
+    and an un-keyframed channel (shear_x) must keep its flat default. This is the
+    "do they compose?" gap: a future regression that lets one envelope overwrite
+    another's key, or that drops an un-keyframed default, only shows at render."""
+    project = _project(tmp_path / "card.png")
+    project["clips"]["card_clip"]["sourceStart"] = 0.0  # keep frame math = t*fps+1
+    project["clips"]["card_clip"]["keyframes"] = [
+        {"property": "volume", "points": [{"t": 0.0, "value": 1.0}, {"t": 1.0, "value": 0.5}]},
+        {"property": "opacity", "points": [{"t": 0.0, "value": 0.2}, {"t": 1.0, "value": 0.8}]},
+        {"property": "scale", "points": [{"t": 0.0, "value": 1.0}, {"t": 1.0, "value": 2.0}]},
+        {"property": "x", "points": [{"t": 0.0, "value": 0.5}, {"t": 1.0, "value": 1.0}]},
+        {"property": "y", "points": [{"t": 0.0, "value": 0.5}, {"t": 1.0, "value": 0.0}]},
+        {"property": "rotation", "points": [{"t": 0.0, "value": 0.0}, {"t": 1.0, "value": 45.0}]},
+    ]
+
+    clip = openshot_bridge.timeline_json(project)["clips"][0]
+
+    # Each envelope is independent: distinct Y transforms, two points each.
+    assert [p["co"]["Y"] for p in clip["volume"]["Points"]] == [100.0, 50.0]  # 0..1 -> 0..100
+    assert [p["co"]["Y"] for p in clip["alpha"]["Points"]] == [0.2, 0.8]
+    assert [p["co"]["Y"] for p in clip["scale_x"]["Points"]] == [1.0, 2.0]
+    assert clip["scale_y"]["Points"] == clip["scale_x"]["Points"]  # scale drives both axes
+    assert [p["co"]["Y"] for p in clip["location_x"]["Points"]] == [0.0, 1.0]  # 0.5->0, 1.0->1
+    assert [p["co"]["Y"] for p in clip["location_y"]["Points"]] == [0.0, -1.0]  # 0.5->0, 0.0->-1
+    assert [p["co"]["Y"] for p in clip["rotation"]["Points"]] == [0.0, 45.0]
+    # All envelopes share the same frame grid; none clobbered another's X.
+    for key in ("volume", "alpha", "scale_x", "scale_y", "location_x", "location_y", "rotation"):
+        assert [p["co"]["X"] for p in clip[key]["Points"]] == [1.0, 31.0], key
+    # An un-keyframed channel keeps its flat single-point default.
+    assert clip["shear_x"]["Points"] == [
+        {"co": {"X": 1.0, "Y": 0.0}, "interpolation": openshot_bridge.CONSTANT}
+    ]
+
+
+def test_single_point_envelope_replaces_flat_default_with_one_dynamic_point(tmp_path):
+    """A one-point keyframe track still overrides the flat static default: the
+    output is a single Point carrying the transformed value and declared interp,
+    not the CONSTANT flat default. Pins the degenerate single-keyframe case."""
+    project = _project(tmp_path / "card.png")
+    project["clips"]["card_clip"]["sourceStart"] = 0.0
+    project["clips"]["card_clip"]["keyframes"] = [
+        {"property": "opacity", "points": [{"t": 0.5, "value": 0.4, "interp": "linear"}]},
+    ]
+
+    clip = openshot_bridge.timeline_json(project)["clips"][0]
+
+    assert clip["alpha"]["Points"] == [
+        {"co": {"X": 0.5 * 30 + 1.0, "Y": 0.4}, "interpolation": openshot_bridge.LINEAR}
+    ]
+
+
+def test_zero_duration_clip_with_keyframes_still_translates_envelope(tmp_path):
+    """A zero-duration clip must not blow up keyframe translation. duration floors
+    to 0.001 for the reader, but the envelope frame math (source_start + t)*fps + 1
+    is independent of duration, so a t=0 keyframe still lands at frame 1."""
+    project = _project(tmp_path / "card.png")
+    project["clips"]["card_clip"]["sourceStart"] = 0.0
+    project["clips"]["card_clip"]["duration"] = 0.0
+    project["clips"]["card_clip"]["keyframes"] = [
+        {"property": "opacity", "points": [{"t": 0.0, "value": 1.0}]},
+    ]
+
+    clip = openshot_bridge.timeline_json(project)["clips"][0]
+
+    assert clip["alpha"]["Points"] == [
+        {"co": {"X": 1.0, "Y": 1.0}, "interpolation": openshot_bridge.LINEAR}
+    ]
+    # duration floored so the clip is still renderable, not zero-length.
+    assert clip["duration"] >= 0.001
+
+
+def test_bezier_interp_mixes_with_linear_constant_in_one_multipoint_envelope(tmp_path):
+    """bezier was only ever tested as a lone single point. A real ease curve mixes
+    interps across a multi-point track; each point must carry its OWN interp code
+    (bezier->0, linear->1, constant->2) — a regression in the interp map per-point
+    lookup would silently flatten the easing."""
+    project = _project(tmp_path / "card.png")
+    project["clips"]["card_clip"]["sourceStart"] = 0.0
+    project["clips"]["card_clip"]["keyframes"] = [
+        {
+            "property": "scale",
+            "points": [
+                {"t": 0.0, "value": 0.0, "interp": "bezier"},
+                {"t": 1.0, "value": 1.0, "interp": "linear"},
+                {"t": 2.0, "value": 1.0, "interp": "constant"},
+            ],
+        }
+    ]
+
+    clip = openshot_bridge.timeline_json(project)["clips"][0]
+
+    assert [p["interpolation"] for p in clip["scale_x"]["Points"]] == [
+        openshot_bridge._INTERPOLATION_MAP["bezier"],
+        openshot_bridge.LINEAR,
+        openshot_bridge.CONSTANT,
+    ]
+    assert openshot_bridge._INTERPOLATION_MAP["bezier"] == 0  # BEZIER sentinel, not linear
+    # scale_y mirrors scale_x interp-for-interp, not just value-for-value.
+    assert clip["scale_y"]["Points"] == clip["scale_x"]["Points"]
+
+
+def test_negative_source_start_offsets_keyframe_frames_below_one(tmp_path):
+    """sourceStart math at the envelope frame line is unguarded: a negative
+    sourceStart (e.g. lead-in handle) shifts keyframe X below 1.0 by the same
+    (source_start + t)*fps + 1 rule. Pin it so the framerate edge case is explicit
+    rather than an accidental crash or clamp later."""
+    project = _project(tmp_path / "card.png")
+    project["clips"]["card_clip"]["sourceStart"] = -1.0
+    project["clips"]["card_clip"]["keyframes"] = [
+        {"property": "rotation", "points": [{"t": 0.0, "value": 0.0}, {"t": 2.0, "value": 10.0}]},
+    ]
+
+    clip = openshot_bridge.timeline_json(project)["clips"][0]
+
+    # (-1.0 + 0.0)*30 + 1 = -29 ; (-1.0 + 2.0)*30 + 1 = 31
+    assert [p["co"]["X"] for p in clip["rotation"]["Points"]] == [-29.0, 31.0]
+
+
 def test_effect_add_command_exports_update_action_with_effects(tmp_path):
     """clip.effect.add flows through the generic clip.* update path: the resulting
     OpenShot UpdateAction carries the full clip JSON with the new effects array."""
