@@ -15,6 +15,8 @@ import subprocess
 import time
 from pathlib import Path
 
+from services.json_store import atomic_save
+
 _VOL = os.getenv("ABN_ASSETS_DIR") or os.getenv("RAILWAY_VOLUME_MOUNT_PATH")
 _BASE = Path(_VOL) if _VOL and Path(_VOL).exists() else Path(__file__).resolve().parent.parent / "agenticnews_assets"
 _BASE.mkdir(parents=True, exist_ok=True)
@@ -64,7 +66,9 @@ def refresh(force: bool = False) -> dict:
         videos.extend(_scrape_channel(h))
     blob = {"ts": int(time.time()), "channels": COMPETITORS, "videos": videos, "findings": FINDINGS}
     try:
-        tmp = INTEL_FILE.with_suffix(".json.tmp"); tmp.write_text(json.dumps(blob, indent=2)); tmp.replace(INTEL_FILE)
+        # fsync-before-rename: title/hook playbooks seed the narrator/titler live in the
+        # post-render path, so a half-written intel file = corrupt titles + cold-opens. (CON ticket)
+        atomic_save(INTEL_FILE, blob)
     except Exception:
         pass
     return blob
