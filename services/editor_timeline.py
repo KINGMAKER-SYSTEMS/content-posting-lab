@@ -14,6 +14,8 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from services.json_store import atomic_save
+
 
 SCHEMA = "editor-timeline/v1"
 ABN_IMPORT_VERSION = 2
@@ -354,9 +356,9 @@ class TimelineStore:
         project = copy.deepcopy(project)
         path = self.path_for(project["projectId"])
         path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(project, indent=2, sort_keys=True) + "\n")
-        tmp.replace(path)
+        # Persist through the proven atomic_save (tmp + flush + fsync + os.replace)
+        # so a CPU crash mid-write can't truncate/lose a project's edits.
+        atomic_save(path, project)
         return project
 
     def apply_command(self, project_id: str, command: dict[str, Any]) -> dict[str, Any]:

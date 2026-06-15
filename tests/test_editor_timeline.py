@@ -68,6 +68,36 @@ def test_imports_abn_timeline_as_atomic_assets_clips_and_tracks(tmp_path):
     assert loaded["projectId"] == "proj_ep_fixture"
 
 
+def test_save_fsyncs_before_replace_so_a_crash_cannot_lose_edits(tmp_path, monkeypatch):
+    """save() must flush+fsync the tmp file before the atomic rename.
+
+    Without fsync, the rename can hit disk while the data is still in the OS
+    page cache, so a CPU crash leaves a renamed-but-empty/truncated project
+    file. atomic_save (the proven telegram/json_store path) fsyncs first; this
+    guards that editor_timeline routes through it and never regresses to a raw
+    write_text()+replace.
+    """
+    import os
+
+    fsynced: list[int] = []
+    real_fsync = os.fsync
+
+    def spy_fsync(fd: int) -> None:
+        fsynced.append(fd)
+        real_fsync(fd)
+
+    monkeypatch.setattr("services.json_store.os.fsync", spy_fsync)
+
+    store = timeline.TimelineStore(tmp_path)
+    project = timeline.new_project("proj_durable", title="Durable")
+    store.save(project)
+
+    assert fsynced, "save() did not fsync the tmp file before the atomic rename"
+    # round-trips cleanly and leaves no stray tmp file behind
+    assert store.load("proj_durable")["title"] == "Durable"
+    assert not list(tmp_path.glob("*.tmp"))
+
+
 def test_import_preserves_production_source_for_openshot():
     """A shot whose `type` is a known production source (broll/remotion/webscroll/css)
     carries that onto the asset as `source`, so the OpenShot bridge keeps layers
