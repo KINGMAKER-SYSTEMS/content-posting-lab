@@ -1170,6 +1170,50 @@ def _single_audio_clip_project(tmp_path):
     return project
 
 
+# ---------------------------------------------------------------------------
+# Render-path keyframe-translation round-trip (libopenshot-FREE).
+#
+# OpenShotRenderer._timeline feeds openshot_bridge.timeline_json(project) into
+# libopenshot — so the keyframe envelope -> OpenShot keyframe JSON translation is
+# on the production render path, but the only render-layer coverage of it
+# (test_opacity_keyframe_envelope_actually_animates_through_openshot) SKIPS where
+# the bindings are absent. These tests drive a full multi-property envelope through
+# the exact bridge entrypoint the render path uses (reached via the same
+# editor_render.openshot_bridge reference), so the translation is pinned on EVERY
+# box, bindings or not. They also exercise the render-layer windowing
+# (_render_scope_project) -> bridge JSON hand-off, the round-trip the ticket flags.
+# ---------------------------------------------------------------------------
+
+
+def _full_envelope_project(*, source_start: float = 0.0) -> dict:
+    """A clip carrying every keyframable property at once (volume duck + scale
+    pop + x/y pan + spin), so one assertion sweep covers the whole property map."""
+    project = timeline.new_project("kf_roundtrip", width=1920, height=1080, fps=30)
+    project["assets"]["bed"] = {"id": "bed", "type": "audio", "src": "/bed.wav", "metadata": {}}
+    project["clips"]["c1"] = {
+        "id": "c1", "assetId": "bed", "trackId": "music_1", "kind": "music_bed",
+        "start": 4.0, "duration": 3.0, "sourceStart": source_start,
+        "enabled": True, "muted": False, "volume": 1.0,
+        "transform": {"x": 0.5, "y": 0.5, "scale": 1.0, "opacity": 1.0},
+        "effects": [],
+        "keyframes": [
+            {"property": "volume", "points": [
+                {"t": 0.0, "value": 1.0, "interp": "linear"},
+                {"t": 1.0, "value": 0.2, "interp": "constant"},
+                {"t": 3.0, "value": 1.0, "interp": "bezier"},
+            ]},
+            {"property": "scale", "points": [
+                {"t": 0.0, "value": 1.0}, {"t": 1.5, "value": 1.4},
+            ]},
+            {"property": "x", "points": [{"t": 0.0, "value": 0.0}, {"t": 3.0, "value": 1.0}]},
+            {"property": "y", "points": [{"t": 0.0, "value": 0.5}, {"t": 3.0, "value": 0.25}]},
+            {"property": "rotation", "points": [{"t": 0.0, "value": 0.0}, {"t": 3.0, "value": 90.0}]},
+        ],
+        "metadata": {},
+    }
+    return project
+
+
 def test_open_shot_audio_mux_raises_render_error_on_timeout(tmp_path, monkeypatch):
     """services/editor_render.py:808-809 — a TimeoutExpired from the ffmpeg mux
     subprocess is re-raised as RenderError, not allowed to escape raw. Mock
@@ -1214,3 +1258,70 @@ def test_open_shot_audio_mux_raises_render_error_on_nonzero_returncode(tmp_path,
     assert "invalid filtergraph boom" in str(excinfo.value)
     # temp_output.replace(output) is past the raise, so the source is untouched.
     assert video.read_bytes() == b"original-bytes"
+
+
+def test_render_path_translates_full_keyframe_envelope_to_openshot_json():
+    """Every keyframable property fans out to the right OpenShot clip key(s) with the
+    documented value transform, monotonic frame X (t*fps + 1 with no trim), and
+    interp map — reached through editor_render's own bridge reference, i.e. exactly
+    what OpenShotRenderer._timeline serializes. Needs no libopenshot."""
+    project = _full_envelope_project()
+    clip = editor_render.openshot_bridge.timeline_json(project)["clips"][0]
+
+    # volume: 0..1 -> 0..100, frame X = t*30 + 1, interp linear/constant/bezier preserved
+    vol = clip["volume"]["Points"]
+    assert [p["co"]["X"] for p in vol] == [1.0, 31.0, 91.0]
+    assert [round(p["co"]["Y"], 2) for p in vol] == [100.0, 20.0, 100.0]
+    assert [p["interpolation"] for p in vol] == [
+        editor_render.openshot_bridge.LINEAR,
+        editor_render.openshot_bridge.CONSTANT,
+        editor_render.openshot_bridge._INTERPOLATION_MAP["bezier"],
+    ]
+    # scale: one editor track animates BOTH axes identically (>=0 floor transform)
+    assert [p["co"]["Y"] for p in clip["scale_x"]["Points"]] == [1.0, 1.4]
+    assert clip["scale_y"]["Points"] == clip["scale_x"]["Points"]
+    # x/y: 0..1 -> centered -1..1 (same _location transform as the flat default)
+    assert [p["co"]["Y"] for p in clip["location_x"]["Points"]] == [-1.0, 1.0]
+    assert [p["co"]["Y"] for p in clip["location_y"]["Points"]] == [0.0, -0.5]
+    # rotation: pass-through degrees
+    assert [p["co"]["Y"] for p in clip["rotation"]["Points"]] == [0.0, 90.0]
+    # an envelope present means the flat single-point default was overridden, not appended
+    assert len(clip["scale_x"]["Points"]) == 2
+    # frame X is strictly increasing across every multi-point envelope (monotonic time)
+    for key in ("volume", "scale_x", "location_x", "location_y", "rotation"):
+        xs = [p["co"]["X"] for p in clip[key]["Points"]]
+        assert xs == sorted(xs) and len(set(xs)) == len(xs), key
+
+
+def test_render_path_envelope_frame_X_offsets_by_source_start():
+    """A trimmed clip (sourceStart>0) must offset every keyframe's frame X by
+    sourceStart*fps so the envelope lands at the right SOURCE frame, not the right
+    timeline frame — the trimmed-clip translation the ffmpeg fallback can't do at all."""
+    project = _full_envelope_project(source_start=2.0)
+    clip = editor_render.openshot_bridge.timeline_json(project)["clips"][0]
+
+    # X = (sourceStart 2.0 + t) * 30fps + 1: volume points at t=0,1,3 -> 61,91,151
+    assert [p["co"]["X"] for p in clip["volume"]["Points"]] == [61.0, 91.0, 151.0]
+    # the offset is uniform across tracks (scale at t=0 -> same 61 origin)
+    assert clip["scale_x"]["Points"][0]["co"]["X"] == 61.0
+
+
+def test_render_scope_windowing_feeds_shifted_envelope_into_bridge_json():
+    """The render path is _render_scope_project (front-trim shifts keyframe t and
+    sourceStart) -> timeline_json. A clip windowed from a later start must arrive at
+    the bridge with its envelope re-timed: the shifted t AND the bumped sourceStart
+    must BOTH land in the OpenShot frame X. This is the windowing<->translation
+    round-trip the ticket calls out as having no coverage."""
+    project = _full_envelope_project(source_start=1.0)
+    # clip spans timeline t=4..7; window t=5..7 -> front_trim = 1.0s.
+    scoped = editor_render._render_scope_project(project, window_start=5.0, duration=2.0)
+    clip = editor_render.openshot_bridge.timeline_json(scoped)["clips"][0]
+
+    # sourceStart bumped 1.0 + 1.0 = 2.0; volume t's shifted down by 1.0 -> [0,0,2]
+    # (first two clamp at 0). Frame X = (2.0 + shifted_t)*30 + 1 -> 61, 61, 121.
+    assert [p["co"]["X"] for p in clip["volume"]["Points"]] == [61.0, 61.0, 121.0]
+    # values ride along with their (re-timed) points unchanged
+    assert [round(p["co"]["Y"], 2) for p in clip["volume"]["Points"]] == [100.0, 20.0, 100.0]
+    # the source project envelope is untouched (scoping deep-copies, no aliasing)
+    assert project["clips"]["c1"]["keyframes"][0]["points"][0]["t"] == pytest.approx(0.0)
+    assert project["clips"]["c1"]["sourceStart"] == pytest.approx(1.0)
