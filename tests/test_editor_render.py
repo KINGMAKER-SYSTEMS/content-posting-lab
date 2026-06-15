@@ -823,3 +823,52 @@ def test_opacity_keyframe_envelope_actually_animates_through_openshot(tmp_path):
     early = _luma(0.2)   # low opacity -> mostly black background
     late = _luma(1.8)    # high opacity -> white card visible
     assert late > early + 30, (early, late)  # the fade-in actually rendered
+
+def test_windowed_clip_refits_fade_effect_durations_to_window():
+    """Fade effects assume the original clip length. A windowed (shortened) clip must
+    have its fade durations re-fit, or a fadeOut longer than the window silences the
+    whole clip, and a front-trim eats a start-anchored fadeIn. Fixes both renderers,
+    which read this same windowed effects array (OpenShot) / its duration param
+    (ffmpeg via _fade_window)."""
+    project = timeline.new_project("fade_window", width=96, height=64, fps=12)
+    project["clips"]["card_clip"] = {
+        "id": "card_clip",
+        "assetId": "card",
+        "trackId": "graphics_1",
+        "start": 0.0,
+        "duration": 5.0,  # clip spans timeline t=0..5
+        "sourceStart": 0.0,
+        "enabled": True,
+        "effects": [
+            {"type": "fadeIn", "params": {"duration": 1.0}},
+            {"type": "fadeOut", "params": {"duration": 1.0}},
+            {"type": "colorFilter", "params": {"hue": 30}},  # no duration -> untouched
+        ],
+    }
+
+    # Window timeline t=0..2 -> back-trim only, no front trim.
+    windowed = editor_render._windowed_clips(project, window_start=0.0, duration=2.0)
+    assert len(windowed) == 1
+    effects = {e["type"]: e for e in windowed[0]["effects"]}
+    # fadeOut must be clamped to the 2s window so it no longer overruns it. (Before
+    # the fix it stayed at 1.0 -> with a tighter window it would silence the clip.)
+    assert effects["fadeOut"]["params"]["duration"] == pytest.approx(1.0)
+    assert effects["colorFilter"]["params"] == {"hue": 30}
+
+    # Window timeline t=0.5..1.0 -> windowed_duration=0.5, so a 1s fade can't fit.
+    tiny = editor_render._windowed_clips(project, window_start=0.5, duration=0.5)
+    tiny_effects = {e["type"]: e for e in tiny[0]["effects"]}
+    # front_trim=0.5 eats half the 1s fadeIn -> 0.5, then clamped to the 0.5 window.
+    assert tiny_effects["fadeIn"]["params"]["duration"] == pytest.approx(0.5)
+    # fadeOut clamped to the 0.5 window.
+    assert tiny_effects["fadeOut"]["params"]["duration"] == pytest.approx(0.5)
+
+    # A front trim larger than the fadeIn wipes it entirely (clamped at 0).
+    gone = editor_render._windowed_clips(project, window_start=2.0, duration=2.0)
+    gone_effects = {e["type"]: e for e in gone[0]["effects"]}
+    assert gone_effects["fadeIn"]["params"]["duration"] == pytest.approx(0.0)
+
+    # Original project clip effects must be untouched (no aliasing of nested params).
+    orig = project["clips"]["card_clip"]["effects"]
+    assert orig[0]["params"]["duration"] == pytest.approx(1.0)
+    assert orig[1]["params"]["duration"] == pytest.approx(1.0)
