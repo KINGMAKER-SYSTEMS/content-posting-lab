@@ -585,3 +585,61 @@ def test_best_effort_update_logs_unexpected_error_instead_of_hiding_it(monkeypat
         asyncio.run(abn_factory._best_effort_update("s1", {"stage": "voicing"}))
     assert any("unexpected error updating video" in r.message for r in caplog.records)
     assert any(r.exc_info for r in caplog.records)  # logged with traceback (logger.exception)
+
+
+# ---------------- CARD BACKGROUNDS: writes must flow through the abn_assets gateway ----------------
+#
+# _ensure_card_backgrounds() used to promote a generated background straight into
+# `ASSETS / "card_backgrounds"` via `src.replace(bgdir / f"bg_{idx:02d}.png")`, bypassing the
+# services/abn_assets gateway. That let a broken/modified function dump an off-schema file under the
+# ASSETS root with no _SLUG_RE validation. The write now routes through shared_path("card_backgrounds",
+# ...) (lands in _shared/card_backgrounds/, name-validated), and the cards reader (_v2cards._ASSETS_DIR)
+# is pointed at that same dir so reads and writes can't drift apart.
+
+def test_cards_assets_dir_matches_gateway_write_location(monkeypatch, tmp_path):
+    """The cards reader base (_cards_assets_dir) + '/card_backgrounds' MUST equal the dir shared_path
+    writes the bg pool into. If these drift, cards read an empty pool and silently fall back to the
+    flat gradient even though backgrounds were generated."""
+    import pathlib
+    monkeypatch.setattr(abn_assets, "ASSETS_DIR", tmp_path)
+    write_dir = abn_assets.shared_path("card_backgrounds", "bg_00.png").parent
+    # the cards reader resolves <_cards_assets_dir()>/card_backgrounds — must equal the write dir.
+    read_dir = pathlib.Path(abn_factory._cards_assets_dir()) / "card_backgrounds"
+    assert read_dir == write_dir
+    assert write_dir.parent.name == "_shared"
+    assert write_dir != tmp_path / "card_backgrounds"  # NOT the old off-schema flat location
+
+
+def test_ensure_card_backgrounds_promotes_through_gateway(monkeypatch, tmp_path):
+    """_ensure_card_backgrounds must promote a generated keeper into the GATEWAY dir
+    (_shared/card_backgrounds/bg_NN.png), not the off-schema flat `ASSETS/card_backgrounds/`.
+    A direct write would skip the gateway's _SLUG_RE validation (the whole point of the ticket)."""
+    monkeypatch.setattr(abn_factory, "ASSETS", tmp_path)
+    monkeypatch.setattr(abn_assets, "ASSETS_DIR", tmp_path)
+    monkeypatch.setattr(abn_factory, "_V2_VISUALS", True)
+
+    calls = {"n": 0}
+
+    def fake_codex_image(prompt, out_name, size="1536x1024"):
+        # mimic the real return: a /agenticnews-assets/ URL whose file already exists on disk
+        # (codex drops it under _scratch/). The promoter resolves + .replace()s it into the pool.
+        rel = f"_scratch/{out_name}.png"
+        src = tmp_path / rel
+        src.parent.mkdir(parents=True, exist_ok=True)
+        src.write_bytes(b"\x89PNG\r\n")  # plausible PNG bytes; content is irrelevant to the test
+        calls["n"] += 1
+        return "/agenticnews-assets/" + rel
+
+    monkeypatch.setattr(abn_factory, "_codex_image", fake_codex_image)
+
+    abn_factory._ensure_card_backgrounds(want=2)
+
+    gateway_dir = tmp_path / "_shared" / "card_backgrounds"
+    flat_dir = tmp_path / "card_backgrounds"
+    promoted = sorted(p.name for p in gateway_dir.glob("bg_*.png"))
+    assert promoted == ["bg_00.png", "bg_01.png"], "keepers must land in the gateway dir"
+    # the off-schema flat location must NOT be written to at all
+    assert not flat_dir.exists() or not list(flat_dir.glob("bg_*.png")), \
+        "_ensure_card_backgrounds wrote to the off-schema flat card_backgrounds/ (gateway bypassed)"
+    # and the cards reader was pointed at the gateway's base, not the flat ASSETS root
+    assert abn_factory._cards_assets_dir() == str(tmp_path / "_shared")

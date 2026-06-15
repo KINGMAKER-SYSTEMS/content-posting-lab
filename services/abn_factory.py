@@ -65,9 +65,12 @@ def _ensure_card_backgrounds(want: int = 6):
     if not _V2_VISUALS:
         return
     try:
-        _v2cards._ASSETS_DIR = str(ASSETS)
-        bgdir = ASSETS / "card_backgrounds"
-        bgdir.mkdir(exist_ok=True)
+        # Read AND write the bg pool through the abn_assets gateway. shared_path()
+        # validates the name (_SLUG_RE) and lands files in _shared/card_backgrounds/;
+        # point the cards reader at that same dir so its <assets>/card_backgrounds
+        # resolves to exactly where we write — no off-schema flat dump under ASSETS root.
+        _v2cards._ASSETS_DIR = _cards_assets_dir()
+        bgdir = shared_path("card_backgrounds", "bg_00.png").parent
         have = [p for p in bgdir.glob("bg_*.png") if not p.name.startswith("._")]
         prompts = [
             "Cinematic dark tech background: deep navy and cyan, abstract circuit-board light traces and glowing nodes, depth of field, atmospheric.",
@@ -86,7 +89,7 @@ def _ensure_card_backgrounds(want: int = 6):
                 # lands in _scratch/, not the root) before promoting the keeper into the bg pool.
                 src = ASSETS / rel.removeprefix("/agenticnews-assets/")
                 if src.exists():
-                    src.replace(bgdir / f"bg_{idx:02d}.png")
+                    src.replace(shared_path("card_backgrounds", f"bg_{idx:02d}.png"))
             idx += 1
     except Exception:
         pass
@@ -103,6 +106,14 @@ from services.abn_assets import (  # noqa: E402
     scratch_path, shared_path, published_path, split_slug, URL_PREFIX,
     reapable_scratch, tombstone, tombstone_render,
 )
+
+
+def _cards_assets_dir() -> str:
+    """Base dir the v2 cards reader (cards._bg_pool: <assets>/card_backgrounds) must point at so
+    its reads resolve to the SAME dir the gateway writes to. shared_path() lands the bg pool in
+    _shared/card_backgrounds/, so the reader's base is that dir's parent (ASSETS/_shared) — derived
+    from the gateway, not hardcoded, so read+write can never drift apart."""
+    return str(shared_path("card_backgrounds", "bg_00.png").parent.parent)
 
 
 def _asset_url(path: Path) -> str:
@@ -188,7 +199,7 @@ def _is_editor_timeline_protected_asset(path: Path, protected_paths: set[Path]) 
 # backgrounds, not the flat gradient. (Was only set in start_factory → forced episodes missed it.)
 if _V2_VISUALS:
     try:
-        _v2cards._ASSETS_DIR = str(ASSETS)
+        _v2cards._ASSETS_DIR = _cards_assets_dir()
     except Exception:
         pass
 WPM = 195
@@ -3326,7 +3337,7 @@ async def start_factory():
     # then top up the pool in the background (Codex/PRO image_gen — never blocks factory startup).
     if _V2_VISUALS:
         try:
-            _v2cards._ASSETS_DIR = str(ASSETS)
+            _v2cards._ASSETS_DIR = _cards_assets_dir()
             asyncio.create_task(asyncio.to_thread(_ensure_card_backgrounds))
         except Exception:
             pass
