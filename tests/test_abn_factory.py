@@ -277,6 +277,123 @@ def test_assemble_episode_raises_on_zero_segments(monkeypatch, tmp_path):
         asyncio.run(abn_factory._assemble_episode("ep_a111111", []))
 
 
+# ---------------- _render_remotion: error recovery + fallback re-encode ----------------
+#
+# _render_remotion shells out to the Remotion CLI to produce the full episode mp4, then runs a
+# normalize (yuv420p + -14 LUFS) and an optional duck post-pass. Two resilience behaviours are
+# load-bearing and were previously untested — a regression in either silently DROPS whole episodes:
+#
+#   1. A failed Remotion render (non-zero exit / no output file) MUST raise RuntimeError. The caller
+#      (_produce_episode) only re-renders-from-the-same-timeline / falls back to ffmpeg when this
+#      raises; if it stopped raising, a broken/0-byte render would ship.
+#   2. A failed POST pass (normalize / duck) must be NON-FATAL: it logs an error event but still
+#      returns the episode, so a loudnorm/ffmpeg hiccup doesn't throw away a good Remotion render.
+
+def _stub_remotion_dir(monkeypatch, tmp_path):
+    """Point REMOTION_DIR at a tmp dir whose node_modules exists so the install-guard passes."""
+    rdir = tmp_path / "remotion"
+    (rdir / "node_modules").mkdir(parents=True)
+    monkeypatch.setattr(abn_factory, "REMOTION_DIR", rdir)
+    return rdir
+
+
+def test_render_remotion_raises_when_not_installed(monkeypatch, tmp_path):
+    """No node_modules → raise 'remotion not installed' BEFORE shelling out. This is the first
+    thing the caller's retry/fallback path relies on raising."""
+    monkeypatch.setattr(abn_factory, "ASSETS", tmp_path)
+    monkeypatch.setattr(abn_assets, "ASSETS_DIR", tmp_path)
+    monkeypatch.setattr(abn_factory, "REMOTION_DIR", tmp_path / "no-remotion-here")
+
+    async def boom_sh(*a, **k):
+        raise AssertionError("shelled out despite remotion not installed")
+
+    monkeypatch.setattr(abn_factory, "_sh", boom_sh)
+    with pytest.raises(RuntimeError, match="remotion not installed"):
+        asyncio.run(abn_factory._render_remotion("ep_a111111", {"musicBed": None}))
+
+
+def test_render_remotion_raises_on_render_failure(monkeypatch, tmp_path):
+    """A non-zero Remotion exit (and no output mp4) MUST raise RuntimeError carrying the exit code +
+    log tail. This is THE error path the caller's re-render-from-same-timeline retry hinges on; if
+    it silently swallowed the failure the episode would ship empty."""
+    monkeypatch.setattr(abn_factory, "ASSETS", tmp_path)
+    monkeypatch.setattr(abn_assets, "ASSETS_DIR", tmp_path)
+    _stub_remotion_dir(monkeypatch, tmp_path)
+
+    async def failing_sh(cmd, timeout=600):
+        return 1, "Error: composition crashed at frame 0"
+
+    monkeypatch.setattr(abn_factory, "_sh", failing_sh)
+    with pytest.raises(RuntimeError, match=r"remotion: exit 1"):
+        asyncio.run(abn_factory._render_remotion("ep_a111111", {"musicBed": None}))
+
+
+def test_render_remotion_survives_failed_normalize_pass(monkeypatch, tmp_path):
+    """If the Remotion render SUCCEEDS but the normalize post-pass fails, _render_remotion must NOT
+    raise — it keeps the rendered episode, emits a non-fatal error event, and still returns
+    (url, duration). A loudnorm/ffmpeg hiccup must never throw away a good render."""
+    monkeypatch.setattr(abn_factory, "ASSETS", tmp_path)
+    monkeypatch.setattr(abn_assets, "ASSETS_DIR", tmp_path)
+    _stub_remotion_dir(monkeypatch, tmp_path)
+
+    out = abn_assets.asset_path("ep_a111111", "episode")
+
+    calls = {"n": 0}
+
+    async def fake_sh(cmd, timeout=600):
+        calls["n"] += 1
+        if "npx remotion render" in cmd:
+            out.write_bytes(b"\x00fake-mp4")     # remotion succeeds: writes the episode mp4
+            return 0, "rendered"
+        return 1, "ffmpeg normalize: boom"        # the normalize re-encode fails
+
+    async def fake_dur(path):
+        return 640.0
+
+    monkeypatch.setattr(abn_factory, "_sh", fake_sh)
+    monkeypatch.setattr(abn_factory, "_dur", fake_dur)
+    seen_before = {e["id"] for e in abn_factory.BUS.replay()}
+
+    url, dur = asyncio.run(
+        abn_factory._render_remotion("ep_a111111", {"musicBed": None}))
+
+    assert dur == 640.0
+    assert url.startswith("/agenticnews-assets/")
+    assert out.exists(), "a failed post-pass must not delete the rendered episode"
+    # the failure was reported but swallowed: a non-fatal 'normalize pass failed' error event fired.
+    new_events = [e for e in abn_factory.BUS.replay() if e["id"] not in seen_before]
+    assert any(e["action"] == "error" and "normalize pass failed" in e["detail"] for e in new_events), \
+        "a failed normalize pass must emit a non-fatal error event, not raise"
+
+
+def test_render_remotion_reuses_existing_complete_render(monkeypatch, tmp_path):
+    """The re-render GUARD: a pre-existing complete render (>= 10min AND already yuv420p) is REUSED —
+    _render_remotion returns its (url, duration) 2-tuple WITHOUT ever invoking the Remotion CLI.
+    Re-entry for an already-rendered episode must be cheap, not a double-render."""
+    monkeypatch.setattr(abn_factory, "ASSETS", tmp_path)
+    monkeypatch.setattr(abn_assets, "ASSETS_DIR", tmp_path)
+    _stub_remotion_dir(monkeypatch, tmp_path)
+
+    out = abn_assets.asset_path("ep_a111111", "episode")
+    out.write_bytes(b"\x00already-rendered")
+
+    async def fake_sh(cmd, timeout=600):
+        if "npx remotion render" in cmd:
+            raise AssertionError("re-rendered despite a complete existing render")
+        return 0, "yuv420p"                       # the ffprobe pix_fmt probe
+
+    async def fake_dur(path):
+        return 900.0
+
+    monkeypatch.setattr(abn_factory, "_sh", fake_sh)
+    monkeypatch.setattr(abn_factory, "_dur", fake_dur)
+
+    url, dur = asyncio.run(
+        abn_factory._render_remotion("ep_a111111", {"musicBed": None}, force=False))
+    assert dur == 900.0
+    assert url.startswith("/agenticnews-assets/")
+
+
 # ---------------- _plan_shots: segment mixing, rhythm variation, Ken-Burns ----------------
 #
 # _plan_shots is the shot-composition engine (≈130 lines, previously untested). It:
