@@ -288,3 +288,106 @@ def test_unsplit_exports_update_and_delete_actions(tmp_path):
     assert unsplit_actions[0]["key"] == ["clips", {"id": "card_clip"}]
     assert unsplit_actions[1]["key"] == ["clips", {"id": "card_clip_b"}]
     assert unsplit_actions[1]["old_values"]["id"] == "card_clip_b"
+
+
+# ---------------------------------------------------------------------------
+# Isolated regression coverage for update_action_from_command and
+# update_actions_from_command_log — the command->UpdateAction mapping that the
+# editor-render pipeline relies on. Previously only exercised transitively via
+# flattened_update_actions.
+# ---------------------------------------------------------------------------
+
+
+def test_command_create_maps_to_insert_action(tmp_path):
+    project = _project(tmp_path / "card.png")
+    new_clip = {**project["clips"]["card_clip"], "id": "card_clip_new"}
+    entry = {"id": "cmd_create", "op": "clip.create", "after": {"clip": new_clip}}
+
+    action = openshot_bridge.update_action_from_command(project, entry)
+
+    assert action["type"] == "insert"
+    assert action["key"] == ["clips"]
+    assert action["old_values"] is None
+    assert action["transaction"] == "cmd_create"
+    assert action["value"]["id"] == "card_clip_new"
+
+
+def test_generic_clip_command_maps_to_update_action(tmp_path):
+    project = _project(tmp_path / "card.png")
+    after = {**project["clips"]["card_clip"], "duration": 4.0}
+    entry = {
+        "id": "cmd_resize",
+        "op": "clip.resize",
+        "before": {"clip": project["clips"]["card_clip"]},
+        "after": {"clip": after},
+    }
+
+    action = openshot_bridge.update_action_from_command(project, entry)
+
+    assert action["type"] == "update"
+    assert action["key"] == ["clips", {"id": "card_clip"}]
+    assert action["value"]["duration"] == 4.0
+    assert action["old_values"]["duration"] == 2.0
+    assert action["transaction"] == "cmd_resize"
+
+
+def test_split_command_returns_unflattened_batch(tmp_path):
+    project = _project(tmp_path / "card.png")
+    left = {**project["clips"]["card_clip"], "duration": 1.0}
+    right = {**project["clips"]["card_clip"], "id": "card_clip_b", "duration": 1.0}
+    entry = {
+        "id": "cmd_split",
+        "op": "clip.split",
+        "before": {"clip": project["clips"]["card_clip"]},
+        "after": {"clip": left, "createdClip": right},
+    }
+
+    action = openshot_bridge.update_action_from_command(project, entry)
+
+    # Split is a batch (not flattened here) — update existing + insert new.
+    assert set(action) == {"batch"}
+    assert [a["type"] for a in action["batch"]] == ["update", "insert"]
+    assert action["batch"][0]["key"] == ["clips", {"id": "card_clip"}]
+    assert action["batch"][1]["value"]["id"] == "card_clip_b"
+
+
+def test_non_clip_commands_return_none(tmp_path):
+    project = _project(tmp_path / "card.png")
+
+    # Markers/notes and other non-timeline ops are intentionally ignored.
+    assert openshot_bridge.update_action_from_command(
+        project, {"id": "n1", "op": "note.add", "after": {"text": "hi"}}
+    ) is None
+    assert openshot_bridge.update_action_from_command(
+        project, {"id": "m1", "op": "marker.add", "after": {}}
+    ) is None
+    # A clip op missing its clip payload yields nothing.
+    assert openshot_bridge.update_action_from_command(
+        project, {"id": "x1", "op": "clip.transform", "after": {}}
+    ) is None
+    # Empty entry doesn't raise.
+    assert openshot_bridge.update_action_from_command(project, {}) is None
+
+
+def test_command_log_keeps_split_batches_unflattened(tmp_path):
+    project = _project(tmp_path / "card.png")
+    project = editor_timeline.apply_command(
+        project,
+        {
+            "id": "cmd_split",
+            "op": "clip.split",
+            "actor": "human",
+            "expectedRevision": 0,
+            "payload": {"clipId": "card_clip", "at": 2.5, "newClipId": "card_clip_b"},
+        },
+    )
+
+    raw = openshot_bridge.update_actions_from_command_log(project)
+    flat = openshot_bridge.flattened_update_actions(project)
+
+    # The split surfaces as a single batch entry pre-flattening...
+    assert len(raw) == 1
+    assert "batch" in raw[0]
+    # ...and as two discrete actions once flattened.
+    assert len(flat) == 2
+    assert [a["type"] for a in flat] == ["update", "insert"]
