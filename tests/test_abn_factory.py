@@ -1237,3 +1237,69 @@ def test_produce_one_episode_backs_off_when_below_floor_after_evergreen(monkeypa
     new = [e for e in abn_factory.BUS.replay() if e["id"] not in seen]
     assert any(e["action"] == "news.thin" for e in new), \
         "a sub-floor news day (post-evergreen) must emit a news.thin back-off event"
+
+
+# ---------------- _github_repo: clone-URL validation (security boundary) ----------------
+#
+# _github_repo(url) is the network-trust + path-traversal gate in front of `git clone` in
+# _real_demo: it pins clones to github.com, normalizes to an https `.git` URL, and rejects any
+# owner/repo slug that is '.'/'..'/empty or otherwise lacks an alphanumeric char (defense in depth
+# against path traversal / shell-meta even though the value is later shlex.quote'd). The validation
+# exists but had ZERO coverage — any change to _GH_REPO_RE / the slug regex (abn_factory.py ~1100-1120)
+# could silently reopen the hole. These pin the security boundary.
+
+def test_github_repo_normalizes_plain_url():
+    """A bare github URL is normalized to an https `.git` clone URL (https forced even from http)."""
+    assert abn_factory._github_repo("https://github.com/foo/bar") == "https://github.com/foo/bar.git"
+    assert abn_factory._github_repo("http://github.com/Foo/Bar") == "https://github.com/Foo/Bar.git"
+
+
+def test_github_repo_strips_then_readds_git_suffix():
+    """An already-`.git` URL isn't doubled — the suffix is stripped then re-added exactly once."""
+    assert abn_factory._github_repo("https://github.com/foo/bar.git") == "https://github.com/foo/bar.git"
+
+
+def test_github_repo_extracts_repo_from_subpath_and_surrounding_text():
+    """The owner/repo are extracted even when followed by a sub-path (…/tree/main) or embedded in prose,
+    and always re-emitted as the canonical clone URL — never the raw input."""
+    assert abn_factory._github_repo("https://github.com/foo/bar/tree/main") == "https://github.com/foo/bar.git"
+    assert abn_factory._github_repo("see https://github.com/foo/bar for more") == "https://github.com/foo/bar.git"
+
+
+def test_github_repo_allows_legitimate_dotted_and_dashed_slugs():
+    """Real owner/repo names contain dots/dashes/underscores (e.g. `a-b_c.d`); these are valid as long
+    as the segment has at least one alphanumeric char, so the path-traversal guard isn't over-broad."""
+    assert abn_factory._github_repo("https://github.com/a-b_c.d/x.y_z") == "https://github.com/a-b_c.d/x.y_z.git"
+
+
+@pytest.mark.parametrize("url", [
+    "https://github.com/../etc",      # traversal in the owner slug
+    "https://github.com/foo/..",      # traversal in the repo slug
+    "https://github.com/./bar",       # current-dir in the owner slug
+    "https://github.com/.../bar",     # all-dots owner (no alphanumeric)
+    "https://github.com/foo/.git",    # repo becomes empty after stripping `.git`
+])
+def test_github_repo_rejects_path_traversal_slugs(url):
+    """THE security regression guard: a '.'/'..'/all-dots owner or repo slug — the path-traversal
+    vector — must be rejected (None), never turned into a clone URL. If the slug regex on line ~1115
+    is loosened, one of these starts returning a URL and this fails."""
+    assert abn_factory._github_repo(url) is None
+
+
+@pytest.mark.parametrize("url", [
+    "https://gitlab.com/foo/bar",            # different host entirely
+    "https://evil.com/github.com/foo/bar",   # github.com only in the path, not the host
+    "https://github.com.evil.com/foo/bar",   # host-spoof: github.com is a subdomain prefix
+    "git@github.com:foo/bar.git",            # ssh scheme — not an https github.com URL
+])
+def test_github_repo_pins_to_github_host(url):
+    """The network-trust boundary: only real `https?://github.com/` URLs clone — a different host, a
+    spoofed subdomain, github.com appearing only in the path, or an ssh URL must all return None."""
+    assert abn_factory._github_repo(url) is None
+
+
+@pytest.mark.parametrize("url", ["", None, "not a url", "https://github.com/foo"])
+def test_github_repo_rejects_empty_and_incomplete(url):
+    """Empty/None/garbage input and an owner-only URL (no repo segment) all return None — the caller
+    (_real_demo) then cleanly falls back to the scripted demo instead of cloning junk."""
+    assert abn_factory._github_repo(url) is None
