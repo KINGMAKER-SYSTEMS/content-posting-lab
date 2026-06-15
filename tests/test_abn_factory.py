@@ -6,10 +6,13 @@ the load-bearing behaviour of each stage WITHOUT touching the network, an LLM, P
 Whisper, or ffmpeg — every external call is monkeypatched. The hard gates covered here:
 
   * VO command is Pocket-TTS built-in English voice ONLY (no clone, no cloud TTS).
-  * `_voice` routes its write through the asset gateway and raises on TTS failure.
+  * `_voice` routes its write through the asset gateway and raises on TTS failure — and on an
+    off-schema slug it raises the gateway's AssetPathError BEFORE ever shelling out to TTS.
   * Captions are SCRIPT-TRUE (script text wins; Whisper only supplies timing).
-  * Whisper brand garbles (Thropic->Anthropic, open ai->OpenAI) are corrected.
-  * `_assemble_episode` refuses to emit an episode with no usable segment clips.
+  * Whisper brand garbles (Thropic->Anthropic, open ai->OpenAI) are corrected WITHOUT disturbing
+    the real word timestamps around them.
+  * `_assemble_episode` refuses to emit an episode with no usable segment clips — whether every
+    per-segment encode failed or the segment list was empty to begin with.
 """
 import asyncio
 
@@ -93,6 +96,21 @@ def test_voice_raises_when_tts_fails(monkeypatch, tmp_path):
         asyncio.run(abn_factory._voice("hello", "ep_a111111_s0"))
 
 
+def test_voice_raises_on_gateway_error_before_shelling_out(monkeypatch, tmp_path):
+    """A malformed slug (no 'ep_<hex>' prefix) must be rejected by the asset gateway BEFORE _voice
+    ever shells out to TTS — the write path itself is the enforcement point (asset-schema epic).
+    The error surfaces as the gateway's AssetPathError, and pocket-tts is never invoked."""
+    monkeypatch.setattr(abn_factory, "ASSETS", tmp_path)
+    monkeypatch.setattr(abn_assets, "ASSETS_DIR", tmp_path)
+
+    async def boom_sh(cmd, timeout=600):  # gateway must reject before we get here
+        raise AssertionError("shelled out to TTS despite an off-schema asset slug")
+
+    monkeypatch.setattr(abn_factory, "_sh", boom_sh)
+    with pytest.raises(abn_assets.AssetPathError):
+        asyncio.run(abn_factory._voice("hello", "no_episode_prefix"))
+
+
 # ---------------- SCRIPT: fallback + length clamp ----------------
 
 def test_script_segment_falls_back_when_llm_returns_nothing(monkeypatch):
@@ -150,6 +168,30 @@ def test_fix_brand_words_corrects_asr_garble():
     fixed = abn_factory._fix_brand_words(words)
     assert fixed[0]["w"] == "Anthropic's"
     assert fixed[1]["w"] == "OpenAI"  # plain casing fix on a single token
+
+
+def test_fix_brand_words_preserves_timestamps_across_garble_in_a_real_sentence():
+    """The garble fix must NOT disturb timing: a bare 'Thropic' (the actual Whisper garble, no
+    leading 'a') embedded mid-sentence is rewritten to 'Anthropic' while keeping its own start/end,
+    and a following 'open ai' split merges to 'OpenAI' spanning both source tokens. Verifying with
+    the surrounding words proves the corrector doesn't shift neighbour timestamps (ticket: garble
+    correction was never checked against actual bad timestamps)."""
+    words = [
+        {"w": "And", "s": 0.00, "e": 0.20},
+        {"w": "Thropic", "s": 0.20, "e": 0.65},   # bare-Thropic garble that slipped onto a real caption
+        {"w": "just", "s": 0.65, "e": 0.90},
+        {"w": "open", "s": 0.90, "e": 1.10},
+        {"w": "ai", "s": 1.10, "e": 1.35},
+    ]
+    fixed = abn_factory._fix_brand_words(words)
+    assert [w["w"] for w in fixed] == ["And", "Anthropic", "just", "OpenAI"]
+    # the corrected brand keeps the EXACT timestamps Whisper emitted for the garble
+    anthropic = fixed[1]
+    assert anthropic["s"] == 0.20 and anthropic["e"] == 0.65
+    # the merged OpenAI spans both original 'open' + 'ai' tokens; neighbours are untouched
+    assert fixed[-1]["s"] == 0.90 and fixed[-1]["e"] == 1.35
+    assert fixed[0] == {"w": "And", "s": 0.00, "e": 0.20}
+    assert fixed[2] == {"w": "just", "s": 0.65, "e": 0.90}
 
 
 def test_fix_brand_words_leaves_real_words_untouched():
@@ -218,3 +260,18 @@ def test_assemble_episode_raises_when_no_clips_render(monkeypatch, tmp_path):
     segments = [{"script": "hi", "vo_path": "/agenticnews-assets/ep_a111111_s0.wav", "screenshot": None}]
     with pytest.raises(RuntimeError, match="no segment clips"):
         asyncio.run(abn_factory._assemble_episode("ep_a111111", segments))
+
+
+def test_assemble_episode_raises_on_zero_segments(monkeypatch, tmp_path):
+    """The <1-usable-segment gate also covers the degenerate case: an empty segment list (nothing
+    survived upstream filtering) must raise 'no segment clips', not silently emit a 0-length episode.
+    ffmpeg is never even reached here, so the gate is the segment-count check itself."""
+    monkeypatch.setattr(abn_factory, "ASSETS", tmp_path)
+    monkeypatch.setattr(abn_assets, "ASSETS_DIR", tmp_path)
+
+    async def boom_sh(cmd, timeout=600):  # no segments means no encode should be attempted
+        raise AssertionError("ran ffmpeg despite zero segments")
+
+    monkeypatch.setattr(abn_factory, "_sh", boom_sh)
+    with pytest.raises(RuntimeError, match="no segment clips"):
+        asyncio.run(abn_factory._assemble_episode("ep_a111111", []))
