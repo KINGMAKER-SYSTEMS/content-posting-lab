@@ -875,6 +875,9 @@ def test_windowed_clip_refits_fade_effect_durations_to_window():
         "effects": [
             {"type": "fadeIn", "params": {"duration": 1.0}},
             {"type": "fadeOut", "params": {"duration": 1.0}},
+            # crossfade is start-anchored like fadeIn (both -> OpenShot `in` Fade), so a
+            # front trim must eat its ramp too, or the crossfade overshoots the window.
+            {"type": "crossfade", "params": {"duration": 1.0}},
             {"type": "colorFilter", "params": {"hue": 30}},  # no duration -> untouched
         ],
     }
@@ -893,13 +896,16 @@ def test_windowed_clip_refits_fade_effect_durations_to_window():
     tiny_effects = {e["type"]: e for e in tiny[0]["effects"]}
     # front_trim=0.5 eats half the 1s fadeIn -> 0.5, then clamped to the 0.5 window.
     assert tiny_effects["fadeIn"]["params"]["duration"] == pytest.approx(0.5)
+    # crossfade is start-anchored too: front_trim eats half -> 0.5, clamped to window.
+    assert tiny_effects["crossfade"]["params"]["duration"] == pytest.approx(0.5)
     # fadeOut clamped to the 0.5 window.
     assert tiny_effects["fadeOut"]["params"]["duration"] == pytest.approx(0.5)
 
-    # A front trim larger than the fadeIn wipes it entirely (clamped at 0).
+    # A front trim larger than the fade wipes it entirely (clamped at 0).
     gone = editor_render._windowed_clips(project, window_start=2.0, duration=2.0)
     gone_effects = {e["type"]: e for e in gone[0]["effects"]}
     assert gone_effects["fadeIn"]["params"]["duration"] == pytest.approx(0.0)
+    assert gone_effects["crossfade"]["params"]["duration"] == pytest.approx(0.0)
 
     # Original project clip effects must be untouched (no aliasing of nested params).
     orig = project["clips"]["card_clip"]["effects"]

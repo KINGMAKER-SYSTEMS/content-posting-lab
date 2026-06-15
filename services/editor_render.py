@@ -884,9 +884,10 @@ def _refit_effects(
 ) -> list[dict[str, Any]]:
     """Re-fit duration-bearing effects onto a windowed (shortened) clip.
 
-    fadeIn is start-anchored: a front trim of `front_trim` removes that much of its
-    ramp. fadeOut is end-anchored: a front trim leaves it alone, but neither fade may
-    be longer than the windowed clip. Effects with no `duration` param pass through."""
+    fadeIn and crossfade are start-anchored (both map to OpenShot's `in` Fade, see
+    openshot_bridge._FADE_DIRECTION_MAP): a front trim of `front_trim` removes that
+    much of their ramp. fadeOut is end-anchored: a front trim leaves it alone, but no
+    fade may be longer than the windowed clip. Effects with no `duration` pass through."""
 
     refit: list[dict[str, Any]] = []
     for effect in effects:
@@ -897,7 +898,7 @@ def _refit_effects(
             refit.append(effect)
             continue
         new_duration = float(original)
-        if str(effect.get("type") or "") == "fadeIn":
+        if str(effect.get("type") or "") in ("fadeIn", "crossfade"):
             new_duration -= front_trim
         new_duration = max(0.0, min(new_duration, windowed_duration))
         refit.append({**effect, "params": {**params, "duration": new_duration}})
