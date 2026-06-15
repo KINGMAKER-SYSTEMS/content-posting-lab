@@ -643,3 +643,149 @@ def test_ensure_card_backgrounds_promotes_through_gateway(monkeypatch, tmp_path)
         "_ensure_card_backgrounds wrote to the off-schema flat card_backgrounds/ (gateway bypassed)"
     # and the cards reader was pointed at the gateway's base, not the flat ASSETS root
     assert abn_factory._cards_assets_dir() == str(tmp_path / "_shared")
+
+
+# ---------------- _build_timeline: schema-aware ABN episode assembly ----------------
+#
+# _build_timeline composes segments → a Remotion timeline. It is the routine commit cb5c98f5
+# touched to add (a) v2 DESIGNED-CARD swapping (replace blog-screenshot 'artifact' shots with
+# designed cards), (b) FIRST-5-SECONDS hook reordering (the hook card owns 0:00 on seg 0), and
+# (c) hook-window pop/highlight suppression. None of that had a regression test. These pin it
+# WITHOUT touching disk, an LLM, the v2 card renderer, or Remotion: _extract_keywords and
+# _v2_scene_cards are stubbed, and _resolve_asset is faked so the swapped-in card urls "exist"
+# on disk with a non-trivial size (the >1024-byte guard in the swap).
+
+
+class _FakeAsset:
+    """Stand-in for _resolve_asset(url): .exists() and .stat().st_size are driven by `present`,
+    a {url: size} map. The v2-card swap gates on BOTH cf.exists() and cf.stat().st_size > 1024."""
+
+    def __init__(self, s, present):
+        self._s = s
+        self._present = present
+
+    def exists(self):
+        return self._s in self._present
+
+    def stat(self):
+        size = self._present.get(self._s, 0)
+        return type("st", (), {"st_size": size})()
+
+
+def _stub_build_timeline_env(monkeypatch, present, v2_cards, keywords=None):
+    """Wire up the four external touch-points _build_timeline reaches into so it runs offline:
+      * _resolve_asset → existence + size driven by `present` ({url: size_bytes});
+      * _v2_scene_cards → returns the fixed `v2_cards` url list (no scene-tagging / card render);
+      * _extract_keywords → returns `keywords` (no LLM / heuristic keyword pass)."""
+    monkeypatch.setattr(abn_factory, "_resolve_asset", lambda x: _FakeAsset(str(x), present))
+    monkeypatch.setattr(abn_factory, "_v2_scene_cards",
+                        lambda ep_id, seg_index, seg, ep_budget=None: list(v2_cards))
+    monkeypatch.setattr(abn_factory, "_extract_keywords",
+                        lambda *a, **k: list(keywords or []))
+
+
+def _seg(idx, duration=60.0, card="/agenticnews-assets/ep_t/card.png"):
+    return {
+        "segment_id": f"seg{idx}", "title": f"Tool {idx} — the headline", "script": "body text " * 20,
+        "words": [{"text": "w", "s": 0.0, "e": 0.3}], "source_url": "https://github.com/foo/bar",
+        "screenshot": None, "card": card, "vo_path": f"/agenticnews-assets/ep_t/vo{idx}.wav",
+        "duration": duration,
+    }
+
+
+def test_build_timeline_returns_well_formed_episode_envelope(monkeypatch):
+    """The top-level shape: 30fps 1920x1080, one tseg per input segment (in order), totalSec is the
+    sum of segment durations, and each tseg carries its VO + ALWAYS an empty keywordPops list
+    (the floating-label feature was deaded — a regression that re-populates it would be caught here)."""
+    _stub_build_timeline_env(monkeypatch, present={}, v2_cards=[])
+    segs = [_seg(0, 60.0), _seg(1, 50.0), _seg(2, 40.0)]
+    tl = abn_factory._build_timeline("ep_t", 7, segs, animated_bg=None)
+
+    assert tl["fps"] == 30 and tl["width"] == 1920 and tl["height"] == 1080
+    assert [s["segmentId"] for s in tl["segments"]] == ["seg0", "seg1", "seg2"]
+    assert tl["totalSec"] == pytest.approx(150.0, abs=0.01)
+    for ts in tl["segments"]:
+        assert ts["keywordPops"] == [], "keywordPops must stay deaded — floating labels were removed"
+        assert ts["audio"]["vo"]["duration"] > 0 and ts["audio"]["vo"]["src"]
+
+
+def test_build_timeline_swaps_v2_designed_cards_into_artifact_shots(monkeypatch):
+    """cb5c98f5 anti-slop swap: 'artifact' shots (blog-screenshot slop) are replaced by DESIGNED
+    cards from the v2 catalog when the card file exists on disk with real bytes. The swapped shot
+    points at the designed-card url and takes the gentle still-hold (1.0→1.05), NOT a hard Ken-Burns."""
+    card = "/agenticnews-assets/ep_t/card.png"
+    v2 = "/agenticnews-assets/ep_t/css/s1_v2sc0.png"
+    # the card the planner needs AND the designed card both 'exist' with > 1KB so the swap gate passes
+    present = {card: 4096, v2: 8192}
+    _stub_build_timeline_env(monkeypatch, present=present, v2_cards=[v2])
+    # use a NON-zero segment so the hook-reorder branch (seg 0 only) doesn't interfere
+    tl = abn_factory._build_timeline("ep_t", 7, [_seg(0), _seg(1, card=card)], animated_bg=None)
+
+    shots = tl["segments"][1]["shots"]
+    swapped = [s for s in shots if s.get("src") == v2]
+    assert swapped, "no artifact shot was swapped for a v2 designed card"
+    for s in swapped:
+        kb = s["kenBurns"]
+        assert (kb["startScale"], kb["endScale"]) == (1.0, 1.05), "designed card must get the gentle hold"
+
+
+def test_build_timeline_skips_v2_swap_when_card_file_too_small(monkeypatch):
+    """DEFENSE-IN-DEPTH: the swap is gated on cf.stat().st_size > 1024 — a 0/under-size designed-card
+    file (a render that produced a stub) must NOT be injected, or the timeline references a broken
+    asset. The original artifact card src survives untouched."""
+    card = "/agenticnews-assets/ep_t/card.png"
+    v2 = "/agenticnews-assets/ep_t/css/s1_v2sc0.png"
+    present = {card: 4096, v2: 512}  # designed card exists but is below the 1024-byte floor
+    _stub_build_timeline_env(monkeypatch, present=present, v2_cards=[v2])
+    tl = abn_factory._build_timeline("ep_t", 7, [_seg(0), _seg(1, card=card)], animated_bg=None)
+
+    srcs = {s.get("src") for s in tl["segments"][1]["shots"]}
+    assert v2 not in srcs, "an under-1KB designed card must never be swapped into the timeline"
+    assert card in srcs, "the original artifact card must survive when the v2 swap is rejected"
+
+
+def test_build_timeline_hook_card_owns_zero_on_opening_segment(monkeypatch):
+    """FIRST-5-SECONDS (cb5c98f5): on seg 0 the HOOK card must be the very first thing on screen —
+    moved to the front and retimed so startSec == 0.0 — not 3s of webpage scroll first."""
+    card = "/agenticnews-assets/ep_t/card.png"
+    hook = "/agenticnews-assets/ep_t/css/s0_v2sc0_hook.png"
+    present = {card: 4096, hook: 8192}
+    _stub_build_timeline_env(monkeypatch, present=present, v2_cards=[hook])
+    tl = abn_factory._build_timeline("ep_t", 7, [_seg(0, card=card)], animated_bg=None)
+
+    shots = tl["segments"][0]["shots"]
+    hook_shots = [s for s in shots if "hook" in (s.get("src") or "")]
+    assert hook_shots, "expected a hook shot on the opening segment"
+    assert shots[0] is hook_shots[0], "the hook must be the FIRST shot on seg 0"
+    assert shots[0]["startSec"] == 0.0, "the hook must own 0:00 on the opening segment"
+
+
+def test_build_timeline_keeps_the_hook_window_clean(monkeypatch):
+    """KEEP THE HOOK CLEAN (cb5c98f5): on seg 0, keyword-pops in the first ~12s are suppressed and
+    per-shot highlight boxes inside the hook window are stripped — the opening statement stands alone.
+    keywordPops is emitted empty regardless (deaded), so we assert via the suppression's side effects:
+    no shot in the hook window keeps a highlight."""
+    card = "/agenticnews-assets/ep_t/card.png"
+    hook = "/agenticnews-assets/ep_t/css/s0_v2sc0_hook.png"
+    present = {card: 4096, hook: 8192}
+    # a keyword that lands at 1.0s — inside the 12s hook window — would have popped pre-fix
+    kws = [{"text": "agents", "s": 1.0, "e": 1.4, "color": "#0ff"}]
+    _stub_build_timeline_env(monkeypatch, present=present, v2_cards=[hook], keywords=kws)
+    tl = abn_factory._build_timeline("ep_t", 7, [_seg(0, card=card)], animated_bg=None)
+
+    shots = tl["segments"][0]["shots"]
+    for s in shots:
+        if s.get("startSec", 0) < 12.0:
+            assert "highlight" not in s, "a highlight box survived inside the clean hook window"
+    assert tl["segments"][0]["keywordPops"] == []
+
+
+def test_build_timeline_suppresses_lower_third_on_hook_segment_only(monkeypatch):
+    """CAPTION best-practice (cb5c98f5): seg 0 opens clean (no lower-third over the hook), while later
+    segments DO get a lower-third headline sourced from the segment title + source url."""
+    _stub_build_timeline_env(monkeypatch, present={}, v2_cards=[])
+    tl = abn_factory._build_timeline("ep_t", 7, [_seg(0), _seg(1)], animated_bg=None)
+
+    assert tl["segments"][0]["lowerThirds"] == [], "seg 0 must open clean — no lower-third over the hook"
+    lt = tl["segments"][1]["lowerThirds"]
+    assert lt and lt[0]["headline"] and lt[0]["sourceUrl"] == "https://github.com/foo/bar"
