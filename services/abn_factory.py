@@ -2358,6 +2358,15 @@ def _build_timeline(ep_id, ep_idx, segments, animated_bg=None):
             if lower_thirds:                                  # may be empty when suppressed by a card clash
                 lt_text = lower_thirds[0]["headline"].lower()
                 pops = [p for p in pops if p["word"].lower() not in lt_text]
+        # CHOREOGRAPHED SHOT TRANSITIONS: the dynamism pass (_plan_shots) cuts a new visual
+        # every 4-7s, but bare boundaries hard-cut. Tag each shot AFTER the first with a short
+        # crossfade so consecutive beats dissolve instead of jump-cutting. editor_timeline
+        # promotes `transitionSec` to a validated `crossfade` effect → OpenShot dissolves the
+        # boundary. Skip kinetic inserts (they carry their own full-bleed motion in/out).
+        for sh in shots[1:]:
+            if sh.get("type") == "kinetic" or "transitionSec" in sh:
+                continue
+            sh["transitionSec"] = 0.4
         tsegs.append({
             "segmentId": seg["segment_id"], "title": seg["title"], "sourceUrl": seg["source_url"],
             # keywordPops 100% DEADED (John, 06-09): the floating labeled rectangles were broken-looking

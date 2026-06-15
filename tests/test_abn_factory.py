@@ -778,6 +778,45 @@ def test_kb_picker_seed_changes_first_move(monkeypatch):
     assert first0 != first1
 
 
+# ---------------- _build_timeline: choreographed shot-boundary crossfades ----------------
+#
+# _plan_shots cuts a new visual every 4-7s but bare shot boundaries hard-cut. _build_timeline
+# tags every shot AFTER the first with a short `transitionSec`, which editor_timeline promotes to
+# a `crossfade` effect → OpenShot dissolves the boundary. Kinetic inserts (own full-bleed motion)
+# are exempt. We stub the heavy collaborators so this exercises only the tagging step.
+
+def test_build_timeline_tags_shot_boundaries_with_crossfade_transitions(monkeypatch):
+    planned = [
+        {"id": "a", "type": "artifact", "src": "/x/a.png", "startSec": 0.0, "endSec": 3.0},
+        {"id": "kin0", "type": "kinetic", "src": "/x/k.mp4", "startSec": 3.0, "endSec": 13.0},
+        {"id": "b", "type": "artifact", "src": "/x/b.png", "startSec": 13.0, "endSec": 16.0},
+    ]
+    monkeypatch.setattr(abn_factory, "_plan_shots", lambda *a, **k: [dict(s) for s in planned])
+    monkeypatch.setattr(abn_factory, "_extract_keywords", lambda *a, **k: [])
+    monkeypatch.setattr(abn_factory, "_v2_scene_cards", lambda *a, **k: [])
+
+    seg = {
+        "segment_id": "s0", "title": "Seg", "source_url": "https://x", "duration": 16.0,
+        "screenshot": None, "card": None, "ui": None, "demo": None,
+        "script": "", "words": [], "vo_path": "/x/vo.wav",
+    }
+    tl = abn_factory._build_timeline("ep_xf", 1, [seg])
+    shots = tl["segments"][0]["shots"]
+
+    # first shot hard-cuts in (nothing to dissolve from)
+    assert "transitionSec" not in shots[0]
+    # the kinetic insert carries its own in/out — never gets a crossfade tag
+    kin = next(s for s in shots if s["type"] == "kinetic")
+    assert "transitionSec" not in kin
+    # the subsequent artifact boundary gets a real crossfade duration
+    b = next(s for s in shots if s["id"] == "b")
+    assert b["transitionSec"] == 0.4
+    # and the import path turns that into an OpenShot-bound crossfade effect
+    from services import editor_timeline
+    fx = editor_timeline._shot_effects(b)
+    assert any(e["type"] == "crossfade" and e["params"]["duration"] == 0.4 for e in fx)
+
+
 # ---------------- TIMELINE WRITE: must be atomic (crash-safe), not a truncating write ----------------
 #
 # timeline.json is the ground-truth render props. It used to be written with

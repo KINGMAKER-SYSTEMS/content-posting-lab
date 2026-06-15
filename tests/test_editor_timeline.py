@@ -125,6 +125,47 @@ def test_import_preserves_production_source_for_openshot():
     assert openshot_bridge._asset_type(broll) == "video"
 
 
+def test_import_synthesizes_crossfade_from_shot_transition_for_openshot():
+    """A shot's inter-clip `transitionSec` (the factory's choreographed boundary crossfade)
+    becomes a validated `crossfade` effect on the clip, so OpenShot dissolves the boundary
+    instead of hard-cutting. An explicit `effects` crossfade is NOT duplicated."""
+    from services import openshot_bridge
+
+    abn_timeline = {
+        "episodeId": "ep_xf",
+        "segments": [{
+            "segmentId": "s0",
+            "durationSec": 6.0,
+            "shots": [
+                {"id": "a", "src": "/agenticnews-assets/a.png", "startSec": 0.0, "durationSec": 2.0, "type": "artifact"},
+                {"id": "b", "src": "/agenticnews-assets/b.png", "startSec": 2.0, "durationSec": 2.0,
+                 "type": "artifact", "transitionSec": 0.4},
+                {"id": "c", "src": "/agenticnews-assets/c.png", "startSec": 4.0, "durationSec": 2.0,
+                 "type": "artifact", "transitionSec": 0.5,
+                 "effects": [{"id": "fx_xf", "type": "crossfade", "params": {"duration": 1.0}}]},
+            ],
+        }],
+    }
+    project = timeline.project_from_abn_timeline("proj_xf", abn_timeline, source_episode_id="ep_xf")
+
+    def clip_for(src):
+        asset_id = next(a["id"] for a in project["assets"].values() if a["src"] == src)
+        return next(c for c in project["clips"].values() if c["assetId"] == asset_id)
+
+    a, b, c = (clip_for(f"/agenticnews-assets/{n}.png") for n in ("a", "b", "c"))
+    # shot a (first / no transition) hard-cuts in
+    assert not any(e["type"] == "crossfade" for e in a["effects"])
+    # shot b gets a synthesized crossfade of its transitionSec
+    xf_b = [e for e in b["effects"] if e["type"] == "crossfade"]
+    assert len(xf_b) == 1 and xf_b[0]["params"]["duration"] == 0.4
+    # shot c already had an explicit crossfade — not duplicated, the explicit one wins
+    xf_c = [e for e in c["effects"] if e["type"] == "crossfade"]
+    assert len(xf_c) == 1 and xf_c[0]["params"]["duration"] == 1.0
+    # the synthesized crossfade survives translation to an OpenShot Fade(in) dissolve
+    fx = openshot_bridge.effect_json(xf_b[0], fps=30)
+    assert fx["type"] == "Fade"
+
+
 def test_music_bed_imports_pre_ducked_under_vo():
     """The music bed must import ducked (0.22, the factory convention) so a render has
     music UNDER the VO, not competing with it at full volume. VO stays at 1.0."""

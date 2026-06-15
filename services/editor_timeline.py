@@ -346,12 +346,18 @@ def _clip(
 
 
 def _shot_effects(shot: dict[str, Any]) -> list[dict[str, Any]]:
-    """Promote an ABN shot's `effects` to validated active clip effects.
+    """Promote an ABN shot's `effects` (and inter-clip `transitionSec`) to clip effects.
 
     The shot effect shape already matches the editor effect contract, so each is
     run through `_validated_effect`. Any effect outside the supported vocabulary
     (EFFECT_TYPES) is skipped rather than aborting the import — the raw shot is
     still preserved under clip.metadata.shot, so nothing is lost.
+
+    A shot's `transitionSec` is the factory's choreographed crossfade into this clip
+    from the previous one (abn_factory._build_timeline tags shot boundaries with it).
+    It's synthesized into a start-anchored `crossfade` effect here so OpenShot dissolves
+    the shot boundary instead of hard-cutting. An explicit `effects` crossfade wins —
+    if one is already present we don't add a duplicate.
     """
 
     out: list[dict[str, Any]] = []
@@ -360,6 +366,16 @@ def _shot_effects(shot: dict[str, Any]) -> list[dict[str, Any]]:
             out.append(_validated_effect(effect))
         except CommandValidationError:
             continue
+    transition = shot.get("transitionSec")
+    if transition not in (None, "") and not any(e["type"] == "crossfade" for e in out):
+        try:
+            out.append(
+                _validated_effect(
+                    {"id": "xf_shot", "type": "crossfade", "params": {"duration": float(transition)}}
+                )
+            )
+        except (CommandValidationError, TypeError, ValueError):
+            pass
     return out
 
 
