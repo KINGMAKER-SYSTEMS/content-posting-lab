@@ -454,7 +454,7 @@ def apply_command(project: dict[str, Any], command: dict[str, Any]) -> dict[str,
         project["clips"].pop(str(created_clip_id), None)
         after["clip"] = copy.deepcopy(project["clips"][str(original["id"])])
         after["deletedClipId"] = str(created_clip_id)
-    elif op in {"clip.move", "clip.trim", "clip.update", "clip.hide", "clip.show", "clip.mute", "clip.unmute", "clip.transform", "clip.opacity", "clip.volume"}:
+    elif op in {"clip.move", "clip.trim", "clip.update", "clip.hide", "clip.show", "clip.mute", "clip.unmute", "clip.transform", "clip.opacity", "clip.volume", "clip.keyframes", "clip.effect.add", "clip.effect.update", "clip.effect.delete"}:
         clip = _require_clip(project, payload.get("clipId"))
         before["clip"] = copy.deepcopy(clip)
         _mutate_clip(project, op, clip, payload)
@@ -650,6 +650,32 @@ def _inverse_command(entry: dict[str, Any], *, actor: str, expected_revision: in
     op = str(entry.get("op") or "")
     before = entry.get("before") or {}
     after = entry.get("after") or {}
+    if op == "clip.keyframes" and before.get("clip"):
+        return {
+            "op": "clip.keyframes",
+            "actor": actor,
+            "expectedRevision": expected_revision,
+            "revertsCommandId": entry.get("id"),
+            "payload": {
+                "clipId": before["clip"]["id"],
+                "keyframes": copy.deepcopy(before["clip"].get("keyframes") or []),
+            },
+        }
+    if op in {
+        "clip.effect.add",
+        "clip.effect.update",
+        "clip.effect.delete",
+    } and before.get("clip"):
+        return {
+            "op": "clip.update",
+            "actor": actor,
+            "expectedRevision": expected_revision,
+            "revertsCommandId": entry.get("id"),
+            "payload": {
+                "clipId": before["clip"]["id"],
+                "patch": {"effects": copy.deepcopy(before["clip"].get("effects") or [])},
+            },
+        }
     if op in {
         "clip.move",
         "clip.trim",
@@ -834,12 +860,13 @@ def _mutate_clip(project: dict[str, Any], op: str, clip: dict[str, Any], payload
                     "muted",
                     "volume",
                     "transform",
+                    "effects",
                 )
                 if key in payload
             }
         if not isinstance(patch, dict):
             raise CommandValidationError("patch must be an object")
-        for key in ("start", "duration", "sourceStart", "trackId", "enabled", "muted", "volume", "transform"):
+        for key in ("start", "duration", "sourceStart", "trackId", "enabled", "muted", "volume", "transform", "effects"):
             if key in patch:
                 if key in {"start", "sourceStart"}:
                     clip[key] = _non_negative(patch[key], key)
@@ -856,6 +883,11 @@ def _mutate_clip(project: dict[str, Any], op: str, clip: dict[str, Any], payload
                     if not isinstance(transform, dict):
                         raise CommandValidationError("transform must be an object")
                     clip["transform"] = _validated_transform(transform)
+                elif key == "effects":
+                    raw = patch.get("effects")
+                    if not isinstance(raw, list):
+                        raise CommandValidationError("effects must be a list")
+                    clip["effects"] = [_validated_effect(e) for e in raw]
                 else:
                     clip[key] = patch[key]
     elif op == "clip.hide":
@@ -877,6 +909,128 @@ def _mutate_clip(project: dict[str, Any], op: str, clip: dict[str, Any], payload
         )
     elif op == "clip.volume":
         clip["volume"] = _non_negative(payload.get("volume"), "volume")
+    elif op == "clip.keyframes":
+        clip["keyframes"] = _validated_keyframes(payload.get("keyframes"))
+    elif op == "clip.effect.add":
+        effect = _validated_effect(payload.get("effect") or payload)
+        effects = clip.setdefault("effects", [])
+        if any(str(e.get("id")) == effect["id"] for e in effects):
+            raise CommandValidationError(f"effect already exists: {effect['id']}")
+        effects.append(effect)
+    elif op == "clip.effect.update":
+        effect = _validated_effect(payload.get("effect") or payload)
+        effects = clip.setdefault("effects", [])
+        for index, existing in enumerate(effects):
+            if str(existing.get("id")) == effect["id"]:
+                effects[index] = effect
+                break
+        else:
+            raise CommandValidationError(f"effect does not exist: {effect['id']}")
+    elif op == "clip.effect.delete":
+        effect_id = str(payload.get("effectId") or "")
+        effects = clip.setdefault("effects", [])
+        kept = [e for e in effects if str(e.get("id")) != effect_id]
+        if len(kept) == len(effects):
+            raise CommandValidationError(f"effect does not exist: {effect_id}")
+        clip["effects"] = kept
+
+
+# Editor-property names a clip-level keyframe track may animate. These map 1:1 to
+# OpenShot clip-JSON keys in openshot_bridge.clip_json; anything else is rejected
+# here so a bad envelope never reaches the compiler.
+KEYFRAME_PROPERTIES = frozenset(
+    {"volume", "opacity", "scale", "x", "y", "rotation"}
+)
+KEYFRAME_INTERPOLATIONS = frozenset({"linear", "constant", "bezier"})
+
+
+def _validated_keyframes(value: Any) -> list[dict[str, Any]]:
+    """Validate a clip's keyframe envelope list.
+
+    Shape: ``[{"property": "volume", "points": [{"t": 0.0, "value": 1.0,
+    "interp": "linear"}, ...]}, ...]``. ``t`` is seconds relative to the clip
+    start; ``value`` is in editor units (0..1 for volume/opacity). Translation to
+    OpenShot multi-Point keyframe JSON happens in openshot_bridge.
+    """
+
+    if value in (None, []):
+        return []
+    if not isinstance(value, list):
+        raise CommandValidationError("keyframes must be a list")
+    out: list[dict[str, Any]] = []
+    for track in value:
+        if not isinstance(track, dict):
+            raise CommandValidationError("keyframe track must be an object")
+        prop = str(track.get("property") or "")
+        if prop not in KEYFRAME_PROPERTIES:
+            raise CommandValidationError(f"unsupported keyframe property: {prop}")
+        raw_points = track.get("points")
+        if not isinstance(raw_points, list) or not raw_points:
+            raise CommandValidationError(f"keyframe track {prop} requires points")
+        points: list[dict[str, Any]] = []
+        for point in raw_points:
+            if not isinstance(point, dict):
+                raise CommandValidationError("keyframe point must be an object")
+            interp = str(point.get("interp") or "linear")
+            if interp not in KEYFRAME_INTERPOLATIONS:
+                raise CommandValidationError(f"unsupported keyframe interp: {interp}")
+            points.append(
+                {
+                    "t": _non_negative(point.get("t"), "keyframe.t"),
+                    "value": _finite_number(point.get("value"), "keyframe.value"),
+                    "interp": interp,
+                }
+            )
+        points.sort(key=lambda p: p["t"])
+        out.append({"property": prop, "points": points})
+    return out
+
+
+# Closed clip-effect vocabulary. Each entry maps an editor effect `type` to the
+# numeric params it accepts (param name -> (low, high) inclusive bounds). These
+# translate 1:1 to OpenShot effect JSON in openshot_bridge.effect_json; any type
+# or param outside this table is rejected here so a bad effect never reaches the
+# compiler. Fades/crossfades cover ducking-tail and clip-boundary compositing
+# that abn_factory depends on (see music-bed ducking comment above).
+EFFECT_TYPES: dict[str, dict[str, tuple[float, float]]] = {
+    "fadeIn": {"duration": (0.0, 600.0)},
+    "fadeOut": {"duration": (0.0, 600.0)},
+    "crossfade": {"duration": (0.0, 600.0)},
+    "brightness": {"value": (-1.0, 1.0)},
+    "saturation": {"value": (0.0, 4.0)},
+}
+
+
+def _validated_effect(value: Any) -> dict[str, Any]:
+    """Validate a single clip effect.
+
+    Shape: ``{"id": "fx_...", "type": "fadeIn", "params": {"duration": 0.5}}``.
+    ``type`` must be in EFFECT_TYPES; every declared param must be present, numeric
+    and within bounds. Unknown params are rejected. Translation to OpenShot effect
+    JSON happens in openshot_bridge.
+    """
+
+    if not isinstance(value, dict):
+        raise CommandValidationError("effect must be an object")
+    effect_id = value.get("id") or value.get("effectId")
+    if not effect_id:
+        raise CommandValidationError("effect id is required")
+    effect_type = str(value.get("type") or "")
+    spec = EFFECT_TYPES.get(effect_type)
+    if spec is None:
+        raise CommandValidationError(f"unsupported effect type: {effect_type}")
+    raw_params = value.get("params") or {}
+    if not isinstance(raw_params, dict):
+        raise CommandValidationError("effect params must be an object")
+    unknown = set(raw_params) - set(spec)
+    if unknown:
+        raise CommandValidationError(f"unsupported effect params: {sorted(unknown)}")
+    params: dict[str, float] = {}
+    for name, (low, high) in spec.items():
+        if name not in raw_params:
+            raise CommandValidationError(f"effect param required: {name}")
+        params[name] = _bounded_signed(raw_params[name], f"effect.{name}", low, high)
+    return {"id": str(effect_id), "type": effect_type, "params": params}
 
 
 def _non_negative(value: Any, name: str) -> float:
@@ -905,6 +1059,14 @@ def _positive(value: Any, name: str) -> float:
 
 def _bounded(value: Any, name: str, low: float, high: float) -> float:
     out = _non_negative(value, name)
+    if out < low or out > high:
+        raise CommandValidationError(f"{name} must be between {low} and {high}")
+    return out
+
+
+def _bounded_signed(value: Any, name: str, low: float, high: float) -> float:
+    """Like _bounded but allows negative values (effect params such as brightness)."""
+    out = _finite_number(value, name)
     if out < low or out > high:
         raise CommandValidationError(f"{name} must be between {low} and {high}")
     return out

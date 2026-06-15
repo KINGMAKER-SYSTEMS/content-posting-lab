@@ -1179,3 +1179,255 @@ def test_unsupported_op_is_rejected(tmp_path):
         )
 
     assert store.load("proj_bad_op")["revision"] == 0
+
+
+def _project_with_bed_clip(store: timeline.TimelineStore, project_id: str) -> dict:
+    store.save(timeline.new_project(project_id))
+    store.apply_command(
+        project_id,
+        {
+            "op": "asset.import",
+            "actor": "agent",
+            "expectedRevision": 0,
+            "payload": {"assetId": "bed", "type": "audio", "src": "/agenticnews-assets/bed.mp3"},
+        },
+    )
+    return store.apply_command(
+        project_id,
+        {
+            "op": "clip.create",
+            "actor": "agent",
+            "expectedRevision": 1,
+            "payload": {
+                "clipId": "bed_clip",
+                "assetId": "bed",
+                "trackId": "music_1",
+                "start": 0.0,
+                "duration": 6.0,
+            },
+        },
+    )
+
+
+def test_clip_keyframes_command_sets_sorted_envelope_and_reverts(tmp_path):
+    store = timeline.TimelineStore(tmp_path)
+    _project_with_bed_clip(store, "proj_keyframes")
+
+    # Unsorted-on-purpose ducking envelope: full -> ducked under VO -> back up.
+    project = store.apply_command(
+        "proj_keyframes",
+        {
+            "op": "clip.keyframes",
+            "actor": "agent",
+            "expectedRevision": 2,
+            "payload": {
+                "clipId": "bed_clip",
+                "keyframes": [
+                    {
+                        "property": "volume",
+                        "points": [
+                            {"t": 5.0, "value": 1.0, "interp": "linear"},
+                            {"t": 0.0, "value": 1.0},
+                            {"t": 1.0, "value": 0.22, "interp": "constant"},
+                        ],
+                    }
+                ],
+            },
+        },
+    )
+
+    envelope = project["clips"]["bed_clip"]["keyframes"]
+    assert [p["t"] for p in envelope[0]["points"]] == [0.0, 1.0, 5.0]  # sorted by time
+    assert envelope[0]["points"][1]["interp"] == "constant"
+    assert envelope[0]["points"][0]["interp"] == "linear"  # default applied
+
+    reverted = store.revert_last_command("proj_keyframes", actor="human", expected_revision=3)
+    assert reverted["clips"]["bed_clip"]["keyframes"] == []  # back to flat
+
+
+def test_clip_effect_add_update_delete_and_revert(tmp_path):
+    store = timeline.TimelineStore(tmp_path)
+    _seed_project_with_clip(store, "proj_effects")  # clip c1 at revision 2
+
+    # add a fadeIn effect
+    project = store.apply_command(
+        "proj_effects",
+        {
+            "op": "clip.effect.add",
+            "actor": "agent",
+            "expectedRevision": 2,
+            "payload": {"clipId": "c1", "effect": {"id": "fx1", "type": "fadeIn", "params": {"duration": 0.5}}},
+        },
+    )
+    assert project["clips"]["c1"]["effects"] == [
+        {"id": "fx1", "type": "fadeIn", "params": {"duration": 0.5}}
+    ]
+
+    # update it in place
+    project = store.apply_command(
+        "proj_effects",
+        {
+            "op": "clip.effect.update",
+            "actor": "agent",
+            "expectedRevision": 3,
+            "payload": {"clipId": "c1", "effect": {"id": "fx1", "type": "fadeIn", "params": {"duration": 1.5}}},
+        },
+    )
+    assert project["clips"]["c1"]["effects"][0]["params"]["duration"] == 1.5
+
+    # add a second effect, then delete the first by id
+    project = store.apply_command(
+        "proj_effects",
+        {
+            "op": "clip.effect.add",
+            "actor": "agent",
+            "expectedRevision": 4,
+            "payload": {"clipId": "c1", "id": "fx2", "type": "brightness", "params": {"value": -0.3}},
+        },
+    )
+    assert [e["id"] for e in project["clips"]["c1"]["effects"]] == ["fx1", "fx2"]
+
+    project = store.apply_command(
+        "proj_effects",
+        {
+            "op": "clip.effect.delete",
+            "actor": "agent",
+            "expectedRevision": 5,
+            "payload": {"clipId": "c1", "effectId": "fx1"},
+        },
+    )
+    assert [e["id"] for e in project["clips"]["c1"]["effects"]] == ["fx2"]
+
+    # revert the delete: fx1 comes back (effects list restored exactly)
+    reverted = store.revert_last_command("proj_effects", actor="human", expected_revision=6)
+    assert reverted["commandLog"][-1]["op"] == "clip.update"
+    assert [e["id"] for e in reverted["clips"]["c1"]["effects"]] == ["fx1", "fx2"]
+
+    # replay rebuilds identical state from the command log
+    rebuilt = timeline.replay_project(reverted)
+    assert rebuilt["clips"] == reverted["clips"]
+    assert rebuilt["revision"] == reverted["revision"]
+
+
+def test_clip_effect_commands_reject_bad_type_params_and_duplicates(tmp_path):
+    store = timeline.TimelineStore(tmp_path)
+    _seed_project_with_clip(store, "proj_effects_bad")  # revision 2
+
+    # unknown effect type
+    with pytest.raises(timeline.CommandValidationError, match="unsupported effect type"):
+        store.apply_command(
+            "proj_effects_bad",
+            {
+                "op": "clip.effect.add",
+                "actor": "agent",
+                "expectedRevision": 2,
+                "payload": {"clipId": "c1", "id": "fx", "type": "warp", "params": {}},
+            },
+        )
+
+    # out-of-bounds param value
+    with pytest.raises(timeline.CommandValidationError, match="effect.value must be between"):
+        store.apply_command(
+            "proj_effects_bad",
+            {
+                "op": "clip.effect.add",
+                "actor": "agent",
+                "expectedRevision": 2,
+                "payload": {"clipId": "c1", "id": "fx", "type": "brightness", "params": {"value": 5}},
+            },
+        )
+
+    # unknown param key
+    with pytest.raises(timeline.CommandValidationError, match="unsupported effect params"):
+        store.apply_command(
+            "proj_effects_bad",
+            {
+                "op": "clip.effect.add",
+                "actor": "agent",
+                "expectedRevision": 2,
+                "payload": {"clipId": "c1", "id": "fx", "type": "fadeIn", "params": {"duration": 1, "bogus": 2}},
+            },
+        )
+
+    # updating / deleting an effect that doesn't exist
+    with pytest.raises(timeline.CommandValidationError, match="effect does not exist"):
+        store.apply_command(
+            "proj_effects_bad",
+            {
+                "op": "clip.effect.update",
+                "actor": "agent",
+                "expectedRevision": 2,
+                "payload": {"clipId": "c1", "id": "ghost", "type": "fadeIn", "params": {"duration": 1}},
+            },
+        )
+    with pytest.raises(timeline.CommandValidationError, match="effect does not exist"):
+        store.apply_command(
+            "proj_effects_bad",
+            {
+                "op": "clip.effect.delete",
+                "actor": "agent",
+                "expectedRevision": 2,
+                "payload": {"clipId": "c1", "effectId": "ghost"},
+            },
+        )
+
+    # duplicate effect id on add
+    project = store.apply_command(
+        "proj_effects_bad",
+        {
+            "op": "clip.effect.add",
+            "actor": "agent",
+            "expectedRevision": 2,
+            "payload": {"clipId": "c1", "id": "fx1", "type": "fadeOut", "params": {"duration": 0.5}},
+        },
+    )
+    with pytest.raises(timeline.CommandValidationError, match="effect already exists"):
+        store.apply_command(
+            "proj_effects_bad",
+            {
+                "op": "clip.effect.add",
+                "actor": "agent",
+                "expectedRevision": project["revision"],
+                "payload": {"clipId": "c1", "id": "fx1", "type": "fadeIn", "params": {"duration": 0.5}},
+            },
+        )
+
+    # the failed commands never advanced revision past the one good add
+    assert store.load("proj_effects_bad")["revision"] == 3
+
+
+def test_clip_keyframes_command_rejects_bad_property_and_interp(tmp_path):
+    store = timeline.TimelineStore(tmp_path)
+    _project_with_bed_clip(store, "proj_keyframes_bad")
+
+    with pytest.raises(timeline.CommandValidationError, match="unsupported keyframe property"):
+        store.apply_command(
+            "proj_keyframes_bad",
+            {
+                "op": "clip.keyframes",
+                "actor": "agent",
+                "expectedRevision": 2,
+                "payload": {
+                    "clipId": "bed_clip",
+                    "keyframes": [{"property": "warp", "points": [{"t": 0, "value": 1}]}],
+                },
+            },
+        )
+
+    with pytest.raises(timeline.CommandValidationError, match="unsupported keyframe interp"):
+        store.apply_command(
+            "proj_keyframes_bad",
+            {
+                "op": "clip.keyframes",
+                "actor": "agent",
+                "expectedRevision": 2,
+                "payload": {
+                    "clipId": "bed_clip",
+                    "keyframes": [
+                        {"property": "volume", "points": [{"t": 0, "value": 1, "interp": "warp"}]}
+                    ],
+                },
+            },
+        )
+
+    assert store.load("proj_keyframes_bad")["revision"] == 2  # nothing committed

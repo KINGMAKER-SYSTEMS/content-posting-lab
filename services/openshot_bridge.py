@@ -239,8 +239,9 @@ def clip_json(project: dict[str, Any], clip: dict[str, Any], *, asset_root: Path
     volume = 0.0 if clip.get("muted") else float(clip.get("volume", 1.0))
     source_start = float(clip.get("sourceStart") or 0.0)
     duration = max(0.001, float(clip.get("duration") or 0.001))
+    fps = int(project.get("fps") or 30)
 
-    return {
+    payload = {
         "id": str(clip.get("id")),
         "position": float(clip.get("start") or 0.0),
         "layer": _layer_number(project, str(clip.get("trackId") or "")),
@@ -282,9 +283,13 @@ def clip_json(project: dict[str, Any], clip: dict[str, Any], *, asset_root: Path
         "perspective_c3_y": _keyframe(0.0),
         "perspective_c4_x": _keyframe(0.0),
         "perspective_c4_y": _keyframe(0.0),
-        "effects": [],
+        "effects": [effect_json(effect, fps=fps) for effect in (clip.get("effects") or [])],
         "reader": reader_json(project, asset, duration=source_start + duration, asset_root=asset_root),
     }
+    # Per-keyframe envelopes (dynamic volume/opacity/scale/position/rotation)
+    # override the flat single-point defaults above. Empty / absent -> flat.
+    payload.update(_keyframe_overrides(clip.get("keyframes"), fps=fps))
+    return payload
 
 
 def reader_json(
@@ -315,6 +320,46 @@ def reader_json(
         "has_audio": asset_type == "audio",
         "has_video": asset_type != "audio",
     }
+
+
+# Map an editor effect `type` (validated in editor_timeline.EFFECT_TYPES) to the
+# libopenshot effect class name. fadeIn/fadeOut/crossfade all use OpenShot's Fade
+# effect (its `fade` / `type` fields select the direction); color filters map to
+# their own effect classes.
+_EFFECT_CLASS_MAP: dict[str, str] = {
+    "fadeIn": "Fade",
+    "fadeOut": "Fade",
+    "crossfade": "Fade",
+    "brightness": "Brightness",
+    "saturation": "Saturation",
+}
+
+_FADE_DIRECTION_MAP = {"fadeIn": "in", "fadeOut": "out", "crossfade": "in"}
+
+
+def effect_json(effect: dict[str, Any], *, fps: int) -> dict[str, Any]:
+    """Translate one editor clip effect into a libopenshot Effect JSON object.
+
+    The editor effect ``{"id", "type", "params"}`` (closed vocabulary, validated
+    upstream) becomes an OpenShot effect: a `type` class name plus keyframed
+    properties. Unknown types fall through with the raw type so nothing is silently
+    dropped — but editor_timeline rejects those before they ever get here."""
+
+    effect_type = str(effect.get("type") or "")
+    params = effect.get("params") or {}
+    out: dict[str, Any] = {
+        "id": str(effect.get("id") or ""),
+        "type": _EFFECT_CLASS_MAP.get(effect_type, effect_type),
+    }
+    if effect_type in _FADE_DIRECTION_MAP:
+        out["fade"] = _FADE_DIRECTION_MAP[effect_type]
+        out["duration"] = _keyframe(float(params.get("duration") or 0.0))
+    elif effect_type == "brightness":
+        out["brightness"] = _keyframe(float(params.get("value") or 0.0))
+        out["contrast"] = _keyframe(0.0)
+    elif effect_type == "saturation":
+        out["saturation"] = _keyframe(float(params.get("value") or 0.0))
+    return out
 
 
 def _update_action(
@@ -362,6 +407,47 @@ def _openshot_volume(editor_volume: float) -> float:
 
 def _location(value: float) -> float:
     return (max(0.0, min(1.0, value)) - 0.5) * 2.0
+
+
+_INTERPOLATION_MAP = {"linear": LINEAR, "constant": CONSTANT, "bezier": 0}
+
+
+# Map an editor keyframe `property` to the OpenShot clip-JSON key(s) it animates,
+# plus the value transform applied to each point (same transforms the flat
+# defaults use above, so a 1-point envelope reproduces the static value).
+# Defined after _openshot_volume/_location so the dict values resolve at import.
+_KEYFRAME_PROPERTY_MAP: dict[str, tuple[tuple[str, ...], Any]] = {
+    "volume": (("volume",), _openshot_volume),
+    "opacity": (("alpha",), lambda v: max(0.0, min(1.0, float(v)))),
+    "scale": (("scale_x", "scale_y"), lambda v: max(0.0, float(v))),
+    "x": (("location_x",), _location),
+    "y": (("location_y",), _location),
+    "rotation": (("rotation",), float),
+}
+
+
+def _keyframe_overrides(keyframes: Any, *, fps: int) -> dict[str, Any]:
+    if not keyframes:
+        return {}
+    out: dict[str, Any] = {}
+    for track in keyframes:
+        prop = str((track or {}).get("property") or "")
+        mapping = _KEYFRAME_PROPERTY_MAP.get(prop)
+        if not mapping:
+            continue
+        keys, transform = mapping
+        points = [
+            {
+                "co": {"X": float(point.get("t") or 0.0) * fps + 1.0, "Y": transform(point.get("value"))},
+                "interpolation": _INTERPOLATION_MAP.get(str(point.get("interp") or "linear"), LINEAR),
+            }
+            for point in (track or {}).get("points") or []
+        ]
+        if not points:
+            continue
+        for key in keys:
+            out[key] = {"Points": points}
+    return out
 
 
 def _layer_number(project: dict[str, Any], track_id: str) -> int:

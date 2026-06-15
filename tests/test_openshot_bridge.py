@@ -144,6 +144,109 @@ def test_command_log_exports_openshot_apply_json_diff(tmp_path):
     assert diff[0]["key"] == ["clips", {"id": "card_clip"}]
 
 
+def test_clip_keyframe_envelope_translates_to_multipoint_openshot_keyframes(tmp_path):
+    """A volume-ducking envelope on the clip becomes a multi-Point OpenShot
+    keyframe (frame X = t*fps+1, Y scaled to 0..100), overriding the flat default."""
+    project = _project(tmp_path / "bed.wav")
+    project["assets"]["card"]["type"] = "audio"
+    project["clips"]["card_clip"]["trackId"] = "music_1"
+    project["clips"]["card_clip"]["kind"] = "music_bed"
+    project["clips"]["card_clip"]["keyframes"] = [
+        {
+            "property": "volume",
+            "points": [
+                {"t": 0.0, "value": 1.0, "interp": "linear"},
+                {"t": 1.0, "value": 0.22, "interp": "constant"},
+                {"t": 2.0, "value": 1.0, "interp": "linear"},
+            ],
+        }
+    ]
+
+    clip = openshot_bridge.timeline_json(project)["clips"][0]
+
+    points = clip["volume"]["Points"]
+    assert [p["co"]["X"] for p in points] == [1.0, 31.0, 61.0]  # t*30fps + 1
+    assert [round(p["co"]["Y"], 2) for p in points] == [100.0, 22.0, 100.0]  # 0..1 -> 0..100
+    assert points[0]["interpolation"] == openshot_bridge.LINEAR
+    assert points[1]["interpolation"] == openshot_bridge.CONSTANT
+
+
+def test_clip_keyframe_opacity_and_scale_map_to_alpha_and_both_scale_axes(tmp_path):
+    project = _project(tmp_path / "card.png")
+    project["clips"]["card_clip"]["keyframes"] = [
+        {"property": "opacity", "points": [{"t": 0.0, "value": 0.0}, {"t": 0.5, "value": 1.0}]},
+        {"property": "scale", "points": [{"t": 0.0, "value": 1.0}, {"t": 0.5, "value": 1.5}]},
+    ]
+
+    clip = openshot_bridge.timeline_json(project)["clips"][0]
+
+    assert [p["co"]["Y"] for p in clip["alpha"]["Points"]] == [0.0, 1.0]
+    # scale animates BOTH axes from one editor track
+    assert [p["co"]["Y"] for p in clip["scale_x"]["Points"]] == [1.0, 1.5]
+    assert clip["scale_y"]["Points"] == clip["scale_x"]["Points"]
+
+
+def test_empty_keyframes_keep_the_flat_default_keyframe(tmp_path):
+    project = _project(tmp_path / "card.png")
+    project["clips"]["card_clip"]["keyframes"] = []
+
+    clip = openshot_bridge.timeline_json(project)["clips"][0]
+
+    assert clip["scale_x"]["Points"] == [{"co": {"X": 1.0, "Y": 0.8}, "interpolation": openshot_bridge.CONSTANT}]
+
+
+def test_clip_effects_translate_to_openshot_effect_objects(tmp_path):
+    """A clip's editor effects become libopenshot Effect JSON objects on the clip:
+    fades map to the Fade class with a direction + keyframed duration; color filters
+    map to their own effect class. Empty effects stay an empty list."""
+    project = _project(tmp_path / "card.png")
+    project["clips"]["card_clip"]["effects"] = [
+        {"id": "fx1", "type": "fadeIn", "params": {"duration": 0.5}},
+        {"id": "fx2", "type": "brightness", "params": {"value": -0.3}},
+    ]
+
+    clip = openshot_bridge.timeline_json(project)["clips"][0]
+
+    assert [e["id"] for e in clip["effects"]] == ["fx1", "fx2"]
+    fade, bright = clip["effects"]
+    assert fade["type"] == "Fade"
+    assert fade["fade"] == "in"
+    assert fade["duration"]["Points"][0]["co"]["Y"] == 0.5
+    assert bright["type"] == "Brightness"
+    assert bright["brightness"]["Points"][0]["co"]["Y"] == -0.3
+
+
+def test_clip_with_no_effects_exports_empty_effects_list(tmp_path):
+    project = _project(tmp_path / "card.png")
+    project["clips"]["card_clip"]["effects"] = []
+
+    assert openshot_bridge.timeline_json(project)["clips"][0]["effects"] == []
+
+
+def test_effect_add_command_exports_update_action_with_effects(tmp_path):
+    """clip.effect.add flows through the generic clip.* update path: the resulting
+    OpenShot UpdateAction carries the full clip JSON with the new effects array."""
+    project = _project(tmp_path / "card.png")
+    project = editor_timeline.apply_command(
+        project,
+        {
+            "id": "cmd_fx",
+            "op": "clip.effect.add",
+            "actor": "agent",
+            "expectedRevision": 0,
+            "payload": {"clipId": "card_clip", "effect": {"id": "fx1", "type": "fadeOut", "params": {"duration": 1.0}}},
+        },
+    )
+
+    actions = openshot_bridge.flattened_update_actions(project)
+    fx_action = next(a for a in actions if a["transaction"] == "cmd_fx")
+    assert fx_action["type"] == "update"
+    assert fx_action["key"] == ["clips", {"id": "card_clip"}]
+    effects = fx_action["value"]["effects"]
+    assert effects[0]["type"] == "Fade"
+    assert effects[0]["fade"] == "out"
+
+
 def test_unsplit_exports_update_and_delete_actions(tmp_path):
     project = _project(tmp_path / "card.png")
     project = editor_timeline.apply_command(
