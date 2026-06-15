@@ -8,6 +8,7 @@ import json
 import pytest
 
 import services.abn_competitors as ac
+from services import abn_competitors as comp
 
 
 @pytest.fixture
@@ -54,3 +55,33 @@ def test_uses_atomic_save_for_fsync(intel, monkeypatch):
     blob = ac.refresh(force=True)
     assert calls.get("path") == intel
     assert calls.get("data") == blob
+
+
+def test_refresh_writes_intel_atomically_via_shared_store(tmp_path, monkeypatch):
+    """refresh() must persist competitor_intel.json through the shared atomic_save
+    util (tmp + fsync + replace) so a crash mid-write can't truncate the intel cache."""
+    intel = tmp_path / "competitor_intel.json"
+    monkeypatch.setattr(comp, "INTEL_FILE", intel)
+    monkeypatch.setattr(comp, "COMPETITORS", ["ChannelA"])
+    monkeypatch.setattr(
+        comp, "_scrape_channel", lambda h, n=8: [{"channel": h, "title": "A real winner"}]
+    )
+
+    calls = {}
+
+    def _spy(path, data, **kwargs):
+        calls["path"] = path
+        from services.json_store import atomic_save as real
+        real(path, data, **kwargs)
+
+    monkeypatch.setattr(comp, "atomic_save", _spy)
+
+    blob = comp.refresh(force=True)
+
+    # routed through the shared atomic util, no stray tmp left behind...
+    assert calls["path"] == intel
+    assert not list(tmp_path.glob("*.tmp"))
+    # ...and the file round-trips to valid, complete JSON.
+    on_disk = json.loads(intel.read_text())
+    assert on_disk["videos"] == [{"channel": "ChannelA", "title": "A real winner"}]
+    assert on_disk == blob

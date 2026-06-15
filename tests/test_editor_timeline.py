@@ -1561,3 +1561,28 @@ def test_crossfade_and_saturation_effects_validate_and_persist(tmp_path):
             },
         )
     assert store.load("proj_xfade_sat")["revision"] == 4
+
+
+def test_save_uses_atomic_store_and_fsyncs(tmp_path, monkeypatch):
+    """TimelineStore.save must route through the shared atomic_save util (tmp+fsync+
+    replace) — not a bare write — so a crash mid-write can't truncate a timeline config."""
+    calls = {}
+
+    def _spy(path, data, **kwargs):
+        calls["path"] = path
+        calls["data"] = data
+        from services.json_store import atomic_save as real
+        real(path, data, **kwargs)
+
+    monkeypatch.setattr(timeline, "atomic_save", _spy)
+
+    store = timeline.TimelineStore(tmp_path)
+    project = {"projectId": "proj_atomic", "revision": 0, "clips": {}}
+    store.save(project)
+
+    # routed through the shared util...
+    assert calls["path"] == store.path_for("proj_atomic")
+    assert calls["data"]["projectId"] == "proj_atomic"
+    # ...and the real atomic_save left no stray tmp file and round-trips.
+    assert not list(tmp_path.glob("*.tmp"))
+    assert store.load("proj_atomic") == project
