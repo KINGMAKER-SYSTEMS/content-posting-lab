@@ -1214,3 +1214,209 @@ def test_editor_timeline_api_rejects_demo_timeline_ids(sync_client, monkeypatch,
 
     assert response.status_code == 400
     assert "demo editor timelines are disabled" in response.json()["detail"]
+
+
+# ---------------------------------------------------------------------------
+# Direct unit coverage for the render-cache sanitization helpers
+# (routers/agenticnews.py lines 1138-1328). These run on every editor project
+# load; a corruption here can make renders use stale/incorrect artifacts.
+# ---------------------------------------------------------------------------
+
+
+def _present(tmp_path, name: str) -> str:
+    p = tmp_path / name
+    p.write_bytes(b"x")
+    return str(p)
+
+
+def test_strip_source_reference_render_cache_drops_abn_source_backend():
+    project = {"renderCache": {"video": {"backend": "abn-source", "video": "/x.mp4"}}}
+    out, changed = agenticnews_router._strip_source_reference_render_cache(project)
+    assert changed is True
+    assert "video" not in out["renderCache"]
+    # original is not mutated (deepcopy)
+    assert project["renderCache"]["video"]["backend"] == "abn-source"
+
+
+def test_strip_source_reference_render_cache_drops_episode_mp4_path():
+    project = {"renderCache": {"video": {"backend": "openshot", "video": "/a/ep_episode.mp4"}}}
+    out, changed = agenticnews_router._strip_source_reference_render_cache(project)
+    assert changed is True
+    assert "video" not in out["renderCache"]
+
+
+def test_strip_source_reference_render_cache_drops_window_cache_by_start():
+    project = {"renderCache": {"video": {"backend": "openshot", "video": "/a.mp4", "start": 1.5}}}
+    out, changed = agenticnews_router._strip_source_reference_render_cache(project)
+    assert changed is True
+    assert "video" not in out["renderCache"]
+
+
+def test_strip_source_reference_render_cache_drops_short_duration_against_clips():
+    project = {
+        "clips": {"c1": {"start": 0, "duration": 10}},
+        "renderCache": {"video": {"backend": "openshot", "video": "/a.mp4", "duration": 4.0}},
+    }
+    out, changed = agenticnews_router._strip_source_reference_render_cache(project)
+    assert changed is True
+    assert "video" not in out["renderCache"]
+
+
+def test_strip_source_reference_render_cache_keeps_full_length_cache():
+    project = {
+        "clips": {"c1": {"start": 0, "duration": 10}},
+        "renderCache": {"video": {"backend": "openshot", "video": "/a.mp4", "duration": 10.0}},
+    }
+    out, changed = agenticnews_router._strip_source_reference_render_cache(project)
+    assert changed is False
+    assert out is project
+
+
+def test_prune_missing_render_cache_removes_missing_video_window_frame(tmp_path):
+    project = {
+        "renderCache": {
+            "video": {"video": str(tmp_path / "gone.mp4")},
+            "windows": {"w": {"video": str(tmp_path / "gone-w.mp4")}},
+            "frames": {"f": {"frame": str(tmp_path / "gone.png")}},
+        }
+    }
+    out, changed = agenticnews_router._prune_missing_render_cache(project)
+    assert changed is True
+    # every entry was missing -> whole renderCache collapses
+    assert "renderCache" not in out
+
+
+def test_prune_missing_render_cache_keeps_present_files(tmp_path):
+    project = {
+        "renderCache": {
+            "video": {"video": _present(tmp_path, "ok.mp4")},
+            "windows": {"w": {"video": str(tmp_path / "gone-w.mp4")}},
+        }
+    }
+    out, changed = agenticnews_router._prune_missing_render_cache(project)
+    assert changed is True
+    assert out["renderCache"]["video"]["video"].endswith("ok.mp4")
+    assert "windows" not in out["renderCache"]
+
+
+def test_prune_missing_render_cache_noop_when_all_present(tmp_path):
+    project = {"renderCache": {"video": {"video": _present(tmp_path, "ok.mp4")}}}
+    out, changed = agenticnews_router._prune_missing_render_cache(project)
+    assert changed is False
+    assert out is project
+
+
+def test_prune_missing_render_cache_ignores_non_dict_cache():
+    project = {"renderCache": "corrupt"}
+    out, changed = agenticnews_router._prune_missing_render_cache(project)
+    assert changed is False
+    assert out is project
+
+
+def test_prune_stale_revision_render_cache_drops_mismatched_entries(tmp_path):
+    project = {
+        "revision": 4,
+        "renderCache": {
+            "video": {"video": _present(tmp_path, "v.mp4"), "revision": 4},
+            "windows": {"w": {"video": _present(tmp_path, "w.mp4"), "revision": 3}},
+            "frames": {"f": {"frame": _present(tmp_path, "f.png"), "revision": 3}},
+        },
+    }
+    out, changed = agenticnews_router._prune_stale_revision_render_cache(project)
+    assert changed is True
+    assert out["renderCache"]["video"]["revision"] == 4
+    assert "windows" not in out["renderCache"]
+    assert "frames" not in out["renderCache"]
+
+
+def test_prune_stale_revision_render_cache_keeps_matching_revision(tmp_path):
+    project = {
+        "revision": 2,
+        "renderCache": {"video": {"video": _present(tmp_path, "v.mp4"), "revision": 2}},
+    }
+    out, changed = agenticnews_router._prune_stale_revision_render_cache(project)
+    assert changed is False
+    assert out is project
+
+
+def test_stamp_legacy_render_cache_revisions_stamps_unversioned_entries():
+    project = {
+        "revision": 7,
+        "renderCache": {
+            "video": {"video": "/v.mp4"},
+            "windows": {"w": {"video": "/w.mp4"}},
+            "frames": {"f": {"frame": "/f.png"}},
+        },
+    }
+    out, changed = agenticnews_router._stamp_legacy_render_cache_revisions(project)
+    assert changed is True
+    assert out["renderCache"]["video"]["revision"] == 7
+    assert out["renderCache"]["windows"]["w"]["revision"] == 7
+    assert out["renderCache"]["frames"]["f"]["revision"] == 7
+
+
+def test_stamp_legacy_render_cache_revisions_noop_when_already_stamped():
+    project = {"revision": 1, "renderCache": {"video": {"video": "/v.mp4", "revision": 1}}}
+    out, changed = agenticnews_router._stamp_legacy_render_cache_revisions(project)
+    assert changed is False
+    assert out is project
+
+
+def test_render_cache_revision_mismatch_branches():
+    # missing revision key -> treated as compatible (legacy entries)
+    assert agenticnews_router._render_cache_revision_mismatch({}, 3) is False
+    assert agenticnews_router._render_cache_revision_mismatch({"revision": 3}, 3) is False
+    assert agenticnews_router._render_cache_revision_mismatch({"revision": 2}, 3) is True
+    # unparseable revision -> treated as a mismatch (drop it)
+    assert agenticnews_router._render_cache_revision_mismatch({"revision": "nope"}, 3) is True
+
+
+def test_render_cache_path_exists_url_and_local(tmp_path, monkeypatch):
+    monkeypatch.setattr(agenticnews_router.db, "ASSETS_DIR", tmp_path)
+    assert agenticnews_router._render_cache_path_exists("") is False
+    assert agenticnews_router._render_cache_path_exists("https://cdn/x.mp4") is True
+    assert agenticnews_router._render_cache_path_exists("http://cdn/x.mp4") is True
+    present = _present(tmp_path, "local.mp4")
+    assert agenticnews_router._render_cache_path_exists(present) is True
+    assert agenticnews_router._render_cache_path_exists(str(tmp_path / "missing.mp4")) is False
+    # /agenticnews-assets/ prefix resolves under db.ASSETS_DIR
+    (tmp_path / "card.png").write_bytes(b"c")
+    assert agenticnews_router._render_cache_path_exists("/agenticnews-assets/card.png") is True
+    assert agenticnews_router._render_cache_path_exists("/agenticnews-assets/nope.png") is False
+
+
+def test_sanitize_render_cache_composes_all_stages(tmp_path, monkeypatch):
+    """End-to-end at the function level: an abn-source full-video reference is
+    stripped, a missing window is pruned, a present-but-unstamped frame gets the
+    current revision stamped on. One pass, one combined 'changed' flag."""
+    monkeypatch.setattr(agenticnews_router.db, "ASSETS_DIR", tmp_path)
+    project = {
+        "revision": 5,
+        "clips": {},
+        "renderCache": {
+            "video": {"backend": "abn-source", "video": "/agenticnews-assets/ep_episode.mp4"},
+            "windows": {"w": {"video": str(tmp_path / "gone-w.mp4"), "revision": 5}},
+            "frames": {"f": {"frame": _present(tmp_path, "f.png")}},
+        },
+    }
+    out, changed = agenticnews_router._sanitize_render_cache(project)
+    assert changed is True
+    assert "video" not in out["renderCache"]
+    assert "windows" not in out["renderCache"]
+    assert out["renderCache"]["frames"]["f"]["revision"] == 5
+    # original untouched
+    assert project["renderCache"]["video"]["backend"] == "abn-source"
+
+
+def test_sanitize_render_cache_clean_cache_is_noop(tmp_path, monkeypatch):
+    monkeypatch.setattr(agenticnews_router.db, "ASSETS_DIR", tmp_path)
+    project = {
+        "revision": 1,
+        "clips": {"c": {"start": 0, "duration": 2}},
+        "renderCache": {
+            "video": {"backend": "openshot", "video": _present(tmp_path, "v.mp4"), "duration": 2.0, "revision": 1}
+        },
+    }
+    out, changed = agenticnews_router._sanitize_render_cache(project)
+    assert changed is False
+    assert out["renderCache"]["video"]["video"].endswith("v.mp4")
