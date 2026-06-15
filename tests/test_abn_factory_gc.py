@@ -5,6 +5,7 @@ import os
 import shutil
 import time
 from collections import namedtuple
+from pathlib import Path
 
 import pytest
 
@@ -715,3 +716,113 @@ def test_cross_scratch_path_rejects_off_schema_names(store, bad):
         abn_factory._cross_scratch_path(bad)
     # the reject path must not have created a _scratch/ dir as a side effect for a traversal name
     assert not (store / "_scratch" / bad).exists()
+
+
+# --- GC FAIL-SAFE: a swallowed protection-scan error must NOT let the low-disk trim eat a render --
+
+_LOW_DISK = namedtuple("usage", ("total", "used", "free"))(100, 100, 0)
+
+
+def _force_low_disk(monkeypatch):
+    monkeypatch.setattr(shutil, "disk_usage", lambda _: _LOW_DISK)
+
+
+def test_protection_scan_complete_flag_tracks_unreadable_timeline(store):
+    """A timeline JSON that can't be parsed marks the scan INCOMPLETE — the scanner can't promise it
+    saw every referenced render, so it must signal `complete=False` (the fail-safe input)."""
+    (store / "editor_timelines" / "good.json").write_text('{"clips": []}')
+    (store / "editor_timelines" / "broken.json").write_text("{ this is not json")
+
+    _paths, complete = abn_factory._editor_timeline_asset_paths_checked()
+    assert complete is False, "an unparseable timeline must mark the protection scan incomplete"
+
+
+def test_protection_scan_complete_when_all_timelines_readable(store):
+    """No editor_timelines dir or all-readable timelines → scan is COMPLETE (trim is allowed)."""
+    (store / "editor_timelines" / "ok.json").write_text('{"clips": [{"path": "x"}]}')
+    _paths, complete = abn_factory._editor_timeline_asset_paths_checked()
+    assert complete is True
+
+
+def test_protection_scan_incomplete_on_glob_failure(store, monkeypatch):
+    """If even globbing the timeline dir errors (permission denied), the scan is incomplete and the
+    set is empty — the dangerous combination the fail-safe exists for."""
+    real_glob = Path.glob
+
+    def boom(self, pattern):
+        if self.name == "editor_timelines":
+            raise PermissionError("denied")
+        return real_glob(self, pattern)
+
+    monkeypatch.setattr(Path, "glob", boom)
+    paths, complete = abn_factory._editor_timeline_asset_paths_checked()
+    assert paths == set()
+    assert complete is False
+
+
+def _render(store, ep_id, age_s):
+    d = store / ep_id / "renders"
+    d.mkdir(parents=True)
+    f = d / "episode.mp4"
+    f.write_bytes(b"render")
+    t = time.time() - age_s
+    os.utime(f, (t, t))
+    return f
+
+
+def test_purge_disk_skips_render_trim_when_protection_scan_incomplete(store, monkeypatch):
+    """THE BUG THIS TICKET GUARDS: an unreadable timeline JSON (a swallowed parse error) must NOT let
+    the low-disk render trim tombstone old renders. Because the scan couldn't confirm what's still
+    referenced, the destructive trim is skipped entirely — the old render survives. Disk pressure is
+    recoverable; deleting a render an active editor depends on 500s the next render."""
+    old_render = _render(store, "ep_old000", age_s=9000)
+    _render(store, "ep_new000", age_s=10)
+    # A broken timeline → protection scan is incomplete (some refs unknown).
+    (store / "editor_timelines" / "broken.json").write_text("{ not json at all")
+    _force_low_disk(monkeypatch)
+
+    freed = abn_factory.purge_disk(intermediate_age_s=99999, keep_episodes=1, low_disk_gb=999)
+
+    assert old_render.exists(), (
+        "low-disk trim ran despite an incomplete protection scan — it could have eaten a live render"
+    )
+    assert not (store / "_trash" / "ep_old000" / "renders" / "episode.mp4").exists()
+    assert freed == 0
+
+
+def test_purge_disk_still_trims_when_protection_scan_is_complete(store, monkeypatch):
+    """Control: with a clean (complete) protection scan and low disk, the oldest unreferenced render
+    IS trimmed — the fail-safe only blocks the trim when the scan genuinely failed, not always."""
+    old_render = _render(store, "ep_old111", age_s=9000)
+    _render(store, "ep_new111", age_s=10)
+    (store / "editor_timelines" / "clean.json").write_text('{"clips": []}')
+    _force_low_disk(monkeypatch)
+
+    abn_factory.purge_disk(intermediate_age_s=99999, keep_episodes=1, low_disk_gb=999)
+
+    assert not old_render.exists(), "a complete scan + low disk should still trim the oldest render"
+    assert (store / "_trash" / "ep_old111" / "renders" / "episode.mp4").exists(), (
+        "trimmed render must be tombstoned (recoverable), not unlinked"
+    )
+
+
+def test_purge_disk_scratch_reap_survives_protection_check_raising(store, monkeypatch):
+    """A protection check that RAISES mid-loop (e.g. stat/normalize blowing up on one path) must not
+    crash purge_disk or cause it to delete the file it failed to classify — the file is left intact
+    and the GC moves on. Fail-closed on a per-file protection error."""
+    target = _scratch(store, "ep_raise0", "s0_raw.wav")
+
+    real_predicate = abn_factory._is_editor_timeline_protected_asset
+
+    def explode(path, protected):
+        if path == target:
+            raise OSError("simulated stat/permission failure")
+        return real_predicate(path, protected)
+
+    monkeypatch.setattr(abn_factory, "_is_editor_timeline_protected_asset", explode)
+
+    # Must not raise, and must not reap the file it couldn't classify.
+    freed = abn_factory.purge_disk(intermediate_age_s=1, keep_episodes=99, low_disk_gb=0)
+    assert target.exists(), "a scratch file whose protection check raised must be left intact"
+    assert not (store / "_trash" / "ep_raise0" / "scratch" / "s0_raw.wav").exists()
+    assert freed == 0

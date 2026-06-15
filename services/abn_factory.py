@@ -176,16 +176,27 @@ def _normalize_asset_path(path: Path) -> Path:
         return path
 
 
-def _editor_timeline_asset_paths() -> set[Path]:
-    """Return asset paths that are still referenced by Editor Bay timelines."""
+def _editor_timeline_asset_paths_checked() -> tuple[set[Path], bool]:
+    """Like _editor_timeline_asset_paths but also return whether the scan was COMPLETE.
+
+    `complete` is False if any part of the protection scan failed — the timeline dir couldn't be
+    globbed, or any individual timeline JSON couldn't be read/parsed. When the scan is incomplete
+    the returned set may be MISSING references an active Editor Bay timeline still depends on, so a
+    destructive GC must treat an incomplete scan as "protect everything" and skip render trimming
+    (a swallowed stat/permission/parse error must never let the disk-wall trim eat a live render)."""
 
     paths: set[Path] = set()
+    complete = True
     timeline_dir = ASSETS / "editor_timelines"
     asset_root = _normalize_asset_path(ASSETS)
     try:
         timeline_paths = list(timeline_dir.glob("*.json"))
+    except FileNotFoundError:
+        # No editor_timelines dir at all → nothing to protect, and that's a COMPLETE answer.
+        return paths, True
     except Exception:
-        return paths
+        # Permission denied / IO error globbing → we genuinely don't know what's referenced.
+        return paths, False
 
     def collect(value):
         if isinstance(value, dict):
@@ -220,8 +231,16 @@ def _editor_timeline_asset_paths() -> set[Path]:
         try:
             collect(json.loads(timeline_path.read_text()))
         except Exception:
+            # A timeline we can't read/parse may reference renders we now can't see → scan incomplete.
+            complete = False
             continue
-    return paths
+    return paths, complete
+
+
+def _editor_timeline_asset_paths() -> set[Path]:
+    """Return asset paths that are still referenced by Editor Bay timelines."""
+
+    return _editor_timeline_asset_paths_checked()[0]
 
 
 def _editor_timeline_asset_names() -> set[str]:
@@ -3100,7 +3119,7 @@ def purge_disk(intermediate_age_s=1800, keep_episodes=4, low_disk_gb=2.0):
     freed = 0
     try:
         now = time.time()
-        protected_paths = _editor_timeline_asset_paths()
+        protected_paths, protection_complete = _editor_timeline_asset_paths_checked()
         for f in reapable_scratch():
             try:
                 if _is_editor_timeline_protected_asset(f, protected_paths):
@@ -3109,7 +3128,11 @@ def purge_disk(intermediate_age_s=1800, keep_episodes=4, low_disk_gb=2.0):
                     freed += tombstone(f)
             except Exception:
                 pass
-        if _sh2.disk_usage(str(ASSETS)).free / 1e9 < low_disk_gb:
+        # FAIL SAFE: if the protection scan was incomplete (a timeline JSON we couldn't read, or a
+        # glob that errored), we may not know every render an active Editor Bay timeline depends on.
+        # Skip the destructive low-disk render trim rather than risk tombstoning a live render and
+        # 500-ing the next render — disk pressure is recoverable, a deleted in-use render is not.
+        if protection_complete and _sh2.disk_usage(str(ASSETS)).free / 1e9 < low_disk_gb:
             for old in _old_episode_renders()[keep_episodes:]:
                 try:
                     if _is_editor_timeline_protected_asset(old, protected_paths):
@@ -3169,7 +3192,7 @@ async def _gc_segments(keep_recent=12):
         try:
             import shutil as _sh2
             inter_freed = inter_n = 0
-            protected_paths = _editor_timeline_asset_paths()
+            protected_paths, protection_complete = _editor_timeline_asset_paths_checked()
             for f in reapable_scratch():
                 try:
                     if _is_editor_timeline_protected_asset(f, protected_paths):
@@ -3183,7 +3206,9 @@ async def _gc_segments(keep_recent=12):
             # FREE-SPACE GUARD: if disk is critically low, tombstone the oldest real episode renders
             # (keep 4) → _trash/ via tombstone_render(), recoverable safe-delete, never unlink.
             free_gb = _sh2.disk_usage(str(ASSETS)).free / 1e9
-            if free_gb < 2.0:
+            # FAIL SAFE: skip the destructive render trim if the protection scan was incomplete
+            # (see purge_disk) — never tombstone a render an active timeline might still reference.
+            if protection_complete and free_gb < 2.0:
                 for old in _old_episode_renders()[4:]:
                     try:
                         if _is_editor_timeline_protected_asset(old, protected_paths):
