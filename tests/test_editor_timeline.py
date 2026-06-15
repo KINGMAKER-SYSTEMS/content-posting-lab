@@ -1516,6 +1516,107 @@ def test_split_partitions_and_rebases_keyframes_and_effects(tmp_path):
     assert tail["keyframes"][0]["points"][1]["value"] == 0.0  # was t=9.5 on the parent
 
 
+@pytest.mark.xfail(
+    reason="ticket #1: clip.split clones crossfade at full duration onto the tail "
+    "instead of re-fitting it (front_trim+windowed) like editor_render._refit_effects; "
+    "this test pins the correct behavior and flips green when the split bug is fixed",
+    strict=False,
+)
+def test_split_refits_crossfade_duration_on_tail(tmp_path):
+    """clip.split must re-fit a start-anchored crossfade onto the tail half.
+
+    crossfade is start-anchored (it maps to OpenShot's `in` Fade, same as fadeIn —
+    see editor_render._refit_effects / openshot_bridge._FADE_DIRECTION_MAP). It is a
+    whole-clip effect, so the split keeps it on BOTH halves — but the tail's source
+    front is trimmed by `split_offset`, which eats that much of the crossfade ramp.
+    Blindly cloning the parent's full crossfade duration onto the tail (ticket #1 bug)
+    over-fades a windowed clip: a 3s crossfade on a clip split so the tail is 2s long
+    would crossfade the entire tail.
+
+    The render path already gets this right in editor_render._refit_effects with
+    front_trim=split_offset and windowed_duration=tail_duration; clip.split must
+    produce the SAME crossfade duration so the timeline and the compiled video agree.
+    """
+    from services import editor_render
+
+    store = timeline.TimelineStore(tmp_path)
+    store.save(timeline.new_project("proj_split_xfade"))
+    store.apply_command(
+        "proj_split_xfade",
+        {
+            "op": "asset.import",
+            "actor": "agent",
+            "expectedRevision": 0,
+            "payload": {"assetId": "a1", "type": "video", "src": "/a.mp4"},
+        },
+    )
+    store.apply_command(
+        "proj_split_xfade",
+        {
+            "op": "clip.create",
+            "actor": "agent",
+            "expectedRevision": 1,
+            "payload": {
+                "clipId": "c1",
+                "assetId": "a1",
+                "trackId": "video_1",
+                "start": 0.0,
+                "duration": 10.0,
+            },
+        },
+    )
+    store.apply_command(
+        "proj_split_xfade",
+        {
+            "op": "clip.effect.add",
+            "actor": "agent",
+            "expectedRevision": 2,
+            "payload": {"clipId": "c1", "effect": {"id": "xf", "type": "crossfade", "params": {"duration": 3.0}}},
+        },
+    )
+
+    # Split so the tail is only 2s long; the start-anchored 3s crossfade can't survive
+    # intact on a 2s clip whose front was trimmed by 8s.
+    project = store.apply_command(
+        "proj_split_xfade",
+        {
+            "op": "clip.split",
+            "actor": "human",
+            "expectedRevision": 3,
+            "payload": {"clipId": "c1", "at": 8.0, "newClipId": "c1_tail"},
+        },
+    )
+
+    head = project["clips"]["c1"]
+    tail = project["clips"]["c1_tail"]
+
+    split_offset = 8.0
+    tail_duration = 2.0
+
+    # Head owns the original start, so its crossfade is unchanged.
+    head_xf = next(e for e in head["effects"] if e["id"] == "xf")
+    assert head_xf["params"]["duration"] == 3.0
+
+    # Tail's crossfade must match exactly what the render path would compute, so the
+    # timeline state and the compiled OpenShot fade agree. front_trim is the split
+    # offset (the tail's source front moves forward by that much); windowed_duration
+    # is the tail's new duration.
+    expected = editor_render._refit_effects(
+        [{"id": "xf", "type": "crossfade", "params": {"duration": 3.0}}],
+        front_trim=split_offset,
+        windowed_duration=tail_duration,
+    )
+    expected_duration = expected[0]["params"]["duration"]
+    # Sanity: a 3s start-anchored fade trimmed by 8s collapses to 0 (then clamped).
+    assert expected_duration == 0.0
+
+    tail_xf = next(e for e in tail["effects"] if e["id"] == "xf")
+    assert tail_xf["params"]["duration"] == expected_duration, (
+        "tail crossfade duration must be re-fit (front_trim+windowed) to match "
+        "editor_render._refit_effects, not cloned at the parent's full duration"
+    )
+
+
 def test_unsupported_op_is_rejected(tmp_path):
     store = timeline.TimelineStore(tmp_path)
     store.save(timeline.new_project("proj_bad_op"))
