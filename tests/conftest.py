@@ -52,6 +52,22 @@ def reset_in_memory_state():
     captions_router._ws_clients.clear()
 
 
+@pytest.fixture(autouse=True)
+def no_live_codex_image(monkeypatch):
+    """Keep the test suite hermetic. The app lifespan (`abn_factory.start_factory`) fires a
+    fire-and-forget card-background warmup that shells out to the real Codex `image_gen` tool
+    (a live, minutes-long PRO-plan call) whenever the v2 visual system imports cleanly. Any test
+    that enters the app lifespan (every `sync_client`/`LifespanManager` based API test) would
+    otherwise spawn that live generation and hang the whole run. Neutralize the shell-out at the
+    source so the warmup is a no-op; tests that exercise the promoter explicitly still override
+    `_codex_image` with their own stub, which wins over this default."""
+    try:
+        import services.abn_factory as abn_factory
+    except Exception:
+        return
+    monkeypatch.setattr(abn_factory, "_codex_image", lambda *a, **k: None, raising=False)
+
+
 @pytest.fixture
 async def async_client():
     transport = httpx.ASGITransport(app=app)
