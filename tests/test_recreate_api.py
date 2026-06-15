@@ -41,7 +41,7 @@ async def test_delete_existing_job_removes_dir():
 async def test_delete_job_survives_rmtree_failure(monkeypatch):
     """A locked/permission-blocked dir must not 500 the DELETE route — the
     rmtree is best-effort (ignore_errors=True), so the route still returns 200."""
-    import routers.recreate as recreate
+    import services.fsutil as fsutil
 
     job_dir = get_project_recreate_dir("quick-test") / "locked-job"
     job_dir.mkdir(parents=True)
@@ -51,7 +51,11 @@ async def test_delete_job_survives_rmtree_failure(monkeypatch):
         if not ignore_errors:
             raise PermissionError("dir is locked")
 
-    monkeypatch.setattr(recreate.shutil, "rmtree", boom)
+    # The route now deletes through services.fsutil.safe_rmtree, which calls
+    # shutil.rmtree WITHOUT ignore_errors and swallows the resulting OSError
+    # (best-effort, never raises). Patch the underlying chokepoint so the route
+    # still returns 200 on a locked dir.
+    monkeypatch.setattr(fsutil.shutil, "rmtree", boom)
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:

@@ -1838,10 +1838,14 @@ def test_imported_clip_crossfade_survives_split_and_exports_to_openshot():
     head = split["clips"][clip_id]
     tail = split["clips"]["xf_tail"]
 
-    # Head owns the original start -> keeps the crossfade; tail (mid-clip) drops it,
-    # so there is no stray start-anchored fade on a clip that has no real start.
+    # Head owns the original start -> keeps the crossfade at full duration. The tail's
+    # front is trimmed by the 6s split, so its start-anchored crossfade is RE-FIT (not
+    # dropped) exactly like editor_render._refit_effects: the 2s crossfade collapses to
+    # a duration-0 no-op fade. Keeping the re-fit fade (rather than dropping it) keeps
+    # the timeline state and the compiled OpenShot fade in agreement.
     assert [e["type"] for e in head["effects"]] == ["crossfade"]
-    assert tail["effects"] == []
+    assert [e["type"] for e in tail["effects"]] == ["crossfade"]
+    assert tail["effects"][0]["params"]["duration"] == 0.0  # collapsed by the front trim
 
     # The surviving head crossfade exports to a libopenshot Fade-`in` with its duration.
     head_json = openshot_bridge.clip_json(split, head)

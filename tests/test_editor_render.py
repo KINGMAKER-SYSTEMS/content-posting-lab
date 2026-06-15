@@ -1142,7 +1142,10 @@ def test_split_clip_crossfade_refits_through_render_window_into_openshot_fade():
         "keyframes": [], "metadata": {},
     }
 
-    # Split at t=8 -> head [0,8) keeps the 3s start-anchored crossfade, tail drops it.
+    # Split at t=8 -> head [0,8) keeps the 3s start-anchored crossfade at full duration.
+    # The tail's 8s-trimmed front RE-FITS that start-anchored crossfade (matching
+    # editor_render._refit_effects) rather than dropping it: 3.0 - 8.0 clamps to a
+    # duration-0 no-op fade. Keeping the re-fit fade keeps timeline + compiler in sync.
     split = timeline.apply_command(
         project,
         {
@@ -1151,7 +1154,8 @@ def test_split_clip_crossfade_refits_through_render_window_into_openshot_fade():
         },
     )
     assert [e["type"] for e in split["clips"]["c1"]["effects"]] == ["crossfade"]
-    assert split["clips"]["c1_tail"]["effects"] == []  # tail has no real start -> no fade
+    assert [e["type"] for e in split["clips"]["c1_tail"]["effects"]] == ["crossfade"]
+    assert split["clips"]["c1_tail"]["effects"][0]["params"]["duration"] == 0.0
 
     # Render-window the head with a 2s front trim (window t=2..6). The start-anchored
     # crossfade must shrink by 2s: 3.0 - 2.0 = 1.0s, clamped to the 4s window.

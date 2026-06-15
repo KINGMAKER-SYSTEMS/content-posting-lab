@@ -1598,10 +1598,15 @@ async def test_missing_abn_youtube_alerts_once_not_per_cycle(monkeypatch):
     """The auto-publish loop tries `import services.abn_youtube`, which does not exist. With an
     episode waiting in review the operator MUST be told the feature is broken — but exactly once,
     as a distinct 'unavailable' alert, not a generic per-cycle 'error' that buries the signal in
-    the 600-entry ring buffer."""
-    import importlib.util
-    assert importlib.util.find_spec("services.abn_youtube") is None, \
-        "test premise: abn_youtube is genuinely absent"
+    the 600-entry ring buffer.
+
+    services/abn_youtube.py now ships (the publish endpoints need it), so the loop's
+    ModuleNotFoundError branch can no longer fire on a genuinely-absent module. Force
+    the absence at import time instead — `sys.modules[name] = None` makes
+    `import services.abn_youtube` raise ModuleNotFoundError — so this still pins the
+    once-only 'unavailable' alert behavior of the missing-module code path."""
+    import sys
+    monkeypatch.setitem(sys.modules, "services.abn_youtube", None)
 
     pending = [{"id": "ep_pub01", "kind": "episode", "stage": "review"}]
     events = await _drive_loop_cycles(monkeypatch, n_cycles=3, pending_eps=pending)
