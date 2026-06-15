@@ -1077,6 +1077,54 @@ def test_windowed_clip_refits_fade_effect_durations_to_window():
     orig = project["clips"]["card_clip"]["effects"]
     assert orig[0]["params"]["duration"] == pytest.approx(1.0)
     assert orig[1]["params"]["duration"] == pytest.approx(1.0)
+
+
+def test_split_clip_crossfade_refits_through_render_window_into_openshot_fade():
+    """End-to-end carry-through: a clip with a start-anchored crossfade is SPLIT, then
+    the surviving-crossfade HEAD is windowed during render (front-trimmed), then exported
+    to OpenShot. The crossfade must re-fit to the front-trim AND land as a single OpenShot
+    Fade-`in` effect whose duration keyframe carries the re-fit seconds. This is the
+    split -> windowed-render -> OpenShot-export path the ticket flags as untested; a
+    regression here means the timeline state and the compiled video disagree on the fade.
+    """
+    project = timeline.new_project("xf_carry", width=64, height=48, fps=10)
+    project["assets"]["a1"] = {"id": "a1", "type": "video", "src": "/x.mp4", "metadata": {}}
+    project["clips"]["c1"] = {
+        "id": "c1", "assetId": "a1", "trackId": "video_1", "kind": "video",
+        "start": 0.0, "duration": 10.0, "sourceStart": 0.0,
+        "enabled": True, "muted": False, "volume": 1.0,
+        "transform": {"x": 0.5, "y": 0.5, "scale": 1.0, "opacity": 1.0},
+        "effects": [{"id": "xf", "type": "crossfade", "params": {"duration": 3.0}}],
+        "keyframes": [], "metadata": {},
+    }
+
+    # Split at t=8 -> head [0,8) keeps the 3s start-anchored crossfade, tail drops it.
+    split = timeline.apply_command(
+        project,
+        {
+            "op": "clip.split", "actor": "human", "expectedRevision": 0,
+            "payload": {"clipId": "c1", "at": 8.0, "newClipId": "c1_tail"},
+        },
+    )
+    assert [e["type"] for e in split["clips"]["c1"]["effects"]] == ["crossfade"]
+    assert split["clips"]["c1_tail"]["effects"] == []  # tail has no real start -> no fade
+
+    # Render-window the head with a 2s front trim (window t=2..6). The start-anchored
+    # crossfade must shrink by 2s: 3.0 - 2.0 = 1.0s, clamped to the 4s window.
+    scoped = editor_render._render_scope_project(split, window_start=2.0, duration=4.0)
+    head_scoped = scoped["clips"]["c1"]
+    xf = next(e for e in head_scoped["effects"] if e["id"] == "xf")
+    assert xf["params"]["duration"] == pytest.approx(1.0)
+
+    # Export the windowed head to OpenShot: ONE Fade-`in` effect carrying the re-fit
+    # duration as a single keyframe Point (no duplicate, correct direction + value).
+    clip_json = openshot_bridge.clip_json(scoped, head_scoped)
+    fades = [e for e in clip_json["effects"] if e["type"] == "Fade"]
+    assert len(fades) == 1
+    assert fades[0]["fade"] == "in"  # crossfade -> OpenShot `in` Fade
+    assert fades[0]["duration"]["Points"][0]["co"]["Y"] == pytest.approx(1.0)
+
+
 def _kf_clip(clip_id: str, *, start: float, duration: float, source_start: float,
              tracks: list[dict]) -> dict:
     """A windowing fixture clip that carries keyframe tracks."""

@@ -1665,6 +1665,113 @@ def test_split_refits_crossfade_duration_on_tail(tmp_path):
     )
 
 
+def test_abn_import_does_not_duplicate_crossfade_when_shot_has_explicit_and_transition():
+    """An ABN shot can carry BOTH an explicit `effects` crossfade and an inter-clip
+    `transitionSec` (the factory's choreographed boundary dissolve). Both routes
+    create a `crossfade` editor effect, so a naive import would stack TWO crossfades
+    on one clip — conflicting Fade-`in` effects OpenShot would composite twice.
+
+    `_shot_effects` dedupes: an explicit crossfade WINS and the synthesized
+    transitionSec one is suppressed. This pins the no-duplicate contract the ticket
+    flags (explicit-vs-synthesized crossfade interaction)."""
+    shot = {
+        "id": "shot_x",
+        "src": "/agenticnews-assets/remotion_a.mp4",
+        "type": "remotion",
+        "startSec": 0.0,
+        "durationSec": 4.0,
+        # Author-set explicit crossfade.
+        "effects": [{"id": "fx_xf", "type": "crossfade", "params": {"duration": 0.5}}],
+        # Factory-choreographed boundary transition into this shot.
+        "transitionSec": 1.0,
+    }
+    effects = timeline._shot_effects(shot)
+
+    crossfades = [e for e in effects if e["type"] == "crossfade"]
+    assert len(crossfades) == 1, "explicit + transitionSec must NOT stack two crossfades"
+    # The explicit one wins; the synthesized `xf_shot` (transitionSec=1.0) is dropped.
+    assert crossfades[0]["id"] == "fx_xf"
+    assert crossfades[0]["params"]["duration"] == 0.5
+
+
+def test_abn_import_synthesizes_single_crossfade_from_transition_only():
+    """A shot carrying only `transitionSec` (no explicit effects crossfade) gets
+    exactly one synthesized start-anchored crossfade at that duration — the factory's
+    boundary dissolve reaching OpenShot without a manual edit."""
+    shot = {"id": "s2", "src": "/agenticnews-assets/y.mp4", "type": "remotion", "transitionSec": 0.75}
+    effects = timeline._shot_effects(shot)
+
+    crossfades = [e for e in effects if e["type"] == "crossfade"]
+    assert len(crossfades) == 1
+    assert crossfades[0]["id"] == "xf_shot"
+    assert crossfades[0]["params"]["duration"] == 0.75
+
+
+def test_imported_clip_crossfade_survives_split_and_exports_to_openshot():
+    """End-to-end: an imported ABN clip with a synthesized transitionSec crossfade is
+    split, then exported to OpenShot. The split keeps the start-anchored crossfade on
+    the HEAD (which owns the original clip start), drops it from the tail, and the head
+    exports to a libopenshot Fade-`in` effect carrying that crossfade's duration. This
+    proves the crossfade survives the import -> split -> OpenShot-export pipeline as a
+    single, correctly-directed fade (no duplicate, no conflicting tail fade)."""
+    from services import openshot_bridge
+
+    abn = {
+        "episodeId": "ep_xf",
+        "fps": 10,
+        "width": 64,
+        "height": 48,
+        "totalSec": 8.0,
+        "segments": [
+            {
+                "segmentId": "s0",
+                "durationSec": 8.0,
+                "shots": [
+                    {
+                        "id": "shot_a",
+                        "src": "/agenticnews-assets/remotion_a.mp4",
+                        "type": "remotion",
+                        "startSec": 0.0,
+                        "durationSec": 8.0,
+                        "transitionSec": 2.0,
+                    }
+                ],
+            }
+        ],
+    }
+    project = timeline.project_from_abn_timeline("proj_xf_e2e", abn)
+    clip_id = next(
+        cid for cid, clip in project["clips"].items() if clip["kind"] == "remotion"
+    )
+    # The import synthesized exactly one start-anchored crossfade.
+    assert [e["type"] for e in project["clips"][clip_id]["effects"]] == ["crossfade"]
+
+    project["revision"] = 0  # apply_command targets a fresh-revision project
+    split = timeline.apply_command(
+        project,
+        {
+            "op": "clip.split",
+            "actor": "human",
+            "expectedRevision": 0,
+            "payload": {"clipId": clip_id, "at": 6.0, "newClipId": "xf_tail"},
+        },
+    )
+    head = split["clips"][clip_id]
+    tail = split["clips"]["xf_tail"]
+
+    # Head owns the original start -> keeps the crossfade; tail (mid-clip) drops it,
+    # so there is no stray start-anchored fade on a clip that has no real start.
+    assert [e["type"] for e in head["effects"]] == ["crossfade"]
+    assert tail["effects"] == []
+
+    # The surviving head crossfade exports to a libopenshot Fade-`in` with its duration.
+    head_json = openshot_bridge.clip_json(split, head)
+    fades = [e for e in head_json["effects"] if e["type"] == "Fade"]
+    assert len(fades) == 1, "exactly one Fade effect (no duplicate from synth+export)"
+    assert fades[0]["fade"] == "in"  # crossfade is start-anchored
+    assert fades[0]["duration"]["Points"][0]["co"]["Y"] == 2.0  # carried duration
+
+
 def test_unsupported_op_is_rejected(tmp_path):
     store = timeline.TimelineStore(tmp_path)
     store.save(timeline.new_project("proj_bad_op"))
