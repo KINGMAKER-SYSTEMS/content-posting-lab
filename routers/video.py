@@ -598,7 +598,7 @@ async def download_all(job_id: str):
                         zf.write(filepath, rel)
                         written.add(rel)
     except Exception:
-        os.unlink(tmp_path)
+        safe_unlink(tmp_path)
         raise
 
     zip_size = os.path.getsize(tmp_path)
@@ -660,11 +660,11 @@ async def bulk_download(body: dict):
                                 zf.write(fp, f"{jid}/{crop['file']}")
                                 file_count += 1
     except Exception:
-        os.unlink(tmp_path)
+        safe_unlink(tmp_path)
         raise
 
     if file_count == 0:
-        os.unlink(tmp_path)
+        safe_unlink(tmp_path)
         raise HTTPException(status_code=400, detail="No completed videos found in the selected jobs")
 
     zip_size = os.path.getsize(tmp_path)

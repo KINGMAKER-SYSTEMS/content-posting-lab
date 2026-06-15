@@ -59,3 +59,20 @@ def test_abn_factory_uses_safe_unlink_in_screenshot():
     assert "except Exception: pass" not in src
     # ...replaced by the shared helper on the rejected screenshot.
     assert src.count("safe_unlink(out)") == 2
+
+
+def test_video_download_handlers_use_safe_unlink():
+    """Regression: the zip-download handlers in routers.video must clean up
+    their temp .zip via safe_unlink, not a bare os.unlink that crashes the
+    request if the temp file is already gone/locked in concurrent download
+    paths. Covers download_all (1 cleanup) and bulk_download (2 cleanups)."""
+    import inspect
+
+    import routers.video as video
+
+    for fn in (video.download_all, video.bulk_download):
+        src = inspect.getsource(fn)
+        # No bare os.unlink survives in the cleanup blocks...
+        assert "os.unlink(" not in src, f"{fn.__name__} still uses bare os.unlink"
+        # ...every temp cleanup goes through the swallowing helper.
+        assert "safe_unlink(tmp_path)" in src
