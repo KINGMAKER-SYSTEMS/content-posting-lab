@@ -688,6 +688,60 @@ def test_split_marker_note_and_property_commands(tmp_path):
     assert project["notes"]["n1"]["suggestedCommand"]["op"] == "clip.move"
 
 
+def test_clip_hide_show_mute_unmute_toggle_enabled_and_muted_flags(tmp_path):
+    """The four UI visibility/audio toggles flip exactly the `enabled`/`muted`
+    booleans and leave every other clip field untouched."""
+    store = timeline.TimelineStore(tmp_path)
+    project = _seed_project_with_clip(store, "proj_toggles")
+
+    # Fresh clips start visible and audible.
+    assert project["clips"]["c1"]["enabled"] is True
+    assert project["clips"]["c1"]["muted"] is False
+
+    for revision, (op, expected_enabled, expected_muted) in enumerate(
+        [
+            ("clip.hide", False, False),
+            ("clip.mute", False, True),
+            ("clip.show", True, True),
+            ("clip.unmute", True, False),
+        ],
+        start=2,
+    ):
+        project = store.apply_command(
+            "proj_toggles",
+            {"op": op, "actor": "human", "expectedRevision": revision, "payload": {"clipId": "c1"}},
+        )
+        assert project["clips"]["c1"]["enabled"] is expected_enabled, op
+        assert project["clips"]["c1"]["muted"] is expected_muted, op
+
+    # No collateral damage to the rest of the clip.
+    assert project["clips"]["c1"]["start"] == 0
+    assert project["clips"]["c1"]["duration"] == 4
+    assert project["clips"]["c1"]["volume"] == 1.0
+
+
+def test_revert_last_clip_mute_restores_prior_muted_flag_and_replays(tmp_path):
+    """clip.mute is revertible: undo emits a clip.update inverse that restores the
+    pre-mute `muted` flag, and replaying the log reproduces the reverted state."""
+    store = timeline.TimelineStore(tmp_path)
+    _seed_project_with_clip(store, "proj_undo_mute")
+
+    project = store.apply_command(
+        "proj_undo_mute",
+        {"op": "clip.mute", "actor": "human", "expectedRevision": 2, "payload": {"clipId": "c1"}},
+    )
+    assert project["clips"]["c1"]["muted"] is True
+
+    reverted = store.revert_last_command("proj_undo_mute", actor="human", expected_revision=3)
+
+    assert reverted["revision"] == 4
+    assert reverted["commandLog"][-1]["op"] == "clip.update"
+    assert reverted["clips"]["c1"]["muted"] is False
+    rebuilt = timeline.replay_project(reverted)
+    assert rebuilt["clips"] == reverted["clips"]
+    assert rebuilt["revision"] == reverted["revision"]
+
+
 def test_clip_update_accepts_direct_patch_fields_for_agent_control(tmp_path):
     store = timeline.TimelineStore(tmp_path)
     project = timeline.new_project("proj_direct_update")

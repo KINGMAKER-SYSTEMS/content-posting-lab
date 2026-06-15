@@ -756,6 +756,84 @@ def test_editor_timeline_command_invalidates_render_cache_for_output_changes(syn
     assert "renderCache" not in saved
 
 
+def test_editor_timeline_api_clip_visibility_toggles_flip_flags_and_drop_render_cache(
+    sync_client, monkeypatch, tmp_path
+):
+    """clip.hide / clip.mute over HTTP flip the persisted enabled/muted flags and,
+    because they change the rendered output, invalidate the render cache."""
+    monkeypatch.setattr(agenticnews_router.db, "ASSETS_DIR", tmp_path)
+    timeline_dir = tmp_path / "editor_timelines"
+    timeline_dir.mkdir()
+    timeline_path = timeline_dir / "ep_toggle_edit.json"
+    cached_video = tmp_path / "cached.mp4"
+    cached_video.write_bytes(b"cached")
+    timeline_path.write_text(json.dumps({
+        "schema": "editor-timeline/v1",
+        "projectId": "ep_toggle_edit",
+        "sourceEpisodeId": "ep_toggle_edit",
+        "title": "Toggle Edit",
+        "fps": 30,
+        "width": 1920,
+        "height": 1080,
+        "revision": 0,
+        "assets": {"card": {"id": "card", "type": "image", "src": str(tmp_path / "card.png"), "metadata": {}}},
+        "tracks": {"graphics_1": {"id": "graphics_1", "kind": "graphics", "name": "Graphics", "index": 20}},
+        "clips": {
+            "card_clip": {
+                "id": "card_clip",
+                "assetId": "card",
+                "trackId": "graphics_1",
+                "kind": "artifact",
+                "start": 0,
+                "duration": 1,
+                "sourceStart": 0,
+                "enabled": True,
+                "muted": False,
+                "volume": 1,
+                "transform": {"x": 0.5, "y": 0.5, "scale": 1, "opacity": 1},
+                "effects": [],
+                "keyframes": [],
+                "metadata": {},
+            }
+        },
+        "markers": {},
+        "notes": {},
+        "renderCache": {
+            "video": {"backend": "openshot", "video": str(cached_video), "duration": 1.0}
+        },
+    }))
+
+    hidden = sync_client.post(
+        "/api/agenticnews/editor-timelines/ep_toggle_edit/commands",
+        json={
+            "op": "clip.hide",
+            "actor": "human",
+            "expectedRevision": 0,
+            "payload": {"clipId": "card_clip"},
+        },
+    )
+    assert hidden.status_code == 200
+    assert hidden.json()["clips"]["card_clip"]["enabled"] is False
+    assert "renderCache" not in hidden.json()
+
+    muted = sync_client.post(
+        "/api/agenticnews/editor-timelines/ep_toggle_edit/commands",
+        json={
+            "op": "clip.mute",
+            "actor": "human",
+            "expectedRevision": 1,
+            "payload": {"clipId": "card_clip"},
+        },
+    )
+    assert muted.status_code == 200
+    assert muted.json()["clips"]["card_clip"]["muted"] is True
+
+    saved = json.loads(timeline_path.read_text())
+    assert saved["clips"]["card_clip"]["enabled"] is False
+    assert saved["clips"]["card_clip"]["muted"] is True
+    assert "renderCache" not in saved
+
+
 def test_editor_timeline_non_output_command_refreshes_render_cache_revision(sync_client, monkeypatch, tmp_path):
     monkeypatch.setattr(agenticnews_router.db, "ASSETS_DIR", tmp_path)
     timeline_dir = tmp_path / "editor_timelines"
