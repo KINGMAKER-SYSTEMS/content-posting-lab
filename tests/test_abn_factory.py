@@ -323,6 +323,72 @@ def test_assemble_episode_uses_reencode_fallback_when_copy_concat_fails(monkeypa
     assert dur == 12.5  # duration came from the ffprobe stub on the fallback-produced final
 
 
+def test_assemble_episode_raises_when_reencode_fallback_also_fails(monkeypatch, tmp_path):
+    """The fallback's OWN failure must surface. When BOTH concat passes fail (copy AND the libx264
+    re-encode), `_assemble_episode` must raise `RuntimeError("concat: ...")` carrying the ffmpeg log
+    tail — NOT silently return a URL to a non-existent / 0-byte episode. Pins the error branch at
+    services/abn_factory.py ~2470-2471 that the existing happy-path fallback test does not reach."""
+    import shlex
+
+    monkeypatch.setattr(abn_factory, "ASSETS", tmp_path)
+    monkeypatch.setattr(abn_assets, "ASSETS_DIR", tmp_path)
+
+    async def routed_sh(cmd, timeout=600):
+        if cmd.startswith("ffprobe"):
+            raise AssertionError("probed duration despite both concat passes failing")
+        if "-f concat" in cmd:
+            # neither concat writes an output file → final.exists() stays False on both passes
+            return 1, "ffmpeg: concat blew up — non monotonic dts, then re-encode also failed"
+        # per-segment encode succeeds so we actually reach the concat stage
+        from pathlib import Path
+        Path(shlex.split(cmd)[-1]).write_bytes(b"\x00seg-mp4")
+        return 0, ""
+
+    monkeypatch.setattr(abn_factory, "_sh", routed_sh)
+
+    segments = [{"script": "hi", "vo_path": "/agenticnews-assets/ep_a111111_s0.wav", "screenshot": None}]
+    with pytest.raises(RuntimeError, match="concat:"):
+        asyncio.run(abn_factory._assemble_episode("ep_a111111", segments))
+
+
+def test_assemble_episode_per_segment_encode_includes_karaoke_drawtext(monkeypatch, tmp_path):
+    """Each per-segment encode must carry the karaoke caption filter chain — the `drawbox` strip +
+    `drawtext` overlay with the segment's script text. The ticket flags that recent ffmpeg command
+    edits (drawbox/drawtext) could break SILENTLY: if either filter is dropped or the script text
+    stops reaching drawtext, every episode ships without burned captions and nothing else notices.
+    This captures the actual encode command and asserts the filter chain + caption text survive."""
+    import shlex
+
+    monkeypatch.setattr(abn_factory, "ASSETS", tmp_path)
+    monkeypatch.setattr(abn_assets, "ASSETS_DIR", tmp_path)
+
+    seg_cmds = []
+
+    async def routed_sh(cmd, timeout=600):
+        if cmd.startswith("ffprobe"):
+            return 0, "9.0\n"
+        out = shlex.split(cmd)[-1]
+        from pathlib import Path
+        if "-f concat" in cmd:  # let the fast copy-concat succeed
+            Path(out).write_bytes(b"\x00final-mp4")
+            return 0, ""
+        seg_cmds.append(cmd)  # per-segment encode
+        Path(out).write_bytes(b"\x00seg-mp4")
+        return 0, ""
+
+    monkeypatch.setattr(abn_factory, "_sh", routed_sh)
+
+    segments = [{"script": "Anthropic shipped a coding agent", "vo_path": "/agenticnews-assets/ep_a111111_s0.wav", "screenshot": None}]
+    asyncio.run(abn_factory._assemble_episode("ep_a111111", segments))
+
+    assert len(seg_cmds) == 1, "exactly one per-segment encode should have run"
+    cmd = seg_cmds[0]
+    assert "drawbox=" in cmd, "karaoke caption background strip (drawbox) was dropped from the encode"
+    assert "drawtext=" in cmd, "karaoke caption overlay (drawtext) was dropped from the encode"
+    # the segment's script text must actually reach drawtext (shlex-quoted somewhere in the cmd)
+    assert "Anthropic shipped a coding agent" in cmd, "segment script text never reached drawtext"
+
+
 # ---------------- _render_remotion: error recovery + fallback re-encode ----------------
 #
 # _render_remotion shells out to the Remotion CLI to produce the full episode mp4, then runs a
