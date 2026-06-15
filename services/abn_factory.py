@@ -104,7 +104,7 @@ ASSETS = db.ASSETS_DIR
 from services.abn_assets import (  # noqa: E402
     asset_path, asset_url, asset_path_from_slug, asset_url_from_slug,
     scratch_path, shared_path, published_path, split_slug, URL_PREFIX,
-    reapable_scratch, tombstone, tombstone_render, is_managed,
+    reapable_scratch, scratch_dirs, tombstone, tombstone_render,
 )
 from services.json_store import atomic_save  # noqa: E402
 from services.fsutil import safe_unlink  # noqa: E402
@@ -149,9 +149,14 @@ def _cross_scratch_path(name: str) -> Path:
             f"(alphanumerics, dot, dash, underscore; no slashes, no leading dot, no traversal)."
         )
     dest = ASSETS / "_scratch" / name
-    if not is_managed(dest):
-        raise ValueError(f"refusing off-schema cross-scratch write {dest}")
     dest.parent.mkdir(parents=True, exist_ok=True)
+    # Assert the write lands in a GC-REAPABLE root, not merely a MANAGED one. is_managed() is too
+    # weak here: it's True for broll_library/, _shared/, _published/, editor_renders/ — all managed
+    # but NEVER reaped — so the old is_managed() guard would wave a write into a dir the GC can't
+    # touch, the exact unreapable-stray / disk-bloat failure this chokepoint exists to prevent. The
+    # GC's reapable roots are scratch_dirs() by definition, so check membership against that set.
+    if dest.parent.resolve() not in {d.resolve() for d in scratch_dirs()}:
+        raise ValueError(f"refusing non-reapable cross-scratch write {dest}")
     return dest
 
 

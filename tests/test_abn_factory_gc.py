@@ -864,3 +864,28 @@ def test_purge_disk_scratch_reap_survives_protection_check_raising(store, monkey
     assert target.exists(), "a scratch file whose protection check raised must be left intact"
     assert not (store / "_trash" / "ep_raise0" / "scratch" / "s0_raw.wav").exists()
     assert freed == 0
+
+
+def test_cross_scratch_chokepoint_self_asserts_reapability_not_just_managed(store, monkeypatch):
+    """The chokepoint's own guard must prove REAPABILITY, not merely is_managed(). is_managed() is
+    True for broll_library/, _shared/, _published/, editor_renders/ — all managed but the GC NEVER
+    reaps them — so the old is_managed()-only guard would wave through a write into a dir the GC
+    can't touch (the unreapable-stray / disk-bloat failure this chokepoint exists to prevent).
+
+    Concretely: is_managed() is strictly broader than the GC's reapable-root set. This pins that the
+    chokepoint consults scratch_dirs() (the GC's actual reapable roots), NOT is_managed(): when the
+    destination's parent is absent from scratch_dirs(), the write must RAISE even though is_managed()
+    would say yes. Patching scratch_dirs() to exclude _scratch/ proves the guard reads it."""
+    # the gap the tightened guard closes: a managed dir the GC never reaps. is_managed() passes it;
+    # the reapable-root set does not — so an is_managed()-only guard would have let it through.
+    unreapable = store / "broll_library" / "cache.png"
+    assert abn_assets.is_managed(unreapable), "precondition: broll_library/ is is_managed()"
+    assert unreapable.parent.resolve() not in {d.resolve() for d in abn_assets.scratch_dirs()}, (
+        "precondition: broll_library/ is NOT a GC reapable root"
+    )
+
+    # with _scratch/ NOT in the reapable roots, the chokepoint must refuse even its normal target —
+    # proving the guard is gated on scratch_dirs() membership, not the broader is_managed() check.
+    monkeypatch.setattr(abn_factory, "scratch_dirs", lambda: [])
+    with pytest.raises(ValueError):
+        abn_factory._cross_scratch_path("probe_still.png")
