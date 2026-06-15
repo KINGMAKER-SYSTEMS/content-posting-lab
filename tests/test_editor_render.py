@@ -611,6 +611,36 @@ def test_open_shot_audio_mux_applies_audio_fadein(tmp_path):
     assert head < body - 6  # fadeIn ramp keeps the head well below steady level
 
 
+def test_open_shot_audio_mux_raises_on_missing_audio_asset(tmp_path):
+    """The mux path must fail closed when an audio clip's src is absent (line 749):
+    it builds a -filter_complex over the audio inputs and a phantom -i would make
+    ffmpeg fail late with an opaque error. The missing-asset guard fires BEFORE the
+    subprocess, so this raises deterministically without invoking ffmpeg. Pins the
+    fail-closed contract guarding fadeIn/fadeOut and the amix filter graph."""
+    video = tmp_path / "silent_video.mp4"
+    subprocess.run(
+        ["ffmpeg", "-y", "-f", "lavfi", "-i", "color=c=black:s=96x64:r=12:d=2",
+         "-c:v", "libx264", "-pix_fmt", "yuv420p", str(video)],
+        check=True, capture_output=True, text=True,
+    )
+    ghost = tmp_path / "ghost.wav"  # never created on disk
+    project = timeline.new_project("audio_mux_missing", width=96, height=64, fps=12)
+    project["assets"]["ghost"] = {"id": "ghost", "type": "audio", "src": str(ghost)}
+    project["clips"]["ghost"] = {
+        "id": "ghost", "assetId": "ghost", "trackId": "audio_1", "kind": "voiceover",
+        "start": 0.0, "duration": 1.0, "sourceStart": 0.0, "enabled": True,
+        "muted": False, "volume": 1.0, "transform": {},
+        "effects": [{"id": "fx_in", "type": "fadeIn", "params": {"duration": 0.5}}],
+    }
+
+    with pytest.raises(editor_render.RenderError) as excinfo:
+        editor_render._mux_timeline_audio(project, video, duration=2.0, asset_root=None)
+    assert "audio mux blocked by missing asset" in str(excinfo.value)
+    assert "ghost.wav" in str(excinfo.value)
+    # fail-closed: the video must be left untouched (no .audio-mux temp swapped in).
+    assert not video.with_name("silent_video.audio-mux.mp4").exists()
+
+
 def test_ffmpeg_renderer_exports_layered_mp4_and_preview_frame(tmp_path):
     red = _solid_png(tmp_path / "red.png", "red")
     project = _project_with_card("render_fixture", red, x=0.0)
