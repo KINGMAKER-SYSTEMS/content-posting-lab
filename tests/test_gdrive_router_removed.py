@@ -37,10 +37,24 @@ def test_no_api_drive_routes_mounted():
     assert drive_paths == [], f"unexpected /api/drive routes still mounted: {drive_paths}"
 
 
-def test_api_drive_status_returns_404(sync_client):
-    """A representative former endpoint must now 404 (not be reachable)."""
+def test_api_drive_status_no_longer_serves_drive_api(sync_client):
+    """A representative former endpoint must no longer serve its Drive JSON API.
+
+    The gdrive router is unmounted, so `/api/drive/status` is just an unmatched
+    path. What that resolves to depends only on whether a built frontend exists:
+    with no SPA build it 404s; with a build the `/{full_path:path}` catch-all
+    returns index.html (200, text/html). Either way it must NOT be the old Drive
+    JSON contract — and a non-GET verb, which the catch-all can't shadow, must not
+    reach a Drive handler (405/404, never a 2xx)."""
     resp = sync_client.get("/api/drive/status")
-    assert resp.status_code == 404
+    if resp.status_code == 200:
+        # only the SPA fallback may answer — never a Drive JSON payload.
+        assert "text/html" in resp.headers.get("content-type", "")
+    else:
+        assert resp.status_code == 404
+    # the catch-all is GET-only, so POST can't be shadowed by it: proves no real
+    # /api/drive handler is mounted.
+    assert sync_client.post("/api/drive/status").status_code in (404, 405)
 
 
 def test_services_gdrive_still_present():
