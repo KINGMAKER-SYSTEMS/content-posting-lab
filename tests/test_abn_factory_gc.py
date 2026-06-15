@@ -1,5 +1,6 @@
 import asyncio
 import importlib
+import json
 import os
 import shutil
 import time
@@ -151,6 +152,96 @@ def test_protection_scan_strips_cachebuster_query_on_agenticnews_url(store):
         shutil.disk_usage = _orig
 
     assert keeper.exists(), "GC trimmed a render referenced by a ?rev= cache-busted timeline URL"
+
+
+def test_protection_scan_reaches_deeply_nested_clip_keyframe_refs(store):
+    """The collect() traversal must reach asset refs buried arbitrarily deep — a real editor timeline
+    nests them under clips[] → keyframes[] (and an effects[] sidecar), not at the top level. If the
+    recursion stopped short of any of these, the GC would tombstone a still-referenced asset. Every
+    leaf URL — even one inside a list-of-dicts inside a list-of-dicts — must end up protected."""
+    d = store / "ep_aaabbb" / "scratch"
+    d.mkdir(parents=True)
+    clip_src = d / "s0_clip.mp4"
+    keyframe_img = d / "s0_keyframe.png"
+    effect_lut = d / "s0_effect.cube"
+    for f in (clip_src, keyframe_img, effect_lut):
+        f.write_bytes(b"asset")
+
+    def rel(p):
+        return "/agenticnews-assets/" + str(p.relative_to(store))
+
+    timeline = {
+        "tracks": [
+            {
+                "clips": [
+                    {
+                        "src": rel(clip_src),
+                        "keyframes": [
+                            {"poster": rel(keyframe_img)},
+                        ],
+                        "effects": [{"params": {"lut": rel(effect_lut)}}],
+                    }
+                ]
+            }
+        ]
+    }
+    (store / "editor_timelines" / "ep_aaabbb.json").write_text(json.dumps(timeline))
+
+    protected = abn_factory._editor_timeline_asset_paths()
+    for f in (clip_src, keyframe_img, effect_lut):
+        assert abn_factory._is_editor_timeline_protected_asset(f, protected), (
+            f"deeply nested ref {f.name} was not reached by the protection scan"
+        )
+
+
+def test_protection_scan_handles_rendercache_variants(store):
+    """renderCache is more than the one ?rev= case the original test covered. A bare path (no query),
+    a #fragment-only cache-buster, AND a list of cache entries must ALL protect their real files.
+    Each variant strips to the same on-disk file the static mount serves."""
+    d = store / "ep_cc0011" / "renders"
+    d.mkdir(parents=True)
+    bare = d / "bare.mp4"
+    fragged = d / "fragged.mp4"
+    listed = d / "listed.mp4"
+    for f in (bare, fragged, listed):
+        f.write_bytes(b"render")
+
+    def rel(p):
+        return "/agenticnews-assets/" + str(p.relative_to(store))
+
+    timeline = {
+        "renderCache": {
+            "video": {"path": rel(bare)},                       # no cache-buster at all
+            "preview": {"path": rel(fragged) + "#t=3"},         # fragment-only cache-buster
+            "history": [                                         # a LIST of cache entries
+                {"path": rel(listed) + "?rev=9"},
+            ],
+        }
+    }
+    (store / "editor_timelines" / "ep_cc0011.json").write_text(json.dumps(timeline))
+
+    protected = abn_factory._editor_timeline_asset_paths()
+    for f in (bare, fragged, listed):
+        assert abn_factory._is_editor_timeline_protected_asset(f, protected), (
+            f"renderCache variant pointing at {f.name} did not protect the real file"
+        )
+
+
+def test_deeply_nested_timeline_ref_survives_full_gc_cycle(store):
+    """Integration: a timeline whose only ref is buried under tracks→clips→keyframes survives a full
+    purge_disk() cycle, while an aged, UNREFERENCED sibling in the same episode is reaped. This proves
+    the recursive collect() result is actually consulted by the reap loop end to end — not just by the
+    standalone predicate — so a missing traversal pattern can't let the GC eat a referenced asset."""
+    protected = _scratch(store, "ep_dd0022", "s0_clip.mp4")
+    unreferenced = _scratch(store, "ep_dd0022", "s1_orphan.mp4")
+    rel = "/agenticnews-assets/" + str(protected.relative_to(store))
+    timeline = {"tracks": [{"clips": [{"keyframes": [{"src": rel}]}]}]}
+    (store / "editor_timelines" / "ep_dd0022.json").write_text(json.dumps(timeline))
+
+    abn_factory.purge_disk(intermediate_age_s=1, keep_episodes=99, low_disk_gb=0)
+
+    assert protected.exists(), "GC reaped an asset referenced only by a deeply nested timeline path"
+    assert not unreferenced.exists(), "GC should still reap the unreferenced sibling"
 
 
 def test_purge_disk_trims_old_episode_renders_under_low_disk(store):
