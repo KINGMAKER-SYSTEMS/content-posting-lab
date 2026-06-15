@@ -158,6 +158,34 @@ def test_purge_disk_trims_old_episode_renders_under_low_disk(store):
     assert trashed.read_bytes() == b"render", "tombstoned render content must be intact"
 
 
+def test_old_episode_renders_excludes_reserved_top_dirs_and_symlinks(store):
+    """The low-disk trim only ever tombstones what _old_episode_renders() ENUMERATES, so the
+    enumerator itself must never offer a non-episode render as a GC candidate. A render under a
+    reserved-top dir (_shared/_scratch/_published, and crucially _trash/ — where a prior tombstone
+    landed one) or under a symlinked episode dir must NOT appear, even though each sits at a
+    .../renders/episode.mp4 path. Only the two real episode renders are returned."""
+    def render(parent_rel, body=b"render"):
+        d = store / parent_rel / "renders"
+        d.mkdir(parents=True)
+        f = d / "episode.mp4"
+        f.write_bytes(body)
+        return f
+
+    real_a = render("ep_a111111")
+    real_b = render("ep_b222222")
+    # reserved-top renders — must be invisible to the enumerator (the `_`-prefix skip)
+    render("_shared")
+    render("_published")
+    render("_scratch")
+    trashed = render("_trash/ep_dead00")  # a previously-tombstoned render — must not be re-enumerated
+    # a SYMLINKED episode dir pointing at a real one — must be skipped (no double-trim of the target)
+    (store / "ep_link00").symlink_to(store / "ep_a111111")
+
+    found = set(abn_factory._old_episode_renders())
+    assert found == {real_a, real_b}, "enumerator leaked a reserved-top or symlinked render as a GC candidate"
+    assert trashed not in found, "a tombstoned _trash/ render must never be re-enumerated for re-trim"
+
+
 # --- gateway-level tombstone_render contract (the render safe-delete primitive) -----------------
 
 

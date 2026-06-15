@@ -3025,11 +3025,14 @@ def _offload_episode(ep_id):
 
 def _old_episode_renders():
     """Real schema episode renders ({ep_id}/renders/episode.mp4), newest first. The ONLY mp4s the
-    low-disk trim may tombstone — never a flat glob, never a symlink, never a non-render file."""
+    low-disk trim may tombstone — never a flat glob, never a symlink, never a non-render file, and
+    never a reserved-top dir (`_shared`/`_scratch`/`_published`/`_trash`): those start with `_`, and
+    a tombstoned render that landed at `_trash/<ep>/renders/episode.mp4` must not be re-enumerated and
+    re-trimmed. This keeps the enumerator in lockstep with tombstone_render()'s own `_`-prefix guard."""
     out = []
     try:
         for child in ASSETS.iterdir():
-            if not child.is_dir() or child.is_symlink():
+            if not child.is_dir() or child.is_symlink() or child.name.startswith("_"):
                 continue
             mp4 = child / "renders" / "episode.mp4"
             try:
