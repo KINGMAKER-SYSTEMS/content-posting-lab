@@ -1,8 +1,11 @@
 import json
+import subprocess
 from pathlib import Path
 
 from services import editor_timeline
 from services import openshot_bridge
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 def _project(asset_path: Path | str) -> dict:
@@ -502,3 +505,58 @@ def test_command_log_keeps_split_batches_unflattened(tmp_path):
     # ...and as two discrete actions once flattened.
     assert len(flat) == 2
     assert [a["type"] for a in flat] == ["update", "insert"]
+
+
+# ── repo-hygiene guard ────────────────────────────────────────────────────────
+# openshot_bridge.py is imported at app load (routers/agenticnews.py). It was once
+# untracked and nearly lost; a clean checkout that's missing it raises
+# ModuleNotFoundError at startup. prod-cycle.js (lines 107/151) explicitly guards
+# for this on every merge. These tests pin the invariant so it can't silently regress.
+
+def _git(*args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["git", *args],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+    )
+
+
+def test_openshot_bridge_is_git_tracked():
+    """openshot_bridge.py must be committed — the app imports it at load time."""
+    tracked = _git("ls-files", "--error-unmatch", "services/openshot_bridge.py")
+    assert tracked.returncode == 0, (
+        "services/openshot_bridge.py is NOT git-tracked — a clean checkout will "
+        f"ModuleNotFoundError on import.\n{tracked.stderr}"
+    )
+
+
+def test_openshot_bridge_is_not_gitignored():
+    """It must NOT be ignored — an ignored module silently drops from clean clones."""
+    ignored = _git("check-ignore", "-v", "services/openshot_bridge.py")
+    # git check-ignore exits 0 (and prints the matching rule) when a path IS ignored.
+    assert ignored.returncode != 0, (
+        "services/openshot_bridge.py matches a .gitignore rule:\n"
+        f"{ignored.stdout}"
+    )
+
+
+def test_app_imported_python_modules_are_all_tracked():
+    """Generalize the openshot_bridge lesson: every services/ + routers/ module the
+    app can import at runtime must be tracked, so a clean checkout never raises
+    ModuleNotFoundError. Catches the whole class of bug, not just one file."""
+    candidates = sorted(
+        p for d in ("services", "routers")
+        for p in (REPO_ROOT / d).rglob("*.py")
+        if "__pycache__" not in p.parts
+    )
+    rel = [str(p.relative_to(REPO_ROOT)) for p in candidates]
+    assert rel, "no python modules found under services/ or routers/ — wrong repo root?"
+
+    listed = _git("ls-files", "--", *rel)
+    tracked = set(listed.stdout.splitlines())
+    untracked = [p for p in rel if p not in tracked]
+    assert not untracked, (
+        "app-imported python modules are NOT git-tracked (clean checkout would "
+        f"ModuleNotFoundError): {untracked}"
+    )
