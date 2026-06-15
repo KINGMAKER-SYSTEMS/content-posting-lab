@@ -658,3 +658,43 @@ def test_windowed_clip_shifts_keyframe_times_when_front_trimmed():
     original = project["clips"]["card_clip"]["keyframes"][0]["points"]
     assert original[0]["t"] == pytest.approx(0.5)
     assert original[1]["t"] == pytest.approx(3.0)
+
+
+def test_opacity_keyframe_envelope_actually_animates_through_openshot(tmp_path):
+    """End-to-end: a clip with an opacity envelope (0 -> 1 over its duration) must RENDER
+    the fade through OpenShot, not just translate to correct JSON. Sample an early frame
+    (low opacity -> dark bg shows through) vs a late frame (high opacity -> card visible).
+    Pins the keyframe-envelope render contract; skips where libopenshot isn't installed."""
+    if not editor_render._import_openshot()[0]:
+        pytest.skip("libopenshot Python bindings not importable here")
+
+    white = _solid_png(tmp_path / "white.png", "white", size="64x48")
+    project = timeline.new_project("kf_render", width=64, height=48, fps=12)
+    project["assets"]["c"] = {"id": "c", "type": "image", "src": str(white)}
+    project["clips"]["c1"] = {
+        "id": "c1", "assetId": "c", "trackId": "graphics_1", "kind": "artifact",
+        "start": 0.0, "duration": 2.0, "sourceStart": 0.0,
+        "enabled": True, "muted": False, "volume": 1.0,
+        "transform": {"x": 0.5, "y": 0.5, "scale": 3.0, "opacity": 1.0}, "effects": [],
+        "keyframes": [{"property": "opacity", "points": [
+            {"t": 0.0, "value": 0.0, "interp": "linear"},
+            {"t": 2.0, "value": 1.0, "interp": "linear"},
+        ]}],
+        "metadata": {},
+    }
+    project.update({"sampleRate": 48000, "channels": 2, "channelLayout": 3})
+
+    renderer = editor_render.OpenShotRenderer(tmp_path)
+
+    def _luma(at: float) -> int:
+        frame = renderer.render_frame(project, at=at, output_path=tmp_path / f"f{at}.png")
+        out = subprocess.run(
+            ["ffmpeg", "-v", "error", "-i", str(frame["frame"]), "-vf", "crop=1:1:32:24",
+             "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "gray", "-"],
+            check=True, capture_output=True,
+        )
+        return out.stdout[0] if out.stdout else -1
+
+    early = _luma(0.2)   # low opacity -> mostly black background
+    late = _luma(1.8)    # high opacity -> white card visible
+    assert late > early + 30, (early, late)  # the fade-in actually rendered
