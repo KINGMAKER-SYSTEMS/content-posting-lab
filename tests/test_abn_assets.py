@@ -507,3 +507,91 @@ def test_migration_lands_episode_singletons_where_read_resolver_looks(gw):
     # the flat name survives only as a back-compat symlink into the schema (on its way out)
     assert flat_tl.is_symlink() and flat_ep.is_symlink()
     assert flat_tl.resolve() == gw.episode_singleton_path(ep, "timeline").resolve()
+
+
+# --- the PRE-WRITE HOOK (.claude/hooks/abn_asset_guard.py): the SECONDARY guard ------
+# The runtime gateway (asset_path/scratch_path) raises on off-schema requests for any
+# agent. The pre-write hook is the claude-family second layer: a PreToolUse deny on a
+# Write/Edit whose destination bypasses the gateway. The gap this ticket closes: a bare
+# Path(ASSETS/ep_x/"s0_card.png").write_bytes() lands a file FLAT at the episode-dir root
+# — the top component is a valid ep_id, so the old hook waved it through, reproducing the
+# "broken function dumped off-schema files" incident. These pin that the hook now blocks a
+# flat-in-episode dump while still allowing every sanctioned schema destination.
+
+import json as _json
+import subprocess
+import sys
+
+_HOOK = (
+    Path(__file__).resolve().parent.parent
+    / "yt-pipeline" / ".claude" / "hooks" / "abn_asset_guard.py"
+)
+
+
+def _hook_decision(store_root, file_path) -> str:
+    """Run the guard as the harness does (JSON event on stdin) against an asset store at
+    ``store_root``. Returns 'deny' or 'allow'."""
+    event = _json.dumps({"tool_name": "Write", "tool_input": {"file_path": str(file_path)}})
+    env = dict(os.environ, ABN_ASSETS_DIR=str(store_root))
+    proc = subprocess.run(
+        [sys.executable, str(_HOOK)], input=event, env=env,
+        capture_output=True, text=True, timeout=20,
+    )
+    out = proc.stdout.strip()
+    if out and '"deny"' in out:
+        return "deny"
+    return "allow"
+
+
+def test_hook_exists_and_is_wired(gw):
+    # the hook file must exist on disk (it's the secondary enforcement layer the SOP names)
+    assert _HOOK.is_file(), f"pre-write guard hook missing at {_HOOK}"
+
+
+@pytest.mark.parametrize("relpath", [
+    "ep_648e806a/s0_card.png",         # the incident: flat card dumped at episode root
+    "ep_648e806a/voice.wav",           # flat audio at episode root
+    "ep_648e806a/foo.json",            # flat json that isn't a sanctioned singleton
+    "ep_648e806a/junk/x.png",          # an unknown (non-schema) episode subdir
+    "ep_648e806a_s0_card.png",         # the classic stray write at the store ROOT
+    "stray_at_store_root.png",         # a bare file at the store root
+])
+def test_hook_denies_off_schema_writes(gw, relpath):
+    # gw.ASSETS_DIR is the throwaway store the fixture pointed the gateway at
+    assert _hook_decision(gw.ASSETS_DIR, gw.ASSETS_DIR / relpath) == "deny"
+
+
+@pytest.mark.parametrize("relpath", [
+    "ep_648e806a/css/s0_card.png",     # css layer
+    "ep_648e806a/footage/s3_ui.mp4",   # webscroll layer
+    "ep_648e806a/audio/s0_voice.wav",  # vo layer
+    "ep_648e806a/renders/episode.mp4", # output
+    "ep_648e806a/scratch/s0.tape",     # reapable intermediate
+    "ep_648e806a/timeline.json",       # episode-root singleton
+    "ep_648e806a/manifest.json",       # episode-root singleton
+    "_shared/audio/bed_v2.mp3",        # shared, allowed top dir
+    "_published/ep_648e806a/episode.mp4",  # published final
+])
+def test_hook_allows_sanctioned_schema_writes(gw, relpath):
+    assert _hook_decision(gw.ASSETS_DIR, gw.ASSETS_DIR / relpath) == "allow"
+
+
+def test_hook_allows_writes_outside_the_store(gw, tmp_path):
+    # a write that isn't under the asset store at all is none of the guard's business
+    assert _hook_decision(gw.ASSETS_DIR, tmp_path.parent / "unrelated.png") == "allow"
+
+
+def test_hook_denial_names_the_gateway(gw):
+    # the deny reason must tell the agent the fix (asset_path), so it self-corrects in-loop
+    event = _json.dumps({
+        "tool_name": "Write",
+        "tool_input": {"file_path": str(gw.ASSETS_DIR / "ep_648e806a" / "s0_card.png")},
+    })
+    env = dict(os.environ, ABN_ASSETS_DIR=str(gw.ASSETS_DIR))
+    proc = subprocess.run(
+        [sys.executable, str(_HOOK)], input=event, env=env,
+        capture_output=True, text=True, timeout=20,
+    )
+    payload = _json.loads(proc.stdout)
+    reason = payload["hookSpecificOutput"]["permissionDecisionReason"]
+    assert "asset_path" in reason

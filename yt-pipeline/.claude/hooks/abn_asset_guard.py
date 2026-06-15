@@ -57,9 +57,18 @@ ALLOWED_TOP = {
     "editor_renders", "editor_timelines", "editor_title_assets", "align",
     "card_backgrounds", "broll_library", "ai-chat-repo", "voice_bakeoff",
 }
-# A real episode dir: ep_<hex> / rec_ep_<hex> / legacy ep<N>. Writes scoped to one of
-# these are fine (the runtime gateway validates the subdir/kind beyond that).
+# A real episode dir: ep_<hex> / rec_ep_<hex> / legacy ep<N>. A write scoped to one of
+# these is fine ONLY if it lands in a schema subdir (or is an episode-root singleton) —
+# see _EP_SUBDIRS below. A flat file dumped straight at {ep_id}/ root (e.g. a bare
+# Path(ASSETS/ep_x/"s0_card.png").write_bytes via a broken/rogue function) is the exact
+# off-schema-dump incident this guard exists to block, even though the top dir is valid.
 _EP_TOP_RE = re.compile(r"^(?:rec_)?ep_[0-9a-f]{6,}$|^ep\d+$")
+
+# Inside a {ep_id}/ dir the only sanctioned destinations are the typed layer-source subdirs
+# (mirrors abn_assets.KINDS subdirs) ...
+_EP_SUBDIRS = {"footage", "css", "remotion", "broll", "audio", "renders", "scratch"}
+# ... plus the two episode-root singletons (abn_assets.KINDS '.' kinds).
+_EP_ROOT_SINGLETONS = {"timeline.json", "manifest.json"}
 
 # crude path extraction from a bash command (redirects, cp/mv/tee targets, common writers)
 _BASH_PATH_RE = re.compile(
@@ -113,8 +122,19 @@ def main() -> None:
             continue  # not under the asset store — none of our business
         parts = rel.parts
         # writing a file directly at the store root, or into a non-allowed top dir
-        top_ok = bool(parts) and (parts[0] in ALLOWED_TOP or _EP_TOP_RE.match(parts[0]))
-        if len(parts) <= 1 or not top_ok:
+        is_ep = bool(parts) and bool(_EP_TOP_RE.match(parts[0]))
+        top_ok = bool(parts) and (parts[0] in ALLOWED_TOP or is_ep)
+        # Inside a valid {ep_id}/ the write must descend into a schema subdir
+        # (footage/css/remotion/broll/audio/renders/scratch), OR be a flat episode-root
+        # singleton (timeline.json / manifest.json). A flat file at {ep_id}/<other-name>
+        # is the off-schema dump a bare Path(ASSETS/ep_x/"s0_card.png").write_bytes()
+        # produces when it bypasses the gateway — block it even though the top dir is valid.
+        ep_dump = (
+            is_ep and len(parts) >= 2
+            and parts[1] not in _EP_SUBDIRS
+            and not (len(parts) == 2 and parts[1] in _EP_ROOT_SINGLETONS)
+        )
+        if len(parts) <= 1 or not top_ok or ep_dump:
             reason = (
                 f"Blocked: '{rel}' is a stray write into the ABN asset store "
                 f"({root}).\n"
