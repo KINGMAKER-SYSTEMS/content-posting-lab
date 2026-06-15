@@ -540,3 +540,45 @@ def test_openshot_renders_real_two_layer_timeline_to_valid_mp4(tmp_path):
     assert Path(result["video"]).exists()
     assert _probe_duration(output) >= 0.9
     assert _mean_volume(output, start=0.1, duration=0.6) > -30  # audio actually present
+
+
+def test_windowed_clip_shifts_keyframe_times_when_front_trimmed():
+    """A clip windowed from a later start has its front trimmed; keyframe `t`
+    (seconds relative to the clip start) must move down by the same trim amount,
+    clamped at 0, so the animation fires at the right time during partial renders."""
+    project = timeline.new_project("kf_window", width=96, height=64, fps=12)
+    project["clips"]["card_clip"] = {
+        "id": "card_clip",
+        "assetId": "card",
+        "trackId": "graphics_1",
+        "start": 5.0,
+        "duration": 4.0,  # clip spans timeline t=5..9
+        "sourceStart": 0.0,
+        "enabled": True,
+        "keyframes": [
+            {
+                "property": "opacity",
+                "points": [
+                    {"t": 0.5, "value": 0.0, "interp": "linear"},  # before window -> clamps to 0
+                    {"t": 3.0, "value": 1.0, "interp": "linear"},  # at timeline t=8
+                ],
+            }
+        ],
+    }
+
+    # Window timeline t=7..9 -> front_trim = 7 - 5 = 2.0s.
+    windowed = editor_render._windowed_clips(project, window_start=7.0, duration=2.0)
+
+    assert len(windowed) == 1
+    clip = windowed[0]
+    assert clip["start"] == pytest.approx(0.0)  # clip begins at window start
+    assert clip["sourceStart"] == pytest.approx(2.0)
+    points = clip["keyframes"][0]["points"]
+    assert points[0]["t"] == pytest.approx(0.0)  # 0.5 - 2.0 clamped to 0
+    assert points[1]["t"] == pytest.approx(1.0)  # 3.0 - 2.0
+    assert points[0]["value"] == 0.0 and points[1]["value"] == 1.0
+
+    # Original project clip must be untouched (no aliasing of nested keyframes).
+    original = project["clips"]["card_clip"]["keyframes"][0]["points"]
+    assert original[0]["t"] == pytest.approx(0.5)
+    assert original[1]["t"] == pytest.approx(3.0)
