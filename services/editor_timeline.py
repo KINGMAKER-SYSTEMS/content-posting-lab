@@ -524,10 +524,17 @@ def apply_command(project: dict[str, Any], command: dict[str, Any]) -> dict[str,
         # keyframes at the wrong times. (CON ticket: split must preserve animation.)
         clip["keyframes"] = _keyframes_before(clip.get("keyframes"), split_offset)
         second["keyframes"] = _keyframes_after(second.get("keyframes"), split_offset)
-        # Boundary-anchored effects (fadeIn at the head, fadeOut at the tail) belong
-        # only to the half that owns that boundary; whole-clip effects stay on both.
+        # Boundary-anchored effects: the head keeps start-anchored fades whole and
+        # drops fadeOut; the tail keeps every effect but re-fits its start-anchored
+        # fades for the front the split trimmed (front_trim=split_offset), matching
+        # editor_render._refit_effects so the timeline and the compiled video agree.
         clip["effects"] = _effects_for_split_half(clip.get("effects"), "head")
-        second["effects"] = _effects_for_split_half(second.get("effects"), "tail")
+        second["effects"] = _effects_for_split_half(
+            second.get("effects"),
+            "tail",
+            split_offset=split_offset,
+            half_duration=second["duration"],
+        )
         clip["duration"] = split_offset
         project["clips"][second["id"]] = second
         after["clip"] = copy.deepcopy(clip)
@@ -1034,11 +1041,11 @@ def _mutate_clip(project: dict[str, Any], op: str, clip: dict[str, Any], payload
 # with t <= offset and the second (tail) clip keeps points at t >= offset rebased to
 # t -= offset. Boundary value is preserved on both sides so the envelope is continuous.
 
-# Effects anchored to a clip boundary: fadeIn/crossfade live at the head, fadeOut at
-# the tail. fadeIn and crossfade are both start-anchored (both map to OpenShot's `in`
-# Fade, see openshot_bridge._FADE_DIRECTION_MAP). Everything else (brightness,
-# saturation) applies to the whole clip and is copied to both halves.
-_HEAD_ANCHORED_EFFECTS = frozenset({"fadeIn", "crossfade"})
+# fadeOut is end-anchored, so it cannot live on the head half (whose end is the split
+# point, not the original clip end) — it is dropped there. fadeIn/crossfade are start-
+# anchored (both map to OpenShot's `in` Fade, see openshot_bridge._FADE_DIRECTION_MAP):
+# the head keeps them whole; the tail keeps them re-fit for its trimmed front. Whole-
+# clip effects (brightness/saturation) copy to both halves unchanged.
 _TAIL_ANCHORED_EFFECTS = frozenset({"fadeOut"})
 
 
@@ -1066,10 +1073,39 @@ def _keyframes_after(tracks: Any, offset: float) -> list[dict[str, Any]]:
     return out
 
 
-def _effects_for_split_half(effects: Any, half: str) -> list[dict[str, Any]]:
-    """Keep a boundary-anchored effect only on the half that owns its boundary."""
-    drop = _TAIL_ANCHORED_EFFECTS if half == "head" else _HEAD_ANCHORED_EFFECTS
-    return [copy.deepcopy(e) for e in (effects or []) if e.get("type") not in drop]
+def _effects_for_split_half(
+    effects: Any,
+    half: str,
+    *,
+    split_offset: float = 0.0,
+    half_duration: float = 0.0,
+) -> list[dict[str, Any]]:
+    """Route boundary-anchored effects to the split half that owns their boundary.
+
+    The HEAD owns the original start: it keeps start-anchored fades (fadeIn/crossfade)
+    at full duration and drops the end-anchored fadeOut. The TAIL owns the original
+    end: it keeps fadeOut, but its source front is trimmed by ``split_offset``, which
+    eats into any start-anchored fade. So the tail's start-anchored fades must be
+    RE-FIT exactly like the render path does (``editor_render._refit_effects`` with
+    ``front_trim=split_offset`` and ``windowed_duration=half_duration``) — otherwise
+    the timeline state and the compiled OpenShot fade disagree. Whole-clip effects
+    (brightness/saturation) copy to both halves unchanged.
+    """
+    if half == "head":
+        kept = [
+            e for e in (effects or []) if e.get("type") not in _TAIL_ANCHORED_EFFECTS
+        ]
+        return [copy.deepcopy(e) for e in kept]
+    # Tail: keep everything (fadeOut included), then re-fit the start-anchored fades
+    # that the trimmed front shortened. Reuse the render path's _refit_effects so the
+    # two code paths can never drift.
+    from services.editor_render import _refit_effects
+
+    return _refit_effects(
+        [copy.deepcopy(e) for e in (effects or [])],
+        front_trim=split_offset,
+        windowed_duration=half_duration,
+    )
 
 
 # Editor-property names a clip-level keyframe track may animate. These map 1:1 to

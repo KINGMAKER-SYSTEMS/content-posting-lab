@@ -842,9 +842,14 @@ def test_split_preserves_keyframes_and_effects_on_both_halves(tmp_path):
     tail_pts = tail["keyframes"][0]["points"]
     assert [(p["t"], p["value"]) for p in tail_pts] == [(0.0, 1.0), (3.0, 0.5)]
 
-    # fadeIn stays at the head, fadeOut moves to the tail, brightness is whole-clip.
+    # fadeIn is start-anchored: full on the head, re-fit (0.5 - 2s front trim -> 0) on
+    # the tail. fadeOut is end-anchored: dropped from the head, kept on the tail.
+    # brightness is whole-clip and stays on both.
     assert {e["id"] for e in head["effects"]} == {"fx_in", "fx_bri"}
-    assert {e["id"] for e in tail["effects"]} == {"fx_out", "fx_bri"}
+    assert {e["id"] for e in tail["effects"]} == {"fx_in", "fx_out", "fx_bri"}
+    tail_fx = {e["id"]: e for e in tail["effects"]}
+    assert tail_fx["fx_in"]["params"]["duration"] == 0.0  # collapsed by the front trim
+    assert tail_fx["fx_out"]["params"]["duration"] == 0.5
 
     # Replay reproduces the same partitioned envelopes deterministically.
     rebuilt = timeline.replay_project(project)
@@ -1544,10 +1549,18 @@ def test_split_partitions_and_rebases_keyframes_and_effects(tmp_path):
     assert head["duration"] == 8.0
     assert (tail["start"], tail["duration"]) == (8.0, 2.0)
 
-    # Boundary-anchored effects: head keeps the start-anchored fadeIn + crossfade,
-    # tail keeps the end-anchored fadeOut only.
+    # Head owns the original start: it keeps the start-anchored fadeIn + crossfade at
+    # full duration and drops the end-anchored fadeOut.
     assert [e["id"] for e in head["effects"]] == ["fi", "xf"]
-    assert [e["id"] for e in tail["effects"]] == ["fo"]
+    head_fades = {e["id"]: e["params"]["duration"] for e in head["effects"]}
+    assert head_fades == {"fi": 1.0, "xf": 1.0}
+
+    # Tail owns the original end: it keeps every effect, but its 8s-trimmed front
+    # collapses the start-anchored fadeIn + crossfade to 0 (re-fit like the render
+    # path's editor_render._refit_effects), while the end-anchored fadeOut survives.
+    assert [e["id"] for e in tail["effects"]] == ["fi", "fo", "xf"]
+    tail_fades = {e["id"]: e["params"]["duration"] for e in tail["effects"]}
+    assert tail_fades == {"fi": 0.0, "fo": 1.0, "xf": 0.0}
 
     # Head envelope keeps only points up to the split (t <= 8); the t=9.5 point is gone.
     assert [p["t"] for p in head["keyframes"][0]["points"]] == [0.0, 7.5, 8.0]
@@ -1557,12 +1570,6 @@ def test_split_partitions_and_rebases_keyframes_and_effects(tmp_path):
     assert tail["keyframes"][0]["points"][1]["value"] == 0.0  # was t=9.5 on the parent
 
 
-@pytest.mark.xfail(
-    reason="ticket #1: clip.split clones crossfade at full duration onto the tail "
-    "instead of re-fitting it (front_trim+windowed) like editor_render._refit_effects; "
-    "this test pins the correct behavior and flips green when the split bug is fixed",
-    strict=False,
-)
 def test_split_refits_crossfade_duration_on_tail(tmp_path):
     """clip.split must re-fit a start-anchored crossfade onto the tail half.
 
@@ -2384,9 +2391,19 @@ def test_effects_for_split_half_anchors_fades_and_copies_whole_clip_effects():
         {"id": "br", "type": "brightness", "params": {"value": 0.2}},
     ]
     head = timeline._effects_for_split_half(effects, "head")
-    tail = timeline._effects_for_split_half(effects, "tail")
-    assert {e["id"] for e in head} == {"fi", "br"}   # head keeps fadeIn, drops fadeOut
-    assert {e["id"] for e in tail} == {"fo", "br"}   # tail keeps fadeOut, drops fadeIn
+    # Head keeps the start-anchored fadeIn (full) + whole-clip brightness, drops fadeOut.
+    assert {e["id"] for e in head} == {"fi", "br"}
+    assert next(e for e in head if e["id"] == "fi")["params"]["duration"] == 0.5
+
+    # Tail keeps everything; its trimmed front re-fits the start-anchored fadeIn (here
+    # the 0.3s front trim shortens the 0.5s fadeIn to 0.2s), fadeOut + brightness pass.
+    tail = timeline._effects_for_split_half(
+        effects, "tail", split_offset=0.3, half_duration=2.0
+    )
+    assert {e["id"] for e in tail} == {"fi", "fo", "br"}
+    tail_by_id = {e["id"]: e for e in tail}
+    assert tail_by_id["fi"]["params"]["duration"] == pytest.approx(0.2)  # 0.5 - 0.3 trim
+    assert tail_by_id["fo"]["params"]["duration"] == 0.5  # end-anchored, untouched
 
 
 def test_effects_for_split_half_deep_copies_so_halves_do_not_alias():
@@ -2476,9 +2493,15 @@ def test_clip_split_partitions_multitrack_keyframes_and_straddling_effects(tmp_p
     assert "opacity" not in tail_kf or [p["t"] for p in tail_kf["opacity"]["points"]] == [2.0]
     assert [p["t"] for p in tail_kf["opacity"]["points"]] == [2.0]
 
-    # fadeIn anchors to the head, fadeOut to the tail.
+    # fadeIn is start-anchored: full on the head, re-fit (collapsed by the 3s front
+    # trim to 0) on the tail. fadeOut is end-anchored: dropped from the head, kept on
+    # the tail. Both fades stay on the tail so it matches editor_render._refit_effects.
     assert {e["id"] for e in head["effects"]} == {"fi"}
-    assert {e["id"] for e in tail["effects"]} == {"fo"}
+    assert next(e for e in head["effects"] if e["id"] == "fi")["params"]["duration"] == 0.5
+    assert {e["id"] for e in tail["effects"]} == {"fi", "fo"}
+    tail_fx = {e["id"]: e for e in tail["effects"]}
+    assert tail_fx["fi"]["params"]["duration"] == 0.0  # 0.5 - 3.0 front trim, clamped
+    assert tail_fx["fo"]["params"]["duration"] == 0.5
 
 
 def test_abn_import_skips_unsupported_shot_effects_without_aborting():
