@@ -321,6 +321,81 @@ def is_managed(path: Path | str) -> bool:
     return head in MANAGED_TOP or bool(_EP_RE.match(head))
 
 
+# ---- GC support: the ONLY things the garbage collector may reap -----------------
+#
+# The schema makes GC trivially safe: the reapable surface is the union of every
+# per-episode ``{ep_id}/scratch/`` dir plus the cross-episode ``_scratch/`` (spec lines
+# 27, 32). Nothing else is ever a GC candidate — not footage/css/remotion/broll/audio/
+# renders, not timeline.json/manifest.json, not _shared/_published, and never a dir or a
+# symlink. So the GC no longer has to flat-glob the root and then defensively skip schema
+# dirs/symlinks (the old ``_gc_unsafe`` band-aid): it just walks these two roots.
+
+
+def scratch_dirs() -> list[Path]:
+    """The reapable scratch roots: every ``{ep_id}/scratch/`` + the cross-episode ``_scratch/``."""
+    dirs: list[Path] = []
+    cross = ASSETS_DIR / "_scratch"
+    if cross.is_dir():
+        dirs.append(cross)
+    try:
+        for child in ASSETS_DIR.iterdir():
+            if child.is_dir() and not child.is_symlink() and _EP_RE.match(child.name):
+                sd = child / "scratch"
+                if sd.is_dir():
+                    dirs.append(sd)
+    except (FileNotFoundError, OSError):
+        pass
+    return dirs
+
+
+def reapable_scratch() -> list[Path]:
+    """Every regular FILE under a reapable scratch root — the closed set the GC may delete.
+    Directories and symlinks are excluded (a symlink under scratch/ could point INTO the
+    schema; following + tombstoning it would orphan the real keeper)."""
+    files: list[Path] = []
+    for d in scratch_dirs():
+        for f in d.rglob("*"):
+            try:
+                if f.is_file() and not f.is_symlink():
+                    files.append(f)
+            except OSError:
+                pass
+    return files
+
+
+def tombstone(path: Path | str) -> int:
+    """SAFE-DELETE: move ``path`` into ``_trash/`` instead of unlinking it (spec line 33), so a
+    mistaken reap is recoverable rather than data loss. Returns the byte size moved (0 on no-op).
+
+    Refuses to tombstone anything that is NOT a regular file under a reapable scratch root —
+    schema dirs, renders, audio, symlinks, _shared/_published all RAISE, so the GC physically
+    cannot turn a tombstone call into whole-episode loss even if handed a bad path."""
+    p = Path(path)
+    try:
+        if p.is_symlink() or not p.is_file():
+            raise AssetPathError(f"refusing to tombstone non-regular-file {p}")
+        rel = p.resolve().relative_to(ASSETS_DIR.resolve())
+    except (ValueError, OSError) as e:
+        raise AssetPathError(f"refusing to tombstone off-store path {p}: {e}")
+    parts = rel.parts
+    in_scratch = (parts[0] == "_scratch") or (
+        len(parts) >= 2 and bool(_EP_RE.match(parts[0])) and parts[1] == "scratch"
+    )
+    if not in_scratch:
+        raise AssetPathError(
+            f"refusing to tombstone {rel} — GC may only reap scratch/ (per-episode) and _scratch/."
+        )
+    size = p.stat().st_size
+    # mirror the relative path under _trash/ so collisions across episodes can't clobber,
+    # and a human can see where a tombstoned file came from. Suffix on basename collision.
+    dest = ASSETS_DIR / "_trash" / rel
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if dest.exists():
+        dest = dest.with_name(f"{dest.stem}.{int(p.stat().st_mtime)}{dest.suffix}")
+    p.replace(dest)
+    return size
+
+
 # Reverse map: classify a LEGACY flat filename (`ep_648e806a_s0_card.png`) into the
 # schema so the migration script knows where it belongs. Returns None for files that
 # aren't episode-scoped (shared/scratch are handled separately by the migrator).

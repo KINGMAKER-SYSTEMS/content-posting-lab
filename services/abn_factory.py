@@ -83,6 +83,7 @@ ASSETS = db.ASSETS_DIR
 from services.abn_assets import (  # noqa: E402
     asset_path, asset_url, asset_path_from_slug, asset_url_from_slug,
     scratch_path, shared_path, published_path, split_slug, URL_PREFIX,
+    reapable_scratch, tombstone,
 )
 
 
@@ -2993,52 +2994,51 @@ def _offload_episode(ep_id):
         return None
 
 
-def _gc_unsafe(f: Path) -> bool:
-    """MIGRATION SAFETY GUARD (interim, until the GC refactor lands). The legacy GC globs the flat
-    store root by `ep_*` patterns and unlinks by age. After the per-episode migration those globs now
-    also match (a) the REAL `ep_<id>/` schema directories and (b) the back-compat SYMLINKS the
-    migration left at old flat paths. Unlinking a symlink orphans the real render; "unlinking" a
-    directory is worse. So the GC must NEVER touch either until it's rewritten to reap only
-    scratch/ + tombstone-to-_trash. Returns True = DO NOT DELETE this path.
-
-    - real schema dir (ep_<id>/, _shared, _published, ...) -> protect (whole-episode loss otherwise)
-    - a symlink -> protect (it points INTO the schema; deleting it orphans the real keeper)
-    - a path that resolves under a managed schema location -> protect
-    """
+def _old_episode_renders():
+    """Real schema episode renders ({ep_id}/renders/episode.mp4), newest first. The ONLY mp4s the
+    low-disk trim may tombstone — never a flat glob, never a symlink, never a non-render file."""
+    out = []
     try:
-        if f.is_symlink() or f.is_dir():
-            return True
-        # if the real target lives under a per-episode schema dir or a managed top, don't touch it
-        from services.abn_assets import is_managed
-        return is_managed(f)
-    except Exception:
-        return True  # uncertain -> protect (fail safe, never fail destructive)
+        for child in ASSETS.iterdir():
+            if not child.is_dir() or child.is_symlink():
+                continue
+            mp4 = child / "renders" / "episode.mp4"
+            try:
+                if mp4.is_file() and not mp4.is_symlink():
+                    out.append(mp4)
+            except OSError:
+                pass
+    except (FileNotFoundError, OSError):
+        pass
+    return sorted(out, key=lambda p: p.stat().st_mtime, reverse=True)
 
 
 def purge_disk(intermediate_age_s=1800, keep_episodes=4, low_disk_gb=2.0):
-    """Free disk: drop spent per-segment intermediates older than N seconds + (if low) trim old episodes.
-    Callable from the factory loop AND the manual /gc endpoint. Returns MB freed."""
+    """Free disk by reaping ONLY per-episode scratch/ + cross-episode _scratch/ (the schema's
+    reapable surface — abn_assets spec lines 27, 32), tombstoning to _trash/ instead of unlinking.
+    Under low disk, also trim the oldest real episode renders. Callable from the factory loop AND
+    the manual /gc endpoint. Returns MB freed.
+
+    The per-episode schema makes this safe by construction: the GC never enumerates schema dirs,
+    renders, audio, or back-compat symlinks, so there is no flat-glob blast radius to guard against
+    (this replaces the interim `_gc_unsafe` migration band-aid)."""
     import shutil as _sh2
     freed = 0
     try:
         now = time.time()
         protected_paths = _editor_timeline_asset_paths()
-        patterns = ("*_s*.wav", "*_demo.mp4", "*_bg*.mp4", "*_src.png", "*_snippet.py",
-                    "*.tape", "*_raw.wav", "*_c[0-9].wav", "*_ducked.mp4", "*_list.txt")
-        for pat in patterns:
-            for f in ASSETS.glob(pat):
-                try:
-                    if _gc_unsafe(f) or _is_editor_timeline_protected_asset(f, protected_paths):
-                        continue
-                    if now - f.stat().st_mtime > intermediate_age_s:
-                        freed += f.stat().st_size; f.unlink()
-                except Exception:
-                    pass
+        for f in reapable_scratch():
+            try:
+                if _is_editor_timeline_protected_asset(f, protected_paths):
+                    continue
+                if now - f.stat().st_mtime > intermediate_age_s:
+                    freed += tombstone(f)
+            except Exception:
+                pass
         if _sh2.disk_usage(str(ASSETS)).free / 1e9 < low_disk_gb:
-            epmp4s = sorted(ASSETS.glob("ep_*_episode.mp4"), key=lambda p: p.stat().st_mtime, reverse=True)
-            for old in epmp4s[keep_episodes:]:
+            for old in _old_episode_renders()[keep_episodes:]:
                 try:
-                    if _gc_unsafe(old) or _is_editor_timeline_protected_asset(old, protected_paths):
+                    if _is_editor_timeline_protected_asset(old, protected_paths):
                         continue
                     freed += old.stat().st_size; old.unlink()
                 except Exception:
@@ -3085,63 +3085,33 @@ async def _gc_segments(keep_recent=12):
                 await db.delete_video(v["id"]); n += 1
         if n:
             BUS.emit("system", "gc", f"auto-pruned {n} board cards (segments, revision orphans, stale cards)")
-        # DISK GC: episode asset files (mp4/ui/snippet/etc) are never deleted when their DB card is
-        # pruned — they accumulate unbounded (disk-exhaustion risk on a 24/7 system). Delete asset
-        # files whose ep_id is no longer tracked in the DB AND whose file is older than 6h (safety window).
-        try:
-            live_ids = {v.get("id") for v in await db.list_videos() if v.get("kind") == "episode"}
-            protected_paths = _editor_timeline_asset_paths()
-            cutoff = now - 6 * 3600
-            freed, dn = 0, 0
-            for f in ASSETS.glob("ep_*"):
-                # STRUCTURAL GUARD: `ep_*` matches DIRECTORIES (e.g. per-episode `ep_<id>/` schema
-                # dirs) and SYMLINKS by name, not just flat `ep_<id>_*.mp4` files. unlink() on a dir
-                # would be whole-episode loss; on a symlink it orphans the real keeper it points at.
-                # Only ever reap a real, regular flat file — never a dir or a link — so this GC can't
-                # eat a schema dir/symlink even if an entry's type races or is corrupted.
-                if f.is_dir() or f.is_symlink():
-                    continue
-                m = re.match(r'(ep_[0-9a-f]+)_', f.name)
-                if not m or m.group(1) in live_ids:
-                    continue
-                try:
-                    if _gc_unsafe(f) or _is_editor_timeline_protected_asset(f, protected_paths):
-                        continue
-                    if f.stat().st_mtime < cutoff:
-                        freed += f.stat().st_size; f.unlink(); dn += 1
-                except Exception:
-                    pass
-            if dn:
-                BUS.emit("system", "gc", f"freed {freed//1024//1024}MB — pruned {dn} orphaned asset files")
-        except Exception:
-            pass
-        # INTERMEDIATE PURGE: per-segment files (wavs, demos, b-rolls, screenshots, snippets, tapes) are
-        # useless once the episode mp4 exists — they were the heavy disk hog (4.5G → ENOSPC). Delete any
-        # older than 30min whose final episode mp4 is already on disk.
+        # DISK GC: per-segment intermediates (wavs, demos, b-rolls, screenshots, snippets, tapes,
+        # concat lists) are the heavy disk hog (4.5G → ENOSPC) and are useless once the episode mp4
+        # exists. Under the per-episode schema they ALL live in reapable scratch/ (per-episode) and
+        # _scratch/ (cross-episode); nothing else is ever a GC candidate. Tombstone (→ _trash/) any
+        # older than 30min instead of unlinking, so a mistaken reap is recoverable, not data loss.
+        # This walks only the schema's reapable surface, so it can never touch a real schema dir,
+        # render, audio file, or back-compat symlink — the interim `_gc_unsafe` guard is gone.
         try:
             import shutil as _sh2
             inter_freed = inter_n = 0
             protected_paths = _editor_timeline_asset_paths()
-            patterns = ("*_s*.wav", "*_demo.mp4", "*_bg*.mp4", "*_src.png", "*_snippet.py",
-                        "*.tape", "*_raw.wav", "*_c[0-9].wav", "*_ducked.mp4", "*_list.txt")
-            for pat in patterns:
-                for f in ASSETS.glob(pat):
-                    try:
-                        if _gc_unsafe(f) or _is_editor_timeline_protected_asset(f, protected_paths):
-                            continue
-                        if now - f.stat().st_mtime > 1800:  # 30min
-                            inter_freed += f.stat().st_size; f.unlink(); inter_n += 1
-                    except Exception:
-                        pass
+            for f in reapable_scratch():
+                try:
+                    if _is_editor_timeline_protected_asset(f, protected_paths):
+                        continue
+                    if now - f.stat().st_mtime > 1800:  # 30min
+                        inter_freed += tombstone(f); inter_n += 1
+                except Exception:
+                    pass
             if inter_n:
-                BUS.emit("system", "gc", f"freed {inter_freed//1024//1024}MB — pruned {inter_n} spent intermediates")
-            # FREE-SPACE GUARD: if disk is critically low, also drop the oldest episode mp4s (keep 4)
+                BUS.emit("system", "gc", f"freed {inter_freed//1024//1024}MB — tombstoned {inter_n} spent scratch intermediates")
+            # FREE-SPACE GUARD: if disk is critically low, also drop the oldest real episode renders (keep 4)
             free_gb = _sh2.disk_usage(str(ASSETS)).free / 1e9
             if free_gb < 2.0:
-                epmp4s = sorted(ASSETS.glob("ep_*_episode.mp4"), key=lambda p: p.stat().st_mtime, reverse=True)
-                for old in epmp4s[4:]:
+                for old in _old_episode_renders()[4:]:
                     try:
-                        if _gc_unsafe(old) or _is_editor_timeline_protected_asset(old, protected_paths):
+                        if _is_editor_timeline_protected_asset(old, protected_paths):
                             continue
                         old.unlink()
                     except Exception:
