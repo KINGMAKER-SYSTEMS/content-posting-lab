@@ -1665,7 +1665,10 @@ def _chop(t0, t1, target=6.0, max_n=6, lead=0.0):
     import math
     n = max(1, min(max_n, round(span / target)))
     if span / n > 8.0:                     # never let a single sub-shot run past ~8s
-        n = min(max_n, math.ceil(span / 7.0))
+        # The 8s rule is a HARD editing rule and wins over the soft max_n preference: re-clamping
+        # back under max_n here would silently re-create the >8s shot we just rejected (e.g. a 50s
+        # span at max_n=6 → 8.33s/shot). Let the cap recompute raise N above max_n when they conflict.
+        n = math.ceil(span / 7.0)
     slot = span / n
     out = []
     for j in range(n):

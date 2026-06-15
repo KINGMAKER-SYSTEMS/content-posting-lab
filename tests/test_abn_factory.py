@@ -452,3 +452,97 @@ def test_kb_picker_seed_changes_first_move(monkeypatch):
     first0 = abn_factory._kb_picker(seed=0)()
     first1 = abn_factory._kb_picker(seed=1)()
     assert first0 != first1
+# ---------------- _chop WINDOWING: caps, micro-beat merge, contiguity ----------------
+#
+# _chop(t0, t1, target, max_n, lead) splits a span into N sub-shots, each ~target seconds,
+# with two hard editing rules baked in:
+#   * NO sub-shot may run past ~8s (the held-on-one-frame rule) — N is recomputed upward when needed.
+#   * NO tail micro-beat under 3.5s — it is merged back into the previous window (a 0.7s shot reads
+#     as a glitch, not a beat).
+# These pin those rules plus the contiguity/coverage invariant: the windows must tile [t0,t1] with
+# no gap and no dropped beat, and clipStartSec must track the continuous source offset (+lead).
+
+# How much tolerance to allow on the per-shot cap: shots are rounded to 2dp, so allow a hair over 8.0.
+_CAP = 8.0 + 0.02
+
+
+def _assert_contiguous(out, t0, t1):
+    """Every window abuts the next with no gap/overlap, and together they cover exactly [t0,t1]."""
+    assert out, "expected at least one window for a positive span"
+    assert out[0][0] == pytest.approx(t0, abs=0.01), "first window must start at t0"
+    assert out[-1][1] == pytest.approx(t1, abs=0.01), "last window must end at t1"
+    for (s, e, _), (ns, _ns_e, _off) in zip(out, out[1:]):
+        assert e == ns, f"gap/overlap between windows: {e} != {ns}"
+        assert e > s, "each window must have positive length"
+
+
+def test_chop_zero_span_returns_empty():
+    """A zero-length span (t0 == t1) yields no shots — must not emit a degenerate 0-length window."""
+    assert abn_factory._chop(10.0, 10.0) == []
+
+
+def test_chop_negative_span_returns_empty():
+    """An inverted/negative span (t1 < t0) is clamped to empty, never a backwards window."""
+    assert abn_factory._chop(10.0, 4.0) == []
+
+
+def test_chop_unit_duration_single_shot():
+    """A short unit-duration span fits in one shot — and a lone shot is NEVER treated as a
+    micro-beat to merge (there is nothing before it to merge into)."""
+    out = abn_factory._chop(0.0, 2.0)
+    assert len(out) == 1
+    assert out == [(0.0, 2.0, 0.0)]
+    _assert_contiguous(out, 0.0, 2.0)
+
+
+def test_chop_no_shot_exceeds_max_length():
+    """The hard cap: across a sweep of spans (incl. ones whose naive N would exceed 8s/shot, like a
+    50s span where round(50/6)=8 is clamped to max_n=6 → 8.3s/shot), NO emitted sub-shot runs past ~8s."""
+    for span in (8.3, 12.0, 16.0, 24.0, 30.0, 40.0, 50.0, 60.0):
+        out = abn_factory._chop(0.0, span)
+        for s, e, _ in out:
+            assert (e - s) <= _CAP, f"span={span}: sub-shot {(s, e)} = {round(e - s, 2)}s exceeds 8s cap"
+        _assert_contiguous(out, 0.0, span)
+
+
+def test_chop_caps_uncapped_max_n_when_needed():
+    """Regression guard for the cap recompute: a 50s span with target=6 gives round(50/6)=8, clamped
+    to max_n=6 → 8.33s/shot which trips the >8s rule, so N must be bumped via ceil(50/7)=8.
+    With a roomier max_n the recompute is free to take effect and every shot lands under the cap."""
+    out = abn_factory._chop(0.0, 50.0, target=6.0, max_n=8)
+    assert len(out) == 8  # ceil(50/7) = 8, since the clamped-at-6 plan blew the cap
+    for s, e, _ in out:
+        assert (e - s) <= _CAP
+    _assert_contiguous(out, 0.0, 50.0)
+
+
+def test_chop_merges_tail_micro_beat():
+    """A trailing fragment under 3.5s must be MERGED into the previous window, never emitted as a
+    standalone micro-beat. 13s @ target=6 → round(13/6)=2 shots of 6.5s each (no micro-beat there),
+    so we force the case with max_n high enough to produce an undersized tail and assert no window
+    in the result is under 3.5s while coverage stays exact."""
+    # 10s into 3 slots = 3.33s each → the last 3.33s slot is a micro-beat and must merge up.
+    out = abn_factory._chop(0.0, 10.0, target=3.3, max_n=3)
+    assert len(out) == 2, "the sub-3.5s tail slot must have merged into the previous window"
+    assert (out[-1][1] - out[-1][0]) >= 3.5, "no surviving window may be a sub-3.5s micro-beat"
+    _assert_contiguous(out, 0.0, 10.0)
+
+
+def test_chop_does_not_drop_or_duplicate_a_beat():
+    """The merge must rewrite the previous window's END (extending it), never silently drop the tail
+    or leave a gap. Total covered duration after any merge equals the full span exactly."""
+    for span, target, max_n in ((10.0, 3.3, 3), (9.0, 4.0, 3), (7.4, 3.6, 2), (11.0, 4.0, 3)):
+        out = abn_factory._chop(0.0, span, target=target, max_n=max_n)
+        covered = sum(e - s for s, e, _ in out)
+        assert covered == pytest.approx(span, abs=0.02), f"span={span}: coverage {covered} != {span}"
+        _assert_contiguous(out, 0.0, span)
+
+
+def test_chop_lead_offset_tracks_continuous_source():
+    """clipStartSec (3rd tuple element) carries the continuous source offset + lead-in, advancing one
+    slot per shot from `lead` — so warm-up frames are skipped without desyncing later sub-shots."""
+    out = abn_factory._chop(0.0, 12.0, target=6.0, max_n=2, lead=1.5)
+    assert len(out) == 2
+    assert out[0][2] == 1.5  # first shot offset == lead
+    slot = 12.0 / 2
+    assert out[1][2] == pytest.approx(1.5 + slot, abs=0.01)  # next shot advances one slot
