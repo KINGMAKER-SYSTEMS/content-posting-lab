@@ -1457,3 +1457,75 @@ def test_combined_keyframes_effects_transform_render_to_valid_frame_through_open
     late = _frame_png_at(output, tmp_path / "late.png", at=1.9)
     # sample the clip's repositioned/scaled region near frame center.
     assert _sample_rgb(late, 48, 32)[0] >= _sample_rgb(early, 48, 32)[0]
+
+
+# ---------------------------------------------------------------------------
+# ABN-import -> ffmpeg-fallback seam. project_from_abn_timeline produces the
+# project the renderers consume. The fallback can't composite crossfades or
+# keyframe envelopes (OpenShot-only); on an ABN-imported timeline it must still
+# (a) build a command without crashing on the text-only lower third (no media
+# src -> skip, not a phantom -i input) and (b) SURFACE the un-renderable
+# crossfade/keyframe as structured warnings. Both blind spots the ticket names.
+# ---------------------------------------------------------------------------
+
+
+def test_ffmpeg_fallback_on_abn_imported_timeline_skips_text_layer_and_warns(tmp_path):
+    # real media files so the broll/bed/vo assets resolve (not missing-asset noise)
+    broll = _solid_png(tmp_path / "ui.png", "blue", size="96x64")
+    vo = tmp_path / "vo.wav"
+    bedf = tmp_path / "bed.wav"
+    for audio in (vo, bedf):
+        subprocess.run(
+            ["ffmpeg", "-y", "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo",
+             "-t", "4", str(audio)],
+            check=True, capture_output=True, text=True,
+        )
+
+    abn_timeline = {
+        "episodeId": "ep_render_seam",
+        "fps": 12,
+        "width": 96,
+        "height": 64,
+        "totalSec": 4.0,
+        "musicBed": str(bedf),
+        "segments": [
+            {
+                "segmentId": "s0",
+                "durationSec": 4.0,
+                "shots": [
+                    {"id": "b", "src": str(broll), "startSec": 0.0,
+                     "durationSec": 2.0, "type": "still"},
+                ],
+                "audio": {"vo": {"src": str(vo), "duration": 4.0}},
+                # text-only lower third: headline lives in metadata, no media src.
+                "lowerThirds": [{"startSec": 0.5, "durationSec": 2.5, "headline": "Hook"}],
+            }
+        ],
+    }
+    project = timeline.project_from_abn_timeline("proj_render_seam", abn_timeline)
+
+    # Attach the OpenShot-only constructs the fallback must warn about: a crossfade
+    # transition on the still, and a ducking volume envelope on the imported bed.
+    still = next(c for c in project["clips"].values() if c["kind"] == "still")
+    still["effects"] = [{"id": "fx_cf", "type": "crossfade", "params": {"duration": 0.3}}]
+    bed_clip = next(c for c in project["clips"].values() if c["kind"] == "music_bed")
+    bed_clip["keyframes"] = [
+        {"property": "volume", "points": [
+            {"t": 0.0, "value": 0.6, "interp": "linear"},
+            {"t": 1.0, "value": 0.22, "interp": "constant"},
+        ]},
+    ]
+
+    renderer = editor_render.FFmpegLayeredRenderer(tmp_path / "renders", asset_root=tmp_path)
+    cmd, missing, warnings = renderer._build_video_command(
+        project, tmp_path / "renders" / "seam.mp4", duration=4.0
+    )
+
+    # The text-only lower third (empty src) is skipped, not reported missing or
+    # fed as a phantom -i input that would crash the command.
+    assert missing == []
+    names = {(w["kind"], w["name"]) for w in warnings}
+    assert ("effect", "crossfade") in names            # crossfade can't be faked
+    assert ("keyframe", "volume") in names             # ducking envelope can't be faked
+    # the command is buildable and routes the resolved media through -i inputs
+    assert str(broll) in cmd and str(bedf) in cmd and str(vo) in cmd

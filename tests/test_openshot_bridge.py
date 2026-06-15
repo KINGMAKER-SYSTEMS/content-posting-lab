@@ -112,6 +112,128 @@ def test_openshot_export_duration_ignores_disabled_tail_clip(tmp_path):
     assert [clip["id"] for clip in exported["clips"]] == ["card_clip"]
 
 
+# ---------------------------------------------------------------------------
+# ABN-import -> OpenShot seam. project_from_abn_timeline builds the project and
+# the bridge translates it; each side is unit-tested, but the SEAM between them
+# had zero coverage. A fidelity bug in the import path (music-bed ducking gain
+# not carried, source tag lost, lower-third skipped) would survive both suites
+# and only surface as a wrong-sounding/looking render. These pin the round-trip.
+# ---------------------------------------------------------------------------
+
+
+def _abn_timeline() -> dict:
+    """A representative ABN episode: ducked music bed, VO, a source-tagged shot,
+    and a text-only lower third — the heterogeneous layers OpenShot composites."""
+    return {
+        "episodeId": "ep_seam",
+        "title": "Seam Episode",
+        "fps": 30,
+        "width": 1920,
+        "height": 1080,
+        "totalSec": 4.0,
+        "musicBed": "/agenticnews-assets/bed.mp3",
+        "segments": [
+            {
+                "segmentId": "s0",
+                "durationSec": 4.0,
+                "shots": [
+                    {
+                        "id": "shot_a",
+                        "src": "/agenticnews-assets/ui.mp4",
+                        "startSec": 0.0,
+                        "durationSec": 2.0,
+                        "type": "broll",
+                    }
+                ],
+                "audio": {"vo": {"src": "/agenticnews-assets/vo.wav", "duration": 4.0}},
+                "lowerThirds": [
+                    {"startSec": 0.5, "durationSec": 2.5, "headline": "Hook lower"}
+                ],
+            }
+        ],
+    }
+
+
+def test_abn_imported_timeline_exports_openshot_json_with_ducked_bed_volume(tmp_path):
+    """Import an ABN timeline, then run it through the OpenShot bridge. The
+    music-bed ducking gain (0.22, the factory convention) must survive the seam
+    as OpenShot volume 22.0; the VO stays at full 100.0. A flattened/dropped
+    ducking gain here silently mixes music OVER the VO at render time."""
+    project = editor_timeline.project_from_abn_timeline(
+        "proj_seam", _abn_timeline(), source_episode_id="ep_seam"
+    )
+
+    exported = openshot_bridge.timeline_json(project, asset_root=tmp_path)
+
+    by_id = {c["id"]: c for c in exported["clips"]}
+    bed = next(c for c in project["clips"].values() if c["kind"] == "music_bed")
+    vo = next(c for c in project["clips"].values() if c["kind"] == "voiceover")
+    # 0.22 editor gain -> 22.0 OpenShot percent; full VO -> 100.0
+    assert by_id[bed["id"]]["volume"]["Points"][0]["co"]["Y"] == 22.0
+    assert by_id[vo["id"]]["volume"]["Points"][0]["co"]["Y"] == 100.0
+
+
+def test_abn_imported_timeline_keeps_source_tag_and_layer_ordering(tmp_path):
+    """The broll shot's production `source` resolves to a video FFmpegReader (not
+    an image reader), the bed/VO resolve to audio readers, and clips export sorted
+    by track layer index — so the OpenShot timeline stacks layers correctly."""
+    project = editor_timeline.project_from_abn_timeline(
+        "proj_seam2", _abn_timeline(), source_episode_id="ep_seam"
+    )
+
+    exported = openshot_bridge.timeline_json(project, asset_root=tmp_path)
+    by_id = {c["id"]: c for c in exported["clips"]}
+
+    broll = next(c for c in project["clips"].values() if c["kind"] == "broll")
+    assert by_id[broll["id"]]["reader"]["type"] == "FFmpegReader"
+    assert by_id[broll["id"]]["has_video"]["Points"][0]["co"]["Y"] == 1
+    assert by_id[broll["id"]]["reader"]["path"].endswith("ui.mp4")
+
+    bed = next(c for c in project["clips"].values() if c["kind"] == "music_bed")
+    assert by_id[bed["id"]]["reader"]["type"] == "FFmpegReader"
+    assert by_id[bed["id"]]["has_audio"]["Points"][0]["co"]["Y"] == 1
+
+    # A text-only lower third (no media src) falls back to a DummyReader, not a
+    # phantom path that would crash libopenshot opening it.
+    lower = next(c for c in project["clips"].values() if c["kind"] == "lower_third")
+    assert by_id[lower["id"]]["reader"]["type"] == "DummyReader"
+
+    # clips export sorted by track layer index (video_1=10 < graphics < titles_1=30
+    # < audio_1=40 < music_1=50): the bed (music_1) is the last clip.
+    layers = [c["layer"] for c in exported["clips"]]
+    assert layers == sorted(layers)
+
+
+def test_abn_imported_bed_keyframe_ducking_envelope_survives_the_seam(tmp_path):
+    """The import lands a FLAT 0.22 bed gain today; the ponytail comment notes a
+    keyframed ducking envelope can replace it later. Simulate that upgrade by
+    attaching a volume envelope to the imported bed and assert the bridge carries
+    it as a multi-Point OpenShot keyframe (not the flat default) — so the import
+    path is future-proof for an envelope, not just a flat gain."""
+    project = editor_timeline.project_from_abn_timeline(
+        "proj_seam3", _abn_timeline(), source_episode_id="ep_seam"
+    )
+    bed = next(c for c in project["clips"].values() if c["kind"] == "music_bed")
+    bed["keyframes"] = [
+        {
+            "property": "volume",
+            "points": [
+                {"t": 0.0, "value": 0.6, "interp": "linear"},
+                {"t": 1.0, "value": 0.22, "interp": "constant"},
+                {"t": 3.0, "value": 0.6, "interp": "linear"},
+            ],
+        }
+    ]
+
+    exported = openshot_bridge.timeline_json(project, asset_root=tmp_path)
+    by_id = {c["id"]: c for c in exported["clips"]}
+    points = by_id[bed["id"]]["volume"]["Points"]
+
+    # three points (the envelope), not one (the flat default), scaled 0..1 -> 0..100
+    assert [round(p["co"]["Y"], 2) for p in points] == [60.0, 22.0, 60.0]
+    assert points[1]["interpolation"] == openshot_bridge.CONSTANT
+
+
 def test_command_log_exports_openshot_apply_json_diff(tmp_path):
     project = _project(tmp_path / "card.png")
     command = {
