@@ -889,3 +889,63 @@ def test_cross_scratch_chokepoint_self_asserts_reapability_not_just_managed(stor
     monkeypatch.setattr(abn_factory, "scratch_dirs", lambda: [])
     with pytest.raises(ValueError):
         abn_factory._cross_scratch_path("probe_still.png")
+
+
+# --- _gc_segments low-disk trim: the OTHER destructive path's incomplete-scan fail-safe ---------
+# purge_disk's incomplete-scan skip is pinned above; _gc_segments (abn_factory ~3214-3238) runs its
+# OWN protected_paths/protection_complete gate before its hardcoded keep-4 render trim. This is the
+# exact span this ticket cites — it needs its own proof that an incomplete scan blocks the trim.
+
+
+def _gc_no_videos(monkeypatch):
+    """_gc_segments queries db.list_videos for the board-prune phase; stub it so we isolate the
+    disk-trim phase. (We don't want a real DB and we don't want board pruning to interfere.)"""
+    async def list_videos(*a, **k):
+        return []
+    monkeypatch.setattr(abn_factory.db, "list_videos", list_videos)
+
+
+def test_gc_segments_skips_render_trim_when_protection_scan_incomplete(store, monkeypatch):
+    """THE BUG THIS TICKET GUARDS (second GC path): an unreadable timeline JSON makes the protection
+    scan incomplete, so _gc_segments' low-disk render trim must be SKIPPED entirely — even the oldest
+    unreferenced render survives, because the scan couldn't confirm it isn't referenced by a timeline
+    we failed to read. Disk pressure is recoverable; tombstoning a live render 500s the next render."""
+    # >4 renders so the hardcoded keep-4 slice (_old_episode_renders()[4:]) WOULD yield a victim if
+    # the trim ran — otherwise the gate is untested (with the guard gone, the trim must eat the
+    # oldest; the guard is what makes it survive).
+    old_render = _render(store, "ep_old222", age_s=9000)        # oldest -> trim victim absent guard
+    for i, age in enumerate((8000, 7000, 6000, 5000, 10)):      # 5 newer -> 6 total, keep 4
+        _render(store, f"ep_fill2{i}", age_s=age)
+    # A broken timeline → protection scan is incomplete (some refs unknown).
+    (store / "editor_timelines" / "broken.json").write_text("{ not json at all")
+    _gc_no_videos(monkeypatch)
+    _force_low_disk(monkeypatch)
+
+    asyncio.run(abn_factory._gc_segments(keep_recent=0))
+
+    assert old_render.exists(), (
+        "_gc_segments low-disk trim ran despite an incomplete protection scan — it could have eaten "
+        "a render an active Editor Bay timeline still references"
+    )
+    assert not (store / "_trash" / "ep_old222" / "renders" / "episode.mp4").exists(), (
+        "no render should have been tombstoned while the protection scan was incomplete"
+    )
+
+
+def test_gc_segments_still_trims_when_protection_scan_is_complete(store, monkeypatch):
+    """Control: with a clean (complete) protection scan and low disk, _gc_segments DOES trim the
+    oldest unreferenced render (keep-4) — the fail-safe blocks the trim only when the scan genuinely
+    failed, not always. Needs >4 renders so the keep-4 trim has a victim."""
+    old_render = _render(store, "ep_old333", age_s=9000)        # oldest, unreferenced -> trimmed
+    for i, age in enumerate((8000, 7000, 6000, 5000, 10)):       # 5 newer -> 6 total, keep 4
+        _render(store, f"ep_fill3{i}", age_s=age)
+    (store / "editor_timelines" / "clean.json").write_text('{"clips": []}')
+    _gc_no_videos(monkeypatch)
+    _force_low_disk(monkeypatch)
+
+    asyncio.run(abn_factory._gc_segments(keep_recent=0))
+
+    assert not old_render.exists(), "a complete scan + low disk should still trim the oldest render"
+    assert (store / "_trash" / "ep_old333" / "renders" / "episode.mp4").exists(), (
+        "trimmed render must be tombstoned (recoverable), not unlinked"
+    )
