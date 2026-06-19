@@ -7,6 +7,7 @@
  */
 
 const BASE = import.meta.env.VITE_API_URL?.replace(/\/+$/, '') ?? '';
+const API_KEY = import.meta.env.VITE_APP_API_KEY ?? '';
 
 /** Prefix an API path (e.g. `/api/video/providers`) with the backend URL. */
 export function apiUrl(path: string): string {
@@ -45,7 +46,9 @@ export async function fetchApi<T = unknown>(
   path: string,
   init?: RequestInit,
 ): Promise<T> {
-  const res = await fetch(apiUrl(path), init);
+  const headers = new Headers(init?.headers);
+  if (API_KEY && !headers.has('x-api-key')) headers.set('x-api-key', API_KEY);
+  const res = await fetch(apiUrl(path), { ...init, headers });
   if (!res.ok) {
     let msg = `Request failed (${res.status})`;
     try {

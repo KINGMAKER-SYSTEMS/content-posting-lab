@@ -8,7 +8,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 import uvicorn
 
@@ -187,6 +187,21 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+_APP_API_KEY = os.getenv("APP_API_KEY")
+_AUTH_SKIP = ("/api/health", "/api/miniapp/", "/api/telegram/")
+
+
+@app.middleware("http")
+async def check_api_key(request: Request, call_next):
+    if _APP_API_KEY and request.url.path.startswith("/api/"):
+        if not any(request.url.path.startswith(s) for s in _AUTH_SKIP):
+            token = request.headers.get("authorization", "").removeprefix("Bearer ").strip()
+            key_header = request.headers.get("x-api-key", "").strip()
+            if token != _APP_API_KEY and key_header != _APP_API_KEY:
+                return JSONResponse(status_code=401, content={"detail": "Invalid or missing API key"})
+    return await call_next(request)
 
 
 @app.middleware("http")
