@@ -7,6 +7,7 @@ changes also write back to Notion.
 """
 
 import logging
+import os
 from datetime import datetime, timezone
 from typing import Any
 
@@ -44,10 +45,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-# Default password set on new intake rows. Eric/Glitch uses this when
-# creating the TikTok account. We'll figure out per-account password
-# management later.
-DEFAULT_INTAKE_PASSWORD = "Risingtides123$"
+DEFAULT_INTAKE_PASSWORD = os.getenv("DEFAULT_INTAKE_PASSWORD", "changeme")
 
 
 # Pipeline stages — must match the Notion Status select values exactly.
