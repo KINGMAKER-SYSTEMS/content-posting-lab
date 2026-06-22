@@ -857,3 +857,17 @@ def test_caption_rename_batch_validation_and_collisions(sync_client):
     )
     assert r.status_code == 409
     assert (base / "alpha").exists() and (base / "beta").exists()
+
+
+def test_load_batch_meta_roundtrip_and_resilience(tmp_path):
+    # Missing file -> None
+    assert burn_router._load_batch_meta(tmp_path) is None
+
+    # Valid round-trip via the atomic saver
+    meta = {"batchId": "x-1", "count": 3}
+    burn_router._save_batch_meta(tmp_path, meta)
+    assert burn_router._load_batch_meta(tmp_path) == meta
+
+    # Corrupt JSON -> None (atomic_load swallows JSONDecodeError)
+    (tmp_path / "batch_meta.json").write_text("{not json", encoding="utf-8")
+    assert burn_router._load_batch_meta(tmp_path) is None

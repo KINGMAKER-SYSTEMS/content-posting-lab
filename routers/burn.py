@@ -6,7 +6,6 @@ All endpoints are project-scoped via `project` query param.
 
 import asyncio
 import base64
-import json as _json
 import logging
 import math
 import os
@@ -31,7 +30,7 @@ from project_manager import (
 from services.captions import scan_project_captions, caption_facets
 from services.ffmpeg import TIKTOK_ENCODE_ARGS, build_cc_filter
 from services.fsutil import safe_unlink
-from services.json_store import atomic_save
+from services.json_store import atomic_load, atomic_save
 
 log = logging.getLogger("burn")
 
@@ -72,13 +71,7 @@ def _save_batch_meta(batch_dir: Path, meta: dict) -> None:
 
 def _load_batch_meta(batch_dir: Path) -> dict | None:
     """Load batch metadata if it exists."""
-    meta_path = batch_dir / "batch_meta.json"
-    if meta_path.exists():
-        try:
-            return _json.loads(meta_path.read_text(encoding="utf-8"))
-        except (_json.JSONDecodeError, OSError):
-            pass
-    return None
+    return atomic_load(batch_dir / "batch_meta.json", default=None)
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
