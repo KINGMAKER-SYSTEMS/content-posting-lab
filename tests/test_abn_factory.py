@@ -2242,3 +2242,47 @@ def test_cross_scratch_path_rejects_non_reapable_root(scratch_store, monkeypatch
     monkeypatch.setattr(abn_factory, "scratch_dirs", lambda: [])
     with pytest.raises(ValueError, match="refusing non-reapable cross-scratch write"):
         abn_factory._cross_scratch_path("probe.png")
+
+
+# ---- adhoc_scratch_path: name validation + extension format (services/abn_assets.py L279-313) ----
+
+
+@pytest.mark.parametrize(
+    "bad_name",
+    [
+        "..",
+        "../evil",
+        ".hidden",          # leading dot rejected by _SLUG_RE
+        "a/b",              # slash
+        "a\\b",             # backslash
+        "evil\x00",         # null byte
+        "",                 # empty
+        "  ",               # whitespace-only -> empty after strip
+    ],
+)
+def test_adhoc_scratch_path_rejects_bad_names(monkeypatch, tmp_path, bad_name):
+    """A GC-unsafe / traversing ad-hoc name must RAISE before any path is built —
+    it must never land a write at the ASSETS_DIR root or escape the store."""
+    monkeypatch.setattr(abn_assets, "ASSETS_DIR", tmp_path)
+    with pytest.raises(abn_assets.AssetPathError):
+        abn_assets.adhoc_scratch_path(bad_name, "wav")
+
+
+@pytest.mark.parametrize("bad_ext", ["w av", "wav/x", "wav.", "../x", "wa-v", "wav!"])
+def test_adhoc_scratch_path_rejects_bad_extensions(monkeypatch, tmp_path, bad_ext):
+    """The extension must be a plain alphanumeric token — special chars RAISE."""
+    monkeypatch.setattr(abn_assets, "ASSETS_DIR", tmp_path)
+    with pytest.raises(abn_assets.AssetPathError):
+        abn_assets.adhoc_scratch_path("vo", bad_ext)
+
+
+def test_adhoc_scratch_path_lands_valid_name_under_scratch(monkeypatch, tmp_path):
+    """A valid name+ext lands under the reapable cross-episode _scratch/ dir,
+    NOT the flat ASSETS_DIR root (the glob-GC hazard the gateway exists to kill)."""
+    monkeypatch.setattr(abn_assets, "ASSETS_DIR", tmp_path)
+    p = abn_assets.adhoc_scratch_path("vo", "wav")
+    assert p == tmp_path / "_scratch" / "vo.wav"
+    assert p.parent.is_dir()
+    # leading dot on ext is normalized; empty ext yields a bare name
+    assert abn_assets.adhoc_scratch_path("card", ".png") == tmp_path / "_scratch" / "card.png"
+    assert abn_assets.adhoc_scratch_path("clip", "") == tmp_path / "_scratch" / "clip"
