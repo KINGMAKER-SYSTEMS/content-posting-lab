@@ -2827,6 +2827,153 @@ def test_openshot_render_frame_window_shift_preserves_keyframe_source_frames(tmp
     assert project["clips"]["c1"]["keyframes"][0]["points"][0]["t"] == pytest.approx(0.0)
 
 
+def _ffmpeg_envelope_project(tmp_path, *, source_start: float = 0.0) -> dict:
+    """The ffmpeg fallback animates volume on AUDIO assets and opacity/x on VISUAL
+    assets (see _FFMPEG_KEYFRAME_PROPERTIES). Use two clips sharing the SAME timeline
+    span (t=4..7) and sourceStart so a single window front-trims both identically: a
+    video carrying opacity + x, and an audio bed carrying the volume envelope. Real
+    media on disk so the missing-asset gate stays quiet."""
+    clip_video = tmp_path / "clip.mp4"
+    bed_audio = tmp_path / "bed.wav"
+    subprocess.run(
+        ["ffmpeg", "-y", "-f", "lavfi", "-i", "color=c=red:s=64x64:r=30:d=8",
+         "-frames:v", "240", str(clip_video)],
+        check=True, capture_output=True, text=True,
+    )
+    subprocess.run(
+        ["ffmpeg", "-y", "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo",
+         "-t", "8", str(bed_audio)],
+        check=True, capture_output=True, text=True,
+    )
+    project = timeline.new_project("ffmpeg_kf", width=1920, height=1080, fps=30)
+    project["assets"]["v"] = {"id": "v", "type": "video", "src": str(clip_video), "metadata": {}}
+    project["assets"]["bed"] = {"id": "bed", "type": "audio", "src": str(bed_audio), "metadata": {}}
+    span = {"start": 4.0, "duration": 3.0, "sourceStart": source_start,
+            "enabled": True, "muted": False, "volume": 1.0, "effects": [], "metadata": {}}
+    project["clips"]["c1"] = {
+        **span, "id": "c1", "assetId": "v", "trackId": "graphics_1", "kind": "artifact",
+        "transform": {"x": 0.5, "y": 0.5, "scale": 1.0, "opacity": 1.0},
+        "keyframes": [
+            {"property": "opacity", "points": [
+                {"t": 0.0, "value": 0.0, "interp": "linear"},
+                {"t": 1.0, "value": 1.0, "interp": "linear"},
+            ]},
+            {"property": "x", "points": [
+                {"t": 0.0, "value": 0.0}, {"t": 3.0, "value": 1.0},
+            ]},
+        ],
+    }
+    project["clips"]["c2"] = {
+        **span, "id": "c2", "assetId": "bed", "trackId": "music_1", "kind": "music_bed",
+        "transform": {"x": 0.5, "y": 0.5, "scale": 1.0, "opacity": 1.0},
+        "keyframes": [
+            {"property": "volume", "points": [
+                {"t": 0.0, "value": 1.0, "interp": "linear"},
+                {"t": 1.0, "value": 0.2, "interp": "constant"},
+                {"t": 3.0, "value": 1.0, "interp": "bezier"},
+            ]},
+        ],
+    }
+    return project
+
+
+def _kf_segment_thresholds(expr: str) -> list[float]:
+    """Pull the ordered `lt(<var>,<T>)` segment thresholds out of a
+    _piecewise_linear_expr string. The smallest threshold is the OUTERMOST if (it
+    appears first in the string), so left-to-right order is ascending segment time —
+    the filter-time at which each keyframe point fires."""
+    import re
+
+    return [float(m) for m in re.findall(r"lt\([tT],([0-9.]+)\)", expr)]
+
+
+def test_ffmpeg_render_frame_window_shift_preserves_keyframe_source_frames(tmp_path):
+    """Parallel to the OpenShot frame-window test for the FFmpegLayeredRenderer path.
+
+    OpenShotRenderer.render_frame windows a 250ms slice and proves the keyframe-t
+    shift (down) and sourceStart bump (up) CANCEL in OpenShot frame space. The ffmpeg
+    fallback windows the SAME way (FFmpegLayeredRenderer.render -> _build_video_command
+    -> _windowed_clips), but lands its keyframes via filter-time `t`/`T` after
+    atrim/trim + (a)setpts reset PTS to 0. So the analogous invariant is: a keyframe
+    that sits at the window ORIGIN must fire at filter-time 0 whether the preview window
+    starts at the clip head or mid-clip — otherwise volume/opacity/x animate at the
+    wrong moment on the fallback vs OpenShot (front-trim misalignment the ticket names).
+
+    Drive the real command builder (no ffmpeg run) at two window starts and compare the
+    `lt(t,T)` / `lt(T,T)` segment thresholds of the volume, opacity, and x envelopes.
+    """
+    import re
+
+    renderer = editor_render.FFmpegLayeredRenderer(tmp_path / "renders")
+    # Clip spans timeline t=4..7, sourceStart=1.0. Volume points sit at clip-relative
+    # t=0,1,3 -> absolute timeline t=4,5,7.
+    project = _ffmpeg_envelope_project(tmp_path, source_start=1.0)
+
+    def _exprs(window_start: float, duration: float):
+        cmd, missing, _ = renderer._build_video_command(
+            project, tmp_path / "renders" / "out.mp4",
+            duration=duration, window_start=window_start,
+        )
+        assert missing == []
+        fc = cmd[cmd.index("-filter_complex") + 1]
+        # one volume= (audio), one geq alpha (opacity), one overlay x (position)
+        vol = re.search(r"volume='([^']+)':eval=frame", fc).group(1)
+        alpha = re.search(r"a='255\*max\(0,min\(1,(.+?)\)\)'", fc).group(1)
+        x_overlay = re.search(r"overlay=x='([^']+)'", fc).group(1)
+        return vol, alpha, x_overlay
+
+    # HEAD: window the whole clip from its start (front_trim=0). Keyframe t passes
+    # through untouched: volume fires at filter-time 0,1,3.
+    head_vol, head_alpha, head_x = _exprs(window_start=4.0, duration=3.0)
+    assert _kf_segment_thresholds(head_vol) == [0.0, 1.0, 3.0]
+    assert _kf_segment_thresholds(head_alpha) == [0.0, 1.0]
+    assert _kf_segment_thresholds(head_x) == [0.0, 3.0]
+
+    # MID-CLIP: preview from absolute t=5.0 -> front_trim=1.0s. _windowed_clips shifts
+    # every keyframe t down by 1.0 (clamped at 0) AND the visual trim/audio atrim bump
+    # sourceStart, but PTS reset makes filter-time start at 0. So the keyframe that sat
+    # at absolute t=5.0 (clip-relative 1.0) becomes the window ORIGIN at filter-time 0.
+    mid_vol, mid_alpha, mid_x = _exprs(window_start=5.0, duration=2.0)
+    # volume t's 0,1,3 -> shifted 0,0,2 (first two clamp to the origin frame 0).
+    assert _kf_segment_thresholds(mid_vol) == [0.0, 0.0, 2.0]
+    # opacity reveal t=1.0 (abs 5.0) is now the origin -> fires at filter-time 0, not
+    # late: thresholds 0,1 -> 0,0. This is the front-trim misalignment guard.
+    assert _kf_segment_thresholds(mid_alpha) == [0.0, 0.0]
+    # x pan t's 0,3 -> 0,2, shifting in lockstep with volume/opacity.
+    assert _kf_segment_thresholds(mid_x) == [0.0, 2.0]
+
+    # The in-window keyframe is frame-stable across both builds: the volume point at
+    # absolute t=7.0 (the bezier return) sits 3.0s after the head origin and 2.0s after
+    # the mid origin, i.e. exactly front_trim earlier — the t-shift, nothing dropped.
+    assert _kf_segment_thresholds(head_vol)[-1] - _kf_segment_thresholds(mid_vol)[-1] == pytest.approx(1.0)
+
+    # render_frame is the real entrypoint and uses a fixed 250ms window; its built
+    # command must carry the same shifted-origin opacity envelope (proving render_frame,
+    # not just _build_video_command, threads the windowing). Capture the command _run
+    # would receive instead of invoking ffmpeg.
+    captured: dict[str, list] = {}
+    original_run = editor_render._run
+    original_probe = editor_render._probe_duration
+    try:
+        editor_render._run = lambda cmd: captured.setdefault("cmds", []).append(cmd)
+        editor_render._probe_duration = lambda *a, **k: 0.25  # no real mp4 to probe
+        renderer.render_frame(project, at=5.0, output_path=tmp_path / "renders" / "preview.png")
+    finally:
+        editor_render._run = original_run
+        editor_render._probe_duration = original_probe
+    # first _run is the layered render building the preview slice (has -filter_complex);
+    # the second is the single-frame extract.
+    render_cmd = next(c for c in captured["cmds"] if "-filter_complex" in c)
+    rc_fc = render_cmd[render_cmd.index("-filter_complex") + 1]
+    rc_alpha = re.search(r"a='255\*max\(0,min\(1,(.+?)\)\)'", rc_fc).group(1)
+    assert _kf_segment_thresholds(rc_alpha)[0] == 0.0  # origin reveal fires immediately
+
+    # The caller's project is never mutated by the windowing (deep-copy scope), exactly
+    # as the OpenShot parallel asserts.
+    assert project["clips"]["c1"]["sourceStart"] == pytest.approx(1.0)
+    assert project["clips"]["c1"]["keyframes"][0]["points"][0]["t"] == pytest.approx(0.0)
+
+
 def test_keyframes_effects_and_transform_coexist_in_one_openshot_clip_json():
     """Round-trip fidelity for the combined case. The exported OpenShot clip must
     carry, on the SAME clip object: (1) the transform — centered location_x/y and
