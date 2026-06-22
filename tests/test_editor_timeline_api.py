@@ -2229,3 +2229,204 @@ def test_editor_timeline_track_create_defaults_via_command_core():
         "index": 0,
         "locked": False,
     }
+
+# ---------------------------------------------------------------------------
+# Direct unit coverage for clip.effect.* commands and _validated_effect
+# (services/editor_timeline.py lines 1136-1158 + 1298-1327). These power the
+# ABN editor-bay brightness/saturation/fade effects on clips; the add/update/
+# delete ops and their validation were previously untested.
+# ---------------------------------------------------------------------------
+
+
+def _project_with_clip():
+    """Build a project carrying a single video clip via the public command path."""
+    from services import editor_timeline
+
+    project = editor_timeline.new_project("p")
+    project = editor_timeline.apply_command(
+        project,
+        {
+            "op": "asset.import",
+            "actor": "agent",
+            "expectedRevision": 0,
+            "payload": {"id": "a1", "type": "video", "src": "/x.mp4"},
+        },
+    )
+    track_id = next(iter(project["tracks"]))
+    project = editor_timeline.apply_command(
+        project,
+        {
+            "op": "clip.create",
+            "actor": "agent",
+            "expectedRevision": 1,
+            "payload": {
+                "clipId": "c1",
+                "assetId": "a1",
+                "trackId": track_id,
+                "start": 0.0,
+                "duration": 5.0,
+            },
+        },
+    )
+    return editor_timeline, project
+
+
+def _effect_cmd(op, expected, payload):
+    return {"op": op, "actor": "agent", "expectedRevision": expected, "payload": payload}
+
+
+def test_clip_effect_add_appends_validated_effect():
+    et, project = _project_with_clip()
+    out = et.apply_command(
+        project,
+        _effect_cmd(
+            "clip.effect.add",
+            project["revision"],
+            {
+                "clipId": "c1",
+                "effect": {"id": "fx1", "type": "brightness", "params": {"value": 0.5}},
+            },
+        ),
+    )
+    assert out["clips"]["c1"]["effects"] == [
+        {"id": "fx1", "type": "brightness", "params": {"value": 0.5}}
+    ]
+    assert out["revision"] == project["revision"] + 1
+
+
+def test_clip_effect_add_accepts_inline_payload_shape():
+    """The effect can be supplied inline on the payload (no nested `effect` key)."""
+    et, project = _project_with_clip()
+    out = et.apply_command(
+        project,
+        _effect_cmd(
+            "clip.effect.add",
+            project["revision"],
+            {"clipId": "c1", "id": "fx_inline", "type": "fadeIn", "params": {"duration": 0.5}},
+        ),
+    )
+    assert out["clips"]["c1"]["effects"][0]["id"] == "fx_inline"
+
+
+def test_clip_effect_add_rejects_duplicate_id():
+    et, project = _project_with_clip()
+    project = et.apply_command(
+        project,
+        _effect_cmd(
+            "clip.effect.add",
+            project["revision"],
+            {"clipId": "c1", "effect": {"id": "dup", "type": "saturation", "params": {"value": 1.0}}},
+        ),
+    )
+    with pytest.raises(et.CommandValidationError, match="effect already exists: dup"):
+        et.apply_command(
+            project,
+            _effect_cmd(
+                "clip.effect.add",
+                project["revision"],
+                {"clipId": "c1", "effect": {"id": "dup", "type": "saturation", "params": {"value": 2.0}}},
+            ),
+        )
+
+
+def test_clip_effect_update_replaces_matching_effect():
+    et, project = _project_with_clip()
+    project = et.apply_command(
+        project,
+        _effect_cmd(
+            "clip.effect.add",
+            project["revision"],
+            {"clipId": "c1", "effect": {"id": "fx1", "type": "brightness", "params": {"value": 0.2}}},
+        ),
+    )
+    out = et.apply_command(
+        project,
+        _effect_cmd(
+            "clip.effect.update",
+            project["revision"],
+            {"clipId": "c1", "effect": {"id": "fx1", "type": "brightness", "params": {"value": -0.4}}},
+        ),
+    )
+    assert out["clips"]["c1"]["effects"] == [
+        {"id": "fx1", "type": "brightness", "params": {"value": -0.4}}
+    ]
+
+
+def test_clip_effect_update_rejects_missing_effect():
+    et, project = _project_with_clip()
+    with pytest.raises(et.CommandValidationError, match="effect does not exist: ghost"):
+        et.apply_command(
+            project,
+            _effect_cmd(
+                "clip.effect.update",
+                project["revision"],
+                {"clipId": "c1", "effect": {"id": "ghost", "type": "brightness", "params": {"value": 0.1}}},
+            ),
+        )
+
+
+def test_clip_effect_delete_removes_effect_by_id():
+    et, project = _project_with_clip()
+    for fid in ("fx1", "fx2"):
+        project = et.apply_command(
+            project,
+            _effect_cmd(
+                "clip.effect.add",
+                project["revision"],
+                {"clipId": "c1", "effect": {"id": fid, "type": "saturation", "params": {"value": 1.0}}},
+            ),
+        )
+    out = et.apply_command(
+        project,
+        _effect_cmd("clip.effect.delete", project["revision"], {"clipId": "c1", "effectId": "fx1"}),
+    )
+    assert [e["id"] for e in out["clips"]["c1"]["effects"]] == ["fx2"]
+
+
+def test_clip_effect_delete_rejects_missing_effect():
+    et, project = _project_with_clip()
+    with pytest.raises(et.CommandValidationError, match="effect does not exist: nope"):
+        et.apply_command(
+            project,
+            _effect_cmd("clip.effect.delete", project["revision"], {"clipId": "c1", "effectId": "nope"}),
+        )
+
+
+def test_validated_effect_rejects_unsupported_type():
+    from services import editor_timeline
+
+    with pytest.raises(editor_timeline.CommandValidationError, match="unsupported effect type: blur"):
+        editor_timeline._validated_effect({"id": "x", "type": "blur", "params": {}})
+
+
+def test_validated_effect_rejects_unknown_param():
+    from services import editor_timeline
+
+    with pytest.raises(editor_timeline.CommandValidationError, match="unsupported effect params"):
+        editor_timeline._validated_effect(
+            {"id": "x", "type": "brightness", "params": {"value": 0.5, "gamma": 1.0}}
+        )
+
+
+def test_validated_effect_rejects_missing_required_param():
+    from services import editor_timeline
+
+    with pytest.raises(editor_timeline.CommandValidationError, match="effect param required: value"):
+        editor_timeline._validated_effect({"id": "x", "type": "brightness", "params": {}})
+
+
+def test_validated_effect_rejects_out_of_bounds_param():
+    from services import editor_timeline
+
+    # brightness is bounded to [-1.0, 1.0]; 2.0 is out of range.
+    with pytest.raises(editor_timeline.CommandValidationError, match="must be between"):
+        editor_timeline._validated_effect(
+            {"id": "x", "type": "brightness", "params": {"value": 2.0}}
+        )
+
+
+def test_validated_effect_requires_id():
+    from services import editor_timeline
+
+    with pytest.raises(editor_timeline.CommandValidationError, match="effect id is required"):
+        editor_timeline._validated_effect({"type": "brightness", "params": {"value": 0.5}})
