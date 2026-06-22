@@ -260,6 +260,82 @@ def test_converted_setter_skips_save_on_exception(isolated_config, monkeypatch):
     assert "page-9" not in tg.get_poster("p1").get("topics", {})
 
 
+# --- router endpoint: reset-defaults must use mutate_config (was bare load/save) ---
+
+
+def test_reset_default_posters_does_not_clobber_concurrent_poster_add(
+    isolated_config, monkeypatch
+):
+    """routers.telegram.reset_default_posters must hold the config lock for its
+    whole read-modify-write so a concurrent set_poster() can't be clobbered.
+
+    Before the fix it did load_config() -> mutate -> save_config() with no lock,
+    so a poster created by *another thread* between reset's load and its save was
+    lost (reset's stale snapshot overwrote it). We force that interleave
+    deterministically: reset's load is wrapped to (a) release a competing
+    writer thread and (b) wait for it to finish its own set_poster save before
+    reset proceeds to mutate+save.
+
+    With reset under mutate_config the competing writer blocks on the shared
+    reentrant lock until reset commits, so its poster survives. Without the lock
+    (the bug) the competing write lands during reset's window and reset's save
+    clobbers it.
+    """
+    import asyncio
+
+    from routers import telegram as tg_router
+    from services import telegram as tg_svc
+    from services.telegram import _DEFAULT_POSTERS
+
+    # Start from a config with NO defaults so reset actually has work to do
+    # (a fresh boot auto-seeds defaults, which would make reset a no-op).
+    tg.save_config(tg_svc._empty_config())
+
+    competitor_done = threading.Event()
+    competitor_errors = []
+
+    def competitor():
+        try:
+            tg.set_poster("competing", {"name": "Competing", "chat_id": -999})
+        except Exception as exc:  # pragma: no cover
+            competitor_errors.append(exc)
+        finally:
+            competitor_done.set()
+
+    real_load = tg_svc.load_config
+    fired = {"done": False}
+
+    def load_then_race():
+        # Trip only on reset's first load (before any default exists), inside
+        # whatever lock reset is (or isn't) holding.
+        cfg = real_load()
+        if not fired["done"] and not any(
+            pid in cfg.get("posters", {}) for pid in _DEFAULT_POSTERS
+        ):
+            fired["done"] = True
+            threading.Thread(target=competitor).start()
+            # Give the competitor a moment to try its write. If reset holds the
+            # lock, the competitor blocks here (we time out) and only commits
+            # after reset releases — surviving. If reset holds no lock, the
+            # competitor commits NOW, in reset's window — and gets clobbered.
+            competitor_done.wait(timeout=0.5)
+        return cfg
+
+    monkeypatch.setattr(tg_svc, "load_config", load_then_race)
+
+    asyncio.run(tg_router.reset_default_posters())
+    competitor_done.wait(timeout=2.0)
+
+    assert not competitor_errors, f"competitor raised: {competitor_errors}"
+
+    posters = tg.load_config().get("posters", {})
+    # the concurrently-added poster survived (not clobbered by reset's save)
+    assert "competing" in posters, "concurrent poster add was clobbered by reset"
+    # and the defaults were still re-seeded
+    for pid in _DEFAULT_POSTERS:
+        assert pid in posters, f"default {pid} missing"
+
+
 # --- write-failure (not just TOCTOU) regressions for the config layer -------
 
 

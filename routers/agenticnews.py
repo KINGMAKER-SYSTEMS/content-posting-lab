@@ -994,7 +994,12 @@ class EditorSourceExtractionError(RuntimeError):
 
 
 def _run_ffmpeg_extract(cmd: list[str], *, source: Path, target: Path) -> None:
-    target.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:  # disk full, no-write perms, parent path is a file, etc.
+        raise EditorSourceExtractionError(
+            f"could not create target directory {target.parent} for {target.name}: {exc}"
+        ) from exc
     try:
         subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=180)
     except FileNotFoundError as exc:  # ffmpeg not installed / not on PATH

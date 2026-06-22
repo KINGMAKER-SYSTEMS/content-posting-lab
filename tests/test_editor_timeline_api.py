@@ -1901,3 +1901,217 @@ def test_materialization_surfaces_clean_error_on_ffmpeg_failure(assets_dir, monk
         "vid1", _materialization_timeline(), materialize=False
     )
     assert any(e["type"] == "audio" for e in plan)
+
+
+# ============ EDITOR BAY review-notes endpoints (/editor/{ep_id}/notes) ============
+# Regression coverage for the review scratchpad notes persisted to review_notes.json.
+# These are distinct from the editor-timeline command system above: they round-trip
+# operator review notes through _load_review_notes / _save_review_notes (atomic write).
+# _REVIEW_NOTES is bound at import time, so tests must repoint it (not db.ASSETS_DIR).
+
+
+def _patch_review_notes(monkeypatch, tmp_path):
+    """Repoint the module-level notes file at a temp path and stub out the DB
+    lookup so the endpoints never touch the real SQLite videos table (no video
+    found -> rid falls back to the ep_id, which is the normal scratchpad path)."""
+    notes_file = tmp_path / "review_notes.json"
+    monkeypatch.setattr(agenticnews_router, "_REVIEW_NOTES", notes_file)
+
+    async def _no_video(_ep_id):
+        return None
+
+    monkeypatch.setattr(agenticnews_router, "_find_video", _no_video)
+    return notes_file
+
+
+def test_editor_save_note_appends_and_persists(sync_client, monkeypatch, tmp_path):
+    notes_file = _patch_review_notes(monkeypatch, tmp_path)
+
+    resp = sync_client.post(
+        "/api/agenticnews/editor/ep_notes/notes",
+        json={"t": 1.5, "kind": "pin", "track": "vo", "text": "tighten pacing"},
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ok"] is True
+    assert body["epId"] == "ep_notes"
+    assert body["count"] == 1
+    # An id is auto-assigned when none is supplied.
+    assert body["note"]["id"]
+
+    saved = json.loads(notes_file.read_text())
+    assert saved["ep_notes"][0]["text"] == "tighten pacing"
+    assert saved["ep_notes"][0]["id"] == body["note"]["id"]
+
+
+def test_editor_save_note_upserts_by_id(sync_client, monkeypatch, tmp_path):
+    notes_file = _patch_review_notes(monkeypatch, tmp_path)
+
+    first = sync_client.post(
+        "/api/agenticnews/editor/ep_up/notes",
+        json={"id": "n1", "t": 0.0, "kind": "frame", "text": "original"},
+    )
+    assert first.status_code == 200
+    assert first.json()["count"] == 1
+
+    # Same id -> replace in place, not append.
+    updated = sync_client.post(
+        "/api/agenticnews/editor/ep_up/notes",
+        json={"id": "n1", "t": 0.0, "kind": "frame", "text": "revised"},
+    )
+    assert updated.status_code == 200
+    assert updated.json()["count"] == 1
+
+    saved = json.loads(notes_file.read_text())
+    assert len(saved["ep_up"]) == 1
+    assert saved["ep_up"][0]["text"] == "revised"
+
+
+def test_editor_delete_note_removes_matching_and_reports_count(sync_client, monkeypatch, tmp_path):
+    notes_file = _patch_review_notes(monkeypatch, tmp_path)
+
+    sync_client.post(
+        "/api/agenticnews/editor/ep_del/notes",
+        json={"id": "keep", "text": "keep me"},
+    )
+    sync_client.post(
+        "/api/agenticnews/editor/ep_del/notes",
+        json={"id": "drop", "text": "drop me"},
+    )
+
+    resp = sync_client.delete("/api/agenticnews/editor/ep_del/notes/drop")
+
+    assert resp.status_code == 200
+    assert resp.json() == {"ok": True, "epId": "ep_del", "removed": 1}
+
+    saved = json.loads(notes_file.read_text())
+    assert [n["id"] for n in saved["ep_del"]] == ["keep"]
+
+
+def test_editor_delete_unknown_note_is_noop(sync_client, monkeypatch, tmp_path):
+    _patch_review_notes(monkeypatch, tmp_path)
+    sync_client.post(
+        "/api/agenticnews/editor/ep_noop/notes",
+        json={"id": "n1", "text": "only note"},
+    )
+
+    resp = sync_client.delete("/api/agenticnews/editor/ep_noop/notes/does_not_exist")
+
+    assert resp.status_code == 200
+    assert resp.json()["removed"] == 0
+
+
+def test_editor_save_note_recovers_from_corrupt_notes_file(sync_client, monkeypatch, tmp_path):
+    """A truncated/garbage review_notes.json must not 500 the save path: the loader
+    swallows the parse error and treats the store as empty, so the new note still lands."""
+    notes_file = _patch_review_notes(monkeypatch, tmp_path)
+    notes_file.write_text("{ this is not valid json")
+
+    resp = sync_client.post(
+        "/api/agenticnews/editor/ep_corrupt/notes",
+        json={"text": "after corruption"},
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["count"] == 1
+    saved = json.loads(notes_file.read_text())
+    assert saved["ep_corrupt"][0]["text"] == "after corruption"
+
+
+def test_editor_save_note_surfaces_write_failure(sync_client, monkeypatch, tmp_path):
+    """If the atomic write fails (e.g. read-only volume), the error propagates rather
+    than silently dropping the operator's note. TestClient re-raises unhandled server
+    exceptions, so the OSError surfaces here instead of being swallowed."""
+    _patch_review_notes(monkeypatch, tmp_path)
+
+    def boom(*_a, **_k):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(agenticnews_router, "atomic_save", boom)
+
+    with pytest.raises(OSError, match="disk full"):
+        sync_client.post(
+            "/api/agenticnews/editor/ep_writefail/notes",
+            json={"text": "never persisted"},
+        )
+
+
+# ---------------------------------------------------------------------------
+# Target-directory creation failures (disk-full / no-perms / concurrent races).
+#
+# `_run_ffmpeg_extract` mkdir's the target's parent before shelling out. A
+# disk-full (OSError/ENOSPC), a read-only mount, or a concurrent worker that
+# planted a *file* where the dir should be (FileExistsError) must NOT leak a raw
+# OSError past the extractor — it should be wrapped in the same catchable
+# EditorSourceExtractionError as the ffmpeg failures so callers handle one type.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "mkdir_exc",
+    [
+        OSError(28, "No space left on device"),  # disk full during mkdir
+        PermissionError(13, "Permission denied"),  # read-only / unwritable mount
+    ],
+    ids=["disk_full", "no_perms"],
+)
+def test_extract_audio_window_wraps_mkdir_failures(monkeypatch, tmp_path, mkdir_exc):
+    def boom_mkdir(*_a, **_k):
+        raise mkdir_exc
+
+    monkeypatch.setattr(agenticnews_router.Path, "mkdir", boom_mkdir)
+    # subprocess.run must never be reached when the directory can't be made.
+    monkeypatch.setattr(
+        agenticnews_router.subprocess,
+        "run",
+        lambda *_a, **_k: pytest.fail("ffmpeg ran despite mkdir failure"),
+    )
+
+    with pytest.raises(agenticnews_router.EditorSourceExtractionError) as caught:
+        agenticnews_router._extract_audio_window(
+            tmp_path / "episode.mp4", tmp_path / "out" / "seg0_vo.wav", start=0.0, duration=5.0
+        )
+    assert "seg0_vo.wav" in str(caught.value)
+    assert caught.value.__cause__ is mkdir_exc
+
+
+def test_extract_video_window_wraps_concurrent_dir_race(monkeypatch, tmp_path):
+    """A concurrent worker planted a *file* where the target dir should go;
+    mkdir(parents=True, exist_ok=True) raises FileExistsError, which must be
+    translated rather than leaked as a raw OSError."""
+    # Real on-disk race: parent path exists as a file, not a directory.
+    clash = tmp_path / "out"
+    clash.write_bytes(b"not a dir")
+
+    monkeypatch.setattr(
+        agenticnews_router.subprocess,
+        "run",
+        lambda *_a, **_k: pytest.fail("ffmpeg ran despite mkdir failure"),
+    )
+
+    with pytest.raises(agenticnews_router.EditorSourceExtractionError) as caught:
+        agenticnews_router._extract_video_window(
+            clash / "seg0_demo.mp4", clash / "seg0_demo.mp4", start=0.0, duration=5.0
+        )
+    assert isinstance(caught.value.__cause__, OSError)
+
+
+def test_extract_audio_window_wraps_disk_full_during_encode(monkeypatch, tmp_path):
+    """Disk fills *during* the ffmpeg encode: ffmpeg exits non-zero with an
+    ENOSPC stderr. That surfaces as a clean error carrying ffmpeg's message."""
+    err = subprocess.CalledProcessError(
+        returncode=1, cmd=["ffmpeg"], stderr="av_interleaved_write_frame(): No space left on device"
+    )
+
+    def boom(*_a, **_k):
+        raise err
+
+    monkeypatch.setattr(agenticnews_router.subprocess, "run", boom)
+
+    with pytest.raises(agenticnews_router.EditorSourceExtractionError) as caught:
+        agenticnews_router._extract_audio_window(
+            tmp_path / "episode.mp4", tmp_path / "out" / "seg0_vo.wav", start=0.0, duration=5.0
+        )
+    assert "No space left on device" in str(caught.value)
+    assert caught.value.__cause__ is err

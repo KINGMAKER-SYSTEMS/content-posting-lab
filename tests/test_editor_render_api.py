@@ -533,6 +533,207 @@ def test_editor_command_invalidates_render_cache_for_keyframe_and_effect_ops(
     assert "renderCache" not in loaded.json()
 
 
+def _seed_fx_project(tmp_path: Path, *, cache_revision: int, video_exists: bool) -> Path:
+    """Write an fx_invalidate-style project at revision 0 whose single render-cache
+    window can be tuned for the stale-revision / missing-file edge cases. Returns the
+    timeline dir so callers can monkeypatch ASSETS_DIR to it via its parent."""
+    renders_dir = tmp_path / "editor_renders"
+    renders_dir.mkdir(parents=True, exist_ok=True)
+    video = renders_dir / "fx_edge_0.00_1.00.mp4"
+    if video_exists:
+        video.write_bytes(b"fake-video")
+    timeline_dir = tmp_path / "editor_timelines"
+    timeline_dir.mkdir(exist_ok=True)
+    (timeline_dir / "fx_edge.json").write_text(
+        """{
+  "schema": "editor-timeline/v1",
+  "projectId": "fx_edge",
+  "sourceEpisodeId": "fx_edge",
+  "title": "FX Edge",
+  "fps": 8,
+  "width": 32,
+  "height": 32,
+  "revision": 0,
+  "metadata": {"abnImportVersion": 2},
+  "assets": {"card": {"id": "card", "type": "image", "src": "card.png"}},
+  "tracks": {"graphics_1": {"id": "graphics_1", "kind": "graphics", "index": 0}},
+  "clips": {
+    "fx_clip": {
+      "id": "fx_clip",
+      "assetId": "card",
+      "trackId": "graphics_1",
+      "start": 0,
+      "duration": 1.0,
+      "keyframes": [],
+      "effects": [{"id": "fx_seed", "type": "fadeIn", "params": {"duration": 0.2}}]
+    }
+  },
+  "markers": {},
+  "notes": {},
+  "commandLog": [],
+  "renderCache": {
+    "video": {"backend": "openshot", "video": "%(video)s", "start": 0, "duration": 1.0, "revision": %(rev)d},
+    "windows": {
+      "0.00_1.00": {"backend": "openshot", "video": "%(video)s", "start": 0, "duration": 1.0, "revision": %(rev)d}
+    }
+  }
+}
+"""
+        % {"video": str(video), "rev": cache_revision}
+    )
+    return timeline_dir
+
+
+def test_keyframe_op_invalidates_render_cache_with_stale_revision_entry(
+    sync_client, monkeypatch, tmp_path
+):
+    """Revision mismatch during invalidation: the render-cache entry was stamped at a
+    revision (5) that no longer matches the project's revision (0). Such an entry is
+    pruned on load (_prune_stale_revision_render_cache), so it never reaches a client,
+    and a subsequent clip.keyframes command leaves no cache behind either. Guards both
+    the load-time stale-revision prune and the command-time invalidation path."""
+    monkeypatch.setattr(agenticnews_router.db, "ASSETS_DIR", tmp_path)
+    _seed_fx_project(tmp_path, cache_revision=5, video_exists=True)
+
+    # A render-cache entry whose revision != the project revision is stale: load-time
+    # pruning must drop it rather than serve a render that no longer matches the edit.
+    seeded = sync_client.get("/api/agenticnews/editor-timelines/fx_edge")
+    assert seeded.status_code == 200
+    assert "renderCache" not in seeded.json()
+
+    response = sync_client.post(
+        "/api/agenticnews/editor-timelines/fx_edge/commands",
+        json={
+            "op": "clip.keyframes",
+            "actor": "test",
+            "expectedRevision": 0,
+            "payload": {
+                "clipId": "fx_clip",
+                "keyframes": [
+                    {
+                        "property": "opacity",
+                        "points": [
+                            {"t": 0.0, "value": 0.0, "interp": "linear"},
+                            {"t": 0.5, "value": 1.0, "interp": "linear"},
+                        ],
+                    }
+                ],
+            },
+        },
+    )
+    assert response.status_code == 200
+    assert "renderCache" not in response.json()
+
+    loaded = sync_client.get("/api/agenticnews/editor-timelines/fx_edge")
+    assert "renderCache" not in loaded.json()
+
+
+def test_effect_op_invalidates_render_cache_when_render_file_is_gone(
+    sync_client, monkeypatch, tmp_path
+):
+    """Stale cache with no current render on disk: the cached window points at a
+    render file that no longer exists. A clip.effect.add command must still drop the
+    renderCache. Invalidation is keyed on the op mutating clip compilation, not on
+    whether a render artifact happens to be present."""
+    monkeypatch.setattr(agenticnews_router.db, "ASSETS_DIR", tmp_path)
+    _seed_fx_project(tmp_path, cache_revision=0, video_exists=False)
+
+    seeded = sync_client.get("/api/agenticnews/editor-timelines/fx_edge")
+    assert seeded.status_code == 200
+    # The missing-file pruning runs on load, so the window entry is gone, but a
+    # renderCache container can linger; either way the effect op must clear it.
+    response = sync_client.post(
+        "/api/agenticnews/editor-timelines/fx_edge/commands",
+        json={
+            "op": "clip.effect.add",
+            "actor": "test",
+            "expectedRevision": seeded.json()["revision"],
+            "payload": {
+                "clipId": "fx_clip",
+                "effect": {"id": "fx_fade", "type": "fadeIn", "params": {"duration": 0.25}},
+            },
+        },
+    )
+    assert response.status_code == 200
+    assert "renderCache" not in response.json()
+
+    loaded = sync_client.get("/api/agenticnews/editor-timelines/fx_edge")
+    assert "renderCache" not in loaded.json()
+
+
+def test_consecutive_keyframe_and_effect_ops_keep_render_cache_invalidated(
+    sync_client, monkeypatch, tmp_path
+):
+    """Concurrent/consecutive invalidation: a keyframe edit clears the cache, then a
+    later editor reseeds a render-cache entry, then an effect edit lands at the new
+    revision. The second invalidating op must drop the freshly-reseeded cache too --
+    invalidation is per-command and not a one-shot that a later write can outlive."""
+    monkeypatch.setattr(agenticnews_router.db, "ASSETS_DIR", tmp_path)
+    _seed_fx_project(tmp_path, cache_revision=0, video_exists=True)
+
+    first = sync_client.post(
+        "/api/agenticnews/editor-timelines/fx_edge/commands",
+        json={
+            "op": "clip.keyframes",
+            "actor": "editor-a",
+            "expectedRevision": 0,
+            "payload": {
+                "clipId": "fx_clip",
+                "keyframes": [
+                    {
+                        "property": "opacity",
+                        "points": [
+                            {"t": 0.0, "value": 0.0, "interp": "linear"},
+                            {"t": 0.5, "value": 1.0, "interp": "linear"},
+                        ],
+                    }
+                ],
+            },
+        },
+    )
+    assert first.status_code == 200
+    assert "renderCache" not in first.json()
+    revision_after_first = first.json()["revision"]
+
+    # A render that completed against revision_after_first reseeds the cache directly
+    # in storage (mirrors a render finishing concurrently with editing).
+    store = agenticnews_router._editor_timeline_store()
+    reseeded = store.load("fx_edge")
+    reseeded["renderCache"] = {
+        "windows": {
+            "0.00_1.00": {
+                "backend": "openshot",
+                "video": str(tmp_path / "editor_renders" / "fx_edge_0.00_1.00.mp4"),
+                "start": 0,
+                "duration": 1.0,
+                "revision": revision_after_first,
+            }
+        }
+    }
+    store.save(reseeded)
+    assert "renderCache" in sync_client.get(
+        "/api/agenticnews/editor-timelines/fx_edge"
+    ).json()
+
+    second = sync_client.post(
+        "/api/agenticnews/editor-timelines/fx_edge/commands",
+        json={
+            "op": "clip.effect.add",
+            "actor": "editor-b",
+            "expectedRevision": revision_after_first,
+            "payload": {
+                "clipId": "fx_clip",
+                "effect": {"id": "fx_fade", "type": "fadeIn", "params": {"duration": 0.25}},
+            },
+        },
+    )
+    assert second.status_code == 200
+    assert "renderCache" not in second.json()
+
+    loaded = sync_client.get("/api/agenticnews/editor-timelines/fx_edge")
+    assert "renderCache" not in loaded.json()
+
+
 def _solid_png(path: Path) -> None:
     subprocess.run(
         [

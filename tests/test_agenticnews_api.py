@@ -553,6 +553,175 @@ def test_tools_tts_success_attaches_artifact_to_video(client, monkeypatch):
     assert v["artifacts"]["vo_path"] == f"/agenticnews-assets/_scratch/{vid}.wav"
 
 
+# ----------------------------------------- episode lifecycle: approve / reject
+#
+# POST /tools/approve and /tools/reject (routers/agenticnews.py ~lines 79-110) drive
+# the operator's accept/reject gate: they flip an episode's stage (approved ->
+# 'scheduled', rejected -> 'revision'), emit a factory event on the BUS so the live
+# pulse + SSE stream see it, and feed the flywheel via services.abn_memory
+# (record_episode on approve, record_rejection on reject). The memory call is wrapped
+# in a bare try/except so a flywheel failure must NEVER 500 the operator action, and a
+# missing episode is tolerated (update_video returns None -> the endpoint returns {}).
+# These pin every one of those side effects.
+
+
+def _bus_actions_since(seq):
+    import services.abn_factory as factory
+    return [(e["actor"], e["action"], e["episode_id"]) for e in factory.BUS.replay(seq)]
+
+
+def _bus_seq():
+    import services.abn_factory as factory
+    return factory.BUS._seq
+
+
+def test_approve_moves_to_scheduled_and_emits_event(client):
+    import services.abn_factory as factory
+
+    vid = client.post("/api/agenticnews/videos", json={"title": "Approve me"}).json()["id"]
+    before = _bus_seq()
+    r = client.post("/api/agenticnews/tools/approve", json={"episode_id": vid})
+    assert r.status_code == 200
+    assert r.json()["stage"] == "scheduled"   # idea -> scheduled on approve
+    # the card actually moved on the board
+    v = next(x for x in client.get("/api/agenticnews/videos").json()["videos"] if x["id"] == vid)
+    assert v["stage"] == "scheduled"
+    # a factory event fired so the pulse/SSE stream sees the approval
+    emitted = _bus_actions_since(before)
+    assert ("operator", "episode.approved", vid) in emitted
+
+
+def test_reject_moves_to_revision_and_emits_event_with_note(client):
+    import services.abn_factory as factory
+
+    vid = client.post("/api/agenticnews/videos", json={"title": "Reject me"}).json()["id"]
+    before = _bus_seq()
+    r = client.post(
+        "/api/agenticnews/tools/reject",
+        json={"episode_id": vid, "note": "thesis is weak"},
+    )
+    assert r.status_code == 200
+    assert r.json()["stage"] == "revision"    # rejected -> revision
+    v = next(x for x in client.get("/api/agenticnews/videos").json()["videos"] if x["id"] == vid)
+    assert v["stage"] == "revision"
+    emitted = [
+        (e["actor"], e["action"], e["episode_id"], e["detail"])
+        for e in factory.BUS.replay(before)
+    ]
+    assert ("operator", "episode.rejected", vid, "rejected: thesis is weak") in emitted
+
+
+def test_approve_missing_episode_returns_empty_not_500(client):
+    """update_video returns None for an unknown id; the endpoint must degrade to {}
+    (still emitting the event) rather than 500 or fabricate a card."""
+    before = _bus_seq()
+    r = client.post("/api/agenticnews/tools/approve", json={"episode_id": "ghost"})
+    assert r.status_code == 200
+    assert r.json() == {}
+    # event still fires even though no card matched (the BUS emit is unconditional)
+    assert ("operator", "episode.approved", "ghost") in _bus_actions_since(before)
+
+
+def test_reject_missing_episode_returns_empty_not_500(client):
+    r = client.post("/api/agenticnews/tools/reject", json={"episode_id": "ghost"})
+    assert r.status_code == 200
+    assert r.json() == {}
+
+
+def test_approve_missing_episode_id_key_raises_keyerror(client):
+    """Both endpoints index body['episode_id'] directly (no .get), so an absent key is an
+    unhandled KeyError (server-side 500). Pins the current (strict) contract so loosening it
+    to a clean 400 later is a deliberate, test-driven change. TestClient re-raises the
+    server exception, so we assert on the raise rather than a 500 status code."""
+    with pytest.raises(KeyError):
+        client.post("/api/agenticnews/tools/approve", json={"note": "no id"})
+
+
+def test_approve_records_episode_in_flywheel_memory(client, monkeypatch):
+    """On approve the episode's segment titles + cold-open thesis are recorded as a proven
+    angle (record_episode(approved=True, rendered=True)). Stub abn_memory so we assert the
+    call shape without touching the real memory store."""
+    import services.abn_memory as mem
+
+    calls = {}
+    monkeypatch.setattr(
+        mem, "record_episode",
+        lambda ep_id, titles, thesis, approved=False, rendered=False: calls.update(
+            ep_id=ep_id, titles=titles, thesis=thesis, approved=approved, rendered=rendered
+        ),
+    )
+
+    vid = client.post(
+        "/api/agenticnews/videos",
+        json={
+            "title": "Fallback Title",
+            "timeline": {"segments": [{"title": "Seg A"}, {"title": "Seg B"}]},
+            "artifacts": {"cold_open": "the proven thesis"},
+        },
+    ).json()["id"]
+
+    r = client.post("/api/agenticnews/tools/approve", json={"episode_id": vid})
+    assert r.status_code == 200
+    assert calls["ep_id"] == vid
+    assert calls["titles"] == ["Seg A", "Seg B"]   # pulled from the timeline segments
+    assert calls["thesis"] == "the proven thesis"
+    assert calls["approved"] is True and calls["rendered"] is True
+
+
+def test_approve_titles_fall_back_to_card_title_when_no_segments(client, monkeypatch):
+    """With no timeline segments, record_episode falls back to the card's own title."""
+    import services.abn_memory as mem
+
+    calls = {}
+    monkeypatch.setattr(
+        mem, "record_episode",
+        lambda ep_id, titles, thesis, approved=False, rendered=False: calls.update(titles=titles),
+    )
+    vid = client.post("/api/agenticnews/videos", json={"title": "Only Title"}).json()["id"]
+    client.post("/api/agenticnews/tools/approve", json={"episode_id": vid})
+    assert calls["titles"] == ["Only Title"]
+
+
+def test_reject_records_rejection_signal_in_flywheel_memory(client, monkeypatch):
+    """Reject feeds the NEGATIVE flywheel signal: record_rejection(titles) so the angle is
+    learned-to-avoid."""
+    import services.abn_memory as mem
+
+    calls = {}
+    monkeypatch.setattr(mem, "record_rejection", lambda titles: calls.update(titles=titles))
+    vid = client.post(
+        "/api/agenticnews/videos",
+        json={"title": "T", "timeline": {"segments": [{"title": "Bad Angle"}]}},
+    ).json()["id"]
+    client.post("/api/agenticnews/tools/reject", json={"episode_id": vid})
+    assert calls["titles"] == ["Bad Angle"]
+
+
+def test_approve_survives_memory_record_failure(client, monkeypatch):
+    """A flywheel/memory failure must NOT break the operator action — record_episode raising
+    is swallowed and the stage transition + response still succeed (bare try/except contract)."""
+    import services.abn_memory as mem
+
+    def boom(*a, **k):
+        raise RuntimeError("memory store unavailable")
+
+    monkeypatch.setattr(mem, "record_episode", boom)
+    vid = client.post("/api/agenticnews/videos", json={"title": "Resilient"}).json()["id"]
+    r = client.post("/api/agenticnews/tools/approve", json={"episode_id": vid})
+    assert r.status_code == 200
+    assert r.json()["stage"] == "scheduled"   # transition still applied despite memory crash
+
+
+def test_reject_survives_memory_record_failure(client, monkeypatch):
+    import services.abn_memory as mem
+
+    monkeypatch.setattr(mem, "record_rejection", lambda titles: (_ for _ in ()).throw(RuntimeError("boom")))
+    vid = client.post("/api/agenticnews/videos", json={"title": "Resilient2"}).json()["id"]
+    r = client.post("/api/agenticnews/tools/reject", json={"episode_id": vid})
+    assert r.status_code == 200
+    assert r.json()["stage"] == "revision"
+
+
 # --------------------------------------------------------- tools/* more 400/500
 def test_tools_cards_rejects_when_render_fails_without_video(client, monkeypatch):
     """/tools/cards 500 path when no video_id is attached: a non-zero magick exit
@@ -906,3 +1075,189 @@ def test_regen_card_swap_unlink_failure_does_not_corrupt_target(regen_env, monke
     assert target.read_bytes() == b"ORIGINAL-CARD-BYTES"      # never partially swapped
     assert list(target.parent.glob(".tmp_*")) == []          # tmp scratch still cleaned up
     monkeypatch.setattr(r.os, "replace", real_replace)
+
+
+# ============================================================================
+# services/abn_youtube.upload + POST /publish error handling
+#
+# The publish path (routers/agenticnews.publish_episode -> abn_youtube.upload)
+# is the only place ABN touches the network with side effects. Its happy path is
+# guarded by is_configured(); these tests pin the FAILURE paths the original
+# `# pragma: no cover` left unverified: OAuth token expiry, network timeout,
+# input/metadata validation, and — critically — that an upload failure performs
+# NO DB mutation (the episode never flips to "live" on a failed publish).
+# ============================================================================
+import os as _os
+import socket as _socket
+import urllib.error as _urlerr
+
+import services.abn_youtube as _yt
+
+
+@pytest.fixture
+def _yt_creds(monkeypatch):
+    """Make is_configured() True so upload() runs its real body instead of
+    short-circuiting on the not-configured guard."""
+    monkeypatch.setenv("YT_CLIENT_ID", "cid")
+    monkeypatch.setenv("YT_CLIENT_SECRET", "secret")
+    monkeypatch.setenv("YT_REFRESH_TOKEN", "refresh")
+    assert _yt.is_configured() is True
+
+
+def test_yt_upload_unconfigured_returns_error(monkeypatch):
+    """No creds -> upload never touches the network, returns a clean error dict."""
+    for k in ("YT_CLIENT_ID", "YT_CLIENT_SECRET", "YT_REFRESH_TOKEN"):
+        monkeypatch.delenv(k, raising=False)
+    res = _yt.upload({"video_path": "/whatever.mp4"})
+    assert res["ok"] is False
+    assert "not configured" in res["error"]
+
+
+def test_yt_upload_missing_video_file_returns_error(_yt_creds, tmp_path):
+    """Metadata/input validation: a nonexistent video_path is rejected before any
+    token exchange or network call."""
+    res = _yt.upload({"video_path": str(tmp_path / "nope.mp4"), "title": "x"})
+    assert res["ok"] is False
+    assert "video not found" in res["error"]
+
+
+def test_yt_upload_no_video_path_returns_error(_yt_creds):
+    res = _yt.upload({"title": "no path at all"})
+    assert res["ok"] is False
+    assert "video not found" in res["error"]
+
+
+def test_yt_upload_oauth_token_expiry_is_caught(_yt_creds, tmp_path, monkeypatch):
+    """OAuth token expiry: the refresh-token exchange returns HTTP 401. upload()
+    must surface it as a structured error, not raise."""
+    vid = tmp_path / "ep.mp4"
+    vid.write_bytes(b"FAKE-VIDEO-BYTES")
+
+    class _ExpiredBody:
+        def read(self, *a):
+            return b'{"error":"invalid_grant","error_description":"Token has been expired or revoked."}'
+        def close(self):  # HTTPError keeps this as .fp and closes it during cleanup
+            pass
+
+    def _expired_token():
+        raise _urlerr.HTTPError(
+            _yt._TOKEN_URL, 401, "Unauthorized", hdrs=None, fp=_ExpiredBody()
+        )
+
+    monkeypatch.setattr(_yt, "_access_token", _expired_token)
+    res = _yt.upload({"video_path": str(vid), "title": "x", "description": "d"})
+    assert res["ok"] is False
+    assert res["error"].startswith("HTTP 401")
+    assert "expired" in res["error"]
+
+
+def test_yt_upload_network_timeout_is_caught(_yt_creds, tmp_path, monkeypatch):
+    """Network timeout during token exchange surfaces as a structured error dict."""
+    vid = tmp_path / "ep.mp4"
+    vid.write_bytes(b"FAKE-VIDEO-BYTES")
+
+    def _timeout():
+        raise _socket.timeout("timed out")
+
+    monkeypatch.setattr(_yt, "_access_token", _timeout)
+    res = _yt.upload({"video_path": str(vid), "title": "x"})
+    assert res["ok"] is False
+    assert "timed out" in res["error"]
+
+
+def test_yt_upload_missing_resumable_session_url_returns_error(_yt_creds, tmp_path, monkeypatch):
+    """If Google's resumable-init response carries no Location header, upload()
+    bails before streaming bytes instead of PUT-ing to None."""
+    vid = tmp_path / "ep.mp4"
+    vid.write_bytes(b"FAKE-VIDEO-BYTES")
+    monkeypatch.setattr(_yt, "_access_token", lambda: "tok")
+
+    class _NoLocationResp:
+        headers = {}  # .get("Location") -> None
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    monkeypatch.setattr(_yt.urllib.request, "urlopen", lambda *a, **k: _NoLocationResp())
+    res = _yt.upload({"video_path": str(vid), "title": "x"})
+    assert res["ok"] is False
+    assert "no resumable session URL" in res["error"]
+
+
+# ---- POST /publish: no DB mutation when the upload fails (rollback contract) ----
+def _make_publish_ready_episode(client) -> str:
+    """Create an episode that publish_package() will report ready=True: a rendered
+    assembly_path plus a full package (titler + seo)."""
+    vid = client.post(
+        "/api/agenticnews/videos", json={"title": "Ready ep", "kind": "episode"}
+    ).json()["id"]
+    client.patch(
+        f"/api/agenticnews/videos/{vid}",
+        json={
+            "artifacts": {
+                "assembly_path": "episodes/ep/final.mp4",
+                "package": {"titler": "A Great Title\nAlt Title", "seo": "desc 0:00 intro"},
+            }
+        },
+    )
+    return vid
+
+
+def test_publish_failed_upload_does_not_flip_episode_to_live(client, monkeypatch):
+    """Transaction-integrity / rollback: when abn_youtube.upload returns ok=False,
+    publish_episode must NOT mutate the video (no stage='live', no yt_url written).
+    The episode stays exactly where it was so a retry is clean."""
+    vid = _make_publish_ready_episode(client)
+
+    import services.abn_youtube as yt
+    monkeypatch.setattr(yt, "is_configured", lambda: True)
+    monkeypatch.setattr(yt, "upload", lambda pkg, privacy="private": {"ok": False, "error": "HTTP 503: backend error"})
+
+    r = client.post(f"/api/agenticnews/episodes/{vid}/publish", json={})
+    assert r.status_code == 200
+    assert r.json()["ok"] is False
+
+    after = next(x for x in client.get("/api/agenticnews/videos").json()["videos"] if x["id"] == vid)
+    assert after["stage"] != "live"
+    assert "yt_url" not in (after.get("artifacts") or {})
+
+
+def test_publish_success_flips_episode_to_live(client, monkeypatch):
+    """Counterpart: a successful upload DOES persist stage='live' + the yt_url, so
+    the no-mutation-on-failure test above is meaningful (proves the write path runs)."""
+    vid = _make_publish_ready_episode(client)
+
+    import services.abn_youtube as yt
+    monkeypatch.setattr(yt, "is_configured", lambda: True)
+    monkeypatch.setattr(
+        yt, "upload",
+        lambda pkg, privacy="private": {"ok": True, "url": "https://youtu.be/abc123", "video_id": "abc123"},
+    )
+
+    r = client.post(f"/api/agenticnews/episodes/{vid}/publish", json={})
+    assert r.json()["ok"] is True
+
+    after = next(x for x in client.get("/api/agenticnews/videos").json()["videos"] if x["id"] == vid)
+    assert after["stage"] == "live"
+    assert (after.get("artifacts") or {}).get("yt_url") == "https://youtu.be/abc123"
+
+
+def test_publish_not_ready_episode_does_not_upload(client, monkeypatch):
+    """Guard: an episode missing its rendered video/package is rejected BEFORE
+    upload() is invoked (so we never push an incomplete episode to YouTube)."""
+    vid = client.post(
+        "/api/agenticnews/videos", json={"title": "Bare ep", "kind": "episode"}
+    ).json()["id"]
+
+    import services.abn_youtube as yt
+    monkeypatch.setattr(yt, "is_configured", lambda: True)
+    called = {"n": 0}
+    def _should_not_run(*a, **k):
+        called["n"] += 1
+        return {"ok": True, "url": "x", "video_id": "x"}
+    monkeypatch.setattr(yt, "upload", _should_not_run)
+
+    r = client.post(f"/api/agenticnews/episodes/{vid}/publish", json={})
+    body = r.json()
+    assert body["ok"] is False
+    assert "not publish-ready" in body["error"]
+    assert called["n"] == 0

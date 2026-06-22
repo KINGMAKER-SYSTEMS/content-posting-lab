@@ -3541,3 +3541,350 @@ def test_ffmpeg_fallback_native_effects_are_all_real_validated_types():
     genuinely-unreproducible effect skip its drop warning."""
     assert editor_render._FFMPEG_NATIVE_EFFECTS <= set(timeline.EFFECT_TYPES)
     assert editor_render._FFMPEG_NATIVE_AUDIO_EFFECTS <= set(timeline.EFFECT_TYPES)
+
+
+# ---------------------------------------------------------------------------
+# Full Editor Bay -> OpenShot compile pipeline, exercised on ONE real ABN shot
+# carrying EVERY effect type + an inter-shot transition + a kenBurns block + an
+# explicit keyframe envelope. Prior tests pin the bridge maps in isolation and
+# the ffmpeg-FALLBACK seam; none drives a single imported shot that wears the
+# whole effect vocabulary through project_from_abn_timeline -> openshot clip_json
+# and asserts NOTHING is silently dropped on the OpenShot (sanctioned-compiler)
+# path. This is the fidelity guard the prod-cycle 'openshot' sweep flagged:
+# "volume/ducking/transitions/effects not carried" through the timeline import.
+# ---------------------------------------------------------------------------
+
+
+def test_all_abn_effect_types_round_trip_through_openshot_bridge():
+    """Import one ABN shot wearing every EFFECT_TYPE + transitionSec + kenBurns +
+    an explicit keyframe envelope, compile it to OpenShot, and assert each one
+    survives. A silent drop anywhere in editor_timeline.project_from_abn_timeline
+    or openshot_bridge.clip_json fails this loudly instead of in a render."""
+
+    abn_timeline = {
+        "episodeId": "ep_all_fx",
+        "fps": 30,
+        "width": 1920,
+        "height": 1080,
+        "totalSec": 6.0,
+        "segments": [
+            {
+                "segmentId": "s0",
+                "durationSec": 6.0,
+                "shots": [
+                    {
+                        "id": "hero",
+                        "src": "/agenticnews-assets/ep_all_fx/hero.mp4",
+                        "type": "remotion",
+                        "startSec": 0.0,
+                        "durationSec": 6.0,
+                        "clipStartSec": 0.0,
+                        # inter-shot dissolve the factory choreographs at the boundary
+                        "transitionSec": 0.4,
+                        # every color/fade effect the import gate accepts
+                        "effects": [
+                            {"id": "fx_in", "type": "fadeIn", "params": {"duration": 0.5}},
+                            {"id": "fx_out", "type": "fadeOut", "params": {"duration": 0.5}},
+                            {"id": "fx_br", "type": "brightness", "params": {"value": 0.2}},
+                            {"id": "fx_sat", "type": "saturation", "params": {"value": 1.4}},
+                        ],
+                        # ken-Burns push-in + pan -> scale/x keyframe tracks
+                        "kenBurns": {
+                            "startScale": 1.0,
+                            "endScale": 1.2,
+                            "startX": 0.4,
+                            "endX": 0.6,
+                        },
+                        # an explicit envelope on a NON-kenBurns property (opacity)
+                        "keyframes": [
+                            {"property": "opacity", "points": [
+                                {"t": 0.0, "value": 0.0, "interp": "linear"},
+                                {"t": 1.0, "value": 1.0, "interp": "linear"},
+                            ]},
+                        ],
+                    }
+                ],
+            }
+        ],
+    }
+
+    project = timeline.project_from_abn_timeline("proj_all_fx", abn_timeline)
+    clip = next(c for c in project["clips"].values() if c["kind"] == "remotion")
+
+    # 1) IMPORT carried every effect onto the clip: the 4 explicit ones PLUS the
+    # synthesized crossfade from transitionSec (no explicit crossfade existed).
+    imported_effects = {e["type"] for e in clip["effects"]}
+    assert imported_effects == {"fadeIn", "fadeOut", "brightness", "saturation", "crossfade"}
+    # transitionSec became a real-duration crossfade, not a 0s/None placeholder.
+    xf = next(e for e in clip["effects"] if e["type"] == "crossfade")
+    assert xf["params"]["duration"] == pytest.approx(0.4)
+
+    # 2) IMPORT carried both kenBurns axes (scale, x) AND the explicit opacity
+    # envelope as keyframe tracks (none clobbered the others).
+    assert {k["property"] for k in clip["keyframes"]} == {"scale", "x", "opacity"}
+
+    # 3) COMPILE: every imported effect translates to a known OpenShot class --
+    # no raw-type passthrough (the silent-failure signature). Brightness/Saturation
+    # map to their own classes; the three fade-likes all become a Fade with a
+    # direction.
+    compiled = openshot_bridge.clip_json(project, clip)
+    compiled_classes = sorted(e["type"] for e in compiled["effects"])
+    assert compiled_classes == ["Brightness", "Fade", "Fade", "Fade", "Saturation"]
+    # None fell through as the raw editor type (fadeIn/brightness/... are the
+    # silent-failure signature -- a bare class name with no fade/duration).
+    raw_editor_types = set(timeline.EFFECT_TYPES)
+    assert not (set(compiled_classes) & raw_editor_types)
+    fades = [e for e in compiled["effects"] if e["type"] == "Fade"]
+    assert sorted(f["fade"] for f in fades) == ["in", "in", "out"]  # 2x in (fadeIn+crossfade) + fadeOut
+    for fade in fades:
+        assert fade["duration"]["Points"][0]["co"]["Y"] > 0.0  # never a 0s hard-cut fade
+    bright = next(e for e in compiled["effects"] if e["type"] == "Brightness")
+    assert bright["brightness"]["Points"][0]["co"]["Y"] == pytest.approx(0.2)
+    sat = next(e for e in compiled["effects"] if e["type"] == "Saturation")
+    assert sat["saturation"]["Points"][0]["co"]["Y"] == pytest.approx(1.4)
+
+    # 4) COMPILE: every keyframe envelope reaches OpenShot as a multi-point curve,
+    # not a flattened single-point default. scale -> scale_x/scale_y, x ->
+    # location_x, opacity -> alpha. A silent drop would leave the flat 1-point seed.
+    assert len(compiled["scale_x"]["Points"]) == 2
+    assert len(compiled["scale_y"]["Points"]) == 2
+    assert len(compiled["location_x"]["Points"]) == 2
+    assert len(compiled["alpha"]["Points"]) == 2
+    # the scale curve actually pushes in 1.0 -> 1.2 (values carried, not zeroed)
+    scale_ys = [p["co"]["Y"] for p in compiled["scale_x"]["Points"]]
+    assert scale_ys == pytest.approx([1.0, 1.2])
+
+
+def test_abn_music_bed_ducking_envelope_round_trips_to_openshot_volume_curve():
+    """A factory-attached ducking envelope on the music bed must survive import and
+    compile to a multi-point OpenShot `volume` curve with its ABSOLUTE gains intact
+    (not double-attenuated by the flat 0.22 seed). This is the 'volume/ducking not
+    carried' half of the sweep finding, on the OpenShot path."""
+
+    abn_timeline = {
+        "episodeId": "ep_duck",
+        "fps": 30,
+        "totalSec": 6.0,
+        "musicBed": {"src": "/agenticnews-assets/ep_duck/bed.wav"},
+        # absolute-gain ducking envelope: 0.6 under the intro, 0.22 under VO.
+        "musicBedKeyframes": [
+            {"property": "volume", "points": [
+                {"t": 0.0, "value": 0.6, "interp": "linear"},
+                {"t": 2.0, "value": 0.22, "interp": "linear"},
+            ]},
+        ],
+        "segments": [{"segmentId": "s0", "durationSec": 6.0, "shots": []}],
+    }
+
+    project = timeline.project_from_abn_timeline("proj_duck", abn_timeline)
+    bed = next(c for c in project["clips"].values() if c["kind"] == "music_bed")
+
+    # The flat seed is neutralized to 1.0 so the envelope's absolute gains pass
+    # through OpenShot un-scaled (0.6 stays 0.6, not 0.6 * 0.22).
+    assert bed["volume"] == pytest.approx(1.0)
+    vol_track = next(t for t in bed["keyframes"] if t["property"] == "volume")
+    assert [p["value"] for p in vol_track["points"]] == pytest.approx([0.6, 0.22])
+
+    compiled = openshot_bridge.clip_json(project, bed)
+    # OpenShot volume is the editor gain * 100; the curve keeps both points.
+    vol_ys = [p["co"]["Y"] for p in compiled["volume"]["Points"]]
+    assert len(vol_ys) == 2
+    assert vol_ys == pytest.approx([60.0, 22.0])
+
+
+# ---------------------------------------------------------------------------
+# OpenShotRenderer._timeline serialization seam. Every other fake-openshot test
+# (_build_fake_openshot_renderer) STUBS _timeline, so the real method --
+#   json.dumps(openshot_bridge.timeline_json(project)) -> Timeline.SetJson
+# -- is exercised by NOTHING on a box without libopenshot bindings (i.e. CI).
+# That method is exactly where a translation gap bites: a keyframe envelope that
+# won't json-serialize, a multi-clip crossfade transition whose two Fades land on
+# the wrong layers, an effect that drops on the way into SetJson. These drive the
+# REAL _timeline with a fake openshot module whose Timeline captures the JSON
+# string handed to SetJson, on a COMPLEX multi-clip overlapping-crossfade project
+# carrying volume/opacity/scale keyframe envelopes -- the exact "complex effects
+# and keyframes" the render-path ticket flags. No bindings needed -> never skips.
+# ---------------------------------------------------------------------------
+
+
+class _CapturingTimelineModule:
+    """A fake `openshot` module whose Timeline records the SetJson payload.
+
+    Lets OpenShotRenderer._timeline run for real (it constructs Timeline(...),
+    calls SetJson(json) and Open()) while capturing the serialized timeline JSON
+    -- the precise bytes that would reach libopenshot -- without any bindings."""
+
+    def __init__(self) -> None:
+        captured: dict[str, str] = {}
+        self.captured = captured
+
+        class _Fraction:
+            def __init__(self, num, den):
+                self.num, self.den = num, den
+
+        class _Timeline:
+            def __init__(self, *_a, **_k):
+                pass
+
+            def SetJson(self, payload):
+                captured["json"] = payload
+
+            def Open(self):
+                pass
+
+            def Close(self):
+                pass
+
+        self.Fraction = _Fraction
+        self.Timeline = _Timeline
+
+
+def _crossfade_transition_project() -> dict:
+    """Two overlapping graphics clips forming a crossfade transition (clip A fades
+    OUT as clip B crossfades IN over the same 0.5s window), PLUS a ducking music bed
+    carrying volume + a scale-pop + an opacity envelope. Every render dimension the
+    ticket names is active across the timeline: a transition, and volume/opacity/
+    scale keyframes."""
+    project = timeline.new_project("xfade_tl", width=96, height=64, fps=12)
+    project["assets"]["a"] = {"id": "a", "type": "image", "src": "/tmp/a.png", "metadata": {}}
+    project["assets"]["b"] = {"id": "b", "type": "image", "src": "/tmp/b.png", "metadata": {}}
+    project["assets"]["bed"] = {"id": "bed", "type": "audio", "src": "/tmp/bed.wav", "metadata": {}}
+    # Clip A: graphics, t=0..2, fades out over its last 0.5s.
+    project["clips"]["clip_a"] = {
+        "id": "clip_a", "assetId": "a", "trackId": "graphics_1", "kind": "artifact",
+        "start": 0.0, "duration": 2.0, "sourceStart": 0.0,
+        "enabled": True, "muted": False, "volume": 1.0,
+        "transform": {"x": 0.5, "y": 0.5, "scale": 1.0, "opacity": 1.0},
+        "effects": [{"id": "fx_out", "type": "fadeOut", "params": {"duration": 0.5}}],
+        "keyframes": [], "metadata": {},
+    }
+    # Clip B: graphics, t=1.5..3.5 (overlaps A's last 0.5s), crossfades in.
+    project["clips"]["clip_b"] = {
+        "id": "clip_b", "assetId": "b", "trackId": "graphics_1", "kind": "artifact",
+        "start": 1.5, "duration": 2.0, "sourceStart": 0.0,
+        "enabled": True, "muted": False, "volume": 1.0,
+        "transform": {"x": 0.5, "y": 0.5, "scale": 1.0, "opacity": 1.0},
+        "effects": [{"id": "fx_cf", "type": "crossfade", "params": {"duration": 0.5}}],
+        "keyframes": [], "metadata": {},
+    }
+    # Music bed: audio, t=0..3.5, ducks under and animates scale+opacity (so the
+    # serialized timeline carries all three envelope kinds at once).
+    project["clips"]["bed_clip"] = {
+        "id": "bed_clip", "assetId": "bed", "trackId": "music_1", "kind": "music_bed",
+        "start": 0.0, "duration": 3.5, "sourceStart": 0.0,
+        "enabled": True, "muted": False, "volume": 1.0,
+        "transform": {"x": 0.5, "y": 0.5, "scale": 1.0, "opacity": 1.0},
+        "effects": [],
+        "keyframes": [
+            {"property": "volume", "points": [
+                {"t": 0.0, "value": 0.6, "interp": "linear"},
+                {"t": 1.0, "value": 0.18, "interp": "constant"},
+                {"t": 3.0, "value": 0.6, "interp": "bezier"},
+            ]},
+            {"property": "scale", "points": [
+                {"t": 0.0, "value": 1.0, "interp": "linear"},
+                {"t": 1.0, "value": 1.3, "interp": "linear"},
+            ]},
+            {"property": "opacity", "points": [
+                {"t": 0.0, "value": 0.0, "interp": "linear"},
+                {"t": 0.5, "value": 1.0, "interp": "linear"},
+            ]},
+        ],
+        "metadata": {},
+    }
+    return project
+
+
+def test_openshot_timeline_serializes_complex_crossfade_and_keyframes_to_setjson(tmp_path, monkeypatch):
+    """The real OpenShotRenderer._timeline must serialize a complex multi-clip
+    timeline (overlapping crossfade transition + volume/opacity/scale envelopes)
+    into a well-formed Timeline JSON and hand it to SetJson. This is the prod
+    SetJson hand-off no existing test reaches without libopenshot (they all stub
+    _timeline). A non-finite keyframe, a non-serializable value, or a transition
+    landing on the wrong layer would surface HERE, before the writer runs."""
+    fake = _CapturingTimelineModule()
+    monkeypatch.setattr(editor_render, "_import_openshot", lambda: (fake, "available", None))
+    renderer = editor_render.OpenShotRenderer(tmp_path / "renders")
+
+    project = _crossfade_transition_project()
+    tl = renderer._timeline(project)
+    assert tl is not None
+
+    # SetJson got a real, parseable JSON string (the libopenshot contract). A
+    # NaN/Infinity keyframe would make json.dumps emit a token json.loads rejects
+    # under strict mode -- so parse strictly to pin finiteness at the seam.
+    raw = fake.captured["json"]
+    payload = json.loads(raw, parse_constant=lambda c: (_ for _ in ()).throw(
+        AssertionError(f"non-finite token {c!r} reached SetJson")))
+
+    # Top-level Timeline shape mirrors the project (the writer reads these).
+    assert payload["type"] == "Timeline"
+    assert payload["width"] == 96 and payload["height"] == 64
+    assert payload["fps"] == {"num": 12, "den": 1}
+    assert payload["duration"] == pytest.approx(3.5)  # bed clip ends last
+
+    clips = {c["id"]: c for c in payload["clips"]}
+    assert set(clips) == {"clip_a", "clip_b", "bed_clip"}
+
+    # --- the crossfade TRANSITION: A fades OUT, B fades IN, over the overlap. ---
+    (a_fade,) = clips["clip_a"]["effects"]
+    (b_fade,) = clips["clip_b"]["effects"]
+    assert a_fade["type"] == "Fade" and a_fade["fade"] == "out"
+    assert b_fade["type"] == "Fade" and b_fade["fade"] == "in"   # crossfade -> in
+    assert a_fade["duration"]["Points"][0]["co"]["Y"] == pytest.approx(0.5)
+    assert b_fade["duration"]["Points"][0]["co"]["Y"] == pytest.approx(0.5)
+    # The two transition clips share the graphics layer and overlap in time (the
+    # defining property of a crossfade, not a hard cut).
+    assert clips["clip_a"]["layer"] == clips["clip_b"]["layer"]
+    a_end = clips["clip_a"]["position"] + clips["clip_a"]["duration"]
+    assert clips["clip_b"]["position"] < a_end                    # overlap exists
+
+    # --- all three keyframe envelopes survived onto the bed clip ---
+    bed = clips["bed_clip"]
+    # volume: 0..1 -> 0..100, interp linear/constant/bezier preserved, X = t*12+1.
+    vol = bed["volume"]["Points"]
+    assert [round(p["co"]["Y"], 2) for p in vol] == [60.0, 18.0, 60.0]
+    assert [p["co"]["X"] for p in vol] == [1.0, 13.0, 37.0]
+    assert [p["interpolation"] for p in vol] == [
+        openshot_bridge.LINEAR, openshot_bridge.CONSTANT,
+        openshot_bridge._INTERPOLATION_MAP["bezier"],
+    ]
+    # scale: one editor track drives BOTH axes (multi-point envelope, not flat).
+    assert [p["co"]["Y"] for p in bed["scale_x"]["Points"]] == [1.0, 1.3]
+    assert bed["scale_y"]["Points"] == bed["scale_x"]["Points"]
+    assert len(bed["scale_x"]["Points"]) == 2
+    # opacity envelope overrode the flat alpha default (2 points, clamped 0..1).
+    assert [p["co"]["Y"] for p in bed["alpha"]["Points"]] == [0.0, 1.0]
+    # the audio bed is tagged audio-only (has_audio=1, has_video=0) so OpenShot
+    # mixes it rather than compositing a phantom video plane.
+    assert bed["has_audio"]["Points"][0]["co"]["Y"] == 1
+    assert bed["has_video"]["Points"][0]["co"]["Y"] == 0
+
+
+def test_openshot_timeline_setjson_in_process_path_does_not_guard_nonfinite(tmp_path, monkeypatch):
+    """Document where finiteness IS and ISN'T enforced. A poisoned (Infinity) volume
+    keyframe serializes through the in-process _timeline as the bare JS `Infinity`
+    literal -- the in-process SetJson path does NOT reject it. That guard lives on
+    the SUBPROCESS path (OpenShotSubprocessRenderer._run_child uses allow_nan=False,
+    pinned by test_openshot_subprocess_rejects_nonfinite_volume_keyframe_before_spawn),
+    which is the sanctioned prod entrypoint via choose_renderer. This test pins the
+    asymmetry so a future refactor that routes prod through the in-process path
+    without re-adding the allow_nan guard fails loudly here instead of shipping a
+    corrupted duck."""
+    fake = _CapturingTimelineModule()
+    monkeypatch.setattr(editor_render, "_import_openshot", lambda: (fake, "available", None))
+    renderer = editor_render.OpenShotRenderer(tmp_path / "renders")
+
+    project = _crossfade_transition_project()
+    project["clips"]["bed_clip"]["keyframes"][0]["points"][1]["value"] = float("inf")
+
+    tl = renderer._timeline(project)
+    assert tl is not None
+    raw = fake.captured["json"]
+    # The in-process seam emits the non-finite value as the JS `Infinity` literal
+    # (default json.dumps) -- it does NOT raise. A strict parser (parse_constant)
+    # is what catches it; the subprocess boundary's allow_nan=False is the real gate.
+    assert "Infinity" in raw
+    with pytest.raises(AssertionError):
+        json.loads(raw, parse_constant=lambda c: (_ for _ in ()).throw(
+            AssertionError(f"non-finite token {c!r}")))

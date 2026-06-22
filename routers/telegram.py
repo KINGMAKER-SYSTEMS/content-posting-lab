@@ -39,6 +39,7 @@ from services.telegram import (
     list_sounds,
     load_config,
     mark_forwarded,
+    mutate_config,
     remove_inventory_item,
     remove_poster,
     remove_song_from_page,
@@ -752,23 +753,26 @@ async def unbind_poster_user(poster_id: str, user_id: int,
 async def reset_default_posters():
     """Re-seed the default posters (Seffra, Gigi, etc.) without wiping custom ones."""
     from services.telegram import _DEFAULT_POSTERS, _now
-    config = load_config()
     added = 0
-    for pid, pdata in _DEFAULT_POSTERS.items():
-        if pid not in config.get("posters", {}):
-            now = _now()
-            config.setdefault("posters", {})[pid] = {
-                **pdata,
-                "page_ids": [],
-                "topics": {},
-                "added_at": now,
-                "updated_at": now,
-            }
-            added += 1
-    if added > 0:
-        from services.telegram import save_config
-        save_config(config)
-    return {"ok": True, "added": added, "total": len(config.get("posters", {}))}
+    # Run the whole load-modify-save under the config lock (mutate_config) so a
+    # concurrent setter (bot handler thread, another HTTP request) can't
+    # interleave between our read and write and clobber a poster. The bare
+    # load_config()/save_config() pattern reopened the exact TOCTOU window the
+    # service-layer lock exists to close.
+    with mutate_config() as config:
+        for pid, pdata in _DEFAULT_POSTERS.items():
+            if pid not in config.get("posters", {}):
+                now = _now()
+                config.setdefault("posters", {})[pid] = {
+                    **pdata,
+                    "page_ids": [],
+                    "topics": {},
+                    "added_at": now,
+                    "updated_at": now,
+                }
+                added += 1
+        total = len(config.get("posters", {}))
+    return {"ok": True, "added": added, "total": total}
 
 
 @router.post("/posters/{poster_id}/pages")

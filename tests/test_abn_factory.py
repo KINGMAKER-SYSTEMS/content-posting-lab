@@ -1306,6 +1306,65 @@ def test_ensure_card_backgrounds_refuses_to_promote_non_scratch_source(monkeypat
     assert bystander.exists() and bystander.read_bytes() == b"\x89PNG\r\nKEEP"
 
 
+def test_ensure_card_backgrounds_refuses_symlink_in_scratch_pointing_outside(monkeypatch, tmp_path):
+    """SYMLINK TRAVERSAL: _codex_image returns a /_scratch/ URL, but the file sitting there is a
+    SYMLINK pointing at an arbitrary in-store file OUTSIDE any reapable root. The guard checks
+    src.resolve().parent — resolve() follows the link to its real (non-_scratch) parent, so the
+    membership test must fail and the keeper must NOT be promoted. A naive guard using
+    src.parent (the link's own dir, which IS _scratch/) would wrongly admit it and let .replace()
+    rip the symlink — and on some semantics its target — into the shared pool."""
+    monkeypatch.setattr(abn_factory, "ASSETS", tmp_path)
+    monkeypatch.setattr(abn_assets, "ASSETS_DIR", tmp_path)
+    monkeypatch.setattr(abn_factory, "_V2_VISUALS", True)
+
+    # a sensitive in-store file the symlink will point at (lives at the flat root, NOT _scratch/)
+    secret = tmp_path / "important_render.png"
+    secret.write_bytes(b"\x89PNG\r\nSECRET")
+
+    def fake_codex_image(prompt, out_name, size="1536x1024"):
+        # codex "drops" a file in _scratch/, but it's actually a symlink to the secret
+        link = tmp_path / "_scratch" / f"{out_name}.png"
+        link.parent.mkdir(parents=True, exist_ok=True)
+        link.symlink_to(secret)
+        return f"/agenticnews-assets/_scratch/{out_name}.png"
+
+    monkeypatch.setattr(abn_factory, "_codex_image", fake_codex_image)
+
+    abn_factory._ensure_card_backgrounds(want=1)
+
+    gateway_dir = tmp_path / "_shared" / "card_backgrounds"
+    assert not gateway_dir.exists() or not list(gateway_dir.glob("bg_*.png")), \
+        "promoted a _scratch/ symlink whose target lives outside any reapable root"
+    # the secret target must be untouched (neither moved nor consumed via the link)
+    assert secret.exists() and secret.read_bytes() == b"\x89PNG\r\nSECRET"
+
+
+def test_ensure_card_backgrounds_promotes_real_scratch_file_not_symlink(monkeypatch, tmp_path):
+    """Positive control for the symlink test: a REAL regular file genuinely inside _scratch/
+    (src.resolve().parent == the reapable _scratch root) MUST still promote. This guards against a
+    future over-tightening of the guard that rejects legitimate keepers and silently kills the
+    background pool (cards would forever fall back to the flat gradient)."""
+    monkeypatch.setattr(abn_factory, "ASSETS", tmp_path)
+    monkeypatch.setattr(abn_assets, "ASSETS_DIR", tmp_path)
+    monkeypatch.setattr(abn_factory, "_V2_VISUALS", True)
+
+    def fake_codex_image(prompt, out_name, size="1536x1024"):
+        src = tmp_path / "_scratch" / f"{out_name}.png"
+        src.parent.mkdir(parents=True, exist_ok=True)
+        src.write_bytes(b"\x89PNG\r\nREAL")
+        return f"/agenticnews-assets/_scratch/{out_name}.png"
+
+    monkeypatch.setattr(abn_factory, "_codex_image", fake_codex_image)
+
+    abn_factory._ensure_card_backgrounds(want=1)
+
+    promoted = list((tmp_path / "_shared" / "card_backgrounds").glob("bg_*.png"))
+    assert [p.name for p in promoted] == ["bg_00.png"], "a genuine _scratch keeper must promote"
+    assert promoted[0].read_bytes() == b"\x89PNG\r\nREAL"
+    # .replace() is a move: the source must be gone from _scratch/ after promotion
+    assert not (tmp_path / "_scratch" / "_tmp_bg_0.png").exists()
+
+
 # ---------------- _build_timeline: schema-aware ABN episode assembly ----------------
 #
 # _build_timeline composes segments → a Remotion timeline. It is the routine commit cb5c98f5
