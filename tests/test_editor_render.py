@@ -365,6 +365,86 @@ def test_build_video_command_adds_audio_map_and_amix(tmp_path):
     assert "-shortest" in cmd
 
 
+def test_build_video_command_all_clips_disabled_still_emits_one_input(tmp_path):
+    """All clips disabled -> visual_clips and audio_clips are both empty. The
+    command must STILL carry the always-present black lavfi base as input 0 (never
+    0 inputs, which ffmpeg rejects), produce a mapped [v] stream, and map no audio.
+    Pins the invariant the ticket flagged: the builder must never emit a 0-input
+    argv even when every timeline clip is turned off."""
+    red = _solid_png(tmp_path / "red.png", "red")
+    project = _project_with_card("all_disabled", red, x=0.0)
+    project["clips"]["card_clip"]["enabled"] = False
+    r = _renderer(tmp_path)
+    cmd, missing, warnings = r._build_video_command(
+        project, tmp_path / "out.mp4", duration=1.0, window_start=0.0
+    )
+    assert missing == []
+    # exactly one -i (the black base); the disabled card is never fed as an input.
+    assert cmd.count("-i") == 1
+    assert "color=c=black:s=96x64:r=12:d=1.000" in cmd
+    assert cmd[cmd.index("-map") + 1] == "[v]"
+    assert "[a]" not in cmd  # no audio clips -> no audio map
+
+
+def test_build_video_command_empty_project_renders_black_not_zero_inputs(tmp_path):
+    """A project with NO clips at all (empty visual + empty audio lists) must
+    compile to a single-input black-base command whose only video filter is the
+    format-conversion of the base layer — and render end-to-end rather than
+    emitting a 0-input argv that ffmpeg would reject at subprocess time."""
+    project = timeline.new_project("empty_proj", width=96, height=64, fps=12)
+    project["clips"].clear()
+    r = _renderer(tmp_path)
+    cmd, missing, warnings = r._build_video_command(
+        project, tmp_path / "out.mp4", duration=0.5, window_start=0.0
+    )
+    assert missing == [] and warnings == []
+    assert cmd.count("-i") == 1  # the black base is the sole input, never zero
+    filter_arg = cmd[cmd.index("-filter_complex") + 1]
+    assert filter_arg == "[0:v]format=yuv420p[v]"  # only the base layer formatted
+    assert "[a]" not in cmd
+    # and it actually renders — proving the 1-input command is valid for ffmpeg.
+    result = r.render(project, output_path=tmp_path / "empty.mp4", start=0, duration=0.5)
+    assert Path(result["video"]).exists()
+
+
+def test_build_video_command_tolerates_missing_assets_key(tmp_path):
+    """A malformed project missing the top-level 'assets' key must NOT KeyError.
+    `assets = project.get("assets") or {}` defaults it; the clip then resolves to
+    type-unknown (no asset entry), is fed no -i input, and the builder degrades to
+    the black-base command instead of crashing. Pins the defensive default."""
+    project = {
+        "projectId": "no_assets",
+        "width": 96,
+        "height": 64,
+        "fps": 12,
+        "tracks": {"graphics_1": {"id": "graphics_1", "index": 0}},
+        "clips": {
+            "c": {
+                "id": "c",
+                "assetId": "card",
+                "trackId": "graphics_1",
+                "kind": "artifact",
+                "start": 0.0,
+                "duration": 1.0,
+                "sourceStart": 0.0,
+                "enabled": True,
+                "transform": {},
+                "effects": [],
+                "keyframes": [],
+            }
+        },
+    }
+    r = _renderer(tmp_path)
+    cmd, missing, warnings = r._build_video_command(
+        project, tmp_path / "out.mp4", duration=1.0, window_start=0.0
+    )
+    # no 'assets' map -> the clip has no resolvable type, contributes no input,
+    # and the command falls back to the single black-base input without raising.
+    assert cmd.count("-i") == 1
+    assert missing == []
+    assert cmd[cmd.index("-map") + 1] == "[v]"
+
+
 def test_windowed_clips_trims_clip_overlapping_window_start():
     # clip spans [1, 5); window is [2, 6). Front 1s is before the window and must be cut.
     project = _window_project(_wclip("a", start=1.0, duration=4.0, source_start=10.0))
