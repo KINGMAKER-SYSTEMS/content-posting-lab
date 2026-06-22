@@ -44,6 +44,7 @@ def capture_sync(url: str, name: str, seconds: float = 8.0) -> str | None:
     episode-scoped ``{ep_id}/footage/s{N}_ui.mp4``. Returns its /agenticnews-assets/ URL or None."""
     try:
         from playwright.sync_api import sync_playwright
+        from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
     except Exception:
         return None
     # Route the final asset through the abn_assets GATEWAY — it validates ep_id/kind and
@@ -80,7 +81,12 @@ def capture_sync(url: str, name: str, seconds: float = 8.0) -> str | None:
             # bot-wall detection — Cloudflare/captcha pages are worthless footage, bail out
             try:
                 txt = (page.inner_text("body") or "").lower()[:600]
-            except Exception:
+            except PlaywrightTimeoutError:
+                # A genuine inner_text timeout (slow/absent body) is treated as "no readable
+                # text" → the near-empty/error guards below bail to a designed card. Only a
+                # TIMEOUT degrades to "" — any OTHER exception (browser crash, nav error, a
+                # 504/bot-wall that broke the page) must NOT masquerade as empty content; let
+                # it propagate to the outer handler so the capture bails properly.
                 txt = ""
             bot_signals = ("verify you are human", "performing security verification",
                            "checking your browser", "are you a robot", "enable javascript and cookies",
