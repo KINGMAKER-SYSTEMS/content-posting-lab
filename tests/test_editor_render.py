@@ -2289,3 +2289,58 @@ def test_split_at_crossfade_boundary_leaves_no_dead_fade_on_tail():
         out = openshot_bridge.effect_json(effect, fps=30)
         if "duration" in out:
             assert out["duration"]["Points"][0]["co"]["Y"] > 0.0
+
+
+# ---------------------------------------------------------------------------
+# _parse_child_render_result — malformed / contaminated subprocess stdout.
+# Pure-string parsing; no ffmpeg needed (but module skipif keeps it harmless).
+# ---------------------------------------------------------------------------
+
+
+def test_parse_child_render_result_picks_last_dict_line():
+    stdout = (
+        "loading project...\n"
+        '{"video": "/tmp/a.mp4"}\n'
+        '{"video": "/tmp/final.mp4"}\n'
+    )
+    assert editor_render._parse_child_render_result(stdout) == {
+        "video": "/tmp/final.mp4"
+    }
+
+
+def test_parse_child_render_result_only_invalid_json():
+    # stderr/logging contamination with zero parseable JSON -> None.
+    stdout = "Traceback (most recent call last):\n  File x\nValueError: boom\n"
+    assert editor_render._parse_child_render_result(stdout) is None
+
+
+def test_parse_child_render_result_mixed_valid_invalid_spanning_lines():
+    # The valid dict is buried above noisy non-JSON trailing lines; reverse
+    # iteration must skip the junk and still find it.
+    stdout = (
+        '{"frame": "/tmp/f.png"}\n'
+        "WARN: deprecation notice\n"
+        "not json at all\n"
+    )
+    assert editor_render._parse_child_render_result(stdout) == {
+        "frame": "/tmp/f.png"
+    }
+
+
+def test_parse_child_render_result_valid_but_non_dict_json():
+    # Valid JSON arrays/primitives are not render results -> None.
+    for payload in ("[1, 2, 3]", '"a string"', "42", "true", "null"):
+        assert editor_render._parse_child_render_result(payload + "\n") is None
+
+
+def test_parse_child_render_result_non_dict_then_dict():
+    # A non-dict valid-JSON line below a real dict: dict still wins.
+    stdout = '{"video": "/tmp/v.mp4"}\n[1, 2, 3]\n'
+    assert editor_render._parse_child_render_result(stdout) == {
+        "video": "/tmp/v.mp4"
+    }
+
+
+def test_parse_child_render_result_empty_and_none():
+    assert editor_render._parse_child_render_result("") is None
+    assert editor_render._parse_child_render_result(None) is None
