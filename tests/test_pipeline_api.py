@@ -229,6 +229,124 @@ def test_mint_500_when_random_alias_collides_every_time(monkeypatch):
     assert created == []  # never tried to create a colliding rule
 
 
+def test_mint_random_loop_recovers_after_collisions(monkeypatch):
+    """The retry loop must eventually succeed: the first few generated locals
+    collide with existing aliases, but a later one is free and gets created.
+    Pins that the loop actually retries (not give-up-on-first-collision) and
+    terminates on success rather than exhausting all 5 tries."""
+    _patch_cfg(monkeypatch)
+    monkeypatch.setattr(pipeline, "destination_for_pipeline", lambda p: None)
+    _patch_httpx(monkeypatch, _verified("henry@risingtidesent.com"))
+
+    # First two draws collide, the third is free.
+    draws = iter(["acct-dup1", "acct-dup2", "acct-free3", "acct-never"])
+    monkeypatch.setattr(pipeline, "_random_alias_local", lambda: next(draws))
+
+    async def _list():
+        return [
+            {"matchers": [{"value": "acct-dup1@risingtidesviral.com"}]},
+            {"matchers": [{"value": "acct-dup2@risingtidesviral.com"}]},
+        ]
+
+    monkeypatch.setattr(pipeline, "cf_list_rules", _list)
+
+    created = {}
+
+    async def _create(local, dest):
+        created["local"] = local
+        return {"id": "rule-recovered"}
+
+    monkeypatch.setattr(pipeline, "cf_create_rule", _create)
+
+    out = _run(pipeline._mint_random_alias())
+    # Skipped the two colliding draws, landed on the free one.
+    assert out["alias"] == "acct-free3@risingtidesviral.com"
+    assert out["rule_id"] == "rule-recovered"
+    assert created["local"] == "acct-free3"
+
+
+def test_mint_random_loop_retries_at_most_five_times(monkeypatch):
+    """Bound the loop: with an always-colliding generator the generator is
+    called exactly 1 (initial) + 5 (retries) = 6 times before the 500. This
+    pins the retry budget so a future off-by-one in the `attempts < 5` guard
+    is caught (too few = flaky 500s, too many = slow/wasteful CF list reuse)."""
+    _patch_cfg(monkeypatch)
+    monkeypatch.setattr(pipeline, "destination_for_pipeline", lambda p: None)
+    _patch_httpx(monkeypatch, _verified("henry@risingtidesent.com"))
+
+    calls = {"n": 0}
+
+    def _gen():
+        calls["n"] += 1
+        return "acct-fixed"
+
+    monkeypatch.setattr(pipeline, "_random_alias_local", _gen)
+
+    async def _list():
+        return [{"matchers": [{"value": "acct-fixed@risingtidesviral.com"}]}]
+
+    monkeypatch.setattr(pipeline, "cf_list_rules", _list)
+    with pytest.raises(HTTPException) as ei:
+        _run(pipeline._mint_random_alias())
+    assert ei.value.status_code == 500
+    assert calls["n"] == 6  # 1 initial draw + 5 retries
+
+
+def test_mint_collision_detection_is_case_sensitive(monkeypatch):
+    """KNOWN GAP (pinned, not asserted-as-correct): collision detection
+    compares the lowercase generated local against the RAW CF matcher values
+    without normalizing case. CF stores `m.get("value")` verbatim; the
+    verified-destination check on line ~126 lowercases, but the alias check
+    does NOT. So an existing alias stored mixed-case (`ACCT-FIXED@...`) does
+    NOT register as a collision against a generated lowercase `acct-fixed`,
+    and the mint proceeds to create a case-variant duplicate.
+
+    Email is treated as case-insensitive by mail servers, so this is a latent
+    duplicate-alias hazard. This test documents the current behavior; if the
+    router is fixed to lowercase the alias set, flip the assertion to expect a
+    collision (the loop would then retry / 500)."""
+    _patch_cfg(monkeypatch)
+    monkeypatch.setattr(pipeline, "destination_for_pipeline", lambda p: None)
+    _patch_httpx(monkeypatch, _verified("henry@risingtidesent.com"))
+    monkeypatch.setattr(pipeline, "_random_alias_local", lambda: "acct-fixed")
+
+    async def _list():
+        # Stored UPPERCASE; generated local is lowercase.
+        return [{"matchers": [{"value": "ACCT-FIXED@RISINGTIDESVIRAL.COM"}]}]
+
+    monkeypatch.setattr(pipeline, "cf_list_rules", _list)
+
+    created = {}
+
+    async def _create(local, dest):
+        created["local"] = local
+        return {"id": "rule-casedup"}
+
+    monkeypatch.setattr(pipeline, "cf_create_rule", _create)
+
+    # Current behavior: NOT detected as a collision -> creates the duplicate.
+    out = _run(pipeline._mint_random_alias())
+    assert out["alias"] == "acct-fixed@risingtidesviral.com"
+    assert created["local"] == "acct-fixed"
+
+
+def test_random_alias_local_does_not_bias_toward_same_localpart(monkeypatch):
+    """The retry loop only makes progress if successive draws differ. Sample
+    the real generator many times and assert high uniqueness + good spread of
+    first characters, so a regression that pins the RNG (e.g. seeds it once or
+    truncates entropy) is caught — that would turn collisions into guaranteed
+    loop exhaustion."""
+    samples = [pipeline._random_alias_local() for _ in range(500)]
+    # All well-formed acct-XXXXXXXX.
+    assert all(s.startswith("acct-") and len(s) == 13 and s[5:].isalnum() for s in samples)
+    # Overwhelmingly unique (8 chars of base36 -> collisions vanishingly rare).
+    assert len(set(samples)) >= 499
+    # Spread: the random suffix's first char should hit many distinct values,
+    # not cluster on one (a biased/constant RNG would fail this).
+    first_chars = {s[5] for s in samples}
+    assert len(first_chars) >= 10
+
+
 def test_mint_502_when_rule_create_fails(monkeypatch):
     _patch_cfg(monkeypatch)
     monkeypatch.setattr(pipeline, "destination_for_pipeline", lambda p: None)
