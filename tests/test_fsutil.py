@@ -247,3 +247,20 @@ def test_recreate_uses_safe_rmtree():
     src = Path(recreate.__file__).read_text()
     assert "shutil.rmtree" not in src
     assert src.count("safe_rmtree(") == 1
+
+
+def test_pipeline_forward_uses_safe_helpers():
+    """Regression: the R2-download-forward finally block in routers.pipeline must
+    scrub its tmp file + dir via the shared helpers, not the bare
+    ``try: tmp_path.unlink(missing_ok=True); tmp_dir.rmdir() / except
+    Exception: pass`` block that safe_unlink/safe_rmtree were created to
+    replace (so an orphaned tmp dir is logged, not silently swallowed)."""
+    import routers.pipeline as pipeline
+
+    src = Path(pipeline.__file__).read_text()
+    # The bare patterns are gone...
+    assert ".unlink(missing_ok=True)" not in src
+    assert ".rmdir()" not in src
+    # ...replaced by the shared logging helpers.
+    assert "safe_unlink(tmp_path)" in src
+    assert "safe_rmtree(tmp_dir)" in src

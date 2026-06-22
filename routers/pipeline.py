@@ -16,6 +16,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from services import r2
+from services.fsutil import safe_rmtree, safe_unlink
 from services.slack import post_pipeline_handoff, is_configured as slack_configured
 from services.email_send import destination_for_pipeline
 from services.email_routing import (
@@ -928,12 +929,9 @@ async def forward_r2_to_topic(integration_id: str, req: ForwardToTopicRequest):
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Forward failed: {exc}")
     finally:
-        # Clean up tmp file
-        try:
-            tmp_path.unlink(missing_ok=True)
-            tmp_dir.rmdir()
-        except Exception:
-            pass
+        # Clean up tmp file + its dir (logs on failure instead of swallowing)
+        safe_unlink(tmp_path)
+        safe_rmtree(tmp_dir)
 
 
 # ── Per-page health check ────────────────────────────────────────────────────
