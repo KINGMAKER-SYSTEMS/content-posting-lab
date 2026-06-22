@@ -1455,3 +1455,75 @@ def test_gc_segments_skips_trim_when_rescan_becomes_incomplete(store, monkeypatc
         "must block the trim, not let it eat a render the unreadable timeline might reference"
     )
     assert not (store / "_trash" / "ep_2d0000" / "renders" / "episode.mp4").exists()
+
+
+# --- SOURCE-LEVEL invariant: the GC protection scan only walks ASSETS/editor_timelines/*.json,
+# so it is correct ONLY IF that dir is the SOLE place Editor Bay timelines are ever persisted.
+# test_protection_scan_dir_is_where_editor_store_persists pins the ONE store the router builds, but
+# it would still pass if a SECOND persistence path (a differently-rooted TimelineStore, a DB
+# persister) were added — that second path would carry live render references the scan never sees,
+# complete=True would be wrong, and the disk-wall would tombstone an in-use render. These two tests
+# fail loudly the moment such a drift is introduced, so the fail-safe's core assumption stays true.
+
+def _repo_root() -> Path:
+    return Path(abn_factory.__file__).resolve().parent.parent
+
+
+def _repo_py_sources() -> list[Path]:
+    """First-party PRODUCTION .py sources only — the runtime that can persist a timeline.
+
+    Tests intentionally build throwaway TimelineStore(tmp_path) roots, so they're excluded; the
+    invariant under test is about where the SHIPPING code persists timelines, not test fixtures."""
+    root = _repo_root()
+    skip = {".git", ".venv", "venv", "node_modules", ".claude", "yt-pipeline", "ec-repos",
+            "agentonline", ".codex", "__pycache__", "tests", "scripts"}
+    out = []
+    for p in root.rglob("*.py"):
+        parts = set(p.relative_to(root).parts)
+        if parts & skip:
+            continue
+        out.append(p)
+    return out
+
+
+def test_timeline_store_is_only_constructed_under_editor_timelines():
+    """Every TimelineStore(...) in first-party source must be rooted at the SAME dir the GC scans
+    (.../editor_timelines). A construction rooted anywhere else is a second persistence path the
+    protection scan can't see — exactly the silent-render-deletion the fail-safe guards against."""
+    import re
+
+    # `TimelineStore(` followed (on the same logical line) by a root arg that mentions editor_timelines.
+    ctor = re.compile(r"TimelineStore\(([^)]*)\)")
+    offenders = []
+    for src in _repo_py_sources():
+        text = src.read_text(encoding="utf-8", errors="ignore")
+        for m in ctor.finditer(text):
+            arg = m.group(1)
+            if "editor_timelines" not in arg:
+                offenders.append(f"{src.relative_to(_repo_root())}: TimelineStore({arg.strip()})")
+    assert not offenders, (
+        "found TimelineStore construction(s) NOT rooted at editor_timelines/ — the GC protection "
+        "scan only walks ASSETS/editor_timelines/*.json, so any other root persists live render "
+        "references the scan can never see (silent render deletion under low disk):\n  "
+        + "\n  ".join(offenders)
+    )
+
+
+def test_editor_timeline_store_persists_only_to_a_single_json_per_project(tmp_path):
+    """The store's path_for() must keep timelines as flat {projectId}.json directly under its root
+    (no nesting, no second sidecar file) — the protection scan globs editor_timelines/*.json one
+    level deep, so a nested or alternately-named persistence file would be missed by the scan."""
+    from services import editor_timeline
+
+    root = tmp_path / "editor_timelines"
+    st = editor_timeline.TimelineStore(root)
+    saved = st.save({"projectId": "ep_single0", "clips": [{"path": "x"}]})
+
+    on_disk = list(root.glob("*.json"))
+    assert on_disk == [root / "ep_single0.json"], (
+        "TimelineStore must persist exactly one flat {projectId}.json under its root; the GC "
+        "protection scan only globs editor_timelines/*.json one level deep"
+    )
+    assert saved["projectId"] == "ep_single0"
+    # No nested timeline JSONs hiding below the scanned glob depth.
+    assert not list(root.glob("*/*.json"))
