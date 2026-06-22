@@ -4295,3 +4295,184 @@ def test_atomic_copy_file_crash_mid_write_leaves_dest_untouched(tmp_path, monkey
         abn_factory._atomic_copy_file(src, dest)
     # the original destination must be byte-for-byte intact (never half-written)
     assert dest.read_bytes() == b"OLD-GOOD-CLIP"
+
+
+# ============================================================================
+# REGRESSION COVERAGE — previously-untested pure helpers in abn_factory.
+# These are deterministic text/path/scoring integration points that feed the
+# timeline, thumbnails, and topic scout. They had ZERO direct coverage and can
+# silently regress (e.g. _disk dropping a subdir → every cached b-roll 404s,
+# which has actually killed a real Remotion render). All run offline: no LLM,
+# network, or ffmpeg — _kinetic_params is forced down its deterministic fallback.
+# ============================================================================
+
+from pathlib import Path as _P
+
+
+# ---- _clip: word-boundary truncation with ellipsis ----
+
+def test_clip_returns_text_unchanged_when_short():
+    assert abn_factory._clip("hello", 20) == "hello"
+
+
+def test_clip_truncates_on_word_boundary_never_mid_word():
+    out = abn_factory._clip("the quick brown fox jumps", 12)
+    assert out.endswith("…")
+    # the visible part is whole words only — no chopped 'bro'/'qui'
+    assert all(w in {"the", "quick", "brown", "fox", "jumps"} for w in out.rstrip("…").split())
+
+
+def test_clip_handles_none_and_empty():
+    assert abn_factory._clip(None, 10) == ""
+    assert abn_factory._clip("", 10) == ""
+
+
+# ---- _wrap: thumbnail text wrapping, max 3 lines ----
+
+def test_wrap_breaks_into_lines_under_width():
+    out = abn_factory._wrap("one two three four five", 8)
+    for line in out.split("\n"):
+        assert len(line) <= 8 or " " not in line  # only a single overlong word may exceed
+
+
+def test_wrap_caps_at_three_lines():
+    out = abn_factory._wrap("a b c d e f g h i j k", 1)
+    assert len(out.split("\n")) <= 3
+
+
+# ---- _disk: timeline URL normalization (the b-roll 404 bug) ----
+
+def test_disk_returns_none_for_empty():
+    assert abn_factory._disk("") is None
+    assert abn_factory._disk(None) is None
+
+
+def test_disk_passes_through_existing_mount_prefix():
+    assert abn_factory._disk("/agenticnews-assets/x.png") == "/agenticnews-assets/x.png"
+
+
+def test_disk_preserves_known_subdir():
+    # the regression: a subdir like broll_library/ must survive, else cached b-roll 404s
+    assert abn_factory._disk("/tmp/broll_library/a.mp4") == "/agenticnews-assets/broll_library/a.mp4"
+
+
+def test_disk_flattens_when_parent_is_the_assets_root():
+    p = f"/whatever/{abn_factory.ASSETS.name}/b.png"
+    assert abn_factory._disk(p) == "/agenticnews-assets/b.png"
+
+
+# ---- _asset_url: managed path -> mount URL ----
+
+def test_asset_url_maps_under_mount_prefix():
+    p = abn_factory.ASSETS / "sub" / "x.png"
+    assert abn_factory._asset_url(p) == abn_factory.URL_PREFIX + "sub/x.png"
+
+
+# ---- _thumb_hook: clean uppercase 2-4 word hook, never leaks spec labels ----
+
+def test_thumb_hook_uses_title_and_strips_ask_hn_prefix():
+    out = abn_factory._thumb_hook("", "Ask HN: Anthropic ships Claude")
+    assert out == out.upper()
+    assert "ASK HN" not in out
+    assert "TEXT:" not in out and "HOOK:" not in out
+
+
+def test_thumb_hook_prefers_explicit_spec_hook():
+    assert abn_factory._thumb_hook("HOOK: agents win", "some other title") == "AGENTS WIN"
+
+
+def test_thumb_hook_falls_back_when_everything_empty():
+    assert abn_factory._thumb_hook("", "") == "AGENTIC BUILD"
+
+
+# ---- _hook_line: first-5s hook card payload extraction ----
+
+def test_hook_line_empty_returns_default():
+    assert abn_factory._hook_line("") == "THE AI STORY YOU MISSED"
+
+
+def test_hook_line_prefers_the_stat_clause():
+    out = abn_factory._hook_line(
+        "Scout. Anthropic shipped a model with a 1 million token context window."
+    )
+    assert out == out.upper()
+    assert "MILLION" in out
+
+
+def test_hook_line_does_not_dangle_on_a_weak_tail_word():
+    out = abn_factory._hook_line("OpenAI just released a tool for")
+    assert not out.split()[-1].lower() in {"for", "a", "the", "and", "with"}
+
+
+# ---- _hi_box: keyword highlight box positioned by type ----
+
+def test_hi_box_number_model_tool_land_in_different_spots():
+    num = abn_factory._hi_box({"type": "number", "color": "#fff", "text": "5x"})
+    mod = abn_factory._hi_box({"type": "model", "color": "#fff", "text": "gpt"})
+    tool = abn_factory._hi_box({"type": "tool", "color": "#fff", "text": "cursor"})
+    ys = {num["y"], mod["y"], tool["y"]}
+    assert len(ys) == 3  # variety in WHERE emphasis lands
+    assert num["label"] == "5x" and num["color"] == "#fff"
+
+
+# ---- _is_stale: vintage / retro topic filter ----
+
+def test_is_stale_flags_retro_years_and_keywords():
+    assert abn_factory._is_stale({"title": "making a game in visual studio 1997"}) is True
+
+
+def test_is_stale_passes_recent_ai_era_topic():
+    assert abn_factory._is_stale({"title": "OpenAI ships new agent in 2026"}) is False
+
+
+# ---- _score: topic ranking (the scout only sees what scoring floats up) ----
+
+def test_score_returns_negative_one_for_stale_topic():
+    assert abn_factory._score({"title": "building in visual studio 1997", "pts": 500}) == -1
+
+
+def test_score_rewards_frontier_lab_searchable_shipping_news():
+    lab = abn_factory._score({"title": "OpenAI launches new GPT model today", "pts": 200})
+    plain = abn_factory._score({"title": "a quiet tuesday update", "pts": 200})
+    assert lab > plain
+
+
+def test_score_penalizes_obscure_awesome_list():
+    assert abn_factory._score({"title": "awesome-agents — a list", "pts": 10}) < 0
+
+
+# ---- _evergreen_topics: never explodes when GitHub is unreachable ----
+
+def test_evergreen_topics_returns_empty_when_github_unreachable(monkeypatch):
+    import urllib.request as _u
+    monkeypatch.setattr(_u, "urlopen", lambda *a, **k: (_ for _ in ()).throw(OSError("offline")))
+    assert abn_factory._evergreen_topics(3) == []
+
+
+# ---- _kinetic_params: deterministic fallback (LLM forced silent) ----
+
+def _silence_experts(monkeypatch):
+    import services.abn_experts as experts
+    monkeypatch.setattr(experts, "ask", lambda *a, **k: "")
+
+
+def test_kinetic_params_stat_path_when_script_has_value_and_unit(monkeypatch):
+    _silence_experts(monkeypatch)
+    name, P = abn_factory._kinetic_params(
+        "OpenAI ships", "They cut latency by 40% today.", "https://openai.com/blog"
+    )
+    assert name == "stat-shrine"
+    assert P["statValue"] == 40
+    assert P["source"].startswith("SRC:")
+
+
+def test_kinetic_params_zine_path_when_no_stat(monkeypatch):
+    _silence_experts(monkeypatch)
+    name, P = abn_factory._kinetic_params(
+        "The wrapper era is dead", "Everything changed for builders.",
+        "https://news.ycombinator.com/x",
+    )
+    assert name == "zine-slam"
+    # the 5-word verdict composes from the title, last word ends with a period
+    assert P["w5"].endswith(".")
+    assert all(P.get(f"w{i}") for i in range(1, 6))
