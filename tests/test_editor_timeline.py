@@ -434,6 +434,77 @@ def test_keyframed_bed_envelope_is_not_double_attenuated_by_flat_gain():
     assert "0.6000" in flt and "(0.2200)*(" not in flt
 
 
+def test_clip_keyframes_command_neutralizes_flat_bed_gain_post_import(tmp_path):
+    """A bed imported with the flat volume=0.22 duck (NO envelope at import) and then
+    given a volume envelope LATER via a `clip.keyframes` command must not keep both:
+    the absolute envelope drives ducking, so the flat 0.22 is neutralized to 1.0.
+
+    This is the post-import gap the importer's neutralization (~line 230) never covered:
+    `clip.keyframes` previously just overwrote `clip.keyframes` and left the flat 0.22
+    sitting alongside the new absolute envelope (a double-attenuation state). The render
+    path is defensive, but the timeline state itself must stay consistent."""
+    from services import editor_render
+
+    store = timeline.TimelineStore(tmp_path)
+    project = timeline.project_from_abn_timeline("proj_kf", {
+        "episodeId": "e", "totalSec": 4.0,
+        "musicBed": "/agenticnews-assets/bed.mp3",  # flat-ducked, no envelope at import
+        "segments": [{"segmentId": "s0", "durationSec": 4.0, "shots": []}],
+    })
+    store.save(project)
+    bed_id = next(c["id"] for c in project["clips"].values() if c["kind"] == "music_bed")
+    # Pre-condition: imported with the flat 0.22 duck and no volume envelope.
+    assert project["clips"][bed_id]["volume"] == 0.22
+    assert not any(t["property"] == "volume" for t in project["clips"][bed_id]["keyframes"])
+
+    project = store.apply_command("proj_kf", {
+        "op": "clip.keyframes",
+        "actor": "human",
+        "expectedRevision": project["revision"],
+        "payload": {"clipId": bed_id, "keyframes": [
+            {"property": "volume", "points": [
+                {"t": 0.0, "value": 0.6}, {"t": 1.0, "value": 0.22},
+            ]},
+        ]},
+    })
+    bed = project["clips"][bed_id]
+    # The envelope is installed AND the flat gain is neutralized to 1.0 — no stale 0.22.
+    assert any(t["property"] == "volume" for t in bed["keyframes"])
+    assert bed["volume"] == 1.0
+    # End-to-end: the render path emits the envelope's absolute gains, not 0.6*0.22.
+    flt = editor_render._volume_filter(bed, float(bed["volume"]))
+    assert "0.6000" in flt and "(0.2200)*(" not in flt
+
+
+def test_clip_keyframes_command_keeps_flat_gain_for_non_volume_envelope(tmp_path):
+    """Asymmetry guard mirroring the importer: a `clip.keyframes` command that installs
+    a NON-volume envelope (e.g. opacity) must NOT touch the flat volume duck — otherwise
+    the bed would snap to full volume and mix over the VO."""
+    store = timeline.TimelineStore(tmp_path)
+    project = timeline.project_from_abn_timeline("proj_kf2", {
+        "episodeId": "e", "totalSec": 4.0,
+        "musicBed": "/agenticnews-assets/bed.mp3",
+        "segments": [{"segmentId": "s0", "durationSec": 4.0, "shots": []}],
+    })
+    store.save(project)
+    bed_id = next(c["id"] for c in project["clips"].values() if c["kind"] == "music_bed")
+
+    project = store.apply_command("proj_kf2", {
+        "op": "clip.keyframes",
+        "actor": "human",
+        "expectedRevision": project["revision"],
+        "payload": {"clipId": bed_id, "keyframes": [
+            {"property": "opacity", "points": [
+                {"t": 0.0, "value": 1.0}, {"t": 1.0, "value": 0.0},
+            ]},
+        ]},
+    })
+    bed = project["clips"][bed_id]
+    assert any(t["property"] == "opacity" for t in bed["keyframes"])
+    assert not any(t["property"] == "volume" for t in bed["keyframes"])
+    assert bed["volume"] == 0.22  # flat duck survives — no volume track to override it
+
+
 def test_import_infers_missing_shot_durations_from_next_boundary():
     project = timeline.project_from_abn_timeline(
         "proj_boundaries",

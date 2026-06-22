@@ -1123,6 +1123,16 @@ def _mutate_clip(project: dict[str, Any], op: str, clip: dict[str, Any], payload
         clip["volume"] = _non_negative(payload.get("volume"), "volume")
     elif op == "clip.keyframes":
         clip["keyframes"] = _validated_keyframes(payload.get("keyframes"))
+        # Mirror the import-time neutralization (see project_from_abn_timeline ~line
+        # 230): a music bed imports with a flat volume=0.22 duck. If a user later adds
+        # a volume envelope via this command, the clip would carry BOTH the flat 0.22
+        # AND an absolute envelope — exactly the double-attenuation state the importer
+        # guards against. The envelope's points are absolute gains, so neutralize the
+        # flat gain to 1.0 so render backends (openshot_bridge overwrites the volume
+        # key; editor_render._volume_filter ignores base_volume) and the timeline state
+        # all agree the envelope drives ducking.
+        if any(t["property"] == "volume" for t in clip["keyframes"]):
+            clip["volume"] = 1.0
     elif op == "clip.effect.add":
         effect = _validated_effect(payload.get("effect") or payload)
         effects = clip.setdefault("effects", [])

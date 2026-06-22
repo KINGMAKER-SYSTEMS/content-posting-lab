@@ -569,6 +569,27 @@ def _volume_keyframes(*points: "tuple[float, float]") -> list[dict]:
     }]
 
 
+def test_volume_filter_envelope_overrides_flat_gain_even_when_not_neutralized():
+    """Backend-parity safety net: even if a caller leaves a non-1.0 flat `volume`
+    (the legacy 0.22 bed duck) ALONGSIDE an absolute volume envelope, _volume_filter
+    must emit the envelope's absolute gains and IGNORE the flat base_volume — not
+    scale by it (the documented 0.6 -> 0.6*0.22 double-attenuation bug). This mirrors
+    openshot_bridge, where the envelope overwrites the flat volume key outright.
+
+    editor_timeline now neutralizes the flat gain to 1.0 on both import and the
+    post-import clip.keyframes command, but this pins the render-side defense so the
+    two backends agree regardless of upstream neutralization."""
+    clip = {"keyframes": _volume_keyframes((0.0, 0.6), (1.0, 0.22))}
+    # Flat gain present (0.22) AND an envelope -> the envelope wins, unscaled.
+    flt_with_stale = editor_render._volume_filter(clip, 0.22)
+    flt_neutralized = editor_render._volume_filter(clip, 1.0)
+    # Identical output: base_volume is ignored once an envelope exists.
+    assert flt_with_stale == flt_neutralized
+    assert "0.6000" in flt_with_stale
+    # NOT a base-scaled form: the intro gain is plain 0.6, never (0.2200)*(...).
+    assert "(0.2200)*(" not in flt_with_stale and ":eval=frame" in flt_with_stale
+
+
 def test_windowed_volume_envelope_keeps_absolute_gains_through_window_shift():
     """A ducking volume envelope (absolute gains: 0.6 under intro, 0.22 under VO)
     must survive _render_scope_project windowing with its GAIN values unchanged --
