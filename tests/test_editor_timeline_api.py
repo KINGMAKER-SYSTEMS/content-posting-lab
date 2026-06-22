@@ -1,3 +1,4 @@
+import copy
 import json
 
 import pytest
@@ -2430,3 +2431,341 @@ def test_validated_effect_requires_id():
 
     with pytest.raises(editor_timeline.CommandValidationError, match="effect id is required"):
         editor_timeline._validated_effect({"type": "brightness", "params": {"value": 0.5}})
+
+
+# ---------------------------------------------------------------------------
+# replay_project + CommandValidationError seams (from ticket cb9-13).
+# ---------------------------------------------------------------------------
+
+
+def _project_with_clip_replay():
+    """A fresh project carrying one asset + one clip, ready for split/mutate."""
+    from services import editor_timeline
+
+    project = editor_timeline.new_project("replay_proj")
+    project = editor_timeline.apply_command(
+        project,
+        {
+            "id": "cmd_asset",
+            "op": "asset.import",
+            "actor": "agent",
+            "expectedRevision": 0,
+            "payload": {"assetId": "a1", "type": "video", "src": "/agenticnews-assets/clip.mp4"},
+        },
+    )
+    project = editor_timeline.apply_command(
+        project,
+        {
+            "id": "cmd_clip",
+            "op": "clip.create",
+            "actor": "agent",
+            "expectedRevision": 1,
+            "payload": {
+                "clipId": "c1",
+                "assetId": "a1",
+                "trackId": "video_1",
+                "start": 0,
+                "duration": 4,
+            },
+        },
+    )
+    return project
+
+
+def test_replay_project_reconstructs_state_from_command_log():
+    """replay_project replays the command log onto a fresh base and must reproduce
+    the same clips/revision as the live project (timeline persistence guard)."""
+    from services import editor_timeline
+
+    project = _project_with_clip_replay()
+    # A few more output-changing edits so the log is non-trivial.
+    project = editor_timeline.apply_command(
+        project,
+        {
+            "id": "cmd_move",
+            "op": "clip.move",
+            "actor": "agent",
+            "expectedRevision": 2,
+            "payload": {"clipId": "c1", "start": 1.0},
+        },
+    )
+    project = editor_timeline.apply_command(
+        project,
+        {
+            "id": "cmd_split",
+            "op": "clip.split",
+            "actor": "agent",
+            "expectedRevision": 3,
+            "payload": {"clipId": "c1", "at": 2.0, "newClipId": "c2"},
+        },
+    )
+
+    replayed = editor_timeline.replay_project(project)
+
+    assert replayed["revision"] == project["revision"]
+    assert set(replayed["clips"]) == set(project["clips"]) == {"c1", "c2"}
+    assert replayed["clips"]["c1"]["start"] == project["clips"]["c1"]["start"]
+    assert replayed["clips"]["c2"]["start"] == project["clips"]["c2"]["start"]
+    # The replayed log preserves the original command ids (not freshly minted).
+    assert [e["id"] for e in replayed["commandLog"]] == [
+        e["id"] for e in project["commandLog"]
+    ]
+
+
+def test_replay_project_carries_reverts_command_id():
+    """A revert command in the log must replay through the revertsCommandId branch
+    without tripping the 'already reverted' / 'does not reference' validators."""
+    from services import editor_timeline
+
+    project = _project_with_clip_replay()
+    project = editor_timeline.apply_command(
+        project,
+        {
+            "id": "cmd_move",
+            "op": "clip.move",
+            "actor": "agent",
+            "expectedRevision": 2,
+            "payload": {"clipId": "c1", "start": 1.5},
+        },
+    )
+    # Revert the move via the store-style inverse so the log has a revertsCommandId.
+    inverse = editor_timeline._inverse_command(
+        project["commandLog"][-1], actor="agent", expected_revision=project["revision"]
+    )
+    project = editor_timeline.apply_command(project, inverse)
+    assert project["clips"]["c1"]["start"] == 0.0
+
+    replayed = editor_timeline.replay_project(project)
+    assert replayed["clips"]["c1"]["start"] == 0.0
+    assert any(e.get("revertsCommandId") for e in replayed["commandLog"])
+
+
+def test_validate_reverts_command_id_unknown_target():
+    from services import editor_timeline
+
+    project = _project_with_clip_replay()
+    with pytest.raises(editor_timeline.CommandValidationError, match="does not reference a command"):
+        editor_timeline.apply_command(
+            project,
+            {
+                "op": "clip.move",
+                "actor": "agent",
+                "expectedRevision": 2,
+                "revertsCommandId": "no_such_cmd",
+                "payload": {"clipId": "c1", "start": 0},
+            },
+        )
+
+
+def test_validate_reverts_command_id_already_reverted():
+    from services import editor_timeline
+
+    project = _project_with_clip_replay()
+    project = editor_timeline.apply_command(
+        project,
+        {
+            "id": "cmd_move",
+            "op": "clip.move",
+            "actor": "agent",
+            "expectedRevision": 2,
+            "payload": {"clipId": "c1", "start": 1.5},
+        },
+    )
+    inverse = editor_timeline._inverse_command(
+        project["commandLog"][-1], actor="agent", expected_revision=project["revision"]
+    )
+    project = editor_timeline.apply_command(project, inverse)
+
+    # Re-issuing the same revert must be rejected: cmd_move was already reverted.
+    inverse2 = dict(inverse)
+    inverse2["expectedRevision"] = project["revision"]
+    inverse2.pop("id", None)
+    with pytest.raises(editor_timeline.CommandValidationError, match="already reverted"):
+        editor_timeline.apply_command(project, inverse2)
+
+
+def test_validate_reverts_command_id_payload_mismatch():
+    """revertsCommandId pointing at a real command, but with a payload that is NOT
+    the true inverse, is rejected."""
+    from services import editor_timeline
+
+    project = _project_with_clip_replay()
+    project = editor_timeline.apply_command(
+        project,
+        {
+            "id": "cmd_move",
+            "op": "clip.move",
+            "actor": "agent",
+            "expectedRevision": 2,
+            "payload": {"clipId": "c1", "start": 1.5},
+        },
+    )
+    # The true inverse of a clip.move is a clip.update restore; reusing that op but
+    # with a bogus payload trips the payload-mismatch validator.
+    with pytest.raises(editor_timeline.CommandValidationError, match="payload does not match"):
+        editor_timeline.apply_command(
+            project,
+            {
+                "op": "clip.update",
+                "actor": "agent",
+                "expectedRevision": 3,
+                "revertsCommandId": "cmd_move",
+                "payload": {"clipId": "c1", "patch": {"start": 99.0}},
+            },
+        )
+
+
+def test_validate_reverts_command_id_op_mismatch():
+    """revertsCommandId points at a real command, but the supplied op is not the
+    inverse op the command would produce."""
+    from services import editor_timeline
+
+    project = _project_with_clip_replay()
+    project = editor_timeline.apply_command(
+        project,
+        {
+            "id": "cmd_move",
+            "op": "clip.move",
+            "actor": "agent",
+            "expectedRevision": 2,
+            "payload": {"clipId": "c1", "start": 1.5},
+        },
+    )
+    # Inverse of clip.move is clip.update; offering clip.move is an op mismatch.
+    with pytest.raises(editor_timeline.CommandValidationError, match="op does not match inverse command"):
+        editor_timeline.apply_command(
+            project,
+            {
+                "op": "clip.move",
+                "actor": "agent",
+                "expectedRevision": 3,
+                "revertsCommandId": "cmd_move",
+                "payload": {"clipId": "c1", "start": 0},
+            },
+        )
+
+
+def test_clip_unsplit_requires_original_and_created_ids():
+    from services import editor_timeline
+
+    project = _project_with_clip_replay()
+    with pytest.raises(editor_timeline.CommandValidationError, match="requires original clip"):
+        editor_timeline.apply_command(
+            project,
+            {
+                "op": "clip.unsplit",
+                "actor": "agent",
+                "expectedRevision": 2,
+                "payload": {"createdClipId": "c2"},
+            },
+        )
+    with pytest.raises(editor_timeline.CommandValidationError, match="requires createdClipId"):
+        editor_timeline.apply_command(
+            project,
+            {
+                "op": "clip.unsplit",
+                "actor": "agent",
+                "expectedRevision": 2,
+                "payload": {"clip": {"id": "c1"}},
+            },
+        )
+
+
+def test_clip_unsplit_requires_revert_of_recorded_split():
+    """clip.unsplit with no revertsCommandId, and one that points at a non-split
+    command, are both rejected by _validate_unsplit_reverts_recorded_split."""
+    from services import editor_timeline
+
+    project = _project_with_clip_replay()
+    # Missing revertsCommandId.
+    with pytest.raises(editor_timeline.CommandValidationError, match="requires revertsCommandId"):
+        editor_timeline.apply_command(
+            project,
+            {
+                "op": "clip.unsplit",
+                "actor": "agent",
+                "expectedRevision": 2,
+                "payload": {"clip": {"id": "c1"}, "createdClipId": "c2"},
+            },
+        )
+    # revertsCommandId points at cmd_clip (a clip.create, which has no inverse) so
+    # the generic reverts validator rejects it before the unsplit-specific seam.
+    with pytest.raises(editor_timeline.CommandValidationError, match="cannot revert command clip.create"):
+        editor_timeline.apply_command(
+            project,
+            {
+                "op": "clip.unsplit",
+                "actor": "agent",
+                "expectedRevision": 2,
+                "revertsCommandId": "cmd_clip",
+                "payload": {"clip": {"id": "c1"}, "createdClipId": "c2"},
+            },
+        )
+
+
+def test_clip_split_then_unsplit_round_trips_via_apply_command():
+    """The happy-path unsplit (the inverse of a recorded split) restores the original
+    clip and drops the created clip — exercising the full validation seam."""
+    from services import editor_timeline
+
+    project = _project_with_clip_replay()
+    project = editor_timeline.apply_command(
+        project,
+        {
+            "id": "cmd_split",
+            "op": "clip.split",
+            "actor": "agent",
+            "expectedRevision": 2,
+            "payload": {"clipId": "c1", "at": 2.0, "newClipId": "c2"},
+        },
+    )
+    assert set(project["clips"]) == {"c1", "c2"}
+
+    inverse = editor_timeline._inverse_command(
+        project["commandLog"][-1], actor="agent", expected_revision=project["revision"]
+    )
+    assert inverse["op"] == "clip.unsplit"
+    project = editor_timeline.apply_command(project, inverse)
+
+    assert set(project["clips"]) == {"c1"}
+    assert project["clips"]["c1"]["duration"] == 4
+
+
+def test_clip_unsplit_inner_seam_rejects_mutated_split_output():
+    """A recorded split exists and the unsplit payload IS the true inverse, but the
+    project's current clips were mutated after the split — the inner
+    _validate_unsplit_reverts_recorded_split seam rejects the stale unsplit."""
+    from services import editor_timeline
+
+    project = _project_with_clip_replay()
+    project = editor_timeline.apply_command(
+        project,
+        {
+            "id": "cmd_split",
+            "op": "clip.split",
+            "actor": "agent",
+            "expectedRevision": 2,
+            "payload": {"clipId": "c1", "at": 2.0, "newClipId": "c2"},
+        },
+    )
+    inverse = editor_timeline._inverse_command(
+        project["commandLog"][-1], actor="agent", expected_revision=project["revision"]
+    )
+    # Move the created clip after the split so the live state no longer matches the
+    # split's recorded output, while the unsplit payload still equals the true inverse.
+    project = editor_timeline.apply_command(
+        project,
+        {
+            "op": "clip.move",
+            "actor": "agent",
+            "expectedRevision": project["revision"],
+            "payload": {"clipId": "c2", "start": 3.5},
+        },
+    )
+    bad = copy.deepcopy(inverse)
+    bad["expectedRevision"] = project["revision"]
+    with pytest.raises(
+        editor_timeline.CommandValidationError,
+        match="no longer matches split output",
+    ):
+        editor_timeline.apply_command(project, bad)
