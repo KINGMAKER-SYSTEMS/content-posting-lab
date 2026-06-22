@@ -1223,6 +1223,74 @@ def test_kb_picker_seed_changes_first_move(monkeypatch):
     assert first0 != first1
 
 
+def test_kb_picker_never_repeats_direction_for_any_seed(monkeypatch):
+    """Harden the anti-templating guarantee across the FULL seed space, not just seed=0: for every
+    legal starting seed the picker must still alternate direction back-to-back. A seed that happens to
+    land the rotation on a run of same-direction moves must never leak two identical gestures in a row."""
+    dir_of = {}
+    for m in abn_factory._KB_MOVES:
+        dir_of[(m[0], m[1], m[2], m[3], m[4], m[5], m[6])] = m[7]
+    for seed in range(len(abn_factory._KB_MOVES)):
+        pick = abn_factory._kb_picker(seed=seed)
+        dirs = []
+        for _ in range(25):
+            kb = pick()
+            key = (kb["startScale"], kb["endScale"], kb["startX"], kb["startY"],
+                   kb["endX"], kb["endY"], kb["easing"])
+            dirs.append(dir_of[key])
+        for a, b in zip(dirs, dirs[1:]):
+            assert a != b, f"seed={seed} served two consecutive {a!r} moves"
+
+
+def test_plan_shots_card_and_screenshot_both_unresolvable_fall_through_to_none(monkeypatch):
+    """The full fallback CHAIN under failure: card is provided but doesn't resolve on disk → it falls
+    back to the screenshot → the screenshot ALSO doesn't resolve → it was already nulled → src is None.
+    Distinct from passing literal None: here both paths are non-empty strings the guards must reject,
+    proving card→screenshot→None degrades safely instead of emitting a dead on-disk path."""
+    # Both real paths, but _present_assets reports neither exists, so every guard fails in sequence.
+    _present_assets(monkeypatch, set())
+    shots = abn_factory._plan_shots(
+        30.0,
+        "/agenticnews-assets/ep_a111111/gone_shot.png",   # screenshot: missing → nulled
+        "/agenticnews-assets/ep_a111111/gone_card.png",   # card: missing → falls back to (nulled) screenshot → None
+        words=[], keywords=[], source_url="https://x", seg_index=0,
+    )
+    assert shots and all(s["type"] == "artifact" for s in shots)
+    # the card→screenshot→None chain collapsed cleanly; no surviving disk path leaked into src
+    assert {s.get("src") for s in shots} == {None}
+
+
+def test_plan_shots_short_duration_routes_to_legacy_ui_frac(monkeypatch):
+    """DURATION-BASED routing: the wide v2 UI share (0.26/0.30/0.22) only applies when duration > 6.
+    A short segment (≤6s) must fall back to the legacy ui_frac tuple (0.40/0.45/0.50) even with v2
+    visuals on and UI present — pin that ui_end tracks the LEGACY fraction, not the v2 one."""
+    monkeypatch.setattr(abn_factory, "_V2_VISUALS", True)
+    monkeypatch.setattr(abn_factory, "_USE_V2_VISUALS", True)
+    legacy = (0.40, 0.45, 0.50)
+    for seg in (0, 1, 2):
+        duration = 6.0  # not > 6 → legacy branch
+        shots = _full_segment(monkeypatch, seg_index=seg, duration=duration)
+        ui_shots = [s for s in shots if s["id"].startswith("ui")]
+        assert ui_shots, "UI present + short duration should still open on a UI beat"
+        ui_end = max(s["endSec"] for s in ui_shots)
+        assert ui_end == round(duration * legacy[seg % 3], 2), (
+            f"seg={seg} short-duration ui_end {ui_end} did not use legacy frac {legacy[seg % 3]}")
+
+
+def test_plan_shots_demo_frac_routes_by_seg_index(monkeypatch):
+    """DURATION-BASED routing #2: the demo block start is duration * demo_frac where demo_frac varies
+    by seg_index % 3 (0.68/0.72/0.70). With a demo present, the first demo beat must start at exactly
+    round(duration * demo_frac, 2) for each segment — locking the per-segment demo placement."""
+    demo_frac = (0.68, 0.72, 0.70)
+    duration = 60.0
+    for seg in (0, 1, 2):
+        shots = _full_segment(monkeypatch, seg_index=seg, duration=duration)
+        demo_starts = [s["startSec"] for s in shots if s["id"].startswith("demo")]
+        assert demo_starts, "demo present should produce a demo block"
+        assert min(demo_starts) == round(duration * demo_frac[seg % 3], 2), (
+            f"seg={seg} demo start {min(demo_starts)} != duration*{demo_frac[seg % 3]}")
+
+
 # ---------------- _build_timeline: choreographed shot-boundary crossfades ----------------
 #
 # _plan_shots cuts a new visual every 4-7s but bare shot boundaries hard-cut. _build_timeline
