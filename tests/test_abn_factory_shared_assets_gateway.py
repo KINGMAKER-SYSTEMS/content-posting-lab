@@ -100,3 +100,66 @@ def test_factory_does_not_emit_flat_shared_url():
         "abn_factory emits a flat shared-pool URL — use abn_assets.shared_url('audio'|'brand', "
         f"name) (lands under /_shared/) instead: {offenders}"
     )
+
+
+# ---------------------------------------------------------------------------
+# _cross_scratch_path: the ONE chokepoint for cross-episode throwaway writes.
+# It must (a) land valid names in a GC-reapable _scratch/ root the gateway
+# recognises, and (b) RAISE on any off-schema name BEFORE bytes are written, so
+# the GC is never handed an unreapable stray. No test covered either branch.
+# ---------------------------------------------------------------------------
+
+def test_cross_scratch_path_lands_in_reapable_managed_scratch(store):
+    """A valid cross-scratch name resolves under _scratch/, with its parent created,
+    and the gateway recognises that parent as BOTH managed (is_managed) and a
+    GC-reapable root (scratch_dirs) — the same set the chokepoint asserts against."""
+    dest = abn_factory._cross_scratch_path("_tmp_bg_0")
+    assert dest == store / "_scratch" / "_tmp_bg_0"
+    assert dest.parent.is_dir()                       # parent created
+    assert abn_assets.is_managed(dest)               # on-schema
+    reapable = {d.resolve() for d in abn_assets.scratch_dirs()}
+    assert dest.parent.resolve() in reapable         # GC can reap it
+    # And once a real file is written there, the GC enumerates it as reapable.
+    dest.write_bytes(b"z" * 64)
+    assert dest.resolve() in {f.resolve() for f in abn_assets.reapable_scratch()}
+
+
+def test_cross_scratch_path_allows_leading_underscore(store):
+    """Real cross-scratch names carry a leading underscore (_tmp_bg_0); the
+    per-episode slug rule forbids it, but this chokepoint must allow it."""
+    dest = abn_factory._cross_scratch_path("_codex_keep.png")
+    assert dest.name == "_codex_keep.png"
+    assert dest.parent == store / "_scratch"
+
+
+@pytest.mark.parametrize("bad", [
+    "../escape.png",          # parent traversal
+    "sub/dir.png",            # forward slash
+    "sub\\dir.png",           # backslash
+    ".hidden",                # leading dot
+    "",                       # empty
+    "   ",                    # whitespace-only (strips to empty)
+    "/abs.png",               # absolute-ish
+    "a b.png",                # space (not in the closed charset)
+])
+def test_cross_scratch_path_rejects_off_schema_names(store, bad):
+    """An off-schema basename RAISES before any bytes/dir are written — the GC can
+    never be handed an unreapable stray. _scratch/ is created lazily, so verify the
+    bad name produced no file at the (would-be) location either."""
+    with pytest.raises(ValueError):
+        abn_factory._cross_scratch_path(bad)
+    # No stray landed: nothing matching the rejected name exists under the store.
+    leaked = [p for p in store.rglob("*") if p.is_file()]
+    assert leaked == []
+
+
+def test_cross_scratch_path_rejects_when_resolved_parent_not_reapable(store, monkeypatch):
+    """The reapable-root check is the real guard, not just the regex: if scratch_dirs()
+    ever stopped reporting _scratch/ as reapable (a schema regression), the chokepoint
+    must REFUSE the write rather than hand the GC an unreapable target."""
+    # Force the reapable set to exclude _scratch/ — simulating the regression the
+    # `dest.parent not in scratch_dirs()` assert exists to catch.
+    monkeypatch.setattr(abn_assets, "scratch_dirs", lambda: [])
+    monkeypatch.setattr(abn_factory, "scratch_dirs", lambda: [])
+    with pytest.raises(ValueError, match="non-reapable"):
+        abn_factory._cross_scratch_path("_tmp_bg_0")
