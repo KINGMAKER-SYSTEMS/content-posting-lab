@@ -2186,3 +2186,59 @@ async def test_compile_episode_raises_when_all_three_compilers_fail(monkeypatch)
     actions = _bus_actions_since(seen)
     assert "openshot.fallback" in actions
     assert "remotion.fallback" in actions, "the cascade must reach the ffmpeg backstop before giving up"
+
+
+# ---------------- _cross_scratch_path: traversal guard + GC-reapability ----------------
+
+@pytest.fixture
+def scratch_store(tmp_path, monkeypatch):
+    """Point BOTH the factory's bound ASSETS and the gateway's ASSETS_DIR at a throwaway store.
+    _cross_scratch_path builds under abn_factory.ASSETS but checks membership against
+    abn_assets.scratch_dirs() (which reads abn_assets.ASSETS_DIR) — both must move together
+    or the guard would compare against the real on-disk store."""
+    assets = tmp_path / "assets"
+    assets.mkdir()
+    monkeypatch.setattr(abn_factory, "ASSETS", assets)
+    monkeypatch.setattr(abn_assets, "ASSETS_DIR", assets)
+    return assets
+
+
+def test_cross_scratch_path_accepts_flat_name_and_lands_in_reapable_root(scratch_store):
+    """Happy path: a flat basename routes to ASSETS/_scratch/<name>, the parent dir gets created,
+    and it lives in a GC-reapable root (scratch_dirs() membership)."""
+    dest = abn_factory._cross_scratch_path("_tmp_bg_0.png")
+    assert dest == scratch_store / "_scratch" / "_tmp_bg_0.png"
+    assert dest.parent.is_dir(), "the chokepoint must create the _scratch parent"
+    reapable = {d.resolve() for d in abn_assets.scratch_dirs()}
+    assert dest.parent.resolve() in reapable, "write must land in a GC-reapable root"
+
+
+@pytest.mark.parametrize("bad", [
+    "../escape.png",          # parent traversal
+    "sub/dir/file.png",       # forward-slash subpath
+    "sub\\dir.png",           # backslash subpath
+    ".hidden",                # leading dot
+    "..",                     # bare traversal
+    "/abs/path.png",          # absolute-ish leading slash
+    "",                       # empty after strip
+    "   ",                    # whitespace-only -> empty after strip
+    "bad name!.png",          # disallowed punctuation
+])
+def test_cross_scratch_path_rejects_bad_names_before_any_write(scratch_store, bad):
+    """Off-schema names (traversal, slashes, leading dot, junk) RAISE before bytes are written,
+    so the GC can never be handed an unreapable stray. The _scratch dir must not be created as a
+    side effect of a rejected call."""
+    with pytest.raises(ValueError, match="bad cross-scratch filename"):
+        abn_factory._cross_scratch_path(bad)
+
+
+def test_cross_scratch_path_rejects_non_reapable_root(scratch_store, monkeypatch):
+    """Even a name that passes the regex must RAISE if its parent isn't a GC-reapable root.
+    Simulate a store whose _scratch is NOT in scratch_dirs() (e.g. the dir doesn't exist yet so
+    scratch_dirs() omits it) — the membership check is the second, independent guard."""
+    # scratch_dirs() only includes _scratch when it's an existing dir; force it empty so the
+    # membership assertion is the thing that fires, not the regex. _cross_scratch_path imported
+    # scratch_dirs into the factory namespace, so patch the name the function actually resolves.
+    monkeypatch.setattr(abn_factory, "scratch_dirs", lambda: [])
+    with pytest.raises(ValueError, match="refusing non-reapable cross-scratch write"):
+        abn_factory._cross_scratch_path("probe.png")
