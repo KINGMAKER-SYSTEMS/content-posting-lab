@@ -242,6 +242,87 @@ def test_materialize_blocked_flag_skips_extraction(assets_dir, monkeypatch, capt
     assert (assets_dir / "s0_card_src.png").exists()
 
 
+# ----------------------------------------- episode-singleton resolver branches
+#
+# These pin the schema-first / flat-fallback contract of the two episode-read
+# resolvers so the migration's deliberate (permanent) flat fallback can't be
+# silently broken by a future refactor. The fallback is NOT a half-finished
+# migration: it is the documented, sanctioned read path for (a) un-migrated
+# episodes whose only durable artifact is the flat legacy file, and (b)
+# non-episode ids the gateway can't scope (episode_singleton_path -> None).
+
+
+def test_timeline_resolver_prefers_schema_when_present(assets_dir):
+    """Schema timeline.json exists -> resolver returns the schema path, ignoring
+    the flat legacy name even when BOTH exist (schema is the factory's ground truth)."""
+    ep = "ep_648e806a"
+    schema = abn_assets.asset_path(ep, "timeline")
+    schema.write_text('{"segments": [{"id": "s0"}]}')
+    (assets_dir / f"{ep}_timeline.json").write_text('{"segments": [{"id": "STALE"}]}')
+
+    assert r._timeline_file_for_episode(ep) == schema
+
+
+def test_timeline_resolver_falls_back_to_flat_when_unmigrated(assets_dir):
+    """No schema timeline, only the flat legacy file -> resolver returns the flat
+    path (the permanent fallback for an episode not yet migrated to the schema)."""
+    ep = "ep_7a15b8c3"
+    flat = assets_dir / f"{ep}_timeline.json"
+    flat.write_text('{"segments": [{"id": "s0"}]}')
+    assert not abn_assets.episode_singleton_path(ep, "timeline").exists()
+
+    assert r._timeline_file_for_episode(ep) == flat
+
+
+def test_timeline_resolver_returns_schema_path_when_neither_exists(assets_dir):
+    """For a real episode id with nothing on disk, the resolver returns the
+    canonical schema path (so a downstream .exists() check fails on the path the
+    factory WOULD write, not a flat legacy name)."""
+    ep = "ep_deadbeef"
+    resolved = r._timeline_file_for_episode(ep)
+    assert resolved == abn_assets.episode_singleton_path(ep, "timeline")
+    assert not resolved.exists()
+
+
+def test_timeline_resolver_uses_flat_for_non_episode_id(assets_dir):
+    """A non-episode id (no ep_ prefix) -> gateway returns None -> resolver uses
+    the flat fallback. This is the permanent path for ad-hoc / video-id reads."""
+    flat = assets_dir / "vid_abc123_timeline.json"
+    flat.write_text('{"segments": []}')
+    assert abn_assets.episode_singleton_path("vid_abc123", "timeline") is None
+
+    assert r._timeline_file_for_episode("vid_abc123") == flat
+
+
+def test_materialization_prefers_schema_episode_render(assets_dir, monkeypatch):
+    """The source-materialization read picks the schema render
+    {ep}/renders/episode.mp4 when present, NOT the flat {ep}_episode.mp4."""
+    monkeypatch.setattr(r, "EDITOR_ALLOW_FLATTENED_SOURCE_MATERIALIZATION", True)
+    ep = "ep_648e806a"
+    schema_render = abn_assets.asset_path(ep, "episode")
+    schema_render.write_bytes(b"SCHEMA")
+    # a stale flat render must be ignored in favor of the schema path
+    (assets_dir / f"{ep}_episode.mp4").write_bytes(b"STALE")
+
+    plan = r._plan_editor_source_materialization(ep, _two_segment_timeline())
+    sources = {entry["source"] for entry in plan if "source" in entry}
+    assert sources == {str(schema_render)}
+
+
+def test_materialization_falls_back_to_flat_episode_render(assets_dir, monkeypatch):
+    """No schema render -> the materialization read falls back to the flat legacy
+    {ep}_episode.mp4 (permanent fallback for un-migrated episodes)."""
+    monkeypatch.setattr(r, "EDITOR_ALLOW_FLATTENED_SOURCE_MATERIALIZATION", True)
+    ep = "ep_7a15b8c3"
+    flat_render = assets_dir / f"{ep}_episode.mp4"
+    flat_render.write_bytes(b"FLAT")
+    assert not abn_assets.episode_singleton_path(ep, "episode").exists()
+
+    plan = r._plan_editor_source_materialization(ep, _two_segment_timeline())
+    sources = {entry["source"] for entry in plan if "source" in entry}
+    assert sources == {str(flat_render)}
+
+
 def test_card_copy_deduplicated_across_repeated_src(assets_dir, monkeypatch):
     """Two shots referencing the same missing _src.png plan a single copy."""
     monkeypatch.setattr(r, "EDITOR_ALLOW_FLATTENED_SOURCE_MATERIALIZATION", True)
