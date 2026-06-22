@@ -15,11 +15,12 @@ from services.email_routing import (
     list_destinations,
     list_rules,
 )
+from services.roster import get_page, set_page
 
 
 def _destination_email(d: dict) -> str:
     return (d.get("email") or "").strip().lower()
-from services.roster import set_page, get_page
+
 
 router = APIRouter()
 

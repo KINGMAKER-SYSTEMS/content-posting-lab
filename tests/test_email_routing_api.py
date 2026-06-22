@@ -44,6 +44,29 @@ def test_surviving_email_routes_present():
         assert survivor in paths, f"{survivor} should still be registered"
 
 
+def test_roster_imports_are_module_level():
+    """Regression: `from services.roster import ...` was wedged mid-file after a
+    function def. All imports in routers/email_routing.py must live at module top
+    level (no nested/function-scoped imports)."""
+    import ast
+    import inspect
+
+    import routers.email_routing as r
+
+    tree = ast.parse(inspect.getsource(r))
+    top_level = {id(n) for n in tree.body}
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            assert id(node) in top_level, (
+                f"import on line {node.lineno} is not at module level"
+            )
+
+    names = {a.name for n in ast.walk(tree)
+             if isinstance(n, ast.ImportFrom) and n.module == "services.roster"
+             for a in n.names}
+    assert {"get_page", "set_page"} <= names
+
+
 def test_update_rule_service_removed():
     import services.email_routing as svc
 
