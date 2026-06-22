@@ -469,6 +469,64 @@ def test_abn_musicBedKeyframes_promotes_envelope_through_the_import_seam(tmp_pat
     assert points[1]["interpolation"] == openshot_bridge.CONSTANT
 
 
+def test_bed_ducking_envelope_passes_through_both_backends_identically(tmp_path):
+    """Cross-backend fidelity gate for the music-bed ducking envelope.
+
+    The same absolute musicBedKeyframes envelope feeds BOTH compilers: OpenShot
+    (openshot_bridge → libopenshot Point.Y on a 0..100 scale) and the ffmpeg
+    fallback (editor_render._volume_filter → a `t`-expression of 0..1 gains).
+    editor_timeline neutralizes the flat 0.22 bed gain to 1.0 when it promotes the
+    envelope; both backends must then emit the envelope's ABSOLUTE gains UNSCALED.
+
+    Prior tests pinned each backend against its own hand-written expectation, but
+    nothing asserted the two AGREE on the gain at the same keyframe time. A drift
+    here (one backend scaling by the flat 0.22, the other not — the documented
+    0.6 -> 0.132 double-attenuation) would ship the OpenShot render ducked
+    differently than every ffmpeg-fallback render. This locks them together: at
+    each keyframe `t`, OpenShot's Point.Y/100 == editor_render's absolute gain,
+    and the flat clip volume is neutralized so neither path re-scales."""
+    from services import editor_render
+
+    timeline = _abn_timeline()
+    timeline["musicBedKeyframes"] = [
+        {
+            "property": "volume",
+            "points": [
+                {"t": 0.0, "value": 0.6, "interp": "linear"},
+                {"t": 0.5, "value": 0.22, "interp": "constant"},
+                {"t": 3.5, "value": 0.6, "interp": "linear"},
+            ],
+        }
+    ]
+    project = editor_timeline.project_from_abn_timeline(
+        "proj_parity", timeline, source_episode_id="ep_seam"
+    )
+    bed = next(c for c in project["clips"].values() if c["kind"] == "music_bed")
+
+    # The flat gain was neutralized to 1.0 so the absolute envelope passes through
+    # unscaled on BOTH backends (otherwise one would multiply 0.6 by 0.22).
+    assert bed["volume"] == 1.0, "flat bed gain not neutralized; backends will diverge"
+
+    # ffmpeg fallback: the absolute (t, gain) the volume expression is built from
+    # (points carry a trailing interp element we drop here).
+    render_gains = [(p[0], p[1]) for p in editor_render._volume_keyframe_points(bed)]
+    assert render_gains == pytest.approx([(0.0, 0.6), (0.5, 0.22), (3.5, 0.6)])
+
+    # OpenShot: same gains, scaled 0..1 -> 0..100, keyed at frame t*fps + 1.
+    exported = openshot_bridge.timeline_json(project, asset_root=tmp_path)
+    points = {c["id"]: c for c in exported["clips"]}[bed["id"]]["volume"]["Points"]
+    fps = project["fps"]
+
+    # Same number of points; at each keyframe the two backends agree on the gain.
+    assert len(points) == len(render_gains)
+    for (t, gain), point in zip(render_gains, points):
+        assert point["co"]["X"] == pytest.approx(t * fps + 1.0)
+        assert point["co"]["Y"] / 100.0 == pytest.approx(gain), (
+            "OpenShot and ffmpeg backends disagree on bed ducking gain at the same "
+            "keyframe — one is scaling the absolute envelope, the other is not"
+        )
+
+
 def test_abn_dict_musicBed_keyframes_promote_through_the_import_seam(tmp_path):
     """A dict-shaped bed `{src, keyframes}` is the other factory wire-format. The
     import must read its `keyframes` envelope (and still resolve `src` as the bed
