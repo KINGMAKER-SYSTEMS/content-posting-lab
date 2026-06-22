@@ -15,6 +15,7 @@ Whisper, or ffmpeg — every external call is monkeypatched. The hard gates cove
     per-segment encode failed or the segment list was empty to begin with.
 """
 import asyncio
+from pathlib import Path
 
 import pytest
 
@@ -546,3 +547,93 @@ def test_chop_lead_offset_tracks_continuous_source():
     assert out[0][2] == 1.5  # first shot offset == lead
     slot = 12.0 / 2
     assert out[1][2] == pytest.approx(1.5 + slot, abs=0.01)  # next shot advances one slot
+
+
+def _patch_demo_workdir(monkeypatch, tmp_path):
+    """Redirect _real_demo's tempfile.mkdtemp + asset gateway into tmp_path and hand back a dict
+    that will hold the workdir/tape paths the function actually used, so a test can assert on
+    whether the finally block removed them."""
+    import tempfile
+    monkeypatch.setattr(abn_factory, "ASSETS", tmp_path)
+    monkeypatch.setattr(abn_assets, "ASSETS_DIR", tmp_path)
+    seen = {}
+    real_mkdtemp = tempfile.mkdtemp
+
+    def fake_mkdtemp(*a, **k):
+        k.pop("dir", None)
+        d = real_mkdtemp(*a, dir=str(tmp_path), **k)
+        seen["workdir"] = Path(d)
+        return d
+
+    monkeypatch.setattr(tempfile, "mkdtemp", fake_mkdtemp)
+    return seen
+
+
+def test_real_demo_cleans_workdir_and_tape_when_an_exception_is_raised(monkeypatch, tmp_path):
+    """An exception AFTER the clone (here: the shell raises on the VHS pass) must be swallowed
+    (_real_demo returns None so the caller falls back to the scripted demo) AND the finally block
+    must still safe_rmtree the workdir and safe_unlink the tape — no temp leak on the error path."""
+    seen = _patch_demo_workdir(monkeypatch, tmp_path)
+
+    async def sh(cmd, timeout=60):
+        if "git clone" in cmd:
+            # simulate a successful clone: create the repo dir + a README so the body builds
+            repo = seen["workdir"] / "repo"
+            repo.mkdir(parents=True, exist_ok=True)
+            (repo / "README.md").write_text("# hi\nreal repo\n")
+            return 0, "cloned"
+        raise RuntimeError("vhs blew up mid-render")  # the VHS pass explodes
+
+    monkeypatch.setattr(abn_factory, "_sh", sh)
+
+    result = asyncio.run(abn_factory._real_demo("https://github.com/foo/bar", "ep_a111111_s0"))
+    assert result is None, "an exception must fall back to None (scripted demo), not propagate"
+    assert "workdir" in seen, "the demo never created its workdir"
+    assert not seen["workdir"].exists(), "finally must safe_rmtree the workdir even on the error path"
+    tape = abn_assets.scratch_path("ep_a111111_s0", "ep_a111111_s0_real.tape")
+    assert not tape.exists(), "finally must safe_unlink the tape even on the error path"
+
+
+def test_real_demo_cleans_up_on_clone_failure_early_return(monkeypatch, tmp_path):
+    """The early `return None` on a clone failure (404/private/timeout) still flows through the
+    finally — the workdir created before the clone attempt must be removed, not leaked."""
+    seen = _patch_demo_workdir(monkeypatch, tmp_path)
+
+    async def sh(cmd, timeout=60):
+        return 128, "fatal: repository not found"  # clone fails; repo_dir never created
+
+    monkeypatch.setattr(abn_factory, "_sh", sh)
+
+    result = asyncio.run(abn_factory._real_demo("https://github.com/foo/bar", "ep_a111111_s0"))
+    assert result is None
+    assert "workdir" in seen
+    assert not seen["workdir"].exists(), "finally must remove the workdir on the clone-failure return"
+
+
+def test_real_demo_finally_survives_partial_state_without_tape(monkeypatch, tmp_path):
+    """Partial state: the workdir exists but the .tape was NEVER written (clone failed before the
+    tape build). safe_unlink on a missing tape must NOT crash the finally — it returns False and the
+    workdir is still removed. Pins that the cleanup is robust to a half-built demo."""
+    seen = _patch_demo_workdir(monkeypatch, tmp_path)
+
+    async def sh(cmd, timeout=60):
+        return 1, "clone died"  # nothing past the clone runs → no tape is ever written
+
+    monkeypatch.setattr(abn_factory, "_sh", sh)
+
+    tape = abn_assets.scratch_path("ep_a111111_s0", "ep_a111111_s0_real.tape")
+    assert not tape.exists(), "precondition: tape must not exist for the partial-state case"
+
+    result = asyncio.run(abn_factory._real_demo("https://github.com/foo/bar", "ep_a111111_s0"))
+    assert result is None  # did not raise despite the missing tape in the finally
+    assert not seen["workdir"].exists()
+
+
+def test_real_demo_cleanup_helpers_are_never_raise():
+    """The finally block's safety rests on safe_rmtree/safe_unlink NEVER raising on a normal
+    OSError (missing/locked/permission). If a refactor makes either propagate, _real_demo's finally
+    could re-raise and mask the clean fallback-to-scripted-demo. Pin the never-raise contract."""
+    from services.fsutil import safe_rmtree, safe_unlink
+    # missing paths: both report 'nothing removed' rather than raising
+    assert safe_rmtree("/nonexistent/abn/demo/workdir") is False
+    assert safe_unlink("/nonexistent/abn/demo/some.tape") is False
