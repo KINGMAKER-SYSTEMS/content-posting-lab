@@ -1,5 +1,8 @@
 import json
 
+import pytest
+
+import services.abn_assets as abn_assets
 from routers import agenticnews as agenticnews_router
 
 
@@ -1420,3 +1423,106 @@ def test_sanitize_render_cache_clean_cache_is_noop(tmp_path, monkeypatch):
     out, changed = agenticnews_router._sanitize_render_cache(project)
     assert changed is False
     assert out["renderCache"]["video"]["video"].endswith("v.mp4")
+
+
+# ---------------------------------------------------------------------------
+# _timeline_file_for_episode() — schema-first / flat-fallback contract with
+# migration edge cases (restored by commit c161442c). A regression here would
+# silently drop un-migrated episodes. The four straight branches are pinned in
+# tests/test_editor_source_materialization.py; these cover the migration states
+# the resolver must survive: flat-as-symlink (the real post-migration shape),
+# the legacy `ep<N>` id form, and the schema-wins-over-stale-symlink transition.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def assets_dir(tmp_path, monkeypatch):
+    """Repoint BOTH captured ASSETS_DIR bindings at a temp dir.
+
+    `_timeline_file_for_episode` reads `db.ASSETS_DIR` directly AND calls
+    `abn_assets.episode_singleton_path`, which uses `abn_assets.ASSETS_DIR`
+    (captured by value at import). Patch both or the resolver straddles dirs.
+    """
+    assets = tmp_path / "assets"
+    assets.mkdir()
+    monkeypatch.setattr(agenticnews_router.db, "ASSETS_DIR", assets)
+    monkeypatch.setattr(abn_assets, "ASSETS_DIR", assets)
+    return assets
+
+
+def test_timeline_resolver_returns_flat_symlink_into_schema(assets_dir):
+    """Post-migration shape: the flat legacy name is a SYMLINK pointing at the
+    schema timeline.json, but no standalone schema file exists at the canonical
+    path. The resolver must return the flat (symlink) path and it must read
+    through to the real content — i.e. the back-compat link is honored, not
+    dropped, for an episode the migration linked but didn't fully re-home."""
+    ep = "ep_a1b2c3"
+    real = assets_dir / ep / "renders" / "timeline_real.json"
+    real.parent.mkdir(parents=True)
+    real.write_text('{"segments": [{"id": "s0"}]}')
+
+    flat = assets_dir / f"{ep}_timeline.json"
+    flat.symlink_to(real)
+
+    # canonical schema path itself is absent on disk
+    assert not abn_assets.episode_singleton_path(ep, "timeline").exists()
+
+    resolved = agenticnews_router._timeline_file_for_episode(ep)
+    assert resolved == flat
+    assert json.loads(resolved.read_text())["segments"][0]["id"] == "s0"
+
+
+def test_timeline_resolver_schema_wins_over_stale_flat_symlink(assets_dir):
+    """A fully-migrated episode: the schema timeline.json exists AND a flat
+    symlink still lingers (pointing at stale content). Schema-first means the
+    resolver returns the real schema path, never the legacy symlink — proving
+    the un-migrated -> migrated transition can't resurrect stale data."""
+    ep = "ep_d4e5f6"
+    schema = abn_assets.asset_path(ep, "timeline")
+    schema.write_text('{"segments": [{"id": "FRESH"}]}')
+
+    stale = assets_dir / "stale.json"
+    stale.write_text('{"segments": [{"id": "STALE"}]}')
+    flat = assets_dir / f"{ep}_timeline.json"
+    flat.symlink_to(stale)
+
+    resolved = agenticnews_router._timeline_file_for_episode(ep)
+    assert resolved == schema
+    assert json.loads(resolved.read_text())["segments"][0]["id"] == "FRESH"
+
+
+def test_timeline_resolver_handles_legacy_ep_n_id_schema_first(assets_dir):
+    """The legacy `ep<N>` id form (e.g. `ep2`) is a valid episode id via the
+    second regex branch in abn_assets._validate_ep, so the gateway scopes it and
+    schema-first applies — the flat name is ignored when schema is present."""
+    ep = "ep2"
+    schema = abn_assets.asset_path(ep, "timeline")
+    schema.write_text('{"segments": [{"id": "s0"}]}')
+    (assets_dir / f"{ep}_timeline.json").write_text('{"segments": [{"id": "STALE"}]}')
+
+    assert agenticnews_router._timeline_file_for_episode(ep) == schema
+
+
+def test_timeline_resolver_legacy_ep_n_id_flat_fallback(assets_dir):
+    """A legacy `ep<N>` episode with ONLY the flat file (never migrated to the
+    schema dir) must still resolve to the flat path — the un-migrated read path
+    a regression would silently drop."""
+    ep = "ep2"
+    flat = assets_dir / f"{ep}_timeline.json"
+    flat.write_text('{"segments": [{"id": "s0"}]}')
+    assert not abn_assets.episode_singleton_path(ep, "timeline").exists()
+
+    assert agenticnews_router._timeline_file_for_episode(ep) == flat
+
+
+def test_timeline_resolver_flat_fallback_is_exists_gated(assets_dir):
+    """The flat fallback fires on `flat.exists()`. With NO flat file and NO
+    schema file, the resolver returns the canonical schema path (so a downstream
+    .exists() check fails on the path the factory WOULD write, never a phantom
+    flat name) — the empty-disk migration state."""
+    ep = "ep_c0ffee"
+    assert not (assets_dir / f"{ep}_timeline.json").exists()
+
+    resolved = agenticnews_router._timeline_file_for_episode(ep)
+    assert resolved == abn_assets.episode_singleton_path(ep, "timeline")
+    assert not resolved.exists()
