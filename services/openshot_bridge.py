@@ -8,6 +8,13 @@ the JSON shapes consumed by OpenShot's own TimelineSync path:
 
 Keeping this pure-Python makes the command contract testable even on machines
 where the OpenShot Python bindings are not installed yet.
+
+Shape-level translation is unit-tested in tests/test_openshot_bridge.py; the
+REAL seam (that ``timeline_json`` actually loads via ``Timeline.SetJson`` and
+``flattened_update_actions`` via ``Timeline.ApplyJsonDiff`` on a live binary,
+then renders a frame) is verified in
+tests/test_openshot_bridge_libopenshot_contract.py — which runs against
+libopenshot when its bindings are importable and skips when they are not.
 """
 
 from __future__ import annotations
