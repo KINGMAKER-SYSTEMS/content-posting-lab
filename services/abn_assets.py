@@ -402,6 +402,33 @@ def is_managed(path: Path | str) -> bool:
 # renders, not timeline.json/manifest.json, not _shared/_published, and never a dir or a
 # symlink. So the GC no longer has to flat-glob the root and then defensively skip schema
 # dirs/symlinks (the old ``_gc_unsafe`` band-aid): it just walks these two roots.
+#
+# ============================ GC SAFETY INVARIANT (RUNBOOK) =======================
+# Reapable-scratch-only guarantee — the single rule operating this GC depends on:
+#
+#   The GC may ONLY reap regular files under a scratch root: per-episode
+#   ``{ep_id}/scratch/`` and cross-episode ``_scratch/``. It may NEVER delete a render,
+#   audio/VO, footage, css/remotion/broll asset, timeline/manifest JSON, a schema dir,
+#   a back-compat symlink, or anything under ``_shared`` / ``_published`` / ``_trash``.
+#
+# Enforced in TWO layers so a buggy caller cannot cause loss:
+#   1. ENUMERATION — ``reapable_scratch()`` only yields regular files under ``scratch_dirs()``;
+#      ``_old_episode_renders()`` (in abn_factory) only yields ``<ep_dir>/renders/episode.mp4``,
+#      skipping ``_``-prefixed top dirs and symlinked episode dirs.
+#   2. PHYSICAL DELETE — ``tombstone()`` RAISES on any non-scratch path; ``tombstone_render()``
+#      RAISES on anything that isn't ``<ep_dir>/renders/*``. Both MOVE to ``_trash/`` (never
+#      ``unlink``), so even a mistaken reap is recoverable, not data loss.
+#
+# Low-disk render trim is the one path that touches a real render. It is gated by:
+#   - an Editor Bay timeline-reference scan (never trim a referenced render),
+#   - a fail-safe that SKIPS the trim entirely if that scan was incomplete (unreadable JSON),
+#   - a pre-trim RE-SCAN (closes the TOCTOU where a timeline is saved mid-reap),
+#   - and ``tombstone_render()`` (recoverable, not unlink).
+# Proven by tests/test_abn_factory_gc.py. The old flat-glob GC that ate original VO
+# (CLAUDE.md "origaudio loss") is gone — never reintroduce a root-glob reap.
+#
+# OBSERVABILITY: ``scratch_usage()`` (below) reports per-episode scratch bytes over exactly
+# this reapable surface; ``abn_factory.purge_disk`` emits it so growth can be aged in prod.
 
 
 def scratch_dirs() -> list[Path]:
@@ -434,6 +461,26 @@ def reapable_scratch() -> list[Path]:
             except OSError:
                 pass
     return files
+
+
+def scratch_usage() -> dict[str, int]:
+    """OBSERVABILITY: bytes of reapable scratch, broken down by reap root, for measuring
+    per-episode scratch growth in prod (the GC's blast-radius ticket asks to age this under load).
+
+    Keyed by the scratch-root owner — ``ep_id`` for a per-episode ``{ep_id}/scratch/`` and
+    ``"_scratch"`` for the cross-episode root — to the summed byte size of the regular files under it.
+    Walks EXACTLY ``reapable_scratch()`` (same closed set the GC may delete), so what this reports as
+    growth is by construction only ever reapable scratch — never a render, audio, footage, or schema
+    dir. A non-reapable surface can therefore never silently show up here as 'scratch growth'."""
+    by_owner: dict[str, int] = {}
+    base = ASSETS_DIR.resolve()
+    for f in reapable_scratch():
+        try:
+            owner = f.resolve().relative_to(base).parts[0]  # ep_id, or "_scratch"
+            by_owner[owner] = by_owner.get(owner, 0) + f.stat().st_size
+        except (OSError, ValueError, IndexError):
+            pass
+    return by_owner
 
 
 def tombstone(path: Path | str) -> int:

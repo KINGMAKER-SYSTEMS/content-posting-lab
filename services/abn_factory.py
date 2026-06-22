@@ -104,7 +104,7 @@ ASSETS = db.ASSETS_DIR
 from services.abn_assets import (  # noqa: E402
     asset_path, asset_url, asset_path_from_slug, asset_url_from_slug,
     scratch_path, shared_path, published_path, split_slug, URL_PREFIX,
-    reapable_scratch, scratch_dirs, tombstone, tombstone_render,
+    reapable_scratch, scratch_dirs, scratch_usage, tombstone, tombstone_render,
 )
 from services.json_store import atomic_save  # noqa: E402
 from services.fsutil import safe_unlink  # noqa: E402
@@ -3216,6 +3216,18 @@ def purge_disk(intermediate_age_s=1800, keep_episodes=4, low_disk_gb=2.0):
     freed = 0
     try:
         now = time.time()
+        # OBSERVABILITY (ticket: measure per-episode scratch growth in prod). Emit the per-owner
+        # scratch byte breakdown BEFORE reaping so we can age the schema-rooted GC under load and
+        # spot a runaway episode. Best-effort: never let measurement break the GC.
+        try:
+            usage = scratch_usage()
+            if usage:
+                total_mb = sum(usage.values()) // 1024 // 1024
+                top = sorted(usage.items(), key=lambda kv: kv[1], reverse=True)[:5]
+                detail = ", ".join(f"{owner}={sz//1024//1024}MB" for owner, sz in top)
+                BUS.emit("system", "gc", f"scratch usage {total_mb}MB across {len(usage)} owners — top: {detail}")
+        except Exception:
+            pass
         protected_paths, protection_complete = _editor_timeline_asset_paths_checked()
         for f in reapable_scratch():
             try:

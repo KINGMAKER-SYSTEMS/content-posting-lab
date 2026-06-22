@@ -343,6 +343,61 @@ def test_old_episode_renders_skips_non_mp4_render_files(store):
     assert (d / "episode.mp4") in abn_factory._old_episode_renders(), "a real .mp4 render must still enumerate"
 
 
+# --- scratch_usage(): the per-episode growth-measurement hook (ticket deliverable #1) ----------
+
+
+def test_scratch_usage_breaks_down_bytes_per_owner(store):
+    """scratch_usage() reports reapable scratch bytes keyed by owner — ep_id for a per-episode
+    scratch/ and '_scratch' for the cross-episode root — so prod can age per-episode growth."""
+    _scratch(store, "ep_a111111", "s0_raw.wav", body=b"x" * 100)
+    _scratch(store, "ep_a111111", "s1_raw.wav", body=b"y" * 50)
+    _scratch(store, "ep_b222222", "s0_raw.wav", body=b"z" * 30)
+    cross = store / "_scratch"
+    cross.mkdir()
+    (cross / "probe.png").write_bytes(b"q" * 10)
+
+    usage = abn_assets.scratch_usage()
+    assert usage == {"ep_a111111": 150, "ep_b222222": 30, "_scratch": 10}
+
+
+def test_scratch_usage_only_measures_reapable_scratch_never_renders_or_audio(store):
+    """The measurement boundary IS the reap boundary: a render, a VO, and a footage capture must
+    never count toward 'scratch growth' — only files under scratch/ do. This pins that an operator
+    reading scratch_usage() can't be misled into thinking a render is reapable scratch."""
+    epdir = store / "ep_a111111"
+    (epdir / "renders").mkdir(parents=True)
+    (epdir / "renders" / "episode.mp4").write_bytes(b"R" * 1000)
+    (epdir / "audio").mkdir()
+    (epdir / "audio" / "s0_voice.wav").write_bytes(b"V" * 1000)
+    (epdir / "footage").mkdir()
+    (epdir / "footage" / "s3_ui.mp4").write_bytes(b"F" * 1000)
+    _scratch(store, "ep_a111111", "s0_raw.wav", body=b"S" * 7)
+
+    usage = abn_assets.scratch_usage()
+    assert usage == {"ep_a111111": 7}, "only the scratch file may be measured as scratch growth"
+
+
+def test_scratch_usage_empty_store_is_empty(store):
+    """No scratch anywhere → empty dict (purge_disk's emit guard skips the BUS line)."""
+    assert abn_assets.scratch_usage() == {}
+
+
+def test_purge_disk_emits_scratch_usage_breakdown(store, monkeypatch):
+    """purge_disk emits the per-owner scratch breakdown so growth is observable in prod (it runs
+    BEFORE the reap, so it measures what's there at GC time)."""
+    _scratch(store, "ep_a111111", "s0_raw.wav", body=b"x" * (3 * 1024 * 1024), age_s=10)
+
+    emitted = []
+    monkeypatch.setattr(abn_factory.BUS, "emit", lambda *a, **k: emitted.append(a))
+    # don't actually reap (fresh file) — we only assert the measurement emit fired
+    abn_factory.purge_disk(intermediate_age_s=99999, keep_episodes=99, low_disk_gb=0)
+
+    msgs = [a[2] for a in emitted if len(a) >= 3 and a[1] == "gc"]
+    assert any("scratch usage" in m and "ep_a111111" in m for m in msgs), (
+        f"purge_disk must emit a per-owner scratch usage line; got {msgs}"
+    )
+
+
 # --- gateway-level tombstone_render contract (the render safe-delete primitive) -----------------
 
 
