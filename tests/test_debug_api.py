@@ -57,3 +57,43 @@ def test_debug_requires_matching_key_when_configured(sync_client, monkeypatch):
     monkeypatch.setenv("RAILWAY_ENVIRONMENT", "production")
     ok = sync_client.get("/api/debug/health", headers={"X-Agent-Key": "s3cret"})
     assert ok.status_code == 200
+
+
+# All six debug endpoints, with the HTTP method each uses. The guard is a router-level
+# dependency, so it must block EVERY one of these — not just /health. If the Depends wiring
+# regresses (e.g. moved off the router, or a route added without the prefix), one of these
+# parametrized cases will catch the exposed endpoint instead of silently leaking.
+DEBUG_ENDPOINTS = [
+    ("GET", "/api/debug/logs"),
+    ("GET", "/api/debug/stream"),
+    ("GET", "/api/debug/jobs/some-job-id"),
+    ("GET", "/api/debug/errors"),
+    ("GET", "/api/debug/health"),
+    ("POST", "/api/debug/clear"),
+]
+
+
+@pytest.mark.parametrize("method,path", DEBUG_ENDPOINTS)
+def test_every_endpoint_fails_closed_when_deployed_without_key(
+    sync_client, monkeypatch, method, path
+):
+    # Deployed, no key → every endpoint must deny (503), even with a bogus header.
+    monkeypatch.setenv("RAILWAY_ENVIRONMENT", "production")
+    r = sync_client.request(method, path, headers={"X-Agent-Key": "anything"})
+    assert r.status_code == 503, f"{method} {path} leaked when deployed without key"
+
+
+@pytest.mark.parametrize("method,path", DEBUG_ENDPOINTS)
+def test_every_endpoint_requires_key_when_configured(
+    sync_client, monkeypatch, method, path
+):
+    monkeypatch.setenv("MINIAPP_AGENT_KEY", "s3cret")
+    # Missing key → 401 on every endpoint.
+    assert (
+        sync_client.request(method, path).status_code == 401
+    ), f"{method} {path} accepted a request with no agent key"
+    # Wrong key → 401 on every endpoint.
+    assert (
+        sync_client.request(method, path, headers={"X-Agent-Key": "nope"}).status_code
+        == 401
+    ), f"{method} {path} accepted a wrong agent key"
