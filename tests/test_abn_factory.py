@@ -3287,6 +3287,55 @@ def test_render_remotion_ducks_valid_music_bed_inside_store(monkeypatch, tmp_pat
         "duck pass must read the resolved in-store bed file"
 
 
+def test_render_remotion_drops_symlink_music_bed_pointing_outside_store(monkeypatch, tmp_path):
+    """The symlink edge case the '..' traversal test does NOT cover: a musicBed whose path lives
+    LEXICALLY inside the asset store but is a SYMLINK whose target is OUTSIDE the store. A pure
+    string/lexical containment check would pass it (the link's own path is in-store), then the
+    sidechain ffmpeg call would read the attacker-controlled file the link points at. The guard
+    uses bedfile.resolve() (which FOLLOWS symlinks) before .relative_to(ASSETS.resolve()), so the
+    real target is what's checked — the escaping link must be dropped and the duck pass skipped.
+
+    This is the music-bed analogue of the card-background _scratch/ symlink guard
+    (test_ensure_card_backgrounds_refuses_symlink_in_scratch_pointing_outside)."""
+    store = tmp_path / "assets"
+    store.mkdir()
+    monkeypatch.setattr(abn_factory, "ASSETS", store)
+    monkeypatch.setattr(abn_assets, "ASSETS_DIR", store)
+    _stub_remotion_dir(monkeypatch, store)
+
+    async def fake_dur(path):
+        return 640.0
+    monkeypatch.setattr(abn_factory, "_dur", fake_dur)
+
+    # Sensitive sentinel living OUTSIDE the store — what the in-store symlink secretly points at.
+    secret = tmp_path / "outside_secret.mp3"
+    secret.write_bytes(b"\x00")
+
+    # The musicBed: a real symlink whose OWN path is inside the store (would pass a naive lexical
+    # check) but whose target escapes the store.
+    link = store / "ep_e777777" / "bed.mp3"
+    link.parent.mkdir(parents=True, exist_ok=True)
+    link.symlink_to(secret)
+
+    duck_calls = []
+    out = abn_assets.asset_path("ep_e777777", "episode")
+    inner = _remotion_dispatch_sh(out, normalize_ok=True, duck_ok=True)
+
+    async def tracking_sh(cmd, timeout=600):
+        if "sidechaincompress" in cmd:
+            duck_calls.append(cmd)
+        return await inner(cmd, timeout=timeout)
+    monkeypatch.setattr(abn_factory, "_sh", tracking_sh)
+
+    # In-store relative name that points at the escaping symlink.
+    timeline = {"musicBed": "ep_e777777/bed.mp3", "segments": []}
+    url, dur = asyncio.run(abn_factory._render_remotion("ep_e777777", timeline, force=True))
+    assert dur == 640.0
+    assert url
+    # The symlink's real target is outside the store → dropped, duck pass never runs against it.
+    assert duck_calls == [], "a music-bed symlink escaping the store must be dropped, not ducked"
+
+
 # ---- revisualize: pristine-timeline backup is written ATOMICALLY (this ticket) ----
 
 
