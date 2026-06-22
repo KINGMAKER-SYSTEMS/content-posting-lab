@@ -414,3 +414,133 @@ def test_split_then_windowed_crossfade_animates_through_openshot_render(tmp_path
         "a value near 0.33 means the original 3.0s duration leaked through the "
         "split->window->export seam"
     )
+
+
+def test_multipoint_volume_envelope_roundtrips_gains_and_frames(tmp_path):
+    """Volume-envelope PARITY beyond the single 2-point ducking shape: a 3-point
+    volume curve must survive the native layer with every gain and frame offset
+    intact. The ticket flags 'volume envelope parity (volume/ducking) not carried';
+    the bed test proves a 2-point duck, but the bridge's 0..1 -> 0..100 scaling
+    (`_openshot_volume`) and `t*fps + 1` frame mapping have to hold for an arbitrary
+    multi-point envelope too — a native fidelity bug could drop the middle point,
+    misscale a gain, or shift a frame offset and only show up here."""
+    project = _project(tmp_path)
+    # Replace the bed envelope with a 3-point curve: full -> duck -> partial recover.
+    # fps=30, so t={0.0, 0.5, 2.0} -> X={1.0, 16.0, 61.0}; gains 1.0/0.2/0.5 -> 100/20/50.
+    project["clips"]["bed_clip"]["keyframes"] = [
+        {"property": "volume", "points": [
+            {"t": 0.0, "value": 1.0, "interp": "linear"},
+            {"t": 0.5, "value": 0.2, "interp": "bezier"},
+            {"t": 2.0, "value": 0.5, "interp": "constant"},
+        ]},
+    ]
+    payload = openshot_bridge.timeline_json(project)
+
+    timeline = _timeline(project)
+    try:
+        timeline.SetJson(json.dumps(payload))
+        roundtrip = json.loads(timeline.Json())
+    finally:
+        timeline.Close()
+
+    bed = next(c for c in roundtrip.get("clips", []) if c.get("id") == "bed_clip")
+    points = bed["volume"]["Points"]
+    assert len(points) == 3, "libopenshot dropped a point from the 3-point volume envelope"
+    assert [round(p["co"]["Y"], 2) for p in points] == [100.0, 20.0, 50.0]
+    assert [round(p["co"]["X"], 2) for p in points] == [1.0, 16.0, 61.0]
+    # The per-point interpolations the bridge mapped (bezier=0 mid, constant=2 tail)
+    # must survive — a native flatten to all-linear would lose the curve shape.
+    assert points[0]["interpolation"] == openshot_bridge.LINEAR
+    assert points[1]["interpolation"] == openshot_bridge.BEZIER
+    assert points[2]["interpolation"] == openshot_bridge.CONSTANT
+
+
+def test_clip_boundary_crossfade_animates_to_full_at_its_duration(tmp_path):
+    """Crossfade DURATION at a clip boundary, end to end. Distinct from the
+    split->window re-fit test: this is the plain case the ticket calls out —
+    'crossfade duration at clip boundaries' — a clip whose declared 1.0s crossfade
+    must, through a real libopenshot render, ramp from near-black at the boundary to
+    full brightness exactly at 1.0s. If the duration is mistranslated (or the fade is
+    dropped because this build has no Fade effect class and the bake didn't fire),
+    brightness at 1.0s would not reach full."""
+    fps = 10
+    from PIL import Image
+
+    src = tmp_path / "solid.png"
+    Image.new("RGBA", (64, 48), (255, 255, 255, 255)).save(src)
+
+    project = editor_timeline.new_project("xf_boundary", width=64, height=48, fps=fps)
+    project["assets"]["a1"] = {"id": "a1", "type": "image", "src": str(src), "metadata": {}}
+    project["clips"]["c1"] = {
+        "id": "c1", "assetId": "a1", "trackId": "video_1", "kind": "video",
+        "start": 0.0, "duration": 4.0, "sourceStart": 0.0,
+        "enabled": True, "muted": False, "volume": 1.0,
+        "transform": {"x": 0.5, "y": 0.5, "scale": 1.0, "opacity": 1.0},
+        "effects": [{"id": "xf", "type": "crossfade", "params": {"duration": 1.0}}],
+        "keyframes": [], "metadata": {},
+    }
+    # Full-project render path (window_start=0) so _bake_fade_keyframes turns the
+    # declarative crossfade into the opacity ramp libopenshot actually renders.
+    scoped = editor_render._render_scope_project(project, window_start=0.0, duration=None)
+    payload = openshot_bridge.timeline_json(scoped)
+
+    timeline = _timeline(scoped)
+    try:
+        timeline.SetJson(json.dumps(payload))
+        timeline.Open()
+        b_start = _max_brightness(timeline.GetFrame(1))    # t=0.0, fade begun
+        b_mid = _max_brightness(timeline.GetFrame(6))      # t=0.5, halfway
+        b_end = _max_brightness(timeline.GetFrame(11))     # t=1.0, complete
+    finally:
+        timeline.Close()
+
+    assert b_start < 0.25, f"crossfade should start near black, got {b_start}"
+    assert b_start < b_mid < b_end, f"brightness must ramp: {b_start} -> {b_mid} -> {b_end}"
+    assert b_end > 0.9, (
+        f"1.0s clip-boundary crossfade must be complete at t=1.0s (got {b_end}); "
+        "a lower value means the crossfade duration was mistranslated or the fade "
+        "was dropped at the native render layer"
+    )
+
+
+def test_bed_ducking_survives_with_concurrent_vo_clip(tmp_path):
+    """Ducking under CONCURRENT clips — the real ABN scenario. The bed ducks while a
+    VO clip plays over the SAME time span. The ticket flags 'ducking under concurrent
+    clips' is untested: adding a concurrent audio clip on another layer must not
+    perturb the bed's animated volume envelope after SetJson. Both clips must land,
+    and the bed's curve must still echo back as the same animated 2-point duck — proof
+    that concurrent audio on the timeline doesn't collapse or re-scale the duck."""
+    project = _project(tmp_path)
+    # A VO clip overlapping the bed's 0..3.5s span, on the dedicated audio_1 layer.
+    project["assets"]["vo"] = {
+        "id": "vo", "type": "audio", "source": "vo",
+        "src": str(tmp_path / "vo.mp3"), "metadata": {},
+    }
+    project["clips"]["vo_clip"] = {
+        "id": "vo_clip", "assetId": "vo", "trackId": "audio_1", "kind": "voiceover",
+        "start": 0.0, "duration": 3.0, "sourceStart": 0.0,
+        "enabled": True, "muted": False, "volume": 1.0,
+        "transform": {}, "effects": [], "keyframes": [], "metadata": {},
+    }
+    payload = openshot_bridge.timeline_json(project)
+
+    timeline = _timeline(project)
+    try:
+        timeline.SetJson(json.dumps(payload))
+        # All four clips (card, shot, bed, vo) land despite the concurrent overlap.
+        assert len(timeline.Clips()) == 4
+        roundtrip = json.loads(timeline.Json())
+    finally:
+        timeline.Close()
+
+    bed = next(c for c in roundtrip.get("clips", []) if c.get("id") == "bed_clip")
+    points = bed["volume"]["Points"]
+    # The concurrent VO clip did not flatten or re-scale the bed's duck (0.6 -> 0.22
+    # i.e. 60 -> 22, frames 1 & 31): ducking is per-clip and survives concurrency.
+    assert len(points) == 2, "concurrent VO clip collapsed the bed ducking envelope"
+    assert [round(p["co"]["Y"], 2) for p in points] == [60.0, 22.0]
+    assert [round(p["co"]["X"], 2) for p in points] == [1.0, 31.0]
+    # The concurrent VO clip itself carries no envelope -> a single flat-gain Point.
+    vo = next(c for c in roundtrip.get("clips", []) if c.get("id") == "vo_clip")
+    assert len(vo["volume"]["Points"]) == 1
+    assert round(vo["volume"]["Points"][0]["co"]["Y"], 2) == 100.0
