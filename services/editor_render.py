@@ -18,7 +18,25 @@ import sys
 from pathlib import Path
 from typing import Any
 
-import services.openshot_bridge as openshot_bridge
+try:
+    import services.openshot_bridge as openshot_bridge
+except ModuleNotFoundError as exc:
+    # openshot_bridge is the sanctioned OpenShot compiler module and is imported
+    # at module load. It has been UNTRACKED in a worktree before (see
+    # .claude/workflows/prod-cycle.js): a fresh worktree or a `git checkout`/
+    # `stash` that doesn't carry the file makes this import explode with a bare
+    # "No module named 'services.openshot_bridge'" that points at nothing and
+    # takes down choose_renderer with it. Re-raise with the actual fix so the
+    # next person doesn't lose an hour. ponytail: one try/except, no behavior
+    # change when the file is present.
+    if exc.name not in {"services.openshot_bridge", "openshot_bridge"}:
+        raise
+    raise ModuleNotFoundError(
+        "services/openshot_bridge.py is missing from this checkout. It is the "
+        "OpenShot compiler module that editor_render imports at load time and it "
+        "has been untracked/lost in a worktree before. Fix: `git add "
+        "services/openshot_bridge.py && git commit` it on this branch."
+    ) from exc
 
 log = logging.getLogger("editor_render")
 

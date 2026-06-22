@@ -4628,3 +4628,38 @@ def test_ffmpeg_render_fails_closed_on_missing_asset(tmp_path):
         renderer.render(project)
     assert "render blocked by missing assets" in str(exc.value)
     assert "gone.png" in str(exc.value)
+
+
+def test_editor_render_import_names_untracked_openshot_bridge_fix():
+    """If services/openshot_bridge.py is missing from a checkout (it has been
+    untracked/lost in a worktree before), importing editor_render must fail with an
+    actionable message naming the file and the `git add` fix — NOT a bare
+    "No module named 'services.openshot_bridge'" that points at nothing. We simulate
+    the missing file by blocking the submodule import and re-executing editor_render's
+    source so the module-load try/except runs in isolation."""
+    import importlib.util
+
+    src = Path(editor_render.__file__).read_text()
+
+    # A finder that makes `import services.openshot_bridge` raise ModuleNotFoundError,
+    # exactly as a checkout without the file would. Everything else imports normally.
+    class _BlockBridge:
+        def find_spec(self, name, path=None, target=None):
+            if name in {"services.openshot_bridge", "openshot_bridge"}:
+                raise ModuleNotFoundError(f"No module named {name!r}", name=name)
+            return None
+
+    finder = _BlockBridge()
+    sys.meta_path.insert(0, finder)
+    saved = sys.modules.pop("services.openshot_bridge", None)
+    try:
+        ns: dict = {"__name__": "services._editor_render_probe", "__file__": editor_render.__file__}
+        with pytest.raises(ModuleNotFoundError) as exc:
+            exec(compile(src, editor_render.__file__, "exec"), ns)
+        msg = str(exc.value)
+        assert "services/openshot_bridge.py" in msg
+        assert "git add" in msg
+    finally:
+        sys.meta_path.remove(finder)
+        if saved is not None:
+            sys.modules["services.openshot_bridge"] = saved
