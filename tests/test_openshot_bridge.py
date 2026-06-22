@@ -234,6 +234,70 @@ def test_abn_imported_bed_keyframe_ducking_envelope_survives_the_seam(tmp_path):
     assert points[1]["interpolation"] == openshot_bridge.CONSTANT
 
 
+def test_abn_musicBedKeyframes_promotes_envelope_through_the_import_seam(tmp_path):
+    """The factory hands the import a `musicBedKeyframes` ducking envelope. The
+    IMPORT path (project_from_abn_timeline) — not a post-import hand-attach — must
+    promote it onto the bed clip so the bridge animates it. Pins the untested seam:
+    ABN.musicBedKeyframes -> bed clip.keyframes -> OpenShot multi-Point volume."""
+    timeline = _abn_timeline()
+    timeline["musicBedKeyframes"] = [
+        {
+            "property": "volume",
+            "points": [
+                {"t": 0.0, "value": 0.6, "interp": "linear"},
+                {"t": 0.5, "value": 0.22, "interp": "constant"},
+                {"t": 3.5, "value": 0.6, "interp": "linear"},
+            ],
+        }
+    ]
+    project = editor_timeline.project_from_abn_timeline(
+        "proj_seam_kf", timeline, source_episode_id="ep_seam"
+    )
+
+    # the import promoted the envelope onto the bed clip (not the flat 0.22 gain)
+    bed = next(c for c in project["clips"].values() if c["kind"] == "music_bed")
+    assert bed.get("keyframes"), "import dropped musicBedKeyframes onto the floor"
+
+    exported = openshot_bridge.timeline_json(project, asset_root=tmp_path)
+    by_id = {c["id"]: c for c in exported["clips"]}
+    points = by_id[bed["id"]]["volume"]["Points"]
+
+    assert [round(p["co"]["Y"], 2) for p in points] == [60.0, 22.0, 60.0]
+    assert points[1]["interpolation"] == openshot_bridge.CONSTANT
+
+
+def test_abn_dict_musicBed_keyframes_promote_through_the_import_seam(tmp_path):
+    """A dict-shaped bed `{src, keyframes}` is the other factory wire-format. The
+    import must read its `keyframes` envelope (and still resolve `src` as the bed
+    asset) so the bridge animates the ducking — not silently flatten to 0.22."""
+    timeline = _abn_timeline()
+    timeline["musicBed"] = {
+        "src": "/agenticnews-assets/bed.mp3",
+        "keyframes": [
+            {
+                "property": "volume",
+                "points": [
+                    {"t": 0.0, "value": 0.5, "interp": "linear"},
+                    {"t": 2.0, "value": 0.22, "interp": "linear"},
+                ],
+            }
+        ],
+    }
+    project = editor_timeline.project_from_abn_timeline(
+        "proj_seam_kf2", timeline, source_episode_id="ep_seam"
+    )
+
+    bed = next(c for c in project["clips"].values() if c["kind"] == "music_bed")
+    assert bed.get("keyframes"), "import dropped dict-bed keyframes onto the floor"
+
+    exported = openshot_bridge.timeline_json(project, asset_root=tmp_path)
+    by_id = {c["id"]: c for c in exported["clips"]}
+    clip = by_id[bed["id"]]
+    # src still resolves to the bed audio reader, and the envelope animates volume
+    assert clip["reader"]["path"].endswith("bed.mp3")
+    assert [round(p["co"]["Y"], 2) for p in clip["volume"]["Points"]] == [50.0, 22.0]
+
+
 def test_command_log_exports_openshot_apply_json_diff(tmp_path):
     project = _project(tmp_path / "card.png")
     command = {
