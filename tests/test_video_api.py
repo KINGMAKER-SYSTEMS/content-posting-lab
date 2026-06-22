@@ -433,6 +433,61 @@ def test_bulk_delete_no_ids_400(sync_client):
     assert resp.status_code == 400
 
 
+def test_bulk_delete_tolerates_missing_files(sync_client):
+    """A tracked file already gone from disk must not raise — safe_unlink no-ops
+    and the job is still removed (graceful, was a hard unlink() raise before)."""
+    _make_video("bd-miss", "present.mp4")
+    video_router.jobs.clear()
+    video_router.jobs["g1"] = {
+        "project": "bd-miss",
+        # 'ghost.mp4' was never written to disk; safe_unlink must tolerate it.
+        "videos": [
+            {"status": "done", "file": "present.mp4"},
+            {"status": "done", "file": "ghost.mp4"},
+        ],
+    }
+    vdir = get_project_video_dir("bd-miss")
+
+    resp = sync_client.post(
+        "/api/video/bulk-delete",
+        json={"job_ids": ["g1"], "project": "bd-miss"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["deleted_jobs"] == 1
+    # Only the file that actually existed counts as removed.
+    assert body["deleted_files"] == 1
+    assert not (vdir / "present.mp4").exists()
+    assert "g1" not in video_router.jobs
+
+
+def test_delete_job_tolerates_unlink_oserror(sync_client, monkeypatch):
+    """If a file is locked/removed at unlink time (TOCTOU), delete_job returns
+    gracefully instead of 500-ing — safe_unlink swallows the OSError."""
+    _make_video("dj-race", "race.mp4")
+    video_router.jobs.clear()
+    video_router.jobs["r1"] = {
+        "project": "dj-race",
+        "videos": [{"status": "done", "file": "race.mp4"}],
+    }
+
+    # safe_unlink calls os.unlink inside services.fsutil — patch it there.
+    import services.fsutil as fsutil
+
+    def boom(path):
+        raise OSError("Device or resource busy")
+
+    monkeypatch.setattr(fsutil.os, "unlink", boom)
+
+    resp = sync_client.request(
+        "DELETE", "/api/video/jobs/r1", params={"project": "dj-race"}
+    )
+    assert resp.status_code == 200
+    assert resp.json()["deleted"] is True
+    # Job removed from memory even though the file couldn't be unlinked.
+    assert "r1" not in video_router.jobs
+
+
 # --- color-correct (single) ----------------------------------------------
 
 

@@ -280,8 +280,7 @@ async def list_prompts(project: str = "quick-test"):
 @router.delete("/prompts")
 async def clear_prompts(project: str = "quick-test"):
     p = _prompts_path(project)
-    if p.exists():
-        p.unlink()
+    safe_unlink(p)
     return {"ok": True}
 
 
@@ -297,7 +296,7 @@ async def delete_video_file(project: str = "quick-test", path: str = ""):
         raise HTTPException(400, "Invalid path")
     if not target.exists():
         raise HTTPException(404, "File not found")
-    target.unlink()
+    safe_unlink(target)
     return {"deleted": True, "path": path}
 
 
@@ -538,15 +537,13 @@ async def delete_job(job_id: str, project: str = "quick-test"):
         # Delete main file
         if v.get("file"):
             target = (video_dir / v["file"]).resolve()
-            if str(target).startswith(str(video_dir.resolve())) and target.exists():
-                target.unlink()
+            if str(target).startswith(str(video_dir.resolve())) and safe_unlink(target):
                 deleted_files += 1
         # Delete crop files
         for crop in v.get("crops", []):
             if crop.get("file"):
                 target = (video_dir / crop["file"]).resolve()
-                if str(target).startswith(str(video_dir.resolve())) and target.exists():
-                    target.unlink()
+                if str(target).startswith(str(video_dir.resolve())) and safe_unlink(target):
                     deleted_files += 1
 
     # Remove from in-memory state
@@ -715,14 +712,12 @@ async def bulk_delete(body: dict):
         for v in job.get("videos", []):
             if v.get("file"):
                 target = (vdir / v["file"]).resolve()
-                if str(target).startswith(str(vdir.resolve())) and target.exists():
-                    target.unlink()
+                if str(target).startswith(str(vdir.resolve())) and safe_unlink(target):
                     deleted_files += 1
             for crop in v.get("crops", []):
                 if crop.get("file"):
                     target = (vdir / crop["file"]).resolve()
-                    if str(target).startswith(str(vdir.resolve())) and target.exists():
-                        target.unlink()
+                    if str(target).startswith(str(vdir.resolve())) and safe_unlink(target):
                         deleted_files += 1
         del jobs[jid]
         deleted_jobs += 1
