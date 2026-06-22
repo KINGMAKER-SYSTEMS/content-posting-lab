@@ -667,6 +667,137 @@ def test_choose_renderer_isolates_openshot_in_subprocess(monkeypatch, tmp_path):
     assert renderer.__class__.__name__ == "OpenShotSubprocessRenderer"
 
 
+def _fake_which(present):
+    """shutil.which stand-in: returns a fake path for binaries in ``present``."""
+
+    def which(binary):
+        return f"/usr/bin/{binary}" if binary in present else None
+
+    return which
+
+
+def test_detect_backends_reports_openshot_version_and_path_when_importable(monkeypatch):
+    class FakeModule:
+        @staticmethod
+        def GetVersion():
+            return "0.3.3"
+
+    monkeypatch.setattr(
+        editor_render,
+        "_import_openshot",
+        lambda: (FakeModule, "available", Path("/opt/openshot/python")),
+    )
+    monkeypatch.setattr(editor_render.shutil, "which", _fake_which({"ffmpeg", "ffprobe"}))
+
+    caps = editor_render.detect_render_backends()
+
+    assert caps["openshot"]["available"] is True
+    assert caps["openshot"]["preferred"] is True
+    assert caps["openshot"]["reason"] == "available"
+    assert caps["openshot"]["version"] == "0.3.3"
+    assert caps["openshot"]["pythonPath"] == "/opt/openshot/python"
+
+
+def test_detect_backends_marks_openshot_unavailable_and_nulls_version(monkeypatch):
+    monkeypatch.setattr(
+        editor_render,
+        "_import_openshot",
+        lambda: (None, "Python bindings not importable in this environment", None),
+    )
+    monkeypatch.setattr(editor_render.shutil, "which", _fake_which({"ffmpeg", "ffprobe"}))
+
+    caps = editor_render.detect_render_backends()
+
+    assert caps["openshot"]["available"] is False
+    assert caps["openshot"]["version"] is None
+    assert caps["openshot"]["pythonPath"] is None
+    assert "not importable" in caps["openshot"]["reason"]
+
+
+def test_detect_backends_ffmpeg_needs_both_ffmpeg_and_ffprobe(monkeypatch):
+    monkeypatch.setattr(editor_render, "_import_openshot", lambda: (None, "x", None))
+    # ffmpeg present but ffprobe missing -> not usable.
+    monkeypatch.setattr(editor_render.shutil, "which", _fake_which({"ffmpeg"}))
+
+    caps = editor_render.detect_render_backends()
+
+    assert caps["ffmpeg"]["available"] is False
+    assert caps["ffmpeg"]["reason"] == "ffmpeg/ffprobe missing"
+
+
+def test_detect_backends_reports_optional_mlt_and_blender(monkeypatch):
+    monkeypatch.setattr(editor_render, "_import_openshot", lambda: (None, "x", None))
+    monkeypatch.setattr(
+        editor_render.shutil,
+        "which",
+        _fake_which({"ffmpeg", "ffprobe", "melt", "blender"}),
+    )
+
+    caps = editor_render.detect_render_backends()
+
+    assert caps["ffmpeg"]["available"] is True
+    assert caps["mlt"]["available"] is True
+    assert caps["mlt"]["binary"] == "/usr/bin/melt"
+    assert caps["blender"]["available"] is True
+    assert caps["blender"]["binary"] == "/usr/bin/blender"
+    # mlt/blender are detected but never preferred over openshot/ffmpeg.
+    assert caps["mlt"]["reason"] == "available"
+    assert caps["blender"]["reason"] == "available"
+
+
+def test_choose_renderer_falls_back_to_ffmpeg_when_openshot_unavailable(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        editor_render,
+        "detect_render_backends",
+        lambda: {
+            "openshot": {"available": False, "preferred": True, "reason": "missing"},
+            "ffmpeg": {"available": True, "preferred": False, "reason": "available"},
+        },
+    )
+
+    renderer = editor_render.choose_renderer(tmp_path / "renders")
+
+    assert renderer.backend == "ffmpeg"
+    assert renderer.__class__.__name__ == "FFmpegLayeredRenderer"
+
+
+def test_choose_renderer_runs_openshot_in_process_inside_render_child(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        editor_render,
+        "detect_render_backends",
+        lambda: {
+            "openshot": {"available": True, "preferred": True, "reason": "available"},
+            "ffmpeg": {"available": True, "preferred": False, "reason": "available"},
+        },
+    )
+    monkeypatch.setenv("EDITOR_RENDER_CHILD", "1")
+    # OpenShotRenderer.__init__ re-imports the bindings; stub so the in-process
+    # branch is exercised even on hosts without libopenshot installed.
+    monkeypatch.setattr(
+        editor_render, "_import_openshot", lambda: (object(), "available", None)
+    )
+
+    renderer = editor_render.choose_renderer(tmp_path / "renders")
+
+    assert renderer.backend == "openshot"
+    assert renderer.__class__.__name__ == "OpenShotRenderer"
+
+
+def test_choose_renderer_raises_when_no_backend_available(monkeypatch, tmp_path):
+    caps = {
+        "openshot": {"available": False, "preferred": True, "reason": "missing"},
+        "ffmpeg": {"available": False, "preferred": False, "reason": "ffmpeg/ffprobe missing"},
+    }
+    monkeypatch.setattr(editor_render, "detect_render_backends", lambda: caps)
+
+    with pytest.raises(editor_render.RenderError) as excinfo:
+        editor_render.choose_renderer(tmp_path / "renders")
+
+    # The error embeds the capability report so ops can see *why* nothing ran.
+    assert "no supported renderer available" in str(excinfo.value)
+    assert "ffmpeg/ffprobe missing" in str(excinfo.value)
+
+
 def test_openshot_subprocess_renderer_salvages_result_from_native_child_exit(monkeypatch, tmp_path):
     output = tmp_path / "renders" / "window.mp4"
     output.parent.mkdir()
