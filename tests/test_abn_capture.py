@@ -234,3 +234,76 @@ def test_inner_text_empty_string_bails_near_empty(tmp_path, monkeypatch):
     assert state["scrolled"] is False  # near-empty guard bailed before recording
     foot = Path(tmp_path) / "ep_beef22" / "footage"
     assert not list(foot.glob("_rec_*"))
+
+
+# ---------------------------------------------------------------------------
+# Signal-list coverage: the bot-wall / error-page guards (lines 91-105). These
+# pages render PLENTY of body text (so they clear the near-empty len<40 threshold)
+# yet are worthless footage. Each must bail (None) WITHOUT driving the scroll.
+# ---------------------------------------------------------------------------
+
+# every bot/error signal string the detector matches on, each padded into a
+# realistic >=40-char body so ONLY the signal — not the near-empty guard — trips.
+import pytest  # noqa: E402
+
+_BOT_SIGNALS = [
+    "verify you are human", "performing security verification",
+    "checking your browser", "are you a robot", "enable javascript and cookies",
+    "ddos protection by", "just a moment",
+    "verifying...", "verifying you are", "needs to review the security",
+    "cloudflare", "cf-challenge", "cf_chl", "ray id", "attention required",
+]
+_ERROR_SIGNALS = [
+    "504 gateway", "502 bad gateway", "503 service", "gateway time-out",
+    "gateway timeout", "didn't respond in time", "did not respond in time",
+    "this page isn't working", "took too long to respond", "site can't be reached",
+    "page not found", "404 not found", "internal server error", "error 500",
+    "temporarily unavailable", "origin server",
+]
+
+
+@pytest.mark.parametrize("signal", _BOT_SIGNALS + _ERROR_SIGNALS)
+def test_bot_and_error_signals_bail_despite_long_body(signal, tmp_path, monkeypatch):
+    """A page LONG enough to clear the near-empty threshold but containing any
+    bot-wall / error-page signal must still bail (None) and must NOT drive the
+    worthless scroll. Guards against partial signal coverage in the detector."""
+    timeout_exc = type("TimeoutError", (Exception,), {})
+    # pad so len(strip()) >= 40 — proves the BAIL came from the signal, not near-empty.
+    # Mixed-case to also prove the detector lowercases before matching (line 83).
+    body = (signal.upper() + " " + "x" * 60)
+    fake, state = _fake_playwright(lambda: body, timeout_exc)
+    cap = _reload_capture(tmp_path, monkeypatch, fake)
+
+    assert cap.capture_sync("https://example.com", "ep_5191a1_s0") is None
+    assert state["scrolled"] is False  # signal guard bailed before recording
+    foot = Path(tmp_path) / "ep_5191a1" / "footage"
+    assert not list(foot.glob("_rec_*"))
+
+
+def test_near_empty_boundary_just_under_40_bails(tmp_path, monkeypatch):
+    """39 stripped chars (< 40) with no signals is still 'near-empty' -> bail."""
+    timeout_exc = type("TimeoutError", (Exception,), {})
+    body = "  " + "a" * 39 + "  "  # surrounding whitespace stripped -> 39 < 40
+    fake, state = _fake_playwright(lambda: body, timeout_exc)
+    cap = _reload_capture(tmp_path, monkeypatch, fake)
+
+    assert cap.capture_sync("https://example.com", "ep_b39abc_s0") is None
+    assert state["scrolled"] is False
+    foot = Path(tmp_path) / "ep_b39abc" / "footage"
+    assert not list(foot.glob("_rec_*"))
+
+
+def test_clean_page_at_threshold_proceeds_to_scroll(tmp_path, monkeypatch):
+    """A clean page with >= 40 chars and NO bot/error signal must PASS the guards
+    and actually drive the scroll (the guard must not over-bail real footage). It
+    still returns None downstream because the fake produces no .webm to transcode,
+    but state['scrolled'] proves it cleared the bail and reached the record loop."""
+    timeout_exc = type("TimeoutError", (Exception,), {})
+    # 40+ chars of innocuous repo-hero text, no signal substrings
+    body = "awesome project readme " + "the quick brown fox jumps over"
+    assert len(body.strip()) >= 40
+    fake, state = _fake_playwright(lambda: body, timeout_exc)
+    cap = _reload_capture(tmp_path, monkeypatch, fake)
+
+    assert cap.capture_sync("https://example.com", "ep_0c1ea4_s0") is None  # no webm produced
+    assert state["scrolled"] is True  # cleared the guards, drove the scroll loop
