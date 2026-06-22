@@ -92,6 +92,8 @@ def _save_jobs(project: str) -> None:
     p = _jobs_path(project)
     p.parent.mkdir(parents=True, exist_ok=True)
     try:
+        # Atomic (tmp + fsync + replace) so a crash mid-write can't truncate or
+        # wipe the persisted queue — a bare write_text left it corrupt (P0).
         atomic_save(p, project_jobs)
     except OSError as e:
         log.error("Failed to save jobs for project %s: %s", project, e)

@@ -188,3 +188,19 @@ def test_save_jobs_unwritable_swallows_error(isolated_projects_root, monkeypatch
     monkeypatch.setattr(video_router, "atomic_save", boom)
     # Must not raise.
     video_router._save_jobs("save-proj")
+
+
+def test_save_jobs_writes_atomically_no_tmp_leak(isolated_projects_root):
+    """_save_jobs goes through atomic_save (tmp + fsync + replace): the final
+    jobs.json exists and no .tmp scratch file is left behind."""
+    video_router.jobs.clear()
+    video_router.jobs["atomic-1"] = {
+        "project": "atomic-proj",
+        "videos": [{"status": "done", "file": "a.mp4"}],
+    }
+    video_router._save_jobs("atomic-proj")
+
+    proj_dir = isolated_projects_root / "atomic-proj"
+    assert (proj_dir / "jobs.json").exists()
+    # No orphaned tmp file from the atomic write.
+    assert not any(proj_dir.glob("jobs.json.*.tmp"))
