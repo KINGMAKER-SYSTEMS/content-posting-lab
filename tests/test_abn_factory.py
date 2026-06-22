@@ -112,6 +112,47 @@ def test_voice_raises_on_gateway_error_before_shelling_out(monkeypatch, tmp_path
         asyncio.run(abn_factory._voice("hello", "no_episode_prefix"))
 
 
+# ---------------- CROSS-SCRATCH: the last factory-local write-path helper ----------------
+# `_cross_scratch_path` is the one path-builder in abn_factory that doesn't call the gateway
+# directly (the gateway only hands out PER-EPISODE scratch; these library/probe intermediates
+# have no episode to scope to). It must still uphold the gateway's invariant: a write lands
+# ONLY in a GC-REAPABLE root (_scratch/), and an off-schema name RAISES before any bytes are
+# written — so the GC can never be handed an unreapable stray. Pins it against drift so nobody
+# "simplifies" it back into a hand-built `ASSETS / "_scratch" / name` that skips the check.
+
+
+def test_cross_scratch_path_lands_in_reapable_scratch_root(monkeypatch, tmp_path):
+    monkeypatch.setattr(abn_factory, "ASSETS", tmp_path)
+    monkeypatch.setattr(abn_assets, "ASSETS_DIR", tmp_path)
+
+    dest = abn_factory._cross_scratch_path("wan_i2v_lib_0.mp4")
+
+    # lands under the cross-episode _scratch/ root the GC reaps by location
+    assert dest.parent == tmp_path / "_scratch"
+    assert dest.parent.is_dir()  # parent created, ready to write
+    # and that root is one the gateway recognises as GC-reapable (not merely "managed")
+    assert dest.parent.resolve() in {d.resolve() for d in abn_assets.scratch_dirs()}
+    # a leading-underscore basename (real names like '_tmp_bg_0') is allowed
+    assert abn_factory._cross_scratch_path("_tmp_bg_0.png").name == "_tmp_bg_0.png"
+
+
+@pytest.mark.parametrize("evil", [
+    "../evil.png",            # parent traversal
+    "sub/dir/x.png",          # nested path
+    "a\\b.png",               # windows separator
+    ".hidden.png",            # leading dot
+    "x\x00.png",              # null byte
+    "",                       # empty
+])
+def test_cross_scratch_path_rejects_off_schema_name(monkeypatch, tmp_path, evil):
+    monkeypatch.setattr(abn_factory, "ASSETS", tmp_path)
+    monkeypatch.setattr(abn_assets, "ASSETS_DIR", tmp_path)
+    with pytest.raises(ValueError):
+        abn_factory._cross_scratch_path(evil)
+    # nothing was written/created outside the store on the rejected path
+    assert not (tmp_path.parent / "evil.png").exists()
+
+
 # ---------------- SCRIPT: fallback + length clamp ----------------
 
 def test_script_segment_falls_back_when_llm_returns_nothing(monkeypatch):
