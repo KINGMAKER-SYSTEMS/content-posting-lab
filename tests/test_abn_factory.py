@@ -1622,6 +1622,53 @@ async def test_missing_abn_youtube_alerts_once_not_per_cycle(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_ytmod_warned_guard_survives_many_cycles(monkeypatch):
+    """The _ytmod_warned guard is the ONLY thing standing between the missing-module branch and
+    per-cycle log spam. Pin it across many cycles (not just the 3 the happy-path test runs): the
+    'unavailable' alert must fire exactly once no matter how long the loop runs, and STATE must
+    carry the flag forward. A regression that drops/clears the flag would flood the bus here."""
+    import sys
+    monkeypatch.setitem(sys.modules, "services.abn_youtube", None)
+
+    pending = [{"id": "ep_pubXX", "kind": "episode", "stage": "review"}]
+    events = await _drive_loop_cycles(monkeypatch, n_cycles=25, pending_eps=pending)
+
+    unavailable = [(a, k) for (a, k) in events if a[:2] == ("publisher", "unavailable")]
+    assert len(unavailable) == 1, "guard must suppress all but the first alert across 25 cycles"
+    assert abn_factory.STATE.get("_ytmod_warned") is True, "the suppression flag must persist in STATE"
+
+
+@pytest.mark.asyncio
+async def test_is_configured_raising_is_caught_not_crashing_loop(monkeypatch):
+    """services/abn_youtube.py exists but ytmod.is_configured() raises (corrupt creds, OAuth lib
+    blowup, etc.). The loop must NOT die: the exception is caught at the inner try/except and
+    surfaced as a 'publisher'/'error' event, while episode production keeps running every cycle.
+    This pins the untested exception path at the is_configured() call."""
+    import types
+    fake_yt = types.ModuleType("services.abn_youtube")
+
+    def boom():
+        raise RuntimeError("creds corrupt")
+    fake_yt.is_configured = boom
+
+    import sys
+    monkeypatch.setitem(sys.modules, "services.abn_youtube", fake_yt)
+
+    pending = [{"id": "ep_pubER", "kind": "episode", "stage": "review"}]
+    events = await _drive_loop_cycles(monkeypatch, n_cycles=2, pending_eps=pending)
+
+    # is_configured() blowing up is a runtime error → caught and surfaced, not a crash
+    errors = [(a, k) for (a, k) in events if a[:2] == ("publisher", "error")]
+    assert errors, "is_configured() raising must be caught and emitted as a publisher error"
+    assert "creds corrupt" in errors[0][0][2], "the original exception must be surfaced in the alert"
+    # the module IS present, so the missing-module path must NOT fire
+    assert not [(a, k) for (a, k) in events if a[:2] == ("publisher", "unavailable")], \
+        "module is present — the missing-module 'unavailable' branch must not fire"
+    # and the loop kept producing episodes despite the publisher fault
+    assert any(a[:2] == ("factory", "boot") for (a, k) in events)
+
+
+@pytest.mark.asyncio
 async def test_no_publisher_noise_when_no_pending_episodes(monkeypatch):
     """When nothing is waiting in review, the loop must not touch the publisher at all — no import
     attempt, hence no 'unavailable' alert and no 'error'. (Guards the regression where the import
