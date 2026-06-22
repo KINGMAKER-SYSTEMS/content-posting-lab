@@ -1073,12 +1073,13 @@ def _mutate_clip(project: dict[str, Any], op: str, clip: dict[str, Any], payload
                     "volume",
                     "transform",
                     "effects",
+                    "keyframes",
                 )
                 if key in payload
             }
         if not isinstance(patch, dict):
             raise CommandValidationError("patch must be an object")
-        for key in ("start", "duration", "sourceStart", "trackId", "enabled", "muted", "volume", "transform", "effects"):
+        for key in ("start", "duration", "sourceStart", "trackId", "enabled", "muted", "volume", "transform", "effects", "keyframes"):
             if key in patch:
                 if key in {"start", "sourceStart"}:
                     clip[key] = _non_negative(patch[key], key)
@@ -1100,6 +1101,13 @@ def _mutate_clip(project: dict[str, Any], op: str, clip: dict[str, Any], payload
                     if not isinstance(raw, list):
                         raise CommandValidationError("effects must be a list")
                     clip["effects"] = [_validated_effect(e) for e in raw]
+                elif key == "keyframes":
+                    clip["keyframes"] = _validated_keyframes(patch.get("keyframes"))
+                    # Mirror clip.keyframes (~line 1134): a volume envelope's points are
+                    # absolute gains, so neutralize any flat base gain to 1.0 to avoid
+                    # double-attenuation against the import-time duck.
+                    if any(t["property"] == "volume" for t in clip["keyframes"]):
+                        clip["volume"] = 1.0
                 else:
                     clip[key] = patch[key]
     elif op == "clip.hide":

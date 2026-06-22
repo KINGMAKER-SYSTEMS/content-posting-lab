@@ -393,6 +393,75 @@ def test_clip_keyframes_command_neutralizes_flat_volume_end_to_end():
     assert "0.1320" not in flt  # the double-attenuation bug must not appear
 
 
+def _project_with_one_clip():
+    """A minimal project carrying a single music-bed clip via the importer, used by
+    the clip.update keyframe tests below."""
+    project = timeline.project_from_abn_timeline("p", {
+        "episodeId": "e", "totalSec": 4.0, "musicBed": "/agenticnews-assets/bed.mp3",
+        "segments": [{"segmentId": "s0", "durationSec": 4.0, "shots": [],
+                      "audio": {"vo": {"src": "/agenticnews-assets/vo.wav", "duration": 4.0}}}],
+    })
+    bed_id = next(cid for cid, c in project["clips"].items() if c["kind"] == "music_bed")
+    return project, bed_id
+
+
+def test_clip_update_validates_keyframes_structure():
+    """clip.update must run a keyframes patch through the SAME validator clip.keyframes
+    uses — a malformed envelope (bad property / interp / non-finite value / missing
+    points) must be REJECTED, not silently passed through to the render path. This is
+    the gap the ticket flags: keyframes was absent from clip.update's patch keys."""
+    project, bed_id = _project_with_one_clip()
+    rev = project["revision"]
+
+    bad_payloads = [
+        {"keyframes": [{"property": "warp", "points": [{"t": 0, "value": 1}]}]},
+        {"keyframes": [{"property": "volume", "points": [
+            {"t": 0.0, "value": 0.5, "interp": "bogus"}]}]},
+        {"keyframes": [{"property": "volume", "points": [
+            {"t": 0.0, "value": float("nan")}]}]},
+        {"keyframes": [{"property": "volume", "points": []}]},
+        {"keyframes": "not-a-list"},
+    ]
+    for patch in bad_payloads:
+        with pytest.raises(timeline.CommandValidationError):
+            timeline.apply_command(project, {
+                "id": "cmd_bad",
+                "op": "clip.update",
+                "actor": "editor",
+                "expectedRevision": rev,
+                "payload": {"clipId": bed_id, "patch": patch},
+            })
+        # rejected commands must not mutate the clip or bump the revision
+        assert project["revision"] == rev
+        assert not project["clips"][bed_id].get("keyframes")
+
+
+def test_clip_update_keyframes_neutralizes_flat_volume():
+    """A valid volume envelope delivered via clip.update must (1) validate & land on
+    the clip and (2) neutralize the flat 0.22 duck to 1.0 — mirroring clip.keyframes
+    so the absolute envelope drives ducking instead of being double-attenuated."""
+    project, bed_id = _project_with_one_clip()
+    assert project["clips"][bed_id]["volume"] == 0.22
+
+    project = timeline.apply_command(project, {
+        "id": "cmd_kf_update",
+        "op": "clip.update",
+        "actor": "editor",
+        "expectedRevision": project["revision"],
+        "payload": {"clipId": bed_id, "patch": {"keyframes": [
+            {"property": "volume", "points": [
+                {"t": 0.0, "value": 0.6}, {"t": 1.0, "value": 0.22},
+            ]},
+        ]}},
+    })
+
+    bed = project["clips"][bed_id]
+    assert bed["volume"] == 1.0
+    env = next(t for t in bed["keyframes"] if t["property"] == "volume")
+    assert [p["t"] for p in env["points"]] == [0.0, 1.0]
+    assert all("interp" in p for p in env["points"])
+
+
 def test_import_drops_malformed_shot_envelope_without_aborting():
     """A bad shot envelope must be skipped, not fatal — the raw shot is preserved in
     metadata.shot for re-import, and the rest of the import must still succeed."""
