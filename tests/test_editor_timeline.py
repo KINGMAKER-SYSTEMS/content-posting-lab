@@ -2052,6 +2052,77 @@ def test_clip_effect_add_update_delete_and_revert(tmp_path):
     assert rebuilt["revision"] == reverted["revision"]
 
 
+def test_clip_effect_delete_last_effect_keeps_keyframes_into_openshot_bridge(tmp_path):
+    """Cross-module contract: clip.effect.delete only rewrites clip['effects']; the
+    sibling clip['keyframes'] envelope must stay intact and still reach
+    openshot_bridge.clip_json — even when the LAST effect is deleted (effects -> []).
+
+    effects and keyframes are sibling fields on one in-place-mutated clip dict, and
+    clip_json reads both off that same live clip, so they cannot desync. This test
+    pins that behavior so a future refactor of the delete path can't silently drop
+    the keyframe envelope at export time.
+    """
+    from services import openshot_bridge
+
+    store = timeline.TimelineStore(tmp_path)
+    _seed_project_with_clip(store, "proj_fx_kf")  # clip c1 at revision 2
+
+    # Author a volume keyframe envelope on the clip.
+    store.apply_command(
+        "proj_fx_kf",
+        {
+            "op": "clip.keyframes",
+            "actor": "agent",
+            "expectedRevision": 2,
+            "payload": {
+                "clipId": "c1",
+                "keyframes": [
+                    {
+                        "property": "volume",
+                        "points": [
+                            {"t": 0.0, "value": 0.2},
+                            {"t": 4.0, "value": 1.0},
+                        ],
+                    }
+                ],
+            },
+        },
+    )
+
+    # Add a single effect, then delete it — leaving effects empty.
+    store.apply_command(
+        "proj_fx_kf",
+        {
+            "op": "clip.effect.add",
+            "actor": "agent",
+            "expectedRevision": 3,
+            "payload": {"clipId": "c1", "effect": {"id": "fx1", "type": "fadeIn", "params": {"duration": 0.5}}},
+        },
+    )
+    project = store.apply_command(
+        "proj_fx_kf",
+        {
+            "op": "clip.effect.delete",
+            "actor": "agent",
+            "expectedRevision": 4,
+            "payload": {"clipId": "c1", "effectId": "fx1"},
+        },
+    )
+
+    clip = project["clips"]["c1"]
+    # Deleting the last effect empties effects but must not touch keyframes.
+    assert clip["effects"] == []
+    assert [t["property"] for t in clip["keyframes"]] == ["volume"]
+
+    # The cross-module read: clip_json sees no effects but a real volume envelope.
+    oj = openshot_bridge.clip_json(project, clip)
+    assert oj["effects"] == []
+    vol_points = oj["volume"]["Points"]
+    assert len(vol_points) == 2  # multi-point envelope, not a flattened single point
+    # editor volume is scaled by 100 for libopenshot; the duck-then-rise survives.
+    assert vol_points[0]["co"]["Y"] < vol_points[-1]["co"]["Y"]
+
+
 def test_clip_effect_commands_reject_bad_type_params_and_duplicates(tmp_path):
     store = timeline.TimelineStore(tmp_path)
     _seed_project_with_clip(store, "proj_effects_bad")  # revision 2
