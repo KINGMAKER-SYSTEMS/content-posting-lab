@@ -416,6 +416,7 @@ def test_split_then_windowed_crossfade_animates_through_openshot_render(tmp_path
     )
 
 
+@_needs_libopenshot
 def test_multipoint_volume_envelope_roundtrips_gains_and_frames(tmp_path):
     """Volume-envelope PARITY beyond the single 2-point ducking shape: a 3-point
     volume curve must survive the native layer with every gain and frame offset
@@ -455,6 +456,7 @@ def test_multipoint_volume_envelope_roundtrips_gains_and_frames(tmp_path):
     assert points[2]["interpolation"] == openshot_bridge.CONSTANT
 
 
+@_needs_libopenshot
 def test_clip_boundary_crossfade_animates_to_full_at_its_duration(tmp_path):
     """Crossfade DURATION at a clip boundary, end to end. Distinct from the
     split->window re-fit test: this is the plain case the ticket calls out —
@@ -503,6 +505,7 @@ def test_clip_boundary_crossfade_animates_to_full_at_its_duration(tmp_path):
     )
 
 
+@_needs_libopenshot
 def test_bed_ducking_survives_with_concurrent_vo_clip(tmp_path):
     """Ducking under CONCURRENT clips — the real ABN scenario. The bed ducks while a
     VO clip plays over the SAME time span. The ticket flags 'ducking under concurrent
