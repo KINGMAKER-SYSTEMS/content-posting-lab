@@ -1586,3 +1586,57 @@ def test_save_uses_atomic_store_and_fsyncs(tmp_path, monkeypatch):
     # ...and the real atomic_save left no stray tmp file and round-trips.
     assert not list(tmp_path.glob("*.tmp"))
     assert store.load("proj_atomic") == project
+
+
+
+
+# --- keyframe value bounds -------------------------------------------------
+# Per-property bounds are enforced at import so an out-of-range value (e.g.
+# volume=-0.5, which openshot_bridge would export as -50.0 volume) is rejected
+# before it can reach the compiler. See _KEYFRAME_VALUE_BOUNDS.
+
+
+def _kf_single(prop, value):
+    return [{"property": prop, "points": [{"t": 0.0, "value": value, "interp": "linear"}]}]
+
+
+@pytest.mark.parametrize(
+    "prop,value",
+    [
+        ("volume", -0.5),   # would export as -50.0 OpenShot volume
+        ("volume", 1.5),    # would export as 150.0 OpenShot volume
+        ("opacity", -0.1),
+        ("opacity", 1.1),
+        ("scale", -1.0),    # negative scale flips/breaks the reader
+        ("x", -0.5),
+        ("x", 1.5),
+        ("y", 2.0),
+    ],
+)
+def test_keyframe_value_out_of_bounds_rejected(prop, value):
+    with pytest.raises(timeline.CommandValidationError, match=f"keyframe.{prop}.value"):
+        timeline._validated_keyframes(_kf_single(prop, value))
+
+
+@pytest.mark.parametrize(
+    "prop,value",
+    [
+        ("volume", 0.0),
+        ("volume", 1.0),
+        ("opacity", 0.5),
+        ("scale", 0.0),
+        ("scale", 3.0),     # scale has no upper bound
+        ("x", 0.0),
+        ("y", 1.0),
+        ("rotation", -720.0),  # rotation is unbounded degrees
+        ("rotation", 720.0),
+    ],
+)
+def test_keyframe_value_in_bounds_accepted(prop, value):
+    out = timeline._validated_keyframes(_kf_single(prop, value))
+    assert out[0]["points"][0]["value"] == value
+
+
+def test_keyframe_value_none_rejected():
+    with pytest.raises(timeline.CommandValidationError, match="keyframe.volume.value"):
+        timeline._validated_keyframes(_kf_single("volume", None))

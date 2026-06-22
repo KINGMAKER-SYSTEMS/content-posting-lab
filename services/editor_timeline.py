@@ -945,6 +945,21 @@ KEYFRAME_PROPERTIES = frozenset(
 )
 KEYFRAME_INTERPOLATIONS = frozenset({"linear", "constant", "bezier"})
 
+# Per-property bounds (editor units) for keyframe point values, matching the
+# transforms in openshot_bridge._KEYFRAME_PROPERTY_MAP. A value outside these
+# bounds (e.g. volume=-0.5) is rejected here so it can never reach the compiler
+# and export as an invalid OpenShot value (e.g. -50.0 volume). None means no
+# bound on that side (scale has no upper limit; rotation is unbounded degrees).
+# math.inf keeps the comparison numeric without special-casing.
+_KEYFRAME_VALUE_BOUNDS: dict[str, tuple[float, float]] = {
+    "volume": (0.0, 1.0),
+    "opacity": (0.0, 1.0),
+    "scale": (0.0, math.inf),
+    "x": (0.0, 1.0),
+    "y": (0.0, 1.0),
+    "rotation": (-math.inf, math.inf),
+}
+
 
 def _validated_keyframes(value: Any) -> list[dict[str, Any]]:
     """Validate a clip's keyframe envelope list.
@@ -976,10 +991,13 @@ def _validated_keyframes(value: Any) -> list[dict[str, Any]]:
             interp = str(point.get("interp") or "linear")
             if interp not in KEYFRAME_INTERPOLATIONS:
                 raise CommandValidationError(f"unsupported keyframe interp: {interp}")
+            low, high = _KEYFRAME_VALUE_BOUNDS[prop]
             points.append(
                 {
                     "t": _non_negative(point.get("t"), "keyframe.t"),
-                    "value": _finite_number(point.get("value"), "keyframe.value"),
+                    "value": _bounded_signed(
+                        point.get("value"), f"keyframe.{prop}.value", low, high
+                    ),
                     "interp": interp,
                 }
             )

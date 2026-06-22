@@ -341,6 +341,31 @@ def test_clip_keyframe_position_and_rotation_envelopes_and_bezier_interp(tmp_pat
     assert [p["co"]["Y"] for p in clip["rotation"]["Points"]] == [0.0, 90.0]
 
 
+def test_keyframe_export_clamps_out_of_bounds_values_at_the_boundary(tmp_path):
+    """Defense-in-depth: the editor validator rejects out-of-bounds keyframe
+    values, but the bridge transforms must ALSO clamp so a project that bypasses
+    validation (older on-disk project, direct bridge call) can never emit an
+    invalid OpenShot value. volume floors at 0 (no negative percent), opacity and
+    location clamp to their valid ranges, scale floors at 0 (no flip)."""
+    project = _project(tmp_path / "card.png")
+    project["clips"]["card_clip"]["sourceStart"] = 0.0
+    # Skip the validator — attach raw out-of-bounds points straight to the clip.
+    project["clips"]["card_clip"]["keyframes"] = [
+        {"property": "volume", "points": [{"t": 0.0, "value": -0.5}]},
+        {"property": "opacity", "points": [{"t": 0.0, "value": 1.5}]},
+        {"property": "scale", "points": [{"t": 0.0, "value": -2.0}]},
+        {"property": "x", "points": [{"t": 0.0, "value": -3.0}, {"t": 1.0, "value": 9.0}]},
+    ]
+
+    clip = openshot_bridge.timeline_json(project)["clips"][0]
+
+    assert clip["volume"]["Points"][0]["co"]["Y"] == 0.0      # not -50.0
+    assert clip["alpha"]["Points"][0]["co"]["Y"] == 1.0       # clamped to 1
+    assert clip["scale_x"]["Points"][0]["co"]["Y"] == 0.0     # no negative scale
+    # _location clamps the editor 0..1 input before mapping to -1..1
+    assert [p["co"]["Y"] for p in clip["location_x"]["Points"]] == [-1.0, 1.0]
+
+
 def test_clip_effects_translate_to_openshot_effect_objects(tmp_path):
     """A clip's editor effects become libopenshot Effect JSON objects on the clip:
     fades map to the Fade class with a direction + keyframed duration; color filters
