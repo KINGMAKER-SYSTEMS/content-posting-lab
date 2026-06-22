@@ -1875,6 +1875,116 @@ async def test_assemble_episode_openshot_raises_so_factory_falls_back(monkeypatc
         await abn_factory._assemble_episode_openshot("ep_dead01", timeline)
 
 
+# OpenShot crosses a subprocess boundary inside editor_render.render() (the whole timeline is piped
+# in as JSON, the child decodes it and shells libopenshot, then prints a JSON render result back).
+# Two failure modes there are silent-quality killers if the factory swallows them: (a) the child
+# hangs and trips subprocess.run(timeout=...) -> TimeoutExpired, and (b) a non-finite keyframe makes
+# the round-tripped JSON corrupt so editor_render refuses to spawn -> RenderError. Either way the
+# contract _assemble_episode_openshot promises produce_one_episode is: RAISE, so the compiler cascade
+# falls through to Remotion/ffmpeg instead of shipping a hung or corrupt-audio episode. These pin the
+# propagation at the in-scope factory boundary (renderer.render is the mock; the WIRING is the test).
+
+def _minimal_openshot_timeline(ep_id):
+    return {
+        "fps": 30, "width": 1920, "height": 1080, "episodeId": ep_id,
+        "title": "T", "totalSec": 1.0, "musicBed": None,
+        "segments": [{
+            "segmentId": "s0", "title": "Seg", "sourceUrl": "https://x",
+            "shots": [{"id": "a", "src": "/agenticnews-assets/x.png", "startSec": 0.0,
+                       "durationSec": 1.0, "type": "artifact"}],
+            "wordTimestamps": [], "keywordPops": [], "lowerThirds": [],
+            "audio": {"vo": {"src": "/agenticnews-assets/vo.wav", "duration": 1.0}},
+            "durationSec": 1.0,
+        }],
+    }
+
+
+@pytest.mark.asyncio
+async def test_assemble_episode_openshot_propagates_subprocess_timeout(monkeypatch, tmp_path):
+    """The OpenShot child runs under subprocess.run(timeout=1800) in editor_render. If it hangs and
+    trips TimeoutExpired, _assemble_episode_openshot must let that bubble up (no try/except swallow,
+    no phantom return) so the cascade falls through — a hung compiler can't silently win."""
+    import subprocess
+    monkeypatch.setattr(abn_factory, "ASSETS", tmp_path)
+    monkeypatch.setattr(abn_assets, "ASSETS_DIR", tmp_path)
+
+    class HangingRenderer:
+        backend = "openshot"
+        def render(self, project, *, output_path=None, **kw):
+            raise subprocess.TimeoutExpired(cmd="openshot-child", timeout=1800)
+
+    import services.editor_render as er
+    monkeypatch.setattr(er, "choose_renderer", lambda out, asset_root=None: HangingRenderer())
+
+    with pytest.raises(subprocess.TimeoutExpired):
+        await abn_factory._assemble_episode_openshot("ep_ba6601", _minimal_openshot_timeline("ep_ba6601"))
+    # the renderer never wrote a file; nothing must have been left at the gateway episode path
+    assert not (tmp_path / "ep_ba6601" / "renders" / "episode.mp4").exists()
+
+
+@pytest.mark.asyncio
+async def test_assemble_episode_openshot_propagates_corrupt_json_render_error(monkeypatch, tmp_path):
+    """editor_render serializes the project with allow_nan=False and refuses to spawn when a
+    non-finite keyframe would corrupt the cross-process JSON (RenderError). _assemble_episode_openshot
+    must propagate that — corrupt-JSON detection is worthless if the factory eats it and ships."""
+    monkeypatch.setattr(abn_factory, "ASSETS", tmp_path)
+    monkeypatch.setattr(abn_assets, "ASSETS_DIR", tmp_path)
+
+    import services.editor_render as er
+
+    class CorruptJsonRenderer:
+        backend = "openshot"
+        def render(self, project, *, output_path=None, **kw):
+            raise er.RenderError(
+                "refusing to render: project has non-finite keyframe/value "
+                "that would corrupt the subprocess JSON (Out of range float values are not JSON compliant)"
+            )
+
+    monkeypatch.setattr(er, "choose_renderer", lambda out, asset_root=None: CorruptJsonRenderer())
+
+    with pytest.raises(er.RenderError, match="non-finite keyframe"):
+        await abn_factory._assemble_episode_openshot("ep_b00b01", _minimal_openshot_timeline("ep_b00b01"))
+    assert not (tmp_path / "ep_b00b01" / "renders" / "episode.mp4").exists()
+
+
+@pytest.mark.asyncio
+async def test_compile_episode_treats_openshot_timeout_as_recoverable_and_falls_back(monkeypatch, tmp_path):
+    """End-to-end: a REAL renderer timeout (raised from choose_renderer, not a stubbed
+    _assemble_episode_openshot) must flow through the cascade and trigger the Remotion fallback —
+    proving a hung OpenShot is a recoverable cascade trigger, not an unhandled crash that aborts
+    the episode. Pins that _assemble_episode_openshot's exception is the SAME one _compile_episode
+    catches; if someone wraps the timeout in a non-Exception or returns early, this flips."""
+    import subprocess
+    monkeypatch.setattr(abn_factory, "ASSETS", tmp_path)
+    monkeypatch.setattr(abn_assets, "ASSETS_DIR", tmp_path)
+
+    class HangingRenderer:
+        backend = "openshot"
+        def render(self, project, *, output_path=None, **kw):
+            raise subprocess.TimeoutExpired(cmd="openshot-child", timeout=1800)
+
+    import services.editor_render as er
+    monkeypatch.setattr(er, "choose_renderer", lambda out, asset_root=None: HangingRenderer())
+
+    async def remotion_ok(ep_id, timeline):
+        return "/agenticnews-assets/remotion.mp4", 600.0
+
+    async def ffmpeg_boom(ep_id, segments):
+        raise AssertionError("ffmpeg backstop must NOT run once Remotion recovers the timeout")
+
+    monkeypatch.setattr(abn_factory, "_render_remotion", remotion_ok)
+    monkeypatch.setattr(abn_factory, "_assemble_episode", ffmpeg_boom)
+
+    seen = {e["id"] for e in abn_factory.BUS.replay()}
+    url, dur = await abn_factory._compile_episode(
+        "ep_700001", _minimal_openshot_timeline("ep_700001"), [])
+
+    assert (url, dur) == ("/agenticnews-assets/remotion.mp4", 600.0)
+    actions = _bus_actions_since(seen)
+    assert "openshot.fallback" in actions, "an OpenShot timeout must announce the fall-through to Remotion"
+    assert "remotion.done" in actions
+
+
 # ---------------- revisualize_episode: re-skin keeping the original audio mix ----------------
 #
 # `revisualize_episode` rebuilds an already-rendered episode with the new visual grammar while
