@@ -797,6 +797,65 @@ def test_choose_renderer_stamps_backend_health_and_warnings_on_ffmpeg_fallback(m
     assert "warnings" in result  # uniform contract regardless of backend
 
 
+class _FakeInner:
+    """Minimal renderer stand-in for proxy tests: exposes render/render_frame plus
+    extra methods/attributes the proxy must forward through __getattr__."""
+
+    backend = "fake"
+
+    def __init__(self):
+        self.output_dir = Path("/tmp/out")
+        self.asset_root = Path("/tmp/assets")
+        self._timeline = {"clips": []}
+
+    def render(self, *a, **k):
+        return {"ok": "render"}
+
+    def render_frame(self, *a, **k):
+        return {"ok": "frame"}
+
+    def some_helper(self, x):
+        return x * 2
+
+
+def test_health_stamp_proxy_forwards_wrapped_methods_other_than_render():
+    """__getattr__ fall-through must forward arbitrary methods (e.g. helpers the
+    callers reach for) to the inner renderer, not just render/render_frame."""
+    proxy = editor_render._HealthStampingRenderer(_FakeInner(), {"selected": "fake"})
+    assert proxy.some_helper(21) == 42
+
+
+def test_health_stamp_proxy_forwards_attributes_through_getattr():
+    """output_dir/asset_root/_timeline live only on the inner renderer; the proxy
+    must surface them via __getattr__ so existing call sites keep working."""
+    inner = _FakeInner()
+    proxy = editor_render._HealthStampingRenderer(inner, {})
+    assert proxy.output_dir == inner.output_dir
+    assert proxy.asset_root == inner.asset_root
+    assert proxy._timeline == inner._timeline
+
+
+def test_health_stamp_proxy_propagates_attributeerror_from_missing_attr():
+    """When the inner renderer has no such attribute, getattr raises AttributeError;
+    the proxy must let it propagate (not swallow it or recurse on _inner)."""
+    proxy = editor_render._HealthStampingRenderer(_FakeInner(), {})
+    with pytest.raises(AttributeError):
+        _ = proxy.does_not_exist
+
+
+def test_health_stamp_proxy_propagates_when_inner_getattr_itself_raises():
+    """If the inner object's own __getattr__ raises a non-AttributeError, the proxy
+    must surface that exact error rather than masking it as AttributeError."""
+
+    class _AngryInner:
+        def __getattr__(self, name):
+            raise RuntimeError(f"boom:{name}")
+
+    proxy = editor_render._HealthStampingRenderer(_AngryInner(), {})
+    with pytest.raises(RuntimeError, match="boom:whatever"):
+        _ = proxy.whatever
+
+
 def _fake_which(present):
     """shutil.which stand-in: returns a fake path for binaries in ``present``."""
 
