@@ -10,9 +10,11 @@ volume with atomic writes, mirroring the telegram/roster data layers.
 import os
 import time
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
+from typing import Iterator
 
-from services.json_store import atomic_load, atomic_save
+from services.json_store import atomic_load, atomic_save, lock_for
 
 BASE_DIR = Path(__file__).parent.parent
 _VOLUME_PATH = os.getenv("RAILWAY_VOLUME_MOUNT_PATH", "")
@@ -44,6 +46,22 @@ def save_requests(data: dict) -> None:
     atomic_save(REQUESTS_PATH, data)
 
 
+@contextmanager
+def mutate_requests() -> Iterator[dict]:
+    """Load the store, yield it for in-place mutation, then save it — under a lock.
+
+    Closes the load-modify-save (TOCTOU) race: atomic_save only atomizes the
+    write, so two concurrent callers (add_request / update_request from async
+    routers via the sync threadpool) that each load → mutate → save could lose
+    one set of changes. Holding REQUESTS_PATH's reentrant lock across the whole
+    transaction serializes them. Mirrors services/telegram.mutate_config.
+    """
+    with lock_for(REQUESTS_PATH):
+        data = load_requests()
+        yield data
+        save_requests(data)
+
+
 def add_request(
     poster_id: str,
     text: str,
@@ -55,7 +73,6 @@ def add_request(
     source: str = "miniapp",
 ) -> dict:
     """Append a new content request. Returns the stored entry with a generated id."""
-    data = load_requests()
     entry = {
         "id": uuid.uuid4().hex[:12],
         "poster_id": poster_id,
@@ -71,8 +88,8 @@ def add_request(
         "fulfilled_at": None,
         "agent_note": None,
     }
-    data["requests"].append(entry)
-    save_requests(data)
+    with mutate_requests() as data:
+        data["requests"].append(entry)
     return entry
 
 
@@ -105,16 +122,15 @@ def update_request(
     """Update a request's status / agent note. Returns the updated entry or None."""
     if status is not None and status not in STATUSES:
         raise ValueError(f"invalid status {status!r}; expected one of {STATUSES}")
-    data = load_requests()
-    for r in data["requests"]:
-        if r.get("id") == request_id:
-            if status is not None:
-                r["status"] = status
-                if status == "fulfilled":
-                    r["fulfilled_at"] = _now()
-            if agent_note is not None:
-                r["agent_note"] = agent_note
-            r["updated_at"] = _now()
-            save_requests(data)
-            return r
+    with mutate_requests() as data:
+        for r in data["requests"]:
+            if r.get("id") == request_id:
+                if status is not None:
+                    r["status"] = status
+                    if status == "fulfilled":
+                        r["fulfilled_at"] = _now()
+                if agent_note is not None:
+                    r["agent_note"] = agent_note
+                r["updated_at"] = _now()
+                return r
     return None
