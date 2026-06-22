@@ -544,6 +544,251 @@ def test_transition_400_when_invalid_status(monkeypatch):
     assert "invalid status" in ei.value.detail.lower()
 
 
+def test_transition_404_when_page_missing(monkeypatch):
+    """A valid status against an unknown page 404s — and must not reach Notion."""
+    monkeypatch.setattr(pipeline, "get_page", lambda iid: None)
+
+    async def _no_notion(*a, **k):
+        raise AssertionError("must not touch Notion for a missing page")
+
+    monkeypatch.setattr(pipeline, "update_page_status", _no_notion)
+    req = pipeline.TransitionRequest(status="Live")
+    with pytest.raises(HTTPException) as ei:
+        _run(pipeline.transition_status("acct:ghost", req))
+    assert ei.value.status_code == 404
+    assert "not found" in ei.value.detail.lower()
+
+
+def test_transition_502_when_notion_write_fails(monkeypatch):
+    """Notion is the canonical store and gets written FIRST (it's the likeliest
+    to fail). If that write throws, the transition must 502 and NOT persist the
+    new status to the local roster — otherwise roster and Notion drift apart,
+    exactly the 'status matches Notion' invariant the ticket calls out."""
+    page = {"name": "P", "notion_page_id": "np1", "status": "In Production"}
+    monkeypatch.setattr(pipeline, "get_page", lambda iid: dict(page))
+    monkeypatch.setattr(pipeline, "notion_configured", lambda: True)
+
+    async def _boom(pid, status):
+        raise RuntimeError("notion 500")
+
+    monkeypatch.setattr(pipeline, "update_page_status", _boom)
+
+    saved = {}
+
+    def _set(iid, patch):
+        saved.update(patch)
+
+    monkeypatch.setattr(pipeline, "set_page", _set)
+
+    req = pipeline.TransitionRequest(status="Live")
+    with pytest.raises(HTTPException) as ei:
+        _run(pipeline.transition_status("acct:x", req))
+    assert ei.value.status_code == 502
+    assert "notion update failed" in ei.value.detail.lower()
+    # Local roster must NOT have been flipped — Notion is canonical and it failed.
+    assert "status" not in saved
+
+
+def test_transition_happy_writes_notion_then_roster(monkeypatch):
+    """The happy path: Notion update succeeds, THEN the roster is flipped to the
+    same status (keeping local == Notion). Order matters — Notion first, roster
+    only on success."""
+    order = []
+    page = {"name": "P", "notion_page_id": "np1", "status": "In Production"}
+    # get_page is called twice: once up-front, once for the return payload.
+    monkeypatch.setattr(pipeline, "get_page", lambda iid: dict(page))
+    monkeypatch.setattr(pipeline, "notion_configured", lambda: True)
+
+    async def _update(pid, status):
+        order.append(("notion", pid, status))
+
+    monkeypatch.setattr(pipeline, "update_page_status", _update)
+
+    def _set(iid, patch):
+        order.append(("roster", iid, patch.get("status")))
+        page.update(patch)
+
+    monkeypatch.setattr(pipeline, "set_page", _set)
+
+    req = pipeline.TransitionRequest(status="Live")
+    out = _run(pipeline.transition_status("acct:x", req))
+    assert out["ok"] is True
+    # Notion written before roster, both with the new status.
+    assert order[0] == ("notion", "np1", "Live")
+    assert order[1][0] == "roster" and order[1][2] == "Live"
+
+
+def test_transition_local_only_when_notion_unconfigured(monkeypatch):
+    """No Notion page id / Notion off → skip the Notion write entirely but still
+    persist the status locally. The transition must not 502 just because Notion
+    isn't wired up."""
+    page = {"name": "P", "status": "In Production"}  # no notion_page_id
+    monkeypatch.setattr(pipeline, "get_page", lambda iid: dict(page))
+    monkeypatch.setattr(pipeline, "notion_configured", lambda: False)
+
+    async def _no_notion(*a, **k):
+        raise AssertionError("must not call Notion when unconfigured / no page id")
+
+    monkeypatch.setattr(pipeline, "update_page_status", _no_notion)
+
+    saved = {}
+    monkeypatch.setattr(pipeline, "set_page", lambda iid, patch: saved.update(patch))
+
+    req = pipeline.TransitionRequest(status="Complete")
+    out = _run(pipeline.transition_status("acct:x", req))
+    assert out["ok"] is True
+    assert saved["status"] == "Complete"
+
+
+# ── get_stages grouping ──────────────────────────────────────────────────────
+# /stages buckets every roster page by its Notion `status`. The contract: known
+# statuses land in their lane (order == PIPELINE_STAGES), unknown-but-nonempty
+# statuses go to `unassigned` (data-drift spotter), and status-less pages are
+# dropped entirely (those are operational Roster pages, not pipeline pages).
+
+
+def test_stages_buckets_known_unknown_and_drops_statusless(monkeypatch):
+    pages = [
+        {"id": "a", "status": "New — Pending Setup"},
+        {"id": "b", "status": "Live"},
+        {"id": "c", "status": "Live"},
+        {"id": "d", "status": "Weird Drift Status"},  # unknown -> unassigned
+        {"id": "e"},                                   # no status -> dropped
+        {"id": "f", "status": ""},                     # blank -> dropped
+    ]
+    monkeypatch.setattr(pipeline, "list_all_pages", lambda: pages)
+    out = _run(pipeline.get_stages())
+
+    # Lanes are in canonical order and count correctly.
+    lanes = {s["status"]: s for s in out["stages"]}
+    assert [s["status"] for s in out["stages"]] == pipeline.PIPELINE_STAGES
+    assert lanes["New — Pending Setup"]["count"] == 1
+    assert lanes["Live"]["count"] == 2
+
+    # Unknown status surfaced for drift detection, tagged with its raw value.
+    assert len(out["unassigned"]) == 1
+    assert out["unassigned"][0]["_unknown_status"] == "Weird Drift Status"
+
+    # total_pages counts every roster row, even the dropped status-less ones.
+    assert out["total_pages"] == 6
+
+
+# ── mint-alias endpoint wrapper ──────────────────────────────────────────────
+# The POST /mint-alias handler wraps _mint_random_alias and (when Notion is on)
+# creates a placeholder row so a half-finished intake leaves a recoverable
+# record. A Notion failure there must NOT fail the mint — the alias is real.
+
+
+def test_mint_alias_endpoint_creates_notion_placeholder(monkeypatch):
+    async def _mint(pipeline=None, destination_override=None, desired_local=None):
+        return {"alias": "acct-xyz@risingtidesviral.com", "destination": "henry@x.com", "rule_id": "r1"}
+
+    monkeypatch.setattr(pipeline, "_mint_random_alias", _mint)
+    monkeypatch.setattr(pipeline, "notion_configured", lambda: True)
+
+    seen = {}
+
+    async def _create(**kwargs):
+        seen.update(kwargs)
+        return {"id": "notion-123"}
+
+    monkeypatch.setattr(pipeline, "create_intake_page", _create)
+
+    out = _run(pipeline.mint_random_alias_endpoint(pipeline.MintAliasRequest()))
+    assert out.alias == "acct-xyz@risingtidesviral.com"
+    assert out.notion_page_id == "notion-123"
+    # Placeholder handle is the email local-part (Notion title can't be blank).
+    assert seen["account_username"] == "acct-xyz"
+    assert seen["email"] == "acct-xyz@risingtidesviral.com"
+
+
+def test_mint_alias_endpoint_survives_notion_failure(monkeypatch):
+    """If the placeholder Notion write throws, the endpoint must still return the
+    (real, usable) alias with notion_page_id=None rather than 500ing — losing
+    the alias is worse than losing the placeholder row."""
+    async def _mint(pipeline=None, destination_override=None, desired_local=None):
+        return {"alias": "acct-abc@risingtidesviral.com", "destination": "henry@x.com", "rule_id": "r2"}
+
+    monkeypatch.setattr(pipeline, "_mint_random_alias", _mint)
+    monkeypatch.setattr(pipeline, "notion_configured", lambda: True)
+
+    async def _boom(**kwargs):
+        raise RuntimeError("notion create 500")
+
+    monkeypatch.setattr(pipeline, "create_intake_page", _boom)
+
+    out = _run(pipeline.mint_random_alias_endpoint(pipeline.MintAliasRequest()))
+    assert out.alias == "acct-abc@risingtidesviral.com"
+    assert out.notion_page_id is None
+
+
+def test_mint_alias_endpoint_skips_notion_when_unconfigured(monkeypatch):
+    async def _mint(pipeline=None, destination_override=None, desired_local=None):
+        return {"alias": "acct-q@risingtidesviral.com", "destination": "d@x.com", "rule_id": "r3"}
+
+    monkeypatch.setattr(pipeline, "_mint_random_alias", _mint)
+    monkeypatch.setattr(pipeline, "notion_configured", lambda: False)
+
+    async def _no_create(**kwargs):
+        raise AssertionError("must not create a Notion row when Notion is off")
+
+    monkeypatch.setattr(pipeline, "create_intake_page", _no_create)
+
+    out = _run(pipeline.mint_random_alias_endpoint(None))  # None req is allowed
+    assert out.alias == "acct-q@risingtidesviral.com"
+    assert out.notion_page_id is None
+
+
+# ── run_setup Flow Stage branch ──────────────────────────────────────────────
+# The Flow Stage pipeline is the short path: verify email, write it back to
+# Notion, (optional) Slack handoff, flip status to 'In Production'. It must NOT
+# touch poster assignment / Telegram / R2 (that's the King Maker branch). Pin
+# that the branch completes and stops at status_flip.
+
+
+def test_run_setup_flow_stage_completes_without_km_steps(monkeypatch):
+    page = {
+        "name": "Flow Page",
+        "pipeline": "Flow Stage",
+        "email_alias": "acct-f@risingtidesviral.com",
+        "fwd_destination": "henry@x.com",
+        "notion_page_id": "np-flow",
+    }
+    monkeypatch.setattr(pipeline, "get_page", lambda iid: dict(page))
+    monkeypatch.setattr(pipeline, "cf_get_config", lambda: dict(CFG))
+    monkeypatch.setattr(pipeline, "set_page", lambda *a, **k: None)
+    monkeypatch.setattr(pipeline, "notion_configured", lambda: True)
+
+    writes = []
+
+    async def _email_wb(pid, email=None, fwd_address=None):
+        writes.append(("email", pid))
+
+    async def _status(pid, status):
+        writes.append(("status", status))
+
+    monkeypatch.setattr(pipeline, "update_page_email_fields", _email_wb)
+    monkeypatch.setattr(pipeline, "update_page_status", _status)
+    # Slack off so the handoff step is a clean skip (not a hard dep here).
+    monkeypatch.setattr(pipeline, "slack_configured", lambda: False)
+
+    # If any KM-only step were reached it would need these; make them explode.
+    monkeypatch.setattr(
+        pipeline, "resolve_poster_for_page",
+        lambda p: (_ for _ in ()).throw(AssertionError("KM step reached on Flow Stage")),
+    )
+
+    out = _run(pipeline.run_setup("acct:flow", pipeline.SetupRequest()))
+    assert out["completed"] is True
+    assert out["pipeline"] == "Flow Stage"
+    assert out["steps"]["status_flip"]["new_status"] == "In Production"
+    # No King Maker steps present.
+    assert "poster_assign" not in out["steps"]
+    assert "telegram_topic" not in out["steps"]
+    assert "r2_prefix" not in out["steps"]
+    assert ("status", "In Production") in writes
+
+
 # ── get_workspace ────────────────────────────────────────────────────────────
 # The King Maker operator console. Every external dependency (R2, poster
 # resolution, cookie status) is optional and must degrade gracefully — an R2
