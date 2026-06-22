@@ -4532,3 +4532,99 @@ def test_bezier_envelope_is_distinct_from_linear_and_constant():
     assert abs(v_lin - v_bez) > 0.05, "bezier collapsed to linear"
     assert v_con == 0.0, "constant must hold the start value before the end point"
     assert v_bez != v_lin and v_bez != v_con
+
+
+# --- defensive hard-gate error paths (corrupt project JSON) ---
+# These exercise the validation that fails the render LOUDLY before any
+# subprocess/ffmpeg is spawned. Silently passing them would mask render
+# corruption (NaN-flattened audio envelopes) or phantom -i inputs.
+
+def _project_with_nan_keyframe(non_finite: float) -> dict:
+    """A project whose volume keyframe carries a non-finite value — the exact
+    shape that json.dumps(allow_nan=False) must reject at the subprocess boundary
+    (editor_render._run_child lines 411-417)."""
+    project = timeline.new_project("nan_render", width=96, height=64, fps=12)
+    project["clips"]["c"] = {
+        "id": "c",
+        "assetId": "card",
+        "trackId": "graphics_1",
+        "kind": "artifact",
+        "start": 0.0,
+        "duration": 1.0,
+        "sourceStart": 0.0,
+        "enabled": True,
+        "keyframes": [
+            {"property": "volume", "points": [
+                {"t": 0.0, "value": 0.0, "interp": "linear"},
+                {"t": 1.0, "value": non_finite, "interp": "linear"},
+            ]},
+        ],
+    }
+    return project
+
+
+def test_run_child_refuses_nan_keyframe_before_spawning_subprocess(tmp_path, monkeypatch):
+    """A NaN keyframe value would serialize to a bare `NaN` token that the child's
+    lenient json.loads silently accepts, then OpenShot flattens the envelope to
+    garbage and exits 0 — a corrupt-audio render the parent never hears about.
+    allow_nan=False must turn that into a loud RenderError *before* spawning."""
+    # Guard: if validation ever regresses, the subprocess must NOT be reached.
+    def _boom(*a, **k):  # pragma: no cover - only runs on regression
+        raise AssertionError("subprocess.run was reached despite a NaN keyframe")
+    monkeypatch.setattr(editor_render.subprocess, "run", _boom)
+
+    renderer = editor_render.OpenShotSubprocessRenderer(tmp_path / "renders")
+    with pytest.raises(editor_render.RenderError) as exc:
+        renderer.render(_project_with_nan_keyframe(float("nan")))
+    assert "non-finite" in str(exc.value)
+
+
+def test_run_child_refuses_infinity_keyframe_before_spawning_subprocess(tmp_path, monkeypatch):
+    """Infinity is the other non-finite token allow_nan=False rejects; same gate,
+    same loud failure — never a silently-corrupt envelope."""
+    def _boom(*a, **k):  # pragma: no cover - only runs on regression
+        raise AssertionError("subprocess.run was reached despite an Infinity keyframe")
+    monkeypatch.setattr(editor_render.subprocess, "run", _boom)
+
+    renderer = editor_render.OpenShotSubprocessRenderer(tmp_path / "renders")
+    with pytest.raises(editor_render.RenderError) as exc:
+        renderer.render(_project_with_nan_keyframe(float("inf")))
+    assert "non-finite" in str(exc.value)
+
+
+def test_run_child_renders_finite_keyframe_payload(tmp_path, monkeypatch):
+    """The gate must NOT false-positive: a finite keyframe value serializes clean
+    and the render proceeds to the subprocess. We stub subprocess.run so no real
+    OpenShot is needed — proving the JSON crossed the boundary, not that it rendered."""
+    captured = {}
+
+    class _Completed:
+        returncode = 0
+        stdout = json.dumps({"backend": "openshot", "video": str(tmp_path / "ok.mp4")})
+        stderr = ""
+
+    def _fake_run(cmd, **kwargs):
+        captured["input"] = kwargs.get("input")
+        return _Completed()
+
+    monkeypatch.setattr(editor_render.subprocess, "run", _fake_run)
+    monkeypatch.setattr(editor_render, "_render_result_artifact_exists", lambda r: True)
+
+    renderer = editor_render.OpenShotSubprocessRenderer(tmp_path / "renders")
+    result = renderer.render(_project_with_nan_keyframe(0.5))
+    assert result["backend"] == "openshot"
+    # the finite value survived json.dumps and reached the child payload
+    assert "0.5" in captured["input"]
+
+
+def test_ffmpeg_render_fails_closed_on_missing_asset(tmp_path):
+    """FFmpegLayeredRenderer.render (lines 613-614) must raise RenderError when an
+    asset source is absent — it must NOT fall through to _run() and ship a render
+    with a phantom -i input. This pins the gate at the render layer, not just the
+    _missing_assets helper."""
+    project = _project_with_card("ffmpeg_missing", tmp_path / "gone.png")
+    renderer = _renderer(tmp_path)
+    with pytest.raises(editor_render.RenderError) as exc:
+        renderer.render(project)
+    assert "render blocked by missing assets" in str(exc.value)
+    assert "gone.png" in str(exc.value)
