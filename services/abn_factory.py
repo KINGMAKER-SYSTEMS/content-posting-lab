@@ -3042,6 +3042,13 @@ def purge_disk(intermediate_age_s=1800, keep_episodes=4, low_disk_gb=2.0):
         if _sh2.disk_usage(str(ASSETS)).free / 1e9 < low_disk_gb:
             for old in _old_episode_renders()[keep_episodes:]:
                 try:
+                    # ACTIVE consume-site guard, symmetric with the scratch-reap loop above: only ever
+                    # hand tombstone_render() a real regular file. _old_episode_renders() already filters
+                    # at enumeration time, but a regressed enumerator (or a TOCTOU swap of the path to a
+                    # dir/symlink between enumeration and here) must not reach the destructive call —
+                    # don't lean solely on tombstone_render()'s own `_`-prefix/is_file RAISE.
+                    if not old.is_file() or old.is_symlink():
+                        continue
                     if _is_editor_timeline_protected_asset(old, protected_paths):
                         continue
                     freed += tombstone_render(old)  # safe-delete → _trash/, recoverable (not unlink)
@@ -3116,6 +3123,11 @@ async def _gc_segments(keep_recent=12):
             if free_gb < 2.0:
                 for old in _old_episode_renders()[4:]:
                     try:
+                        # ACTIVE consume-site guard (see purge_disk twin): only hand tombstone_render()
+                        # a real regular file, so a regressed/poisoned enumerator or a TOCTOU dir/symlink
+                        # swap can't reach the destructive call — don't rely on the RAISE alone.
+                        if not old.is_file() or old.is_symlink():
+                            continue
                         if _is_editor_timeline_protected_asset(old, protected_paths):
                             continue
                         tombstone_render(old)  # safe-delete → _trash/, recoverable (not unlink)

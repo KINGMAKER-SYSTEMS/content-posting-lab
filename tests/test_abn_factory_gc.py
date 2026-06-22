@@ -4,6 +4,7 @@ import os
 import shutil
 import time
 from collections import namedtuple
+from pathlib import Path
 
 import pytest
 
@@ -354,6 +355,98 @@ def test_tombstone_refuses_non_scratch_paths(store):
         with pytest.raises(abn_assets.AssetPathError):
             abn_factory.tombstone(bad)
     assert render.exists() and vo.exists() and link.is_symlink()
+
+
+def test_purge_disk_survives_poisoned_enumerator_returning_schema_dir(store, monkeypatch):
+    """AUDIT (schema-dir deletions): even if reapable_scratch() were buggy and yielded a schema dir
+    like ep_a12345/audio/ (the exact failure mode the enumeration guards exist to prevent), purge_disk
+    must NOT reap it. Two independent layers catch it: the loop's `if f.is_file()` test is False for a
+    directory so the tombstone call is never reached, and tombstone() itself RAISES on a non-scratch
+    dir. We poison the enumerator at the factory call site and prove the schema dir is left fully
+    intact while a legitimately-aged scratch file alongside it is still reaped."""
+    audio_dir = store / "ep_a12345" / "audio"
+    audio_dir.mkdir(parents=True)
+    vo = audio_dir / "s0_voice.wav"
+    vo.write_bytes(b"the real VO - must never be tombstoned")
+    old = time.time() - 7200
+    os.utime(audio_dir, (old, old))  # aged so a naive mtime check would select it
+
+    legit = _scratch(store, "ep_a12345", "s0_raw.wav", body=b"reapable")
+
+    # Simulate a regressed enumerator that leaks a schema dir into the reapable set.
+    monkeypatch.setattr(abn_factory, "reapable_scratch", lambda: [audio_dir, legit])
+    # keep disk healthy so the low-disk render trim path is irrelevant to this assertion
+    monkeypatch.setattr(shutil, "disk_usage", lambda _: namedtuple("u", "total used free")(100, 0, 100 * 1e9))
+
+    abn_factory.purge_disk(intermediate_age_s=1, keep_episodes=99, low_disk_gb=0)
+
+    assert audio_dir.is_dir(), "purge_disk reaped a schema dir handed to it by a poisoned enumerator"
+    assert vo.exists() and vo.read_bytes() == b"the real VO - must never be tombstoned"
+    assert not (store / "_trash" / "ep_a12345" / "audio").exists(), "schema dir must never be tombstoned"
+    assert not legit.exists(), "the genuine aged scratch file should still have been reaped"
+    assert (store / "_trash" / "ep_a12345" / "scratch" / "s0_raw.wav").exists()
+
+
+def test_purge_disk_render_trim_survives_poisoned_enumerator_returning_schema_dir(store, monkeypatch):
+    """AUDIT (schema-dir deletions, render-trim twin of the scratch-loop poisoned-enumerator test):
+    even if _old_episode_renders() were buggy and leaked a schema dir (ep_a12345/audio/) or a symlink
+    into the low-disk render-trim set, the trim must NOT reap it. Two layers catch it: the consume-site
+    `is_file()/not is_symlink()` guard skips it before the destructive call, AND tombstone_render()
+    itself RAISES on a non-render path. The real episode render IS still trimmed, so the guard doesn't
+    over-block. Pins that the render-trim consume site checks is_file() BEFORE tombstone_render()."""
+    audio_dir = store / "ep_a12345" / "audio"      # a schema dir masquerading as a render candidate
+    audio_dir.mkdir(parents=True)
+    vo = audio_dir / "s0_voice.wav"
+    vo.write_bytes(b"the real VO - must never be tombstoned")
+
+    def _render(store, ep_id, age_s):
+        d = store / ep_id / "renders"
+        d.mkdir(parents=True)
+        f = d / "episode.mp4"
+        f.write_bytes(b"render")
+        t = time.time() - age_s
+        os.utime(f, (t, t))
+        return f
+
+    real = _render(store, "ep_real00", age_s=9000)  # a genuine old render that SHOULD trim
+    link_target = _render(store, "ep_tgt000", age_s=8000)
+    bad_link = store / "ep_link00" / "renders"
+    bad_link.mkdir(parents=True)
+    poison_link = bad_link / "episode.mp4"
+    poison_link.symlink_to(link_target)             # a symlinked render candidate
+
+    # Regressed enumerator: leaks a dir and a symlink alongside the one real render.
+    monkeypatch.setattr(
+        abn_factory, "_old_episode_renders", lambda: [audio_dir, poison_link, real]
+    )
+    monkeypatch.setattr(shutil, "disk_usage", lambda _: namedtuple("u", "total used free")(100, 100, 0))
+
+    # Record every path the destructive primitive is HANDED. The active consume-site is_file() guard
+    # must keep the leaked dir/symlink from ever reaching tombstone_render() — proving the guard fires
+    # BEFORE the call (not merely that tombstone_render()'s own RAISE, swallowed by except, backstops).
+    real_tr = abn_factory.tombstone_render
+    seen = []
+
+    def spy(path):
+        seen.append(Path(path))
+        return real_tr(path)
+
+    monkeypatch.setattr(abn_factory, "tombstone_render", spy)
+
+    # keep_episodes=0 so the whole leaked list is in the trim slice
+    abn_factory.purge_disk(intermediate_age_s=99999, keep_episodes=0, low_disk_gb=999)
+
+    assert audio_dir not in seen and poison_link not in seen, (
+        "tombstone_render() was handed a leaked dir/symlink — the consume site must check is_file() FIRST"
+    )
+    assert seen == [real], "only the genuine regular-file render should reach tombstone_render()"
+    assert audio_dir.is_dir(), "render trim reaped a schema dir handed in by a poisoned enumerator"
+    assert vo.exists() and vo.read_bytes() == b"the real VO - must never be tombstoned"
+    assert poison_link.is_symlink(), "render trim must skip a symlinked render candidate"
+    assert link_target.exists(), "the symlink's target render must not be reaped via the symlink"
+    assert not (store / "_trash" / "ep_a12345" / "audio").exists(), "schema dir must never be tombstoned"
+    assert not real.exists(), "the genuine old render should still have been trimmed"
+    assert (store / "_trash" / "ep_real00" / "renders" / "episode.mp4").exists(), "real render must tombstone"
 
 
 def test_tombstone_collision_does_not_clobber(store):
