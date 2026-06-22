@@ -996,7 +996,15 @@ def _refit_effects(
     fadeIn and crossfade are start-anchored (both map to OpenShot's `in` Fade, see
     openshot_bridge._FADE_DIRECTION_MAP): a front trim of `front_trim` removes that
     much of their ramp. fadeOut is end-anchored: a front trim leaves it alone, but no
-    fade may be longer than the windowed clip. Effects with no `duration` pass through."""
+    fade may be longer than the windowed clip. Effects with no `duration` pass through.
+
+    A fade whose duration re-fits to <= 0 (the front trim ate the whole start-anchored
+    ramp, e.g. a 0.5s crossfade with a 0.6s front trim, or any fade on a zero-length
+    window) is DROPPED entirely rather than kept as a `duration: 0.0` no-op. OpenShot's
+    Fade silently ignores a 0-second fade (openshot_bridge exports it as a valid but
+    meaningless `duration: 0.0` keyframe), so emitting it breaches the contract — the
+    timeline shows a fade that the compiled video never renders. Dropping it keeps the
+    editor state and the rendered output in agreement."""
 
     refit: list[dict[str, Any]] = []
     for effect in effects:
@@ -1009,7 +1017,9 @@ def _refit_effects(
         new_duration = float(original)
         if str(effect.get("type") or "") in ("fadeIn", "crossfade"):
             new_duration -= front_trim
-        new_duration = max(0.0, min(new_duration, windowed_duration))
+        new_duration = min(new_duration, windowed_duration)
+        if new_duration <= 0.0:
+            continue
         refit.append({**effect, "params": {**params, "duration": new_duration}})
     return refit
 

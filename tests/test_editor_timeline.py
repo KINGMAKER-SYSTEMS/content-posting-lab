@@ -977,13 +977,13 @@ def test_split_preserves_keyframes_and_effects_on_both_halves(tmp_path):
     tail_pts = tail["keyframes"][0]["points"]
     assert [(p["t"], p["value"]) for p in tail_pts] == [(0.0, 1.0), (3.0, 0.5)]
 
-    # fadeIn is start-anchored: full on the head, re-fit (0.5 - 2s front trim -> 0) on
-    # the tail. fadeOut is end-anchored: dropped from the head, kept on the tail.
+    # fadeIn is start-anchored: full on the head; on the tail the 2s front trim fully
+    # eats the 0.5s ramp (0.5 - 2.0 <= 0), so it is DROPPED rather than kept as a 0s
+    # no-op fade. fadeOut is end-anchored: dropped from the head, kept on the tail.
     # brightness is whole-clip and stays on both.
     assert {e["id"] for e in head["effects"]} == {"fx_in", "fx_bri"}
-    assert {e["id"] for e in tail["effects"]} == {"fx_in", "fx_out", "fx_bri"}
+    assert {e["id"] for e in tail["effects"]} == {"fx_out", "fx_bri"}
     tail_fx = {e["id"]: e for e in tail["effects"]}
-    assert tail_fx["fx_in"]["params"]["duration"] == 0.0  # collapsed by the front trim
     assert tail_fx["fx_out"]["params"]["duration"] == 0.5
 
     # Replay reproduces the same partitioned envelopes deterministically.
@@ -1690,12 +1690,13 @@ def test_split_partitions_and_rebases_keyframes_and_effects(tmp_path):
     head_fades = {e["id"]: e["params"]["duration"] for e in head["effects"]}
     assert head_fades == {"fi": 1.0, "xf": 1.0}
 
-    # Tail owns the original end: it keeps every effect, but its 8s-trimmed front
-    # collapses the start-anchored fadeIn + crossfade to 0 (re-fit like the render
-    # path's editor_render._refit_effects), while the end-anchored fadeOut survives.
-    assert [e["id"] for e in tail["effects"]] == ["fi", "fo", "xf"]
+    # Tail owns the original end: its 8s-trimmed front fully eats the start-anchored
+    # fadeIn + crossfade (1.0 - 8.0 <= 0), so both are DROPPED (re-fit like the render
+    # path's editor_render._refit_effects) rather than kept as 0s no-op fades OpenShot
+    # ignores. The end-anchored fadeOut survives.
+    assert [e["id"] for e in tail["effects"]] == ["fo"]
     tail_fades = {e["id"]: e["params"]["duration"] for e in tail["effects"]}
-    assert tail_fades == {"fi": 0.0, "fo": 1.0, "xf": 0.0}
+    assert tail_fades == {"fo": 1.0}
 
     # Head envelope keeps only points up to the split (t <= 8); the t=9.5 point is gone.
     assert [p["t"] for p in head["keyframes"][0]["points"]] == [0.0, 7.5, 8.0]
@@ -1789,14 +1790,14 @@ def test_split_refits_crossfade_duration_on_tail(tmp_path):
         front_trim=split_offset,
         windowed_duration=tail_duration,
     )
-    expected_duration = expected[0]["params"]["duration"]
-    # Sanity: a 3s start-anchored fade trimmed by 8s collapses to 0 (then clamped).
-    assert expected_duration == 0.0
+    # A 3s start-anchored fade trimmed by 8s re-fits to <= 0 and is DROPPED entirely —
+    # not kept as a `duration: 0.0` no-op fade OpenShot silently ignores.
+    assert expected == []
 
-    tail_xf = next(e for e in tail["effects"] if e["id"] == "xf")
-    assert tail_xf["params"]["duration"] == expected_duration, (
-        "tail crossfade duration must be re-fit (front_trim+windowed) to match "
-        "editor_render._refit_effects, not cloned at the parent's full duration"
+    tail_xf = [e for e in tail["effects"] if e["id"] == "xf"]
+    assert tail_xf == [], (
+        "a crossfade fully consumed by the split front trim must be dropped on the "
+        "tail, matching editor_render._refit_effects — not carried as a 0s no-op fade"
     )
 
 
@@ -1895,13 +1896,12 @@ def test_imported_clip_crossfade_survives_split_and_exports_to_openshot():
     tail = split["clips"]["xf_tail"]
 
     # Head owns the original start -> keeps the crossfade at full duration. The tail's
-    # front is trimmed by the 6s split, so its start-anchored crossfade is RE-FIT (not
-    # dropped) exactly like editor_render._refit_effects: the 2s crossfade collapses to
-    # a duration-0 no-op fade. Keeping the re-fit fade (rather than dropping it) keeps
+    # front is trimmed by the 6s split, fully eating the 2s start-anchored crossfade
+    # (2.0 - 6.0 <= 0), so it is DROPPED exactly like editor_render._refit_effects —
+    # not kept as a duration-0 no-op fade OpenShot silently ignores. Dropping it keeps
     # the timeline state and the compiled OpenShot fade in agreement.
     assert [e["type"] for e in head["effects"]] == ["crossfade"]
-    assert [e["type"] for e in tail["effects"]] == ["crossfade"]
-    assert tail["effects"][0]["params"]["duration"] == 0.0  # collapsed by the front trim
+    assert tail["effects"] == []
 
     # The surviving head crossfade exports to a libopenshot Fade-`in` with its duration.
     head_json = openshot_bridge.clip_json(split, head)
@@ -2739,14 +2739,14 @@ def test_clip_split_partitions_multitrack_keyframes_and_straddling_effects(tmp_p
     assert "opacity" not in tail_kf or [p["t"] for p in tail_kf["opacity"]["points"]] == [2.0]
     assert [p["t"] for p in tail_kf["opacity"]["points"]] == [2.0]
 
-    # fadeIn is start-anchored: full on the head, re-fit (collapsed by the 3s front
-    # trim to 0) on the tail. fadeOut is end-anchored: dropped from the head, kept on
-    # the tail. Both fades stay on the tail so it matches editor_render._refit_effects.
+    # fadeIn is start-anchored: full on the head; on the tail the 3s front trim fully
+    # eats the 0.5s ramp (0.5 - 3.0 <= 0), so it is DROPPED rather than kept as a 0s
+    # no-op fade. fadeOut is end-anchored: dropped from the head, kept on the tail.
+    # This matches editor_render._refit_effects so the timeline and compiled video agree.
     assert {e["id"] for e in head["effects"]} == {"fi"}
     assert next(e for e in head["effects"] if e["id"] == "fi")["params"]["duration"] == 0.5
-    assert {e["id"] for e in tail["effects"]} == {"fi", "fo"}
+    assert {e["id"] for e in tail["effects"]} == {"fo"}
     tail_fx = {e["id"]: e for e in tail["effects"]}
-    assert tail_fx["fi"]["params"]["duration"] == 0.0  # 0.5 - 3.0 front trim, clamped
     assert tail_fx["fo"]["params"]["duration"] == 0.5
 
 

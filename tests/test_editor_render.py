@@ -521,8 +521,10 @@ def test_ffmpeg_fallback_warns_on_dropped_effects_and_keyframes(tmp_path):
     assert ("effect", "crossfade") in names
     assert ("effect", "brightness") in names
     assert ("keyframe", "scale") in names
-    # frame previews carry the same warning contract
-    frame = renderer.render_frame(project, at=0.5, output_path=tmp_path / "renders" / "warn.png")
+    # frame previews carry the same warning contract. Preview INSIDE the crossfade's
+    # [0, 0.3] window (at=0.1) — at a later frame the front trim correctly drops the
+    # spent fade, so there'd be nothing to warn about.
+    frame = renderer.render_frame(project, at=0.1, output_path=tmp_path / "renders" / "warn.png")
     assert any(w["name"] == "crossfade" for w in frame["warnings"])
 
 
@@ -1293,11 +1295,13 @@ def test_windowed_clip_refits_fade_effect_durations_to_window():
     # fadeOut clamped to the 0.5 window.
     assert tiny_effects["fadeOut"]["params"]["duration"] == pytest.approx(0.5)
 
-    # A front trim larger than the fade wipes it entirely (clamped at 0).
+    # A front trim larger than the fade wipes the start-anchored fades entirely: they
+    # re-fit to <= 0 and are DROPPED, not kept as `duration: 0.0` no-op fades that
+    # OpenShot's Fade silently ignores (the ticket's 0s-boundary contract breach).
     gone = editor_render._windowed_clips(project, window_start=2.0, duration=2.0)
     gone_effects = {e["type"]: e for e in gone[0]["effects"]}
-    assert gone_effects["fadeIn"]["params"]["duration"] == pytest.approx(0.0)
-    assert gone_effects["crossfade"]["params"]["duration"] == pytest.approx(0.0)
+    assert "fadeIn" not in gone_effects
+    assert "crossfade" not in gone_effects
 
     # Original project clip effects must be untouched (no aliasing of nested params).
     orig = project["clips"]["card_clip"]["effects"]
@@ -1325,9 +1329,10 @@ def test_split_clip_crossfade_refits_through_render_window_into_openshot_fade():
     }
 
     # Split at t=8 -> head [0,8) keeps the 3s start-anchored crossfade at full duration.
-    # The tail's 8s-trimmed front RE-FITS that start-anchored crossfade (matching
-    # editor_render._refit_effects) rather than dropping it: 3.0 - 8.0 clamps to a
-    # duration-0 no-op fade. Keeping the re-fit fade keeps timeline + compiler in sync.
+    # The tail's 8s-trimmed front fully eats that start-anchored crossfade (3.0 - 8.0 < 0),
+    # so the tail DROPS it (matching editor_render._refit_effects) rather than carrying a
+    # `duration: 0.0` no-op fade that OpenShot's Fade silently ignores — keeping the
+    # timeline state and the compiled video in agreement at the 0s boundary.
     split = timeline.apply_command(
         project,
         {
@@ -1336,8 +1341,7 @@ def test_split_clip_crossfade_refits_through_render_window_into_openshot_fade():
         },
     )
     assert [e["type"] for e in split["clips"]["c1"]["effects"]] == ["crossfade"]
-    assert [e["type"] for e in split["clips"]["c1_tail"]["effects"]] == ["crossfade"]
-    assert split["clips"]["c1_tail"]["effects"][0]["params"]["duration"] == 0.0
+    assert split["clips"]["c1_tail"]["effects"] == []
 
     # Render-window the head with a 2s front trim (window t=2..6). The start-anchored
     # crossfade must shrink by 2s: 3.0 - 2.0 = 1.0s, clamped to the 4s window.
@@ -2031,3 +2035,74 @@ def test_openshot_render_silent_project_never_muxes(tmp_path, monkeypatch):
     result = renderer.render(project, output_path=output)
 
     assert result["audioMuxed"] is False
+
+
+def test_refit_effects_drops_start_fade_eaten_by_front_trim():
+    """A start-anchored fade whose ramp is fully consumed by the front trim must be
+    DROPPED, not kept as a meaningless `duration: 0.0` fade. A 0.5s crossfade with a
+    0.6s front trim (split at the 0.6s mark) re-fits to -0.1 -> the fade no longer
+    exists on the tail; emitting `duration: 0.0` would breach the OpenShot contract
+    (Fade silently ignores a 0s fade) and desync the timeline from the rendered video."""
+    effects = [{"id": "xf", "type": "crossfade", "params": {"duration": 0.5}}]
+    refit = editor_render._refit_effects(effects, front_trim=0.6, windowed_duration=2.0)
+    assert refit == []
+
+
+def test_refit_effects_keeps_partially_trimmed_start_fade():
+    """A start-anchored fade only partially eaten by the front trim survives with its
+    remaining duration (regression guard so the zero-drop doesn't over-eat)."""
+    effects = [{"id": "fi", "type": "fadeIn", "params": {"duration": 0.5}}]
+    refit = editor_render._refit_effects(effects, front_trim=0.2, windowed_duration=2.0)
+    assert len(refit) == 1
+    assert refit[0]["params"]["duration"] == pytest.approx(0.3)
+
+
+def test_refit_effects_drops_fade_on_zero_length_window():
+    """Any fade clamped to a zero-length window (windowed_duration == 0) is dropped."""
+    effects = [
+        {"id": "fo", "type": "fadeOut", "params": {"duration": 0.4}},
+        {"id": "fi", "type": "fadeIn", "params": {"duration": 0.4}},
+    ]
+    refit = editor_render._refit_effects(effects, front_trim=0.0, windowed_duration=0.0)
+    assert refit == []
+
+
+def test_split_at_crossfade_boundary_leaves_no_dead_fade_on_tail():
+    """End-to-end: split a clip carrying a 0.5s crossfade at the 0.6s mark. The tail's
+    front is trimmed by 0.6s, fully eating the start-anchored crossfade. The tail must
+    NOT carry a `duration: 0.0` crossfade that openshot_bridge would export as a valid
+    but non-rendering fade -- it must carry no crossfade at all."""
+    project = timeline.new_project("split-fade", fps=30, width=1920, height=1080)
+    project["assets"]["a"] = {
+        "id": "a", "type": "video", "path": "a.mp4", "duration": 10.0,
+    }
+    track_id = next(iter(project["tracks"]))
+    project["clips"]["c"] = {
+        "id": "c", "trackId": track_id, "assetId": "a",
+        "start": 0.0, "duration": 2.0, "sourceStart": 0.0,
+        "transform": {}, "keyframes": [],
+        "effects": [{"id": "xf", "type": "crossfade", "params": {"duration": 0.5}}],
+    }
+
+    split = timeline.apply_command(
+        project,
+        {
+            "op": "clip.split", "actor": "human", "expectedRevision": 0,
+            "payload": {"clipId": "c", "at": 0.6, "newClipId": "c2"},
+        },
+    )
+
+    tail = split["clips"]["c2"]
+    assert all(e["type"] != "crossfade" for e in tail.get("effects") or []), (
+        "tail must not carry a crossfade consumed by the split front trim"
+    )
+    # The head keeps the start-anchored crossfade whole (it owns the original start).
+    head = split["clips"]["c"]
+    head_xf = [e for e in head.get("effects") or [] if e["type"] == "crossfade"]
+    assert len(head_xf) == 1 and head_xf[0]["params"]["duration"] == pytest.approx(0.5)
+
+    # The bridge must never emit a 0-second fade for the tail's compiled effects.
+    for effect in tail.get("effects") or []:
+        out = openshot_bridge.effect_json(effect, fps=30)
+        if "duration" in out:
+            assert out["duration"]["Points"][0]["co"]["Y"] > 0.0
