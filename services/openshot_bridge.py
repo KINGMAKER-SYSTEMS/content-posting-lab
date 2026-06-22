@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 
+BEZIER = 0
 LINEAR = 1
 CONSTANT = 2
 GRAVITY_CENTER = 4
@@ -409,7 +410,10 @@ def _location(value: float) -> float:
     return (max(0.0, min(1.0, value)) - 0.5) * 2.0
 
 
-_INTERPOLATION_MAP = {"linear": LINEAR, "constant": CONSTANT, "bezier": 0}
+# libopenshot's openshot::InterpolationType enum is {BEZIER=0, LINEAR=1, CONSTANT=2}.
+# Bezier MUST map to 0 — not a fall-through default — so smooth ducking/opacity/
+# position curves from abn_factory render as curves instead of silently linearizing.
+_INTERPOLATION_MAP = {"linear": LINEAR, "constant": CONSTANT, "bezier": BEZIER}
 
 
 # Map an editor keyframe `property` to the OpenShot clip-JSON key(s) it animates,

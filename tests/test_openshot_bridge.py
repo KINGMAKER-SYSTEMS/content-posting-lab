@@ -433,9 +433,15 @@ def test_clip_keyframe_position_and_rotation_envelopes_and_bezier_interp(tmp_pat
     # (sourceStart 0.25 + t)*30 + 1 — trimmed clips offset keyframe X by sourceStart
     assert [p["co"]["X"] for p in clip["location_x"]["Points"]] == [8.5, 38.5]
     assert [p["co"]["Y"] for p in clip["location_x"]["Points"]] == [-1.0, 1.0]
-    # y: 0.5 -> 0.0 (center), single bezier point
+    # y: 0.5 -> 0.0 (center), single bezier point. Assert the concrete BEZIER code
+    # (0), NOT _INTERPOLATION_MAP["bezier"] — the latter is tautological and would
+    # pass even if bezier silently fell through to LINEAR's default. Bezier MUST be
+    # the named BEZIER constant and MUST be distinct from LINEAR, or smooth ducking
+    # curves from abn_factory linearize at render.
     assert clip["location_y"]["Points"][0]["co"]["Y"] == 0.0
-    assert clip["location_y"]["Points"][0]["interpolation"] == openshot_bridge._INTERPOLATION_MAP["bezier"]
+    assert openshot_bridge.BEZIER == 0
+    assert clip["location_y"]["Points"][0]["interpolation"] == openshot_bridge.BEZIER
+    assert clip["location_y"]["Points"][0]["interpolation"] != openshot_bridge.LINEAR
     # rotation passes through untransformed
     assert [p["co"]["Y"] for p in clip["rotation"]["Points"]] == [0.0, 90.0]
 
