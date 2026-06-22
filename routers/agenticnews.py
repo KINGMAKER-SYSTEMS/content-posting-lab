@@ -616,10 +616,20 @@ def _timeline_file_for_episode(episode_id: str) -> Path:
     # abn_assets.assert_migration_complete), so the flat {ep_id}_timeline.json name now only
     # exists as a back-compat symlink into this same schema path — reading it is redundant.
     # A non-episode id (gateway returns None) keeps the flat path as its only addressable form.
+    # Schema-first / flat-fallback contract (pinned by test_editor_source_materialization):
+    # prefer the schema path when it exists on disk; otherwise fall back to the flat legacy
+    # name when THAT exists (the permanent, sanctioned read path for un-migrated episodes).
+    # With neither on disk, return the canonical schema path so a downstream .exists() check
+    # fails on the path the factory WOULD write, not a flat legacy name.
     schema = abn_assets.episode_singleton_path(episode_id, "timeline")
-    if schema is not None:
+    flat = db.ASSETS_DIR / f"{episode_id}_timeline.json"
+    if schema is None:
+        return flat
+    if schema.exists():
         return schema
-    return db.ASSETS_DIR / f"{episode_id}_timeline.json"
+    if flat.exists():
+        return flat
+    return schema
 
 
 async def _load_real_abn_timeline(project_id: str) -> tuple[str, dict]:
@@ -705,11 +715,21 @@ def _plan_editor_source_materialization(
     # gateway). Migration is complete (asserted at startup), so the flat {ep_id}_episode.mp4 name
     # is only a back-compat symlink into this same path. A non-episode id (gateway returns None)
     # keeps the flat path as its only addressable form.
+    # Schema-first / flat-fallback contract (pinned by test_editor_source_materialization):
+    # prefer the schema render {ep}/renders/episode.mp4 when it exists on disk; otherwise fall
+    # back to the flat legacy {ep}_episode.mp4 (the permanent, sanctioned read path for an
+    # un-migrated episode whose only durable artifact is the flat render). A non-episode id
+    # (gateway returns None) keeps the flat path as its only addressable form.
     _schema_video = abn_assets.episode_singleton_path(episode_id, "episode")
-    if _schema_video is not None:
+    _flat_video = db.ASSETS_DIR / f"{episode_id}_episode.mp4"
+    if _schema_video is not None and _schema_video.exists():
+        episode_video = _schema_video
+    elif _flat_video.exists():
+        episode_video = _flat_video
+    elif _schema_video is not None:
         episode_video = _schema_video
     else:
-        episode_video = db.ASSETS_DIR / f"{episode_id}_episode.mp4"
+        episode_video = _flat_video
     if not episode_video.exists():
         return []
 
