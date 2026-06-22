@@ -334,3 +334,352 @@ def test_burn_folder_rename_clips_preserves_prefix(sync_client):
 
     assert not (get_project_clips_dir("rename-clips") / "job_xyz").exists()
     assert (get_project_clips_dir("rename-clips") / "rooftop-shoot" / "clip_001.mp4").exists()
+
+
+# ── Caption WebSocket pipeline (_run_pipeline) ────────────────────────────
+#
+# _run_pipeline imports its scraper deps lazily INSIDE the function
+# (`from scraper.frame_extractor import ...`), so patches must land on the
+# source modules, not on routers.captions. We capture the broadcast stream
+# instead of opening a real WebSocket and assert the event/error shapes.
+
+from routers import captions as captions_router  # noqa: E402
+
+
+def _run_caption_pipeline(monkeypatch, *, list_videos, get_thumbnail, extract_caption,
+                          analyze_mood, project="quick-test", max_videos=20):
+    """Drive _run_pipeline with stubbed scraper deps; return captured broadcasts.
+
+    Each scraper dep is an async-capable callable (or one that raises). Returns
+    the list of (event, data) tuples broadcast for the job.
+    """
+    import scraper.frame_extractor as fe
+    import scraper.caption_extractor as ce
+    import scraper.sentiment_analyzer as sa
+
+    monkeypatch.setattr(fe, "list_profile_videos", list_videos)
+    monkeypatch.setattr(fe, "get_thumbnail", get_thumbnail)
+    monkeypatch.setattr(ce, "extract_caption", extract_caption)
+    monkeypatch.setattr(sa, "analyze_mood", analyze_mood)
+
+    events: list[tuple[str, dict]] = []
+
+    async def fake_broadcast(job_id, event, data):
+        events.append((event, data))
+
+    monkeypatch.setattr(captions_router, "_broadcast", fake_broadcast)
+
+    asyncio.run(
+        captions_router._run_pipeline(
+            "job-test-0", "@creator", max_videos, "latest", project
+        )
+    )
+    return events
+
+
+def _ev(events, name):
+    return [d for e, d in events if e == name]
+
+
+def test_caption_pipeline_happy_path(monkeypatch, sync_client):
+    """Full pipeline: list -> download -> OCR -> mood -> CSV -> all_complete."""
+    sync_client.post("/api/projects", json={"name": "Pipe Happy"})
+
+    async def list_videos(url, n, sort):
+        return [
+            "https://www.tiktok.com/@creator/video/111",
+            "https://www.tiktok.com/@creator/video/222",
+        ]
+
+    async def get_thumbnail(url, dest):
+        dest.write_bytes(b"\xff\xd8jpegbytes")
+        return dest
+
+    async def extract_caption(frame_bytes, _max_retries=4):
+        return "a real caption"
+
+    async def analyze_mood(caption, _max_retries=3):
+        return "hype"
+
+    events = _run_caption_pipeline(
+        monkeypatch, project="pipe-happy",
+        list_videos=list_videos, get_thumbnail=get_thumbnail,
+        extract_caption=extract_caption, analyze_mood=analyze_mood,
+    )
+
+    assert _ev(events, "urls_collected")[0]["count"] == 2
+    assert len(_ev(events, "frame_ready")) == 2
+    ocr_done = _ev(events, "ocr_done")
+    assert len(ocr_done) == 2
+    assert all(d["caption"] == "a real caption" and d["mood"] == "hype" for d in ocr_done)
+
+    complete = _ev(events, "all_complete")[0]
+    assert len(complete["results"]) == 2
+    assert all(r["error"] is None for r in complete["results"])
+
+    # CSV written to the project-scoped caption dir
+    csv_path = get_project_caption_dir("pipe-happy") / "creator" / "captions.csv"
+    assert csv_path.exists()
+    assert "a real caption" in csv_path.read_text(encoding="utf-8")
+
+
+def test_caption_pipeline_empty_profile(monkeypatch, sync_client):
+    """Zero videos short-circuits to all_complete with empty results, no crash."""
+    sync_client.post("/api/projects", json={"name": "Pipe Empty"})
+
+    async def list_videos(url, n, sort):
+        return []
+
+    async def unreached(*a, **k):  # pragma: no cover
+        raise AssertionError("should not be called for an empty profile")
+
+    events = _run_caption_pipeline(
+        monkeypatch, project="pipe-empty",
+        list_videos=list_videos, get_thumbnail=unreached,
+        extract_caption=unreached, analyze_mood=unreached,
+    )
+
+    assert _ev(events, "urls_collected")[0]["count"] == 0
+    complete = _ev(events, "all_complete")[0]
+    assert complete["results"] == []
+    assert complete["csv"] is None
+
+
+def test_caption_pipeline_thumbnail_timeout(monkeypatch, sync_client):
+    """A thumbnail download exceeding the 45s budget records a timeout error,
+    emits frame_error, and the row carries through OCR as a skip (not a crash)."""
+    sync_client.post("/api/projects", json={"name": "Pipe Timeout"})
+
+    async def list_videos(url, n, sort):
+        return ["https://www.tiktok.com/@creator/video/999"]
+
+    async def get_thumbnail(url, dest):
+        raise asyncio.TimeoutError()
+
+    async def extract_caption(frame_bytes, _max_retries=4):  # pragma: no cover
+        raise AssertionError("OCR must be skipped for a failed thumbnail")
+
+    async def analyze_mood(caption, _max_retries=3):  # pragma: no cover
+        raise AssertionError("mood must be skipped for a failed thumbnail")
+
+    events = _run_caption_pipeline(
+        monkeypatch, project="pipe-timeout",
+        list_videos=list_videos, get_thumbnail=get_thumbnail,
+        extract_caption=extract_caption, analyze_mood=analyze_mood,
+    )
+
+    frame_errs = _ev(events, "frame_error")
+    assert len(frame_errs) == 1
+    assert "timed out" in frame_errs[0]["error"].lower()
+    # OCR emits ocr_done immediately for the errored row, carrying the error
+    ocr_done = _ev(events, "ocr_done")[0]
+    assert ocr_done["caption"] == ""
+    assert "timed out" in ocr_done["error"].lower()
+    assert _ev(events, "all_complete")[0]["results"][0]["error"]
+
+
+def test_caption_pipeline_thumbnail_network_failure(monkeypatch, sync_client):
+    """A non-timeout download exception (network/yt-dlp crash) is captured per-row
+    and surfaced as frame_error without aborting the batch."""
+    sync_client.post("/api/projects", json={"name": "Pipe Net"})
+
+    async def list_videos(url, n, sort):
+        return ["https://www.tiktok.com/@creator/video/1", "https://www.tiktok.com/@creator/video/2"]
+
+    async def get_thumbnail(url, dest):
+        if url.endswith("/1"):
+            raise RuntimeError("connection reset by peer")
+        dest.write_bytes(b"\xff\xd8ok")
+        return dest
+
+    async def extract_caption(frame_bytes, _max_retries=4):
+        return "caption two"
+
+    async def analyze_mood(caption, _max_retries=3):
+        return "chill"
+
+    events = _run_caption_pipeline(
+        monkeypatch, project="pipe-net",
+        list_videos=list_videos, get_thumbnail=get_thumbnail,
+        extract_caption=extract_caption, analyze_mood=analyze_mood,
+    )
+
+    frame_errs = _ev(events, "frame_error")
+    assert len(frame_errs) == 1
+    assert "connection reset" in frame_errs[0]["error"]
+    # The healthy second video still completes
+    complete = _ev(events, "all_complete")[0]
+    errors = [r["error"] for r in complete["results"]]
+    captions = [r["caption"] for r in complete["results"]]
+    assert "connection reset by peer" in errors
+    assert "caption two" in captions
+
+
+def test_caption_pipeline_ocr_timeout(monkeypatch, sync_client):
+    """A successful thumbnail but a stalled OCR call records a caption-extraction
+    timeout on the row and emits ocr_done with an empty caption."""
+    sync_client.post("/api/projects", json={"name": "Pipe Ocr"})
+
+    async def list_videos(url, n, sort):
+        return ["https://www.tiktok.com/@creator/video/5"]
+
+    async def get_thumbnail(url, dest):
+        dest.write_bytes(b"\xff\xd8jpeg")
+        return dest
+
+    async def extract_caption(frame_bytes, _max_retries=4):
+        raise asyncio.TimeoutError()
+
+    async def analyze_mood(caption, _max_retries=3):  # pragma: no cover
+        raise AssertionError("mood must not run when OCR times out")
+
+    events = _run_caption_pipeline(
+        monkeypatch, project="pipe-ocr",
+        list_videos=list_videos, get_thumbnail=get_thumbnail,
+        extract_caption=extract_caption, analyze_mood=analyze_mood,
+    )
+
+    ocr_done = _ev(events, "ocr_done")[0]
+    assert ocr_done["caption"] == ""
+    assert "timed out" in ocr_done["error"].lower()
+    assert _ev(events, "all_complete")[0]["results"][0]["error"]
+
+
+def test_caption_pipeline_mood_failure_falls_back_to_chill(monkeypatch, sync_client):
+    """If mood analysis fails, the caption is still kept and mood defaults to
+    'chill' — a mood error must never lose a good caption."""
+    sync_client.post("/api/projects", json={"name": "Pipe Mood"})
+
+    async def list_videos(url, n, sort):
+        return ["https://www.tiktok.com/@creator/video/7"]
+
+    async def get_thumbnail(url, dest):
+        dest.write_bytes(b"\xff\xd8jpeg")
+        return dest
+
+    async def extract_caption(frame_bytes, _max_retries=4):
+        return "good caption survives"
+
+    async def analyze_mood(caption, _max_retries=3):
+        raise RuntimeError("mood model 500")
+
+    events = _run_caption_pipeline(
+        monkeypatch, project="pipe-mood",
+        list_videos=list_videos, get_thumbnail=get_thumbnail,
+        extract_caption=extract_caption, analyze_mood=analyze_mood,
+    )
+
+    ocr_done = _ev(events, "ocr_done")[0]
+    assert ocr_done["caption"] == "good caption survives"
+    assert ocr_done["mood"] == "chill"
+    assert ocr_done["error"] is None
+
+
+def test_caption_pipeline_playwright_crash_emits_top_level_error(monkeypatch, sync_client):
+    """A failure in the video-listing phase (e.g. Playwright/yt-dlp crash) aborts
+    the pipeline cleanly with a single top-level `error` event — not an unhandled
+    exception that kills the background task silently."""
+    sync_client.post("/api/projects", json={"name": "Pipe Crash"})
+
+    async def list_videos(url, n, sort):
+        raise RuntimeError("Playwright browser closed unexpectedly")
+
+    async def unreached(*a, **k):  # pragma: no cover
+        raise AssertionError("nothing past listing should run")
+
+    events = _run_caption_pipeline(
+        monkeypatch, project="pipe-crash",
+        list_videos=list_videos, get_thumbnail=unreached,
+        extract_caption=unreached, analyze_mood=unreached,
+    )
+
+    errs = _ev(events, "error")
+    assert len(errs) == 1
+    assert "Playwright" in errs[0]["error"]
+    assert not _ev(events, "all_complete")
+
+
+# ── /history and /rename-batch endpoints ──────────────────────────────────
+
+
+def test_caption_history_lists_batches(sync_client):
+    sync_client.post("/api/projects", json={"name": "Hist Suite"})
+
+    cdir = get_project_caption_dir("hist-suite") / "artistA"
+    cdir.mkdir(parents=True, exist_ok=True)
+    (cdir / "captions.csv").write_text(
+        "video_id,video_url,caption,mood,error\n"
+        "1,https://tiktok.com/@a/video/1,first cap,hype,\n"
+        "2,https://tiktok.com/@a/video/2,second cap,chill,\n",
+        encoding="utf-8",
+    )
+
+    resp = sync_client.get("/api/captions/history", params={"project": "hist-suite"})
+    assert resp.status_code == 200
+    batches = resp.json()["batches"]
+    assert len(batches) == 1
+    b = batches[0]
+    assert b["username"] == "artistA"
+    assert b["caption_count"] == 2
+    assert b["captions"][0]["mood"] == "hype"
+    assert "first cap" in b["sample"]
+
+
+def test_caption_history_empty_project(sync_client):
+    sync_client.post("/api/projects", json={"name": "Hist Empty"})
+    resp = sync_client.get("/api/captions/history", params={"project": "hist-empty"})
+    assert resp.status_code == 200
+    assert resp.json()["batches"] == []
+
+
+def test_caption_rename_batch_happy_path(sync_client):
+    sync_client.post("/api/projects", json={"name": "Ren Batch"})
+    cdir = get_project_caption_dir("ren-batch") / "oldartist"
+    cdir.mkdir(parents=True, exist_ok=True)
+    (cdir / "captions.csv").write_text("video_id,caption\n1,x\n", encoding="utf-8")
+
+    resp = sync_client.post(
+        "/api/captions/rename-batch",
+        json={"project": "ren-batch", "old_name": "oldartist", "new_name": "new artist"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["renamed"] is True
+    assert not (get_project_caption_dir("ren-batch") / "oldartist").exists()
+    assert (get_project_caption_dir("ren-batch") / "new artist" / "captions.csv").exists()
+
+
+def test_caption_rename_batch_validation_and_collisions(sync_client):
+    sync_client.post("/api/projects", json={"name": "Ren Guard"})
+    base = get_project_caption_dir("ren-guard")
+    (base / "alpha").mkdir(parents=True, exist_ok=True)
+    (base / "beta").mkdir(parents=True, exist_ok=True)
+
+    # Missing fields -> 400
+    r = sync_client.post(
+        "/api/captions/rename-batch",
+        json={"project": "ren-guard", "old_name": "", "new_name": "x"},
+    )
+    assert r.status_code == 400
+
+    # Path-traversal new_name sanitizes to empty -> 400
+    r = sync_client.post(
+        "/api/captions/rename-batch",
+        json={"project": "ren-guard", "old_name": "alpha", "new_name": "../"},
+    )
+    assert r.status_code == 400
+    assert (base / "alpha").exists()
+
+    # Unknown old_name -> 404
+    r = sync_client.post(
+        "/api/captions/rename-batch",
+        json={"project": "ren-guard", "old_name": "ghost", "new_name": "fresh"},
+    )
+    assert r.status_code == 404
+
+    # Collision with existing batch -> 409
+    r = sync_client.post(
+        "/api/captions/rename-batch",
+        json={"project": "ren-guard", "old_name": "alpha", "new_name": "beta"},
+    )
+    assert r.status_code == 409
+    assert (base / "alpha").exists() and (base / "beta").exists()
