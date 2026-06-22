@@ -311,6 +311,13 @@ def clip_json(project: dict[str, Any], clip: dict[str, Any], *, asset_root: Path
     # Per-keyframe envelopes (dynamic volume/opacity/scale/position/rotation)
     # override the flat single-point defaults above. Empty / absent -> flat.
     payload.update(_keyframe_overrides(clip.get("keyframes"), fps=fps, source_start=source_start))
+    # Mute is render-time silence and must win over a volume envelope. The flat
+    # base `volume` above already reflects mute, but _keyframe_overrides composes
+    # the envelope from the clip's true base volume (so an editor unmute animates
+    # from 1.0, not 0.0) — which would otherwise resurrect audio on a muted clip.
+    # Flatten volume back to silence here, leaving keyframes intact for unmute.
+    if clip.get("muted"):
+        payload["volume"] = _keyframe(_openshot_volume(0.0))
     return payload
 
 

@@ -96,6 +96,37 @@ def test_openshot_export_preserves_quiet_music_bed_volume(tmp_path):
     assert exported["clips"][0]["volume"]["Points"][0]["co"]["Y"] == 18.0
 
 
+def test_muted_clip_with_volume_envelope_exports_silent(tmp_path):
+    """A muted clip must render silent even when it carries a volume keyframe
+    envelope. The envelope composes from the clip's true base volume (so an
+    editor unmute animates from 1.0, not 0.0); mute must flatten the exported
+    `volume` back to 0 so OpenShot's envelope math matches the timeline's muted
+    state instead of resurrecting the audio."""
+    project = _project(tmp_path / "bed.wav")
+    project["assets"]["card"]["type"] = "audio"
+    project["clips"]["card_clip"]["trackId"] = "music_1"
+    project["clips"]["card_clip"]["kind"] = "music_bed"
+    project["clips"]["card_clip"]["volume"] = 1.0
+    project["clips"]["card_clip"]["muted"] = True
+    project["clips"]["card_clip"]["keyframes"] = [
+        {
+            "property": "volume",
+            "points": [
+                {"t": 0.0, "value": 1.0, "interp": "linear"},
+                {"t": 2.0, "value": 0.5, "interp": "linear"},
+            ],
+        }
+    ]
+
+    exported = openshot_bridge.timeline_json(project)
+
+    points = exported["clips"][0]["volume"]["Points"]
+    assert len(points) == 1
+    assert points[0]["co"]["Y"] == 0.0
+    # The keyframe envelope is preserved on the clip so an unmute restores it.
+    assert project["clips"]["card_clip"]["keyframes"][0]["property"] == "volume"
+
+
 def test_openshot_export_duration_ignores_disabled_tail_clip(tmp_path):
     project = _project(tmp_path / "card.png")
     project["clips"]["disabled_tail"] = {
