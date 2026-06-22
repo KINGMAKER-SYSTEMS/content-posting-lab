@@ -1,6 +1,7 @@
 import json
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -527,6 +528,99 @@ def test_choose_renderer_isolates_openshot_in_subprocess(monkeypatch, tmp_path):
 
     assert renderer.backend == "openshot"
     assert renderer.__class__.__name__ == "OpenShotSubprocessRenderer"
+
+
+# --- ZMQ debug-logger port-bind livelock guard (editor_render.py L825-833) ---------
+#
+# libopenshot's ZmqLogger singleton binds TCP 5556 the first time a render runs.
+# With multiple in-process renders (the test suite, prod-cycle gates) a later render
+# contends on that port and blocks forever. `_import_openshot` must disable the logger
+# on every import so the port is never bound. These tests inject a fake `openshot`
+# module so the behaviour is verifiable on hosts without libopenshot installed.
+
+
+def _install_fake_openshot(monkeypatch, *, with_logger=True, raise_on_enable=False):
+    """Make `import openshot` resolve to a tracking double; return the double."""
+    import importlib.machinery
+    import types
+
+    enable_calls: list[bool] = []
+
+    fake = types.ModuleType("openshot")
+    fake.__file__ = "/fake/openshot/__init__.py"
+    # importlib.util.find_spec consults __spec__ for a module already in sys.modules.
+    fake.__spec__ = importlib.machinery.ModuleSpec("openshot", loader=None, origin=fake.__file__)
+    fake.enable_calls = enable_calls  # type: ignore[attr-defined]
+
+    if with_logger:
+        class _Logger:
+            def Enable(self, flag):
+                if raise_on_enable:
+                    raise RuntimeError("logger API absent on this build")
+                enable_calls.append(flag)
+
+        _instance = _Logger()
+
+        class _ZmqLogger:
+            @staticmethod
+            def Instance():
+                return _instance
+
+        fake.ZmqLogger = _ZmqLogger  # type: ignore[attr-defined]
+
+    # `_import_openshot` uses importlib.util.find_spec; a module in sys.modules
+    # is found and returned without touching sys.path or the real bindings.
+    monkeypatch.setitem(sys.modules, "openshot", fake)
+    # Keep candidate path probing inert so no real install gets onto sys.path.
+    monkeypatch.setattr(editor_render, "_openshot_python_candidates", lambda: [])
+    return fake
+
+
+def test_import_openshot_disables_zmq_logger_to_prevent_port_bind(monkeypatch):
+    fake = _install_fake_openshot(monkeypatch)
+
+    module, reason, _path = editor_render._import_openshot()
+
+    assert module is fake
+    assert reason == "available"
+    # The logger was disabled exactly once with False — the 5556 bind never happens.
+    assert fake.enable_calls == [False]
+
+
+def test_import_openshot_disables_logger_on_every_parallel_render(monkeypatch):
+    # Simulate the parallel-render scenario: N renders each import the bindings.
+    # Every import must disable the logger so no render is the one that binds 5556.
+    fake = _install_fake_openshot(monkeypatch)
+
+    for _ in range(5):
+        module, reason, _ = editor_render._import_openshot()
+        assert module is fake
+        assert reason == "available"
+
+    assert fake.enable_calls == [False] * 5
+
+
+def test_import_openshot_survives_builds_without_zmq_logger(monkeypatch):
+    # Older libopenshot builds lack ZmqLogger entirely. Import must still succeed
+    # (the bind never happens there anyway) and never raise.
+    fake = _install_fake_openshot(monkeypatch, with_logger=False)
+    assert not hasattr(fake, "ZmqLogger")
+
+    module, reason, _ = editor_render._import_openshot()
+
+    assert module is fake
+    assert reason == "available"
+
+
+def test_import_openshot_swallows_zmq_logger_enable_errors(monkeypatch):
+    # If Enable() throws on some build, the import must not blow up the render.
+    fake = _install_fake_openshot(monkeypatch, raise_on_enable=True)
+
+    module, reason, _ = editor_render._import_openshot()
+
+    assert module is fake
+    assert reason == "available"
+    assert fake.enable_calls == []  # the throwing call recorded nothing
 
 
 def test_openshot_subprocess_renderer_salvages_result_from_native_child_exit(monkeypatch, tmp_path):
