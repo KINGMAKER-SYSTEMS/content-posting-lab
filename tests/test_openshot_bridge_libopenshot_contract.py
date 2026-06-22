@@ -31,7 +31,52 @@ from services import openshot_bridge
 
 _openshot, _reason, _ = editor_render._import_openshot()
 
-pytestmark = pytest.mark.skipif(
+
+# --- Availability-check contract (runs in BOTH environments, no skip) --------
+# The ticket: verify + document the libopenshot detection seam. These guard the
+# detection itself, so they must NOT be gated on the bindings being present.
+
+def test_import_openshot_reason_is_diagnosable():
+    """_import_openshot must return a 3-tuple whose reason is actionable either
+    way: 'available' when the bindings load, or — when missing — a reason that
+    NAMES the candidate paths searched, so a silent ffmpeg downgrade points ops
+    at the install location / OPENSHOT_PYTHON_PATH instead of a bare 'not
+    importable' (CLAUDE.md hard rule 2: OpenShot is the sanctioned compiler)."""
+    module, reason, path = editor_render._import_openshot()
+    assert isinstance(reason, str) and reason
+    if module is None:
+        # Missing path: the reason must name at least one searched candidate so
+        # the blocker is diagnosable, and the .codex runtime dir is always one.
+        candidates = editor_render._openshot_python_candidates()
+        assert candidates, "detection must always search at least the .codex runtime"
+        runtime = str(
+            editor_render._repo_root()
+            / ".codex" / "openshot-runtime" / "install" / "python"
+        )
+        assert runtime in [str(c) for c in candidates]
+        if "searched:" in reason:
+            assert runtime in reason
+    else:
+        assert reason == "available"
+        assert path is not None
+
+
+def test_detect_render_backends_reports_openshot_preferred_with_reason():
+    """detect_render_backends() must always expose the OpenShot backend as the
+    PREFERRED compiler and carry _import_openshot's reason through verbatim, so
+    the Editor Bay UI can explain why an episode is (or isn't) on OpenShot."""
+    backends = editor_render.detect_render_backends()
+    openshot = backends["openshot"]
+    assert openshot["preferred"] is True
+    _, reason, _ = editor_render._import_openshot()
+    assert openshot["reason"] == reason
+    assert openshot["available"] is (_openshot is not None)
+
+
+# Binding-dependent tests below skip when the native bindings are absent (same
+# posture test_editor_render.py takes for ffmpeg). The two availability-check
+# tests above are deliberately NOT gated — they verify the detection itself.
+_needs_libopenshot = pytest.mark.skipif(
     _openshot is None,
     reason=f"libopenshot Python bindings unavailable ({_reason})",
 )
@@ -135,6 +180,7 @@ def _project(tmp_path) -> dict:
     return project
 
 
+@_needs_libopenshot
 def test_timeline_setjson_accepts_full_bridge_payload(tmp_path):
     """timeline_json(project) loads into a real Timeline via SetJson without the
     native layer throwing. This is the full-load seam the bridge docstring
@@ -151,6 +197,7 @@ def test_timeline_setjson_accepts_full_bridge_payload(tmp_path):
         timeline.Close()
 
 
+@_needs_libopenshot
 def test_timeline_setjson_roundtrips_clip_ids_and_layers(tmp_path):
     """After SetJson, libopenshot's own GetJson must echo back the clips the bridge
     sent — same ids, on their declared layers — proving the payload was understood,
@@ -170,6 +217,7 @@ def test_timeline_setjson_roundtrips_clip_ids_and_layers(tmp_path):
     assert got == expected_layers
 
 
+@_needs_libopenshot
 def test_timeline_applyjsondiff_accepts_command_log_actions(tmp_path):
     """flattened_update_actions(project) applies into a real Timeline via
     ApplyJsonDiff — the incremental-edit seam. An insert action from a clip.create
@@ -209,6 +257,7 @@ def test_timeline_applyjsondiff_accepts_command_log_actions(tmp_path):
         timeline.Close()
 
 
+@_needs_libopenshot
 def test_music_bed_ducking_envelope_animates_volume_inside_libopenshot(tmp_path):
     """The point of the ABN ducking envelope: the music level must ANIMATE inside
     OpenShot, not sit at one flat gain. The shape tests (test_openshot_bridge.py)
@@ -248,6 +297,7 @@ def test_music_bed_ducking_envelope_animates_volume_inside_libopenshot(tmp_path)
     assert points[1]["interpolation"] == openshot_bridge.CONSTANT
 
 
+@_needs_libopenshot
 def test_setjson_then_getframe_renders_without_native_error(tmp_path):
     """The ultimate proof the contract holds: after SetJson the timeline must
     produce a frame. Assets don't exist on disk, but a DummyReader-backed /
@@ -290,6 +340,7 @@ def _max_brightness(frame) -> float:
     return best / 255.0
 
 
+@_needs_libopenshot
 def test_split_then_windowed_crossfade_animates_through_openshot_render(tmp_path):
     """E2E render proof for the ticket: a start-anchored crossfade that survives a
     SPLIT and is then front-trimmed by the render WINDOW must animate through a real

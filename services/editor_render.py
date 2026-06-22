@@ -867,9 +867,18 @@ def _ffmpeg_strict_drops() -> bool:
 
 
 def _import_openshot():
-    for python_path in _openshot_python_candidates():
+    candidates = _openshot_python_candidates()
+    for python_path in candidates:
         if python_path.exists() and str(python_path) not in sys.path:
             sys.path.insert(0, str(python_path))
+
+    # When the bindings are missing the bare reason ("not importable") doesn't
+    # tell ops WHERE the renderer looked, so a wiped .codex runtime or a stale
+    # OPENSHOT_PYTHON_PATH looks identical to "never installed". Surface the
+    # searched candidates so backendHealth.reason points at the fix. CLAUDE.md:
+    # OpenShot is the sanctioned compiler — a silent ffmpeg downgrade must be
+    # diagnosable. ponytail: one f-string off the list we already built.
+    searched = ", ".join(str(p) for p in candidates) or "<none>"
 
     # find_spec is not always a clean None on a broken install. A half-loaded
     # native-extension module (the "dylibs wiped, bindings present" failure from
@@ -884,7 +893,11 @@ def _import_openshot():
     except Exception as exc:
         return None, f"Python bindings not importable in this environment: {exc}", None
     if not spec:
-        return None, "Python bindings not importable in this environment", None
+        return (
+            None,
+            f"Python bindings not importable in this environment (searched: {searched})",
+            None,
+        )
 
     try:
         import openshot  # type: ignore
