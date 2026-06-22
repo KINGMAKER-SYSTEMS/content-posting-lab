@@ -14,6 +14,7 @@ import re
 from pathlib import Path
 
 from services.abn_assets import asset_path_from_slug, asset_url_from_slug
+from services.fsutil import safe_rmtree
 
 
 def _re_i(label: str):
@@ -22,26 +23,14 @@ def _re_i(label: str):
 
 
 def _cleanup_dir(path: Path) -> None:
-    """Best-effort remove a temp recording dir: unlink each file, then rmdir.
+    """Best-effort remove a temp recording dir (contents and all).
 
-    Every failure is swallowed — this runs in destructive bail/finally paths where
+    Delegates to ``fsutil.safe_rmtree``, which never raises and logs on failure
+    instead of swallowing it. This runs in destructive bail/finally paths where
     leaving an orphaned _rec_<name>/ dir is the only stake, so a missing dir or a
-    locked file must never raise.
+    locked file must never propagate.
     """
-    try:
-        if not path.exists():
-            return
-        for f in path.glob("*"):
-            try:
-                f.unlink()
-            except Exception:
-                pass
-        try:
-            path.rmdir()
-        except Exception:
-            pass
-    except Exception:
-        pass
+    safe_rmtree(path)
 
 _VOL = os.getenv("RAILWAY_VOLUME_MOUNT_PATH")
 _BASE = Path(_VOL) if _VOL and Path(_VOL).exists() else Path(__file__).resolve().parent.parent

@@ -40,11 +40,14 @@ def test_cleanup_dir_swallows_unlink_errors(tmp_path, monkeypatch):
     rec.mkdir()
     (rec / "video.webm").write_bytes(b"x")
 
-    def boom(self):
-        raise OSError("file is locked")
+    import shutil
 
-    # a locked/undeletable file must not propagate out of the destructive path
-    monkeypatch.setattr(Path, "unlink", boom)
+    def boom(*a, **kw):
+        raise OSError("dir is locked")
+
+    # a locked/undeletable tree must not propagate out of the destructive path;
+    # _cleanup_dir now delegates to fsutil.safe_rmtree, which catches OSError
+    monkeypatch.setattr(shutil, "rmtree", boom)
     _cleanup_dir(rec)  # no exception == pass
 
 
