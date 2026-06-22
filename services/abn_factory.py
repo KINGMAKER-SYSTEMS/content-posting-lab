@@ -3383,6 +3383,9 @@ def purge_disk(intermediate_age_s=1800, keep_episodes=4, low_disk_gb=2.0):
                 top = sorted(usage.items(), key=lambda kv: kv[1], reverse=True)[:5]
                 detail = ", ".join(f"{owner}={sz//1024//1024}MB" for owner, sz in top)
                 BUS.emit("system", "gc", f"scratch usage {total_mb}MB across {len(usage)} owners — top: {detail}")
+                # PERSIST: historical scratch-growth row so the dashboard (/scratch-metrics) can
+                # age the GC's impact under real load. purge_disk is sync, so write synchronously.
+                db._record_scratch_usage_sync("purge_disk", usage)
         except Exception:
             pass
         protected_paths, protection_complete = _editor_timeline_asset_paths_checked()
@@ -3497,6 +3500,9 @@ async def _gc_segments(keep_recent=12):
                     top = sorted(usage.items(), key=lambda kv: kv[1], reverse=True)[:5]
                     detail = ", ".join(f"{owner}={sz//1024//1024}MB" for owner, sz in top)
                     BUS.emit("system", "gc", f"scratch usage {total_mb}MB across {len(usage)} owners — top: {detail}")
+                    # PERSIST: this is the AUTONOMOUS factory-loop GC (runs every 3 cycles under
+                    # load) — the prod path that previously had no historical scratch-growth signal.
+                    await db.record_scratch_usage("gc_segments", usage)
             except Exception:
                 pass
             protected_paths, protection_complete = _editor_timeline_asset_paths_checked()

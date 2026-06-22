@@ -95,8 +95,17 @@ def _init_sync() -> None:
             data JSON,
             created_at REAL NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS scratch_metrics (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts REAL NOT NULL,
+            source TEXT NOT NULL,        -- which GC emitted it: purge_disk | gc_segments
+            total_bytes INTEGER NOT NULL,
+            owner_count INTEGER NOT NULL,
+            data JSON NOT NULL           -- {owner: bytes} full per-owner breakdown
+        );
         CREATE INDEX IF NOT EXISTS idx_videos_stage ON videos(stage);
         CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status, job_type);
+        CREATE INDEX IF NOT EXISTS idx_scratch_metrics_ts ON scratch_metrics(ts DESC);
         """
     )
     c.commit()
@@ -321,6 +330,38 @@ def _top_patterns_sync(limit) -> list[dict]:
 
 
 async def top_patterns(limit=10): return await asyncio.to_thread(_top_patterns_sync, limit)
+
+
+# ============ SCRATCH METRICS (GC observability) ============
+def _record_scratch_usage_sync(source: str, usage: dict) -> dict:
+    """Persist one per-episode scratch-usage measurement so the GC's impact under load
+    is observable historically (not just a transient EventBus emit). `usage` is the raw
+    {owner: bytes} map from abn_assets.scratch_usage()."""
+    c = _connect(); now = _now()
+    total = int(sum(usage.values()))
+    c.execute("INSERT INTO scratch_metrics(ts,source,total_bytes,owner_count,data) VALUES(?,?,?,?,?)",
+              (now, source, total, len(usage), json.dumps(usage)))
+    c.commit()
+    return {"ts": now, "source": source, "total_bytes": total, "owner_count": len(usage)}
+
+
+def _recent_scratch_metrics_sync(limit: int) -> list[dict]:
+    c = _connect()
+    rows = c.execute("SELECT * FROM scratch_metrics ORDER BY ts DESC LIMIT ?", (limit,)).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["data"] = json.loads(d.get("data") or "{}")
+        out.append(d)
+    return out
+
+
+async def record_scratch_usage(source: str, usage: dict) -> dict:
+    return await asyncio.to_thread(_record_scratch_usage_sync, source, usage)
+
+
+async def recent_scratch_metrics(limit: int = 50) -> list[dict]:
+    return await asyncio.to_thread(_recent_scratch_metrics_sync, limit)
 
 
 # ============ SEED ============

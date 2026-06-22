@@ -1343,3 +1343,45 @@ def test_publish_not_ready_episode_does_not_upload(client, monkeypatch):
     assert body["ok"] is False
     assert "not publish-ready" in body["error"]
     assert called["n"] == 0
+
+
+# ------------------------------------------------- scratch-growth observability
+def test_scratch_metrics_empty_when_no_gc_has_run(client):
+    r = client.get("/api/agenticnews/scratch-metrics")
+    assert r.status_code == 200
+    body = r.json()
+    assert body == {"samples": [], "latest": None, "current_mb": 0, "peak_mb": 0, "count": 0}
+
+
+def test_scratch_metrics_records_and_exposes_per_episode_growth(client):
+    import asyncio as _aio
+    # simulate the two GC measurement sites persisting a per-owner scratch breakdown
+    _aio.run(
+        db.record_scratch_usage("purge_disk", {"ep_aaa": 50 * 1024 * 1024, "ep_bbb": 10 * 1024 * 1024})
+    )
+    _aio.run(
+        db.record_scratch_usage("gc_segments", {"ep_ccc": 200 * 1024 * 1024})
+    )
+
+    body = client.get("/api/agenticnews/scratch-metrics").json()
+    assert body["count"] == 2
+    # newest-first: the gc_segments sample (200MB single owner) is the latest
+    assert body["latest"]["source"] == "gc_segments"
+    assert body["current_mb"] == 200
+    # peak spans all samples, not just the latest
+    assert body["peak_mb"] == 200
+    # the earlier purge_disk sample is present with its top-owner breakdown sorted desc
+    purge = next(s for s in body["samples"] if s["source"] == "purge_disk")
+    assert purge["total_mb"] == 60
+    assert purge["owner_count"] == 2
+    assert purge["top_owners"][0] == {"owner": "ep_aaa", "mb": 50}
+
+
+def test_scratch_metrics_respects_limit(client):
+    import asyncio as _aio
+    for i in range(5):
+        _aio.run(
+            db.record_scratch_usage("purge_disk", {f"ep_{i}": (i + 1) * 1024 * 1024})
+        )
+    body = client.get("/api/agenticnews/scratch-metrics?limit=2").json()
+    assert body["count"] == 2

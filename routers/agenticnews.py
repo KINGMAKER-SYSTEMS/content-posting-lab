@@ -584,6 +584,37 @@ async def workshop_feed(limit: int = 8):
     return {"episodes": out}
 
 
+@router.get("/scratch-metrics")
+async def scratch_metrics(limit: int = 50):
+    """Scratch-growth observability dashboard: the historical per-episode scratch usage
+    recorded by the disk GCs (purge_disk + the autonomous _gc_segments loop), so runaway
+    episodes and the GC's effectiveness under real prod load are visible — not just a
+    transient EventBus emit. Returns newest-first samples + a current-vs-peak summary."""
+    rows = await db.recent_scratch_metrics(limit)
+    samples = [
+        {
+            "ts": r["ts"],
+            "source": r["source"],
+            "total_mb": r["total_bytes"] // 1024 // 1024,
+            "owner_count": r["owner_count"],
+            "top_owners": [
+                {"owner": o, "mb": b // 1024 // 1024}
+                for o, b in sorted(r["data"].items(), key=lambda kv: kv[1], reverse=True)[:5]
+            ],
+        }
+        for r in rows
+    ]
+    latest = samples[0] if samples else None
+    peak_mb = max((s["total_mb"] for s in samples), default=0)
+    return {
+        "samples": samples,
+        "latest": latest,
+        "current_mb": latest["total_mb"] if latest else 0,
+        "peak_mb": peak_mb,
+        "count": len(samples),
+    }
+
+
 @router.get("/stats")
 async def get_stats():
     vids = await db.list_videos()
