@@ -3673,3 +3673,48 @@ def test_abn_to_openshot_roundtrip_preserves_all_motion_and_fades():
     vol_points = b["volume"]["Points"]
     assert len(vol_points) == 2
     assert [round(p["co"]["Y"], 1) for p in vol_points] == [20.0, 20.0]
+
+
+def test_merge_keyframes_keeps_kenburns_motion_and_explicit_volume_envelope():
+    """_merge_keyframes (called during ABN import to combine kenBurns motion with a
+    shot-level envelope) must keep BOTH a kenBurns-derived scale/x/y track AND a
+    distinct volume envelope — neither silently dropped.
+
+    Precedence is first-track-seen per property: kenBurns groups are passed first so
+    their scale/x/y win over any same-property explicit track, while a volume track
+    (which kenBurns never synthesizes) passes through untouched. A regression that
+    dropped the volume track to the kenBurns scale would lose factory ducking.
+    """
+
+    ken_burns = [
+        {"property": "scale", "keyframes": [{"time": 0, "value": 1.0}, {"time": 1, "value": 1.1}]},
+        {"property": "x", "keyframes": [{"time": 0, "value": 0}, {"time": 1, "value": 5}]},
+        {"property": "y", "keyframes": [{"time": 0, "value": 0}, {"time": 1, "value": 5}]},
+    ]
+    explicit = [
+        # collides with kenBurns scale -> kenBurns wins (dropped here)
+        {"property": "scale", "keyframes": [{"time": 0, "value": 9.9}]},
+        # unique property -> survives
+        {"property": "volume", "keyframes": [{"time": 0, "value": 1.0}, {"time": 1, "value": 0.2}]},
+    ]
+
+    merged = timeline._merge_keyframes(ken_burns, explicit)
+
+    by_prop = {t["property"]: t for t in merged}
+    # No property dropped: motion (scale/x/y) AND the volume envelope all present.
+    assert set(by_prop) == {"scale", "x", "y", "volume"}
+    # kenBurns scale won the collision (its 1.0->1.1 motion, not the explicit 9.9).
+    assert by_prop["scale"] is ken_burns[0]
+    assert [kf["value"] for kf in by_prop["scale"]["keyframes"]] == [1.0, 1.1]
+    # The volume ducking envelope survived untouched — this is the regression guard.
+    assert by_prop["volume"] is explicit[1]
+    assert [kf["value"] for kf in by_prop["volume"]["keyframes"]] == [1.0, 0.2]
+
+
+def test_merge_keyframes_tolerates_none_and_empty_groups():
+    """_shot_keyframes/_ken_burns_keyframes can yield None/[] (no envelope, no
+    kenBurns block); _merge_keyframes must skip those without error."""
+
+    vol = [{"property": "volume", "keyframes": [{"time": 0, "value": 0.5}]}]
+    assert timeline._merge_keyframes(None, [], vol) == vol
+    assert timeline._merge_keyframes() == []
