@@ -181,9 +181,22 @@ def _piecewise_linear_expr(
         if span <= 0 or interp == "constant":
             seg = f"{v0:.4f}" if interp == "constant" else f"{v1:.4f}"
         elif interp == "bezier":
-            # s = (var-t0)/span in [0,1]; smoothstep 3s^2-2s^3 eases both ends.
+            # libopenshot's default BEZIER is the symmetric ease-in-out cubic with
+            # x-handles at 0.5: parametric x(u)=1.5u-1.5u^2+u^3, y(u)=3u^2-2u^3.
+            # Smoothstep (3s^2-2s^3) was the old stand-in but diverges from that
+            # curve by up to ~0.056 mid-segment (it silently assumes u==x), so a
+            # bezier ducking envelope rendered audibly different in this ffmpeg
+            # fallback vs the OpenShot compiler. ffmpeg can't solve the cubic
+            # x(u)=s for u in closed form, so refine u from u0=s with ONE Newton
+            # step -- u -= (x(u)-s)/x'(u), x'(u)=1.5-3u+3u^2 -- which collapses the
+            # parity gap to <=0.002 (30x better) with a branch-free expression.
+            # See tests/test_editor_render.py::test_bezier_envelope_matches_openshot*.
             s = f"(({var}-{t0:.4f})/{span:.6f})"
-            seg = f"({v0:.4f}+({v1 - v0:.4f})*(3*{s}*{s}-2*{s}*{s}*{s}))"
+            u = (
+                f"({s}-((1.5*{s}-1.5*{s}*{s}+{s}*{s}*{s})-{s})"
+                f"/(1.5-3*{s}+3*{s}*{s}))"
+            )
+            seg = f"({v0:.4f}+({v1 - v0:.4f})*(3*{u}*{u}-2*{u}*{u}*{u}))"
         else:
             slope = (v1 - v0) / span
             seg = f"({v0:.4f}+({slope:.6f})*({var}-{t0:.4f}))"

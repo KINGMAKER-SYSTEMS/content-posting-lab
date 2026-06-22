@@ -4322,3 +4322,78 @@ def test_bake_fade_zero_duration_fade_is_identity():
     }
     # A fade effect with zero duration produces no ramp -> identity.
     assert editor_render._bake_fade_keyframes(clip) is clip
+
+
+# --- bezier keyframe parity: ffmpeg fallback vs OpenShot's cubic Bezier ---------
+
+# Ground truth: libopenshot's default BEZIER interpolation for a 0->1 ramp over a
+# 10-frame span (Keyframe.AddPoint(1,0,LINEAR); AddPoint(11,1,BEZIER); GetValue
+# at frames 1..11). Captured from the bundled libopenshot binding so the test does
+# NOT depend on the fragile native runtime importing in CI. This is the symmetric
+# ease-in-out cubic Bezier with x-handles at 0.5, i.e. x(u)=1.5u-1.5u^2+u^3,
+# y(u)=3u^2-2u^3 -- which is NOT smoothstep(3s^2-2s^3).
+_OPENSHOT_BEZIER_RAMP = [
+    0.0, 0.014912, 0.064076, 0.160667, 0.308193, 0.5,
+    0.691807, 0.839333, 0.935924, 0.985088, 1.0,
+]
+
+
+def _eval_ffmpeg_time_expr(expr: str, t: float) -> float:
+    """Evaluate the subset of ffmpeg expression syntax our keyframe generator
+    emits -- nested `if(lt(...),a,b)` over arithmetic -- the way ffmpeg's
+    eval=frame would. Lets us assert the rendered curve numerically without
+    spawning ffmpeg."""
+    py = expr.replace("if(", "IF(").replace("lt(", "LT(")
+    return eval(  # noqa: S307 - generated, trusted arithmetic only
+        py,
+        {"__builtins__": {}},
+        {"t": t, "IF": lambda c, a, b: a if c else b, "LT": lambda a, b: a < b},
+    )
+
+
+def test_bezier_envelope_matches_openshot_cubic_not_smoothstep():
+    """An envelope point with `bezier` interp must render the SAME cubic Bezier
+    curve in the ffmpeg fallback that openshot_bridge gets from libopenshot
+    (BEZIER=0). The old smoothstep stand-in (3s^2-2s^3) diverges from libopenshot's
+    default ease-in-out by up to ~0.056 mid-segment, so a bezier volume-ducking
+    envelope rendered an audibly different curve in the two backends with nothing
+    guarding parity. The Newton-refined expression must track the real curve to a
+    small tolerance AND beat smoothstep's worst-case error decisively."""
+    expr = editor_render._piecewise_linear_expr(
+        [(0.0, 0.0), (10.0, 1.0, "bezier")], var="t"
+    )
+
+    errs = []
+    smoothstep_errs = []
+    for i, ref in enumerate(_OPENSHOT_BEZIER_RAMP):
+        t = float(i)
+        got = _eval_ffmpeg_time_expr(expr, t)
+        errs.append(abs(got - ref))
+        s = t / 10.0
+        smoothstep_errs.append(abs((3 * s * s - 2 * s * s * s) - ref))
+
+    # The fallback now tracks libopenshot's cubic Bezier closely.
+    assert max(errs) < 0.005, f"bezier parity drift too large: {errs}"
+    # Endpoints are exact (they are the keyframe values themselves).
+    assert errs[0] == 0.0 and errs[-1] == 0.0
+    # Regression guard: smoothstep was off by >0.05; we are an order better.
+    assert max(smoothstep_errs) > 0.05  # documents the old bug magnitude
+    assert max(errs) < max(smoothstep_errs) / 10
+
+
+def test_bezier_envelope_is_distinct_from_linear_and_constant():
+    """Sanity: the three interpolations produce genuinely different mid-segment
+    values, so `bezier` is not silently collapsing to linear/constant in the
+    ffmpeg fallback (the failure mode the parity bug masked)."""
+    mid_t = 2.5  # quarter-ish into a 0..10 ramp where the curves separate
+    lin = editor_render._piecewise_linear_expr([(0.0, 0.0), (10.0, 1.0, "linear")], var="t")
+    bez = editor_render._piecewise_linear_expr([(0.0, 0.0), (10.0, 1.0, "bezier")], var="t")
+    con = editor_render._piecewise_linear_expr([(0.0, 0.0), (10.0, 1.0, "constant")], var="t")
+
+    v_lin = _eval_ffmpeg_time_expr(lin, mid_t)
+    v_bez = _eval_ffmpeg_time_expr(bez, mid_t)
+    v_con = _eval_ffmpeg_time_expr(con, mid_t)
+
+    assert abs(v_lin - v_bez) > 0.05, "bezier collapsed to linear"
+    assert v_con == 0.0, "constant must hold the start value before the end point"
+    assert v_bez != v_lin and v_bez != v_con
