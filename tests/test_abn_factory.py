@@ -216,6 +216,48 @@ def test_voice_raises_when_tts_fails(monkeypatch, tmp_path):
         asyncio.run(abn_factory._voice("hello", "ep_a111111_s0"))
 
 
+def test_voice_raises_when_tts_reports_ok_but_writes_no_file(monkeypatch, tmp_path):
+    """Second half of the `code != 0 or not out.exists()` gate at services/abn_factory.py ~864:
+    pocket-tts can exit 0 yet silently write NO wav (a binary that fails late, a filter that emits
+    no audio). `_voice` must still raise rather than return a URL to a non-existent narration that
+    would later read as 0-duration and slip past the episode duration floor. The existing
+    `test_voice_raises_when_tts_fails` only exercises the `code != 0` half; this pins `not out.exists()`."""
+    monkeypatch.setattr(abn_factory, "ASSETS", tmp_path)
+    monkeypatch.setattr(abn_assets, "ASSETS_DIR", tmp_path)
+
+    async def ok_but_no_file_sh(cmd, timeout=600):
+        return 0, "pocket-tts: done"  # success code, but the wav is never written -> out.exists() is False
+
+    async def boom_dur(path):  # _dur must never run on an episode whose VO was never produced
+        raise AssertionError("measured duration of a wav that was never written")
+
+    monkeypatch.setattr(abn_factory, "_sh", ok_but_no_file_sh)
+    monkeypatch.setattr(abn_factory, "_dur", boom_dur)
+    with pytest.raises(RuntimeError, match="tts:"):
+        asyncio.run(abn_factory._voice("hello", "ep_a111111_s0"))
+
+
+def test_voice_raises_when_gateway_raises_after_tts_command_built(monkeypatch, tmp_path):
+    """Failure mode the ticket calls out: asset_path_from_slug itself raises AssetPathError when
+    resolving the slug. `_voice` resolves the path via the gateway FIRST (services/abn_factory.py
+    ~861), so a gateway error must propagate as AssetPathError and the TTS command must NEVER run --
+    proving the gateway is the enforcement chokepoint regardless of how the slug went bad. We make
+    the gateway raise directly to cover any off-schema/parse failure surfacing from inside it."""
+    monkeypatch.setattr(abn_factory, "ASSETS", tmp_path)
+    monkeypatch.setattr(abn_assets, "ASSETS_DIR", tmp_path)
+
+    def raising_gateway(slug, kind, *, ext=None):
+        raise abn_assets.AssetPathError(f"off-schema slug {slug!r}")
+
+    async def boom_sh(cmd, timeout=600):
+        raise AssertionError("shelled out to TTS despite the gateway raising on the slug")
+
+    monkeypatch.setattr(abn_factory, "asset_path_from_slug", raising_gateway)
+    monkeypatch.setattr(abn_factory, "_sh", boom_sh)
+    with pytest.raises(abn_assets.AssetPathError):
+        asyncio.run(abn_factory._voice("hello", "ep_a111111_s0"))
+
+
 def test_voice_raises_on_gateway_error_before_shelling_out(monkeypatch, tmp_path):
     """A malformed slug (no 'ep_<hex>' prefix) must be rejected by the asset gateway BEFORE _voice
     ever shells out to TTS — the write path itself is the enforcement point (asset-schema epic).
