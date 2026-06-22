@@ -774,6 +774,11 @@ def test_load_captions_filters_empty_and_keeps_fields(tmp_path):
         "video_id": "1",
         "video_url": "https://tiktok.com/@a/video/1",
         "mood": "hype",
+        # CSV lacks the newer columns -> they default to empty/0 (CAPTION_FIELDS).
+        "creator": "",
+        "sound_id": "",
+        "song": "",
+        "views": 0,
     }
     # text is stripped
     assert caps[1]["text"] == "kept w/ space"
