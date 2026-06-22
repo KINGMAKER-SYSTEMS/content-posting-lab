@@ -187,9 +187,13 @@ def test_import_synthesizes_crossfade_from_shot_transition_for_openshot():
     # shot c already had an explicit crossfade — not duplicated, the explicit one wins
     xf_c = [e for e in c["effects"] if e["type"] == "crossfade"]
     assert len(xf_c) == 1 and xf_c[0]["params"]["duration"] == 1.0
-    # the synthesized crossfade survives translation to an OpenShot Fade(in) dissolve
+    # the synthesized crossfade survives translation to an OpenShot Fade(in) dissolve,
+    # carrying both the `in` direction and the original transition duration — a dropped
+    # direction or zeroed duration here would hard-cut the boundary at render.
     fx = openshot_bridge.effect_json(xf_b[0], fps=30)
     assert fx["type"] == "Fade"
+    assert fx["fade"] == "in"
+    assert fx["duration"]["Points"][0]["co"]["Y"] == 0.4
 
 
 def test_music_bed_imports_pre_ducked_under_vo():

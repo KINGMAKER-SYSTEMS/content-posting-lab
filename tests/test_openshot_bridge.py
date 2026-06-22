@@ -375,6 +375,38 @@ def test_abn_imported_timeline_keeps_source_tag_and_layer_ordering(tmp_path):
     assert layers == sorted(layers)
 
 
+def test_abn_imported_transition_survives_as_openshot_crossfade(tmp_path):
+    """End-to-end: an ABN shot's `transitionSec` is the factory's choreographed
+    dissolve INTO that shot. editor_timeline promotes it to a `crossfade` effect,
+    and the bridge translates that to an OpenShot Fade (direction `in`) with the
+    transition's duration. Each side is covered in isolation, but a crossfade
+    dropped or mistranslated mid-pipeline (lost effect, wrong direction, zeroed
+    duration) would survive both suites and hard-cut the render. This pins the
+    whole round-trip: ABN transitionSec -> import -> OpenShot Fade effect."""
+    abn = _abn_timeline()
+    # Tag the broll shot with a 0.75s dissolve into it.
+    abn["segments"][0]["shots"][0]["transitionSec"] = 0.75
+
+    project = editor_timeline.project_from_abn_timeline(
+        "proj_seam_xf", abn, source_episode_id="ep_seam"
+    )
+
+    # Import must promote transitionSec to a start-anchored crossfade effect.
+    broll = next(c for c in project["clips"].values() if c["kind"] == "broll")
+    xf = next(e for e in broll["effects"] if e["type"] == "crossfade")
+    assert xf["params"]["duration"] == 0.75
+
+    exported = openshot_bridge.timeline_json(project, asset_root=tmp_path)
+    by_id = {c["id"]: c for c in exported["clips"]}
+
+    # The crossfade reaches OpenShot as a Fade effect, direction `in`, carrying
+    # the original 0.75s duration as its keyframe value.
+    effects = by_id[broll["id"]]["effects"]
+    fade = next(e for e in effects if e["type"] == "Fade")
+    assert fade["fade"] == "in"
+    assert fade["duration"]["Points"][0]["co"]["Y"] == 0.75
+
+
 def test_abn_imported_bed_keyframe_ducking_envelope_survives_the_seam(tmp_path):
     """The import lands a FLAT 0.22 bed gain today; the ponytail comment notes a
     keyframed ducking envelope can replace it later. Simulate that upgrade by
