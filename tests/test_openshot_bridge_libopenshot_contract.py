@@ -209,6 +209,45 @@ def test_timeline_applyjsondiff_accepts_command_log_actions(tmp_path):
         timeline.Close()
 
 
+def test_music_bed_ducking_envelope_animates_volume_inside_libopenshot(tmp_path):
+    """The point of the ABN ducking envelope: the music level must ANIMATE inside
+    OpenShot, not sit at one flat gain. The shape tests (test_openshot_bridge.py)
+    prove the bridge EMITS a multi-Point volume curve; this proves libopenshot
+    actually INGESTS it as an animated curve — the seam the ticket flags.
+
+    _project's bed clip carries a volume envelope (0.6 at t=0 -> 0.22 at t=1, the
+    factory ducking convention). After SetJson, libopenshot's own GetJson must echo
+    the bed's `volume` back as >1 Point (not flattened/swallowed to a single static
+    gain) with the right values at the right frame offsets (fps=30 => X=1.0 and
+    X=31.0, the bridge's `t*fps + 1` mapping) — a fidelity bug at the native layer
+    would collapse this to one Point or shift the frame offsets."""
+    project = _project(tmp_path)
+    payload = openshot_bridge.timeline_json(project)
+    bed_id = "bed_clip"
+
+    # Sanity: the bridge emitted an animated (>1 Point) volume curve to begin with.
+    emitted = next(c for c in payload["clips"] if c["id"] == bed_id)
+    assert len(emitted["volume"]["Points"]) == 2
+
+    timeline = _timeline(project)
+    try:
+        timeline.SetJson(json.dumps(payload))
+        roundtrip = json.loads(timeline.Json())
+    finally:
+        timeline.Close()
+
+    bed = next(c for c in roundtrip.get("clips", []) if c.get("id") == bed_id)
+    points = bed["volume"]["Points"]
+
+    # The envelope survived the native layer as a real animated curve, not a flat
+    # gain: two Points, ducking from 0.6 -> 0.22 (0..1 -> 0..100), at frames 1 & 31.
+    assert len(points) == 2, "libopenshot flattened the ducking envelope to one Point"
+    assert [round(p["co"]["Y"], 2) for p in points] == [60.0, 22.0]
+    assert [round(p["co"]["X"], 2) for p in points] == [1.0, 31.0]
+    # The second point's CONSTANT interpolation (hold the duck) survives too.
+    assert points[1]["interpolation"] == openshot_bridge.CONSTANT
+
+
 def test_setjson_then_getframe_renders_without_native_error(tmp_path):
     """The ultimate proof the contract holds: after SetJson the timeline must
     produce a frame. Assets don't exist on disk, but a DummyReader-backed /
