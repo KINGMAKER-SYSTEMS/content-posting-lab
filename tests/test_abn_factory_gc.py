@@ -615,3 +615,60 @@ def test_migrated_asset_url_roundtrips_back_to_disk(migrate_store, monkeypatch):
     assert resolved == dst, "gateway URL must resolve to the migrated destination"
     assert resolved.exists(), "migrated file is unreadable via the gateway URL (read-as-missing bug)"
     assert resolved.read_bytes() == b"card-bytes"
+
+
+def test_purge_disk_protects_render_referenced_by_timeline_saved_mid_trim(store, monkeypatch):
+    """TOCTOU regression guard. A single fresh scan taken BEFORE the trim loop is still stale by the
+    time a LATER loop iteration runs: an Editor Bay timeline saved mid-loop can reference a render a
+    subsequent iteration is about to delete. The fix re-scans the protected set immediately before
+    tombstoning EACH render, so a render that becomes referenced part-way through the loop survives.
+
+    The trim loop walks _old_episode_renders() newest-first then slices off the keepers, so the
+    OLDEST render is processed LAST. We hook tombstone_render: when the first render in the loop is
+    trimmed, we write a new timeline JSON referencing the render scheduled to be trimmed LATER. The
+    per-iteration re-scan must then see that reference and spare it — proving the window is closed.
+    Under the old once-before-the-loop scan that later render would be deleted."""
+    def render(ep_id, age_s):
+        d = store / ep_id / "renders"
+        d.mkdir(parents=True)
+        f = d / "episode.mp4"
+        f.write_bytes(b"render")
+        t = time.time() - age_s
+        os.utime(f, (t, t))
+        return f
+
+    trimmed_first = render("ep_old002", age_s=8000)   # processed first in the loop (newer of the two old)
+    protected_late = render("ep_old001", age_s=9000)  # processed later → referenced DURING trimmed_first's trim
+    fresh = render("ep_fresh1", age_s=10)             # newest → kept (keep_episodes=1)
+
+    real_tombstone = abn_factory.tombstone_render
+
+    def tombstone_then_save_timeline(path):
+        size = real_tombstone(path)
+        # Mid-loop concurrent save: a new timeline now references `protected_late`, which is scheduled
+        # to be trimmed in a LATER iteration. A pre-loop-only scan would miss this; the per-iteration
+        # re-scan must catch it before `protected_late` is trimmed.
+        if Path(path) == trimmed_first:
+            rel = protected_late.relative_to(store)
+            (store / "editor_timelines" / "ep_old001.json").write_text(
+                f'{{"renderCache": {{"video": {{"path": "/agenticnews-assets/{rel}"}}}}}}'
+            )
+        return size
+
+    monkeypatch.setattr(abn_factory, "tombstone_render", tombstone_then_save_timeline)
+
+    usage = namedtuple("usage", ("total", "used", "free"))
+    _orig = shutil.disk_usage
+    shutil.disk_usage = lambda _: usage(100, 100, 0)  # critically low → trim
+    try:
+        abn_factory.purge_disk(intermediate_age_s=99999, keep_episodes=1, low_disk_gb=999)
+    finally:
+        shutil.disk_usage = _orig
+
+    assert not trimmed_first.exists(), "the first unreferenced render in the loop should have been trimmed"
+    assert protected_late.exists(), (
+        "render referenced by a timeline saved DURING the trim loop was deleted — TOCTOU window open"
+    )
+    assert fresh.exists(), "fresh render must be kept"
+
+

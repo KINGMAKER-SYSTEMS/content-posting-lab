@@ -3039,6 +3039,14 @@ def purge_disk(intermediate_age_s=1800, keep_episodes=4, low_disk_gb=2.0):
                     freed += tombstone(f)
             except Exception:
                 pass
+        # RE-SCAN before EACH destructive trim: a single up-front fresh scan still leaves a TOCTOU
+        # window. The protected set captured at the top of this function is stale by the time we get
+        # here (the scratch-reap loop above takes wall-clock time), AND the trim loop itself takes
+        # wall-clock time per render — a NEW Editor Bay timeline saved mid-loop would reference a
+        # render a LATER iteration is about to delete, which a once-before-the-loop scan can't see.
+        # So we re-scan immediately before tombstoning each render and OR it onto the accumulated
+        # protected set: a render protected by ANY scan survives (disk pressure is recoverable, a
+        # deleted in-use render is not).
         if _sh2.disk_usage(str(ASSETS)).free / 1e9 < low_disk_gb:
             for old in _old_episode_renders()[keep_episodes:]:
                 try:
@@ -3049,6 +3057,10 @@ def purge_disk(intermediate_age_s=1800, keep_episodes=4, low_disk_gb=2.0):
                     # don't lean solely on tombstone_render()'s own `_`-prefix/is_file RAISE.
                     if not old.is_file() or old.is_symlink():
                         continue
+                    # Fresh scan at the MOMENT of trimming this render — closes the window a render
+                    # saved during the loop would otherwise fall through. OR onto the accumulated
+                    # protected set so a render referenced by ANY scan survives.
+                    protected_paths = protected_paths | _editor_timeline_asset_paths()
                     if _is_editor_timeline_protected_asset(old, protected_paths):
                         continue
                     freed += tombstone_render(old)  # safe-delete → _trash/, recoverable (not unlink)
@@ -3120,6 +3132,12 @@ async def _gc_segments(keep_recent=12):
             # FREE-SPACE GUARD: if disk is critically low, tombstone the oldest real episode renders
             # (keep 4) → _trash/ via tombstone_render(), recoverable safe-delete, never unlink.
             free_gb = _sh2.disk_usage(str(ASSETS)).free / 1e9
+            # RE-SCAN before the destructive trim (see purge_disk for the twin guard): the protected
+            # set captured at the top is STALE by now, AND the trim loop itself takes wall-clock time
+            # per render: a new Editor Bay timeline saved mid-loop references a render a LATER iteration
+            # is about to delete (the TOCTOU this ticket guards). A single up-front re-scan can't see
+            # that, so we re-scan immediately before tombstoning EACH render and OR it onto the
+            # accumulated protected set — disk pressure is recoverable, a deleted in-use render is not.
             if free_gb < 2.0:
                 for old in _old_episode_renders()[4:]:
                     try:
@@ -3128,6 +3146,10 @@ async def _gc_segments(keep_recent=12):
                         # swap can't reach the destructive call — don't rely on the RAISE alone.
                         if not old.is_file() or old.is_symlink():
                             continue
+                        # Fresh scan at the MOMENT of trimming this render — closes the window a render
+                        # saved during the loop would otherwise fall through. OR onto the accumulated
+                        # protected set so a render referenced by ANY scan survives.
+                        protected_paths = protected_paths | _editor_timeline_asset_paths()
                         if _is_editor_timeline_protected_asset(old, protected_paths):
                             continue
                         tombstone_render(old)  # safe-delete → _trash/, recoverable (not unlink)
