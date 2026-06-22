@@ -7,7 +7,7 @@ from datetime import datetime
 import pytest
 
 from services import json_store
-from services.json_store import atomic_load, atomic_save
+from services.json_store import atomic_load, atomic_save, lock_for
 
 
 def test_round_trip(tmp_path):
@@ -212,3 +212,102 @@ def test_concurrent_saves_same_path_no_corruption(tmp_path):
     assert final["payload"] == list(range(final["writer"]))
     # no tmp sidecar may survive the storm
     assert not list(tmp_path.glob("*.tmp")), "tmp leaked under concurrent saves"
+
+
+# --- lock_for(): per-path reentrant transaction guard (this ticket) ----------
+
+
+def test_lock_for_is_reentrant_rlock(tmp_path):
+    """lock_for returns an RLock that one thread can acquire nested without
+    self-deadlocking — the property roster/telegram transactions rely on when a
+    load-modify-save calls into another transaction on the same file."""
+    lock = lock_for(tmp_path / "cfg.json")
+    assert isinstance(lock, type(threading.RLock()))
+    with lock:
+        with lock:  # nested acquire on the same thread must not block
+            assert True
+
+
+def test_lock_for_same_path_returns_same_lock(tmp_path):
+    """Same logical path -> identical lock object (so racing callers actually
+    serialize on one another), regardless of str vs Path or trailing forms."""
+    p = tmp_path / "cfg.json"
+    a = lock_for(p)
+    b = lock_for(str(p))
+    c = lock_for(tmp_path / "cfg.json")
+    assert a is b is c
+
+
+def test_lock_for_different_paths_return_different_locks(tmp_path):
+    """Distinct files must not share a lock — guarding one file shouldn't block
+    an unrelated transaction on another."""
+    a = lock_for(tmp_path / "one.json")
+    b = lock_for(tmp_path / "two.json")
+    assert a is not b
+
+
+def test_lock_for_serializes_concurrent_transactions(tmp_path):
+    """The lock actually serializes racing read-modify-write transactions.
+
+    Without holding lock_for, many threads doing load->mutate->save on the same
+    file lose increments (TOCTOU: each reads the same base before any writes).
+    Holding the per-path lock for the whole transaction makes the final count
+    exact — this is the race the function exists to close.
+    """
+    p = tmp_path / "counter.json"
+    atomic_save(p, {"n": 0})
+    lock = lock_for(p)
+
+    n = 40
+    barrier = threading.Barrier(n)
+
+    def bump():
+        barrier.wait()
+        with lock:  # whole load-modify-save serialized
+            data = atomic_load(p, default={"n": 0})
+            data["n"] += 1
+            atomic_save(p, data)
+
+    threads = [threading.Thread(target=bump) for _ in range(n)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert atomic_load(p)["n"] == n, "lost updates: lock did not serialize transactions"
+
+
+def test_lock_for_provides_mutual_exclusion(tmp_path):
+    """Only one thread may hold a given path's lock at a time. A second thread's
+    non-blocking acquire must fail while the first holds it, then succeed after
+    release."""
+    lock = lock_for(tmp_path / "excl.json")
+    acquired_while_held = []
+    released = threading.Event()
+    holding = threading.Event()
+
+    def holder():
+        with lock:
+            holding.set()
+            released.wait(timeout=5)
+
+    t = threading.Thread(target=holder)
+    t.start()
+    assert holding.wait(timeout=5)
+    # a different thread trying non-blocking acquire must be refused while held
+    def probe():
+        got = lock.acquire(blocking=False)
+        acquired_while_held.append(got)
+        if got:
+            lock.release()
+
+    pt = threading.Thread(target=probe)
+    pt.start()
+    pt.join()
+    released.set()
+    t.join()
+
+    assert acquired_while_held == [False], "lock was not mutually exclusive across threads"
+    # after release the lock is free again
+    assert lock.acquire(blocking=False)
+    lock.release()
