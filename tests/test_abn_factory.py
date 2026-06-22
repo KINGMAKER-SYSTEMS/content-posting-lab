@@ -1110,6 +1110,33 @@ def test_ensure_card_backgrounds_promotes_through_gateway(monkeypatch, tmp_path)
     assert abn_factory._cards_assets_dir() == str(tmp_path / "_shared")
 
 
+def test_ensure_card_backgrounds_refuses_to_promote_non_scratch_source(monkeypatch, tmp_path):
+    """If _codex_image regresses and returns a URL pointing OUTSIDE _scratch/ (e.g. a flat
+    ASSETS-root path), the promoter must NOT .replace() that file into the shared bg pool — that
+    would yank an arbitrary in-store file off-schema. Only GC-reapable _scratch/ keepers promote."""
+    monkeypatch.setattr(abn_factory, "ASSETS", tmp_path)
+    monkeypatch.setattr(abn_assets, "ASSETS_DIR", tmp_path)
+    monkeypatch.setattr(abn_factory, "_V2_VISUALS", True)
+
+    # an existing in-store file at the flat ASSETS root (NOT under _scratch/) that must be left alone
+    bystander = tmp_path / "_tmp_bg_0.png"
+    bystander.write_bytes(b"\x89PNG\r\nKEEP")
+
+    def fake_codex_image(prompt, out_name, size="1536x1024"):
+        # regression: return a flat-root URL instead of the _scratch/ one the contract promises
+        return f"/agenticnews-assets/{out_name}.png"
+
+    monkeypatch.setattr(abn_factory, "_codex_image", fake_codex_image)
+
+    abn_factory._ensure_card_backgrounds(want=1)
+
+    gateway_dir = tmp_path / "_shared" / "card_backgrounds"
+    assert not gateway_dir.exists() or not list(gateway_dir.glob("bg_*.png")), \
+        "promoted an off-schema (non-_scratch) source into the shared pool"
+    # the bystander file must be untouched (not moved/consumed by .replace())
+    assert bystander.exists() and bystander.read_bytes() == b"\x89PNG\r\nKEEP"
+
+
 # ---------------- _build_timeline: schema-aware ABN episode assembly ----------------
 #
 # _build_timeline composes segments → a Remotion timeline. It is the routine commit cb5c98f5

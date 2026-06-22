@@ -88,7 +88,13 @@ def _ensure_card_backgrounds(want: int = 6):
                 # rel is a /agenticnews-assets/<subpath> URL — resolve through ASSETS (it now
                 # lands in _scratch/, not the root) before promoting the keeper into the bg pool.
                 src = ASSETS / rel.removeprefix("/agenticnews-assets/")
-                if src.exists():
+                # GUARD the source, not just the destination: only promote a keeper that actually
+                # came from a GC-reapable _scratch/ root. If _codex_image ever returned a URL
+                # pointing elsewhere (a regression, a flat ASSETS-root path), src.replace() would
+                # otherwise yank an arbitrary in-store file into the shared pool. scratch_dirs() is
+                # the same reapable-root set _cross_scratch_path() validates writes against.
+                reapable = {d.resolve() for d in scratch_dirs()}
+                if src.exists() and src.resolve().parent in reapable:
                     src.replace(shared_path("card_backgrounds", f"bg_{idx:02d}.png"))
             idx += 1
     except Exception:
