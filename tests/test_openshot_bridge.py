@@ -127,6 +127,39 @@ def test_muted_clip_with_volume_envelope_exports_silent(tmp_path):
     assert project["clips"]["card_clip"]["keyframes"][0]["property"] == "volume"
 
 
+def test_disabled_clip_with_opacity_envelope_exports_invisible_but_keeps_keyframes(tmp_path):
+    """A disabled clip must export render-time invisible (flat alpha 0) even when
+    it carries an opacity keyframe envelope — same shape as mute. The envelope
+    must NOT clobber the disable (no resurrecting a hidden clip), and the clip's
+    `keyframes` must survive untouched so re-enabling restores the animation.
+
+    `timeline_json` drops disabled clips, so this checks `clip_json` directly —
+    the serializer the command-log diff path emits for an individual clip."""
+    project = _project(tmp_path / "card.png")
+    clip = project["clips"]["card_clip"]
+    clip["enabled"] = False
+    clip["transform"]["opacity"] = 0.9
+    clip["keyframes"] = [
+        {
+            "property": "opacity",
+            "points": [
+                {"t": 0.0, "value": 1.0, "interp": "linear"},
+                {"t": 2.0, "value": 0.5, "interp": "linear"},
+            ],
+        }
+    ]
+
+    payload = openshot_bridge.clip_json(project, clip)
+
+    # Disable wins: alpha flattened to a single 0 point for the render.
+    points = payload["alpha"]["Points"]
+    assert len(points) == 1
+    assert points[0]["co"]["Y"] == 0.0
+    # The opacity envelope is preserved on the clip so re-enabling restores it.
+    assert clip["keyframes"][0]["property"] == "opacity"
+    assert len(clip["keyframes"][0]["points"]) == 2
+
+
 def test_openshot_export_duration_ignores_disabled_tail_clip(tmp_path):
     project = _project(tmp_path / "card.png")
     project["clips"]["disabled_tail"] = {

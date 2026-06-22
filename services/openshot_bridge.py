@@ -257,7 +257,7 @@ def clip_json(project: dict[str, Any], clip: dict[str, Any], *, asset_root: Path
     asset = (project.get("assets") or {}).get(clip.get("assetId")) or {}
     transform = clip.get("transform") or {}
     scale = max(0.0, float(transform.get("scale", 1.0)))
-    opacity = 0.0 if not clip.get("enabled", True) else float(transform.get("opacity", 1.0))
+    opacity = float(transform.get("opacity", 1.0))
     volume = 0.0 if clip.get("muted") else float(clip.get("volume", 1.0))
     source_start = float(clip.get("sourceStart") or 0.0)
     duration = max(0.001, float(clip.get("duration") or 0.001))
@@ -318,6 +318,12 @@ def clip_json(project: dict[str, Any], clip: dict[str, Any], *, asset_root: Path
     # Flatten volume back to silence here, leaving keyframes intact for unmute.
     if clip.get("muted"):
         payload["volume"] = _keyframe(_openshot_volume(0.0))
+    # Disable is render-time invisibility and must win over an opacity envelope —
+    # same shape as mute above. The base `opacity` (and any opacity keyframes) is
+    # composed from the clip's true values so re-enabling restores the animation;
+    # here we flatten alpha to 0 for the render, leaving `keyframes` intact.
+    if not clip.get("enabled", True):
+        payload["alpha"] = _keyframe(0.0)
     return payload
 
 
