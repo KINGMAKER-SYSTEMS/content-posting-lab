@@ -1207,6 +1207,65 @@ def test_effect_json_maps_classes_and_falls_through_for_unknown_types():
     assert unknown == {"id": "u", "type": "kaleidoscope"}
 
 
+def test_every_editor_effect_type_translates_to_a_real_openshot_class():
+    """Drift guard: every effect type the editor accepts (editor_timeline.EFFECT_TYPES)
+    MUST have a libopenshot class mapping in openshot_bridge — otherwise effect_json
+    falls through with the raw editor type, OpenShot can't construct the effect, and it
+    is silently skipped at render with no error. This is the exact untested translation
+    gap (a new transition / color filter added upstream but never wired into the bridge)
+    that the production-gaps audit flagged. It fails loudly the moment the vocabularies
+    diverge instead of losing the effect in a rendered episode."""
+    editor_types = set(editor_timeline.EFFECT_TYPES)
+    mapped = set(openshot_bridge._EFFECT_CLASS_MAP)
+    missing = editor_types - mapped
+    assert not missing, (
+        "editor effect types with no openshot_bridge class mapping (they fall through "
+        f"as raw types and OpenShot silently drops them at render): {sorted(missing)}"
+    )
+
+    # And the mapping must resolve to a real class name (a non-empty value that is NOT
+    # just the editor type echoed back), and effect_json must emit it for every type
+    # exercised end-to-end. Build a minimal valid effect for each editor type from its
+    # own param spec so this stays in lockstep with the upstream vocabulary.
+    for effect_type, spec in editor_timeline.EFFECT_TYPES.items():
+        cls = openshot_bridge._EFFECT_CLASS_MAP[effect_type]
+        assert cls and cls != effect_type, (
+            f"{effect_type} maps to a bogus class name {cls!r}"
+        )
+        params = {name: low for name, (low, high) in spec.items()}
+        out = openshot_bridge.effect_json(
+            {"id": f"fx_{effect_type}", "type": effect_type, "params": params}, fps=30
+        )
+        assert out["type"] == cls, (
+            f"effect_json did not emit the mapped class for {effect_type}: got {out['type']!r}"
+        )
+        # Fades carry a direction; color filters carry their keyframed property.
+        if effect_type in openshot_bridge._FADE_DIRECTION_MAP:
+            assert out["fade"] == openshot_bridge._FADE_DIRECTION_MAP[effect_type]
+            assert "duration" in out and "Points" in out["duration"]
+        else:
+            assert any(
+                isinstance(v, dict) and "Points" in v
+                for k, v in out.items()
+                if k not in {"id", "type"}
+            ), f"{effect_type} emitted no keyframed property"
+
+
+def test_every_fade_type_has_a_direction():
+    """Parallel drift guard for the fade family: every effect that maps to the Fade
+    class must also have an entry in _FADE_DIRECTION_MAP, or effect_json emits a Fade
+    with no `fade` field and OpenShot defaults the direction (wrong-way crossfades /
+    missing dissolves at clip boundaries). Pin the two fade tables in lockstep."""
+    fade_types = {
+        t for t, cls in openshot_bridge._EFFECT_CLASS_MAP.items() if cls == "Fade"
+    }
+    undirected = fade_types - set(openshot_bridge._FADE_DIRECTION_MAP)
+    assert not undirected, (
+        "effect types mapped to the Fade class with no direction in _FADE_DIRECTION_MAP "
+        f"(they render with a default/ambiguous fade direction): {sorted(undirected)}"
+    )
+
+
 # ── repo-hygiene guard ────────────────────────────────────────────────────────
 # openshot_bridge.py is imported at app load (routers/agenticnews.py). It was once
 # untracked and nearly lost; a clean checkout that's missing it raises
