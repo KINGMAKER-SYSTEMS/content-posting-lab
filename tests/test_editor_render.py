@@ -519,6 +519,30 @@ def test_windowed_clip_keyframe_fires_at_same_source_frame_as_unwindowed():
     assert after == pytest.approx(before)
 
 
+def test_trimmed_clip_keyframe_at_t0_offsets_by_source_start():
+    """Direct guard on the sourceStart frame-number offset (openshot_bridge:496).
+
+    A clip trimmed via clip.trim carries sourceStart > 0. Its keyframe at t=0 must
+    NOT compile to X=1 (the source-reader origin); it must compile to
+    (sourceStart + 0)*fps + 1 so the animation fires at the frame the trimmed clip
+    actually starts reading from. A second keyframe at t>0 must offset by the same
+    base plus its own t. Prior keyframe tests only reach this offset *through*
+    _render_scope_project windowing; none asserts clip_json applies it on a clip
+    that is merely source-trimmed with a t=0 keyframe."""
+
+    fps = 12
+    source_start = 4.0  # clip.trim left the front 4s of source off the timeline
+    kfs = _opacity_keyframes((0.0, 0.0), (2.5, 1.0))
+    project = _window_project(
+        _wclip("a", start=0.0, duration=3.0, source_start=source_start, keyframes=kfs)
+    )
+
+    xs = _alpha_xs(project["clips"]["a"], project)
+    # t=0 -> (4+0)*12+1 = 49 (NOT 1) ; t=2.5 -> (4+2.5)*12+1 = 79
+    assert xs == pytest.approx([49.0, 79.0])
+    assert xs[0] != pytest.approx(1.0)  # offset really applied, not source-origin
+
+
 def test_windowed_clip_keyframe_before_window_clamps_to_window_start():
     """A keyframe in the trimmed-away front region clamps to the window's first
     source frame (t -> 0 after the shift), not past it. Asserts the clamp in
