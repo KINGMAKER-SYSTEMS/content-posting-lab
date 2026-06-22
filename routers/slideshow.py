@@ -29,6 +29,8 @@ from project_manager import (
 from services import sound_cache
 from services.captions import scan_project_captions
 from services.cropper import crop_to_916
+from services.fsutil import safe_rmtree
+from services.json_store import atomic_save
 
 router = APIRouter(tags=["slideshow"])
 
@@ -952,7 +954,7 @@ async def save_format(body: SaveFormatRequest):
         "updated_at": now,
         "config": body.config,
     }
-    fmt_path.write_text(_json.dumps(data, indent=2), encoding="utf-8")
+    atomic_save(fmt_path, data)
     return {"saved": safe_name, "format": data}
 
 

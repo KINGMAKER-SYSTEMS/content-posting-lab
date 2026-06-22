@@ -153,3 +153,38 @@ def test_generate_stores_and_passes_negative_prompt(sync_client, monkeypatch, is
 
     prompts = json.loads((isolated_projects_root / "video-suite" / "prompts.json").read_text())
     assert prompts[0]["negative_prompt"] == negative_prompt
+
+
+def test_save_jobs_is_atomic(isolated_projects_root):
+    """_save_jobs writes through atomic_save: valid JSON, no .tmp sidecar left.
+
+    A direct write_text() could leave jobs.json truncated on a mid-write crash;
+    routing through services.json_store.atomic_save (tmp + fsync + os.replace)
+    is the guard. This pins the wiring so it can't regress to a raw write.
+    """
+    video_router.jobs.clear()
+    video_router.jobs["job-1"] = {
+        "project": "atomic-jobs",
+        "videos": [{"status": "done"}],
+    }
+    video_router._save_jobs("atomic-jobs")
+
+    p = video_router._jobs_path("atomic-jobs")
+    assert p.exists()
+    assert json.loads(p.read_text(encoding="utf-8"))["job-1"]["project"] == "atomic-jobs"
+    # atomic_save renames its tmp away — none may linger in the project dir
+    assert not list(p.parent.glob("*.tmp"))
+
+
+def test_save_jobs_unwritable_swallows_error(isolated_projects_root, monkeypatch):
+    """atomic_save raising OSError (e.g. disk full / unwritable) is caught,
+    not propagated — an in-flight render must not crash the request."""
+    video_router.jobs.clear()
+    video_router.jobs["job-x"] = {"project": "save-proj", "videos": []}
+
+    def boom(*args, **kwargs):
+        raise OSError("No space left on device")
+
+    monkeypatch.setattr(video_router, "atomic_save", boom)
+    # Must not raise.
+    video_router._save_jobs("save-proj")

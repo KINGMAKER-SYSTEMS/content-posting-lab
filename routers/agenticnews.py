@@ -30,6 +30,8 @@ import services.abn_assets as abn_assets
 import services.openshot_bridge as openshot_bridge
 import services.editor_render as editor_render
 import services.editor_timeline as editor_timeline
+from services.fsutil import safe_unlink
+from services.json_store import atomic_save
 from fastapi.responses import StreamingResponse
 
 router = APIRouter()
@@ -1764,7 +1766,7 @@ async def editor_apply(ep_id: str, body: dict = Body(...)):
                             applied["skipped"] += 1
 
     # atomic write of the modified timeline
-    tmp = tl_file.with_suffix(".json.tmp"); tmp.write_text(_json.dumps(timeline)); tmp.replace(tl_file)
+    atomic_save(tl_file, timeline)
 
     # re-render in the background (the re-render guard reuses nothing here — timeline changed)
     import logging as _logging

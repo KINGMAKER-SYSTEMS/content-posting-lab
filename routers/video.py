@@ -21,6 +21,7 @@ from providers import PROVIDERS
 from providers.base import API_KEYS, generate_one
 from services.ffmpeg import is_default_cc, run_color_correct
 from services.fsutil import safe_unlink
+from services.json_store import atomic_save
 
 log = logging.getLogger("video")
 
@@ -91,7 +92,7 @@ def _save_jobs(project: str) -> None:
     p = _jobs_path(project)
     p.parent.mkdir(parents=True, exist_ok=True)
     try:
-        p.write_text(json.dumps(project_jobs, indent=2), encoding="utf-8")
+        atomic_save(p, project_jobs)
     except OSError as e:
         log.error("Failed to save jobs for project %s: %s", project, e)
 
