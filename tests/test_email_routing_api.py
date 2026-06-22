@@ -281,3 +281,249 @@ def test_delete_rule_propagates_cf_error_as_502(sync_client, monkeypatch, config
     resp = sync_client.delete("/api/email/rules/rule_99")
     assert resp.status_code == 502
     assert "CF 500" in resp.json()["detail"]
+
+
+# ── Service-level tests for services/email_routing.py ────────────────────────
+#
+# These exercise the real async httpx calls inside the service (not the router).
+# We drive httpx.AsyncClient with a MockTransport so no live Cloudflare traffic
+# happens, then assert on success parsing AND the error paths the ticket cares
+# about: missing config, HTTP 403/500, timeouts, and network partitions.
+
+import httpx  # noqa: E402
+
+import services.email_routing as svc  # noqa: E402
+
+CF_ENV = {
+    "CF_API_TOKEN": "tok-123",
+    "CF_ZONE_ID": "zone-abc",
+    "CF_ACCOUNT_ID": "acct-xyz",
+    "CF_EMAIL_DOMAIN": "rt.example",
+}
+
+
+@pytest.fixture
+def cf_configured(monkeypatch):
+    for k, v in CF_ENV.items():
+        monkeypatch.setenv(k, v)
+
+
+@pytest.fixture
+def cf_unconfigured(monkeypatch):
+    for k in CF_ENV:
+        monkeypatch.delenv(k, raising=False)
+
+
+def _install_transport(monkeypatch, handler):
+    """Force the service's httpx.AsyncClient to use a MockTransport handler.
+
+    The service builds its own client as ``httpx.AsyncClient(timeout=15)`` with
+    no transport arg, so we wrap the class to inject one. ``handler`` receives an
+    ``httpx.Request`` and returns an ``httpx.Response`` (or raises to simulate a
+    network fault / timeout).
+    """
+    real_client = httpx.AsyncClient
+
+    def _factory(*args, **kwargs):
+        kwargs["transport"] = httpx.MockTransport(handler)
+        return real_client(*args, **kwargs)
+
+    monkeypatch.setattr(svc.httpx, "AsyncClient", _factory)
+
+
+# --- get_config ---------------------------------------------------------------
+
+
+def test_get_config_reports_configured(cf_configured):
+    cfg = svc.get_config()
+    assert cfg["configured"] is True
+    assert cfg["zone_id"] == "zone-abc"
+    assert cfg["domain"] == "rt.example"
+    assert cfg["account_id"] == "acct-xyz"
+    assert cfg["token"] == "tok-123"
+
+
+def test_get_config_reports_unconfigured_when_partial(monkeypatch, cf_unconfigured):
+    monkeypatch.setenv("CF_API_TOKEN", "tok-only")
+    cfg = svc.get_config()
+    assert cfg["configured"] is False
+
+
+# --- unconfigured short-circuits (no network) ---------------------------------
+
+
+async def test_list_rules_returns_empty_when_unconfigured(cf_unconfigured, monkeypatch):
+    def _no_calls(request):  # pragma: no cover - must never fire
+        raise AssertionError("must not hit the network when unconfigured")
+
+    _install_transport(monkeypatch, _no_calls)
+    assert await svc.list_rules() == []
+
+
+async def test_list_destinations_returns_empty_when_unconfigured(cf_unconfigured, monkeypatch):
+    def _no_calls(request):  # pragma: no cover
+        raise AssertionError("must not hit the network when unconfigured")
+
+    _install_transport(monkeypatch, _no_calls)
+    assert await svc.list_destinations() == []
+
+
+async def test_create_rule_raises_when_unconfigured(cf_unconfigured):
+    with pytest.raises(ValueError, match="not configured"):
+        await svc.create_rule("acme", "a@b.com")
+
+
+async def test_delete_rule_raises_when_unconfigured(cf_unconfigured):
+    with pytest.raises(ValueError, match="not configured"):
+        await svc.delete_rule("rule_1")
+
+
+async def test_add_destination_raises_when_unconfigured(cf_unconfigured):
+    with pytest.raises(ValueError, match="not configured"):
+        await svc.add_destination("a@b.com")
+
+
+# --- happy paths: real request building + response parsing --------------------
+
+
+async def test_list_rules_parses_result(cf_configured, monkeypatch):
+    seen = {}
+
+    def handler(request):
+        seen["url"] = str(request.url)
+        seen["auth"] = request.headers.get("authorization")
+        return httpx.Response(200, json={"result": [{"id": "r1"}, {"id": "r2"}]})
+
+    _install_transport(monkeypatch, handler)
+    rules = await svc.list_rules()
+    assert [r["id"] for r in rules] == ["r1", "r2"]
+    assert seen["url"].endswith("/zones/zone-abc/email/routing/rules")
+    assert seen["auth"] == "Bearer tok-123"
+
+
+async def test_create_rule_builds_forward_payload(cf_configured, monkeypatch):
+    import json as _json
+
+    captured = {}
+
+    def handler(request):
+        captured["body"] = _json.loads(request.content)
+        captured["method"] = request.method
+        return httpx.Response(200, json={"result": {"id": "new_rule"}})
+
+    _install_transport(monkeypatch, handler)
+    result = await svc.create_rule("acme", "dest@b.com")
+    assert result == {"id": "new_rule"}
+    assert captured["method"] == "POST"
+    body = captured["body"]
+    assert body["matchers"][0]["value"] == "acme@rt.example"
+    assert body["actions"][0]["type"] == "forward"
+    assert body["actions"][0]["value"] == ["dest@b.com"]
+    assert body["enabled"] is True
+
+
+async def test_delete_rule_returns_true_on_200(cf_configured, monkeypatch):
+    def handler(request):
+        assert request.method == "DELETE"
+        assert request.url.path.endswith("/rules/rule_42")
+        return httpx.Response(200, json={"result": {"id": "rule_42"}})
+
+    _install_transport(monkeypatch, handler)
+    assert await svc.delete_rule("rule_42") is True
+
+
+async def test_list_destinations_parses_result(cf_configured, monkeypatch):
+    def handler(request):
+        assert "/accounts/acct-xyz/email/routing/addresses" in str(request.url)
+        return httpx.Response(200, json={"result": [{"email": "a@b.com", "verified": "x"}]})
+
+    _install_transport(monkeypatch, handler)
+    dests = await svc.list_destinations()
+    assert dests[0]["email"] == "a@b.com"
+
+
+async def test_add_destination_posts_email(cf_configured, monkeypatch):
+    import json as _json
+
+    captured = {}
+
+    def handler(request):
+        captured["body"] = _json.loads(request.content)
+        return httpx.Response(200, json={"result": {"email": "a@b.com", "id": "d1"}})
+
+    _install_transport(monkeypatch, handler)
+    result = await svc.add_destination("a@b.com")
+    assert result["id"] == "d1"
+    assert captured["body"] == {"email": "a@b.com"}
+
+
+async def test_missing_result_key_defaults(cf_configured, monkeypatch):
+    """CF responds 200 but with no 'result' key — service should not KeyError."""
+    _install_transport(monkeypatch, lambda req: httpx.Response(200, json={"success": True}))
+    assert await svc.list_rules() == []
+    assert await svc.create_rule("acme", "a@b.com") == {}
+    assert await svc.add_destination("a@b.com") == {}
+
+
+# --- error paths: HTTP status failures (raise_for_status) ---------------------
+
+
+@pytest.mark.parametrize("status", [403, 401, 429, 500, 502])
+async def test_list_rules_raises_on_http_error(cf_configured, monkeypatch, status):
+    _install_transport(monkeypatch, lambda req: httpx.Response(status, json={"errors": ["nope"]}))
+    with pytest.raises(httpx.HTTPStatusError) as exc:
+        await svc.list_rules()
+    assert exc.value.response.status_code == status
+
+
+async def test_create_rule_raises_on_403_auth_failure(cf_configured, monkeypatch):
+    _install_transport(
+        monkeypatch,
+        lambda req: httpx.Response(403, json={"errors": [{"message": "Authentication error"}]}),
+    )
+    with pytest.raises(httpx.HTTPStatusError) as exc:
+        await svc.create_rule("acme", "a@b.com")
+    assert exc.value.response.status_code == 403
+
+
+async def test_delete_rule_raises_on_500(cf_configured, monkeypatch):
+    _install_transport(monkeypatch, lambda req: httpx.Response(500, text="boom"))
+    with pytest.raises(httpx.HTTPStatusError) as exc:
+        await svc.delete_rule("rule_1")
+    assert exc.value.response.status_code == 500
+
+
+async def test_add_destination_raises_on_500(cf_configured, monkeypatch):
+    _install_transport(monkeypatch, lambda req: httpx.Response(500))
+    with pytest.raises(httpx.HTTPStatusError):
+        await svc.add_destination("a@b.com")
+
+
+# --- error paths: timeouts and network partitions -----------------------------
+
+
+async def test_list_rules_propagates_timeout(cf_configured, monkeypatch):
+    def handler(request):
+        raise httpx.ReadTimeout("CF timed out", request=request)
+
+    _install_transport(monkeypatch, handler)
+    with pytest.raises(httpx.TimeoutException):
+        await svc.list_rules()
+
+
+async def test_create_rule_propagates_connect_error(cf_configured, monkeypatch):
+    def handler(request):
+        raise httpx.ConnectError("network partition", request=request)
+
+    _install_transport(monkeypatch, handler)
+    with pytest.raises(httpx.ConnectError):
+        await svc.create_rule("acme", "a@b.com")
+
+
+async def test_delete_rule_propagates_network_error(cf_configured, monkeypatch):
+    def handler(request):
+        raise httpx.ConnectError("no route to host", request=request)
+
+    _install_transport(monkeypatch, handler)
+    with pytest.raises(httpx.ConnectError):
+        await svc.delete_rule("rule_1")
