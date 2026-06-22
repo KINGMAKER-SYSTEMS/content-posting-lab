@@ -16,6 +16,7 @@ Whisper, or ffmpeg — every external call is monkeypatched. The hard gates cove
 """
 import asyncio
 import json
+import shlex
 from pathlib import Path
 
 import pytest
@@ -535,20 +536,18 @@ def test_render_remotion_raises_on_render_failure(monkeypatch, tmp_path):
         asyncio.run(abn_factory._render_remotion("ep_a111111", {"musicBed": None}))
 
 
-def test_render_remotion_survives_failed_normalize_pass(monkeypatch, tmp_path):
-    """If the Remotion render SUCCEEDS but the normalize post-pass fails, _render_remotion must NOT
-    raise — it keeps the rendered episode, emits a non-fatal error event, and still returns
-    (url, duration). A loudnorm/ffmpeg hiccup must never throw away a good render."""
+def test_render_remotion_rejects_failed_normalize_pass(monkeypatch, tmp_path):
+    """ATOMIC, not "non-fatal": if the Remotion render SUCCEEDS but the normalize post-pass fails,
+    the episode is still yuvj420p / unnormalized-loudness — shipping it would FAIL the hard yuv420p
+    gate yet still reach 'review'. _render_remotion MUST raise so the broken render is rejected,
+    and it MUST emit a FATAL error event (not the old swallowed 'non-fatal' one)."""
     monkeypatch.setattr(abn_factory, "ASSETS", tmp_path)
     monkeypatch.setattr(abn_assets, "ASSETS_DIR", tmp_path)
     _stub_remotion_dir(monkeypatch, tmp_path)
 
     out = abn_assets.asset_path("ep_a111111", "episode")
 
-    calls = {"n": 0}
-
     async def fake_sh(cmd, timeout=600):
-        calls["n"] += 1
         if "npx remotion render" in cmd:
             out.write_bytes(b"\x00fake-mp4")     # remotion succeeds: writes the episode mp4
             return 0, "rendered"
@@ -561,16 +560,12 @@ def test_render_remotion_survives_failed_normalize_pass(monkeypatch, tmp_path):
     monkeypatch.setattr(abn_factory, "_dur", fake_dur)
     seen_before = {e["id"] for e in abn_factory.BUS.replay()}
 
-    url, dur = asyncio.run(
-        abn_factory._render_remotion("ep_a111111", {"musicBed": None}))
+    with pytest.raises(RuntimeError, match="normalize pass failed"):
+        asyncio.run(abn_factory._render_remotion("ep_a111111", {"musicBed": None}))
 
-    assert dur == 640.0
-    assert url.startswith("/agenticnews-assets/")
-    assert out.exists(), "a failed post-pass must not delete the rendered episode"
-    # the failure was reported but swallowed: a non-fatal 'normalize pass failed' error event fired.
     new_events = [e for e in abn_factory.BUS.replay() if e["id"] not in seen_before]
-    assert any(e["action"] == "error" and "normalize pass failed" in e["detail"] for e in new_events), \
-        "a failed normalize pass must emit a non-fatal error event, not raise"
+    assert any(e["action"] == "error" and "normalize pass failed (FATAL)" in e["detail"]
+               for e in new_events), "a failed normalize pass must emit a FATAL error event"
 
 
 def test_render_remotion_reuses_existing_complete_render(monkeypatch, tmp_path):
@@ -620,6 +615,8 @@ def test_render_remotion_force_rerenders_despite_complete_render(monkeypatch, tm
             rendered["n"] += 1
             out.write_bytes(b"\x00fresh-render")     # remotion re-renders the edited timeline
             return 0, "rendered"
+        if cmd.startswith("ffmpeg"):                 # normalize/duck passes: write the intermediate
+            Path(shlex.split(cmd)[-2]).write_bytes(b"\x00")
         return 0, "yuv420p"                          # ffprobe pix_fmt + normalize/duck passes
 
     async def fake_dur(path):
@@ -654,6 +651,8 @@ def test_render_remotion_does_not_reuse_unnormalized_render(monkeypatch, tmp_pat
             return 0, "rendered"
         if "pix_fmt" in cmd:
             return 0, "yuvj420p"                     # raw JPEG-range fmt → must NOT be reused
+        if cmd.startswith("ffmpeg"):                 # normalize/duck passes: write the intermediate
+            Path(shlex.split(cmd)[-2]).write_bytes(b"\x00")
         return 0, "ok"                               # normalize/duck passes
 
     async def fake_dur(path):
@@ -684,6 +683,8 @@ def test_render_remotion_does_not_reuse_short_render(monkeypatch, tmp_path):
             rendered["n"] += 1
             out.write_bytes(b"\x00fresh-render")
             return 0, "rendered"
+        if cmd.startswith("ffmpeg"):                 # normalize/duck passes: write the intermediate
+            Path(shlex.split(cmd)[-2]).write_bytes(b"\x00")
         return 0, "yuv420p"                          # correct fmt; only the duration fails the guard
 
     async def fake_dur(path):
@@ -2716,3 +2717,72 @@ def test_purge_disk_skips_render_trim_when_protection_scan_incomplete(monkeypatc
         "incomplete protection scan must short-circuit BEFORE the render-trim branch — "
         "_old_episode_renders() must never be enumerated"
     )
+
+
+# ---- _render_remotion: normalize/duck passes are ATOMIC, not "non-fatal" ----
+# A failed normalize/duck pass used to be logged and swallowed, shipping an episode in the
+# wrong format (yuvj420p / unnormalized loudness) that then FAILS the hard yuv420p gate yet
+# still reaches 'review'. These pin that both passes now RAISE so the broken render is rejected.
+
+def _remotion_dispatch_sh(out_path, *, normalize_ok=True, duck_ok=True):
+    """Build a fake _sh that simulates the remotion render + normalize + duck shell calls. The
+    ffmpeg passes write their intermediate (second-to-last cmd token) so `.replace(out)` succeeds."""
+    async def fake_sh(cmd, timeout=600):
+        if "remotion render" in cmd:
+            Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+            Path(out_path).write_bytes(b"\x00")  # remotion produced the raw mp4
+            return 0, "ok"
+        if "loudnorm=I=-14" in cmd and "sidechaincompress" not in cmd:   # normalize pass
+            if not normalize_ok:
+                return 1, "ffmpeg: normalize boom"
+            Path(shlex.split(cmd)[-2]).write_bytes(b"\x00")
+            return 0, "ok"
+        if "sidechaincompress" in cmd:            # duck pass
+            if not duck_ok:
+                return 1, "ffmpeg: duck boom"
+            Path(shlex.split(cmd)[-2]).write_bytes(b"\x00")
+            return 0, "ok"
+        return 0, "ok"
+    return fake_sh
+
+
+def test_render_remotion_raises_when_duck_pass_fails(monkeypatch, tmp_path):
+    """The duck pass is the last video stage and re-asserts yuv420p; if it fails the episode
+    ships un-ducked and risks the yuvj420p that broke ep_d640a3eb. Must RAISE, not swallow."""
+    monkeypatch.setattr(abn_factory, "ASSETS", tmp_path)
+    monkeypatch.setattr(abn_assets, "ASSETS_DIR", tmp_path)
+    _stub_remotion_dir(monkeypatch, tmp_path)
+
+    # a music bed must exist on disk for the duck pass to run at all
+    bed = tmp_path / "bed.mp3"
+    bed.write_bytes(b"\x00")
+
+    out = abn_assets.asset_path("ep_c333333", "episode")
+    monkeypatch.setattr(abn_factory, "_sh",
+                        _remotion_dispatch_sh(out, normalize_ok=True, duck_ok=False))
+
+    timeline = {"musicBed": bed.name, "segments": []}
+    with pytest.raises(RuntimeError, match="duck pass failed"):
+        asyncio.run(abn_factory._render_remotion("ep_c333333", timeline, force=True))
+
+
+def test_render_remotion_succeeds_when_both_passes_ok(monkeypatch, tmp_path):
+    """Happy path still returns (url, duration) when normalize + duck both succeed."""
+    monkeypatch.setattr(abn_factory, "ASSETS", tmp_path)
+    monkeypatch.setattr(abn_assets, "ASSETS_DIR", tmp_path)
+    _stub_remotion_dir(monkeypatch, tmp_path)
+
+    async def fake_dur(path):
+        return 640.0
+    monkeypatch.setattr(abn_factory, "_dur", fake_dur)
+
+    bed = tmp_path / "bed.mp3"
+    bed.write_bytes(b"\x00")
+    out = abn_assets.asset_path("ep_d444444", "episode")
+    monkeypatch.setattr(abn_factory, "_sh",
+                        _remotion_dispatch_sh(out, normalize_ok=True, duck_ok=True))
+
+    timeline = {"musicBed": bed.name, "segments": []}
+    url, dur = asyncio.run(abn_factory._render_remotion("ep_d444444", timeline, force=True))
+    assert dur == 640.0
+    assert url

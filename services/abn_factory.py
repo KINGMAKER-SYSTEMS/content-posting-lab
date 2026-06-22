@@ -2486,7 +2486,11 @@ async def _render_remotion(ep_id, timeline, force=False):
         norm.replace(out)
         BUS.emit("editor-agent", "render.normalize", "pixel→yuv420p + audio→-14 LUFS (YouTube-loud)", episode_id=ep_id)
     else:
-        BUS.emit("editor-agent", "error", f"normalize pass failed (non-fatal): {nlog[-120:]}", episode_id=ep_id)
+        # ATOMIC, NOT non-fatal: if normalize fails the episode is still yuvj420p / unnormalized
+        # loudness. Shipping it would fail the hard yuv420p gate (line ~2438) yet still reach
+        # 'review'. Reject the render instead so a broken-format episode never ships.
+        BUS.emit("editor-agent", "error", f"normalize pass failed (FATAL): {nlog[-120:]}", episode_id=ep_id)
+        raise RuntimeError(f"remotion normalize pass failed (exit {nc}): {nlog[-300:]}")
     # POST PASS: real sidechain ducking. Remotion bakes the VO+SFX; mix the music bed UNDER it with
     # sidechaincompress keyed off the VO so music auto-dips when narration plays (pro audio, not a flat bed).
     bed = timeline.get("musicBed")
@@ -2515,7 +2519,12 @@ async def _render_remotion(ep_id, timeline, force=False):
                 ducked.replace(out)
                 BUS.emit("editor-agent", "audio.duck", "music ducked under VO (sidechaincompress)", episode_id=ep_id)
             else:
-                BUS.emit("editor-agent", "error", f"duck pass failed (non-fatal): {dlog[-120:]}", episode_id=ep_id)
+                # ATOMIC, NOT non-fatal: the duck pass is the LAST video stage and also re-asserts
+                # yuv420p. If it fails, the episode ships with no music duck AND (since this stage
+                # owns the final pixel-format re-encode) risks the yuvj420p that broke ep_d640a3eb.
+                # Reject rather than ship a broken episode to 'review'.
+                BUS.emit("editor-agent", "error", f"duck pass failed (FATAL): {dlog[-120:]}", episode_id=ep_id)
+                raise RuntimeError(f"remotion duck pass failed (exit {dc}): {dlog[-300:]}")
     return _asset_url(out), await _dur(out)
 
 
