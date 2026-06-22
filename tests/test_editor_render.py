@@ -4187,3 +4187,138 @@ def test_openshot_timeline_setjson_in_process_path_does_not_guard_nonfinite(tmp_
     with pytest.raises(AssertionError):
         json.loads(raw, parse_constant=lambda c: (_ for _ in ()).throw(
             AssertionError(f"non-finite token {c!r}")))
+
+
+# ---------------------------------------------------------------------------
+# Unit tests for _bake_fade_keyframes (pure-python, no render needed).
+#
+# Translates visual fade effects (fadeIn / crossfade / fadeOut) into an opacity
+# keyframe ramp the OpenShot path can actually animate. Five code paths:
+#   1. no fades              -> identity (same object)
+#   2. fade_in only          -> 0->1 ramp at the head
+#   3. fade_out only         -> 1->0 ramp at the tail
+#   4. fade_in + fade_out    -> head ramp + tail ramp
+#   5. fades exceeding clip  -> clamped to duration (no overlap / past-end points)
+# ---------------------------------------------------------------------------
+
+
+def _opacity_points(baked: dict) -> list[dict]:
+    tracks = [t for t in (baked.get("keyframes") or []) if t.get("property") == "opacity"]
+    assert len(tracks) == 1, "expected exactly one opacity track"
+    return tracks[0]["points"]
+
+
+def test_bake_fade_no_fades_is_identity():
+    clip = {"id": "c1", "duration": 5.0, "effects": [{"type": "blur"}]}
+    out = editor_render._bake_fade_keyframes(clip)
+    # No visual fade present -> callers rely on the exact same object being returned.
+    assert out is clip
+
+
+def test_bake_fade_no_effects_at_all_is_identity():
+    clip = {"id": "c1", "duration": 5.0}
+    assert editor_render._bake_fade_keyframes(clip) is clip
+
+
+def test_bake_fade_in_only():
+    clip = {
+        "id": "c1",
+        "duration": 4.0,
+        "effects": [{"type": "fadeIn", "params": {"duration": 1.0}}],
+    }
+    pts = _opacity_points(editor_render._bake_fade_keyframes(clip))
+    assert pts == [
+        {"t": 0.0, "value": 0.0, "interp": "linear"},
+        {"t": 1.0, "value": 1.0, "interp": "linear"},
+    ]
+
+
+def test_bake_crossfade_counts_as_fade_in():
+    clip = {
+        "id": "c1",
+        "duration": 4.0,
+        "effects": [{"type": "crossfade", "params": {"duration": 0.5}}],
+    }
+    pts = _opacity_points(editor_render._bake_fade_keyframes(clip))
+    assert pts[0] == {"t": 0.0, "value": 0.0, "interp": "linear"}
+    assert pts[1] == {"t": 0.5, "value": 1.0, "interp": "linear"}
+
+
+def test_bake_fade_out_only():
+    clip = {
+        "id": "c1",
+        "duration": 4.0,
+        "effects": [{"type": "fadeOut", "params": {"duration": 1.0}}],
+    }
+    pts = _opacity_points(editor_render._bake_fade_keyframes(clip))
+    assert pts == [
+        {"t": 3.0, "value": 1.0, "interp": "linear"},
+        {"t": 4.0, "value": 0.0, "interp": "linear"},
+    ]
+
+
+def test_bake_fade_in_and_out():
+    clip = {
+        "id": "c1",
+        "duration": 10.0,
+        "effects": [
+            {"type": "fadeIn", "params": {"duration": 2.0}},
+            {"type": "fadeOut", "params": {"duration": 3.0}},
+        ],
+    }
+    pts = _opacity_points(editor_render._bake_fade_keyframes(clip))
+    assert pts == [
+        {"t": 0.0, "value": 0.0, "interp": "linear"},
+        {"t": 2.0, "value": 1.0, "interp": "linear"},
+        {"t": 7.0, "value": 1.0, "interp": "linear"},
+        {"t": 10.0, "value": 0.0, "interp": "linear"},
+    ]
+
+
+def test_bake_fade_durations_exceed_clip_are_clamped():
+    # Both fades individually exceed the clip; each clamps to the full duration and
+    # out_start is held at >= fade_in so the ramps can't cross or emit a point > duration.
+    clip = {
+        "id": "c1",
+        "duration": 2.0,
+        "effects": [
+            {"type": "fadeIn", "params": {"duration": 5.0}},
+            {"type": "fadeOut", "params": {"duration": 5.0}},
+        ],
+    }
+    pts = _opacity_points(editor_render._bake_fade_keyframes(clip))
+    times = [p["t"] for p in pts]
+    assert all(0.0 <= t <= 2.0 for t in times)
+    assert times == sorted(times)
+    # fade_in clamped to full duration -> head ramp ends exactly at the clip end.
+    assert pts[0] == {"t": 0.0, "value": 0.0, "interp": "linear"}
+    assert pts[1] == {"t": 2.0, "value": 1.0, "interp": "linear"}
+
+
+def test_bake_fade_replaces_existing_opacity_track():
+    clip = {
+        "id": "c1",
+        "duration": 4.0,
+        "effects": [{"type": "fadeIn", "params": {"duration": 1.0}}],
+        "keyframes": [
+            {"property": "opacity", "points": [{"t": 0.0, "value": 0.5}]},
+            {"property": "scale", "points": [{"t": 0.0, "value": 1.0}]},
+        ],
+    }
+    out = editor_render._bake_fade_keyframes(clip)
+    # original clip is not mutated
+    assert len(clip["keyframes"]) == 2
+    props = [t["property"] for t in out["keyframes"]]
+    assert props.count("opacity") == 1  # stale opacity track dropped, fade one added
+    assert "scale" in props  # non-opacity tracks preserved
+    assert _opacity_points(out)[0] == {"t": 0.0, "value": 0.0, "interp": "linear"}
+
+
+def test_bake_fade_zero_duration_fade_is_identity():
+    clip = {
+        "id": "c1",
+        "duration": 4.0,
+        "effects": [{"type": "fadeIn", "params": {"duration": 0.0}}],
+    }
+    # A fade effect with zero duration produces no ramp -> identity.
+    assert editor_render._bake_fade_keyframes(clip) is clip
