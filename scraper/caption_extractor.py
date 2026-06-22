@@ -33,12 +33,17 @@ SYSTEM_PROMPT = (
     "share button, description text at the bottom, sound name, hashtags, "
     "and any watermarks.\n\n"
     "Return ONLY the caption text exactly as it appears, preserving line "
-    "breaks. If no burned-in caption is visible, return exactly: NO_CAPTION"
+    "breaks. Output the raw text only — no labels, headers, quotes, or preamble "
+    "like 'Text on image:'. If no burned-in caption is visible, return exactly: NO_CAPTION"
 )
+
+# OCR vision model. gpt-5.4-nano is ~10x cheaper than gpt-4.1 with equivalent
+# OCR quality on TikTok covers; override with OCR_MODEL if needed.
+OCR_MODEL = os.getenv("OCR_MODEL", "gpt-5.4-nano")
 
 
 async def extract_caption(screenshot_bytes: bytes, _max_retries: int = 4) -> str:
-    """Send a screenshot to GPT-4.1 vision and extract burned-in caption text.
+    """Send a screenshot to the OCR vision model and extract burned-in caption text.
 
     Returns the extracted caption string, or empty string if none found.
     Retries with exponential backoff on rate-limit (429) errors.
@@ -65,11 +70,11 @@ async def extract_caption(screenshot_bytes: bytes, _max_retries: int = 4) -> str
 
     for attempt in range(_max_retries + 1):
         try:
+            # GPT-5 family uses max_completion_tokens and rejects custom temperature
             resp = await client.chat.completions.create(
-                model="gpt-4.1",
+                model=OCR_MODEL,
                 messages=messages,
-                max_tokens=500,
-                temperature=0.0,
+                max_completion_tokens=2000,
             )
             text = resp.choices[0].message.content.strip()
             return "" if text == "NO_CAPTION" else text
