@@ -590,6 +590,56 @@ def test_gc_segments_disk_phase_tombstones_scratch_and_spares_schema(store, monk
     assert (store / "_trash" / "ep_dead00" / "scratch" / "s0_demo.mp4").exists(), "scratch reap must tombstone"
 
 
+def test_gc_segments_emits_scratch_usage_breakdown(store, monkeypatch):
+    """The AUTONOMOUS factory-loop GC (_gc_segments, run every few cycles by run_factory_loop) must
+    emit the per-owner scratch usage breakdown too — not only purge_disk's manual /gc endpoint. This
+    is the exact ticket gap: scratch_usage() observability was tested but never emitted in the prod
+    path that actually runs under load. Like purge_disk it measures BEFORE the reap, and the emit is
+    best-effort so a measurement failure can never break the GC."""
+    _scratch(store, "ep_a111111", "s0_raw.wav", body=b"x" * (3 * 1024 * 1024), age_s=10)
+
+    async def list_videos(*a, **k):
+        return []
+
+    monkeypatch.setattr(abn_factory.db, "list_videos", list_videos)
+    # healthy disk so the low-disk render trim path stays irrelevant to this assertion
+    monkeypatch.setattr(shutil, "disk_usage", lambda _: namedtuple("u", "total used free")(100, 0, 100 * 1e9))
+
+    emitted = []
+    monkeypatch.setattr(abn_factory.BUS, "emit", lambda *a, **k: emitted.append(a))
+    asyncio.run(abn_factory._gc_segments(keep_recent=0))
+
+    msgs = [a[2] for a in emitted if len(a) >= 3 and a[1] == "gc"]
+    assert any("scratch usage" in m and "ep_a111111" in m for m in msgs), (
+        f"_gc_segments must emit a per-owner scratch usage line in prod; got {msgs}"
+    )
+
+
+def test_gc_segments_reaps_even_when_scratch_usage_observability_raises(store, monkeypatch):
+    """Twin of test_purge_disk_reaps_even_when_scratch_usage_observability_raises for the prod
+    _gc_segments path: if scratch_usage() blows up, the emit must be swallowed and the aged scratch
+    must still be tombstoned — a failed metric is never allowed to leave disk un-freed."""
+    f = _scratch(store, "ep_a111111", "s0_raw.wav", body=b"x" * 100)
+
+    def boom():
+        raise RuntimeError("usage probe blew up")
+
+    monkeypatch.setattr(abn_factory, "scratch_usage", boom)
+
+    async def list_videos(*a, **k):
+        return []
+
+    monkeypatch.setattr(abn_factory.db, "list_videos", list_videos)
+    monkeypatch.setattr(shutil, "disk_usage", lambda _: namedtuple("u", "total used free")(100, 0, 100 * 1e9))
+
+    asyncio.run(abn_factory._gc_segments(keep_recent=0))
+
+    assert not f.exists(), "_gc_segments stopped reaping because the observability emit raised"
+    assert (store / "_trash" / "ep_a111111" / "scratch" / "s0_raw.wav").exists(), (
+        "aged scratch must still be tombstoned by _gc_segments even when scratch_usage() fails"
+    )
+
+
 def test_gc_segments_low_disk_trim_honors_cachebusted_timeline_ref(store, monkeypatch):
     """End-to-end on the OTHER GC path: the async _gc_segments low-disk render trim must also strip a
     ?rev= cache-buster off a /agenticnews-assets/ timeline URL and spare the real render. purge_disk()

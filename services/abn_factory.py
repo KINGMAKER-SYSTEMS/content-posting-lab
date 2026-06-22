@@ -3439,6 +3439,20 @@ async def _gc_segments(keep_recent=12):
         try:
             import shutil as _sh2
             inter_freed = inter_n = 0
+            # OBSERVABILITY (ticket: measure per-episode scratch growth in PROD). purge_disk (the
+            # manual /gc endpoint) already emits this; _gc_segments is the AUTONOMOUS factory-loop GC
+            # (run_factory_loop every 3 cycles), so without this the prod path that actually runs under
+            # load was the one with no scratch-growth signal. Emit BEFORE the reap so it measures
+            # what's there at GC time. Best-effort: never let measurement break the GC.
+            try:
+                usage = scratch_usage()
+                if usage:
+                    total_mb = sum(usage.values()) // 1024 // 1024
+                    top = sorted(usage.items(), key=lambda kv: kv[1], reverse=True)[:5]
+                    detail = ", ".join(f"{owner}={sz//1024//1024}MB" for owner, sz in top)
+                    BUS.emit("system", "gc", f"scratch usage {total_mb}MB across {len(usage)} owners — top: {detail}")
+            except Exception:
+                pass
             protected_paths, protection_complete = _editor_timeline_asset_paths_checked()
             for f in reapable_scratch():
                 try:
