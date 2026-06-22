@@ -3029,6 +3029,51 @@ def test_reimport_records_a_warning_instead_of_crashing_when_a_render_drops_an_e
     assert migrated["revision"] == 0
 
 
+def test_reimport_replay_logs_bad_asset_import_and_keeps_replaying_later_edits():
+    """Graceful degradation in the replay loop (services/editor_timeline.py:248-265).
+
+    A command log can contain an entry that fails validation at replay time — here an
+    `asset.import` whose payload is missing its src so `_asset_from_payload` raises
+    CommandValidationError. The re-import must (a) catch it, (b) record it to
+    metadata.migrationWarnings, and crucially (c) NOT abort: every other valid edit
+    in the log (a marker added AFTER the bad command) must still replay. Otherwise one
+    corrupt/stale command during a factory re-render silently nukes all subsequent edits.
+    """
+    abn = _abn_timeline_single_artifact(
+        episode_id="ep_grace", shot_id="shot_a",
+        src="/agenticnews-assets/a.png", seg_duration=4.0,
+    )
+    project = timeline.project_from_abn_timeline("proj_grace", abn, source_episode_id="ep_grace")
+
+    # Splice a malformed asset.import directly into the command log (simulating a
+    # command that no longer validates), bracketed by a good marker BEFORE and a good
+    # marker AFTER so we can prove the bad one neither aborts nor skips the rest.
+    project["commandLog"] = [
+        {"id": "cmd_before", "op": "marker.add", "actor": "human",
+         "payload": {"markerId": "m_before", "time": 0.5, "label": "before"}},
+        {"id": "cmd_bad", "op": "asset.import", "actor": "agent",
+         "payload": {"assetId": "asset_bad", "type": "video"}},  # missing src -> invalid
+        {"id": "cmd_after", "op": "marker.add", "actor": "human",
+         "payload": {"markerId": "m_after", "time": 1.5, "label": "after"}},
+    ]
+
+    migrated = timeline.reimport_abn_timeline_preserving_commands(project, abn)
+
+    # The bad command surfaced as exactly one warning, naming the offending command.
+    warnings = migrated["metadata"]["migrationWarnings"]
+    assert len(warnings) == 1
+    assert warnings[0]["commandId"] == "cmd_bad"
+    assert warnings[0]["op"] == "asset.import"
+    assert warnings[0]["reason"]  # non-empty CommandValidationError message
+    # The bad asset never landed in state.
+    assert "asset_bad" not in migrated["assets"]
+    # Graceful degradation: BOTH valid markers replayed despite the bad command between them.
+    assert "m_before" in migrated["markers"]
+    assert "m_after" in migrated["markers"]
+    # Two good commands applied -> revision advanced by exactly 2 (the bad one didn't count).
+    assert migrated["revision"] == 2
+
+
 def test_reimport_is_idempotent_for_the_router_migration_gate():
     """routers/agenticnews._needs_abn_import_migration re-imports whenever abnImportVersion
     is stale. After one re-import the version is current, so a second pass over the SAME
