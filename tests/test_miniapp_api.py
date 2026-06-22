@@ -13,7 +13,11 @@ import services.miniapp_auth as miniapp_auth
 import services.roster as roster
 import services.telegram as tg
 from project_manager import get_project_video_dir
-from services.miniapp_auth import AuthError, parse_init_data
+from services.miniapp_auth import (
+    AuthError,
+    parse_init_data,
+    resolve_poster_from_request,
+)
 
 
 FAKE_TOKEN = "123456:FAKE-bot-token-for-tests"
@@ -462,3 +466,106 @@ def test_agent_list_poster_filter(sync_client):
         "/api/miniapp/agent/requests?status=&poster_id=test-poster"
     ).json()["requests"]
     assert {r["poster_id"] for r in only_test} == {"test-poster"}
+
+
+# ── resolve_poster_from_request (direct unit, critical auth path) ─────
+
+
+def test_resolve_dev_bypass_returns_poster():
+    # MINIAPP_DEV_AUTH=1 from the autouse fixture; dev poster id resolves.
+    tg.set_poster("dev-p", {"name": "Dev", "chat_id": -1})
+    poster = resolve_poster_from_request(None, dev_poster_id="dev-p")
+    assert poster["name"] == "Dev"
+
+
+def test_resolve_dev_bypass_unknown_poster_404():
+    with pytest.raises(AuthError) as ei:
+        resolve_poster_from_request(None, dev_poster_id="ghost")
+    assert ei.value.status_code == 404
+
+
+def test_resolve_dev_bypass_disabled_falls_through(monkeypatch):
+    # With dev auth off, a dev_poster_id is ignored and we fall to initData,
+    # which here is empty → 401. The bypass must NOT grant access.
+    monkeypatch.delenv("MINIAPP_DEV_AUTH", raising=False)
+    tg.set_poster("dev-p", {"name": "Dev", "chat_id": -1})
+    with pytest.raises(AuthError) as ei:
+        resolve_poster_from_request(None, dev_poster_id="dev-p")
+    assert ei.value.status_code == 401
+
+
+def test_resolve_dev_bypass_requires_poster_id(monkeypatch):
+    # Dev auth on but no dev_poster_id → must not bypass; falls to initData.
+    with pytest.raises(AuthError) as ei:
+        resolve_poster_from_request(None, dev_poster_id=None)
+    assert ei.value.status_code == 401
+
+
+def test_resolve_initdata_bound_user(monkeypatch):
+    monkeypatch.delenv("MINIAPP_DEV_AUTH", raising=False)
+    tg.set_poster("real-p", {"name": "Real", "chat_id": -2})
+    tg.set_bot_token(FAKE_TOKEN)
+    tg.bind_user_to_poster("real-p", 777, "seffra_tg")
+
+    init_data = _build_init_data(FAKE_TOKEN, {"id": 777, "username": "seffra_tg"})
+    poster = resolve_poster_from_request(init_data)
+    assert poster["name"] == "Real"
+
+
+def test_resolve_initdata_unbound_user_403(monkeypatch):
+    monkeypatch.delenv("MINIAPP_DEV_AUTH", raising=False)
+    tg.set_bot_token(FAKE_TOKEN)
+    init_data = _build_init_data(FAKE_TOKEN, {"id": 999, "username": "nobody"})
+    with pytest.raises(AuthError) as ei:
+        resolve_poster_from_request(init_data)
+    assert ei.value.status_code == 403
+
+
+def test_resolve_initdata_no_user_field_400ish(monkeypatch):
+    # Validly signed but user-less initData → "no user" error.
+    monkeypatch.delenv("MINIAPP_DEV_AUTH", raising=False)
+    tg.set_bot_token(FAKE_TOKEN)
+    fields = {"auth_date": str(int(time.time())), "query_id": "AAExample"}
+    dcs = "\n".join(f"{k}={fields[k]}" for k in sorted(fields))
+    secret = hmac.new(b"WebAppData", FAKE_TOKEN.encode(), hashlib.sha256).digest()
+    fields["hash"] = hmac.new(secret, dcs.encode(), hashlib.sha256).hexdigest()
+    with pytest.raises(AuthError) as ei:
+        resolve_poster_from_request(urlencode(fields))
+    assert "no user" in ei.value.message
+
+
+def test_resolve_initdata_user_without_id_or_username(monkeypatch):
+    # user JSON present but carries neither id nor username → can't resolve.
+    monkeypatch.delenv("MINIAPP_DEV_AUTH", raising=False)
+    tg.set_bot_token(FAKE_TOKEN)
+    init_data = _build_init_data(FAKE_TOKEN, {"first_name": "Anon"})
+    with pytest.raises(AuthError) as ei:
+        resolve_poster_from_request(init_data)
+    assert "no user" in ei.value.message
+
+
+def test_resolve_initdata_username_only_match(monkeypatch):
+    # No telegram_user_ids entry, but username binding resolves the poster.
+    monkeypatch.delenv("MINIAPP_DEV_AUTH", raising=False)
+    tg.set_poster("uname-p", {"name": "UnameOnly", "chat_id": -3})
+    tg.set_bot_token(FAKE_TOKEN)
+    tg.bind_user_to_poster("uname-p", 0, "seffra_tg")
+
+    init_data = _build_init_data(FAKE_TOKEN, {"username": "seffra_tg"})
+    poster = resolve_poster_from_request(init_data)
+    assert poster["name"] == "UnameOnly"
+
+
+def test_resolve_concurrent_dev_bypass_consistent():
+    # The auth path reads JSON from disk on every call; hammering it
+    # concurrently must always return the same poster (no torn reads).
+    import concurrent.futures
+
+    tg.set_poster("race-p", {"name": "Race", "chat_id": -9})
+
+    def call():
+        return resolve_poster_from_request(None, dev_poster_id="race-p")["name"]
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as ex:
+        results = list(ex.map(lambda _: call(), range(40)))
+    assert set(results) == {"Race"}
