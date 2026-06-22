@@ -215,3 +215,250 @@ def test_initdata_unbound_user_forbidden(sync_client, monkeypatch):
         "/api/miniapp/me", headers={"X-Telegram-Init-Data": init_data}
     )
     assert resp.status_code == 403
+
+
+# ── initData validation: more malformed shapes (unit) ────────────────
+
+
+def test_parse_init_data_missing_hash():
+    # Hand-built field set with no `hash` at all.
+    with pytest.raises(AuthError) as ei:
+        parse_init_data("auth_date=1&user=%7B%7D", bot_token=FAKE_TOKEN)
+    assert "hash" in ei.value.message
+
+
+def test_parse_init_data_empty_rejected():
+    with pytest.raises(AuthError) as ei:
+        parse_init_data("", bot_token=FAKE_TOKEN)
+    assert ei.value.status_code == 401
+
+
+def test_parse_init_data_garbage_rejected():
+    # Random non-querystring junk: parses to nothing useful, has no hash.
+    with pytest.raises(AuthError):
+        parse_init_data("@@@not-a-querystring@@@", bot_token=FAKE_TOKEN)
+
+
+def test_parse_init_data_no_bot_token_503():
+    user = {"id": 1}
+    init_data = _build_init_data(FAKE_TOKEN, user)
+    with pytest.raises(AuthError) as ei:
+        parse_init_data(init_data, bot_token="")
+    assert ei.value.status_code == 503
+
+
+def test_parse_init_data_bad_user_json_nulls_user():
+    # Valid signature but `user` is not JSON → parsed user becomes None.
+    fields = {"auth_date": str(int(time.time())), "user": "not-json"}
+    dcs = "\n".join(f"{k}={fields[k]}" for k in sorted(fields))
+    secret = hmac.new(b"WebAppData", FAKE_TOKEN.encode(), hashlib.sha256).digest()
+    fields["hash"] = hmac.new(secret, dcs.encode(), hashlib.sha256).hexdigest()
+    parsed = parse_init_data(urlencode(fields), bot_token=FAKE_TOKEN)
+    assert parsed["user"] is None
+
+
+def test_initdata_no_user_field_rejected(sync_client, monkeypatch):
+    # Validly signed initData carrying no `user` → cannot resolve a poster.
+    monkeypatch.delenv("MINIAPP_DEV_AUTH", raising=False)
+    _seed_poster_with_page()
+    tg.set_bot_token(FAKE_TOKEN)
+
+    fields = {"auth_date": str(int(time.time())), "query_id": "AAExample"}
+    dcs = "\n".join(f"{k}={fields[k]}" for k in sorted(fields))
+    secret = hmac.new(b"WebAppData", FAKE_TOKEN.encode(), hashlib.sha256).digest()
+    fields["hash"] = hmac.new(secret, dcs.encode(), hashlib.sha256).hexdigest()
+    resp = sync_client.get(
+        "/api/miniapp/me", headers={"X-Telegram-Init-Data": urlencode(fields)}
+    )
+    assert resp.status_code in (401, 403)
+
+
+def test_authorization_tma_header_accepted(sync_client, monkeypatch):
+    # initData may arrive via `Authorization: tma <initData>` instead of the header.
+    monkeypatch.delenv("MINIAPP_DEV_AUTH", raising=False)
+    _seed_poster_with_page()
+    tg.set_bot_token(FAKE_TOKEN)
+    tg.bind_user_to_poster("test-poster", 777, "seffra_tg")
+
+    init_data = _build_init_data(FAKE_TOKEN, {"id": 777, "username": "seffra_tg"})
+    resp = sync_client.get(
+        "/api/miniapp/me", headers={"Authorization": f"tma {init_data}"}
+    )
+    assert resp.status_code == 200
+    assert resp.json()["poster_id"] == "test-poster"
+
+
+# ── Dev bypass gating ────────────────────────────────────────────────
+
+
+def test_dev_bypass_ignored_when_disabled(sync_client, monkeypatch):
+    # With MINIAPP_DEV_AUTH off, X-Dev-Poster-Id must NOT grant access.
+    monkeypatch.delenv("MINIAPP_DEV_AUTH", raising=False)
+    _seed_poster_with_page()
+    resp = sync_client.get(
+        "/api/miniapp/me", headers={"X-Dev-Poster-Id": "test-poster"}
+    )
+    assert resp.status_code in (401, 403)
+
+
+def test_dev_bypass_unknown_poster_404(sync_client):
+    # Dev auth is on (autouse fixture), but the poster id doesn't exist.
+    resp = sync_client.get(
+        "/api/miniapp/me", headers={"X-Dev-Poster-Id": "ghost-poster"}
+    )
+    assert resp.status_code == 404
+
+
+# ── Agent-key validation failures ────────────────────────────────────
+
+
+def test_agent_wrong_key_rejected(sync_client, monkeypatch):
+    monkeypatch.setenv("MINIAPP_AGENT_KEY", "s3cret")
+    _seed_poster_with_page()
+    resp = sync_client.get(
+        "/api/miniapp/agent/requests", headers={"X-Agent-Key": "wrong"}
+    )
+    assert resp.status_code == 401
+
+
+def test_agent_patch_key_enforced(sync_client, monkeypatch):
+    # The PATCH endpoint is gated too, not just the GET listing.
+    monkeypatch.setenv("MINIAPP_AGENT_KEY", "s3cret")
+    _seed_poster_with_page()
+    created = sync_client.post(
+        "/api/miniapp/requests",
+        headers={"X-Dev-Poster-Id": "test-poster"},
+        json={"text": "need content"},
+    )
+    rid = created.json()["id"]
+
+    denied = sync_client.patch(
+        f"/api/miniapp/agent/requests/{rid}", json={"status": "in_progress"}
+    )
+    assert denied.status_code == 401
+
+    ok = sync_client.patch(
+        f"/api/miniapp/agent/requests/{rid}",
+        headers={"X-Agent-Key": "s3cret"},
+        json={"status": "in_progress"},
+    )
+    assert ok.status_code == 200
+    assert ok.json()["status"] == "in_progress"
+
+
+# ── Agent endpoint edge cases ────────────────────────────────────────
+
+
+def test_agent_patch_unknown_request_404(sync_client):
+    resp = sync_client.patch(
+        "/api/miniapp/agent/requests/does-not-exist",
+        json={"status": "fulfilled"},
+    )
+    assert resp.status_code == 404
+
+
+def test_agent_patch_invalid_status_400(sync_client):
+    _seed_poster_with_page()
+    created = sync_client.post(
+        "/api/miniapp/requests",
+        headers={"X-Dev-Poster-Id": "test-poster"},
+        json={"text": "need content"},
+    )
+    rid = created.json()["id"]
+    resp = sync_client.patch(
+        f"/api/miniapp/agent/requests/{rid}", json={"status": "bogus-status"}
+    )
+    assert resp.status_code == 400
+
+
+# ── Request filtering edge cases ─────────────────────────────────────
+
+
+def test_requests_status_filter(sync_client):
+    _seed_poster_with_page()
+    hdr = {"X-Dev-Poster-Id": "test-poster"}
+    a = sync_client.post(
+        "/api/miniapp/requests", headers=hdr, json={"text": "first"}
+    ).json()
+    sync_client.post("/api/miniapp/requests", headers=hdr, json={"text": "second"})
+    # Move one request to in_progress.
+    sync_client.patch(
+        f"/api/miniapp/agent/requests/{a['id']}", json={"status": "in_progress"}
+    )
+
+    open_only = sync_client.get(
+        "/api/miniapp/requests?status=open", headers=hdr
+    ).json()["requests"]
+    assert all(r["status"] == "open" for r in open_only)
+    assert a["id"] not in {r["id"] for r in open_only}
+
+    in_prog = sync_client.get(
+        "/api/miniapp/requests?status=in_progress", headers=hdr
+    ).json()["requests"]
+    assert {r["id"] for r in in_prog} == {a["id"]}
+
+
+def test_requests_scoped_to_calling_poster(sync_client):
+    # Two posters; each sees only their own requests.
+    _seed_poster_with_page()
+    tg.set_poster("other-poster", {"name": "Other", "chat_id": -200})
+
+    sync_client.post(
+        "/api/miniapp/requests",
+        headers={"X-Dev-Poster-Id": "test-poster"},
+        json={"text": "mine"},
+    )
+    sync_client.post(
+        "/api/miniapp/requests",
+        headers={"X-Dev-Poster-Id": "other-poster"},
+        json={"text": "theirs"},
+    )
+
+    mine = sync_client.get(
+        "/api/miniapp/requests", headers={"X-Dev-Poster-Id": "test-poster"}
+    ).json()["requests"]
+    assert {r["text"] for r in mine} == {"mine"}
+
+
+def test_agent_list_status_empty_returns_all(sync_client):
+    # status="" (empty) on the agent listing means "all statuses".
+    _seed_poster_with_page()
+    hdr = {"X-Dev-Poster-Id": "test-poster"}
+    a = sync_client.post(
+        "/api/miniapp/requests", headers=hdr, json={"text": "one"}
+    ).json()
+    sync_client.patch(
+        f"/api/miniapp/agent/requests/{a['id']}", json={"status": "fulfilled"}
+    )
+    sync_client.post("/api/miniapp/requests", headers=hdr, json={"text": "two"})
+
+    all_reqs = sync_client.get(
+        "/api/miniapp/agent/requests?status="
+    ).json()["requests"]
+    statuses = {r["status"] for r in all_reqs}
+    assert {"fulfilled", "open"} <= statuses
+
+    # Default (no status param) lists only open.
+    open_default = sync_client.get(
+        "/api/miniapp/agent/requests"
+    ).json()["requests"]
+    assert all(r["status"] == "open" for r in open_default)
+
+
+def test_agent_list_poster_filter(sync_client):
+    _seed_poster_with_page()
+    tg.set_poster("other-poster", {"name": "Other", "chat_id": -200})
+    sync_client.post(
+        "/api/miniapp/requests",
+        headers={"X-Dev-Poster-Id": "test-poster"},
+        json={"text": "mine"},
+    )
+    sync_client.post(
+        "/api/miniapp/requests",
+        headers={"X-Dev-Poster-Id": "other-poster"},
+        json={"text": "theirs"},
+    )
+    only_test = sync_client.get(
+        "/api/miniapp/agent/requests?status=&poster_id=test-poster"
+    ).json()["requests"]
+    assert {r["poster_id"] for r in only_test} == {"test-poster"}
