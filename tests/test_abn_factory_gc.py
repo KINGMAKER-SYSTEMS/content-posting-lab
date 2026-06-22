@@ -1084,6 +1084,42 @@ def test_protection_scan_incomplete_on_glob_failure(store, monkeypatch):
     assert complete is False
 
 
+def test_protection_scan_dir_is_where_editor_store_persists(store):
+    """CRITICAL invariant: the GC's protection scan globs ASSETS/editor_timelines/*.json
+    (abn_factory line ~201). If the editor-bay actually persisted timelines anywhere else
+    (a different dir, a DB, an in-memory-only cache), the scan would return complete=True
+    while missing a live reference and the disk-wall would tombstone a still-referenced render.
+
+    This pins the two halves to the SAME dir by going through the REAL persistence path the
+    router uses (services.editor_timeline.TimelineStore rooted at ASSETS/editor_timelines —
+    the only place editor timelines are ever written; there is no in-memory-only path) and
+    asserting the GC scan actually picks up a render that timeline references.
+    """
+    from services import editor_timeline
+
+    # Save a timeline EXACTLY like routers/agenticnews.py _editor_timeline_store() does.
+    timeline_store = editor_timeline.TimelineStore(store / "editor_timelines")
+    referenced = "/agenticnews-assets/ep_storedir/renders/episode.mp4"
+    timeline_store.save({
+        "projectId": "ep_storedir",
+        "clips": [{"path": referenced}],
+    })
+
+    # The store must have written into the very dir the GC scan reads — not elsewhere.
+    on_disk = store / "editor_timelines" / "ep_storedir.json"
+    assert on_disk.exists(), "TimelineStore must persist into ASSETS/editor_timelines/"
+
+    paths, complete = abn_factory._editor_timeline_asset_paths_checked()
+    assert complete is True, "a cleanly-saved timeline must yield a COMPLETE scan"
+    expected = abn_factory._normalize_asset_path(
+        store / "ep_storedir" / "renders" / "episode.mp4"
+    )
+    assert expected in paths, (
+        "render referenced by a real editor-bay timeline must be seen by the GC protection "
+        "scan — if it isn't, the editor store and the scan dir have drifted apart"
+    )
+
+
 def _render(store, ep_id, age_s):
     d = store / ep_id / "renders"
     d.mkdir(parents=True)
