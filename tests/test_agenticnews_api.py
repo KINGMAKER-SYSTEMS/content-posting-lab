@@ -293,20 +293,30 @@ def test_tools_tts_episode_name_routes_through_asset_gateway(client, monkeypatch
     assert not (db.ASSETS_DIR / "ep_648e806a_s0.wav").exists()
 
 
-def test_tools_tts_non_episode_name_falls_back_to_flat(client, monkeypatch):
-    """A bare/ad-hoc name (no ep_ prefix) has nowhere to be scoped, so it falls back to
-    the legacy flat path — the gateway raises AssetPathError and is caught."""
+def test_tools_tts_non_episode_name_falls_back_to_scratch(client, monkeypatch):
+    """A bare/ad-hoc name (no ep_ prefix) has nowhere to be scoped, so it falls back to the
+    REAPABLE _scratch/ dir — NOT the flat ASSETS_DIR root, where the glob GC can't tell an
+    intermediate from a keeper and has eaten original VO. The gateway raises AssetPathError
+    on the unscoped name and adhoc_scratch_path() routes it to _scratch/."""
     import routers.agenticnews as r
 
+    captured = {}
+
     async def fake_sh(cmd, timeout=300):
-        out = db.ASSETS_DIR / "vo.wav"
+        out = db.ASSETS_DIR / "_scratch" / "vo.wav"
+        out.parent.mkdir(parents=True, exist_ok=True)
         out.write_bytes(b"RIFF")
+        captured["wrote"] = out
         return 0, "ok"
 
     monkeypatch.setattr(r, "_sh", fake_sh)
     resp = client.post("/api/agenticnews/tools/tts", json={"text": "hi", "name": "vo"})
     assert resp.status_code == 200
-    assert resp.json()["path"] == "/agenticnews-assets/vo.wav"
+    # URL carries the _scratch/ subpath so it resolves back to the same reapable file
+    assert resp.json()["path"] == "/agenticnews-assets/_scratch/vo.wav"
+    assert captured["wrote"].exists()
+    # nothing was dumped flat in the ASSETS_DIR root (the glob-GC hazard)
+    assert not (db.ASSETS_DIR / "vo.wav").exists()
 
 
 def test_tools_assemble_episode_name_routes_through_asset_gateway(client, monkeypatch):
@@ -334,21 +344,25 @@ def test_tools_assemble_episode_name_routes_through_asset_gateway(client, monkey
     assert not (db.ASSETS_DIR / "ep_648e806a_s0_assembled.mp4").exists()
 
 
-def test_tools_cards_non_episode_name_falls_back_to_flat(client, monkeypatch):
+def test_tools_cards_non_episode_name_falls_back_to_scratch(client, monkeypatch):
     """tool_cards must catch the gateway's AssetPathError for a non-episode name and fall
-    back to the flat ``{name}_card.png`` — the catch at routers/agenticnews.py:293 was
-    untested for cards. A bare 'card' has no ep_ prefix, so split_slug raises and we fall back."""
+    back to the REAPABLE _scratch/ dir (``_scratch/{name}_card.png``) — NOT the flat
+    ASSETS_DIR root. A bare 'card' has no ep_ prefix, so split_slug raises and adhoc_scratch_path
+    routes it to _scratch/ where the GC can reap it by location instead of guessing from the name."""
     import routers.agenticnews as r
 
     async def fake_sh(cmd, timeout=60):
-        out = db.ASSETS_DIR / "card_card.png"
+        out = db.ASSETS_DIR / "_scratch" / "card_card.png"
+        out.parent.mkdir(parents=True, exist_ok=True)
         out.write_bytes(b"\x89PNG")
         return 0, "ok"
 
     monkeypatch.setattr(r, "_sh", fake_sh)
     resp = client.post("/api/agenticnews/tools/cards", json={"title": "HELLO"})
     assert resp.status_code == 200
-    assert resp.json()["path"] == "/agenticnews-assets/card_card.png"
+    assert resp.json()["path"] == "/agenticnews-assets/_scratch/card_card.png"
+    # nothing dumped flat in the root
+    assert not (db.ASSETS_DIR / "card_card.png").exists()
 
 
 def test_tools_cards_episode_name_routes_through_asset_gateway(client, monkeypatch):
@@ -372,14 +386,16 @@ def test_tools_cards_episode_name_routes_through_asset_gateway(client, monkeypat
     assert not (db.ASSETS_DIR / "ep_648e806a_s0_card.png").exists()
 
 
-def test_tools_assemble_non_episode_name_falls_back_to_flat(client, monkeypatch):
+def test_tools_assemble_non_episode_name_falls_back_to_scratch(client, monkeypatch):
     """tool_assemble must catch the gateway's AssetPathError for a non-episode name and fall
-    back to the flat ``{name}_assembled.mp4`` (the catch at routers/agenticnews.py:334 was
-    untested for the fallback branch). 'clip' has no ep_ prefix, so split_slug raises."""
+    back to the REAPABLE _scratch/ dir (``_scratch/{name}_assembled.mp4``) — NOT the flat
+    ASSETS_DIR root. 'clip' has no ep_ prefix, so split_slug raises and adhoc_scratch_path
+    routes it to _scratch/."""
     import routers.agenticnews as r
 
     async def fake_sh(cmd, timeout=300):
-        out = db.ASSETS_DIR / "clip_assembled.mp4"
+        out = db.ASSETS_DIR / "_scratch" / "clip_assembled.mp4"
+        out.parent.mkdir(parents=True, exist_ok=True)
         out.write_bytes(b"\x00\x00\x00\x18ftyp")
         return 0, "ok"
 
@@ -388,12 +404,13 @@ def test_tools_assemble_non_episode_name_falls_back_to_flat(client, monkeypatch)
         "/api/agenticnews/tools/assemble",
         json={
             "name": "clip",
-            "card_path": "/agenticnews-assets/card_card.png",
-            "vo_path": "/agenticnews-assets/vo.wav",
+            "card_path": "/agenticnews-assets/_scratch/card_card.png",
+            "vo_path": "/agenticnews-assets/_scratch/vo.wav",
         },
     )
     assert resp.status_code == 200
-    assert resp.json()["path"] == "/agenticnews-assets/clip_assembled.mp4"
+    assert resp.json()["path"] == "/agenticnews-assets/_scratch/clip_assembled.mp4"
+    assert not (db.ASSETS_DIR / "clip_assembled.mp4").exists()
 
 
 def test_editor_load_reads_timeline_and_render_from_schema_path(client):
@@ -515,8 +532,10 @@ def test_tools_tts_success_attaches_artifact_to_video(client, monkeypatch):
     vid = client.post("/api/agenticnews/videos", json={"title": "VO target"}).json()["id"]
 
     async def fake_sh(cmd, timeout=300):
-        # the command writes to ASSETS_DIR/<name>.wav; create it so the guard passes
-        out = db.ASSETS_DIR / f"{vid}.wav"
+        # a video id has no ep_ prefix, so the render lands in the reapable _scratch/ dir,
+        # not flat in the root. Create it there so the out.exists() guard passes.
+        out = db.ASSETS_DIR / "_scratch" / f"{vid}.wav"
+        out.parent.mkdir(parents=True, exist_ok=True)
         out.write_bytes(b"RIFF")
         return 0, "ok"
 
@@ -525,13 +544,13 @@ def test_tools_tts_success_attaches_artifact_to_video(client, monkeypatch):
         "/api/agenticnews/tools/tts", json={"text": "voiceover", "video_id": vid}
     )
     assert resp.status_code == 200
-    assert resp.json()["path"] == f"/agenticnews-assets/{vid}.wav"
+    assert resp.json()["path"] == f"/agenticnews-assets/_scratch/{vid}.wav"
     v = next(
         x for x in client.get("/api/agenticnews/videos").json()["videos"]
         if x["id"] == vid
     )
     assert v["artifacts"]["vo"] is True
-    assert v["artifacts"]["vo_path"] == f"/agenticnews-assets/{vid}.wav"
+    assert v["artifacts"]["vo_path"] == f"/agenticnews-assets/_scratch/{vid}.wav"
 
 
 # --------------------------------------------------------- tools/* more 400/500

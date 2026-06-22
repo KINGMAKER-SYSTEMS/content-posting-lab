@@ -276,6 +276,42 @@ def scratch_path(flat_slug: str, filename: str) -> Path:
     return d / name
 
 
+def adhoc_scratch_path(name: str, ext: str) -> Path:
+    """Gateway path for a genuinely UNSCOPED ad-hoc/test render — one with no episode to
+    scope it to (a bare default like ``vo``/``card``/``clip``, or a video id with no ``ep_``
+    prefix). Lands it under the cross-episode ``_scratch/`` dir instead of the flat
+    ASSETS_DIR ROOT.
+
+    This closes the three fallback holes in routers/agenticnews.py (the ``except
+    AssetPathError`` clauses that built ``ASSETS_DIR / f"{name}.wav"`` etc.): a flat name at
+    the store root collides across calls AND is indistinguishable to the GC from a keeper —
+    the exact glob-GC hazard the schema exists to kill. ``_scratch/`` is already the
+    cross-episode reapable surface (``scratch_dirs()`` walks it, ``tombstone()`` accepts it),
+    so these intermediates land where the GC can safely reap them by location, not by guessing
+    from the filename.
+
+    ``name`` is validated through the same ``_SLUG_RE`` as every other slug, so traversal,
+    slashes, leading dots and null bytes RAISE here rather than escaping the store.
+
+        adhoc_scratch_path("vo", "wav")    -> .../_scratch/vo.wav
+        adhoc_scratch_path("card", "png")  -> .../_scratch/card.png
+    """
+    name = str(name).strip()
+    if not _SLUG_RE.match(name) or "/" in name or "\\" in name:
+        raise AssetPathError(
+            f"bad ad-hoc name {name!r}. Use a flat basename (alphanumerics, dot, dash, "
+            f"underscore; no slashes, no leading dot, no traversal)."
+        )
+    ext = str(ext).lstrip(".")
+    if ext and not re.fullmatch(r"[A-Za-z0-9]+", ext):
+        raise AssetPathError(
+            f"bad extension {ext!r}. Use a plain extension like 'png'/'mp4'/'wav'."
+        )
+    d = ASSETS_DIR / "_scratch"
+    d.mkdir(parents=True, exist_ok=True)
+    return d / (f"{name}.{ext}" if ext else name)
+
+
 def _rel_url(p: Path) -> str:
     return URL_PREFIX + str(p.relative_to(ASSETS_DIR))
 

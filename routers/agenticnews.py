@@ -262,7 +262,9 @@ async def tool_tts(body: dict = Body(...)):
     try:
         out = abn_assets.asset_path_from_slug(name, "voice")
     except abn_assets.AssetPathError:
-        out = db.ASSETS_DIR / f"{name}.wav"
+        # unscoped ad-hoc render -> reapable _scratch/, NOT the flat root (where the glob GC
+        # can't tell an intermediate from a keeper and has eaten original VO wavs).
+        out = abn_assets.adhoc_scratch_path(name, "wav")
     # Pocket-TTS built-in English voice only — the channel's single narrator (no clone, no cloud).
     cmd = f'pocket-tts generate --text {shlex.quote(text)} --output-path {shlex.quote(str(out))} --quiet'
     code, log = await _sh(cmd, timeout=600)
@@ -291,7 +293,8 @@ async def tool_cards(body: dict = Body(...)):
     try:
         out = abn_assets.asset_path_from_slug(name, "card")
     except abn_assets.AssetPathError:
-        out = db.ASSETS_DIR / f"{name}_card.png"
+        # unscoped ad-hoc/test render -> reapable _scratch/, NOT the flat root.
+        out = abn_assets.adhoc_scratch_path(f"{name}_card", "png")
     font = "/System/Library/Fonts/Helvetica.ttc"
     cmd = (
         f'magick -size 1920x1080 xc:"#08090b" -gravity center '
@@ -332,7 +335,8 @@ async def tool_assemble(body: dict = Body(...)):
     try:
         out = abn_assets.asset_path_from_slug(name, "assembled")
     except abn_assets.AssetPathError:
-        out = db.ASSETS_DIR / f"{name}_assembled.mp4"
+        # unscoped ad-hoc render -> reapable _scratch/, NOT the flat root.
+        out = abn_assets.adhoc_scratch_path(f"{name}_assembled", "mp4")
     cmd = (
         f'ffmpeg -y -loop 1 -i {shlex.quote(str(cardf))} -i {shlex.quote(str(vof))} '
         f'-filter_complex "[0:v]scale=1920:1080,zoompan=z=\'min(zoom+0.0006,1.1)\':d=99999:s=1920x1080:fps=25[v]" '
@@ -1747,30 +1751,56 @@ _RERENDER_TASKS: set = set()
 
 
 def _regen_card(src: str, edit: dict) -> bool:
-    """Regenerate ONE designed-card PNG in place from the edit's new text. Returns True on success."""
-    name = Path(src).name
-    m = _CARD_KIND.search(name)
+    """Regenerate ONE designed-card PNG in place from the edit's new text. Returns True on success.
+
+    The src is OPERATOR-SUPPLIED (it comes off the timeline shot the editor UI picked), so the write
+    target is derived from it under two hard guards before any PNG is generated:
+      1. it must resolve to an EXISTING, MANAGED card under the episode schema ({ep_id}/css/…) — a
+         malformed/traversal src (``../../evil``, a bare name, an off-schema path) fails is_managed or
+         the existence check and returns False, so the generators can never write outside the schema
+         (the gateway's whole reason to exist: the write path itself is rejected when off-schema).
+      2. the new PNG is rendered to a sibling temp stem in the SAME css/ dir, then os.replace'd onto
+         the real target — an atomic swap, so a crashed/partial magick run can't leave a torn card in
+         place of the good one (the old code let magick write straight onto the live file)."""
+    m = _CARD_KIND.search(Path(src).name)
     if not m:
         return False
     kind = m.group(1)
-    stem = name[: m.start()]          # 'ep_x_s1_v2sc2' — the card generator writes back to this stem
+    # Resolve the operator-supplied src to its real on-disk path and REQUIRE it to be an existing
+    # managed card. factory.ASSETS (the store ROOT) is never the write dir anymore — we write back
+    # into exactly the validated css/ dir the original card lives in.
+    target = factory._resolve_asset(src)
+    try:
+        if target.is_symlink() or not target.is_file() or not abn_assets.is_managed(target):
+            return False
+    except OSError:
+        return False
+    assets_dir = target.parent               # the real {ep_id}/css/ dir (gateway-validated)
+    stem = target.name[: -len(f"_{kind}.png")]   # 's1_v2sc2' — segment-local slug under that dir
+    tmp_stem = f".tmp_{os.getpid()}_{stem}"      # render here first, then atomic-replace onto target
     cards = factory._v2cards
-    A, F = factory.ASSETS, factory._FONTS_DIR
+    A, F = assets_dir, factory._FONTS_DIR
     txt = (edit.get("text") or "").strip()
     try:
         if kind == "number":
-            cards.number_card(edit.get("value", txt), edit.get("label", ""), stem, A, F)
+            out = cards.number_card(edit.get("value", txt), edit.get("label", ""), tmp_stem, A, F)
         elif kind == "vs":
-            cards.vs_card(edit.get("left", txt), edit.get("right", ""), stem, A, F)
+            out = cards.vs_card(edit.get("left", txt), edit.get("right", ""), tmp_stem, A, F)
         elif kind == "quote":
-            cards.quote_card(txt, stem, A, F)
+            out = cards.quote_card(txt, tmp_stem, A, F)
         elif kind == "diagram":
             steps = [s.strip() for s in (edit.get("steps") or txt.split("\n")) if s.strip()]
-            cards.diagram_card(edit.get("title", "How it works"), steps or [txt], stem, A, F)
+            out = cards.diagram_card(edit.get("title", "How it works"), steps or [txt], tmp_stem, A, F)
         else:  # hook / statement
-            cards.hook_card(txt, stem, A, F, accent=cards.BRAND_CYAN if edit.get("statement") else cards.BRAND_RED)
+            out = cards.hook_card(txt, tmp_stem, A, F, accent=cards.BRAND_CYAN if edit.get("statement") else cards.BRAND_RED)
+        os.replace(out, target)              # atomic swap of the freshly-rendered card onto the live one
         return True
     except Exception:
+        # never leave a half-rendered .tmp_* card behind in the css/ dir
+        try:
+            (assets_dir / f"{tmp_stem}_{kind}.png").unlink(missing_ok=True)
+        except OSError:
+            pass
         return False
 
 

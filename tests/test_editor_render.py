@@ -226,6 +226,28 @@ def test_visual_filter_clamps_opacity_and_scale_into_string(tmp_path):
     assert "scale=iw*0.0100:ih*0.0100" in out      # scale -3.0 -> clamped to 0.01 floor
 
 
+def test_visual_filter_crossfade_is_dropped_not_faked(tmp_path):
+    """A `crossfade` effect on a VISUAL (image/video) clip has no ffmpeg-native
+    equivalent in the overlay path, so _visual_filter must NOT emit a fade/xfade
+    term for it (unlike fadeIn/fadeOut). The drop is intentional and silent in the
+    filter string — _ffmpeg_unsupported_drops is what surfaces it as a warning.
+
+    This pins the audio/visual inconsistency the ticket flagged: the mux path
+    applies an `afade` for fades, but a crossfade on a visual layer must vanish
+    from the graph rather than being mistaken for a fade (which would corrupt the
+    clip's alpha). It also guards against a future edit accidentally wiring
+    crossfade into the `fades` accumulator."""
+    r = _renderer(tmp_path)
+    clip = {"id": "cf", "assetId": "v", "duration": 2.0, "sourceStart": 0.0, "transform": {},
+            "effects": [{"id": "fx", "type": "crossfade", "params": {"duration": 0.5}}]}
+    out = r._visual_filter(2, clip, {"type": "video"}, "lbl", 1920, 1080)
+    assert "fade=" not in out   # crossfade is NOT honored as a native fade
+    assert "xfade" not in out   # nor faked as an ffmpeg xfade
+    # but the drop is reported by the warning collector, never lost in silence
+    drops = editor_render._ffmpeg_unsupported_drops(clip)
+    assert {"clipId": "cf", "kind": "effect", "name": "crossfade"} in drops
+
+
 def test_visual_filter_zero_duration_clip_omits_fades(tmp_path):
     """A zero-duration clip (e.g. a degenerate window slice) must NOT emit a
     fade=...:d=0 term — ffmpeg treats d<=0 as invalid and aborts the render. The
