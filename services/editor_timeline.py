@@ -219,6 +219,14 @@ def project_from_abn_timeline(
         )
         if bed_keyframes:
             bed_clip["keyframes"] = bed_keyframes
+            # The envelope's points are ABSOLUTE gains (e.g. 0.6 under intros, 0.22
+            # under VO) — they already encode the ducking. But editor_render._volume_filter
+            # SCALES a volume envelope by the clip's flat `volume`, and openshot_bridge's
+            # static volume seeds the same key, so leaving the flat 0.22 here would
+            # double-attenuate the bed (0.6 -> 0.132). Neutralize the flat gain to 1.0
+            # when a real envelope drives the ducking so its absolute values pass through.
+            if any(t["property"] == "volume" for t in bed_keyframes):
+                bed_clip["volume"] = 1.0
         project["clips"][clip_id] = bed_clip
     return project
 

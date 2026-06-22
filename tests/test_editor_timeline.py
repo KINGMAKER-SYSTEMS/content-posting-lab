@@ -297,6 +297,9 @@ def test_import_promotes_dict_music_bed_ducking_envelope():
     env = next(t for t in bed["keyframes"] if t["property"] == "volume")
     assert [p["t"] for p in env["points"]] == [0.0, 1.0, 3.0]
     assert min(p["value"] for p in env["points"]) == 0.18
+    # The envelope holds ABSOLUTE gains; the flat 0.22 must be neutralized to 1.0 so
+    # the render path doesn't scale the envelope down (double-attenuation).
+    assert bed["volume"] == 1.0
 
 
 def test_import_promotes_top_level_music_bed_keyframes_field():
@@ -313,6 +316,32 @@ def test_import_promotes_top_level_music_bed_keyframes_field():
     bed = next(c for c in project["clips"].values() if c["kind"] == "music_bed")
     env = next(t for t in bed["keyframes"] if t["property"] == "volume")
     assert [p["t"] for p in env["points"]] == [0.0, 2.0]
+    assert bed["volume"] == 1.0
+
+
+def test_keyframed_bed_envelope_is_not_double_attenuated_by_flat_gain():
+    """The whole point of the ducking-envelope upgrade: a render must apply the
+    envelope's absolute gains, NOT scale them by the legacy flat 0.22.
+
+    editor_render._volume_filter multiplies a volume envelope by the clip's flat
+    `volume`. With the flat gain neutralized to 1.0 (because the envelope now drives
+    ducking), the compiled ffmpeg expression must reproduce the envelope value 1:1 —
+    at the intro the bed should be 0.6, not 0.6*0.22."""
+    from services import editor_render
+
+    project = timeline.project_from_abn_timeline("p", {
+        "episodeId": "e", "totalSec": 4.0,
+        "musicBed": "/agenticnews-assets/bed.mp3",
+        "musicBedKeyframes": [{"property": "volume", "points": [
+            {"t": 0.0, "value": 0.6}, {"t": 1.0, "value": 0.22},
+        ]}],
+        "segments": [{"segmentId": "s0", "durationSec": 4.0, "shots": []}],
+    })
+    bed = next(c for c in project["clips"].values() if c["kind"] == "music_bed")
+    flt = editor_render._volume_filter(bed, float(bed["volume"]))
+    # base_volume is 1.0, so the leading scale factor is unity — the envelope passes
+    # through. (Pre-fix the bed["volume"] was 0.22 and this expr was 0.22*envelope.)
+    assert flt.startswith("volume='(1.0000)*(")
 
 
 def test_import_infers_missing_shot_durations_from_next_boundary():
