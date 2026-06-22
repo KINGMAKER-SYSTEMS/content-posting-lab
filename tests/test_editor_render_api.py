@@ -63,6 +63,14 @@ def test_editor_render_api_reports_capabilities_and_renders_project(sync_client,
     assert video.suffix == ".mp4"
     assert rendered.json()["backend"] == expected_backend
     assert rendered.json()["start"] == 0.0
+    # End-to-end visibility: every render result carries a backendHealth block so the
+    # frontend can tell a deliberate OpenShot compile from a silent ffmpeg downgrade,
+    # plus a uniform warnings list. (See services/editor_render.choose_renderer.)
+    health = rendered.json()["backendHealth"]
+    assert health["selected"] == expected_backend
+    assert health["preferred"] == "openshot"
+    assert health["downgraded"] is (expected_backend != "openshot")
+    assert "warnings" in rendered.json()
 
     frame = sync_client.post(
         "/api/agenticnews/editor-render/render_api/frame", json={"at": 0.25}

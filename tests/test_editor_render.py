@@ -664,7 +664,57 @@ def test_choose_renderer_isolates_openshot_in_subprocess(monkeypatch, tmp_path):
     renderer = editor_render.choose_renderer(tmp_path / "renders")
 
     assert renderer.backend == "openshot"
-    assert renderer.__class__.__name__ == "OpenShotSubprocessRenderer"
+    # choose_renderer wraps the chosen backend in a health-stamping proxy; the real
+    # subprocess renderer is the proxied inner instance.
+    assert renderer._inner.__class__.__name__ == "OpenShotSubprocessRenderer"
+
+
+def test_backend_health_marks_ffmpeg_fallback_as_downgrade():
+    capabilities = {
+        "openshot": {"available": False, "preferred": True, "reason": "bindings missing"},
+        "ffmpeg": {"available": True, "preferred": False, "reason": "available"},
+    }
+    health = editor_render._backend_health(capabilities, "ffmpeg")
+    assert health["selected"] == "ffmpeg"
+    assert health["preferred"] == "openshot"
+    assert health["downgraded"] is True
+    assert health["reason"] == "bindings missing"
+
+
+def test_backend_health_no_downgrade_when_preferred_selected():
+    capabilities = {
+        "openshot": {"available": True, "preferred": True, "reason": "available"},
+        "ffmpeg": {"available": True, "preferred": False, "reason": "available"},
+    }
+    health = editor_render._backend_health(capabilities, "openshot")
+    assert health["downgraded"] is False
+    assert health["reason"] == ""
+
+
+def test_choose_renderer_stamps_backend_health_and_warnings_on_ffmpeg_fallback(monkeypatch, tmp_path):
+    """When OpenShot is unavailable, the ffmpeg fallback render result must carry a
+    backendHealth block (downgraded=True + reason) AND a warnings list, so the
+    frontend can show WHY the episode silently dropped to ffmpeg and what it lost."""
+    monkeypatch.setattr(
+        editor_render,
+        "detect_render_backends",
+        lambda: {
+            "openshot": {"available": False, "preferred": True, "reason": "Python bindings not importable"},
+            "ffmpeg": {"available": True, "preferred": False, "reason": "available"},
+        },
+    )
+    image = _solid_png(tmp_path / "still.png", "red")
+    project = _project_with_card("health", image)
+
+    renderer = editor_render.choose_renderer(tmp_path / "renders", asset_root=tmp_path)
+    assert renderer.backend == "ffmpeg"
+    result = renderer.render(project, start=0, duration=0.5)
+
+    assert result["backendHealth"]["downgraded"] is True
+    assert result["backendHealth"]["selected"] == "ffmpeg"
+    assert result["backendHealth"]["preferred"] == "openshot"
+    assert "Python bindings not importable" in result["backendHealth"]["reason"]
+    assert "warnings" in result  # uniform contract regardless of backend
 
 
 def _fake_which(present):

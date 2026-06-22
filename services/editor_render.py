@@ -198,14 +198,81 @@ def detect_render_backends() -> dict[str, dict[str, Any]]:
     }
 
 
+def _backend_health(capabilities: dict[str, dict[str, Any]], selected: str) -> dict[str, Any]:
+    """Build the per-render backend-health block the frontend uses to explain WHY
+    an episode is on a given compiler.
+
+    The preferred compiler (CLAUDE.md: OpenShot) may be unavailable, in which case
+    ``choose_renderer`` silently downgrades to ffmpeg. Without this block the editor
+    can't tell a deliberate OpenShot render from a silent ffmpeg fallback that lost
+    effects/keyframes. ``downgraded`` is true whenever the selected backend is not
+    the preferred one; ``reason`` carries the preferred backend's blocker so the UI
+    can show it. ponytail: one dict, derived from the capability map we already have."""
+
+    preferred = next(
+        (name for name, cap in capabilities.items() if cap.get("preferred")),
+        "openshot",
+    )
+    downgraded = selected != preferred
+    return {
+        "selected": selected,
+        "preferred": preferred,
+        "downgraded": downgraded,
+        "reason": str((capabilities.get(preferred) or {}).get("reason") or "")
+        if downgraded
+        else "",
+    }
+
+
+class _HealthStampingRenderer:
+    """Wraps the chosen renderer so every render result carries ``backendHealth``
+    (selected-vs-preferred compiler + downgrade reason) and a ``warnings`` list.
+
+    The OpenShot/subprocess backends return no ``warnings`` key, while the ffmpeg
+    fallback does; stamping a default ``[]`` here gives callers (and the render-cache
+    persistence in routers/agenticnews.py) one uniform contract regardless of which
+    compiler ran. ponytail: one proxy at the single chokepoint, not three edits across
+    three renderer classes."""
+
+    def __init__(self, inner: Any, health: dict[str, Any]):
+        self._inner = inner
+        self._health = health
+
+    @property
+    def backend(self) -> str:
+        return self._inner.backend
+
+    def _stamp(self, result: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(result, dict):
+            return result
+        result.setdefault("warnings", [])
+        result["backendHealth"] = self._health
+        return result
+
+    def render(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        return self._stamp(self._inner.render(*args, **kwargs))
+
+    def render_frame(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        return self._stamp(self._inner.render_frame(*args, **kwargs))
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+
 def choose_renderer(output_dir: Path | str, *, asset_root: Path | str | None = None):
     capabilities = detect_render_backends()
     if capabilities["openshot"]["available"]:
         if os.getenv("EDITOR_RENDER_CHILD") == "1":
+            # Child process: return the bare renderer. The parent
+            # OpenShotSubprocessRenderer stamps health on the result it parses back,
+            # so double-wrapping the child would be redundant (and the child's stdout
+            # contract stays minimal).
             return OpenShotRenderer(output_dir, asset_root=asset_root)
-        return OpenShotSubprocessRenderer(output_dir, asset_root=asset_root)
+        inner: Any = OpenShotSubprocessRenderer(output_dir, asset_root=asset_root)
+        return _HealthStampingRenderer(inner, _backend_health(capabilities, "openshot"))
     if capabilities["ffmpeg"]["available"]:
-        return FFmpegLayeredRenderer(output_dir, asset_root=asset_root)
+        inner = FFmpegLayeredRenderer(output_dir, asset_root=asset_root)
+        return _HealthStampingRenderer(inner, _backend_health(capabilities, "ffmpeg"))
     raise RenderError(f"no supported renderer available: {json.dumps(capabilities)}")
 
 

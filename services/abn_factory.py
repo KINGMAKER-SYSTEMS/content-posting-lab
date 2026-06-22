@@ -2543,9 +2543,23 @@ async def _assemble_episode_openshot(ep_id, timeline):
     final = Path(video)
     if not final.exists():
         raise RuntimeError(f"openshot compile produced no file: {result}")
+    # Surface the compiler-cascade outcome so editors can SEE a silent downgrade
+    # (CLAUDE.md mandates OpenShot; a fall-through to the ffmpeg fallback drops
+    # effects/keyframes — _ffmpeg_unsupported_drops()). backendHealth.downgraded
+    # is true when the preferred compiler was unavailable; warnings lists the
+    # effects/keyframes the chosen backend couldn't honor.
+    health = result.get("backendHealth") or {}
+    warnings = result.get("warnings") or []
+    if health.get("downgraded"):
+        BUS.emit("editor-agent", "openshot.downgraded",
+                 f"OpenShot unavailable ({health.get('reason','?')[:80]}); "
+                 f"compiled via {result.get('backend','?')} fallback"
+                 + (f", dropped {len(warnings)} effect(s)/keyframe(s)" if warnings else ""),
+                 episode_id=ep_id, data={"backendHealth": health, "warnings": warnings})
     BUS.emit("editor-agent", "openshot.done",
              f"OpenShot compiled episode ({result.get('backend','?')}, {result.get('duration',0):.0f}s)",
-             episode_id=ep_id, data={"backend": result.get("backend")})
+             episode_id=ep_id,
+             data={"backend": result.get("backend"), "backendHealth": health, "warnings": warnings})
     return _asset_url(final), (result.get("duration") or await _dur(final))
 
 
