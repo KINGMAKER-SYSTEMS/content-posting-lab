@@ -302,6 +302,27 @@ def test_import_promotes_dict_music_bed_ducking_envelope():
     assert bed["volume"] == 1.0
 
 
+def test_import_keeps_flat_duck_when_promoted_envelope_has_no_volume_track():
+    """The dual-attenuation guard (editor_timeline ~line 228) only neutralizes the
+    flat 0.22 duck when the promoted envelope actually carries a `volume` track. If a
+    factory attaches an envelope that animates a NON-volume property (e.g. opacity),
+    the flat 0.22 MUST survive — otherwise the bed snaps to full volume and mixes
+    OVER the VO. Pins the asymmetry of the `any(t.property == 'volume')` condition."""
+    project = timeline.project_from_abn_timeline("p", {
+        "episodeId": "e", "totalSec": 4.0,
+        "musicBed": "/agenticnews-assets/bed.mp3",
+        "musicBedKeyframes": [{"property": "opacity", "points": [
+            {"t": 0.0, "value": 1.0}, {"t": 1.0, "value": 0.0},
+        ]}],
+        "segments": [{"segmentId": "s0", "durationSec": 4.0, "shots": []}],
+    })
+    bed = next(c for c in project["clips"].values() if c["kind"] == "music_bed")
+    # opacity envelope promoted, but no volume track -> flat duck stays in force.
+    assert any(t["property"] == "opacity" for t in bed["keyframes"])
+    assert not any(t["property"] == "volume" for t in bed["keyframes"])
+    assert bed["volume"] == 0.22
+
+
 def test_import_promotes_top_level_music_bed_keyframes_field():
     """`musicBedKeyframes` at the timeline top level (bed stays a path string) is also
     promoted onto the bed clip."""
