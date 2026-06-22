@@ -41,6 +41,8 @@ from services.telegram import (
     list_sounds,
     get_schedule,
     set_last_run,
+    set_poster_sounds_topic,
+    build_poster_message,
 )
 from services.roster import list_all_pages
 
@@ -292,6 +294,77 @@ async def sounds_create_forum_topic(chat_id: int, name: str) -> int:
         raise RuntimeError("Sounds bot is not running")
     result = await _sounds_bot.create_forum_topic(chat_id=chat_id, name=name)
     return result.message_thread_id
+
+
+async def ensure_sounds_topic(poster_id: str, poster: dict) -> int | None:
+    """Get or create a poster's Campaign Sounds topic via the SOUNDS bot.
+
+    The sounds bot owns this topic so the feature is self-contained (no
+    main-bot dependency). Returns the topic_id, or None if there's no chat_id
+    or creation fails. Persists a freshly created topic_id atomically.
+    """
+    existing = poster.get("sounds_topic_id")
+    if existing:
+        return int(existing)
+
+    chat_id = poster.get("chat_id")
+    if not chat_id:
+        return None
+
+    try:
+        tid = await sounds_create_forum_topic(int(chat_id), "Campaign Sounds")
+        set_poster_sounds_topic(poster_id, tid)
+        logger.info("sounds-bot auto-created Campaign Sounds topic_id=%s for %s", tid, poster_id)
+        return tid
+    except Exception as exc:
+        logger.warning("sounds-bot failed to create Campaign Sounds topic for %s: %s", poster_id, exc)
+        return None
+
+
+async def send_sound_assignments(poster_id: str, poster: dict, page_names: dict[str, str]) -> dict:
+    """Send a poster their personalized per-page Sound Assignments message.
+
+    Single source of truth for the Sound Assignments send path — used by both
+    the manual API endpoints and the scheduled daily batch so they never
+    diverge. Routes through the SOUNDS bot (isolated, send-only), auto-creating
+    the Campaign Sounds topic if missing. Skips silently when the poster has no
+    active songs across any of their pages.
+
+    Returns a result dict: {"sent": bool, "reason"?: str, "song_count": int,
+    "page_count": int, "skipped_pages": [...]}.
+    """
+    if _sounds_bot is None:
+        return {"sent": False, "reason": "sounds_bot_not_running"}
+
+    if not poster.get("chat_id"):
+        return {"sent": False, "reason": "missing_chat_id"}
+
+    message = build_poster_message(poster_id, page_names)
+    if message["song_count"] == 0:
+        return {
+            "sent": False,
+            "reason": "no_songs",
+            "song_count": 0,
+            "page_count": 0,
+            "skipped_pages": message["skipped_pages"],
+            "preview": message,
+        }
+
+    topic_id = await ensure_sounds_topic(poster_id, poster)
+    if not topic_id:
+        return {"sent": False, "reason": "topic_create_failed"}
+
+    await sounds_send_text_to_topic(
+        chat_id=int(poster["chat_id"]),
+        topic_id=int(topic_id),
+        text=message["text"],
+    )
+    return {
+        "sent": True,
+        "song_count": message["song_count"],
+        "page_count": message["page_count"],
+        "skipped_pages": message["skipped_pages"],
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -1015,8 +1088,16 @@ async def run_daily_batch() -> dict:
     posters = list_posters()
     sounds = list_sounds()
 
+    # {integration_id: page_name} — fed to the per-poster Sound Assignments builder.
+    page_names = {
+        p.get("integration_id", ""): p.get("name", p.get("integration_id", ""))
+        for p in list_all_pages()
+        if p.get("integration_id")
+    }
+
     total_forwarded = 0
     posters_notified = 0
+    sound_assignments_sent = 0
     today = datetime.now().strftime("%B %d, %Y")
 
     for poster in posters:
@@ -1084,6 +1165,21 @@ async def run_daily_batch() -> dict:
 
         total_forwarded += poster_total
 
+        # Send the personalized per-page Sound Assignments message to the
+        # poster's dedicated Campaign Sounds topic. Uses the same SOUNDS-bot
+        # path as the manual endpoints so scheduled and manual sends can't
+        # diverge. No-op (silent skip) when the sounds bot isn't running or the
+        # poster has no active songs across their pages. Runs before the
+        # videos/global-sounds skip below so a playlist-only poster still gets
+        # their assignments.
+        if _sounds_bot is not None and poster_id:
+            try:
+                result = await send_sound_assignments(poster_id, poster_data, page_names)
+                if result.get("sent"):
+                    sound_assignments_sent += 1
+            except Exception as e:
+                logger.error("sound-assignments send error poster=%s: %s", poster_id, e)
+
         if poster_total == 0 and not sounds:
             continue
 
@@ -1114,33 +1210,11 @@ async def run_daily_batch() -> dict:
         except Exception as e:
             logger.error("summary send error poster=%s: %s", poster_id, e)
 
-        # Send sound links to the poster's dedicated Sounds topic
-        sounds_topic_id = poster_data.get("sounds_topic_id")
-        if sounds and sounds_topic_id:
-            sounds_msg_parts: list[str] = [
-                f"\U0001f3b5 Active Sounds \u2014 {today}",
-                "",
-            ]
-            for sound in sounds:
-                label = sound.get("label", sound.get("name", "Sound"))
-                url = sound.get("url", "")
-                sounds_msg_parts.append(f"\u2022 {label}")
-                sounds_msg_parts.append(f"  {url}")
-                sounds_msg_parts.append("")
-
-            try:
-                await send_text_to_topic(
-                    chat_id=poster_chat_id,
-                    topic_id=int(sounds_topic_id),
-                    text="\n".join(sounds_msg_parts),
-                )
-            except Exception as e:
-                logger.error("sounds topic send error poster=%s: %s", poster_id, e)
-
     set_last_run(datetime.now(tz=ZoneInfo("UTC")).isoformat())
 
     return {
         "posters_notified": posters_notified,
         "videos_forwarded": total_forwarded,
         "sounds_sent": len(sounds) if sounds else 0,
+        "sound_assignments_sent": sound_assignments_sent,
     }

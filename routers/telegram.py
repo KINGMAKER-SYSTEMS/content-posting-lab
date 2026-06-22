@@ -1656,32 +1656,6 @@ def _require_sounds_bot():
         )
 
 
-async def _ensure_sounds_topic_via_sounds_bot(poster_id: str, poster: dict) -> int | None:
-    """Get or create the Campaign Sounds topic using the SOUNDS bot.
-
-    The sounds bot creates the topic itself so that:
-    1. The new feature is fully self-contained (no main-bot dependency)
-    2. The new bot has clear ownership of the topic going forward
-    Returns topic_id or None on failure.
-    """
-    sounds_topic_id = poster.get("sounds_topic_id")
-    if sounds_topic_id:
-        return int(sounds_topic_id)
-
-    chat_id = poster.get("chat_id")
-    if not chat_id:
-        return None
-
-    try:
-        tid = await _tg_bot.sounds_create_forum_topic(int(chat_id), "Campaign Sounds")
-        set_poster_sounds_topic(poster_id, tid)
-        logger.info("sounds-bot auto-created Campaign Sounds topic_id=%s for %s", tid, poster_id)
-        return tid
-    except Exception as exc:
-        logger.warning("sounds-bot failed to create Campaign Sounds topic for %s: %s", poster_id, exc)
-        return None
-
-
 @router.get("/pages/{integration_id}/playlist")
 async def get_page_playlist_endpoint(integration_id: str):
     """Return a page's playlist with sound details.
@@ -1769,41 +1743,29 @@ async def send_assignments_to_poster(poster_id: str):
     if poster is None:
         raise HTTPException(status_code=404, detail="Poster not found")
 
-    poster_chat_id = poster.get("chat_id")
-    if not poster_chat_id:
+    if not poster.get("chat_id"):
         raise HTTPException(status_code=400, detail="Poster has no chat_id")
 
-    sounds_topic_id = await _ensure_sounds_topic_via_sounds_bot(poster_id, poster)
-    if not sounds_topic_id:
-        raise HTTPException(status_code=502, detail="Failed to create Campaign Sounds topic")
-
-    message = build_poster_message(poster_id, _page_name_lookup())
-
-    if message["song_count"] == 0:
-        return {
-            "ok": True,
-            "sent": False,
-            "reason": "no_songs",
-            "poster_id": poster_id,
-            "preview": message,
-        }
-
     try:
-        await _tg_bot.sounds_send_text_to_topic(
-            chat_id=int(poster_chat_id),
-            topic_id=int(sounds_topic_id),
-            text=message["text"],
+        result = await _tg_bot.send_sound_assignments(
+            poster_id, poster, _page_name_lookup()
         )
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Send failed: {exc}")
+
+    if not result.get("sent"):
+        reason = result.get("reason")
+        if reason == "topic_create_failed":
+            raise HTTPException(status_code=502, detail="Failed to create Campaign Sounds topic")
+        return {"ok": True, "sent": False, "poster_id": poster_id, **result}
 
     return {
         "ok": True,
         "sent": True,
         "poster_id": poster_id,
-        "song_count": message["song_count"],
-        "page_count": message["page_count"],
-        "skipped_pages": message["skipped_pages"],
+        "song_count": result["song_count"],
+        "page_count": result["page_count"],
+        "skipped_pages": result["skipped_pages"],
     }
 
 
@@ -1827,39 +1789,29 @@ async def send_assignments_to_all_posters():
 
     for poster in posters:
         poster_id = poster.get("poster_id", "")
-        poster_chat_id = poster.get("chat_id")
-        if not poster_id or not poster_chat_id:
+        if not poster_id or not poster.get("chat_id"):
             skipped.append({"poster_id": poster_id, "reason": "missing_chat_id"})
             continue
 
         try:
-            message = build_poster_message(poster_id, page_names)
+            result = await _tg_bot.send_sound_assignments(poster_id, poster, page_names)
         except ValueError as exc:
             errors.append({"poster_id": poster_id, "error": str(exc)})
             continue
-
-        if message["song_count"] == 0:
-            skipped.append({"poster_id": poster_id, "reason": "no_songs"})
-            continue
-
-        sounds_topic_id = await _ensure_sounds_topic_via_sounds_bot(poster_id, poster)
-        if not sounds_topic_id:
-            errors.append({"poster_id": poster_id, "error": "topic_create_failed"})
-            continue
-
-        try:
-            await _tg_bot.sounds_send_text_to_topic(
-                chat_id=int(poster_chat_id),
-                topic_id=int(sounds_topic_id),
-                text=message["text"],
-            )
-            sent.append({
-                "poster_id": poster_id,
-                "song_count": message["song_count"],
-                "page_count": message["page_count"],
-            })
         except Exception as exc:
             errors.append({"poster_id": poster_id, "error": str(exc)[:200]})
+            continue
+
+        if result.get("sent"):
+            sent.append({
+                "poster_id": poster_id,
+                "song_count": result["song_count"],
+                "page_count": result["page_count"],
+            })
+        elif result.get("reason") == "topic_create_failed":
+            errors.append({"poster_id": poster_id, "error": "topic_create_failed"})
+        else:
+            skipped.append({"poster_id": poster_id, "reason": result.get("reason", "skipped")})
 
         await asyncio.sleep(0.5)
 

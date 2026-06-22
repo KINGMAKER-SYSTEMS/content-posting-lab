@@ -9,12 +9,15 @@ Data lives in competitor_intel.json on the assets volume (refreshed periodically
 playbook()/topic_signals() into their prompts.
 """
 from __future__ import annotations
+import logging
 import os
 import subprocess
 import time
 from pathlib import Path
 
 from services.json_store import atomic_load, atomic_save
+
+log = logging.getLogger(__name__)
 
 _VOL = os.getenv("ABN_ASSETS_DIR") or os.getenv("RAILWAY_VOLUME_MOUNT_PATH")
 _BASE = Path(_VOL) if _VOL and Path(_VOL).exists() else Path(__file__).resolve().parent.parent / "agenticnews_assets"
@@ -66,7 +69,8 @@ def refresh(force: bool = False) -> dict:
         # post-render path, so a half-written intel file = corrupt titles + cold-opens. (CON ticket)
         atomic_save(INTEL_FILE, blob)
     except Exception:
-        pass
+        log.warning("competitor intel save failed; titler/narrator will use stale or static playbook",
+                    exc_info=True)
     return blob
 
 

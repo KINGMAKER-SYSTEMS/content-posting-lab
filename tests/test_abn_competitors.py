@@ -136,6 +136,26 @@ def test_refresh_partial_channel_failure_keeps_good_videos(intel, monkeypatch):
     assert "good winner" in ac.topic_signals()
 
 
+def test_refresh_logs_warning_when_save_fails(intel, monkeypatch, caplog):
+    # atomic_save blowing up must no longer be silently swallowed: callers get the
+    # in-memory blob back, but a WARNING is emitted so a stale/missing intel file
+    # (corrupt titles + cold-opens downstream) is diagnosable.
+    def boom(path, data, **kw):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(ac, "atomic_save", boom)
+    with caplog.at_level("WARNING", logger=ac.log.name):
+        blob = ac.refresh(force=True)
+    # still returns a well-formed blob so callers degrade gracefully...
+    assert blob["videos"]
+    # ...and the failure is logged, not swallowed.
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert warnings, "save failure must emit a WARNING"
+    assert any("save failed" in r.getMessage() for r in warnings)
+    # exc_info is attached so the traceback is visible in the log.
+    assert any(r.exc_info for r in warnings)
+
+
 def test_load_routes_through_atomic_load(intel, monkeypatch):
     # _load() must read via the shared atomic_load util (specific exception handling),
     # not a bare json.loads/except that swallows every error including real bugs.

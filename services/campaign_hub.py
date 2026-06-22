@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import re
+from difflib import SequenceMatcher
 from typing import Any
 
 import httpx
@@ -77,6 +78,40 @@ def _match_keys(artist: str, song: str) -> set[str]:
             keys.add(f"{fa}|{s}")
 
     return keys
+
+
+# Minimum combined artist|song similarity for the deterministic fuzzy fallback.
+# Tuned so real spelling variants (Nicol/Nichol, Lyn/Lynn, Gregory/Greg) score
+# ~0.91-0.97 while same-artist-different-song or unrelated names stay below ~0.78.
+FUZZY_MATCH_THRESHOLD = 0.88
+
+
+def _fuzzy_match_notion(
+    artist: str,
+    song: str,
+    notion_entries: list[dict[str, str]],
+) -> dict[str, str] | None:
+    """Deterministic stdlib fuzzy fallback for the deterministic pass.
+
+    Catches near-miss spelling differences (e.g. "Alex Nicol" vs "Alex Nichol")
+    that produce zero normalized-key overlap, without paying for an AI call.
+    Returns the best Notion entry above FUZZY_MATCH_THRESHOLD, or None.
+    """
+    hub_key = f"{_slugify(artist)}|{_slugify(song)}"
+    if not hub_key.strip("|"):
+        return None
+
+    best: dict[str, str] | None = None
+    best_ratio = FUZZY_MATCH_THRESHOLD
+    for n in notion_entries:
+        if not n.get("url"):
+            continue
+        notion_key = f"{_slugify(n.get('artist', ''))}|{_slugify(n.get('song', ''))}"
+        ratio = SequenceMatcher(None, hub_key, notion_key).ratio()
+        if ratio >= best_ratio:
+            best_ratio = ratio
+            best = n
+    return best
 
 
 def _parse_sound_label(label: str) -> tuple[str, str]:
@@ -233,6 +268,7 @@ async def sync_sound_status(notion_campaigns: list[dict[str, Any]] | None = None
     # Pass 1: Deterministic matching for active campaigns
     matched_active: list[dict] = []  # [{hub_campaign, notion_url, notion_label}]
     unmatched_for_ai: list[dict[str, str]] = []
+    fuzzy_matched = 0
 
     for c in active_hub:
         artist = c.get("artist", "")
@@ -244,6 +280,15 @@ async def sync_sound_status(notion_campaigns: list[dict[str, Any]] | None = None
             if key in notion_by_key:
                 notion_entry = notion_by_key[key]
                 break
+
+        # Pass 1b: deterministic stdlib fuzzy fallback for spelling variants
+        # (zero key-overlap cases like "Alex Nicol" vs "Alex Nichol"). Free,
+        # deterministic, and runs before the costly AI pass.
+        if not (notion_entry and notion_entry["url"]):
+            fuzzy = _fuzzy_match_notion(artist, song, notion_entries_for_ai)
+            if fuzzy:
+                notion_entry = fuzzy
+                fuzzy_matched += 1
 
         if notion_entry and notion_entry["url"]:
             matched_active.append({
@@ -323,12 +368,17 @@ async def sync_sound_status(notion_campaigns: list[dict[str, Any]] | None = None
     completed_urls: set[str] = set()
     for c in completed_hub:
         hub_keys = _match_keys(c.get("artist", ""), c.get("song", ""))
+        notion_entry = None
         for key in hub_keys:
             if key in notion_by_key:
-                url = notion_by_key[key].get("url", "")
-                if url:
-                    completed_urls.add(url.rstrip("/").lower())
+                notion_entry = notion_by_key[key]
                 break
+        if not (notion_entry and notion_entry.get("url")):
+            notion_entry = _fuzzy_match_notion(
+                c.get("artist", ""), c.get("song", ""), notion_entries_for_ai
+            )
+        if notion_entry and notion_entry.get("url"):
+            completed_urls.add(notion_entry["url"].rstrip("/").lower())
 
     for sound in existing_sounds:
         url_key = sound.get("url", "").rstrip("/").lower()
@@ -346,7 +396,8 @@ async def sync_sound_status(notion_campaigns: list[dict[str, Any]] | None = None
         "sounds_added": sounds_added,
         "sounds_deactivated": sounds_deactivated,
         "sounds_reactivated": sounds_reactivated,
-        "matched_deterministic": len(matched_active) - ai_matched,
+        "matched_deterministic": len(matched_active) - ai_matched - fuzzy_matched,
+        "matched_fuzzy": fuzzy_matched,
         "matched_ai": ai_matched,
         "unmatched": [f"{u['artist']} - {u['song']}" for u in unmatched_for_ai],
         "errors": errors,

@@ -837,9 +837,13 @@ def _plan_editor_source_materialization(
 
 
 def _asset_path_from_url(src: str) -> Path:
-    if src.startswith("/agenticnews-assets/"):
-        return db.ASSETS_DIR / src.removeprefix("/agenticnews-assets/")
-    return Path(src)
+    # Delegate to the ONE canonical /agenticnews-assets/ resolver so asset-health /
+    # VO-existence checks see the same on-disk path the OpenShot/ffmpeg compiler does.
+    # The bridge resolver strips ?rev=N / #frag cache-busters that the editor persists
+    # on render-cache URLs (e.g. ".../episode.mp4?rev=3"); a divergent un-stripped
+    # resolver here builds ".../episode.mp4?rev=3", which never exists on disk, so a
+    # valid asset gets falsely flagged missing and the compile is blocked.
+    return Path(openshot_bridge._resolve_asset_src(src, asset_root=db.ASSETS_DIR))
 
 
 async def _load_editor_project_for_asset_health(project_id: str) -> tuple[dict, str | None, dict | None, bool]:
@@ -1397,7 +1401,9 @@ def _render_cache_path_exists(path: str) -> bool:
     if path.startswith("http://") or path.startswith("https://"):
         return True
     if path.startswith("/agenticnews-assets/"):
-        return (db.ASSETS_DIR / path.removeprefix("/agenticnews-assets/")).exists()
+        # Same canonical resolver as the compiler: strip the ?rev=N cache-buster the
+        # editor persists on these URLs, else a present render-cache file reads stale.
+        return Path(openshot_bridge._resolve_asset_src(path, asset_root=db.ASSETS_DIR)).exists()
     return Path(path).exists()
 
 

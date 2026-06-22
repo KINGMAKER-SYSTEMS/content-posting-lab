@@ -1260,6 +1260,39 @@ def test_import_openshot_degrades_when_find_spec_raises(monkeypatch):
     assert "not importable" in reason
 
 
+def test_find_spec_exception_surfaces_as_ffmpeg_fallback_through_choose_renderer(
+    monkeypatch, tmp_path
+):
+    # End-to-end companion to the unit test above: when importlib.util.find_spec
+    # itself RAISES (not the __spec__-is-None ValueError, but any native-extension
+    # discovery blow-up), the exception must be caught in _import_openshot and the
+    # WHOLE stack must degrade to ffmpeg — detect_render_backends reports openshot
+    # unavailable with the exception text as its reason, and choose_renderer returns
+    # the ffmpeg backend stamped as a downgrade carrying that reason. Without the
+    # try/except at the find_spec call this raises out of choose_renderer and there
+    # is no render at all. Pin the surfaced path, not just the helper return tuple.
+    monkeypatch.setattr(editor_render, "_openshot_python_candidates", lambda: [])
+
+    def _boom(name):
+        raise OSError("libopenshot.dylib: image not found")
+
+    monkeypatch.setattr(editor_render.importlib.util, "find_spec", _boom)
+
+    caps = editor_render.detect_render_backends()
+    assert caps["openshot"]["available"] is False
+    assert "image not found" in caps["openshot"]["reason"]
+
+    renderer = editor_render.choose_renderer(tmp_path / "renders")
+
+    assert renderer.backend == "ffmpeg"
+    assert renderer._inner.__class__.__name__ == "FFmpegLayeredRenderer"
+    health = renderer._health
+    assert health["downgraded"] is True
+    assert health["selected"] == "ffmpeg"
+    assert health["preferred"] == "openshot"
+    assert "image not found" in health["reason"]
+
+
 def test_openshot_subprocess_renderer_salvages_result_from_native_child_exit(monkeypatch, tmp_path):
     output = tmp_path / "renders" / "window.mp4"
     output.parent.mkdir()

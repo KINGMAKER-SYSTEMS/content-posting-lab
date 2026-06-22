@@ -231,6 +231,123 @@ def test_voice_raises_on_gateway_error_before_shelling_out(monkeypatch, tmp_path
         asyncio.run(abn_factory._voice("hello", "no_episode_prefix"))
 
 
+# ---------------- TITLE CARD: ImageMagick failure modes ----------------
+
+def test_card_raises_when_magick_returns_nonzero(monkeypatch, tmp_path):
+    """If `magick` exits non-zero (e.g. ImageMagick missing / bad args), _card must raise
+    rather than return a URL to a card that was never written."""
+    monkeypatch.setattr(abn_factory, "ASSETS", tmp_path)
+    monkeypatch.setattr(abn_assets, "ASSETS_DIR", tmp_path)
+
+    async def fail_sh(cmd, timeout=60):
+        return 127, "magick: command not found"
+
+    monkeypatch.setattr(abn_factory, "_sh", fail_sh)
+    with pytest.raises(RuntimeError, match="card:"):
+        asyncio.run(abn_factory._card("Headline", "subtitle", "ep_a111111_s0"))
+
+
+def test_card_raises_when_magick_succeeds_but_no_output_file(monkeypatch, tmp_path):
+    """Even on a zero exit code, _card must raise if the output PNG is missing — a silent
+    render miss must not be handed downstream as a real card."""
+    monkeypatch.setattr(abn_factory, "ASSETS", tmp_path)
+    monkeypatch.setattr(abn_assets, "ASSETS_DIR", tmp_path)
+
+    async def ok_but_no_file_sh(cmd, timeout=60):
+        return 0, ""  # exit 0 but never writes the out file
+
+    monkeypatch.setattr(abn_factory, "_sh", ok_but_no_file_sh)
+    with pytest.raises(RuntimeError, match="card:"):
+        asyncio.run(abn_factory._card("Headline", "subtitle", "ep_a111111_s0"))
+
+
+# ---------------- CARD + DEMO PRODUCERS: gateway routing (asset-schema epic) ----------------
+# Same contract proven for _voice above: the card and code-demo producers must build their write
+# path via the asset gateway (per-episode {ep_id}/css|broll/ schema, not a flat ASSETS-root dump),
+# and an off-schema slug must be rejected by the gateway BEFORE the producer shells out to magick/
+# VHS. These pin that the verification ticket's "card/demo producers route through
+# asset_path_from_slug" guarantee can't silently regress to a hand-built flat path.
+
+def test_card_routes_through_gateway_and_returns_managed_url(monkeypatch, tmp_path):
+    """_card writes the title-card PNG to the gateway's per-episode css/ subdir and returns the
+    managed /agenticnews-assets/ URL that round-trips back to that same file. magick is stubbed."""
+    monkeypatch.setattr(abn_factory, "ASSETS", tmp_path)
+    monkeypatch.setattr(abn_assets, "ASSETS_DIR", tmp_path)
+
+    captured = {}
+
+    async def fake_sh(cmd, timeout=60):
+        captured["cmd"] = cmd
+        # simulate magick writing the png the gateway told it to
+        out = abn_assets.asset_path_from_slug("ep_b222222_s0", "card")
+        out.write_bytes(b"\x89PNG fake")
+        return 0, "ok"
+
+    monkeypatch.setattr(abn_factory, "_sh", fake_sh)
+
+    url = asyncio.run(abn_factory._card("Big Headline", "a subtitle", "ep_b222222_s0"))
+
+    assert url.startswith("/agenticnews-assets/")
+    assert "magick" in captured["cmd"], "card did not go through ImageMagick"
+    resolved = abn_factory._resolve_asset(url)
+    assert resolved.exists()
+    # lands under the per-episode css/ layer, not a flat root dump
+    assert resolved.parent == tmp_path / "ep_b222222" / "css"
+
+
+def test_card_raises_on_gateway_error_before_shelling_out(monkeypatch, tmp_path):
+    """An off-schema slug (no 'ep_<hex>' prefix) must be rejected by the gateway BEFORE _card ever
+    shells out to magick — the write path itself is the enforcement point."""
+    monkeypatch.setattr(abn_factory, "ASSETS", tmp_path)
+    monkeypatch.setattr(abn_assets, "ASSETS_DIR", tmp_path)
+
+    async def boom_sh(cmd, timeout=60):
+        raise AssertionError("shelled out to magick despite an off-schema card slug")
+
+    monkeypatch.setattr(abn_factory, "_sh", boom_sh)
+    with pytest.raises(abn_assets.AssetPathError):
+        asyncio.run(abn_factory._card("h", "s", "no_episode_prefix"))
+
+
+def test_code_demo_routes_through_gateway(monkeypatch, tmp_path):
+    """_code_demo writes its VHS-rendered mp4 to the gateway's per-episode broll/ subdir and returns
+    the managed URL. codegen + the VHS shell are stubbed (no real LLM / VHS / ffmpeg)."""
+    monkeypatch.setattr(abn_factory, "ASSETS", tmp_path)
+    monkeypatch.setattr(abn_assets, "ASSETS_DIR", tmp_path)
+    monkeypatch.setattr(abn_factory, "_codegen_sync", lambda title, brief: "print('hi')\nx = 1\n")
+
+    async def fake_sh(cmd, timeout=120):
+        # VHS would write the relative Output into the gateway dir; simulate that
+        out = abn_assets.asset_path_from_slug("ep_c333333_s1", "demo")
+        out.write_bytes(b"fake mp4")
+        return 0, "ok"
+
+    monkeypatch.setattr(abn_factory, "_sh", fake_sh)
+
+    url = asyncio.run(abn_factory._code_demo("Title", "brief", "ep_c333333_s1"))
+
+    assert url is not None and url.startswith("/agenticnews-assets/")
+    resolved = abn_factory._resolve_asset(url)
+    assert resolved.exists()
+    # demo is a broll-layer asset under the per-episode schema, not a flat dump
+    assert resolved.parent == tmp_path / "ep_c333333" / "broll"
+
+
+def test_code_demo_raises_on_gateway_error_before_codegen_writes(monkeypatch, tmp_path):
+    """An off-schema slug must be rejected by the gateway (asset_path_from_slug) before _code_demo
+    builds any scratch tape/snippet — the producer cannot hand-build a flat path around it."""
+    monkeypatch.setattr(abn_factory, "ASSETS", tmp_path)
+    monkeypatch.setattr(abn_assets, "ASSETS_DIR", tmp_path)
+    monkeypatch.setattr(abn_factory, "_codegen_sync", lambda title, brief: "print('hi')\n")
+
+    async def boom_sh(cmd, timeout=120):
+        raise AssertionError("shelled out to VHS despite an off-schema demo slug")
+
+    monkeypatch.setattr(abn_factory, "_sh", boom_sh)
+    with pytest.raises(abn_assets.AssetPathError):
+        asyncio.run(abn_factory._code_demo("Title", "brief", "no_episode_prefix"))
+
+
 # ---------------- SCRIPT: fallback + length clamp ----------------
 
 def test_script_segment_falls_back_when_llm_returns_nothing(monkeypatch):
@@ -364,6 +481,53 @@ def test_align_returns_whisper_words_without_cli_fallback(monkeypatch, tmp_path)
     assert words == [{"w": "hi", "s": 0.0, "e": 0.5}]
 
 
+def test_align_legacy_fallback_is_read_only_and_writes_through_gateway(monkeypatch, tmp_path):
+    """ASSET-GATEWAY GUARD: when _align hits its legacy flat-path read fallback (the
+    back-compat symlink the migration left at the store root), that legacy path must stay
+    READ-ONLY. The CLI-fallback's alignment JSON must be written under the GATEWAY
+    audio/ dir (derived from asset_path_from_slug, never from the resolved read path), and
+    the legacy file's bytes must be untouched. This pins the invariant the ticket audits:
+    no VO code path can turn the legacy read fallback into a write that bypasses the
+    services/abn_assets gateway."""
+    monkeypatch.setattr(abn_factory, "ASSETS", tmp_path)
+    monkeypatch.setattr(abn_assets, "ASSETS_DIR", tmp_path)
+
+    # The gateway voice path does NOT exist -> _align falls back to the legacy flat path.
+    legacy = tmp_path / "ep_a111111_s0.wav"
+    legacy.write_bytes(b"legacy vo bytes")
+    gateway_wav = abn_assets.asset_path_from_slug("ep_a111111_s0", "voice")
+    assert not gateway_wav.exists()
+
+    # faster-whisper yields nothing -> the slow whisper-CLI fallback runs and writes JSON.
+    monkeypatch.setattr(abn_factory, "_align_sync", lambda p: [])
+
+    captured = {}
+
+    async def fake_sh(cmd, timeout=300):
+        captured["cmd"] = cmd
+        # Emulate the whisper CLI writing its json into the --output_dir it was given,
+        # named after the input wav stem (what _align expects to read back).
+        out_json = abn_assets.asset_path_from_slug("ep_a111111_s0", "align")
+        outdir = out_json.parent
+        (outdir / f"{legacy.stem}.json").write_text(json.dumps(
+            {"segments": [{"words": [{"word": "yo", "start": 0.0, "end": 0.4}]}]}
+        ))
+        return 0, ""
+
+    monkeypatch.setattr(abn_factory, "_sh", fake_sh)
+    words = asyncio.run(abn_factory._align("ep_a111111_s0"))
+
+    assert words == [{"w": "yo", "s": 0.0, "e": 0.4}]
+    # The legacy flat file was read, never written through.
+    assert legacy.read_bytes() == b"legacy vo bytes"
+    # whisper's --output_dir is the GATEWAY audio/ dir, not the flat store root.
+    gateway_audio_dir = abn_assets.asset_path_from_slug("ep_a111111_s0", "align").parent
+    assert gateway_audio_dir.name == "audio"
+    assert f"--output_dir {shlex.quote(str(gateway_audio_dir))}" in captured["cmd"]
+    # Nothing was written next to the legacy file at the store root.
+    assert not (tmp_path / f"{legacy.stem}.json").exists()
+
+
 # ---------------- ASSEMBLE: refuse an empty episode ----------------
 
 def test_assemble_episode_raises_when_no_clips_render(monkeypatch, tmp_path):
@@ -378,6 +542,59 @@ def test_assemble_episode_raises_when_no_clips_render(monkeypatch, tmp_path):
     monkeypatch.setattr(abn_factory, "_sh", failing_sh)
 
     segments = [{"script": "hi", "vo_path": "/agenticnews-assets/ep_a111111_s0.wav", "screenshot": None}]
+    with pytest.raises(RuntimeError, match="no segment clips"):
+        asyncio.run(abn_factory._assemble_episode("ep_a111111", segments))
+
+
+def test_assemble_episode_raises_when_every_segment_encode_fails(monkeypatch, tmp_path):
+    """The empty-`seg_clips` gate (services/abn_factory.py ~2741) is the LAST-RESORT ffmpeg
+    fallback's own failure path: when EVERY per-segment encode fails it must raise 'no segment
+    clips' and never reach concat. The existing single-segment failure test only proves one
+    segment; this proves the gate holds when a MULTI-segment episode loses every clip — and that
+    failure is detected via `code != 0` for each segment, so concat is never attempted."""
+    monkeypatch.setattr(abn_factory, "ASSETS", tmp_path)
+    monkeypatch.setattr(abn_assets, "ASSETS_DIR", tmp_path)
+
+    seg_attempts = {"n": 0}
+
+    async def failing_sh(cmd, timeout=600):
+        if "-f concat" in cmd or cmd.startswith("ffprobe"):
+            raise AssertionError("reached concat/probe despite every segment encode failing")
+        seg_attempts["n"] += 1
+        return 1, "ffmpeg: encode failed for this segment"  # code != 0 for every segment
+
+    monkeypatch.setattr(abn_factory, "_sh", failing_sh)
+
+    segments = [
+        {"script": "first", "vo_path": "/agenticnews-assets/ep_a111111_s0.wav", "screenshot": None},
+        {"script": "second", "vo_path": "/agenticnews-assets/ep_a111111_s1.wav", "screenshot": None},
+        {"script": "third", "vo_path": "/agenticnews-assets/ep_a111111_s2.wav", "screenshot": None},
+    ]
+    with pytest.raises(RuntimeError, match="no segment clips"):
+        asyncio.run(abn_factory._assemble_episode("ep_a111111", segments))
+    assert seg_attempts["n"] == 3, "every segment should have been attempted before the gate fires"
+
+
+def test_assemble_episode_raises_when_every_encode_reports_ok_but_writes_nothing(monkeypatch, tmp_path):
+    """The gate at services/abn_factory.py ~2737 is `code == 0 AND clip.exists()` — a segment that
+    returns success but silently writes NO output file must NOT count as a usable clip. When every
+    segment hits that (ffmpeg exits 0 but produced nothing — e.g. a filter that emits no frames),
+    `seg_clips` stays empty and 'no segment clips' must still raise. The other failure tests only
+    exercise `code != 0`; this pins the second half of the AND."""
+    monkeypatch.setattr(abn_factory, "ASSETS", tmp_path)
+    monkeypatch.setattr(abn_assets, "ASSETS_DIR", tmp_path)
+
+    async def ok_but_empty_sh(cmd, timeout=600):
+        if "-f concat" in cmd or cmd.startswith("ffprobe"):
+            raise AssertionError("reached concat/probe despite no clip files being written")
+        return 0, ""  # success code, but the clip file is never created → clip.exists() is False
+
+    monkeypatch.setattr(abn_factory, "_sh", ok_but_empty_sh)
+
+    segments = [
+        {"script": "alpha", "vo_path": "/agenticnews-assets/ep_a111111_s0.wav", "screenshot": None},
+        {"script": "beta", "vo_path": "/agenticnews-assets/ep_a111111_s1.wav", "screenshot": None},
+    ]
     with pytest.raises(RuntimeError, match="no segment clips"):
         asyncio.run(abn_factory._assemble_episode("ep_a111111", segments))
 
@@ -770,6 +987,63 @@ def test_render_remotion_does_not_reuse_short_render(monkeypatch, tmp_path):
 
     asyncio.run(abn_factory._render_remotion("ep_a111111", {"musicBed": None}, force=False))
     assert rendered["n"] == 1, "a sub-floor (short) leftover must be re-rendered, not reused"
+
+
+def _run_duck_pass(monkeypatch, tmp_path, music_bytes=b"\x00music"):
+    """Drive _render_remotion all the way to the duck post-pass with a real musicBed present,
+    and return the captured duck ffmpeg command string. Render + normalize are stubbed to
+    succeed; the music bed is written INSIDE the asset store so the containment check passes."""
+    monkeypatch.setattr(abn_factory, "ASSETS", tmp_path)
+    monkeypatch.setattr(abn_assets, "ASSETS_DIR", tmp_path)
+    _stub_remotion_dir(monkeypatch, tmp_path)
+
+    out = abn_assets.asset_path("ep_a111111", "episode")
+    bed = tmp_path / "music_bed.mp3"          # under ASSETS -> passes the relative_to containment check
+    bed.write_bytes(music_bytes)
+
+    captured = {"duck": None}
+
+    async def fake_sh(cmd, timeout=600):
+        if "npx remotion render" in cmd:
+            out.write_bytes(b"\x00fake-mp4")  # remotion render succeeds
+            return 0, "rendered"
+        if "sidechaincompress" in cmd:
+            captured["duck"] = cmd            # this is the duck pass
+        if cmd.startswith("ffmpeg"):          # normalize/duck: write the intermediate so .exists() holds
+            Path(shlex.split(cmd)[-2]).write_bytes(b"\x00")
+            return 0, "ok"
+        return 0, "yuv420p"
+
+    async def fake_dur(path):
+        return 640.0
+
+    monkeypatch.setattr(abn_factory, "_sh", fake_sh)
+    monkeypatch.setattr(abn_factory, "_dur", fake_dur)
+
+    asyncio.run(abn_factory._render_remotion("ep_a111111", {"musicBed": "music_bed.mp3"}))
+    assert captured["duck"], "duck pass never ran despite a present musicBed"
+    return captured["duck"]
+
+
+def test_render_remotion_duck_pass_is_safe_for_mismatched_audio_durations(monkeypatch, tmp_path):
+    """The duck post-pass mixes a separate music bed UNDER the baked VO via sidechaincompress. VO and
+    music bed have NO guaranteed relationship in length, so the filter MUST stay anchored to the VO
+    regardless of which side is longer:
+      * `-stream_loop -1` on the music input -> a SHORTER bed is looped, never running out mid-episode
+        (which would leave the tail un-ducked / silent music);
+      * `amix=...:duration=first` + `-shortest` -> a LONGER bed is truncated to the VO, so the episode
+        length tracks the narration and the ducking key never drifts past the VO.
+    Without all three a mismatched bed silently produces wrong ducking / wrong episode length."""
+    cmd = _run_duck_pass(monkeypatch, tmp_path)
+
+    # the music bed is input [1] and must be looped so a SHORT bed covers the whole VO
+    assert "-stream_loop -1" in cmd, "music bed must be looped so a shorter bed still covers the VO"
+    # the mix length is pinned to the FIRST input (the VO at [0:a]); a LONGER bed is truncated, not extended
+    assert "duration=first" in cmd, "amix must anchor output length to the VO (duration=first)"
+    assert "-shortest" in cmd, "-shortest must clamp the output to the VO so a long bed can't extend it"
+    # the VO ([0:a]) is the sidechain KEY for the compressor -- ducking is keyed off narration, not the bed
+    assert "[m][0:a]sidechaincompress" in cmd, "VO must be the sidechain key for the ducking compressor"
+
 
 
 # ---------------- _plan_shots: segment mixing, rhythm variation, Ken-Burns ----------------

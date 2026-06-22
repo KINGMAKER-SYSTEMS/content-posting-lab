@@ -132,6 +132,52 @@ def test_scratch_dirs_missing_store_returns_empty(store):
     assert abn_assets.scratch_dirs() == []
 
 
+# --- reapable_scratch(): the enumeration layer of the GC SAFETY INVARIANT (abn_assets ~414-417) ---
+# scratch_dirs() pins the reapable ROOTS; these pin the FILE enumerator that walks them. Its docstring
+# (abn_assets ~455-457) promises directories and symlinks under scratch/ are excluded — a symlink under
+# scratch/ could point INTO the schema, and following + tombstoning it would orphan the real keeper.
+# That exact loss vector (a link INSIDE a real scratch dir, not a symlinked root) was not pinned at the
+# enumeration layer, so a regression dropping the `not is_symlink()` check would pass every other test.
+
+
+def test_reapable_scratch_excludes_symlink_inside_scratch_pointing_at_a_keeper(store):
+    """THE IN-SCRATCH-SYMLINK ESCAPE: a real ``{ep}/scratch/`` that contains a SYMLINK pointing at a
+    real keeper (a shipped render) must NOT yield that link from ``reapable_scratch()``. ``is_file()``
+    follows symlinks, so without the ``not is_symlink()`` guard the GC would resolve the link to the
+    render and hand it to tombstone() — orphaning the keeper. Real scratch files alongside it still reap.
+    This is distinct from the symlinked-ROOT cases (scratch_dirs): here the root is a genuine scratch
+    dir and the link is a FILE inside it."""
+    render = store / "ep_keep00" / "renders" / "episode.mp4"
+    render.parent.mkdir(parents=True)
+    render.write_bytes(b"shipped render - must never be reapable")
+    sd = store / "ep_dead00" / "scratch"
+    sd.mkdir(parents=True)
+    real = sd / "intermediate.png"
+    real.write_bytes(b"spent scratch")
+    (sd / "looks_like_scratch.mp4").symlink_to(render)  # link INTO the schema
+
+    reapable = {f.resolve() for f in abn_assets.reapable_scratch()}
+    assert render.resolve() not in reapable, (
+        "reapable_scratch followed a symlink inside scratch/ to a real render — a GC reap would orphan it"
+    )
+    assert real.resolve() in reapable, "the real scratch file alongside the link was not enumerated"
+
+
+def test_reapable_scratch_excludes_directories_under_scratch(store):
+    """rglob('*') yields DIRECTORIES too; only regular files may be reaped. A subdir under scratch/
+    must not appear in the reapable set (tombstone() only moves regular files), while the regular file
+    nested inside it does."""
+    sd = store / "ep_decade" / "scratch"
+    nested = sd / "frames"
+    nested.mkdir(parents=True)
+    inner = nested / "f001.png"
+    inner.write_bytes(b"frame")
+
+    reapable = {f.resolve() for f in abn_assets.reapable_scratch()}
+    assert nested.resolve() not in reapable, "reapable_scratch yielded a directory"
+    assert inner.resolve() in reapable, "the regular file nested under scratch/ was not enumerated"
+
+
 # --- the new GC contract: reap ONLY scratch/, tombstone (→ _trash/) instead of unlink ----------
 
 
@@ -1798,4 +1844,78 @@ def test_live_protection_set_stops_trim_when_mid_trim_save_is_unparseable(store,
     assert survivor.exists(), (
         "an unparseable timeline landing mid-trim must stop further trimming (protect-everything); "
         "the next render was tombstoned despite the now-incomplete live scan"
+    )
+
+
+# ── SAME-SECOND TOCTOU: the token must flip even when st_mtime does not ────────────────────────────
+# Editor saves go through atomic_save (write tmp + os.replace). A save that lands in the same second
+# as the live set's last scan — or on a coarse-mtime FS, or with an editor that pins mtimes — leaves
+# st_mtime unchanged. An mtime-only token would stay stale, skip the re-scan, and let the trim eat a
+# render the just-saved timeline now references. os.replace changes inode + content changes size, so
+# the token folds both in and still flips. These pin that.
+
+
+def test_dir_token_changes_on_same_second_atomic_replace(store):
+    """An atomic_save-style replace (write tmp + os.replace) that keeps the SAME mtime second must
+    still bump the token, because the inode and size change. mtime alone would miss it."""
+    tl = store / "editor_timelines"
+    f = tl / "ep_same_sec.json"
+    f.write_text('{"old": "ref"}')
+    t = 1_700_000_000.0
+    os.utime(f, (t, t))
+    os.utime(tl, (t, t))
+
+    before = abn_factory._editor_timeline_dir_token()
+
+    tmp = tl / "ep_same_sec.json.tmp"
+    tmp.write_text('{"renderCache": {"video": {"path": "/agenticnews-assets/ep_x/renders/episode.mp4"}}}')
+    os.utime(tmp, (t, t))
+    os.replace(tmp, f)
+    # Pin BOTH the file and the dir back to the original second — the worst case the ticket names.
+    os.utime(f, (t, t))
+    os.utime(tl, (t, t))
+
+    after = abn_factory._editor_timeline_dir_token()
+    assert before != after, (
+        "token did not change across a same-second atomic replace — an mtime-only token would skip "
+        "the live re-scan and let the trim delete a freshly-referenced render (the same-second TOCTOU)"
+    )
+
+
+def test_live_protection_set_catches_same_second_mid_trim_save(store, monkeypatch):
+    """End-to-end: a timeline saved mid-trim whose mtime collides with the live set's last scan must
+    STILL protect the render it references. Identical to the mtime-bump mid-trim test, except we pin
+    the saved timeline AND the dir mtime to a fixed second so st_mtime can't be what signals the
+    change — only the inode/size folded into the token can. Proves the same-second window is closed."""
+    pinned = 1_700_000_000.0
+    # Pin the dir mtime so the token's dir component is stable across the save.
+    os.utime(store / "editor_timelines", (pinned, pinned))
+
+    keep_fresh = _render(store, "ep_keepss", age_s=10)        # newest -> kept (keep_episodes=1)
+    victim = _render(store, "ep_vss000", age_s=8000)          # next-newest victim -> trims first
+    late_protected = _render(store, "ep_lss000", age_s=9000)  # oldest; referenced mid-trim, reached last
+
+    real_tr = abn_factory.tombstone_render
+
+    def save_same_second_then_tombstone(path):
+        if Path(path) == victim:
+            tl = store / "editor_timelines" / "ep_lss000.json"
+            tl.write_text(
+                '{"renderCache": {"video": {"path": "%s"}}}' % _agenticnews_ref(store, late_protected)
+            )
+            # Force the save to look like it happened in the SAME second as the pre-trim scan, and
+            # re-pin the dir mtime too — so neither the file nor the dir mtime second changes.
+            os.utime(tl, (pinned, pinned))
+            os.utime(store / "editor_timelines", (pinned, pinned))
+        return real_tr(path)
+
+    monkeypatch.setattr(abn_factory, "tombstone_render", save_same_second_then_tombstone)
+    _force_low_disk(monkeypatch)
+
+    abn_factory.purge_disk(intermediate_age_s=99999, keep_episodes=1, low_disk_gb=999)
+
+    assert not victim.exists(), "the genuinely-unreferenced render should still be trimmed"
+    assert late_protected.exists(), (
+        "a render referenced by a SAME-SECOND mid-trim save was tombstoned — the live re-scan token "
+        "relied on st_mtime alone and missed the atomic replace (the same-second TOCTOU this hardens)"
     )

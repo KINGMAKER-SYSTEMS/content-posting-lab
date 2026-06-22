@@ -94,6 +94,35 @@ def test_resolve_asset_src_strips_query_and_fragment_in_parity_with_gc_scan(tmp_
         assert openshot_bridge._resolve_asset_src(url, asset_root=tmp_path) == base
 
 
+def test_router_asset_resolvers_agree_with_bridge_on_cachebuster(tmp_path, monkeypatch):
+    """The router's asset-health / render-cache resolvers feed the OpenShot compiler's
+    "is this asset present?" decisions. The editor persists cache-buster URLs
+    (".../episode.mp4?rev=3") on render-cache assets, and the bridge resolver strips
+    them. If the router's resolvers did NOT strip, a present file would read missing and
+    the compile would be falsely blocked (or the render cache read stale). Pin both
+    router resolvers to the canonical bridge resolver so they can't drift apart."""
+    import importlib
+
+    agenticnews = importlib.import_module("routers.agenticnews")
+    monkeypatch.setattr(agenticnews.db, "ASSETS_DIR", tmp_path)
+
+    on_disk = tmp_path / "ep_x" / "renders" / "episode.mp4"
+    on_disk.parent.mkdir(parents=True, exist_ok=True)
+    on_disk.write_bytes(b"\x00\x01")
+
+    bare = "/agenticnews-assets/ep_x/renders/episode.mp4"
+    busted = bare + "?rev=3"
+    expected = Path(openshot_bridge._resolve_asset_src(busted, asset_root=tmp_path))
+    assert expected == on_disk  # bridge strips the ?rev= -> real file
+
+    # _asset_path_from_url must resolve the cache-busted URL to the SAME real file...
+    assert agenticnews._asset_path_from_url(busted) == on_disk
+    assert agenticnews._asset_path_from_url(bare) == on_disk
+    # ...and the render-cache existence check must see the busted URL as PRESENT.
+    assert agenticnews._render_cache_path_exists(busted) is True
+    assert agenticnews._render_cache_path_exists(bare) is True
+
+
 def test_openshot_export_maps_editor_volume_to_openshot_percent(tmp_path):
     project = _project(tmp_path / "vo.wav")
     project["assets"]["card"]["type"] = "audio"

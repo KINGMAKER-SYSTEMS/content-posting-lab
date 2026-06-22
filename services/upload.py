@@ -120,6 +120,26 @@ def cancel_job(job_id: str) -> dict | None:
 
 # ── Cookie helpers ───────────────────────────────────────────────────────────
 
+def _load_cookie_file(path: str) -> tuple[str, int]:
+    """Load and validate a cookie file. Returns (status, cookie_count).
+
+    status is one of: valid, expired, corrupt. Single source of truth for
+    cookie expiry-check logic shared by list_cookie_files / get_cookie_status.
+    """
+    try:
+        with open(path, "r") as f:
+            data = json.load(f)
+    except (json.JSONDecodeError, IOError):
+        return "corrupt", 0
+    if isinstance(data, list):
+        for cookie in data:
+            exp = cookie.get("expiry") or cookie.get("expires")
+            if exp and isinstance(exp, (int, float)) and exp < time.time():
+                return "expired", len(data)
+        return "valid", len(data)
+    return "valid", 0
+
+
 def list_cookie_files() -> list[dict]:
     """Find all TK_cookies_*.json files and return status info."""
     pattern = os.path.join(COOKIE_DIR, "TK_cookies_*.json")
@@ -127,32 +147,17 @@ def list_cookie_files() -> list[dict]:
     for path in glob.glob(pattern):
         name = Path(path).stem  # TK_cookies_accountname
         account = name.replace("TK_cookies_", "")
-        try:
-            with open(path, "r") as f:
-                data = json.load(f)
-            # Check for cookie expiry — look for a cookie with expiry field
-            has_expired = False
-            if isinstance(data, list):
-                for cookie in data:
-                    exp = cookie.get("expiry") or cookie.get("expires")
-                    if exp and isinstance(exp, (int, float)) and exp < time.time():
-                        has_expired = True
-                        break
-            results.append({
-                "account": account,
-                "path": path,
-                "status": "expired" if has_expired else "valid",
-                "cookie_count": len(data) if isinstance(data, list) else 0,
-                "modified": datetime.fromtimestamp(os.path.getmtime(path)).isoformat(),
-            })
-        except (json.JSONDecodeError, IOError):
-            results.append({
-                "account": account,
-                "path": path,
-                "status": "corrupt",
-                "cookie_count": 0,
-                "modified": None,
-            })
+        status, count = _load_cookie_file(path)
+        results.append({
+            "account": account,
+            "path": path,
+            "status": status,
+            "cookie_count": count,
+            "modified": (
+                datetime.fromtimestamp(os.path.getmtime(path)).isoformat()
+                if status != "corrupt" else None
+            ),
+        })
     return results
 
 
@@ -161,17 +166,7 @@ def get_cookie_status(account_name: str) -> str:
     path = os.path.join(COOKIE_DIR, f"TK_cookies_{account_name}.json")
     if not os.path.exists(path):
         return "missing"
-    try:
-        with open(path, "r") as f:
-            data = json.load(f)
-        if isinstance(data, list):
-            for cookie in data:
-                exp = cookie.get("expiry") or cookie.get("expires")
-                if exp and isinstance(exp, (int, float)) and exp < time.time():
-                    return "expired"
-        return "valid"
-    except (json.JSONDecodeError, IOError):
-        return "corrupt"
+    return _load_cookie_file(path)[0]
 
 
 # ── Upload execution ─────────────────────────────────────────────────────────

@@ -235,3 +235,41 @@ async def test_lifespan_starts_factory_when_migration_complete(mig, A, monkeypat
         pass
 
     assert started["factory"] is True  # clean cutover -> factory (and its GC) allowed to run
+
+
+@pytest.mark.asyncio
+async def test_lifespan_skips_factory_when_vo_symlink_broken(mig, A, monkeypatch):
+    # assert_migration_complete() passes (no flat REGULAR files), but a VO back-compat
+    # symlink dangles -> _align's legacy fallback would silently return []. The lifespan
+    # must run verify_voice_symlinks() too and hold the GC-running factory back. This is the
+    # gap the ticket closes: the flat-file gate alone is necessary but not sufficient.
+    import app as app_module
+
+    # dangling legacy VO symlink: flat name present, audio/ target never created.
+    flat = A.ASSETS_DIR / "ep_648e806a_s0.wav"
+    flat.symlink_to(A.ASSETS_DIR / "ep_648e806a" / "audio" / "s0_voice.wav")
+    assert flat.is_symlink() and not flat.exists()  # dangling
+    assert A.flat_unmigrated() == []  # the flat-file gate is happy...
+
+    import services.abn_factory as abn_factory
+    started = {"factory": False}
+
+    async def _fake_start_factory():
+        started["factory"] = True
+
+    monkeypatch.setattr(abn_factory, "start_factory", _fake_start_factory)
+    monkeypatch.setattr(app_module, "_check_ffmpeg", lambda: True)
+    monkeypatch.setattr(app_module, "_check_ytdlp", lambda: True)
+    monkeypatch.setattr("services.telegram.get_bot_token", lambda: None, raising=False)
+
+    async def _noop(*a, **k):
+        return None
+
+    monkeypatch.setattr("telegram_bot.start_sounds_bot", _noop, raising=False)
+    monkeypatch.setattr("telegram_bot.stop_sounds_bot", _noop, raising=False)
+    monkeypatch.setattr("telegram_bot.stop_bot", _noop, raising=False)
+
+    async with app_module.lifespan(app_module.app):
+        pass
+
+    assert started["factory"] is False  # ...but the VO symlink audit still held the factory back

@@ -129,6 +129,21 @@ async def lifespan(app: FastAPI):
         # `python scripts/migrate_abn_assets.py --apply`.
         from services.abn_assets import assert_migration_complete
         assert_migration_complete()
+        # ...and the flat-file check is necessary but NOT sufficient: a VO file misrouted to
+        # scratch/ during migration leaves the legacy back-compat symlink resolving into a
+        # GC-reapable path, so once the GC runs `abn_factory._align`'s legacy fallback dangles
+        # and in-flight alignment silently returns []. assert_migration_complete() can't see
+        # this (it only scans for un-migrated flat files). Run the symlink audit too, so the
+        # SAME gate that protects the GC also refuses to start the factory with broken VO links.
+        from scripts.migrate_abn_assets import verify_voice_symlinks
+        vo_problems = verify_voice_symlinks()
+        if vo_problems:
+            raise RuntimeError(
+                "VO back-compat symlink audit failed for "
+                f"{len(vo_problems)} file(s) — _align fallback would silently fail; "
+                "run `python scripts/migrate_abn_assets.py --verify` and repair before "
+                f"the factory may start: {vo_problems}"
+            )
         import services.abn_factory as abn_factory
         await abn_factory.start_factory()
     except Exception as e:
