@@ -2,6 +2,8 @@ import json
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from services import editor_timeline
 from services import openshot_bridge
 
@@ -1515,3 +1517,79 @@ def test_asset_src_resolution_is_consolidated(tmp_path):
     assert renderer._resolve_src(passthrough) == Path(passthrough)
     rootless = editor_render.FFmpegLayeredRenderer(tmp_path / "renders")
     assert rootless._resolve_src(asset_url) == Path(asset_url)
+
+
+def test_split_with_both_anchored_fades_exports_render_refit_durations(tmp_path):
+    """clip.split on a clip carrying BOTH a start-anchored fade (fadeIn) and an
+    end-anchored fade (fadeOut) must leave the timeline state and the render path
+    in agreement on the refitted fade durations:
+
+      - HEAD owns the original start: it keeps fadeIn at full duration and drops
+        the end-anchored fadeOut.
+      - TAIL owns the original end: its source front is trimmed by split_offset,
+        which eats into the start-anchored fadeIn. The tail's effects, once exported
+        through openshot_bridge, must carry the EXACT same fade durations that the
+        render path (editor_render._refit_effects, front_trim=split_offset,
+        windowed_duration=tail_duration) would apply — otherwise the editor preview
+        and the compiled OpenShot video disagree on the fade.
+    """
+    from services import editor_render
+
+    project = _project(tmp_path / "card.png")
+    clip = project["clips"]["card_clip"]
+    clip["start"] = 1.5
+    clip["duration"] = 3.0
+    clip["effects"] = [
+        {"id": "fxIn", "type": "fadeIn", "params": {"duration": 1.0}},
+        {"id": "fxOut", "type": "fadeOut", "params": {"duration": 1.0}},
+    ]
+
+    split_at = 2.1  # split_offset = 0.6 into the source
+    split_offset = split_at - clip["start"]
+    tail_duration = clip["duration"] - split_offset  # 2.4
+
+    project = editor_timeline.apply_command(
+        project,
+        {
+            "id": "cmd_split",
+            "op": "clip.split",
+            "actor": "test",
+            "expectedRevision": 0,
+            "payload": {"clipId": "card_clip", "at": split_at, "newClipId": "tail_clip"},
+        },
+    )
+
+    # HEAD: fadeIn kept whole, fadeOut dropped.
+    head = openshot_bridge.timeline_json(project)["clips"]
+    head_clip = next(c for c in head if c["id"] == "card_clip")
+    head_fades = {
+        f["fade"]: f["duration"]["Points"][0]["co"]["Y"]
+        for f in head_clip["effects"]
+        if f["type"] == "Fade"
+    }
+    assert head_fades == {"in": 1.0}  # fadeIn whole, fadeOut gone
+
+    # TAIL: export the openshot fade durations the timeline produced...
+    tail_clip = next(c for c in head if c["id"] == "tail_clip")
+    exported_tail_fades = {
+        f["id"]: f["duration"]["Points"][0]["co"]["Y"]
+        for f in tail_clip["effects"]
+        if f["type"] == "Fade"
+    }
+
+    # ...and what the render path would compute from the SAME original effects.
+    render_refit = editor_render._refit_effects(
+        [
+            {"id": "fxIn", "type": "fadeIn", "params": {"duration": 1.0}},
+            {"id": "fxOut", "type": "fadeOut", "params": {"duration": 1.0}},
+        ],
+        front_trim=split_offset,
+        windowed_duration=tail_duration,
+    )
+    render_fades = {fx["id"]: fx["params"]["duration"] for fx in render_refit}
+
+    # The contract: timeline-exported durations == render-path durations, exactly.
+    assert exported_tail_fades == render_fades
+    # And concretely: fadeIn 1.0 - 0.6 front trim = 0.4; fadeOut stays 1.0 (end-anchored,
+    # under the 2.4 window). A divergence in either path would break this equality.
+    assert exported_tail_fades == {"fxIn": pytest.approx(0.4), "fxOut": 1.0}
