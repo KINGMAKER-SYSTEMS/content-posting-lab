@@ -93,6 +93,144 @@ def test_editor_timeline_api_imports_abn_fixture(sync_client, monkeypatch, tmp_p
     assert len(project["clips"]) == 1
 
 
+def test_editor_timeline_api_imports_complex_episode_without_dropping_metadata(
+    sync_client, monkeypatch, tmp_path
+):
+    """End-to-end fidelity guard: a realistic episode carrying every effect type
+    (shot effects, transitionSec crossfade, kenBurns, a per-shot ducking envelope,
+    a music-bed ducking envelope, segment boundaries + segmentId tags, source-type
+    tags) must survive the ABN -> Editor Bay import with nothing silently dropped.
+
+    Pins the import path the prior fixes (516296bc opacity, 9907784b/937d1f79
+    keyframe clamps) touched against a complex input it had never been tested with.
+    """
+    monkeypatch.setattr(agenticnews_router.db, "ASSETS_DIR", tmp_path)
+
+    imported = sync_client.post(
+        "/api/agenticnews/editor-timelines/api_complex/import-abn",
+        json={
+            "sourceEpisodeId": "ep_cx",
+            "timeline": {
+                "episodeId": "ep_cx",
+                "title": "Complex",
+                "totalSec": 10.0,
+                # music bed ships its own ducking envelope (absolute gains)
+                "musicBed": {
+                    "src": "/agenticnews-assets/bed.mp3",
+                    "keyframes": [
+                        {
+                            "property": "volume",
+                            "points": [
+                                {"t": 0.0, "value": 0.6, "interp": "linear"},
+                                {"t": 5.0, "value": 0.22, "interp": "linear"},
+                            ],
+                        }
+                    ],
+                },
+                "segments": [
+                    {
+                        "segmentId": "segA",
+                        "durationSec": 5.0,
+                        "shots": [
+                            {
+                                "id": "shot0",
+                                "type": "webscroll",
+                                "src": "/agenticnews-assets/scroll.mp4",
+                                "startSec": 0,
+                                "durationSec": 5,
+                                "kenBurns": {
+                                    "startScale": 1.0,
+                                    "endScale": 1.2,
+                                    "startX": 0.4,
+                                    "endX": 0.6,
+                                },
+                                "effects": [
+                                    {"id": "fx1", "type": "fadeIn", "params": {"duration": 0.5}}
+                                ],
+                                "transitionSec": 0.4,
+                                "keyframes": [
+                                    {
+                                        "property": "opacity",
+                                        "points": [
+                                            {"t": 0, "value": 0.0, "interp": "linear"},
+                                            {"t": 1.0, "value": 1.0, "interp": "linear"},
+                                        ],
+                                    }
+                                ],
+                            }
+                        ],
+                        "audio": {"vo": {"src": "/agenticnews-assets/vo0.wav", "duration": 5.0}},
+                    },
+                    {
+                        "segmentId": "segB",
+                        "durationSec": 5.0,
+                        "shots": [
+                            {
+                                "id": "shot1",
+                                "type": "remotion",
+                                "src": "/agenticnews-assets/term.mp4",
+                                "startSec": 0,
+                                "durationSec": 5,
+                                # factory-attached ducking envelope on a sibling field
+                                "duckingKeyframes": [
+                                    {
+                                        "property": "volume",
+                                        "points": [
+                                            {"t": 0, "value": 1.0, "interp": "linear"},
+                                            {"t": 2.0, "value": 0.3, "interp": "linear"},
+                                        ],
+                                    }
+                                ],
+                            }
+                        ],
+                        "audio": {"vo": {"src": "/agenticnews-assets/vo1.wav", "duration": 5.0}},
+                    },
+                ],
+            },
+        },
+    )
+    assert imported.status_code == 201
+    project = imported.json()
+    clips = list(project["clips"].values())
+
+    def clip_by_kind(kind):
+        return next(c for c in clips if c["kind"] == kind)
+
+    # Segment boundaries: segA at cursor 0, segB offset by segA's 5s duration.
+    scroll = clip_by_kind("webscroll")
+    term = clip_by_kind("remotion")
+    assert scroll["start"] == 0.0
+    assert term["start"] == 5.0
+    # segmentId tags survive on every clip (markers of which segment owns the clip).
+    assert scroll["metadata"]["segmentId"] == "segA"
+    assert term["metadata"]["segmentId"] == "segB"
+
+    # Source-type vocabulary survives onto the assets (OpenShot layer routing).
+    sources = {a.get("source") for a in project["assets"].values() if a.get("source")}
+    assert {"webscroll", "remotion"} <= sources
+
+    # Shot effects + synthesized transitionSec crossfade both reach the clip.
+    scroll_fx = {e["type"] for e in scroll["effects"]}
+    assert "fadeIn" in scroll_fx
+    assert "crossfade" in scroll_fx
+
+    # kenBurns (scale/x) merged with the shot's explicit opacity envelope — none dropped.
+    scroll_kf = {k["property"] for k in scroll["keyframes"]}
+    assert {"scale", "x", "opacity"} <= scroll_kf
+
+    # Per-shot ducking envelope on a sibling field promoted to a real volume track.
+    assert any(k["property"] == "volume" for k in term["keyframes"])
+
+    # Music-bed ducking envelope promoted; flat 0.22 gain neutralized to 1.0 so the
+    # envelope's absolute gains pass through (no double-attenuation).
+    bed = clip_by_kind("music_bed")
+    assert any(k["property"] == "volume" for k in bed["keyframes"])
+    assert bed["volume"] == 1.0
+
+    # Raw shot preserved under metadata.shot for lossless re-import.
+    assert scroll["metadata"]["shot"]["id"] == "shot0"
+
+
 def test_editor_timeline_api_auto_imports_real_episode_timeline(sync_client, monkeypatch, tmp_path):
     monkeypatch.setattr(agenticnews_router.db, "ASSETS_DIR", tmp_path)
     timeline_path = tmp_path / "ep_real_timeline.json"
