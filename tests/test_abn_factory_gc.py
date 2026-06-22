@@ -398,6 +398,27 @@ def test_purge_disk_emits_scratch_usage_breakdown(store, monkeypatch):
     )
 
 
+def test_purge_disk_reaps_even_when_scratch_usage_observability_raises(store, monkeypatch):
+    """The observability emit must NEVER break the GC (abn_factory ~3221: 'never let measurement
+    break the GC'). If scratch_usage() itself blows up, purge_disk must swallow it and still reap the
+    aged scratch — a failed metric is not allowed to leave disk un-freed. Pins that the try/except
+    around the usage emit is load-bearing, not decorative."""
+    f = _scratch(store, "ep_a111111", "s0_raw.wav", body=b"x" * 100)
+
+    def boom():
+        raise RuntimeError("usage probe blew up")
+
+    monkeypatch.setattr(abn_factory, "scratch_usage", boom)
+
+    # Must not raise, and the reap must still happen despite the measurement failure.
+    abn_factory.purge_disk(intermediate_age_s=1, keep_episodes=99, low_disk_gb=0)
+
+    assert not f.exists(), "GC stopped reaping because the observability emit raised"
+    assert (store / "_trash" / "ep_a111111" / "scratch" / "s0_raw.wav").exists(), (
+        "aged scratch must still be tombstoned even when scratch_usage() fails"
+    )
+
+
 # --- gateway-level tombstone_render contract (the render safe-delete primitive) -----------------
 
 
