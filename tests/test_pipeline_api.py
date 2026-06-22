@@ -342,3 +342,85 @@ def test_random_alias_local_shape():
     assert a.startswith("acct-")
     assert len(a) == len("acct-") + 8
     assert a[5:].isalnum()
+
+
+# ── submit_intake config / input guards ──────────────────────────────────────
+# These are the 503 (Notion unconfigured) and 400 (blank username) doors at the
+# top of the /intake endpoint — the regression surface the ticket calls out.
+# A flip of notion_configured() returning True while NOTION_API_KEY is unset
+# would let a half-configured endpoint create orphaned rows; pin the guard.
+
+
+def test_submit_intake_503_when_notion_not_configured(monkeypatch):
+    monkeypatch.setattr(pipeline, "notion_configured", lambda: False)
+    req = pipeline.IntakeRequest(account_username="newhandle")
+    with pytest.raises(HTTPException) as ei:
+        _run(pipeline.submit_intake(req))
+    assert ei.value.status_code == 503
+    assert "notion not configured" in ei.value.detail.lower()
+
+
+def test_submit_intake_400_when_username_blank(monkeypatch):
+    # Notion is configured; the username guard must still fire on whitespace.
+    monkeypatch.setattr(pipeline, "notion_configured", lambda: True)
+    req = pipeline.IntakeRequest(account_username="   ")
+    with pytest.raises(HTTPException) as ei:
+        _run(pipeline.submit_intake(req))
+    assert ei.value.status_code == 400
+    assert "account_username is required" in ei.value.detail
+
+
+# ── run_setup guards ─────────────────────────────────────────────────────────
+# run_setup must (a) 404 unknown pages and (b) 409 a page with no email rather
+# than re-minting (which historically clobbered real signup addresses). Both
+# paths are independent of Notion/CF being live, so they're cheap to pin.
+
+
+def test_run_setup_404_when_page_missing(monkeypatch):
+    monkeypatch.setattr(pipeline, "get_page", lambda iid: None)
+    with pytest.raises(HTTPException) as ei:
+        _run(pipeline.run_setup("acct:ghost"))
+    assert ei.value.status_code == 404
+    assert "not found" in ei.value.detail.lower()
+
+
+def test_run_setup_409_when_page_has_no_email(monkeypatch):
+    # Page exists but carries neither an email_alias nor a signup_email.
+    page = {"name": "Some Page", "pipeline": "King Maker Tech"}
+    monkeypatch.setattr(pipeline, "get_page", lambda iid: dict(page))
+    monkeypatch.setattr(pipeline, "cf_get_config", lambda: dict(CFG))
+    # set_page must not be needed on this path, but stub it to be safe.
+    monkeypatch.setattr(pipeline, "set_page", lambda *a, **k: None)
+    with pytest.raises(HTTPException) as ei:
+        _run(pipeline.run_setup("acct:no-email"))
+    assert ei.value.status_code == 409
+    assert "no email" in ei.value.detail.lower()
+
+
+def test_run_setup_does_not_remint_when_email_missing(monkeypatch):
+    """The 409 must come from the guard, not from a silent re-mint attempt —
+    Run Setup is explicitly forbidden from minting (it has clobbered real
+    signup emails). If _mint_random_alias is ever wired back in here, this
+    fails loudly."""
+    page = {"name": "Some Page", "pipeline": "Flow Stage"}
+    monkeypatch.setattr(pipeline, "get_page", lambda iid: dict(page))
+    monkeypatch.setattr(pipeline, "cf_get_config", lambda: dict(CFG))
+    monkeypatch.setattr(pipeline, "set_page", lambda *a, **k: None)
+
+    async def _no_mint(*a, **k):
+        raise AssertionError("run_setup must never mint an email")
+
+    monkeypatch.setattr(pipeline, "_mint_random_alias", _no_mint)
+    with pytest.raises(HTTPException) as ei:
+        _run(pipeline.run_setup("acct:no-email"))
+    assert ei.value.status_code == 409
+
+
+def test_transition_400_when_invalid_status(monkeypatch):
+    """transition_status validates against PIPELINE_STAGES before touching
+    Notion — an invalid status must 400, never reach update_page_status."""
+    req = pipeline.TransitionRequest(status="Bogus Stage")
+    with pytest.raises(HTTPException) as ei:
+        _run(pipeline.transition_status("acct:x", req))
+    assert ei.value.status_code == 400
+    assert "invalid status" in ei.value.detail.lower()
