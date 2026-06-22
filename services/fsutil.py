@@ -37,5 +37,8 @@ def safe_unlink(path) -> bool:
     try:
         os.unlink(path)
         return True
-    except OSError:
+    except FileNotFoundError:
+        return False
+    except OSError as e:
+        log.warning("safe_unlink failed to remove %s: %s", path, e)
         return False

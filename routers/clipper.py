@@ -18,7 +18,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
 from project_manager import PROJECTS_DIR, sanitize_project_name
 import services.r2 as r2
-from services.fsutil import safe_rmtree
+from services.fsutil import safe_rmtree, safe_unlink
 from services.json_store import atomic_save
 
 log = logging.getLogger("clipper")
@@ -159,7 +159,7 @@ async def _faststart(mp4_path: Path) -> None:
     if proc.returncode == 0 and tmp.exists():
         tmp.replace(mp4_path)
     else:
-        tmp.unlink(missing_ok=True)
+        safe_unlink(tmp)
         log.warning("faststart failed: %s", stderr.decode(errors="replace")[-200:])
 
 
@@ -606,7 +606,7 @@ async def r2_upload_complete(body: dict):
             continue
 
         if bytes_written == 0:
-            write_path.unlink(missing_ok=True)
+            safe_unlink(write_path)
             errors.append({"filename": filename, "error": "uploaded file is empty"})
             continue
 
@@ -621,9 +621,9 @@ async def r2_upload_complete(body: dict):
                 stderr=asyncio.subprocess.PIPE,
             )
             _, stderr = await proc.communicate()
-            write_path.unlink(missing_ok=True)
+            safe_unlink(write_path)
             if proc.returncode != 0:
-                dest.unlink(missing_ok=True)
+                safe_unlink(dest)
                 tail = stderr.decode(errors="replace")[-200:]
                 errors.append({"filename": filename, "error": f"transcode failed: {tail.strip()}"})
                 continue
@@ -633,12 +633,12 @@ async def r2_upload_complete(body: dict):
         try:
             info = await _get_video_info(dest)
         except Exception as e:
-            dest.unlink(missing_ok=True)
+            safe_unlink(dest)
             errors.append({"filename": filename, "error": f"probe failed: {e}"})
             continue
 
         if not info.get("duration") or info["duration"] <= 0:
-            dest.unlink(missing_ok=True)
+            safe_unlink(dest)
             errors.append({"filename": filename, "error": "zero-duration video"})
             continue
 
@@ -691,13 +691,13 @@ async def upload_video_stream(request: Request):
             async for chunk in request.stream():
                 total_bytes += len(chunk)
                 if total_bytes > _MAX_UPLOAD_BYTES:
-                    dest.unlink(missing_ok=True)
+                    safe_unlink(dest)
                     raise HTTPException(413, f"File exceeds maximum size of {_MAX_UPLOAD_BYTES // (1024**3)}GB")
                 f.write(chunk)
     except HTTPException:
         raise
     except Exception as e:
-        dest.unlink(missing_ok=True)
+        safe_unlink(dest)
         log.error("streaming upload failed at %d bytes: %s", total_bytes, e)
         raise HTTPException(500, f"Upload failed after {total_bytes / (1024**3):.2f}GB: {e}")
 
@@ -749,18 +749,18 @@ async def stage_streamed(request: Request):
             async for chunk in request.stream():
                 total_bytes += len(chunk)
                 if total_bytes > _MAX_UPLOAD_BYTES:
-                    write_path.unlink(missing_ok=True)
+                    safe_unlink(write_path)
                     raise HTTPException(413, f"File exceeds maximum size of {_MAX_UPLOAD_BYTES // (1024**3)}GB")
                 f.write(chunk)
     except HTTPException:
         raise
     except Exception as e:
-        write_path.unlink(missing_ok=True)
+        safe_unlink(write_path)
         log.error("stage-streamed upload failed at %d bytes: %s", total_bytes, e)
         raise HTTPException(500, f"Upload failed after {total_bytes / (1024**3):.2f}GB: {e}")
 
     if total_bytes == 0:
-        write_path.unlink(missing_ok=True)
+        safe_unlink(write_path)
         raise HTTPException(400, f"{filename}: uploaded file is empty (0 bytes)")
 
     log.info("stage-streamed: %s → %s (%.2f GB)", filename, write_path, total_bytes / (1024**3))
@@ -781,20 +781,20 @@ async def stage_streamed(request: Request):
         if proc.returncode != 0:
             stderr_text = stderr.decode(errors="replace")[-300:]
             log.error("transcode failed for %s: %s", filename, stderr_text)
-            write_path.unlink(missing_ok=True)
-            dest.unlink(missing_ok=True)
+            safe_unlink(write_path)
+            safe_unlink(dest)
             raise HTTPException(500, f"{filename}: transcode failed: {stderr_text.strip()[-200:]}")
-        write_path.unlink(missing_ok=True)
+        safe_unlink(write_path)
 
     try:
         info = await _get_video_info(dest)
     except Exception as e:
         log.error("probe failed for %s: %s", filename, e)
-        dest.unlink(missing_ok=True)
+        safe_unlink(dest)
         raise HTTPException(400, f"{filename}: probe failed: {e}")
 
     if not info.get("duration") or info["duration"] <= 0:
-        dest.unlink(missing_ok=True)
+        safe_unlink(dest)
         raise HTTPException(400, f"{filename}: could not determine video duration")
 
     thumb_name = f"thumb_{index:03d}.jpg"
@@ -843,12 +843,12 @@ async def upload_video(
                 f.write(chunk)
                 total_bytes += len(chunk)
                 if total_bytes > _MAX_UPLOAD_BYTES:
-                    dest.unlink(missing_ok=True)
+                    safe_unlink(dest)
                     raise HTTPException(413, f"File exceeds maximum size of {_MAX_UPLOAD_BYTES // (1024**3)}GB")
     except HTTPException:
         raise
     except Exception as e:
-        dest.unlink(missing_ok=True)
+        safe_unlink(dest)
         log.error("upload failed at %d bytes: %s", total_bytes, e)
         raise HTTPException(500, f"Upload failed after {total_bytes / (1024**2):.0f}MB: {e}")
 
@@ -886,7 +886,7 @@ async def upload_batch(
             log.info("batch upload: %s → %s (%d bytes)", file.filename, dest, total_bytes)
             if total_bytes == 0:
                 log.error("upload for %s produced 0 bytes", file.filename)
-                dest.unlink(missing_ok=True)
+                safe_unlink(dest)
                 errors.append({"name": file.filename, "reason": "uploaded file is empty (0 bytes)"})
                 continue
             await _faststart(dest)
@@ -901,7 +901,7 @@ async def upload_batch(
             log.info("batch upload: %s (%d bytes) → transcoding to mp4...", file.filename, total_bytes)
             if total_bytes == 0:
                 log.error("upload for %s produced 0 bytes", file.filename)
-                raw_path.unlink(missing_ok=True)
+                safe_unlink(raw_path)
                 errors.append({"name": file.filename, "reason": "uploaded file is empty (0 bytes)"})
                 continue
             proc = await asyncio.create_subprocess_exec(
@@ -916,14 +916,14 @@ async def upload_batch(
             if proc.returncode != 0:
                 stderr_text = stderr.decode(errors="replace")[-300:]
                 log.error("transcode failed for %s: %s", file.filename, stderr_text)
-                raw_path.unlink(missing_ok=True)
-                dest.unlink(missing_ok=True)
+                safe_unlink(raw_path)
+                safe_unlink(dest)
                 errors.append({
                     "name": file.filename,
                     "reason": f"transcode failed: {stderr_text.strip()[-200:]}",
                 })
                 continue
-            raw_path.unlink(missing_ok=True)
+            safe_unlink(raw_path)
             log.info("batch upload: %s → transcoded to %s", file.filename, dest)
 
         # Probe video info — fail loudly if unreadable
@@ -931,13 +931,13 @@ async def upload_batch(
             info = await _get_video_info(dest)
         except Exception as e:
             log.error("probe failed for %s: %s", file.filename, e)
-            dest.unlink(missing_ok=True)
+            safe_unlink(dest)
             errors.append({"name": file.filename, "reason": f"probe failed: {e}"})
             continue
 
         if not info.get("duration") or info["duration"] <= 0:
             log.error("probe returned zero duration for %s", file.filename)
-            dest.unlink(missing_ok=True)
+            safe_unlink(dest)
             errors.append({"name": file.filename, "reason": "could not determine video duration"})
             continue
 

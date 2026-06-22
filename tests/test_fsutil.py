@@ -37,6 +37,26 @@ def test_directory_is_swallowed(tmp_path):
     assert d.exists()
 
 
+def test_real_oserror_is_logged(tmp_path, caplog):
+    # An actual OSError (e.g. unlinking a directory) must be logged at WARNING
+    # so cleanup failures stay visible — the whole point of unifying the bare
+    # .unlink(missing_ok=True) calls behind this helper.
+    d = tmp_path / "adir"
+    d.mkdir()
+    with caplog.at_level("WARNING", logger="fsutil"):
+        assert safe_unlink(d) is False
+    assert any("safe_unlink failed" in r.message for r in caplog.records)
+
+
+def test_missing_file_is_not_logged(tmp_path, caplog):
+    # A plain missing file is the normal, expected case — it must NOT spam
+    # warnings (FileNotFoundError is handled separately from real OSErrors).
+    missing = tmp_path / "never-existed.txt"
+    with caplog.at_level("WARNING", logger="fsutil"):
+        assert safe_unlink(missing) is False
+    assert not any("safe_unlink failed" in r.message for r in caplog.records)
+
+
 def test_double_unlink_is_idempotent(tmp_path):
     f = tmp_path / "doomed.txt"
     f.write_text("bye")
@@ -196,6 +216,17 @@ def test_clipper_uses_safe_rmtree():
     src = Path(clipper.__file__).read_text()
     assert "shutil.rmtree" not in src
     assert src.count("safe_rmtree(") == 4
+
+
+def test_clipper_uses_safe_unlink():
+    """Regression: every temp/dest cleanup in routers.clipper must go through
+    safe_unlink, not bare Path.unlink(missing_ok=True) — those forfeit the
+    failure logging the shared helper provides. There were 25 such call sites."""
+    import routers.clipper as clipper
+
+    src = Path(clipper.__file__).read_text()
+    assert ".unlink(missing_ok=True)" not in src
+    assert src.count("safe_unlink(") == 25
 
 
 def test_slideshow_uses_safe_rmtree():
