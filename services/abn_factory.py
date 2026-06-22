@@ -3611,6 +3611,48 @@ async def _gc_segments(keep_recent=12):
         pass
 
 
+def _probe_auto_publish(pending_count: int):
+    """Import the auto-publish module and record a PERSISTENT health metric in STATE.
+
+    The auto-publish feature lives in services/abn_youtube.py. If that file is absent (an
+    unimplemented feature OR a broken deploy), the import raises ModuleNotFoundError. The old
+    behaviour surfaced this exactly ONCE on the BUS — an ephemeral event the operator only
+    catches if they happen to be watching the stream at that instant. Under autonomous load
+    that is production-blind: the breakage stays invisible until episodes pile up in review.
+
+    Fix: in addition to the one-time BUS alert, write a durable health record to
+    ``STATE["auto_publish"]`` (returned verbatim by GET /factory/state), so a dashboard polling
+    at ANY later time sees ``ok: False``, the reason, how many episodes are stuck, and how long
+    it has been broken. On recovery the metric flips back to ``ok: True`` and the one-time BUS
+    warning re-arms for the next outage. Returns the imported module, or None when absent.
+    """
+    try:
+        import services.abn_youtube as ytmod
+    except ModuleNotFoundError:
+        prev = STATE.get("auto_publish") or {}
+        STATE["auto_publish"] = {
+            "ok": False,
+            "reason": "services/abn_youtube.py not installed",
+            "pending_episodes": pending_count,
+            "since": prev.get("since") if not prev.get("ok", True) else None,
+            "checked": time.time(),
+        }
+        if STATE["auto_publish"]["since"] is None:
+            STATE["auto_publish"]["since"] = STATE["auto_publish"]["checked"]
+        if not STATE.get("_ytmod_warned"):
+            STATE["_ytmod_warned"] = True
+            BUS.emit("publisher", "unavailable",
+                     f"auto-publish disabled: services/abn_youtube.py not installed — "
+                     f"{pending_count} episode(s) waiting in review will NOT auto-publish")
+        return None
+    # Module present (or a fixed deploy) — clear any stale broken metric so the dashboard
+    # reflects recovery, and re-arm the one-time BUS warning for the next outage.
+    if not (STATE.get("auto_publish") or {}).get("ok"):
+        STATE["auto_publish"] = {"ok": True, "checked": time.time()}
+        STATE["_ytmod_warned"] = False
+    return ytmod
+
+
 async def run_factory_loop():
     STATE["started"] = time.time()
     BUS.emit("factory", "boot", "factory online — autonomous production starting")
@@ -3628,18 +3670,7 @@ async def run_factory_loop():
             # Only touch the publisher when there's actually something to publish — otherwise the
             # missing-module ModuleNotFoundError fires every single cycle and gets swallowed silently.
             if pending_eps:
-                try:
-                    import services.abn_youtube as ytmod
-                except ModuleNotFoundError:
-                    # The auto-publish feature is unimplemented (services/abn_youtube.py absent). This
-                    # is a config/build state, not a runtime error — surface it ONCE so the operator
-                    # knows the feature is broken rather than burying it in per-cycle error spam.
-                    if not STATE.get("_ytmod_warned"):
-                        STATE["_ytmod_warned"] = True
-                        BUS.emit("publisher", "unavailable",
-                                 f"auto-publish disabled: services/abn_youtube.py not installed — "
-                                 f"{len(pending_eps)} episode(s) waiting in review will NOT auto-publish")
-                    ytmod = None
+                ytmod = _probe_auto_publish(len(pending_eps))
                 if ytmod is not None:
                     try:
                         if ytmod.is_configured():
