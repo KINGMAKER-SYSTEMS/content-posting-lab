@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import math
+import os
 import time
 import uuid
 from datetime import datetime
@@ -1111,8 +1112,13 @@ def _persist_job(job: dict) -> None:
         tmp = path.with_suffix(".json.tmp")
         # Don't serialize transient runtime refs
         serialisable = {k: v for k, v in job.items() if not k.startswith("_")}
-        tmp.write_text(json.dumps(serialisable))
-        tmp.replace(path)
+        # fsync before replace: a crash between write and rename can otherwise
+        # leave a truncated/partial file (mirrors services.json_store.atomic_save).
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(serialisable, f)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
     except Exception as e:
         log.warning("failed to persist job %s: %s", job.get("job_id"), e)
 
