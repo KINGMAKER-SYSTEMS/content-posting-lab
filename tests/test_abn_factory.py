@@ -2033,3 +2033,103 @@ def test_purge_disk_does_not_trim_when_disk_above_threshold(monkeypatch):
     abn_factory.purge_disk(keep_episodes=4, low_disk_gb=2.0)
 
     assert trimmed == [], "ample free disk must not trigger any destructive render trim"
+# ---------------- _compile_episode: the OpenShot → Remotion → ffmpeg fallback cascade ----------------
+#
+# produce_one_episode's compiler order (CLAUDE.md) tries the sanctioned OpenShot compiler first,
+# then Remotion (a live layer source, retried once), then the ffmpeg slideshow as last resort.
+# That cascade was inline in the 500-line produce_one_episode and effectively untestable; it now
+# lives in _compile_episode(ep_id, timeline, segments) so each fall-through branch — and the
+# diagnostic BUS events that make the fall-through observable — can be pinned directly. The three
+# tests below cover: (1) OpenShot raises but Remotion succeeds, (2) OpenShot + Remotion fail then
+# ffmpeg succeeds, (3) all three fail (raises). A regression in the ORDER (e.g. Remotion before
+# OpenShot, or skipping the ffmpeg backstop) flips at least one of these.
+
+def _bus_actions_since(seen):
+    return [e["action"] for e in abn_factory.BUS.replay() if e["id"] not in seen]
+
+
+@pytest.mark.asyncio
+async def test_compile_episode_falls_back_to_remotion_when_openshot_raises(monkeypatch):
+    """OpenShot raises → cascade falls through to Remotion, which succeeds. The OpenShot result is
+    NOT used, Remotion's (url, duration) is returned, and the openshot.fallback + remotion.done
+    diagnostic events are both emitted (Remotion is never even reached if OpenShot order breaks)."""
+    async def openshot_boom(ep_id, timeline):
+        raise RuntimeError("libopenshot bindings missing")
+
+    async def remotion_ok(ep_id, timeline):
+        return "/agenticnews-assets/remotion.mp4", 612.0
+
+    async def ffmpeg_boom(ep_id, segments):
+        raise AssertionError("ffmpeg fallback must NOT run once Remotion succeeds")
+
+    monkeypatch.setattr(abn_factory, "_assemble_episode_openshot", openshot_boom)
+    monkeypatch.setattr(abn_factory, "_render_remotion", remotion_ok)
+    monkeypatch.setattr(abn_factory, "_assemble_episode", ffmpeg_boom)
+
+    seen = {e["id"] for e in abn_factory.BUS.replay()}
+    url, dur = await abn_factory._compile_episode("ep_fb0001", {"musicBed": None}, [])
+
+    assert (url, dur) == ("/agenticnews-assets/remotion.mp4", 612.0)
+    actions = _bus_actions_since(seen)
+    assert "openshot.fallback" in actions, "OpenShot failure must announce the fall-through to Remotion"
+    assert "remotion.done" in actions, "a successful Remotion render must emit remotion.done"
+    assert "remotion.fallback" not in actions, "ffmpeg backstop must not be announced when Remotion wins"
+
+
+@pytest.mark.asyncio
+async def test_compile_episode_falls_back_to_ffmpeg_when_openshot_and_remotion_fail(monkeypatch):
+    """OpenShot raises AND Remotion fails both attempts → cascade lands on the ffmpeg slideshow,
+    which succeeds. Remotion is retried exactly twice (two 'error' events), the remotion.fallback
+    backstop event fires, and ffmpeg's (url, duration) is returned."""
+    calls = {"remotion": 0}
+
+    async def openshot_boom(ep_id, timeline):
+        raise RuntimeError("openshot down")
+
+    async def remotion_boom(ep_id, timeline):
+        calls["remotion"] += 1
+        raise RuntimeError("remotion asset fetch timeout")
+
+    async def ffmpeg_ok(ep_id, segments):
+        return "/agenticnews-assets/ffmpeg.mp4", 605.0
+
+    monkeypatch.setattr(abn_factory, "_assemble_episode_openshot", openshot_boom)
+    monkeypatch.setattr(abn_factory, "_render_remotion", remotion_boom)
+    monkeypatch.setattr(abn_factory, "_assemble_episode", ffmpeg_ok)
+
+    seen = {e["id"] for e in abn_factory.BUS.replay()}
+    url, dur = await abn_factory._compile_episode("ep_fb0002", {"musicBed": None}, [{"script": "x"}])
+
+    assert (url, dur) == ("/agenticnews-assets/ffmpeg.mp4", 605.0)
+    assert calls["remotion"] == 2, "Remotion must be retried exactly once (two attempts) before ffmpeg"
+    actions = _bus_actions_since(seen)
+    assert "openshot.fallback" in actions
+    assert actions.count("error") >= 2, "each failed Remotion attempt must emit a diagnostic error event"
+    assert "remotion.fallback" in actions, "the ffmpeg last-resort backstop must announce itself"
+
+
+@pytest.mark.asyncio
+async def test_compile_episode_raises_when_all_three_compilers_fail(monkeypatch):
+    """OpenShot, Remotion (both attempts), and ffmpeg all fail → _compile_episode propagates the
+    ffmpeg error (produce_one_episode maps that to idle + abort). The full diagnostic trail —
+    openshot.fallback, two remotion errors, remotion.fallback — is emitted before the raise."""
+    async def openshot_boom(ep_id, timeline):
+        raise RuntimeError("openshot down")
+
+    async def remotion_boom(ep_id, timeline):
+        raise RuntimeError("remotion down")
+
+    async def ffmpeg_boom(ep_id, segments):
+        raise RuntimeError("no segment clips")
+
+    monkeypatch.setattr(abn_factory, "_assemble_episode_openshot", openshot_boom)
+    monkeypatch.setattr(abn_factory, "_render_remotion", remotion_boom)
+    monkeypatch.setattr(abn_factory, "_assemble_episode", ffmpeg_boom)
+
+    seen = {e["id"] for e in abn_factory.BUS.replay()}
+    with pytest.raises(RuntimeError, match="no segment clips"):
+        await abn_factory._compile_episode("ep_fb0003", {"musicBed": None}, [{"script": "x"}])
+
+    actions = _bus_actions_since(seen)
+    assert "openshot.fallback" in actions
+    assert "remotion.fallback" in actions, "the cascade must reach the ffmpeg backstop before giving up"

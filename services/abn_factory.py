@@ -2549,6 +2549,39 @@ async def _assemble_episode_openshot(ep_id, timeline):
     return _asset_url(final), (result.get("duration") or await _dur(final))
 
 
+async def _compile_episode(ep_id, timeline, segments):
+    """Run the compiler cascade: OpenShot → Remotion (×2) → ffmpeg, in that order.
+
+    COMPILER ORDER (CLAUDE.md): OpenShot is the sanctioned compiler — try it FIRST; the
+    factory's `_build_timeline` already emits the editor-bay shape it consumes. Remotion is a
+    live layer source / second compositor (retried once for transient asset-fetch failures);
+    the ffmpeg slideshow is the last-resort fallback. Each step is wrapped so a failure flows
+    to the next — additive, never a regression. Emits a diagnostic BUS event at every stage
+    boundary so the fall-through is observable. Returns (mp4_url, duration); raises if all
+    three compilers fail (caller maps that to idle + abort)."""
+    mp4 = dur = None
+    last_err = ""
+    try:
+        mp4, dur = await _assemble_episode_openshot(ep_id, timeline)
+    except Exception as e0:
+        last_err = str(e0)[:300]
+        BUS.emit("editor-agent", "openshot.fallback",
+                 f"OpenShot compile failed ({last_err[:100]}); trying Remotion", episode_id=ep_id)
+    if mp4 is None:
+        for attempt in (1, 2):  # Remotion can fail transiently (network asset fetch) — retry once
+            try:
+                mp4, dur = await _render_remotion(ep_id, timeline)
+                BUS.emit("editor-agent", "remotion.done", f"Remotion render: {dur:.0f}s (attempt {attempt})", episode_id=ep_id)
+                break
+            except Exception as e:
+                last_err = str(e)[:300]
+                BUS.emit("editor-agent", "error", f"remotion attempt {attempt} failed: {last_err}", episode_id=ep_id)
+    if mp4 is None:
+        BUS.emit("editor-agent", "remotion.fallback", f"OpenShot+Remotion failed ({last_err[:100]}); ffmpeg fallback", episode_id=ep_id)
+        mp4, dur = await _assemble_episode(ep_id, segments)  # last resort; raises on its own failure
+    return mp4, dur
+
+
 async def _assemble_episode(ep_id, segments):
     """Each segment = source screenshot (or title card) with Ken-Burns + karaoke captions,
     over its VO. Concat all segments → one full episode MP4."""
@@ -2955,37 +2988,13 @@ async def produce_one_episode(force_deepdive=False, force_lore=None):
     total_words = sum(len(s["script"].split()) for s in segments)
     _set("assembling", "editor-agent", f"assembling {len(segments)}-segment episode (~{total_words} words)", ep_id)
     BUS.emit("editor-agent", "assemble.start", f"rendering {len(segments)} segments → episode", episode_id=ep_id)
-    mp4 = dur = None
     timeline = _build_timeline(ep_id, ep_idx, segments, animated_bg=animated_bg)
-    mp4 = dur = None
-    last_err = ""
-    # COMPILER ORDER (CLAUDE.md): OpenShot is the sanctioned compiler — try it FIRST; the
-    # factory's _build_timeline already emits the editor-bay shape it consumes. Remotion is a
-    # live layer source / second compositor; the ffmpeg slideshow is the last-resort fallback.
-    # Each step is wrapped so a failure flows to the next — additive, never a regression.
     try:
-        mp4, dur = await _assemble_episode_openshot(ep_id, timeline)
-    except Exception as e0:
-        last_err = str(e0)[:300]
-        BUS.emit("editor-agent", "openshot.fallback",
-                 f"OpenShot compile failed ({last_err[:100]}); trying Remotion", episode_id=ep_id)
-    if mp4 is None:
-        for attempt in (1, 2):  # Remotion can fail transiently (network asset fetch) — retry once
-            try:
-                mp4, dur = await _render_remotion(ep_id, timeline)
-                BUS.emit("editor-agent", "remotion.done", f"Remotion render: {dur:.0f}s (attempt {attempt})", episode_id=ep_id)
-                break
-            except Exception as e:
-                last_err = str(e)[:300]
-                BUS.emit("editor-agent", "error", f"remotion attempt {attempt} failed: {last_err}", episode_id=ep_id)
-    if mp4 is None:
-        BUS.emit("editor-agent", "remotion.fallback", f"OpenShot+Remotion failed ({last_err[:100]}); ffmpeg fallback", episode_id=ep_id)
-        try:
-            mp4, dur = await _assemble_episode(ep_id, segments)
-        except Exception as e2:
-            _set("idle", "editor-agent", f"assemble failed: {e2}", ep_id)
-            BUS.emit("editor-agent", "error", f"assemble failed: {e2}", episode_id=ep_id)
-            return None
+        mp4, dur = await _compile_episode(ep_id, timeline, segments)
+    except Exception as e2:
+        _set("idle", "editor-agent", f"assemble failed: {e2}", ep_id)
+        BUS.emit("editor-agent", "error", f"assemble failed: {e2}", episode_id=ep_id)
+        return None
 
     # ─── HARD DURATION GATE (non-negotiable RPM/mid-roll floor) ───
     # An episode under MIN_EPISODE_SEC (10:00) is REJECTED here — it never reaches 'review',
