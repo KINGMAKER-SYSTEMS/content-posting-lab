@@ -748,6 +748,75 @@ def test_caption_rename_batch_happy_path(sync_client):
     assert (get_project_caption_dir("ren-batch") / "new artist" / "captions.csv").exists()
 
 
+# ── services/captions.py (load_captions / scan_project_captions) ───────────
+#
+# These power the burn + slideshow caption banks. Tested directly here because
+# the router only exercises them indirectly.
+
+
+def test_load_captions_filters_empty_and_keeps_fields(tmp_path):
+    from services import captions as captions_svc
+
+    csv_path = tmp_path / "captions.csv"
+    csv_path.write_text(
+        "video_id,video_url,caption,mood,error\n"
+        "1,https://tiktok.com/@a/video/1,real caption,hype,\n"
+        "2,https://tiktok.com/@a/video/2,,chill,\n"          # empty caption -> dropped
+        "3,https://tiktok.com/@a/video/3,   ,chill,\n"        # whitespace-only -> dropped
+        "4,https://tiktok.com/@a/video/4,  kept w/ space  ,sad,\n",
+        encoding="utf-8",
+    )
+
+    caps = captions_svc.load_captions(csv_path)
+    assert len(caps) == 2
+    assert caps[0] == {
+        "text": "real caption",
+        "video_id": "1",
+        "video_url": "https://tiktok.com/@a/video/1",
+        "mood": "hype",
+    }
+    # text is stripped
+    assert caps[1]["text"] == "kept w/ space"
+
+
+def test_scan_project_captions_skips_dotdirs_and_missing_csv(sync_client):
+    from services import captions as captions_svc
+
+    sync_client.post("/api/projects", json={"name": "Scan Suite"})
+    base = get_project_caption_dir("scan-suite")
+
+    # Valid batch with one real + one empty caption row
+    (base / "artistA").mkdir(parents=True, exist_ok=True)
+    (base / "artistA" / "captions.csv").write_text(
+        "video_id,video_url,caption,mood,error\n"
+        "1,u1,good,hype,\n"
+        "2,u2,,chill,\n",
+        encoding="utf-8",
+    )
+    # Hidden dir -> skipped
+    (base / ".hidden").mkdir(parents=True, exist_ok=True)
+    (base / ".hidden" / "captions.csv").write_text(
+        "video_id,caption\n1,nope\n", encoding="utf-8"
+    )
+    # Dir without a CSV -> skipped
+    (base / "noCsv").mkdir(parents=True, exist_ok=True)
+
+    sources = captions_svc.scan_project_captions("scan-suite")
+    assert [s["username"] for s in sources] == ["artistA"]
+    s = sources[0]
+    assert s["count"] == 1  # empty caption filtered out
+    assert s["captions"][0]["text"] == "good"
+    # csv_path is relative to the project BASE_DIR (not absolute)
+    assert not s["csv_path"].startswith("/")
+    assert s["csv_path"].endswith("captions.csv")
+
+
+def test_scan_project_captions_missing_project_returns_empty():
+    from services import captions as captions_svc
+
+    assert captions_svc.scan_project_captions("does-not-exist-xyz") == []
+
+
 def test_caption_rename_batch_validation_and_collisions(sync_client):
     sync_client.post("/api/projects", json={"name": "Ren Guard"})
     base = get_project_caption_dir("ren-guard")
