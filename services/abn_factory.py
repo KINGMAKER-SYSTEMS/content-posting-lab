@@ -2512,11 +2512,15 @@ def _build_timeline(ep_id, ep_idx, segments, animated_bg=None):
             "durationSec": seg["duration"],
         })
         total += seg["duration"]
-    bed = "/agenticnews-assets/bed.mp3" if (ASSETS / "bed.mp3").exists() else None
-    sfx = "/agenticnews-assets/whoosh.mp3" if (ASSETS / "whoosh.mp3").exists() else None
+    # Shared beds/sfx/logos route through the abn_assets gateway (shared_path/shared_url),
+    # NOT a flat ASSETS / "bed.mp3" at the store root: that flat name is schema-escape and a
+    # glob-GC hazard. Beds + sfx are 'audio'; logo lockups are 'brand'. shared_url emits the
+    # /agenticnews-assets/_shared/<cat>/<name> URL that _resolve_asset reads back.
+    bed = shared_url("audio", "bed.mp3") if shared_path("audio", "bed.mp3").exists() else None
+    sfx = shared_url("audio", "whoosh.mp3") if shared_path("audio", "whoosh.mp3").exists() else None
     # prefer the transparent logo for the sting so it blends seamlessly (no visible black square)
-    logo = ("/agenticnews-assets/abn_logo_transparent.png" if (ASSETS / "abn_logo_transparent.png").exists()
-            else "/agenticnews-assets/abn_logo.png" if (ASSETS / "abn_logo.png").exists() else None)
+    logo = (shared_url("brand", "abn_logo_transparent.png") if shared_path("brand", "abn_logo_transparent.png").exists()
+            else shared_url("brand", "abn_logo.png") if shared_path("brand", "abn_logo.png").exists() else None)
     return {"fps": fps, "width": 1920, "height": 1080, "accent": BRAND_CYAN,
             "brandKit": "/agenticnews-assets/brand/abn-forge-signal/manifest.json",
             "episodeId": str(ep_id), "title": f"AgenticBuilderNews — Episode {ep_idx}",
@@ -2725,12 +2729,13 @@ async def _assemble_episode(ep_id, segments):
     for i, s in enumerate(segments):
         # deep-dive/animated segments may have no screenshot AND no card — fall back to the animated
         # bg or the logo so a visual always exists (was crashing on Path(None) → "no segment clips").
-        visual = s.get("screenshot") or s.get("card") or s.get("ui") or "/agenticnews-assets/abn_logo.png"
+        # logo fallback routes through the gateway (shared_path 'brand'), not a flat ASSETS root name.
+        visual = s.get("screenshot") or s.get("card") or s.get("ui") or shared_url("brand", "abn_logo.png")
         # assets now live in per-episode subdirs — resolve the FULL subpath from the URL, don't
         # flatten to basename (that silently dropped the subdir → every visual missing → logo fallback).
         vis = _resolve_asset(visual)
         if not vis.exists():
-            vis = ASSETS / "abn_logo.png"
+            vis = shared_path("brand", "abn_logo.png")
         wav = _resolve_asset(s["vo_path"])
         clip = asset_path(ep_id, "scratch", f"seg{i}", ext="mp4")  # per-episode concat intermediate
         # build a drawtext karaoke-ish caption (current sentence) + Ken-Burns zoom
@@ -3254,7 +3259,7 @@ async def produce_one_episode(force_deepdive=False, force_lore=None):
             "seo_chapters": bool(package.get("seo") and "0:00" in (package.get("seo") or "")),
             "thumbnail": bool(package.get("thumbnail_image")),
             "pinned_comment": bool(package.get("commenter")),
-            "music_bed": (ASSETS / "bed.mp3").exists(),
+            "music_bed": shared_path("audio", "bed.mp3").exists(),
         }
         score = sum(1 for v in qa.values() if v)
         total = len(qa)
