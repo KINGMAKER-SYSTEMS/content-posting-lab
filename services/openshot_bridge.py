@@ -198,6 +198,27 @@ def update_action_from_command(
             )
         return {"batch": actions} if actions else None
 
+    if op == "clip.keyframes":
+        # editor_timeline records the full post-edit clip in after["clip"], but a
+        # keyframes-only edit may instead carry just the new envelope in the payload.
+        # Resolve the target clip from whichever block has it and overlay the new
+        # keyframes so the update never gets dropped (the bare catch-all below would
+        # return None when after["clip"] is absent, silently losing the keyframes).
+        target = after.get("clip") or before.get("clip")
+        if not target:
+            return None
+        target = dict(target)
+        payload = entry.get("payload") or {}
+        if not after.get("clip") and "keyframes" in payload:
+            target["keyframes"] = payload["keyframes"]
+        return _update_action(
+            "update",
+            ["clips", {"id": target["id"]}],
+            clip_json(project, target, asset_root=asset_root),
+            old_values=clip_json(project, before["clip"], asset_root=asset_root) if before.get("clip") else None,
+            transaction=entry.get("id"),
+        )
+
     if op.startswith("clip.") and after.get("clip"):
         return _update_action(
             "update",

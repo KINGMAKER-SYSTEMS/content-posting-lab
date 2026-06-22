@@ -333,6 +333,78 @@ def test_command_log_exports_openshot_apply_json_diff(tmp_path):
     assert diff[0]["key"] == ["clips", {"id": "card_clip"}]
 
 
+def test_clip_keyframes_command_exports_update_action_with_envelope(tmp_path):
+    """A clip.keyframes command must emit an OpenShot update action whose value
+    carries the new multi-Point envelope — the bridge previously relied on a
+    bare `clip.` catch-all that would silently drop the edit if after["clip"]
+    were ever absent."""
+    project = _project(tmp_path / "bed.wav")
+    project["assets"]["card"]["type"] = "audio"
+    command = {
+        "id": "cmd_keyframes",
+        "op": "clip.keyframes",
+        "actor": "test",
+        "expectedRevision": 0,
+        "payload": {
+            "clipId": "card_clip",
+            "keyframes": [
+                {
+                    "property": "volume",
+                    "points": [
+                        {"t": 0.0, "value": 1.0, "interp": "linear"},
+                        {"t": 1.0, "value": 0.22, "interp": "constant"},
+                    ],
+                }
+            ],
+        },
+    }
+    project = editor_timeline.apply_command(project, command)
+
+    actions = openshot_bridge.flattened_update_actions(project)
+
+    assert len(actions) == 1
+    action = actions[0]
+    assert action["type"] == "update"
+    assert action["key"] == ["clips", {"id": "card_clip"}]
+    assert action["transaction"] == "cmd_keyframes"
+    points = action["value"]["volume"]["Points"]
+    assert [round(p["co"]["Y"], 2) for p in points] == [100.0, 22.0]
+
+
+def test_clip_keyframes_action_survives_missing_after_clip(tmp_path):
+    """Regression guard: if a clip.keyframes log entry carries the envelope only
+    in its payload (no full after["clip"]), the bridge must still emit the update
+    by overlaying the payload keyframes onto the before clip — not return None."""
+    project = _project(tmp_path / "bed.wav")
+    project["assets"]["card"]["type"] = "audio"
+    entry = {
+        "id": "cmd_kf_payload",
+        "op": "clip.keyframes",
+        "payload": {
+            "clipId": "card_clip",
+            "keyframes": [
+                {
+                    "property": "volume",
+                    "points": [
+                        {"t": 0.0, "value": 1.0, "interp": "linear"},
+                        {"t": 1.0, "value": 0.5, "interp": "linear"},
+                    ],
+                }
+            ],
+        },
+        "before": {"clip": project["clips"]["card_clip"]},
+        "after": {},
+    }
+
+    action = openshot_bridge.update_action_from_command(project, entry)
+
+    assert action is not None
+    assert action["type"] == "update"
+    assert action["key"] == ["clips", {"id": "card_clip"}]
+    points = action["value"]["volume"]["Points"]
+    assert [round(p["co"]["Y"], 2) for p in points] == [100.0, 50.0]
+
+
 def test_clip_keyframe_envelope_translates_to_multipoint_openshot_keyframes(tmp_path):
     """A volume-ducking envelope on the clip becomes a multi-Point OpenShot
     keyframe (frame X = t*fps+1, Y scaled to 0..100), overriding the flat default."""
