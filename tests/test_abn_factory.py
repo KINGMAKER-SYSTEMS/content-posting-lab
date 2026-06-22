@@ -570,6 +570,63 @@ def test_align_legacy_fallback_is_read_only_and_writes_through_gateway(monkeypat
     assert not (tmp_path / f"{legacy.stem}.json").exists()
 
 
+def test_align_feeds_legacy_flat_path_to_whisper_when_gateway_missing(monkeypatch, tmp_path):
+    """Direct coverage for the legacy back-compat symlink read fallback (abn_factory._align,
+    services/abn_factory.py:1010-1013): when the gateway voice wav is absent but a legacy flat
+    `{slug}.wav` exists at the store root, _align must resolve to and TRANSCRIBE that legacy
+    file — i.e. the resolved wav handed to faster-whisper is the legacy path, not the (missing)
+    gateway path. Recent asset migrations could silently break this back-compat layer."""
+    monkeypatch.setattr(abn_factory, "ASSETS", tmp_path)
+    monkeypatch.setattr(abn_assets, "ASSETS_DIR", tmp_path)
+
+    legacy = tmp_path / "ep_a111111_s0.wav"
+    legacy.write_bytes(b"legacy vo bytes")
+    gateway_wav = abn_assets.asset_path_from_slug("ep_a111111_s0", "voice")
+    assert not gateway_wav.exists()
+
+    seen = {}
+
+    def capture_align(p):
+        seen["wav"] = Path(p)
+        return [{"w": "hi", "s": 0.0, "e": 0.5}]
+
+    monkeypatch.setattr(abn_factory, "_align_sync", capture_align)
+
+    async def boom_sh(*a, **k):  # faster-whisper succeeded -> CLI must not run
+        raise AssertionError("whisper-CLI fallback ran on legacy-path happy path")
+
+    monkeypatch.setattr(abn_factory, "_sh", boom_sh)
+
+    words = asyncio.run(abn_factory._align("ep_a111111_s0"))
+    assert words == [{"w": "hi", "s": 0.0, "e": 0.5}]
+    # The wav transcribed was the legacy flat path, NOT the missing gateway path.
+    assert seen["wav"] == legacy
+
+
+def test_align_swallows_malformed_cli_json_and_returns_empty(monkeypatch, tmp_path):
+    """Direct coverage for the JSON-parse exception handler (abn_factory._align,
+    services/abn_factory.py:1026-1032): if the whisper-CLI fallback writes a json file that
+    is not valid JSON, _align must swallow the parse error and return [] rather than raise."""
+    monkeypatch.setattr(abn_factory, "ASSETS", tmp_path)
+    monkeypatch.setattr(abn_assets, "ASSETS_DIR", tmp_path)
+
+    wav = abn_assets.asset_path_from_slug("ep_a111111_s0", "voice")
+    wav.write_bytes(b"fake wav")
+
+    monkeypatch.setattr(abn_factory, "_align_sync", lambda p: [])  # force CLI fallback
+
+    async def fake_sh(cmd, timeout=300):
+        out_json = abn_assets.asset_path_from_slug("ep_a111111_s0", "align")
+        # Write a file at the exact path _align reads back, but with garbage content.
+        (out_json.parent / f"{wav.stem}.json").write_text("{not valid json")
+        return 0, ""
+
+    monkeypatch.setattr(abn_factory, "_sh", fake_sh)
+
+    words = asyncio.run(abn_factory._align("ep_a111111_s0"))
+    assert words == []
+
+
 # ---------------- ASSEMBLE: refuse an empty episode ----------------
 
 def test_assemble_episode_raises_when_no_clips_render(monkeypatch, tmp_path):
