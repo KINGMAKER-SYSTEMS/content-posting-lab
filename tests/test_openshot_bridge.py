@@ -1262,6 +1262,62 @@ def test_command_log_keeps_split_batches_unflattened(tmp_path):
     assert [a["type"] for a in flat] == ["update", "insert"]
 
 
+def test_multiple_split_batches_flatten_into_single_diff(tmp_path):
+    # The seam between timeline state and native render: two split commands each
+    # contribute a 2-action batch. flattened_update_actions must compose them into
+    # ONE ordered flat list, and json_diff must serialize that list as a single
+    # OpenShot ApplyJsonDiff array — no nested batches leaking through.
+    project = _project(tmp_path / "card.png")
+    project = editor_timeline.apply_command(
+        project,
+        {
+            "id": "cmd_split_a",
+            "op": "clip.split",
+            "actor": "human",
+            "expectedRevision": 0,
+            "payload": {"clipId": "card_clip", "at": 2.5, "newClipId": "card_clip_b"},
+        },
+    )
+    # Split the right-hand piece again, producing a second batch.
+    project = editor_timeline.apply_command(
+        project,
+        {
+            "id": "cmd_split_b",
+            "op": "clip.split",
+            "actor": "human",
+            "expectedRevision": 1,
+            "payload": {"clipId": "card_clip_b", "at": 3.0, "newClipId": "card_clip_c"},
+        },
+    )
+
+    raw = openshot_bridge.update_actions_from_command_log(project)
+    flat = openshot_bridge.flattened_update_actions(project)
+
+    # Two split commands -> two batch entries pre-flattening.
+    assert len(raw) == 2
+    assert all("batch" in entry for entry in raw)
+
+    # Flattened: four discrete actions, in command order, no batch wrappers.
+    assert len(flat) == 4
+    assert all("batch" not in action for action in flat)
+    assert [a["type"] for a in flat] == ["update", "insert", "update", "insert"]
+    assert [a["transaction"] for a in flat] == [
+        "cmd_split_a",
+        "cmd_split_a",
+        "cmd_split_b",
+        "cmd_split_b",
+    ]
+    # The two inserts carry the two newly created clips.
+    inserts = [a for a in flat if a["type"] == "insert"]
+    assert [a["value"]["id"] for a in inserts] == ["card_clip_b", "card_clip_c"]
+
+    # json_diff is exactly the flattened list serialized — a single JSON array
+    # OpenShot can replay, with no nested "batch" objects.
+    diff = json.loads(openshot_bridge.json_diff(project))
+    assert diff == flat
+    assert all("batch" not in action for action in diff)
+
+
 # ---------------------------------------------------------------------------
 # Isolated unit coverage for the four core translation functions —
 # source_media_type, clip_json, reader_json, effect_json — called DIRECTLY with
