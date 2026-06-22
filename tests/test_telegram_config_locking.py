@@ -183,6 +183,83 @@ def test_lock_for_distinct_paths_distinct_locks(tmp_path, monkeypatch):
     assert a is not b
 
 
+# --- converted setters: now go through mutate_config (was lock_for+save) -----
+
+
+def test_concurrent_set_staging_topic_loses_nothing(isolated_config):
+    """N threads each map a distinct integration to a staging topic.
+
+    set_staging_topic used the unsafe lock_for + load + save pattern; it now
+    runs under mutate_config. Every append-only mapping must survive.
+    """
+    n = 40
+    _barrier_runner(
+        lambda i: tg.set_staging_topic(f"page-{i}", topic_id=i, topic_name=f"t{i}"),
+        n,
+    )
+    topics = tg.get_staging_group()["topics"]
+    assert set(topics) == {f"page-{i}" for i in range(n)}
+    assert topics["page-5"]["topic_id"] == 5
+
+
+def test_concurrent_add_song_to_page_loses_nothing(isolated_config):
+    """N threads append distinct sounds to the SAME page playlist; none dropped.
+
+    add_song_to_page was a lock_for + load + save setter; now mutate_config.
+    """
+    ids = [tg.add_sound(f"http://s/{i}", f"L{i}")["id"] for i in range(40)]
+    _barrier_runner(lambda i: tg.add_song_to_page("page-x", ids[i]), len(ids))
+    playlist = set(tg.get_page_playlist("page-x"))
+    assert playlist == set(ids), f"lost {set(ids) - playlist}"
+
+
+def test_set_staging_topic_skips_write_when_not_forced(isolated_config):
+    """Append-only: an existing mapping is not overwritten without force.
+
+    Under mutate_config the save still runs on block exit, but it must persist
+    the UNCHANGED config (the early return leaves config untouched).
+    """
+    tg.set_staging_topic("page-1", topic_id=1, topic_name="first")
+    tg.set_staging_topic("page-1", topic_id=2, topic_name="second")  # no force
+    topics = tg.get_staging_group()["topics"]
+    assert topics["page-1"]["topic_id"] == 1
+    # force overrides
+    tg.set_staging_topic("page-1", topic_id=2, topic_name="second", force=True)
+    assert tg.get_staging_group()["topics"]["page-1"]["topic_id"] == 2
+
+
+def test_set_last_forwarded_id_persists(isolated_config):
+    """set_last_forwarded_id (converted setter) writes through to disk."""
+    tg.set_staging_topic("page-1", topic_id=1, topic_name="first")
+    tg.set_last_forwarded_id("page-1", 123)
+    assert tg.get_last_forwarded_id("page-1") == 123
+
+
+def test_converted_setter_skips_save_on_exception(isolated_config, monkeypatch):
+    """A converted setter that raises mid-block must not persist its partial work.
+
+    Proves the lock_for->mutate_config swap inherited mutate_config's
+    no-save-on-exception guarantee. We inject a failure after the in-block
+    mutation of set_poster_topic by making _now() raise.
+    """
+    tg.set_poster("p1", {"name": "One", "chat_id": -1})
+
+    real_now = tg._now
+
+    def boom():
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(tg, "_now", boom)
+    with pytest.raises(RuntimeError):
+        tg.set_poster_topic("p1", "page-9", topic_id=9, topic_name="t9")
+
+    # restore _now only (keep the isolated CONFIG_PATH patch intact)
+    monkeypatch.setattr(tg, "_now", real_now)
+    # the topic mutation happened before _now() in the block, but the whole
+    # transaction must have been discarded (no save on exception)
+    assert "page-9" not in tg.get_poster("p1").get("topics", {})
+
+
 # --- write-failure (not just TOCTOU) regressions for the config layer -------
 
 

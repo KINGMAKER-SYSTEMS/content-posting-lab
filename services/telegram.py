@@ -172,8 +172,7 @@ def set_staging_topic(integration_id: str, topic_id: int, topic_name: str, force
 
     APPEND-ONLY by default: refuses to overwrite an existing mapping unless force=True.
     """
-    with lock_for(CONFIG_PATH):
-        config = load_config()
+    with mutate_config() as config:
         existing = config["staging_group"]["topics"].get(integration_id)
         if existing and not force:
             return config["staging_group"]
@@ -181,19 +180,16 @@ def set_staging_topic(integration_id: str, topic_id: int, topic_name: str, force
             "topic_id": topic_id,
             "topic_name": topic_name,
         }
-        save_config(config)
         return config["staging_group"]
 
 
 def remove_staging_topic(integration_id: str) -> bool:
     """Remove a topic mapping. Returns True if it existed."""
-    with lock_for(CONFIG_PATH):
-        config = load_config()
+    with mutate_config() as config:
         topics = config["staging_group"].get("topics", {})
         if integration_id not in topics:
             return False
         del topics[integration_id]
-        save_config(config)
         return True
 
 
@@ -206,12 +202,10 @@ def get_last_forwarded_id(integration_id: str) -> int:
 
 def set_last_forwarded_id(integration_id: str, message_id: int) -> None:
     """Update the last forwarded message_id for a staging topic."""
-    with lock_for(CONFIG_PATH):
-        config = load_config()
+    with mutate_config() as config:
         topic = config["staging_group"].get("topics", {}).get(integration_id)
         if topic is not None:
             topic["last_forwarded_id"] = message_id
-            save_config(config)
 
 
 # ---------------------------------------------------------------------------
@@ -260,13 +254,11 @@ def set_poster(poster_id: str, data: dict) -> dict:
 
 def remove_poster(poster_id: str) -> bool:
     """Remove a poster. Returns True if it existed."""
-    with lock_for(CONFIG_PATH):
-        config = load_config()
+    with mutate_config() as config:
         posters = config.get("posters", {})
         if poster_id not in posters:
             return False
         del posters[poster_id]
-        save_config(config)
         return True
 
 
@@ -327,8 +319,7 @@ def set_poster_topic(poster_id: str, integration_id: str, topic_id: int, topic_n
 
     APPEND-ONLY by default: refuses to overwrite an existing mapping unless force=True.
     """
-    with lock_for(CONFIG_PATH):
-        config = load_config()
+    with mutate_config() as config:
         poster = config.get("posters", {}).get(poster_id)
         if poster is None:
             raise ValueError(f"Poster {poster_id} not found")
@@ -340,7 +331,6 @@ def set_poster_topic(poster_id: str, integration_id: str, topic_id: int, topic_n
             "topic_name": topic_name,
         }
         poster["updated_at"] = _now()
-        save_config(config)
         return poster
 
 
@@ -482,8 +472,7 @@ def get_pending_inventory(integration_id: str) -> list:
 
 def mark_forwarded(integration_id: str, item_id: str, poster_id: str, message_id: int) -> dict | None:
     """Mark an inventory item as forwarded. Returns updated item or None if not found."""
-    with lock_for(CONFIG_PATH):
-        config = load_config()
+    with mutate_config() as config:
         items = config.get("inventory", {}).get(integration_id, [])
         for item in items:
             if item.get("id") == item_id:
@@ -492,20 +481,17 @@ def mark_forwarded(integration_id: str, item_id: str, poster_id: str, message_id
                     "message_id": message_id,
                     "forwarded_at": _now(),
                 }
-                save_config(config)
                 return item
         return None
 
 
 def remove_inventory_item(integration_id: str, item_id: str) -> bool:
     """Remove an inventory item. Returns True if it existed."""
-    with lock_for(CONFIG_PATH):
-        config = load_config()
+    with mutate_config() as config:
         items = config.get("inventory", {}).get(integration_id, [])
         for idx, item in enumerate(items):
             if item.get("id") == item_id:
                 items.pop(idx)
-                save_config(config)
                 return True
         return False
 
@@ -571,40 +557,34 @@ def add_sound(url: str, label: str) -> dict:
 
 def remove_sound(sound_id: str) -> bool:
     """Remove a sound. Returns True if it existed."""
-    with lock_for(CONFIG_PATH):
-        config = load_config()
+    with mutate_config() as config:
         sounds = config.get("sounds", [])
         for idx, sound in enumerate(sounds):
             if sound.get("id") == sound_id:
                 sounds.pop(idx)
-                save_config(config)
                 return True
         return False
 
 
 def toggle_sound(sound_id: str, active: bool) -> dict | None:
     """Set a sound's active flag. Returns updated sound or None if not found."""
-    with lock_for(CONFIG_PATH):
-        config = load_config()
+    with mutate_config() as config:
         for sound in config.get("sounds", []):
             if sound.get("id") == sound_id:
                 sound["active"] = active
-                save_config(config)
                 return sound
         return None
 
 
 def update_sound(sound_id: str, url: str | None = None, label: str | None = None) -> dict | None:
     """Update a sound's url and/or label. Returns updated sound or None if not found."""
-    with lock_for(CONFIG_PATH):
-        config = load_config()
+    with mutate_config() as config:
         for sound in config.get("sounds", []):
             if sound.get("id") == sound_id:
                 if url is not None:
                     sound["url"] = url
                 if label is not None:
                     sound["label"] = label
-                save_config(config)
                 return sound
         return None
 
@@ -688,8 +668,7 @@ def add_song_to_page(integration_id: str, sound_id: str) -> list[str]:
 
     Raises ValueError if sound_id is not in the sounds[] pool.
     """
-    with lock_for(CONFIG_PATH):
-        config = load_config()
+    with mutate_config() as config:
         valid_ids = {s.get("id") for s in config.get("sounds", []) if s.get("id")}
         if sound_id not in valid_ids:
             raise ValueError(f"Sound {sound_id} not in pool")
@@ -699,31 +678,26 @@ def add_song_to_page(integration_id: str, sound_id: str) -> list[str]:
         if sound_id not in current:
             current.append(sound_id)
             playlists[integration_id] = current
-            save_config(config)
         return current
 
 
 def remove_song_from_page(integration_id: str, sound_id: str) -> list[str]:
     """Remove a sound from a page's playlist. Returns updated list (empty if page absent)."""
-    with lock_for(CONFIG_PATH):
-        config = load_config()
+    with mutate_config() as config:
         playlists = config.setdefault("page_playlists", {})
         current = list(playlists.get(integration_id, []))
         if sound_id in current:
             current.remove(sound_id)
             playlists[integration_id] = current
-            save_config(config)
         return current
 
 
 def clear_page_playlist(integration_id: str) -> bool:
     """Remove a page's playlist entry entirely. Returns True if it existed."""
-    with lock_for(CONFIG_PATH):
-        config = load_config()
+    with mutate_config() as config:
         playlists = config.setdefault("page_playlists", {})
         if integration_id in playlists:
             del playlists[integration_id]
-            save_config(config)
             return True
         return False
 
