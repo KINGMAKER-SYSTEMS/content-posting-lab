@@ -387,6 +387,11 @@ async def _burn_video(
             os.write(fd, png_bytes)
             os.close(fd)
 
+        # Fail fast with a clear message if ffmpeg isn't installed, rather than
+        # letting create_subprocess_exec raise a cryptic FileNotFoundError.
+        if shutil.which("ffmpeg") is None:
+            raise RuntimeError("ffmpeg not available on PATH; cannot burn video")
+
         filter_complex = _build_filter_complex(color_correction)
 
         if overlay_path:

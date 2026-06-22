@@ -1,9 +1,14 @@
+import asyncio
+
+import pytest
+
 from project_manager import (
     get_project_burn_dir,
     get_project_caption_dir,
     get_project_clips_dir,
     get_project_video_dir,
 )
+from routers import burn as burn_router
 
 
 def test_burn_overlay_rejects_path_traversal(sync_client):
@@ -247,6 +252,67 @@ def test_burn_folder_rename_rejects_virtual_and_root(sync_client):
     )
     assert resp.status_code == 400
     assert (get_project_video_dir("rename-virt") / "foo").exists()
+
+
+def test_burn_video_raises_clearly_when_ffmpeg_missing(monkeypatch, tmp_path):
+    """_burn_video must fail gracefully with a clear message (not a raw
+    FileNotFoundError) when ffmpeg is not on PATH."""
+    monkeypatch.setattr(burn_router.shutil, "which", lambda _name: None)
+
+    src = tmp_path / "in.mp4"
+    src.write_bytes(b"video")
+    out = tmp_path / "out.mp4"
+
+    with pytest.raises(RuntimeError) as exc:
+        asyncio.run(
+            burn_router._burn_video(
+                str(src), None, str(out), {"brightness": 50}
+            )
+        )
+    assert "ffmpeg not available" in str(exc.value)
+
+
+def test_burn_background_records_error_when_ffmpeg_missing(monkeypatch, tmp_path):
+    """A burn job with a missing ffmpeg is recorded as status=error in
+    _burn_jobs rather than crashing the background task."""
+    monkeypatch.setattr(burn_router.shutil, "which", lambda _name: None)
+
+    src = tmp_path / "in.mp4"
+    src.write_bytes(b"video")
+    out = tmp_path / "out.mp4"
+    batch_id = "ffmpeg-missing-batch"
+    burn_router._burn_jobs.pop(batch_id, None)
+
+    asyncio.run(
+        burn_router._burn_background(
+            batch_id, 0, str(src), None, str(out), {"brightness": 50}, "in.mp4"
+        )
+    )
+
+    item = burn_router._burn_jobs[batch_id][0]
+    assert item["status"] == "error"
+    assert item["ok"] is False
+    assert "ffmpeg not available" in item["error"]
+    burn_router._burn_jobs.pop(batch_id, None)
+
+
+def test_burn_overlay_missing_video_returns_404(sync_client):
+    """Burning against a project whose video directory / file doesn't exist
+    returns 404 instead of crashing."""
+    created = sync_client.post("/api/projects", json={"name": "Missing Video"})
+    assert created.status_code == 201
+
+    resp = sync_client.post(
+        "/api/burn/overlay",
+        json={
+            "project": "missing-video",
+            "batchId": "batch-missing",
+            "index": 0,
+            "videoPath": "nope/ghost.mp4",
+        },
+    )
+    assert resp.status_code == 404
+    assert "not found" in resp.json()["error"].lower()
 
 
 def test_burn_folder_rename_clips_preserves_prefix(sync_client):
