@@ -2556,6 +2556,96 @@ def test_cross_scratch_path_rejects_non_reapable_root(scratch_store, monkeypatch
         abn_factory._cross_scratch_path("probe.png")
 
 
+# ---- callback write-path audit: wan-i2v + OCR-probe can't be tricked off-schema ----
+#
+# AUDIT (prod-cycle.js L80): the wan-i2v clip callback (_wan_i2v_sync) and the Flux OCR
+# self-review probe (_bg_is_clean) take an upstream `name` (today a controlled `libgenN`
+# tag) and compose it into a _scratch filename — `_cross_scratch_path(f"{name}_broll.mp4")`
+# / `f"{name}_still.png")` — then _download() bytes to that path. If a future caller ever
+# threads an untrusted/off-schema `name` through (e.g. a slug carrying `../`), the gateway
+# chokepoint MUST reject the composed name BEFORE any bytes hit disk, so the GC can never be
+# handed an unreapable stray outside _scratch/.
+#
+# Both callbacks wrap their body in a broad try/except that FAILS SAFE (wan returns None,
+# the OCR probe returns True — its documented fail-open contract), so the gateway's raise is
+# swallowed rather than propagated. The security-relevant invariant is therefore behavioural,
+# not the exception type: an off-schema `name` results in NO _download call and NO stray file
+# under the store — the bytes never reach disk. These pin exactly that.
+
+_REAL_WAN_I2V = abn_factory._wan_i2v_sync
+_REAL_BG_IS_CLEAN = abn_factory._bg_is_clean
+
+
+def _no_stray_under(store):
+    sc = store / "_scratch"
+    return not sc.exists() or not any(sc.iterdir())
+
+
+@pytest.mark.parametrize("evil", ["../escape", "sub/dir", "a\\b", ".hidden"])
+def test_wan_i2v_off_schema_name_writes_nothing(scratch_store, monkeypatch, evil):
+    """A malicious `name` composes into `{name}_broll.mp4`; _cross_scratch_path rejects it before
+    _download is reached, so no stray clip lands outside the reapable _scratch/ root (returns None)."""
+    monkeypatch.setenv("REPLICATE_API_TOKEN", "tok")
+    # json.load is called twice (create prediction, then poll) — first the create-response that
+    # carries the poll URL, then a 'succeeded' poll so control reaches the _cross_scratch_path line.
+    create_resp = {"urls": {"get": "http://x"}}
+    succeeded = {"status": "succeeded", "output": ["http://clip.mp4"]}
+    seq = iter([create_resp, succeeded])
+    monkeypatch.setattr(abn_factory.json, "load", lambda *a, **k: next(seq))
+    monkeypatch.setattr(abn_factory.urllib.request, "urlopen", lambda *a, **k: object())
+    monkeypatch.setattr(abn_factory.time, "sleep", lambda *a, **k: None)
+    downloaded = []
+    monkeypatch.setattr(abn_factory, "_download", lambda *a, **k: downloaded.append(a) or True)
+
+    assert _REAL_WAN_I2V("http://still.png", evil) is None
+    assert not downloaded, "off-schema name must be rejected BEFORE _download writes any bytes"
+    assert _no_stray_under(scratch_store), "no stray file may be created under _scratch for a rejected name"
+
+
+@pytest.mark.parametrize("evil", ["../escape", "sub/dir", "a\\b", ".hidden"])
+def test_bg_is_clean_off_schema_name_writes_nothing(scratch_store, monkeypatch, evil):
+    """The OCR probe composes `{name}_still.png`; an off-schema `name` is rejected at the gateway
+    chokepoint before the still is downloaded — no stray lands (probe fails open -> True)."""
+    downloaded = []
+    monkeypatch.setattr(abn_factory, "_download", lambda *a, **k: downloaded.append(a) or True)
+
+    assert _REAL_BG_IS_CLEAN("http://still.png", evil) is True  # documented fail-open
+    assert not downloaded, "off-schema name must be rejected BEFORE _download writes any bytes"
+    assert _no_stray_under(scratch_store), "no stray file may be created under _scratch for a rejected name"
+
+
+def test_factory_has_no_offschema_episode_asset_write_bypass():
+    """Source-level audit guard (prod-cycle.js L80: 'places that bypass services/abn_assets.py for
+    asset writes'). Every WRITE under the asset store must go through the gateway / its local
+    chokepoint. A bare `ASSETS / f"..."` or `ASSETS / "<literal>" /` build that is then written to
+    is exactly the hand-built off-schema path the gateway exists to forbid. This fails if a future
+    edit reintroduces one, so the audit conclusion stays enforced, not just documented.
+
+    We allow the known, intentional NON-scratch keeper write: the persistent broll_library/ cache
+    (a MANAGED_TOP shared dir, deliberately never reaped). Everything else that constructs a store
+    path with an f-string/literal must be a READ (no .write_/.copy/.move/_download to it)."""
+    import re as _re
+    src = Path(abn_factory.__file__).read_text().splitlines()
+    # lines that build a path from ASSETS via f-string or literal subdir (candidate write targets)
+    builder = _re.compile(r"ASSETS\s*/\s*(f[\"']|[\"'])")
+    offenders = []
+    for i, line in enumerate(src):
+        if not builder.search(line):
+            continue
+        # the only sanctioned literal-built keeper location is the broll library cache dir.
+        if "broll_library" in line:
+            continue
+        # _resolve_asset / _asset_url / timeline-scan all build paths for READS — they never write.
+        # Flag only if this same line ALSO performs a write to the freshly-built path.
+        if _re.search(r"\.write_(text|bytes)\(|\bshutil\.(move|copy)\(|_download\(", line):
+            offenders.append((i + 1, line.strip()))
+    assert not offenders, (
+        "off-schema asset WRITE bypass(es) found in abn_factory.py — route through the "
+        f"abn_assets gateway / _cross_scratch_path instead:\n" +
+        "\n".join(f"  L{n}: {t}" for n, t in offenders)
+    )
+
+
 # ---- adhoc_scratch_path: name validation + extension format (services/abn_assets.py L279-313) ----
 
 
