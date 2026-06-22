@@ -3325,26 +3325,29 @@ async def _gc_segments(keep_recent=12):
             # FREE-SPACE GUARD: if disk is critically low, tombstone the oldest real episode renders
             # (keep 4) → _trash/ via tombstone_render(), recoverable safe-delete, never unlink.
             free_gb = _sh2.disk_usage(str(ASSETS)).free / 1e9
-            # FAIL SAFE: skip the destructive render trim if the protection scan was incomplete
-            # (see purge_disk) — never tombstone a render an active timeline might still reference.
-            # RE-SCAN before trimming: protected_paths captured at the top is stale by now (the scratch
-            # reap above takes wall-clock time, during which a new timeline can reference a render this
-            # trim would delete — the TOCTOU this ticket guards). OR both sets; require both complete.
+            # FAIL SAFE + RE-SCAN before the destructive trim (see purge_disk for the twin guard):
+            #   1. The ENTRY scan must have been complete — `protection_complete`. An incomplete entry
+            #      scan (a timeline JSON we couldn't parse) means we never knew the full referenced set,
+            #      so we must protect everything and skip the trim.
+            #   2. The protected set captured at the top is STALE by now: the scratch reap above takes
+            #      wall-clock time, during which a new Editor Bay timeline can be saved referencing a
+            #      render this trim is about to delete (the TOCTOU this ticket guards). So re-scan, and
+            #      require the FRESH scan to also be complete — `fresh_complete`. If either scan is
+            #      incomplete, skip the trim entirely; disk pressure is recoverable, a deleted in-use
+            #      render is not. When both are complete we OR the two sets so a render protected by
+            #      EITHER survives.
             if protection_complete and free_gb < 2.0:
                 fresh_paths, fresh_complete = _editor_timeline_asset_paths_checked()
                 if fresh_complete:
                     protected_paths = protected_paths | fresh_paths
-                else:
-                    protected_paths = None  # force-skip the trim below
-            if protection_complete and free_gb < 2.0 and protected_paths is not None:
-                for old in _old_episode_renders()[4:]:
-                    try:
-                        if _is_editor_timeline_protected_asset(old, protected_paths):
-                            continue
-                        tombstone_render(old)  # safe-delete → _trash/, recoverable (not unlink)
-                    except Exception:
-                        pass
-                BUS.emit("system", "gc", f"low disk ({free_gb:.1f}GB) — trimmed old episodes to last 4")
+                    for old in _old_episode_renders()[4:]:
+                        try:
+                            if _is_editor_timeline_protected_asset(old, protected_paths):
+                                continue
+                            tombstone_render(old)  # safe-delete → _trash/, recoverable (not unlink)
+                        except Exception:
+                            pass
+                    BUS.emit("system", "gc", f"low disk ({free_gb:.1f}GB) — trimmed old episodes to last 4")
         except Exception:
             pass
     except Exception:

@@ -1140,3 +1140,39 @@ def test_gc_segments_still_trims_when_protection_scan_is_complete(store, monkeyp
     assert (store / "_trash" / "ep_old333" / "renders" / "episode.mp4").exists(), (
         "trimmed render must be tombstoned (recoverable), not unlinked"
     )
+
+
+def test_gc_segments_skips_trim_when_rescan_becomes_incomplete(store, monkeypatch):
+    """Twin of test_purge_disk_skips_trim_when_rescan_becomes_incomplete for the _gc_segments path:
+    the ENTRY scan is complete, but a timeline becomes UNREADABLE by the pre-trim re-scan (an editor
+    mid-write left a half-flushed JSON). The fresh scan can no longer promise it saw every referenced
+    render, so the trim must be SKIPPED — this pins the `fresh_complete` branch the ticket clarified."""
+    old_render = _render(store, "ep_2d0000", age_s=9000)        # oldest -> trim victim absent guard
+    for i, age in enumerate((8000, 7000, 6000, 5000, 10)):      # 5 newer -> 6 total, keep 4
+        _render(store, f"ep_fill4{i}", age_s=age)
+    (store / "editor_timelines" / "clean.json").write_text('{"clips": []}')  # entry scan: complete
+    _scratch(store, "ep_2d0000", "s9_raw.wav")
+
+    real_predicate = abn_factory._is_editor_timeline_protected_asset
+    state = {"broke": False}
+
+    def hook(path, protected):
+        # Fires during the scratch-reap loop, BEFORE the pre-trim re-scan: corrupt a timeline so the
+        # fresh scan comes back incomplete even though the entry scan was clean.
+        if not state["broke"]:
+            state["broke"] = True
+            (store / "editor_timelines" / "broken.json").write_text("{ half-flushed not json")
+        return real_predicate(path, protected)
+
+    monkeypatch.setattr(abn_factory, "_is_editor_timeline_protected_asset", hook)
+    _gc_no_videos(monkeypatch)
+    _force_low_disk(monkeypatch)
+
+    asyncio.run(abn_factory._gc_segments(keep_recent=0))
+
+    assert state["broke"], "test setup: the mid-reap timeline corruption never fired"
+    assert old_render.exists(), (
+        "_gc_segments trim ran even though the pre-trim re-scan became incomplete — an editor mid-write "
+        "must block the trim, not let it eat a render the unreadable timeline might reference"
+    )
+    assert not (store / "_trash" / "ep_2d0000" / "renders" / "episode.mp4").exists()
