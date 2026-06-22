@@ -30,6 +30,7 @@ import services.abn_assets as abn_assets
 import services.openshot_bridge as openshot_bridge
 import services.editor_render as editor_render
 import services.editor_timeline as editor_timeline
+from services.fsutil import safe_unlink
 from fastapi.responses import StreamingResponse
 
 router = APIRouter()
@@ -1818,10 +1819,7 @@ def _regen_card(src: str, edit: dict) -> bool:
         return True
     except Exception:
         # never leave a half-rendered .tmp_* card behind in the css/ dir
-        try:
-            (assets_dir / f"{tmp_stem}_{kind}.png").unlink(missing_ok=True)
-        except OSError:
-            pass
+        safe_unlink(assets_dir / f"{tmp_stem}_{kind}.png")
         return False
 
 

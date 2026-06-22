@@ -110,6 +110,20 @@ def test_burn_download_zip_uses_safe_unlink():
     assert src.count("safe_unlink(tmp_path)") == 2
 
 
+def test_agenticnews_card_render_uses_safe_unlink():
+    """Regression: the failed-card cleanup in routers.agenticnews must scrub its
+    half-rendered .tmp_* card via the shared helper, not the bare
+    ``try: ....unlink(missing_ok=True) / except OSError: pass`` block that
+    safe_unlink was created to replace."""
+    import routers.agenticnews as agenticnews
+
+    src = Path(agenticnews.__file__).read_text()
+    # The bare missing_ok unlink (and its redundant except wrapper) is gone...
+    assert ".unlink(missing_ok=True)" not in src
+    # ...replaced by the shared helper on the rejected tmp card.
+    assert 'safe_unlink(assets_dir / f"{tmp_stem}_{kind}.png")' in src
+
+
 # --- safe_rmtree --------------------------------------------------------------
 
 
