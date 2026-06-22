@@ -751,3 +751,158 @@ def test_publish_endpoint_blocks_instead_of_500_when_youtube_missing(client):
     assert body["ok"] is False
     assert body["blocked"] is True
     assert body["blockers"]
+
+
+# ---------------------------------------------------------- _regen_card: atomic swap + traversal guard
+#
+# _regen_card (routers/agenticnews.py) regenerates ONE designed-card PNG in place from an
+# OPERATOR-SUPPLIED src. The src is hostile input, so the function has two hard guards:
+#   1. the resolved target must be an EXISTING, MANAGED card under the episode schema
+#      ({ep_id}/css/…) — a traversal (../), a symlink, a bare name, or an off-schema path
+#      must be rejected (return False, write nothing) BEFORE any PNG is generated.
+#   2. the new PNG renders to a sibling .tmp_* stem, then os.replace's onto the live target —
+#      an atomic swap, so a crashed/partial render can never leave a torn card in place of the
+#      good one, and the .tmp_* scratch is cleaned up on failure.
+# The happy path is the only thing the rest of the suite touches; these cover the guards.
+
+
+@pytest.fixture
+def regen_env(abn_db, tmp_path, monkeypatch):
+    """A real managed card on disk under {ep_id}/css/ + factory repointed at the temp store.
+
+    factory.ASSETS and factory._v2cards are import-time captures, so the abn_db fixture (which
+    only repoints db/abn_assets ASSETS_DIR) is not enough — _regen_card resolves the write path
+    via factory._resolve_asset (factory.ASSETS) and renders via factory._v2cards.
+    """
+    import routers.agenticnews as r
+    import services.abn_factory as factory
+
+    assets = abn_db.ASSETS_DIR
+    monkeypatch.setattr(factory, "ASSETS", assets)
+
+    css = assets / "ep_abc123" / "css"
+    css.mkdir(parents=True)
+    target = css / "s0_v1sc0_hook.png"
+    target.write_bytes(b"ORIGINAL-CARD-BYTES")
+    src = "/agenticnews-assets/ep_abc123/css/s0_v1sc0_hook.png"
+
+    return r, factory, assets, target, src
+
+
+def _stub_cards(monkeypatch, factory, *, writes=True, raises=False):
+    """Install a fake _v2cards that records the tmp stem it was handed and (optionally) writes
+    a tmp PNG / raises mid-render — so we can assert the atomic swap + cleanup behaviour without
+    ImageMagick on PATH."""
+    calls = {}
+
+    class _FakeCards:
+        BRAND_CYAN = "#0ff"
+        BRAND_RED = "#f00"
+
+        @staticmethod
+        def hook_card(txt, stem, A, F, accent=None):
+            calls["stem"] = stem
+            out = A / f"{stem}_hook.png"
+            if raises:
+                raise RuntimeError("magick crashed mid-render")
+            if writes:
+                out.write_bytes(b"NEW-CARD-BYTES")
+            return out
+
+    monkeypatch.setattr(factory, "_v2cards", _FakeCards)
+    return calls
+
+
+def test_regen_card_rejects_path_traversal(regen_env, monkeypatch):
+    """A `../`-laden src must never resolve to a write outside the schema — return False, no write."""
+    r, factory, assets, _target, _src = regen_env
+    # craft an escape that still ends in a recognized card kind so it passes the _CARD_KIND regex
+    evil = "/agenticnews-assets/../../../../tmp/pwned_hook.png"
+    sentinel = assets.parent / "pwned_hook.png"
+    assert not sentinel.exists()
+    assert r._regen_card(evil, {"text": "x"}) is False
+    assert not sentinel.exists()  # nothing written outside the schema
+
+
+def test_regen_card_rejects_backslash_traversal(regen_env):
+    """A `..\\`-style src is just a bare (non-managed) name on POSIX — must be rejected too."""
+    r, factory, assets, _target, _src = regen_env
+    assert r._regen_card("..\\..\\evil_hook.png", {"text": "x"}) is False
+
+
+def test_regen_card_rejects_bare_unmanaged_name(regen_env):
+    """A bare name resolves under the store root but is NOT a managed/existing card → False."""
+    r, *_ = regen_env
+    assert r._regen_card("orphan_hook.png", {"text": "x"}) is False
+
+
+def test_regen_card_rejects_symlink_target(regen_env):
+    """Even a symlink that lives inside css/ must be refused — it could point anywhere."""
+    r, factory, assets, target, _src = regen_env
+    link = target.parent / "s9_link_hook.png"
+    link.symlink_to(target)
+    assert r._regen_card("/agenticnews-assets/ep_abc123/css/s9_link_hook.png", {"text": "x"}) is False
+    assert target.read_bytes() == b"ORIGINAL-CARD-BYTES"  # link's target untouched
+
+
+def test_regen_card_rejects_non_card_src(regen_env):
+    """src whose name isn't a known card kind never even resolves a target → False."""
+    r, *_ = regen_env
+    assert r._regen_card("/agenticnews-assets/ep_abc123/css/s0_v1sc0.png", {"text": "x"}) is False
+
+
+def test_regen_card_atomic_swap_replaces_in_place(regen_env, monkeypatch):
+    """Happy path: the new PNG is rendered to a .tmp_* sibling, then os.replace'd onto the live
+    target — the operator never sees a torn card, and no .tmp_* scratch is left behind."""
+    r, factory, assets, target, src = regen_env
+    calls = _stub_cards(monkeypatch, factory, writes=True)
+
+    assert r._regen_card(src, {"text": "fresh hook"}) is True
+    assert target.read_bytes() == b"NEW-CARD-BYTES"          # swapped to the new content
+    assert calls["stem"].startswith(".tmp_")                  # rendered to a temp stem first
+    leftover = list(target.parent.glob(".tmp_*"))
+    assert leftover == []                                     # tmp consumed by the atomic replace
+
+
+def test_regen_card_render_failure_leaves_original_and_cleans_tmp(regen_env, monkeypatch):
+    """If the generator crashes mid-render, the live card is untouched and the partial .tmp_* file
+    is removed — a failed swap can never torch the good card or litter scratch."""
+    r, factory, assets, target, src = regen_env
+    # writes=True so a partial tmp file lands on disk, then raises BEFORE os.replace
+    calls = {}
+
+    class _PartialThenCrash:
+        BRAND_CYAN = "#0ff"
+        BRAND_RED = "#f00"
+
+        @staticmethod
+        def hook_card(txt, stem, A, F, accent=None):
+            calls["stem"] = stem
+            (A / f"{stem}_hook.png").write_bytes(b"HALF-WRITTEN")
+            raise RuntimeError("crash after partial write")
+
+    monkeypatch.setattr(factory, "_v2cards", _PartialThenCrash)
+
+    assert r._regen_card(src, {"text": "x"}) is False
+    assert target.read_bytes() == b"ORIGINAL-CARD-BYTES"      # live card untouched on failure
+    assert list(target.parent.glob(".tmp_*")) == []          # half-written tmp cleaned up
+
+
+def test_regen_card_swap_unlink_failure_does_not_corrupt_target(regen_env, monkeypatch):
+    """If os.replace itself fails (e.g. tmp write succeeded but the swap raises), _regen_card
+    returns False and the original card is left intact rather than half-replaced."""
+    r, factory, assets, target, src = regen_env
+    _stub_cards(monkeypatch, factory, writes=True)
+
+    import os as _os
+    real_replace = _os.replace
+
+    def _boom(a, b):
+        raise OSError("rename failed across devices")
+
+    monkeypatch.setattr(r.os, "replace", _boom)
+
+    assert r._regen_card(src, {"text": "x"}) is False
+    assert target.read_bytes() == b"ORIGINAL-CARD-BYTES"      # never partially swapped
+    assert list(target.parent.glob(".tmp_*")) == []          # tmp scratch still cleaned up
+    monkeypatch.setattr(r.os, "replace", real_replace)
