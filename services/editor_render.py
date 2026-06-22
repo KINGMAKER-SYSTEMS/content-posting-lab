@@ -64,7 +64,13 @@ def _ffmpeg_unsupported_drops(clip: dict[str, Any]) -> list[dict[str, str]]:
     for track in clip.get("keyframes") or []:
         if not (track or {}).get("points"):
             continue
-        drops.append({"clipId": clip_id, "kind": "keyframe", "name": str((track or {}).get("property") or "")})
+        prop = str((track or {}).get("property") or "")
+        # volume/opacity/x/y envelopes are now reproduced as piecewise-linear
+        # ffmpeg `t`-expressions (volume on the mux path; opacity + x/y on the
+        # visual overlay). Only scale/rotation envelopes remain OpenShot-only.
+        if prop in _FFMPEG_KEYFRAME_PROPERTIES:
+            continue
+        drops.append({"clipId": clip_id, "kind": "keyframe", "name": prop})
     return drops
 
 
@@ -81,20 +87,64 @@ def _fade_window(clip: dict[str, Any], direction: str) -> float | None:
     return best
 
 
+# Editor keyframe `property` names the ffmpeg fallback can now animate via a
+# piecewise-linear `t`-expression, and how each maps onto an ffmpeg filter:
+#   volume  -> the `volume` filter gain (audio mux path, see _volume_filter)
+#   opacity -> colorchannelmixer alpha (visual overlay, see _visual_filter)
+#   x, y    -> overlay x/y position (visual overlay, see _overlay_expr)
+# `scale` would re-time overlay_w/overlay_h mid-overlay (can't be a single
+# overlay branch) and brightness/saturation are flat effects with no keyframe
+# track in this schema, so both stay OpenShot-only and are reported as warnings.
+_FFMPEG_KEYFRAME_PROPERTIES = {"volume", "opacity", "x", "y"}
+
+
+def _keyframe_points(clip: dict[str, Any], prop: str) -> list[tuple[float, float]]:
+    """Sorted (clip-relative seconds, value) points of one keyframe envelope.
+
+    `t` is clip-relative, which after atrim/trim + (a)setpts (PTS reset to 0) is
+    exactly the ffmpeg filter's `t`, so no source_start offset is needed. Values
+    are floored at 0 for volume (a negative gain is meaningless); other
+    properties pass through (position can be <0.5 / >0.5)."""
+
+    points: list[tuple[float, float]] = []
+    floor = prop == "volume"
+    for track in clip.get("keyframes") or []:
+        if str((track or {}).get("property") or "") != prop:
+            continue
+        for point in (track or {}).get("points") or []:
+            t = max(0.0, float(point.get("t") or 0.0))
+            v = float(point.get("value") or 0.0)
+            points.append((t, max(0.0, v) if floor else v))
+    return sorted(points, key=lambda p: p[0])
+
+
+def _piecewise_linear_expr(points: list[tuple[float, float]], var: str = "t") -> str:
+    """Build an ffmpeg time-expression that linearly interpolates between sorted
+    (t, value) points, holding the first value before the first `t` and the last
+    after the final `t`. Shared by the volume/opacity/position envelopes so they
+    all interpolate identically. `var` is the time symbol (`t` for most filters,
+    `T` for geq). Assumes `points` is non-empty and sorted."""
+
+    # The smallest threshold must be the OUTERMOST `if` (eval order is outside-in),
+    # so iterate pairs in reverse and wrap each smaller-t1 branch around the rest.
+    expr = f"{points[-1][1]:.4f}"  # default = last value (covers t >= final t)
+    for (t0, v0), (t1, v1) in reversed(list(zip(points, points[1:]))):
+        span = t1 - t0
+        if span <= 0:
+            seg = f"{v1:.4f}"
+        else:
+            slope = (v1 - v0) / span
+            seg = f"({v0:.4f}+({slope:.6f})*({var}-{t0:.4f}))"
+        expr = f"if(lt({var},{t1:.4f}),{seg},{expr})"
+    return f"if(lt({var},{points[0][0]:.4f}),{points[0][1]:.4f},{expr})"
+
+
 def _volume_keyframe_points(clip: dict[str, Any]) -> list[tuple[float, float]]:
     """Sorted (clip-relative seconds, gain) points of the clip's volume envelope.
 
-    Mirrors openshot_bridge's `volume` keyframe track. `t` is clip-relative, which
-    after atrim+asetpts (PTS reset to 0) is exactly the ffmpeg `volume` filter's
-    `t`, so no source_start offset is needed on the mux path."""
+    Mirrors openshot_bridge's `volume` keyframe track."""
 
-    points: list[tuple[float, float]] = []
-    for track in clip.get("keyframes") or []:
-        if str((track or {}).get("property") or "") != "volume":
-            continue
-        for point in (track or {}).get("points") or []:
-            points.append((max(0.0, float(point.get("t") or 0.0)), max(0.0, float(point.get("value") or 0.0))))
-    return sorted(points, key=lambda p: p[0])
+    return _keyframe_points(clip, "volume")
 
 
 def _volume_filter(clip: dict[str, Any], base_volume: float) -> str:
@@ -108,21 +158,7 @@ def _volume_filter(clip: dict[str, Any], base_volume: float) -> str:
     points = _volume_keyframe_points(clip)
     if not points:
         return f"volume={base_volume:.4f}"
-    # Piecewise-linear interpolation between successive points, holding the first
-    # value before the first `t` and the last value after the final `t`. The
-    # smallest threshold must be the OUTERMOST `if` (eval order is outside-in), so
-    # iterate pairs in reverse and wrap each smaller-t1 branch around the rest.
-    expr = f"{points[-1][1]:.4f}"  # default = last value (covers t >= final t)
-    for (t0, v0), (t1, v1) in reversed(list(zip(points, points[1:]))):
-        span = t1 - t0
-        if span <= 0:
-            seg = f"{v1:.4f}"
-        else:
-            slope = (v1 - v0) / span
-            seg = f"({v0:.4f}+({slope:.6f})*(t-{t0:.4f}))"
-        expr = f"if(lt(t,{t1:.4f}),{seg},{expr})"
-    expr = f"if(lt(t,{points[0][0]:.4f}),{points[0][1]:.4f},{expr})"
-    expr = f"({base_volume:.4f})*({expr})"
+    expr = f"({base_volume:.4f})*({_piecewise_linear_expr(points)})"
     return f"volume='{expr}':eval=frame"
 
 
@@ -536,8 +572,11 @@ class FFmpegLayeredRenderer:
             x_expr, y_expr = _overlay_expr(clip)
             start = float(clip.get("start") or 0)
             end = start + float(clip.get("duration") or duration)
+            # Single-quote x/y: a position keyframe envelope is an if()/lt() expr
+            # full of commas, which ffmpeg's filtergraph parser would otherwise read
+            # as option separators (same quoting the `enable=` between() uses).
             filters.append(
-                f"{current}[{clip_label}]overlay=x={x_expr}:y={y_expr}:"
+                f"{current}[{clip_label}]overlay=x='{x_expr}':y='{y_expr}':"
                 f"enable='between(t,{start:.3f},{end:.3f})'[{out_label}]"
             )
             current = f"[{out_label}]"
@@ -567,9 +606,13 @@ class FFmpegLayeredRenderer:
             if a_fade_out is not None and duration_sec > 0:
                 a_out_d = min(a_fade_out, duration_sec)
                 afades += f"afade=t=out:st={max(0.0, duration_sec - a_out_d):.3f}:d={a_out_d:.3f},"
+            # Honor a volume keyframe envelope (ducking) the same way the OpenShot
+            # mux path does — _volume_filter falls back to flat `volume=` when the
+            # clip has no envelope, so the cheap path is unchanged.
+            vol_filter = "volume=0.000" if muted else _volume_filter(clip, volume)
             filters.append(
                 f"[{input_index}:a]atrim=start={source_start:.3f}:duration={duration_sec:.3f},"
-                f"asetpts=PTS-STARTPTS,volume={volume:.3f},{afades}adelay={delay_ms}:all=1[{label}]"
+                f"asetpts=PTS-STARTPTS,{vol_filter},{afades}adelay={delay_ms}:all=1[{label}]"
             )
             audio_labels.append(f"[{label}]")
         if audio_labels:
@@ -625,11 +668,27 @@ class FFmpegLayeredRenderer:
         if fade_out is not None and duration > 0:
             out_d = min(fade_out, duration)
             fades += f"fade=t=out:alpha=1:st={max(0.0, duration - out_d):.3f}:d={out_d:.3f},"
+        # Opacity: a flat transform multiplies the alpha plane via colorchannelmixer
+        # (cheap, per-frame constant). An `opacity` keyframe envelope instead drives
+        # a piecewise-linear alpha over time via `geq` (the one ffmpeg primitive that
+        # accepts a `T`-expression on the alpha plane), matching OpenShot's animated
+        # `alpha` keyframes. RGB planes pass through untouched.
+        opacity_pts = _keyframe_points(clip, "opacity")
+        if opacity_pts:
+            # geq uses uppercase T (seconds); build the interpolator over T and
+            # clamp it to a valid 0..1 alpha range.
+            alpha_t = _piecewise_linear_expr(opacity_pts, var="T")
+            alpha = (
+                f"geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':"
+                f"a='255*max(0,min(1,{alpha_t}))'"
+            )
+        else:
+            alpha = f"colorchannelmixer=aa={opacity:.4f}"
         # The fallback keeps graphics at native size by default. Full-frame video clips
         # can opt in later via track-specific policies in the renderer slice.
         return (
             f"[{input_index}:v]{trim}scale=iw*{scale:.4f}:ih*{scale:.4f},"
-            f"format=rgba,colorchannelmixer=aa={opacity:.4f},{fades}null[{label}]"
+            f"format=rgba,{alpha},{fades}null[{label}]"
         )
 
     def _resolve_src(self, src: str) -> Path:
@@ -982,10 +1041,17 @@ def _render_scope_project(project: dict[str, Any], *, window_start: float, durat
 
 
 def _overlay_expr(clip: dict[str, Any]) -> tuple[str, str]:
+    """Overlay x/y position expressions. A static transform fraction yields a
+    constant; an x/y keyframe envelope yields a piecewise-linear `t`-expression
+    (overlay's x/y accept the timeline `t`), so position animates in the fallback
+    the way it does through OpenShot's location_x/location_y keyframes."""
+
     transform = clip.get("transform") or {}
-    x = _num(transform.get("x"), 0.5)
-    y = _num(transform.get("y"), 0.5)
-    return f"(main_w-overlay_w)*{x:.6f}", f"(main_h-overlay_h)*{y:.6f}"
+    x_pts = _keyframe_points(clip, "x")
+    y_pts = _keyframe_points(clip, "y")
+    x_frac = _piecewise_linear_expr(x_pts) if x_pts else f"{_num(transform.get('x'), 0.5):.6f}"
+    y_frac = _piecewise_linear_expr(y_pts) if y_pts else f"{_num(transform.get('y'), 0.5):.6f}"
+    return f"(main_w-overlay_w)*({x_frac})", f"(main_h-overlay_h)*({y_frac})"
 
 
 def _run(cmd: list[str]) -> None:

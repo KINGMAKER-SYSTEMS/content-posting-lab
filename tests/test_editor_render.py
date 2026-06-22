@@ -484,8 +484,10 @@ def test_ffmpeg_fallback_warns_on_dropped_effects_and_keyframes(tmp_path):
         {"id": "fx_br", "type": "brightness", "params": {"value": 0.2}},
     ]
     project["clips"]["card_clip"]["keyframes"] = [
-        {"property": "opacity", "points": [
-            {"t": 0.0, "value": 0.0, "interp": "linear"},
+        # scale envelopes stay OpenShot-only (an animated scale re-times
+        # overlay_w/overlay_h mid-overlay) -> must still surface as a warning.
+        {"property": "scale", "points": [
+            {"t": 0.0, "value": 0.5, "interp": "linear"},
             {"t": 1.0, "value": 1.0, "interp": "linear"},
         ]},
     ]
@@ -496,7 +498,7 @@ def test_ffmpeg_fallback_warns_on_dropped_effects_and_keyframes(tmp_path):
     names = {(w["kind"], w["name"]) for w in result["warnings"]}
     assert ("effect", "crossfade") in names
     assert ("effect", "brightness") in names
-    assert ("keyframe", "opacity") in names
+    assert ("keyframe", "scale") in names
     # frame previews carry the same warning contract
     frame = renderer.render_frame(project, at=0.5, output_path=tmp_path / "renders" / "warn.png")
     assert any(w["name"] == "crossfade" for w in frame["warnings"])
@@ -523,6 +525,96 @@ def test_ffmpeg_fallback_applies_native_fadein_without_warning(tmp_path):
     late_red = _sample_rgb(late, 10, 10)[0]
     assert early_red < late_red  # red ramps up from black as the fade-in progresses
     assert late_red > 150
+
+
+# --- keyframe-envelope support in the ffmpeg fallback (opacity + position) ---
+# The ticket: the fallback silently lost crossfade/color/keyframe envelopes; the
+# volume envelope was already wired into the mux path. These pin the remaining
+# wins — opacity (alpha over time via geq) and clip-position (overlay x/y over
+# time) keyframes — and confirm scale stays an explicit OpenShot-only warning.
+
+
+def test_overlay_expr_builds_position_keyframe_time_expression(tmp_path):
+    """An x/y keyframe envelope must compile to a piecewise-linear overlay
+    position expression (the overlay filter accepts the timeline `t`), not a
+    static fraction. A clip with no envelope keeps the cheap constant."""
+    clip = {
+        "transform": {"x": 0.5, "y": 0.5},
+        "keyframes": [
+            {"property": "x", "points": [
+                {"t": 0.0, "value": 0.0}, {"t": 1.0, "value": 1.0}]},
+        ],
+    }
+    x_expr, y_expr = editor_render._overlay_expr(clip)
+    assert "if(lt(t," in x_expr and "(main_w-overlay_w)" in x_expr  # animated x
+    assert "if(lt(t," not in y_expr and "0.500000" in y_expr        # static y
+
+
+def test_visual_filter_opacity_keyframe_emits_geq_alpha_expression(tmp_path):
+    """An opacity envelope drives the alpha plane over time via geq (the one
+    primitive that takes a `T`-expression on alpha); without an envelope the
+    cheaper colorchannelmixer constant is used."""
+    r = _renderer(tmp_path)
+    clip = {
+        "duration": 2.0, "sourceStart": 0.0,
+        "transform": {"opacity": 1.0, "scale": 1.0},
+        "keyframes": [
+            {"property": "opacity", "points": [
+                {"t": 0.0, "value": 0.0}, {"t": 2.0, "value": 1.0}]},
+        ],
+    }
+    out = r._visual_filter(1, clip, {"type": "image"}, "lbl", 96, 64)
+    assert "geq=" in out and "a='255*max(0,min(1,if(lt(T," in out
+    assert "colorchannelmixer" not in out  # envelope path, not the flat default
+
+
+def test_position_keyframe_actually_moves_clip_in_fallback_render(tmp_path):
+    """End-to-end: a card whose x animates 0 -> 1 over 1s must sit on the LEFT
+    early and the RIGHT late in the real ffmpeg-fallback render. Proves the
+    overlay x time-expression is honored, not silently flattened."""
+    card = _solid_png(tmp_path / "card.png", "white", size="16x16")
+    project = _project_with_card("pos_anim", card, x=0.0)
+    project["clips"]["card_clip"]["keyframes"] = [
+        {"property": "x", "points": [
+            {"t": 0.0, "value": 0.0, "interp": "linear"},
+            {"t": 1.0, "value": 1.0, "interp": "linear"},
+        ]},
+    ]
+    renderer = editor_render.FFmpegLayeredRenderer(tmp_path / "renders")
+    result = renderer.render(project, output_path=tmp_path / "renders" / "pos.mp4")
+    assert result["warnings"] == []  # x keyframe is honored, not dropped
+
+    video = Path(result["video"])
+    early = _frame_png_at(video, tmp_path / "early.png", at=0.05)
+    late = _frame_png_at(video, tmp_path / "late.png", at=0.85)
+    # 96x64 frame, 16x16 card pinned to the top (y=0 -> rows 0..15), so sample
+    # row 8. As x animates 0 -> 1 the card slides left -> right: col 10 sits under
+    # the card early (near the left), col 80 under it late (near the right).
+    assert _sample_rgb(early, 10, 8)[0] > _sample_rgb(early, 80, 8)[0]
+    assert _sample_rgb(late, 80, 8)[0] > _sample_rgb(late, 10, 8)[0]
+
+
+def test_opacity_keyframe_actually_ramps_alpha_in_fallback_render(tmp_path):
+    """End-to-end: a white card whose opacity animates 0 -> 1 over its 1s must be
+    near-invisible (dark base shows through) early and bright late. Proves the geq
+    alpha envelope renders, not just compiles."""
+    card = _solid_png(tmp_path / "card.png", "white", size="96x64")
+    project = _project_with_card("op_anim", card, x=0.0)
+    project["clips"]["card_clip"]["keyframes"] = [
+        {"property": "opacity", "points": [
+            {"t": 0.0, "value": 0.0, "interp": "linear"},
+            {"t": 1.0, "value": 1.0, "interp": "linear"},
+        ]},
+    ]
+    renderer = editor_render.FFmpegLayeredRenderer(tmp_path / "renders")
+    result = renderer.render(project, output_path=tmp_path / "renders" / "op.mp4")
+    assert result["warnings"] == []  # opacity keyframe is honored, not dropped
+
+    video = Path(result["video"])
+    early = _frame_png_at(video, tmp_path / "early.png", at=0.05)
+    late = _frame_png_at(video, tmp_path / "late.png", at=0.85)
+    assert _sample_rgb(early, 48, 32)[0] < _sample_rgb(late, 48, 32)[0]
+    assert _sample_rgb(late, 48, 32)[0] > 150
 
 
 def test_backend_detection_prefers_openshot_but_reports_local_blocker():
@@ -1690,7 +1782,12 @@ def test_ffmpeg_fallback_on_abn_imported_timeline_skips_text_layer_and_warns(tmp
     assert missing == []
     names = {(w["kind"], w["name"]) for w in warnings}
     assert ("effect", "crossfade") in names            # crossfade can't be faked
-    assert ("keyframe", "volume") in names             # ducking envelope can't be faked
+    # the ducking volume envelope is now reproduced as a piecewise-linear ffmpeg
+    # volume expression (no longer a silent drop), so it must NOT warn AND the
+    # built command must carry the time-varying expression.
+    assert ("keyframe", "volume") not in names
+    fc = cmd[cmd.index("-filter_complex") + 1]
+    assert "eval=frame" in fc and "if(lt(t," in fc
     # the command is buildable and routes the resolved media through -i inputs
     assert str(broll) in cmd and str(bedf) in cmd and str(vo) in cmd
 
