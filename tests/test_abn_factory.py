@@ -15,6 +15,7 @@ Whisper, or ffmpeg — every external call is monkeypatched. The hard gates cove
     per-segment encode failed or the segment list was empty to begin with.
 """
 import asyncio
+import json
 from pathlib import Path
 
 import pytest
@@ -1705,3 +1706,267 @@ async def test_assemble_episode_openshot_raises_so_factory_falls_back(monkeypatc
 
     with pytest.raises(RuntimeError):
         await abn_factory._assemble_episode_openshot("ep_dead01", timeline)
+
+
+# ---------------- revisualize_episode: re-skin keeping the original audio mix ----------------
+#
+# `revisualize_episode` rebuilds an already-rendered episode with the new visual grammar while
+# muxing back the ENTIRE original audio mix (VO + bed + ducking). It has five error paths and a
+# load-bearing piece of temporal arithmetic (front-trim the audio by d_orig - d_new = the dropped
+# logo sting) that had zero coverage. These pin both the guards and the arithmetic WITHOUT touching
+# ffmpeg, Remotion, or an LLM — every shell call and duration probe is monkeypatched.
+
+
+def _stub_revis_timeline(monkeypatch):
+    """_build_timeline is pure-ish but pulls in card/shot machinery; stub it to a minimal timeline
+    so the test exercises revisualize_episode's own logic (audio drop, trim, mux), not the builder."""
+    def fake_build(ep_id, ep_idx, segments, animated_bg=None):
+        return {"episodeId": ep_id, "title": "built", "logo": {"sting": 1},
+                "musicBed": {"src": "bed"}, "sfx": [{"x": 1}],
+                "segments": [{"segmentId": "s0", "audio": {"vo": {"src": "v"}}}]}
+    monkeypatch.setattr(abn_factory, "_build_timeline", fake_build)
+
+
+def _write_revis_inputs(ep_id):
+    """Lay down the two preconditions revisualize_episode checks for: a timeline.json and the
+    original episode.mp4. Returns (timeline_path, original_mp4_path)."""
+    tlf = abn_factory.asset_path(ep_id, "timeline")
+    orig = abn_factory.asset_path(ep_id, "episode")
+    tl = {"title": "Orig Title", "segments": [
+        {"segmentId": "s0", "title": "Seg one", "sourceUrl": "https://x",
+         "durationSec": 4.0, "wordTimestamps": [{"w": "hello"}, {"w": "world"}],
+         "audio": {"vo": {"src": "/agenticnews-assets/ep_a111111_s0.wav"}}},
+    ]}
+    tlf.write_text(json.dumps(tl))
+    orig.write_bytes(b"original-episode-with-audio")
+    return tlf, orig
+
+
+def test_revisualize_raises_when_timeline_or_mp4_missing(monkeypatch, tmp_path):
+    """Guard #1: with no timeline.json and no episode.mp4 on disk, revisualize must refuse
+    up front rather than shelling out to ffmpeg against nonexistent files."""
+    monkeypatch.setattr(abn_factory, "ASSETS", tmp_path)
+    monkeypatch.setattr(abn_assets, "ASSETS_DIR", tmp_path)
+
+    async def boom_sh(cmd, timeout=600):
+        raise AssertionError("must not shell out when inputs are missing")
+    monkeypatch.setattr(abn_factory, "_sh", boom_sh)
+
+    with pytest.raises(RuntimeError, match="missing timeline or mp4"):
+        asyncio.run(abn_factory.revisualize_episode("ep_a111111"))
+
+
+def test_revisualize_raises_when_audio_extract_fails(monkeypatch, tmp_path):
+    """Guard #2: if extracting the original audio (-vn -c:a copy) fails, revisualize must raise
+    'audio extract failed' BEFORE rendering anything new — losing the original mix is unrecoverable."""
+    monkeypatch.setattr(abn_factory, "ASSETS", tmp_path)
+    monkeypatch.setattr(abn_assets, "ASSETS_DIR", tmp_path)
+    _write_revis_inputs("ep_a111111")
+
+    async def fake_dur(p):
+        return 60.0
+    async def fail_audio_sh(cmd, timeout=600):
+        # the first shell call is the audio extract; fail it (and write nothing)
+        return 1, "ffmpeg: cannot copy audio"
+    monkeypatch.setattr(abn_factory, "_dur", fake_dur)
+    monkeypatch.setattr(abn_factory, "_sh", fail_audio_sh)
+
+    with pytest.raises(RuntimeError, match="audio extract failed"):
+        asyncio.run(abn_factory.revisualize_episode("ep_a111111"))
+
+
+def test_revisualize_raises_when_remotion_render_fails(monkeypatch, tmp_path):
+    """Guard #3: a non-zero remotion exit (or no output file) must surface as a RuntimeError
+    naming the remotion exit code — not silently mux a stale/absent intermediate."""
+    monkeypatch.setattr(abn_factory, "ASSETS", tmp_path)
+    monkeypatch.setattr(abn_assets, "ASSETS_DIR", tmp_path)
+    _write_revis_inputs("ep_a111111")
+    _stub_revis_timeline(monkeypatch)
+
+    async def fake_dur(p):
+        return 60.0
+    async def fake_bg(ep_id, n=4):
+        return []
+    monkeypatch.setattr(abn_factory, "_dur", fake_dur)
+    monkeypatch.setattr(abn_factory, "_animated_bg", fake_bg)
+
+    async def routed_sh(cmd, timeout=600):
+        if "-vn" in cmd:  # audio extract: succeed + create the m4a
+            aud = abn_factory.asset_path("ep_a111111", "assembled", "origaudio", ext="m4a")
+            aud.write_bytes(b"audio")
+            return 0, ""
+        if "remotion render" in cmd:  # the silent video render: fail
+            return 1, "remotion blew up"
+        raise AssertionError(f"unexpected shell call after remotion failure: {cmd[:60]}")
+    monkeypatch.setattr(abn_factory, "_sh", routed_sh)
+
+    with pytest.raises(RuntimeError, match="remotion exit 1"):
+        asyncio.run(abn_factory.revisualize_episode("ep_a111111"))
+
+
+def test_revisualize_raises_when_mux_fails(monkeypatch, tmp_path):
+    """Guard #4: if the final mux (re-attaching the trimmed original audio) fails, revisualize
+    must raise 'mux failed' AND clean up the intermediate revis mp4."""
+    monkeypatch.setattr(abn_factory, "ASSETS", tmp_path)
+    monkeypatch.setattr(abn_assets, "ASSETS_DIR", tmp_path)
+    _write_revis_inputs("ep_a111111")
+    _stub_revis_timeline(monkeypatch)
+
+    async def fake_dur(p):
+        return 60.0
+    async def fake_bg(ep_id, n=4):
+        return []
+    monkeypatch.setattr(abn_factory, "_dur", fake_dur)
+    monkeypatch.setattr(abn_factory, "_animated_bg", fake_bg)
+
+    vid_path = abn_factory.asset_path("ep_a111111", "scratch", "revis", ext="mp4")
+
+    async def routed_sh(cmd, timeout=600):
+        if "-vn" in cmd:
+            abn_factory.asset_path("ep_a111111", "assembled", "origaudio", ext="m4a").write_bytes(b"a")
+            return 0, ""
+        if "remotion render" in cmd:
+            vid_path.write_bytes(b"silent-video")
+            return 0, ""
+        if "-map 0:v" in cmd:  # the mux: fail
+            return 1, "mux exploded"
+        raise AssertionError(f"unexpected shell call: {cmd[:60]}")
+    monkeypatch.setattr(abn_factory, "_sh", routed_sh)
+
+    with pytest.raises(RuntimeError, match="mux failed"):
+        asyncio.run(abn_factory.revisualize_episode("ep_a111111"))
+    # intermediate is unlinked even on mux failure (it's removed before the failure check)
+    assert not vid_path.exists()
+
+
+def test_revisualize_happy_path_trims_audio_by_duration_delta_and_drops_sting(monkeypatch, tmp_path):
+    """The load-bearing arithmetic + audio handling, end to end:
+
+      * the new silent render's timeline DROPS the logo sting, music bed, and sfx, and zeroes every
+        segment's audio (the original mix carries all sound) — the locked-audio contract;
+      * the original audio is front-trimmed by EXACTLY d_orig - d_new (the dropped sting length),
+        so VO/caption sync is arithmetic, not guesswork;
+      * the pristine original timeline is backed up once (idempotent re-runs);
+      * it returns (asset_url, final_duration) and marks the video back to 'review'."""
+    monkeypatch.setattr(abn_factory, "ASSETS", tmp_path)
+    monkeypatch.setattr(abn_assets, "ASSETS_DIR", tmp_path)
+    ep_id = "ep_a111111"
+    _write_revis_inputs(ep_id)
+
+    captured = {}
+
+    def fake_build(ep_id, ep_idx, segments, animated_bg=None):
+        captured["segments_in"] = segments
+        return {"episodeId": ep_id, "title": "built", "logo": {"sting": 1},
+                "musicBed": {"src": "bed"}, "sfx": [{"x": 1}],
+                "segments": [{"segmentId": "s0", "audio": {"vo": {"src": "v"}}},
+                             {"segmentId": "s1", "audio": {"vo": {"src": "v2"}}}]}
+    monkeypatch.setattr(abn_factory, "_build_timeline", fake_build)
+
+    async def fake_bg(ep_id, n=4):
+        return []
+    monkeypatch.setattr(abn_factory, "_animated_bg", fake_bg)
+
+    # d_orig = 62.5 (includes a 2.5s logo sting), d_new = 60.0 (silent render, sting dropped),
+    # d_final = the muxed output. _dur is called on orig, then new vid, then final out — in order.
+    durs = iter([62.5, 60.0, 60.0])
+    async def fake_dur(p):
+        return next(durs)
+    monkeypatch.setattr(abn_factory, "_dur", fake_dur)
+
+    vid_path = abn_factory.asset_path(ep_id, "scratch", "revis", ext="mp4")
+    out_path = abn_factory.asset_path(ep_id, "episode")
+
+    async def routed_sh(cmd, timeout=600):
+        if "-vn" in cmd:
+            abn_factory.asset_path(ep_id, "assembled", "origaudio", ext="m4a").write_bytes(b"a")
+            return 0, ""
+        if "remotion render" in cmd:
+            vid_path.write_bytes(b"silent-video")
+            return 0, ""
+        if "-map 0:v" in cmd:
+            captured["mux_cmd"] = cmd
+            out_path.write_bytes(b"final-episode")
+            return 0, ""
+        raise AssertionError(f"unexpected shell call: {cmd[:60]}")
+    monkeypatch.setattr(abn_factory, "_sh", routed_sh)
+
+    updates = []
+    async def fake_update(vid, patch):
+        updates.append((vid, patch))
+        return {}
+    monkeypatch.setattr(abn_factory.db, "update_video", fake_update)
+
+    # silence the timeline mutation that revisualize applies to fake_build's output; capture it
+    real_atomic = abn_factory.atomic_save
+    def spy_atomic(path, data):
+        captured["silent_tl"] = data
+        real_atomic(path, data)
+    monkeypatch.setattr(abn_factory, "atomic_save", spy_atomic)
+
+    url, d_final = asyncio.run(abn_factory.revisualize_episode(ep_id))
+
+    # --- locked-audio contract: silent render carries NO sound of its own ---
+    stl = captured["silent_tl"]
+    assert stl["logo"] is None and stl["musicBed"] is None and stl["sfx"] is None
+    assert all(s["audio"] == {} for s in stl["segments"]), "every segment must be muted in the silent render"
+    # original title is preserved onto the rebuilt timeline
+    assert stl["title"] == "Orig Title"
+
+    # --- the trim arithmetic: front-trim = d_orig - d_new = 62.5 - 60.0 = 2.5 (the dropped sting) ---
+    assert "-ss 2.5 " in captured["mux_cmd"], captured["mux_cmd"]
+    # the original (extracted) audio is the trimmed input and is stream-COPIED, not re-encoded
+    assert "-c:a copy" in captured["mux_cmd"]
+
+    # --- pristine original timeline backed up once for idempotent re-runs ---
+    bak = abn_factory.asset_path(ep_id, "assembled", "timeline.orig", ext="json")
+    assert bak.exists() and json.loads(bak.read_text())["title"] == "Orig Title"
+
+    # --- return contract + stage flip back to review ---
+    assert url.endswith("episode.mp4")
+    assert d_final == 60.0
+    assert updates and updates[0][1]["stage"] == "review"
+
+
+def test_revisualize_trim_never_negative_when_new_render_is_longer(monkeypatch, tmp_path):
+    """Defensive arithmetic: if the new (silent) render somehow measures LONGER than the original,
+    the front-trim must clamp to 0.0 — never a negative -ss that ffmpeg would reject or misread."""
+    monkeypatch.setattr(abn_factory, "ASSETS", tmp_path)
+    monkeypatch.setattr(abn_assets, "ASSETS_DIR", tmp_path)
+    ep_id = "ep_a111111"
+    _write_revis_inputs(ep_id)
+    _stub_revis_timeline(monkeypatch)
+
+    async def fake_bg(ep_id, n=4):
+        return []
+    monkeypatch.setattr(abn_factory, "_animated_bg", fake_bg)
+
+    durs = iter([58.0, 60.0, 60.0])  # d_orig < d_new -> raw delta is negative
+    async def fake_dur(p):
+        return next(durs)
+    monkeypatch.setattr(abn_factory, "_dur", fake_dur)
+
+    vid_path = abn_factory.asset_path(ep_id, "scratch", "revis", ext="mp4")
+    out_path = abn_factory.asset_path(ep_id, "episode")
+    captured = {}
+
+    async def routed_sh(cmd, timeout=600):
+        if "-vn" in cmd:
+            abn_factory.asset_path(ep_id, "assembled", "origaudio", ext="m4a").write_bytes(b"a")
+            return 0, ""
+        if "remotion render" in cmd:
+            vid_path.write_bytes(b"v")
+            return 0, ""
+        if "-map 0:v" in cmd:
+            captured["mux_cmd"] = cmd
+            out_path.write_bytes(b"f")
+            return 0, ""
+        raise AssertionError(cmd[:60])
+    monkeypatch.setattr(abn_factory, "_sh", routed_sh)
+
+    async def fake_update(vid, patch):
+        return {}
+    monkeypatch.setattr(abn_factory.db, "update_video", fake_update)
+
+    asyncio.run(abn_factory.revisualize_episode(ep_id))
+    assert "-ss 0.0 " in captured["mux_cmd"], captured["mux_cmd"]
