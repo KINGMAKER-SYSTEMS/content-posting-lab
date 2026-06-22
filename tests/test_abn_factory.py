@@ -2158,6 +2158,20 @@ def _stub_purge_disk(monkeypatch, *, protection_complete, free_gb, renders):
                         lambda path, protected: False)
     monkeypatch.setattr(abn_factory, "_old_episode_renders", lambda: list(renders))
 
+    # The consume-site hardening guard (purge_disk: `if not old.is_file() or
+    # old.is_symlink(): continue`) only hands tombstone_render() a real regular
+    # file. These stub renders are synthetic Paths that don't exist on disk, so
+    # make them present as plain files for the guard — without this they'd all be
+    # skipped and the trim logic under test would never run. We do NOT weaken the
+    # guard; we satisfy it so the protection/threshold branch is what's exercised.
+    _render_set = {str(r) for r in renders}
+    _real_is_file = Path.is_file
+    _real_is_symlink = Path.is_symlink
+    monkeypatch.setattr(Path, "is_file",
+                        lambda self: True if str(self) in _render_set else _real_is_file(self))
+    monkeypatch.setattr(Path, "is_symlink",
+                        lambda self: False if str(self) in _render_set else _real_is_symlink(self))
+
     trimmed = []
     def fake_tombstone_render(old):
         trimmed.append(old)
