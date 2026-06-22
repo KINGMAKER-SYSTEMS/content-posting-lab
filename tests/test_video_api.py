@@ -3,6 +3,7 @@ import time
 import zipfile
 from io import BytesIO
 
+from project_manager import get_project_video_dir
 from routers import video as video_router
 
 
@@ -242,3 +243,339 @@ def test_save_then_load_roundtrip(isolated_projects_root):
     video_router._load_jobs("rt-proj")
     assert video_router.jobs["rt-1"]["videos"][0]["status"] == "done"
     assert video_router.jobs["rt-1"]["videos"][0]["file"] == "a.mp4"
+
+
+# --- helpers -------------------------------------------------------------
+
+
+def _make_video(project: str, name: str, data: bytes = b"vid") -> None:
+    """Write a fake video file into a project's videos dir."""
+    vdir = get_project_video_dir(project)
+    vdir.mkdir(parents=True, exist_ok=True)
+    (vdir / name).write_bytes(data)
+
+
+# --- providers / schemas -------------------------------------------------
+
+
+def test_list_providers_only_returns_keyed(sync_client, monkeypatch):
+    """Only providers with a configured API key are surfaced, and 'module' is stripped."""
+    # Clear all keys, then enable exactly one provider.
+    for k in list(video_router.API_KEYS):
+        monkeypatch.setitem(video_router.API_KEYS, k, "")
+    provider_id = next(iter(video_router.PROVIDERS.keys()))
+    key_id = video_router.PROVIDERS[provider_id]["key_id"]
+    monkeypatch.setitem(video_router.API_KEYS, key_id, "test-key")
+
+    resp = sync_client.get("/api/video/providers")
+    assert resp.status_code == 200
+    body = resp.json()
+    ids = {p["id"] for p in body}
+    assert provider_id in ids
+    # Every returned provider must be keyed and must not leak the module object.
+    for p in body:
+        assert "module" not in p
+        assert video_router.API_KEYS.get(video_router.PROVIDERS[p["id"]]["key_id"])
+
+
+def test_get_provider_schemas(sync_client):
+    resp = sync_client.get("/api/video/provider-schemas")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body == video_router.PROVIDER_SCHEMAS
+    assert "grok" in body
+
+
+# --- prompts list / clear ------------------------------------------------
+
+
+def test_list_prompts_empty_then_clear(sync_client, isolated_projects_root):
+    # No prompts.json yet → empty list.
+    resp = sync_client.get("/api/video/prompts?project=prompt-proj")
+    assert resp.status_code == 200
+    assert resp.json() == []
+
+    # Seed a prompts file, confirm it reads back, then clear it.
+    video_router._save_prompt("prompt-proj", {"prompt": "hi", "timestamp": "t"})
+    resp = sync_client.get("/api/video/prompts?project=prompt-proj")
+    assert resp.json()[0]["prompt"] == "hi"
+
+    pfile = isolated_projects_root / "prompt-proj" / "prompts.json"
+    assert pfile.exists()
+    resp = sync_client.delete("/api/video/prompts?project=prompt-proj")
+    assert resp.status_code == 200
+    assert resp.json() == {"ok": True}
+    assert not pfile.exists()
+
+    # Clearing again (file already gone) is a no-op success.
+    resp = sync_client.delete("/api/video/prompts?project=prompt-proj")
+    assert resp.status_code == 200
+
+
+# --- delete_video_file (path traversal guard) ----------------------------
+
+
+def test_delete_file_happy_path(sync_client):
+    _make_video("del-proj", "gone.mp4")
+    target = get_project_video_dir("del-proj") / "gone.mp4"
+    assert target.exists()
+
+    resp = sync_client.request(
+        "DELETE", "/api/video/file", params={"project": "del-proj", "path": "gone.mp4"}
+    )
+    assert resp.status_code == 200
+    assert resp.json()["deleted"] is True
+    assert not target.exists()
+
+
+def test_delete_file_requires_path(sync_client):
+    resp = sync_client.request("DELETE", "/api/video/file", params={"project": "p"})
+    assert resp.status_code == 400
+
+
+def test_delete_file_blocks_traversal(sync_client, isolated_projects_root):
+    """A ../ path that escapes the project videos dir is rejected with 400 and
+    leaves the targeted outside file untouched."""
+    victim = isolated_projects_root / "secret.txt"
+    victim.write_text("do not delete", encoding="utf-8")
+    # Ensure the project dir exists so resolution doesn't short-circuit.
+    get_project_video_dir("trav-proj").mkdir(parents=True, exist_ok=True)
+
+    resp = sync_client.request(
+        "DELETE",
+        "/api/video/file",
+        params={"project": "trav-proj", "path": "../../../secret.txt"},
+    )
+    assert resp.status_code == 400
+    assert victim.exists()
+
+
+def test_delete_file_missing_returns_404(sync_client):
+    get_project_video_dir("miss-proj").mkdir(parents=True, exist_ok=True)
+    resp = sync_client.request(
+        "DELETE", "/api/video/file", params={"project": "miss-proj", "path": "nope.mp4"}
+    )
+    assert resp.status_code == 404
+
+
+# --- bulk-download / bulk-delete -----------------------------------------
+
+
+def test_bulk_download_zips_done_videos(sync_client):
+    _make_video("bulk-proj", "a.mp4", b"AAAA")
+    _make_video("bulk-proj", "b.mp4", b"BBBB")
+    video_router.jobs.clear()
+    video_router.jobs["j1"] = {
+        "project": "bulk-proj",
+        "videos": [{"status": "done", "file": "a.mp4"}],
+    }
+    video_router.jobs["j2"] = {
+        "project": "bulk-proj",
+        "videos": [{"status": "done", "file": "b.mp4"}, {"status": "error"}],
+    }
+
+    resp = sync_client.post(
+        "/api/video/bulk-download",
+        json={"job_ids": ["j1", "j2"], "project": "bulk-proj"},
+    )
+    assert resp.status_code == 200
+    names = zipfile.ZipFile(BytesIO(resp.content)).namelist()
+    assert set(names) == {"j1/a.mp4", "j2/b.mp4"}
+
+
+def test_bulk_download_no_ids_400(sync_client):
+    resp = sync_client.post("/api/video/bulk-download", json={"job_ids": []})
+    assert resp.status_code == 400
+
+
+def test_bulk_download_no_completed_400(sync_client):
+    video_router.jobs.clear()
+    video_router.jobs["j1"] = {
+        "project": "bulk-proj",
+        "videos": [{"status": "error"}],
+    }
+    resp = sync_client.post(
+        "/api/video/bulk-download",
+        json={"job_ids": ["j1"], "project": "bulk-proj"},
+    )
+    assert resp.status_code == 400
+
+
+def test_bulk_delete_removes_jobs_and_files(sync_client):
+    _make_video("bd-proj", "x.mp4")
+    _make_video("bd-proj", "y.mp4")
+    video_router.jobs.clear()
+    video_router.jobs["d1"] = {
+        "project": "bd-proj",
+        "videos": [{"status": "done", "file": "x.mp4"}],
+    }
+    video_router.jobs["d2"] = {
+        "project": "bd-proj",
+        "videos": [{"status": "done", "file": "y.mp4"}],
+    }
+    vdir = get_project_video_dir("bd-proj")
+
+    resp = sync_client.post(
+        "/api/video/bulk-delete",
+        json={"job_ids": ["d1", "d2", "missing"], "project": "bd-proj"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["deleted_jobs"] == 2
+    assert body["deleted_files"] == 2
+    assert not (vdir / "x.mp4").exists()
+    assert not (vdir / "y.mp4").exists()
+    assert "d1" not in video_router.jobs and "d2" not in video_router.jobs
+
+
+def test_bulk_delete_no_ids_400(sync_client):
+    resp = sync_client.post("/api/video/bulk-delete", json={"job_ids": []})
+    assert resp.status_code == 400
+
+
+# --- color-correct (single) ----------------------------------------------
+
+
+def test_color_correct_zero_cc_streams_original(sync_client):
+    """Null/empty CC → original bytes streamed unchanged, no ffmpeg call."""
+    _make_video("cc-proj", "src.mp4", b"ORIGINAL-BYTES")
+    resp = sync_client.post(
+        "/api/video/color-correct",
+        json={"project": "cc-proj", "path": "src.mp4", "color_correction": None},
+    )
+    assert resp.status_code == 200
+    assert resp.content == b"ORIGINAL-BYTES"
+    assert 'filename="src_cc.mp4"' in resp.headers["content-disposition"]
+
+
+def test_color_correct_runs_ffmpeg_when_cc_set(sync_client, monkeypatch):
+    """A non-zero CC dict routes through run_color_correct (mocked) under the semaphore."""
+    _make_video("cc-proj2", "src.mp4", b"ORIGINAL")
+    called = {}
+
+    async def fake_cc(src, dst, cc, scale=None):
+        called["args"] = (src, dst, cc, scale)
+        with open(dst, "wb") as f:
+            f.write(b"CORRECTED")
+
+    monkeypatch.setattr(video_router, "run_color_correct", fake_cc)
+
+    resp = sync_client.post(
+        "/api/video/color-correct",
+        json={"project": "cc-proj2", "path": "src.mp4", "color_correction": {"brightness": 5}},
+    )
+    assert resp.status_code == 200
+    assert resp.content == b"CORRECTED"
+    assert called["args"][3] is None  # scale=None preserves dimensions
+
+
+def test_color_correct_blocks_traversal(sync_client, isolated_projects_root):
+    get_project_video_dir("cc-trav").mkdir(parents=True, exist_ok=True)
+    resp = sync_client.post(
+        "/api/video/color-correct",
+        json={"project": "cc-trav", "path": "../../etc/passwd", "color_correction": None},
+    )
+    assert resp.status_code == 400
+
+
+def test_color_correct_requires_project_and_path(sync_client):
+    resp = sync_client.post(
+        "/api/video/color-correct", json={"project": "", "path": "x.mp4"}
+    )
+    assert resp.status_code == 400
+    resp = sync_client.post(
+        "/api/video/color-correct", json={"project": "p", "path": ""}
+    )
+    assert resp.status_code == 400
+
+
+# --- color-correct/bulk --------------------------------------------------
+
+
+def test_color_correct_bulk_mixed_copy_and_encode(sync_client, monkeypatch):
+    """Zero-CC items are copied raw; non-zero items run through (mocked) ffmpeg.
+    Resulting ZIP carries one entry per item with the right _cc suffixing."""
+    _make_video("ccb-proj", "raw.mp4", b"RAWBYTES")
+    _make_video("ccb-proj", "graded.mp4", b"GRADEDSRC")
+
+    async def fake_cc(src, dst, cc, scale=None):
+        with open(dst, "wb") as f:
+            f.write(b"GRADED-OUT")
+
+    monkeypatch.setattr(video_router, "run_color_correct", fake_cc)
+
+    resp = sync_client.post(
+        "/api/video/color-correct/bulk",
+        json={
+            "project": "ccb-proj",
+            "items": [
+                {"path": "raw.mp4", "color_correction": None},
+                {"path": "graded.mp4", "color_correction": {"contrast": 10}},
+            ],
+        },
+    )
+    assert resp.status_code == 200
+    zf = zipfile.ZipFile(BytesIO(resp.content))
+    names = set(zf.namelist())
+    assert names == {"raw.mp4", "graded_cc.mp4"}
+    assert zf.read("raw.mp4") == b"RAWBYTES"
+    assert zf.read("graded_cc.mp4") == b"GRADED-OUT"
+
+
+def test_color_correct_bulk_records_ffmpeg_errors(sync_client, monkeypatch):
+    """A per-item ffmpeg failure lands in _errors.txt instead of aborting the batch."""
+    _make_video("ccb-err", "ok.mp4", b"OKSRC")
+    _make_video("ccb-err", "bad.mp4", b"BADSRC")
+
+    async def fake_cc(src, dst, cc, scale=None):
+        if "bad" in src:
+            raise RuntimeError("encoder exploded")
+        with open(dst, "wb") as f:
+            f.write(b"OK-OUT")
+
+    monkeypatch.setattr(video_router, "run_color_correct", fake_cc)
+
+    resp = sync_client.post(
+        "/api/video/color-correct/bulk",
+        json={
+            "project": "ccb-err",
+            "items": [
+                {"path": "ok.mp4", "color_correction": {"contrast": 5}},
+                {"path": "bad.mp4", "color_correction": {"contrast": 5}},
+            ],
+        },
+    )
+    assert resp.status_code == 200
+    zf = zipfile.ZipFile(BytesIO(resp.content))
+    names = set(zf.namelist())
+    assert "ok_cc.mp4" in names
+    assert "_errors.txt" in names
+    assert "encoder exploded" in zf.read("_errors.txt").decode()
+
+
+def test_color_correct_bulk_too_many_items_400(sync_client):
+    items = [{"path": f"v{i}.mp4"} for i in range(video_router._CC_BULK_MAX_ITEMS + 1)]
+    resp = sync_client.post(
+        "/api/video/color-correct/bulk",
+        json={"project": "p", "items": items},
+    )
+    assert resp.status_code == 400
+
+
+def test_color_correct_bulk_requires_project_and_items(sync_client):
+    resp = sync_client.post("/api/video/color-correct/bulk", json={"items": [{"path": "x"}]})
+    assert resp.status_code == 400
+    resp = sync_client.post("/api/video/color-correct/bulk", json={"project": "p", "items": []})
+    assert resp.status_code == 400
+
+
+def test_color_correct_bulk_blocks_traversal(sync_client, isolated_projects_root):
+    get_project_video_dir("ccb-trav").mkdir(parents=True, exist_ok=True)
+    resp = sync_client.post(
+        "/api/video/color-correct/bulk",
+        json={
+            "project": "ccb-trav",
+            "items": [{"path": "../../../secret", "color_correction": {"contrast": 5}}],
+        },
+    )
+    assert resp.status_code == 400
