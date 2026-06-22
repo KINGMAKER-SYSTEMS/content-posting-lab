@@ -3772,3 +3772,53 @@ def test_atomic_write_text_overwrites_atomically(tmp_path):
     abn_factory._atomic_write_text(p, "old\n")
     abn_factory._atomic_write_text(p, "file 'new.mp4'\n")
     assert p.read_text(encoding="utf-8") == "file 'new.mp4'\n"
+
+
+# --- _extract_keywords fallback timing (Whisper alignment failed → words=[]) -------------
+# services/abn_factory.py:1868-1874. When alignment is missing the heuristic still finds
+# keyword candidates but they have no real timestamps; the fallback spaces the top pops
+# evenly across the segment so they STILL animate (the 'overlays severely lacking' defect
+# happened whenever this didn't fire). Previously only ever exercised via a stub.
+
+def test_extract_keywords_fallback_distributes_evenly_when_words_empty():
+    """No Whisper alignment + a real segment duration → pops get spaced timings, never -1."""
+    script = ("ollama-uncensored runs GPT-5 locally with a 128K context for $0 "
+              "from OpenAI and Anthropic at 10x speed")
+    out = abn_factory._extract_keywords(
+        script, words=[], tool_name="ollama-uncensored — local LLM", seg_duration=20.0)
+
+    assert out, "fallback must still yield pops so the segment isn't bare"
+    assert len(out) <= 5
+    # the whole point: placeholder -1 times got replaced with real, in-window timings
+    for c in out:
+        assert c["s"] >= 0 and c["e"] > c["s"], f"pop never got a real time: {c}"
+        # first/last ~12% margin so a pop never collides with the segment cut
+        assert 20.0 * 0.12 <= c["s"] <= 20.0 * 0.88, f"pop out of safe window: {c}"
+        assert "color" in c
+    # emitted in chronological order
+    starts = [c["s"] for c in out]
+    assert starts == sorted(starts)
+    # evenly spaced (distinct), not all stacked on one instant
+    assert len(set(starts)) == len(starts)
+
+
+def test_extract_keywords_fallback_skipped_for_too_short_segment():
+    """seg_duration <= 2 → no room to space pops; timings stay at the -1 placeholder."""
+    script = "GPT-5 from OpenAI hits 10x"
+    out = abn_factory._extract_keywords(script, words=[], seg_duration=1.0)
+    assert out, "candidates still found even when too short to space"
+    assert all(c["s"] == -1.0 and c["e"] == -1.0 for c in out)
+
+
+def test_extract_keywords_uses_whisper_timing_when_words_present():
+    """Sanity contrast: with alignment present, pops take real word timestamps, not the
+    even-distribution fallback."""
+    words = [
+        {"w": "GPT-5", "s": 3.0, "e": 3.4},
+        {"w": "OpenAI", "s": 7.5, "e": 8.0},
+    ]
+    out = abn_factory._extract_keywords(
+        "GPT-5 from OpenAI", words=words, seg_duration=20.0)
+    by_text = {c["text"].lower(): c for c in out}
+    assert by_text["gpt-5"]["s"] == 3.0
+    assert by_text["openai"]["s"] == 7.5
