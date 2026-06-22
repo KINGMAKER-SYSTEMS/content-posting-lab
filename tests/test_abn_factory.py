@@ -2766,6 +2766,53 @@ def test_render_remotion_raises_when_duck_pass_fails(monkeypatch, tmp_path):
         asyncio.run(abn_factory._render_remotion("ep_c333333", timeline, force=True))
 
 
+def test_render_remotion_raises_on_normalize_ok_but_duck_fail_seam(monkeypatch, tmp_path):
+    """The mid-process inconsistent-state seam: normalize SUCCEEDS (out is now yuv420p / -14 LUFS)
+    but the duck pass FAILS. The episode is left half-processed (un-ducked); shipping it would also
+    risk the yuvj420p regression since the duck pass owns the final pixel-format re-encode. Pin that
+    _render_remotion (a) actually ran + applied the normalize pass FIRST, (b) RAISES so the episode
+    is blocked from reaching 'review', and (c) emits a FATAL duck error event (not a swallowed one)."""
+    monkeypatch.setattr(abn_factory, "ASSETS", tmp_path)
+    monkeypatch.setattr(abn_assets, "ASSETS_DIR", tmp_path)
+    _stub_remotion_dir(monkeypatch, tmp_path)
+
+    bed = tmp_path / "bed.mp3"
+    bed.write_bytes(b"\x00")
+
+    out = abn_assets.asset_path("ep_f666666", "episode")
+    inner = _remotion_dispatch_sh(out, normalize_ok=True, duck_ok=False)
+
+    # Record pass ordering so we can prove normalize ran-and-succeeded BEFORE the duck failure —
+    # i.e. the failure is genuinely the normalize-ok/duck-fail seam, not an early bail.
+    passes = []
+
+    async def tracking_sh(cmd, timeout=600):
+        rc, log = await inner(cmd, timeout=timeout)
+        if "loudnorm=I=-14" in cmd and "sidechaincompress" not in cmd:
+            passes.append(("normalize", rc))
+        elif "sidechaincompress" in cmd:
+            passes.append(("duck", rc))
+        return rc, log
+    monkeypatch.setattr(abn_factory, "_sh", tracking_sh)
+
+    seen_before = {e["id"] for e in abn_factory.BUS.replay()}
+
+    timeline = {"musicBed": bed.name, "segments": []}
+    with pytest.raises(RuntimeError, match="duck pass failed"):
+        asyncio.run(abn_factory._render_remotion("ep_f666666", timeline, force=True))
+
+    # normalize ran and succeeded, THEN the duck pass ran and failed — the exact seam.
+    assert passes == [("normalize", 0), ("duck", 1)], passes
+
+    new_events = [e for e in abn_factory.BUS.replay() if e["id"] not in seen_before]
+    # the normalize success event fired (the seam: out was already converted to yuv420p)...
+    assert any(e["action"] == "render.normalize" for e in new_events), \
+        "normalize pass must have applied before the duck pass failed"
+    # ...and the duck failure surfaced as a FATAL error, not a swallowed 'non-fatal' one.
+    assert any(e["action"] == "error" and "duck pass failed (FATAL)" in e["detail"]
+               for e in new_events), "a failed duck pass must emit a FATAL error event"
+
+
 def test_render_remotion_succeeds_when_both_passes_ok(monkeypatch, tmp_path):
     """Happy path still returns (url, duration) when normalize + duck both succeed."""
     monkeypatch.setattr(abn_factory, "ASSETS", tmp_path)
