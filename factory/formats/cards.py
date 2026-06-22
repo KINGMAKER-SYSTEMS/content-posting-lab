@@ -57,7 +57,10 @@ def _clean(s: str, n: int) -> str:
 
 
 def _run(cmd: str, out: Path) -> Path:
-    r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=60)
+    # No shell. The cmd string is composed from shlex.quote()'d tokens above, so shlex.split()
+    # reproduces the exact argv the shell would have built — minus the shell-injection surface.
+    # (These commands use only magick grouping \( \) and quoting; no pipes/redirects/globs/vars.)
+    r = subprocess.run(shlex.split(cmd), shell=False, capture_output=True, text=True, timeout=60)
     if r.returncode != 0 or not out.exists():
         raise RuntimeError(f"card gen failed: {r.stderr[-200:] or r.stdout[-200:]}")
     return out
