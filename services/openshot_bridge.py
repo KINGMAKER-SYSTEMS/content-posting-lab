@@ -543,5 +543,10 @@ def _project_duration(project: dict[str, Any]) -> float:
 
 def _resolve_asset_src(src: str, *, asset_root: Path | str | None) -> str:
     if src.startswith("/agenticnews-assets/") and asset_root:
-        return str(Path(asset_root) / src.removeprefix("/agenticnews-assets/"))
+        # Strip a ?query / #fragment cache-buster — the editor persists render-cache URLs
+        # like "…/episode.mp4?rev=3"; the static mount ignores it, so the real file on disk
+        # is "episode.mp4". This MUST match abn_factory's GC protection scan (which also
+        # strips), or the compiler resolves a path the GC protected under a different name.
+        rel = src.removeprefix("/agenticnews-assets/").split("?", 1)[0].split("#", 1)[0]
+        return str(Path(asset_root) / rel)
     return src

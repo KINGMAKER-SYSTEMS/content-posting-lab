@@ -1232,6 +1232,53 @@ def test_ensure_card_backgrounds_promotes_through_gateway(monkeypatch, tmp_path)
     assert abn_factory._cards_assets_dir() == str(tmp_path / "_shared")
 
 
+def test_grow_bg_library_writes_through_gateway(monkeypatch, tmp_path):
+    """_grow_bg_library used to write `ASSETS / "broll_library" / f"broll_NN.mp4"` directly via
+    dest.write_bytes(), bypassing the services/abn_assets gateway (same class of off-schema write
+    the card_backgrounds fix closed). The cached clip must now land in the GATEWAY dir
+    (_shared/broll_library/), name-validated by shared_path — NOT the flat `ASSETS/broll_library/`."""
+    monkeypatch.setattr(abn_factory, "ASSETS", tmp_path)
+    monkeypatch.setattr(abn_assets, "ASSETS_DIR", tmp_path)
+    # _BG_LIB_DIR is computed at import time off the real store; point it at the runtime gateway dir.
+    monkeypatch.setattr(abn_factory, "_BG_LIB_DIR",
+                        abn_assets.shared_path("broll_library", "broll_00.mp4").parent)
+
+    # stub the expensive gen chain: a clean Flux still, then a wan-i2v clip that already lives
+    # on disk under _scratch/ (the local-path branch the promoter copies into the library).
+    scratch_src = tmp_path / "_scratch" / "libgen0_clip.mp4"
+    scratch_src.parent.mkdir(parents=True, exist_ok=True)
+    scratch_src.write_bytes(b"\x00\x00\x00\x18ftypmp42" + b"x" * 8192)  # >4096 bytes so it's accepted
+
+    monkeypatch.setattr(abn_factory, "_flux_sync", lambda prompt: "/agenticnews-assets/_scratch/still.png")
+    monkeypatch.setattr(abn_factory, "_bg_is_clean", lambda still, tag: True)
+    monkeypatch.setattr(abn_factory, "_wan_i2v_sync",
+                        lambda still, tag: "/agenticnews-assets/_scratch/libgen0_clip.mp4")
+
+    made = asyncio.run(abn_factory._grow_bg_library(want=1))
+
+    gateway_dir = tmp_path / "_shared" / "broll_library"
+    flat_dir = tmp_path / "broll_library"
+    assert made == 1
+    cached = sorted(p.name for p in gateway_dir.glob("broll_*.mp4"))
+    assert cached == ["broll_00.mp4"], "cached clip must land in the gateway dir _shared/broll_library/"
+    # the off-schema flat location must NOT be written to at all
+    assert not flat_dir.exists() or not list(flat_dir.glob("broll_*.mp4")), \
+        "_grow_bg_library wrote to the off-schema flat broll_library/ (gateway bypassed)"
+
+
+def test_animated_bg_url_roundtrips_to_gateway_dir(monkeypatch, tmp_path):
+    """The b-roll URL emitted into the timeline must resolve back (via _resolve_asset) to the EXACT
+    gateway dir the clip was written to. If the emitted URL and the write dir drift, the timeline
+    references a 404 and the whole render dies silently."""
+    monkeypatch.setattr(abn_factory, "ASSETS", tmp_path)
+    monkeypatch.setattr(abn_assets, "ASSETS_DIR", tmp_path)
+    write_path = abn_assets.shared_path("broll_library", "broll_03.mp4")
+    url = abn_assets.shared_url("broll_library", "broll_03.mp4")
+    assert abn_factory._resolve_asset(url) == write_path
+    assert write_path.parent == tmp_path / "_shared" / "broll_library"
+    assert write_path.parent != tmp_path / "broll_library"  # NOT the old off-schema flat location
+
+
 def test_ensure_card_backgrounds_refuses_to_promote_non_scratch_source(monkeypatch, tmp_path):
     """If _codex_image regresses and returns a URL pointing OUTSIDE _scratch/ (e.g. a flat
     ASSETS-root path), the promoter must NOT .replace() that file into the shared bg pool — that
@@ -3019,6 +3066,68 @@ def test_render_remotion_duck_pass_reencodes_video_to_yuv420p(monkeypatch, tmp_p
         "duck pass must NOT copy the video stream through (the ep_d640a3eb regression)"
 
 
+def test_render_remotion_duck_reencodes_yuv420p_even_when_normalize_left_yuvj420p(
+        monkeypatch, tmp_path):
+    """BELT-AND-SUSPENDERS INTERLOCK, END-TO-END (the untested seam this ticket covers).
+
+    The normalize-pass-fails gate (line ~2504) only blocks the case where normalize's
+    ffmpeg EXITS non-zero. But normalize can also exit 0, run norm.replace(out) (line
+    ~2497), and still leave `out` in the wrong pixel format on the normalize-failure path
+    the duck-pass comment (lines 2526-2529) is explicitly hardening against. In that case
+    the duck pass — the LAST video stage — is the ONLY thing that converts the file to
+    yuv420p before the hard gate. The other duck tests assert the *command string* contains
+    format=yuv420p; this one drives the whole chain on disk: normalize succeeds yet leaves
+    yuvj420p, and we prove the FINAL bytes of `out` are the duck pass's yuv420p output
+    (i.e. the interlock actually re-encoded, not passed the yuvj420p through)."""
+    monkeypatch.setattr(abn_factory, "ASSETS", tmp_path)
+    monkeypatch.setattr(abn_assets, "ASSETS_DIR", tmp_path)
+    _stub_remotion_dir(monkeypatch, tmp_path)
+
+    async def fake_dur(path):
+        return 640.0
+    monkeypatch.setattr(abn_factory, "_dur", fake_dur)
+
+    bed = tmp_path / "bed.mp3"
+    bed.write_bytes(b"\x00")
+    out = abn_assets.asset_path("ep_aabbccdd", "episode")
+
+    passes = []
+
+    async def fake_sh(cmd, timeout=600):
+        # Use the file CONTENTS as a stand-in for the encoded pixel format so we can track
+        # what each pass actually wrote to disk through the replace() chain.
+        if "remotion render" in cmd:
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_bytes(b"yuvj420p")          # raw Remotion render: full-range JPEG
+            return 0, "ok"
+        if "loudnorm=I=-14" in cmd and "sidechaincompress" not in cmd:   # normalize pass
+            # SUCCEEDS (exit 0 -> norm.replace(out) runs) but, simulating the normalize
+            # failure path the duck comment guards, leaves the file STILL yuvj420p.
+            Path(shlex.split(cmd)[-2]).write_bytes(b"yuvj420p")
+            passes.append("normalize")
+            return 0, "ok"
+        if "sidechaincompress" in cmd:                                   # duck pass
+            # The belt-and-suspenders re-encode: this pass owns the final pixel format.
+            assert "format=yuv420p" in cmd and "-c:v libx264" in cmd and "-c:v copy" not in cmd
+            Path(shlex.split(cmd)[-2]).write_bytes(b"yuv420p")
+            passes.append("duck")
+            return 0, "ok"
+        return 0, "ok"
+    monkeypatch.setattr(abn_factory, "_sh", fake_sh)
+
+    timeline = {"musicBed": bed.name, "segments": []}
+    url, dur = asyncio.run(abn_factory._render_remotion("ep_aabbccdd", timeline, force=True))
+
+    assert url and dur == 640.0
+    # the interlock chain ran in order: normalize.replace(out) THEN duck.replace(out)
+    assert passes == ["normalize", "duck"], passes
+    # the decisive end-to-end assertion: even though normalize left yuvj420p on disk, the
+    # duck pass re-encoded and its yuv420p output is the FINAL content of the episode — the
+    # belt-and-suspenders held regardless of the normalize pass's result.
+    assert out.read_bytes() == b"yuv420p", \
+        "duck pass must own the final pixel format (yuv420p), overriding the normalize output"
+
+
 def test_render_remotion_succeeds_when_both_passes_ok(monkeypatch, tmp_path):
     """Happy path still returns (url, duration) when normalize + duck both succeed."""
     monkeypatch.setattr(abn_factory, "ASSETS", tmp_path)
@@ -3075,6 +3184,48 @@ def test_render_remotion_drops_traversal_music_bed_outside_store(monkeypatch, tm
     assert dur == 640.0
     assert url
     assert duck_calls == []  # duck pass skipped: escaping bed was dropped, not read
+
+
+def test_render_remotion_ducks_valid_music_bed_inside_store(monkeypatch, tmp_path):
+    """The flip side of the traversal-rejection guard: a musicBed that resolves INSIDE the asset
+    store must NOT be dropped by the containment check — it must survive and actually get ducked.
+    Pin that the duck pass runs exactly once AND that the sidechain ffmpeg call references the
+    resolved in-store bed file (not some other path), proving the valid bed reached the duck."""
+    store = tmp_path / "assets"
+    store.mkdir()
+    monkeypatch.setattr(abn_factory, "ASSETS", store)
+    monkeypatch.setattr(abn_assets, "ASSETS_DIR", store)
+    _stub_remotion_dir(monkeypatch, store)
+
+    async def fake_dur(path):
+        return 640.0
+    monkeypatch.setattr(abn_factory, "_dur", fake_dur)
+
+    # A real bed living INSIDE the store under a per-episode subdir — a legit, non-escaping value.
+    bed = store / "ep_e666666" / "bed.mp3"
+    bed.parent.mkdir(parents=True, exist_ok=True)
+    bed.write_bytes(b"\x00")
+
+    duck_calls = []
+    out = abn_assets.asset_path("ep_e666666", "episode")
+    inner = _remotion_dispatch_sh(out, normalize_ok=True, duck_ok=True)
+
+    async def tracking_sh(cmd, timeout=600):
+        if "sidechaincompress" in cmd:
+            duck_calls.append(cmd)
+        return await inner(cmd, timeout=timeout)
+    monkeypatch.setattr(abn_factory, "_sh", tracking_sh)
+
+    # Relative-name value that resolves under the store (the common, valid case).
+    timeline = {"musicBed": "ep_e666666/bed.mp3", "segments": []}
+    url, dur = asyncio.run(abn_factory._render_remotion("ep_e666666", timeline, force=True))
+    assert dur == 640.0
+    assert url
+
+    # The valid bed survived containment and was ducked exactly once, against the resolved file.
+    assert len(duck_calls) == 1, "valid in-store bed must be ducked exactly once, not dropped"
+    assert str(bed.resolve()) in duck_calls[0] or shlex.quote(str(bed)) in duck_calls[0], \
+        "duck pass must read the resolved in-store bed file"
 
 
 # ---- revisualize: pristine-timeline backup is written ATOMICALLY (this ticket) ----
@@ -3145,3 +3296,16 @@ def test_revisualize_backup_crash_midwrite_leaves_no_partial(monkeypatch, tmp_pa
 
     assert not bak.exists(), "a truncated/partial backup was left after a mid-write crash"
     assert not list(bak.parent.glob("*.tmp")), "tmp sidecar leaked after mid-write crash"
+
+
+# ---------- asset-path resolver parity: strip ?query / #fragment cache-busters ----------
+
+@pytest.mark.parametrize("suffix", ["", "?rev=3", "#frag", "?rev=3&foo=bar#frag"])
+def test_resolve_asset_strips_cachebuster_to_real_disk_path(suffix):
+    """_resolve_asset is the inverse of _asset_url and is fed editor-persisted URLs that may carry
+    a ?rev=N cache-buster (EditorBay). It MUST resolve to the bare on-disk file — in parity with
+    both openshot_bridge._resolve_asset_src and the GC protection scan — or the factory reads back
+    a render the GC protected as 'missing'."""
+    url = f"{abn_factory.URL_PREFIX}ep_x/renders/episode.mp4{suffix}"
+    expected = abn_factory.ASSETS / "ep_x" / "renders" / "episode.mp4"
+    assert abn_factory._resolve_asset(url) == expected

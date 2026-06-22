@@ -287,6 +287,46 @@ def test_import_explicit_shot_keyframes_win_over_separate_envelope():
     assert "opacity" in props
 
 
+def test_shot_ducking_envelope_reaches_render_path_unflattened():
+    """End-to-end guard for an AUDIO/VIDEO shot clip (the case the music-bed tests
+    never cover): a factory-attached ducking envelope must survive import AND compile
+    through editor_render._volume_filter as its absolute gains, not collapse to the
+    clip's flat `volume`.
+
+    editor_render._volume_filter SCALES a volume envelope by the clip's flat volume
+    (line ~178). A shot clip imports with the default volume=1.0, so the envelope must
+    pass through 1:1 — at the intro the clip stays 0.7, not 0.7*<something>. Without
+    the _shot_keyframes promotion the clip would have no envelope and _volume_filter
+    would emit a flat `volume=` instead, silently losing the ducking entirely."""
+    from services import editor_render
+
+    for field in ("keyframesEnvelope", "duckingKeyframes"):
+        project = timeline.project_from_abn_timeline("p", {
+            "episodeId": "e", "totalSec": 4.0,
+            "segments": [{"segmentId": "s0", "durationSec": 4.0, "shots": [{
+                "id": "shot_a", "src": "/agenticnews-assets/clip.mp4", "type": "webscroll",
+                "startSec": 0.0, "durationSec": 4.0,
+                field: [{"property": "volume", "points": [
+                    {"t": 0.0, "value": 0.7}, {"t": 1.0, "value": 0.22},
+                ]}],
+            }]}],
+        })
+        clip = next(c for c in project["clips"].values() if c["kind"] == "webscroll")
+        # The shot clip keeps the default flat volume (no music-bed-style 0.22 duck),
+        # so the envelope's absolute gains pass through unscaled.
+        assert clip["volume"] == 1.0, field
+        assert any(t["property"] == "volume" for t in clip["keyframes"]), field
+        flt = editor_render._volume_filter(clip, float(clip["volume"]))
+        # The envelope's points are ABSOLUTE gains (matching openshot_bridge), so
+        # _volume_filter emits a time-varying piecewise expression evaluated per frame,
+        # NOT a flat `volume=0.7000` and NOT a base-scaled `(0.2200)*(...)` form. A flat
+        # `volume=` (no `eval=frame`) would mean the ducking envelope was dropped/flattened.
+        assert flt.startswith("volume='") and flt.endswith(":eval=frame"), field
+        assert "if(" in flt, field  # piecewise, time-varying — not a single flat gain
+        # the intro gain (0.7) and the ducked gain (0.22) both appear in the expression
+        assert "0.7000" in flt and "0.2200" in flt, field
+
+
 def test_import_drops_malformed_shot_envelope_without_aborting():
     """A bad shot envelope must be skipped, not fatal — the raw shot is preserved in
     metadata.shot for re-import, and the rest of the import must still succeed."""
@@ -386,9 +426,12 @@ def test_keyframed_bed_envelope_is_not_double_attenuated_by_flat_gain():
     })
     bed = next(c for c in project["clips"].values() if c["kind"] == "music_bed")
     flt = editor_render._volume_filter(bed, float(bed["volume"]))
-    # base_volume is 1.0, so the leading scale factor is unity — the envelope passes
-    # through. (Pre-fix the bed["volume"] was 0.22 and this expr was 0.22*envelope.)
-    assert flt.startswith("volume='(1.0000)*(")
+    # The envelope's absolute gains pass through 1:1 — the intro is 0.6, NOT
+    # 0.6*0.22. _volume_filter no longer scales the envelope by the flat gain (it
+    # mirrors openshot_bridge, where the envelope overwrites the flat volume), so
+    # the flat 0.22 cannot double-attenuate regardless of whether it was neutralized.
+    assert flt.startswith("volume='if(lt(t,")
+    assert "0.6000" in flt and "(0.2200)*(" not in flt
 
 
 def test_import_infers_missing_shot_durations_from_next_boundary():

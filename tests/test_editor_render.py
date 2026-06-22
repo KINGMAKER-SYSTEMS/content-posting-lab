@@ -609,6 +609,70 @@ def test_ffmpeg_fallback_warns_on_dropped_effects_and_keyframes(tmp_path):
     assert any(w["name"] == "crossfade" for w in frame["warnings"])
 
 
+def test_ffmpeg_strict_drops_refuses_render_instead_of_degrading(tmp_path, monkeypatch):
+    """Hard gate: OpenShot is the sanctioned compiler, so a degraded ffmpeg render that
+    dropped a video crossfade must never SILENTLY complete and risk being published.
+    With EDITOR_RENDER_STRICT_DROPS=1 the fallback raises instead of emitting the
+    artifact; without it the same project renders (warn-and-continue, the default)."""
+    red = _solid_png(tmp_path / "red.png", "red")
+    project = _project_with_card("strict_fixture", red, x=0.0)
+    # A video crossfade the ffmpeg fallback genuinely cannot reproduce on a visual layer.
+    project["clips"]["card_clip"]["effects"] = [
+        {"id": "fx_cf", "type": "crossfade", "params": {"duration": 0.3}},
+    ]
+    out = tmp_path / "renders" / "strict_fixture.mp4"
+
+    # Default (off): renders despite the drop, surfacing it as a warning.
+    monkeypatch.delenv("EDITOR_RENDER_STRICT_DROPS", raising=False)
+    renderer = editor_render.FFmpegLayeredRenderer(tmp_path / "renders")
+    lenient = renderer.render(project, output_path=out)
+    assert Path(lenient["video"]).exists()
+    assert any(w["name"] == "crossfade" for w in lenient["warnings"])
+    out.unlink()
+
+    # Strict (on): refuse rather than ship a degraded artifact, and write nothing.
+    monkeypatch.setenv("EDITOR_RENDER_STRICT_DROPS", "1")
+    with pytest.raises(editor_render.RenderError) as exc:
+        renderer.render(project, output_path=out)
+    assert "crossfade" in str(exc.value)
+    assert not out.exists()  # no degraded turd left behind
+
+
+def test_ffmpeg_strict_drops_allows_fully_reproducible_render(tmp_path, monkeypatch):
+    """Strict mode must NOT block a render the fallback can reproduce faithfully. A
+    plain fadeIn (ffmpeg-native, zero warnings) still renders with the gate on."""
+    monkeypatch.setenv("EDITOR_RENDER_STRICT_DROPS", "1")
+    red = _solid_png(tmp_path / "red.png", "red", size="96x64")
+    project = _project_with_card("strict_ok", red, x=0.0)
+    project["clips"]["card_clip"]["effects"] = [
+        {"id": "fx_in", "type": "fadeIn", "params": {"duration": 0.5}},
+    ]
+    renderer = editor_render.FFmpegLayeredRenderer(tmp_path / "renders")
+    result = renderer.render(project, output_path=tmp_path / "renders" / "strict_ok.mp4")
+    assert result["warnings"] == []
+    assert Path(result["video"]).exists()
+
+
+def test_ffmpeg_strict_drops_env_parsing():
+    """The strict-mode toggle accepts the usual truthy spellings and stays off for
+    empty/falsey values, so an accidental `EDITOR_RENDER_STRICT_DROPS=0` doesn't gate."""
+    import os as _os
+
+    saved = _os.environ.pop("EDITOR_RENDER_STRICT_DROPS", None)
+    try:
+        for val, expected in [("1", True), ("true", True), ("ON", True), ("yes", True),
+                               ("0", False), ("false", False), ("", False)]:
+            _os.environ["EDITOR_RENDER_STRICT_DROPS"] = val
+            assert editor_render._ffmpeg_strict_drops() is expected, val
+        _os.environ.pop("EDITOR_RENDER_STRICT_DROPS", None)
+        assert editor_render._ffmpeg_strict_drops() is False  # unset -> off
+    finally:
+        if saved is not None:
+            _os.environ["EDITOR_RENDER_STRICT_DROPS"] = saved
+        else:
+            _os.environ.pop("EDITOR_RENDER_STRICT_DROPS", None)
+
+
 def test_ffmpeg_fallback_applies_native_fadein_without_warning(tmp_path):
     """fadeIn/fadeOut are the one effect ffmpeg reproduces natively (the `fade`
     filter). A 0.5s fadeIn on a 1s red card must (a) NOT warn and (b) actually
@@ -1037,6 +1101,7 @@ def _install_fake_openshot(monkeypatch, *, with_logger=True, raise_on_enable=Fal
 
 
 def test_import_openshot_disables_zmq_logger_to_prevent_port_bind(monkeypatch):
+    monkeypatch.setattr(editor_render, "_zmq_logger_disabled", False)
     fake = _install_fake_openshot(monkeypatch)
 
     module, reason, _path = editor_render._import_openshot()
@@ -1047,9 +1112,12 @@ def test_import_openshot_disables_zmq_logger_to_prevent_port_bind(monkeypatch):
     assert fake.enable_calls == [False]
 
 
-def test_import_openshot_disables_logger_on_every_parallel_render(monkeypatch):
-    # Simulate the parallel-render scenario: N renders each import the bindings.
-    # Every import must disable the logger so no render is the one that binds 5556.
+def test_import_openshot_disables_logger_once_across_parallel_renders(monkeypatch):
+    # The ZMQ logger is a process-wide singleton: a single Enable(False) kills the
+    # 5556 bind for the whole process. Re-touching the singleton on every import
+    # is exactly the contention that hung parallel renders, so N imports must
+    # produce exactly ONE disable, not N.
+    monkeypatch.setattr(editor_render, "_zmq_logger_disabled", False)
     fake = _install_fake_openshot(monkeypatch)
 
     for _ in range(5):
@@ -1057,12 +1125,13 @@ def test_import_openshot_disables_logger_on_every_parallel_render(monkeypatch):
         assert module is fake
         assert reason == "available"
 
-    assert fake.enable_calls == [False] * 5
+    assert fake.enable_calls == [False]
 
 
 def test_import_openshot_survives_builds_without_zmq_logger(monkeypatch):
     # Older libopenshot builds lack ZmqLogger entirely. Import must still succeed
     # (the bind never happens there anyway) and never raise.
+    monkeypatch.setattr(editor_render, "_zmq_logger_disabled", False)
     fake = _install_fake_openshot(monkeypatch, with_logger=False)
     assert not hasattr(fake, "ZmqLogger")
 
@@ -1074,6 +1143,7 @@ def test_import_openshot_survives_builds_without_zmq_logger(monkeypatch):
 
 def test_import_openshot_swallows_zmq_logger_enable_errors(monkeypatch):
     # If Enable() throws on some build, the import must not blow up the render.
+    monkeypatch.setattr(editor_render, "_zmq_logger_disabled", False)
     fake = _install_fake_openshot(monkeypatch, raise_on_enable=True)
 
     module, reason, _ = editor_render._import_openshot()
@@ -1107,6 +1177,52 @@ def test_openshot_subprocess_renderer_salvages_result_from_native_child_exit(mon
     assert result["backend"] == "openshot"
     assert result["video"] == str(output)
     assert result["subprocessExitCode"] == -11
+
+
+def test_openshot_subprocess_does_not_salvage_truncated_zero_byte_artifact(monkeypatch, tmp_path):
+    """editor_render.OpenShotSubprocessRenderer._run_child salvage branch (385-390):
+    a non-zero child exit that leaves a *present but zero-byte* artifact behind
+    (process killed mid-write) is NOT a salvageable render. The salvage gate
+    (`_render_result_artifact_exists`) must reject the truncated turd so the
+    caller raises a hard RenderError instead of shipping a corrupt 0-byte mp4
+    as if it were a finished clip."""
+    output = tmp_path / "renders" / "window.mp4"
+    output.parent.mkdir()
+    output.write_bytes(b"")  # truncated: file exists, but is empty/corrupt
+
+    class Completed:
+        returncode = -9  # SIGKILL mid-write
+        stdout = json.dumps({
+            "backend": "openshot",
+            "video": str(output),
+            "start": 0,
+            "duration": 1,
+            "missingAssets": [],
+        })
+        stderr = "child killed after creating but before filling output"
+
+    monkeypatch.setattr(editor_render.subprocess, "run", lambda *a, **k: Completed())
+
+    renderer = editor_render.OpenShotSubprocessRenderer(tmp_path / "renders")
+    with pytest.raises(editor_render.RenderError) as excinfo:
+        renderer.render({"projectId": "p"}, output_path=output, start=0, duration=1)
+    assert "OpenShot subprocess failed (-9)" in str(excinfo.value)
+    assert "child killed" in str(excinfo.value)
+
+
+def test_render_result_artifact_exists_rejects_empty_and_missing(tmp_path):
+    """The salvage gate distinguishes a usable artifact (present, non-empty) from
+    a corrupt one (missing, or present-but-zero-byte)."""
+    good = tmp_path / "good.mp4"
+    good.write_bytes(b"rendered")
+    empty = tmp_path / "empty.mp4"
+    empty.write_bytes(b"")
+
+    assert editor_render._render_result_artifact_exists({"video": str(good)}) is True
+    assert editor_render._render_result_artifact_exists({"frame": str(good)}) is True
+    assert editor_render._render_result_artifact_exists({"video": str(empty)}) is False
+    assert editor_render._render_result_artifact_exists({"video": str(tmp_path / "nope.mp4")}) is False
+    assert editor_render._render_result_artifact_exists({}) is False
 
 
 def test_open_shot_audio_mux_keeps_later_timeline_audio_clips(tmp_path):
@@ -1433,6 +1549,46 @@ def test_volume_filter_builds_keyframe_expression_when_envelope_present():
     assert "(t-0.0000)" in expr and "(t-1.0000)" in expr  # piecewise segments
 
 
+def test_volume_envelope_is_absolute_and_not_scaled_by_flat_gain():
+    """A volume envelope's points are ABSOLUTE gains and must pass through the
+    ffmpeg filter unscaled — exactly as openshot_bridge OVERWRITES the flat volume
+    key with the envelope. If editor_render multiplied the envelope by the clip's
+    flat `volume` (the documented double-attenuation bug) the two render backends
+    would diverge whenever a bed kept a non-1.0 flat gain beside an envelope.
+
+    editor_timeline neutralizes the flat gain to 1.0 on import, but this pins the
+    contract directly so the carryover is robust even if a caller forgets to.
+
+    Concrete carryover: intro gain 0.6, ducked 0.22. The OpenShot path animates
+    volume to 60.0% / 22.0%; the ffmpeg expr must encode 0.6 / 0.22 verbatim, NOT
+    0.6*flat / 0.22*flat."""
+    ducked = {
+        "volume": 0.22,  # legacy flat gain left in place ALONGSIDE the envelope
+        "keyframes": [
+            {
+                "property": "volume",
+                "points": [
+                    {"t": 0.0, "value": 0.6},
+                    {"t": 1.0, "value": 0.22},
+                ],
+            }
+        ],
+    }
+    # Pass the clip's real flat gain (0.22) as base_volume — mirrors the call site
+    # `_volume_filter(clip, float(clip.get("volume")))`.
+    expr = editor_render._volume_filter(ducked, 0.22)
+    # The absolute envelope values appear verbatim; the flat 0.22 must NOT prefix
+    # the expression as a scale factor (that would be `(0.2200)*(...)`).
+    assert "0.6000" in expr and "0.2200" in expr
+    assert "(0.2200)*(" not in expr, "flat gain double-attenuated the envelope"
+
+    # Backend parity: the OpenShot bridge maps the same envelope to its absolute
+    # percent gains (0.6 -> 60.0, 0.22 -> 22.0), independent of the flat volume.
+    overrides = openshot_bridge._keyframe_overrides(ducked["keyframes"], fps=30)
+    ys = [round(p["co"]["Y"], 4) for p in overrides["volume"]["Points"]]
+    assert ys == [60.0, 22.0]
+
+
 def test_open_shot_audio_mux_honors_volume_ducking_keyframes(tmp_path):
     """The mux path must apply a keyframed volume envelope, not flat volume. A
     music-bed ducking curve (loud head, then ducked under VO) must leave the
@@ -1475,6 +1631,76 @@ def test_open_shot_audio_mux_honors_volume_ducking_keyframes(tmp_path):
     head = _mean_volume(video, start=0.0, duration=0.4)  # full level
     body = _mean_volume(video, start=1.3, duration=1.0)  # ducked under VO
     assert body < head - 10  # ducked body well below the loud head
+
+
+def test_piecewise_expr_honors_bezier_and_constant_interp_per_segment():
+    """The ffmpeg fallback's piecewise builder must emit a DIFFERENT segment shape
+    per interp, not silently linearize everything (the bug: bezier ducking curves
+    dropped to linear in mux renders). bezier -> smoothstep (3s^2-2s^3), constant ->
+    a held step, linear -> a slope ramp. A 2-tuple point stays linear for old callers."""
+    pts = [(0.0, 0.0, "bezier"), (1.0, 1.0, "linear"), (2.0, 1.0, "constant")]
+    expr = editor_render._piecewise_linear_expr(pts)
+    # segment 0->1 carries the END point's interp (linear) -> a slope ramp
+    assert "0.0000+(1.000000)*(t-0.0000)" in expr
+    # segment 1->2 carries 'constant' -> holds the previous value, no ramp term
+    assert "if(lt(t,2.0000),1.0000," in expr
+    # a leading bezier point shapes the segment INTO the next point that owns it:
+    bez = editor_render._piecewise_linear_expr([(0.0, 0.0, "linear"), (1.0, 1.0, "bezier")])
+    assert "3*" in bez and "-2*" in bez  # smoothstep, not a bare linear slope
+    assert "(1.000000)*(t-0.0000)" not in bez  # NOT the linear ramp form
+    # back-compat: 2-tuples (no interp) still produce the linear ramp
+    lin = editor_render._piecewise_linear_expr([(0.0, 0.0), (1.0, 1.0)])
+    assert "0.0000+(1.000000)*(t-0.0000)" in lin and "3*" not in lin
+
+
+def test_mux_renders_bezier_ducking_smoother_than_constant_step(tmp_path):
+    """End-to-end ticket guard: a music-bed volume envelope whose midpoint uses
+    `interp: bezier` must render through the actual ffmpeg mux subprocess as a
+    SMOOTH curve, not the silent-linear drop and not a hard step. We compare the
+    mid-transition loudness of a bezier duck against a `constant` duck on identical
+    points: the constant step holds the loud value until t1, while the bezier eases
+    down before it, so at the transition window the bezier render is measurably
+    quieter. This proves interp survives the bridge<->mux seam into a real render."""
+    tone = tmp_path / "tone.wav"
+    subprocess.run(
+        ["ffmpeg", "-y", "-f", "lavfi", "-i", "sine=frequency=440:duration=4.0",
+         "-ac", "1", "-ar", "48000", str(tone)],
+        check=True, capture_output=True, text=True,
+    )
+
+    def _render(interp: str) -> Path:
+        video = tmp_path / f"silent_{interp}.mp4"
+        subprocess.run(
+            ["ffmpeg", "-y", "-f", "lavfi", "-i", "color=c=black:s=96x64:r=12:d=4",
+             "-c:v", "libx264", "-pix_fmt", "yuv420p", str(video)],
+            check=True, capture_output=True, text=True,
+        )
+        project = timeline.new_project(f"duck_{interp}", width=96, height=64, fps=12)
+        project["assets"]["tone"] = {"id": "tone", "type": "audio", "src": str(tone)}
+        project["clips"]["tone"] = {
+            "id": "tone", "assetId": "tone", "trackId": "audio_1", "kind": "music",
+            "start": 0, "duration": 4.0, "sourceStart": 0, "enabled": True,
+            "muted": False, "volume": 1, "transform": {},
+            "keyframes": [
+                {"property": "volume", "points": [
+                    {"t": 0.0, "value": 1.0, "interp": "linear"},
+                    # midpoint owns the t0->t1 transition; bezier eases, constant steps.
+                    {"t": 2.0, "value": 0.02, "interp": interp},
+                    {"t": 4.0, "value": 0.02, "interp": "linear"},
+                ]},
+            ],
+        }
+        assert editor_render._mux_timeline_audio(project, video, duration=4.0, asset_root=None) is True
+        return video
+
+    bezier_v = _render("bezier")
+    constant_v = _render("constant")
+
+    # In the first half of the transition (t in [0.2,1.6]) the constant step is
+    # still pinned at full loud, while the bezier curve has already begun easing
+    # down. The bezier render is therefore audibly quieter across that window.
+    window = dict(start=0.2, duration=1.4)
+    assert _mean_volume(bezier_v, **window) < _mean_volume(constant_v, **window) - 3
 
 
 def test_ffmpeg_renderer_exports_layered_mp4_and_preview_frame(tmp_path):

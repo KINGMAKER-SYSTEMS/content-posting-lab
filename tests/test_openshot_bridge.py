@@ -69,6 +69,31 @@ def test_openshot_export_resolves_agenticnews_asset_urls(tmp_path):
     assert exported["clips"][0]["reader"]["path"] == str(tmp_path / "card.png")
 
 
+def test_openshot_export_strips_cachebuster_query_from_agenticnews_url(tmp_path):
+    # The editor persists render-cache URLs with a ?rev=N cache-buster (EditorBay). The static
+    # mount ignores it, so the real file on disk is "card.png" — the compiler must resolve to that,
+    # not "card.png?rev=3". This MUST agree with abn_factory's GC protection scan, or the GC
+    # protects a render under a name the compiler can't open.
+    project = _project("/agenticnews-assets/card.png?rev=3")
+
+    exported = openshot_bridge.timeline_json(project, asset_root=tmp_path)
+
+    assert exported["clips"][0]["reader"]["path"] == str(tmp_path / "card.png")
+
+
+def test_resolve_asset_src_strips_query_and_fragment_in_parity_with_gc_scan(tmp_path):
+    # Direct unit on the single-source-of-truth resolver: query, fragment, and both together all
+    # reduce to the same on-disk path the GC scan computes via .split("?")[0].split("#")[0].
+    base = str(tmp_path / "episode.mp4")
+    for url in (
+        "/agenticnews-assets/episode.mp4",
+        "/agenticnews-assets/episode.mp4?rev=3",
+        "/agenticnews-assets/episode.mp4#frag",
+        "/agenticnews-assets/episode.mp4?rev=3&foo=bar#frag",
+    ):
+        assert openshot_bridge._resolve_asset_src(url, asset_root=tmp_path) == base
+
+
 def test_openshot_export_maps_editor_volume_to_openshot_percent(tmp_path):
     project = _project(tmp_path / "vo.wav")
     project["assets"]["card"]["type"] = "audio"

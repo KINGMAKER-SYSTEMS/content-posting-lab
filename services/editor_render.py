@@ -126,15 +126,17 @@ def _audio_fade_in_window(clip: dict[str, Any]) -> float | None:
 _FFMPEG_KEYFRAME_PROPERTIES = {"volume", "opacity", "x", "y"}
 
 
-def _keyframe_points(clip: dict[str, Any], prop: str) -> list[tuple[float, float]]:
-    """Sorted (clip-relative seconds, value) points of one keyframe envelope.
+def _keyframe_points(clip: dict[str, Any], prop: str) -> list[tuple[float, float, str]]:
+    """Sorted (clip-relative seconds, value, interp) points of one keyframe envelope.
 
     `t` is clip-relative, which after atrim/trim + (a)setpts (PTS reset to 0) is
     exactly the ffmpeg filter's `t`, so no source_start offset is needed. Values
     are floored at 0 for volume (a negative gain is meaningless); other
-    properties pass through (position can be <0.5 / >0.5)."""
+    properties pass through (position can be <0.5 / >0.5). `interp` is carried per
+    point (mirroring the OpenShot bridge) so the ffmpeg fallback honors it instead
+    of silently linearizing bezier/constant easing — see _piecewise_linear_expr."""
 
-    points: list[tuple[float, float]] = []
+    points: list[tuple[float, float, str]] = []
     floor = prop == "volume"
     for track in clip.get("keyframes") or []:
         if str((track or {}).get("property") or "") != prop:
@@ -142,24 +144,46 @@ def _keyframe_points(clip: dict[str, Any], prop: str) -> list[tuple[float, float
         for point in (track or {}).get("points") or []:
             t = max(0.0, float(point.get("t") or 0.0))
             v = float(point.get("value") or 0.0)
-            points.append((t, max(0.0, v) if floor else v))
+            interp = str(point.get("interp") or "linear").lower()
+            points.append((t, max(0.0, v) if floor else v, interp))
     return sorted(points, key=lambda p: p[0])
 
 
-def _piecewise_linear_expr(points: list[tuple[float, float]], var: str = "t") -> str:
-    """Build an ffmpeg time-expression that linearly interpolates between sorted
-    (t, value) points, holding the first value before the first `t` and the last
-    after the final `t`. Shared by the volume/opacity/position envelopes so they
-    all interpolate identically. `var` is the time symbol (`t` for most filters,
-    `T` for geq). Assumes `points` is non-empty and sorted."""
+def _piecewise_linear_expr(
+    points: list[tuple[float, float] | tuple[float, float, str]], var: str = "t"
+) -> str:
+    """Build an ffmpeg time-expression that interpolates between sorted points,
+    holding the first value before the first `t` and the last after the final `t`.
+    Shared by the volume/opacity/position envelopes. `var` is the time symbol (`t`
+    for most filters, `T` for geq). Assumes `points` is non-empty and sorted.
+
+    Each point may carry a third element, its OpenShot interpolation, which (as in
+    libopenshot) governs the segment leading INTO it from the previous point. Without
+    this the ffmpeg fallback silently flattened every curve to linear, so bezier
+    ducking/easing dropped vs the OpenShot render:
+      - `constant` -> hold the previous value, step at t1 (no ramp)
+      - `bezier`   -> smoothstep ease (3s^2-2s^3), the cheap ffmpeg-expressible
+                       stand-in for OpenShot's cubic so curves stay curved
+      - `linear`/anything else -> straight ramp (unchanged)
+    A 2-tuple point (no interp) is treated as linear, preserving old callers."""
+
+    def _interp(pt: tuple[float, ...]) -> str:
+        return pt[2] if len(pt) > 2 else "linear"
 
     # The smallest threshold must be the OUTERMOST `if` (eval order is outside-in),
     # so iterate pairs in reverse and wrap each smaller-t1 branch around the rest.
     expr = f"{points[-1][1]:.4f}"  # default = last value (covers t >= final t)
-    for (t0, v0), (t1, v1) in reversed(list(zip(points, points[1:]))):
+    for p0, p1 in reversed(list(zip(points, points[1:]))):
+        t0, v0 = p0[0], p0[1]
+        t1, v1 = p1[0], p1[1]
         span = t1 - t0
-        if span <= 0:
-            seg = f"{v1:.4f}"
+        interp = _interp(p1)  # the segment's interp is the END point's (OpenShot)
+        if span <= 0 or interp == "constant":
+            seg = f"{v0:.4f}" if interp == "constant" else f"{v1:.4f}"
+        elif interp == "bezier":
+            # s = (var-t0)/span in [0,1]; smoothstep 3s^2-2s^3 eases both ends.
+            s = f"(({var}-{t0:.4f})/{span:.6f})"
+            seg = f"({v0:.4f}+({v1 - v0:.4f})*(3*{s}*{s}-2*{s}*{s}*{s}))"
         else:
             slope = (v1 - v0) / span
             seg = f"({v0:.4f}+({slope:.6f})*({var}-{t0:.4f}))"
@@ -180,13 +204,22 @@ def _volume_filter(clip: dict[str, Any], base_volume: float) -> str:
 
     OpenShot animates `volume` per-keyframe; the flat `volume=` the mux path used
     silently flattened ducking envelopes. Build a piecewise-linear `t`-expression
-    (eval=frame) so OpenShot and the mux path apply the same gain over time. The
-    envelope value is scaled by the clip's flat volume so both compose."""
+    (eval=frame) so OpenShot and the mux path apply the same gain over time.
+
+    A `volume` envelope's points are ABSOLUTE gains and win outright — exactly as
+    they do in openshot_bridge._keyframe_overrides, where the envelope OVERWRITES
+    the flat `volume` key rather than multiplying it. We must NOT scale the
+    envelope by the clip's flat `volume` here: editor_timeline neutralizes the
+    flat gain to 1.0 when it promotes an absolute envelope, but if any caller
+    leaves a non-1.0 flat gain alongside an envelope, multiplying would
+    double-attenuate the bed (the documented 0.6 -> 0.6*0.22 bug) and silently
+    diverge from the OpenShot render. Ignoring base_volume when an envelope is
+    present guarantees backend parity regardless of upstream neutralization."""
 
     points = _volume_keyframe_points(clip)
     if not points:
         return f"volume={base_volume:.4f}"
-    expr = f"({base_volume:.4f})*({_piecewise_linear_expr(points)})"
+    expr = _piecewise_linear_expr(points)
     return f"volume='{expr}':eval=frame"
 
 
@@ -566,6 +599,15 @@ class FFmpegLayeredRenderer:
         if missing_assets:
             raise RenderError(f"render blocked by missing assets: {json.dumps(missing_assets)}")
         if warnings:
+            if _ffmpeg_strict_drops():
+                # Hard gate (CLAUDE.md): OpenShot is the sanctioned compiler. Rather than
+                # silently emit a degraded artifact (a video crossfade dropped to a hard
+                # cut, a color filter lost) and rely on a downstream UI to notice the
+                # warnings list, refuse the render outright so nothing ships unnoticed.
+                raise RenderError(
+                    "ffmpeg fallback cannot honor effects/keyframes and "
+                    f"EDITOR_RENDER_STRICT_DROPS is set: {json.dumps(warnings)}"
+                )
             log.warning("ffmpeg fallback cannot honor %s; rendered without them", json.dumps(warnings))
         _run(cmd)
         return {
@@ -808,6 +850,22 @@ class FFmpegLayeredRenderer:
         return _resolve_asset_src(src, self.asset_root)
 
 
+def _ffmpeg_strict_drops() -> bool:
+    """Whether the ffmpeg fallback must REFUSE (raise) rather than silently emit a
+    degraded artifact when it can't honor an effect/keyframe (e.g. a video crossfade).
+
+    CLAUDE.md hard gate: OpenShot is the sanctioned compiler, so silently shipping a
+    render that dropped effects violates the contract. The drops are always surfaced
+    in the result's ``warnings`` list, but a warning is only useful if something acts
+    on it — and there is no guarantee a caller/UI checks it before publishing. With
+    ``EDITOR_RENDER_STRICT_DROPS=1`` the fallback turns a would-be-degraded render
+    into a loud ``RenderError`` so a degraded ABN episode can never complete unnoticed.
+    Default off: warn-and-continue stays the behavior every existing caller/test sees.
+    ponytail: one env read, no new config surface, no signature churn."""
+
+    return os.getenv("EDITOR_RENDER_STRICT_DROPS", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _import_openshot():
     for python_path in _openshot_python_candidates():
         if python_path.exists() and str(python_path) not in sys.path:
@@ -822,17 +880,33 @@ def _import_openshot():
     except Exception as exc:
         return None, f"Python bindings failed to import: {exc}", Path(spec.origin).parent if spec.origin else None
 
-    # Disable libopenshot's ZMQ debug logger. It binds a fixed TCP port (5556) the first
-    # time a render runs; with multiple in-process renders (e.g. the test suite, or parallel
-    # cycle gates) the singleton contends on that port and a later render blocks forever.
-    # We don't consume its debug stream, so turn it off — this was the root cause of the
-    # suite hang and the prod-cycle gate livelock. ponytail: one call kills the port bind.
+    _disable_openshot_zmq_logger(openshot)
+
+    return openshot, "available", Path(spec.origin).parent if spec.origin else None
+
+
+_zmq_logger_disabled = False
+
+
+def _disable_openshot_zmq_logger(openshot) -> None:
+    """Disable libopenshot's ZMQ debug logger exactly once per process.
+
+    The logger binds a fixed TCP port (5556) the first time a render runs. With
+    multiple in-process renders (the test suite, or parallel cycle gates) the
+    singleton contends on that port and a later render blocks forever. We don't
+    consume its debug stream, so turn it off. Calling Enable(False) on every
+    import re-touches the singleton and reintroduces the contention this guards
+    against — so do it once and latch the flag. ponytail: one call kills the
+    port bind.
+    """
+    global _zmq_logger_disabled
+    if _zmq_logger_disabled:
+        return
     try:
         openshot.ZmqLogger.Instance().Enable(False)
     except Exception:
         pass  # logger API absent on some builds -> nothing to disable, safe to ignore
-
-    return openshot, "available", Path(spec.origin).parent if spec.origin else None
+    _zmq_logger_disabled = True
 
 
 def _openshot_python_candidates() -> list[Path]:
@@ -911,7 +985,17 @@ def _parse_child_render_result(stdout: str) -> dict[str, Any] | None:
 
 def _render_result_artifact_exists(result: dict[str, Any]) -> bool:
     artifact = result.get("video") or result.get("frame")
-    return bool(artifact and Path(str(artifact)).exists())
+    if not artifact:
+        return False
+    path = Path(str(artifact))
+    # A non-zero child exit can leave a *present but truncated* artifact behind
+    # (process killed mid-write). A zero-byte file is never a salvageable render,
+    # so don't pretend the partial mp4 is usable -- treat it as no artifact and
+    # let the caller raise a hard RenderError instead of shipping a corrupt clip.
+    try:
+        return path.is_file() and path.stat().st_size > 0
+    except OSError:
+        return False
 
 
 def _asset_type(assets: dict[str, Any], clip: dict[str, Any]) -> str:

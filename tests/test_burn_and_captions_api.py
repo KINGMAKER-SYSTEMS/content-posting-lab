@@ -599,6 +599,106 @@ def test_caption_pipeline_playwright_crash_emits_top_level_error(monkeypatch, sy
     assert not _ev(events, "all_complete")
 
 
+# ── WebSocket endpoint (/ws/{job_id}) ─────────────────────────────────────
+#
+# The tests above drive _run_pipeline directly. These exercise the actual
+# `@router.websocket("/ws/{job_id}")` handler: accept -> register client ->
+# receive `start` -> dispatch _run_pipeline -> disconnect cleanup. We stub
+# _run_pipeline so the handler is tested in isolation from the scraper deps.
+
+
+def test_caption_ws_start_dispatches_pipeline(monkeypatch, sync_client):
+    """Connecting registers the client, and a `start` action dispatches
+    _run_pipeline with the parsed/clamped args. The stubbed pipeline broadcasts
+    a sentinel back through the real socket, proving the round trip works."""
+    captured: dict = {}
+
+    async def fake_pipeline(job_id, profile_url, max_videos, sort, project):
+        captured.update(
+            job_id=job_id, profile_url=profile_url,
+            max_videos=max_videos, sort=sort, project=project,
+        )
+        # Client is registered by the time the pipeline runs.
+        assert captions_router._ws_clients.get(job_id), "client not registered"
+        await captions_router._broadcast(job_id, "status", {"text": "dispatched"})
+
+    monkeypatch.setattr(captions_router, "_run_pipeline", fake_pipeline)
+
+    with sync_client.websocket_connect("/api/captions/ws/job-ws-1") as ws:
+        ws.send_json({
+            "action": "start",
+            "profile_url": "@creator",
+            "max_videos": 7,
+            "sort": "popular",
+            "project": "ws-proj",
+        })
+        msg = ws.receive_json()
+
+    assert msg == {"event": "status", "text": "dispatched"}
+    assert captured == {
+        "job_id": "job-ws-1", "profile_url": "@creator",
+        "max_videos": 7, "sort": "popular", "project": "ws-proj",
+    }
+
+
+def test_caption_ws_clamps_max_videos(monkeypatch, sync_client):
+    """max_videos is clamped to [1, 50] and sort/project default sensibly."""
+    seen: list[dict] = []
+
+    async def fake_pipeline(job_id, profile_url, max_videos, sort, project):
+        seen.append({"max": max_videos, "sort": sort, "project": project})
+        await captions_router._broadcast(job_id, "ack", {})
+
+    monkeypatch.setattr(captions_router, "_run_pipeline", fake_pipeline)
+
+    with sync_client.websocket_connect("/api/captions/ws/job-ws-2") as ws:
+        ws.send_json({"action": "start", "profile_url": "@a", "max_videos": 9999})
+        ws.receive_json()
+        ws.send_json({"action": "start", "profile_url": "@b", "max_videos": 0})
+        ws.receive_json()
+
+    assert seen[0]["max"] == 50  # over-cap clamped down
+    assert seen[1]["max"] == 1   # under-floor clamped up
+    # Defaults applied when omitted
+    assert seen[0]["sort"] == "latest"
+    assert seen[0]["project"] is None
+
+
+def test_caption_ws_ignores_unknown_actions(monkeypatch, sync_client):
+    """A non-`start` message is a no-op — the handler keeps listening and never
+    dispatches the pipeline."""
+    async def fake_pipeline(*a, **k):  # pragma: no cover
+        raise AssertionError("pipeline must not run for unknown actions")
+
+    monkeypatch.setattr(captions_router, "_run_pipeline", fake_pipeline)
+
+    with sync_client.websocket_connect("/api/captions/ws/job-ws-3") as ws:
+        ws.send_json({"action": "ping"})
+        # Follow with a real start to prove the socket is still alive.
+        captured = {}
+
+        async def real_pipeline(job_id, *a, **k):
+            captured["ran"] = True
+            await captions_router._broadcast(job_id, "ack", {})
+
+        monkeypatch.setattr(captions_router, "_run_pipeline", real_pipeline)
+        ws.send_json({"action": "start", "profile_url": "@c"})
+        msg = ws.receive_json()
+
+    assert msg["event"] == "ack"
+    assert captured.get("ran") is True
+
+
+def test_caption_ws_disconnect_unregisters_client(monkeypatch, sync_client):
+    """Closing the socket removes the client from _ws_clients (no leak)."""
+    job_id = "job-ws-4"
+    with sync_client.websocket_connect(f"/api/captions/ws/{job_id}"):
+        # Inside the context the client is registered.
+        assert len(captions_router._ws_clients.get(job_id, [])) == 1
+    # After the context exits the finally-block removes it.
+    assert captions_router._ws_clients.get(job_id, []) == []
+
+
 # ── /history and /rename-batch endpoints ──────────────────────────────────
 
 

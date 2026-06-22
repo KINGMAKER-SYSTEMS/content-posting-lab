@@ -109,7 +109,7 @@ ASSETS = db.ASSETS_DIR
 # ep_id off the front; _asset_url turns a managed path back into its /agenticnews-assets/ URL.
 from services.abn_assets import (  # noqa: E402
     asset_path, asset_url, asset_path_from_slug, asset_url_from_slug,
-    scratch_path, shared_path, published_path, split_slug, URL_PREFIX,
+    scratch_path, shared_path, shared_url, published_path, split_slug, URL_PREFIX,
     reapable_scratch, scratch_dirs, scratch_usage, tombstone, tombstone_render,
 )
 from services.json_store import atomic_save  # noqa: E402
@@ -173,7 +173,12 @@ def _resolve_asset(url_or_path) -> Path:
     the back-compat symlinks the migration left at the old paths."""
     s = str(url_or_path or "")
     if s.startswith(URL_PREFIX):
-        return ASSETS / s[len(URL_PREFIX):]
+        # Strip a ?query / #fragment cache-buster (editor render-cache URLs like
+        # "…/episode.mp4?rev=3"); the static mount ignores it, so the real file is
+        # "episode.mp4". Keeps this in parity with the GC protection scan and the
+        # openshot_bridge resolver — all three must agree on the on-disk name.
+        rel = s[len(URL_PREFIX):].split("?", 1)[0].split("#", 1)[0]
+        return ASSETS / rel
     p = Path(s)
     if p.is_absolute():
         return p
@@ -1466,23 +1471,35 @@ _BG_NEGATIVE = ("NO text, NO words, NO letters, NO numbers, NO code, NO UI panel
 # regenerating 3 fresh Flux→wan-i2v clips every episode was the biggest compute waste in the factory
 # (~6 expensive Replicate calls/episode for backgrounds nobody watches the video FOR). Instead we
 # build a small LIBRARY once, cache the clips to disk, and serve a rotating subset per episode.
-_BG_LIB_DIR = ASSETS / "broll_library"
+# Route the b-roll library through the abn_assets gateway (shared_path), not a bare
+# ASSETS / "broll_library" flat dump. shared_path("broll_library", …) lands clips in
+# _shared/broll_library/ — schema-validated, GC-protected, and the SAME dir the emitted
+# shared_url() resolves back to. (.parent gives the dir; the filename is appended per clip.)
+_BG_LIB_DIR = shared_path("broll_library", "broll_00.mp4").parent
 _BG_LIB_TARGET = 8          # build up to 8 distinct cached loops, then stop generating
 _BG_LIB_MIN = 3             # generate lazily until at least this many exist
 
 
+def _bg_lib_dir() -> Path:
+    """The cached b-roll library dir, resolved THROUGH THE GATEWAY at call time (not a frozen
+    import-time constant) so it always tracks abn_assets.ASSETS_DIR. shared_path lands it in
+    _shared/broll_library/ — the schema home — so reads use the exact dir the writes go to."""
+    return shared_path("broll_library", "broll_00.mp4").parent
+
+
 def _bg_library() -> list[Path]:
     """Cached b-roll clips on disk, sorted (stable rotation)."""
-    if not _BG_LIB_DIR.exists():
+    d = _bg_lib_dir()
+    if not d.exists():
         return []
-    return sorted(p for p in _BG_LIB_DIR.glob("broll_*.mp4") if p.stat().st_size > 4096)
+    return sorted(p for p in d.glob("broll_*.mp4") if p.stat().st_size > 4096)
 
 
 async def _grow_bg_library(want=1):
     """Generate `want` NEW clean clips into the cached library (Flux → OCR self-review → wan-i2v →
     download to disk). Only called when the library is below target. This is where the expensive
     video-gen happens — but now ONCE per library slot, not once per episode."""
-    _BG_LIB_DIR.mkdir(parents=True, exist_ok=True)
+    _bg_lib_dir().mkdir(parents=True, exist_ok=True)
     have = len(_bg_library())
     made = 0
     for k in range(want):
@@ -1502,8 +1519,9 @@ async def _grow_bg_library(want=1):
         clip_url = await asyncio.to_thread(_wan_i2v_sync, still, tag)
         if not clip_url:
             continue
-        # persist the clip into the library so it's reused forever
-        dest = _BG_LIB_DIR / f"broll_{have + made:02d}.mp4"
+        # persist the clip into the library so it's reused forever — through the gateway,
+        # so the write target is schema-validated (no off-schema flat dump under ASSETS root).
+        dest = shared_path("broll_library", f"broll_{have + made:02d}.mp4")
         try:
             if isinstance(clip_url, str) and clip_url.startswith("http"):
                 await asyncio.to_thread(_download, clip_url, str(dest), 90)
@@ -1546,7 +1564,9 @@ async def _animated_bg(ep_id, n=3):
         if p.exists() and p.stat().st_size > 4096 and p not in picks:
             picks.append(p)
         k += 1
-    return [f"/agenticnews-assets/broll_library/{p.name}" for p in picks]
+    # Emit gateway-resolved URLs (shared_url -> /agenticnews-assets/_shared/broll_library/<name>)
+    # so the timeline URL round-trips back to the exact dir the gateway wrote — not the old flat path.
+    return [shared_url("broll_library", p.name) for p in picks]
 
 
 def _bg_is_clean(still_url, name) -> bool:
