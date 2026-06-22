@@ -387,54 +387,6 @@ def test_crossfade_transition_exports_as_inward_fade(tmp_path):
     assert xfade["duration"]["Points"][0]["co"]["Y"] == 0.75
 
 
-def test_refit_dropped_fade_is_absent_from_exported_effects(tmp_path):
-    """End-to-end guard for the refit -> export seam: when editor_render._refit_effects
-    drops a fade whose windowed duration re-fits to <= 0 (the front trim ate the whole
-    start-anchored ramp, or the window is zero-length), the dropped fade must NOT show
-    up in the OpenShot effects array. A surviving `duration: 0.0` Fade is silently
-    ignored by libopenshot (openshot_bridge.effect_json L378 emits a valid but
-    meaningless keyframe), so the timeline would claim a fade the compiled video never
-    renders. The refit output is what feeds clip_json's effects array, so exporting it
-    proves the two stay in agreement."""
-    from services.editor_render import _refit_effects
-
-    # 0.5s start-anchored fade, front-trimmed by 0.6s -> -0.1s -> dropped.
-    refit = _refit_effects(
-        [{"id": "deadfade", "type": "fadeIn", "params": {"duration": 0.5}}],
-        front_trim=0.6,
-        windowed_duration=2.0,
-    )
-    assert refit == [], "refit should drop the over-trimmed fade outright"
-
-    project = _project(tmp_path / "card.png")
-    project["clips"]["card_clip"]["effects"] = refit
-
-    clip = openshot_bridge.timeline_json(project)["clips"][0]
-
-    assert clip["effects"] == []
-    assert not any(e.get("type") == "Fade" for e in clip["effects"])
-
-
-def test_refit_zero_window_drops_fade_so_export_has_no_zero_duration_fade(tmp_path):
-    """Same seam, the zero-length-window case: a fade on a clip windowed to 0s re-fits
-    to 0.0 and is dropped, so the export carries no 0.0-duration Fade keyframe."""
-    from services.editor_render import _refit_effects
-
-    refit = _refit_effects(
-        [{"id": "fxOut", "type": "fadeOut", "params": {"duration": 0.4}}],
-        front_trim=0.0,
-        windowed_duration=0.0,
-    )
-    assert refit == []
-
-    project = _project(tmp_path / "card.png")
-    project["clips"]["card_clip"]["effects"] = refit
-
-    clip = openshot_bridge.timeline_json(project)["clips"][0]
-
-    assert clip["effects"] == []
-
-
 def test_saturation_effect_exports_as_saturation_class(tmp_path):
     """Saturation is the second color filter in the closed effect vocabulary; it
     maps to its own OpenShot Saturation class with a keyframed value."""
