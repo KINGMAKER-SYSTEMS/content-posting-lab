@@ -1665,3 +1665,147 @@ def test_split_with_both_anchored_fades_exports_render_refit_durations(tmp_path)
     # And concretely: fadeIn 1.0 - 0.6 front trim = 0.4; fadeOut stays 1.0 (end-anchored,
     # under the 2.4 window). A divergence in either path would break this equality.
     assert exported_tail_fades == {"fxIn": pytest.approx(0.4), "fxOut": 1.0}
+
+
+# clip.effect CRUD -> OpenShot seam. editor_timeline routes clip.effect.add/update/
+# delete through _mutate_clip (~line 1136), but the API tests only exercised move/
+# hide/mute/transform. This pins the whole round-trip: a command mutates the clip's
+# effect list, and the bridge re-compiles each editor effect into the right
+# libopenshot Effect JSON (Fade direction+duration, Brightness value). Without this,
+# the effect path could drift (wrong class, dropped param, stale effect surviving a
+# delete) and no test would catch it.
+def _compiled_effects(project: dict, asset_path: Path) -> list[dict]:
+    exported = openshot_bridge.timeline_json(project)
+    return exported["clips"][0]["effects"]
+
+
+def test_clip_effect_add_update_delete_round_trip_to_openshot(tmp_path):
+    project = _project(tmp_path / "card.png")
+
+    # ADD: a start-anchored fade and a brightness filter.
+    project = editor_timeline.apply_command(project, {
+        "id": "cmd_add_fade",
+        "op": "clip.effect.add",
+        "actor": "agent",
+        "expectedRevision": 0,
+        "payload": {"clipId": "card_clip",
+                    "effect": {"id": "fx_in", "type": "fadeIn", "params": {"duration": 0.5}}},
+    })
+    project = editor_timeline.apply_command(project, {
+        "id": "cmd_add_bright",
+        "op": "clip.effect.add",
+        "actor": "agent",
+        "expectedRevision": 1,
+        "payload": {"clipId": "card_clip",
+                    "effect": {"id": "fx_b", "type": "brightness", "params": {"value": 0.3}}},
+    })
+
+    clip = project["clips"]["card_clip"]
+    assert [e["id"] for e in clip["effects"]] == ["fx_in", "fx_b"]
+
+    effects = _compiled_effects(project, tmp_path / "card.png")
+    by_id = {e["id"]: e for e in effects}
+    assert by_id["fx_in"]["type"] == "Fade"
+    assert by_id["fx_in"]["fade"] == "in"
+    assert by_id["fx_in"]["duration"]["Points"][0]["co"]["Y"] == 0.5
+    assert by_id["fx_b"]["type"] == "Brightness"
+    assert by_id["fx_b"]["brightness"]["Points"][0]["co"]["Y"] == 0.3
+
+    # UPDATE: change the fade duration in place; order and other effects unchanged.
+    project = editor_timeline.apply_command(project, {
+        "id": "cmd_update_fade",
+        "op": "clip.effect.update",
+        "actor": "agent",
+        "expectedRevision": 2,
+        "payload": {"clipId": "card_clip",
+                    "effect": {"id": "fx_in", "type": "fadeIn", "params": {"duration": 1.25}}},
+    })
+    assert [e["id"] for e in project["clips"]["card_clip"]["effects"]] == ["fx_in", "fx_b"]
+    effects = _compiled_effects(project, tmp_path / "card.png")
+    by_id = {e["id"]: e for e in effects}
+    assert by_id["fx_in"]["duration"]["Points"][0]["co"]["Y"] == 1.25
+
+    # DELETE: drop the fade; brightness survives and still compiles.
+    project = editor_timeline.apply_command(project, {
+        "id": "cmd_del_fade",
+        "op": "clip.effect.delete",
+        "actor": "agent",
+        "expectedRevision": 3,
+        "payload": {"clipId": "card_clip", "effectId": "fx_in"},
+    })
+    assert [e["id"] for e in project["clips"]["card_clip"]["effects"]] == ["fx_b"]
+    effects = _compiled_effects(project, tmp_path / "card.png")
+    assert [e["id"] for e in effects] == ["fx_b"]
+    assert effects[0]["type"] == "Brightness"
+
+
+def test_clip_effect_command_error_paths(tmp_path):
+    project = _project(tmp_path / "card.png")
+    project = editor_timeline.apply_command(project, {
+        "id": "cmd_add", "op": "clip.effect.add", "actor": "a", "expectedRevision": 0,
+        "payload": {"clipId": "card_clip",
+                    "effect": {"id": "fx_in", "type": "fadeIn", "params": {"duration": 0.5}}},
+    })
+
+    # Adding the same effect id twice is rejected.
+    with pytest.raises(editor_timeline.CommandValidationError):
+        editor_timeline.apply_command(project, {
+            "id": "cmd_dup", "op": "clip.effect.add", "actor": "a", "expectedRevision": 1,
+            "payload": {"clipId": "card_clip",
+                        "effect": {"id": "fx_in", "type": "fadeIn", "params": {"duration": 0.5}}},
+        })
+
+    # Updating / deleting an effect that does not exist is rejected.
+    with pytest.raises(editor_timeline.CommandValidationError):
+        editor_timeline.apply_command(project, {
+            "id": "cmd_upd", "op": "clip.effect.update", "actor": "a", "expectedRevision": 1,
+            "payload": {"clipId": "card_clip",
+                        "effect": {"id": "fx_missing", "type": "fadeIn", "params": {"duration": 0.5}}},
+        })
+    with pytest.raises(editor_timeline.CommandValidationError):
+        editor_timeline.apply_command(project, {
+            "id": "cmd_del", "op": "clip.effect.delete", "actor": "a", "expectedRevision": 1,
+            "payload": {"clipId": "card_clip", "effectId": "fx_missing"},
+        })
+
+    # An out-of-vocabulary effect type never reaches the bridge.
+    with pytest.raises(editor_timeline.CommandValidationError):
+        editor_timeline.apply_command(project, {
+            "id": "cmd_bad", "op": "clip.effect.add", "actor": "a", "expectedRevision": 1,
+            "payload": {"clipId": "card_clip",
+                        "effect": {"id": "fx_x", "type": "blur", "params": {}}},
+        })
+
+
+def test_clip_effect_crud_survives_replay(tmp_path):
+    """The command log must replay add/update/delete deterministically — replay_project
+    re-applies each logged command, so a divergence here would mean the persisted
+    history reconstructs a different effect set than the live project. The clip is
+    built via commands (asset.import + clip.create) so the whole project is log-derived
+    and replay_project can rebuild it from scratch."""
+    project = editor_timeline.new_project("ep_real", width=1920, height=1080, fps=30)
+    for cmd in (
+        {"id": "a1", "op": "asset.import", "expectedRevision": 0,
+         "payload": {"id": "card", "type": "image", "src": str(tmp_path / "card.png")}},
+        {"id": "cc", "op": "clip.create", "expectedRevision": 1,
+         "payload": {"clipId": "card_clip", "assetId": "card", "trackId": "graphics_1",
+                     "start": 0.0, "duration": 2.0}},
+        {"id": "c1", "op": "clip.effect.add", "expectedRevision": 2,
+         "payload": {"clipId": "card_clip",
+                     "effect": {"id": "fx_in", "type": "fadeIn", "params": {"duration": 0.5}}}},
+        {"id": "c2", "op": "clip.effect.add", "expectedRevision": 3,
+         "payload": {"clipId": "card_clip",
+                     "effect": {"id": "fx_b", "type": "brightness", "params": {"value": 0.2}}}},
+        {"id": "c3", "op": "clip.effect.update", "expectedRevision": 4,
+         "payload": {"clipId": "card_clip",
+                     "effect": {"id": "fx_in", "type": "fadeIn", "params": {"duration": 0.9}}}},
+        {"id": "c4", "op": "clip.effect.delete", "expectedRevision": 5,
+         "payload": {"clipId": "card_clip", "effectId": "fx_b"}},
+    ):
+        project = editor_timeline.apply_command(project, {"actor": "a", **cmd})
+
+    replayed = editor_timeline.replay_project(project)
+    live = project["clips"]["card_clip"]["effects"]
+    rebuilt = replayed["clips"]["card_clip"]["effects"]
+    assert [e["id"] for e in rebuilt] == [e["id"] for e in live] == ["fx_in"]
+    assert rebuilt[0]["params"]["duration"] == 0.9
