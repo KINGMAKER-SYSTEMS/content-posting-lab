@@ -302,26 +302,34 @@ def _is_editor_timeline_protected_asset(path: Path, protected_paths: set[Path]) 
 
 def _editor_timeline_dir_token():
     """A cheap change-token for the editor_timelines dir: a tuple over the dir mtime plus
-    (mtime, inode, size) for every *.json in it. A new/edited/removed timeline bumps this. Used to
-    detect a timeline save that lands DURING the destructive render trim, so we can refresh protection
-    per-deletion without re-globbing+re-parsing every JSON on each iteration. Returns -1.0 if the dir
-    can't be statted — treated as 'changed' so the caller re-scans (fail-safe: a stat we can't trust
-    means re-check).
+    (mtime, ctime, inode, size) for every *.json in it. A new/edited/removed timeline bumps this. Used
+    to detect a timeline save that lands DURING the destructive render trim, so we can refresh
+    protection per-deletion without re-globbing+re-parsing every JSON on each iteration. Returns -1.0
+    if the dir can't be statted — treated as 'changed' so the caller re-scans (fail-safe: a stat we
+    can't trust means re-check).
 
     mtime ALONE is not enough: editor saves go through atomic_save (write tmp + os.replace), and a
     save that lands in the SAME second as our last scan — or on a coarse-mtime filesystem, or with an
     editor that pins mtimes — leaves st_mtime unchanged. That stale token would skip the live re-scan
     and let the trim eat a render the just-saved timeline now references (the exact same-second TOCTOU
     this ticket calls out). os.replace gives the file a new INODE and the new content a new SIZE, so
-    folding both in flips the token even when the mtime second collides — still one stat per file, no
-    extra syscalls."""
+    folding both in flips the token even when the mtime second collides.
+
+    INODE+SIZE is still not enough for the residual hole this ticket closes: an IN-PLACE edit (rewrite
+    without os.replace, so same inode) that swaps a timeline's render ref for a DIFFERENT one of the
+    SAME byte length, with mtime pinned back to the prior second, leaves (mtime, inode, size)
+    byte-for-byte identical — a stale token, a skipped live re-scan, and a now-referenced render eaten
+    by the trim. st_ctime (inode change time) is bumped by ANY write to the inode and CANNOT be set by
+    os.utime, so it flips on that same-size in-place edit even when mtime/inode/size are all pinned. It
+    is already in the stat result, so folding it in costs ZERO extra syscalls — still one stat per
+    file in the common no-save case."""
     timeline_dir = ASSETS / "editor_timelines"
     try:
         token = [timeline_dir.stat().st_mtime]
         for p in sorted(timeline_dir.glob("*.json")):
             try:
                 st = p.stat()
-                token.append((st.st_mtime, st.st_ino, st.st_size))
+                token.append((st.st_mtime, st.st_ctime, st.st_ino, st.st_size))
             except OSError:
                 return -1.0
         return tuple(token)

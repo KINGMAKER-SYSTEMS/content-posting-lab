@@ -2090,3 +2090,146 @@ def test_gc_segments_protects_render_referenced_by_concurrent_save_in_final_gate
         "_gc_segments deleted a render referenced by a concurrent save landing in the final-gate "
         "window — the safe_to_delete() gate didn't re-read the token before tombstoning"
     )
+
+
+# ── SAME-SIZE IN-PLACE EDIT TOCTOU: the token-stale hole this ticket explicitly closes ─────────────
+# The prior same-second tests cover an atomic os.replace save (new inode, usually new size). The
+# residual hole the ticket names is narrower and nastier: a timeline rewritten IN PLACE (same inode)
+# whose new render ref happens to be the SAME byte length as the old one, with mtime pinned back to
+# the prior second. Then (mtime, inode, size) is byte-for-byte identical and an mtime+inode+size token
+# would NOT flip — the live re-scan is skipped and the trim eats the now-referenced render. st_ctime
+# is bumped by any write to the inode and cannot be forged via os.utime, so folding it into the token
+# catches this at zero extra syscall cost. These pin that the dir contents shifting (different ref)
+# without an mtime/inode/size change still flips the token and protects the render.
+
+
+def _equal_len_ref(store, ep_id):
+    """A /agenticnews-assets/ render ref for an episode whose id is a fixed width, so two such refs
+    for two same-width episode ids are byte-for-byte the SAME length — letting an in-place edit swap
+    one for the other without changing the file size."""
+    return "/agenticnews-assets/%s/renders/episode.mp4" % ep_id
+
+
+def test_dir_token_changes_on_same_size_inplace_edit_with_pinned_mtime(store):
+    """An IN-PLACE rewrite (same inode, no os.replace) that swaps the render ref for a different one
+    of the SAME byte length, with mtime pinned back, leaves (mtime, inode, size) identical. The token
+    must STILL flip — only st_ctime distinguishes it, and st_ctime can't be set by os.utime. An
+    mtime+inode+size-only token would miss this and let the trim delete a freshly-referenced render."""
+    tl = store / "editor_timelines"
+    f = tl / "ep_inplace.json"
+    old_ref = _equal_len_ref(store, "ep_oldddd")
+    new_ref = _equal_len_ref(store, "ep_newwww")
+    assert len(old_ref) == len(new_ref)
+    body_old = '{"renderCache": {"video": {"path": "%s"}}}' % old_ref
+    body_new = '{"renderCache": {"video": {"path": "%s"}}}' % new_ref
+    assert len(body_old) == len(body_new), "test bug: bodies must be equal length to exercise the hole"
+
+    f.write_text(body_old)
+    t = 1_700_000_000.0
+    os.utime(f, (t, t))
+    os.utime(tl, (t, t))
+    ino_before = f.stat().st_ino
+
+    before = abn_factory._editor_timeline_dir_token()
+
+    with open(f, "r+") as fh:  # IN PLACE — same inode, same length
+        fh.seek(0)
+        fh.write(body_new)
+        fh.truncate()
+    os.utime(f, (t, t))
+    os.utime(tl, (t, t))
+
+    st = f.stat()
+    assert st.st_ino == ino_before, "test bug: in-place edit must keep the same inode"
+    assert st.st_size == len(body_new.encode()), "test bug: rewrite must keep the same size"
+    assert st.st_mtime == t, "test bug: mtime must be pinned back to the prior second"
+
+    after = abn_factory._editor_timeline_dir_token()
+    assert before != after, (
+        "token did not change across a same-size in-place edit with pinned mtime — an "
+        "mtime+inode+size token would skip the live re-scan and let the trim delete a render the "
+        "rewritten timeline now references (the token-stale TOCTOU this ticket closes)"
+    )
+
+
+def test_safe_to_delete_catches_same_size_inplace_edit(store):
+    """Unit gate, the directly-named ticket scenario: a live set built while a timeline referenced
+    render A must refuse to delete render B once an IN-PLACE same-size, pinned-mtime rewrite of that
+    timeline swaps the ref to B. Only the ctime-folded token can flip here; with an mtime+inode+size
+    token safe_to_delete() would still return True and the trim would eat B."""
+    render_b = _render(store, "ep_newwww", age_s=9000)  # the render the edit will newly reference
+    tl = store / "editor_timelines"
+    f = tl / "ep_tl0000.json"
+    old_ref = _equal_len_ref(store, "ep_oldddd")        # initially points elsewhere (same width)
+    new_ref = _agenticnews_ref(store, render_b)
+    body_old = '{"renderCache": {"video": {"path": "%s"}}}' % old_ref
+    body_new = '{"renderCache": {"video": {"path": "%s"}}}' % new_ref
+    assert len(body_old) == len(body_new), "test bug: bodies must match length to exercise the hole"
+
+    t = 1_700_000_000.0
+    f.write_text(body_old)
+    os.utime(f, (t, t))
+    os.utime(tl, (t, t))
+
+    live = abn_factory._LiveProtectionSet(abn_factory._editor_timeline_asset_paths())
+    assert live.safe_to_delete(render_b) is True, "render_b is unreferenced before the edit"
+
+    with open(f, "r+") as fh:  # IN PLACE — same inode, same length
+        fh.seek(0)
+        fh.write(body_new)
+        fh.truncate()
+    os.utime(f, (t, t))
+    os.utime(tl, (t, t))
+
+    assert live.safe_to_delete(render_b) is False, (
+        "safe_to_delete must re-scan and refuse to delete a render that an in-place, same-size, "
+        "pinned-mtime timeline edit now references — the token-stale TOCTOU this ticket hardens"
+    )
+
+
+def test_purge_disk_protects_render_referenced_by_same_size_inplace_midtrim_edit(store, monkeypatch):
+    """End-to-end: a timeline rewritten IN PLACE mid-trim (same inode, same byte length, mtime pinned
+    to the prior second) to reference the render the loop is about to reach must spare that render —
+    while the genuinely-unreferenced victim still trims. This is the same-second test's nastier
+    cousin: nothing but st_ctime distinguishes the edited timeline, so only the ctime-folded token
+    closes it."""
+    pinned = 1_700_000_000.0
+    os.utime(store / "editor_timelines", (pinned, pinned))
+
+    _render(store, "ep_keepip", age_s=10)                     # newest -> kept (keep_episodes=1)
+    victim = _render(store, "ep_vicip0", age_s=8000)          # next-newest victim -> trims first
+    late_protected = _render(store, "ep_lateip", age_s=9000)  # oldest; referenced mid-trim, reached last
+
+    tl = store / "editor_timelines" / "ep_tl00ip.json"
+    placeholder_ref = _equal_len_ref(store, "ep_nonexs")  # same width as the real ref
+    real_ref = _agenticnews_ref(store, late_protected)
+    body_old = '{"renderCache": {"video": {"path": "%s"}}}' % placeholder_ref
+    body_new = '{"renderCache": {"video": {"path": "%s"}}}' % real_ref
+    assert len(body_old) == len(body_new), "test bug: bodies must match length to exercise the hole"
+    tl.write_text(body_old)
+    os.utime(tl, (pinned, pinned))
+    os.utime(store / "editor_timelines", (pinned, pinned))
+
+    real_tr = abn_factory.tombstone_render
+
+    def inplace_edit_then_tombstone(path):
+        if Path(path) == victim:
+            with open(tl, "r+") as fh:  # IN PLACE — same inode, same length
+                fh.seek(0)
+                fh.write(body_new)
+                fh.truncate()
+            os.utime(tl, (pinned, pinned))                 # pin mtime back to the prior second
+            os.utime(store / "editor_timelines", (pinned, pinned))
+        return real_tr(path)
+
+    monkeypatch.setattr(abn_factory, "tombstone_render", inplace_edit_then_tombstone)
+    _force_low_disk(monkeypatch)
+
+    abn_factory.purge_disk(intermediate_age_s=99999, keep_episodes=1, low_disk_gb=999)
+
+    assert not victim.exists(), "the genuinely-unreferenced render should still be trimmed"
+    assert late_protected.exists(), (
+        "a render referenced by a SAME-SIZE in-place mid-trim edit (mtime/inode/size all pinned) was "
+        "tombstoned — the live token relied on mtime+inode+size and missed the ctime-only change "
+        "(the token-stale TOCTOU this ticket closes)"
+    )
