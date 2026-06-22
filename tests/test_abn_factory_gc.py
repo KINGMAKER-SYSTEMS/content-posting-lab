@@ -655,6 +655,36 @@ def test_tombstone_refuses_non_scratch_paths(store):
     assert render.exists() and vo.exists() and link.is_symlink()
 
 
+def test_purge_disk_survives_poisoned_enumerator_returning_schema_dir(store, monkeypatch):
+    """AUDIT (schema-dir deletions): even if reapable_scratch() were buggy and yielded a schema dir
+    like ep_a12345/audio/ (the exact failure mode the enumeration guards exist to prevent), purge_disk
+    must NOT reap it. Two independent layers catch it: the loop's `if f.is_file()` test is False for a
+    directory so the tombstone call is never reached, and tombstone() itself RAISES on a non-scratch
+    dir. We poison the enumerator at the factory call site and prove the schema dir is left fully
+    intact while a legitimately-aged scratch file alongside it is still reaped."""
+    audio_dir = store / "ep_a12345" / "audio"
+    audio_dir.mkdir(parents=True)
+    vo = audio_dir / "s0_voice.wav"
+    vo.write_bytes(b"the real VO - must never be tombstoned")
+    old = time.time() - 7200
+    os.utime(audio_dir, (old, old))  # aged so a naive mtime check would select it
+
+    legit = _scratch(store, "ep_a12345", "s0_raw.wav", body=b"reapable")
+
+    # Simulate a regressed enumerator that leaks a schema dir into the reapable set.
+    monkeypatch.setattr(abn_factory, "reapable_scratch", lambda: [audio_dir, legit])
+    # keep disk healthy so the low-disk render trim path is irrelevant to this assertion
+    monkeypatch.setattr(shutil, "disk_usage", lambda _: namedtuple("u", "total used free")(100, 0, 100 * 1e9))
+
+    abn_factory.purge_disk(intermediate_age_s=1, keep_episodes=99, low_disk_gb=0)
+
+    assert audio_dir.is_dir(), "purge_disk reaped a schema dir handed to it by a poisoned enumerator"
+    assert vo.exists() and vo.read_bytes() == b"the real VO - must never be tombstoned"
+    assert not (store / "_trash" / "ep_a12345" / "audio").exists(), "schema dir must never be tombstoned"
+    assert not legit.exists(), "the genuine aged scratch file should still have been reaped"
+    assert (store / "_trash" / "ep_a12345" / "scratch" / "s0_raw.wav").exists()
+
+
 def test_tombstone_collision_does_not_clobber(store):
     """Two reaps of the same relative scratch name must not overwrite each other in _trash/."""
     f1 = _scratch(store, "ep_a111111", "s0_raw.wav", body=b"first")
