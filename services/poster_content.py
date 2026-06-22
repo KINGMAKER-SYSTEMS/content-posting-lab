@@ -17,12 +17,15 @@ Source of truth:
 This is a read/aggregation layer only; it does not send anything.
 """
 
+import logging
 from typing import Any
 
 from project_manager import sanitize_project_name
 from services.poster_router import resolve_poster_for_page
 from services.roster import list_all_pages
 from services.telegram import get_poster
+
+log = logging.getLogger("services.poster_content")
 
 
 def pages_for_poster(poster: dict[str, Any]) -> list[dict[str, Any]]:
@@ -99,6 +102,10 @@ def videos_for_poster(
     page_summaries: list[dict[str, Any]] = []
     videos: list[dict[str, Any]] = []
 
+    # Projects whose scan raised — tracked so we don't silently report 0 videos
+    # as if the page is simply empty (silence here = missing content / SLA miss).
+    failed_projects: set[str] = set()
+
     for page in pages:
         iid = page.get("integration_id")
         project = page.get("project")
@@ -108,7 +115,16 @@ def videos_for_poster(
                 try:
                     project_cache[project] = _scan_project_videos(project)
                 except Exception:
+                    # Don't swallow: log with traceback and flag the page so the
+                    # caller can distinguish "scan failed" from "no videos".
+                    log.exception(
+                        "poster_content: video scan failed for project %r "
+                        "(page %r); reporting scan_error to caller",
+                        project,
+                        iid,
+                    )
                     project_cache[project] = []
+                    failed_projects.add(project)
             for v in project_cache[project]:
                 videos.append(
                     {
@@ -131,11 +147,16 @@ def videos_for_poster(
                 "provider": page.get("provider"),
                 "status": page.get("status"),
                 "video_count": count,
+                "scan_error": project in failed_projects,
             }
         )
 
     videos.sort(key=lambda v: v.get("created") or 0, reverse=True)
-    return {"pages": page_summaries, "videos": videos}
+    return {
+        "pages": page_summaries,
+        "videos": videos,
+        "scan_errors": sorted(failed_projects),
+    }
 
 
 def poster_summary(poster: dict[str, Any]) -> dict[str, Any]:
