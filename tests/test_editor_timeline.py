@@ -1,3 +1,4 @@
+import copy
 import shutil
 import subprocess
 
@@ -3854,3 +3855,132 @@ def test_merge_keyframes_tolerates_none_and_empty_groups():
     vol = [{"property": "volume", "keyframes": [{"time": 0, "value": 0.5}]}]
     assert timeline._merge_keyframes(None, [], vol) == vol
     assert timeline._merge_keyframes() == []
+
+
+def _split_fixture_project():
+    """A project with one 10s clip carrying a volume envelope that spans the split
+    point and four effects (start-anchored fadeIn/crossfade, end-anchored fadeOut,
+    whole-clip brightness) — the exact surface the clip.split mutation paths touch."""
+    project = timeline.new_project("p_split", title="Split")
+    project = timeline.apply_command(project, {
+        "id": "cmd_asset", "op": "asset.import", "actor": "editor",
+        "expectedRevision": project["revision"],
+        "payload": {"assetId": "a1", "type": "video", "src": "/x/clip.mp4"},
+    })
+    project = timeline.apply_command(project, {
+        "id": "cmd_clip", "op": "clip.create", "actor": "editor",
+        "expectedRevision": project["revision"],
+        "payload": {"clipId": "c1", "assetId": "a1", "trackId": "video_1",
+                    "start": 5.0, "duration": 10.0, "sourceStart": 1.0},
+    })
+    # Volume envelope: points straddling the split at clip-local t=4.
+    project = timeline.apply_command(project, {
+        "id": "cmd_kf", "op": "clip.keyframes", "actor": "editor",
+        "expectedRevision": project["revision"],
+        "payload": {"clipId": "c1", "keyframes": [
+            {"property": "volume", "points": [
+                {"t": 0.0, "value": 1.0}, {"t": 2.0, "value": 0.5},
+                {"t": 4.0, "value": 0.8}, {"t": 8.0, "value": 0.2},
+            ]},
+        ]},
+    })
+    for fx in (
+        {"id": "fx_in", "type": "fadeIn", "params": {"duration": 2.0}},
+        {"id": "fx_xf", "type": "crossfade", "params": {"duration": 6.0}},
+        {"id": "fx_out", "type": "fadeOut", "params": {"duration": 3.0}},
+        {"id": "fx_bri", "type": "brightness", "params": {"value": 0.3}},
+    ):
+        project = timeline.apply_command(project, {
+            "id": f"cmd_{fx['id']}", "op": "clip.effect.add", "actor": "editor",
+            "expectedRevision": project["revision"],
+            "payload": {"clipId": "c1", "effect": fx},
+        })
+    return project
+
+
+def test_clip_split_rebases_keyframes_and_routes_effects_across_halves():
+    """clip.split must (1) trim the head keyframe envelope to t<=offset, (2) rebase the
+    tail envelope to t>=offset with t-=offset, (3) keep start-anchored fades whole on
+    the head and drop the end-anchored fadeOut there, and (4) on the tail keep fadeOut
+    but re-fit start-anchored fades for the trimmed front (front_trim=offset), dropping
+    any whose ramp the trim fully ate. Exercises _keyframes_before/_keyframes_after and
+    _effects_for_split_half — the mutation paths test_editor_timeline_api never hits."""
+    project = _split_fixture_project()
+    # Clip starts at 5.0, duration 10.0 -> split at absolute 9.0 == clip-local t=4.0.
+    project = timeline.apply_command(project, {
+        "id": "cmd_split", "op": "clip.split", "actor": "editor",
+        "expectedRevision": project["revision"],
+        "payload": {"clipId": "c1", "at": 9.0, "newClipId": "c2"},
+    })
+    head = project["clips"]["c1"]
+    tail = project["clips"]["c2"]
+
+    # Geometry: head shrinks to the split, tail picks up the remainder + source offset.
+    assert head["duration"] == 4.0
+    assert tail["start"] == 9.0
+    assert tail["duration"] == 6.0
+    assert tail["sourceStart"] == 1.0 + 4.0  # original sourceStart + split offset
+    assert tail["metadata"]["splitFrom"] == "c1"
+
+    # (1) Head keyframes trimmed to t <= 4.0 (boundary point kept).
+    head_vol = next(t for t in head["keyframes"] if t["property"] == "volume")
+    assert [p["t"] for p in head_vol["points"]] == [0.0, 2.0, 4.0]
+    assert [p["value"] for p in head_vol["points"]] == [1.0, 0.5, 0.8]
+    # (2) Tail keyframes rebased: t >= 4.0 with t -= 4.0 (continuous boundary at t=0).
+    tail_vol = next(t for t in tail["keyframes"] if t["property"] == "volume")
+    assert [p["t"] for p in tail_vol["points"]] == [0.0, 4.0]
+    assert [p["value"] for p in tail_vol["points"]] == [0.8, 0.2]
+
+    # (3) Head effects: keeps start-anchored fadeIn/crossfade whole, drops end-anchored
+    # fadeOut, keeps whole-clip brightness.
+    head_fx = {e["type"]: e for e in head["effects"]}
+    assert set(head_fx) == {"fadeIn", "crossfade", "brightness"}
+    assert head_fx["fadeIn"]["params"]["duration"] == 2.0
+    assert head_fx["crossfade"]["params"]["duration"] == 6.0
+    assert head_fx["brightness"]["params"]["value"] == 0.3
+
+    # (4) Tail effects: fadeOut kept; crossfade re-fit by front_trim=4 -> 6-4=2; the
+    # fadeIn (duration 2) is fully eaten by the trim (2-4<=0) and dropped; brightness
+    # copies unchanged.
+    tail_fx = {e["type"]: e for e in tail["effects"]}
+    assert set(tail_fx) == {"crossfade", "fadeOut", "brightness"}
+    assert tail_fx["crossfade"]["params"]["duration"] == 2.0
+    assert tail_fx["fadeOut"]["params"]["duration"] == 3.0
+    assert "fadeIn" not in tail_fx
+
+
+def test_clip_unsplit_restores_original_keyframes_and_effects():
+    """clip.unsplit must revert a recorded clip.split exactly: the head clip is restored
+    to its pre-split keyframes/effects/duration and the created tail clip is removed.
+    Uses the split command's own recorded `before.clip` baseline (the contract enforced
+    by _validate_unsplit_reverts_recorded_split)."""
+    project = _split_fixture_project()
+    pre_split = copy.deepcopy(project["clips"]["c1"])
+    project = timeline.apply_command(project, {
+        "id": "cmd_split", "op": "clip.split", "actor": "editor",
+        "expectedRevision": project["revision"],
+        "payload": {"clipId": "c1", "at": 9.0, "newClipId": "c2"},
+    })
+    assert "c2" in project["clips"]
+
+    # The split entry records the original clip under before.clip — the unsplit baseline.
+    split_entry = next(e for e in project["commandLog"] if e["id"] == "cmd_split")
+    original = split_entry["before"]["clip"]
+
+    project = timeline.apply_command(project, {
+        "id": "cmd_unsplit", "op": "clip.unsplit", "actor": "editor",
+        "expectedRevision": project["revision"],
+        "revertsCommandId": "cmd_split",
+        "payload": {"clipId": "c1", "createdClipId": "c2", "clip": original},
+    })
+
+    # Tail clip removed; head clip restored bit-for-bit to its pre-split state.
+    assert "c2" not in project["clips"]
+    restored = project["clips"]["c1"]
+    assert restored["duration"] == 10.0
+    restored_vol = next(t for t in restored["keyframes"] if t["property"] == "volume")
+    assert [p["t"] for p in restored_vol["points"]] == [0.0, 2.0, 4.0, 8.0]
+    assert {e["type"] for e in restored["effects"]} == {
+        "fadeIn", "crossfade", "fadeOut", "brightness"
+    }
+    assert restored == pre_split
