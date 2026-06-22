@@ -438,17 +438,31 @@ def _ken_burns_keyframes(ken_burns: Any, duration: float) -> list[dict[str, Any]
 
 
 def _shot_keyframes(shot: dict[str, Any]) -> list[dict[str, Any]]:
-    """Promote an ABN shot's explicit `keyframes` envelope (e.g. a volume ducking
-    track the factory baked) onto the clip.
+    """Promote an ABN shot's keyframe envelopes (e.g. a volume ducking track the
+    factory baked) onto the clip.
+
+    Two sources are accepted, mirroring the music bed (which reads both an explicit
+    `keyframes` and a sibling `musicBedKeyframes`):
+      * `keyframes` — hand-authored on the shot itself.
+      * `keyframesEnvelope` / `duckingKeyframes` — a factory-attached envelope passed
+        as a SEPARATE field (e.g. a ducking track abn_factory adds dynamically).
+    Without the second source a factory ducking envelope is silently dropped at import
+    and the render loses the ducking it intended (editor_render volume filter has
+    nothing to animate). Both are merged with the same precedence used elsewhere — an
+    explicit per-property `keyframes` track wins over the envelope.
 
     `_ken_burns_keyframes` only synthesizes scale/x/y tracks from a `kenBurns` block,
-    so a shot that ships a hand-authored `keyframes` envelope (volume/opacity/...)
-    was previously dropped. Run it through the same lenient validator as the bed so a
-    malformed envelope is skipped — not fatal — since the raw shot is still preserved
-    under clip.metadata.shot for re-import.
+    so a shot that ships a `keyframes`/envelope (volume/opacity/...) was previously
+    dropped. Each is run through the same lenient validator as the bed so a malformed
+    envelope is skipped — not fatal — since the raw shot is still preserved under
+    clip.metadata.shot for re-import.
     """
 
-    return _validated_keyframes_lenient(shot.get("keyframes"))
+    explicit = _validated_keyframes_lenient(shot.get("keyframes"))
+    envelope = _validated_keyframes_lenient(
+        shot.get("keyframesEnvelope") or shot.get("duckingKeyframes")
+    )
+    return _merge_keyframes(explicit, envelope)
 
 
 def _merge_keyframes(*groups: list[dict[str, Any]]) -> list[dict[str, Any]]:

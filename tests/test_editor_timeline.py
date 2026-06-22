@@ -205,6 +205,62 @@ def test_import_promotes_shot_volume_envelope_alongside_ken_burns():
     assert props["volume"]["points"][1]["value"] == 0.22
 
 
+def test_import_promotes_shot_ducking_envelope_from_separate_field():
+    """A factory-attached ducking envelope passed as a SEPARATE shot field
+    (keyframesEnvelope / duckingKeyframes) must survive import, mirroring how the
+    music bed reads its sibling `musicBedKeyframes`. Previously _shot_keyframes only
+    read `shot.keyframes`, so a dynamically-attached envelope was silently dropped and
+    the render lost the ducking the factory intended."""
+    for field in ("keyframesEnvelope", "duckingKeyframes"):
+        project = timeline.project_from_abn_timeline("p", {
+            "episodeId": "e", "totalSec": 4.0,
+            "segments": [{"segmentId": "s0", "durationSec": 4.0, "shots": [{
+                "id": "shot_a", "src": "/agenticnews-assets/card.png", "type": "artifact",
+                "startSec": 0.0, "durationSec": 4.0,
+                "kenBurns": {"startScale": 1.0, "endScale": 1.1},
+                field: [{"property": "volume", "points": [
+                    {"t": 0.0, "value": 1.0}, {"t": 1.0, "value": 0.2},
+                ]}],
+            }]}],
+        })
+        clip = next(c for c in project["clips"].values() if c["kind"] == "artifact")
+        props = {t["property"]: t for t in clip["keyframes"]}
+        # kenBurns scale track AND the separate-field volume envelope both survive.
+        assert "scale" in props, field
+        assert "volume" in props, field
+        assert props["volume"]["points"][1]["value"] == 0.2, field
+
+
+def test_import_explicit_shot_keyframes_win_over_separate_envelope():
+    """When both `keyframes` and a separate envelope field set the same property, the
+    hand-authored explicit `keyframes` track wins (same precedence as kenBurns vs
+    explicit), while non-overlapping envelope properties still pass through."""
+    project = timeline.project_from_abn_timeline("p", {
+        "episodeId": "e", "totalSec": 4.0,
+        "segments": [{"segmentId": "s0", "durationSec": 4.0, "shots": [{
+            "id": "shot_a", "src": "/agenticnews-assets/card.png", "type": "artifact",
+            "startSec": 0.0, "durationSec": 4.0,
+            "keyframes": [{"property": "volume", "points": [
+                {"t": 0.0, "value": 1.0}, {"t": 1.0, "value": 0.5},
+            ]}],
+            "keyframesEnvelope": [
+                {"property": "volume", "points": [
+                    {"t": 0.0, "value": 1.0}, {"t": 1.0, "value": 0.99},
+                ]},
+                {"property": "opacity", "points": [
+                    {"t": 0.0, "value": 1.0}, {"t": 1.0, "value": 0.0},
+                ]},
+            ],
+        }]}],
+    })
+    clip = next(c for c in project["clips"].values() if c["kind"] == "artifact")
+    props = {t["property"]: t for t in clip["keyframes"]}
+    # explicit volume (0.5) wins over the envelope's 0.99
+    assert props["volume"]["points"][1]["value"] == 0.5
+    # envelope-only property still passes through
+    assert "opacity" in props
+
+
 def test_import_drops_malformed_shot_envelope_without_aborting():
     """A bad shot envelope must be skipped, not fatal — the raw shot is preserved in
     metadata.shot for re-import, and the rest of the import must still succeed."""
