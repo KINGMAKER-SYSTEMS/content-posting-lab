@@ -327,6 +327,67 @@ def test_shot_ducking_envelope_reaches_render_path_unflattened():
         assert "0.7000" in flt and "0.2200" in flt, field
 
 
+def test_clip_keyframes_command_neutralizes_flat_volume_end_to_end():
+    """A `clip.keyframes` command that adds a volume envelope to a pre-ducked music
+    bed (flat volume=0.22) must neutralize the flat gain to 1.0, and that
+    neutralization must survive the round-trip to BOTH render backends so neither
+    double-attenuates the bed (the documented 0.6 -> 0.6*0.22 = 0.132 bug).
+
+    Covers the gap the import-time tests miss: the envelope arrives via the live
+    command path (editor_timeline.apply_command, op clip.keyframes) rather than at
+    import. Asserts (1) the timeline state neutralizes, (2) openshot_bridge.clip_json
+    emits the envelope's ABSOLUTE gains (not base-scaled, not flat 0.22), and (3)
+    editor_render._volume_filter emits the same absolute, time-varying expression."""
+    from services import editor_render
+    from services import openshot_bridge
+
+    project = timeline.project_from_abn_timeline("p", {
+        "episodeId": "e", "totalSec": 4.0, "musicBed": "/agenticnews-assets/bed.mp3",
+        "segments": [{"segmentId": "s0", "durationSec": 4.0, "shots": [],
+                      "audio": {"vo": {"src": "/agenticnews-assets/vo.wav", "duration": 4.0}}}],
+    })
+    bed_id = next(cid for cid, c in project["clips"].items() if c["kind"] == "music_bed")
+    # Bed imported pre-ducked with a FLAT gain (no envelope yet) — the dangerous
+    # starting state: if the command doesn't neutralize, this 0.22 stays alongside
+    # the absolute envelope and both backends double-attenuate.
+    assert project["clips"][bed_id]["volume"] == 0.22
+    assert not project["clips"][bed_id].get("keyframes")
+
+    # User adds an absolute ducking envelope via the live command path.
+    project = timeline.apply_command(project, {
+        "id": "cmd_kf",
+        "op": "clip.keyframes",
+        "actor": "editor",
+        "expectedRevision": project["revision"],
+        "payload": {"clipId": bed_id, "keyframes": [
+            {"property": "volume", "points": [
+                {"t": 0.0, "value": 0.6}, {"t": 1.0, "value": 0.22},
+            ]},
+        ]},
+    })
+
+    bed = project["clips"][bed_id]
+    # (1) Timeline state: the flat 0.22 duck is neutralized to 1.0 so the absolute
+    # envelope drives ducking; the envelope itself survives.
+    assert bed["volume"] == 1.0
+    assert any(t["property"] == "volume" for t in bed["keyframes"])
+
+    # (2) OpenShot JSON round-trip: the volume keyframe track carries the envelope's
+    # ABSOLUTE gains (scaled to OpenShot's 0..100), NOT the flat base and NOT a
+    # base-scaled value. 0.6 -> 60.0, 0.22 -> 22.0. A double-attenuated render would
+    # show 0.6*0.22*100 = 13.2 here.
+    cj = openshot_bridge.clip_json(project, bed)
+    ys = [round(pt["co"]["Y"], 4) for pt in cj["volume"]["Points"]]
+    assert ys == [60.0, 22.0]
+
+    # (3) ffmpeg-mux round-trip: _volume_filter emits the same absolute, time-varying
+    # expression — never a flat `volume=0.22` and never a 0.132 double-attenuation.
+    flt = editor_render._volume_filter(bed, float(bed["volume"]))
+    assert flt.startswith("volume='") and flt.endswith(":eval=frame")
+    assert "0.6000" in flt and "0.2200" in flt
+    assert "0.1320" not in flt  # the double-attenuation bug must not appear
+
+
 def test_import_drops_malformed_shot_envelope_without_aborting():
     """A bad shot envelope must be skipped, not fatal — the raw shot is preserved in
     metadata.shot for re-import, and the rest of the import must still succeed."""
