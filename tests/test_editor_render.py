@@ -1094,3 +1094,696 @@ def test_windowed_clips_leading_clip_no_front_trim_leaves_keyframes_untouched():
     # No shift performed -> the keyframe list passes through by reference.
     assert clip["keyframes"] is original_tracks
     assert clip["keyframes"][0]["points"][0]["t"] == pytest.approx(0.5)
+
+
+def _single_audio_clip_project(tmp_path):
+    """A minimal one-audio-clip project whose asset exists on disk, so the
+    _mux_timeline_audio guards (ffmpeg present, clip present, asset exists) all
+    pass and execution reaches the subprocess.run call."""
+    tone = tmp_path / "tone.wav"
+    tone.write_bytes(b"")  # only .exists() is checked before the (mocked) ffmpeg run
+    project = timeline.new_project("mux_errpath", width=96, height=64, fps=12)
+    project["assets"]["tone"] = {"id": "tone", "type": "audio", "src": str(tone)}
+    project["clips"]["tone"] = {
+        "id": "tone", "assetId": "tone", "trackId": "audio_1", "kind": "music",
+        "start": 0, "duration": 1.0, "sourceStart": 0, "enabled": True,
+        "muted": False, "volume": 1, "transform": {},
+    }
+    return project
+
+
+# ---------------------------------------------------------------------------
+# Render-path keyframe-translation round-trip (libopenshot-FREE).
+#
+# OpenShotRenderer._timeline feeds openshot_bridge.timeline_json(project) into
+# libopenshot — so the keyframe envelope -> OpenShot keyframe JSON translation is
+# on the production render path, but the only render-layer coverage of it
+# (test_opacity_keyframe_envelope_actually_animates_through_openshot) SKIPS where
+# the bindings are absent. These tests drive a full multi-property envelope through
+# the exact bridge entrypoint the render path uses (reached via the same
+# editor_render.openshot_bridge reference), so the translation is pinned on EVERY
+# box, bindings or not. They also exercise the render-layer windowing
+# (_render_scope_project) -> bridge JSON hand-off, the round-trip the ticket flags.
+# ---------------------------------------------------------------------------
+
+
+def _full_envelope_project(*, source_start: float = 0.0) -> dict:
+    """A clip carrying every keyframable property at once (volume duck + scale
+    pop + x/y pan + spin), so one assertion sweep covers the whole property map."""
+    project = timeline.new_project("kf_roundtrip", width=1920, height=1080, fps=30)
+    project["assets"]["bed"] = {"id": "bed", "type": "audio", "src": "/bed.wav", "metadata": {}}
+    project["clips"]["c1"] = {
+        "id": "c1", "assetId": "bed", "trackId": "music_1", "kind": "music_bed",
+        "start": 4.0, "duration": 3.0, "sourceStart": source_start,
+        "enabled": True, "muted": False, "volume": 1.0,
+        "transform": {"x": 0.5, "y": 0.5, "scale": 1.0, "opacity": 1.0},
+        "effects": [],
+        "keyframes": [
+            {"property": "volume", "points": [
+                {"t": 0.0, "value": 1.0, "interp": "linear"},
+                {"t": 1.0, "value": 0.2, "interp": "constant"},
+                {"t": 3.0, "value": 1.0, "interp": "bezier"},
+            ]},
+            {"property": "scale", "points": [
+                {"t": 0.0, "value": 1.0}, {"t": 1.5, "value": 1.4},
+            ]},
+            {"property": "x", "points": [{"t": 0.0, "value": 0.0}, {"t": 3.0, "value": 1.0}]},
+            {"property": "y", "points": [{"t": 0.0, "value": 0.5}, {"t": 3.0, "value": 0.25}]},
+            {"property": "rotation", "points": [{"t": 0.0, "value": 0.0}, {"t": 3.0, "value": 90.0}]},
+        ],
+        "metadata": {},
+    }
+    return project
+
+
+# --- render-fidelity: a SINGLE clip carrying keyframes + effects + a non-default
+# transform all at once must round-trip into the OpenShot timeline JSON that
+# OpenShotRenderer.render feeds to Timeline.SetJson (editor_render.py L335). The
+# existing bridge tests each exercise one dimension in isolation; the factory
+# composites clips that animate, fade, AND are repositioned simultaneously, and
+# that combination had no regression coverage. timeline_json() is the exact
+# compiler contract, so assert it directly (no libopenshot needed -> never skips).
+
+def _fidelity_project() -> dict:
+    """A 96x64@12fps project whose one clip is trimmed (sourceStart=1.0),
+    repositioned/scaled, fades in, AND animates opacity 0->1 — every render
+    dimension active on the same clip."""
+    project = timeline.new_project("fidelity", width=96, height=64, fps=12)
+    project["assets"]["card"] = {"id": "card", "type": "image", "src": "/tmp/card.png", "metadata": {}}
+    project["clips"]["card_clip"] = {
+        "id": "card_clip", "assetId": "card", "trackId": "graphics_1", "kind": "artifact",
+        "start": 0.0, "duration": 2.0, "sourceStart": 1.0,
+        "enabled": True, "muted": False, "volume": 1.0,
+        "transform": {"x": 0.25, "y": 0.75, "scale": 0.5, "opacity": 1.0},
+        "effects": [{"id": "fx_in", "type": "fadeIn", "params": {"duration": 0.5}}],
+        "keyframes": [{"property": "opacity", "points": [
+            {"t": 0.0, "value": 0.0, "interp": "linear"},
+            {"t": 2.0, "value": 1.0, "interp": "linear"},
+        ]}],
+        "metadata": {},
+    }
+    return project
+
+
+def test_open_shot_audio_mux_raises_render_error_on_timeout(tmp_path, monkeypatch):
+    """services/editor_render.py:808-809 — a TimeoutExpired from the ffmpeg mux
+    subprocess is re-raised as RenderError, not allowed to escape raw. Mock
+    subprocess.run so the timeout path is deterministic and ffmpeg-independent."""
+    project = _single_audio_clip_project(tmp_path)
+    video = tmp_path / "silent_video.mp4"
+    video.write_bytes(b"")
+
+    monkeypatch.setattr(editor_render.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+
+    def _timeout(*args, **kwargs):
+        raise subprocess.TimeoutExpired(cmd="ffmpeg", timeout=900)
+
+    monkeypatch.setattr(editor_render.subprocess, "run", _timeout)
+
+    with pytest.raises(editor_render.RenderError) as excinfo:
+        editor_render._mux_timeline_audio(project, video, duration=1.0, asset_root=None)
+    assert "timed out" in str(excinfo.value)
+    # Original mp4 must be left intact (the temp replace is never reached).
+    assert video.exists()
+
+
+def test_open_shot_audio_mux_raises_render_error_on_nonzero_returncode(tmp_path, monkeypatch):
+    """services/editor_render.py:810-811 — a non-zero ffmpeg return code surfaces
+    its stderr tail as a RenderError. Mock subprocess.run to fail without touching
+    real ffmpeg, and confirm the failed temp output never clobbers the source."""
+    project = _single_audio_clip_project(tmp_path)
+    video = tmp_path / "silent_video.mp4"
+    video.write_bytes(b"original-bytes")
+
+    monkeypatch.setattr(editor_render.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+
+    class _Failed:
+        returncode = 1
+        stderr = "ffmpeg: invalid filtergraph boom"
+        stdout = ""
+
+    monkeypatch.setattr(editor_render.subprocess, "run", lambda *a, **k: _Failed())
+
+    with pytest.raises(editor_render.RenderError) as excinfo:
+        editor_render._mux_timeline_audio(project, video, duration=1.0, asset_root=None)
+    assert "invalid filtergraph boom" in str(excinfo.value)
+    # temp_output.replace(output) is past the raise, so the source is untouched.
+    assert video.read_bytes() == b"original-bytes"
+
+
+def test_render_path_translates_full_keyframe_envelope_to_openshot_json():
+    """Every keyframable property fans out to the right OpenShot clip key(s) with the
+    documented value transform, monotonic frame X (t*fps + 1 with no trim), and
+    interp map — reached through editor_render's own bridge reference, i.e. exactly
+    what OpenShotRenderer._timeline serializes. Needs no libopenshot."""
+    project = _full_envelope_project()
+    clip = editor_render.openshot_bridge.timeline_json(project)["clips"][0]
+
+    # volume: 0..1 -> 0..100, frame X = t*30 + 1, interp linear/constant/bezier preserved
+    vol = clip["volume"]["Points"]
+    assert [p["co"]["X"] for p in vol] == [1.0, 31.0, 91.0]
+    assert [round(p["co"]["Y"], 2) for p in vol] == [100.0, 20.0, 100.0]
+    assert [p["interpolation"] for p in vol] == [
+        editor_render.openshot_bridge.LINEAR,
+        editor_render.openshot_bridge.CONSTANT,
+        editor_render.openshot_bridge._INTERPOLATION_MAP["bezier"],
+    ]
+    # scale: one editor track animates BOTH axes identically (>=0 floor transform)
+    assert [p["co"]["Y"] for p in clip["scale_x"]["Points"]] == [1.0, 1.4]
+    assert clip["scale_y"]["Points"] == clip["scale_x"]["Points"]
+    # x/y: 0..1 -> centered -1..1 (same _location transform as the flat default)
+    assert [p["co"]["Y"] for p in clip["location_x"]["Points"]] == [-1.0, 1.0]
+    assert [p["co"]["Y"] for p in clip["location_y"]["Points"]] == [0.0, -0.5]
+    # rotation: pass-through degrees
+    assert [p["co"]["Y"] for p in clip["rotation"]["Points"]] == [0.0, 90.0]
+    # an envelope present means the flat single-point default was overridden, not appended
+    assert len(clip["scale_x"]["Points"]) == 2
+    # frame X is strictly increasing across every multi-point envelope (monotonic time)
+    for key in ("volume", "scale_x", "location_x", "location_y", "rotation"):
+        xs = [p["co"]["X"] for p in clip[key]["Points"]]
+        assert xs == sorted(xs) and len(set(xs)) == len(xs), key
+
+
+def test_render_path_envelope_frame_X_offsets_by_source_start():
+    """A trimmed clip (sourceStart>0) must offset every keyframe's frame X by
+    sourceStart*fps so the envelope lands at the right SOURCE frame, not the right
+    timeline frame — the trimmed-clip translation the ffmpeg fallback can't do at all."""
+    project = _full_envelope_project(source_start=2.0)
+    clip = editor_render.openshot_bridge.timeline_json(project)["clips"][0]
+
+    # X = (sourceStart 2.0 + t) * 30fps + 1: volume points at t=0,1,3 -> 61,91,151
+    assert [p["co"]["X"] for p in clip["volume"]["Points"]] == [61.0, 91.0, 151.0]
+    # the offset is uniform across tracks (scale at t=0 -> same 61 origin)
+    assert clip["scale_x"]["Points"][0]["co"]["X"] == 61.0
+
+
+def test_render_scope_windowing_feeds_shifted_envelope_into_bridge_json():
+    """The render path is _render_scope_project (front-trim shifts keyframe t and
+    sourceStart) -> timeline_json. A clip windowed from a later start must arrive at
+    the bridge with its envelope re-timed: the shifted t AND the bumped sourceStart
+    must BOTH land in the OpenShot frame X. This is the windowing<->translation
+    round-trip the ticket calls out as having no coverage."""
+    project = _full_envelope_project(source_start=1.0)
+    # clip spans timeline t=4..7; window t=5..7 -> front_trim = 1.0s.
+    scoped = editor_render._render_scope_project(project, window_start=5.0, duration=2.0)
+    clip = editor_render.openshot_bridge.timeline_json(scoped)["clips"][0]
+
+    # sourceStart bumped 1.0 + 1.0 = 2.0; volume t's shifted down by 1.0 -> [0,0,2]
+    # (first two clamp at 0). Frame X = (2.0 + shifted_t)*30 + 1 -> 61, 61, 121.
+    assert [p["co"]["X"] for p in clip["volume"]["Points"]] == [61.0, 61.0, 121.0]
+    # values ride along with their (re-timed) points unchanged
+    assert [round(p["co"]["Y"], 2) for p in clip["volume"]["Points"]] == [100.0, 20.0, 100.0]
+    # the source project envelope is untouched (scoping deep-copies, no aliasing)
+    assert project["clips"]["c1"]["keyframes"][0]["points"][0]["t"] == pytest.approx(0.0)
+    assert project["clips"]["c1"]["sourceStart"] == pytest.approx(1.0)
+
+
+def test_keyframes_effects_and_transform_coexist_in_one_openshot_clip_json():
+    """Round-trip fidelity for the combined case. The exported OpenShot clip must
+    carry, on the SAME clip object: (1) the transform — centered location_x/y and
+    the non-1.0 scale on both axes; (2) the fadeIn effect as a Fade(in) object;
+    (3) the opacity keyframe ENVELOPE on `alpha`, which must OVERRIDE the flat
+    transform-derived alpha (multi-point, source-frame-offset by sourceStart).
+    A regression that lets any one dimension clobber another renders the clip
+    wrong with no error — exactly the silent-corruption class this suite guards."""
+    project = _fidelity_project()
+    exported = openshot_bridge.timeline_json(project)
+    (clip,) = exported["clips"]
+
+    # (1) transform survived: centered x/y ((v-0.5)*2) and scale on both axes.
+    assert clip["location_x"]["Points"][0]["co"]["Y"] == pytest.approx(-0.5)   # x=0.25 -> -0.5
+    assert clip["location_y"]["Points"][0]["co"]["Y"] == pytest.approx(0.5)    # y=0.75 -> 0.5
+    assert clip["scale_x"]["Points"][0]["co"]["Y"] == pytest.approx(0.5)
+    assert clip["scale_y"]["Points"][0]["co"]["Y"] == pytest.approx(0.5)
+
+    # (2) the fadeIn effect rode along as a Fade(in) object, not dropped.
+    (effect,) = clip["effects"]
+    assert effect["type"] == "Fade" and effect["fade"] == "in"
+    assert effect["duration"]["Points"][0]["co"]["Y"] == pytest.approx(0.5)
+
+    # (3) the opacity envelope OVERRODE the flat alpha: a real 2-point keyframe on
+    # `alpha`, each X offset into source-reader space by sourceStart=1.0 (frame
+    # (sourceStart + t)*fps + 1), Y clamped to 0..1. This is the dimension most
+    # likely to be clobbered by the transform's flat alpha default.
+    alpha_points = clip["alpha"]["Points"]
+    assert len(alpha_points) == 2                                   # envelope, not the flat 1-pt default
+    assert alpha_points[0]["co"]["X"] == pytest.approx(1.0 * 12 + 1.0)   # (1.0+0.0)*12+1 = 13
+    assert alpha_points[0]["co"]["Y"] == pytest.approx(0.0)
+    assert alpha_points[1]["co"]["X"] == pytest.approx(3.0 * 12 + 1.0)   # (1.0+2.0)*12+1 = 37
+    assert alpha_points[1]["co"]["Y"] == pytest.approx(1.0)
+
+    # source trim survived alongside everything else (start/end in reader space).
+    assert clip["start"] == pytest.approx(1.0)
+    assert clip["end"] == pytest.approx(3.0)
+
+
+def test_combined_keyframes_effects_transform_render_to_valid_frame_through_openshot(tmp_path):
+    """End-to-end on a box that has libopenshot: the SAME combined clip (keyframes
+    + fadeIn + non-default transform) must render to a real frame through the prod
+    OpenShot path, not just translate to correct JSON. Pins the full compiler path
+    for the combined case; skips cleanly where the bindings are absent (CI)."""
+    if not editor_render._import_openshot()[0]:
+        pytest.skip("libopenshot Python bindings not importable here")
+
+    white = _solid_png(tmp_path / "card.png", "white", size="96x64")
+    project = _fidelity_project()
+    project["assets"]["card"]["src"] = str(white)
+    project.update({"sampleRate": 48000, "channels": 2, "channelLayout": 3})
+
+    renderer = editor_render.OpenShotRenderer(tmp_path / "renders")
+    output = tmp_path / "renders" / "fidelity.mp4"
+    result = renderer.render(project, output_path=output)
+
+    assert result["backend"] == "openshot"
+    assert result["missingAssets"] == []
+    assert Path(result["video"]).exists()
+    assert _probe_duration(output) >= 1.8                # full 2s clip rendered
+
+    # the opacity envelope (0 at head, 1 at tail) actually animated through the
+    # combined clip: a late frame is brighter than an early one.
+    early = _frame_png_at(output, tmp_path / "early.png", at=0.1)
+    late = _frame_png_at(output, tmp_path / "late.png", at=1.9)
+    # sample the clip's repositioned/scaled region near frame center.
+    assert _sample_rgb(late, 48, 32)[0] >= _sample_rgb(early, 48, 32)[0]
+
+
+# ---------------------------------------------------------------------------
+# ABN-import -> ffmpeg-fallback seam. project_from_abn_timeline produces the
+# project the renderers consume. The fallback can't composite crossfades or
+# keyframe envelopes (OpenShot-only); on an ABN-imported timeline it must still
+# (a) build a command without crashing on the text-only lower third (no media
+# src -> skip, not a phantom -i input) and (b) SURFACE the un-renderable
+# crossfade/keyframe as structured warnings. Both blind spots the ticket names.
+# ---------------------------------------------------------------------------
+
+
+def test_ffmpeg_fallback_on_abn_imported_timeline_skips_text_layer_and_warns(tmp_path):
+    # real media files so the broll/bed/vo assets resolve (not missing-asset noise)
+    broll = _solid_png(tmp_path / "ui.png", "blue", size="96x64")
+    vo = tmp_path / "vo.wav"
+    bedf = tmp_path / "bed.wav"
+    for audio in (vo, bedf):
+        subprocess.run(
+            ["ffmpeg", "-y", "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo",
+             "-t", "4", str(audio)],
+            check=True, capture_output=True, text=True,
+        )
+
+    abn_timeline = {
+        "episodeId": "ep_render_seam",
+        "fps": 12,
+        "width": 96,
+        "height": 64,
+        "totalSec": 4.0,
+        "musicBed": str(bedf),
+        "segments": [
+            {
+                "segmentId": "s0",
+                "durationSec": 4.0,
+                "shots": [
+                    {"id": "b", "src": str(broll), "startSec": 0.0,
+                     "durationSec": 2.0, "type": "still"},
+                ],
+                "audio": {"vo": {"src": str(vo), "duration": 4.0}},
+                # text-only lower third: headline lives in metadata, no media src.
+                "lowerThirds": [{"startSec": 0.5, "durationSec": 2.5, "headline": "Hook"}],
+            }
+        ],
+    }
+    project = timeline.project_from_abn_timeline("proj_render_seam", abn_timeline)
+
+    # Attach the OpenShot-only constructs the fallback must warn about: a crossfade
+    # transition on the still, and a ducking volume envelope on the imported bed.
+    still = next(c for c in project["clips"].values() if c["kind"] == "still")
+    still["effects"] = [{"id": "fx_cf", "type": "crossfade", "params": {"duration": 0.3}}]
+    bed_clip = next(c for c in project["clips"].values() if c["kind"] == "music_bed")
+    bed_clip["keyframes"] = [
+        {"property": "volume", "points": [
+            {"t": 0.0, "value": 0.6, "interp": "linear"},
+            {"t": 1.0, "value": 0.22, "interp": "constant"},
+        ]},
+    ]
+
+    renderer = editor_render.FFmpegLayeredRenderer(tmp_path / "renders", asset_root=tmp_path)
+    cmd, missing, warnings = renderer._build_video_command(
+        project, tmp_path / "renders" / "seam.mp4", duration=4.0
+    )
+
+    # The text-only lower third (empty src) is skipped, not reported missing or
+    # fed as a phantom -i input that would crash the command.
+    assert missing == []
+    names = {(w["kind"], w["name"]) for w in warnings}
+    assert ("effect", "crossfade") in names            # crossfade can't be faked
+    # the ducking volume envelope is now reproduced as a piecewise-linear ffmpeg
+    # volume expression (no longer a silent drop), so it must NOT warn AND the
+    # built command must carry the time-varying expression.
+    assert ("keyframe", "volume") not in names
+    fc = cmd[cmd.index("-filter_complex") + 1]
+    assert "eval=frame" in fc and "if(lt(t," in fc
+    # the command is buildable and routes the resolved media through -i inputs
+    assert str(broll) in cmd and str(bedf) in cmd and str(vo) in cmd
+
+
+# ---------------------------------------------------------------------------
+# RenderError exception paths not otherwise pinned: the ffmpeg-layered `_run`
+# helper (timeout + non-zero exit, lines 990-993) and the OpenShot subprocess
+# wrapper's child-failure branches (lines 247, 249). All mocked at the stdlib
+# boundary so they are deterministic and need no real ffmpeg/libopenshot.
+# ---------------------------------------------------------------------------
+
+
+def test_run_raises_render_error_on_ffmpeg_timeout(monkeypatch):
+    """editor_render._run:990-991 — a TimeoutExpired from the layered ffmpeg
+    render subprocess is re-raised as RenderError carrying the command head, not
+    allowed to escape raw as a 500."""
+
+    def _timeout(*args, **kwargs):
+        raise subprocess.TimeoutExpired(cmd="ffmpeg", timeout=60)
+
+    monkeypatch.setattr(editor_render.subprocess, "run", _timeout)
+
+    with pytest.raises(editor_render.RenderError) as excinfo:
+        editor_render._run(["ffmpeg", "-y", "-i", "in.mp4", "out.mp4"])
+    assert "timed out" in str(excinfo.value)
+
+
+def test_run_raises_render_error_on_nonzero_exit(monkeypatch):
+    """editor_render._run:992-993 — a non-zero ffmpeg exit surfaces its stderr
+    tail as a RenderError."""
+
+    class _Failed:
+        returncode = 1
+        stderr = "ffmpeg: layered render boom"
+        stdout = ""
+
+    monkeypatch.setattr(editor_render.subprocess, "run", lambda *a, **k: _Failed())
+
+    with pytest.raises(editor_render.RenderError) as excinfo:
+        editor_render._run(["ffmpeg", "-y", "out.mp4"])
+    assert "layered render boom" in str(excinfo.value)
+
+
+def test_openshot_subprocess_raises_render_error_when_child_fails_without_artifact(monkeypatch, tmp_path):
+    """editor_render.OpenShotSubprocessRenderer._run_child:246-247 — a non-zero
+    child exit with NO salvageable artifact on disk is a hard RenderError carrying
+    the exit code and stderr tail (the salvage branch at 240-245 is skipped because
+    the output path never gets written)."""
+
+    class _Completed:
+        returncode = -6  # SIGABRT from a native libopenshot crash
+        stdout = ""
+        stderr = "libopenshot aborted before writing output"
+
+    monkeypatch.setattr(editor_render.subprocess, "run", lambda *a, **k: _Completed())
+
+    renderer = editor_render.OpenShotSubprocessRenderer(tmp_path / "renders")
+    with pytest.raises(editor_render.RenderError) as excinfo:
+        renderer.render({"projectId": "p"}, output_path=tmp_path / "renders" / "never.mp4", start=0, duration=1)
+    assert "OpenShot subprocess failed (-6)" in str(excinfo.value)
+    assert "libopenshot aborted" in str(excinfo.value)
+
+
+def test_openshot_subprocess_raises_render_error_when_child_emits_no_result(monkeypatch, tmp_path):
+    """editor_render.OpenShotSubprocessRenderer._run_child:248-249 — a clean exit
+    (returncode 0) whose stdout carries no parseable JSON render result is a
+    RenderError, not a silent None return."""
+
+    class _Completed:
+        returncode = 0
+        stdout = "warming up...\nnot json at all\n"
+        stderr = ""
+
+    monkeypatch.setattr(editor_render.subprocess, "run", lambda *a, **k: _Completed())
+
+    renderer = editor_render.OpenShotSubprocessRenderer(tmp_path / "renders")
+    with pytest.raises(editor_render.RenderError) as excinfo:
+        renderer.render({"projectId": "p"}, output_path=tmp_path / "renders" / "empty.mp4", start=0, duration=1)
+    assert "produced no render result" in str(excinfo.value)
+
+
+# ---------------------------------------------------------------------------
+# OpenShot audio-mux gating. The external ffmpeg mix (editor_render.py L334) must
+# run ONLY when OpenShot wrote SILENT video (ffmpeg present -> mix_audio_externally).
+# When ffmpeg is absent OpenShot already wrote its own in-engine AAC stream, and
+# unconditionally calling _mux_timeline_audio would raise "ffmpeg is required",
+# throwing away a perfectly valid OpenShot render. These pin both branches with a
+# FAKE openshot module so they run with no libopenshot and no ffmpeg dependency.
+# ---------------------------------------------------------------------------
+
+
+class _FakeWriter:
+    def __init__(self, _path):
+        self.audio_enabled = None
+
+    def SetVideoOptions(self, *a, **k):
+        pass
+
+    def SetAudioOptions(self, has_audio, *a, **k):
+        self.audio_enabled = has_audio
+
+    def Open(self):
+        pass
+
+    def WriteFrame(self, _frame):
+        pass
+
+    def Close(self):
+        pass
+
+
+class _FakeFraction:
+    def __init__(self, num, den):
+        self.num, self.den = num, den
+
+
+def _fake_openshot():
+    import types
+
+    mod = types.SimpleNamespace()
+    mod.FFmpegWriter = _FakeWriter
+    mod.Fraction = _FakeFraction
+    return mod
+
+
+def _audio_project(tmp_path):
+    tone = tmp_path / "tone.wav"
+    tone.write_bytes(b"")  # only existence is checked before any (skipped) mux
+    project = timeline.new_project("mux_gate", width=96, height=64, fps=12)
+    project["assets"]["tone"] = {"id": "tone", "type": "audio", "src": str(tone)}
+    project["clips"]["tone"] = {
+        "id": "tone", "assetId": "tone", "trackId": "audio_1", "kind": "voiceover",
+        "start": 0.0, "duration": 1.0, "sourceStart": 0.0, "enabled": True,
+        "muted": False, "volume": 1.0, "transform": {},
+    }
+    return project
+
+
+def _build_fake_openshot_renderer(tmp_path, monkeypatch):
+    """An OpenShotRenderer whose native bits are faked: the writer is a no-op,
+    _timeline returns a stub, and _probe_duration is stubbed — so render() exercises
+    the real audio-mux gating logic with no libopenshot and no ffmpeg."""
+    fake = _fake_openshot()
+    monkeypatch.setattr(editor_render, "_import_openshot", lambda: (fake, "available", None))
+    renderer = editor_render.OpenShotRenderer(tmp_path / "renders")
+
+    class _StubTimeline:
+        def GetFrame(self, _n):
+            return object()
+
+        def Close(self):
+            pass
+
+    monkeypatch.setattr(renderer, "_timeline", lambda _p: _StubTimeline())
+    monkeypatch.setattr(editor_render, "_probe_duration", lambda *_a, **_k: 1.0)
+    return renderer
+
+
+def test_openshot_render_skips_external_mux_when_ffmpeg_absent(tmp_path, monkeypatch):
+    """The gap the ticket flags: with audio present but ffmpeg ABSENT, OpenShot
+    writes its own in-engine AAC stream (SetAudioOptions enabled). render() must NOT
+    then call the ffmpeg mux — which would raise 'ffmpeg is required' and discard a
+    valid render. Assert audioMuxed is False and _mux_timeline_audio is never hit."""
+    monkeypatch.setattr(editor_render.shutil, "which", lambda name: None)  # no ffmpeg/ffprobe
+
+    def _boom(*a, **k):
+        raise AssertionError("_mux_timeline_audio must NOT run when ffmpeg is absent")
+
+    monkeypatch.setattr(editor_render, "_mux_timeline_audio", _boom)
+
+    renderer = _build_fake_openshot_renderer(tmp_path, monkeypatch)
+    project = _audio_project(tmp_path)
+    output = tmp_path / "renders" / "out.mp4"
+
+    result = renderer.render(project, output_path=output)
+
+    assert result["audioMuxed"] is False  # in-engine audio, no external mux
+    assert result["backend"] == "openshot"
+
+
+def test_openshot_render_muxes_externally_when_ffmpeg_present(tmp_path, monkeypatch):
+    """The other branch: ffmpeg present -> OpenShot wrote SILENT video, so render()
+    DOES call the deterministic external mix. Stub the mux to confirm it ran and its
+    True return flows out as audioMuxed."""
+    monkeypatch.setattr(editor_render.shutil, "which", lambda name: "/usr/bin/" + name)
+
+    calls: list[float] = []
+
+    def _spy(project, output, *, duration, asset_root):
+        calls.append(duration)
+        return True
+
+    monkeypatch.setattr(editor_render, "_mux_timeline_audio", _spy)
+
+    renderer = _build_fake_openshot_renderer(tmp_path, monkeypatch)
+    project = _audio_project(tmp_path)
+    output = tmp_path / "renders" / "out.mp4"
+
+    result = renderer.render(project, output_path=output)
+
+    assert calls, "external mux must run when ffmpeg is present (silent OpenShot video)"
+    assert result["audioMuxed"] is True
+
+
+def test_openshot_render_silent_project_never_muxes(tmp_path, monkeypatch):
+    """A project with no audio clips must never touch the mux path regardless of
+    ffmpeg presence — audioMuxed stays False and _mux_timeline_audio is not called."""
+    monkeypatch.setattr(editor_render.shutil, "which", lambda name: "/usr/bin/" + name)
+    monkeypatch.setattr(
+        editor_render, "_mux_timeline_audio",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("no audio -> no mux")),
+    )
+
+    renderer = _build_fake_openshot_renderer(tmp_path, monkeypatch)
+    red = _solid_png(tmp_path / "red.png", "red", size="96x64")
+    project = _project_with_card("silent", red, x=0.0)
+    output = tmp_path / "renders" / "silent.mp4"
+
+    result = renderer.render(project, output_path=output)
+
+    assert result["audioMuxed"] is False
+
+
+def test_refit_effects_drops_start_fade_eaten_by_front_trim():
+    """A start-anchored fade whose ramp is fully consumed by the front trim must be
+    DROPPED, not kept as a meaningless `duration: 0.0` fade. A 0.5s crossfade with a
+    0.6s front trim (split at the 0.6s mark) re-fits to -0.1 -> the fade no longer
+    exists on the tail; emitting `duration: 0.0` would breach the OpenShot contract
+    (Fade silently ignores a 0s fade) and desync the timeline from the rendered video."""
+    effects = [{"id": "xf", "type": "crossfade", "params": {"duration": 0.5}}]
+    refit = editor_render._refit_effects(effects, front_trim=0.6, windowed_duration=2.0)
+    assert refit == []
+
+
+def test_refit_effects_keeps_partially_trimmed_start_fade():
+    """A start-anchored fade only partially eaten by the front trim survives with its
+    remaining duration (regression guard so the zero-drop doesn't over-eat)."""
+    effects = [{"id": "fi", "type": "fadeIn", "params": {"duration": 0.5}}]
+    refit = editor_render._refit_effects(effects, front_trim=0.2, windowed_duration=2.0)
+    assert len(refit) == 1
+    assert refit[0]["params"]["duration"] == pytest.approx(0.3)
+
+
+def test_refit_effects_drops_fade_on_zero_length_window():
+    """Any fade clamped to a zero-length window (windowed_duration == 0) is dropped."""
+    effects = [
+        {"id": "fo", "type": "fadeOut", "params": {"duration": 0.4}},
+        {"id": "fi", "type": "fadeIn", "params": {"duration": 0.4}},
+    ]
+    refit = editor_render._refit_effects(effects, front_trim=0.0, windowed_duration=0.0)
+    assert refit == []
+
+
+def test_split_at_crossfade_boundary_leaves_no_dead_fade_on_tail():
+    """End-to-end: split a clip carrying a 0.5s crossfade at the 0.6s mark. The tail's
+    front is trimmed by 0.6s, fully eating the start-anchored crossfade. The tail must
+    NOT carry a `duration: 0.0` crossfade that openshot_bridge would export as a valid
+    but non-rendering fade -- it must carry no crossfade at all."""
+    project = timeline.new_project("split-fade", fps=30, width=1920, height=1080)
+    project["assets"]["a"] = {
+        "id": "a", "type": "video", "path": "a.mp4", "duration": 10.0,
+    }
+    track_id = next(iter(project["tracks"]))
+    project["clips"]["c"] = {
+        "id": "c", "trackId": track_id, "assetId": "a",
+        "start": 0.0, "duration": 2.0, "sourceStart": 0.0,
+        "transform": {}, "keyframes": [],
+        "effects": [{"id": "xf", "type": "crossfade", "params": {"duration": 0.5}}],
+    }
+
+    split = timeline.apply_command(
+        project,
+        {
+            "op": "clip.split", "actor": "human", "expectedRevision": 0,
+            "payload": {"clipId": "c", "at": 0.6, "newClipId": "c2"},
+        },
+    )
+
+    tail = split["clips"]["c2"]
+    assert all(e["type"] != "crossfade" for e in tail.get("effects") or []), (
+        "tail must not carry a crossfade consumed by the split front trim"
+    )
+    # The head keeps the start-anchored crossfade whole (it owns the original start).
+    head = split["clips"]["c"]
+    head_xf = [e for e in head.get("effects") or [] if e["type"] == "crossfade"]
+    assert len(head_xf) == 1 and head_xf[0]["params"]["duration"] == pytest.approx(0.5)
+
+    # The bridge must never emit a 0-second fade for the tail's compiled effects.
+    for effect in tail.get("effects") or []:
+        out = openshot_bridge.effect_json(effect, fps=30)
+        if "duration" in out:
+            assert out["duration"]["Points"][0]["co"]["Y"] > 0.0
+
+
+# ---------------------------------------------------------------------------
+# _parse_child_render_result — malformed / contaminated subprocess stdout.
+# Pure-string parsing; no ffmpeg needed (but module skipif keeps it harmless).
+# ---------------------------------------------------------------------------
+
+
+def test_parse_child_render_result_picks_last_dict_line():
+    stdout = (
+        "loading project...\n"
+        '{"video": "/tmp/a.mp4"}\n'
+        '{"video": "/tmp/final.mp4"}\n'
+    )
+    assert editor_render._parse_child_render_result(stdout) == {
+        "video": "/tmp/final.mp4"
+    }
+
+
+def test_parse_child_render_result_only_invalid_json():
+    # stderr/logging contamination with zero parseable JSON -> None.
+    stdout = "Traceback (most recent call last):\n  File x\nValueError: boom\n"
+    assert editor_render._parse_child_render_result(stdout) is None
+
+
+def test_parse_child_render_result_mixed_valid_invalid_spanning_lines():
+    # The valid dict is buried above noisy non-JSON trailing lines; reverse
+    # iteration must skip the junk and still find it.
+    stdout = (
+        '{"frame": "/tmp/f.png"}\n'
+        "WARN: deprecation notice\n"
+        "not json at all\n"
+    )
+    assert editor_render._parse_child_render_result(stdout) == {
+        "frame": "/tmp/f.png"
+    }
+
+
+def test_parse_child_render_result_valid_but_non_dict_json():
+    # Valid JSON arrays/primitives are not render results -> None.
+    for payload in ("[1, 2, 3]", '"a string"', "42", "true", "null"):
+        assert editor_render._parse_child_render_result(payload + "\n") is None
+
+
+def test_parse_child_render_result_non_dict_then_dict():
+    # A non-dict valid-JSON line below a real dict: dict still wins.
+    stdout = '{"video": "/tmp/v.mp4"}\n[1, 2, 3]\n'
+    assert editor_render._parse_child_render_result(stdout) == {
+        "video": "/tmp/v.mp4"
+    }
+
+
+def test_parse_child_render_result_empty_and_none():
+    assert editor_render._parse_child_render_result("") is None
+    assert editor_render._parse_child_render_result(None) is None
