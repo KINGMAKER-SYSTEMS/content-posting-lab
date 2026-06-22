@@ -1193,6 +1193,28 @@ def test_import_openshot_swallows_zmq_logger_enable_errors(monkeypatch):
     assert fake.enable_calls == []  # the throwing call recorded nothing
 
 
+def test_import_openshot_degrades_when_find_spec_raises(monkeypatch):
+    # A half-loaded native-extension install (the "dylibs wiped, bindings present"
+    # OpenShot-runtime-fragility failure) can leave `openshot` in sys.modules with
+    # `__spec__ = None`. importlib.util.find_spec("openshot") then RAISES
+    # ValueError("openshot.__spec__ is None") instead of returning None. That must
+    # NOT escape _import_openshot (it would crash choose_renderer and skip the
+    # ffmpeg fallback entirely); it must degrade to "not importable" so the
+    # renderer falls back. Pin that contract.
+    import types
+
+    broken = types.ModuleType("openshot")
+    broken.__spec__ = None  # the trap importlib.util.find_spec trips over
+    monkeypatch.setitem(sys.modules, "openshot", broken)
+    monkeypatch.setattr(editor_render, "_openshot_python_candidates", lambda: [])
+
+    module, reason, path = editor_render._import_openshot()
+
+    assert module is None
+    assert path is None
+    assert "not importable" in reason
+
+
 def test_openshot_subprocess_renderer_salvages_result_from_native_child_exit(monkeypatch, tmp_path):
     output = tmp_path / "renders" / "window.mp4"
     output.parent.mkdir()

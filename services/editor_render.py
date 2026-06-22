@@ -871,7 +871,18 @@ def _import_openshot():
         if python_path.exists() and str(python_path) not in sys.path:
             sys.path.insert(0, str(python_path))
 
-    spec = importlib.util.find_spec("openshot")
+    # find_spec is not always a clean None on a broken install. A half-loaded
+    # native-extension module (the "dylibs wiped, bindings present" failure from
+    # the OpenShot runtime fragility note) can sit in sys.modules with
+    # ``__spec__ = None``, and then find_spec("openshot") raises ValueError
+    # ("openshot.__spec__ is None") instead of returning None. If that escapes,
+    # it crashes choose_renderer and defeats the whole point of the ffmpeg
+    # fallback. Treat any spec-discovery failure as "not importable" so the
+    # renderer degrades to ffmpeg instead of 500ing. ponytail: one try/except.
+    try:
+        spec = importlib.util.find_spec("openshot")
+    except Exception as exc:
+        return None, f"Python bindings not importable in this environment: {exc}", None
     if not spec:
         return None, "Python bindings not importable in this environment", None
 
