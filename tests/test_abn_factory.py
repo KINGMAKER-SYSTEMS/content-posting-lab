@@ -1653,6 +1653,12 @@ async def test_is_configured_raising_is_caught_not_crashing_loop(monkeypatch):
 
     import sys
     monkeypatch.setitem(sys.modules, "services.abn_youtube", fake_yt)
+    # `import services.abn_youtube as ytmod` binds from the PARENT package attribute when the
+    # submodule is already imported (which earlier tests in the suite do), not from sys.modules —
+    # so patch the attribute too, otherwise the loop sees the real module and is_configured() never
+    # raises. (In isolation services.abn_youtube isn't pre-imported, so this is a harmless no-op.)
+    import services as _services_pkg
+    monkeypatch.setattr(_services_pkg, "abn_youtube", fake_yt, raising=False)
 
     pending = [{"id": "ep_pubER", "kind": "episode", "stage": "review"}]
     events = await _drive_loop_cycles(monkeypatch, n_cycles=2, pending_eps=pending)
