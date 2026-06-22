@@ -15,6 +15,10 @@ from services.email_routing import (
     list_destinations,
     list_rules,
 )
+
+
+def _destination_email(d: dict) -> str:
+    return (d.get("email") or "").strip().lower()
 from services.roster import set_page, get_page
 
 router = APIRouter()
@@ -95,6 +99,20 @@ async def auto_create_for_page(req: AutoCreateRequest):
         for matcher in rule.get("matchers", []):
             if matcher.get("value") == full_alias:
                 raise HTTPException(status_code=409, detail=f"Alias {full_alias} already exists")
+
+    # Reject destinations CF hasn't verified — a rule pointing at an unverified
+    # address silently drops mail, breaking the sale-intake handoff.
+    destinations = await list_destinations()
+    verified = {
+        _destination_email(d)
+        for d in destinations
+        if d.get("verified")  # CF returns an ISO timestamp (truthy) when verified, null otherwise
+    }
+    if req.destination.strip().lower() not in verified:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Destination {req.destination} is not a verified Cloudflare destination",
+        )
 
     try:
         rule = await create_rule(alias, req.destination)
