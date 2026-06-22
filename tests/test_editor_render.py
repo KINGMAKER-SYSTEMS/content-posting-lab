@@ -2124,6 +2124,58 @@ def test_windowed_clip_refits_fade_effect_durations_to_window():
     assert orig[1]["params"]["duration"] == pytest.approx(1.0)
 
 
+def test_windowed_crossfade_clip_trimmed_on_both_ends_refits_and_exports():
+    """A clip that STARTS BEFORE the window AND EXTENDS BEYOND it is trimmed on BOTH
+    ends within a single windowed render (front_trim > 0 AND back-truncated). The
+    ticket's exact case: window start=2.0, duration=3.0 over a clip spanning t=1..7.
+
+    front_trim = 2 - 1 = 1.0s shortens the start-anchored crossfade; the clip is also
+    truncated at the window end (t=5), so windowed_duration = 3.0 < the original 6.0.
+    Both adjustments must apply at once: the crossfade re-fits to (orig - front_trim)
+    then clamps to the window, sourceStart shifts by front_trim, start lands at 0
+    (relative to the window), and the whole thing exports to a single OpenShot in-Fade.
+    No prior test exercises crossfade + trim-on-BOTH-ends in one window."""
+    project = timeline.new_project("xf_both_ends", width=64, height=48, fps=10)
+    project["assets"]["a1"] = {"id": "a1", "type": "video", "src": "/x.mp4", "metadata": {}}
+    project["clips"]["c1"] = {
+        "id": "c1", "assetId": "a1", "trackId": "video_1", "kind": "video",
+        "start": 1.0, "duration": 6.0, "sourceStart": 4.0,  # clip spans timeline t=1..7
+        "enabled": True, "muted": False, "volume": 1.0,
+        "transform": {"x": 0.5, "y": 0.5, "scale": 1.0, "opacity": 1.0},
+        "effects": [{"id": "xf", "type": "crossfade", "params": {"duration": 2.0}}],
+        "keyframes": [], "metadata": {},
+    }
+
+    # Window timeline t=2..5: front_trim = 2 - 1 = 1.0s, windowed_duration = 3.0s.
+    windowed = editor_render._windowed_clips(project, window_start=2.0, duration=3.0)
+    assert len(windowed) == 1
+    wclip = windowed[0]
+
+    # Trimmed on both ends: start is window-relative (overlap_start 2.0 - window 2.0 = 0),
+    # duration is the in-window overlap (min(7,5) - max(1,2) = 3.0), sourceStart advances
+    # by the front_trim so the same source frame plays.
+    assert wclip["start"] == pytest.approx(0.0)
+    assert wclip["duration"] == pytest.approx(3.0)
+    assert wclip["sourceStart"] == pytest.approx(5.0)  # 4.0 + 1.0 front_trim
+
+    # The start-anchored crossfade is shortened by the front_trim (2.0 - 1.0 = 1.0),
+    # which is <= the 3.0 window so the back-trim clamp leaves it at 1.0 (proves the
+    # front-trim path fired even though the clip is ALSO back-truncated).
+    xf = next(e for e in wclip["effects"] if e["id"] == "xf")
+    assert xf["params"]["duration"] == pytest.approx(1.0)
+
+    # The doubly-trimmed clip still exports to exactly one OpenShot in-Fade carrying the
+    # re-fit duration -- timeline state and compiled video agree on the fade.
+    clip_json = openshot_bridge.clip_json(project, wclip)
+    fades = [e for e in clip_json["effects"] if e["type"] == "Fade"]
+    assert len(fades) == 1
+    assert fades[0]["fade"] == "in"
+    assert fades[0]["duration"]["Points"][0]["co"]["Y"] == pytest.approx(1.0)
+
+    # Original clip effect untouched (no nested-param aliasing).
+    assert project["clips"]["c1"]["effects"][0]["params"]["duration"] == pytest.approx(2.0)
+
+
 def test_split_clip_crossfade_refits_through_render_window_into_openshot_fade():
     """End-to-end carry-through: a clip with a start-anchored crossfade is SPLIT, then
     the surviving-crossfade HEAD is windowed during render (front-trimmed), then exported
