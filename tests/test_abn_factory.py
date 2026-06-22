@@ -3462,3 +3462,39 @@ def test_download_failure_with_no_dest_does_not_raise(monkeypatch, tmp_path):
     monkeypatch.setattr(abn_factory.urllib.request, "urlopen", boom)
     assert abn_factory._download("http://x/y", dest) is False
     assert not dest.exists()
+
+
+def test_atomic_write_text_writes_full_content(tmp_path):
+    """The concat-manifest writer must land the complete file."""
+    p = tmp_path / "sub" / "list.txt"
+    body = "file 'a.mp4'\nfile 'b.mp4'\n"
+    abn_factory._atomic_write_text(p, body)
+    assert p.read_text(encoding="utf-8") == body
+    # parent dir was created on demand
+    assert p.parent.is_dir()
+    # no .tmp residue left behind
+    assert not (p.parent / (p.name + ".tmp")).exists()
+
+
+def test_atomic_write_text_leaves_no_partial_on_crash(tmp_path, monkeypatch):
+    """If the process dies after the tmp write but before os.replace, the real
+    target path must NOT exist as a truncated/partial file — the whole point of
+    tmp+replace. The old code (target.write_text) would have left a partial."""
+    p = tmp_path / "list.txt"
+
+    def boom(src, dst):
+        raise RuntimeError("crash before rename")
+
+    monkeypatch.setattr(abn_factory.os, "replace", boom)
+    with pytest.raises(RuntimeError):
+        abn_factory._atomic_write_text(p, "file 'a.mp4'\n")
+    # target was never created — a reader can't pick up a half-written manifest
+    assert not p.exists()
+
+
+def test_atomic_write_text_overwrites_atomically(tmp_path):
+    """Rewriting an existing manifest replaces it wholesale."""
+    p = tmp_path / "list.txt"
+    abn_factory._atomic_write_text(p, "old\n")
+    abn_factory._atomic_write_text(p, "file 'new.mp4'\n")
+    assert p.read_text(encoding="utf-8") == "file 'new.mp4'\n"

@@ -116,6 +116,21 @@ from services.json_store import atomic_save  # noqa: E402
 from services.fsutil import safe_rmtree, safe_unlink  # noqa: E402
 
 
+def _atomic_write_text(path, text: str) -> None:
+    """Write text via tmp file + fsync + os.replace so a crash mid-write can't
+    leave a truncated/partial file for a downstream reader (e.g. the ffmpeg
+    concat manifest). Same proven pattern as json_store.atomic_save, but for
+    plain text."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(text)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
+
+
 def _cards_assets_dir() -> str:
     """Base dir the v2 cards reader (cards._bg_pool: <assets>/card_backgrounds) must point at so
     its reads resolve to the SAME dir the gateway writes to. shared_path() lands the bg pool in
@@ -2727,7 +2742,7 @@ async def _assemble_episode(ep_id, segments):
         raise RuntimeError("no segment clips")
     # concat
     listf = asset_path(ep_id, "scratch", "list", ext="txt")  # concat manifest intermediate
-    listf.write_text("".join(f"file '{c}'\n" for c in seg_clips))
+    _atomic_write_text(listf, "".join(f"file '{c}'\n" for c in seg_clips))
     final = asset_path(ep_id, "episode")
     code, log = await _sh(
         f'ffmpeg -y -f concat -safe 0 -i {shlex.quote(str(listf))} -c copy {shlex.quote(str(final))}', timeout=180)
