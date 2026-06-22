@@ -359,6 +359,22 @@ class _LiveProtectionSet:
                 self.complete = False
         return _is_editor_timeline_protected_asset(path, self.paths)
 
+    def safe_to_delete(self, path: Path) -> bool:
+        """The SINGLE final gate, called immediately before tombstone with nothing between it and the
+        destructive call. contains() + the caller's separate `self.complete` check left a residual
+        TOCTOU under HIGH-CONCURRENCY episodes: a contains() at the top of the loop body reads the
+        token, then the caller does other work (the is_file/symlink guard, the complete branch) before
+        deleting — during which a CONCURRENT episode's editor save can land referencing THIS render.
+        Folding the live re-scan, the protected-set check, AND the completeness check into one call
+        placed as the last statement before tombstone shrinks the window to a single syscall: a save
+        that lands before this returns flips the token (inode/size — same-second safe) and is caught;
+        a save that lands after it can only race the one in-flight tombstone, the irreducible floor.
+        Returns False (DO NOT delete) if the render is now protected OR the live scan went incomplete
+        (unknown referenced set → protect-everything)."""
+        if self.contains(path):
+            return False
+        return self.complete
+
 
 # Point the card generator at the cinematic-background pool at MODULE LOAD — so EVERY path (the loop AND
 # a direct produce_one_episode from force_ep.py, which bypasses start_factory) composites cards over real
@@ -3426,13 +3442,17 @@ def purge_disk(intermediate_age_s=1800, keep_episodes=4, low_disk_gb=2.0):
                     # don't lean solely on tombstone_render()'s own `_`-prefix/is_file RAISE.
                     if not old.is_file() or old.is_symlink():
                         continue
-                    if live.contains(old):
+                    # FINAL live gate, IMMEDIATELY before the destructive call with nothing between:
+                    # safe_to_delete() folds the per-iteration live re-scan, the protected-set check,
+                    # AND the completeness check into one call so a CONCURRENT-episode editor save can't
+                    # slip into the gap between an earlier contains() and this tombstone (the
+                    # high-concurrency residual TOCTOU this ticket closes). False = protected OR the
+                    # live scan went incomplete → protect-everything and stop trimming (disk pressure
+                    # is recoverable; a live render isn't).
+                    if not live.safe_to_delete(old):
+                        if not live.complete:
+                            break
                         continue
-                    # A timeline saved mid-trim that we couldn't re-parse means we no longer know the
-                    # full referenced set — stop trimming (protect-everything), exactly like the
-                    # entry/fresh dual-complete gate. Disk pressure is recoverable; a live render isn't.
-                    if not live.complete:
-                        break
                     freed += tombstone_render(old)  # safe-delete → _trash/, recoverable (not unlink)
                 except Exception:
                     pass
@@ -3545,12 +3565,15 @@ async def _gc_segments(keep_recent=12):
                             # swap can't reach the destructive call — don't rely on the RAISE alone.
                             if not old.is_file() or old.is_symlink():
                                 continue
-                            if live.contains(old):
+                            # FINAL live gate (twin of purge_disk): one safe_to_delete() call as the
+                            # last statement before tombstone, so a concurrent-episode editor save can't
+                            # land in the gap between an earlier contains() and this delete (the
+                            # high-concurrency residual TOCTOU). False = protected OR live scan incomplete
+                            # → protect-everything; incomplete stops the trim, protected skips this one.
+                            if not live.safe_to_delete(old):
+                                if not live.complete:
+                                    break
                                 continue
-                            # Mid-trim timeline we couldn't re-parse → unknown referenced set → stop
-                            # trimming (protect-everything), like the entry/fresh dual-complete gate.
-                            if not live.complete:
-                                break
                             tombstone_render(old)  # safe-delete → _trash/, recoverable (not unlink)
                         except Exception:
                             pass

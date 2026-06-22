@@ -1975,3 +1975,118 @@ def test_live_protection_set_catches_same_second_mid_trim_save(store, monkeypatc
         "a render referenced by a SAME-SECOND mid-trim save was tombstoned — the live re-scan token "
         "relied on st_mtime alone and missed the atomic replace (the same-second TOCTOU this hardens)"
     )
+
+
+# ── HIGH-CONCURRENCY RESIDUAL TOCTOU: the save lands in the gap between THIS render's protection ───
+# check and its OWN tombstone, not between two separate renders. The prior mid-trim tests trip the
+# save from inside the tombstone of an EARLIER victim (caught at the NEXT iteration's check). But
+# when multiple episodes render concurrently, a save can land referencing render N AFTER the loop
+# body has already entered for render N (passed the is_file/symlink guard) but BEFORE render N is
+# deleted. safe_to_delete() is the single final gate placed immediately before tombstone with
+# nothing between, so it re-reads the token one last time and catches that save. These pin it by
+# landing the concurrent save from inside is_symlink() — the last loop-body call before the gate.
+
+
+def test_safe_to_delete_is_false_when_render_becomes_protected(store):
+    """Unit gate: safe_to_delete() must return False the instant a live re-scan (triggered by a
+    changed editor_timelines token) finds the render now protected — even if the protected set was
+    EMPTY when the live set was constructed. This is the atomic final check the trim leans on."""
+    render = _render(store, "ep_unit00", age_s=9000)
+    live = abn_factory._LiveProtectionSet(set())
+    assert live.safe_to_delete(render) is True, "an unreferenced render must be deletable"
+
+    # A concurrent episode's editor saves a timeline referencing this render -> token flips.
+    (store / "editor_timelines" / "ep_unit00.json").write_text(
+        '{"renderCache": {"video": {"path": "%s"}}}' % _agenticnews_ref(store, render)
+    )
+    assert live.safe_to_delete(render) is False, (
+        "safe_to_delete must re-scan on the token change and refuse to delete a now-protected render"
+    )
+
+
+def test_safe_to_delete_is_false_when_live_scan_goes_incomplete(store):
+    """Unit gate: a concurrent save that lands an UNPARSEABLE timeline mid-trim flips the live set's
+    completeness to False — safe_to_delete() must then return False for ANY render (protect-everything),
+    so the caller stops trimming. Pins that completeness is folded into the single final gate."""
+    render = _render(store, "ep_unit11", age_s=9000)
+    live = abn_factory._LiveProtectionSet(set())
+    assert live.safe_to_delete(render) is True
+
+    (store / "editor_timelines" / "broken_concurrent.json").write_text("{ not json at all")
+    assert live.safe_to_delete(render) is False, (
+        "an incomplete live re-scan must make safe_to_delete refuse (protect-everything)"
+    )
+
+
+def test_purge_disk_protects_render_referenced_by_concurrent_save_in_final_gate_window(store, monkeypatch):
+    """HIGH-CONCURRENCY TOCTOU: a concurrent episode's editor saves a timeline referencing the very
+    render the trim loop is ABOUT to delete, landing AFTER the loop body entered for that render but
+    BEFORE the destructive call. We inject the save from inside is_symlink() (the last loop-body call
+    before the final gate) for the target render. safe_to_delete() — the single gate immediately
+    before tombstone — must re-read the token and spare it. An unreferenced sibling still trims."""
+    victim = _render(store, "ep_freedm", age_s=8000)          # next-newest -> trimmed (no save targets it)
+    target = _render(store, "ep_concur", age_s=9000)          # oldest -> reached last; saved into mid-body
+    _render(store, "ep_keepc0", age_s=10)                      # newest -> kept (keep_episodes=1)
+
+    real_is_symlink = Path.is_symlink
+    # target.is_symlink() is called once during _old_episode_renders() enumeration and again in the
+    # trim loop body (right before the final gate). Inject ONLY on the SECOND call, so the save lands
+    # AFTER the pre-trim fresh scan — proving it's the FINAL safe_to_delete() gate that catches it, not
+    # the entry/fresh scan (which would make this pass for the wrong reason).
+    calls = {"n": 0}
+
+    def save_then_symlink(self):
+        if self == target:
+            calls["n"] += 1
+            if calls["n"] == 2:
+                (store / "editor_timelines" / "ep_concur.json").write_text(
+                    '{"renderCache": {"video": {"path": "%s"}}}' % _agenticnews_ref(store, target)
+                )
+        return real_is_symlink(self)
+
+    monkeypatch.setattr(Path, "is_symlink", save_then_symlink)
+    _force_low_disk(monkeypatch)
+
+    abn_factory.purge_disk(intermediate_age_s=99999, keep_episodes=1, low_disk_gb=999)
+
+    assert not victim.exists(), "the genuinely-unreferenced render should still be trimmed"
+    assert target.exists(), (
+        "a render referenced by a concurrent save landing between the loop-body guard and the "
+        "tombstone was deleted — the final safe_to_delete() gate didn't re-read the token in time"
+    )
+
+
+def test_gc_segments_protects_render_referenced_by_concurrent_save_in_final_gate_window(store, monkeypatch):
+    """Twin of the purge_disk test on the async _gc_segments path. 6 renders so the keep-4 slice has
+    2 victims; a concurrent save lands referencing the oldest (reached last) from inside its is_symlink
+    inspection — the final safe_to_delete() gate must spare it while the other victim still trims."""
+    target = _render(store, "ep_gconcr", age_s=9000)          # oldest -> reached last; saved mid-body
+    victim = _render(store, "ep_gvictm", age_s=8500)          # second-oldest -> trimmed
+    for i, age in enumerate((8000, 7000, 6000, 10)):
+        _render(store, f"ep_gfill{i}", age_s=age)
+
+    real_is_symlink = Path.is_symlink
+    # Inject on the SECOND target.is_symlink() (enumeration is 1st, trim-loop body is 2nd) so the save
+    # lands after the pre-trim fresh scan and only the final safe_to_delete() gate can catch it.
+    calls = {"n": 0}
+
+    def save_then_symlink(self):
+        if self == target:
+            calls["n"] += 1
+            if calls["n"] == 2:
+                (store / "editor_timelines" / "ep_gconcr.json").write_text(
+                    '{"renderCache": {"video": {"path": "%s"}}}' % _agenticnews_ref(store, target)
+                )
+        return real_is_symlink(self)
+
+    monkeypatch.setattr(Path, "is_symlink", save_then_symlink)
+    _gc_no_videos(monkeypatch)
+    _force_low_disk(monkeypatch)
+
+    asyncio.run(abn_factory._gc_segments(keep_recent=0))
+
+    assert not victim.exists(), "_gc_segments should still trim the genuinely-unreferenced render"
+    assert target.exists(), (
+        "_gc_segments deleted a render referenced by a concurrent save landing in the final-gate "
+        "window — the safe_to_delete() gate didn't re-read the token before tombstoning"
+    )
