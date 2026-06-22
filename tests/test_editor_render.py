@@ -1092,6 +1092,56 @@ def test_open_shot_audio_mux_raises_on_missing_audio_asset(tmp_path):
     assert not video.with_name("silent_video.audio-mux.mp4").exists()
 
 
+def test_open_shot_audio_mux_raises_on_audio_asset_symlink_target_deleted(tmp_path, monkeypatch):
+    """Concurrent asset cleanup race: an audio clip's src is a SYMLINK whose target
+    is unlinked between project validation (_missing_assets) and the mux's own guard
+    (editor_render.py:923). A broken symlink is the realistic shape of a mid-render
+    GC — the link node survives, the data is gone. Path.exists() follows the link, so
+    it correctly returns False for a dangling target, and the guard must fail closed
+    with the missing-asset error BEFORE ffmpeg is invoked (a phantom -i would make
+    ffmpeg fail late with an opaque filtergraph error instead). subprocess.run is
+    monkeypatched to a tripwire so reaching ffmpeg is itself a test failure — proving
+    the guard short-circuits the whole graph build. Also pins that the source mp4 is
+    left byte-identical (no .audio-mux temp swapped in)."""
+    video = tmp_path / "silent_video.mp4"
+    subprocess.run(
+        ["ffmpeg", "-y", "-f", "lavfi", "-i", "color=c=black:s=96x64:r=12:d=2",
+         "-c:v", "libx264", "-pix_fmt", "yuv420p", str(video)],
+        check=True, capture_output=True, text=True,
+    )
+    original = video.read_bytes()
+
+    # Asset exists at validation time, then its symlink target is GC'd mid-render.
+    real_audio = tmp_path / "tone.wav"
+    real_audio.write_bytes(b"")  # only .exists() is checked before ffmpeg
+    link = tmp_path / "tone-link.wav"
+    link.symlink_to(real_audio)
+    assert link.exists()  # validation would have passed: link resolves
+    real_audio.unlink()   # concurrent cleanup deletes the target
+    assert link.is_symlink() and not link.exists()  # dangling: link node, no data
+
+    project = timeline.new_project("audio_mux_dangling", width=96, height=64, fps=12)
+    project["assets"]["tone"] = {"id": "tone", "type": "audio", "src": str(link)}
+    project["clips"]["tone"] = {
+        "id": "tone", "assetId": "tone", "trackId": "audio_1", "kind": "music",
+        "start": 0.0, "duration": 1.0, "sourceStart": 0.0, "enabled": True,
+        "muted": False, "volume": 1.0, "transform": {},
+    }
+
+    def _tripwire(*args, **kwargs):
+        raise AssertionError("ffmpeg must NOT run when an audio asset symlink is dangling")
+
+    monkeypatch.setattr(editor_render.subprocess, "run", _tripwire)
+
+    with pytest.raises(editor_render.RenderError) as excinfo:
+        editor_render._mux_timeline_audio(project, video, duration=2.0, asset_root=None)
+    assert "audio mux blocked by missing asset" in str(excinfo.value)
+    assert "tone-link.wav" in str(excinfo.value)
+    # fail-closed: source untouched, no temp swap.
+    assert video.read_bytes() == original
+    assert not video.with_name("silent_video.audio-mux.mp4").exists()
+
+
 def test_open_shot_audio_mux_raises_render_error_on_corrupt_audio_real_ffmpeg(tmp_path):
     """End-to-end fail-closed proof against REAL ffmpeg (not a mocked subprocess):
     an audio asset that exists on disk but is undecodable garbage passes the
