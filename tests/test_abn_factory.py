@@ -3822,3 +3822,194 @@ def test_extract_keywords_uses_whisper_timing_when_words_present():
     by_text = {c["text"].lower(): c for c in out}
     assert by_text["gpt-5"]["s"] == 3.0
     assert by_text["openai"]["s"] == 7.5
+
+
+# ---------------- v2 scene-card GUARDS (the anti-slop quality gates) ----------------
+#
+# services.abn_factory._v2_scene_cards turns a segment's VO into DESIGNED cards. Several inline
+# guards stop malformed cards from shipping; they were untested. Two layers of test:
+#   1. the pure guard helpers (_same_entity / _quote_text / _statement / _diagram_steps) directly,
+#   2. _v2_scene_cards end-to-end with the scene-tagger + card renderer stubbed, asserting WHICH
+#      renderer each scene routes to (so the tool-name guard, rival guard, quote floor, diagram
+#      step-floor, and the episode-wide quote-cap are all exercised against the real branch logic).
+
+
+def test_same_entity_flags_product_vs_its_maker():
+    """A vs card pitting a product against its parent company is nonsense ('MAI-Code VS Microsoft').
+    _same_entity catches same-name, substring, AND same-parent-family pairs."""
+    assert abn_factory._same_entity("MAI-Code-1-Flash", "Microsoft") is True   # product vs maker
+    assert abn_factory._same_entity("GPT", "OpenAI") is True                    # product vs maker
+    assert abn_factory._same_entity("Claude", "Claude Code") is True           # substring
+    assert abn_factory._same_entity("Cursor", "Cursor") is True                # identical
+
+
+def test_same_entity_allows_real_rivals_and_handles_empty():
+    """Genuine competitors are NOT the same entity (a real vs card should render), and an empty
+    side is never 'same' (so the caller falls back instead of crashing)."""
+    assert abn_factory._same_entity("Claude", "ChatGPT") is False
+    assert abn_factory._same_entity("Cursor", "Windsurf") is False
+    assert abn_factory._same_entity("", "Anthropic") is False
+    assert abn_factory._same_entity("Anthropic", "") is False
+
+
+def test_quote_text_strips_leadin_and_never_truncates_midsentence():
+    """A quote card needs a clean COMPLETE quote — drop throat-clearing lead-ins and 'X:' preambles,
+    keep whole sentences only."""
+    q = abn_factory._quote_text("But here's the catch: it's mainly for enterprise teams.")
+    assert q == "It's mainly for enterprise teams."
+    # whole sentences, not a mid-sentence chop
+    assert q.endswith(".")
+
+
+def test_statement_drops_filler_opener_and_uppercases():
+    """_statement yields a punchy <=8-word uppercase thought with the setup/connective stripped."""
+    assert abn_factory._statement("And that is why it matters so much for everyone") \
+        == "MATTERS SO MUCH FOR EVERYONE"
+    assert abn_factory._statement("This matters because the model is twice as fast") \
+        == "THE MODEL IS TWICE AS FAST"
+
+
+def test_diagram_steps_extracts_real_mechanism_and_rejects_filler():
+    """A diagram card needs >=2 real mechanism steps. CTAs/questions/naming-clauses are filtered so
+    a diagram never shows a junk single box (caller then falls back to a statement)."""
+    steps = abn_factory._diagram_steps("It scans the repo. Then it builds a plan. Next it writes code.")
+    assert len(steps) >= 2 and steps[0] == "It scans the repo"
+    assert abn_factory._diagram_steps("Want to see how it works in real time?") == []   # CTA/question
+    assert abn_factory._diagram_steps("It's called the Defending Code Ref.") == []       # naming clause
+
+
+# --- _v2_scene_cards integration: stub the tagger + renderer, capture the routed card type ---
+
+
+class _FakeV2Cards:
+    """Records which card renderer each scene hit. Each method returns a fake Path and logs the call,
+    so a test can assert the GUARD routed a scene to a statement/hook instead of a malformed card."""
+
+    BRAND_CYAN = "#7FD2FF"
+
+    def __init__(self):
+        self.calls = []
+
+    def hook_card(self, *a, **k):
+        self.calls.append(("hook", a, k)); return Path(f"/fake/{len(self.calls)}.png")
+
+    def number_card(self, *a, **k):
+        self.calls.append(("number", a, k)); return Path(f"/fake/{len(self.calls)}.png")
+
+    def vs_card(self, *a, **k):
+        self.calls.append(("vs", a, k)); return Path(f"/fake/{len(self.calls)}.png")
+
+    def quote_card(self, *a, **k):
+        self.calls.append(("quote", a, k)); return Path(f"/fake/{len(self.calls)}.png")
+
+    def diagram_card(self, *a, **k):
+        self.calls.append(("diagram", a, k)); return Path(f"/fake/{len(self.calls)}.png")
+
+
+def _stub_v2_env(monkeypatch, scenes, shots, title="Cursor — the headline", comparison=""):
+    """Wire _v2_scene_cards to run offline: fixed scene list + shot list, a recording fake card
+    renderer, and stubbed asset-path/url so nothing touches disk. Returns the fake renderer."""
+    if not abn_factory._V2_VISUALS:
+        pytest.skip("factory.formats (v2 visuals) not importable in this environment")
+    monkeypatch.setattr(abn_factory, "_USE_V2_VISUALS", True)
+    monkeypatch.setattr(abn_factory, "tag_scenes", lambda *a, **k: list(scenes))
+    monkeypatch.setattr(abn_factory, "direct_visuals", lambda *a, **k: list(shots))
+    import factory.formats.scenes as _scenes_mod
+    monkeypatch.setattr(_scenes_mod, "comparison_target", lambda text: comparison)
+    fake = _FakeV2Cards()
+    monkeypatch.setattr(abn_factory, "_v2cards", fake)
+    monkeypatch.setattr(abn_factory, "asset_path",
+                        lambda ep_id, kind, slug: Path(f"/tmp/{ep_id}/css/{slug}.png"))
+    monkeypatch.setattr(abn_factory, "_asset_url", lambda p: f"/agenticnews-assets/{Path(p).name}")
+    return fake
+
+
+def _scene(idx, text):
+    return type("Scene", (), {"index": idx, "text": text})()
+
+
+def _shot(shot_type):
+    return type("Shot", (), {"shot_type": shot_type})()
+
+
+def test_v2_vs_card_rejects_fragment_tool_name_and_renders_statement(monkeypatch):
+    """The vs-card tool-name guard: a title whose first segment is a verb-phrase fragment ('Use your')
+    is NOT a real left entity — the card must drop to a bold STATEMENT (hook), never 'Use your VS X'."""
+    scenes = [_scene(1, "Cursor crushes the competition by a wide margin today.")]
+    shots = [_shot("vs_card")]
+    fake = _stub_v2_env(monkeypatch, scenes, shots, title="Use your terminal — the trick", comparison="Copilot")
+    out = abn_factory._v2_scene_cards("ep_t", 1, {"script": "x", "title": "Use your terminal — the trick"})
+    assert out, "guard should still produce a (statement) card, not nothing"
+    assert fake.calls[0][0] == "hook"   # routed to statement, NOT vs
+
+
+def test_v2_vs_card_rejects_product_vs_maker_via_same_entity(monkeypatch):
+    """The rival guard: even with a valid tool name, a 'rival' that is the tool's own maker
+    (_same_entity True) is not a real matchup — drop to a statement instead of 'GPT VS OpenAI'."""
+    scenes = [_scene(1, "GPT keeps getting faster every single release cycle.")]
+    shots = [_shot("vs_card")]
+    fake = _stub_v2_env(monkeypatch, scenes, shots, title="GPT — the update", comparison="OpenAI")
+    abn_factory._v2_scene_cards("ep_t", 1, {"script": "x", "title": "GPT — the update"})
+    assert fake.calls[0][0] == "hook"   # same-entity rival rejected -> statement
+
+
+def test_v2_vs_card_renders_for_a_real_matchup(monkeypatch):
+    """Positive control: a clean tool name + a genuine competitor DOES render a real vs card."""
+    scenes = [_scene(1, "Cursor is pulling ahead fast in the editor wars.")]
+    shots = [_shot("vs_card")]
+    fake = _stub_v2_env(monkeypatch, scenes, shots, title="Cursor — the headline", comparison="Windsurf")
+    abn_factory._v2_scene_cards("ep_t", 1, {"script": "x", "title": "Cursor — the headline"})
+    assert fake.calls[0][0] == "vs"
+    assert fake.calls[0][1][:2] == ("Cursor", "Windsurf")   # left=tool, right=rival
+
+
+def test_v2_quote_card_floor_routes_tiny_fragment_to_statement(monkeypatch):
+    """The quote floor: a too-short quote ('The catch?') leaves the card mostly empty — render a
+    bold STATEMENT instead. A substantive quote DOES render as a quote."""
+    short = [_scene(1, "The catch?")]
+    fake = _stub_v2_env(monkeypatch, short, [_shot("quote_card")], title="Cursor — x")
+    abn_factory._v2_scene_cards("ep_t", 1, {"script": "x", "title": "Cursor — x"})
+    assert fake.calls[0][0] == "hook"   # below the 24-char / 4-word floor -> statement
+
+    big = [_scene(1, "This model writes production code with almost no hand-holding now.")]
+    fake2 = _stub_v2_env(monkeypatch, big, [_shot("quote_card")], title="Cursor — x")
+    abn_factory._v2_scene_cards("ep_t", 1, {"script": "x", "title": "Cursor — x"})
+    assert fake2.calls[0][0] == "quote"
+
+
+def test_v2_diagram_card_step_floor_routes_to_statement(monkeypatch):
+    """The diagram step-floor: <2 real mechanism steps -> bold STATEMENT, never a junk single-box
+    diagram. >=2 steps DOES render a diagram."""
+    thin = [_scene(1, "Want to see how it works in real time?")]
+    fake = _stub_v2_env(monkeypatch, thin, [_shot("diagram")], title="Cursor — x")
+    abn_factory._v2_scene_cards("ep_t", 1, {"script": "x", "title": "Cursor — x"})
+    assert fake.calls[0][0] == "hook"
+
+    real = [_scene(1, "It scans the repo. Then it builds a plan. Next it writes the code.")]
+    fake2 = _stub_v2_env(monkeypatch, real, [_shot("diagram")], title="Cursor — x")
+    abn_factory._v2_scene_cards("ep_t", 1, {"script": "x", "title": "Cursor — x"})
+    assert fake2.calls[0][0] == "diagram"
+
+
+def test_v2_episode_quote_cap_rotates_excess_quotes_to_other_cards(monkeypatch):
+    """The episode-wide quote-cap: quotes are capped at ~30% of all scenes seen; the EXCESS quote
+    shots rotate through varied alternatives (statement/diagram) so the episode isn't a wall of
+    quotes. With 10 quote scenes the cap is 3 -> only 3 quote cards, the rest are NOT quotes."""
+    n = 10
+    scenes = [_scene(i, "This model writes production code with almost no hand-holding at all.")
+              for i in range(n)]
+    shots = [_shot("quote_card") for _ in range(n)]
+    fake = _stub_v2_env(monkeypatch, scenes, shots, title="Cursor — x")
+    budget = {}
+    abn_factory._v2_scene_cards("ep_t", 1, {"script": "x", "title": "Cursor — x"}, ep_budget=budget)
+    quote_cards = sum(1 for c in fake.calls if c[0] == "quote")
+    assert quote_cards == max(1, int(n * 0.30))   # capped at 3
+    assert quote_cards < n                          # the rest were rotated away
+    assert budget["quotes"] == quote_cards
+
+
+def test_v2_returns_empty_when_v2_visuals_disabled(monkeypatch):
+    """Master kill-switch: with v2 off, _v2_scene_cards returns [] so the legacy visual renders
+    (the whole function is best-effort and must NEVER break a render)."""
+    monkeypatch.setattr(abn_factory, "_USE_V2_VISUALS", False)
+    assert abn_factory._v2_scene_cards("ep_t", 0, {"script": "x", "title": "t"}) == []
