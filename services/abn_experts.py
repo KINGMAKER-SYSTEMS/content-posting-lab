@@ -10,7 +10,10 @@ ThePrimeagen opinionated takes × Better Stack tool deep-dives, FOR AGENTIC BUIL
 in-the-mud, anti-hype, never headline regurgitation.
 """
 from __future__ import annotations
+import logging
 import os
+
+log = logging.getLogger(__name__)
 
 VOICE = ("AgenticBuilderNews voice: a sharp, plugged-in AI host explaining what JUST happened in AI "
          "and WHY it matters to anyone building or working with AI — in plain, energetic English. "
@@ -270,7 +273,11 @@ def ask(role: str, user: str, extra_system: str = "") -> str | None:
             messages=[{"role": "system", "content": sysmsg}, {"role": "user", "content": user}],
             max_tokens=cfg["max_tokens"], temperature=cfg["temperature"], timeout=40)
         return (r.choices[0].message.content or "").strip()
-    except Exception:
+    except Exception as e:
+        # Surface signal: a swallowed auth/rate-limit/timeout error looks
+        # identical to a transient blip to the caller. Log before returning None.
+        log.warning("abn_experts.ask(role=%s) failed: %s: %s",
+                    role, type(e).__name__, e)
         return None
 
 
