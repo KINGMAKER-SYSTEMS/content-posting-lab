@@ -160,6 +160,57 @@ def test_disabled_clip_with_opacity_envelope_exports_invisible_but_keeps_keyfram
     assert len(clip["keyframes"][0]["points"]) == 2
 
 
+def test_muted_and_disabled_clip_flattens_both_volume_and_alpha_keeping_both_envelopes(tmp_path):
+    """The NEW composing contract: when a clip is BOTH muted AND disabled AND
+    carries BOTH a volume and an opacity envelope, the two render-time flattens
+    must coexist on the same payload — volume -> 0 and alpha -> 0 — while neither
+    keyframe track is destroyed. The existing tests each exercise only ONE branch
+    (mute->volume, disable->alpha); this pins the case where both fire together so
+    a regression can't silently resurrect audio OR video on a hidden+silent clip.
+
+    `timeline_json` drops disabled clips, so this drives `clip_json` directly."""
+    project = _project(tmp_path / "bed.mp4")
+    clip = project["clips"]["card_clip"]
+    clip["assetId"] = "card"
+    project["assets"]["card"]["type"] = "video"
+    clip["enabled"] = False
+    clip["muted"] = True
+    clip["volume"] = 1.0
+    clip["transform"]["opacity"] = 0.9
+    clip["keyframes"] = [
+        {
+            "property": "volume",
+            "points": [
+                {"t": 0.0, "value": 1.0, "interp": "linear"},
+                {"t": 2.0, "value": 0.5, "interp": "linear"},
+            ],
+        },
+        {
+            "property": "opacity",
+            "points": [
+                {"t": 0.0, "value": 1.0, "interp": "linear"},
+                {"t": 2.0, "value": 0.5, "interp": "linear"},
+            ],
+        },
+    ]
+
+    payload = openshot_bridge.clip_json(project, clip)
+
+    # Mute wins over the volume envelope: flat single 0 point.
+    volume_points = payload["volume"]["Points"]
+    assert len(volume_points) == 1
+    assert volume_points[0]["co"]["Y"] == 0.0
+    # Disable wins over the opacity envelope: flat single 0 point.
+    alpha_points = payload["alpha"]["Points"]
+    assert len(alpha_points) == 1
+    assert alpha_points[0]["co"]["Y"] == 0.0
+    # Both source envelopes survive untouched on the clip so unmute + re-enable
+    # restore the original animations (the envelope re-composes from true base).
+    surviving = {k["property"]: k["points"] for k in clip["keyframes"]}
+    assert len(surviving["volume"]) == 2
+    assert len(surviving["opacity"]) == 2
+
+
 def test_openshot_export_duration_ignores_disabled_tail_clip(tmp_path):
     project = _project(tmp_path / "card.png")
     project["clips"]["disabled_tail"] = {
