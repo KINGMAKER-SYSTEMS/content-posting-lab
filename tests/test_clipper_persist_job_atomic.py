@@ -4,13 +4,18 @@ Regression guard for the fsync gap: the writer used to call
 `tmp.write_text(json.dumps(...))` then `tmp.replace(path)`, omitting the
 `os.fsync` that services.json_store.atomic_save uses. A crash between the
 write completing and the rename could leave a truncated/partial file and lose
-the first job save after a process crash. The writer now flushes + fsyncs the
-tmp file before the atomic rename.
+the first job save after a process crash.
+
+`_persist_job` now delegates the durable write to
+``services.json_store.atomic_save`` instead of reimplementing tmp+fsync+replace
+inline, and ``_load_jobs_from_disk`` reads via ``atomic_load``. These tests pin
+that durability still holds end-to-end.
 """
 
 import json
 
 from routers import clipper
+from services import json_store
 
 
 def test_persist_job_roundtrips(monkeypatch, tmp_path):
@@ -36,13 +41,17 @@ def test_persist_job_roundtrips(monkeypatch, tmp_path):
 
 
 def test_persist_job_fsyncs_before_replace(monkeypatch, tmp_path):
-    """fsync must run on the tmp fd before the rename, mirroring atomic_save."""
+    """fsync must run on the tmp fd before the rename.
+
+    The durable write is now delegated to ``json_store.atomic_save``, so the
+    fsync/replace happen through ``json_store.os`` — spy there.
+    """
     monkeypatch.setattr(clipper, "PROJECTS_DIR", tmp_path)
 
     events = []
 
-    real_fsync = clipper.os.fsync
-    real_replace = clipper.os.replace
+    real_fsync = json_store.os.fsync
+    real_replace = json_store.os.replace
 
     def spy_fsync(fd):
         events.append("fsync")
@@ -52,12 +61,47 @@ def test_persist_job_fsyncs_before_replace(monkeypatch, tmp_path):
         events.append("replace")
         return real_replace(src, dst)
 
-    monkeypatch.setattr(clipper.os, "fsync", spy_fsync)
-    monkeypatch.setattr(clipper.os, "replace", spy_replace)
+    monkeypatch.setattr(json_store.os, "fsync", spy_fsync)
+    monkeypatch.setattr(json_store.os, "replace", spy_replace)
 
     clipper._persist_job({"_project": "p", "job_id": "j", "status": "done"})
 
     assert events == ["fsync", "replace"], events
+
+
+def test_persist_then_load_roundtrips(monkeypatch, tmp_path):
+    """End-to-end: a persisted job rehydrates via _load_jobs_from_disk (atomic_load)."""
+    monkeypatch.setattr(clipper, "PROJECTS_DIR", tmp_path)
+    monkeypatch.setattr(clipper, "_JOBS_LOADED", False)
+    monkeypatch.setattr(clipper, "_batch_jobs", {})
+
+    clipper._persist_job(
+        {"_project": "proj-x", "job_id": "job-x", "status": "done", "progress": 100}
+    )
+
+    clipper._load_jobs_from_disk()
+
+    assert "job-x" in clipper._batch_jobs
+    loaded = clipper._batch_jobs["job-x"]
+    assert loaded["status"] == "done"
+    assert loaded["progress"] == 100
+    # project is re-derived from the path on load
+    assert loaded["_project"] == "proj-x"
+
+
+def test_load_skips_corrupt_state_via_atomic_load(monkeypatch, tmp_path):
+    """A truncated _state.json must not crash the load (atomic_load -> default {})."""
+    monkeypatch.setattr(clipper, "PROJECTS_DIR", tmp_path)
+    monkeypatch.setattr(clipper, "_JOBS_LOADED", False)
+    monkeypatch.setattr(clipper, "_batch_jobs", {})
+
+    bad = tmp_path / "proj-bad" / "clips" / "job-bad" / "_state.json"
+    bad.parent.mkdir(parents=True)
+    bad.write_text("{ this is not json", encoding="utf-8")
+
+    # Must not raise; corrupt file yields {} which has no job_id -> skipped.
+    clipper._load_jobs_from_disk()
+    assert clipper._batch_jobs == {}
 
 
 def test_persist_job_missing_ids_is_noop(monkeypatch, tmp_path):

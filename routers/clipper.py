@@ -19,7 +19,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from project_manager import PROJECTS_DIR, sanitize_project_name
 import services.r2 as r2
 from services.fsutil import safe_rmtree, safe_unlink
-from services.json_store import atomic_save
+from services.json_store import atomic_load, atomic_save
 
 log = logging.getLogger("clipper")
 
@@ -1109,16 +1109,11 @@ def _persist_job(job: dict) -> None:
             return
         path = _job_state_path(project, job_id)
         path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(".json.tmp")
         # Don't serialize transient runtime refs
         serialisable = {k: v for k, v in job.items() if not k.startswith("_")}
-        # fsync before replace: a crash between write and rename can otherwise
-        # leave a truncated/partial file (mirrors services.json_store.atomic_save).
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(serialisable, f)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp, path)
+        # atomic_save does tmp + flush + fsync + os.replace: a crash mid-write
+        # can't leave a truncated/partial file.
+        atomic_save(path, serialisable)
     except Exception as e:
         log.warning("failed to persist job %s: %s", job.get("job_id"), e)
 
@@ -1132,7 +1127,7 @@ def _load_jobs_from_disk() -> None:
     try:
         for state_file in PROJECTS_DIR.glob("*/clips/*/_state.json"):
             try:
-                data = json.loads(state_file.read_text())
+                data = atomic_load(state_file, default={})
                 jid = data.get("job_id")
                 if not jid:
                     continue
