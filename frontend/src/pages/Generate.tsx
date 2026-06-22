@@ -314,7 +314,6 @@ export function GeneratePage() {
   const navigate = useNavigate();
   const {
     activeProjectName,
-    setActiveProjectName,
     generateJobs,
     addGenerateJob,
     setGenerateJob,
@@ -417,7 +416,7 @@ export function GeneratePage() {
   const fetchRecentVideos = useCallback(async () => {
     setRecentVideosLoading(true);
     try {
-      const res = await fetch(apiUrl(`/api/projects/videos/recent?limit=${RECENT_VIDEO_LIMIT}`));
+      const res = await fetch(apiUrl(`/api/projects/videos/recent?project=${encodeURIComponent(activeProjectName)}&limit=${RECENT_VIDEO_LIMIT}`));
       if (!res.ok) throw new Error(`Failed to load recent videos (${res.status})`);
       const data = (await res.json()) as Partial<RecentProjectVideosResponse>;
       setRecentVideos(Array.isArray(data.videos) ? data.videos : []);
@@ -429,7 +428,7 @@ export function GeneratePage() {
     } finally {
       setRecentVideosLoading(false);
     }
-  }, []);
+  }, [activeProjectName]);
 
   useEffect(() => {
     for (const job of generateJobs) {
@@ -1663,7 +1662,7 @@ export function GeneratePage() {
               <div>
                 <div className="text-xl font-heading text-foreground">Recent Videos</div>
                 <div className="text-xs text-muted-foreground">
-                  Newest files across all projects
+                  Newest files in <span className="font-bold text-foreground">{activeProjectName}</span>
                 </div>
               </div>
               <div className="flex items-center gap-2">
@@ -1697,11 +1696,6 @@ export function GeneratePage() {
                           src={staticUrl(video.url)}
                           className="h-full w-full object-cover"
                         />
-                        <div className="absolute left-1.5 top-1.5 max-w-[calc(100%-12px)]">
-                          <Badge variant={video.project === activeProjectName ? 'default' : 'secondary'} className="max-w-full truncate text-[10px] shadow-none">
-                            {video.project}
-                          </Badge>
-                        </div>
                       </div>
                       <div className="space-y-1.5 px-2.5 py-2">
                         <div className="truncate text-xs font-bold text-foreground" title={video.name}>
@@ -1711,18 +1705,7 @@ export function GeneratePage() {
                           <span>{formatVideoKind(video.kind)}</span>
                           <span>{timeAgo(video.modified)}</span>
                         </div>
-                        <div className="flex items-center justify-between gap-2 pt-0.5">
-                          {video.project !== activeProjectName ? (
-                            <button
-                              type="button"
-                              onClick={() => setActiveProjectName(video.project)}
-                              className="text-[11px] font-bold text-muted-foreground hover:text-primary"
-                            >
-                              Select Project
-                            </button>
-                          ) : (
-                            <span className="text-[11px] font-bold text-primary">Active Project</span>
-                          )}
+                        <div className="flex items-center justify-end gap-2 pt-0.5">
                           <a href={staticUrl(video.url)} download className="text-[11px] font-bold text-primary hover:underline">
                             Download
                           </a>
