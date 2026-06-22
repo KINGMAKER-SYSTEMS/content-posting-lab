@@ -177,7 +177,11 @@ export interface CaptionRow {
   text: string;
   video_id: string;
   video_url: string;
+  creator?: string;
+  sound_id?: string;
+  song?: string;
   mood?: string;
+  views?: number;
 }
 
 export interface CaptionSource {
@@ -185,6 +189,12 @@ export interface CaptionSource {
   csv_path: string;
   count: number;
   captions: CaptionRow[];
+}
+
+export interface CaptionFacets {
+  creators: string[];
+  sounds: { sound_id: string; song: string }[];
+  moods: string[];
 }
 
 export interface FontInfo {
@@ -242,6 +252,7 @@ export interface VideosResponse {
 
 export interface CaptionsResponse {
   sources: CaptionSource[];
+  facets?: CaptionFacets;
 }
 
 

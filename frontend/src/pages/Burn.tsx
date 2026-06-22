@@ -32,6 +32,7 @@ import { Separator } from '@/components/ui/separator';
 const DEFAULT_LINE_HEIGHT = 1.08;
 const DEFAULT_STROKE_WIDTH = 4;
 const SNAP_THRESHOLD = 3;
+const MOOD_TAGS = ['sad', 'hype', 'love', 'funny', 'chill'] as const;
 
 const TIKTOK_COLOR_PRESETS: { name: string; hex: string }[] = [
   { name: 'White', hex: '#FFFFFF' },
@@ -494,6 +495,8 @@ export function BurnPage() {
 
   const [selectedCaptionSource, setSelectedCaptionSource] = useState('__paste');
   const [randomizeCaptions, setRandomizeCaptions] = useState(false);
+  const [moodFilter, setMoodFilter] = useState<string | null>(null);
+  const [creatorFilter, setCreatorFilter] = useState<string | null>(null);
 
   const [selectedFolders, setSelectedFolders] = useState<string[]>(() => {
     if (!activeProjectName) return [];
@@ -584,11 +587,24 @@ export function BurnPage() {
     setSelectedFolders((prev) => prev.includes(folder) ? prev.filter((f) => f !== folder) : [...prev, folder]);
   }, []);
 
+  // Distinct creators within the selected source (for the creator filter)
+  const sourceCreators = useMemo(() => {
+    const src = captionSources.find((s) => s.username === selectedCaptionSource);
+    if (!src) return [];
+    return Array.from(new Set(src.captions.map((r) => r.creator).filter(Boolean) as string[])).sort();
+  }, [captionSources, selectedCaptionSource]);
+
   const selectedCaptionItems = useMemo(() => {
     if (selectedCaptionSource === '__paste') return manualPaste.split('\n').map((l) => l.trim()).filter(Boolean);
     const src = captionSources.find((s) => s.username === selectedCaptionSource);
-    return src ? src.captions.map((r) => r.text) : [];
-  }, [captionSources, manualPaste, selectedCaptionSource]);
+    if (!src) return [];
+    return src.captions
+      .filter((r) => !moodFilter || r.mood === moodFilter)
+      .filter((r) => !creatorFilter || r.creator === creatorFilter)
+      .slice()
+      .sort((a, b) => (b.views ?? 0) - (a.views ?? 0))
+      .map((r) => r.text);
+  }, [captionSources, manualPaste, selectedCaptionSource, moodFilter, creatorFilter]);
 
   const showPasteManual = selectedCaptionSource === '__paste';
   const projectName = activeProjectName ?? '';
@@ -1200,7 +1216,7 @@ export function BurnPage() {
         <div className="mt-1 mb-2 flex flex-wrap gap-1.5">
           <button
             type="button"
-            onClick={() => setSelectedCaptionSource('__paste')}
+            onClick={() => { setSelectedCaptionSource('__paste'); setMoodFilter(null); setCreatorFilter(null); }}
             className={`rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
               selectedCaptionSource === '__paste'
                 ? 'border-primary bg-primary text-primary-foreground'
@@ -1213,17 +1229,72 @@ export function BurnPage() {
             <button
               key={s.username}
               type="button"
-              onClick={() => setSelectedCaptionSource(s.username)}
+              onClick={() => { setSelectedCaptionSource(s.username); setMoodFilter(null); setCreatorFilter(null); }}
               className={`rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
                 selectedCaptionSource === s.username
                   ? 'border-primary bg-primary text-primary-foreground'
                   : 'border-border bg-muted text-muted-foreground hover:bg-accent'
               }`}
             >
-              @{s.username} ({s.count})
+              {s.username.startsWith('tos-') ? s.username : `@${s.username}`} ({s.count})
             </button>
           ))}
         </div>
+
+        {!showPasteManual && (
+          <div className="mb-2 space-y-1.5">
+            <div className="flex flex-wrap items-center gap-1">
+              <span className="mr-1 text-[10px] font-semibold uppercase text-muted-foreground/70">Sentiment</span>
+              <button
+                type="button"
+                onClick={() => setMoodFilter(null)}
+                className={`rounded-full border px-2 py-0.5 text-[11px] font-medium transition-colors ${
+                  !moodFilter ? 'border-primary bg-primary text-primary-foreground' : 'border-border bg-muted text-muted-foreground hover:bg-accent'
+                }`}
+              >
+                all
+              </button>
+              {MOOD_TAGS.map((tag) => (
+                <button
+                  key={tag}
+                  type="button"
+                  onClick={() => setMoodFilter(moodFilter === tag ? null : tag)}
+                  className={`rounded-full border px-2 py-0.5 text-[11px] font-medium uppercase transition-colors ${
+                    moodFilter === tag ? 'border-primary bg-primary text-primary-foreground' : 'border-border bg-muted text-muted-foreground hover:bg-accent'
+                  }`}
+                >
+                  {tag}
+                </button>
+              ))}
+            </div>
+            {sourceCreators.length > 1 && (
+              <div className="flex flex-wrap items-center gap-1">
+                <span className="mr-1 text-[10px] font-semibold uppercase text-muted-foreground/70">Creator</span>
+                <button
+                  type="button"
+                  onClick={() => setCreatorFilter(null)}
+                  className={`rounded-full border px-2 py-0.5 text-[11px] font-medium transition-colors ${
+                    !creatorFilter ? 'border-primary bg-primary text-primary-foreground' : 'border-border bg-muted text-muted-foreground hover:bg-accent'
+                  }`}
+                >
+                  all
+                </button>
+                {sourceCreators.map((c) => (
+                  <button
+                    key={c}
+                    type="button"
+                    onClick={() => setCreatorFilter(creatorFilter === c ? null : c)}
+                    className={`rounded-full border px-2 py-0.5 text-[11px] font-medium transition-colors ${
+                      creatorFilter === c ? 'border-primary bg-primary text-primary-foreground' : 'border-border bg-muted text-muted-foreground hover:bg-accent'
+                    }`}
+                  >
+                    @{c}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
 
         <div className="mb-3 flex items-center gap-2">
           <label className="flex cursor-pointer items-center gap-1.5 text-xs text-muted-foreground">
