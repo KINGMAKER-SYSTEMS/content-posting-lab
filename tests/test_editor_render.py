@@ -1746,6 +1746,141 @@ def test_openshot_render_silent_project_never_muxes(tmp_path, monkeypatch):
     assert result["audioMuxed"] is False
 
 
+# ---------------------------------------------------------------------------
+# OpenShotRenderer.render() exception cleanup (editor_render.py:424-434). When
+# writer.Open()/WriteFrame() throws (crashed libopenshot), the except block calls
+# writer.Close() in a blind try/except and the finally calls timeline.Close() also
+# blindly. These paths are never hit by the happy-path fakes above: a failed Open()
+# followed by a double Close(), and timeline.Close() after an early failure. A
+# regression here either masks the real error behind a cleanup exception or leaks
+# the native Timeline handle. Pin both with a writer/timeline that can be told to
+# blow up at each stage.
+# ---------------------------------------------------------------------------
+
+
+class _ExplodingWriter(_FakeWriter):
+    """A writer whose Open()/WriteFrame()/Close() can be armed to raise, and that
+    counts Close() calls so the double-close path can be asserted."""
+
+    open_error: Exception | None = None
+    write_error: Exception | None = None
+    close_error: Exception | None = None
+
+    def __init__(self, _path):
+        super().__init__(_path)
+        self.close_calls = 0
+
+    def Open(self):
+        if self.open_error is not None:
+            raise self.open_error
+
+    def WriteFrame(self, _frame):
+        if self.write_error is not None:
+            raise self.write_error
+
+    def Close(self):
+        self.close_calls += 1
+        if self.close_error is not None:
+            raise self.close_error
+
+
+def _build_exploding_renderer(tmp_path, monkeypatch):
+    """OpenShotRenderer wired with _ExplodingWriter + a Timeline stub that records
+    whether Close() ran and can be armed to raise on Close()."""
+    fake = _fake_openshot()
+    fake.FFmpegWriter = _ExplodingWriter
+    monkeypatch.setattr(editor_render, "_import_openshot", lambda: (fake, "available", None))
+    renderer = editor_render.OpenShotRenderer(tmp_path / "renders")
+
+    class _StubTimeline:
+        closed = 0
+        close_error: Exception | None = None
+
+        def GetFrame(self, _n):
+            return object()
+
+        def Close(self):
+            type(self).closed += 1
+            if self.close_error is not None:
+                raise self.close_error
+
+    timeline_stub = _StubTimeline()
+    monkeypatch.setattr(renderer, "_timeline", lambda _p: timeline_stub)
+    monkeypatch.setattr(editor_render, "_probe_duration", lambda *_a, **_k: 1.0)
+    return renderer, timeline_stub
+
+
+def test_openshot_render_wraps_writer_open_failure_as_render_error(tmp_path, monkeypatch):
+    """writer.Open() failure (crashed libopenshot at startup) must surface as a
+    RenderError carrying the original cause, not leak the raw native exception."""
+    monkeypatch.setattr(editor_render.shutil, "which", lambda name: None)
+    renderer, _timeline_stub = _build_exploding_renderer(tmp_path, monkeypatch)
+    monkeypatch.setattr(_ExplodingWriter, "open_error", RuntimeError("libopenshot Open crashed"), raising=False)
+
+    project = _audio_project(tmp_path)
+    with pytest.raises(editor_render.RenderError) as excinfo:
+        renderer.render(project, output_path=tmp_path / "renders" / "out.mp4")
+
+    assert "OpenShot render failed" in str(excinfo.value)
+    # the original libopenshot exception is preserved as the cause (raise ... from exc)
+    assert isinstance(excinfo.value.__cause__, RuntimeError)
+    assert "Open crashed" in str(excinfo.value.__cause__)
+
+
+def test_openshot_render_double_close_after_open_failure_does_not_mask_error(tmp_path, monkeypatch):
+    """After Open() fails, the except block calls writer.Close() in a blind
+    try/except (line 426). On an already-failed/half-open writer that Close() can
+    itself throw — it must be swallowed so the ORIGINAL Open() error is what
+    propagates, never the secondary cleanup error."""
+    monkeypatch.setattr(editor_render.shutil, "which", lambda name: None)
+    renderer, _timeline_stub = _build_exploding_renderer(tmp_path, monkeypatch)
+    monkeypatch.setattr(_ExplodingWriter, "open_error", RuntimeError("primary Open failure"), raising=False)
+    monkeypatch.setattr(_ExplodingWriter, "close_error", RuntimeError("secondary Close blew up"), raising=False)
+
+    project = _audio_project(tmp_path)
+    with pytest.raises(editor_render.RenderError) as excinfo:
+        renderer.render(project, output_path=tmp_path / "renders" / "out.mp4")
+
+    # the wrapped cause is the PRIMARY Open failure, not the cleanup Close failure
+    assert isinstance(excinfo.value.__cause__, RuntimeError)
+    assert "primary Open failure" in str(excinfo.value.__cause__)
+    assert "secondary Close" not in str(excinfo.value)
+
+
+def test_openshot_render_closes_timeline_after_early_failure(tmp_path, monkeypatch):
+    """The finally block must close the native Timeline even when Open() failed
+    before any frame was written — otherwise the libopenshot handle leaks on every
+    crashed render."""
+    monkeypatch.setattr(editor_render.shutil, "which", lambda name: None)
+    renderer, timeline_stub = _build_exploding_renderer(tmp_path, monkeypatch)
+    type(timeline_stub).closed = 0
+    monkeypatch.setattr(_ExplodingWriter, "open_error", RuntimeError("Open failed early"), raising=False)
+
+    project = _audio_project(tmp_path)
+    with pytest.raises(editor_render.RenderError):
+        renderer.render(project, output_path=tmp_path / "renders" / "out.mp4")
+
+    assert type(timeline_stub).closed == 1  # timeline.Close() ran in the finally
+
+
+def test_openshot_render_swallows_timeline_close_failure_keeps_original_error(tmp_path, monkeypatch):
+    """timeline.Close() raising in the finally (line 432) must be swallowed by its
+    blind try/except so it never overrides the render error already in flight."""
+    monkeypatch.setattr(editor_render.shutil, "which", lambda name: None)
+    renderer, timeline_stub = _build_exploding_renderer(tmp_path, monkeypatch)
+    monkeypatch.setattr(_ExplodingWriter, "write_error", RuntimeError("WriteFrame crashed"), raising=False)
+    monkeypatch.setattr(type(timeline_stub), "close_error", RuntimeError("Timeline Close crashed"), raising=False)
+
+    project = _audio_project(tmp_path)
+    with pytest.raises(editor_render.RenderError) as excinfo:
+        renderer.render(project, output_path=tmp_path / "renders" / "out.mp4")
+
+    # the in-flight WriteFrame error wins; the finally's Close failure is swallowed
+    assert isinstance(excinfo.value.__cause__, RuntimeError)
+    assert "WriteFrame crashed" in str(excinfo.value.__cause__)
+    assert "Timeline Close" not in str(excinfo.value)
+
+
 def test_refit_effects_drops_start_fade_eaten_by_front_trim():
     """A start-anchored fade whose ramp is fully consumed by the front trim must be
     DROPPED, not kept as a meaningless `duration: 0.0` fade. A 0.5s crossfade with a
