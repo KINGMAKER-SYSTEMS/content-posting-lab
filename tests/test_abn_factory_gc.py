@@ -1246,6 +1246,86 @@ def test_gc_segments_still_trims_when_protection_scan_is_complete(store, monkeyp
     )
 
 
+def test_purge_disk_union_protects_render_seen_only_by_entry_scan(store, monkeypatch):
+    """THE OTHER HALF OF THE OR-UNION (the symmetric twin of the saved-during-reap test): a render
+    referenced by a timeline that exists at function ENTRY but is DELETED during the scratch reap (an
+    editor closes a project / clears a draft mid-GC) must STILL be protected. The fresh pre-trim
+    re-scan no longer sees it, but the entry scan did — and the comment promises a render protected by
+    EITHER scan survives. If the code did `protected_paths = fresh_paths` (replace) instead of
+    `protected_paths | fresh_paths` (OR), this render would be tombstoned. This pins the union keeps
+    the entry-only side, not just the fresh-only side."""
+    entry_only = _render(store, "ep_e17000", age_s=9000)   # oldest -> first trim victim absent the fix
+    _render(store, "ep_face00", age_s=10)
+    rel = entry_only.relative_to(store)
+    # Timeline referencing the render EXISTS at entry, so the entry scan protects it.
+    timeline = store / "editor_timelines" / "ep_e17000.json"
+    timeline.write_text(f'{{"renderCache": {{"video": {{"path": "/agenticnews-assets/{rel}"}}}}}}')
+    _scratch(store, "ep_e17000", "s9_raw.wav")
+
+    real_predicate = abn_factory._is_editor_timeline_protected_asset
+    state = {"deleted": False}
+
+    def hook(path, protected):
+        # During the scratch-reap loop (after the entry scan, before the pre-trim re-scan) the editor
+        # removes the timeline — the FRESH scan will be complete but no longer reference this render.
+        if not state["deleted"]:
+            state["deleted"] = True
+            timeline.unlink()
+        return real_predicate(path, protected)
+
+    monkeypatch.setattr(abn_factory, "_is_editor_timeline_protected_asset", hook)
+    _force_low_disk(monkeypatch)
+
+    abn_factory.purge_disk(intermediate_age_s=1, keep_episodes=1, low_disk_gb=999)
+
+    assert state["deleted"], "test setup: the mid-reap timeline deletion never fired"
+    # fresh scan is COMPLETE (all remaining timelines parse) but no longer references the render, so
+    # only the entry-scan side of the OR keeps it alive — proving the union isn't a replace.
+    _fresh, complete = abn_factory._editor_timeline_asset_paths_checked()
+    assert complete, "precondition: the post-deletion fresh scan must be complete (not the skip path)"
+    assert entry_only.exists(), (
+        "render protected only by the ENTRY scan was trimmed — the pre-trim re-scan REPLACED the "
+        "protected set instead of OR-ing it; a render protected by EITHER scan must survive"
+    )
+    assert not (store / "_trash" / "ep_e17000" / "renders" / "episode.mp4").exists()
+
+
+def test_gc_segments_union_protects_render_seen_only_by_entry_scan(store, monkeypatch):
+    """Same OR-union-keeps-the-entry-side guarantee on the _gc_segments path: a timeline present at
+    entry but deleted during the scratch reap must still protect its render via the entry-scan side of
+    the union, even though the (complete) fresh re-scan no longer references it. Needs >4 renders so
+    the keep-4 trim has a victim."""
+    entry_only = _render(store, "ep_a55e70", age_s=9000)        # oldest -> trim victim absent the fix
+    for i, age in enumerate((8000, 7000, 6000, 5000, 10)):       # 5 newer -> 6 total, keep 4
+        _render(store, f"ep_b011{i}", age_s=age)
+    rel = entry_only.relative_to(store)
+    timeline = store / "editor_timelines" / "ep_a55e70.json"
+    timeline.write_text(f'{{"renderCache": {{"video": {{"path": "/agenticnews-assets/{rel}"}}}}}}')
+    _scratch(store, "ep_a55e70", "s9_raw.wav")
+
+    real_predicate = abn_factory._is_editor_timeline_protected_asset
+    state = {"deleted": False}
+
+    def hook(path, protected):
+        if not state["deleted"]:
+            state["deleted"] = True
+            timeline.unlink()
+        return real_predicate(path, protected)
+
+    monkeypatch.setattr(abn_factory, "_is_editor_timeline_protected_asset", hook)
+    _gc_no_videos(monkeypatch)
+    _force_low_disk(monkeypatch)
+
+    asyncio.run(abn_factory._gc_segments(keep_recent=0))
+
+    assert state["deleted"], "test setup: the mid-reap timeline deletion never fired"
+    assert entry_only.exists(), (
+        "_gc_segments trimmed a render protected only by the ENTRY scan — the re-scan must OR the two "
+        "protected sets, not replace the entry set with the fresh one"
+    )
+    assert not (store / "_trash" / "ep_a55e70" / "renders" / "episode.mp4").exists()
+
+
 def test_gc_segments_skips_trim_when_rescan_becomes_incomplete(store, monkeypatch):
     """Twin of test_purge_disk_skips_trim_when_rescan_becomes_incomplete for the _gc_segments path:
     the ENTRY scan is complete, but a timeline becomes UNREADABLE by the pre-trim re-scan (an editor
