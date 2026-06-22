@@ -3055,3 +3055,264 @@ def test_reimport_is_idempotent_for_the_router_migration_gate():
     assert twice["clips"][clip_id]["start"] == 1.25
     assert twice["revision"] == once["revision"]
     assert twice["metadata"]["migrationWarnings"] == []
+
+
+# ---------------------------------------------------------------------------
+# apply_command() edge-case / malformed-payload coverage
+#
+# The happy paths and the revert-guard error paths are covered above. These
+# tests exercise the per-op validation branches (missing/malformed payloads,
+# unknown clip/asset/track IDs, command-specific validation) that the
+# editor-bay mutation path depends on rejecting cleanly with a
+# CommandValidationError rather than corrupting the timeline or raising a
+# bare KeyError/TypeError.
+# ---------------------------------------------------------------------------
+
+def _seed_clip_project(tmp_path, project_id="proj_edge"):
+    """A saved project with one asset, the default video_1 track, and one clip."""
+    store = timeline.TimelineStore(tmp_path)
+    project = timeline.new_project(project_id)
+    store.save(project)
+    store.apply_command(project_id, {
+        "op": "asset.import", "actor": "agent", "expectedRevision": 0,
+        "payload": {"assetId": "a1", "type": "video", "src": "/a.mp4"},
+    })
+    project = store.apply_command(project_id, {
+        "op": "clip.create", "actor": "agent", "expectedRevision": 1,
+        "payload": {"clipId": "c1", "assetId": "a1", "trackId": "video_1",
+                    "start": 0.0, "duration": 6.0},
+    })
+    return store, project
+
+
+def test_apply_command_requires_expected_revision_and_known_op(tmp_path):
+    store = timeline.TimelineStore(tmp_path)
+    project = timeline.new_project("proj_op_guard")
+    store.save(project)
+
+    # expectedRevision is mandatory (omitting it is a malformed command, not rev 0).
+    with pytest.raises(timeline.CommandValidationError, match="expectedRevision is required"):
+        store.apply_command("proj_op_guard", {"op": "clip.show", "actor": "x",
+                                              "payload": {"clipId": "c1"}})
+
+    # An unknown op must be rejected, not silently no-op'd.
+    with pytest.raises(timeline.CommandValidationError, match="unsupported command op"):
+        store.apply_command("proj_op_guard", {"op": "clip.frobnicate", "actor": "x",
+                                              "expectedRevision": 0, "payload": {}})
+
+    # A None op also falls through to the unsupported-op guard.
+    with pytest.raises(timeline.CommandValidationError, match="unsupported command op"):
+        store.apply_command("proj_op_guard", {"actor": "x", "expectedRevision": 0,
+                                              "payload": {}})
+
+    # The store and revision are untouched by the rejected commands.
+    assert store.load("proj_op_guard")["revision"] == 0
+
+
+def test_asset_import_rejects_missing_required_fields(tmp_path):
+    store = timeline.TimelineStore(tmp_path)
+    project = timeline.new_project("proj_asset_guard")
+    store.save(project)
+
+    base = {"op": "asset.import", "actor": "agent", "expectedRevision": 0}
+    with pytest.raises(timeline.CommandValidationError, match="assetId is required"):
+        store.apply_command("proj_asset_guard", {**base, "payload": {"type": "video", "src": "/a.mp4"}})
+    with pytest.raises(timeline.CommandValidationError, match="asset type is required"):
+        store.apply_command("proj_asset_guard", {**base, "payload": {"assetId": "a1", "src": "/a.mp4"}})
+    with pytest.raises(timeline.CommandValidationError, match="asset src is required"):
+        store.apply_command("proj_asset_guard", {**base, "payload": {"assetId": "a1", "type": "video"}})
+
+    # Empty payload is rejected on the first missing field, not crashed.
+    with pytest.raises(timeline.CommandValidationError):
+        store.apply_command("proj_asset_guard", {**base, "payload": {}})
+    assert store.load("proj_asset_guard")["revision"] == 0
+
+
+def test_clip_create_rejects_unknown_asset_track_and_bad_geometry(tmp_path):
+    store, _ = _seed_clip_project(tmp_path, "proj_create_guard")
+    rev = store.load("proj_create_guard")["revision"]
+    base = {"op": "clip.create", "actor": "agent", "expectedRevision": rev}
+
+    with pytest.raises(timeline.CommandValidationError, match="clipId is required"):
+        store.apply_command("proj_create_guard", {**base, "payload": {"assetId": "a1", "trackId": "video_1", "duration": 3}})
+    with pytest.raises(timeline.CommandValidationError, match="asset does not exist: nope"):
+        store.apply_command("proj_create_guard", {**base, "payload": {"clipId": "c2", "assetId": "nope", "trackId": "video_1", "duration": 3}})
+    with pytest.raises(timeline.CommandValidationError, match="track does not exist: nope"):
+        store.apply_command("proj_create_guard", {**base, "payload": {"clipId": "c2", "assetId": "a1", "trackId": "nope", "duration": 3}})
+    # duration must be strictly positive; 0 and negatives are rejected.
+    with pytest.raises(timeline.CommandValidationError, match="duration must be positive"):
+        store.apply_command("proj_create_guard", {**base, "payload": {"clipId": "c2", "assetId": "a1", "trackId": "video_1", "duration": 0}})
+    # non-numeric geometry is a clean validation error, not a TypeError.
+    with pytest.raises(timeline.CommandValidationError, match="duration must be numeric"):
+        store.apply_command("proj_create_guard", {**base, "payload": {"clipId": "c2", "assetId": "a1", "trackId": "video_1", "duration": "abc"}})
+    with pytest.raises(timeline.CommandValidationError, match="start must be non-negative"):
+        store.apply_command("proj_create_guard", {**base, "payload": {"clipId": "c2", "assetId": "a1", "trackId": "video_1", "duration": 3, "start": -1}})
+
+
+def test_clip_mutations_reject_missing_and_unknown_clip_ids(tmp_path):
+    store, _ = _seed_clip_project(tmp_path, "proj_mutate_guard")
+    rev = store.load("proj_mutate_guard")["revision"]
+
+    # Every clip-targeting op routes through _require_clip first.
+    for op in ("clip.move", "clip.trim", "clip.hide", "clip.show", "clip.mute",
+               "clip.unmute", "clip.transform", "clip.opacity", "clip.volume",
+               "clip.keyframes", "clip.effect.add", "clip.effect.update",
+               "clip.effect.delete", "clip.split"):
+        with pytest.raises(timeline.CommandValidationError, match="clipId is required"):
+            store.apply_command("proj_mutate_guard", {"op": op, "actor": "x", "expectedRevision": rev, "payload": {}})
+        with pytest.raises(timeline.CommandValidationError, match="clip does not exist: ghost"):
+            store.apply_command("proj_mutate_guard", {"op": op, "actor": "x", "expectedRevision": rev, "payload": {"clipId": "ghost"}})
+
+
+def test_clip_property_ops_reject_out_of_range_and_non_numeric_values(tmp_path):
+    store, _ = _seed_clip_project(tmp_path, "proj_range_guard")
+    rev = store.load("proj_range_guard")["revision"]
+
+    # opacity is bounded [0, 1].
+    with pytest.raises(timeline.CommandValidationError, match="opacity must be between"):
+        store.apply_command("proj_range_guard", {"op": "clip.opacity", "actor": "x", "expectedRevision": rev, "payload": {"clipId": "c1", "opacity": 1.5}})
+    # volume is non-negative.
+    with pytest.raises(timeline.CommandValidationError, match="volume must be non-negative"):
+        store.apply_command("proj_range_guard", {"op": "clip.volume", "actor": "x", "expectedRevision": rev, "payload": {"clipId": "c1", "volume": -0.1}})
+    # move start must be a finite number.
+    with pytest.raises(timeline.CommandValidationError, match="start must be numeric"):
+        store.apply_command("proj_range_guard", {"op": "clip.move", "actor": "x", "expectedRevision": rev, "payload": {"clipId": "c1", "start": float("inf")}})
+    # transform payload must be an object.
+    with pytest.raises(timeline.CommandValidationError, match="transform must be an object"):
+        store.apply_command("proj_range_guard", {"op": "clip.transform", "actor": "x", "expectedRevision": rev, "payload": {"clipId": "c1", "transform": [1, 2]}})
+    # transform.scale must be positive.
+    with pytest.raises(timeline.CommandValidationError, match="transform.scale must be positive"):
+        store.apply_command("proj_range_guard", {"op": "clip.transform", "actor": "x", "expectedRevision": rev, "payload": {"clipId": "c1", "transform": {"scale": 0}}})
+
+
+def test_clip_update_patch_validation(tmp_path):
+    store, _ = _seed_clip_project(tmp_path, "proj_patch_guard")
+    rev = store.load("proj_patch_guard")["revision"]
+    base = {"op": "clip.update", "actor": "x", "expectedRevision": rev}
+
+    with pytest.raises(timeline.CommandValidationError, match="patch must be an object"):
+        store.apply_command("proj_patch_guard", {**base, "payload": {"clipId": "c1", "patch": "nope"}})
+    with pytest.raises(timeline.CommandValidationError, match="track does not exist: ghost"):
+        store.apply_command("proj_patch_guard", {**base, "payload": {"clipId": "c1", "patch": {"trackId": "ghost"}}})
+    with pytest.raises(timeline.CommandValidationError, match="effects must be a list"):
+        store.apply_command("proj_patch_guard", {**base, "payload": {"clipId": "c1", "patch": {"effects": {"id": "x"}}}})
+    with pytest.raises(timeline.CommandValidationError, match="duration must be positive"):
+        store.apply_command("proj_patch_guard", {**base, "payload": {"clipId": "c1", "patch": {"duration": 0}}})
+    with pytest.raises(timeline.CommandValidationError, match="duration must be non-negative"):
+        store.apply_command("proj_patch_guard", {**base, "payload": {"clipId": "c1", "patch": {"duration": -2}}})
+    with pytest.raises(timeline.CommandValidationError, match="volume must be non-negative"):
+        store.apply_command("proj_patch_guard", {**base, "payload": {"clipId": "c1", "patch": {"volume": -1}}})
+
+
+def test_clip_effect_ops_validate_type_params_and_existence(tmp_path):
+    store, _ = _seed_clip_project(tmp_path, "proj_fx_guard")
+    rev = store.load("proj_fx_guard")["revision"]
+
+    # add: unsupported type / missing id / missing required param / unknown param.
+    with pytest.raises(timeline.CommandValidationError, match="effect id is required"):
+        store.apply_command("proj_fx_guard", {"op": "clip.effect.add", "actor": "x", "expectedRevision": rev,
+                                              "payload": {"clipId": "c1", "effect": {"type": "fadeIn", "params": {"duration": 0.5}}}})
+    with pytest.raises(timeline.CommandValidationError, match="unsupported effect type"):
+        store.apply_command("proj_fx_guard", {"op": "clip.effect.add", "actor": "x", "expectedRevision": rev,
+                                              "payload": {"clipId": "c1", "effect": {"id": "fx1", "type": "wobble", "params": {}}}})
+    with pytest.raises(timeline.CommandValidationError, match="effect param required: duration"):
+        store.apply_command("proj_fx_guard", {"op": "clip.effect.add", "actor": "x", "expectedRevision": rev,
+                                              "payload": {"clipId": "c1", "effect": {"id": "fx1", "type": "fadeIn", "params": {}}}})
+    with pytest.raises(timeline.CommandValidationError, match="unsupported effect params"):
+        store.apply_command("proj_fx_guard", {"op": "clip.effect.add", "actor": "x", "expectedRevision": rev,
+                                              "payload": {"clipId": "c1", "effect": {"id": "fx1", "type": "fadeIn", "params": {"duration": 0.5, "bogus": 1}}}})
+
+    # A valid add succeeds; a duplicate id is then rejected.
+    project = store.apply_command("proj_fx_guard", {"op": "clip.effect.add", "actor": "x", "expectedRevision": rev,
+                                                    "payload": {"clipId": "c1", "effect": {"id": "fx1", "type": "fadeIn", "params": {"duration": 0.5}}}})
+    rev = project["revision"]
+    with pytest.raises(timeline.CommandValidationError, match="effect already exists: fx1"):
+        store.apply_command("proj_fx_guard", {"op": "clip.effect.add", "actor": "x", "expectedRevision": rev,
+                                              "payload": {"clipId": "c1", "effect": {"id": "fx1", "type": "fadeIn", "params": {"duration": 0.5}}}})
+
+    # update / delete against a non-existent effect id.
+    with pytest.raises(timeline.CommandValidationError, match="effect does not exist: ghost"):
+        store.apply_command("proj_fx_guard", {"op": "clip.effect.update", "actor": "x", "expectedRevision": rev,
+                                              "payload": {"clipId": "c1", "effect": {"id": "ghost", "type": "fadeIn", "params": {"duration": 0.5}}}})
+    with pytest.raises(timeline.CommandValidationError, match="effect does not exist: ghost"):
+        store.apply_command("proj_fx_guard", {"op": "clip.effect.delete", "actor": "x", "expectedRevision": rev,
+                                              "payload": {"clipId": "c1", "effectId": "ghost"}})
+
+    # brightness param is signed and bounded [-1, 1].
+    with pytest.raises(timeline.CommandValidationError, match="effect.value must be between"):
+        store.apply_command("proj_fx_guard", {"op": "clip.effect.add", "actor": "x", "expectedRevision": rev,
+                                              "payload": {"clipId": "c1", "effect": {"id": "fx2", "type": "brightness", "params": {"value": 5}}}})
+
+
+def test_clip_keyframes_validation_rejects_malformed_envelopes(tmp_path):
+    store, _ = _seed_clip_project(tmp_path, "proj_kf_guard")
+    rev = store.load("proj_kf_guard")["revision"]
+    base = {"op": "clip.keyframes", "actor": "x", "expectedRevision": rev}
+
+    with pytest.raises(timeline.CommandValidationError, match="keyframes must be a list"):
+        store.apply_command("proj_kf_guard", {**base, "payload": {"clipId": "c1", "keyframes": {"prop": "opacity"}}})
+    with pytest.raises(timeline.CommandValidationError, match="unsupported keyframe property"):
+        store.apply_command("proj_kf_guard", {**base, "payload": {"clipId": "c1", "keyframes": [{"property": "wobble", "points": [{"t": 0, "value": 1}]}]}})
+    with pytest.raises(timeline.CommandValidationError, match="requires points"):
+        store.apply_command("proj_kf_guard", {**base, "payload": {"clipId": "c1", "keyframes": [{"property": "opacity", "points": []}]}})
+    with pytest.raises(timeline.CommandValidationError, match="keyframe point must be an object"):
+        store.apply_command("proj_kf_guard", {**base, "payload": {"clipId": "c1", "keyframes": [{"property": "opacity", "points": ["nope"]}]}})
+    with pytest.raises(timeline.CommandValidationError, match="unsupported keyframe interp"):
+        store.apply_command("proj_kf_guard", {**base, "payload": {"clipId": "c1", "keyframes": [{"property": "opacity", "points": [{"t": 0, "value": 1, "interp": "warp"}]}]}})
+
+
+def test_clip_split_rejects_split_point_outside_clip(tmp_path):
+    store, _ = _seed_clip_project(tmp_path, "proj_split_guard")  # clip c1: start 0, duration 6
+    rev = store.load("proj_split_guard")["revision"]
+    base = {"op": "clip.split", "actor": "x", "expectedRevision": rev}
+
+    # at the start boundary -> offset 0 -> not inside.
+    with pytest.raises(timeline.CommandValidationError, match="split point must be inside the clip"):
+        store.apply_command("proj_split_guard", {**base, "payload": {"clipId": "c1", "at": 0.0}})
+    # past the end -> offset >= duration -> not inside.
+    with pytest.raises(timeline.CommandValidationError, match="split point must be inside the clip"):
+        store.apply_command("proj_split_guard", {**base, "payload": {"clipId": "c1", "at": 6.0}})
+    # negative split point is non-numeric/negative -> non-negative guard.
+    with pytest.raises(timeline.CommandValidationError, match="at must be non-negative"):
+        store.apply_command("proj_split_guard", {**base, "payload": {"clipId": "c1", "at": -1.0}})
+
+
+
+def test_clip_split_rejects_duplicate_new_clip_id(tmp_path):
+    store, _ = _seed_clip_project(tmp_path, "proj_split_dup")
+    rev = store.load("proj_split_dup")["revision"]
+    with pytest.raises(timeline.CommandValidationError, match="clip already exists: c1"):
+        store.apply_command("proj_split_dup", {"op": "clip.split", "actor": "x", "expectedRevision": rev,
+                                               "payload": {"clipId": "c1", "at": 3.0, "newClipId": "c1"}})
+
+
+def test_marker_and_note_delete_reject_unknown_ids(tmp_path):
+    store, _ = _seed_clip_project(tmp_path, "proj_mn_guard")
+    rev = store.load("proj_mn_guard")["revision"]
+
+    with pytest.raises(timeline.CommandValidationError, match="marker does not exist"):
+        store.apply_command("proj_mn_guard", {"op": "marker.delete", "actor": "x", "expectedRevision": rev, "payload": {"markerId": "ghost"}})
+    with pytest.raises(timeline.CommandValidationError, match="note does not exist"):
+        store.apply_command("proj_mn_guard", {"op": "note.delete", "actor": "x", "expectedRevision": rev, "payload": {"noteId": "ghost"}})
+    # note.add with empty text is rejected.
+    with pytest.raises(timeline.CommandValidationError, match="note text is required"):
+        store.apply_command("proj_mn_guard", {"op": "note.add", "actor": "x", "expectedRevision": rev, "payload": {"text": ""}})
+    # marker.add with a non-numeric time is a clean validation error.
+    with pytest.raises(timeline.CommandValidationError, match="time must be numeric"):
+        store.apply_command("proj_mn_guard", {"op": "marker.add", "actor": "x", "expectedRevision": rev, "payload": {"time": "soon"}})
+
+
+def test_rejected_command_leaves_revision_and_command_log_untouched(tmp_path):
+    """A malformed command must not bump revision or append to the log — the
+    editor-bay relies on failed mutations being fully no-op so retries stay safe."""
+    store, project = _seed_clip_project(tmp_path, "proj_noop")
+    rev_before = project["revision"]
+    log_len_before = len(project["commandLog"])
+
+    with pytest.raises(timeline.CommandValidationError):
+        store.apply_command("proj_noop", {"op": "clip.opacity", "actor": "x", "expectedRevision": rev_before,
+                                          "payload": {"clipId": "c1", "opacity": 99}})
+
+    reloaded = store.load("proj_noop")
+    assert reloaded["revision"] == rev_before
+    assert len(reloaded["commandLog"]) == log_len_before
