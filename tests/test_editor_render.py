@@ -979,6 +979,89 @@ def test_open_shot_audio_mux_applies_audio_fadein(tmp_path):
     assert head < body - 6  # fadeIn ramp keeps the head well below steady level
 
 
+def test_audio_fade_in_window_treats_crossfade_as_fadein():
+    """An audio crossfade is a start-anchored fade-in (openshot_bridge maps both
+    fadeIn and crossfade to an `in` Fade), so _audio_fade_in_window must surface a
+    crossfade's duration even when the clip carries no explicit fadeIn. The longest
+    of the two wins when both are present; no fade -> None."""
+    assert editor_render._audio_fade_in_window({"effects": []}) is None
+    crossfade_only = {
+        "effects": [{"id": "xf", "type": "crossfade", "params": {"duration": 0.7}}]
+    }
+    assert editor_render._audio_fade_in_window(crossfade_only) == pytest.approx(0.7)
+    both = {
+        "effects": [
+            {"id": "fi", "type": "fadeIn", "params": {"duration": 0.3}},
+            {"id": "xf", "type": "crossfade", "params": {"duration": 0.7}},
+        ]
+    }
+    assert editor_render._audio_fade_in_window(both) == pytest.approx(0.7)
+
+
+def test_build_video_command_audio_crossfade_emits_afade_and_is_not_warned(tmp_path):
+    """An audio clip's crossfade must reproduce as an `afade=t=in` in the ffmpeg
+    fallback (parity with OpenShot's `in` Fade) AND must NOT be reported as a
+    dropped effect, because the fallback now honors it. Pre-fix the afade chain
+    only looked at fadeIn, so audio crossfades vanished silently."""
+    red = _solid_png(tmp_path / "red.png", "red")
+    voice = tmp_path / "vo.wav"
+    subprocess.run(
+        ["ffmpeg", "-y", "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
+         "-ac", "1", "-ar", "48000", str(voice)],
+        check=True, capture_output=True, text=True,
+    )
+    project = _project_with_card("cmd_xfade", red, x=0.0)
+    project["assets"]["vo"] = {"id": "vo", "type": "audio", "src": str(voice)}
+    project["clips"]["vo_clip"] = {
+        "id": "vo_clip", "assetId": "vo", "trackId": "audio_1", "kind": "voiceover",
+        "start": 0.0, "duration": 1.0, "sourceStart": 0.0,
+        "enabled": True, "muted": False, "volume": 1.0, "transform": {},
+        "effects": [{"id": "xf", "type": "crossfade", "params": {"duration": 0.5}}],
+    }
+    r = _renderer(tmp_path)
+    cmd, missing, warnings = r._build_video_command(
+        project, tmp_path / "out.mp4", duration=1.0, window_start=0.0
+    )
+    assert missing == []
+    filter_arg = cmd[cmd.index("-filter_complex") + 1]
+    assert "afade=t=in:st=0:d=0.500" in filter_arg
+    # the audio crossfade is reproduced, so it is NOT a dropped-effect warning
+    assert not any(w["name"] == "crossfade" for w in warnings)
+
+
+def test_open_shot_audio_mux_applies_audio_crossfade_as_fadein(tmp_path):
+    """The OpenShot mux path must honor an audio crossfade as a fade-in, exactly
+    like fadeIn. Pre-fix only fadeIn rode through, so an interclip ducking crossfade
+    on audio was silently lost vs OpenShot. The ramped head is audibly quieter than
+    the steady body."""
+    video = tmp_path / "silent_video.mp4"
+    tone = tmp_path / "tone.wav"
+    subprocess.run(
+        ["ffmpeg", "-y", "-f", "lavfi", "-i", "color=c=black:s=96x64:r=12:d=2",
+         "-c:v", "libx264", "-pix_fmt", "yuv420p", str(video)],
+        check=True, capture_output=True, text=True,
+    )
+    subprocess.run(
+        ["ffmpeg", "-y", "-f", "lavfi", "-i", "sine=frequency=440:duration=2.0",
+         "-ac", "1", "-ar", "48000", str(tone)],
+        check=True, capture_output=True, text=True,
+    )
+    project = timeline.new_project("audio_xfade", width=96, height=64, fps=12)
+    project["assets"]["tone"] = {"id": "tone", "type": "audio", "src": str(tone)}
+    project["clips"]["tone"] = {
+        "id": "tone", "assetId": "tone", "trackId": "audio_1", "kind": "music",
+        "start": 0, "duration": 2.0, "sourceStart": 0, "enabled": True,
+        "muted": False, "volume": 1, "transform": {},
+        "effects": [{"id": "xf", "type": "crossfade", "params": {"duration": 1.0}}],
+    }
+
+    assert editor_render._mux_timeline_audio(project, video, duration=2.0, asset_root=None) is True
+
+    head = _mean_volume(video, start=0.0, duration=0.25)
+    body = _mean_volume(video, start=1.2, duration=0.4)
+    assert head < body - 6  # crossfade ramp keeps the head well below steady level
+
+
 def test_open_shot_audio_mux_raises_on_missing_audio_asset(tmp_path):
     """The mux path must fail closed when an audio clip's src is absent (line 749):
     it builds a -filter_complex over the audio inputs and a phantom -i would make

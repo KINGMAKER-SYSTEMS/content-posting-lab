@@ -47,18 +47,30 @@ def _num(value: Any, default: float) -> float:
 # than silently drop them (the whole point of this slice).
 _FFMPEG_NATIVE_EFFECTS = {"fadeIn", "fadeOut"}
 
+# On audio clips a crossfade is just a start-anchored fade-in (openshot_bridge's
+# _FADE_DIRECTION_MAP maps both fadeIn and crossfade to OpenShot's `in` Fade), and
+# the audio (a)fade chains below reproduce it as an `afade=t=in`. Visual crossfades
+# stay unreproducible (the fallback can't composite two overlapping streams), so
+# this extra-native set applies to audio clips only.
+_FFMPEG_NATIVE_AUDIO_EFFECTS = _FFMPEG_NATIVE_EFFECTS | {"crossfade"}
 
-def _ffmpeg_unsupported_drops(clip: dict[str, Any]) -> list[dict[str, str]]:
+
+def _ffmpeg_unsupported_drops(
+    clip: dict[str, Any], *, is_audio: bool = False
+) -> list[dict[str, str]]:
     """List the per-clip effects/keyframes the ffmpeg fallback cannot honor.
 
     OpenShot renders these; ffmpeg can't (without reinventing the compiler), so
-    we surface a structured warning instead of dropping them in silence."""
+    we surface a structured warning instead of dropping them in silence. Audio
+    clips additionally reproduce ``crossfade`` (as a fade-in), so it is not a drop
+    for them."""
 
+    native = _FFMPEG_NATIVE_AUDIO_EFFECTS if is_audio else _FFMPEG_NATIVE_EFFECTS
     drops: list[dict[str, str]] = []
     clip_id = str(clip.get("id") or "")
     for effect in clip.get("effects") or []:
         effect_type = str((effect or {}).get("type") or "")
-        if effect_type in _FFMPEG_NATIVE_EFFECTS:
+        if effect_type in native:
             continue
         drops.append({"clipId": clip_id, "kind": "effect", "name": effect_type})
     for track in clip.get("keyframes") or []:
@@ -85,6 +97,22 @@ def _fade_window(clip: dict[str, Any], direction: str) -> float | None:
         if seconds > 0 and (best is None or seconds > best):
             best = seconds
     return best
+
+
+def _audio_fade_in_window(clip: dict[str, Any]) -> float | None:
+    """Start-anchored fade-in duration for an audio clip, treating ``crossfade``
+    as a fade-in.
+
+    OpenShot renders an audio crossfade as an `in` Fade (openshot_bridge's
+    _FADE_DIRECTION_MAP: crossfade -> "in"); without this the ffmpeg audio path
+    only saw `fadeIn` and silently dropped crossfade ducking transitions. The
+    longest of the clip's fade-in / crossfade windows wins (same max() semantics
+    _fade_window uses), so a clip carrying both still gets one fade-in."""
+
+    fade_in = _fade_window(clip, "fadeIn")
+    crossfade = _fade_window(clip, "crossfade")
+    candidates = [d for d in (fade_in, crossfade) if d is not None]
+    return max(candidates) if candidates else None
 
 
 # Editor keyframe `property` names the ffmpeg fallback can now animate via a
@@ -589,7 +617,11 @@ class FFmpegLayeredRenderer:
         # carries a warning instead of dropping them silently (the ticket's core).
         warnings: list[dict[str, str]] = []
         for clip in clips:
-            warnings.extend(_ffmpeg_unsupported_drops(clip))
+            warnings.extend(
+                _ffmpeg_unsupported_drops(
+                    clip, is_audio=_asset_type(assets, clip) == "audio"
+                )
+            )
 
         cmd: list[str] = [
             self.ffmpeg,
@@ -666,7 +698,7 @@ class FFmpegLayeredRenderer:
             muted = bool(clip.get("muted"))
             volume = 0.0 if muted else volume
             afades = ""
-            a_fade_in = _fade_window(clip, "fadeIn")
+            a_fade_in = _audio_fade_in_window(clip)
             if a_fade_in is not None and duration_sec > 0:
                 afades += f"afade=t=in:st=0:d={min(a_fade_in, duration_sec):.3f},"
             a_fade_out = _fade_window(clip, "fadeOut")
@@ -938,7 +970,7 @@ def _mux_timeline_audio(
         # silently dropping them. Timings are clip-relative (PTS reset to 0 by
         # asetpts), inserted between volume and the timeline adelay offset.
         afades = ""
-        a_fade_in = _fade_window(clip, "fadeIn")
+        a_fade_in = _audio_fade_in_window(clip)
         if a_fade_in is not None:
             afades += f"afade=t=in:st=0:d={min(a_fade_in, clip_duration):.3f},"
         a_fade_out = _fade_window(clip, "fadeOut")
