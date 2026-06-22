@@ -83,6 +83,50 @@ def test_burn_list_endpoints(sync_client):
     assert batches[0]["id"] == "batch-x"
 
 
+def test_burn_batch_status_unknown_batch(sync_client):
+    """Polling an unknown/not-yet-registered batch returns a safe empty shape,
+    never a 500 — the frontend may poll before /overlay registers the batch."""
+    resp = sync_client.get("/api/burn/batch-status/never-seen-batch")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body == {
+        "batchId": "never-seen-batch",
+        "items": {},
+        "total": 0,
+        "done": 0,
+        "ok": 0,
+        "failed": 0,
+    }
+
+
+def test_burn_batch_status_aggregates_mixed_items(sync_client):
+    """batch-status returns the per-item dict plus the done/ok/failed counts the
+    Burn.tsx poll loop reads. Seed _burn_jobs directly (real burns need ffmpeg)."""
+    import routers.burn as burn
+
+    batch_id = "status-suite-batch"
+    burn._burn_jobs[batch_id] = {
+        0: {"status": "done", "index": 0, "ok": True, "file": f"{batch_id}/burned_000.mp4"},
+        1: {"status": "error", "index": 1, "ok": False, "error": "boom"},
+        2: {"status": "burning"},
+    }
+    try:
+        resp = sync_client.get(f"/api/burn/batch-status/{batch_id}")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["batchId"] == batch_id
+        assert body["total"] == 3
+        # done counts both "done" and "error" terminal states
+        assert body["done"] == 2
+        assert body["ok"] == 1
+        assert body["failed"] == 1
+        # items are keyed by index (JSON stringifies int keys) — Burn.tsx reads finalResults[String(i)]
+        assert body["items"]["0"]["file"] == f"{batch_id}/burned_000.mp4"
+        assert body["items"]["1"]["error"] == "boom"
+    finally:
+        burn._burn_jobs.pop(batch_id, None)
+
+
 def test_caption_export_endpoint(sync_client):
     created = sync_client.post("/api/projects", json={"name": "Caption Suite"})
     assert created.status_code == 201

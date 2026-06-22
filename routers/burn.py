@@ -582,9 +582,9 @@ async def batch_status(batch_id: str):
         "batchId": batch_id,
         "items": items,
         "total": len(items),
-        "done": sum(1 for v in items.values() if v["status"] in ("done", "error")),
+        "done": sum(1 for v in items.values() if v.get("status") in ("done", "error")),
         "ok": sum(1 for v in items.values() if v.get("ok")),
-        "failed": sum(1 for v in items.values() if v["status"] == "error"),
+        "failed": sum(1 for v in items.values() if v.get("status") == "error"),
     }
 
 
