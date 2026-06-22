@@ -31,6 +31,7 @@ import services.openshot_bridge as openshot_bridge
 import services.editor_render as editor_render
 import services.editor_timeline as editor_timeline
 from services.fsutil import safe_unlink
+from services.json_store import atomic_save
 from fastapi.responses import StreamingResponse
 
 router = APIRouter()
@@ -982,9 +983,38 @@ def _abn_shot_duration(segment: dict, shots: list[dict], shot_index: int, segmen
     return max(0.001, end - start)
 
 
-def _extract_audio_window(source: Path, target: Path, *, start: float, duration: float) -> None:
+class EditorSourceExtractionError(RuntimeError):
+    """Raised when an ffmpeg window extraction during source materialization fails.
+
+    Wraps the three uncaught subprocess failure modes (ffmpeg not installed,
+    non-zero exit on a corrupt / audio-less source, and timeouts) in one clear,
+    catchable error carrying ffmpeg's stderr so the caller does not leak a raw
+    CalledProcessError / FileNotFoundError / TimeoutExpired.
+    """
+
+
+def _run_ffmpeg_extract(cmd: list[str], *, source: Path, target: Path) -> None:
     target.parent.mkdir(parents=True, exist_ok=True)
-    subprocess.run(
+    try:
+        subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=180)
+    except FileNotFoundError as exc:  # ffmpeg not installed / not on PATH
+        raise EditorSourceExtractionError(
+            f"ffmpeg not available while extracting {target.name} from {source.name}"
+        ) from exc
+    except subprocess.TimeoutExpired as exc:
+        raise EditorSourceExtractionError(
+            f"ffmpeg timed out extracting {target.name} from {source.name}"
+        ) from exc
+    except subprocess.CalledProcessError as exc:
+        stderr = (exc.stderr or "").strip()
+        raise EditorSourceExtractionError(
+            f"ffmpeg failed (exit {exc.returncode}) extracting {target.name} "
+            f"from {source.name}: {stderr[-500:]}"
+        ) from exc
+
+
+def _extract_audio_window(source: Path, target: Path, *, start: float, duration: float) -> None:
+    _run_ffmpeg_extract(
         [
             "ffmpeg",
             "-y",
@@ -1005,16 +1035,13 @@ def _extract_audio_window(source: Path, target: Path, *, start: float, duration:
             "pcm_s16le",
             str(target),
         ],
-        check=True,
-        capture_output=True,
-        text=True,
-        timeout=180,
+        source=source,
+        target=target,
     )
 
 
 def _extract_video_window(source: Path, target: Path, *, start: float, duration: float) -> None:
-    target.parent.mkdir(parents=True, exist_ok=True)
-    subprocess.run(
+    _run_ffmpeg_extract(
         [
             "ffmpeg",
             "-y",
@@ -1035,10 +1062,8 @@ def _extract_video_window(source: Path, target: Path, *, start: float, duration:
             "+faststart",
             str(target),
         ],
-        check=True,
-        capture_output=True,
-        text=True,
-        timeout=180,
+        source=source,
+        target=target,
     )
 
 
@@ -1388,6 +1413,10 @@ def _command_invalidates_render_cache(op: str) -> bool:
         "clip.transform",
         "clip.opacity",
         "clip.volume",
+        "clip.keyframes",
+        "clip.effect.add",
+        "clip.effect.update",
+        "clip.effect.delete",
     }
 
 
@@ -1675,10 +1704,9 @@ def _load_review_notes() -> dict:
 
 
 def _save_review_notes(data: dict) -> None:
-    # atomic write (tmp + rename) per the storage SOP — never leave a partial notes file
-    tmp = _REVIEW_NOTES.with_suffix(".json.tmp")
-    tmp.write_text(_json.dumps(data, indent=2, default=str))
-    tmp.replace(_REVIEW_NOTES)
+    # atomic write (tmp + flush + fsync + rename) per the storage SOP —
+    # a crash mid-write must never leave a partial/corrupt notes file
+    atomic_save(_REVIEW_NOTES, data, default=str)
 
 
 async def _find_video(ep_id: str) -> dict | None:
@@ -1861,8 +1889,9 @@ async def editor_apply(ep_id: str, body: dict = Body(...)):
                         else:
                             applied["skipped"] += 1
 
-    # atomic write of the modified timeline
-    tmp = tl_file.with_suffix(".json.tmp"); tmp.write_text(_json.dumps(timeline)); tmp.replace(tl_file)
+    # atomic write of the modified timeline (tmp + fsync + os.replace, tmp cleaned up
+    # on failure) — this file gates re-renders, so a crash mid-write must not corrupt it
+    atomic_save(tl_file, timeline)
 
     # re-render in the background (the re-render guard reuses nothing here — timeline changed)
     import logging as _logging

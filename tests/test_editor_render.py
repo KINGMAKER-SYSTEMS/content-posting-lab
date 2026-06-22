@@ -537,6 +537,46 @@ def test_windowed_clip_keyframe_before_window_clamps_to_window_start():
     assert after == pytest.approx([133.0, 157.0])
 
 
+def _volume_keyframes(*points: "tuple[float, float]") -> list[dict]:
+    """A `volume` keyframe track: each point is (t_seconds_from_clip_start, gain)."""
+    return [{
+        "property": "volume",
+        "points": [{"t": t, "value": v, "interp": "linear"} for t, v in points],
+    }]
+
+
+def test_windowed_volume_envelope_keeps_absolute_gains_through_window_shift():
+    """A ducking volume envelope (absolute gains: 0.6 under intro, 0.22 under VO)
+    must survive _render_scope_project windowing with its GAIN values unchanged --
+    only the keyframe `t` may shift. _shot_keyframes promotes such an envelope onto
+    the clip (editor_timeline ~450-475); if windowing ever mutated `value` the music
+    bed would duck to the wrong level (0.6 -> 0.22 or vice versa) or go silent.
+
+    This locks the invariant at the _shift_keyframes seam directly on a `volume`
+    track -- prior windowing tests only covered `opacity`/`alpha`."""
+
+    # Clip spans timeline [1, 9); the front 1s gets trimmed by the window below.
+    # Envelope: full-level intro point, ducked-under-VO point, recovery point.
+    kfs = _volume_keyframes((0.5, 0.6), (2.0, 0.22), (6.0, 0.6))
+    project = _window_project(
+        _wclip("bed", start=1.0, duration=8.0, source_start=10.0, keyframes=kfs)
+    )
+
+    # Window [2, 8): front_trim = 2 - 1 = 1s. Each point's `t` shifts down by 1
+    # (clamped at 0); every gain `value` must be byte-for-byte identical.
+    scoped = editor_render._render_scope_project(project, window_start=2.0, duration=6.0)
+    windowed = next(iter(scoped["clips"].values()))
+
+    vol_track = next(t for t in windowed["keyframes"] if t["property"] == "volume")
+    shifted = [(p["t"], p["value"]) for p in vol_track["points"]]
+
+    # t: 0.5 -> 0 (clamped), 2.0 -> 1.0, 6.0 -> 5.0 ; gains untouched.
+    assert shifted == pytest.approx([(0.0, 0.6), (1.0, 0.22), (5.0, 0.6)])
+    # The original project envelope is not mutated by windowing.
+    orig = project["clips"]["bed"]["keyframes"][0]["points"]
+    assert [(p["t"], p["value"]) for p in orig] == [(0.5, 0.6), (2.0, 0.22), (6.0, 0.6)]
+
+
 def test_windowed_clips_drops_clips_fully_outside_window():
     project = _window_project(
         _wclip("before", start=0.0, duration=1.0),   # ends at window_start boundary
@@ -2554,6 +2594,87 @@ def test_render_scope_windowing_feeds_shifted_envelope_into_bridge_json():
     assert project["clips"]["c1"]["sourceStart"] == pytest.approx(1.0)
 
 
+def test_openshot_render_frame_window_shift_preserves_keyframe_source_frames(tmp_path, monkeypatch):
+    """The ticket's core gap: OpenShotRenderer.render_frame uses a hard-coded 250ms
+    window via _render_scope_project, which front-trims and so runs BOTH the
+    keyframe-t shift (down) and the sourceStart bump (up). Those two must CANCEL in
+    OpenShot frame space (X = (sourceStart + t)*fps + 1), so a keyframe lands at the
+    SAME source frame whether the preview window starts at the clip's head or mid-clip.
+    If they don't cancel, a preview frame shows opacity/volume/position envelopes
+    firing at the wrong time vs the full OpenShot render. No prior test drove the real
+    render_frame entrypoint (it patches _timeline directly to capture the JSON the
+    method actually feeds libopenshot)."""
+    fake = _fake_openshot()
+    monkeypatch.setattr(editor_render, "_import_openshot", lambda: (fake, "available", None))
+    renderer = editor_render.OpenShotRenderer(tmp_path / "renders")
+
+    captured: dict[str, dict] = {}
+
+    class _CapturedFrame:
+        def Save(self, *_a, **_k):
+            pass
+
+    class _CapturingTimeline:
+        def GetFrame(self, _n):
+            return _CapturedFrame()
+
+        def Close(self):
+            pass
+
+    def _capture_timeline(render_project):
+        # This is exactly what the real _timeline serializes into libopenshot.
+        captured["clip"] = editor_render.openshot_bridge.timeline_json(render_project)["clips"][0]
+        return _CapturingTimeline()
+
+    monkeypatch.setattr(renderer, "_timeline", _capture_timeline)
+
+    # Clip spans timeline t=4..7, fps=30, sourceStart=1.0, with volume + opacity +
+    # x envelopes. A volume point at t=1.0 sits at absolute timeline t=5.0.
+    project = _full_envelope_project(source_start=1.0)
+    bed = tmp_path / "bed.wav"
+    bed.write_bytes(b"")  # only .exists() is checked by render_frame's missing-asset gate
+    project["assets"]["bed"]["src"] = str(bed)
+    project["clips"]["c1"]["keyframes"].append(
+        {"property": "opacity", "points": [
+            {"t": 0.0, "value": 0.0, "interp": "linear"},
+            {"t": 1.0, "value": 1.0, "interp": "linear"},
+        ]}
+    )
+
+    # Source frame X each volume keyframe lands at when previewing from the clip head
+    # (no front-trim): X = (1.0 + t)*30 + 1 for t in [0,1,3].
+    head = editor_render.openshot_bridge.timeline_json(project)["clips"][0]
+    head_vol_x = [p["co"]["X"] for p in head["volume"]["Points"]]
+    assert head_vol_x == [31.0, 61.0, 121.0]
+
+    # Preview a frame at t=5.0 -> render_frame windows t=5..5.25, front_trim=1.0s.
+    renderer.render_frame(project, at=5.0, output_path=tmp_path / "preview.png")
+    clip = captured["clip"]
+
+    # The shared first volume point (t=1.0 -> abs t=5.0) is the window origin and must
+    # land at the IDENTICAL source frame it had un-windowed (61.0): proof the t-shift
+    # and sourceStart-bump cancel. Points before the window clamp to the origin frame.
+    win_vol_x = [p["co"]["X"] for p in clip["volume"]["Points"]]
+    assert win_vol_x == [61.0, 61.0, 121.0]
+    assert win_vol_x[1] == head_vol_x[1]            # the in-window point is frame-stable
+    # Volume Y (ducking depth) rides along unchanged: 1.0,0.2,1.0 -> 100,20,100.
+    assert [round(p["co"]["Y"], 2) for p in clip["volume"]["Points"]] == [100.0, 20.0, 100.0]
+
+    # Opacity fade: its t=1.0 reveal also sits at abs t=5.0, so it must fire at the
+    # window-origin frame 61.0 (not slip late), with Y still clamped 0..1.
+    op = clip["alpha"]["Points"]
+    assert [p["co"]["X"] for p in op] == [61.0, 61.0]   # both <= origin clamp to 61
+    assert [p["co"]["Y"] for p in op] == [0.0, 1.0]
+
+    # Position (location_x) envelope shifts in lockstep: x t=0/3 -> frames 61/121.
+    loc_x = [p["co"]["X"] for p in clip["location_x"]["Points"]]
+    assert loc_x == [61.0, 121.0]
+
+    # The caller's project is never mutated by the windowing (deep-copy scope).
+    assert project["clips"]["c1"]["sourceStart"] == pytest.approx(1.0)
+    assert project["clips"]["c1"]["keyframes"][0]["points"][0]["t"] == pytest.approx(0.0)
+
+
 def test_keyframes_effects_and_transform_coexist_in_one_openshot_clip_json():
     """Round-trip fidelity for the combined case. The exported OpenShot clip must
     carry, on the SAME clip object: (1) the transform — centered location_x/y and
@@ -3354,3 +3475,69 @@ def test_full_render_surfaces_timeout_as_render_error(monkeypatch, tmp_path):
     with pytest.raises(editor_render.RenderError) as excinfo:
         renderer.render(project, output_path=tmp_path / "out.mp4")
     assert "timed out" in str(excinfo.value)
+
+
+# ---------------------------------------------------------------------------
+# Transition translation-gap guard. ABN crossfades flow:
+#   editor_timeline.EFFECT_TYPES        (validation gate; what an import may carry)
+#   -> openshot_bridge._EFFECT_CLASS_MAP / _FADE_DIRECTION_MAP  (-> libopenshot Fade)
+#   -> editor_render._FFMPEG_NATIVE_EFFECTS  (what the fallback can reproduce; the
+#      rest must surface as a structured drop, never vanish silently)
+# These four dicts are hand-maintained and independent. If a future transition
+# type is added to the validation gate but missed in the bridge maps, effect_json
+# emits a bare class name with NO `fade`/`duration` and the fallback doesn't even
+# flag it as a drop -- a fidelity loss with zero warning (exactly the ticket's
+# "any transition type outside that set fails silently"). These guards make that
+# desync fail loudly here instead of silently in a render.
+# ---------------------------------------------------------------------------
+
+
+def test_every_fadelike_effect_type_has_bridge_class_and_direction():
+    """Every fade/crossfade transition the validation gate accepts must have BOTH
+    a bridge class (_EFFECT_CLASS_MAP) and a fade direction (_FADE_DIRECTION_MAP),
+    or openshot_bridge.effect_json silently emits a directionless, durationless
+    Fade -- a hard cut where the factory choreographed a dissolve."""
+    fadelike = {"fadeIn", "fadeOut", "crossfade"}
+    # The fade-like vocabulary must actually be a subset of what the import gate
+    # validates -- otherwise this guard is checking against a stale literal.
+    assert fadelike <= set(timeline.EFFECT_TYPES)
+    for effect_type in fadelike:
+        assert effect_type in openshot_bridge._EFFECT_CLASS_MAP, effect_type
+        assert effect_type in openshot_bridge._FADE_DIRECTION_MAP, effect_type
+
+
+def test_every_validated_effect_type_translates_through_bridge():
+    """Every effect type the ABN import gate can carry must produce a non-empty
+    OpenShot translation (a known class name, not the raw passthrough), so an
+    import never reaches the compiler as an untranslated effect."""
+    for effect_type, spec in timeline.EFFECT_TYPES.items():
+        params = {name: 0.5 for name in spec}
+        out = openshot_bridge.effect_json(
+            {"id": f"fx_{effect_type}", "type": effect_type, "params": params},
+            fps=30,
+        )
+        # A mapped class never equals the raw editor type (Fade/Brightness/...);
+        # the raw-type passthrough branch is the silent-failure signature.
+        assert out["type"] != effect_type, (
+            f"{effect_type} fell through openshot_bridge untranslated -- "
+            "add it to _EFFECT_CLASS_MAP"
+        )
+
+
+def test_crossfade_translates_to_a_real_in_fade_with_duration():
+    """The concrete carry-through: a factory crossfade lands as an OpenShot `in`
+    Fade carrying its duration -- not a bare directionless effect."""
+    out = openshot_bridge.effect_json(
+        {"id": "xf", "type": "crossfade", "params": {"duration": 0.5}}, fps=30
+    )
+    assert out["type"] == "Fade"
+    assert out["fade"] == "in"
+    assert out["duration"]["Points"][0]["co"]["Y"] == pytest.approx(0.5)
+
+
+def test_ffmpeg_fallback_native_effects_are_all_real_validated_types():
+    """The fallback's native-effect allowlists must reference only effect types
+    the import gate actually defines. A typo'd or stale entry would silently let a
+    genuinely-unreproducible effect skip its drop warning."""
+    assert editor_render._FFMPEG_NATIVE_EFFECTS <= set(timeline.EFFECT_TYPES)
+    assert editor_render._FFMPEG_NATIVE_AUDIO_EFFECTS <= set(timeline.EFFECT_TYPES)

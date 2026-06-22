@@ -269,6 +269,56 @@ def _is_editor_timeline_protected_asset(path: Path, protected_paths: set[Path]) 
     return _normalize_asset_path(path) in protected_paths
 
 
+def _editor_timeline_dir_token() -> float:
+    """A cheap change-token for the editor_timelines dir: the MAX mtime over the dir itself and
+    every *.json in it. A new/edited/removed timeline bumps this. Used to detect a timeline save
+    that lands DURING the destructive render trim, so we can refresh protection per-deletion without
+    re-globbing+re-parsing every JSON on each iteration. Returns -1.0 if the dir can't be statted —
+    treated as 'changed' so the caller re-scans (fail-safe: a stat we can't trust means re-check)."""
+    timeline_dir = ASSETS / "editor_timelines"
+    try:
+        token = timeline_dir.stat().st_mtime
+        for p in timeline_dir.glob("*.json"):
+            try:
+                token = max(token, p.stat().st_mtime)
+            except OSError:
+                return -1.0
+        return token
+    except OSError:
+        return -1.0
+
+
+class _LiveProtectionSet:
+    """TOCTOU guard for the per-render destructive trim. The fresh re-scan captured just before the
+    trim loop is itself stale the moment the loop starts iterating: while we tombstone render N, an
+    Editor Bay save can land referencing render N+1 that this loop is about to delete. The wider the
+    trim (many old episodes) the wider that window.
+
+    This wraps the protected set so each `contains()` check first compares a cheap mtime token of the
+    editor_timelines dir; only if a timeline was written/changed since the last scan does it re-scan
+    and OR in the new refs. So a save mid-trim is picked up before the NEXT render is deleted, the
+    window collapses to a single in-flight tombstone, and the common case (no save during trim) costs
+    one stat per render, not a full re-parse. An incomplete re-scan (a timeline we can't read) flips
+    `complete` False — the caller treats that as protect-everything and stops trimming, exactly like
+    the entry/fresh dual-complete gate."""
+
+    def __init__(self, paths: set[Path]):
+        self.paths = set(paths)
+        self.complete = True
+        self._token = _editor_timeline_dir_token()
+
+    def contains(self, path: Path) -> bool:
+        token = _editor_timeline_dir_token()
+        if token != self._token:
+            # A timeline changed since our last scan (or we can't trust the stat) — refresh.
+            self._token = token
+            fresh, fresh_complete = _editor_timeline_asset_paths_checked()
+            self.paths |= fresh
+            if not fresh_complete:
+                self.complete = False
+        return _is_editor_timeline_protected_asset(path, self.paths)
+
+
 # Point the card generator at the cinematic-background pool at MODULE LOAD — so EVERY path (the loop AND
 # a direct produce_one_episode from force_ep.py, which bypasses start_factory) composites cards over real
 # backgrounds, not the flat gradient. (Was only set in start_factory → forced episodes missed it.)
@@ -356,11 +406,8 @@ def _download(url: str, dest, timeout: int = 60) -> bool:
                 fh.write(chunk)
         return Path(dest).exists() and Path(dest).stat().st_size > 0
     except Exception:
-        try:
-            if Path(dest).exists() and Path(dest).stat().st_size == 0:
-                Path(dest).unlink()
-        except Exception:
-            pass
+        # download failed mid-stream: the dest is a partial/empty file, drop it
+        safe_unlink(dest)
         return False
 
 
@@ -3315,7 +3362,12 @@ def purge_disk(intermediate_age_s=1800, keep_episodes=4, low_disk_gb=2.0):
             fresh_paths, fresh_complete = _editor_timeline_asset_paths_checked()
             if not fresh_complete:
                 return freed // 1024 // 1024
-            protected_paths = protected_paths | fresh_paths
+            # LIVE protection: the fresh scan above is stale the instant the trim loop starts — a
+            # timeline saved between deletions can reference a render this loop is about to eat (the
+            # widening-window TOCTOU this ticket hardens). _LiveProtectionSet re-scans per-iteration
+            # ONLY when the editor_timelines dir's mtime token changed, so the window collapses to a
+            # single in-flight tombstone at the cost of one stat per render in the common no-save case.
+            live = _LiveProtectionSet(protected_paths | fresh_paths)
             for old in _old_episode_renders()[keep_episodes:]:
                 try:
                     # ACTIVE consume-site guard, symmetric with the scratch-reap loop above: only ever
@@ -3325,8 +3377,13 @@ def purge_disk(intermediate_age_s=1800, keep_episodes=4, low_disk_gb=2.0):
                     # don't lean solely on tombstone_render()'s own `_`-prefix/is_file RAISE.
                     if not old.is_file() or old.is_symlink():
                         continue
-                    if _is_editor_timeline_protected_asset(old, protected_paths):
+                    if live.contains(old):
                         continue
+                    # A timeline saved mid-trim that we couldn't re-parse means we no longer know the
+                    # full referenced set — stop trimming (protect-everything), exactly like the
+                    # entry/fresh dual-complete gate. Disk pressure is recoverable; a live render isn't.
+                    if not live.complete:
+                        break
                     freed += tombstone_render(old)  # safe-delete → _trash/, recoverable (not unlink)
                 except Exception:
                     pass
@@ -3410,7 +3467,11 @@ async def _gc_segments(keep_recent=12):
             if protection_complete and free_gb < 2.0:
                 fresh_paths, fresh_complete = _editor_timeline_asset_paths_checked()
                 if fresh_complete:
-                    protected_paths = protected_paths | fresh_paths
+                    # LIVE protection (see purge_disk twin): re-scan per-iteration only when a
+                    # timeline save changed the editor_timelines mtime token, so a timeline saved
+                    # mid-trim referencing a not-yet-deleted render is caught before it's tombstoned —
+                    # the widening-window TOCTOU this ticket hardens. One stat/render in the no-save case.
+                    live = _LiveProtectionSet(protected_paths | fresh_paths)
                     for old in _old_episode_renders()[4:]:
                         try:
                             # ACTIVE consume-site guard (see purge_disk twin): only hand tombstone_render()
@@ -3418,8 +3479,12 @@ async def _gc_segments(keep_recent=12):
                             # swap can't reach the destructive call — don't rely on the RAISE alone.
                             if not old.is_file() or old.is_symlink():
                                 continue
-                            if _is_editor_timeline_protected_asset(old, protected_paths):
+                            if live.contains(old):
                                 continue
+                            # Mid-trim timeline we couldn't re-parse → unknown referenced set → stop
+                            # trimming (protect-everything), like the entry/fresh dual-complete gate.
+                            if not live.complete:
+                                break
                             tombstone_render(old)  # safe-delete → _trash/, recoverable (not unlink)
                         except Exception:
                             pass

@@ -31,6 +31,7 @@ from project_manager import (
 from services.captions import scan_project_captions
 from services.ffmpeg import TIKTOK_ENCODE_ARGS, build_cc_filter
 from services.fsutil import safe_unlink
+from services.json_store import atomic_save
 
 log = logging.getLogger("burn")
 
@@ -64,9 +65,9 @@ def _make_batch_id(project: str, burn_dir: Path, label: str | None = None) -> st
 
 
 def _save_batch_meta(batch_dir: Path, meta: dict) -> None:
-    """Write batch metadata sidecar JSON."""
+    """Write batch metadata sidecar JSON (atomic: tmp + fsync + rename)."""
     meta_path = batch_dir / "batch_meta.json"
-    meta_path.write_text(_json.dumps(meta, indent=2), encoding="utf-8")
+    atomic_save(meta_path, meta)
 
 
 def _load_batch_meta(batch_dir: Path) -> dict | None:

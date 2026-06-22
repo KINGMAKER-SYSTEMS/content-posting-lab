@@ -415,6 +415,124 @@ def test_editor_render_api_surfaces_subprocess_render_error_as_500(sync_client, 
     assert "renderCache" not in loaded.json()
 
 
+@pytest.mark.parametrize(
+    "command",
+    [
+        {
+            "op": "clip.keyframes",
+            "actor": "test",
+            "expectedRevision": 0,
+            "payload": {
+                "clipId": "fx_clip",
+                "keyframes": [
+                    {
+                        "property": "opacity",
+                        "points": [
+                            {"t": 0.0, "value": 0.0, "interp": "linear"},
+                            {"t": 0.5, "value": 1.0, "interp": "linear"},
+                        ],
+                    }
+                ],
+            },
+        },
+        {
+            "op": "clip.effect.add",
+            "actor": "test",
+            "expectedRevision": 0,
+            "payload": {
+                "clipId": "fx_clip",
+                "effect": {"id": "fx_fade", "type": "fadeIn", "params": {"duration": 0.25}},
+            },
+        },
+        {
+            "op": "clip.effect.update",
+            "actor": "test",
+            "expectedRevision": 0,
+            "payload": {
+                "clipId": "fx_clip",
+                "effect": {"id": "fx_seed", "type": "fadeIn", "params": {"duration": 0.4}},
+            },
+        },
+        {
+            "op": "clip.effect.delete",
+            "actor": "test",
+            "expectedRevision": 0,
+            "payload": {"clipId": "fx_clip", "effectId": "fx_seed"},
+        },
+    ],
+    ids=["keyframes", "effect.add", "effect.update", "effect.delete"],
+)
+def test_editor_command_invalidates_render_cache_for_keyframe_and_effect_ops(
+    sync_client, monkeypatch, tmp_path, command
+):
+    """A clip.keyframes / clip.effect.* command changes how the clip compiles
+    (services/editor_timeline._mutate_clip), so it must drop the render cache or
+    the API will keep serving a stale render. Regression guard for
+    routers/agenticnews._command_invalidates_render_cache()."""
+    monkeypatch.setattr(agenticnews_router.db, "ASSETS_DIR", tmp_path)
+
+    video = tmp_path / "editor_renders" / "fx_invalidate_0.00_1.00.mp4"
+    video.parent.mkdir(parents=True)
+    video.write_bytes(b"fake-video")
+    timeline_dir = tmp_path / "editor_timelines"
+    timeline_dir.mkdir()
+    project_path = timeline_dir / "fx_invalidate.json"
+    project_path.write_text(
+        """{
+  "schema": "editor-timeline/v1",
+  "projectId": "fx_invalidate",
+  "sourceEpisodeId": "fx_invalidate",
+  "title": "FX Invalidate",
+  "fps": 8,
+  "width": 32,
+  "height": 32,
+  "revision": 0,
+  "metadata": {"abnImportVersion": 2},
+  "assets": {"card": {"id": "card", "type": "image", "src": "card.png"}},
+  "tracks": {"graphics_1": {"id": "graphics_1", "kind": "graphics", "index": 0}},
+  "clips": {
+    "fx_clip": {
+      "id": "fx_clip",
+      "assetId": "card",
+      "trackId": "graphics_1",
+      "start": 0,
+      "duration": 1.0,
+      "keyframes": [],
+      "effects": [{"id": "fx_seed", "type": "fadeIn", "params": {"duration": 0.2}}]
+    }
+  },
+  "markers": {},
+  "notes": {},
+  "commandLog": [],
+  "renderCache": {
+    "windows": {
+      "0.00_1.00": {
+        "backend": "openshot",
+        "video": "%s",
+        "start": 0,
+        "duration": 1.0,
+        "revision": 0
+      }
+    }
+  }
+}
+"""
+        % str(video)
+    )
+
+    seeded = sync_client.get("/api/agenticnews/editor-timelines/fx_invalidate")
+    assert seeded.status_code == 200
+    assert "renderCache" in seeded.json()
+
+    response = sync_client.post(
+        "/api/agenticnews/editor-timelines/fx_invalidate/commands", json=command
+    )
+    assert response.status_code == 200
+
+    loaded = sync_client.get("/api/agenticnews/editor-timelines/fx_invalidate")
+    assert "renderCache" not in loaded.json()
+
+
 def _solid_png(path: Path) -> None:
     subprocess.run(
         [

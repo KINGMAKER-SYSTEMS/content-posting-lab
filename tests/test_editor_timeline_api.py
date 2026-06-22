@@ -1803,3 +1803,101 @@ def test_timeline_resolver_flat_fallback_is_exists_gated(assets_dir):
     resolved = agenticnews_router._timeline_file_for_episode(ep)
     assert resolved == abn_assets.episode_singleton_path(ep, "timeline")
     assert not resolved.exists()
+
+
+# ---------------------------------------------------------------------------
+# ffmpeg subprocess failure handling in source materialization.
+#
+# `_extract_audio_window` / `_extract_video_window` shell out to ffmpeg with
+# `check=True` and no error handling. A missing ffmpeg binary, a corrupt /
+# audio-less source, or a slow encode would otherwise leak a raw
+# FileNotFoundError / CalledProcessError / TimeoutExpired straight up through
+# `_plan_editor_source_materialization(materialize=True)`. These tests pin that
+# all three are translated into the single, catchable
+# `EditorSourceExtractionError` carrying ffmpeg's stderr.
+# ---------------------------------------------------------------------------
+
+import subprocess
+
+
+def _materialization_timeline():
+    return {
+        "segments": [
+            {
+                "durationSec": 5.0,
+                "audio": {"vo": {"src": "/agenticnews-assets/seg0_vo.wav"}},
+                "shots": [],
+            }
+        ]
+    }
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        FileNotFoundError("ffmpeg"),
+        subprocess.CalledProcessError(
+            returncode=1, cmd=["ffmpeg"], stderr="seg0_vo.wav: Output file does not contain any stream"
+        ),
+        subprocess.TimeoutExpired(cmd=["ffmpeg"], timeout=180),
+    ],
+    ids=["ffmpeg_missing", "nonzero_exit", "timeout"],
+)
+def test_extract_audio_window_translates_subprocess_failures(monkeypatch, tmp_path, exc):
+    def boom(*_a, **_k):
+        raise exc
+
+    monkeypatch.setattr(agenticnews_router.subprocess, "run", boom)
+
+    with pytest.raises(agenticnews_router.EditorSourceExtractionError) as caught:
+        agenticnews_router._extract_audio_window(
+            tmp_path / "episode.mp4", tmp_path / "out" / "seg0_vo.wav", start=0.0, duration=5.0
+        )
+    # The clean error names the target so a failure is diagnosable.
+    assert "seg0_vo.wav" in str(caught.value)
+    # The original subprocess exception is preserved on the chain.
+    assert caught.value.__cause__ is exc
+
+
+def test_extract_video_window_translates_subprocess_failures(monkeypatch, tmp_path):
+    err = subprocess.CalledProcessError(returncode=1, cmd=["ffmpeg"], stderr="corrupt input")
+
+    def boom(*_a, **_k):
+        raise err
+
+    monkeypatch.setattr(agenticnews_router.subprocess, "run", boom)
+
+    with pytest.raises(agenticnews_router.EditorSourceExtractionError) as caught:
+        agenticnews_router._extract_video_window(
+            tmp_path / "episode.mp4", tmp_path / "out" / "seg0_demo.mp4", start=0.0, duration=5.0
+        )
+    assert "corrupt input" in str(caught.value)
+    assert caught.value.__cause__ is err
+
+
+def test_materialization_surfaces_clean_error_on_ffmpeg_failure(assets_dir, monkeypatch):
+    """When ffmpeg fails mid-materialization the caller gets one clean,
+    catchable EditorSourceExtractionError instead of a raw subprocess exception."""
+    monkeypatch.setattr(
+        agenticnews_router, "EDITOR_ALLOW_FLATTENED_SOURCE_MATERIALIZATION", True
+    )
+    # Flattened episode render present so the extract path is reached.
+    (assets_dir / "vid1_episode.mp4").write_bytes(b"EPISODE")
+
+    def boom(*_a, **_k):
+        raise subprocess.CalledProcessError(
+            returncode=1, cmd=["ffmpeg"], stderr="no audio stream"
+        )
+
+    monkeypatch.setattr(agenticnews_router.subprocess, "run", boom)
+
+    with pytest.raises(agenticnews_router.EditorSourceExtractionError):
+        agenticnews_router._plan_editor_source_materialization(
+            "vid1", _materialization_timeline(), materialize=True
+        )
+
+    # Planning (materialize=False) never shells out, so it stays unaffected.
+    plan = agenticnews_router._plan_editor_source_materialization(
+        "vid1", _materialization_timeline(), materialize=False
+    )
+    assert any(e["type"] == "audio" for e in plan)

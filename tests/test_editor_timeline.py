@@ -3591,3 +3591,85 @@ def test_keyframed_ducking_envelope_drives_actual_render(tmp_path):
     # VO-window. 0.6 vs 0.15 is ~12 dB; require a solid margin to rule out a flat
     # render (which would measure ~0 dB difference).
     assert intro_db - ducked_db > 6.0
+
+
+def test_abn_to_openshot_roundtrip_preserves_all_motion_and_fades():
+    """End-to-end gateway assertion: ABN -> Editor -> OpenShot Timeline JSON keeps
+    every motion/fade an ABN factory shot carries, and silently drops only the
+    effect types outside the closed vocabulary (never aborting the import).
+
+    This is the regression guard the ticket asks for: the prior bug was the import
+    promotion path (clip.effects / clip.keyframes) silently losing shot effects,
+    the synthesized transitionSec crossfade, kenBurns, or a shot-level keyframe
+    envelope before they reached the compiler. Earlier tests check each piece via
+    clip_json in isolation; this one drives the WHOLE timeline_json so the layers
+    can't desync and a future edit to either module is caught.
+    """
+    from services import openshot_bridge
+
+    abn_timeline = {
+        "episodeId": "ep_gateway",
+        "totalSec": 4.0,
+        "fps": 30,
+        "segments": [
+            {
+                "segmentId": "s0",
+                "durationSec": 4.0,
+                "shots": [
+                    # Shot A: kenBurns scale push only.
+                    {
+                        "id": "a",
+                        "src": "/agenticnews-assets/a.png",
+                        "startSec": 0.0,
+                        "durationSec": 2.0,
+                        "type": "artifact",
+                        "kenBurns": {"startScale": 1.0, "endScale": 1.2},
+                    },
+                    # Shot B: an explicit fadeIn effect, an UNKNOWN effect type that
+                    # must be dropped (not fatal), a choreographed boundary crossfade
+                    # via transitionSec, AND a shot-level volume ducking envelope.
+                    {
+                        "id": "b",
+                        "src": "/agenticnews-assets/b.png",
+                        "startSec": 2.0,
+                        "durationSec": 2.0,
+                        "type": "artifact",
+                        "transitionSec": 0.5,
+                        "effects": [
+                            {"id": "fx_fi", "type": "fadeIn", "params": {"duration": 0.3}},
+                            {"id": "fx_bad", "type": "glitch", "params": {}},
+                        ],
+                        "keyframes": [
+                            {"property": "volume", "points": [
+                                {"t": 0.0, "value": 0.2},
+                                {"t": 2.0, "value": 0.2},
+                            ]},
+                        ],
+                    },
+                ],
+            }
+        ],
+    }
+
+    project = timeline.project_from_abn_timeline("p_gateway", abn_timeline)
+    tj = openshot_bridge.timeline_json(project, asset_root="/tmp")
+    clips = {c["id"]: c for c in tj["clips"]}
+
+    a = clips["clip_s0_a_a_png"]
+    b = clips["clip_s0_b_b_png"]
+
+    # Shot A's kenBurns reaches OpenShot as a real 2-point scale envelope.
+    assert [round(p["co"]["Y"], 3) for p in a["scale_x"]["Points"]] == [1.0, 1.2]
+    assert a["effects"] == []
+
+    # Shot B: the explicit fadeIn AND the synthesized transitionSec crossfade both
+    # land as Fade effects; the unknown "glitch" effect is dropped, not fatal.
+    assert [e["type"] for e in b["effects"]] == ["Fade", "Fade"]
+    assert all(e["fade"] == "in" for e in b["effects"])
+    assert not any(str(e.get("id")) == "fx_bad" for e in b["effects"])
+
+    # Shot B's volume ducking envelope reaches OpenShot as a multi-Point volume
+    # keyframe on the 0..100 scale (0.2 editor -> 20.0 openshot).
+    vol_points = b["volume"]["Points"]
+    assert len(vol_points) == 2
+    assert [round(p["co"]["Y"], 1) for p in vol_points] == [20.0, 20.0]

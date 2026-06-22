@@ -143,6 +143,39 @@ def test_recovers_after_leftover_tmp(tmp_path):
     assert not p.with_suffix(p.suffix + f".{os.getpid()}.{threading.get_ident()}.tmp").exists()
 
 
+def test_keyboardinterrupt_propagates_without_cleanup(tmp_path, monkeypatch):
+    """A BaseException (SystemExit/KeyboardInterrupt) must propagate, not be
+    swallowed/masked by the best-effort tmp cleanup.
+
+    The cleanup now catches ``Exception`` (not ``BaseException``), so a
+    KeyboardInterrupt mid-write tears out cleanly and the unlink branch is never
+    entered for it — a stale tmp is harmless (atomic_load reads ``path``).
+    """
+    p = tmp_path / "g.json"
+    atomic_save(p, {"good": 1})
+
+    def boom(_src, _dst):
+        raise KeyboardInterrupt("simulated shutdown")
+
+    unlink_called = []
+    real_unlink = json_store.os.unlink
+
+    def tracking_unlink(path):
+        unlink_called.append(path)
+        return real_unlink(path)
+
+    monkeypatch.setattr(json_store.os, "replace", boom)
+    monkeypatch.setattr(json_store.os, "unlink", tracking_unlink)
+
+    with pytest.raises(KeyboardInterrupt):
+        atomic_save(p, {"new": 2})
+
+    # cleanup branch must be skipped for BaseException
+    assert not unlink_called, "best-effort cleanup ran on KeyboardInterrupt"
+    # original is untouched regardless
+    assert atomic_load(p) == {"good": 1}
+
+
 def test_concurrent_saves_same_path_no_corruption(tmp_path):
     """Many threads atomic_save distinct payloads to the SAME path at once.
 

@@ -3309,3 +3309,48 @@ def test_resolve_asset_strips_cachebuster_to_real_disk_path(suffix):
     url = f"{abn_factory.URL_PREFIX}ep_x/renders/episode.mp4{suffix}"
     expected = abn_factory.ASSETS / "ep_x" / "renders" / "episode.mp4"
     assert abn_factory._resolve_asset(url) == expected
+
+
+# ---------- _download partial-file cleanup uses safe_unlink (no nested bare except) ----------
+
+def test_download_success_streams_to_dest(monkeypatch, tmp_path):
+    """A working download writes bytes to dest and returns True."""
+    import io
+    dest = tmp_path / "ok.bin"
+
+    class FakeResp:
+        def __init__(self): self._b = io.BytesIO(b"payload-bytes")
+        def read(self, n): return self._b.read(n)
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    monkeypatch.setattr(abn_factory.urllib.request, "urlopen", lambda *a, **k: FakeResp())
+    assert abn_factory._download("http://x/y", dest) is True
+    assert dest.read_bytes() == b"payload-bytes"
+
+
+def test_download_failure_unlinks_partial_and_returns_false(monkeypatch, tmp_path):
+    """When the stream blows up mid-download, the partial dest is cleaned up via safe_unlink
+    and _download returns False — replacing the old nested bare-except cleanup."""
+    dest = tmp_path / "partial.bin"
+
+    class BoomResp:
+        def read(self, n): raise IOError("CDN dropped the connection")
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    monkeypatch.setattr(abn_factory.urllib.request, "urlopen", lambda *a, **k: BoomResp())
+    assert abn_factory._download("http://x/y", dest) is False
+    assert not dest.exists(), "partial download file was not cleaned up"
+
+
+def test_download_failure_with_no_dest_does_not_raise(monkeypatch, tmp_path):
+    """If the download fails before any file is created, cleanup must not raise — safe_unlink
+    swallows the missing-file OSError."""
+    dest = tmp_path / "never_created.bin"
+
+    def boom(*a, **k): raise ConnectionError("dns failure, nothing written")
+
+    monkeypatch.setattr(abn_factory.urllib.request, "urlopen", boom)
+    assert abn_factory._download("http://x/y", dest) is False
+    assert not dest.exists()

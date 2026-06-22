@@ -1617,3 +1617,135 @@ def test_editor_timeline_store_persists_only_to_a_single_json_per_project(tmp_pa
     assert saved["projectId"] == "ep_single0"
     # No nested timeline JSONs hiding below the scanned glob depth.
     assert not list(root.glob("*/*.json"))
+
+
+# --- TOCTOU hardening: a timeline saved DURING the destructive trim must still protect a render ---
+# The fresh re-scan captured just before the trim loop is stale the instant the loop starts: while we
+# tombstone render N, an Editor Bay save can land referencing render N+1 the loop is about to delete.
+# The wider the trim, the wider that window. _LiveProtectionSet re-scans per-iteration (mtime-token
+# gated) so a mid-trim save is caught before the next render is tombstoned.
+
+
+def _agenticnews_ref(store, render_path):
+    return "/agenticnews-assets/" + str(render_path.relative_to(store))
+
+
+def test_purge_disk_render_trim_protects_render_referenced_by_timeline_saved_mid_trim(store, monkeypatch):
+    """A timeline saved AFTER the pre-trim fresh re-scan but BEFORE the loop reaches its render must
+    spare that render. We trip the save from inside the tombstone of an EARLIER victim — exactly the
+    interleaving the ticket calls out — and assert the later, now-referenced render survives while the
+    genuinely-unreferenced earlier one is still trimmed.
+
+    Trim order is newest-first over the post-keep slice, so the victim must be NEWER than the render
+    it later protects — that way the victim is tombstoned first and the save lands before the loop
+    reaches the protected (older) render."""
+    keep_fresh = _render(store, "ep_keepfr", age_s=10)      # newest -> kept (keep_episodes=1)
+    victim = _render(store, "ep_vvvv00", age_s=8000)        # next-newest victim -> trims first
+    late_protected = _render(store, "ep_llll00", age_s=9000)  # oldest; referenced mid-trim, reached last
+
+    real_tr = abn_factory.tombstone_render
+
+    def save_timeline_then_tombstone(path):
+        # The instant the first victim is being tombstoned, an Editor Bay timeline lands referencing
+        # the NEXT render in the trim list. This bumps the editor_timelines mtime token.
+        if Path(path) == victim:
+            (store / "editor_timelines" / "ep_llll00.json").write_text(
+                '{"renderCache": {"video": {"path": "%s"}}}' % _agenticnews_ref(store, late_protected)
+            )
+        return real_tr(path)
+
+    monkeypatch.setattr(abn_factory, "tombstone_render", save_timeline_then_tombstone)
+    _force_low_disk(monkeypatch)
+
+    abn_factory.purge_disk(intermediate_age_s=99999, keep_episodes=1, low_disk_gb=999)
+
+    assert not victim.exists(), "the genuinely-unreferenced oldest render should still be trimmed"
+    assert late_protected.exists(), (
+        "a render referenced by a timeline saved mid-trim was tombstoned — the per-iteration live "
+        "re-scan failed to pick up the save before deleting the next render (the TOCTOU this guards)"
+    )
+
+
+def test_gc_segments_render_trim_protects_render_referenced_by_timeline_saved_mid_trim(store, monkeypatch):
+    """Twin of the purge_disk test on the async _gc_segments path: a mid-trim timeline save protects a
+    not-yet-deleted render. 6 renders so the keep-4 trim has 2 victims; the save lands while the first
+    victim is tombstoned and references the oldest, not-yet-reached render.
+
+    Trim order is newest-first, so of the two keep-4 victims the victim must be the NEWER one (reached
+    first) and late_protected the oldest (reached last)."""
+    late_protected = _render(store, "ep_bb0000", age_s=9000)  # oldest -> reached last in the trim slice
+    victim = _render(store, "ep_aa0000", age_s=8500)         # second-oldest -> first victim
+    for i, age in enumerate((8000, 7000, 6000, 10)):
+        _render(store, f"ep_cc000{i}", age_s=age)
+
+    real_tr = abn_factory.tombstone_render
+
+    def save_timeline_then_tombstone(path):
+        if Path(path) == victim:
+            (store / "editor_timelines" / "ep_bb0000.json").write_text(
+                '{"renderCache": {"video": {"path": "%s"}}}' % _agenticnews_ref(store, late_protected)
+            )
+        return real_tr(path)
+
+    monkeypatch.setattr(abn_factory, "tombstone_render", save_timeline_then_tombstone)
+    _gc_no_videos(monkeypatch)
+    _force_low_disk(monkeypatch)
+
+    asyncio.run(abn_factory._gc_segments(keep_recent=0))
+
+    assert not victim.exists(), "_gc_segments should still trim the genuinely-unreferenced oldest render"
+    assert late_protected.exists(), (
+        "_gc_segments tombstoned a render referenced by a timeline saved mid-trim — the per-iteration "
+        "live re-scan missed the save"
+    )
+
+
+def test_live_protection_set_does_not_rescan_when_no_timeline_changes(store, monkeypatch):
+    """Cost guard: when NO timeline changes during the trim, the live set must NOT re-parse the
+    timelines on every render — it compares a cheap mtime token first. A stable token means zero extra
+    full re-scans. Pins that the common case stays a stat-per-render, not a glob+parse-per-render."""
+    live = abn_factory._LiveProtectionSet(set())
+
+    calls = []
+    real_checked = abn_factory._editor_timeline_asset_paths_checked
+
+    def counting_checked():
+        calls.append(1)
+        return real_checked()
+
+    monkeypatch.setattr(abn_factory, "_editor_timeline_asset_paths_checked", counting_checked)
+
+    # No timeline activity between checks -> token stable -> never re-scans.
+    for _ in range(5):
+        assert live.contains(store / "ep_x" / "renders" / "episode.mp4") is False
+    assert calls == [], "live set re-scanned timelines with no change — the mtime-token gate is broken"
+
+
+def test_live_protection_set_stops_trim_when_mid_trim_save_is_unparseable(store, monkeypatch):
+    """If the timeline that lands mid-trim can't be parsed, the live set can't promise it knows the
+    full referenced set, so `.complete` flips False and the caller must STOP trimming (protect
+    everything) — the same fail-safe as the entry/fresh dual-complete gate, now enforced per-iteration.
+
+    Newest-first trim order: the victim must be NEWER than the survivor so it trims first, lands the
+    broken save, and the bail-out then protects the older survivor still ahead in the loop."""
+    keep_fresh = _render(store, "ep_keepf2", age_s=10)      # newest -> kept (keep_episodes=1)
+    victim = _render(store, "ep_dd0000", age_s=8000)        # next-newest -> trims first
+    survivor = _render(store, "ep_ee0000", age_s=9000)      # oldest; protected by the bail-out
+
+    real_tr = abn_factory.tombstone_render
+
+    def save_broken_timeline_then_tombstone(path):
+        if Path(path) == victim:
+            (store / "editor_timelines" / "broken_midtrim.json").write_text("{ not json at all")
+        return real_tr(path)
+
+    monkeypatch.setattr(abn_factory, "tombstone_render", save_broken_timeline_then_tombstone)
+    _force_low_disk(monkeypatch)
+
+    abn_factory.purge_disk(intermediate_age_s=99999, keep_episodes=1, low_disk_gb=999)
+
+    assert not victim.exists(), "the first victim (trimmed before the broken save) should be gone"
+    assert survivor.exists(), (
+        "an unparseable timeline landing mid-trim must stop further trimming (protect-everything); "
+        "the next render was tombstoned despite the now-incomplete live scan"
+    )

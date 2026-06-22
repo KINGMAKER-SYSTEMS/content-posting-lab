@@ -209,15 +209,15 @@ def test_load_jobs_recovers_stuck_nonterminal_videos(isolated_projects_root):
 
 
 def test_save_jobs_unwritable_dir_swallows_error(isolated_projects_root, monkeypatch):
-    """write_text raising OSError (e.g. disk full / unwritable) is caught,
+    """atomic_save raising OSError (e.g. disk full / unwritable) is caught,
     not propagated — an in-flight render must not crash the request."""
     video_router.jobs.clear()
-    video_router.jobs["job-x"] = {"project": "save-proj", "videos": []}
+    video_router.jobs["job-x"] = {"project": "save-proj", "videos": [{"status": "done"}]}
 
     def boom(*args, **kwargs):
         raise OSError("No space left on device")
 
-    monkeypatch.setattr(video_router.Path, "write_text", boom)
+    monkeypatch.setattr(video_router, "atomic_save", boom)
     # Must not raise.
     video_router._save_jobs("save-proj")
 

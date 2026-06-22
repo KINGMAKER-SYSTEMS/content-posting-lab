@@ -75,10 +75,12 @@ def atomic_save(
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp, p)
-    except BaseException:
+    except Exception:
         # ponytail: best-effort cleanup; a crash between fsync and replace can
         # still orphan a tmp, but a stale tmp never breaks atomic_load (it reads
         # `path`, not the tmp) and the unique suffix keeps it out of the way.
+        # Catch Exception (not BaseException) so SystemExit/KeyboardInterrupt
+        # propagate cleanly during shutdown — a stale tmp is harmless either way.
         try:
             os.unlink(tmp)
         except OSError:

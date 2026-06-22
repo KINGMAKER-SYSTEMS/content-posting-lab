@@ -7,9 +7,11 @@ and Google Drive folders.
 import os
 import re
 import time
+from contextlib import contextmanager
 from pathlib import Path
+from typing import Iterator
 
-from services.json_store import atomic_load, atomic_save
+from services.json_store import atomic_load, atomic_save, lock_for
 
 BASE_DIR = Path(__file__).parent.parent
 _VOLUME_PATH = os.getenv("RAILWAY_VOLUME_MOUNT_PATH", "")
@@ -36,6 +38,23 @@ def save_roster(data: dict) -> None:
     atomic_save(ROSTER_PATH, data)
 
 
+@contextmanager
+def mutate_roster() -> Iterator[dict]:
+    """Load the roster, yield it for in-place mutation, then save it — under a lock.
+
+    Closes the load-modify-save (TOCTOU) race: atomic_save only atomizes the
+    write, so two concurrent callers (set_page / remove_page from async routers
+    — email_routing, pipeline, roster, notion_pages — via the sync threadpool)
+    that each load → mutate → save could lose one set of changes. Holding
+    ROSTER_PATH's reentrant lock across the whole transaction serializes them.
+    Mirrors services/content_requests.mutate_requests and telegram.mutate_config.
+    """
+    with lock_for(ROSTER_PATH):
+        data = load_roster()
+        yield data
+        save_roster(data)
+
+
 def get_page(integration_id: str) -> dict | None:
     """Get a single page entry or None."""
     roster = load_roster()
@@ -44,65 +63,63 @@ def get_page(integration_id: str) -> dict | None:
 
 def set_page(integration_id: str, data: dict) -> dict:
     """Create or update a page entry. Returns the saved entry."""
-    roster = load_roster()
-    existing = roster["pages"].get(integration_id, {})
-    now = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime())
+    with mutate_roster() as roster:
+        existing = roster["pages"].get(integration_id, {})
+        now = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime())
 
-    entry = {
-        "integration_id": integration_id,
-        "name": data.get("name", existing.get("name", "")),
-        "provider": data.get("provider", existing.get("provider", "")),
-        "picture": data.get("picture", existing.get("picture")),
-        "project": data.get("project", existing.get("project")),
-        "drive_folder_url": data.get("drive_folder_url", existing.get("drive_folder_url")),
-        "drive_folder_id": data.get("drive_folder_id", existing.get("drive_folder_id")),
-        "email_alias": data.get("email_alias", existing.get("email_alias")),
-        "email_rule_id": data.get("email_rule_id", existing.get("email_rule_id")),
-        "fwd_destination": data.get("fwd_destination", existing.get("fwd_destination")),
-        # Notion-sourced fields (canonical when source == "notion")
-        "source": data.get("source", existing.get("source")),
-        "tiktok_url": data.get("tiktok_url", existing.get("tiktok_url")),
-        "signup_email": data.get("signup_email", existing.get("signup_email")),
-        "fwd_address": data.get("fwd_address", existing.get("fwd_address")),
-        "password": data.get("password", existing.get("password")),
-        "poster_name": data.get("poster_name", existing.get("poster_name")),
-        "group": data.get("group", existing.get("group")),
-        "group_label": data.get("group_label", existing.get("group_label")),
-        "account_type": data.get("account_type", existing.get("account_type")),
-        "notes": data.get("notes", existing.get("notes")),
-        "notion_page_id": data.get("notion_page_id", existing.get("notion_page_id")),
-        # Pipeline-canonical (Notion):
-        "status": data.get("status", existing.get("status")),
-        "pipeline": data.get("pipeline", existing.get("pipeline")),
-        "page_type": data.get("page_type", existing.get("page_type")),
-        "sounds_reference": data.get("sounds_reference", existing.get("sounds_reference")),
-        "go_live_date": data.get("go_live_date", existing.get("go_live_date")),
-        # R2 storage (replaces Drive for new pipeline accounts):
-        "r2_prefix": data.get("r2_prefix", existing.get("r2_prefix")),
-        "r2_bucket": data.get("r2_bucket", existing.get("r2_bucket")),
-        "added_at": existing.get("added_at", now),
-        "updated_at": now,
-    }
+        entry = {
+            "integration_id": integration_id,
+            "name": data.get("name", existing.get("name", "")),
+            "provider": data.get("provider", existing.get("provider", "")),
+            "picture": data.get("picture", existing.get("picture")),
+            "project": data.get("project", existing.get("project")),
+            "drive_folder_url": data.get("drive_folder_url", existing.get("drive_folder_url")),
+            "drive_folder_id": data.get("drive_folder_id", existing.get("drive_folder_id")),
+            "email_alias": data.get("email_alias", existing.get("email_alias")),
+            "email_rule_id": data.get("email_rule_id", existing.get("email_rule_id")),
+            "fwd_destination": data.get("fwd_destination", existing.get("fwd_destination")),
+            # Notion-sourced fields (canonical when source == "notion")
+            "source": data.get("source", existing.get("source")),
+            "tiktok_url": data.get("tiktok_url", existing.get("tiktok_url")),
+            "signup_email": data.get("signup_email", existing.get("signup_email")),
+            "fwd_address": data.get("fwd_address", existing.get("fwd_address")),
+            "password": data.get("password", existing.get("password")),
+            "poster_name": data.get("poster_name", existing.get("poster_name")),
+            "group": data.get("group", existing.get("group")),
+            "group_label": data.get("group_label", existing.get("group_label")),
+            "account_type": data.get("account_type", existing.get("account_type")),
+            "notes": data.get("notes", existing.get("notes")),
+            "notion_page_id": data.get("notion_page_id", existing.get("notion_page_id")),
+            # Pipeline-canonical (Notion):
+            "status": data.get("status", existing.get("status")),
+            "pipeline": data.get("pipeline", existing.get("pipeline")),
+            "page_type": data.get("page_type", existing.get("page_type")),
+            "sounds_reference": data.get("sounds_reference", existing.get("sounds_reference")),
+            "go_live_date": data.get("go_live_date", existing.get("go_live_date")),
+            # R2 storage (replaces Drive for new pipeline accounts):
+            "r2_prefix": data.get("r2_prefix", existing.get("r2_prefix")),
+            "r2_bucket": data.get("r2_bucket", existing.get("r2_bucket")),
+            "added_at": existing.get("added_at", now),
+            "updated_at": now,
+        }
 
-    # Auto-parse drive folder ID from URL if URL changed
-    url = entry.get("drive_folder_url")
-    if url and url != existing.get("drive_folder_url"):
-        folder_id = parse_drive_folder_id(url)
-        if folder_id:
-            entry["drive_folder_id"] = folder_id
+        # Auto-parse drive folder ID from URL if URL changed
+        url = entry.get("drive_folder_url")
+        if url and url != existing.get("drive_folder_url"):
+            folder_id = parse_drive_folder_id(url)
+            if folder_id:
+                entry["drive_folder_id"] = folder_id
 
-    roster["pages"][integration_id] = entry
-    save_roster(roster)
+        roster["pages"][integration_id] = entry
     return entry
 
 
 def remove_page(integration_id: str) -> bool:
     """Remove a page from the roster. Returns True if it existed."""
-    roster = load_roster()
-    if integration_id not in roster["pages"]:
-        return False
-    del roster["pages"][integration_id]
-    save_roster(roster)
+    with mutate_roster() as roster:
+        if integration_id not in roster["pages"]:
+            return False
+        del roster["pages"][integration_id]
     return True
 
 

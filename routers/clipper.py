@@ -18,6 +18,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from project_manager import PROJECTS_DIR, sanitize_project_name
 import services.r2 as r2
 from services.fsutil import safe_rmtree
+from services.json_store import atomic_save
 
 log = logging.getLogger("clipper")
 
@@ -1531,7 +1532,7 @@ async def rename_clipper_job(job_id: str, body: dict, project: str = Query(defau
         except Exception:
             pass
     meta["label"] = new_label
-    meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    atomic_save(meta_path, meta)
     return {"ok": True, "label": new_label}
 
 
