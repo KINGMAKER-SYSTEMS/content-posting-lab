@@ -808,7 +808,9 @@ def test_choose_renderer_falls_back_to_ffmpeg_when_openshot_unavailable(monkeypa
     renderer = editor_render.choose_renderer(tmp_path / "renders")
 
     assert renderer.backend == "ffmpeg"
-    assert renderer.__class__.__name__ == "FFmpegLayeredRenderer"
+    # choose_renderer wraps the concrete backend in _HealthStampingRenderer
+    # (compiler-cascade health surfacing); assert through the proxied inner renderer.
+    assert renderer._inner.__class__.__name__ == "FFmpegLayeredRenderer"
 
 
 def test_choose_renderer_runs_openshot_in_process_inside_render_child(monkeypatch, tmp_path):
