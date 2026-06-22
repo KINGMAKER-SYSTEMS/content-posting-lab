@@ -3229,7 +3229,17 @@ def purge_disk(intermediate_age_s=1800, keep_episodes=4, low_disk_gb=2.0):
         # glob that errored), we may not know every render an active Editor Bay timeline depends on.
         # Skip the destructive low-disk render trim rather than risk tombstoning a live render and
         # 500-ing the next render — disk pressure is recoverable, a deleted in-use render is not.
+        #
+        # RE-SCAN before the destructive trim: the protected set captured at the top of this function
+        # is stale by the time we get here (the scratch-reap loop above takes wall-clock time, during
+        # which a NEW Editor Bay timeline can be saved referencing a render this trim is about to
+        # delete). A fresh scan at the moment of trimming closes that TOCTOU window; we OR the two sets
+        # so a render protected by EITHER scan survives, and require BOTH scans complete before trimming.
         if protection_complete and _sh2.disk_usage(str(ASSETS)).free / 1e9 < low_disk_gb:
+            fresh_paths, fresh_complete = _editor_timeline_asset_paths_checked()
+            if not fresh_complete:
+                return freed // 1024 // 1024
+            protected_paths = protected_paths | fresh_paths
             for old in _old_episode_renders()[keep_episodes:]:
                 try:
                     if _is_editor_timeline_protected_asset(old, protected_paths):
@@ -3305,7 +3315,16 @@ async def _gc_segments(keep_recent=12):
             free_gb = _sh2.disk_usage(str(ASSETS)).free / 1e9
             # FAIL SAFE: skip the destructive render trim if the protection scan was incomplete
             # (see purge_disk) — never tombstone a render an active timeline might still reference.
+            # RE-SCAN before trimming: protected_paths captured at the top is stale by now (the scratch
+            # reap above takes wall-clock time, during which a new timeline can reference a render this
+            # trim would delete — the TOCTOU this ticket guards). OR both sets; require both complete.
             if protection_complete and free_gb < 2.0:
+                fresh_paths, fresh_complete = _editor_timeline_asset_paths_checked()
+                if fresh_complete:
+                    protected_paths = protected_paths | fresh_paths
+                else:
+                    protected_paths = None  # force-skip the trim below
+            if protection_complete and free_gb < 2.0 and protected_paths is not None:
                 for old in _old_episode_renders()[4:]:
                     try:
                         if _is_editor_timeline_protected_asset(old, protected_paths):

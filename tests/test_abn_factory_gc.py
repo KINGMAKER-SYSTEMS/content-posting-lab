@@ -435,12 +435,12 @@ def test_gc_segments_low_disk_trim_honors_cachebusted_timeline_ref(store, monkey
         return f
 
     # 6 renders so the keep-4 trim has 2 victims; the oldest is the cache-busted keeper.
-    keeper = render("ep_keep00", age_s=9000)            # oldest -> first trim victim, but protected
+    keeper = render("ep_beef00", age_s=9000)            # oldest -> first trim victim, but protected
     drop_old = render("ep_drop00", age_s=8500)          # second-oldest, unreferenced -> trimmed
     for i, age in enumerate((8000, 7000, 6000, 10)):
         render(f"ep_fill0{i}", age_s=age)
     rel = keeper.relative_to(store)
-    (store / "editor_timelines" / "ep_keep00.json").write_text(
+    (store / "editor_timelines" / "ep_beef00.json").write_text(
         f'{{"renderCache": {{"video": {{"path": "/agenticnews-assets/{rel}?rev=7"}}}}}}'
     )
 
@@ -846,7 +846,7 @@ def test_purge_disk_skips_render_trim_when_protection_scan_incomplete(store, mon
     referenced, the destructive trim is skipped entirely — the old render survives. Disk pressure is
     recoverable; deleting a render an active editor depends on 500s the next render."""
     old_render = _render(store, "ep_old000", age_s=9000)
-    _render(store, "ep_new000", age_s=10)
+    _render(store, "ep_5e0000", age_s=10)
     # A broken timeline → protection scan is incomplete (some refs unknown).
     (store / "editor_timelines" / "broken.json").write_text("{ not json at all")
     _force_low_disk(monkeypatch)
@@ -962,6 +962,110 @@ def test_gc_segments_skips_render_trim_when_protection_scan_incomplete(store, mo
     assert not (store / "_trash" / "ep_old222" / "renders" / "episode.mp4").exists(), (
         "no render should have been tombstoned while the protection scan was incomplete"
     )
+
+
+# --- GC TOCTOU: a timeline saved DURING purge_disk (between the initial scan and the render trim)
+# must still protect its render. The protected set is captured once at the top of the function; the
+# scratch-reap loop takes wall-clock time, during which an editor can save a new timeline. The fix
+# re-scans immediately before the destructive trim and ORs the result in.
+
+
+def test_purge_disk_protects_render_referenced_by_timeline_saved_during_reap(store, monkeypatch):
+    """THE TOCTOU THIS TICKET GUARDS: at function entry NO timeline references ep_1a7e00's render, so
+    the initial protection scan does NOT protect it. While the scratch-reap loop runs, an Editor Bay
+    timeline is saved referencing that render. A stale (entry-time) protected set would let the
+    low-disk trim tombstone a now-live render. The re-scan before the trim must spare it."""
+    late = _render(store, "ep_1a7e00", age_s=9000)   # oldest -> first trim victim absent the fix
+    _render(store, "ep_beef00", age_s=10)
+    rel = late.relative_to(store)
+
+    # Drop a reapable scratch file so the reap loop has work to do — and use ITS protection check as
+    # the hook to simulate "an editor saved a timeline mid-reap" (writes the timeline JSON exactly
+    # once, after the entry-time scan already ran but before the render trim re-scan).
+    _scratch(store, "ep_1a7e00", "s9_raw.wav")
+    real_predicate = abn_factory._is_editor_timeline_protected_asset
+    state = {"wrote": False}
+
+    def hook(path, protected):
+        if not state["wrote"]:
+            state["wrote"] = True
+            (store / "editor_timelines" / "ep_1a7e00.json").write_text(
+                f'{{"renderCache": {{"video": {{"path": "/agenticnews-assets/{rel}"}}}}}}'
+            )
+        return real_predicate(path, protected)
+
+    monkeypatch.setattr(abn_factory, "_is_editor_timeline_protected_asset", hook)
+    _force_low_disk(monkeypatch)
+
+    abn_factory.purge_disk(intermediate_age_s=1, keep_episodes=1, low_disk_gb=999)
+
+    assert state["wrote"], "test setup: the mid-reap timeline write never fired"
+    assert late.exists(), (
+        "render referenced by a timeline saved DURING the reap was trimmed — the protected set was "
+        "stale; the destructive trim must re-scan protection before deleting"
+    )
+    assert not (store / "_trash" / "ep_1a7e00" / "renders" / "episode.mp4").exists()
+
+
+def test_purge_disk_skips_trim_when_rescan_becomes_incomplete(store, monkeypatch):
+    """If the protection scan was complete at entry but a timeline becomes UNREADABLE by the time of
+    the pre-trim re-scan (an editor mid-write left a half-flushed JSON), the trim must be SKIPPED —
+    the re-scan can no longer promise it saw every referenced render. Fail-safe on the fresh scan."""
+    old_render = _render(store, "ep_1c0000", age_s=9000)
+    _render(store, "ep_5e0000", age_s=10)
+    (store / "editor_timelines" / "clean.json").write_text('{"clips": []}')  # entry scan: complete
+    _scratch(store, "ep_1c0000", "s9_raw.wav")
+
+    real_predicate = abn_factory._is_editor_timeline_protected_asset
+    state = {"broke": False}
+
+    def hook(path, protected):
+        if not state["broke"]:
+            state["broke"] = True
+            (store / "editor_timelines" / "broken.json").write_text("{ half-flushed not json")
+        return real_predicate(path, protected)
+
+    monkeypatch.setattr(abn_factory, "_is_editor_timeline_protected_asset", hook)
+    _force_low_disk(monkeypatch)
+
+    abn_factory.purge_disk(intermediate_age_s=1, keep_episodes=1, low_disk_gb=999)
+
+    assert old_render.exists(), "trim ran even though the pre-trim re-scan became incomplete"
+    assert not (store / "_trash" / "ep_1c0000" / "renders" / "episode.mp4").exists()
+
+
+def test_gc_segments_protects_render_referenced_by_timeline_saved_during_reap(store, monkeypatch):
+    """Same TOCTOU on the _gc_segments path: a timeline saved during the scratch reap must protect its
+    render against the keep-4 low-disk trim via the pre-trim re-scan."""
+    late = _render(store, "ep_91a7e0", age_s=9000)               # oldest -> trim victim absent the fix
+    for i, age in enumerate((8000, 7000, 6000, 5000, 10)):       # 5 newer -> 6 total, keep 4
+        _render(store, f"ep_9f111{i}", age_s=age)
+    rel = late.relative_to(store)
+    _scratch(store, "ep_91a7e0", "s9_raw.wav")
+
+    real_predicate = abn_factory._is_editor_timeline_protected_asset
+    state = {"wrote": False}
+
+    def hook(path, protected):
+        if not state["wrote"]:
+            state["wrote"] = True
+            (store / "editor_timelines" / "ep_91a7e0.json").write_text(
+                f'{{"renderCache": {{"video": {{"path": "/agenticnews-assets/{rel}"}}}}}}'
+            )
+        return real_predicate(path, protected)
+
+    monkeypatch.setattr(abn_factory, "_is_editor_timeline_protected_asset", hook)
+    _gc_no_videos(monkeypatch)
+    _force_low_disk(monkeypatch)
+
+    asyncio.run(abn_factory._gc_segments(keep_recent=0))
+
+    assert state["wrote"], "test setup: the mid-reap timeline write never fired"
+    assert late.exists(), (
+        "_gc_segments trimmed a render referenced by a timeline saved DURING the reap — the trim must "
+        "re-scan protection before deleting"
+    )
+    assert not (store / "_trash" / "ep_91a7e0" / "renders" / "episode.mp4").exists()
 
 
 def test_gc_segments_still_trims_when_protection_scan_is_complete(store, monkeypatch):
