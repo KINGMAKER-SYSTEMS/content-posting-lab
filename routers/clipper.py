@@ -35,6 +35,40 @@ def _make_clip_job_id(project: str = "clip") -> str:
     return f"clip-{prefix}-{ts}-{short}"
 
 
+def _plan_segments(
+    duration: float,
+    clip_min: float,
+    clip_max: float,
+    strategy: str,
+) -> list[tuple[float, float]]:
+    """Compute (start, seg_duration) clip boundaries for a source of `duration`.
+
+    Pure function — no I/O. Two strategies:
+      - "even": split the whole source into N near-equal clips, each within
+        [clip_min, clip_max]; bumps N up if a single clip would exceed clip_max.
+      - anything else ("sequential"): chop clip_max-long clips from the start,
+        stopping once the remaining tail is shorter than clip_min.
+    """
+    if strategy == "even":
+        clip_dur = min(clip_max, max(clip_min, duration))
+        num_clips = max(1, math.floor(duration / clip_dur))
+        actual_dur = duration / num_clips
+        if actual_dur > clip_max:
+            num_clips += 1
+            actual_dur = duration / num_clips
+        return [(i * actual_dur, actual_dur) for i in range(num_clips)]
+
+    segments: list[tuple[float, float]] = []
+    pos = 0.0
+    while pos + clip_min <= duration:
+        seg_dur = min(clip_max, duration - pos)
+        if seg_dur < clip_min:
+            break
+        segments.append((pos, seg_dur))
+        pos += seg_dur
+    return segments
+
+
 def _get_clipper_dir(project: str) -> Path:
     sanitized = sanitize_project_name(project)
     d = PROJECTS_DIR / sanitized / "clips"
@@ -388,26 +422,7 @@ async def _run_pipeline(
         })
 
         # Phase 3: Calculate clip segments
-        if strategy == "even":
-            # Split evenly into clips within the min-max range
-            clip_dur = min(clip_max, max(clip_min, duration))
-            num_clips = max(1, math.floor(duration / clip_dur))
-            # Adjust clip duration to fill evenly
-            actual_dur = duration / num_clips
-            if actual_dur > clip_max:
-                num_clips += 1
-                actual_dur = duration / num_clips
-            segments = [(i * actual_dur, actual_dur) for i in range(num_clips)]
-        else:
-            # Sequential: chop from start using clip_max duration
-            segments = []
-            pos = 0.0
-            while pos + clip_min <= duration:
-                seg_dur = min(clip_max, duration - pos)
-                if seg_dur < clip_min:
-                    break
-                segments.append((pos, seg_dur))
-                pos += seg_dur
+        segments = _plan_segments(duration, clip_min, clip_max, strategy)
 
         total = len(segments)
         log.info("will create %d clips (strategy=%s)", total, strategy)
@@ -1330,23 +1345,7 @@ async def _run_pipeline_local(
         })
 
         # Phase 2: Calculate clip segments
-        if strategy == "even":
-            clip_dur = min(clip_max, max(clip_min, duration))
-            num_clips = max(1, math.floor(duration / clip_dur))
-            actual_dur = duration / num_clips
-            if actual_dur > clip_max:
-                num_clips += 1
-                actual_dur = duration / num_clips
-            segments = [(i * actual_dur, actual_dur) for i in range(num_clips)]
-        else:
-            segments = []
-            pos = 0.0
-            while pos + clip_min <= duration:
-                seg_dur = min(clip_max, duration - pos)
-                if seg_dur < clip_min:
-                    break
-                segments.append((pos, seg_dur))
-                pos += seg_dur
+        segments = _plan_segments(duration, clip_min, clip_max, strategy)
 
         total = len(segments)
         log.info("will create %d clips (strategy=%s)", total, strategy)

@@ -254,3 +254,197 @@ async def test_clip_returns_false_on_ffmpeg_failure(monkeypatch, tmp_path):
         clip_duration=10.0, src_width=1080, src_height=1920,
     )
     assert ok is False
+
+
+# ── _plan_segments boundary math ─────────────────────────────────────
+
+
+def test_plan_even_splits_into_equal_clips():
+    # 30s, clips 8-15s → clip_dur capped at 15, floor(30/15)=2 clips of 15s.
+    segs = clipper._plan_segments(30.0, 8.0, 15.0, "even")
+    assert segs == [(0.0, 15.0), (15.0, 15.0)]
+
+
+def test_plan_even_bumps_count_when_clip_too_long():
+    # 40s / floor(40/15)=2 → 20s each which exceeds clip_max(15), so N bumps
+    # to 3 → ~13.33s each, all within range.
+    segs = clipper._plan_segments(40.0, 8.0, 15.0, "even")
+    assert len(segs) == 3
+    assert all(d <= 15.0 + 1e-9 for _, d in segs)
+    assert abs(sum(d for _, d in segs) - 40.0) < 1e-6  # tiles the whole source
+    # contiguous, no gaps
+    assert segs[0][0] == 0.0
+    assert abs(segs[1][0] - segs[0][1]) < 1e-9
+
+
+def test_plan_even_short_source_is_single_clip():
+    # Shorter than clip_min → still produce exactly one clip covering it all.
+    segs = clipper._plan_segments(5.0, 8.0, 15.0, "even")
+    assert segs == [(0.0, 5.0)]
+
+
+def test_plan_sequential_chops_from_start_and_drops_short_tail():
+    # 35s, max 15 → 15,15, then 5s tail < clip_min(8) is dropped.
+    segs = clipper._plan_segments(35.0, 8.0, 15.0, "sequential")
+    assert segs == [(0.0, 15.0), (15.0, 15.0)]
+
+
+def test_plan_sequential_keeps_tail_at_least_clip_min():
+    # 38s, max 15 → 15,15, then 8s tail == clip_min is kept.
+    segs = clipper._plan_segments(38.0, 8.0, 15.0, "sequential")
+    assert segs == [(0.0, 15.0), (15.0, 15.0), (30.0, 8.0)]
+
+
+def test_plan_sequential_too_short_yields_no_clips():
+    # Below clip_min and sequential → nothing to cut.
+    assert clipper._plan_segments(5.0, 8.0, 15.0, "sequential") == []
+
+
+# ── _send WebSocket fan-out ──────────────────────────────────────────
+
+
+class _FakeWS:
+    """Records sent text; optionally raises to simulate a dead client."""
+
+    def __init__(self, fail: bool = False):
+        self.sent: list[str] = []
+        self.fail = fail
+
+    async def send_text(self, msg: str):
+        if self.fail:
+            raise RuntimeError("client gone")
+        self.sent.append(msg)
+
+
+async def test_send_broadcasts_event_payload(monkeypatch):
+    ws = _FakeWS()
+    monkeypatch.setitem(clipper._ws_clients, "job1", [ws])
+    await clipper._send("job1", "progress", {"idx": 2})
+    assert len(ws.sent) == 1
+    assert json.loads(ws.sent[0]) == {"event": "progress", "idx": 2}
+
+
+async def test_send_prunes_dead_clients(monkeypatch):
+    good, dead = _FakeWS(), _FakeWS(fail=True)
+    clients = [good, dead]
+    monkeypatch.setitem(clipper._ws_clients, "job2", clients)
+    await clipper._send("job2", "done", {})
+    # dead client removed, good one survives and received the message
+    assert dead not in clients
+    assert good in clients
+    assert json.loads(good.sent[0]) == {"event": "done"}
+
+
+async def test_send_no_clients_is_noop():
+    # Unknown job id must not raise.
+    await clipper._send("nope", "x", {"a": 1})
+
+
+# ── _faststart moov-atom relocation ──────────────────────────────────
+
+
+async def test_faststart_replaces_original_on_success(monkeypatch, tmp_path):
+    mp4 = tmp_path / "v.mp4"
+    mp4.write_bytes(b"original")
+
+    async def fake_exec(*args, **kwargs):
+        # ffmpeg "-c copy -movflags +faststart" writes the temp output.
+        out = Path(args[-1])
+        out.write_bytes(b"faststarted")
+        return _FakeProc(returncode=0)
+
+    monkeypatch.setattr(clipper.asyncio, "create_subprocess_exec", fake_exec)
+    await clipper._faststart(mp4)
+    assert mp4.read_bytes() == b"faststarted"
+    # temp file cleaned up by the rename
+    assert not mp4.with_suffix(".faststart.mp4").exists()
+
+
+async def test_faststart_keeps_original_and_cleans_temp_on_failure(monkeypatch, tmp_path):
+    mp4 = tmp_path / "v.mp4"
+    mp4.write_bytes(b"original")
+
+    async def fake_exec(*args, **kwargs):
+        out = Path(args[-1])
+        out.write_bytes(b"garbage")  # temp written but ffmpeg "failed"
+        return _FakeProc(stderr=b"boom", returncode=1)
+
+    monkeypatch.setattr(clipper.asyncio, "create_subprocess_exec", fake_exec)
+    await clipper._faststart(mp4)
+    assert mp4.read_bytes() == b"original"  # untouched
+    assert not mp4.with_suffix(".faststart.mp4").exists()  # temp removed
+
+
+# ── _generate_thumbnail multi-seek fallback ──────────────────────────
+
+
+async def test_thumbnail_succeeds_on_first_good_seek(monkeypatch, tmp_path):
+    thumb = tmp_path / "t.jpg"
+
+    async def fake_exec(*args, **kwargs):
+        thumb.write_bytes(b"x" * 5000)  # > min_thumb_size
+        return _FakeProc(returncode=0)
+
+    monkeypatch.setattr(clipper.asyncio, "create_subprocess_exec", fake_exec)
+    ok = await clipper._generate_thumbnail(tmp_path / "v.mp4", thumb, seek=2.0)
+    assert ok
+    assert thumb.stat().st_size >= 2000
+
+
+async def test_thumbnail_retries_past_tiny_frames(monkeypatch, tmp_path):
+    """A blank first frame (too small) must trigger the next seek point."""
+    thumb = tmp_path / "t.jpg"
+    sizes = iter([100, 100, 9000])  # first two blank, third good
+    seeks: list[float] = []
+
+    async def fake_exec(*args, **kwargs):
+        # capture the -ss value for this attempt
+        ss = float(args[args.index("-ss") + 1])
+        seeks.append(ss)
+        thumb.write_bytes(b"x" * next(sizes))
+        return _FakeProc(returncode=0)
+
+    monkeypatch.setattr(clipper.asyncio, "create_subprocess_exec", fake_exec)
+    # seek<0 with no duration available → fixed [2.0, 0.5, 0.1] seek points
+    monkeypatch.setattr(
+        clipper, "_get_video_info",
+        _raise_async(RuntimeError("no probe")),
+    )
+    ok = await clipper._generate_thumbnail(tmp_path / "v.mp4", thumb)
+    assert ok
+    assert len(seeks) == 3  # walked all three fallback seeks
+    assert thumb.stat().st_size == 9000
+
+
+async def test_thumbnail_accepts_small_frame_as_last_resort(monkeypatch, tmp_path):
+    """If every seek yields a tiny frame, still accept the file that exists."""
+    thumb = tmp_path / "t.jpg"
+
+    async def fake_exec(*args, **kwargs):
+        thumb.write_bytes(b"x" * 100)  # always below min_thumb_size
+        return _FakeProc(returncode=0)
+
+    monkeypatch.setattr(clipper.asyncio, "create_subprocess_exec", fake_exec)
+    monkeypatch.setattr(
+        clipper, "_get_video_info",
+        _raise_async(RuntimeError("no probe")),
+    )
+    ok = await clipper._generate_thumbnail(tmp_path / "v.mp4", thumb)
+    assert ok  # accepts whatever exists rather than failing outright
+
+
+async def test_thumbnail_fails_when_no_file_produced(monkeypatch, tmp_path):
+    thumb = tmp_path / "t.jpg"  # never created
+
+    async def fake_exec(*args, **kwargs):
+        return _FakeProc(stderr=b"decode error", returncode=1)
+
+    monkeypatch.setattr(clipper.asyncio, "create_subprocess_exec", fake_exec)
+    ok = await clipper._generate_thumbnail(tmp_path / "v.mp4", thumb, seek=2.0)
+    assert ok is False
+
+
+def _raise_async(exc):
+    async def _f(*args, **kwargs):
+        raise exc
+    return _f
