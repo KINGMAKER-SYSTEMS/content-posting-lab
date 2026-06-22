@@ -1970,3 +1970,66 @@ def test_revisualize_trim_never_negative_when_new_render_is_longer(monkeypatch, 
 
     asyncio.run(abn_factory.revisualize_episode(ep_id))
     assert "-ss 0.0 " in captured["mux_cmd"], captured["mux_cmd"]
+
+
+# ---------------- purge_disk: FAIL-SAFE protection guard on the low-disk render trim ----------------
+# purge_disk (services/abn_factory.py) tombstones spent scratch unconditionally, but only trims the
+# oldest EPISODE RENDERS when BOTH (a) the Editor-Bay protection scan was COMPLETE and (b) free disk
+# is below low_disk_gb. The guard logic itself (`protection_complete` + the threshold) was untested;
+# a regression there could premature-delete live renders under load, breaking the recovery guarantee.
+
+def _stub_purge_disk(monkeypatch, *, protection_complete, free_gb, renders):
+    """Wire purge_disk's collaborators so only the guard logic under test runs. Returns a list that
+    records every render passed to tombstone_render() (i.e. every render actually trimmed)."""
+    import shutil
+    # No scratch to reap → isolate the render-trim branch entirely.
+    monkeypatch.setattr(abn_factory, "reapable_scratch", lambda: [])
+    monkeypatch.setattr(abn_factory, "tombstone", lambda f: 0)
+    monkeypatch.setattr(abn_factory, "_editor_timeline_asset_paths_checked",
+                        lambda: (set(), protection_complete))
+    monkeypatch.setattr(abn_factory, "_is_editor_timeline_protected_asset",
+                        lambda path, protected: False)
+    monkeypatch.setattr(abn_factory, "_old_episode_renders", lambda: list(renders))
+
+    trimmed = []
+    def fake_tombstone_render(old):
+        trimmed.append(old)
+        return 1024 * 1024  # 1 MB freed per render
+    monkeypatch.setattr(abn_factory, "tombstone_render", fake_tombstone_render)
+
+    class _Usage:
+        free = int(free_gb * 1e9)
+    monkeypatch.setattr(shutil, "disk_usage", lambda path: _Usage())
+    return trimmed
+
+
+def test_purge_disk_skips_render_trim_when_protection_scan_incomplete(monkeypatch):
+    """FAIL SAFE: even with disk critically low, an INCOMPLETE protection scan must skip the
+    destructive render trim — a live render we couldn't prove safe is never tombstoned."""
+    renders = [Path(f"/ep{i}/renders/episode.mp4") for i in range(10)]
+    trimmed = _stub_purge_disk(monkeypatch, protection_complete=False, free_gb=0.1, renders=renders)
+
+    abn_factory.purge_disk(keep_episodes=4, low_disk_gb=2.0)
+
+    assert trimmed == [], "incomplete protection scan must not trim ANY render, even under low disk"
+
+
+def test_purge_disk_trims_old_renders_when_protection_complete_and_low_disk(monkeypatch):
+    """When the scan is COMPLETE and disk is below the threshold, trim only renders past keep_episodes
+    (the newest keep_episodes are retained)."""
+    renders = [Path(f"/ep{i}/renders/episode.mp4") for i in range(10)]
+    trimmed = _stub_purge_disk(monkeypatch, protection_complete=True, free_gb=0.5, renders=renders)
+
+    abn_factory.purge_disk(keep_episodes=4, low_disk_gb=2.0)
+
+    assert trimmed == renders[4:], "only renders past the keep_episodes window should be trimmed"
+
+
+def test_purge_disk_does_not_trim_when_disk_above_threshold(monkeypatch):
+    """Disk above low_disk_gb → no render trim even with a complete scan (threshold guard)."""
+    renders = [Path(f"/ep{i}/renders/episode.mp4") for i in range(10)]
+    trimmed = _stub_purge_disk(monkeypatch, protection_complete=True, free_gb=50.0, renders=renders)
+
+    abn_factory.purge_disk(keep_episodes=4, low_disk_gb=2.0)
+
+    assert trimmed == [], "ample free disk must not trigger any destructive render trim"
