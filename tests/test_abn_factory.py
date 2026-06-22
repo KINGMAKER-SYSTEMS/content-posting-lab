@@ -79,6 +79,20 @@ def test_pocket_tts_command_rejects_pathlike_language_env(monkeypatch, tmp_path,
         assert banned not in joined, f"VO command leaked a poisoned language value: {banned!r}"
 
 
+@pytest.mark.parametrize("evil", [
+    "english_x\n",                          # bare trailing newline (Python `$` tolerates this)
+    "english_x\n/path/to/evil.safetensors", # trailing-newline smuggles a clone path
+    "english_2026-04\nmodel.safetensors",   # valid-looking code, then newline + clone file
+])
+def test_pocket_language_regex_rejects_trailing_newline_bypass(evil):
+    """REGEX-LEVEL DEFENSE-IN-DEPTH for the locked-voice gate: Python's `re.match` + `$` treats
+    a trailing newline as the end of the string, so a value like "english_x\\n/evil.safetensors"
+    can pass `match()` even though it carries an embedded path. `_POCKET_LANG_RE` must use
+    `fullmatch` semantics so it rejects these regardless of whether the caller's .strip() is
+    present — guarding against a future refactor dropping the strip and reopening the bypass."""
+    assert abn_factory._POCKET_LANG_RE.fullmatch(evil) is None
+
+
 def test_pocket_language_resolves_default_when_env_unset(monkeypatch):
     monkeypatch.delenv("ABN_POCKET_LANGUAGE", raising=False)
     assert abn_factory._pocket_language() == "english_2026-04"

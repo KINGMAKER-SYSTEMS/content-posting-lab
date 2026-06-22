@@ -725,7 +725,10 @@ def _pocket_language() -> str:
     """Resolve the validated Pocket-TTS language code. Rejects path-like / off-pattern env
     values (the locked-voice hard gate) and falls back to the built-in default."""
     raw = os.getenv("ABN_POCKET_LANGUAGE", _POCKET_DEFAULT_LANGUAGE).strip()
-    if _POCKET_LANG_RE.match(raw):
+    # fullmatch, NOT match: in Python `$` also matches just before a trailing newline, so a
+    # value like "english_x\n/evil.safetensors" could slip a path past the gate via that
+    # trailing-newline tolerance if the .strip() above is ever dropped in a refactor.
+    if _POCKET_LANG_RE.fullmatch(raw):
         return raw
     if raw:
         _log.warning(
