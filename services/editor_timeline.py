@@ -9,12 +9,14 @@ from __future__ import annotations
 import copy
 import json
 import math
+import threading
 import time
 import uuid
+from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
-from services.json_store import atomic_save
+from services.json_store import atomic_load, atomic_save
 
 
 SCHEMA = "editor-timeline/v1"
@@ -510,6 +512,19 @@ class TimelineStore:
     def __init__(self, root: Path | str):
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
+        # apply_command / revert_last_command are read-modify-write on a project
+        # file. The revision check is optimistic concurrency, but two threads can
+        # both read revision N between load() and save() and the second clobbers
+        # the first (lost update). Serialize the RMW per project so the second
+        # caller observes the first's write and either bumps the revision or
+        # raises RevisionConflict. RLock because revert_last_command holds the
+        # lock and then calls apply_command, which re-acquires it.
+        self._locks: dict[str, threading.RLock] = defaultdict(threading.RLock)
+        self._locks_guard = threading.Lock()
+
+    def _lock_for(self, project_id: str) -> threading.RLock:
+        with self._locks_guard:
+            return self._locks[project_id]
 
     def path_for(self, project_id: str) -> Path:
         return self.root / f"{project_id}.json"
@@ -518,7 +533,15 @@ class TimelineStore:
         path = self.path_for(project_id)
         if not path.exists():
             raise FileNotFoundError(project_id)
-        return json.loads(path.read_text())
+        # Robustified like json_store.atomic_load: a truncated/corrupt project
+        # file (e.g. a crash mid-write before save() was atomized) must not raise
+        # JSONDecodeError and 500 the editor. We use atomic_load with a sentinel
+        # default so corrupt-but-present is reported as the same FileNotFoundError
+        # the callers already handle (-> 404) instead of an unhandled crash.
+        project = atomic_load(path, default=None)
+        if not isinstance(project, dict):
+            raise FileNotFoundError(project_id)
+        return project
 
     def save(self, project: dict[str, Any]) -> dict[str, Any]:
         project = copy.deepcopy(project)
@@ -530,9 +553,10 @@ class TimelineStore:
         return project
 
     def apply_command(self, project_id: str, command: dict[str, Any]) -> dict[str, Any]:
-        project = self.load(project_id)
-        project = apply_command(project, command)
-        return self.save(project)
+        with self._lock_for(project_id):
+            project = self.load(project_id)
+            project = apply_command(project, command)
+            return self.save(project)
 
     def revert_last_command(
         self,
@@ -541,16 +565,17 @@ class TimelineStore:
         actor: str,
         expected_revision: int | None = None,
     ) -> dict[str, Any]:
-        project = self.load(project_id)
-        if expected_revision is not None and int(expected_revision) != int(project.get("revision", 0)):
-            raise RevisionConflict(
-                f"expected revision {expected_revision}, current revision {project.get('revision', 0)}"
-            )
-        if not project.get("commandLog"):
-            raise CommandValidationError("project has no command to revert")
-        last = _last_revertable_command(project.get("commandLog") or [])
-        command = _inverse_command(last, actor=actor, expected_revision=int(project["revision"]))
-        return self.apply_command(project_id, command)
+        with self._lock_for(project_id):
+            project = self.load(project_id)
+            if expected_revision is not None and int(expected_revision) != int(project.get("revision", 0)):
+                raise RevisionConflict(
+                    f"expected revision {expected_revision}, current revision {project.get('revision', 0)}"
+                )
+            if not project.get("commandLog"):
+                raise CommandValidationError("project has no command to revert")
+            last = _last_revertable_command(project.get("commandLog") or [])
+            command = _inverse_command(last, actor=actor, expected_revision=int(project["revision"]))
+            return self.apply_command(project_id, command)
 
 
 def apply_command(project: dict[str, Any], command: dict[str, Any]) -> dict[str, Any]:

@@ -479,6 +479,7 @@ export function ClipperPage() {
       const init: {
         batch_id: string;
         items: { index: number; filename: string; key: string; put_url: string }[];
+        expires_at?: number;
       } = await initResp.json();
 
       // Step 2: PUT each file directly to R2, tracking aggregate progress.
@@ -527,7 +528,9 @@ export function ClipperPage() {
         return;
       }
 
-      // Step 3: tell the server to pull from R2 and probe.
+      // Step 3: tell the server to pull from R2 and probe. Echo back the batch
+      // deadline so the server can reject an expired session with a clear 409
+      // instead of a confusing S3 error.
       const completeResp = await fetch(apiUrl('/api/clipper/r2/upload-complete'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -535,8 +538,16 @@ export function ClipperPage() {
           project: activeProjectName,
           batch_id: init.batch_id,
           items: uploaded,
+          ...(init.expires_at != null ? { expires_at: init.expires_at } : {}),
         }),
       });
+      if (completeResp.status === 409) {
+        // Presigned URLs expired between init and complete — restart the whole
+        // upload from a fresh init so the user doesn't have to re-pick files.
+        addNotification('error', 'Upload session expired — restarting upload…');
+        await handleUpload(files);
+        return;
+      }
       if (!completeResp.ok) {
         const text = await completeResp.text();
         throw new Error(text || `upload-complete failed (${completeResp.status})`);

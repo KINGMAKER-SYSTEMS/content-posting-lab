@@ -1,3 +1,6 @@
+import shutil
+import subprocess
+
 import pytest
 
 from services import editor_timeline as timeline
@@ -96,6 +99,29 @@ def test_save_fsyncs_before_replace_so_a_crash_cannot_lose_edits(tmp_path, monke
     # round-trips cleanly and leaves no stray tmp file behind
     assert store.load("proj_durable")["title"] == "Durable"
     assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_load_corrupt_project_raises_filenotfound_not_jsondecode(tmp_path):
+    """load() must not crash on a truncated/corrupt project file.
+
+    A crash mid-write (before save()'s atomic rename was complete) can leave a
+    half-written project JSON. The old load() called json.loads() directly and
+    raised JSONDecodeError -> unhandled 500. Robustified like
+    json_store.atomic_load, load() now degrades a corrupt-but-present file to the
+    same FileNotFoundError the routers already handle as a clean 404.
+    """
+    store = timeline.TimelineStore(tmp_path)
+    path = store.path_for("proj_corrupt")
+    path.write_text('{"projectId": "proj_corrupt", "clips": {', encoding="utf-8")
+
+    with pytest.raises(FileNotFoundError):
+        store.load("proj_corrupt")
+
+    # a structurally-valid JSON that isn't an object (e.g. a stray array/string)
+    # is also not a usable project -> same graceful FileNotFoundError
+    path.write_text("[]", encoding="utf-8")
+    with pytest.raises(FileNotFoundError):
+        store.load("proj_corrupt")
 
 
 def test_import_preserves_production_source_for_openshot():
@@ -3382,3 +3408,143 @@ def test_rejected_command_leaves_revision_and_command_log_untouched(tmp_path):
     reloaded = store.load("proj_noop")
     assert reloaded["revision"] == rev_before
     assert len(reloaded["commandLog"]) == log_len_before
+
+
+def test_concurrent_apply_command_does_not_lose_updates(tmp_path):
+    """Concurrent mutations on one project must not lost-update each other.
+
+    apply_command is a read-modify-write (load -> apply -> atomic_save). Without a
+    per-project lock, two threads can both read revision N between load() and
+    save(); both pass the optimistic revision check and the second save() clobbers
+    the first (the first command vanishes from the log even though it "succeeded").
+
+    Fire many threads, all distinct commands but all targeting the SAME starting
+    revision. With correct serialization exactly ONE wins per revision (the rest
+    raise RevisionConflict because they observe the prior write), and the final
+    on-disk state is internally consistent: every command the store reported as
+    succeeded is present in the log and the revision bumped once per success.
+    """
+    import threading
+
+    store, project = _seed_clip_project(tmp_path, "proj_race")
+    start_rev = project["revision"]
+
+    n = 24
+    barrier = threading.Barrier(n)
+    succeeded: list[str] = []
+    conflicted = 0
+    lock = threading.Lock()
+
+    def worker(i: int) -> None:
+        nonlocal conflicted
+        cmd_id = f"cmd_race_{i}"
+        barrier.wait()  # maximize the read-modify-write overlap window
+        try:
+            store.apply_command("proj_race", {
+                "op": "clip.move", "actor": f"agent{i}", "id": cmd_id,
+                "expectedRevision": start_rev,
+                "payload": {"clipId": "c1", "start": float(i)},
+            })
+            with lock:
+                succeeded.append(cmd_id)
+        except timeline.RevisionConflict:
+            with lock:
+                conflicted += 1
+
+    threads = [threading.Thread(target=worker, args=(i,)) for i in range(n)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    # All threads aimed at the same revision, so exactly one can win.
+    assert len(succeeded) == 1
+    assert conflicted == n - 1
+
+    reloaded = store.load("proj_race")
+    # Revision bumped once per reported success — no lost update, no double-apply.
+    assert reloaded["revision"] == start_rev + len(succeeded)
+    # The single winning command is actually persisted in the log.
+    log_ids = {c.get("id") for c in reloaded["commandLog"]}
+    for cmd_id in succeeded:
+        assert cmd_id in log_ids
+
+
+# ---------------------------------------------------------------------------
+# E2E: factory-attached keyframed ducking envelope -> import -> editor_render
+# -> an ACTUAL rendered audio mix. The unit/seam suites stop at JSON/filter
+# strings; nothing previously proved the line 212-230 envelope-promotion path
+# survives all the way to a real render and actually ducks the bed. This drives
+# the deterministic ffmpeg-layered renderer (CI-available; the OpenShot path is
+# native and may be absent) end to end and measures the output.
+# ---------------------------------------------------------------------------
+
+_HAS_FFMPEG = bool(shutil.which("ffmpeg") and shutil.which("ffprobe"))
+
+
+def _tone_wav(path, *, duration=4.0):
+    """A real constant-amplitude sine WAV so a downstream gain change is audible
+    in the measured mean volume."""
+    subprocess.run(
+        ["ffmpeg", "-y", "-f", "lavfi", "-i",
+         f"sine=frequency=220:duration={duration}",
+         "-ac", "1", "-ar", "48000", str(path)],
+        check=True, capture_output=True, text=True,
+    )
+    return path
+
+
+def _mean_volume_db(path, *, start, duration):
+    out = subprocess.run(
+        ["ffmpeg", "-hide_banner", "-nostats", "-ss", str(start), "-t", str(duration),
+         "-i", str(path), "-af", "volumedetect", "-f", "null", "-"],
+        check=True, capture_output=True, text=True,
+    ).stderr
+    line = next(l for l in out.splitlines() if "mean_volume:" in l)
+    return float(line.split("mean_volume:")[1].strip().split(" ")[0])
+
+
+@pytest.mark.skipif(not _HAS_FFMPEG, reason="ffmpeg/ffprobe required for E2E render")
+def test_keyframed_ducking_envelope_drives_actual_render(tmp_path):
+    """End-to-end proof of the lines 212-230 path: a factory hands a dict-shaped
+    music bed with a ducking volume envelope (loud 0.6 intro, quiet 0.15 under VO),
+    the import promotes it onto the bed clip and neutralizes the flat 0.22 gain, and
+    the REAL ffmpeg-layered render must reproduce that envelope — the intro window
+    must be measurably louder than the ducked window. If the flat 0.22 weren't
+    neutralized the intro would be double-attenuated (0.6*0.22) and the envelope's
+    shape would collapse; if the envelope were dropped at import the bed would be a
+    flat 0.22 and the two windows would measure equal."""
+    bed = _tone_wav(tmp_path / "bed.wav", duration=4.0)
+
+    project = timeline.project_from_abn_timeline("p_e2e", {
+        "episodeId": "e", "totalSec": 4.0, "fps": 30, "width": 320, "height": 240,
+        "musicBed": {"src": str(bed), "keyframes": [
+            {"property": "volume", "points": [
+                {"t": 0.0, "value": 0.6, "interp": "linear"},
+                {"t": 1.0, "value": 0.15, "interp": "linear"},
+                {"t": 3.0, "value": 0.15, "interp": "linear"},
+            ]},
+        ]},
+        "segments": [{"segmentId": "s0", "durationSec": 4.0, "shots": []}],
+    })
+
+    bed_clip = next(c for c in project["clips"].values() if c["kind"] == "music_bed")
+    # the envelope (not the flat 0.22) drives ducking, so the flat gain is neutralized
+    assert bed_clip["volume"] == 1.0
+    assert any(t["property"] == "volume" for t in bed_clip["keyframes"])
+
+    from services import editor_render
+
+    renderer = editor_render.FFmpegLayeredRenderer(tmp_path / "renders")
+    result = renderer.render(project, output_path=tmp_path / "renders" / "e2e.mp4")
+
+    out = tmp_path / "renders" / "e2e.mp4"
+    assert out.exists() and out.stat().st_size > 0
+    assert result["video"] == str(out)
+
+    intro_db = _mean_volume_db(out, start=0.1, duration=0.6)   # ~0.6 gain region
+    ducked_db = _mean_volume_db(out, start=2.0, duration=0.9)  # ~0.15 gain region
+    # The envelope actually ducked the bed: the intro is clearly louder than the
+    # VO-window. 0.6 vs 0.15 is ~12 dB; require a solid margin to rule out a flat
+    # render (which would measure ~0 dB difference).
+    assert intro_db - ducked_db > 6.0

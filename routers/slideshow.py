@@ -39,6 +39,13 @@ VALID_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 VALID_AUDIO_EXTENSIONS = {".mp3", ".wav", ".m4a", ".aac", ".ogg"}
 VALID_VIDEO_EXTENSIONS = {".mp4", ".mov", ".webm", ".mkv"}
 
+_UNSAFE_SLUG_RE = re.compile(r"[^a-zA-Z0-9_\-]")
+
+
+def safe_slug(name: str) -> str:
+    """Sanitize a user-supplied name into a filesystem-safe slug (<=64 chars)."""
+    return _UNSAFE_SLUG_RE.sub("_", name.strip())[:64]
+
 
 # ── Image management ────────────────────────────────────────────────────
 
@@ -930,7 +937,7 @@ class SaveFormatRequest(BaseModel):
 @router.post("/formats")
 async def save_format(body: SaveFormatRequest):
     fmt_dir = get_project_slideshow_formats_dir(body.project)
-    safe_name = re.sub(r"[^a-zA-Z0-9_\-]", "_", body.name.strip())[:64]
+    safe_name = safe_slug(body.name)
     if not safe_name:
         raise HTTPException(status_code=400, detail="Invalid format name")
 
@@ -974,7 +981,7 @@ async def list_formats(project: str):
 @router.get("/formats/{name}")
 async def get_format(name: str, project: str):
     fmt_dir = get_project_slideshow_formats_dir(project)
-    safe_name = re.sub(r"[^a-zA-Z0-9_\-]", "_", name.strip())[:64]
+    safe_name = safe_slug(name)
     fmt_path = fmt_dir / f"{safe_name}.json"
     if not fmt_path.exists():
         raise HTTPException(status_code=404, detail="Format not found")
@@ -985,7 +992,7 @@ async def get_format(name: str, project: str):
 @router.delete("/formats/{name}")
 async def delete_format(name: str, project: str):
     fmt_dir = get_project_slideshow_formats_dir(project)
-    safe_name = re.sub(r"[^a-zA-Z0-9_\-]", "_", name.strip())[:64]
+    safe_name = safe_slug(name)
     fmt_path = fmt_dir / f"{safe_name}.json"
     if not fmt_path.exists():
         raise HTTPException(status_code=404, detail="Format not found")

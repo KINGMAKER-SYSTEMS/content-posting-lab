@@ -61,7 +61,7 @@ from services.telegram import (
     update_sound,
 )
 from services.roster import list_all_pages
-from services.notion import sync_sounds_from_notion, is_configured as notion_configured
+from services.notion import is_configured as notion_configured
 from services.campaign_hub import sync_sound_status as hub_sync_sound_status, is_configured as hub_configured
 
 # Lazy import to avoid circular import at module level.

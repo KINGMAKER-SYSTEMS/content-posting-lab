@@ -603,6 +603,145 @@ def test_editor_timeline_api_exports_openshot_contract(sync_client, monkeypatch,
     assert payload["updateActions"][0]["transaction"] == "cmd_nudge"
 
 
+def test_editor_timeline_openshot_export_emits_path_for_missing_asset_file(
+    sync_client, monkeypatch, tmp_path
+):
+    """Edge case the export contract must pin: an asset whose /agenticnews-assets/
+    URL resolves to a file that does NOT exist on disk. The export does not crash
+    and does not silently blank the path — it resolves the URL to a concrete
+    <ASSETS_DIR>/<name> path so OpenShot's reader (and the asset-health surface)
+    can see the gap. Missing-file detection is asset-health's job, not export's."""
+    monkeypatch.setattr(agenticnews_router.db, "ASSETS_DIR", tmp_path)
+    timeline_dir = tmp_path / "editor_timelines"
+    timeline_dir.mkdir()
+    timeline_path = timeline_dir / "ep_missing_asset.json"
+    timeline_path.write_text(json.dumps({
+        "schema": "editor-timeline/v1",
+        "projectId": "ep_missing_asset",
+        "sourceEpisodeId": "ep_missing_asset",
+        "title": "Missing Asset",
+        "fps": 30,
+        "width": 1920,
+        "height": 1080,
+        "revision": 0,
+        "assets": {
+            "a_missing": {"id": "a_missing", "type": "image", "src": "/agenticnews-assets/gone.png"}
+        },
+        "tracks": {"graphics_1": {"id": "graphics_1", "kind": "image", "name": "Graphics", "index": 1}},
+        "clips": {
+            "c_missing": {
+                "id": "c_missing",
+                "assetId": "a_missing",
+                "trackId": "graphics_1",
+                "kind": "image",
+                "start": 0,
+                "duration": 1,
+                "sourceStart": 0,
+                "enabled": True,
+                "muted": False,
+                "volume": 1,
+                "transform": {"x": 0.5, "y": 0.5, "scale": 1, "opacity": 1},
+                "effects": [],
+                "keyframes": [],
+                "metadata": {},
+            }
+        },
+        "markers": {},
+        "notes": {},
+    }))
+    assert not (tmp_path / "gone.png").exists()
+
+    response = sync_client.get("/api/agenticnews/editor-timelines/ep_missing_asset/openshot")
+
+    assert response.status_code == 200
+    clip = response.json()["timeline"]["clips"][0]
+    # URL resolved to a concrete (still-missing) path, not silently blanked.
+    assert clip["reader"]["path"] == str(tmp_path / "gone.png")
+    assert clip["reader"]["type"] == "QtImageReader"
+
+
+def test_editor_timeline_openshot_export_handles_empty_src_with_dummy_reader(
+    sync_client, monkeypatch, tmp_path
+):
+    """A title/lower-third asset carries src="" (text is rendered, no file). The
+    export must NOT invent a path — it falls back to an empty-path DummyReader so
+    OpenShot treats it as a generated layer rather than a missing file."""
+    monkeypatch.setattr(agenticnews_router.db, "ASSETS_DIR", tmp_path)
+    timeline_dir = tmp_path / "editor_timelines"
+    timeline_dir.mkdir()
+    timeline_path = timeline_dir / "ep_empty_src.json"
+    timeline_path.write_text(json.dumps({
+        "schema": "editor-timeline/v1",
+        "projectId": "ep_empty_src",
+        "sourceEpisodeId": "ep_empty_src",
+        "title": "Empty Src",
+        "fps": 30,
+        "width": 1920,
+        "height": 1080,
+        "revision": 0,
+        "assets": {
+            "lower": {
+                "id": "lower",
+                "type": "title",
+                "src": "",
+                "metadata": {"text": "Generated title"},
+            }
+        },
+        "tracks": {"titles_1": {"id": "titles_1", "kind": "title", "name": "Titles", "index": 30}},
+        "clips": {
+            "lower_clip": {
+                "id": "lower_clip",
+                "assetId": "lower",
+                "trackId": "titles_1",
+                "kind": "lower_third",
+                "start": 0,
+                "duration": 2,
+                "sourceStart": 0,
+                "enabled": True,
+                "muted": False,
+                "volume": 1,
+                "transform": {"x": 0.5, "y": 0.5, "scale": 1, "opacity": 1},
+                "effects": [],
+                "keyframes": [],
+                "metadata": {},
+            }
+        },
+        "markers": {},
+        "notes": {},
+    }))
+
+    response = sync_client.get("/api/agenticnews/editor-timelines/ep_empty_src/openshot")
+
+    assert response.status_code == 200
+    clip = response.json()["timeline"]["clips"][0]
+    assert clip["reader"]["path"] == ""
+    assert clip["reader"]["type"] == "DummyReader"
+
+
+def test_openshot_bridge_resolve_asset_src_url_edge_cases():
+    """Unit-pin _resolve_asset_src so the export contract's path resolution can't
+    regress: agenticnews-assets URLs join under asset_root, but only when a root is
+    present; empty and non-prefixed srcs pass through untouched (never None, never
+    raises)."""
+    from pathlib import Path
+
+    from services import openshot_bridge
+
+    root = Path("/assets")
+    # URL + root -> joined filesystem path
+    assert openshot_bridge._resolve_asset_src(
+        "/agenticnews-assets/card.png", asset_root=root
+    ) == str(root / "card.png")
+    # URL + NO root -> unresolvable, passes through as the URL (no crash, no None)
+    assert openshot_bridge._resolve_asset_src(
+        "/agenticnews-assets/card.png", asset_root=None
+    ) == "/agenticnews-assets/card.png"
+    # empty src -> empty (drives the DummyReader fallback)
+    assert openshot_bridge._resolve_asset_src("", asset_root=root) == ""
+    # already-absolute non-URL path -> untouched
+    assert openshot_bridge._resolve_asset_src("/var/x.png", asset_root=root) == "/var/x.png"
+
+
 def test_editor_timeline_api_strips_stale_source_video_cache(sync_client, monkeypatch, tmp_path):
     monkeypatch.setattr(agenticnews_router.db, "ASSETS_DIR", tmp_path)
     timeline_dir = tmp_path / "editor_timelines"

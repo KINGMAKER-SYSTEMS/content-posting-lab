@@ -372,6 +372,20 @@ _EFFECT_CLASS_MAP: dict[str, str] = {
 _FADE_DIRECTION_MAP = {"fadeIn": "in", "fadeOut": "out", "crossfade": "in"}
 
 
+def _safe_float(value: Any) -> float:
+    """Coerce an effect param to float, tolerating poisoned/malformed values.
+
+    Frontend effects are validated upstream, but corrupted project files or
+    malicious JSON can deliver non-numeric params (e.g. ``"not-a-number"``,
+    ``None``, a list). Rather than letting ``float()`` raise ValueError/TypeError
+    and abort the whole render, fall back to 0.0 — the same neutral default a
+    missing param already produces."""
+    try:
+        return float(value or 0.0)
+    except (ValueError, TypeError):
+        return 0.0
+
+
 def effect_json(effect: dict[str, Any], *, fps: int) -> dict[str, Any]:
     """Translate one editor clip effect into a libopenshot Effect JSON object.
 
@@ -388,12 +402,12 @@ def effect_json(effect: dict[str, Any], *, fps: int) -> dict[str, Any]:
     }
     if effect_type in _FADE_DIRECTION_MAP:
         out["fade"] = _FADE_DIRECTION_MAP[effect_type]
-        out["duration"] = _keyframe(float(params.get("duration") or 0.0))
+        out["duration"] = _keyframe(_safe_float(params.get("duration")))
     elif effect_type == "brightness":
-        out["brightness"] = _keyframe(float(params.get("value") or 0.0))
+        out["brightness"] = _keyframe(_safe_float(params.get("value")))
         out["contrast"] = _keyframe(0.0)
     elif effect_type == "saturation":
-        out["saturation"] = _keyframe(float(params.get("value") or 0.0))
+        out["saturation"] = _keyframe(_safe_float(params.get("value")))
     return out
 
 

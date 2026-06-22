@@ -204,3 +204,33 @@ def test_inner_text_timeout_degrades_to_empty_and_bails_near_empty(tmp_path, mon
     assert state["scrolled"] is False  # near-empty guard bailed before recording
     foot = Path(tmp_path) / "ep_cafef0" / "footage"
     assert not list(foot.glob("_rec_*"))
+
+
+def test_inner_text_none_bails_near_empty(tmp_path, monkeypatch):
+    """Playwright inner_text() can return None (no readable body) WITHOUT raising. The
+    `... or ""` coercion on line 83 must turn that into txt='' so the near-empty guard treats
+    it as worthless footage and bails (None) — never an AttributeError on None.lower()."""
+    timeout_exc = type("TimeoutError", (Exception,), {})
+
+    fake, state = _fake_playwright(lambda: None, timeout_exc)
+    cap = _reload_capture(tmp_path, monkeypatch, fake)
+
+    assert cap.capture_sync("https://example.com", "ep_d00d11_s3") is None
+    assert state["scrolled"] is False  # near-empty guard bailed before recording
+    foot = Path(tmp_path) / "ep_d00d11" / "footage"
+    assert not list(foot.glob("_rec_*"))
+
+
+def test_inner_text_empty_string_bails_near_empty(tmp_path, monkeypatch):
+    """A body that returns "" (or near-empty markup) before any timeout — e.g. a challenge page
+    whose content lives in an iframe — must hit the near-empty guard and bail (None) without
+    driving the worthless scroll/record."""
+    timeout_exc = type("TimeoutError", (Exception,), {})
+
+    fake, state = _fake_playwright(lambda: "   \n  ", timeout_exc)  # whitespace-only -> strip()<40
+    cap = _reload_capture(tmp_path, monkeypatch, fake)
+
+    assert cap.capture_sync("https://example.com", "ep_beef22_s4") is None
+    assert state["scrolled"] is False  # near-empty guard bailed before recording
+    foot = Path(tmp_path) / "ep_beef22" / "footage"
+    assert not list(foot.glob("_rec_*"))

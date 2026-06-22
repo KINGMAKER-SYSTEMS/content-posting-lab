@@ -214,3 +214,48 @@ def test_sync_from_notion_wraps_errors_as_500(sync_client, monkeypatch):
     r = sync_client.post("/api/roster/sync-notion")
     assert r.status_code == 500
     assert "kaboom" in r.json()["detail"]
+
+
+# ── service-boundary separation (regression for stale-boundary ticket) ───────
+
+
+def test_roster_sync_uses_page_roster_service_not_sounds(sync_client, monkeypatch):
+    """The roster /sync-notion endpoint must hit notion_pages.sync_into_roster
+    (page roster), and must NOT touch services.notion.sync_sounds_from_notion
+    (the Telegram sound-library sync). The two share a confusingly similar name;
+    this pins them to distinct service boundaries.
+    """
+    import services.notion_pages as np
+    import services.notion as notion_sounds
+
+    called = {"roster": False}
+
+    async def fake_roster_sync():
+        called["roster"] = True
+        return {"added": 1, "updated": 0, "total_in_notion": 1, "pages": []}
+
+    async def sounds_must_not_run():  # pragma: no cover - asserts it isn't called
+        raise AssertionError(
+            "roster sync wrongly invoked the sounds sync service boundary"
+        )
+
+    monkeypatch.setattr(np, "is_configured", lambda: True)
+    monkeypatch.setattr(np, "sync_into_roster", fake_roster_sync)
+    monkeypatch.setattr(notion_sounds, "sync_sounds_from_notion", sounds_must_not_run)
+
+    r = sync_client.post("/api/roster/sync-notion")
+    assert r.status_code == 200
+    assert called["roster"] is True
+
+
+def test_telegram_router_has_no_dead_sounds_notion_import():
+    """The Telegram router previously imported the unused
+    services.notion.sync_sounds_from_notion symbol, creating the illusion that
+    the roster sync and the sound sync shared an implementation. Ensure the dead
+    import is gone so the live sync surface stays unambiguous.
+    """
+    import routers.telegram as tg_router
+
+    assert not hasattr(tg_router, "sync_sounds_from_notion"), (
+        "dead `sync_sounds_from_notion` import leaked back into routers/telegram.py"
+    )

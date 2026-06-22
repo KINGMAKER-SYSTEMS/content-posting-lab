@@ -507,6 +507,13 @@ async def r2_upload_init(body: dict):
     sanitized = sanitize_project_name(project)
     batch_id = uuid.uuid4().hex[:12]
 
+    # Make the init→complete contract explicit: every presigned PUT URL in this
+    # batch expires at the same wall-clock deadline. The client echoes this back
+    # on /upload-complete so the server can reject an expired batch with a clear
+    # "re-initialize" error instead of letting the R2 fetch fail with a confusing
+    # S3 SignatureDoesNotExist / AccessDenied error.
+    expires_at = int(time.time()) + r2.UPLOAD_TTL
+
     items = []
     for i, f in enumerate(files):
         filename = str(f.get("filename") or f"video_{i}.mp4")
@@ -520,7 +527,7 @@ async def r2_upload_init(body: dict):
             "put_url": put_url,
         })
 
-    return {"batch_id": batch_id, "items": items}
+    return {"batch_id": batch_id, "items": items, "expires_at": expires_at}
 
 
 @router.post("/r2/upload-complete")
@@ -543,6 +550,22 @@ async def r2_upload_complete(body: dict):
         raise HTTPException(400, "batch_id is required")
     if not items:
         raise HTTPException(400, "items[] is required")
+
+    # If the client echoes back the batch deadline from /upload-init and it has
+    # already passed, the presigned PUT URLs are dead — the R2 fetch below would
+    # fail with an opaque S3 error. Fail fast with an actionable 409 so the client
+    # knows to re-initialize the upload rather than retrying a doomed complete.
+    expires_at = body.get("expires_at")
+    if expires_at is not None:
+        try:
+            deadline = int(expires_at)
+        except (TypeError, ValueError):
+            deadline = None  # malformed deadline → ignore, fall through to best-effort fetch
+        if deadline is not None and deadline <= int(time.time()):
+            raise HTTPException(
+                409,
+                "upload session expired — re-initialize the upload (call /r2/upload-init again)",
+            )
 
     sanitized = sanitize_project_name(project)
     clipper_dir = _get_clipper_dir(project)

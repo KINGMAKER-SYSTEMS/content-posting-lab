@@ -1150,6 +1150,60 @@ def test_purge_disk_skips_render_trim_when_protection_scan_incomplete(store, mon
     assert freed == 0
 
 
+def test_purge_disk_incomplete_scan_still_reaps_scratch(store, monkeypatch):
+    """THE FAIL-SAFE MUST STAY NARROW: an incomplete protection scan (malformed timeline.json) skips
+    ONLY the destructive low-disk render trim — the non-destructive scratch reap must still run and
+    free disk. The natural over-broad "fix" for this ticket is to bail out of purge_disk the moment
+    the scan is incomplete; that would let a single half-flushed timeline.json silently stop ALL disk
+    reclamation (the GC's whole job) and the suite would stay green. This pins that scratch is still
+    reaped under an incomplete scan, so the guard can't be widened into a full-GC kill switch.
+
+    Aged scratch is NOT timeline-referenceable in a way the broken JSON could protect (the broken
+    file carries no parseable refs), so reaping it is always safe regardless of scan completeness."""
+    old_render = _render(store, "ep_4a4444", age_s=9000)
+    reapable = _scratch(store, "ep_4a4444", "s0_raw.wav", body=b"x" * 100)
+    # A broken timeline → protection scan is incomplete (render trim must be skipped)...
+    (store / "editor_timelines" / "broken.json").write_text("{ not json at all")
+    _force_low_disk(monkeypatch)
+
+    abn_factory.purge_disk(intermediate_age_s=1, keep_episodes=1, low_disk_gb=999)
+
+    # ...but the scratch reap still happened: the aged intermediate was tombstoned (→ _trash/).
+    assert not reapable.exists(), (
+        "incomplete protection scan stopped the scratch reap — the fail-safe was widened from "
+        "'skip the destructive render trim' into a full-GC kill switch; disk would never be reclaimed"
+    )
+    assert (store / "_trash" / "ep_4a4444" / "scratch" / "s0_raw.wav").exists(), (
+        "aged scratch must still be tombstoned (→ _trash/) even when the protection scan is incomplete"
+    )
+    # the destructive render trim is STILL correctly skipped (the other half of the contract).
+    assert old_render.exists(), "render trim ran despite the incomplete scan — must stay skipped"
+
+
+def test_gc_segments_incomplete_scan_still_reaps_scratch(store, monkeypatch):
+    """Twin of test_purge_disk_incomplete_scan_still_reaps_scratch for the _gc_segments disk phase:
+    an incomplete protection scan must skip only the render trim, not the scratch reap. Same regression
+    target — a guard widened into an early bail would silently stop _gc_segments from reclaiming disk."""
+    old_render = _render(store, "ep_5a5555", age_s=9000)
+    for i, age in enumerate((8000, 7000, 6000, 5000, 10)):       # 6 total renders, keep-4 -> 2 victims
+        _render(store, f"ep_5f111{i}", age_s=age)
+    reapable = _scratch(store, "ep_5a5555", "s0_raw.wav", body=b"x" * 100, age_s=7200)
+    (store / "editor_timelines" / "broken.json").write_text("{ not json at all")
+    _gc_no_videos(monkeypatch)
+    _force_low_disk(monkeypatch)
+
+    asyncio.run(abn_factory._gc_segments(keep_recent=0))
+
+    assert not reapable.exists(), (
+        "_gc_segments stopped the scratch reap under an incomplete scan — the fail-safe was widened "
+        "into a full-GC kill switch instead of skipping only the destructive render trim"
+    )
+    assert (store / "_trash" / "ep_5a5555" / "scratch" / "s0_raw.wav").exists(), (
+        "aged scratch must still be tombstoned by _gc_segments even when the protection scan is incomplete"
+    )
+    assert old_render.exists(), "_gc_segments render trim ran despite the incomplete scan — must stay skipped"
+
+
 def test_purge_disk_still_trims_when_protection_scan_is_complete(store, monkeypatch):
     """Control: with a clean (complete) protection scan and low disk, the oldest unreferenced render
     IS trimmed — the fail-safe only blocks the trim when the scan genuinely failed, not always."""

@@ -145,6 +145,30 @@ def test_pocket_language_resolves_default_when_env_unset(monkeypatch):
     assert abn_factory._pocket_language() == "english_2026-04"
 
 
+@pytest.mark.parametrize("poisoned", [
+    "/path/to/evil.safetensors",            # clone weights file
+    "model.safetensors",                     # bare clone filename
+    "english_2026-04\nmodel.safetensors",   # embedded-newline path smuggle
+    "replicate:chatterbox",                 # cloud-engine handle
+    "../etc/passwd",                         # traversal
+])
+def test_pocket_tts_command_re_gates_even_if_language_resolver_bypassed(monkeypatch, tmp_path, poisoned):
+    """LOCKED-VOICE HARD GATE, defense-in-depth: the env validation lives in _pocket_language(), but
+    the audit concern is a CALL SITE that bypasses it (a future refactor sourcing the code elsewhere,
+    or a new caller). _pocket_tts_command is the single chokepoint that emits `--language`, so even if
+    the resolver is fully bypassed and hands back a poisoned value, the command MUST still fall back to
+    the built-in default and never feed pocket-tts a clone file / cloud handle / path."""
+    # simulate a bypass: the resolver itself returns an unvalidated, poisoned value
+    monkeypatch.setattr(abn_factory, "_pocket_language", lambda: poisoned)
+    cmd = abn_factory._pocket_tts_command("hi", tmp_path / "v.wav")
+
+    assert poisoned not in cmd
+    assert cmd[cmd.index("--language") + 1] == "english_2026-04"
+    joined = " ".join(cmd).lower()
+    for banned in ("safetensors", "replicate", "chatterbox", "passwd", "/path", "/etc", "\n"):
+        assert banned not in joined, f"bypassed resolver leaked poisoned language into VO command: {banned!r}"
+
+
 def test_voice_routes_through_gateway_and_returns_url_and_duration(monkeypatch, tmp_path):
     """_voice must (a) build its output path via the asset gateway (per-episode schema, not a
     flat dump), (b) shell out to the pocket-tts command, (c) return the managed URL + measured
@@ -483,6 +507,57 @@ def test_assemble_episode_per_segment_encode_includes_karaoke_drawtext(monkeypat
     assert "drawtext=" in cmd, "karaoke caption overlay (drawtext) was dropped from the encode"
     # the segment's script text must actually reach drawtext (shlex-quoted somewhere in the cmd)
     assert "Anthropic shipped a coding agent" in cmd, "segment script text never reached drawtext"
+
+
+def test_assemble_episode_partial_encode_failure_concats_only_survivors(monkeypatch, tmp_path):
+    """PARTIAL failure: of N segments, some encode and some don't. `_assemble_episode` skips the
+    failed encodes (BUS-only, no raise) and concats ONLY the survivors — it must NOT abort the whole
+    episode just because one segment's ffmpeg returned non-zero, and it must NOT feed a non-existent
+    clip path into the concat manifest. Pins the silent-skip loop at services/abn_factory.py ~2644.
+
+    Three segments; the MIDDLE one (seg1) fails to encode. We assert the concat manifest contains
+    exactly seg0 + seg2 (in order), seg1 is absent, and the episode still renders."""
+    import shlex
+
+    monkeypatch.setattr(abn_factory, "ASSETS", tmp_path)
+    monkeypatch.setattr(abn_assets, "ASSETS_DIR", tmp_path)
+
+    manifest_lines = []
+
+    async def routed_sh(cmd, timeout=600):
+        if cmd.startswith("ffprobe"):
+            return 0, "30.0\n"
+        out = shlex.split(cmd)[-1]
+        if "-f concat" in cmd:  # capture the manifest the concat is asked to stitch
+            listf = shlex.split(cmd)[shlex.split(cmd).index("-i") + 1]
+            manifest_lines.extend(
+                l for l in Path(listf).read_text().splitlines() if l.strip())
+            Path(out).write_bytes(b"\x00final-mp4")  # copy-concat succeeds
+            return 0, ""
+        # per-segment encode: seg1 fails (no output written), others succeed.
+        # clip basenames are like "seg1_scratch.mp4" — match on the seg-index prefix.
+        if Path(out).name.startswith("seg1"):
+            return 1, "ffmpeg: seg1 encode blew up"
+        Path(out).write_bytes(b"\x00seg-mp4")
+        return 0, ""
+
+    monkeypatch.setattr(abn_factory, "_sh", routed_sh)
+
+    segments = [
+        {"script": "one", "vo_path": "/agenticnews-assets/ep_a111111_s0.wav", "screenshot": None},
+        {"script": "two", "vo_path": "/agenticnews-assets/ep_a111111_s1.wav", "screenshot": None},
+        {"script": "three", "vo_path": "/agenticnews-assets/ep_a111111_s2.wav", "screenshot": None},
+    ]
+    url, dur = asyncio.run(abn_factory._assemble_episode("ep_a111111", segments))
+
+    assert url and dur == 30.0, "episode must still render from the surviving segments"
+    assert len(manifest_lines) == 2, f"concat manifest must hold ONLY the 2 survivors, got {manifest_lines}"
+    assert any("/seg0" in l for l in manifest_lines), "surviving seg0 missing from concat"
+    assert any("/seg2" in l for l in manifest_lines), "surviving seg2 missing from concat"
+    assert not any("/seg1" in l for l in manifest_lines), "failed seg1 was fed into concat"
+    # order preserved: seg0 before seg2
+    assert next(i for i, l in enumerate(manifest_lines) if "/seg0" in l) < \
+        next(i for i, l in enumerate(manifest_lines) if "/seg2" in l)
 
 
 # ---------------- _render_remotion: error recovery + fallback re-encode ----------------
@@ -2903,6 +2978,47 @@ def test_render_remotion_raises_on_normalize_ok_but_duck_fail_seam(monkeypatch, 
                for e in new_events), "a failed duck pass must emit a FATAL error event"
 
 
+def test_render_remotion_duck_pass_reencodes_video_to_yuv420p(monkeypatch, tmp_path):
+    """BELT-AND-SUSPENDERS INTERLOCK (the ep_d640a3eb regression). The duck pass is the LAST
+    video stage. It used to pass the video through with '-c:v copy', so a normalize-pass hiccup
+    let the episode SHIP yuvj420p and FAIL the hard yuv420p gate. The duck command MUST therefore
+    re-encode the video to yuv420p itself (format=yuv420p + a real libx264 encode, NEVER -c:v copy)
+    so the gate holds regardless of what the normalize pass did. Pin the actual command shape."""
+    monkeypatch.setattr(abn_factory, "ASSETS", tmp_path)
+    monkeypatch.setattr(abn_assets, "ASSETS_DIR", tmp_path)
+    _stub_remotion_dir(monkeypatch, tmp_path)
+
+    async def fake_dur(path):
+        return 640.0
+    monkeypatch.setattr(abn_factory, "_dur", fake_dur)
+
+    bed = tmp_path / "bed.mp3"
+    bed.write_bytes(b"\x00")
+    out = abn_assets.asset_path("ep_b222222", "episode")
+    inner = _remotion_dispatch_sh(out, normalize_ok=True, duck_ok=True)
+
+    duck_cmds = []
+
+    async def capturing_sh(cmd, timeout=600):
+        if "sidechaincompress" in cmd:
+            duck_cmds.append(cmd)
+        return await inner(cmd, timeout=timeout)
+    monkeypatch.setattr(abn_factory, "_sh", capturing_sh)
+
+    timeline = {"musicBed": bed.name, "segments": []}
+    url, dur = asyncio.run(abn_factory._render_remotion("ep_b222222", timeline, force=True))
+    assert url and dur == 640.0
+
+    assert len(duck_cmds) == 1, "the duck pass must run exactly once"
+    dcmd = duck_cmds[0]
+    # The interlock: the duck pass forces yuv420p AND really re-encodes the video — it must NOT
+    # shortcut with -c:v copy (which would pass an upstream yuvj420p through to the gate).
+    assert "format=yuv420p" in dcmd, "duck pass must force yuv420p on the video stream"
+    assert "-c:v libx264" in dcmd, "duck pass must re-encode the video (belt-and-suspenders)"
+    assert "-c:v copy" not in dcmd, \
+        "duck pass must NOT copy the video stream through (the ep_d640a3eb regression)"
+
+
 def test_render_remotion_succeeds_when_both_passes_ok(monkeypatch, tmp_path):
     """Happy path still returns (url, duration) when normalize + duck both succeed."""
     monkeypatch.setattr(abn_factory, "ASSETS", tmp_path)
@@ -2959,3 +3075,73 @@ def test_render_remotion_drops_traversal_music_bed_outside_store(monkeypatch, tm
     assert dur == 640.0
     assert url
     assert duck_calls == []  # duck pass skipped: escaping bed was dropped, not read
+
+
+# ---- revisualize: pristine-timeline backup is written ATOMICALLY (this ticket) ----
+
+
+def _seed_revisualize_episode(monkeypatch, tmp_path, ep_id="ep_a111111"):
+    """Lay down the minimal on-disk inputs revisualize_episode needs to reach the
+    backup-write branch: a valid timeline.json and the original episode mp4."""
+    monkeypatch.setattr(abn_factory, "ASSETS", tmp_path)
+    monkeypatch.setattr(abn_assets, "ASSETS_DIR", tmp_path)
+    tlf = abn_assets.asset_path(ep_id, "timeline")
+    timeline = {"segments": [{"segmentId": f"{ep_id}_s0"}], "fps": 30, "café": "naïve"}
+    tlf.write_text(json.dumps(timeline), encoding="utf-8")
+    orig = abn_assets.asset_path(ep_id, "episode")
+    orig.write_bytes(b"fake mp4 bytes")
+    bak = abn_assets.asset_path(ep_id, "assembled", "timeline.orig", ext="json")
+    return ep_id, timeline, bak
+
+
+def test_revisualize_backup_is_written_atomically(monkeypatch, tmp_path):
+    """The pristine-timeline backup must be persisted through atomic_save (tmp+fsync+
+    replace), not a raw write_text — so a crash mid-write can't truncate it. We let
+    revisualize_episode reach the backup write, then make the very next shell-out (the
+    audio extract) fail so the run stops right after the backup. The backup must exist,
+    parse as the original timeline, and leave no tmp sidecar behind."""
+    ep_id, timeline, bak = _seed_revisualize_episode(monkeypatch, tmp_path)
+
+    async def fake_dur(path):
+        return 600.0
+
+    async def fail_sh(cmd, timeout=600):
+        return 1, "boom"  # audio extract fails -> revisualize raises after the backup
+
+    monkeypatch.setattr(abn_factory, "_dur", fake_dur)
+    monkeypatch.setattr(abn_factory, "_sh", fail_sh)
+
+    with pytest.raises(RuntimeError):
+        asyncio.run(abn_factory.revisualize_episode(ep_id))
+
+    assert bak.exists(), "pristine-timeline backup was not written"
+    assert json.loads(bak.read_text(encoding="utf-8")) == timeline
+    assert not list(bak.parent.glob("*.tmp")), "atomic_save leaked a tmp sidecar"
+
+
+def test_revisualize_backup_crash_midwrite_leaves_no_partial(monkeypatch, tmp_path):
+    """If the process dies mid-backup (here: os.fsync raises, the ENOSPC/EIO crash
+    class), atomic_save must abort with NO backup file and NO tmp — never a truncated
+    timeline.orig that a re-run would treat as the pristine copy. A raw write_text
+    would have left a half-written, corrupt backup."""
+    ep_id, _timeline, bak = _seed_revisualize_episode(
+        monkeypatch, tmp_path, ep_id="ep_b222222"
+    )
+
+    async def fake_dur(path):
+        return 600.0
+
+    monkeypatch.setattr(abn_factory, "_dur", fake_dur)
+
+    from services import json_store
+
+    def boom(_fd):
+        raise OSError("simulated fsync failure mid-backup")
+
+    monkeypatch.setattr(json_store.os, "fsync", boom)
+
+    with pytest.raises(OSError):
+        asyncio.run(abn_factory.revisualize_episode(ep_id))
+
+    assert not bak.exists(), "a truncated/partial backup was left after a mid-write crash"
+    assert not list(bak.parent.glob("*.tmp")), "tmp sidecar leaked after mid-write crash"

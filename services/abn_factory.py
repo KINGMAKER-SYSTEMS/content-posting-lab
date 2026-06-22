@@ -746,6 +746,17 @@ def _pocket_language() -> str:
 
 def _pocket_tts_command(text: str, out: Path) -> list[str]:
     language = _pocket_language()
+    # LOCKED-VOICE HARD GATE (defense-in-depth): _pocket_language() already validates, but this is
+    # the single chokepoint that emits the `--language` flag, so re-assert the invariant here. This
+    # guarantees the gate holds no matter how `language` was obtained — e.g. a future refactor that
+    # sources the code differently, or a new caller that bypasses _pocket_language(). The flag value
+    # MUST be a built-in english_* code; never a path / clone file / cloud handle.
+    if language and not _POCKET_LANG_RE.fullmatch(language):
+        _log.warning(
+            "rejecting non-builtin pocket-tts language %r at command build; using built-in %s",
+            language, _POCKET_DEFAULT_LANGUAGE,
+        )
+        language = _POCKET_DEFAULT_LANGUAGE
     cmd = ["pocket-tts", "generate", "--text", text, "--output-path", str(out), "--quiet"]
     if language:
         cmd += ["--language", language]
@@ -3497,7 +3508,9 @@ async def revisualize_episode(ep_id):
     # keep the pristine original timeline once (idempotent re-runs) — renders/ singleton
     bak = asset_path(ep_id, "assembled", "timeline.orig", ext="json")
     if not bak.exists():
-        bak.write_text(tlf.read_text())
+        # atomic write (tmp+fsync+replace) so a crash mid-write can't truncate the
+        # pristine-timeline backup — same gateway the other config writers use.
+        atomic_save(bak, json.loads(tlf.read_text()))
     tl = json.loads(bak.read_text())
     d_orig = await _dur(orig)
 

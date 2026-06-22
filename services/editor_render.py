@@ -1025,13 +1025,20 @@ def _mux_timeline_audio(
         ]
     )
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=900)
-    except subprocess.TimeoutExpired as exc:
-        raise RenderError("audio mux command timed out") from exc
-    if result.returncode != 0:
-        raise RenderError(result.stderr[-1200:] or result.stdout[-1200:])
-    temp_output.replace(output)
-    return True
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=900)
+        except subprocess.TimeoutExpired as exc:
+            raise RenderError("audio mux command timed out") from exc
+        if result.returncode != 0:
+            raise RenderError(result.stderr[-1200:] or result.stdout[-1200:])
+        temp_output.replace(output)
+        return True
+    finally:
+        # A failed or timed-out mux can leave a partial `.audio-mux` file next to
+        # the real output. The source mp4 is never touched (replace is past the
+        # raise), but the half-written temp turd must not linger. ponytail: one
+        # finally, missing_ok swallows the success path where it was renamed away.
+        temp_output.unlink(missing_ok=True)
 
 
 def _missing_assets(project: dict[str, Any], asset_root: Path | None) -> list[dict[str, str]]:
@@ -1182,6 +1189,12 @@ def _run(cmd: list[str]) -> None:
         result = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=60)
     except subprocess.TimeoutExpired as exc:
         raise RenderError(f"render command timed out: {' '.join(cmd[:4])} ...") from exc
+    except (FileNotFoundError, OSError) as exc:
+        # ffmpeg detected at __init__ via shutil.which can vanish before the render
+        # actually runs (uninstalled mid-job, PATH change, broken symlink). Without
+        # this the fallback crashes with a bare OSError the caller can't classify;
+        # surface it as the same RenderError every other failure mode raises.
+        raise RenderError(f"render command could not be executed ({cmd[0]}): {exc}") from exc
     if result.returncode != 0:
         raise RenderError(result.stderr[-1200:] or result.stdout[-1200:])
 
@@ -1204,4 +1217,14 @@ def _probe_duration(ffprobe: str, output: Path) -> float:
     )
     if result.returncode != 0:
         raise RenderError(result.stderr[-1200:] or result.stdout[-1200:])
-    return float(result.stdout.strip())
+    # ffmpeg can exit 0 yet leave a truncated/corrupt artifact whose container has
+    # no parseable `format=duration` (empty / `N/A` stdout). float("")/float("N/A")
+    # raises a ValueError the renderer would otherwise leak as an uncaught crash;
+    # turn the corrupt-output case into the standard RenderError instead.
+    raw = result.stdout.strip()
+    try:
+        return float(raw)
+    except ValueError as exc:
+        raise RenderError(
+            f"render produced an unprobeable artifact (no duration: {raw!r}): {output}"
+        ) from exc

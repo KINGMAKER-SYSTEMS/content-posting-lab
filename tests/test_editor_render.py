@@ -2154,6 +2154,113 @@ def test_open_shot_audio_mux_raises_render_error_on_nonzero_returncode(tmp_path,
     assert video.read_bytes() == b"original-bytes"
 
 
+def test_open_shot_audio_mux_truncates_stderr_tail_to_1200_chars(tmp_path, monkeypatch):
+    """services/editor_render.py:1032 — a verbose ffmpeg failure must not dump its
+    entire stderr into the RenderError; only the last 1200 chars survive. A real
+    ffmpeg can emit megabytes of filtergraph spew on failure, so the tail slice is
+    the bound that keeps the error (and the logs/UI carrying it) sane."""
+    project = _single_audio_clip_project(tmp_path)
+    video = tmp_path / "silent_video.mp4"
+    video.write_bytes(b"original-bytes")
+
+    monkeypatch.setattr(editor_render.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+
+    head = "X" * 5000          # noise that must be dropped
+    tail = "REAL_TAIL_" * 100  # 1000 chars; the meaningful end of the message
+    full_stderr = head + tail
+
+    class _Verbose:
+        returncode = 1
+        stderr = full_stderr
+        stdout = ""
+
+    monkeypatch.setattr(editor_render.subprocess, "run", lambda *a, **k: _Verbose())
+
+    with pytest.raises(editor_render.RenderError) as excinfo:
+        editor_render._mux_timeline_audio(project, video, duration=1.0, asset_root=None)
+    msg = str(excinfo.value)
+    assert len(msg) == 1200                       # exactly the tail slice, not the whole 6000
+    assert msg == full_stderr[-1200:]             # and it is the END of the spew (the real error)
+    assert "REAL_TAIL_" in msg                    # the meaningful tail survived
+    assert video.read_bytes() == b"original-bytes"
+
+
+def test_open_shot_audio_mux_falls_back_to_stdout_when_stderr_empty(tmp_path, monkeypatch):
+    """services/editor_render.py:1032 — when ffmpeg fails with an empty stderr the
+    error must surface the stdout tail instead, so a non-zero exit never yields a
+    blank, un-actionable RenderError."""
+    project = _single_audio_clip_project(tmp_path)
+    video = tmp_path / "silent_video.mp4"
+    video.write_bytes(b"original-bytes")
+
+    monkeypatch.setattr(editor_render.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+
+    class _StdoutOnly:
+        returncode = 1
+        stderr = ""
+        stdout = "diagnostic on stdout: muxer refused the stream"
+
+    monkeypatch.setattr(editor_render.subprocess, "run", lambda *a, **k: _StdoutOnly())
+
+    with pytest.raises(editor_render.RenderError) as excinfo:
+        editor_render._mux_timeline_audio(project, video, duration=1.0, asset_root=None)
+    assert "muxer refused the stream" in str(excinfo.value)
+
+
+def test_open_shot_audio_mux_cleans_up_partial_temp_on_failure(tmp_path, monkeypatch):
+    """services/editor_render.py — a mux that fails mid-operation must not leave its
+    `.audio-mux` partial file behind. Simulate ffmpeg writing a half-baked temp
+    output and then exiting non-zero; the finally-cleanup must remove the turd while
+    leaving the real source untouched."""
+    project = _single_audio_clip_project(tmp_path)
+    video = tmp_path / "silent_video.mp4"
+    video.write_bytes(b"original-bytes")
+    temp_output = video.with_name(f"{video.stem}.audio-mux{video.suffix}")
+
+    monkeypatch.setattr(editor_render.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+
+    class _FailedAfterPartialWrite:
+        returncode = 1
+        stderr = "ffmpeg: write failed near EOF"
+        stdout = ""
+
+    def _run(*a, **k):
+        # ffmpeg writes a partial temp file, then fails (the real failure mode).
+        temp_output.write_bytes(b"half-muxed-garbage")
+        return _FailedAfterPartialWrite()
+
+    monkeypatch.setattr(editor_render.subprocess, "run", _run)
+
+    with pytest.raises(editor_render.RenderError):
+        editor_render._mux_timeline_audio(project, video, duration=1.0, asset_root=None)
+    assert not temp_output.exists()               # partial turd cleaned up
+    assert video.read_bytes() == b"original-bytes"  # source never clobbered
+
+
+def test_open_shot_audio_mux_cleans_up_partial_temp_on_timeout(tmp_path, monkeypatch):
+    """services/editor_render.py — same cleanup guarantee when the mux times out:
+    a partial `.audio-mux` file from a killed ffmpeg must not survive the
+    TimeoutExpired -> RenderError translation."""
+    project = _single_audio_clip_project(tmp_path)
+    video = tmp_path / "silent_video.mp4"
+    video.write_bytes(b"original-bytes")
+    temp_output = video.with_name(f"{video.stem}.audio-mux{video.suffix}")
+
+    monkeypatch.setattr(editor_render.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+
+    def _timeout(*a, **k):
+        temp_output.write_bytes(b"partial-before-kill")
+        raise subprocess.TimeoutExpired(cmd="ffmpeg", timeout=900)
+
+    monkeypatch.setattr(editor_render.subprocess, "run", _timeout)
+
+    with pytest.raises(editor_render.RenderError) as excinfo:
+        editor_render._mux_timeline_audio(project, video, duration=1.0, asset_root=None)
+    assert "timed out" in str(excinfo.value)
+    assert not temp_output.exists()
+    assert video.read_bytes() == b"original-bytes"
+
+
 def test_render_path_translates_full_keyframe_envelope_to_openshot_json():
     """Every keyframable property fans out to the right OpenShot clip key(s) with the
     documented value transform, monotonic frame X (t*fps + 1 with no trim), and
@@ -2929,3 +3036,95 @@ def test_parse_child_render_result_non_dict_then_dict():
 def test_parse_child_render_result_empty_and_none():
     assert editor_render._parse_child_render_result("") is None
     assert editor_render._parse_child_render_result(None) is None
+
+
+# ---------------------------------------------------------------------------
+# ffmpeg-layered failure modes not previously pinned (ticket): a vanished
+# ffmpeg binary at exec time, a generic OSError at exec time, an
+# unprobeable/corrupt output artifact (ffmpeg exits 0 but the container has no
+# parseable duration), an ffprobe failure, and an end-to-end render that must
+# surface a deep timeout as RenderError. All mocked at the stdlib boundary.
+# ---------------------------------------------------------------------------
+
+
+def test_run_raises_render_error_when_ffmpeg_binary_missing(monkeypatch):
+    """ffmpeg detected at __init__ can vanish before the render runs; the exec
+    FileNotFoundError must come back as RenderError, not a raw OSError."""
+
+    def _missing(*args, **kwargs):
+        raise FileNotFoundError(2, "No such file or directory", "ffmpeg")
+
+    monkeypatch.setattr(editor_render.subprocess, "run", _missing)
+    with pytest.raises(editor_render.RenderError) as excinfo:
+        editor_render._run(["ffmpeg", "-i", "in.mp4", "out.mp4"])
+    assert "could not be executed" in str(excinfo.value)
+
+
+def test_run_raises_render_error_on_generic_oserror(monkeypatch):
+    """A generic OSError at exec time (e.g. ETXTBSY / Exec format error) is
+    wrapped as RenderError rather than escaping raw."""
+
+    def _oserror(*args, **kwargs):
+        raise OSError("Exec format error")
+
+    monkeypatch.setattr(editor_render.subprocess, "run", _oserror)
+    with pytest.raises(editor_render.RenderError):
+        editor_render._run(["ffmpeg", "out.mp4"])
+
+
+def test_probe_duration_raises_render_error_on_corrupt_artifact(monkeypatch, tmp_path):
+    """ffmpeg can exit 0 yet leave an artifact with no parseable duration
+    (`N/A` stdout). float() of that must become RenderError, not a crash."""
+
+    class _Result:
+        returncode = 0
+        stderr = ""
+        stdout = "N/A\n"
+
+    monkeypatch.setattr(editor_render.subprocess, "run", lambda *a, **k: _Result())
+    with pytest.raises(editor_render.RenderError) as excinfo:
+        editor_render._probe_duration("ffprobe", tmp_path / "out.mp4")
+    assert "unprobeable" in str(excinfo.value)
+
+
+def test_probe_duration_raises_render_error_on_empty_stdout(monkeypatch, tmp_path):
+    """Empty ffprobe stdout (truncated / zero-byte output) -> RenderError."""
+
+    class _Result:
+        returncode = 0
+        stderr = ""
+        stdout = ""
+
+    monkeypatch.setattr(editor_render.subprocess, "run", lambda *a, **k: _Result())
+    with pytest.raises(editor_render.RenderError):
+        editor_render._probe_duration("ffprobe", tmp_path / "out.mp4")
+
+
+def test_probe_duration_propagates_ffprobe_failure(monkeypatch, tmp_path):
+    """Non-zero ffprobe exit (unreadable file) reports its stderr as RenderError."""
+
+    class _Result:
+        returncode = 1
+        stderr = "moov atom not found"
+        stdout = ""
+
+    monkeypatch.setattr(editor_render.subprocess, "run", lambda *a, **k: _Result())
+    with pytest.raises(editor_render.RenderError) as excinfo:
+        editor_render._probe_duration("ffprobe", tmp_path / "out.mp4")
+    assert "moov atom" in str(excinfo.value)
+
+
+def test_full_render_surfaces_timeout_as_render_error(monkeypatch, tmp_path):
+    """End-to-end: a timeout deep in _run during FFmpegLayeredRenderer.render
+    propagates out as RenderError (the renderer never leaks TimeoutExpired)."""
+    renderer = editor_render.FFmpegLayeredRenderer(tmp_path / "renders")
+    img = _solid_png(tmp_path / "a.png", "red")
+    project = _project_with_card("timeout", img)
+
+    def _timeout(*args, **kwargs):
+        raise subprocess.TimeoutExpired(cmd="ffmpeg", timeout=60)
+
+    monkeypatch.setattr(editor_render.subprocess, "run", _timeout)
+    with pytest.raises(editor_render.RenderError) as excinfo:
+        renderer.render(project, output_path=tmp_path / "out.mp4")
+    assert "timed out" in str(excinfo.value)

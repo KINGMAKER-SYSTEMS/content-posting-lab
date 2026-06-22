@@ -1207,6 +1207,40 @@ def test_effect_json_maps_classes_and_falls_through_for_unknown_types():
     assert unknown == {"id": "u", "type": "kaleidoscope"}
 
 
+def test_effect_json_tolerates_malformed_param_values():
+    """Poisoned/malformed effect params (corrupted project files, malicious JSON)
+    must not raise ValueError/TypeError out of effect_json and abort the whole
+    render. Non-numeric param values fall back to the neutral 0.0 default — the
+    same value a missing param already produces — so the bad effect degrades
+    quietly instead of taking the episode down with it."""
+    # string that float() can't parse
+    bright = openshot_bridge.effect_json(
+        {"id": "b", "type": "brightness", "params": {"value": "not-a-number"}}, fps=30
+    )
+    assert bright["type"] == "Brightness"
+    assert bright["brightness"]["Points"][0]["co"]["Y"] == 0.0
+
+    # wrong type entirely (list) on a fade duration
+    fade = openshot_bridge.effect_json(
+        {"id": "f", "type": "fadeIn", "params": {"duration": ["bogus"]}}, fps=30
+    )
+    assert fade["fade"] == "in"
+    assert fade["duration"]["Points"][0]["co"]["Y"] == 0.0
+
+    # dict value on saturation
+    sat = openshot_bridge.effect_json(
+        {"id": "s", "type": "saturation", "params": {"value": {"x": 1}}}, fps=30
+    )
+    assert sat["type"] == "Saturation"
+    assert sat["saturation"]["Points"][0]["co"]["Y"] == 0.0
+
+    # a numeric string still parses correctly (regression: don't over-clamp)
+    ok = openshot_bridge.effect_json(
+        {"id": "ok", "type": "brightness", "params": {"value": "0.5"}}, fps=30
+    )
+    assert ok["brightness"]["Points"][0]["co"]["Y"] == 0.5
+
+
 def test_every_editor_effect_type_translates_to_a_real_openshot_class():
     """Drift guard: every effect type the editor accepts (editor_timeline.EFFECT_TYPES)
     MUST have a libopenshot class mapping in openshot_bridge — otherwise effect_json
