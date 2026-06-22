@@ -467,6 +467,83 @@ def test_abn_dict_musicBed_keyframes_promote_through_the_import_seam(tmp_path):
     assert [round(p["co"]["Y"], 2) for p in clip["volume"]["Points"]] == [50.0, 22.0]
 
 
+def test_abn_shot_ducking_envelope_reaches_openshot_via_bridge(tmp_path):
+    """A factory-attached shot ducking envelope (duckingKeyframes / keyframesEnvelope)
+    must survive the IMPORT path and reach OpenShot through the bridge — not just the
+    ffmpeg fallback. The music-bed seam is covered, but a SHOT's separate-field
+    envelope had no bridge coverage: a regression in _shot_keyframes would silently
+    flatten the ducking and only surface as a wrong-sounding OpenShot render."""
+    for field in ("duckingKeyframes", "keyframesEnvelope"):
+        timeline = _abn_timeline()
+        timeline["segments"][0]["shots"][0][field] = [
+            {
+                "property": "volume",
+                "points": [
+                    {"t": 0.0, "value": 0.7, "interp": "linear"},
+                    {"t": 1.0, "value": 0.22, "interp": "constant"},
+                ],
+            }
+        ]
+        project = editor_timeline.project_from_abn_timeline(
+            "proj_shot_duck", timeline, source_episode_id="ep_seam"
+        )
+        broll = next(c for c in project["clips"].values() if c["kind"] == "broll")
+        assert broll.get("keyframes"), f"import dropped shot {field} onto the floor"
+
+        exported = openshot_bridge.timeline_json(project, asset_root=tmp_path)
+        by_id = {c["id"]: c for c in exported["clips"]}
+        points = by_id[broll["id"]]["volume"]["Points"]
+        # two-Point envelope (0.7 -> 0.22), scaled 0..1 -> 0..100, not the flat default
+        assert [round(p["co"]["Y"], 2) for p in points] == [70.0, 22.0], field
+        assert points[1]["interpolation"] == openshot_bridge.CONSTANT, field
+
+
+def test_abn_shot_explicit_keyframes_beat_envelope_through_openshot_bridge(tmp_path):
+    """When the SAME shot ships both an explicit `keyframes` track AND a separate
+    `duckingKeyframes` envelope for the same property, the explicit track wins (the
+    documented _shot_keyframes precedence) — and that precedence must hold all the way
+    through to the OpenShot clip JSON, while an envelope-only property still passes."""
+    timeline = _abn_timeline()
+    timeline["segments"][0]["shots"][0]["keyframes"] = [
+        {
+            "property": "volume",
+            "points": [
+                {"t": 0.0, "value": 0.9, "interp": "linear"},
+                {"t": 1.0, "value": 0.5, "interp": "linear"},
+            ],
+        }
+    ]
+    timeline["segments"][0]["shots"][0]["duckingKeyframes"] = [
+        {
+            "property": "volume",
+            "points": [
+                {"t": 0.0, "value": 1.0, "interp": "linear"},
+                {"t": 1.0, "value": 0.22, "interp": "linear"},
+            ],
+        },
+        {
+            "property": "opacity",
+            "points": [
+                {"t": 0.0, "value": 1.0, "interp": "linear"},
+                {"t": 1.0, "value": 0.0, "interp": "linear"},
+            ],
+        },
+    ]
+    project = editor_timeline.project_from_abn_timeline(
+        "proj_shot_prio", timeline, source_episode_id="ep_seam"
+    )
+    broll = next(c for c in project["clips"].values() if c["kind"] == "broll")
+
+    exported = openshot_bridge.timeline_json(project, asset_root=tmp_path)
+    by_id = {c["id"]: c for c in exported["clips"]}
+    clip = by_id[broll["id"]]
+
+    # explicit volume (0.9 -> 0.5 => 90.0/50.0) wins over the envelope's 1.0 -> 0.22
+    assert [round(p["co"]["Y"], 2) for p in clip["volume"]["Points"]] == [90.0, 50.0]
+    # envelope-only opacity still reaches OpenShot as an animated alpha track
+    assert [round(p["co"]["Y"], 2) for p in clip["alpha"]["Points"]] == [1.0, 0.0]
+
+
 def test_command_log_exports_openshot_apply_json_diff(tmp_path):
     project = _project(tmp_path / "card.png")
     command = {
