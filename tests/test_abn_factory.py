@@ -3483,6 +3483,80 @@ def test_render_remotion_succeeds_when_both_passes_ok(monkeypatch, tmp_path):
     assert url
 
 
+def test_render_remotion_rejects_normalize_exit0_but_no_output_file(monkeypatch, tmp_path):
+    """ATOMIC gate, the OTHER half. The normalize gate is `if nc == 0 and norm.exists()` —
+    ffmpeg can exit 0 yet write no file (e.g. killed after open, full disk, filter emits nothing).
+    The exit-0-but-no-output branch must take the FATAL `else` and RAISE, never replace `out` with a
+    missing file or fall through shipping the un-normalized yuvj420p render."""
+    monkeypatch.setattr(abn_factory, "ASSETS", tmp_path)
+    monkeypatch.setattr(abn_assets, "ASSETS_DIR", tmp_path)
+    _stub_remotion_dir(monkeypatch, tmp_path)
+
+    out = abn_assets.asset_path("ep_a0a0a0a0", "episode")
+
+    async def fake_sh(cmd, timeout=600):
+        if "remotion render" in cmd:
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_bytes(b"\x00raw")          # remotion succeeds
+            return 0, "ok"
+        if "loudnorm=I=-14" in cmd and "sidechaincompress" not in cmd:
+            return 0, "ok"                       # normalize EXITS 0 but writes NO intermediate file
+        return 0, "ok"
+
+    async def fake_dur(path):
+        return 640.0
+    monkeypatch.setattr(abn_factory, "_sh", fake_sh)
+    monkeypatch.setattr(abn_factory, "_dur", fake_dur)
+    seen_before = {e["id"] for e in abn_factory.BUS.replay()}
+
+    with pytest.raises(RuntimeError, match="normalize pass failed"):
+        asyncio.run(abn_factory._render_remotion("ep_a0a0a0a0", {"musicBed": None}, force=True))
+
+    new_events = [e for e in abn_factory.BUS.replay() if e["id"] not in seen_before]
+    assert any(e["action"] == "error" and "normalize pass failed (FATAL)" in e["detail"]
+               for e in new_events), "exit-0-no-output normalize must emit a FATAL error event"
+
+
+def test_render_remotion_rejects_duck_exit0_but_no_output_file(monkeypatch, tmp_path):
+    """ATOMIC gate, the OTHER half for the duck pass. The duck gate is `if dc == 0 and ducked.exists()`.
+    If the duck ffmpeg exits 0 but produces no file, the episode is un-ducked AND (since the duck pass
+    owns the final yuv420p re-encode) risks shipping the yuvj420p that broke ep_d640a3eb. The
+    exit-0-but-no-output branch must hit the FATAL `else` and RAISE, never silently ship."""
+    monkeypatch.setattr(abn_factory, "ASSETS", tmp_path)
+    monkeypatch.setattr(abn_assets, "ASSETS_DIR", tmp_path)
+    _stub_remotion_dir(monkeypatch, tmp_path)
+
+    bed = tmp_path / "bed.mp3"
+    bed.write_bytes(b"\x00")
+    out = abn_assets.asset_path("ep_b0b0b0b0", "episode")
+
+    async def fake_sh(cmd, timeout=600):
+        if "remotion render" in cmd:
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_bytes(b"\x00raw")
+            return 0, "ok"
+        if "loudnorm=I=-14" in cmd and "sidechaincompress" not in cmd:   # normalize: succeeds normally
+            Path(shlex.split(cmd)[-2]).write_bytes(b"\x00")
+            return 0, "ok"
+        if "sidechaincompress" in cmd:                                   # duck: exit 0 but NO file
+            return 0, "ok"
+        return 0, "ok"
+
+    async def fake_dur(path):
+        return 640.0
+    monkeypatch.setattr(abn_factory, "_sh", fake_sh)
+    monkeypatch.setattr(abn_factory, "_dur", fake_dur)
+    seen_before = {e["id"] for e in abn_factory.BUS.replay()}
+
+    timeline = {"musicBed": bed.name, "segments": []}
+    with pytest.raises(RuntimeError, match="duck pass failed"):
+        asyncio.run(abn_factory._render_remotion("ep_b0b0b0b0", timeline, force=True))
+
+    new_events = [e for e in abn_factory.BUS.replay() if e["id"] not in seen_before]
+    assert any(e["action"] == "error" and "duck pass failed (FATAL)" in e["detail"]
+               for e in new_events), "exit-0-no-output duck must emit a FATAL error event"
+
+
 def test_render_remotion_drops_traversal_music_bed_outside_store(monkeypatch, tmp_path):
     """A corrupted/traversal musicBed value must NOT read a file outside the asset store. The
     bed read goes through the _resolve_asset gateway + a containment check; an escaping path is
