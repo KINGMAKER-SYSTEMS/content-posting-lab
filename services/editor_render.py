@@ -354,11 +354,25 @@ class OpenShotSubprocessRenderer:
             "outputDir": str(self.output_dir),
             "assetRoot": str(self.asset_root) if self.asset_root else None,
         }
+        # The whole project (keyframe envelopes included) crosses the subprocess
+        # boundary as JSON. A non-finite keyframe value (NaN/Infinity) would
+        # serialize to a bare `NaN`/`Infinity` token that the child's lenient
+        # json.loads silently accepts, then OpenShot flattens the volume/ducking
+        # envelope to garbage and the child exits 0 -- a corrupt-audio render the
+        # parent never hears about. `allow_nan=False` makes that round-trip fail
+        # loudly *here*, before we spawn, instead of shipping a broken duck.
+        try:
+            child_json = json.dumps(child_payload, allow_nan=False)
+        except ValueError as exc:
+            raise RenderError(
+                f"refusing to render: project has non-finite keyframe/value "
+                f"that would corrupt the subprocess JSON ({exc})"
+            ) from exc
         env = os.environ.copy()
         env["EDITOR_RENDER_CHILD"] = "1"
         completed = subprocess.run(
             [sys.executable, "-c", _OPENSHOT_CHILD_CODE],
-            input=json.dumps(child_payload),
+            input=child_json,
             capture_output=True,
             text=True,
             check=False,

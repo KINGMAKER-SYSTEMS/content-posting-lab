@@ -2143,6 +2143,90 @@ def test_openshot_subprocess_raises_render_error_when_child_fails_without_artifa
     assert "libopenshot aborted" in str(excinfo.value)
 
 
+def test_openshot_subprocess_rejects_nonfinite_volume_keyframe_before_spawn(monkeypatch, tmp_path):
+    """editor_render.OpenShotSubprocessRenderer._run_child — a non-finite
+    (NaN/Infinity) volume/ducking keyframe value must fail the JSON round-trip
+    LOUDLY in the parent before the child is spawned. Otherwise json.dumps emits
+    a bare `NaN`/`Infinity` token, the child's lenient json.loads swallows it,
+    OpenShot flattens the ducking envelope to garbage, and the child exits 0 — a
+    corrupt-audio render the parent never detects. We assert (1) it raises, and
+    (2) subprocess.run is NEVER reached (no silent-success window)."""
+
+    spawned = {"called": False}
+
+    def _boom_if_spawned(*_a, **_k):
+        spawned["called"] = True
+        raise AssertionError("subprocess.run must not be called for a corrupt payload")
+
+    monkeypatch.setattr(editor_render.subprocess, "run", _boom_if_spawned)
+
+    project = {
+        "projectId": "p",
+        "clips": {
+            "music": {
+                "id": "music",
+                "assetId": "bed",
+                "volume": 1.0,
+                # A ducking envelope corrupted to a non-finite gain.
+                "keyframes": [
+                    {"property": "volume", "points": [
+                        {"t": 0.0, "value": 1.0},
+                        {"t": 2.0, "value": float("inf")},
+                    ]},
+                ],
+            },
+        },
+    }
+
+    renderer = editor_render.OpenShotSubprocessRenderer(tmp_path / "renders")
+    with pytest.raises(editor_render.RenderError) as excinfo:
+        renderer.render(project, output_path=tmp_path / "renders" / "duck.mp4", start=0, duration=3)
+    assert "non-finite" in str(excinfo.value)
+    assert spawned["called"] is False
+
+
+def test_openshot_subprocess_allows_finite_volume_keyframe_round_trip(monkeypatch, tmp_path):
+    """The guard is precise: a well-formed (finite) volume/ducking envelope must
+    pass cleanly through the JSON boundary and reach the child unchanged."""
+
+    captured = {}
+
+    class _Completed:
+        returncode = 0
+        stdout = json.dumps({"video": "ok.mp4", "warnings": []})
+        stderr = ""
+
+    def _capture(*_a, **kwargs):
+        captured["input"] = kwargs.get("input")
+        return _Completed()
+
+    monkeypatch.setattr(editor_render.subprocess, "run", _capture)
+
+    project = {
+        "projectId": "p",
+        "clips": {
+            "music": {
+                "id": "music", "assetId": "bed", "volume": 1.0,
+                "keyframes": [
+                    {"property": "volume", "points": [
+                        {"t": 0.0, "value": 1.0},
+                        {"t": 2.0, "value": 0.2},  # duck under VO
+                        {"t": 4.0, "value": 1.0},
+                    ]},
+                ],
+            },
+        },
+    }
+
+    renderer = editor_render.OpenShotSubprocessRenderer(tmp_path / "renders")
+    result = renderer.render(project, output_path=tmp_path / "renders" / "duck.mp4", start=0, duration=5)
+    assert result["video"] == "ok.mp4"
+    # The exact ducking envelope must survive the serialization the child reads.
+    sent = json.loads(captured["input"])
+    pts = sent["project"]["clips"]["music"]["keyframes"][0]["points"]
+    assert [p["value"] for p in pts] == [1.0, 0.2, 1.0]
+
+
 def test_openshot_subprocess_raises_render_error_when_child_emits_no_result(monkeypatch, tmp_path):
     """editor_render.OpenShotSubprocessRenderer._run_child:248-249 — a clean exit
     (returncode 0) whose stdout carries no parseable JSON render result is a
