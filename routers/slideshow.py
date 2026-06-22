@@ -29,7 +29,7 @@ from project_manager import (
 from services import sound_cache
 from services.captions import scan_project_captions
 from services.cropper import crop_to_916
-from services.fsutil import safe_rmtree
+from services.fsutil import safe_rmtree, safe_unlink
 from services.json_store import atomic_save
 
 router = APIRouter(tags=["slideshow"])
@@ -77,15 +77,15 @@ async def upload_images(
 
         try:
             crop_to_916(raw_path, cropped_path)
-            raw_path.unlink(missing_ok=True)
+            safe_unlink(raw_path)
             saved += 1
             results.append({
                 "name": safe_name,
                 "original_name": f.filename,
             })
         except Exception as e:
-            raw_path.unlink(missing_ok=True)
-            cropped_path.unlink(missing_ok=True)
+            safe_unlink(raw_path)
+            safe_unlink(cropped_path)
             results.append({
                 "name": None,
                 "original_name": f.filename,
