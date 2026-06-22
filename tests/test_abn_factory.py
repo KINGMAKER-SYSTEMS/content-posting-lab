@@ -2524,3 +2524,122 @@ def test_adhoc_scratch_path_lands_valid_name_under_scratch(monkeypatch, tmp_path
     # leading dot on ext is normalized; empty ext yields a bare name
     assert abn_assets.adhoc_scratch_path("card", ".png") == tmp_path / "_scratch" / "card.png"
     assert abn_assets.adhoc_scratch_path("clip", "") == tmp_path / "_scratch" / "clip"
+
+
+# ---------------- GC PROTECTION SCAN: complete vs incomplete (the fail-safe that guards live renders) ----------------
+#
+# _editor_timeline_asset_paths_checked() returns (paths, complete). A swallowed IO/parse error during
+# the protection scan MUST surface as complete=False, because the destructive low-disk render trim is
+# gated on `protection_complete and fresh_complete`: an incomplete scan means we may not know every
+# render an active Editor Bay timeline references, so the trim must be skipped (disk pressure is
+# recoverable; tombstoning a live render an editor is mid-edit on is not). These pin that contract and
+# the cascade so a regression that flips an error into a silent complete=True can't ship.
+
+def _write_timeline(assets: Path, name: str, payload) -> Path:
+    d = assets / "editor_timelines"
+    d.mkdir(parents=True, exist_ok=True)
+    p = d / name
+    p.write_text(payload if isinstance(payload, str) else json.dumps(payload))
+    return p
+
+
+def test_protection_scan_complete_when_no_timeline_dir(monkeypatch, tmp_path):
+    """No editor_timelines dir at all → nothing to protect, and that is a COMPLETE answer (the trim
+    is free to run; we are sure nothing is referenced)."""
+    monkeypatch.setattr(abn_factory, "ASSETS", tmp_path)
+    paths, complete = abn_factory._editor_timeline_asset_paths_checked()
+    assert paths == set()
+    assert complete is True
+
+
+def test_protection_scan_complete_collects_referenced_renders(monkeypatch, tmp_path):
+    """A well-formed timeline → complete=True and the referenced render path is protected (query
+    string / fragment cache-busters stripped to the real on-disk path)."""
+    monkeypatch.setattr(abn_factory, "ASSETS", tmp_path)
+    _write_timeline(tmp_path, "t.json", {
+        "clips": [{"url": "/agenticnews-assets/ep5/episode.mp4?rev=3"}],
+    })
+    paths, complete = abn_factory._editor_timeline_asset_paths_checked()
+    assert complete is True
+    assert abn_factory._normalize_asset_path(tmp_path / "ep5" / "episode.mp4") in paths
+
+
+def test_protection_scan_incomplete_on_unparseable_timeline(monkeypatch, tmp_path):
+    """A timeline JSON we can't parse → complete=False. The scan does NOT abort: a sibling valid
+    timeline is still collected, but the unknown one forces the fail-safe (complete=False)."""
+    monkeypatch.setattr(abn_factory, "ASSETS", tmp_path)
+    _write_timeline(tmp_path, "good.json", {"url": "/agenticnews-assets/ep1/keep.mp4"})
+    _write_timeline(tmp_path, "broken.json", "{ this is not valid json :::")
+    paths, complete = abn_factory._editor_timeline_asset_paths_checked()
+    assert complete is False, "an unparseable timeline must mark the scan incomplete"
+    # the parse failure must NOT abort the scan — the good timeline's render is still protected
+    assert abn_factory._normalize_asset_path(tmp_path / "ep1" / "keep.mp4") in paths
+
+
+def test_protection_scan_incomplete_on_unreadable_timeline(monkeypatch, tmp_path):
+    """A timeline file we can't READ (permission denied / IO error) → complete=False, scan continues."""
+    monkeypatch.setattr(abn_factory, "ASSETS", tmp_path)
+    p = _write_timeline(tmp_path, "locked.json", {"url": "/agenticnews-assets/ep2/x.mp4"})
+
+    orig_read_text = Path.read_text
+
+    def boom_read_text(self, *a, **k):
+        if self == p:
+            raise PermissionError("permission denied")
+        return orig_read_text(self, *a, **k)
+
+    monkeypatch.setattr(Path, "read_text", boom_read_text)
+    paths, complete = abn_factory._editor_timeline_asset_paths_checked()
+    assert complete is False
+
+
+def test_protection_scan_incomplete_on_glob_io_error(monkeypatch, tmp_path):
+    """If globbing the timeline dir itself errors (symlink loop / permission denied) we genuinely
+    don't know what's referenced → complete=False and an empty set (NOT a complete empty answer)."""
+    monkeypatch.setattr(abn_factory, "ASSETS", tmp_path)
+    _write_timeline(tmp_path, "t.json", {"url": "/agenticnews-assets/ep3/y.mp4"})
+
+    orig_glob = Path.glob
+
+    def boom_glob(self, pattern, *a, **k):
+        if self.name == "editor_timelines":
+            raise OSError("simulated symlink loop / EIO")
+        return orig_glob(self, pattern, *a, **k)
+
+    monkeypatch.setattr(Path, "glob", boom_glob)
+    paths, complete = abn_factory._editor_timeline_asset_paths_checked()
+    assert complete is False
+    assert paths == set()
+
+
+def test_purge_disk_skips_render_trim_when_protection_scan_incomplete(monkeypatch, tmp_path):
+    """THE CASCADE: _editor_timeline_asset_paths_checked() complete=False → purge_disk must NOT
+    enter the destructive render-trim branch (it must never enumerate old renders to tombstone),
+    even under simulated low disk. A regression here destroys live editor renders during a disk
+    crisis."""
+    monkeypatch.setattr(abn_factory, "ASSETS", tmp_path)
+    # force the protection scan to report incomplete
+    monkeypatch.setattr(abn_factory, "_editor_timeline_asset_paths_checked",
+                        lambda: (set(), False))
+    # nothing reapable in scratch — isolate the render-trim decision
+    monkeypatch.setattr(abn_factory, "reapable_scratch", lambda: [])
+
+    # simulate a critical low-disk condition so the trim branch WOULD run if not for the fail-safe
+    class _DU:
+        free = 0.0  # 0 bytes free → well under any low_disk_gb threshold
+
+    import shutil
+    monkeypatch.setattr(shutil, "disk_usage", lambda *_a, **_k: _DU())
+
+    trim_calls = []
+    monkeypatch.setattr(abn_factory, "_old_episode_renders",
+                        lambda: trim_calls.append("enumerated") or [])
+    monkeypatch.setattr(abn_factory, "tombstone_render",
+                        lambda *a, **k: pytest.fail("tombstone_render must not run on incomplete scan"))
+
+    abn_factory.purge_disk()
+
+    assert trim_calls == [], (
+        "incomplete protection scan must short-circuit BEFORE the render-trim branch — "
+        "_old_episode_renders() must never be enumerated"
+    )
