@@ -1923,3 +1923,165 @@ def test_clip_effect_crud_survives_replay(tmp_path):
     rebuilt = replayed["clips"]["card_clip"]["effects"]
     assert [e["id"] for e in rebuilt] == [e["id"] for e in live] == ["fx_in"]
     assert rebuilt[0]["params"]["duration"] == 0.9
+
+
+# ---------------------------------------------------------------------------
+# Direct unit coverage for the internal helpers. These pure functions are the
+# building blocks every public exporter composes; they were only ever exercised
+# transitively through timeline_json/clip_json. Pinning each one directly means a
+# refactor that changes a helper's contract (e.g. _location's centering math, the
+# _openshot_volume 0..1 -> 0..100 scale, _ordered_enabled_clips' sort key) fails
+# a small obvious test instead of surfacing as a wrong render frames later.
+# ---------------------------------------------------------------------------
+
+
+def test_safe_float_coerces_and_tolerates_garbage():
+    assert openshot_bridge._safe_float(1.5) == 1.5
+    assert openshot_bridge._safe_float("2.5") == 2.5
+    assert openshot_bridge._safe_float(0) == 0.0
+    # Falsy / missing -> neutral 0.0 (same default a missing param produces).
+    assert openshot_bridge._safe_float(None) == 0.0
+    assert openshot_bridge._safe_float("") == 0.0
+    # Poisoned values must not raise — they fall back to 0.0 so a corrupt project
+    # file can't abort the whole render.
+    assert openshot_bridge._safe_float("not-a-number") == 0.0
+    assert openshot_bridge._safe_float([1, 2]) == 0.0
+    assert openshot_bridge._safe_float({"a": 1}) == 0.0
+
+
+def test_openshot_volume_scales_editor_zero_to_one_into_percent():
+    assert openshot_bridge._openshot_volume(0.0) == 0.0
+    assert openshot_bridge._openshot_volume(0.22) == 22.0
+    assert openshot_bridge._openshot_volume(1.0) == 100.0
+    # Negative editor volume clamps to silence, never a negative gain.
+    assert openshot_bridge._openshot_volume(-0.5) == 0.0
+
+
+def test_location_centers_zero_to_one_into_negative_one_to_one():
+    # 0.5 (canvas center) -> 0.0; edges map to -1 / +1; out-of-range clamps.
+    assert openshot_bridge._location(0.5) == 0.0
+    assert openshot_bridge._location(0.0) == -1.0
+    assert openshot_bridge._location(1.0) == 1.0
+    assert openshot_bridge._location(0.25) == -0.5
+    assert openshot_bridge._location(-5.0) == -1.0
+    assert openshot_bridge._location(5.0) == 1.0
+
+
+def test_keyframe_wraps_value_in_single_constant_point():
+    kf = openshot_bridge._keyframe(0.42)
+    assert kf == {
+        "Points": [{"co": {"X": 1.0, "Y": 0.42}, "interpolation": openshot_bridge.CONSTANT}]
+    }
+    # Ints pass through untouched (used for has_audio/has_video flags).
+    assert openshot_bridge._keyframe(1)["Points"][0]["co"]["Y"] == 1
+
+
+def test_color_keyframe_builds_per_channel_constant_keyframes():
+    ck = openshot_bridge._color_keyframe(0, 123, 255, 200)
+    assert set(ck) == {"red", "green", "blue", "alpha"}
+    assert ck["red"]["Points"][0]["co"]["Y"] == 0
+    assert ck["green"]["Points"][0]["co"]["Y"] == 123
+    assert ck["blue"]["Points"][0]["co"]["Y"] == 255
+    assert ck["alpha"]["Points"][0]["co"]["Y"] == 200
+    # Each channel is itself a _keyframe (single CONSTANT point).
+    assert ck["blue"]["Points"][0]["interpolation"] == openshot_bridge.CONSTANT
+
+
+def test_update_action_assembles_the_apply_json_diff_shape():
+    action = openshot_bridge._update_action(
+        "insert",
+        ["clips"],
+        {"id": "c1"},
+        old_values=None,
+        transaction="tx1",
+    )
+    assert action == {
+        "type": "insert",
+        "key": ["clips"],
+        "value": {"id": "c1"},
+        "old_values": None,
+        "transaction": "tx1",
+    }
+
+
+def test_layer_number_reads_track_index_with_zero_fallback():
+    project = {"tracks": {"t_video": {"index": 10}, "t_music": {"index": 50}}}
+    assert openshot_bridge._layer_number(project, "t_video") == 10
+    assert openshot_bridge._layer_number(project, "t_music") == 50
+    # Unknown track id -> layer 0, never a KeyError.
+    assert openshot_bridge._layer_number(project, "missing") == 0
+    assert openshot_bridge._layer_number({}, "anything") == 0
+
+
+def test_asset_type_prefers_production_source_then_falls_back_to_raw_type():
+    # A production `source` wins and maps through SOURCE_TYPES to its media kind.
+    assert openshot_bridge._asset_type({"source": "remotion", "type": "image"}) == "video"
+    assert openshot_bridge._asset_type({"source": "vo"}) == "audio"
+    assert openshot_bridge._asset_type({"source": "still"}) == "image"
+    # No source -> raw libopenshot `type` is used directly.
+    assert openshot_bridge._asset_type({"type": "audio"}) == "audio"
+    # Neither present -> empty string (DummyReader territory upstream).
+    assert openshot_bridge._asset_type({}) == ""
+
+
+def test_ordered_enabled_clips_drops_disabled_and_sorts_by_layer_then_start():
+    project = {
+        "tracks": {"top": {"index": 50}, "bottom": {"index": 10}},
+        "clips": {
+            "a": {"id": "a", "trackId": "top", "start": 0.0, "enabled": True},
+            "b": {"id": "b", "trackId": "bottom", "start": 5.0, "enabled": True},
+            "c": {"id": "c", "trackId": "bottom", "start": 1.0, "enabled": True},
+            "d": {"id": "d", "trackId": "top", "start": 0.0, "enabled": False},
+        },
+    }
+    ordered = openshot_bridge._ordered_enabled_clips(project)
+    # Disabled "d" dropped; sort key is (track index, start, id):
+    # bottom(10): c@1.0, b@5.0 ; then top(50): a@0.0
+    assert [c["id"] for c in ordered] == ["c", "b", "a"]
+    # Result is a deep copy — mutating it must not touch the source project.
+    ordered[0]["start"] = 999.0
+    assert project["clips"]["c"]["start"] == 1.0
+
+
+def test_ordered_enabled_clips_treats_missing_enabled_as_enabled():
+    project = {"tracks": {}, "clips": {"x": {"id": "x", "trackId": "t", "start": 0.0}}}
+    assert [c["id"] for c in openshot_bridge._ordered_enabled_clips(project)] == ["x"]
+
+
+def test_project_duration_is_max_end_of_enabled_clips_with_floor():
+    project = {
+        "tracks": {},
+        "clips": {
+            "a": {"id": "a", "trackId": "t", "start": 1.0, "duration": 2.0, "enabled": True},
+            "b": {"id": "b", "trackId": "t", "start": 0.0, "duration": 5.0, "enabled": True},
+            "tail": {"id": "tail", "trackId": "t", "start": 100.0, "duration": 9.0, "enabled": False},
+        },
+    }
+    # max(start+duration) over ENABLED clips = max(3.0, 5.0) — disabled tail ignored.
+    assert openshot_bridge._project_duration(project) == 5.0
+    # No clips -> 1.0 sentinel (a renderable, non-zero timeline).
+    assert openshot_bridge._project_duration({"clips": {}, "tracks": {}}) == 1.0
+
+
+def test_keyframe_overrides_empty_or_unknown_property_yields_nothing():
+    assert openshot_bridge._keyframe_overrides(None, fps=30) == {}
+    assert openshot_bridge._keyframe_overrides([], fps=30) == {}
+    # Unknown property is skipped, not mapped to a phantom key.
+    bogus = [{"property": "wobble", "points": [{"t": 0.0, "value": 1.0}]}]
+    assert openshot_bridge._keyframe_overrides(bogus, fps=30) == {}
+    # A track with no points contributes nothing.
+    empty = [{"property": "volume", "points": []}]
+    assert openshot_bridge._keyframe_overrides(empty, fps=30) == {}
+
+
+def test_keyframe_overrides_maps_property_to_keys_with_frame_and_value_transform():
+    kf = [{"property": "scale", "points": [{"t": 0.0, "value": 1.0}, {"t": 1.0, "value": 2.0}]}]
+    out = openshot_bridge._keyframe_overrides(kf, fps=30, source_start=0.0)
+    # scale animates BOTH axes from one editor track; frame X = (source_start+t)*fps+1.
+    assert set(out) == {"scale_x", "scale_y"}
+    assert [p["co"]["X"] for p in out["scale_x"]["Points"]] == [1.0, 31.0]
+    assert [p["co"]["Y"] for p in out["scale_x"]["Points"]] == [1.0, 2.0]
+    assert out["scale_y"] == out["scale_x"]
+    # source_start offsets every keyframe X by source_start*fps (trimmed clips).
+    trimmed = openshot_bridge._keyframe_overrides(kf, fps=30, source_start=2.0)
+    assert [p["co"]["X"] for p in trimmed["scale_x"]["Points"]] == [61.0, 91.0]
