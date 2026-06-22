@@ -1310,11 +1310,7 @@ async def _real_demo(repo_url: str, name: str):
         return None
     finally:
         safe_rmtree(workdir)
-        try:
-            if tape.exists():
-                tape.unlink()
-        except Exception:
-            pass
+        safe_unlink(tape)
 
 
 # ---------------- TITLE CARD ----------------

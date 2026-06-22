@@ -61,6 +61,22 @@ def test_abn_factory_uses_safe_unlink_in_screenshot():
     assert src.count("safe_unlink(out)") == 2
 
 
+def test_abn_factory_uses_safe_unlink_in_real_demo():
+    """Regression: abn_factory._real_demo's finally block must clean up its VHS
+    tape file via the shared helper, not the bare ``try: tape.unlink() /
+    except Exception: pass`` cleanup block that safe_unlink replaces (so a
+    locked/missing tape is logged-consistent, not silently swallowed)."""
+    import inspect
+
+    import services.abn_factory as af
+
+    src = inspect.getsource(af._real_demo)
+    # The bare tape unlink pattern is gone...
+    assert "tape.unlink()" not in src
+    # ...replaced by the shared helper.
+    assert "safe_unlink(tape)" in src
+
+
 def test_video_download_handlers_use_safe_unlink():
     """Regression: the zip-download handlers in routers.video must clean up
     their temp .zip via safe_unlink, not a bare os.unlink that crashes the
