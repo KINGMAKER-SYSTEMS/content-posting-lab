@@ -251,6 +251,38 @@ def test_parse_init_data_no_bot_token_503():
     assert ei.value.status_code == 503
 
 
+def test_parse_init_data_no_auth_date_skips_expiry(monkeypatch):
+    # Documented behavior: the expiry check only fires when auth_date is present
+    # and non-zero. Validly signed initData with NO auth_date is accepted even
+    # with a max-age set. Pin this so a future change can't silently flip it.
+    monkeypatch.setenv("MINIAPP_INITDATA_MAX_AGE", "60")
+    fields = {"user": json.dumps({"id": 1}, separators=(",", ":"))}
+    dcs = "\n".join(f"{k}={fields[k]}" for k in sorted(fields))
+    secret = hmac.new(b"WebAppData", FAKE_TOKEN.encode(), hashlib.sha256).digest()
+    fields["hash"] = hmac.new(secret, dcs.encode(), hashlib.sha256).hexdigest()
+    parsed = parse_init_data(urlencode(fields), bot_token=FAKE_TOKEN)
+    assert parsed["user"]["id"] == 1
+
+
+def test_parse_init_data_max_age_zero_disables_expiry(monkeypatch):
+    # MINIAPP_INITDATA_MAX_AGE=0 disables the expiry check (documented). A very
+    # old but validly signed initData must still be accepted.
+    monkeypatch.setenv("MINIAPP_INITDATA_MAX_AGE", "0")
+    old = int(time.time()) - 10_000_000
+    init_data = _build_init_data(FAKE_TOKEN, {"id": 1}, auth_date=old)
+    parsed = parse_init_data(init_data, bot_token=FAKE_TOKEN)
+    assert parsed["user"]["id"] == 1
+
+
+def test_parse_init_data_garbage_max_age_falls_back(monkeypatch):
+    # A non-integer MINIAPP_INITDATA_MAX_AGE must fall back to the 86400 default
+    # (not crash), so a fresh initData still validates.
+    monkeypatch.setenv("MINIAPP_INITDATA_MAX_AGE", "not-a-number")
+    init_data = _build_init_data(FAKE_TOKEN, {"id": 1})
+    parsed = parse_init_data(init_data, bot_token=FAKE_TOKEN)
+    assert parsed["user"]["id"] == 1
+
+
 def test_parse_init_data_bad_user_json_nulls_user():
     # Valid signature but `user` is not JSON → parsed user becomes None.
     fields = {"auth_date": str(int(time.time())), "user": "not-json"}
@@ -321,6 +353,17 @@ def test_agent_wrong_key_rejected(sync_client, monkeypatch):
     _seed_poster_with_page()
     resp = sync_client.get(
         "/api/miniapp/agent/requests", headers={"X-Agent-Key": "wrong"}
+    )
+    assert resp.status_code == 401
+
+
+def test_agent_blank_key_rejected(sync_client, monkeypatch):
+    # An empty/whitespace X-Agent-Key must be treated as missing, not as a
+    # match against a configured key.
+    monkeypatch.setenv("MINIAPP_AGENT_KEY", "s3cret")
+    _seed_poster_with_page()
+    resp = sync_client.get(
+        "/api/miniapp/agent/requests", headers={"X-Agent-Key": "   "}
     )
     assert resp.status_code == 401
 
