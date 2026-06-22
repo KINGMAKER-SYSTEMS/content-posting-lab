@@ -1335,14 +1335,58 @@ def _bake_fade_keyframes(clip: dict[str, Any]) -> dict[str, Any]:
     if fade_in <= 0.0 and fade_out <= 0.0:
         return clip
 
+    # The clip's existing opacity envelope (if any) is the base curve; the fade is
+    # a 0..1 multiplier ramp layered on top. When there is NO base envelope the
+    # bare ramp IS the opacity, so emit exactly the ramp points (cheapest, and the
+    # shape downstream/contract tests expect). When a base envelope DOES exist,
+    # compose them multiplicatively (the docstring's promise) so a clip that both
+    # fades and animates opacity keeps both, instead of the fade clobbering the
+    # envelope. Non-opacity tracks (scale/x/y/rotation/volume) are always kept.
+    base = _keyframe_points(clip, "opacity")  # sorted (t, value, interp)
     points: list[dict[str, Any]] = []
-    if fade_in > 0.0:
-        points.append({"t": 0.0, "value": 0.0, "interp": "linear"})
-        points.append({"t": fade_in, "value": 1.0, "interp": "linear"})
-    if fade_out > 0.0:
-        out_start = max(fade_in, duration - fade_out)
-        points.append({"t": out_start, "value": 1.0, "interp": "linear"})
-        points.append({"t": duration, "value": 0.0, "interp": "linear"})
+
+    if not base:
+        if fade_in > 0.0:
+            points.append({"t": 0.0, "value": 0.0, "interp": "linear"})
+            points.append({"t": fade_in, "value": 1.0, "interp": "linear"})
+        if fade_out > 0.0:
+            out_start = max(fade_in, duration - fade_out)
+            points.append({"t": out_start, "value": 1.0, "interp": "linear"})
+            points.append({"t": duration, "value": 0.0, "interp": "linear"})
+    else:
+        def _fade_factor(t: float) -> float:
+            f = 1.0
+            if fade_in > 0.0:
+                f *= min(1.0, max(0.0, t / fade_in))
+            if fade_out > 0.0:
+                out_start = max(fade_in, duration - fade_out)
+                if t >= out_start:
+                    f *= min(1.0, max(0.0, (duration - t) / fade_out))
+            return f
+
+        def _base_value(t: float) -> float:
+            if t <= base[0][0]:
+                return base[0][1]
+            if t >= base[-1][0]:
+                return base[-1][1]
+            for (t0, v0, _i0), (t1, v1, _i1) in zip(base, base[1:]):
+                if t0 <= t <= t1:
+                    span = t1 - t0
+                    return v1 if span <= 0 else v0 + (v1 - v0) * ((t - t0) / span)
+            return base[-1][1]
+
+        # Sample at every fade boundary AND every existing opacity keyframe time, so
+        # neither curve's corners are smoothed away by the linear segments between.
+        times = {0.0, duration}
+        if fade_in > 0.0:
+            times.add(fade_in)
+        if fade_out > 0.0:
+            times.add(max(fade_in, duration - fade_out))
+        times.update(t for (t, _v, _i) in base if 0.0 <= t <= duration)
+        points = [
+            {"t": t, "value": _base_value(t) * _fade_factor(t), "interp": "linear"}
+            for t in sorted(times)
+        ]
 
     next_clip = dict(clip)
     tracks = [dict(t) for t in (clip.get("keyframes") or []) if t.get("property") != "opacity"]

@@ -729,6 +729,73 @@ def test_render_scope_project_defaults_duration_to_remaining_timeline():
     assert clip["duration"] == pytest.approx(6.0)         # 10 - 4 remaining seconds
 
 
+def _opacity_track(clip):
+    return next(t for t in clip["keyframes"] if t["property"] == "opacity")
+
+
+def test_bake_fade_preserves_non_opacity_keyframes():
+    """A clip that fades in while it animates scale/x/rotation must keep ALL of
+    those tracks — baking the fade only adds/replaces the opacity envelope and
+    must never delete the other animation tracks."""
+    clip = {
+        "id": "c",
+        "duration": 4.0,
+        "effects": [{"type": "fadeIn", "params": {"duration": 1.0}}],
+        "keyframes": [
+            {"property": "scale", "points": [
+                {"t": 0.0, "value": 0.5, "interp": "linear"},
+                {"t": 2.0, "value": 1.0, "interp": "linear"}]},
+            {"property": "x", "points": [
+                {"t": 0.0, "value": 0.0, "interp": "linear"},
+                {"t": 2.0, "value": 0.5, "interp": "linear"}]},
+        ],
+    }
+    baked = editor_render._bake_fade_keyframes(clip)
+    props = {t["property"] for t in baked["keyframes"]}
+    assert props == {"scale", "x", "opacity"}        # both animations survive + fade added
+    scale = next(t for t in baked["keyframes"] if t["property"] == "scale")
+    assert scale["points"][1]["value"] == pytest.approx(1.0)  # scale animation intact
+    assert clip is not baked                          # original not mutated
+
+
+def test_bake_fade_composes_multiplicatively_with_existing_opacity():
+    """A clip that fades in AND has its own opacity envelope must show BOTH: the
+    fade ramp multiplied into the base opacity curve (the docstring's promise),
+    not the fade overwriting the envelope."""
+    clip = {
+        "id": "c",
+        "duration": 4.0,
+        "effects": [{"type": "fadeIn", "params": {"duration": 2.0}}],
+        # base opacity is a constant 0.5 (a half-transparent clip)
+        "keyframes": [
+            {"property": "opacity", "points": [
+                {"t": 0.0, "value": 0.5, "interp": "linear"},
+                {"t": 4.0, "value": 0.5, "interp": "linear"}]},
+        ],
+    }
+    baked = editor_render._bake_fade_keyframes(clip)
+    op = _opacity_track(baked)
+    by_t = {pt["t"]: pt["value"] for pt in op["points"]}
+    assert by_t[0.0] == pytest.approx(0.0)            # fade factor 0 * base 0.5
+    assert by_t[2.0] == pytest.approx(0.5)            # fade factor 1 * base 0.5 (NOT 1.0)
+    assert by_t[4.0] == pytest.approx(0.5)            # base preserved past the fade
+
+
+def test_bake_fade_with_no_existing_opacity_is_plain_ramp():
+    clip = {
+        "id": "c",
+        "duration": 4.0,
+        "effects": [{"type": "fadeIn", "params": {"duration": 1.0}}],
+        "keyframes": [],
+    }
+    baked = editor_render._bake_fade_keyframes(clip)
+    # No base envelope -> the bare ramp IS the opacity track (no redundant tail point).
+    assert _opacity_track(baked)["points"] == [
+        {"t": 0.0, "value": 0.0, "interp": "linear"},
+        {"t": 1.0, "value": 1.0, "interp": "linear"},
+    ]
+
+
 def test_ffmpeg_fallback_warns_on_dropped_effects_and_keyframes(tmp_path):
     """The ffmpeg fallback can't composite crossfade/color effects or keyframe
     envelopes (OpenShot-only). It must SURFACE that as a structured warning, not
