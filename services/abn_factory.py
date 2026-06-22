@@ -3778,8 +3778,33 @@ async def revisualize_episode(ep_id):
 _task = None
 
 
+def _assert_vo_links_before_start() -> None:
+    """VO-loss gate, travelling WITH the factory instead of only living in app.py startup.
+
+    The GC the factory runs can reap a scratch-misrouted VO copy, leaving the legacy
+    back-compat symlink dangling — and `_align`'s legacy fallback then silently returns
+    [] (the exact "origaudio loss" hazard). app.py runs this audit before start_factory(),
+    but a script/agent that spawns the factory directly bypasses app startup and would skip
+    the gate entirely. Run it here too so the SAME gate guards every entry point. Pure
+    read-only; raises RuntimeError (NOT swallowed) if any link is broken."""
+    from services.abn_assets import assert_migration_complete
+    from scripts.migrate_abn_assets import verify_voice_symlinks
+    assert_migration_complete()
+    vo_problems = verify_voice_symlinks()
+    if vo_problems:
+        raise RuntimeError(
+            "VO back-compat symlink audit failed for "
+            f"{len(vo_problems)} file(s) — _align fallback would silently fail; "
+            "run `python scripts/migrate_abn_assets.py --verify` and repair before "
+            f"the factory may start: {vo_problems}"
+        )
+
+
 async def start_factory():
     global _task
+    # GATE: refuse to start with broken VO links / an incomplete migration, regardless of
+    # whether app.py already checked. Idempotent + read-only, so the double-check is cheap.
+    _assert_vo_links_before_start()
     # point the cards at the cinematic-background pool immediately (uses any already-generated bgs),
     # then top up the pool in the background (Codex/PRO image_gen — never blocks factory startup).
     if _V2_VISUALS:

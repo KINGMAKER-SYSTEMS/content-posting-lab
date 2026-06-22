@@ -273,3 +273,53 @@ async def test_lifespan_skips_factory_when_vo_symlink_broken(mig, A, monkeypatch
         pass
 
     assert started["factory"] is False  # ...but the VO symlink audit still held the factory back
+
+
+# ---------------------------------------------------------------------------
+# start_factory() must enforce the SAME VO gate itself — not just app.py. The ticket: a
+# future agent/script that spawns the factory directly (bypassing app startup) would skip
+# the VO audit, and _align's legacy fallback could read a dangling symlink -> silent []
+# (the "origaudio loss" hazard). The gate now travels with the factory.
+
+
+@pytest.mark.asyncio
+async def test_start_factory_blocks_on_dangling_vo_symlink(mig, A, monkeypatch):
+    import importlib
+    import services.abn_factory as abn_factory
+    importlib.reload(abn_factory)  # rebind to the throwaway ASSETS_DIR
+
+    # dangling legacy VO symlink: assert_migration_complete() is happy, but _align would dangle.
+    flat = A.ASSETS_DIR / "ep_648e806a_s0.wav"
+    flat.symlink_to(A.ASSETS_DIR / "ep_648e806a" / "audio" / "s0_voice.wav")
+    assert flat.is_symlink() and not flat.exists()
+    assert A.flat_unmigrated() == []  # flat-file gate passes...
+
+    # spawning the factory directly (no app lifespan) must still refuse to start.
+    with pytest.raises(RuntimeError, match="VO back-compat symlink audit failed"):
+        await abn_factory.start_factory()
+    # nothing was scheduled: the gate raised before the loop task was created
+    assert abn_factory._task is None
+
+
+@pytest.mark.asyncio
+async def test_start_factory_passes_on_clean_store(mig, A, monkeypatch):
+    import importlib
+    import services.abn_factory as abn_factory
+    importlib.reload(abn_factory)
+
+    # clean store: a properly-schema'd file, no broken VO links -> gate passes.
+    (A.ASSETS_DIR / "ep_648e806a" / "css").mkdir(parents=True)
+    (A.ASSETS_DIR / "ep_648e806a" / "css" / "s0_card.png").write_bytes(b"ok")
+
+    # don't actually run the background loop; just prove the gate let us past it.
+    scheduled = {"loop": False}
+
+    async def _fake_loop():
+        scheduled["loop"] = True
+
+    monkeypatch.setattr(abn_factory, "run_factory_loop", _fake_loop)
+    monkeypatch.setattr(abn_factory, "_V2_VISUALS", False, raising=False)
+
+    task = await abn_factory.start_factory()
+    assert task is not None  # gate passed, loop was scheduled
+    await abn_factory.stop_factory()
