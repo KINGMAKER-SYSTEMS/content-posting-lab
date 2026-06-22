@@ -171,7 +171,7 @@ def _window_project(*clips: dict) -> dict:
 
 
 def _wclip(clip_id: str, *, start: float, duration: float, source_start: float = 0.0,
-           enabled: bool = True) -> dict:
+           enabled: bool = True, keyframes: list | None = None) -> dict:
     return {
         "id": clip_id,
         "assetId": clip_id,
@@ -181,6 +181,7 @@ def _wclip(clip_id: str, *, start: float, duration: float, source_start: float =
         "duration": duration,
         "sourceStart": source_start,
         "enabled": enabled,
+        "keyframes": keyframes or [],
     }
 
 
@@ -364,6 +365,73 @@ def test_windowed_clips_trims_clip_overlapping_window_end():
     assert clip["start"] == pytest.approx(1.0)            # clip starts 1s into the window
     assert clip["duration"] == pytest.approx(3.0)         # only [1,4) survives
     assert clip["sourceStart"] == pytest.approx(3.0)      # no front trim -> no source shift
+
+
+def _opacity_keyframes(*points: tuple[float, float]) -> list[dict]:
+    """An `opacity` keyframe track: each point is (t_seconds_from_clip_start, value)."""
+    return [{
+        "property": "opacity",
+        "points": [{"t": t, "value": v, "interp": "linear"} for t, v in points],
+    }]
+
+
+def _alpha_xs(clip: dict, project: dict) -> list[float]:
+    """Export `clip` to its OpenShot payload and return the keyframe X (frame
+    number in source-reader space) of every `alpha` point. `alpha` is what an
+    `opacity` keyframe track compiles to (see openshot_bridge._KEYFRAME_PROPERTY_MAP)."""
+    payload = openshot_bridge.clip_json(project, clip)
+    return [p["co"]["X"] for p in payload["alpha"]["Points"]]
+
+
+def test_windowed_clip_keyframe_fires_at_same_source_frame_as_unwindowed():
+    """Regression guard for the front_trim / sourceStart keyframe-X coupling.
+
+    A clip that spans a render-window boundary gets BOTH its `sourceStart` bumped
+    by `front_trim` (editor_render line ~913) and its keyframe `t` shifted down by
+    the same `front_trim` (line ~918). OpenShot computes keyframe X as
+    `(sourceStart + t) * fps + 1`, so the two adjustments must cancel and leave
+    every surviving keyframe pinned to the SAME source frame it had before
+    windowing. If one adjustment happens without the other, X drifts and the
+    animation fires at the wrong frame. No prior test imported -> windowed ->
+    exported with keyframes present; this locks the invariant in."""
+
+    fps = 12
+    # Clip spans timeline [1, 5); source starts at 10s. Keyframes at 1s and 3s
+    # into the clip (both AFTER the 1s that the window will trim off the front).
+    kfs = _opacity_keyframes((1.0, 0.0), (3.0, 1.0))
+    project = _window_project(_wclip("a", start=1.0, duration=4.0, source_start=10.0, keyframes=kfs))
+
+    before = _alpha_xs(project["clips"]["a"], project)
+    # source frame for t=1: (10+1)*12+1 = 133 ; for t=3: (10+3)*12+1 = 157
+    assert before == pytest.approx([133.0, 157.0])
+
+    # Window [2, 6): front_trim = 2 - 1 = 1s. sourceStart -> 11, kf t -> {0, 2}.
+    scoped = editor_render._render_scope_project(project, window_start=2.0, duration=4.0)
+    windowed = next(iter(scoped["clips"].values()))
+    assert windowed["sourceStart"] == pytest.approx(11.0)
+
+    after = _alpha_xs(windowed, scoped)
+    # Both keyframes survive the trim, so X must be IDENTICAL to the unwindowed
+    # export -- the source frame each one points at has not moved.
+    assert after == pytest.approx(before)
+
+
+def test_windowed_clip_keyframe_before_window_clamps_to_window_start():
+    """A keyframe in the trimmed-away front region clamps to the window's first
+    source frame (t -> 0 after the shift), not past it. Asserts the clamp in
+    _shift_keyframes and the sourceStart offset agree on the windowed origin."""
+
+    fps = 12
+    # Keyframe at t=0.5s sits inside the 1s that gets trimmed; t=3s survives.
+    kfs = _opacity_keyframes((0.5, 0.0), (3.0, 1.0))
+    project = _window_project(_wclip("a", start=1.0, duration=4.0, source_start=10.0, keyframes=kfs))
+
+    scoped = editor_render._render_scope_project(project, window_start=2.0, duration=4.0)
+    windowed = next(iter(scoped["clips"].values()))
+    after = _alpha_xs(windowed, scoped)
+
+    # window origin source frame = (11 + 0)*12 + 1 = 133 ; survivor t=2 -> (11+2)*12+1 = 157
+    assert after == pytest.approx([133.0, 157.0])
 
 
 def test_windowed_clips_drops_clips_fully_outside_window():
