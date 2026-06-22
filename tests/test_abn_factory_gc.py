@@ -37,6 +37,101 @@ def _scratch(assets, ep_id, name, *, age_s=7200, body=b"intermediate"):
     return f
 
 
+# --- scratch_dirs(): the GC's reapable-root enumerator must never reach a non-scratch surface ----
+# The whole GC safety invariant (abn_assets ~406-431) rests on scratch_dirs() returning ONLY
+# per-episode {ep}/scratch/ + cross-episode _scratch/. These pin the enumerator directly (the reap
+# loop / tombstone are covered elsewhere) so a regression in its iteration or symlink checks is
+# caught at the source — before it can hand a keeper-bearing dir to reapable_scratch().
+
+
+def test_scratch_dirs_returns_only_scratch_roots(store):
+    """Happy path: a real per-episode scratch/ and the cross-episode _scratch/ are the ONLY roots
+    returned — schema layer dirs (renders/audio/footage/css) alongside them are never offered."""
+    (store / "ep_a111111" / "scratch").mkdir(parents=True)
+    (store / "ep_a111111" / "renders").mkdir()
+    (store / "ep_a111111" / "audio").mkdir()
+    (store / "_scratch").mkdir()
+
+    got = {d.resolve() for d in abn_assets.scratch_dirs()}
+    assert got == {
+        (store / "ep_a111111" / "scratch").resolve(),
+        (store / "_scratch").resolve(),
+    }
+
+
+def test_scratch_dirs_never_reaches_reserved_top_dirs(store):
+    """A scratch/ subdir living UNDER a reserved top dir (_published/_shared/_trash) must NEVER be
+    enumerated — those names don't match the episode-id regex, so even a literal 'scratch' child of
+    _published/ (a shipped final's working dir) is not a reapable root."""
+    for top in ("_published", "_shared", "_trash"):
+        (store / top / "scratch").mkdir(parents=True)
+        (store / top / "ep_a111111" / "scratch").mkdir(parents=True)  # nested ep dir under reserved top
+    # one legitimate root so we know the enumerator is actually running
+    (store / "ep_dead00" / "scratch").mkdir(parents=True)
+
+    got = {d.resolve() for d in abn_assets.scratch_dirs()}
+    assert got == {(store / "ep_dead00" / "scratch").resolve()}, (
+        "scratch_dirs leaked a scratch/ under a reserved top dir as a reapable root"
+    )
+
+
+def test_scratch_dirs_skips_symlinked_episode_dir(store):
+    """A symlinked EPISODE dir (e.g. ep_beef00 -> ep_dead00) must be skipped: enumerating its
+    scratch/ would reap through the link and orphan the real episode's keepers. Only the real
+    episode's scratch/ is returned."""
+    (store / "ep_dead00" / "scratch").mkdir(parents=True)
+    (store / "ep_beef00").symlink_to(store / "ep_dead00")
+
+    got = {d.resolve() for d in abn_assets.scratch_dirs()}
+    assert got == {(store / "ep_dead00" / "scratch").resolve()}
+    # the symlinked episode dir's scratch/ (same resolved target) is not added a SECOND time either
+    assert len(abn_assets.scratch_dirs()) == 1, "symlinked episode dir was enumerated as its own root"
+
+
+def test_scratch_dirs_skips_symlinked_scratch_pointing_into_published(store):
+    """THE STALE-SYMLINK ESCAPE: a real episode dir whose ``scratch`` is itself a SYMLINK pointing
+    into _published/ (a stale/relocated link, or a malicious one) must NOT be returned. ``is_dir()``
+    follows symlinks, so without an explicit ``not is_symlink()`` guard the GC would rglob into
+    _published/ and tombstone shipped finals. The real episode's scratch/ alongside it still works."""
+    (store / "_published" / "ep_a111111").mkdir(parents=True)
+    final = store / "_published" / "ep_a111111" / "episode.mp4"
+    final.write_bytes(b"shipped final - must never be reapable")
+    # ep_bad00/scratch is a symlink INTO _published/ (resolves to a dir, but is a symlink)
+    (store / "ep_bad000").mkdir()
+    (store / "ep_bad000" / "scratch").symlink_to(store / "_published" / "ep_a111111")
+    # a normal episode scratch alongside it
+    (store / "ep_cab000" / "scratch").mkdir(parents=True)
+
+    roots = abn_assets.scratch_dirs()
+    resolved = {d.resolve() for d in roots}
+    assert (store / "_published" / "ep_a111111").resolve() not in resolved, (
+        "scratch_dirs followed a symlinked scratch/ into _published/ — a GC rglob would eat finals"
+    )
+    assert resolved == {(store / "ep_cab000" / "scratch").resolve()}
+    # end-to-end: the shipped final is therefore NOT in the reapable set
+    assert final.resolve() not in {f.resolve() for f in abn_assets.reapable_scratch()}
+
+
+def test_scratch_dirs_ignores_episodelike_regular_file(store):
+    """A malformed entry at the store root that LOOKS like an episode id but is a regular FILE
+    (not a dir) must be ignored — iterdir() yields it, but the ``is_dir()`` gate drops it, so no
+    AttributeError / stray root. A legitimate episode dir alongside it is still enumerated."""
+    (store / "ep_a111111").write_bytes(b"not a dir, just a file named like an episode")
+    (store / "ep_fad000" / "scratch").mkdir(parents=True)
+
+    got = {d.resolve() for d in abn_assets.scratch_dirs()}
+    assert got == {(store / "ep_fad000" / "scratch").resolve()}
+
+
+def test_scratch_dirs_missing_store_returns_empty(store):
+    """If ASSETS_DIR doesn't exist yet (fresh boot, pre-migration), scratch_dirs() returns [] rather
+    than raising — the FileNotFoundError/OSError guard around iterdir() holds."""
+    import shutil as _sh
+
+    _sh.rmtree(store)
+    assert abn_assets.scratch_dirs() == []
+
+
 # --- the new GC contract: reap ONLY scratch/, tombstone (→ _trash/) instead of unlink ----------
 
 
@@ -304,7 +399,7 @@ def test_old_episode_renders_excludes_reserved_top_dirs_and_symlinks(store):
     render("_scratch")
     trashed = render("_trash/ep_dead00")  # a previously-tombstoned render — must not be re-enumerated
     # a SYMLINKED episode dir pointing at a real one — must be skipped (no double-trim of the target)
-    (store / "ep_link00").symlink_to(store / "ep_a111111")
+    (store / "ep_beef00").symlink_to(store / "ep_a111111")
 
     found = set(abn_factory._old_episode_renders())
     assert found == {real_a, real_b}, "enumerator leaked a reserved-top or symlinked render as a GC candidate"
@@ -697,9 +792,9 @@ def test_purge_disk_render_trim_survives_poisoned_enumerator_returning_schema_di
     vo = audio_dir / "s0_voice.wav"
     vo.write_bytes(b"the real VO - must never be tombstoned")
 
-    real = _render(store, "ep_real00", age_s=9000)  # a genuine old render that SHOULD trim
+    real = _render(store, "ep_dead00", age_s=9000)  # a genuine old render that SHOULD trim
     link_target = _render(store, "ep_tgt000", age_s=8000)
-    bad_link = store / "ep_link00" / "renders"
+    bad_link = store / "ep_beef00" / "renders"
     bad_link.mkdir(parents=True)
     poison_link = bad_link / "episode.mp4"
     poison_link.symlink_to(link_target)             # a symlinked render candidate
@@ -735,7 +830,7 @@ def test_purge_disk_render_trim_survives_poisoned_enumerator_returning_schema_di
     assert link_target.exists(), "the symlink's target render must not be reaped via the symlink"
     assert not (store / "_trash" / "ep_a12345" / "audio").exists(), "schema dir must never be tombstoned"
     assert not real.exists(), "the genuine old render should still have been trimmed"
-    assert (store / "_trash" / "ep_real00" / "renders" / "episode.mp4").exists(), "real render must tombstone"
+    assert (store / "_trash" / "ep_dead00" / "renders" / "episode.mp4").exists(), "real render must tombstone"
 
 
 def test_tombstone_collision_does_not_clobber(store):

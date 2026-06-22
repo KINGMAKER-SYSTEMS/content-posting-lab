@@ -441,7 +441,10 @@ def scratch_dirs() -> list[Path]:
         for child in ASSETS_DIR.iterdir():
             if child.is_dir() and not child.is_symlink() and _EP_RE.match(child.name):
                 sd = child / "scratch"
-                if sd.is_dir():
+                # ``is_dir()`` follows symlinks, so a symlinked ``{ep}/scratch`` pointing INTO
+                # ``_published/`` / ``_shared/`` (a stale or malicious link) would otherwise be
+                # returned as a reapable root and let the GC rglob real keepers. Exclude it.
+                if sd.is_dir() and not sd.is_symlink():
                     dirs.append(sd)
     except (FileNotFoundError, OSError):
         pass
