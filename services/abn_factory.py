@@ -2495,8 +2495,17 @@ async def _render_remotion(ep_id, timeline, force=False):
     # sidechaincompress keyed off the VO so music auto-dips when narration plays (pro audio, not a flat bed).
     bed = timeline.get("musicBed")
     if bed:
-        bedfile = ASSETS / str(bed).removeprefix("/agenticnews-assets/") if str(bed).startswith("/agenticnews-assets/") else ASSETS / Path(bed).name
-        if bedfile.exists():
+        # Route the bed read through the gateway (_resolve_asset) instead of bare ASSETS / path
+        # construction — the basename fallback bypassed the store's namespace isolation. Then
+        # assert containment: a corrupted/traversal musicBed value (e.g. '/agenticnews-assets/../../x')
+        # must resolve INSIDE the asset store or be dropped, never read from outside the schema.
+        bedfile = _resolve_asset(bed)
+        try:
+            bedfile.resolve().relative_to(ASSETS.resolve())
+        except ValueError:
+            BUS.emit("editor-agent", "error", f"musicBed escapes asset store, skipping duck: {bed!r}", episode_id=ep_id)
+            bedfile = None
+        if bedfile and bedfile.exists():
             ducked = asset_path(ep_id, "assembled", "ducked")  # renders/ intermediate, replaced into `out`
             # [0:a]=baked VO/SFX (the sidechain key), [1:a]=music looped; duck music by the VO, mix,
             # THEN loudnorm to -14 LUFS. CRITICAL ORDER FIX: the duck pass runs AFTER the normalize

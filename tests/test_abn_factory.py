@@ -2786,3 +2786,39 @@ def test_render_remotion_succeeds_when_both_passes_ok(monkeypatch, tmp_path):
     url, dur = asyncio.run(abn_factory._render_remotion("ep_d444444", timeline, force=True))
     assert dur == 640.0
     assert url
+
+
+def test_render_remotion_drops_traversal_music_bed_outside_store(monkeypatch, tmp_path):
+    """A corrupted/traversal musicBed value must NOT read a file outside the asset store. The
+    bed read goes through the _resolve_asset gateway + a containment check; an escaping path is
+    dropped and the duck pass is skipped, so the sidechain ffmpeg call never runs against it."""
+    store = tmp_path / "assets"
+    store.mkdir()
+    monkeypatch.setattr(abn_factory, "ASSETS", store)
+    monkeypatch.setattr(abn_assets, "ASSETS_DIR", store)
+    _stub_remotion_dir(monkeypatch, store)
+
+    async def fake_dur(path):
+        return 640.0
+    monkeypatch.setattr(abn_factory, "_dur", fake_dur)
+
+    # Sentinel music file living OUTSIDE the store — a traversal value would reach it.
+    outside = tmp_path / "outside_bed.mp3"
+    outside.write_bytes(b"\x00")
+
+    duck_calls = []
+    out = abn_assets.asset_path("ep_e555555", "episode")
+    inner = _remotion_dispatch_sh(out, normalize_ok=True, duck_ok=True)
+
+    async def tracking_sh(cmd, timeout=600):
+        if "sidechaincompress" in cmd:
+            duck_calls.append(cmd)
+        return await inner(cmd, timeout=timeout)
+    monkeypatch.setattr(abn_factory, "_sh", tracking_sh)
+
+    # URL-form value that escapes the store via traversal.
+    timeline = {"musicBed": "/agenticnews-assets/../outside_bed.mp3", "segments": []}
+    url, dur = asyncio.run(abn_factory._render_remotion("ep_e555555", timeline, force=True))
+    assert dur == 640.0
+    assert url
+    assert duck_calls == []  # duck pass skipped: escaping bed was dropped, not read
