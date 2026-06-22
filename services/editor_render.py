@@ -1250,16 +1250,81 @@ def _shift_keyframes(keyframes: list[dict[str, Any]], delta: float) -> list[dict
     return shifted
 
 
+# Visual fade effect types whose `duration` param must be baked into an `opacity`
+# keyframe ramp for the OpenShot render. This libopenshot build ships NO "Fade"
+# effect class (EffectInfo lists 37 effects; "Fade" is not among them), so the
+# bridge's crossfade/fadeIn/fadeOut -> "Fade" mapping loads via SetJson but is
+# silently ignored at render time — the timeline shows a fade the compiled video
+# never renders. OpenShot itself renders fades as clip `alpha` keyframes (what its
+# own Qt editor writes), and the bridge already turns an `opacity` keyframe track
+# into alpha keyframes. So bake the fade window into opacity here, on the render
+# path only (stored project keeps its declarative effect). fadeIn/crossfade are
+# start-anchored (0 -> 1 over duration); fadeOut is end-anchored (1 -> 0 over the
+# trailing duration).
+_VISUAL_FADE_TYPES = {"fadeIn", "crossfade", "fadeOut"}
+
+
+def _bake_fade_keyframes(clip: dict[str, Any]) -> dict[str, Any]:
+    """Return a render-clip with visual fade effects expressed as opacity keyframes.
+
+    Without this the OpenShot render drops every visual fade (no Fade effect class
+    in libopenshot), so the re-fit crossfade duration the windowing path computes
+    never animates the compiled frames — the exact split->window->export seam the
+    contract test guards. The fade is layered onto the clip's existing opacity
+    envelope (multiplicatively at the fade boundaries) so a clip that both fades and
+    animates opacity keeps both. Effects are left intact; the bridge ignores them."""
+
+    fades = [e for e in (clip.get("effects") or [])
+             if str((e or {}).get("type") or "") in _VISUAL_FADE_TYPES]
+    if not fades:
+        return clip
+    duration = max(0.001, float(clip.get("duration") or 0.001))
+    fade_in = max((float((e.get("params") or {}).get("duration") or 0.0)
+                   for e in fades if e.get("type") in ("fadeIn", "crossfade")), default=0.0)
+    fade_out = max((float((e.get("params") or {}).get("duration") or 0.0)
+                    for e in fades if e.get("type") == "fadeOut"), default=0.0)
+    fade_in = min(max(0.0, fade_in), duration)
+    fade_out = min(max(0.0, fade_out), duration)
+    if fade_in <= 0.0 and fade_out <= 0.0:
+        return clip
+
+    points: list[dict[str, Any]] = []
+    if fade_in > 0.0:
+        points.append({"t": 0.0, "value": 0.0, "interp": "linear"})
+        points.append({"t": fade_in, "value": 1.0, "interp": "linear"})
+    if fade_out > 0.0:
+        out_start = max(fade_in, duration - fade_out)
+        points.append({"t": out_start, "value": 1.0, "interp": "linear"})
+        points.append({"t": duration, "value": 0.0, "interp": "linear"})
+
+    next_clip = dict(clip)
+    tracks = [dict(t) for t in (clip.get("keyframes") or []) if t.get("property") != "opacity"]
+    tracks.append({"property": "opacity", "points": points})
+    next_clip["keyframes"] = tracks
+    return next_clip
+
+
 def _render_scope_project(project: dict[str, Any], *, window_start: float, duration: float | None) -> dict[str, Any]:
     if window_start <= 0 and duration is None:
-        return project
+        clips = project.get("clips") or {}
+        # Identity fast-path: only copy + bake when a clip actually carries a visual
+        # fade (otherwise there's nothing to translate and callers rely on identity).
+        if not any(
+            str((e or {}).get("type") or "") in _VISUAL_FADE_TYPES
+            for clip in clips.values()
+            for e in (clip.get("effects") or [])
+        ):
+            return project
+        scoped = dict(project)
+        scoped["clips"] = {cid: _bake_fade_keyframes(clip) for cid, clip in clips.items()}
+        return scoped
     render_duration = duration
     if render_duration is None:
         render_duration = max(0.1, _project_duration(project) - window_start)
     scoped = dict(project)
     scoped_clips = _windowed_clips(project, window_start=window_start, duration=float(render_duration))
     scoped["clips"] = {
-        str(clip.get("id") or f"clip_{index}"): clip
+        str(clip.get("id") or f"clip_{index}"): _bake_fade_keyframes(clip)
         for index, clip in enumerate(scoped_clips)
     }
     return scoped
