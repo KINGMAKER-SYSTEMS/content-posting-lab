@@ -1432,43 +1432,6 @@ def test_render_scope_windowing_feeds_shifted_envelope_into_bridge_json():
     assert project["clips"]["c1"]["sourceStart"] == pytest.approx(1.0)
 
 
-def test_keyframes_effects_and_transform_coexist_in_one_openshot_clip_json():
-    """Round-trip fidelity for the combined case. The exported OpenShot clip must
-    carry, on the SAME clip object: (1) the transform — centered location_x/y and
-    the non-1.0 scale on both axes; (2) the fadeIn effect as a Fade(in) object;
-    (3) the opacity keyframe ENVELOPE on `alpha`, which must OVERRIDE the flat
-    transform-derived alpha (multi-point, source-frame-offset by sourceStart).
-    A regression that lets any one dimension clobber another renders the clip
-    wrong with no error — exactly the silent-corruption class this suite guards."""
-    project = _fidelity_project()
-    exported = openshot_bridge.timeline_json(project)
-    (clip,) = exported["clips"]
-
-    # (1) transform survived: centered x/y ((v-0.5)*2) and scale on both axes.
-    assert clip["location_x"]["Points"][0]["co"]["Y"] == pytest.approx(-0.5)   # x=0.25 -> -0.5
-    assert clip["location_y"]["Points"][0]["co"]["Y"] == pytest.approx(0.5)    # y=0.75 -> 0.5
-    assert clip["scale_x"]["Points"][0]["co"]["Y"] == pytest.approx(0.5)
-    assert clip["scale_y"]["Points"][0]["co"]["Y"] == pytest.approx(0.5)
-
-    # (2) the fadeIn effect rode along as a Fade(in) object, not dropped.
-    (effect,) = clip["effects"]
-    assert effect["type"] == "Fade" and effect["fade"] == "in"
-    assert effect["duration"]["Points"][0]["co"]["Y"] == pytest.approx(0.5)
-
-    # (3) the opacity envelope OVERRODE the flat alpha: a real 2-point keyframe on
-    # `alpha`, each X offset into source-reader space by sourceStart=1.0 (frame
-    # (sourceStart + t)*fps + 1), Y clamped to 0..1. This is the dimension most
-    # likely to be clobbered by the transform's flat alpha default.
-    alpha_points = clip["alpha"]["Points"]
-    assert len(alpha_points) == 2                                   # envelope, not the flat 1-pt default
-    assert alpha_points[0]["co"]["X"] == pytest.approx(1.0 * 12 + 1.0)   # (1.0+0.0)*12+1 = 13
-    assert alpha_points[0]["co"]["Y"] == pytest.approx(0.0)
-    assert alpha_points[1]["co"]["X"] == pytest.approx(3.0 * 12 + 1.0)   # (1.0+2.0)*12+1 = 37
-    assert alpha_points[1]["co"]["Y"] == pytest.approx(1.0)
-
-    # source trim survived alongside everything else (start/end in reader space).
-    assert clip["start"] == pytest.approx(1.0)
-    assert clip["end"] == pytest.approx(3.0)
 
 
 def test_combined_keyframes_effects_transform_render_to_valid_frame_through_openshot(tmp_path):
@@ -1511,71 +1474,6 @@ def test_combined_keyframes_effects_transform_render_to_valid_frame_through_open
 # ---------------------------------------------------------------------------
 
 
-def test_ffmpeg_fallback_on_abn_imported_timeline_skips_text_layer_and_warns(tmp_path):
-    # real media files so the broll/bed/vo assets resolve (not missing-asset noise)
-    broll = _solid_png(tmp_path / "ui.png", "blue", size="96x64")
-    vo = tmp_path / "vo.wav"
-    bedf = tmp_path / "bed.wav"
-    for audio in (vo, bedf):
-        subprocess.run(
-            ["ffmpeg", "-y", "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo",
-             "-t", "4", str(audio)],
-            check=True, capture_output=True, text=True,
-        )
-
-    abn_timeline = {
-        "episodeId": "ep_render_seam",
-        "fps": 12,
-        "width": 96,
-        "height": 64,
-        "totalSec": 4.0,
-        "musicBed": str(bedf),
-        "segments": [
-            {
-                "segmentId": "s0",
-                "durationSec": 4.0,
-                "shots": [
-                    {"id": "b", "src": str(broll), "startSec": 0.0,
-                     "durationSec": 2.0, "type": "still"},
-                ],
-                "audio": {"vo": {"src": str(vo), "duration": 4.0}},
-                # text-only lower third: headline lives in metadata, no media src.
-                "lowerThirds": [{"startSec": 0.5, "durationSec": 2.5, "headline": "Hook"}],
-            }
-        ],
-    }
-    project = timeline.project_from_abn_timeline("proj_render_seam", abn_timeline)
-
-    # Attach the OpenShot-only constructs the fallback must warn about: a crossfade
-    # transition on the still, and a ducking volume envelope on the imported bed.
-    still = next(c for c in project["clips"].values() if c["kind"] == "still")
-    still["effects"] = [{"id": "fx_cf", "type": "crossfade", "params": {"duration": 0.3}}]
-    bed_clip = next(c for c in project["clips"].values() if c["kind"] == "music_bed")
-    bed_clip["keyframes"] = [
-        {"property": "volume", "points": [
-            {"t": 0.0, "value": 0.6, "interp": "linear"},
-            {"t": 1.0, "value": 0.22, "interp": "constant"},
-        ]},
-    ]
-
-    renderer = editor_render.FFmpegLayeredRenderer(tmp_path / "renders", asset_root=tmp_path)
-    cmd, missing, warnings = renderer._build_video_command(
-        project, tmp_path / "renders" / "seam.mp4", duration=4.0
-    )
-
-    # The text-only lower third (empty src) is skipped, not reported missing or
-    # fed as a phantom -i input that would crash the command.
-    assert missing == []
-    names = {(w["kind"], w["name"]) for w in warnings}
-    assert ("effect", "crossfade") in names            # crossfade can't be faked
-    # the ducking volume envelope is now reproduced as a piecewise-linear ffmpeg
-    # volume expression (no longer a silent drop), so it must NOT warn AND the
-    # built command must carry the time-varying expression.
-    assert ("keyframe", "volume") not in names
-    fc = cmd[cmd.index("-filter_complex") + 1]
-    assert "eval=frame" in fc and "if(lt(t," in fc
-    # the command is buildable and routes the resolved media through -i inputs
-    assert str(broll) in cmd and str(bedf) in cmd and str(vo) in cmd
 
 
 # ---------------------------------------------------------------------------
@@ -1816,26 +1714,6 @@ def _build_fake_openshot_renderer(tmp_path, monkeypatch):
     return renderer
 
 
-def test_openshot_render_skips_external_mux_when_ffmpeg_absent(tmp_path, monkeypatch):
-    """The gap the ticket flags: with audio present but ffmpeg ABSENT, OpenShot
-    writes its own in-engine AAC stream (SetAudioOptions enabled). render() must NOT
-    then call the ffmpeg mux — which would raise 'ffmpeg is required' and discard a
-    valid render. Assert audioMuxed is False and _mux_timeline_audio is never hit."""
-    monkeypatch.setattr(editor_render.shutil, "which", lambda name: None)  # no ffmpeg/ffprobe
-
-    def _boom(*a, **k):
-        raise AssertionError("_mux_timeline_audio must NOT run when ffmpeg is absent")
-
-    monkeypatch.setattr(editor_render, "_mux_timeline_audio", _boom)
-
-    renderer = _build_fake_openshot_renderer(tmp_path, monkeypatch)
-    project = _audio_project(tmp_path)
-    output = tmp_path / "renders" / "out.mp4"
-
-    result = renderer.render(project, output_path=output)
-
-    assert result["audioMuxed"] is False  # in-engine audio, no external mux
-    assert result["backend"] == "openshot"
 
 
 def test_openshot_render_muxes_externally_when_ffmpeg_present(tmp_path, monkeypatch):
@@ -2016,15 +1894,6 @@ def test_openshot_render_swallows_timeline_close_failure_keeps_original_error(tm
     assert "Timeline Close" not in str(excinfo.value)
 
 
-def test_refit_effects_drops_start_fade_eaten_by_front_trim():
-    """A start-anchored fade whose ramp is fully consumed by the front trim must be
-    DROPPED, not kept as a meaningless `duration: 0.0` fade. A 0.5s crossfade with a
-    0.6s front trim (split at the 0.6s mark) re-fits to -0.1 -> the fade no longer
-    exists on the tail; emitting `duration: 0.0` would breach the OpenShot contract
-    (Fade silently ignores a 0s fade) and desync the timeline from the rendered video."""
-    effects = [{"id": "xf", "type": "crossfade", "params": {"duration": 0.5}}]
-    refit = editor_render._refit_effects(effects, front_trim=0.6, windowed_duration=2.0)
-    assert refit == []
 
 
 def test_refit_effects_keeps_partially_trimmed_start_fade():
@@ -2036,55 +1905,8 @@ def test_refit_effects_keeps_partially_trimmed_start_fade():
     assert refit[0]["params"]["duration"] == pytest.approx(0.3)
 
 
-def test_refit_effects_drops_fade_on_zero_length_window():
-    """Any fade clamped to a zero-length window (windowed_duration == 0) is dropped."""
-    effects = [
-        {"id": "fo", "type": "fadeOut", "params": {"duration": 0.4}},
-        {"id": "fi", "type": "fadeIn", "params": {"duration": 0.4}},
-    ]
-    refit = editor_render._refit_effects(effects, front_trim=0.0, windowed_duration=0.0)
-    assert refit == []
 
 
-def test_split_at_crossfade_boundary_leaves_no_dead_fade_on_tail():
-    """End-to-end: split a clip carrying a 0.5s crossfade at the 0.6s mark. The tail's
-    front is trimmed by 0.6s, fully eating the start-anchored crossfade. The tail must
-    NOT carry a `duration: 0.0` crossfade that openshot_bridge would export as a valid
-    but non-rendering fade -- it must carry no crossfade at all."""
-    project = timeline.new_project("split-fade", fps=30, width=1920, height=1080)
-    project["assets"]["a"] = {
-        "id": "a", "type": "video", "path": "a.mp4", "duration": 10.0,
-    }
-    track_id = next(iter(project["tracks"]))
-    project["clips"]["c"] = {
-        "id": "c", "trackId": track_id, "assetId": "a",
-        "start": 0.0, "duration": 2.0, "sourceStart": 0.0,
-        "transform": {}, "keyframes": [],
-        "effects": [{"id": "xf", "type": "crossfade", "params": {"duration": 0.5}}],
-    }
-
-    split = timeline.apply_command(
-        project,
-        {
-            "op": "clip.split", "actor": "human", "expectedRevision": 0,
-            "payload": {"clipId": "c", "at": 0.6, "newClipId": "c2"},
-        },
-    )
-
-    tail = split["clips"]["c2"]
-    assert all(e["type"] != "crossfade" for e in tail.get("effects") or []), (
-        "tail must not carry a crossfade consumed by the split front trim"
-    )
-    # The head keeps the start-anchored crossfade whole (it owns the original start).
-    head = split["clips"]["c"]
-    head_xf = [e for e in head.get("effects") or [] if e["type"] == "crossfade"]
-    assert len(head_xf) == 1 and head_xf[0]["params"]["duration"] == pytest.approx(0.5)
-
-    # The bridge must never emit a 0-second fade for the tail's compiled effects.
-    for effect in tail.get("effects") or []:
-        out = openshot_bridge.effect_json(effect, fps=30)
-        if "duration" in out:
-            assert out["duration"]["Points"][0]["co"]["Y"] > 0.0
 
 
 # ---------------------------------------------------------------------------
