@@ -128,14 +128,17 @@ def _iter_project_video_items(project_name: str, project_path: Path) -> list[dic
 @router.get("/videos/recent")
 async def list_recent_project_videos(
     limit: int = Query(120, ge=1, le=500),
+    project: str | None = Query(None),
 ):
-    """List newest playable clips across every project, newest first."""
+    """List newest playable clips, scoped to a project when provided."""
     if not PROJECTS_DIR.exists():
         return {"count": 0, "videos": []}
 
     items: list[dict] = []
     for project_dir in PROJECTS_DIR.iterdir():
         if not project_dir.is_dir():
+            continue
+        if project and project_dir.name != project:
             continue
         items.extend(_iter_project_video_items(project_dir.name, project_dir))
 

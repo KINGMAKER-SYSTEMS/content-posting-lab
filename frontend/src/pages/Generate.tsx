@@ -6,8 +6,6 @@ import type {
   ColorCorrection,
   Provider,
   Job,
-  RecentProjectVideo,
-  RecentProjectVideosResponse,
   VideoEntry,
   ProviderSchemas,
   SchemaField,
@@ -127,12 +125,6 @@ function formatJobTimestamp(iso?: string): string {
   return `${d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} ${d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}`;
 }
 
-function formatVideoKind(kind: RecentProjectVideo['kind']): string {
-  if (kind === 'burned') return 'Burned';
-  if (kind === 'clips') return 'Clip';
-  return 'Generated';
-}
-
 function getDateKey(iso?: string): string {
   if (!iso) return 'Unknown';
   const d = new Date(iso);
@@ -153,9 +145,6 @@ const PROVIDER_SHORT: Record<string, string> = {
   'pruna-pvideo': 'Pruna',
   'pruna-pvideo-vertical': 'Pruna 9:16',
 };
-
-const RECENT_VIDEO_LIMIT = 500;
-const RECENT_VIDEO_PREVIEW_LIMIT = 24;
 
 /** Trigger a browser download from a Blob with the given filename. */
 function triggerBlobDownload(blob: Blob, filename: string): void {
@@ -314,7 +303,6 @@ export function GeneratePage() {
   const navigate = useNavigate();
   const {
     activeProjectName,
-    setActiveProjectName,
     generateJobs,
     addGenerateJob,
     setGenerateJob,
@@ -335,11 +323,6 @@ export function GeneratePage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pollTick, setPollTick] = useState(0);
-  const [recentVideos, setRecentVideos] = useState<RecentProjectVideo[]>([]);
-  const [recentVideosCount, setRecentVideosCount] = useState(0);
-  const [recentVideosLoading, setRecentVideosLoading] = useState(false);
-  const [recentVisibleCount, setRecentVisibleCount] = useState(RECENT_VIDEO_PREVIEW_LIMIT);
-
   useEffect(() => {
     const rerender = () => setPollTick((t) => t + 1);
     const unsubscribe = subscribeToPollStatus(rerender);
@@ -414,23 +397,6 @@ export function GeneratePage() {
   const stableOnUpdate = useCallback((job: Job) => onUpdateRef.current(job), []);
   const stableOnComplete = useCallback((job: Job) => onCompleteRef.current(job), []);
 
-  const fetchRecentVideos = useCallback(async () => {
-    setRecentVideosLoading(true);
-    try {
-      const res = await fetch(apiUrl(`/api/projects/videos/recent?limit=${RECENT_VIDEO_LIMIT}`));
-      if (!res.ok) throw new Error(`Failed to load recent videos (${res.status})`);
-      const data = (await res.json()) as Partial<RecentProjectVideosResponse>;
-      setRecentVideos(Array.isArray(data.videos) ? data.videos : []);
-      setRecentVideosCount(typeof data.count === 'number' ? data.count : 0);
-      setRecentVisibleCount(RECENT_VIDEO_PREVIEW_LIMIT);
-    } catch {
-      setRecentVideos([]);
-      setRecentVideosCount(0);
-    } finally {
-      setRecentVideosLoading(false);
-    }
-  }, []);
-
   useEffect(() => {
     for (const job of generateJobs) {
       const allDone = job.videos.every(isTerminal);
@@ -498,19 +464,6 @@ export function GeneratePage() {
   useEffect(() => {
     fetchHistory();
   }, [fetchHistory]);
-
-  useEffect(() => {
-    if (!activeProjectName) return;
-    void fetchRecentVideos();
-
-    const refresh = () => void fetchRecentVideos();
-    window.addEventListener('projects:changed', refresh);
-    window.addEventListener('videos:changed', refresh);
-    return () => {
-      window.removeEventListener('projects:changed', refresh);
-      window.removeEventListener('videos:changed', refresh);
-    };
-  }, [activeProjectName, fetchRecentVideos]);
 
   // Recover jobs from backend on mount / project change
   useEffect(() => {
@@ -828,11 +781,6 @@ export function GeneratePage() {
     }
     return out;
   }, [liveJobs]);
-
-  const recentVideoPreview = useMemo(
-    () => recentVideos.slice(0, recentVisibleCount),
-    [recentVideos, recentVisibleCount],
-  );
 
   const runBatchColorCorrect = useCallback(async () => {
     if (allDoneVideoPaths.length === 0) {
@@ -1658,94 +1606,6 @@ export function GeneratePage() {
       {/* Right panel — active jobs + completed */}
       <div className="flex-1 p-6 overflow-y-auto bg-background">
         <div className="max-w-6xl mx-auto">
-          <div className="mb-8">
-            <div className="mb-3 flex items-center justify-between gap-3">
-              <div>
-                <div className="text-xl font-heading text-foreground">Recent Videos</div>
-                <div className="text-xs text-muted-foreground">
-                  Newest files across all projects
-                </div>
-              </div>
-              <div className="flex items-center gap-2">
-                {recentVideosCount > 0 && (
-                  <Badge variant="secondary">{recentVideosCount} total</Badge>
-                )}
-                <Button variant="outline" size="sm" onClick={() => void fetchRecentVideos()} disabled={recentVideosLoading}>
-                  {recentVideosLoading ? 'Scanning...' : 'Refresh'}
-                </Button>
-              </div>
-            </div>
-
-            {recentVideosLoading && recentVideoPreview.length === 0 ? (
-              <div className="rounded-[var(--border-radius)] border border-dashed border-border bg-muted/30 px-4 py-6 text-center text-sm text-muted-foreground">
-                Scanning project folders...
-              </div>
-            ) : recentVideoPreview.length === 0 ? (
-              <div className="rounded-[var(--border-radius)] border border-dashed border-border bg-muted/30 px-4 py-6 text-center text-sm text-muted-foreground">
-                No local video files found yet.
-              </div>
-            ) : (
-              <div>
-                <div className="grid grid-cols-[repeat(auto-fill,minmax(150px,1fr))] gap-3">
-                  {recentVideoPreview.map((video) => (
-                    <div
-                      key={video.path}
-                      className="group overflow-hidden rounded-[var(--border-radius)] border border-border bg-card shadow-[var(--shadow)] transition-colors hover:border-primary/30"
-                    >
-                      <div className="relative aspect-[9/16] bg-muted">
-                        <LazyVideo
-                          src={staticUrl(video.url)}
-                          className="h-full w-full object-cover"
-                        />
-                        <div className="absolute left-1.5 top-1.5 max-w-[calc(100%-12px)]">
-                          <Badge variant={video.project === activeProjectName ? 'default' : 'secondary'} className="max-w-full truncate text-[10px] shadow-none">
-                            {video.project}
-                          </Badge>
-                        </div>
-                      </div>
-                      <div className="space-y-1.5 px-2.5 py-2">
-                        <div className="truncate text-xs font-bold text-foreground" title={video.name}>
-                          {video.name}
-                        </div>
-                        <div className="flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
-                          <span>{formatVideoKind(video.kind)}</span>
-                          <span>{timeAgo(video.modified)}</span>
-                        </div>
-                        <div className="flex items-center justify-between gap-2 pt-0.5">
-                          {video.project !== activeProjectName ? (
-                            <button
-                              type="button"
-                              onClick={() => setActiveProjectName(video.project)}
-                              className="text-[11px] font-bold text-muted-foreground hover:text-primary"
-                            >
-                              Select Project
-                            </button>
-                          ) : (
-                            <span className="text-[11px] font-bold text-primary">Active Project</span>
-                          )}
-                          <a href={staticUrl(video.url)} download className="text-[11px] font-bold text-primary hover:underline">
-                            Download
-                          </a>
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-                {recentVideoPreview.length < recentVideos.length && (
-                  <div className="mt-3 flex justify-center">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => setRecentVisibleCount((n) => Math.min(n + RECENT_VIDEO_PREVIEW_LIMIT, recentVideos.length))}
-                    >
-                      Show More ({recentVideos.length - recentVideoPreview.length})
-                    </Button>
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-
           <div className="flex items-center justify-between mb-6">
             <div className="text-xl font-heading text-foreground">Active Jobs</div>
             <div className="flex items-center gap-2">

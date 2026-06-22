@@ -15,6 +15,7 @@ Whisper, or ffmpeg — every external call is monkeypatched. The hard gates cove
     per-segment encode failed or the segment list was empty to begin with.
 """
 import asyncio
+from pathlib import Path
 
 import pytest
 
@@ -1628,3 +1629,79 @@ async def test_no_publisher_noise_when_no_pending_episodes(monkeypatch):
 
     assert not [(a, k) for (a, k) in events if a[0] == "publisher"], \
         "an empty review board must produce zero publisher events"
+
+
+# ---------------- OpenShot-as-compiler: factory episode assembly ----------------
+
+@pytest.mark.asyncio
+async def test_assemble_episode_openshot_bridges_timeline_to_compiler(monkeypatch, tmp_path):
+    """The factory's final assembly must flow through the sanctioned compiler
+    (editor_render.choose_renderer) — not the raw-ffmpeg bypass. This pins the bridge:
+    a factory _build_timeline shape -> project_from_abn_timeline -> renderer.render(),
+    output routed to the gateway {ep}/renders/episode.mp4, returning (url, duration).
+    choose_renderer is mocked so CI doesn't need libopenshot; the WIRING is what's pinned."""
+    monkeypatch.setattr(abn_factory, "ASSETS", tmp_path)
+    monkeypatch.setattr(abn_assets, "ASSETS_DIR", tmp_path)
+
+    ep_id = "ep_c0ffee01"
+    # a minimal but real factory timeline (same shape _build_timeline emits)
+    timeline = {
+        "fps": 30, "width": 1920, "height": 1080, "episodeId": ep_id,
+        "title": "T", "totalSec": 4.0, "musicBed": None,
+        "segments": [{
+            "segmentId": "s0", "title": "Seg", "sourceUrl": "https://x",
+            "shots": [{"id": "a", "src": "/agenticnews-assets/x.png", "startSec": 0.0,
+                       "durationSec": 4.0, "type": "artifact"}],
+            "wordTimestamps": [], "keywordPops": [], "lowerThirds": [],
+            "audio": {"vo": {"src": "/agenticnews-assets/vo.wav", "duration": 4.0}},
+            "durationSec": 4.0,
+        }],
+    }
+
+    captured = {}
+
+    class FakeRenderer:
+        backend = "openshot"
+        def render(self, project, *, output_path=None, **kw):
+            captured["projectId"] = project.get("projectId")
+            captured["has_clips"] = bool(project.get("clips"))
+            Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+            Path(output_path).write_bytes(b"mp4")
+            return {"backend": "openshot", "video": str(output_path), "duration": 4.0,
+                    "missingAssets": []}
+
+    import services.editor_render as er
+    monkeypatch.setattr(er, "choose_renderer", lambda out, asset_root=None: FakeRenderer())
+
+    url, dur = await abn_factory._assemble_episode_openshot(ep_id, timeline)
+
+    # bridge actually converted the timeline into an editor-bay project with clips
+    assert captured["projectId"] == ep_id
+    assert captured["has_clips"] is True
+    # output landed at the gateway episode path and returns a usable (url, duration)
+    assert url.startswith("/agenticnews-assets/") and url.endswith("episode.mp4")
+    assert dur == 4.0
+    assert (tmp_path / ep_id / "renders" / "episode.mp4").exists()
+
+
+@pytest.mark.asyncio
+async def test_assemble_episode_openshot_raises_so_factory_falls_back(monkeypatch, tmp_path):
+    """If the compiler produces no file, the OpenShot path must RAISE — so produce_one_episode
+    falls through to Remotion / ffmpeg instead of shipping a phantom episode. Additive, no regression."""
+    monkeypatch.setattr(abn_factory, "ASSETS", tmp_path)
+    monkeypatch.setattr(abn_assets, "ASSETS_DIR", tmp_path)
+    timeline = {"fps": 30, "width": 1920, "height": 1080, "episodeId": "ep_dead01",
+                "title": "T", "totalSec": 1.0, "segments": [{
+                    "segmentId": "s0", "durationSec": 1.0, "shots": [],
+                    "audio": {"vo": {"src": "/agenticnews-assets/vo.wav", "duration": 1.0}}}]}
+
+    class NoFileRenderer:
+        backend = "openshot"
+        def render(self, project, *, output_path=None, **kw):
+            return {"backend": "openshot", "video": str(output_path), "duration": 1.0}  # never writes the file
+
+    import services.editor_render as er
+    monkeypatch.setattr(er, "choose_renderer", lambda out, asset_root=None: NoFileRenderer())
+
+    with pytest.raises(RuntimeError):
+        await abn_factory._assemble_episode_openshot("ep_dead01", timeline)
