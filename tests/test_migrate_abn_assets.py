@@ -96,3 +96,69 @@ def test_verify_respects_ep_filter(mig):
     mig.apply(mig.plan("ep_648e806a"))
     assert mig.verify_voice_symlinks("ep_648e806a") == []
     assert mig.verify_voice_symlinks("ep_aaaaaaaa") == [("ep_aaaaaaaa_s0.wav", "dangling")]
+
+
+# ---- migration completion gate (abn_assets.assert_migration_complete) ----------
+# The lock-down step: once migration has run, no flat un-migrated REGULAR file may
+# remain at the store root. Back-compat symlinks (even dangling, e.g. after an
+# ASSETS_DIR relocation) must pass — they are shims, not un-migrated data.
+
+
+@pytest.fixture()
+def A(mig):
+    """The reloaded abn_assets module (same throwaway ASSETS_DIR as `mig`)."""
+    import services.abn_assets as _A
+    return _A
+
+
+def test_gate_clean_store_passes(A):
+    # empty store, and a properly-schema'd episode file -> no flat un-migrated files
+    (A.ASSETS_DIR / "ep_648e806a" / "css").mkdir(parents=True)
+    (A.ASSETS_DIR / "ep_648e806a" / "css" / "s0_card.png").write_bytes(b"x")
+    assert A.flat_unmigrated() == []
+    A.assert_migration_complete()  # does not raise
+
+
+def test_gate_flags_flat_regular_file(A):
+    flat = A.ASSETS_DIR / "ep_648e806a_s0_card.png"
+    flat.write_bytes(b"unmigrated")
+    assert A.flat_unmigrated() == [flat]
+    with pytest.raises(A.AssetPathError) as ei:
+        A.assert_migration_complete()
+    assert "migration incomplete" in str(ei.value)
+    assert "ep_648e806a_s0_card.png" in str(ei.value)
+
+
+def test_gate_ignores_back_compat_symlink_even_dangling(A):
+    # the real migration outcome: flat name replaced by a symlink into the schema.
+    # a DANGLING one (target moved with ASSETS_DIR) is still a shim, not un-migrated data.
+    target = A.ASSETS_DIR / "ep_648e806a" / "css" / "s0_card.png"  # never created -> dangling
+    flat = A.ASSETS_DIR / "ep_648e806a_s0_card.png"
+    flat.symlink_to(target)
+    assert flat.is_symlink() and not flat.exists()  # dangling
+    assert A.flat_unmigrated() == []
+    A.assert_migration_complete()  # passes — symlinks never trip the gate
+
+
+def test_gate_ignores_episode_dirs_and_dotfiles(A):
+    (A.ASSETS_DIR / "ep_648e806a").mkdir()
+    (A.ASSETS_DIR / ".DS_Store").write_bytes(b"")
+    (A.ASSETS_DIR / "_shared").mkdir()
+    assert A.flat_unmigrated() == []
+    A.assert_migration_complete()
+
+
+def test_check_cli_mode(mig, A, capsys):
+    # `migrate_abn_assets.py --check`: exit 0 clean, exit 1 with a flat file present
+    import sys
+    monkey_argv = ["migrate_abn_assets.py", "--check"]
+    sys.argv = monkey_argv
+    mig.main()  # clean store
+    assert "migration check: OK" in capsys.readouterr().out
+
+    (A.ASSETS_DIR / "ep_648e806a_s0_card.png").write_bytes(b"x")
+    sys.argv = monkey_argv
+    with pytest.raises(SystemExit) as ei:
+        mig.main()
+    assert ei.value.code == 1
+    assert "migration check: FAIL" in capsys.readouterr().out

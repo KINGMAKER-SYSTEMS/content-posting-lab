@@ -37,7 +37,8 @@ from typing import Optional
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from services.abn_assets import (  # noqa: E402
-    ASSETS_DIR, KINDS, SHARED_CATEGORIES, classify, episode_dir,
+    ASSETS_DIR, KINDS, SHARED_CATEGORIES, AssetPathError,
+    assert_migration_complete, classify, episode_dir, flat_unmigrated,
 )
 
 # Loose-file routing rules: filename pattern -> shared category under _shared/.
@@ -227,11 +228,26 @@ def main() -> None:
     ap.add_argument("--report", action="store_true", help="classification summary only")
     ap.add_argument("--verify", action="store_true",
                     help="audit back-compat VO symlinks (abn_factory._align fallback); exit 1 if any broken")
+    ap.add_argument("--check", action="store_true",
+                    help="one-time completion gate: exit 1 if any flat un-migrated file remains "
+                         "at the store root (back-compat symlinks pass). Use at startup/CI to "
+                         "certify the cutover before the gateway is locked down.")
     args = ap.parse_args()
 
     print(f"ASSETS_DIR = {ASSETS_DIR}")
     if not ASSETS_DIR.exists():
         sys.exit(f"ASSETS_DIR does not exist: {ASSETS_DIR}")
+
+    if args.check:
+        try:
+            assert_migration_complete()
+        except AssetPathError as e:
+            print(f"migration check: FAIL\n  {e}")
+            for p in flat_unmigrated():
+                print(f"  !! {p.name}")
+            sys.exit(1)
+        print("migration check: OK — no flat un-migrated files at the store root.")
+        return
 
     if args.verify:
         problems = verify_voice_symlinks(args.ep)

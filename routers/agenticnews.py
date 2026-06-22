@@ -385,12 +385,13 @@ async def episode_qa(ep_id: str):
     import json as _json, os as _os, subprocess as _sp, re as _re
     # Route through the asset gateway (NOT hand-built flat legacy names): read the timeline
     # + render the factory ACTUALLY wrote at the schema paths {ep_id}/timeline.json and
-    # {ep_id}/renders/episode.mp4. _timeline_file_for_episode + episode_singleton_path both
-    # fall back to the flat legacy name for non-episode / un-migrated ids, so this stays
-    # read-safe while honoring the gateway hard gate (no GC-eatable hand-built paths).
+    # {ep_id}/renders/episode.mp4. Migration is complete (asserted at startup), so the flat
+    # legacy name is only a back-compat symlink into the schema path; _timeline_file_for_episode +
+    # episode_singleton_path resolve the schema path for a real episode and fall back to the flat
+    # name only for a non-episode id (no schema singleton exists). No GC-eatable hand-built paths.
     props_path = _timeline_file_for_episode(ep_id)
     _schema_mp4 = abn_assets.episode_singleton_path(ep_id, "episode")
-    if _schema_mp4 is not None and _schema_mp4.exists():
+    if _schema_mp4 is not None:
         mp4 = _schema_mp4
     else:
         mp4 = db.ASSETS_DIR / f"{ep_id}_episode.mp4"
@@ -610,16 +611,15 @@ def _reject_demo_editor_project(project_id: str) -> None:
 
 
 def _timeline_file_for_episode(episode_id: str) -> Path:
-    # Read the timeline the factory ACTUALLY wrote: the schema path {ep_id}/timeline.json
-    # (via the gateway), not the flat {ep_id}_timeline.json legacy name — which now only
-    # exists as a back-compat symlink the migration left behind. Fall back to the flat path
-    # only for a non-episode id (gateway returns None) or an episode not yet migrated to the
-    # schema, so the cutover stays read-safe.
+    # Read the timeline the factory wrote: the schema path {ep_id}/timeline.json (via the
+    # gateway). The migration is complete (asserted at startup by
+    # abn_assets.assert_migration_complete), so the flat {ep_id}_timeline.json name now only
+    # exists as a back-compat symlink into this same schema path — reading it is redundant.
+    # A non-episode id (gateway returns None) keeps the flat path as its only addressable form.
     schema = abn_assets.episode_singleton_path(episode_id, "timeline")
-    flat = db.ASSETS_DIR / f"{episode_id}_timeline.json"
-    if schema is not None and (schema.exists() or not flat.exists()):
+    if schema is not None:
         return schema
-    return flat
+    return db.ASSETS_DIR / f"{episode_id}_timeline.json"
 
 
 async def _load_real_abn_timeline(project_id: str) -> tuple[str, dict]:
@@ -702,10 +702,11 @@ def _plan_editor_source_materialization(
     materialize: bool = False,
 ) -> list[dict[str, str]]:
     # Read the render the factory wrote at the schema path {ep_id}/renders/episode.mp4 (via the
-    # gateway), not the flat {ep_id}_episode.mp4 legacy name (now a back-compat symlink only).
-    # Non-episode id -> gateway returns None -> flat fallback; un-migrated episode -> flat fallback.
+    # gateway). Migration is complete (asserted at startup), so the flat {ep_id}_episode.mp4 name
+    # is only a back-compat symlink into this same path. A non-episode id (gateway returns None)
+    # keeps the flat path as its only addressable form.
     _schema_video = abn_assets.episode_singleton_path(episode_id, "episode")
-    if _schema_video is not None and _schema_video.exists():
+    if _schema_video is not None:
         episode_video = _schema_video
     else:
         episode_video = db.ASSETS_DIR / f"{episode_id}_episode.mp4"

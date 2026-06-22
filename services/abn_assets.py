@@ -558,6 +558,55 @@ _LEGACY_RE = re.compile(
 )
 
 
+# ---- migration completion gate -------------------------------------------------
+#
+# The migration (scripts/migrate_abn_assets.py) is COPY + back-compat-symlink: it
+# leaves the original flat file replaced by a symlink into the schema. So once an
+# episode is migrated the ONLY legacy-named things left at the store root are those
+# back-compat SYMLINKS — never a regular file. A flat REGULAR file matching the legacy
+# ``{ep}_{kind}.ext`` shape therefore means an un-migrated (or crash-half-migrated)
+# asset still living off-schema, exposed to the glob-GC hazard this schema exists to
+# kill. Symlinks (even dangling ones, e.g. after an ASSETS_DIR relocation) are NOT
+# un-migrated data and must NOT trip the gate.
+
+
+def flat_unmigrated() -> list[Path]:
+    """Every legacy-named flat REGULAR FILE still sitting at the store root un-migrated.
+    Excludes symlinks (back-compat shims the migration left) and directories. Empty list
+    == migration complete. Read-only."""
+    bad: list[Path] = []
+    try:
+        for f in ASSETS_DIR.iterdir():
+            if f.is_symlink() or f.is_dir():
+                continue
+            if f.name.startswith("."):
+                continue
+            if classify(f.name) is not None:
+                bad.append(f)
+    except (FileNotFoundError, OSError):
+        pass
+    return bad
+
+
+def assert_migration_complete() -> None:
+    """One-time startup/CI guard: RAISE if any un-migrated flat asset remains at the store
+    root. Run this after the migration has been applied to certify the cutover; it makes
+    the schema the enforced reality instead of a convention. Back-compat symlinks pass.
+
+        from services.abn_assets import assert_migration_complete
+        assert_migration_complete()   # in app startup or `migrate_abn_assets.py --check`
+    """
+    bad = flat_unmigrated()
+    if bad:
+        sample = ", ".join(p.name for p in bad[:8])
+        more = f" (+{len(bad) - 8} more)" if len(bad) > 8 else ""
+        raise AssetPathError(
+            f"ABN asset migration incomplete: {len(bad)} flat un-migrated file(s) still at "
+            f"the store root [{sample}{more}]. Run `python scripts/migrate_abn_assets.py --apply` "
+            f"to move them into the per-episode schema before the gateway is locked down."
+        )
+
+
 def classify(path: Path | str) -> Optional[dict]:
     """Reverse-engineer a flat legacy filename into {ep_id, kind, slug, subdir, ext}.
     Used only by the one-time migration. Falls back to 'scratch' for episode-scoped
