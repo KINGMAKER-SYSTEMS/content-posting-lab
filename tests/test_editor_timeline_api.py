@@ -2115,3 +2115,117 @@ def test_extract_audio_window_wraps_disk_full_during_encode(monkeypatch, tmp_pat
         )
     assert "No space left on device" in str(caught.value)
     assert caught.value.__cause__ is err
+
+
+def test_editor_timeline_api_track_create_and_validation(sync_client, monkeypatch, tmp_path):
+    """track.create over HTTP adds a new track to the project (beyond the five
+    default tracks) and a clip can then be created on it; a track.create missing
+    trackId is rejected by command validation as a 400. Covers the apply_command
+    track.create branch and _track_from_payload, which had no API-level test."""
+    monkeypatch.setattr(agenticnews_router.db, "ASSETS_DIR", tmp_path)
+
+    created = sync_client.post(
+        "/api/agenticnews/editor-timelines",
+        json={"projectId": "track_proj", "title": "Track Project"},
+    )
+    assert created.status_code == 201
+    # New projects ship the five default tracks.
+    assert set(created.json()["tracks"]) == {
+        "video_1", "graphics_1", "titles_1", "audio_1", "music_1"
+    }
+
+    # track.create adds a brand-new track with the payload's fields applied.
+    new_track = sync_client.post(
+        "/api/agenticnews/editor-timelines/track_proj/commands",
+        json={
+            "op": "track.create",
+            "actor": "agent",
+            "expectedRevision": 0,
+            "payload": {
+                "trackId": "overlay_1",
+                "kind": "graphics",
+                "name": "Overlay",
+                "index": 25,
+                "locked": True,
+            },
+        },
+    )
+    assert new_track.status_code == 200
+    body = new_track.json()
+    assert body["revision"] == 1
+    track = body["tracks"]["overlay_1"]
+    assert track == {
+        "id": "overlay_1",
+        "kind": "graphics",
+        "name": "Overlay",
+        "index": 25,
+        "locked": True,
+    }
+
+    # The new track is real enough to hang a clip on (clip.create validates trackId).
+    asset = sync_client.post(
+        "/api/agenticnews/editor-timelines/track_proj/commands",
+        json={
+            "op": "asset.import",
+            "actor": "agent",
+            "expectedRevision": 1,
+            "payload": {"assetId": "a1", "type": "image", "src": "/agenticnews-assets/card.png"},
+        },
+    )
+    assert asset.status_code == 200
+    clip = sync_client.post(
+        "/api/agenticnews/editor-timelines/track_proj/commands",
+        json={
+            "op": "clip.create",
+            "actor": "agent",
+            "expectedRevision": 2,
+            "payload": {
+                "clipId": "c1",
+                "assetId": "a1",
+                "trackId": "overlay_1",
+                "start": 0,
+                "duration": 1,
+            },
+        },
+    )
+    assert clip.status_code == 200
+    assert clip.json()["clips"]["c1"]["trackId"] == "overlay_1"
+
+    # A track.create with no trackId/id is rejected by command validation (400).
+    bad = sync_client.post(
+        "/api/agenticnews/editor-timelines/track_proj/commands",
+        json={
+            "op": "track.create",
+            "actor": "agent",
+            "expectedRevision": 3,
+            "payload": {"kind": "graphics", "name": "Nameless"},
+        },
+    )
+    assert bad.status_code == 400
+    assert "trackId is required" in bad.json()["detail"]
+
+
+def test_editor_timeline_track_create_defaults_via_command_core():
+    """Unit-pin _track_from_payload / apply_command track.create defaults: a payload
+    with only an `id` gets kind=video, name=id, index=0, locked=False, and the track
+    lands in project['tracks'] with the revision bumped."""
+    from services import editor_timeline
+
+    project = editor_timeline.new_project("p")
+    result = editor_timeline.apply_command(
+        project,
+        {
+            "op": "track.create",
+            "actor": "agent",
+            "expectedRevision": 0,
+            "payload": {"id": "bare_1"},
+        },
+    )
+    assert result["revision"] == 1
+    assert result["tracks"]["bare_1"] == {
+        "id": "bare_1",
+        "kind": "video",
+        "name": "bare_1",
+        "index": 0,
+        "locked": False,
+    }
