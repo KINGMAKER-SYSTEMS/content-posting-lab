@@ -218,6 +218,13 @@ def update_action_from_command(
         payload = entry.get("payload") or {}
         if not after.get("clip") and "keyframes" in payload:
             target["keyframes"] = payload["keyframes"]
+        # clip.keyframes only ever mutates keyframes/volume — never effects. So
+        # before["clip"]["effects"] is the authoritative effect set (it carries the
+        # ABN-import-synthesized crossfade). If the after block is partial and dropped
+        # effects, restore them from before so the crossfade survives to OpenShot.
+        before_clip = before.get("clip")
+        if before_clip is not None and before_clip.get("effects") and not target.get("effects"):
+            target["effects"] = before_clip["effects"]
         return _update_action(
             "update",
             ["clips", {"id": target["id"]}],

@@ -734,6 +734,46 @@ def test_clip_keyframes_orphaned_command_with_no_clip_target_returns_none(tmp_pa
     )
 
 
+def test_clip_keyframes_partial_after_block_keeps_before_crossfade(tmp_path):
+    """Regression guard for the ABN cross-clip transition: a clip.keyframes log
+    entry whose after["clip"] is a partial/keyframes-only block that dropped the
+    effects array must not lose the import-synthesized crossfade. clip.keyframes
+    never mutates effects, so before["clip"]["effects"] is authoritative and the
+    crossfade must survive to OpenShot as a Fade."""
+    project = _project(tmp_path / "card.png")
+    before_clip = dict(project["clips"]["card_clip"])
+    before_clip["effects"] = [
+        {"id": "xf_shot", "type": "crossfade", "params": {"duration": 0.5}}
+    ]
+    # after block carries the new keyframes but its effects array was dropped
+    after_clip = dict(before_clip)
+    after_clip["effects"] = []
+    after_clip["keyframes"] = [
+        {
+            "property": "opacity",
+            "points": [
+                {"t": 0.0, "value": 0.0, "interp": "linear"},
+                {"t": 1.0, "value": 1.0, "interp": "linear"},
+            ],
+        }
+    ]
+    entry = {
+        "id": "cmd_kf_partial",
+        "op": "clip.keyframes",
+        "payload": {"clipId": "card_clip", "keyframes": after_clip["keyframes"]},
+        "before": {"clip": before_clip},
+        "after": {"clip": after_clip},
+    }
+
+    action = openshot_bridge.update_action_from_command(project, entry)
+
+    assert action is not None
+    effects = action["value"].get("effects", [])
+    assert any(e.get("type") == "Fade" for e in effects), (
+        "import-synthesized crossfade was dropped from a keyframes-only after block"
+    )
+
+
 def test_clip_keyframe_envelope_translates_to_multipoint_openshot_keyframes(tmp_path):
     """A volume-ducking envelope on the clip becomes a multi-Point OpenShot
     keyframe (frame X = t*fps+1, Y scaled to 0..100), overriding the flat default."""
