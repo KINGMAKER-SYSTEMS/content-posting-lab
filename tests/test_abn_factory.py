@@ -4155,3 +4155,44 @@ def test_v2_returns_empty_when_v2_visuals_disabled(monkeypatch):
     (the whole function is best-effort and must NEVER break a render)."""
     monkeypatch.setattr(abn_factory, "_USE_V2_VISUALS", False)
     assert abn_factory._v2_scene_cards("ep_t", 0, {"script": "x", "title": "t"}) == []
+
+
+# ---------------- ATOMIC BINARY COPY: no truncated clips for downstream readers ----------------
+
+def test_atomic_copy_file_copies_bytes_exactly(tmp_path):
+    """_atomic_copy_file must reproduce the source bytes exactly at the destination."""
+    src = tmp_path / "src.mp4"
+    payload = b"\x00\x01FAKE-MP4-CLIP\xff" * 1000
+    src.write_bytes(payload)
+    dest = tmp_path / "out" / "dest.mp4"
+    abn_factory._atomic_copy_file(src, dest)
+    assert dest.read_bytes() == payload
+
+
+def test_atomic_copy_file_leaves_no_tmp_and_uses_replace(tmp_path):
+    """The copy goes through a tmp sibling + os.replace, so the .tmp must not survive and the
+    final dest is created atomically (no partial dest is ever the live file)."""
+    src = tmp_path / "src.mp4"
+    src.write_bytes(b"x" * 50000)
+    dest = tmp_path / "dest.mp4"
+    abn_factory._atomic_copy_file(src, dest)
+    assert dest.exists()
+    assert not dest.with_suffix(dest.suffix + ".tmp").exists()
+
+
+def test_atomic_copy_file_crash_mid_write_leaves_dest_untouched(tmp_path, monkeypatch):
+    """If a crash happens after the tmp is written but BEFORE os.replace, the destination is
+    never partially overwritten — the whole point of tmp+replace. Simulate by making os.replace
+    raise and asserting the pre-existing dest is intact and no live partial replaced it."""
+    src = tmp_path / "src.mp4"
+    src.write_bytes(b"NEW" * 10000)
+    dest = tmp_path / "dest.mp4"
+    dest.write_bytes(b"OLD-GOOD-CLIP")
+
+    import os as _os
+    real_replace = _os.replace
+    monkeypatch.setattr(abn_factory.os, "replace", lambda *a, **k: (_ for _ in ()).throw(OSError("boom")))
+    with pytest.raises(OSError):
+        abn_factory._atomic_copy_file(src, dest)
+    # the original destination must be byte-for-byte intact (never half-written)
+    assert dest.read_bytes() == b"OLD-GOOD-CLIP"

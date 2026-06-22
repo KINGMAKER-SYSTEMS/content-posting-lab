@@ -131,6 +131,22 @@ def _atomic_write_text(path, text: str) -> None:
     os.replace(tmp, path)
 
 
+def _atomic_copy_file(src, dest) -> None:
+    """Copy bytes via tmp file + fsync + os.replace so a crash mid-write can't
+    leave a truncated/partial clip at `dest` for a downstream reader (openshot
+    bridge / ffmpeg). Same proven pattern as _atomic_write_text, but for binary
+    files large enough that a partial write is a real hazard (~90s clip downloads)."""
+    src = Path(src)
+    dest = Path(dest)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dest.with_suffix(dest.suffix + ".tmp")
+    with open(tmp, "wb") as f:
+        f.write(src.read_bytes())
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, dest)
+
+
 def _cards_assets_dir() -> str:
     """Base dir the v2 cards reader (cards._bg_pool: <assets>/card_backgrounds) must point at so
     its reads resolve to the SAME dir the gateway writes to. shared_path() lands the bg pool in
@@ -1600,7 +1616,7 @@ async def _grow_bg_library(want=1):
             else:  # already a local /agenticnews-assets path (now under _scratch/)
                 src = ASSETS / str(clip_url).removeprefix("/agenticnews-assets/")
                 if src.exists():
-                    await asyncio.to_thread(lambda: dest.write_bytes(src.read_bytes()))
+                    await asyncio.to_thread(_atomic_copy_file, src, dest)
             if dest.exists() and dest.stat().st_size > 4096:
                 made += 1
                 BUS.emit("editor-agent", "bg.cache", f"cached b-roll clip {dest.name} (library now {have+made})", stage="assets")
