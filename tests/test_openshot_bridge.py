@@ -798,3 +798,27 @@ def test_app_imported_python_modules_are_all_tracked():
         "app-imported python modules are NOT git-tracked (clean checkout would "
         f"ModuleNotFoundError): {untracked}"
     )
+
+
+def test_opacity_keyframe_is_sole_alpha_driver_overriding_flat_transform(tmp_path):
+    """The flat `transform.opacity` and an opacity keyframe envelope both target
+    `alpha`. When both exist the keyframe must REPLACE the flat value, not blend
+    with it. Pick a flat opacity (0.5) that collides with neither keyframe endpoint
+    (0.0, 1.0) so any leak of the flat default into the exported envelope is visible:
+    the alpha Points must be exactly the two keyframe values, and 0.5 must appear
+    nowhere in them."""
+    project = _project(tmp_path / "card.png")
+    project["clips"]["card_clip"]["sourceStart"] = 0.0
+    project["clips"]["card_clip"]["transform"]["opacity"] = 0.5  # flat default
+    project["clips"]["card_clip"]["keyframes"] = [
+        {"property": "opacity", "points": [{"t": 0.0, "value": 0.0}, {"t": 1.0, "value": 1.0}]},
+    ]
+
+    clip = openshot_bridge.timeline_json(project)["clips"][0]
+
+    alpha_values = [p["co"]["Y"] for p in clip["alpha"]["Points"]]
+    assert alpha_values == [0.0, 1.0]  # keyframe drives alpha end-to-end
+    assert 0.5 not in alpha_values  # flat transform.opacity does NOT leak in
+    assert len(clip["alpha"]["Points"]) == 2  # no extra flat-default point appended
+
+
