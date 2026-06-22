@@ -296,6 +296,62 @@ def test_protection_scan_strips_cachebuster_query_on_agenticnews_url(store):
     assert keeper.exists(), "GC trimmed a render referenced by a ?rev= cache-busted timeline URL"
 
 
+def test_cachebuster_url_protects_and_renders_the_same_file_end_to_end(store):
+    """THE DRIFT GUARD the audit asks for: drive ONE cache-buster URL
+    (/agenticnews-assets/.../episode.mp4?rev=3) through BOTH the GC protection scan AND the
+    OpenShot render path in the SAME test, and prove they land on the IDENTICAL on-disk file.
+
+    The two sides strip the cache-buster independently — the GC via
+    `_editor_timeline_asset_paths` (abn_factory) and the compiler via
+    `openshot_bridge._resolve_asset_src`. test_resolve_asset_src_strips_query_and_fragment_in_parity_with_gc_scan
+    pins the resolver shape, and test_protection_scan_strips_cachebuster_query_on_agenticnews_url
+    pins the scan — but nothing pinned that the path the GC PROTECTS equals the path the compiler
+    OPENS for the same URL. If they ever drift (GC protects 'episode.mp4', compiler opens
+    'episode.mp4?rev=3', or vice versa), the file is reaped under one name while the render tries
+    to open another — silent loss at render time. This test fails the moment that divergence opens.
+    """
+    from services import openshot_bridge
+
+    d = store / "ep_drift0" / "renders"
+    d.mkdir(parents=True)
+    keeper = d / "episode.mp4"
+    keeper.write_bytes(b"render")
+    old = time.time() - 9000
+    os.utime(keeper, (old, old))
+    rel = keeper.relative_to(store)
+    busted = f"/agenticnews-assets/{rel}?rev=3"
+
+    # 1) The compiler's resolver (the path libopenshot would actually open at render time).
+    rendered = Path(openshot_bridge._resolve_asset_src(busted, asset_root=store))
+
+    # 2) The GC protection scan (the path the GC promises never to reap), from a timeline that
+    #    persists the exact same cache-buster URL.
+    (store / "editor_timelines" / "ep_drift0.json").write_text(
+        f'{{"renderCache": {{"video": {{"path": "{busted}"}}}}}}'
+    )
+    protected = abn_factory._editor_timeline_asset_paths()
+
+    # The render path AND the protected path must both be the SINGLE real file on disk — locked
+    # together so a one-sided change to either strip rule trips this immediately.
+    assert rendered.resolve() == keeper.resolve(), "compiler opens a path that isn't the real render"
+    assert abn_factory._is_editor_timeline_protected_asset(rendered, protected), (
+        "the file the compiler opens is NOT the file the GC protects — protect/render drift"
+    )
+
+    # 3) End-to-end under a real low-disk trim: the protected render survives, and the compiler's
+    #    resolved path is still openable afterwards (it's the surviving keeper, not a reaped name).
+    usage = namedtuple("usage", ("total", "used", "free"))
+    _orig = shutil.disk_usage
+    shutil.disk_usage = lambda _: usage(100, 100, 0)  # critically low → render trim fires
+    try:
+        abn_factory.purge_disk(intermediate_age_s=99999, keep_episodes=0, low_disk_gb=999)
+    finally:
+        shutil.disk_usage = _orig
+
+    assert keeper.exists(), "GC reaped the cache-busted render the compiler resolves to"
+    assert rendered.exists(), "compiler's resolved render path is missing after the GC cycle"
+
+
 def test_protection_scan_reaches_deeply_nested_clip_keyframe_refs(store):
     """The collect() traversal must reach asset refs buried arbitrarily deep — a real editor timeline
     nests them under clips[] → keyframes[] (and an effects[] sidecar), not at the top level. If the
