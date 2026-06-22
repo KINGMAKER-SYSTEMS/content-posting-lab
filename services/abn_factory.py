@@ -107,7 +107,7 @@ from services.abn_assets import (  # noqa: E402
     reapable_scratch, scratch_dirs, scratch_usage, tombstone, tombstone_render,
 )
 from services.json_store import atomic_save  # noqa: E402
-from services.fsutil import safe_unlink  # noqa: E402
+from services.fsutil import safe_rmtree, safe_unlink  # noqa: E402
 
 
 def _cards_assets_dir() -> str:
@@ -1309,11 +1309,7 @@ async def _real_demo(repo_url: str, name: str):
     except Exception:
         return None
     finally:
-        try:
-            import shutil as _sh2
-            _sh2.rmtree(workdir, ignore_errors=True)
-        except Exception:
-            pass
+        safe_rmtree(workdir)
         try:
             if tape.exists():
                 tape.unlink()

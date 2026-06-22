@@ -139,6 +139,24 @@ def test_rmtree_double_call_is_idempotent(tmp_path):
     assert safe_rmtree(d) is False
 
 
+def test_abn_factory_uses_safe_rmtree_in_real_demo():
+    """Regression: abn_factory._real_demo's finally block must scrub its temp
+    workdir via the shared helper, not the bare
+    ``shutil.rmtree(workdir, ignore_errors=True)`` wrapped in a redundant
+    ``try/except Exception: pass`` — the exact double-swallowing pattern
+    safe_rmtree was created to unify. safe_rmtree logs the OSError instead of
+    silently eating it, so orphaned temp workdirs become visible."""
+    import inspect
+
+    import services.abn_factory as af
+
+    src = inspect.getsource(af._real_demo)
+    # The bare ignore_errors rmtree (and its redundant wrapper) is gone...
+    assert "ignore_errors=True" not in src
+    # ...replaced by the shared logging helper.
+    assert "safe_rmtree(workdir)" in src
+
+
 def test_clipper_uses_safe_rmtree():
     """Regression: every staging/job cleanup in routers.clipper must go through
     safe_rmtree, not bare shutil.rmtree (including the one site that wrapped it
