@@ -93,6 +93,52 @@ def test_pocket_language_regex_rejects_trailing_newline_bypass(evil):
     assert abn_factory._POCKET_LANG_RE.fullmatch(evil) is None
 
 
+@pytest.mark.parametrize("evil", [
+    "english_x\n/path/to/evil.safetensors", # newline smuggles a clone path past a `$`-anchored re
+    "english_2026-04\nmodel.safetensors",   # valid-looking code, then newline + clone file
+    "english_x\n/etc/passwd",               # newline + traversal target
+])
+def test_pocket_tts_command_rejects_trailing_newline_bypass_end_to_end(monkeypatch, tmp_path, evil):
+    """END-TO-END locked-voice gate for the embedded-newline class: the regex test above pins the
+    pattern, but this proves the WHOLE command path rejects it. `.strip()` only collapses a *bare*
+    trailing newline; an embedded `\\n<path>` survives strip and would slip past a `$`-anchored
+    `re.match`, so `_pocket_tts_command` must fall back to the built-in default and the poisoned
+    value (plus any embedded clone file / path) must never reach the `--language` flag handed to
+    the pocket-tts binary."""
+    monkeypatch.setenv("ABN_POCKET_LANGUAGE", evil)
+    cmd = abn_factory._pocket_tts_command("hi", tmp_path / "v.wav")
+
+    assert cmd[cmd.index("--language") + 1] == "english_2026-04"
+    joined = " ".join(cmd).lower()
+    for banned in ("safetensors", "model.", "/path", "/etc", "passwd", "\n"):
+        assert banned not in joined, f"trailing-newline bypass leaked into VO command: {banned!r}"
+
+
+def test_pocket_language_fallback_logs_warning_not_security_anomaly(monkeypatch, caplog):
+    """When a poisoned ABN_POCKET_LANGUAGE is rejected the fallback is QUIET: it emits a single
+    WARNING (operator-visible, for debugging a misconfigured env) and never escalates to
+    ERROR/CRITICAL or anything a SIEM would page on. A rejected env is an ops mistake, not a
+    breach signal — over-logging it as an anomaly would drown the real signal."""
+    monkeypatch.setenv("ABN_POCKET_LANGUAGE", "/path/to/evil.safetensors")
+    with caplog.at_level("WARNING", logger="services.abn_factory"):
+        assert abn_factory._pocket_language() == "english_2026-04"
+
+    gate_records = [r for r in caplog.records if "ABN_POCKET_LANGUAGE" in r.getMessage()]
+    assert len(gate_records) == 1, "fallback must log exactly once, not spam per call"
+    rec = gate_records[0]
+    assert rec.levelname == "WARNING", f"fallback must not escalate past WARNING, got {rec.levelname}"
+    # the rejected value is named so ops can fix it, but it's a config warning, not a paged anomaly
+    assert "evil.safetensors" in rec.getMessage()
+
+
+def test_pocket_language_valid_env_logs_nothing(monkeypatch, caplog):
+    """A VALID language code passes the gate silently — no warning noise on the happy path."""
+    monkeypatch.setenv("ABN_POCKET_LANGUAGE", "english_test")
+    with caplog.at_level("WARNING", logger="services.abn_factory"):
+        assert abn_factory._pocket_language() == "english_test"
+    assert not [r for r in caplog.records if "ABN_POCKET_LANGUAGE" in r.getMessage()]
+
+
 def test_pocket_language_resolves_default_when_env_unset(monkeypatch):
     monkeypatch.delenv("ABN_POCKET_LANGUAGE", raising=False)
     assert abn_factory._pocket_language() == "english_2026-04"
