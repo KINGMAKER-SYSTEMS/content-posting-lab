@@ -261,6 +261,74 @@ def test_visual_filter_zero_duration_clip_omits_fades(tmp_path):
     assert "fade=" not in out  # no fade term at all for a zero-length clip
 
 
+def test_visual_filter_no_rotation_omits_rotate_term(tmp_path):
+    """The common (unrotated) clip must NOT carry a `rotate` filter — it would be a
+    wasted per-frame op and risk sub-pixel resampling on every overlay."""
+    r = _renderer(tmp_path)
+    clip = {"id": "c", "assetId": "i", "duration": 1.0, "sourceStart": 0.0, "transform": {}}
+    out = r._visual_filter(1, clip, {"type": "image"}, "lbl", 1920, 1080)
+    assert "rotate=" not in out
+
+
+def test_visual_filter_static_rotation_emits_rotate_in_radians(tmp_path):
+    """A flat `rotation` transform (degrees, per the editor schema / OpenShot bridge)
+    must map to ffmpeg's `rotate` filter, which takes RADIANS — so the angle is
+    converted via *PI/180, fills corners transparently (c=none), and uses a constant
+    diagonal output box so no angle clips the corners."""
+    r = _renderer(tmp_path)
+    clip = {"id": "c", "assetId": "i", "duration": 1.0, "sourceStart": 0.0,
+            "transform": {"rotation": 90.0}}
+    out = r._visual_filter(1, clip, {"type": "image"}, "lbl", 1920, 1080)
+    assert "rotate=a='90.0000*PI/180':c=none" in out
+    assert "ow='hypot(iw,ih)':oh='hypot(iw,ih)'" in out
+
+
+def test_visual_filter_rotation_keyframes_emit_time_expr_not_dropped(tmp_path):
+    """The ticket: a `rotation` keyframe envelope is validated in the schema and
+    translated by the OpenShot bridge, but the ffmpeg fallback used to silently drop
+    it. It must now reproduce the envelope as a piecewise-linear `t`-expression fed to
+    the `rotate` angle (still converted degrees -> radians), and NOT be reported as an
+    unsupported drop."""
+    r = _renderer(tmp_path)
+    clip = {"id": "rot", "assetId": "i", "duration": 2.0, "sourceStart": 0.0,
+            "transform": {},
+            "keyframes": [{
+                "property": "rotation",
+                "points": [{"t": 0.0, "value": 0.0, "interp": "linear"},
+                           {"t": 2.0, "value": 180.0, "interp": "linear"}],
+            }]}
+    out = r._visual_filter(1, clip, {"type": "image"}, "lbl", 1920, 1080)
+    assert "rotate=a='(" in out          # angle is a t-expression, not a constant
+    assert ")*PI/180':c=none" in out     # converted to radians
+    assert "lt(t," in out or "if(" in out  # piecewise-linear interpolation over t
+    # and crucially the envelope is NOT surfaced as a dropped keyframe anymore
+    drops = editor_render._ffmpeg_unsupported_drops(clip)
+    assert not any(d.get("name") == "rotation" for d in drops)
+
+
+def test_rotation_keyframe_filtergraph_actually_renders(tmp_path):
+    """End-to-end: a rotation ENVELOPE must produce a filtergraph ffmpeg accepts and
+    a real output file. A string-only assert can't catch the trap that broke the first
+    cut: `rotate` evaluates ow/oh once at init, so a time-varying rotw()/roth() output
+    box is rejected — and hypot()'s comma in ow/oh must be quoted or the filtergraph
+    parser splits the filter. This render is the proof the chain is valid."""
+    card = _solid_png(tmp_path / "card.png", "white", size="16x16")
+    project = _project_with_card("rot_anim", card, x=0.5)
+    project["clips"]["card_clip"]["keyframes"] = [
+        {"property": "rotation", "points": [
+            {"t": 0.0, "value": 0.0, "interp": "linear"},
+            {"t": 1.0, "value": 90.0, "interp": "linear"}]},
+    ]
+    renderer = editor_render.FFmpegLayeredRenderer(tmp_path / "renders")
+    result = renderer.render(project, output_path=tmp_path / "renders" / "rot.mp4")
+    out = Path(result["video"])
+    assert out.exists() and out.stat().st_size > 0
+    # the envelope was honored, not reported as an unsupported drop
+    assert not any(
+        w.get("name") == "rotation" for w in (result.get("warnings") or [])
+    )
+
+
 # --- direct unit tests for _build_video_command (no ffmpeg execution) ---
 
 def test_build_video_command_loops_image_over_black_base(tmp_path):

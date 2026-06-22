@@ -77,9 +77,9 @@ def _ffmpeg_unsupported_drops(
         if not (track or {}).get("points"):
             continue
         prop = str((track or {}).get("property") or "")
-        # volume/opacity/x/y envelopes are now reproduced as piecewise-linear
-        # ffmpeg `t`-expressions (volume on the mux path; opacity + x/y on the
-        # visual overlay). Only scale/rotation envelopes remain OpenShot-only.
+        # volume/opacity/x/y/rotation envelopes are now reproduced as piecewise-
+        # linear ffmpeg `t`-expressions (volume on the mux path; opacity + x/y +
+        # rotation on the visual overlay). Only scale envelopes remain OpenShot-only.
         if prop in _FFMPEG_KEYFRAME_PROPERTIES:
             continue
         drops.append({"clipId": clip_id, "kind": "keyframe", "name": prop})
@@ -120,10 +120,11 @@ def _audio_fade_in_window(clip: dict[str, Any]) -> float | None:
 #   volume  -> the `volume` filter gain (audio mux path, see _volume_filter)
 #   opacity -> colorchannelmixer alpha (visual overlay, see _visual_filter)
 #   x, y    -> overlay x/y position (visual overlay, see _overlay_expr)
+#   rotation-> the `rotate` filter angle (visual overlay, see _visual_filter)
 # `scale` would re-time overlay_w/overlay_h mid-overlay (can't be a single
 # overlay branch) and brightness/saturation are flat effects with no keyframe
 # track in this schema, so both stay OpenShot-only and are reported as warnings.
-_FFMPEG_KEYFRAME_PROPERTIES = {"volume", "opacity", "x", "y"}
+_FFMPEG_KEYFRAME_PROPERTIES = {"volume", "opacity", "x", "y", "rotation"}
 
 
 def _keyframe_points(clip: dict[str, Any], prop: str) -> list[tuple[float, float, str]]:
@@ -816,6 +817,7 @@ class FFmpegLayeredRenderer:
         transform = clip.get("transform") or {}
         opacity = min(1.0, max(0.0, _num(transform.get("opacity"), 1.0)))
         scale = max(0.01, _num(transform.get("scale"), 1.0))
+        rotation = _num(transform.get("rotation"), 0.0)
         duration = _num(clip.get("duration"), 0.0)
         source_start = _num(clip.get("sourceStart"), 0.0)
         asset_type = asset.get("type")
@@ -852,11 +854,30 @@ class FFmpegLayeredRenderer:
             )
         else:
             alpha = f"colorchannelmixer=aa={opacity:.4f}"
+        # Rotation: the editor schema (and the OpenShot bridge, _KEYFRAME_PROPERTY_MAP)
+        # support a `rotation` track in DEGREES; ffmpeg's `rotate` filter takes an angle
+        # in RADIANS and accepts a `t`-expression, so a flat value and a keyframe envelope
+        # both map cleanly. Without this the envelope silently dropped vs the OpenShot
+        # render (the ticket). `c=none` keeps corners transparent. The output box (ow/oh)
+        # must be CONSTANT — ffmpeg evaluates it once at init and rejects a t-dependent
+        # rotw()/roth(), so we size it to the rotation diagonal hypot(iw,ih), which never
+        # clips at any angle. ow/oh are single-quoted because hypot()'s comma would
+        # otherwise read as a filtergraph option separator. Skip the filter entirely when
+        # there's no rotation so the common (unrotated) path stays a no-op.
+        _box = "ow='hypot(iw,ih)':oh='hypot(iw,ih)'"
+        rotation_pts = _keyframe_points(clip, "rotation")
+        if rotation_pts:
+            deg_t = _piecewise_linear_expr(rotation_pts, var="t")
+            rotate = f"rotate=a='({deg_t})*PI/180':c=none:{_box},"
+        elif abs(rotation) > 1e-9:
+            rotate = f"rotate=a='{rotation:.4f}*PI/180':c=none:{_box},"
+        else:
+            rotate = ""
         # The fallback keeps graphics at native size by default. Full-frame video clips
         # can opt in later via track-specific policies in the renderer slice.
         return (
             f"[{input_index}:v]{trim}scale=iw*{scale:.4f}:ih*{scale:.4f},"
-            f"format=rgba,{alpha},{fades}null[{label}]"
+            f"format=rgba,{alpha},{fades}{rotate}null[{label}]"
         )
 
     def _resolve_src(self, src: str) -> Path:
