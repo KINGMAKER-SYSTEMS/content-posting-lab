@@ -1497,13 +1497,32 @@ def _codex_image(prompt: str, out_name: str, size: str = "1536x1024") -> str | N
     if not new:
         _log.warning("_codex_image: codex exec produced no new image for %r", out_name)
         return None
+    # GUARD THE SOURCE before copying: the glob walks ~/.codex/generated_images, which is
+    # NOT a managed/trusted root — a symlink planted there (by codex misbehaving or a user
+    # linking the dir into an arbitrary location) would make new[0] point anywhere, and a
+    # blind shutil.copy() would pull that arbitrary file into the asset store, bypassing the
+    # gateway entirely. Require the picked file to be a REGULAR file whose real (symlink-
+    # resolved) location stays inside gen_dir. os.path.realpath collapses any symlink hop;
+    # commonpath confirms containment without escaping via ../.
+    src = new[0]
+    try:
+        gen_root = os.path.realpath(gen_dir)
+        real_src = os.path.realpath(src)
+        if (os.path.islink(src)
+                or not os.path.isfile(real_src)
+                or os.path.commonpath([gen_root, real_src]) != gen_root):
+            _log.warning("_codex_image: rejecting out-of-tree/symlinked source %s for %r", src, out_name)
+            return None
+    except Exception as e:
+        _log.warning("_codex_image: could not validate source %s for %r (%s)", src, out_name, e)
+        return None
     # NOT episode-scoped (out_name is e.g. '_tmp_bg_0' / a thumb-bg name) — cross-episode
     # generation intermediate. Routed through the gateway chokepoint so the _scratch/ write
     # path is validated at runtime (reapable), then the caller copies the keeper into
     # card_backgrounds/ or the broll library.
     try:
         dest = _cross_scratch_path(f"{out_name}.png")
-        shutil.copy(new[0], dest)
+        shutil.copy(real_src, dest)
         return _asset_url(dest)
     except Exception as e:
         _log.warning("_codex_image: failed to copy %s into _scratch for %r (%s)", new[0], out_name, e)

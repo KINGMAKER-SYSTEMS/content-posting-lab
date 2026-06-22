@@ -25,6 +25,11 @@ import pytest
 from services import abn_factory
 from services import abn_assets
 
+# Captured at import, BEFORE conftest's autouse `no_live_codex_image` fixture stubs
+# abn_factory._codex_image to a None-returning no-op. The codex SOURCE-gating tests
+# below must exercise the REAL function, so they restore this original first.
+_REAL_CODEX_IMAGE = abn_factory._codex_image
+
 
 @pytest.fixture()
 def store(tmp_path, monkeypatch):
@@ -163,3 +168,98 @@ def test_cross_scratch_path_rejects_when_resolved_parent_not_reapable(store, mon
     monkeypatch.setattr(abn_factory, "scratch_dirs", lambda: [])
     with pytest.raises(ValueError, match="non-reapable"):
         abn_factory._cross_scratch_path("_tmp_bg_0")
+
+
+# ---------------------------------------------------------------------------
+# _codex_image SOURCE gating: the glob walks ~/.codex/generated_images, an
+# UNTRUSTED root. The picked "new" file must be a regular file whose real
+# (symlink-resolved) location stays inside gen_dir, or a planted symlink could
+# pull an arbitrary file into the asset store, bypassing the gateway. The dest
+# is already guarded by _cross_scratch_path; these pin the SOURCE guard.
+# ---------------------------------------------------------------------------
+
+def test_codex_image_copies_legit_in_tree_file(store, tmp_path, monkeypatch):
+    """A normal codex-produced regular file inside gen_dir is accepted and copied
+    into the reapable _scratch/ root, returning its managed URL."""
+    import glob as _glob
+    gen_dir = store.parent / ".codex" / "generated_images"
+    sub = gen_dir / "abc"
+    sub.mkdir(parents=True)
+    made = sub / "ig_legit.png"
+    made.write_bytes(b"img" * 64)
+
+    import subprocess
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: None)
+    seen = {"n": 0}
+    def fake_glob(_pat):
+        seen["n"] += 1
+        return [] if seen["n"] == 1 else [str(made)]
+    monkeypatch.setattr(_glob, "glob", fake_glob)
+    monkeypatch.setenv("CODEX_HOME", str(gen_dir.parent))
+    monkeypatch.setattr(abn_factory, "_codex_image", _REAL_CODEX_IMAGE)
+
+    url = abn_factory._codex_image("a cinematic background", "_tmp_bg_9")
+    assert url is not None
+    dest = abn_factory._resolve_asset(url)
+    assert dest.parent.resolve() == (store / "_scratch").resolve()
+    assert dest.read_bytes() == made.read_bytes()
+
+
+def test_codex_image_rejects_symlinked_source(store, tmp_path, monkeypatch):
+    """A SYMLINK planted in ~/.codex/generated_images pointing at an arbitrary
+    out-of-tree file must be rejected — nothing gets copied into the store."""
+    import glob as _glob
+    gen_dir = store.parent / ".codex" / "generated_images"
+    sub = gen_dir / "abc"
+    sub.mkdir(parents=True)
+    # The attacker's target lives entirely outside gen_dir.
+    secret = tmp_path / "outside" / "secret.png"
+    secret.parent.mkdir(parents=True)
+    secret.write_bytes(b"SECRET-DATA")
+    evil = sub / "ig_evil.png"
+    evil.symlink_to(secret)
+
+    import subprocess
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: None)
+    seen = {"n": 0}
+    def fake_glob(_pat):
+        seen["n"] += 1
+        return [] if seen["n"] == 1 else [str(evil)]
+    monkeypatch.setattr(_glob, "glob", fake_glob)
+    monkeypatch.setenv("CODEX_HOME", str(gen_dir.parent))
+    monkeypatch.setattr(abn_factory, "_codex_image", _REAL_CODEX_IMAGE)
+
+    url = abn_factory._codex_image("anything", "_tmp_bg_8")
+    assert url is None
+    # No bytes from the secret file leaked into the store.
+    leaked = [p for p in store.rglob("*") if p.is_file() and p.read_bytes() == b"SECRET-DATA"]
+    assert leaked == []
+
+
+def test_codex_image_rejects_source_escaping_via_symlinked_gen_subdir(store, tmp_path, monkeypatch):
+    """Even a file whose path string is *under* gen_dir is rejected if a symlink
+    hop in its real path escapes the tree (realpath containment, not string prefix)."""
+    import glob as _glob
+    gen_dir = store.parent / ".codex" / "generated_images"
+    gen_dir.mkdir(parents=True)
+    # gen_dir/linkdir -> outside; the "produced" file string is gen_dir/linkdir/ig_x.png
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "ig_x.png").write_bytes(b"ESCAPED")
+    (gen_dir / "linkdir").symlink_to(outside)
+    fake = gen_dir / "linkdir" / "ig_x.png"  # exists via the symlink, realpath is outside
+
+    import subprocess
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: None)
+    seen = {"n": 0}
+    def fake_glob(_pat):
+        seen["n"] += 1
+        return [] if seen["n"] == 1 else [str(fake)]
+    monkeypatch.setattr(_glob, "glob", fake_glob)
+    monkeypatch.setenv("CODEX_HOME", str(gen_dir.parent))
+    monkeypatch.setattr(abn_factory, "_codex_image", _REAL_CODEX_IMAGE)
+
+    url = abn_factory._codex_image("anything", "_tmp_bg_7")
+    assert url is None
+    leaked = [p for p in store.rglob("*") if p.is_file() and p.read_bytes() == b"ESCAPED"]
+    assert leaked == []
