@@ -414,6 +414,7 @@ export function GeneratePage() {
   const stableOnComplete = useCallback((job: Job) => onCompleteRef.current(job), []);
 
   const fetchRecentVideos = useCallback(async () => {
+    if (!activeProjectName) return;
     setRecentVideosLoading(true);
     try {
       const res = await fetch(apiUrl(`/api/projects/videos/recent?project=${encodeURIComponent(activeProjectName)}&limit=${RECENT_VIDEO_LIMIT}`));
