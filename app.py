@@ -120,6 +120,15 @@ async def lifespan(app: FastAPI):
     # AgenticBuilderNews workspace DB + autonomous factory
     try:
         await agenticnews_db.init_db()
+        # GC SAFETY GATE: the autonomous factory runs the asset GC. If any flat un-migrated
+        # asset still sits at the store root, the schema isn't the enforced reality yet and a
+        # legacy-named file is exposed to the glob-GC hazard that ate original VO in prod
+        # (CLAUDE.md "origaudio loss"). Certify the cutover BEFORE the factory (and its GC)
+        # starts; if incomplete, log loudly and DO NOT start the factory — the web app keeps
+        # serving everything else, but nothing touches the asset store until the operator runs
+        # `python scripts/migrate_abn_assets.py --apply`.
+        from services.abn_assets import assert_migration_complete
+        assert_migration_complete()
         import services.abn_factory as abn_factory
         await abn_factory.start_factory()
     except Exception as e:

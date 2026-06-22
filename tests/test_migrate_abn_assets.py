@@ -162,3 +162,76 @@ def test_check_cli_mode(mig, A, capsys):
         mig.main()
     assert ei.value.code == 1
     assert "migration check: FAIL" in capsys.readouterr().out
+
+
+# ---- app-startup GC-safety gate (app.py lifespan) ------------------------------
+# The lock-down wiring: the autonomous factory runs the asset GC, so the lifespan must
+# certify the migration cutover (assert_migration_complete) BEFORE start_factory(). If a
+# flat un-migrated file remains, the factory (and its glob-GC) must NOT start — otherwise a
+# legacy-named file is exposed to the GC that ate original VO in prod. The web app itself
+# keeps serving; only the asset-touching factory is held back.
+
+
+@pytest.mark.asyncio
+async def test_lifespan_skips_factory_when_migration_incomplete(mig, A, monkeypatch):
+    import app as app_module
+
+    # a flat un-migrated regular file at the store root -> gate must fire
+    (A.ASSETS_DIR / "ep_648e806a_s0_card.png").write_bytes(b"unmigrated")
+
+    import services.abn_factory as abn_factory
+    started = {"factory": False}
+
+    async def _fake_start_factory():
+        started["factory"] = True
+
+    monkeypatch.setattr(abn_factory, "start_factory", _fake_start_factory)
+    # neutralize the rest of the lifespan (telegram bots, command checks) so the test is hermetic
+    monkeypatch.setattr(app_module, "_check_ffmpeg", lambda: True)
+    monkeypatch.setattr(app_module, "_check_ytdlp", lambda: True)
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "")
+    monkeypatch.setattr("services.telegram.get_bot_token", lambda: None, raising=False)
+
+    async def _noop(*a, **k):
+        return None
+
+    monkeypatch.setattr("telegram_bot.start_sounds_bot", _noop, raising=False)
+    monkeypatch.setattr("telegram_bot.stop_sounds_bot", _noop, raising=False)
+    monkeypatch.setattr("telegram_bot.stop_bot", _noop, raising=False)
+
+    async with app_module.lifespan(app_module.app):
+        pass
+
+    assert started["factory"] is False  # gate held the GC-running factory back
+
+
+@pytest.mark.asyncio
+async def test_lifespan_starts_factory_when_migration_complete(mig, A, monkeypatch):
+    import app as app_module
+
+    # clean store (only a properly-schema'd file) -> gate passes, factory starts
+    (A.ASSETS_DIR / "ep_648e806a" / "css").mkdir(parents=True)
+    (A.ASSETS_DIR / "ep_648e806a" / "css" / "s0_card.png").write_bytes(b"ok")
+
+    import services.abn_factory as abn_factory
+    started = {"factory": False}
+
+    async def _fake_start_factory():
+        started["factory"] = True
+
+    monkeypatch.setattr(abn_factory, "start_factory", _fake_start_factory)
+    monkeypatch.setattr(app_module, "_check_ffmpeg", lambda: True)
+    monkeypatch.setattr(app_module, "_check_ytdlp", lambda: True)
+    monkeypatch.setattr("services.telegram.get_bot_token", lambda: None, raising=False)
+
+    async def _noop(*a, **k):
+        return None
+
+    monkeypatch.setattr("telegram_bot.start_sounds_bot", _noop, raising=False)
+    monkeypatch.setattr("telegram_bot.stop_sounds_bot", _noop, raising=False)
+    monkeypatch.setattr("telegram_bot.stop_bot", _noop, raising=False)
+
+    async with app_module.lifespan(app_module.app):
+        pass
+
+    assert started["factory"] is True  # clean cutover -> factory (and its GC) allowed to run
