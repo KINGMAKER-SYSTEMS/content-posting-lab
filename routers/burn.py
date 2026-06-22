@@ -28,7 +28,7 @@ from project_manager import (
     get_project_video_dir,
     sanitize_project_name,
 )
-from services.captions import scan_project_captions
+from services.captions import scan_project_captions, caption_facets
 from services.ffmpeg import TIKTOK_ENCODE_ARGS, build_cc_filter
 from services.fsutil import safe_unlink
 
@@ -448,9 +448,10 @@ async def list_videos(project: str = Query(..., description="Project name")):
 
 @router.get("/captions")
 async def list_captions(project: str = Query(..., description="Project name")):
-    """List caption CSVs from project's captions/ directory."""
+    """List caption CSVs plus facets (creators / sounds / moods) for filtering."""
     try:
-        return {"sources": scan_project_captions(project)}
+        sources = scan_project_captions(project)
+        return {"sources": sources, "facets": caption_facets(sources)}
     except ValueError as e:
         return JSONResponse({"error": str(e)}, status_code=400)
 
