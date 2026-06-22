@@ -424,3 +424,262 @@ def test_transition_400_when_invalid_status(monkeypatch):
         _run(pipeline.transition_status("acct:x", req))
     assert ei.value.status_code == 400
     assert "invalid status" in ei.value.detail.lower()
+
+
+# ── get_workspace ────────────────────────────────────────────────────────────
+# The King Maker operator console. Every external dependency (R2, poster
+# resolution, cookie status) is optional and must degrade gracefully — an R2
+# list failure or a missing poster must NOT 500 the whole workspace, it must
+# surface as a field. The only hard error is a missing page (404).
+
+
+def test_workspace_404_when_page_missing(monkeypatch):
+    monkeypatch.setattr(pipeline, "get_page", lambda iid: None)
+    with pytest.raises(HTTPException) as ei:
+        _run(pipeline.get_workspace("acct:ghost"))
+    assert ei.value.status_code == 404
+
+
+def test_workspace_degrades_when_r2_unconfigured_and_no_poster(monkeypatch):
+    """No R2 prefix, R2 not configured, no poster resolved, cookie lookup
+    throws — the workspace must still return a complete skeleton with defaults
+    rather than blowing up."""
+    page = {"name": "Some Page", "pipeline": "King Maker Tech"}
+    monkeypatch.setattr(pipeline, "get_page", lambda iid: dict(page))
+    monkeypatch.setattr(pipeline.r2, "is_configured", lambda: False)
+    monkeypatch.setattr(pipeline, "resolve_poster_for_page", lambda p: None)
+
+    def _boom(name):
+        raise RuntimeError("cookie store down")
+
+    monkeypatch.setattr(pipeline, "get_cookie_status", _boom)
+
+    ws = _run(pipeline.get_workspace("acct:x"))
+    assert ws["r2"]["configured"] is False
+    assert ws["r2"]["object_count"] == 0
+    assert ws["telegram"]["topic_present"] is False
+    assert ws["telegram"]["poster_id"] is None
+    # cookie lookup threw -> stays at the default "missing", never propagates
+    assert ws["cookie_status"] == "missing"
+
+
+def test_workspace_r2_list_error_surfaces_as_field(monkeypatch):
+    """When R2 is configured and the page has a prefix but listing objects
+    throws, the error is captured on workspace['r2']['error'] — not raised."""
+    page = {"name": "P", "r2_prefix": "accounts/acct-x/", "r2_bucket": "b"}
+    monkeypatch.setattr(pipeline, "get_page", lambda iid: dict(page))
+    monkeypatch.setattr(pipeline.r2, "is_configured", lambda: True)
+
+    def _boom(iid, max_keys=500):
+        raise RuntimeError("r2 list 500")
+
+    monkeypatch.setattr(pipeline.r2, "list_account_objects", _boom)
+    monkeypatch.setattr(pipeline, "resolve_poster_for_page", lambda p: None)
+    monkeypatch.setattr(pipeline, "get_cookie_status", lambda name: "valid")
+
+    ws = _run(pipeline.get_workspace("acct:x"))
+    assert "r2 list 500" in ws["r2"]["error"]
+    assert ws["r2"]["object_count"] == 0
+    assert ws["cookie_status"] == "valid"
+
+
+def test_workspace_includes_poster_topic_when_resolved(monkeypatch):
+    page = {"name": "P", "r2_prefix": "accounts/acct-x/", "r2_bucket": "b"}
+    monkeypatch.setattr(pipeline, "get_page", lambda iid: dict(page))
+    monkeypatch.setattr(pipeline.r2, "is_configured", lambda: True)
+    monkeypatch.setattr(
+        pipeline.r2, "list_account_objects", lambda iid, max_keys=500: [{"key": "a"}, {"key": "b"}]
+    )
+    poster = {
+        "poster_id": "p1",
+        "name": "Glitch",
+        "chat_id": -100,
+        "topics": {"acct:x": {"topic_id": 42, "topic_name": "P"}},
+    }
+    monkeypatch.setattr(pipeline, "resolve_poster_for_page", lambda p: poster)
+    monkeypatch.setattr(pipeline, "get_cookie_status", lambda name: "valid")
+
+    ws = _run(pipeline.get_workspace("acct:x"))
+    assert ws["r2"]["object_count"] == 2
+    assert ws["telegram"]["poster_id"] == "p1"
+    assert ws["telegram"]["topic_present"] is True
+    assert ws["telegram"]["topic_id"] == 42
+
+
+# ── presign_upload ───────────────────────────────────────────────────────────
+# The browser-direct-to-R2 upload door. Three guard rails: 404 unknown page,
+# 503 R2 unconfigured, 400 page with no R2 prefix (setup never ran). Only when
+# all three pass do we hand back a presigned URL.
+
+
+def test_presign_404_when_page_missing(monkeypatch):
+    monkeypatch.setattr(pipeline, "get_page", lambda iid: None)
+    req = pipeline.PresignUploadRequest(filename="v.mp4")
+    with pytest.raises(HTTPException) as ei:
+        _run(pipeline.presign_upload("acct:ghost", req))
+    assert ei.value.status_code == 404
+
+
+def test_presign_503_when_r2_unconfigured(monkeypatch):
+    monkeypatch.setattr(pipeline, "get_page", lambda iid: {"r2_prefix": "x/"})
+    monkeypatch.setattr(pipeline.r2, "is_configured", lambda: False)
+    req = pipeline.PresignUploadRequest(filename="v.mp4")
+    with pytest.raises(HTTPException) as ei:
+        _run(pipeline.presign_upload("acct:x", req))
+    assert ei.value.status_code == 503
+    assert "r2 not configured" in ei.value.detail.lower()
+
+
+def test_presign_400_when_no_r2_prefix(monkeypatch):
+    monkeypatch.setattr(pipeline, "get_page", lambda iid: {"name": "P"})
+    monkeypatch.setattr(pipeline.r2, "is_configured", lambda: True)
+    req = pipeline.PresignUploadRequest(filename="v.mp4")
+    with pytest.raises(HTTPException) as ei:
+        _run(pipeline.presign_upload("acct:x", req))
+    assert ei.value.status_code == 400
+    assert "no r2 prefix" in ei.value.detail.lower()
+
+
+def test_presign_happy_sanitizes_filename_and_returns_url(monkeypatch):
+    """Path separators in the filename must be neutralized so a caller can't
+    escape the account prefix (e.g. '../../etc'). The key is built from the
+    sanitized name."""
+    monkeypatch.setattr(pipeline, "get_page", lambda iid: {"r2_prefix": "accounts/acct-x/"})
+    monkeypatch.setattr(pipeline.r2, "is_configured", lambda: True)
+    monkeypatch.setattr(
+        pipeline.r2, "account_key", lambda iid, name: f"accounts/{iid}/{name}"
+    )
+    monkeypatch.setattr(pipeline.r2, "presign_put", lambda key, content_type: f"https://r2/{key}")
+
+    req = pipeline.PresignUploadRequest(filename="a/b\\c.mp4")
+    out = _run(pipeline.presign_upload("acct:x", req))
+    assert out["filename"] == "a_b_c.mp4"
+    assert "a_b_c.mp4" in out["key"]
+    assert out["url"].startswith("https://r2/")
+
+
+# ── forward_r2_to_topic ──────────────────────────────────────────────────────
+# Streams an R2 object to the poster's Telegram topic. The interesting failure
+# modes the ticket calls out: page missing (404), R2 unconfigured (503), no
+# poster resolved (400), no telegram topic (400), R2 object missing (404).
+
+
+def test_forward_404_when_page_missing(monkeypatch):
+    monkeypatch.setattr(pipeline, "get_page", lambda iid: None)
+    req = pipeline.ForwardToTopicRequest(r2_key="k")
+    with pytest.raises(HTTPException) as ei:
+        _run(pipeline.forward_r2_to_topic("acct:ghost", req))
+    assert ei.value.status_code == 404
+
+
+def test_forward_503_when_r2_unconfigured(monkeypatch):
+    monkeypatch.setattr(pipeline, "get_page", lambda iid: {"name": "P"})
+    monkeypatch.setattr(pipeline.r2, "is_configured", lambda: False)
+    req = pipeline.ForwardToTopicRequest(r2_key="k")
+    with pytest.raises(HTTPException) as ei:
+        _run(pipeline.forward_r2_to_topic("acct:x", req))
+    assert ei.value.status_code == 503
+
+
+def test_forward_400_when_no_poster(monkeypatch):
+    monkeypatch.setattr(pipeline, "get_page", lambda iid: {"name": "P", "poster_name": ""})
+    monkeypatch.setattr(pipeline.r2, "is_configured", lambda: True)
+    monkeypatch.setattr(pipeline, "resolve_poster_for_page", lambda p: None)
+    req = pipeline.ForwardToTopicRequest(r2_key="k")
+    with pytest.raises(HTTPException) as ei:
+        _run(pipeline.forward_r2_to_topic("acct:x", req))
+    assert ei.value.status_code == 400
+    assert "no poster" in ei.value.detail.lower()
+
+
+def test_forward_400_when_no_telegram_topic(monkeypatch):
+    """Poster resolved but has no topic for this page (setup never created
+    one) — must 400, never attempt a send."""
+    monkeypatch.setattr(pipeline, "get_page", lambda iid: {"name": "P"})
+    monkeypatch.setattr(pipeline.r2, "is_configured", lambda: True)
+    monkeypatch.setattr(
+        pipeline,
+        "resolve_poster_for_page",
+        lambda p: {"chat_id": -100, "topics": {}},
+    )
+    req = pipeline.ForwardToTopicRequest(r2_key="k")
+    with pytest.raises(HTTPException) as ei:
+        _run(pipeline.forward_r2_to_topic("acct:x", req))
+    assert ei.value.status_code == 400
+    assert "no telegram topic" in ei.value.detail.lower()
+
+
+def test_forward_404_when_r2_object_missing(monkeypatch):
+    """All routing resolves, but the R2 key the caller passed doesn't exist —
+    head() returns None and we 404 the object before downloading anything."""
+    monkeypatch.setattr(pipeline, "get_page", lambda iid: {"name": "P"})
+    monkeypatch.setattr(pipeline.r2, "is_configured", lambda: True)
+    monkeypatch.setattr(
+        pipeline,
+        "resolve_poster_for_page",
+        lambda p: {"chat_id": -100, "topics": {"acct:x": {"topic_id": 7}}},
+    )
+    monkeypatch.setattr(pipeline.r2, "head", lambda key: None)
+    req = pipeline.ForwardToTopicRequest(r2_key="missing.mp4")
+    with pytest.raises(HTTPException) as ei:
+        _run(pipeline.forward_r2_to_topic("acct:x", req))
+    assert ei.value.status_code == 404
+    assert "r2 object not found" in ei.value.detail.lower()
+
+
+# ── page_health ──────────────────────────────────────────────────────────────
+# Derived dashboard metrics. Like the workspace, every external call is
+# best-effort: an R2 count failure or a cookie-status throw must be swallowed
+# (the field keeps its default) rather than propagating. Only a missing page
+# 404s.
+
+
+def test_health_404_when_page_missing(monkeypatch):
+    monkeypatch.setattr(pipeline, "get_page", lambda iid: None)
+    with pytest.raises(HTTPException) as ei:
+        _run(pipeline.page_health("acct:ghost"))
+    assert ei.value.status_code == 404
+
+
+def test_health_swallows_r2_and_cookie_errors(monkeypatch):
+    """R2 count throws and cookie lookup throws — both must be caught so the
+    health blob still returns with its defaults intact."""
+    page = {"name": "P", "r2_prefix": "accounts/acct-x/"}
+    monkeypatch.setattr(pipeline, "get_page", lambda iid: dict(page))
+    monkeypatch.setattr(pipeline.r2, "is_configured", lambda: True)
+
+    def _boom_count(iid):
+        raise RuntimeError("r2 down")
+
+    def _boom_cookie(name):
+        raise RuntimeError("cookie down")
+
+    monkeypatch.setattr(pipeline.r2, "count_account_objects", _boom_count)
+    monkeypatch.setattr(pipeline, "resolve_poster_for_page", lambda p: None)
+    monkeypatch.setattr(pipeline, "get_cookie_status", _boom_cookie)
+
+    h = _run(pipeline.page_health("acct:x"))
+    assert h["r2_count"] == 0
+    assert h["cookie_status"] == "missing"
+    assert h["has_r2_prefix"] is True
+    assert h["telegram_topic_present"] is False
+
+
+def test_health_reports_counts_and_topic(monkeypatch):
+    page = {"name": "P", "r2_prefix": "accounts/acct-x/", "email_alias": "a@b.com"}
+    monkeypatch.setattr(pipeline, "get_page", lambda iid: dict(page))
+    monkeypatch.setattr(pipeline.r2, "is_configured", lambda: True)
+    monkeypatch.setattr(pipeline.r2, "count_account_objects", lambda iid: 37)
+    monkeypatch.setattr(
+        pipeline,
+        "resolve_poster_for_page",
+        lambda p: {"topics": {"acct:x": {"topic_name": "My Topic"}}},
+    )
+    monkeypatch.setattr(pipeline, "get_cookie_status", lambda name: "valid")
+
+    h = _run(pipeline.page_health("acct:x"))
+    assert h["r2_count"] == 37
+    assert h["telegram_topic_present"] is True
+    assert h["telegram_topic_name"] == "My Topic"
+    assert h["has_email_alias"] is True
+    assert h["cookie_status"] == "valid"
