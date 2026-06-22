@@ -355,7 +355,7 @@ Some pages use CSS-based tab switching (display:none for inactive) to preserve s
 
 ## Pending Work / Known Issues
 
-- **Bot occasionally exhibited destructive delete-and-repost behavior in inventory tracking.** Bot is currently kept stopped between deploys for safety. Investigation pending.
+- **RESOLVED — destructive delete-and-repost behavior in inventory tracking.** Root cause: the old `_scan_topic_fallback()` in `telegram_bot.py` brute-forced topic scanning by forwarding every message back into the same staging group to read its media, then deleting the copy; a crash/rate-limit/permission failure between forward and delete orphaned content and desynced inventory. Fix (in place): the fallback is now inert (returns "scan unavailable", never forwards/deletes/sends); real backfill goes through the read-only Pyrogram scanner; the live `forward_new_messages()` path checkpoints its high-water mark per successful forward and caps it on a blocking error so no message is orphaned or re-forwarded. Pinned by `tests/test_telegram_bot_safety.py` (6 tests). Bot is safe to run.
 - **5 active campaigns unmatched** in latest sound sync (Liam St John, In Color, Alex Nicol, Gregory Alan Isakov, Matilda Lyn) — either missing TikTok Sound Links in Notion or names differ enough that AI matcher fails.
 - **Sound Assignments feature** — in development. Per-page sound playlists, with sends grouped per poster by their pages. UI lives in Campaign Hub (separate repo); lab provides backend data + endpoints + send primitives.
 
