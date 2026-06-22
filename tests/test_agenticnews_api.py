@@ -124,6 +124,88 @@ def test_delete_video_is_idempotent(client):
     ).status_code == 404
 
 
+# ------------------------------------------------------------- factory control
+#
+# GET /factory/state, POST /factory/pause, POST /factory/resume (routers/agenticnews.py
+# ~lines 64-76) are the operator's control surface over the autonomous ABN production
+# loop. They are thin wrappers over services.abn_factory: pause()/resume() flip
+# STATE["running"] + the internal _PAUSE asyncio.Event and emit a BUS event; GET
+# /factory/state returns the live STATE dict verbatim. STATE / _PAUSE are module-level
+# singletons, so each test snapshots and restores them to stay hermetic.
+
+
+@pytest.fixture
+def factory_state_guard():
+    """Snapshot + restore the factory's module-level STATE dict and _PAUSE event so a
+    pause/resume test can't bleed running/paused state into the rest of the suite."""
+    import services.abn_factory as factory
+
+    saved = dict(factory.STATE)
+    saved_paused = factory._PAUSE.is_set()
+    yield factory
+    factory.STATE.clear()
+    factory.STATE.update(saved)
+    (factory._PAUSE.set if saved_paused else factory._PAUSE.clear)()
+
+
+def test_factory_state_returns_live_state_dict(client, factory_state_guard):
+    """GET /factory/state returns the internal STATE dict verbatim — the same object
+    the pulse panel / SSE stream read, with all its keys intact."""
+    factory = factory_state_guard
+    r = client.get("/api/agenticnews/factory/state")
+    assert r.status_code == 200
+    body = r.json()
+    # mirrors services.abn_factory.STATE exactly
+    assert body == factory.STATE
+    for key in ("running", "stage", "actor", "episode_id", "detail", "started"):
+        assert key in body
+
+
+def test_factory_pause_flips_running_false_and_emits_event(client, factory_state_guard):
+    factory = factory_state_guard
+    factory.resume()  # start from a known running state
+    before = _bus_seq()
+
+    r = client.post("/api/agenticnews/factory/pause")
+    assert r.status_code == 200
+    assert r.json() == {"ok": True}
+    # STATE flipped to paused AND the internal gate cleared (loop will block)
+    assert factory.STATE["running"] is False
+    assert factory._PAUSE.is_set() is False
+    # GET /factory/state reflects the new running=False
+    assert client.get("/api/agenticnews/factory/state").json()["running"] is False
+    # a factory event fired so the pulse/SSE stream sees the pause
+    actions = [(e["actor"], e["action"]) for e in factory.BUS.replay(before)]
+    assert ("factory", "paused") in actions
+
+
+def test_factory_resume_flips_running_true_and_emits_event(client, factory_state_guard):
+    factory = factory_state_guard
+    factory.pause()  # start from a known paused state
+    before = _bus_seq()
+
+    r = client.post("/api/agenticnews/factory/resume")
+    assert r.status_code == 200
+    assert r.json() == {"ok": True}
+    assert factory.STATE["running"] is True
+    assert factory._PAUSE.is_set() is True
+    assert client.get("/api/agenticnews/factory/state").json()["running"] is True
+    actions = [(e["actor"], e["action"]) for e in factory.BUS.replay(before)]
+    assert ("factory", "resumed") in actions
+
+
+def test_factory_pause_resume_roundtrip_is_idempotent(client, factory_state_guard):
+    """pause -> resume -> pause leaves STATE + _PAUSE consistent every step; the
+    control surface is a pure toggle with no drift."""
+    factory = factory_state_guard
+    client.post("/api/agenticnews/factory/pause")
+    assert factory.STATE["running"] is False and factory._PAUSE.is_set() is False
+    client.post("/api/agenticnews/factory/resume")
+    assert factory.STATE["running"] is True and factory._PAUSE.is_set() is True
+    client.post("/api/agenticnews/factory/pause")
+    assert factory.STATE["running"] is False and factory._PAUSE.is_set() is False
+
+
 # ----------------------------------------------------------------------- jobs
 def test_job_claim_locks_linked_video(client):
     vid = client.post("/api/agenticnews/videos", json={"title": "Job target"}).json()["id"]
