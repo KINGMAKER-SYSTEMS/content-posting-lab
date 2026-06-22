@@ -19,6 +19,7 @@ import type {
   VideoFile,
   VideosResponse,
 } from '../types/api';
+import { MOOD_COLORS } from '../types/api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -497,6 +498,7 @@ export function BurnPage() {
   const [randomizeCaptions, setRandomizeCaptions] = useState(false);
   const [moodFilter, setMoodFilter] = useState<string | null>(null);
   const [creatorFilter, setCreatorFilter] = useState<string | null>(null);
+  const [captionSearch, setCaptionSearch] = useState('');
 
   const [selectedFolders, setSelectedFolders] = useState<string[]>(() => {
     if (!activeProjectName) return [];
@@ -594,7 +596,37 @@ export function BurnPage() {
     return Array.from(new Set(src.captions.map((r) => r.creator).filter(Boolean) as string[])).sort();
   }, [captionSources, selectedCaptionSource]);
 
+  // Cross-batch search: flatten every caption across ALL sources (past batches),
+  // filter by query + active mood/creator facets, dedupe, rank by views.
+  const captionSearchMatches = useMemo(() => {
+    const q = captionSearch.trim().toLowerCase();
+    if (!q) return [];
+    const seen = new Set<string>();
+    const out: { text: string; song: string; creator: string; mood: string; views: number }[] = [];
+    for (const src of captionSources) {
+      for (const r of src.captions) {
+        if (!r.text.toLowerCase().includes(q)) continue;
+        if (moodFilter && r.mood !== moodFilter) continue;
+        if (creatorFilter && r.creator !== creatorFilter) continue;
+        const key = r.text.trim().toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        out.push({
+          text: r.text,
+          song: r.song || src.username.replace(/^tos-/, ''),
+          creator: r.creator || '',
+          mood: r.mood || '',
+          views: r.views ?? 0,
+        });
+      }
+    }
+    return out.sort((a, b) => b.views - a.views);
+  }, [captionSources, captionSearch, moodFilter, creatorFilter]);
+
+  const searching = captionSearch.trim().length > 0;
+
   const selectedCaptionItems = useMemo(() => {
+    if (searching) return captionSearchMatches.map((m) => m.text);
     if (selectedCaptionSource === '__paste') return manualPaste.split('\n').map((l) => l.trim()).filter(Boolean);
     const src = captionSources.find((s) => s.username === selectedCaptionSource);
     if (!src) return [];
@@ -604,9 +636,9 @@ export function BurnPage() {
       .slice()
       .sort((a, b) => (b.views ?? 0) - (a.views ?? 0))
       .map((r) => r.text);
-  }, [captionSources, manualPaste, selectedCaptionSource, moodFilter, creatorFilter]);
+  }, [captionSources, manualPaste, selectedCaptionSource, moodFilter, creatorFilter, searching, captionSearchMatches]);
 
-  const showPasteManual = selectedCaptionSource === '__paste';
+  const showPasteManual = selectedCaptionSource === '__paste' && !searching;
   const projectName = activeProjectName ?? '';
   const encodedProjectName = useMemo(() => encodeURIComponent(projectName), [projectName]);
 
@@ -1212,8 +1244,50 @@ export function BurnPage() {
           )}
         </div>
 
-        <Label>Caption Source</Label>
-        <div className="mt-1 mb-2 flex flex-wrap gap-1.5">
+        <Label>Search past caption batches</Label>
+        <div className="mt-1 mb-2">
+          <Input
+            type="search"
+            value={captionSearch}
+            onChange={(e) => setCaptionSearch(e.target.value)}
+            placeholder="Search all captions across every batch (e.g. 'broke up', 'pov', 'btw')…"
+            className="h-8 text-sm"
+          />
+          {searching && (
+            <div className="mt-2 rounded-md border border-border bg-muted/30">
+              <div className="flex items-center justify-between px-2 py-1 text-[11px] text-muted-foreground">
+                <span>{captionSearchMatches.length} match{captionSearchMatches.length === 1 ? '' : 'es'} across all batches</span>
+                <button type="button" className="underline hover:text-foreground" onClick={() => setCaptionSearch('')}>clear</button>
+              </div>
+              <div className="max-h-56 overflow-y-auto">
+                {captionSearchMatches.slice(0, 200).map((m, i) => (
+                  <div key={`${m.text}-${i}`} className="border-t border-border/60 px-2 py-1.5 text-xs">
+                    <div className="text-foreground">{m.text}</div>
+                    <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[10px] text-muted-foreground">
+                      <span className="font-medium">🎵 {m.song}</span>
+                      {m.creator && <span>@{m.creator}</span>}
+                      {m.mood && (
+                        <span className={`rounded-sm border px-1 py-0.5 font-bold uppercase ${MOOD_COLORS[m.mood as keyof typeof MOOD_COLORS] ?? ''}`}>{m.mood}</span>
+                      )}
+                      {m.views > 0 && <span>{m.views >= 1000 ? `${(m.views / 1000).toFixed(1)}K` : m.views} views</span>}
+                    </div>
+                  </div>
+                ))}
+                {captionSearchMatches.length === 0 && (
+                  <div className="px-2 py-3 text-center text-xs text-muted-foreground">No captions match “{captionSearch}”.</div>
+                )}
+              </div>
+              {captionSearchMatches.length > 0 && (
+                <div className="border-t border-border/60 px-2 py-1 text-[10px] text-muted-foreground/70">
+                  These {Math.min(captionSearchMatches.length, selectedCaptionItems.length)} captions will burn onto your selected videos (ranked by views).
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        <Label className={searching ? 'opacity-40' : ''}>Caption Source</Label>
+        <div className={`mt-1 mb-2 flex flex-wrap gap-1.5 ${searching ? 'pointer-events-none opacity-40' : ''}`}>
           <button
             type="button"
             onClick={() => { setSelectedCaptionSource('__paste'); setMoodFilter(null); setCreatorFilter(null); }}
