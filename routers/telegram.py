@@ -17,7 +17,7 @@ from services.telegram import (
     add_inventory_item,
     add_song_to_page,
     add_sound,
-    assign_page_to_poster,
+    assign_pages_to_poster,
     bind_user_to_poster,
     build_poster_message,
     clear_all_sounds,
@@ -786,9 +786,10 @@ async def assign_pages(poster_id: str, req: AssignPagesRequest):
     existing_topics = poster.get("topics", {})
     bot_available = _tg_bot.get_bot() is not None
 
-    # Save all page assignments immediately (fast, no network calls)
-    for page_id in req.page_ids:
-        assign_page_to_poster(poster_id, page_id)
+    # Save all page assignments in ONE locked transaction so a concurrent
+    # unassign / assign-batch can't interleave between pages (and we write the
+    # config file once, not once per page).
+    assign_pages_to_poster(poster_id, req.page_ids)
 
     # Topics are NOT auto-created here to avoid duplicates and race conditions.
     # Use "Set Up Folders" (POST /posters/{id}/sync-topics) after assigning pages.

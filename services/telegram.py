@@ -282,6 +282,30 @@ def assign_page_to_poster(poster_id: str, integration_id: str) -> dict:
         return poster
 
 
+def assign_pages_to_poster(poster_id: str, integration_ids: list[str]) -> dict:
+    """Add several pages to a poster's page_ids in a SINGLE locked transaction.
+
+    The router used to loop ``assign_page_to_poster`` once per page. Each call
+    takes and releases the lock independently, so a concurrent op (an unassign,
+    another assign batch, a direct poster edit) can interleave between pages —
+    and it does one full config write per page. Batching the whole list under one
+    ``mutate_config`` hold makes the assignment atomic and writes the file once.
+    Idempotent: pages already present are skipped. Returns the updated poster.
+    """
+    with mutate_config() as config:
+        poster = config.get("posters", {}).get(poster_id)
+        if poster is None:
+            raise ValueError(f"Poster {poster_id} not found")
+        page_ids = poster.setdefault("page_ids", [])
+        existing = set(page_ids)
+        for integration_id in integration_ids:
+            if integration_id not in existing:
+                page_ids.append(integration_id)
+                existing.add(integration_id)
+        poster["updated_at"] = _now()
+        return poster
+
+
 def unassign_page_from_poster(poster_id: str, integration_id: str) -> dict:
     """Remove a page from a poster's page_ids and topics. Returns updated poster."""
     with mutate_config() as config:

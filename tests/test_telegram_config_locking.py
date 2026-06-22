@@ -69,6 +69,45 @@ def test_concurrent_assign_page_to_poster_loses_nothing(isolated_config):
     assert page_ids == expected, f"lost {expected - page_ids}"
 
 
+def test_assign_pages_to_poster_is_idempotent_and_atomic(isolated_config):
+    """The batched assign adds every page once, even with overlapping inputs.
+
+    The router used to loop ``assign_page_to_poster`` per page (lock taken and
+    released between each), leaving a window for a concurrent op to interleave.
+    The batched helper does the whole list under one ``mutate_config`` hold.
+    """
+    tg.set_poster("p1", {"name": "Poster One", "chat_id": -100})
+
+    poster = tg.assign_pages_to_poster("p1", ["a", "b", "c"])
+    assert poster["page_ids"] == ["a", "b", "c"]
+
+    # Re-assigning overlapping pages must not duplicate.
+    poster = tg.assign_pages_to_poster("p1", ["b", "c", "d"])
+    assert poster["page_ids"] == ["a", "b", "c", "d"]
+
+
+def test_concurrent_assign_batches_lose_nothing(isolated_config):
+    """N threads each assign a distinct BATCH of pages to the same poster.
+
+    This mirrors the real race: multiple assign_pages requests landing at once.
+    Every page across every batch must survive — none clobbered by last-writer.
+    """
+    tg.set_poster("p1", {"name": "Poster One", "chat_id": -100})
+
+    n = 20
+    batch_size = 5
+    _barrier_runner(
+        lambda i: tg.assign_pages_to_poster(
+            "p1", [f"b{i}-p{j}" for j in range(batch_size)]
+        ),
+        n,
+    )
+
+    page_ids = set(tg.get_poster("p1")["page_ids"])
+    expected = {f"b{i}-p{j}" for i in range(n) for j in range(batch_size)}
+    assert page_ids == expected, f"lost {expected - page_ids}"
+
+
 def test_concurrent_set_poster_topic_loses_nothing(isolated_config):
     """N threads each map a distinct integration to a topic on the same poster.
 
