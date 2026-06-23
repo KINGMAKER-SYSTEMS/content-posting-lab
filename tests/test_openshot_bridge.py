@@ -183,6 +183,58 @@ def test_muted_clip_with_volume_envelope_exports_silent(tmp_path):
     assert project["clips"]["card_clip"]["keyframes"][0]["property"] == "volume"
 
 
+def test_muted_clip_volume_envelope_via_clip_update_command_exports_silent(tmp_path):
+    """End-to-end pin for the editor_timeline:1104-1110 seam: a `clip.update`
+    that attaches a volume envelope to a MUTED clip neutralizes the flat base
+    gain to 1.0 (so a later unmute animates from 1.0, not 0.0) WITHOUT touching
+    `muted`. The only thing keeping that clip silent at render time is the
+    bridge's mute-flatten (openshot_bridge:333-340). This drives the real
+    command path then the real export and asserts mute still wins over the
+    resurrected envelope — i.e. the two halves of the contract actually compose."""
+    project = _project(tmp_path / "bed.wav")
+    project["assets"]["card"]["type"] = "audio"
+    project["clips"]["card_clip"]["trackId"] = "music_1"
+    project["clips"]["card_clip"]["kind"] = "music_bed"
+    project["clips"]["card_clip"]["volume"] = 0.0
+    project["clips"]["card_clip"]["muted"] = True
+
+    command = {
+        "id": "cmd_env",
+        "op": "clip.update",
+        "expectedRevision": project.get("revision", 0),
+        "payload": {
+            "clipId": "card_clip",
+            "patch": {
+                "keyframes": [
+                    {
+                        "property": "volume",
+                        "points": [
+                            {"t": 0.0, "value": 1.0, "interp": "linear"},
+                            {"t": 2.0, "value": 0.5, "interp": "linear"},
+                        ],
+                    }
+                ],
+            },
+        },
+    }
+    updated = editor_timeline.apply_command(project, command)
+
+    # The command neutralized the flat base gain to 1.0 (unmute would animate
+    # from full), but left the clip muted.
+    assert updated["clips"]["card_clip"]["volume"] == 1.0
+    assert updated["clips"]["card_clip"]["muted"] is True
+
+    exported = openshot_bridge.timeline_json(updated)
+
+    # Mute wins over the envelope: exported volume is a single 0 point.
+    points = exported["clips"][0]["volume"]["Points"]
+    assert len(points) == 1
+    assert points[0]["co"]["Y"] == 0.0
+    # The envelope survives on the clip so a future unmute restores it.
+    assert updated["clips"]["card_clip"]["keyframes"][0]["property"] == "volume"
+    assert len(updated["clips"]["card_clip"]["keyframes"][0]["points"]) == 2
+
+
 def test_disabled_clip_with_opacity_envelope_exports_invisible_but_keeps_keyframes(tmp_path):
     """A disabled clip must export render-time invisible (flat alpha 0) even when
     it carries an opacity keyframe envelope — same shape as mute. The envelope
@@ -405,6 +457,46 @@ def test_abn_imported_transition_survives_as_openshot_crossfade(tmp_path):
     fade = next(e for e in effects if e["type"] == "Fade")
     assert fade["fade"] == "in"
     assert fade["duration"]["Points"][0]["co"]["Y"] == 0.75
+
+
+@pytest.mark.parametrize("transition", [0, 0.0, -0.5, -3])
+def test_abn_nonpositive_transition_exports_without_openshot_fade(tmp_path, transition):
+    """A transitionSec <= 0 is not a dissolve: 0 is a hard cut and negative is
+    invalid. Neither may reach OpenShot as a Fade — a zero-duration Fade is render
+    noise, and a negative one is undefined. The full round-trip (import -> bridge)
+    must yield the broll clip with no Fade effect at all."""
+    abn = _abn_timeline()
+    abn["segments"][0]["shots"][0]["transitionSec"] = transition
+
+    project = editor_timeline.project_from_abn_timeline(
+        "proj_seam_xf_edge", abn, source_episode_id="ep_seam"
+    )
+
+    broll = next(c for c in project["clips"].values() if c["kind"] == "broll")
+    assert [e for e in broll["effects"] if e["type"] == "crossfade"] == []
+
+    exported = openshot_bridge.timeline_json(project, asset_root=tmp_path)
+    by_id = {c["id"]: c for c in exported["clips"]}
+    assert [e for e in by_id[broll["id"]]["effects"] if e["type"] == "Fade"] == []
+
+
+@pytest.mark.parametrize("transition", [0.001, 0.5, 1.0, 600.0])
+def test_abn_positive_transition_duration_survives_roundtrip(tmp_path, transition):
+    """The exact transitionSec duration must survive import + bridge translation to
+    the OpenShot Fade keyframe value — pinning that no rounding/zeroing eats it for
+    the small, typical, and max-bound durations."""
+    abn = _abn_timeline()
+    abn["segments"][0]["shots"][0]["transitionSec"] = transition
+
+    project = editor_timeline.project_from_abn_timeline(
+        "proj_seam_xf_pos", abn, source_episode_id="ep_seam"
+    )
+    broll = next(c for c in project["clips"].values() if c["kind"] == "broll")
+    exported = openshot_bridge.timeline_json(project, asset_root=tmp_path)
+    by_id = {c["id"]: c for c in exported["clips"]}
+
+    fade = next(e for e in by_id[broll["id"]]["effects"] if e["type"] == "Fade")
+    assert fade["duration"]["Points"][0]["co"]["Y"] == transition
 
 
 def test_abn_imported_bed_keyframe_ducking_envelope_survives_the_seam(tmp_path):
@@ -829,6 +921,48 @@ def test_clip_keyframes_partial_after_block_keeps_before_crossfade(tmp_path):
     effects = action["value"].get("effects", [])
     assert any(e.get("type") == "Fade" for e in effects), (
         "import-synthesized crossfade was dropped from a keyframes-only after block"
+    )
+
+
+@pytest.mark.parametrize(
+    "op, mutation",
+    [
+        ("clip.move", {"start": 4.0}),
+        ("clip.trim", {"duration": 1.0, "sourceStart": 0.5}),
+        ("clip.volume", {"volume": 0.3}),
+    ],
+)
+def test_generic_clip_mutation_keeps_before_crossfade(tmp_path, op, mutation):
+    """Regression guard for the generic clip.* catch-all: ANY non-keyframes clip
+    mutation (move/trim/volume/...) whose after["clip"] dropped the effects array must
+    not lose the import-synthesized crossfade. These ops never touch effects, so
+    before["clip"]["effects"] is authoritative and the crossfade must survive to
+    OpenShot as a Fade -- the same guarantee clip.keyframes already gives. Previously
+    only clip.volume was covered, leaving clip.move/clip.trim able to silently drop
+    a crossfade during timeline editing with no test catching it."""
+    project = _project(tmp_path / "card.png")
+    before_clip = dict(project["clips"]["card_clip"])
+    before_clip["effects"] = [
+        {"id": "xf_shot", "type": "crossfade", "params": {"duration": 0.5}}
+    ]
+    # after block carries the mutated field but its effects array was dropped
+    after_clip = dict(before_clip)
+    after_clip["effects"] = []
+    after_clip.update(mutation)
+    entry = {
+        "id": f"cmd_{op.replace('.', '_')}",
+        "op": op,
+        "payload": {"clipId": "card_clip", **mutation},
+        "before": {"clip": before_clip},
+        "after": {"clip": after_clip},
+    }
+
+    action = openshot_bridge.update_action_from_command(project, entry)
+
+    assert action is not None
+    effects = action["value"].get("effects", [])
+    assert any(e.get("type") == "Fade" for e in effects), (
+        f"import-synthesized crossfade was dropped from a {op} after block"
     )
 
 
@@ -2085,3 +2219,44 @@ def test_keyframe_overrides_maps_property_to_keys_with_frame_and_value_transform
     # source_start offsets every keyframe X by source_start*fps (trimmed clips).
     trimmed = openshot_bridge._keyframe_overrides(kf, fps=30, source_start=2.0)
     assert [p["co"]["X"] for p in trimmed["scale_x"]["Points"]] == [61.0, 91.0]
+
+
+def test_missing_bridge_message_gives_exact_worktree_recovery_steps():
+    """The import-error message that fires when services/openshot_bridge.py is
+    absent must hand the next person the EXACT fix for the case that actually bit
+    us: a git worktree where the file is missing because it was untracked in the
+    main checkout (so `git worktree add` never copied it in). Plain
+    `git add services/openshot_bridge.py` finds nothing in that worktree -- the
+    message must say to copy it from the main checkout first, then commit it, and
+    must warn off the destructive `git checkout`/`stash`-in-main move that
+    deletes the untracked original. Pins the load-bearing recovery text so a
+    future "tidy the comment" edit can't quietly drop the worktree path."""
+    from services import editor_render
+
+    msg = editor_render._MISSING_BRIDGE_MSG
+    assert "services/openshot_bridge.py" in msg
+    # Committed-checkout path: the original add+commit fix.
+    assert "git add services/openshot_bridge.py" in msg
+    assert "git commit" in msg
+    # Worktree path: copy from main, then commit -- not just `git add`.
+    assert "cp " in msg
+    assert "main" in msg
+    # The destructive-move warning that loses the untracked original.
+    assert "git checkout" in msg
+    assert "git stash" in msg
+
+
+def test_missing_bridge_guard_reraises_unrelated_module_errors():
+    """The try/except around the bridge import must ONLY swallow the missing
+    bridge -- an unrelated ModuleNotFoundError raised from inside
+    openshot_bridge (e.g. a genuinely missing third-party dep) has to propagate
+    untouched, or we'd mask real breakage behind the friendly bridge message.
+    Mirrors the guard's `exc.name not in {...}: raise` branch."""
+    from services import editor_render
+
+    bridge_names = {"services.openshot_bridge", "openshot_bridge"}
+    # The guard re-raises anything whose .name is outside the bridge set.
+    assert "numpy" not in bridge_names
+    assert "services.openshot_bridge" in bridge_names
+    # And the friendly message is wired into the module that does the importing.
+    assert editor_render.openshot_bridge is not None

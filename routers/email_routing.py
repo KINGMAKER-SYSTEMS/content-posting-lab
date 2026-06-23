@@ -52,20 +52,35 @@ async def email_status():
 async def delete_email_rule(rule_id: str, integration_id: str | None = None):
     """Delete an email routing rule and optionally unlink from roster page."""
     _require_configured()
+
+    # When an integration_id is supplied, the caller is asking us to unlink a
+    # specific page. Validate that the rule actually belongs to that page BEFORE
+    # deleting anything — otherwise a mismatched rule_id/integration_id pair
+    # silently nukes the wrong CF rule and leaves the page's real rule orphaned.
+    page = None
+    if integration_id:
+        page = get_page(integration_id)
+        if page and page.get("email_rule_id") not in (None, "", rule_id):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"rule_id {rule_id} does not belong to page {integration_id} "
+                    f"(linked rule is {page.get('email_rule_id')})"
+                ),
+            )
+
     try:
         await delete_rule(rule_id)
     except Exception as e:
         raise HTTPException(status_code=502, detail=str(e))
 
     # Unlink from roster page
-    if integration_id:
-        page = get_page(integration_id)
-        if page:
-            set_page(integration_id, {
-                "email_alias": None,
-                "email_rule_id": None,
-                "fwd_destination": None,
-            })
+    if integration_id and page:
+        set_page(integration_id, {
+            "email_alias": None,
+            "email_rule_id": None,
+            "fwd_destination": None,
+        })
 
     return {"deleted": True}
 

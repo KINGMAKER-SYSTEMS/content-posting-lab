@@ -396,13 +396,21 @@ def _shot_effects(shot: dict[str, Any]) -> list[dict[str, Any]]:
     transition = shot.get("transitionSec")
     if transition not in (None, "") and not any(e["type"] == "crossfade" for e in out):
         try:
-            out.append(
-                _validated_effect(
-                    {"id": "xf_shot", "type": "crossfade", "params": {"duration": float(transition)}}
+            transition_sec = float(transition)
+        except (TypeError, ValueError):
+            transition_sec = 0.0
+        # transitionSec <= 0 is not a dissolve: 0 is a no-op (hard cut) and a
+        # zero-duration crossfade effect is pure noise downstream; negative is
+        # invalid. Only a positive transition becomes a synthesized crossfade.
+        if transition_sec > 0:
+            try:
+                out.append(
+                    _validated_effect(
+                        {"id": "xf_shot", "type": "crossfade", "params": {"duration": transition_sec}}
+                    )
                 )
-            )
-        except (CommandValidationError, TypeError, ValueError):
-            pass
+            except (CommandValidationError, TypeError, ValueError):
+                pass
     return out
 
 

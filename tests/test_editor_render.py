@@ -658,6 +658,99 @@ def test_volume_filter_envelope_overrides_flat_gain_even_when_not_neutralized():
     assert "(0.2200)*(" not in flt_with_stale and ":eval=frame" in flt_with_stale
 
 
+def _extract_volume_segment(filtergraph: str) -> str:
+    """Pull the single `volume=...:eval=frame` envelope segment out of a built
+    filter_complex string. Both audio backends emit exactly one such segment for a
+    clip that carries a volume envelope; the surrounding atrim/adelay differ between
+    paths (one resets PTS via aresample/aformat, the other doesn't) so we compare
+    only the gain segment that ducking parity actually depends on."""
+    import re
+
+    matches = re.findall(r"volume='[^']*':eval=frame", filtergraph)
+    assert len(matches) == 1, f"expected exactly one volume envelope segment, got {matches}"
+    return matches[0]
+
+
+def test_mux_and_fallback_emit_identical_volume_envelope_when_flat_gain_also_set(tmp_path):
+    """Ticket: the OpenShot mux path (_mux_timeline_audio) and the ffmpeg-layered
+    fallback (_build_video_command) both build a ducking volume envelope, but no test
+    proved they emit the SAME gain over time for the untested edge case — an audio
+    clip that has BOTH a non-1.0 flat `volume` AND an absolute keyframe envelope.
+
+    The docstring on _volume_filter (lines ~241-249) promises the envelope OVERRIDES
+    the flat gain (no double-attenuation) and that this holds 'regardless of upstream
+    neutralization' — but the mux path passes the raw flat `clip['volume']` (0.22)
+    straight in as base_volume, so if the override ever regressed the OpenShot-muxed
+    audio would duck to 0.22*envelope while the fallback ducked to envelope. This pins
+    that both paths feed _volume_filter and produce a byte-identical envelope segment,
+    with the flat 0.22 ignored on both sides."""
+    red = _solid_png(tmp_path / "red.png", "red")
+    voice = tmp_path / "bed.wav"
+    subprocess.run(
+        ["ffmpeg", "-y", "-f", "lavfi", "-i", "sine=frequency=220:duration=2",
+         "-ac", "2", "-ar", "48000", str(voice)],
+        check=True, capture_output=True, text=True,
+    )
+    project = _project_with_card("mux_parity", red, x=0.0)
+    project["assets"]["bed"] = {"id": "bed", "type": "audio", "src": str(voice)}
+    project["clips"]["bed_clip"] = {
+        "id": "bed_clip", "assetId": "bed", "trackId": "audio_1", "kind": "music",
+        "start": 0.0, "duration": 2.0, "sourceStart": 0.0,
+        "enabled": True, "muted": False,
+        # The edge case: a stale non-1.0 flat gain ALONGSIDE an absolute envelope.
+        "volume": 0.22,
+        "transform": {},
+        "keyframes": _volume_keyframes((0.0, 0.6), (1.0, 0.22), (2.0, 0.6)),
+    }
+
+    # --- ffmpeg-layered fallback path ---
+    r = _renderer(tmp_path)
+    fallback_cmd, missing, _warnings = r._build_video_command(
+        project, tmp_path / "fallback.mp4", duration=2.0, window_start=0.0
+    )
+    assert missing == []
+    fallback_fg = fallback_cmd[fallback_cmd.index("-filter_complex") + 1]
+
+    # --- OpenShot mux path: intercept the ffmpeg argv it would run ---
+    captured: dict[str, list[str]] = {}
+
+    class _FakeCompleted:
+        returncode = 0
+        stderr = ""
+        stdout = ""
+
+    muxed_target = tmp_path / "muxed.mp4"
+    muxed_target.write_bytes(b"video")
+    temp_output = muxed_target.with_name(f"{muxed_target.stem}.audio-mux{muxed_target.suffix}")
+
+    def _fake_run(cmd, *args, **kwargs):
+        captured["cmd"] = cmd
+        # Real ffmpeg would write the temp mux file; the success path then renames
+        # it over the target. Emulate that so _mux_timeline_audio returns True.
+        temp_output.write_bytes(b"muxed")
+        return _FakeCompleted()
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(editor_render.subprocess, "run", _fake_run)
+    try:
+        did_mux = editor_render._mux_timeline_audio(
+            project, muxed_target, duration=2.0, asset_root=None
+        )
+    finally:
+        monkeypatch.undo()
+    assert did_mux is True
+    mux_cmd = captured["cmd"]
+    mux_fg = mux_cmd[mux_cmd.index("-filter_complex") + 1]
+
+    # The gain-over-time segment must be byte-for-byte identical across both backends.
+    fallback_seg = _extract_volume_segment(fallback_fg)
+    mux_seg = _extract_volume_segment(mux_fg)
+    assert fallback_seg == mux_seg
+    # And it is the absolute envelope, NOT scaled by the flat 0.22 on either side.
+    assert "0.6000" in mux_seg
+    assert "(0.2200)*(" not in mux_seg and "(0.2200)*(" not in fallback_seg
+
+
 def test_windowed_volume_envelope_keeps_absolute_gains_through_window_shift():
     """A ducking volume envelope (absolute gains: 0.6 under intro, 0.22 under VO)
     must survive _render_scope_project windowing with its GAIN values unchanged --
@@ -1684,6 +1777,124 @@ def test_open_shot_audio_mux_applies_audio_crossfade_as_fadein(tmp_path):
     head = _mean_volume(video, start=0.0, duration=0.25)
     body = _mean_volume(video, start=1.2, duration=0.4)
     assert head < body - 6  # crossfade ramp keeps the head well below steady level
+
+
+def test_build_video_command_audio_crossfade_clamped_to_clip_duration(tmp_path):
+    """A crossfade longer than the audio clip must NOT emit an `afade=t=in` whose
+    `d` overruns the clip — ffmpeg would ramp past the clip's end and never reach
+    full volume. The fallback clamps with min(crossfade, duration_sec); pre-clamp a
+    1.5s crossfade on a 0.6s clip would have written d=1.500. This pins the clamp so
+    the afade duration never exceeds the clip window."""
+    red = _solid_png(tmp_path / "red.png", "red")
+    voice = tmp_path / "vo.wav"
+    subprocess.run(
+        ["ffmpeg", "-y", "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
+         "-ac", "1", "-ar", "48000", str(voice)],
+        check=True, capture_output=True, text=True,
+    )
+    project = _project_with_card("cmd_xfade_clamp", red, x=0.0)
+    project["assets"]["vo"] = {"id": "vo", "type": "audio", "src": str(voice)}
+    project["clips"]["vo_clip"] = {
+        "id": "vo_clip", "assetId": "vo", "trackId": "audio_1", "kind": "voiceover",
+        "start": 0.0, "duration": 0.6, "sourceStart": 0.0,
+        "enabled": True, "muted": False, "volume": 1.0, "transform": {},
+        "effects": [{"id": "xf", "type": "crossfade", "params": {"duration": 1.5}}],
+    }
+    r = _renderer(tmp_path)
+    cmd, missing, warnings = r._build_video_command(
+        project, tmp_path / "out.mp4", duration=0.6, window_start=0.0
+    )
+    assert missing == []
+    filter_arg = cmd[cmd.index("-filter_complex") + 1]
+    # clamped to the 0.6s clip, NOT the raw 1.5s crossfade duration
+    assert "afade=t=in:st=0:d=0.600" in filter_arg
+    assert "d=1.500" not in filter_arg
+    assert not any(w["name"] == "crossfade" for w in warnings)
+
+
+def test_build_video_command_audio_crossfade_and_fadein_emit_single_afade(tmp_path):
+    """An audio clip carrying BOTH a crossfade and a fadeIn must collapse to ONE
+    `afade=t=in` whose duration is the longer of the two (max() semantics in
+    _audio_fade_in_window) — never two stacked fade-ins. Here crossfade(0.5) wins
+    over fadeIn(0.2), so exactly one afade=t=in:d=0.500 is emitted for the clip."""
+    red = _solid_png(tmp_path / "red.png", "red")
+    voice = tmp_path / "vo.wav"
+    subprocess.run(
+        ["ffmpeg", "-y", "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
+         "-ac", "1", "-ar", "48000", str(voice)],
+        check=True, capture_output=True, text=True,
+    )
+    project = _project_with_card("cmd_xfade_plus_in", red, x=0.0)
+    project["assets"]["vo"] = {"id": "vo", "type": "audio", "src": str(voice)}
+    project["clips"]["vo_clip"] = {
+        "id": "vo_clip", "assetId": "vo", "trackId": "audio_1", "kind": "voiceover",
+        "start": 0.0, "duration": 1.0, "sourceStart": 0.0,
+        "enabled": True, "muted": False, "volume": 1.0, "transform": {},
+        "effects": [
+            {"id": "fi", "type": "fadeIn", "params": {"duration": 0.2}},
+            {"id": "xf", "type": "crossfade", "params": {"duration": 0.5}},
+        ],
+    }
+    r = _renderer(tmp_path)
+    cmd, missing, warnings = r._build_video_command(
+        project, tmp_path / "out.mp4", duration=1.0, window_start=0.0
+    )
+    assert missing == []
+    filter_arg = cmd[cmd.index("-filter_complex") + 1]
+    # exactly one fade-in, at the LONGER (crossfade) duration
+    assert filter_arg.count("afade=t=in") == 1
+    assert "afade=t=in:st=0:d=0.500" in filter_arg
+    assert "d=0.200" not in filter_arg  # the shorter fadeIn does not stack on top
+
+
+def test_open_shot_audio_mux_crossfade_clamped_to_clip_duration(tmp_path, monkeypatch):
+    """The OpenShot mux path clamps a crossfade to the clip duration just like the
+    ffmpeg fallback: min(crossfade, clip_duration). A 3.0s crossfade on a 1.0s clip
+    must surface as `afade=t=in:st=0:d=1.000`, never d=3.000 (which would ramp past
+    the clip end and never reach full volume). Captures the ffmpeg command via a
+    subprocess shim so the assertion is deterministic and ffmpeg-free."""
+    video = tmp_path / "silent_video.mp4"
+    subprocess.run(
+        ["ffmpeg", "-y", "-f", "lavfi", "-i", "color=c=black:s=96x64:r=12:d=2",
+         "-c:v", "libx264", "-pix_fmt", "yuv420p", str(video)],
+        check=True, capture_output=True, text=True,
+    )
+    tone = tmp_path / "tone.wav"
+    subprocess.run(
+        ["ffmpeg", "-y", "-f", "lavfi", "-i", "sine=frequency=440:duration=2.0",
+         "-ac", "1", "-ar", "48000", str(tone)],
+        check=True, capture_output=True, text=True,
+    )
+    project = timeline.new_project("audio_xfade_clamp", width=96, height=64, fps=12)
+    project["assets"]["tone"] = {"id": "tone", "type": "audio", "src": str(tone)}
+    project["clips"]["tone"] = {
+        "id": "tone", "assetId": "tone", "trackId": "audio_1", "kind": "music",
+        "start": 0, "duration": 1.0, "sourceStart": 0, "enabled": True,
+        "muted": False, "volume": 1, "transform": {},
+        "effects": [{"id": "xf", "type": "crossfade", "params": {"duration": 3.0}}],
+    }
+
+    captured: dict[str, list[str]] = {}
+
+    class _Result:
+        returncode = 0
+        stderr = ""
+        stdout = ""
+
+    def _fake_run(cmd, *args, **kwargs):
+        captured["cmd"] = cmd
+        # stand in for ffmpeg: produce the temp output the mux path renames over
+        tmp_out = next(p for p in cmd if str(p).endswith(".audio-mux.mp4"))
+        Path(tmp_out).write_bytes(video.read_bytes())
+        return _Result()
+
+    monkeypatch.setattr(editor_render.subprocess, "run", _fake_run)
+    assert editor_render._mux_timeline_audio(project, video, duration=2.0, asset_root=None) is True
+
+    filter_arg = captured["cmd"][captured["cmd"].index("-filter_complex") + 1]
+    # clamped to the 1.0s clip, NOT the raw 3.0s crossfade
+    assert "afade=t=in:st=0:d=1.000" in filter_arg
+    assert "d=3.000" not in filter_arg
 
 
 def test_open_shot_audio_mux_raises_on_missing_audio_asset(tmp_path):

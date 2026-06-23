@@ -238,7 +238,7 @@ async def dedup_roster():
         keep_id = ids_sorted[0]
 
         for dupe_id in ids_sorted[1:]:
-            # Merge inventory from dupe into keeper
+            # Merge inventory from dupe into keeper (in-memory only for now)
             dupe_inv = all_inventory.get(dupe_id, [])
             if dupe_inv and tg_config is not None:
                 keep_inv = tg_config.get("inventory", {}).setdefault(keep_id, [])
@@ -250,11 +250,22 @@ async def dedup_roster():
 
             removed_ids.append(dupe_id)
             removed_names.append(pages[dupe_id].get("name", dupe_id))
-            remove_page(dupe_id)
 
-    # Save merged inventory
+    # Persist merged inventory FIRST. If this fails we abort before destroying
+    # any roster entries, so the roster + telegram config stay consistent (no
+    # partially-applied merge with lost inventory). Only after a successful
+    # save do we remove the duplicate pages.
     if tg_config is not None and inventory_merged > 0:
-        save_tg_config(tg_config)
+        try:
+            save_tg_config(tg_config)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to save merged inventory; roster left unchanged: {exc}",
+            )
+
+    for dupe_id in removed_ids:
+        remove_page(dupe_id)
 
     # Clean up staging topics for removed IDs
     topic_removed = 0

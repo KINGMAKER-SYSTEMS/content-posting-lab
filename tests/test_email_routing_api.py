@@ -262,6 +262,52 @@ def test_delete_rule_unlinks_roster_page(sync_client, monkeypatch, configured):
     assert cleared == {"email_alias": None, "email_rule_id": None, "fwd_destination": None}
 
 
+def test_delete_rule_rejects_mismatched_rule_for_page(sync_client, monkeypatch, configured):
+    """If the page is linked to a *different* rule, deletion must be refused (409)
+    and the CF rule must NOT be deleted — otherwise we silently nuke the wrong
+    rule and orphan the page's real one."""
+    def _boom_delete(*a, **k):
+        raise AssertionError("must not delete a rule that does not belong to the page")
+
+    monkeypatch.setattr(r, "delete_rule", _boom_delete)
+    monkeypatch.setattr(
+        r, "get_page",
+        lambda iid: {"integration_id": iid, "email_rule_id": "rule_OWNED"},
+    )
+
+    def _boom_set(*a, **k):
+        raise AssertionError("roster must not be modified on a mismatch")
+
+    monkeypatch.setattr(r, "set_page", _boom_set)
+
+    resp = sync_client.delete("/api/email/rules/rule_WRONG?integration_id=i1")
+    assert resp.status_code == 409
+    assert "does not belong" in resp.json()["detail"]
+
+
+def test_delete_rule_allows_matching_rule_for_page(sync_client, monkeypatch, configured):
+    """When the page's linked rule matches rule_id, deletion proceeds and unlinks."""
+    deleted = {"id": None}
+
+    async def _del(rule_id):
+        deleted["id"] = rule_id
+        return True
+
+    monkeypatch.setattr(r, "delete_rule", _del)
+
+    cleared = {}
+    monkeypatch.setattr(
+        r, "get_page",
+        lambda iid: {"integration_id": iid, "email_rule_id": "rule_OWNED"},
+    )
+    monkeypatch.setattr(r, "set_page", lambda iid, fields: cleared.update(fields))
+
+    resp = sync_client.delete("/api/email/rules/rule_OWNED?integration_id=i1")
+    assert resp.status_code == 200
+    assert deleted["id"] == "rule_OWNED"
+    assert cleared == {"email_alias": None, "email_rule_id": None, "fwd_destination": None}
+
+
 def test_delete_rule_without_integration_does_not_touch_roster(sync_client, monkeypatch, configured):
     monkeypatch.setattr(r, "delete_rule", _async(True))
 

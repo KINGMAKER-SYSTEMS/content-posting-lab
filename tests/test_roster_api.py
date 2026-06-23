@@ -130,6 +130,43 @@ def test_dedup_keeps_highest_inventory_and_merges(sync_client):
     assert "one_item" not in inv
 
 
+def test_dedup_aborts_atomically_when_inventory_save_fails(sync_client, monkeypatch):
+    """If persisting the merged inventory fails, no roster entries are removed.
+
+    Regression: the dedup endpoint used to remove duplicate pages *before*
+    saving the merged telegram config, so an I/O error on save left the roster
+    short the dupes while their inventory was lost — an inconsistent state.
+    The save now happens first; a failure must leave roster + config untouched.
+    """
+    _add_page("keeper", "Page")                 # score 200 -> survivor
+    _add_page("dropme", "page", project="p")    # score 110 -> would be removed
+
+    cfg = tg.load_config()
+    cfg["inventory"]["keeper"] = [{"forwarded": False}, {"forwarded": False}]
+    cfg["inventory"]["dropme"] = [{"forwarded": True}]
+    tg.save_config(cfg)
+
+    def boom(_data):
+        raise OSError("disk full")
+
+    # dedup_roster imports save_config locally from services.telegram, so patch
+    # it at the source module.
+    monkeypatch.setattr(tg, "save_config", boom)
+
+    r = sync_client.post("/api/roster/dedup")
+    assert r.status_code == 500
+    assert "roster left unchanged" in r.json()["detail"]
+
+    # Both pages still present — nothing was destroyed.
+    pages = {p["integration_id"] for p in roster.list_all_pages()}
+    assert pages == {"keeper", "dropme"}
+
+    # On-disk inventory untouched (the failed save wrote nothing).
+    inv = tg.load_config()["inventory"]
+    assert "dropme" in inv
+    assert len(inv["keeper"]) == 2
+
+
 def test_dedup_noop_when_no_duplicates(sync_client):
     _add_page("a", "Alpha")
     _add_page("b", "Beta")

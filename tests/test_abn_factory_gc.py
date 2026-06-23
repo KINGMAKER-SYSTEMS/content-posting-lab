@@ -352,6 +352,34 @@ def test_cachebuster_url_protects_and_renders_the_same_file_end_to_end(store):
     assert rendered.exists(), "compiler's resolved render path is missing after the GC cycle"
 
 
+def test_cachebuster_strip_is_a_single_shared_helper_not_three_copies(store):
+    """STRUCTURAL drift guard: the GC protection scan, abn_factory's `_resolve_asset`, and the
+    OpenShot compiler's `_resolve_asset_src` must all strip the cache-buster through the SAME
+    `openshot_bridge.strip_cachebuster` — not three hand-copied `.split('?')…split('#')` chains.
+
+    test_cachebuster_url_protects_and_renders_the_same_file_end_to_end catches drift behaviorally
+    for one URL shape; this catches it structurally: if any site re-forks its own strip, the
+    shared helper stops being the single source and these assertions break. We exercise a few
+    awkward shapes (fragment-before-query, double query, no buster) so the helper, the resolver,
+    and the protection scan are all proven to agree byte-for-byte on the on-disk name."""
+    from services import openshot_bridge
+
+    cases = {
+        "ep/renders/episode.mp4?rev=3": "ep/renders/episode.mp4",
+        "ep/renders/episode.mp4#frag?rev=3": "ep/renders/episode.mp4",
+        "ep/renders/episode.mp4?a=1&b=2": "ep/renders/episode.mp4",
+        "ep/renders/episode.mp4": "ep/renders/episode.mp4",
+    }
+    for rel, want in cases.items():
+        # 1) the canonical helper
+        assert openshot_bridge.strip_cachebuster(rel) == want, rel
+        # 2) the compiler resolver lands on asset_root / <stripped>
+        url = f"/agenticnews-assets/{rel}"
+        assert openshot_bridge._resolve_asset_src(url, asset_root=store) == str(store / want), rel
+        # 3) abn_factory's _resolve_asset agrees with both
+        assert abn_factory._resolve_asset(url) == abn_factory.ASSETS / want, rel
+
+
 def test_protection_scan_reaches_deeply_nested_clip_keyframe_refs(store):
     """The collect() traversal must reach asset refs buried arbitrarily deep — a real editor timeline
     nests them under clips[] → keyframes[] (and an effects[] sidecar), not at the top level. If the
@@ -1299,6 +1327,37 @@ def test_purge_disk_skips_render_trim_when_protection_scan_incomplete(store, mon
         "low-disk trim ran despite an incomplete protection scan — it could have eaten a live render"
     )
     assert not (store / "_trash" / "ep_old000" / "renders" / "episode.mp4").exists()
+    assert freed == 0
+
+
+def test_purge_disk_skips_render_trim_when_timeline_glob_permission_denied(store, monkeypatch):
+    """Companion to test_purge_disk_skips_render_trim_when_protection_scan_incomplete, but the scan
+    fails for the OTHER reason the fail-safe exists for: globbing the timeline dir itself raises (a
+    PermissionError / OSError mid-scan, not a per-file parse error). _editor_timeline_asset_paths_checked
+    returns (empty_set, complete=False), and the downstream low-disk render trim must respect that and
+    skip — an empty-but-incomplete protected set must NOT be read as 'nothing is referenced, trim freely'.
+    Without this, a denied glob would look identical to a clean empty scan and the disk-wall would
+    tombstone a render an active editor still depends on."""
+    old_render = _render(store, "ep_old222", age_s=9000)
+    _render(store, "ep_5e2222", age_s=10)
+
+    real_glob = Path.glob
+
+    def boom(self, pattern):
+        if self.name == "editor_timelines":
+            raise PermissionError("denied")
+        return real_glob(self, pattern)
+
+    monkeypatch.setattr(Path, "glob", boom)
+    _force_low_disk(monkeypatch)
+
+    freed = abn_factory.purge_disk(intermediate_age_s=99999, keep_episodes=1, low_disk_gb=999)
+
+    assert old_render.exists(), (
+        "low-disk trim ran despite a permission-denied timeline glob — an incomplete scan whose set "
+        "happens to be empty must still skip the destructive render trim, not trim freely"
+    )
+    assert not (store / "_trash" / "ep_old222" / "renders" / "episode.mp4").exists()
     assert freed == 0
 
 

@@ -18,6 +18,30 @@ import sys
 from pathlib import Path
 from typing import Any
 
+# Recovery instructions surfaced when services/openshot_bridge.py is missing.
+# Exposed as a module constant so the import-error path is testable without
+# having to actually delete the file. ponytail: one string, no logic.
+#
+# The original message only said "git add && git commit", which is wrong for the
+# case that actually bit us: the file was UNTRACKED in the main checkout, so a
+# `git worktree add` never copied it in. In a fresh worktree the file does not
+# exist at all, `git add services/openshot_bridge.py` finds nothing, and the
+# person is stuck. The real fix in a worktree is to copy it back from the main
+# checkout (it lives there, just untracked), then commit it so it survives.
+_MISSING_BRIDGE_MSG = (
+    "services/openshot_bridge.py is missing from this checkout. It is the "
+    "sanctioned OpenShot compiler module that editor_render imports at load "
+    "time and it has been untracked/lost in a worktree before.\n"
+    "Fix (committed checkout): `git add services/openshot_bridge.py && "
+    "git commit` it on this branch.\n"
+    "Fix (git worktree where the file is absent because it was untracked in "
+    "main): copy it from the main checkout, then commit it so the worktree "
+    "keeps it: `cp /path/to/main/services/openshot_bridge.py "
+    "services/openshot_bridge.py && git add services/openshot_bridge.py && "
+    "git commit`. Do NOT `git checkout`/`git stash` in the main repo while "
+    "worktrees are live -- that deletes the untracked original."
+)
+
 try:
     import services.openshot_bridge as openshot_bridge
 except ModuleNotFoundError as exc:
@@ -31,12 +55,7 @@ except ModuleNotFoundError as exc:
     # change when the file is present.
     if exc.name not in {"services.openshot_bridge", "openshot_bridge"}:
         raise
-    raise ModuleNotFoundError(
-        "services/openshot_bridge.py is missing from this checkout. It is the "
-        "OpenShot compiler module that editor_render imports at load time and it "
-        "has been untracked/lost in a worktree before. Fix: `git add "
-        "services/openshot_bridge.py && git commit` it on this branch."
-    ) from exc
+    raise ModuleNotFoundError(_MISSING_BRIDGE_MSG) from exc
 
 log = logging.getLogger("editor_render")
 

@@ -234,10 +234,18 @@ def update_action_from_command(
         )
 
     if op.startswith("clip.") and after.get("clip"):
+        # Like clip.keyframes above: a generic clip.* mutation (move/trim/volume/...)
+        # touches its own field, never effects. If the after block dropped effects
+        # that before carried (e.g. an ABN-import-synthesized crossfade), restore
+        # them so the crossfade survives to OpenShot instead of being silently lost.
+        target = dict(after["clip"])
+        before_clip = before.get("clip")
+        if before_clip is not None and before_clip.get("effects") and not target.get("effects"):
+            target["effects"] = before_clip["effects"]
         return _update_action(
             "update",
-            ["clips", {"id": after["clip"]["id"]}],
-            clip_json(project, after["clip"], asset_root=asset_root),
+            ["clips", {"id": target["id"]}],
+            clip_json(project, target, asset_root=asset_root),
             old_values=clip_json(project, before["clip"], asset_root=asset_root) if before.get("clip") else None,
             transaction=entry.get("id"),
         )
@@ -555,12 +563,20 @@ def _project_duration(project: dict[str, Any]) -> float:
     return max(0.1, max(float(c.get("start") or 0.0) + float(c.get("duration") or 0.0) for c in clips))
 
 
+def strip_cachebuster(rel: str) -> str:
+    """Strip a ?query / #fragment cache-buster off an asset subpath.
+
+    The editor persists render-cache URLs like "…/episode.mp4?rev=3"; the static
+    mount ignores the suffix, so the real file on disk is "episode.mp4". This is the
+    SINGLE canonical strip — abn_factory's GC protection scan and `_resolve_asset`
+    both call it so the compiler can never resolve a path the GC protected under a
+    different name (the drift guard in tests/test_abn_factory_gc.py pins this).
+    """
+    return rel.split("?", 1)[0].split("#", 1)[0]
+
+
 def _resolve_asset_src(src: str, *, asset_root: Path | str | None) -> str:
     if src.startswith("/agenticnews-assets/") and asset_root:
-        # Strip a ?query / #fragment cache-buster — the editor persists render-cache URLs
-        # like "…/episode.mp4?rev=3"; the static mount ignores it, so the real file on disk
-        # is "episode.mp4". This MUST match abn_factory's GC protection scan (which also
-        # strips), or the compiler resolves a path the GC protected under a different name.
-        rel = src.removeprefix("/agenticnews-assets/").split("?", 1)[0].split("#", 1)[0]
+        rel = strip_cachebuster(src.removeprefix("/agenticnews-assets/"))
         return str(Path(asset_root) / rel)
     return src

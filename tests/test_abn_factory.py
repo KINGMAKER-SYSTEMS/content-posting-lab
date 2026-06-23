@@ -156,17 +156,13 @@ def test_pocket_tts_command_re_gates_even_if_language_resolver_bypassed(monkeypa
     """LOCKED-VOICE HARD GATE, defense-in-depth: the env validation lives in _pocket_language(), but
     the audit concern is a CALL SITE that bypasses it (a future refactor sourcing the code elsewhere,
     or a new caller). _pocket_tts_command is the single chokepoint that emits `--language`, so even if
-    the resolver is fully bypassed and hands back a poisoned value, the command MUST still fall back to
-    the built-in default and never feed pocket-tts a clone file / cloud handle / path."""
+    the resolver is fully bypassed and hands back a poisoned value, the command MUST fail closed —
+    RAISING rather than silently rewriting to the default, so the bypass surfaces loudly instead of
+    masking a regression. No clone file / cloud handle / path may ever reach pocket-tts."""
     # simulate a bypass: the resolver itself returns an unvalidated, poisoned value
     monkeypatch.setattr(abn_factory, "_pocket_language", lambda: poisoned)
-    cmd = abn_factory._pocket_tts_command("hi", tmp_path / "v.wav")
-
-    assert poisoned not in cmd
-    assert cmd[cmd.index("--language") + 1] == "english_2026-04"
-    joined = " ".join(cmd).lower()
-    for banned in ("safetensors", "replicate", "chatterbox", "passwd", "/path", "/etc", "\n"):
-        assert banned not in joined, f"bypassed resolver leaked poisoned language into VO command: {banned!r}"
+    with pytest.raises(ValueError, match="locked-voice gate"):
+        abn_factory._pocket_tts_command("hi", tmp_path / "v.wav")
 
 
 def test_voice_routes_through_gateway_and_returns_url_and_duration(monkeypatch, tmp_path):

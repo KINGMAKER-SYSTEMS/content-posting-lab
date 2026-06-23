@@ -478,6 +478,36 @@ def test_import_drops_malformed_shot_envelope_without_aborting():
     assert clip["metadata"]["shot"]["keyframes"]  # raw shot still preserved
 
 
+@pytest.mark.parametrize(
+    "malformed",
+    [
+        [{"property": "volume"}],  # no points key at all
+        [{"property": "volume", "points": []}],  # empty points array
+        [{"property": "volume", "points": None}],  # null points
+        [{"property": "warp", "points": [{"t": 0, "value": 1}]}],  # bad property
+        [{"property": "volume", "points": [{"t": 0, "value": 1, "interp": "warp"}]}],  # bad interp
+        [{"property": "volume", "points": [{"t": 0, "value": float("nan")}]}],  # NaN value
+    ],
+)
+def test_validated_keyframes_lenient_swallows_what_strict_rejects(malformed):
+    """The lenient import path (_validated_keyframes_lenient) must swallow EXACTLY the
+    CommandValidationErrors the strict clip.update validator raises and return [] —
+    including the easily-missed missing/empty/null `points` envelopes.
+
+    This pins the two halves of the contract in isolation: the strict validator
+    (clip.update path) flags the malformed envelope, while the lenient import wrapper
+    silently drops it so a bad factory envelope never aborts the whole ABN import.
+    The raw shot/bed stays in metadata for re-import, so dropping (not raising) is the
+    intended best-effort behavior here."""
+
+    # Strict path (clip.update) rejects every one of these.
+    with pytest.raises(timeline.CommandValidationError):
+        timeline._validated_keyframes(malformed)
+
+    # Lenient import path swallows the same error and yields no envelope.
+    assert timeline._validated_keyframes_lenient(malformed) == []
+
+
 def test_import_promotes_dict_music_bed_ducking_envelope():
     """A {src, keyframes} music bed (a factory that bakes its own ducking envelope)
     must promote that envelope onto the bed clip instead of dropping it for the flat
@@ -2168,6 +2198,61 @@ def test_abn_import_synthesizes_single_crossfade_from_transition_only():
     assert crossfades[0]["params"]["duration"] == 0.75
 
 
+@pytest.mark.parametrize("transition", [0, 0.0, -0.5, -2])
+def test_abn_import_skips_crossfade_for_nonpositive_transition(transition):
+    """transitionSec <= 0 must NOT synthesize a crossfade. 0 is a hard cut (a
+    zero-duration dissolve is a no-op that only adds a noise Fade downstream);
+    negative is invalid. Either way no `crossfade` effect should appear, and the
+    raw shot is still preserved by the caller under clip.metadata.shot."""
+    shot = {
+        "id": "s_edge",
+        "src": "/agenticnews-assets/edge.mp4",
+        "type": "remotion",
+        "transitionSec": transition,
+    }
+    effects = timeline._shot_effects(shot)
+    assert [e for e in effects if e["type"] == "crossfade"] == []
+
+
+def test_abn_import_zero_transition_yields_no_fade_through_openshot():
+    """Roundtrip: a shot with transitionSec==0 produces a clip with no crossfade,
+    and that clip exports to OpenShot with no Fade effect at all — proving the
+    no-op transition never leaks a duration-0 Fade into the compiler."""
+    from services import openshot_bridge
+
+    abn = {
+        "episodeId": "ep_zero_xf",
+        "fps": 10,
+        "width": 64,
+        "height": 48,
+        "totalSec": 4.0,
+        "segments": [
+            {
+                "segmentId": "s0",
+                "durationSec": 4.0,
+                "shots": [
+                    {
+                        "id": "shot_zero",
+                        "src": "/agenticnews-assets/zero.mp4",
+                        "type": "remotion",
+                        "startSec": 0.0,
+                        "durationSec": 4.0,
+                        "transitionSec": 0,
+                    }
+                ],
+            }
+        ],
+    }
+    project = timeline.project_from_abn_timeline("proj_zero_xf", abn)
+    clip_id = next(
+        cid for cid, clip in project["clips"].items() if clip["kind"] == "remotion"
+    )
+    assert project["clips"][clip_id]["effects"] == []
+
+    clip_json = openshot_bridge.clip_json(project, project["clips"][clip_id])
+    assert [e for e in clip_json["effects"] if e["type"] == "Fade"] == []
+
+
 def test_imported_clip_crossfade_survives_split_and_exports_to_openshot():
     """End-to-end: an imported ABN clip with a synthesized transitionSec crossfade is
     split, then exported to OpenShot. The split keeps the start-anchored crossfade on
@@ -3717,6 +3802,86 @@ def test_concurrent_apply_command_does_not_lose_updates(tmp_path):
     log_ids = {c.get("id") for c in reloaded["commandLog"]}
     for cmd_id in succeeded:
         assert cmd_id in log_ids
+
+
+def test_concurrent_apply_command_serializes_so_second_observes_first_write(tmp_path):
+    """Two concurrent apply_command calls on ONE project must serialize, and the
+    SECOND must end up applied ON TOP of the FIRST's write — not lost over it.
+
+    The "same starting revision" race (test above) proves exactly one of N
+    contenders wins per revision. This proves the complementary property the
+    per-project RLock exists for: a realistic optimistic-concurrency client that
+    reloads on conflict and retries. Two threads start from the SAME revision and
+    each retries with the freshly-observed revision until it lands. Because the
+    lock serializes every read-modify-write, the loser of the first round observes
+    the winner's bumped revision (and its command in the log) on reload, then
+    applies on top of it. BOTH commands end up durably in the log with strictly
+    increasing revisions — no lost update, no double-apply.
+
+    load() is slowed so the two RMW windows maximally overlap; without the lock a
+    thread could read a half-written / stale project between another thread's
+    load() and atomic_save() and clobber it.
+    """
+    import threading
+    import time as _time
+
+    store, project = _seed_clip_project(tmp_path, "proj_serialize")
+    start_rev = project["revision"]
+
+    real_load = store.load
+
+    def slow_load(project_id):
+        loaded = real_load(project_id)
+        _time.sleep(0.05)  # widen the read-modify-write overlap window
+        return loaded
+
+    store.load = slow_load  # type: ignore[method-assign]
+
+    barrier = threading.Barrier(2)
+    errors: dict[str, BaseException] = {}
+    lock = threading.Lock()
+
+    def worker(name: str) -> None:
+        try:
+            barrier.wait()
+            # Optimistic-concurrency client: reload + retry on conflict. Under
+            # correct serialization the retry observes the other thread's write.
+            for _ in range(10):
+                current = store.load("proj_serialize")["revision"]
+                try:
+                    store.apply_command("proj_serialize", {
+                        "op": "clip.move", "actor": name, "id": f"cmd_{name}",
+                        "expectedRevision": current,
+                        "payload": {"clipId": "c1", "start": float(len(name))},
+                    })
+                    return
+                except timeline.RevisionConflict:
+                    continue
+            raise AssertionError(f"{name} never landed after retries")
+        except BaseException as exc:  # noqa: BLE001 - surfaced in the assertion
+            with lock:
+                errors[name] = exc
+
+    threads = [threading.Thread(target=worker, args=(n,)) for n in ("first", "second")]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    # Both serialized + retried cleanly to completion.
+    assert errors == {}, errors
+
+    reloaded = store.load("proj_serialize")
+    # Two RMWs landed one on top of the other: revision advanced by exactly two.
+    assert reloaded["revision"] == start_rev + 2
+    # Both commands are durably in the log — the second did NOT clobber the first.
+    log_ids = {c.get("id") for c in reloaded["commandLog"]}
+    assert {"cmd_first", "cmd_second"} <= log_ids
+    # The log revisions are strictly increasing with no gaps/dupes around the race.
+    race_revs = sorted(
+        c["revision"] for c in reloaded["commandLog"] if c.get("id") in {"cmd_first", "cmd_second"}
+    )
+    assert race_revs == [start_rev + 1, start_rev + 2]
 
 
 # ---------------------------------------------------------------------------

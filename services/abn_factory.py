@@ -33,6 +33,31 @@ import services.agenticnews as db
 _log = logging.getLogger(__name__)
 
 
+def _safe_mem_import():
+    """Import services.abn_memory once, safely. Returns (module_or_None, is_available).
+
+    The freshness/flywheel ledger is optional — every caller degrades gracefully when
+    it's missing. This collapses the ~11 copy-pasted import try/except blocks that all
+    did the same thing.
+    """
+    try:
+        import services.abn_memory as mem
+        return mem, True
+    except Exception:
+        return None, False
+
+
+def _mem_episodes() -> int:
+    """Episode count from the ledger (0 if unavailable). Drives all the rotation modulos."""
+    mem, ok = _safe_mem_import()
+    if not ok:
+        return 0
+    try:
+        return int(mem.stats().get("episodes", 0))
+    except Exception:
+        return 0
+
+
 async def _best_effort_update(vid: str, patch: dict) -> None:
     """Best-effort board-state update. Tolerates DB contention (sqlite3.Error,
     e.g. 'database is locked') silently — these state writes are non-essential.
@@ -206,9 +231,11 @@ def _resolve_asset(url_or_path) -> Path:
     if s.startswith(URL_PREFIX):
         # Strip a ?query / #fragment cache-buster (editor render-cache URLs like
         # "…/episode.mp4?rev=3"); the static mount ignores it, so the real file is
-        # "episode.mp4". Keeps this in parity with the GC protection scan and the
-        # openshot_bridge resolver — all three must agree on the on-disk name.
-        rel = s[len(URL_PREFIX):].split("?", 1)[0].split("#", 1)[0]
+        # "episode.mp4". Routed through the SINGLE canonical strip so the GC scan,
+        # this resolver, and the openshot_bridge compiler can never drift on the name.
+        from services.openshot_bridge import strip_cachebuster
+
+        rel = strip_cachebuster(s[len(URL_PREFIX):])
         return ASSETS / rel
     p = Path(s)
     if p.is_absolute():
@@ -261,8 +288,11 @@ def _editor_timeline_asset_paths_checked() -> tuple[set[Path], bool]:
             # URLs like "…/episode.mp4?rev=3"); the static mount ignores it, so the real
             # file on disk is "episode.mp4". Without this strip the protected path becomes
             # "episode.mp4?rev=3", never matches the keeper, and the GC tombstones a render
-            # an Editor Bay timeline still references.
-            rel = value.removeprefix("/agenticnews-assets/").split("?", 1)[0].split("#", 1)[0]
+            # an Editor Bay timeline still references. Routed through the SINGLE canonical
+            # strip (openshot_bridge.strip_cachebuster) so GC and compiler can never drift.
+            from services.openshot_bridge import strip_cachebuster
+
+            rel = strip_cachebuster(value.removeprefix("/agenticnews-assets/"))
             paths.add(_normalize_asset_path(ASSETS / rel))
             return
         path = Path(value)
@@ -625,16 +655,20 @@ def _clip(text, n):
 
 def mem_recent(title, window):
     """Windowed freshness check (shorter window for evergreen so the channel never goes fully dark)."""
+    mem, ok = _safe_mem_import()
+    if not ok:
+        return False
     try:
-        import services.abn_memory as mem
         return mem.is_recently_used(title, window)
     except Exception:
         return False
 
 
 def _is_recently_used_safe(title):
+    mem, ok = _safe_mem_import()
+    if not ok:
+        return False
     try:
-        import services.abn_memory as mem
         return mem.is_recently_used(title)
     except Exception:
         return False
@@ -649,11 +683,7 @@ def _evergreen_topics(n):
     topics = ("ai-agents", "llm", "mcp", "agentic", "rag", "llm-agent", "autonomous-agents",
               "ai-tools", "agent-framework", "local-llm", "llmops", "vector-database",
               "prompt-engineering", "rust", "cli-tool", "tui")
-    try:
-        import services.abn_memory as _m
-        rot = int(_m.stats().get("episodes", 0))
-    except Exception:
-        rot = 0
+    rot = _mem_episodes()
     # pick 4 topics this round + vary the star band so we dip into the mid-tail, not just the top
     picks = [topics[(rot + i) % len(topics)] for i in range(4)]
     star_bands = ("stars:1000..8000", "stars:500..4000", "stars:%3E2000", "stars:800..6000")
@@ -706,11 +736,12 @@ def _score(it):
         obscure += 2
     # FLYWHEEL negative signal: deprioritize stories similar to ones the operator rejected
     penalty = 0
-    try:
-        import services.abn_memory as mem
-        penalty = min(4, mem.rejection_penalty(it["title"]))  # cap so one bad topic doesn't nuke a whole vein
-    except Exception:
-        pass
+    mem, ok = _safe_mem_import()
+    if ok:
+        try:
+            penalty = min(4, mem.rejection_penalty(it["title"]))  # cap so one bad topic doesn't nuke a whole vein
+        except Exception:
+            pass
     return it["pts"] / 100 + lab + shipping + drama + recency + searchable - obscure - penalty
 
 
@@ -868,12 +899,17 @@ def _pocket_tts_command(text: str, out: Path) -> list[str]:
     # guarantees the gate holds no matter how `language` was obtained — e.g. a future refactor that
     # sources the code differently, or a new caller that bypasses _pocket_language(). The flag value
     # MUST be a built-in english_* code; never a path / clone file / cloud handle.
+    #
+    # This RAISES rather than logging-and-falling-back: if execution reaches here with a poisoned
+    # value, the primary validation in _pocket_language() was bypassed (env-var bypass, cache, config
+    # file, or a new caller). That is a real regression, not an operator typo, and silently rewriting
+    # to the default would mask it. Fail closed and loud so the bypass surfaces in CI / at runtime.
     if language and not _POCKET_LANG_RE.fullmatch(language):
-        _log.warning(
-            "rejecting non-builtin pocket-tts language %r at command build; using built-in %s",
-            language, _POCKET_DEFAULT_LANGUAGE,
+        raise ValueError(
+            f"pocket-tts language {language!r} is not a built-in english_* code; "
+            "the locked-voice gate was bypassed upstream of _pocket_tts_command "
+            "(no clone / cloud / path is allowed)"
         )
-        language = _POCKET_DEFAULT_LANGUAGE
     cmd = ["pocket-tts", "generate", "--text", text, "--output-path", str(out), "--quiet"]
     if language:
         cmd += ["--language", language]
@@ -1672,7 +1708,6 @@ async def _animated_bg(ep_id, n=3):
     """Return n brand-themed animated b-roll backgrounds, served from the CACHED LIBRARY. Only
     generates new clips when the library is short — so steady-state cost is ~0 video-gen calls per
     episode instead of ~6. Rotates the subset per episode so segments don't all share one clip."""
-    import services.abn_memory as _m
     lib = _bg_library()
     # lazily top up the library toward the minimum (cheap once full)
     if len(lib) < _BG_LIB_MIN:
@@ -1685,10 +1720,7 @@ async def _animated_bg(ep_id, n=3):
     # hadn't finished generating yet (a race with the background library fill) put a non-existent
     # broll_NN.mp4 in the timeline → Remotion 404 → the WHOLE render died silently. Re-stat here and
     # verify each pick exists before handing it to the timeline.
-    try:
-        rot = int(_m.stats().get("episodes", 0))
-    except Exception:
-        rot = 0
+    rot = _mem_episodes()
     picks, k = [], 0
     while len(picks) < min(n, len(lib)) and k < len(lib) * 2:
         p = lib[(rot + k) % len(lib)]
@@ -2847,14 +2879,15 @@ async def produce_one_episode(force_deepdive=False, force_lore=None):
 
     # SCORE + SCOUT (the research agent DRIVES A-tier selection, not just HN points)
     # FLYWHEEL: drop stories we've covered recently (freshness ledger from memory)
-    try:
-        import services.abn_memory as mem
-        fresh_before = len(items)
-        items = [it for it in items if not mem.is_recently_used(it.get("title", ""))]
-        if fresh_before - len(items) > 0:
-            BUS.emit("research-agent", "memory.freshness", f"dropped {fresh_before - len(items)} already-covered stories", episode_id=ep_id)
-    except Exception:
-        pass
+    mem, _mem_ok = _safe_mem_import()
+    if _mem_ok:
+        try:
+            fresh_before = len(items)
+            items = [it for it in items if not mem.is_recently_used(it.get("title", ""))]
+            if fresh_before - len(items) > 0:
+                BUS.emit("research-agent", "memory.freshness", f"dropped {fresh_before - len(items)} already-covered stories", episode_id=ep_id)
+        except Exception:
+            pass
     # ADAPTIVE EPISODE SIZE — real news flow doesn't always give 7 A-tier stories. Produce a
     # tighter episode (min 3) when news is moderate; only idle if there's genuinely too little.
     # A 4-story episode of fresh content beats waiting forever for 7.
@@ -2922,8 +2955,7 @@ async def produce_one_episode(force_deepdive=False, force_lore=None):
     # Takes the top pick, expands it into 3 focused angles (what/how/why) — the in-the-mud format.
     deepdive = False
     try:
-        import services.abn_memory as _mm
-        if picks and (force_deepdive or int(_mm.stats().get("episodes", 0)) % 4 == 3):
+        if picks and (force_deepdive or _mem_episodes() % 4 == 3):
             top = picks[0]
             angles = await asyncio.to_thread(experts.ask, "deepdive", f"Tool: {top['title']}\nSource: {top.get('url','')}")
             lines = [l.strip() for l in (angles or "").splitlines() if l.strip()][:3]
@@ -2974,15 +3006,16 @@ async def produce_one_episode(force_deepdive=False, force_lore=None):
     story_list = "\n".join(f"- {it['title']}" for it in picks)
     # FLYWHEEL read-side: seed the narrator with theses from APPROVED episodes (proven framing)
     proven = ""
-    try:
-        import services.abn_memory as mem
-        wins = mem.winning_theses(4)
-        if wins:
-            proven = ("\n\nThese cold-opens have worked well before — match their punch and structure, "
-                      "do NOT reuse their wording:\n" + "\n".join(f"• {w[:120]}" for w in wins))
-            BUS.emit("narrator-agent", "memory.proven", f"seeded with {len(wins)} proven theses", episode_id=ep_id)
-    except Exception:
-        pass
+    mem, _mem_ok = _safe_mem_import()
+    if _mem_ok:
+        try:
+            wins = mem.winning_theses(4)
+            if wins:
+                proven = ("\n\nThese cold-opens have worked well before — match their punch and structure, "
+                          "do NOT reuse their wording:\n" + "\n".join(f"• {w[:120]}" for w in wins))
+                BUS.emit("narrator-agent", "memory.proven", f"seeded with {len(wins)} proven theses", episode_id=ep_id)
+        except Exception:
+            pass
     # COMPETITOR INTEL: feed the narrator the real hook rule distilled from top AI channels' actual
     # openings (e.g. 'I've read the 244-page report Anthropic put out') so the hook MODELS proven
     # winners instead of guessing. Falls back silently if the intel isn't available.
@@ -2997,11 +3030,12 @@ async def produce_one_episode(force_deepdive=False, force_lore=None):
     if cold_open:
         BUS.emit("narrator-agent", "narrative.thesis", f"cold-open: {cold_open[:70]}", episode_id=ep_id, data={"cold_open": cold_open})
     # FLYWHEEL: record this episode's stories + thesis into self-refinement memory
-    try:
-        import services.abn_memory as mem
-        mem.record_episode(ep_id, [it["title"] for it in picks], cold_open or "", approved=False)
-    except Exception:
-        pass
+    mem, _mem_ok = _safe_mem_import()
+    if _mem_ok:
+        try:
+            mem.record_episode(ep_id, [it["title"] for it in picks], cold_open or "", approved=False)
+        except Exception:
+            pass
 
     # ─── WAVE-BASED PARALLEL PRODUCTION ───
     # The orchestrator fans the crew out across ALL segments at once, wave by wave:
@@ -3266,11 +3300,7 @@ async def produce_one_episode(force_deepdive=False, force_lore=None):
     # by episode count, so the channel varies its hook structure instead of looking formulaic.
     tlines = [l.strip() for l in (package.get("titler") or "").splitlines() if l.strip()]
     if len(tlines) > 1:
-        try:
-            import services.abn_memory as _tm
-            r = int(_tm.stats().get("episodes", 0)) % len(tlines)
-        except Exception:
-            r = 0
+        r = _mem_episodes() % len(tlines)
         tlines = tlines[r:] + tlines[:r]  # rotate so a different pattern leads each episode
         package["titler"] = "\n".join(tlines)
         BUS.emit("expert-team", "title.rotate", f"lead title pattern rotated → {tlines[0][:50]}", episode_id=ep_id)
@@ -3302,11 +3332,12 @@ async def produce_one_episode(force_deepdive=False, force_lore=None):
                                   "duration": dur})
     BUS.emit("expert-team", "title.set", f"episode title → {final_title[:60]}", episode_id=ep_id)
     # FLYWHEEL: mark these stories produced (rendered) so freshness only blocks REAL episodes
-    try:
-        import services.abn_memory as mem
-        mem.record_episode(ep_id, [s["title"] for s in segments], cold_open or "", approved=False, rendered=True)
-    except Exception:
-        pass
+    mem, _mem_ok = _safe_mem_import()
+    if _mem_ok:
+        try:
+            mem.record_episode(ep_id, [s["title"] for s in segments], cold_open or "", approved=False, rendered=True)
+        except Exception:
+            pass
     # AUTO-QA: grade every episode the moment it's produced (continuous self-monitoring, not just
     # on-demand). A low score surfaces as an alert so quality regressions can't slip in unseen.
     try:
@@ -3696,13 +3727,9 @@ async def run_factory_loop():
             # FORMAT ROTATION: every 6th episode, run a LORE story on a rotating subject (the high-value
             # ColdFusion-register tentpole) instead of a news roundup. Cheap to vary, big watch-time upside.
             lore_subject = None
-            try:
-                import services.abn_memory as _mm
-                ecount = int(_mm.stats().get("episodes", 0))
-                if ecount % 6 == 5:
-                    lore_subject = _LORE_SUBJECTS[(ecount // 6) % len(_LORE_SUBJECTS)]
-            except Exception:
-                pass
+            ecount = _mem_episodes()
+            if ecount % 6 == 5:
+                lore_subject = _LORE_SUBJECTS[(ecount // 6) % len(_LORE_SUBJECTS)]
             # WATCHDOG: a full episode (research → render → review) completes in ~20-25 min. Cap it at
             # 45 min so a HANG in the post-render path (observed: an episode rendered a complete mp4 then
             # wedged before reaching review, DB stuck at 'scripting', process at 0% CPU forever) force-
