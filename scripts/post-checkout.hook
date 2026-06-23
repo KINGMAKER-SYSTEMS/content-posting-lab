@@ -1,0 +1,33 @@
+#!/bin/sh
+#
+# post-checkout: auto-stage services/openshot_bridge.py so it is never lost as an
+# untracked file across worktree transitions.
+#
+# Why this exists: services/openshot_bridge.py is the sanctioned OpenShot
+# compiler module imported at load time by services/editor_render.py
+# (see that file's _MISSING_BRIDGE_MSG). It has been UNTRACKED in a worktree
+# before -- a `git worktree add` never copies an untracked file, so a fresh
+# worktree imports nothing and choose_renderer explodes. The prod-cycle.js
+# workflow flags this as a recurring lesson. This hook runs after every
+# checkout / `git worktree add` and stages the file if it exists in the working
+# tree but is not yet tracked, so the next commit carries it.
+#
+# ponytail: pure shell, no deps, no behavior change when the file is already
+# tracked (git add on a tracked, unmodified file is a no-op).
+
+bridge="services/openshot_bridge.py"
+
+# Resolve repo top-level for this worktree; bail quietly if we are not in one.
+top=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
+[ -n "$top" ] || exit 0
+
+# Only act when the file physically exists in this checkout.
+[ -f "$top/$bridge" ] || exit 0
+
+# If it is not tracked here, stage it so it survives the next commit.
+if ! git ls-files --error-unmatch "$bridge" >/dev/null 2>&1; then
+    git add -- "$bridge" 2>/dev/null \
+        && echo "post-checkout: staged untracked $bridge (critical runtime import)"
+fi
+
+exit 0
