@@ -236,6 +236,49 @@ def test_inner_text_empty_string_bails_near_empty(tmp_path, monkeypatch):
     assert not list(foot.glob("_rec_*"))
 
 
+def test_near_empty_bail_survives_locked_cleanup(tmp_path, monkeypatch):
+    """The near-empty bail (lines 109-112) calls _cleanup_dir(rec_dir) explicitly BEFORE
+    returning None. If that removal fails — a locked file on the Railway volume — the failure
+    must pass silently (best-effort): capture_sync still returns None and NO exception escapes.
+    Previously untested; a raising cleanup here would have propagated out of the bail path.
+
+    We force the underlying rmtree to raise OSError (simulating a locked file) so safe_rmtree's
+    swallow-and-log behaviour is the only thing standing between a locked volume and a crash.
+    The orphan _rec_ dir is EXPECTED to survive (cleanup genuinely failed) — the contract is
+    'no exception / still None', not 'dir always gone' when the FS won't cooperate."""
+    timeout_exc = type("TimeoutError", (Exception,), {})
+    fake, state = _fake_playwright(lambda: "   \n  ", timeout_exc)  # whitespace-only -> near-empty
+    cap = _reload_capture(tmp_path, monkeypatch, fake)
+
+    import shutil
+
+    def locked(*a, **kw):
+        raise OSError("dir is locked on the volume")
+
+    # both the explicit near-empty cleanup (line 111) and the finally cleanup (line 177)
+    # route through safe_rmtree -> shutil.rmtree; make every removal hit a locked file.
+    monkeypatch.setattr(shutil, "rmtree", locked)
+
+    # count cleanup attempts: the near-empty path makes its own call, then finally{} makes one.
+    calls = {"n": 0}
+    real_cleanup = cap._cleanup_dir
+
+    def counting_cleanup(p):
+        calls["n"] += 1
+        return real_cleanup(p)
+
+    monkeypatch.setattr(cap, "_cleanup_dir", counting_cleanup)
+
+    # must NOT raise despite rmtree blowing up on every attempt
+    assert cap.capture_sync("https://example.com", "ep_10cced_s5") is None
+    assert state["scrolled"] is False        # bailed before driving worthless footage
+    assert calls["n"] == 2                    # near-empty bail cleanup + finally{} cleanup
+    # cleanup genuinely failed (locked), so the orphan dir is still there — proves we exercised
+    # the failure branch, not a path where removal happened to succeed.
+    foot = Path(tmp_path) / "ep_10cced" / "footage"
+    assert list(foot.glob("_rec_*"))         # orphan survives; no crash is the win
+
+
 # ---------------------------------------------------------------------------
 # Signal-list coverage: the bot-wall / error-page guards (lines 91-105). These
 # pages render PLENTY of body text (so they clear the near-empty len<40 threshold)
