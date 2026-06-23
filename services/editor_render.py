@@ -93,10 +93,11 @@ def _num(value: Any, default: float) -> float:
 
 # Effects the ffmpeg fallback can reproduce natively. fadeIn/fadeOut map to
 # ffmpeg's `fade`/`afade` filters (the same in/out semantics OpenShot's Fade
-# uses). Everything else (crossfade, color filters) and every keyframe envelope
-# is OpenShot-only; the fallback can't composite them, so it must SAY SO rather
-# than silently drop them (the whole point of this slice).
-_FFMPEG_NATIVE_EFFECTS = {"fadeIn", "fadeOut"}
+# uses). brightness/saturation are flat color grades the `eq` filter reproduces
+# 1:1 with OpenShot's Brightness/Saturation ranges (see _visual_filter). Crossfade
+# and every keyframe envelope stay OpenShot-only; the fallback can't composite
+# them, so it must SAY SO rather than silently drop them.
+_FFMPEG_NATIVE_EFFECTS = {"fadeIn", "fadeOut", "brightness", "saturation"}
 
 # On audio clips a crossfade is just a start-anchored fade-in (openshot_bridge's
 # _FADE_DIRECTION_MAP maps both fadeIn and crossfade to OpenShot's `in` Fade), and
@@ -148,6 +149,36 @@ def _fade_window(clip: dict[str, Any], direction: str) -> float | None:
         if seconds > 0 and (best is None or seconds > best):
             best = seconds
     return best
+
+
+def _color_grade_filter(clip: dict[str, Any]) -> str:
+    """Reproduce flat brightness/saturation effects via ffmpeg's `eq` filter.
+
+    OpenShot's Brightness effect (`brightness` -1..1, 0 neutral) and Saturation
+    effect (`saturation` 0..3, 1 neutral) map 1:1 onto ffmpeg `eq=brightness=`
+    and `eq=saturation=`, which use the same ranges and neutrals. Without this the
+    ffmpeg fallback silently shipped UNGRADED clips when OpenShot bindings were
+    missing (the bug). Returns an empty string when the clip carries no color
+    grade so the common path stays a no-op; the last brightness/saturation effect
+    wins (one flat grade per property). Defaults: brightness 0.0, saturation 1.0
+    (both eq neutrals), so a clip carrying only one property leaves the other
+    untouched."""
+
+    brightness: float | None = None
+    saturation: float | None = None
+    for effect in clip.get("effects") or []:
+        effect_type = str((effect or {}).get("type") or "")
+        params = (effect or {}).get("params") or {}
+        if effect_type == "brightness":
+            brightness = _num(params.get("value"), 0.0)
+        elif effect_type == "saturation":
+            saturation = _num(params.get("value"), 1.0)
+    if brightness is None and saturation is None:
+        return ""
+    return (
+        f"eq=brightness={brightness if brightness is not None else 0.0:.4f}:"
+        f"saturation={saturation if saturation is not None else 1.0:.4f},"
+    )
 
 
 def _audio_fade_in_window(clip: dict[str, Any]) -> float | None:
@@ -924,11 +955,16 @@ class FFmpegLayeredRenderer:
             rotate = f"rotate=a='{rotation:.4f}*PI/180':c=none:{_box},"
         else:
             rotate = ""
+        # Flat brightness/saturation color grades reproduced via `eq` (matches
+        # OpenShot's Brightness/Saturation ranges 1:1). Applied on the rgba stream
+        # before alpha/fade so the grade affects RGB while transparency is honored.
+        # No-op string when the clip carries no color grade.
+        grade = _color_grade_filter(clip)
         # The fallback keeps graphics at native size by default. Full-frame video clips
         # can opt in later via track-specific policies in the renderer slice.
         return (
             f"[{input_index}:v]{trim}scale=iw*{scale:.4f}:ih*{scale:.4f},"
-            f"format=rgba,{alpha},{fades}{rotate}null[{label}]"
+            f"format=rgba,{grade}{alpha},{fades}{rotate}null[{label}]"
         )
 
     def _resolve_src(self, src: str) -> Path:

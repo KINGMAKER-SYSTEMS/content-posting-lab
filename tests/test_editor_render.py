@@ -329,6 +329,67 @@ def test_rotation_keyframe_filtergraph_actually_renders(tmp_path):
     )
 
 
+def test_visual_filter_color_grade_emits_eq_not_dropped(tmp_path):
+    """The ticket: brightness/saturation effects are validated in the schema and
+    translated by the OpenShot bridge, but the ffmpeg fallback used to silently drop
+    them — ungraded clips shipped on the OpenShot-bindings-missing path. They must now
+    reproduce 1:1 via ffmpeg's `eq` filter (same ranges/neutrals) and NOT be reported
+    as unsupported drops."""
+    r = _renderer(tmp_path)
+    clip = {"id": "grade", "assetId": "i", "duration": 2.0, "sourceStart": 0.0,
+            "transform": {},
+            "effects": [
+                {"id": "fx_br", "type": "brightness", "params": {"value": 0.2}},
+                {"id": "fx_sat", "type": "saturation", "params": {"value": 1.5}},
+            ]}
+    out = r._visual_filter(1, clip, {"type": "image"}, "lbl", 1920, 1080)
+    assert "eq=brightness=0.2000:saturation=1.5000," in out
+    drops = editor_render._ffmpeg_unsupported_drops(clip)
+    names = {d.get("name") for d in drops}
+    assert "brightness" not in names and "saturation" not in names
+
+
+def test_visual_filter_no_color_grade_omits_eq(tmp_path):
+    """A clip with no brightness/saturation effect must NOT emit an `eq` term — the
+    common (ungraded) path stays a no-op so we don't pay a per-frame filter cost."""
+    r = _renderer(tmp_path)
+    clip = {"id": "c", "assetId": "i", "duration": 1.0, "sourceStart": 0.0,
+            "transform": {}}
+    out = r._visual_filter(1, clip, {"type": "image"}, "lbl", 1920, 1080)
+    assert "eq=" not in out
+
+
+def test_visual_filter_single_color_property_uses_neutral_for_other(tmp_path):
+    """A clip carrying only brightness must leave saturation at eq's neutral (1.0)
+    and vice versa — applying one grade must not accidentally desaturate the clip."""
+    r = _renderer(tmp_path)
+    clip = {"id": "c", "assetId": "i", "duration": 1.0, "sourceStart": 0.0,
+            "transform": {},
+            "effects": [{"id": "fx_br", "type": "brightness", "params": {"value": -0.3}}]}
+    out = r._visual_filter(1, clip, {"type": "image"}, "lbl", 1920, 1080)
+    assert "eq=brightness=-0.3000:saturation=1.0000," in out
+
+
+def test_color_grade_filtergraph_actually_renders(tmp_path):
+    """End-to-end: a brightness+saturation grade must produce a filtergraph ffmpeg
+    accepts and a real output file, with no dropped-effect warning. Proves the `eq`
+    placement on the rgba stream is a valid chain (string-only asserts can't)."""
+    card = _solid_png(tmp_path / "card.png", "white", size="16x16")
+    project = _project_with_card("grade_anim", card, x=0.5)
+    project["clips"]["card_clip"]["effects"] = [
+        {"id": "fx_br", "type": "brightness", "params": {"value": 0.3}},
+        {"id": "fx_sat", "type": "saturation", "params": {"value": 0.5}},
+    ]
+    renderer = editor_render.FFmpegLayeredRenderer(tmp_path / "renders")
+    result = renderer.render(project, output_path=tmp_path / "renders" / "grade.mp4")
+    out = Path(result["video"])
+    assert out.exists() and out.stat().st_size > 0
+    assert not any(
+        w.get("name") in {"brightness", "saturation"}
+        for w in (result.get("warnings") or [])
+    )
+
+
 # --- direct unit tests for _build_video_command (no ffmpeg execution) ---
 
 def test_build_video_command_loops_image_over_black_base(tmp_path):
@@ -956,14 +1017,13 @@ def test_bake_fade_with_no_existing_opacity_is_plain_ramp():
 
 
 def test_ffmpeg_fallback_warns_on_dropped_effects_and_keyframes(tmp_path):
-    """The ffmpeg fallback can't composite crossfade/color effects or keyframe
-    envelopes (OpenShot-only). It must SURFACE that as a structured warning, not
-    drop them in silence — that silent drop was the bug this slice fixes."""
+    """The ffmpeg fallback can't composite crossfade or keyframe envelopes
+    (OpenShot-only). It must SURFACE that as a structured warning, not drop them
+    in silence — that silent drop was the bug this slice fixes."""
     red = _solid_png(tmp_path / "red.png", "red")
     project = _project_with_card("warn_fixture", red, x=0.0)
     project["clips"]["card_clip"]["effects"] = [
         {"id": "fx_cf", "type": "crossfade", "params": {"duration": 0.3}},
-        {"id": "fx_br", "type": "brightness", "params": {"value": 0.2}},
     ]
     project["clips"]["card_clip"]["keyframes"] = [
         # scale envelopes stay OpenShot-only (an animated scale re-times
@@ -979,7 +1039,6 @@ def test_ffmpeg_fallback_warns_on_dropped_effects_and_keyframes(tmp_path):
     assert Path(result["video"]).exists()  # still renders
     names = {(w["kind"], w["name"]) for w in result["warnings"]}
     assert ("effect", "crossfade") in names
-    assert ("effect", "brightness") in names
     assert ("keyframe", "scale") in names
     # frame previews carry the same warning contract. Preview INSIDE the crossfade's
     # [0, 0.3] window (at=0.1) — at a later frame the front trim correctly drops the
