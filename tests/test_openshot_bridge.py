@@ -924,6 +924,52 @@ def test_clip_keyframes_partial_after_block_keeps_before_crossfade(tmp_path):
     )
 
 
+def test_clip_keyframes_absent_after_block_keeps_before_crossfade(tmp_path):
+    """Companion to the partial-after guard above, for the OTHER branch of the
+    clip.keyframes restore (openshot_bridge:214,219-227): when after["clip"] is
+    ENTIRELY ABSENT and the new envelope lives only in the payload, the target is
+    sourced from before["clip"]. The import-synthesized crossfade in
+    before["clip"]["effects"] must still reach OpenShot as a Fade — a truncated or
+    malformed log entry that dropped the after block cannot silently lose the
+    crossfade. (The partial-after test exercises the `not target.get("effects")`
+    restore; this exercises the `target = before["clip"]` source path.)"""
+    project = _project(tmp_path / "card.png")
+    before_clip = dict(project["clips"]["card_clip"])
+    before_clip["effects"] = [
+        {"id": "xf_shot", "type": "crossfade", "params": {"duration": 0.5}}
+    ]
+    entry = {
+        "id": "cmd_kf_absent",
+        "op": "clip.keyframes",
+        # The new envelope rides only in the payload; there is NO after["clip"].
+        "payload": {
+            "clipId": "card_clip",
+            "keyframes": [
+                {
+                    "property": "opacity",
+                    "points": [
+                        {"t": 0.0, "value": 0.0, "interp": "linear"},
+                        {"t": 1.0, "value": 1.0, "interp": "linear"},
+                    ],
+                }
+            ],
+        },
+        "before": {"clip": before_clip},
+        "after": {},
+    }
+
+    action = openshot_bridge.update_action_from_command(project, entry)
+
+    assert action is not None
+    # The payload envelope was applied...
+    assert [round(p["co"]["Y"], 2) for p in action["value"]["alpha"]["Points"]] == [0.0, 1.0]
+    # ...AND the crossfade from before survived to OpenShot as a Fade.
+    effects = action["value"].get("effects", [])
+    assert any(e.get("type") == "Fade" for e in effects), (
+        "import-synthesized crossfade was dropped when after['clip'] was absent"
+    )
+
+
 @pytest.mark.parametrize(
     "op, mutation",
     [
