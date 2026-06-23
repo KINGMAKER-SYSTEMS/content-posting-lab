@@ -1654,7 +1654,10 @@ def test_find_spec_exception_surfaces_as_ffmpeg_fallback_through_choose_renderer
 def test_openshot_subprocess_renderer_salvages_result_from_native_child_exit(monkeypatch, tmp_path):
     output = tmp_path / "renders" / "window.mp4"
     output.parent.mkdir()
-    output.write_bytes(b"rendered")
+    # Structurally-complete enough to pass the salvage integrity gate: a real
+    # render's container carries a `moov` atom. (A child can exit non-zero AFTER
+    # finishing the write -- e.g. a crash during teardown.)
+    output.write_bytes(b"\x00\x00\x00\x14ftypmp42moov\x00rendered")
 
     class Completed:
         returncode = -11
@@ -1712,7 +1715,7 @@ def test_render_result_artifact_exists_rejects_empty_and_missing(tmp_path):
     """The salvage gate distinguishes a usable artifact (present, non-empty) from
     a corrupt one (missing, or present-but-zero-byte)."""
     good = tmp_path / "good.mp4"
-    good.write_bytes(b"rendered")
+    good.write_bytes(b"\x00\x00\x00\x14ftypmp42moov\x00rendered")
     empty = tmp_path / "empty.mp4"
     empty.write_bytes(b"")
 
@@ -1721,6 +1724,39 @@ def test_render_result_artifact_exists_rejects_empty_and_missing(tmp_path):
     assert editor_render._render_result_artifact_exists({"video": str(empty)}) is False
     assert editor_render._render_result_artifact_exists({"video": str(tmp_path / "nope.mp4")}) is False
     assert editor_render._render_result_artifact_exists({}) is False
+
+
+def test_render_result_artifact_exists_rejects_truncated_nonzero_mp4(tmp_path):
+    """The ticket's core gap: a child killed mid-write (OOM / SIGKILL / timeout)
+    leaves a *present, non-zero-byte, but truncated* mp4 -- bytes on disk but no
+    `moov` atom (ffmpeg writes moov last). size>0 alone would wave it through and
+    a silent retry would re-use the corrupt file. The salvage gate must reject it.
+    """
+    truncated = tmp_path / "truncated.mp4"
+    # Non-empty: just the leading ftyp/mdat payload, killed before the trailing
+    # moov atom was written. This is exactly what a SIGKILL'd render leaves behind.
+    truncated.write_bytes(b"\x00\x00\x00\x18ftypmp42" + b"\xde\xad\xbe\xef" * 64)
+    assert truncated.stat().st_size > 0  # would pass the OLD size-only gate
+    assert editor_render._render_result_artifact_exists({"video": str(truncated)}) is False
+
+    # A complete render (carries moov) is still accepted.
+    complete = tmp_path / "complete.mp4"
+    complete.write_bytes(b"\x00\x00\x00\x18ftypmp42" + b"data" * 16 + b"moov" + b"\x00" * 8)
+    assert editor_render._render_result_artifact_exists({"video": str(complete)}) is True
+
+    # Truncated png (no IEND trailer) is rejected; complete png accepted.
+    bad_png = tmp_path / "bad.png"
+    bad_png.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 32)
+    assert editor_render._render_result_artifact_exists({"frame": str(bad_png)}) is False
+    good_png = tmp_path / "good.png"
+    good_png.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 32 + b"IEND\xaeB`\x82")
+    assert editor_render._render_result_artifact_exists({"frame": str(good_png)}) is True
+
+    # Unknown extension: keep the lenient size>0 contract (don't false-reject
+    # a format we don't model).
+    other = tmp_path / "clip.webm"
+    other.write_bytes(b"anything")
+    assert editor_render._render_result_artifact_exists({"video": str(other)}) is True
 
 
 def test_open_shot_audio_mux_keeps_later_timeline_audio_clips(tmp_path):

@@ -1092,6 +1092,34 @@ def _parse_child_render_result(stdout: str) -> dict[str, Any] | None:
     return None
 
 
+def _artifact_is_structurally_complete(path: Path) -> bool:
+    """Cheap, dependency-free integrity gate for a salvaged render artifact.
+
+    `st_size > 0` is necessary but not sufficient: a child killed mid-write (OOM,
+    SIGKILL, timeout) commonly leaves a present, non-empty, *truncated* file whose
+    container is missing the index it needs to be playable. ffmpeg writes the mp4
+    `moov` atom LAST (no faststart), so a mid-write kill leaves the `mdat` payload
+    but no `moov` -- the exact "incomplete moov atom" corruption the editorial
+    retry would otherwise silently re-use. We byte-scan for the format's terminal
+    marker rather than shelling out to ffprobe (no subprocess under render
+    concurrency, no extra dep). Unknown extensions fall back to size>0 so we never
+    falsely reject a format we don't model.
+    """
+    suffix = path.suffix.lower()
+    try:
+        if suffix in {".mp4", ".mov", ".m4v", ".m4a"}:
+            # The moov atom is small relative to the file; reading the whole thing
+            # is fine for a render artifact and avoids missing a front-faststart
+            # moov on a clean file. A truncated render simply won't contain it.
+            return b"moov" in path.read_bytes()
+        if suffix == ".png":
+            # Canonical PNG end-of-file chunk. A truncated PNG lacks it.
+            return path.read_bytes().rstrip().endswith(b"IEND\xaeB`\x82")
+    except OSError:
+        return False
+    return True
+
+
 def _render_result_artifact_exists(result: dict[str, Any]) -> bool:
     artifact = result.get("video") or result.get("frame")
     if not artifact:
@@ -1099,12 +1127,16 @@ def _render_result_artifact_exists(result: dict[str, Any]) -> bool:
     path = Path(str(artifact))
     # A non-zero child exit can leave a *present but truncated* artifact behind
     # (process killed mid-write). A zero-byte file is never a salvageable render,
-    # so don't pretend the partial mp4 is usable -- treat it as no artifact and
-    # let the caller raise a hard RenderError instead of shipping a corrupt clip.
+    # and neither is a non-zero-byte file whose container is structurally
+    # incomplete (truncated mp4 with no moov atom, half-written png). Reject both
+    # so the caller raises a hard RenderError instead of shipping a corrupt clip
+    # -- or worse, having a silent retry re-use the broken file as if finished.
     try:
-        return path.is_file() and path.stat().st_size > 0
+        if not (path.is_file() and path.stat().st_size > 0):
+            return False
     except OSError:
         return False
+    return _artifact_is_structurally_complete(path)
 
 
 def _asset_type(assets: dict[str, Any], clip: dict[str, Any]) -> str:
