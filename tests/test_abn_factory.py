@@ -4144,6 +4144,58 @@ def test_render_remotion_drops_symlink_music_bed_pointing_outside_store(monkeypa
     assert duck_calls == [], "a music-bed symlink escaping the store must be dropped, not ducked"
 
 
+def test_render_remotion_duck_reads_resolved_target_not_symlink_path(monkeypatch, tmp_path):
+    """The validated path and the path ffmpeg reads must be the SAME path. Containment is checked
+    against bedfile.resolve() (the real target), so the sidechain ffmpeg call must also read that
+    resolved target — not the unresolved symlink path. If the duck pass read the raw symlink while
+    only the resolved target was validated, a link could be swapped/repointed between check and read
+    (TOCTOU) and ffmpeg would pull a path that never passed containment.
+
+    Setup: an in-store symlink whose target is ALSO in-store (so it legitimately passes the guard).
+    The duck command must reference the resolved real file, and must NOT reference the symlink path."""
+    store = tmp_path / "assets"
+    store.mkdir()
+    monkeypatch.setattr(abn_factory, "ASSETS", store)
+    monkeypatch.setattr(abn_assets, "ASSETS_DIR", store)
+    _stub_remotion_dir(monkeypatch, store)
+
+    async def fake_dur(path):
+        return 640.0
+    monkeypatch.setattr(abn_factory, "_dur", fake_dur)
+
+    # Real bed file, in-store, under one subdir.
+    real = store / "ep_e888888" / "real_bed.mp3"
+    real.parent.mkdir(parents=True, exist_ok=True)
+    real.write_bytes(b"\x00")
+
+    # In-store symlink pointing at the in-store real file (passes containment after resolve()).
+    link = store / "ep_e888888" / "bed.mp3"
+    link.symlink_to(real)
+
+    duck_calls = []
+    out = abn_assets.asset_path("ep_e888888", "episode")
+    inner = _remotion_dispatch_sh(out, normalize_ok=True, duck_ok=True)
+
+    async def tracking_sh(cmd, timeout=600):
+        if "sidechaincompress" in cmd:
+            duck_calls.append(cmd)
+        return await inner(cmd, timeout=timeout)
+    monkeypatch.setattr(abn_factory, "_sh", tracking_sh)
+
+    timeline = {"musicBed": "ep_e888888/bed.mp3", "segments": []}
+    url, dur = asyncio.run(abn_factory._render_remotion("ep_e888888", timeline, force=True))
+    assert dur == 640.0
+    assert url
+
+    assert len(duck_calls) == 1, "valid in-store symlinked bed must be ducked exactly once"
+    # The duck pass must read the RESOLVED real target (the thing that was validated)...
+    assert shlex.quote(str(real.resolve())) in duck_calls[0], \
+        "duck pass must read the resolved real target that passed containment"
+    # ...and must NOT read the raw, unresolved symlink path (which was never the validated path).
+    assert shlex.quote(str(link)) not in duck_calls[0], \
+        "duck pass must not read the unresolved symlink path"
+
+
 # ---- revisualize: pristine-timeline backup is written ATOMICALLY (this ticket) ----
 
 

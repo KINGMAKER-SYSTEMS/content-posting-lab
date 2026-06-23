@@ -2724,8 +2724,12 @@ async def _render_remotion(ep_id, timeline, force=False):
             bedfile = _resolve_asset(bed)
             # Belt-and-suspenders: the gateway now raises on a traversal/absolute escape, but a
             # bare-relative bed name can still resolve under ASSETS lexically yet escape after the
-            # OS follows symlinks — keep the realpath containment check too.
-            bedfile.resolve().relative_to(ASSETS.resolve())
+            # OS follows symlinks — keep the realpath containment check too. Validate the REAL
+            # target (resolve() follows symlinks) is in-store, then REBIND bedfile to that resolved
+            # path so ffmpeg reads exactly what passed containment — not the unresolved symlink,
+            # which could still hop outside the store after the check.
+            bedfile = bedfile.resolve()
+            bedfile.relative_to(ASSETS.resolve())
         except (AssetTraversalError, ValueError):
             BUS.emit("editor-agent", "error", f"musicBed escapes asset store, skipping duck: {bed!r}", episode_id=ep_id)
             bedfile = None
