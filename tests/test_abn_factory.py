@@ -394,6 +394,27 @@ def test_code_demo_routes_through_gateway(monkeypatch, tmp_path):
     assert resolved.parent == tmp_path / "ep_c333333" / "broll"
 
 
+def test_code_demo_returns_none_on_vhs_timeout(monkeypatch, tmp_path):
+    """If VHS hangs, _sh times out and returns (124, "timeout") without ever writing the Output
+    file. _code_demo must degrade to None (the shot is dropped) — never raise — so a hung render
+    can't kill the whole episode build."""
+    monkeypatch.setattr(abn_factory, "ASSETS", tmp_path)
+    monkeypatch.setattr(abn_assets, "ASSETS_DIR", tmp_path)
+    monkeypatch.setattr(abn_factory, "_codegen_sync", lambda title, brief: "print('hi')\nx = 1\n")
+
+    async def timeout_sh(cmd, timeout=120):
+        # mirror _sh's real timeout return: killed process, no Output file written
+        return 124, "timeout"
+
+    monkeypatch.setattr(abn_factory, "_sh", timeout_sh)
+
+    url = asyncio.run(abn_factory._code_demo("Title", "brief", "ep_c333333_s1"))
+
+    assert url is None
+    # nothing was written to the gateway broll dir
+    assert not (tmp_path / "ep_c333333" / "broll" / "demo.mp4").exists()
+
+
 def test_code_demo_raises_on_gateway_error_before_codegen_writes(monkeypatch, tmp_path):
     """An off-schema slug must be rejected by the gateway (asset_path_from_slug) before _code_demo
     builds any scratch tape/snippet — the producer cannot hand-build a flat path around it."""
