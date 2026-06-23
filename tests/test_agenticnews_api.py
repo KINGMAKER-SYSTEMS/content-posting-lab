@@ -284,23 +284,14 @@ def test_job_fail_releases_lock(client):
 
 
 # ----------------------------------------------------------------------- chat
-def test_chat_roundtrip_persists_and_drains(client):
-    client.post("/api/agenticnews/chat", json={"text": "hello from operator"})
-    # /chat/inbox drains user->claude messages exactly once
-    inbox = client.get("/api/agenticnews/chat/inbox").json()["messages"]
-    assert inbox == ["hello from operator"]
-    # draining is destructive: a second poll is empty
-    assert client.get("/api/agenticnews/chat/inbox").json()["messages"] == []
-
-    client.post("/api/agenticnews/chat/reply", json={"text": "ack from claude"})
-    poll = client.get("/api/agenticnews/chat/poll").json()["messages"]
-    assert poll == ["ack from claude"]
-
-    # history is non-destructive and ordered oldest->newest
-    hist = client.get("/api/agenticnews/chat/history").json()["messages"]
-    texts = [(m["who"], m["text"]) for m in hist]
-    assert ("user", "hello from operator") in texts
-    assert ("claude", "ack from claude") in texts
+def test_chat_endpoints_removed(client):
+    # The unused chat-bridge endpoints were removed (no frontend/codebase consumers).
+    # They must no longer be routed.
+    assert client.post("/api/agenticnews/chat", json={"text": "x"}).status_code == 404
+    assert client.get("/api/agenticnews/chat/poll").status_code == 404
+    assert client.get("/api/agenticnews/chat/inbox").status_code == 404
+    assert client.post("/api/agenticnews/chat/reply", json={"text": "x"}).status_code == 404
+    assert client.get("/api/agenticnews/chat/history").status_code == 404
 
 
 # ------------------------------------------------------------------- tools/*

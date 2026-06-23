@@ -4,7 +4,6 @@ AgenticBuilderNews — router for the living-workspace kanban flywheel.
 Mounted at /api/agenticnews. Endpoints:
   Board:   GET/POST /videos, PATCH/DELETE /videos/{id}, POST /videos/{id}/move
   Jobs:    GET/POST /jobs, POST /jobs/{id}/claim|complete|fail
-  Chat:    POST /chat, GET /chat/poll, GET /chat/inbox, POST /chat/reply, GET /chat/history
   Tools:   POST /tools/tts, /tools/cards, /tools/assemble, /tools/scrape
   Flywheel: GET /patterns, GET /stats
 """
@@ -220,32 +219,6 @@ async def fail_job(jid: str, body: dict = Body(...)):
     if j and j.get("video_id"):
         await db.update_video(j["video_id"], {"locked_by": None})
     return j or {}
-
-
-# ============ CHAT BRIDGE ============
-@router.post("/chat")
-async def chat_send(body: dict = Body(...)):
-    return await db.chat_post("user", body["text"])
-
-
-@router.get("/chat/poll")
-async def chat_poll():
-    return {"messages": [m["text"] for m in await db.chat_drain("to_page")]}
-
-
-@router.get("/chat/inbox")
-async def chat_inbox():
-    return {"messages": [m["text"] for m in await db.chat_drain("to_claude")]}
-
-
-@router.post("/chat/reply")
-async def chat_reply(body: dict = Body(...)):
-    return await db.chat_post("claude", body["text"])
-
-
-@router.get("/chat/history")
-async def chat_hist(limit: int = 50):
-    return {"messages": await db.chat_history(limit)}
 
 
 # ============ TOOLS (the real wiring) ============
