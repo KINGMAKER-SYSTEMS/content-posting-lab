@@ -2853,8 +2853,20 @@ async def _assemble_episode(ep_id, segments):
             seg_clips.append(clip)
             BUS.emit("editor-agent", "assemble.segment", f"rendered segment {i+1}/{len(segments)}",
                      episode_id=ep_id, data={"i": i})
+        else:
+            # PARTIAL FAILURE: ffmpeg returned non-zero OR reported ok but wrote no clip. The old
+            # code skipped these silently, so an episode could ship with 3 of 6 segments and nothing
+            # would notice (the empty-`seg_clips` gate below only fires when EVERY segment fails).
+            # Make the drop observable so a truncated episode is never silent.
+            BUS.emit("editor-agent", "assemble.segment.failed",
+                     f"segment {i+1}/{len(segments)} dropped (code={code}, clip_exists={clip.exists()})",
+                     episode_id=ep_id, data={"i": i, "code": code})
     if not seg_clips:
         raise RuntimeError("no segment clips")
+    if len(seg_clips) < len(segments):
+        BUS.emit("editor-agent", "assemble.partial",
+                 f"PARTIAL episode: only {len(seg_clips)}/{len(segments)} segments rendered",
+                 episode_id=ep_id, data={"rendered": len(seg_clips), "total": len(segments)})
     # concat
     listf = asset_path(ep_id, "scratch", "list", ext="txt")  # concat manifest intermediate
     _atomic_write_text(listf, "".join(f"file '{c}'\n" for c in seg_clips))

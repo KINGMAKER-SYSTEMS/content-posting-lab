@@ -916,6 +916,88 @@ def test_assemble_episode_partial_encode_failure_concats_only_survivors(monkeypa
         next(i for i, l in enumerate(manifest_lines) if "/seg2" in l)
 
 
+def test_assemble_episode_partial_failure_is_observable_not_silent(monkeypatch, tmp_path):
+    """The ticket's core concern: when segments 1-3 succeed but 4-6 fail, `seg_clips` is partial and
+    the episode ships TRUNCATED. The old code skipped failures with no signal at all — only a
+    *total* wipeout (empty `seg_clips`) raised. A silently-short episode would slip past the
+    MIN_EPISODE_SEC duration gate downstream with nobody the wiser.
+
+    This pins that a partial render is now OBSERVABLE on the event bus: each dropped segment emits an
+    `assemble.segment.failed` event, and the overall partial episode emits one `assemble.partial`
+    summary event carrying rendered/total counts. (We don't make it RAISE — the resilient
+    concat-the-survivors behaviour is intentional; we only require it stop being silent.)
+
+    Six segments; the last three fail to encode. Episode still renders from the 3 survivors, but the
+    failure + partial signals must be on the bus."""
+    import shlex
+
+    monkeypatch.setattr(abn_factory, "ASSETS", tmp_path)
+    monkeypatch.setattr(abn_assets, "ASSETS_DIR", tmp_path)
+
+    async def routed_sh(cmd, timeout=600):
+        if cmd.startswith("ffprobe"):
+            return 0, "30.0\n"
+        out = shlex.split(cmd)[-1]
+        if "-f concat" in cmd:
+            Path(out).write_bytes(b"\x00final-mp4")
+            return 0, ""
+        # seg3, seg4, seg5 fail (the back half); seg0-2 succeed
+        if any(Path(out).name.startswith(f"seg{n}") for n in (3, 4, 5)):
+            return 1, "ffmpeg: back-half encode blew up"
+        Path(out).write_bytes(b"\x00seg-mp4")
+        return 0, ""
+
+    monkeypatch.setattr(abn_factory, "_sh", routed_sh)
+
+    before = abn_factory.BUS._seq
+    segments = [
+        {"script": f"s{n}", "vo_path": f"/agenticnews-assets/ep_a111111_s{n}.wav", "screenshot": None}
+        for n in range(6)
+    ]
+    url, dur = asyncio.run(abn_factory._assemble_episode("ep_a111111", segments))
+
+    assert url and dur == 30.0, "episode must still render from the surviving segments"
+
+    new_events = abn_factory.BUS.replay(since=before)
+    failed = [e for e in new_events if e["action"] == "assemble.segment.failed"]
+    partial = [e for e in new_events if e["action"] == "assemble.partial"]
+
+    assert len(failed) == 3, f"each of the 3 dropped segments must emit a failure event, got {len(failed)}"
+    assert len(partial) == 1, "a partial episode must emit exactly one assemble.partial summary event"
+    assert partial[0]["data"] == {"rendered": 3, "total": 6}, \
+        f"partial event must carry rendered/total counts, got {partial[0]['data']}"
+
+
+def test_assemble_episode_full_success_emits_no_partial_event(monkeypatch, tmp_path):
+    """Inverse guard: when ALL segments encode cleanly, NO `assemble.partial` / `assemble.segment.failed`
+    events fire — so the new partial signal can't become noise on the happy path (and a false-partial
+    regression would be caught)."""
+    import shlex
+
+    monkeypatch.setattr(abn_factory, "ASSETS", tmp_path)
+    monkeypatch.setattr(abn_assets, "ASSETS_DIR", tmp_path)
+
+    async def routed_sh(cmd, timeout=600):
+        if cmd.startswith("ffprobe"):
+            return 0, "30.0\n"
+        out = shlex.split(cmd)[-1]
+        Path(out).write_bytes(b"\x00mp4")
+        return 0, ""
+
+    monkeypatch.setattr(abn_factory, "_sh", routed_sh)
+
+    before = abn_factory.BUS._seq
+    segments = [
+        {"script": f"s{n}", "vo_path": f"/agenticnews-assets/ep_a111111_s{n}.wav", "screenshot": None}
+        for n in range(4)
+    ]
+    asyncio.run(abn_factory._assemble_episode("ep_a111111", segments))
+
+    new_events = abn_factory.BUS.replay(since=before)
+    assert not [e for e in new_events if e["action"] in ("assemble.partial", "assemble.segment.failed")], \
+        "a fully-successful episode must not emit any partial/failure signal"
+
+
 # ---------------- _render_remotion: error recovery + fallback re-encode ----------------
 #
 # _render_remotion shells out to the Remotion CLI to produce the full episode mp4, then runs a
