@@ -583,8 +583,48 @@ def strip_cachebuster(rel: str) -> str:
     return rel.split("?", 1)[0].split("#", 1)[0]
 
 
+class AssetTraversalError(ValueError):
+    """A /agenticnews-assets/ subpath escaped the managed asset tree (symlink hop or ../)."""
+
+
+def resolve_managed_asset(rel: str, asset_root: Path | str) -> Path:
+    """Map a /agenticnews-assets/ SUBPATH (cache-buster already strippable) to a disk Path
+    UNDER ``asset_root``, refusing any escape from the managed tree.
+
+    This is the single containment gate the asset gateway lacked: ``Path(root) / rel`` happily
+    builds ``root/_shared/../../../../etc/passwd``, and a corrupted/malicious timeline src could
+    point the compiler at ``/etc/passwd``. We block the two LEXICAL escapes — an absolute subpath,
+    and a ``..`` sequence that climbs above the root — by ``normpath``-collapsing the join and
+    requiring it to stay at/under the root.
+
+    Why lexical (normpath) and NOT realpath-containment: the asset migration deliberately left
+    back-compat SYMLINKS at the old flat names (e.g. ``<root>/bed.mp3`` → the in-repo
+    ``agenticnews_assets/_shared/audio/bed.mp3``), and the T9 store routinely lives on a different
+    physical volume than those targets. A realpath/commonpath check (the _codex_image idiom, which
+    is correct THERE because ~/.codex is an UNTRUSTED root) would reject every one of those trusted
+    gateway-placed symlinks. The store's own symlinks are sanctioned; the attack we must stop is a
+    ``..``/absolute subpath in the untrusted URL, which is purely lexical. Raises
+    ``AssetTraversalError`` on any escape.
+    """
+    import os
+
+    rel = strip_cachebuster(rel)
+    # An absolute / drive-letter rel would make os.path.join jump straight to it, leaving the store.
+    if os.path.isabs(rel) or rel.startswith(("/", "\\")):
+        raise AssetTraversalError(f"asset subpath must be relative, got {rel!r}")
+    root_norm = os.path.normpath(str(asset_root))
+    cand_norm = os.path.normpath(os.path.join(root_norm, rel))
+    # Contained iff cand == root or cand starts with root + sep. Compare lexically so trusted
+    # in-store symlinks are followed later by the OS, not pre-resolved here.
+    if cand_norm != root_norm and not cand_norm.startswith(root_norm + os.sep):
+        raise AssetTraversalError(
+            f"asset subpath {rel!r} escapes the managed tree (resolves to {cand_norm})"
+        )
+    return Path(cand_norm)
+
+
 def _resolve_asset_src(src: str, *, asset_root: Path | str | None) -> str:
     if src.startswith("/agenticnews-assets/") and asset_root:
         rel = strip_cachebuster(src.removeprefix("/agenticnews-assets/"))
-        return str(Path(asset_root) / rel)
+        return str(resolve_managed_asset(rel, asset_root))
     return src

@@ -1099,6 +1099,28 @@ def _clip_restore_payload(clip: dict[str, Any]) -> dict[str, Any]:
     return {"clipId": clip["id"], "patch": patch}
 
 
+def _reject_traversing_asset_src(src: str) -> None:
+    """Refuse to PERSIST a /agenticnews-assets/ src that escapes the managed tree.
+
+    Validation at upload time (asset.import) is cheaper and safer than catching it only at
+    render-resolution: a traversing src (``_shared/../../../../etc/passwd`` or a planted-symlink
+    hop) never reaches the timeline JSON in the first place. Non-gateway srcs (http(s)://,
+    bare/absolute disk paths the factory writes itself) pass through untouched — the gate only
+    bites the /agenticnews-assets/ URL space the editor hands to untrusted clients.
+    """
+    if not src.startswith("/agenticnews-assets/"):
+        return
+    # Lazy import to avoid a module-load cycle (openshot_bridge -> agenticnews -> ...).
+    from services import agenticnews as _db
+    from services.openshot_bridge import resolve_managed_asset, AssetTraversalError
+
+    rel = src.removeprefix("/agenticnews-assets/")
+    try:
+        resolve_managed_asset(rel, _db.ASSETS_DIR)
+    except AssetTraversalError as e:
+        raise CommandValidationError(f"asset src escapes the managed asset tree: {e}") from e
+
+
 def _asset_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
     asset_id = payload.get("assetId") or payload.get("id")
     src = payload.get("src")
@@ -1109,6 +1131,7 @@ def _asset_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
         raise CommandValidationError("asset type is required")
     if src is None:
         raise CommandValidationError("asset src is required")
+    _reject_traversing_asset_src(str(src))
     return {
         "id": str(asset_id),
         "type": str(kind),

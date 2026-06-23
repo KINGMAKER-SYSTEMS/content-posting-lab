@@ -239,10 +239,13 @@ def _resolve_asset(url_or_path) -> Path:
         # "…/episode.mp4?rev=3"); the static mount ignores it, so the real file is
         # "episode.mp4". Routed through the SINGLE canonical strip so the GC scan,
         # this resolver, and the openshot_bridge compiler can never drift on the name.
-        from services.openshot_bridge import strip_cachebuster
+        from services.openshot_bridge import resolve_managed_asset
 
-        rel = strip_cachebuster(s[len(URL_PREFIX):])
-        return ASSETS / rel
+        # Containment gate: a corrupted/malicious URL like
+        # /agenticnews-assets/_shared/../../../../etc/passwd (or one whose subpath hops a
+        # planted symlink) would otherwise resolve to an out-of-tree file. resolve_managed_asset
+        # realpaths + commonpath-checks the result against ASSETS and RAISES on any escape.
+        return resolve_managed_asset(s[len(URL_PREFIX):], ASSETS)
     p = Path(s)
     if p.is_absolute():
         return p
@@ -2716,10 +2719,14 @@ async def _render_remotion(ep_id, timeline, force=False):
         # construction — the basename fallback bypassed the store's namespace isolation. Then
         # assert containment: a corrupted/traversal musicBed value (e.g. '/agenticnews-assets/../../x')
         # must resolve INSIDE the asset store or be dropped, never read from outside the schema.
-        bedfile = _resolve_asset(bed)
+        from services.openshot_bridge import AssetTraversalError
         try:
+            bedfile = _resolve_asset(bed)
+            # Belt-and-suspenders: the gateway now raises on a traversal/absolute escape, but a
+            # bare-relative bed name can still resolve under ASSETS lexically yet escape after the
+            # OS follows symlinks — keep the realpath containment check too.
             bedfile.resolve().relative_to(ASSETS.resolve())
-        except ValueError:
+        except (AssetTraversalError, ValueError):
             BUS.emit("editor-agent", "error", f"musicBed escapes asset store, skipping duck: {bed!r}", episode_id=ep_id)
             bedfile = None
         if bedfile and bedfile.exists():

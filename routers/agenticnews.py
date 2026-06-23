@@ -1834,11 +1834,12 @@ def _regen_card(src: str, edit: dict) -> bool:
     # Resolve the operator-supplied src to its real on-disk path and REQUIRE it to be an existing
     # managed card. factory.ASSETS (the store ROOT) is never the write dir anymore — we write back
     # into exactly the validated css/ dir the original card lives in.
-    target = factory._resolve_asset(src)
     try:
+        target = factory._resolve_asset(src)
         if target.is_symlink() or not target.is_file() or not abn_assets.is_managed(target):
             return False
-    except OSError:
+    except (OSError, openshot_bridge.AssetTraversalError):
+        # gateway rejected a traversal/absolute escape, or the stat failed — refuse the write
         return False
     assets_dir = target.parent               # the real {ep_id}/css/ dir (gateway-validated)
     stem = target.name[: -len(f"_{kind}.png")]   # 's1_v2sc2' — segment-local slug under that dir
