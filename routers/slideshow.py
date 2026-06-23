@@ -136,8 +136,11 @@ async def delete_all_images(project: str):
         count = 0
         for p in images_dir.iterdir():
             if p.suffix.lower() in VALID_EXTENSIONS:
-                p.unlink()
-                count += 1
+                # safe_unlink continues the loop on a locked/raced file
+                # (logs each failure) instead of raising and silently
+                # leaving the rest of the directory undeleted.
+                if safe_unlink(p):
+                    count += 1
         return {"deleted": count}
     return {"deleted": 0}
 
