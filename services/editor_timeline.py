@@ -43,6 +43,12 @@ def _uid(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex[:10]}"
 
 
+# Tracks that carry sound, not pixels. A boundary crossfade is a visual dissolve;
+# audio clips must never be temporally slid for one (it would desync the audio and
+# give the fade nothing to composite over anyway). Used by _overlap_crossfade.
+_AUDIO_TRACKS = frozenset({"audio_1", "music_1"})
+
+
 def _default_tracks() -> dict[str, dict[str, Any]]:
     return {
         "video_1": {"id": "video_1", "kind": "video", "name": "Video 1", "index": 10, "locked": False},
@@ -483,6 +489,12 @@ def _overlap_crossfade(
     clip duration so the caller spreads keyframes across the right span. A no-op
     (returns the original duration) when there's no crossfade or no previous clip.
     """
+    # Audio clips never slide for a visual dissolve: moving them desyncs the sound,
+    # and an audio shot that happens to carry a transitionSec shouldn't be treated as
+    # a video crossfade. The caller also keeps audio out of `prev_visual`, so this
+    # only guards the incoming-clip side. Returns the authored duration unchanged.
+    if clip.get("trackId") in _AUDIO_TRACKS:
+        return float(clip["duration"])
     transition = _crossfade_duration(clip)
     if transition <= 0 or not prev_visual:
         return float(clip["duration"])
@@ -1087,6 +1099,28 @@ def _clip_restore_payload(clip: dict[str, Any]) -> dict[str, Any]:
     return {"clipId": clip["id"], "patch": patch}
 
 
+def _reject_traversing_asset_src(src: str) -> None:
+    """Refuse to PERSIST a /agenticnews-assets/ src that escapes the managed tree.
+
+    Validation at upload time (asset.import) is cheaper and safer than catching it only at
+    render-resolution: a traversing src (``_shared/../../../../etc/passwd`` or a planted-symlink
+    hop) never reaches the timeline JSON in the first place. Non-gateway srcs (http(s)://,
+    bare/absolute disk paths the factory writes itself) pass through untouched — the gate only
+    bites the /agenticnews-assets/ URL space the editor hands to untrusted clients.
+    """
+    if not src.startswith("/agenticnews-assets/"):
+        return
+    # Lazy import to avoid a module-load cycle (openshot_bridge -> agenticnews -> ...).
+    from services import agenticnews as _db
+    from services.openshot_bridge import resolve_managed_asset, AssetTraversalError
+
+    rel = src.removeprefix("/agenticnews-assets/")
+    try:
+        resolve_managed_asset(rel, _db.ASSETS_DIR)
+    except AssetTraversalError as e:
+        raise CommandValidationError(f"asset src escapes the managed asset tree: {e}") from e
+
+
 def _asset_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
     asset_id = payload.get("assetId") or payload.get("id")
     src = payload.get("src")
@@ -1097,6 +1131,7 @@ def _asset_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
         raise CommandValidationError("asset type is required")
     if src is None:
         raise CommandValidationError("asset src is required")
+    _reject_traversing_asset_src(str(src))
     return {
         "id": str(asset_id),
         "type": str(kind),
@@ -1390,6 +1425,31 @@ KEYFRAME_PROPERTIES = frozenset(
     {"volume", "opacity", "scale", "x", "y", "rotation"}
 )
 KEYFRAME_INTERPOLATIONS = frozenset({"linear", "constant", "bezier"})
+
+
+def ffmpeg_lossy_keyframe_properties() -> frozenset[str]:
+    """Authorable keyframe properties the ffmpeg fallback CANNOT reproduce.
+
+    These pass timeline validation (they're in ``KEYFRAME_PROPERTIES``) and
+    OpenShot renders them correctly, but the ffmpeg-layered fallback can only
+    animate ``editor_render._FFMPEG_KEYFRAME_PROPERTIES``. The remainder (today
+    just ``scale`` — it would re-time overlay_w/overlay_h mid-overlay, see
+    editor_render line ~175) get dropped to a structured warning instead of
+    honored. The editor can't otherwise tell which envelopes survive a fallback
+    render, so it can read this to flag/annotate at authoring time rather than
+    discover the silent drop only in the render result's ``warnings`` list.
+
+    Derived from the render module (single source of truth, no hard-coded
+    duplicate that could drift) via a local import so the two modules stay
+    decoupled at load time.
+    ``test_ffmpeg_lossy_keyframe_properties_names_scale_and_pins_no_silent_drift``
+    pins that the two sets partition ``KEYFRAME_PROPERTIES`` exactly — so adding a
+    property to the schema without teaching the fallback (or whitelisting it as
+    lossy) fails loudly instead of becoming a new silent drop."""
+
+    from services.editor_render import _FFMPEG_KEYFRAME_PROPERTIES
+
+    return frozenset(KEYFRAME_PROPERTIES) - frozenset(_FFMPEG_KEYFRAME_PROPERTIES)
 
 
 def _validated_keyframes(value: Any) -> list[dict[str, Any]]:

@@ -998,6 +998,172 @@ def test_assemble_episode_full_success_emits_no_partial_event(monkeypatch, tmp_p
         "a fully-successful episode must not emit any partial/failure signal"
 
 
+# ---------------- ffmpeg backstop: 0-byte / partial-render + timeout gates ----------------
+#
+# The ticket's gap: ffmpeg can exit 0 yet leave a 0-BYTE file (disk full, killed mid-flush, a
+# degenerate filtergraph that emits no frames). The old gate was `code == 0 and clip.exists()` — a
+# 0-byte file passes `.exists()`, so a broken/empty clip would be accepted and concatenated, and a
+# 0-byte FINAL episode could be returned with a real-looking URL. These pin the size guard
+# (`_nonempty`) at all three ffmpeg gates in `_assemble_episode`, plus the subprocess-timeout path
+# (`_sh` maps asyncio.TimeoutError → (124, "timeout")) bubbling correctly through the cascade.
+
+def test_nonempty_rejects_zero_byte_and_missing_but_accepts_real_file(tmp_path):
+    """Unit-pin the helper: missing → False, 0-byte → False, has-bytes → True. The whole
+    partial-render defense rests on this; a regression to a bare `.exists()` flips the 0-byte case."""
+    missing = tmp_path / "nope.mp4"
+    empty = tmp_path / "empty.mp4"; empty.write_bytes(b"")
+    real = tmp_path / "real.mp4"; real.write_bytes(b"\x00mp4")
+    assert abn_factory._nonempty(missing) is False
+    assert abn_factory._nonempty(empty) is False, "a 0-byte file must NOT pass — this is the ticket's bug"
+    assert abn_factory._nonempty(real) is True
+
+
+def test_assemble_episode_drops_segment_that_exits_zero_but_writes_zero_bytes(monkeypatch, tmp_path):
+    """PARTIAL RENDER (ticket gap #2): ffmpeg exits 0 for one segment but writes a 0-byte clip. That
+    clip must be DROPPED (observable as assemble.segment.failed), never concatenated. Here seg0
+    writes real bytes and seg1 writes an empty file with exit 0 — the episode renders from seg0 only
+    and a partial signal fires. A bare `.exists()` gate would have shipped the empty clip."""
+    import shlex
+    monkeypatch.setattr(abn_factory, "ASSETS", tmp_path)
+    monkeypatch.setattr(abn_assets, "ASSETS_DIR", tmp_path)
+
+    async def routed_sh(cmd, timeout=600):
+        if cmd.startswith("ffprobe"):
+            return 0, "20.0\n"
+        out = shlex.split(cmd)[-1]
+        if "-f concat" in cmd:
+            Path(out).write_bytes(b"\x00final-mp4")
+            return 0, ""
+        if Path(out).name.startswith("seg1"):
+            Path(out).write_bytes(b"")   # exit 0 but 0 bytes — the broken-clip case
+            return 0, ""
+        Path(out).write_bytes(b"\x00seg-mp4")
+        return 0, ""
+
+    monkeypatch.setattr(abn_factory, "_sh", routed_sh)
+
+    before = abn_factory.BUS._seq
+    segments = [
+        {"script": "s0", "vo_path": "/agenticnews-assets/ep_a111111_s0.wav", "screenshot": None},
+        {"script": "s1", "vo_path": "/agenticnews-assets/ep_a111111_s1.wav", "screenshot": None},
+    ]
+    url, dur = asyncio.run(abn_factory._assemble_episode("ep_a111111", segments))
+    assert url and dur == 20.0, "episode renders from the one non-empty survivor"
+
+    new_events = abn_factory.BUS.replay(since=before)
+    failed = [e for e in new_events if e["action"] == "assemble.segment.failed"]
+    partial = [e for e in new_events if e["action"] == "assemble.partial"]
+    assert len(failed) == 1, "the 0-byte segment must emit a drop event"
+    assert partial and partial[0]["data"] == {"rendered": 1, "total": 2}
+
+
+def test_assemble_episode_raises_when_every_segment_writes_zero_bytes(monkeypatch, tmp_path):
+    """The total-wipeout variant of the 0-byte case: EVERY segment exits 0 but writes an empty file.
+    `seg_clips` must stay empty and 'no segment clips' must raise — concat must never be reached on a
+    pile of 0-byte clips."""
+    import shlex
+    monkeypatch.setattr(abn_factory, "ASSETS", tmp_path)
+    monkeypatch.setattr(abn_assets, "ASSETS_DIR", tmp_path)
+
+    async def empty_writer_sh(cmd, timeout=600):
+        if "-f concat" in cmd or cmd.startswith("ffprobe"):
+            raise AssertionError("reached concat/probe despite every clip being 0 bytes")
+        Path(shlex.split(cmd)[-1]).write_bytes(b"")  # exit 0, but empty
+        return 0, ""
+
+    monkeypatch.setattr(abn_factory, "_sh", empty_writer_sh)
+    segments = [
+        {"script": "a", "vo_path": "/agenticnews-assets/ep_a111111_s0.wav", "screenshot": None},
+        {"script": "b", "vo_path": "/agenticnews-assets/ep_a111111_s1.wav", "screenshot": None},
+    ]
+    with pytest.raises(RuntimeError, match="no segment clips"):
+        asyncio.run(abn_factory._assemble_episode("ep_a111111", segments))
+
+
+def test_assemble_episode_zero_byte_copy_concat_triggers_reencode(monkeypatch, tmp_path):
+    """The copy-concat exits 0 but writes a 0-byte FINAL (the partial-render case at the concat gate,
+    not just the per-segment gate). `_nonempty(final)` must be False so the re-encode fallback fires;
+    the re-encode writes a real final and the episode is returned. A bare `.exists()` would have
+    returned a URL to a 0-byte episode."""
+    import shlex
+    monkeypatch.setattr(abn_factory, "ASSETS", tmp_path)
+    monkeypatch.setattr(abn_assets, "ASSETS_DIR", tmp_path)
+
+    calls = {"copy": 0, "reencode": 0}
+
+    async def routed_sh(cmd, timeout=600):
+        if cmd.startswith("ffprobe"):
+            return 0, "15.0\n"
+        out = shlex.split(cmd)[-1]
+        if "-f concat" in cmd and "-c copy" in cmd:
+            calls["copy"] += 1
+            Path(out).write_bytes(b"")   # exit 0 but 0 bytes → must NOT be accepted
+            return 0, ""
+        if "-f concat" in cmd and "libx264" in cmd:
+            calls["reencode"] += 1
+            Path(out).write_bytes(b"\x00final-mp4")
+            return 0, ""
+        Path(out).write_bytes(b"\x00seg-mp4")
+        return 0, ""
+
+    monkeypatch.setattr(abn_factory, "_sh", routed_sh)
+    segments = [{"script": "hi", "vo_path": "/agenticnews-assets/ep_a111111_s0.wav", "screenshot": None}]
+    url, dur = asyncio.run(abn_factory._assemble_episode("ep_a111111", segments))
+    assert calls["copy"] == 1 and calls["reencode"] == 1, \
+        "a 0-byte copy-concat must fall through to the re-encode, not be accepted"
+    assert url and dur == 15.0
+
+
+def test_assemble_episode_raises_when_concat_times_out(monkeypatch, tmp_path):
+    """SUBPROCESS TIMEOUT (ticket gap #1) at the ffmpeg backstop: `_sh` maps asyncio.TimeoutError →
+    (124, "timeout"). When BOTH concat passes time out, `code != 0` on each so the re-encode is tried
+    and then `_assemble_episode` raises `concat: ...timeout` — a hung concat must surface, never be
+    swallowed into a phantom return."""
+    import shlex
+    monkeypatch.setattr(abn_factory, "ASSETS", tmp_path)
+    monkeypatch.setattr(abn_assets, "ASSETS_DIR", tmp_path)
+
+    async def routed_sh(cmd, timeout=600):
+        if cmd.startswith("ffprobe"):
+            raise AssertionError("probed duration despite both concat passes timing out")
+        if "-f concat" in cmd:
+            return 124, "timeout"   # exactly what _sh returns on asyncio.TimeoutError
+        Path(shlex.split(cmd)[-1]).write_bytes(b"\x00seg-mp4")
+        return 0, ""
+
+    monkeypatch.setattr(abn_factory, "_sh", routed_sh)
+    segments = [{"script": "hi", "vo_path": "/agenticnews-assets/ep_a111111_s0.wav", "screenshot": None}]
+    with pytest.raises(RuntimeError, match="concat:.*timeout"):
+        asyncio.run(abn_factory._assemble_episode("ep_a111111", segments))
+
+
+@pytest.mark.asyncio
+async def test_compile_episode_falls_through_when_remotion_raises_asyncio_timeout(monkeypatch):
+    """ASYNCIO TIMEOUT BUBBLING (ticket gap #1): a Remotion stage that raises raw asyncio.TimeoutError
+    (e.g. an `asyncio.wait_for` on an asset fetch) must be caught by the cascade's `except Exception`
+    and fall through to the ffmpeg backstop — NOT escape uncaught and abort the episode. In Python
+    3.11+ asyncio.TimeoutError IS TimeoutError; this pins it's still a recoverable cascade trigger."""
+    async def openshot_boom(ep_id, timeline):
+        raise RuntimeError("openshot down")
+
+    async def remotion_timeout(ep_id, timeline):
+        raise asyncio.TimeoutError()
+
+    async def ffmpeg_ok(ep_id, segments):
+        return "/agenticnews-assets/ffmpeg.mp4", 601.0
+
+    monkeypatch.setattr(abn_factory, "_assemble_episode_openshot", openshot_boom)
+    monkeypatch.setattr(abn_factory, "_render_remotion", remotion_timeout)
+    monkeypatch.setattr(abn_factory, "_assemble_episode", ffmpeg_ok)
+
+    seen = {e["id"] for e in abn_factory.BUS.replay()}
+    url, dur = await abn_factory._compile_episode("ep_to0001", {"musicBed": None}, [{"script": "x"}])
+    assert (url, dur) == ("/agenticnews-assets/ffmpeg.mp4", 601.0)
+    actions = _bus_actions_since(seen)
+    assert "openshot.fallback" in actions
+    assert "remotion.fallback" in actions, "a Remotion asyncio.TimeoutError must reach the ffmpeg backstop"
+
+
 # ---------------- _render_remotion: error recovery + fallback re-encode ----------------
 #
 # _render_remotion shells out to the Remotion CLI to produce the full episode mp4, then runs a
@@ -3976,6 +4142,58 @@ def test_render_remotion_drops_symlink_music_bed_pointing_outside_store(monkeypa
     assert url
     # The symlink's real target is outside the store → dropped, duck pass never runs against it.
     assert duck_calls == [], "a music-bed symlink escaping the store must be dropped, not ducked"
+
+
+def test_render_remotion_duck_reads_resolved_target_not_symlink_path(monkeypatch, tmp_path):
+    """The validated path and the path ffmpeg reads must be the SAME path. Containment is checked
+    against bedfile.resolve() (the real target), so the sidechain ffmpeg call must also read that
+    resolved target — not the unresolved symlink path. If the duck pass read the raw symlink while
+    only the resolved target was validated, a link could be swapped/repointed between check and read
+    (TOCTOU) and ffmpeg would pull a path that never passed containment.
+
+    Setup: an in-store symlink whose target is ALSO in-store (so it legitimately passes the guard).
+    The duck command must reference the resolved real file, and must NOT reference the symlink path."""
+    store = tmp_path / "assets"
+    store.mkdir()
+    monkeypatch.setattr(abn_factory, "ASSETS", store)
+    monkeypatch.setattr(abn_assets, "ASSETS_DIR", store)
+    _stub_remotion_dir(monkeypatch, store)
+
+    async def fake_dur(path):
+        return 640.0
+    monkeypatch.setattr(abn_factory, "_dur", fake_dur)
+
+    # Real bed file, in-store, under one subdir.
+    real = store / "ep_e888888" / "real_bed.mp3"
+    real.parent.mkdir(parents=True, exist_ok=True)
+    real.write_bytes(b"\x00")
+
+    # In-store symlink pointing at the in-store real file (passes containment after resolve()).
+    link = store / "ep_e888888" / "bed.mp3"
+    link.symlink_to(real)
+
+    duck_calls = []
+    out = abn_assets.asset_path("ep_e888888", "episode")
+    inner = _remotion_dispatch_sh(out, normalize_ok=True, duck_ok=True)
+
+    async def tracking_sh(cmd, timeout=600):
+        if "sidechaincompress" in cmd:
+            duck_calls.append(cmd)
+        return await inner(cmd, timeout=timeout)
+    monkeypatch.setattr(abn_factory, "_sh", tracking_sh)
+
+    timeline = {"musicBed": "ep_e888888/bed.mp3", "segments": []}
+    url, dur = asyncio.run(abn_factory._render_remotion("ep_e888888", timeline, force=True))
+    assert dur == 640.0
+    assert url
+
+    assert len(duck_calls) == 1, "valid in-store symlinked bed must be ducked exactly once"
+    # The duck pass must read the RESOLVED real target (the thing that was validated)...
+    assert shlex.quote(str(real.resolve())) in duck_calls[0], \
+        "duck pass must read the resolved real target that passed containment"
+    # ...and must NOT read the raw, unresolved symlink path (which was never the validated path).
+    assert shlex.quote(str(link)) not in duck_calls[0], \
+        "duck pass must not read the unresolved symlink path"
 
 
 # ---- revisualize: pristine-timeline backup is written ATOMICALLY (this ticket) ----

@@ -278,6 +278,113 @@ def test_crossfade_overlap_clamped_to_source_head_and_previous_tail():
     assert b["sourceStart"] == 0.0
 
 
+def test_overlap_pulls_source_start_back_without_going_negative():
+    """sourceStart near-floor: a clip seeked just past frame 0 (sourceStart=0.2) with a
+    larger crossfade (0.5s) slides back by the FULL transition on the timeline, but its
+    sourceStart only pulls back as far as frame 0 — it must clamp at 0.0, never negative,
+    while start/duration still move the full overlap so the out-point is preserved."""
+    clip = {"start": 3.0, "duration": 2.0, "sourceStart": 0.2,
+            "effects": [{"type": "crossfade", "params": {"duration": 0.5}}]}
+    prev = {"start": 0.0, "end": 3.0, "duration": 3.0}
+
+    grown = timeline._overlap_crossfade(clip, prev)
+
+    # The full 0.5s overlap is applied to the timeline (prev tail is long enough).
+    assert clip["start"] == 2.5
+    assert clip["duration"] == 2.5
+    assert grown == 2.5
+    # sourceStart floors at 0.0 — pulling back 0.5 from 0.2 would be -0.3, clamped.
+    assert clip["sourceStart"] == 0.0
+
+
+def test_multiple_adjacent_clips_each_overlap_their_own_predecessor():
+    """Staggered crossfades down a back-to-back chain: each clip with a boundary
+    crossfade slides onto the clip it actually butts against, using that clip's grown
+    (post-overlap) tail as the next predecessor. A no-crossfade clip in the middle is
+    untouched and becomes the next predecessor at its authored position, so the chain
+    can't smear all dissolves onto the first clip."""
+    abn = {
+        "episodeId": "ep_stagger",
+        "segments": [{
+            "segmentId": "s0",
+            "durationSec": 8.0,
+            "shots": [
+                {"id": "a", "src": "/agenticnews-assets/a.mp4", "startSec": 0.0,
+                 "durationSec": 2.0, "type": "remotion", "clipStartSec": 1.0},
+                {"id": "b", "src": "/agenticnews-assets/b.mp4", "startSec": 2.0,
+                 "durationSec": 2.0, "type": "remotion", "clipStartSec": 1.0,
+                 "transitionSec": 0.3},
+                # No transition: butts up at 4.0, stays put, becomes next predecessor.
+                {"id": "c", "src": "/agenticnews-assets/c.mp4", "startSec": 4.0,
+                 "durationSec": 2.0, "type": "remotion", "clipStartSec": 1.0},
+                {"id": "d", "src": "/agenticnews-assets/d.mp4", "startSec": 6.0,
+                 "durationSec": 2.0, "type": "remotion", "clipStartSec": 1.0,
+                 "transitionSec": 0.4},
+            ],
+        }],
+    }
+    project = timeline.project_from_abn_timeline("proj_stagger", abn)
+
+    def clip_for(src):
+        asset_id = next(a["id"] for a in project["assets"].values() if a["src"] == src)
+        return next(c for c in project["clips"].values() if c["assetId"] == asset_id)
+
+    a, b, c, d = (clip_for(f"/agenticnews-assets/{n}.mp4") for n in ("a", "b", "c", "d"))
+    # First clip: no transition, untouched.
+    assert (a["start"], a["duration"]) == (0.0, 2.0)
+    # b slides 0.3 onto a's tail; its out-point (4.0) is preserved.
+    assert b["start"] == 1.7 and b["duration"] == 2.3
+    assert b["sourceStart"] == 0.7
+    # c has no crossfade — it must NOT move just because b grew; stays at its boundary.
+    assert (c["start"], c["duration"]) == (4.0, 2.0)
+    # d slides 0.4 onto c's tail (the immediate predecessor), not onto a or b.
+    assert d["start"] == 5.6 and d["duration"] == 2.4
+    assert d["sourceStart"] == 0.6
+    # Each dissolve overlaps its OWN predecessor's authored tail.
+    assert b["start"] < a["start"] + a["duration"]
+    assert d["start"] < c["start"] + c["duration"]
+
+
+def test_audio_clip_neither_slides_nor_breaks_visual_dissolve_chain():
+    """An audio shot interleaved among video shots must be skipped by the overlap logic:
+    it has no boundary crossfade so it never slides, AND it must not become the
+    `prev_visual` predecessor — otherwise a following video crossfade would try to
+    dissolve over an audio clip (no pixels) and the real video-to-video dissolve would
+    be lost. The video that follows the audio still overlaps the prior VIDEO clip."""
+    abn = {
+        "episodeId": "ep_audio",
+        "segments": [{
+            "segmentId": "s0",
+            "durationSec": 9.0,
+            "shots": [
+                {"id": "a", "src": "/agenticnews-assets/a.mp4", "startSec": 0.0,
+                 "durationSec": 3.0, "type": "remotion", "clipStartSec": 1.0},
+                # An audio shot sitting between the two video shots.
+                {"id": "snd", "src": "/agenticnews-assets/sfx.wav", "startSec": 3.0,
+                 "durationSec": 3.0, "type": "broll", "transitionSec": 0.5},
+                {"id": "b", "src": "/agenticnews-assets/b.mp4", "startSec": 3.0,
+                 "durationSec": 3.0, "type": "remotion", "clipStartSec": 2.0,
+                 "transitionSec": 0.5},
+            ],
+        }],
+    }
+    project = timeline.project_from_abn_timeline("proj_audio", abn)
+
+    def clip_for(src):
+        asset_id = next(a["id"] for a in project["assets"].values() if a["src"] == src)
+        return next(c for c in project["clips"].values() if c["assetId"] == asset_id)
+
+    snd = clip_for("/agenticnews-assets/sfx.wav")
+    b = clip_for("/agenticnews-assets/b.mp4")
+    # The audio clip lands on the audio track and is left exactly where authored.
+    assert snd["trackId"] == "audio_1"
+    assert (snd["start"], snd["duration"], snd["sourceStart"]) == (3.0, 3.0, 0.0)
+    # The following video clip still dissolves onto the prior VIDEO clip (a, ending at
+    # 3.0), NOT onto the audio clip — proving audio was skipped as the predecessor.
+    assert b["start"] == 2.5 and b["duration"] == 3.5
+    assert b["sourceStart"] == 1.5
+
+
 def test_music_bed_imports_pre_ducked_under_vo():
     """The music bed must import ducked (0.22, the factory convention) so a render has
     music UNDER the VO, not competing with it at full volume. VO stays at 1.0."""
@@ -623,6 +730,28 @@ def test_validated_keyframes_lenient_swallows_what_strict_rejects(malformed):
 
     # Lenient import path swallows the same error and yields no envelope.
     assert timeline._validated_keyframes_lenient(malformed) == []
+
+
+def test_ffmpeg_lossy_keyframe_properties_names_scale_and_pins_no_silent_drift():
+    """An authorable keyframe property the ffmpeg fallback can't reproduce must be
+    NAMED at the timeline (authoring) layer, not discovered only as a render
+    `warnings` entry. ``ffmpeg_lossy_keyframe_properties()`` is that signal.
+
+    Today that set is exactly {"scale"}: the timeline validator accepts a scale
+    envelope and OpenShot honors it, but the ffmpeg fallback drops it (it would
+    re-time overlay_w/overlay_h mid-overlay). This test also pins the no-drift
+    invariant: every authorable property is EITHER ffmpeg-reproducible OR flagged
+    lossy — never a third silent category. Add a new KEYFRAME_PROPERTY without
+    teaching the fallback (or accepting it as lossy) and this fails loudly."""
+    from services.editor_render import _FFMPEG_KEYFRAME_PROPERTIES
+
+    lossy = timeline.ffmpeg_lossy_keyframe_properties()
+    assert lossy == frozenset({"scale"})  # the one current authorable-but-dropped property
+
+    # Partition invariant: reproducible ∪ lossy == all authorable, with no overlap.
+    reproducible = frozenset(_FFMPEG_KEYFRAME_PROPERTIES)
+    assert reproducible.isdisjoint(lossy)
+    assert reproducible | lossy == timeline.KEYFRAME_PROPERTIES
 
 
 def test_import_promotes_dict_music_bed_ducking_envelope():

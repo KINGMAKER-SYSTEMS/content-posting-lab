@@ -93,10 +93,11 @@ def _num(value: Any, default: float) -> float:
 
 # Effects the ffmpeg fallback can reproduce natively. fadeIn/fadeOut map to
 # ffmpeg's `fade`/`afade` filters (the same in/out semantics OpenShot's Fade
-# uses). Everything else (crossfade, color filters) and every keyframe envelope
-# is OpenShot-only; the fallback can't composite them, so it must SAY SO rather
-# than silently drop them (the whole point of this slice).
-_FFMPEG_NATIVE_EFFECTS = {"fadeIn", "fadeOut"}
+# uses). brightness/saturation are flat color grades the `eq` filter reproduces
+# 1:1 with OpenShot's Brightness/Saturation ranges (see _visual_filter). Crossfade
+# and every keyframe envelope stay OpenShot-only; the fallback can't composite
+# them, so it must SAY SO rather than silently drop them.
+_FFMPEG_NATIVE_EFFECTS = {"fadeIn", "fadeOut", "brightness", "saturation"}
 
 # On audio clips a crossfade is just a start-anchored fade-in (openshot_bridge's
 # _FADE_DIRECTION_MAP maps both fadeIn and crossfade to OpenShot's `in` Fade), and
@@ -148,6 +149,36 @@ def _fade_window(clip: dict[str, Any], direction: str) -> float | None:
         if seconds > 0 and (best is None or seconds > best):
             best = seconds
     return best
+
+
+def _color_grade_filter(clip: dict[str, Any]) -> str:
+    """Reproduce flat brightness/saturation effects via ffmpeg's `eq` filter.
+
+    OpenShot's Brightness effect (`brightness` -1..1, 0 neutral) and Saturation
+    effect (`saturation` 0..3, 1 neutral) map 1:1 onto ffmpeg `eq=brightness=`
+    and `eq=saturation=`, which use the same ranges and neutrals. Without this the
+    ffmpeg fallback silently shipped UNGRADED clips when OpenShot bindings were
+    missing (the bug). Returns an empty string when the clip carries no color
+    grade so the common path stays a no-op; the last brightness/saturation effect
+    wins (one flat grade per property). Defaults: brightness 0.0, saturation 1.0
+    (both eq neutrals), so a clip carrying only one property leaves the other
+    untouched."""
+
+    brightness: float | None = None
+    saturation: float | None = None
+    for effect in clip.get("effects") or []:
+        effect_type = str((effect or {}).get("type") or "")
+        params = (effect or {}).get("params") or {}
+        if effect_type == "brightness":
+            brightness = _num(params.get("value"), 0.0)
+        elif effect_type == "saturation":
+            saturation = _num(params.get("value"), 1.0)
+    if brightness is None and saturation is None:
+        return ""
+    return (
+        f"eq=brightness={brightness if brightness is not None else 0.0:.4f}:"
+        f"saturation={saturation if saturation is not None else 1.0:.4f},"
+    )
 
 
 def _audio_fade_in_window(clip: dict[str, Any]) -> float | None:
@@ -924,11 +955,16 @@ class FFmpegLayeredRenderer:
             rotate = f"rotate=a='{rotation:.4f}*PI/180':c=none:{_box},"
         else:
             rotate = ""
+        # Flat brightness/saturation color grades reproduced via `eq` (matches
+        # OpenShot's Brightness/Saturation ranges 1:1). Applied on the rgba stream
+        # before alpha/fade so the grade affects RGB while transparency is honored.
+        # No-op string when the clip carries no color grade.
+        grade = _color_grade_filter(clip)
         # The fallback keeps graphics at native size by default. Full-frame video clips
         # can opt in later via track-specific policies in the renderer slice.
         return (
             f"[{input_index}:v]{trim}scale=iw*{scale:.4f}:ih*{scale:.4f},"
-            f"format=rgba,{alpha},{fades}{rotate}null[{label}]"
+            f"format=rgba,{grade}{alpha},{fades}{rotate}null[{label}]"
         )
 
     def _resolve_src(self, src: str) -> Path:
@@ -1092,6 +1128,34 @@ def _parse_child_render_result(stdout: str) -> dict[str, Any] | None:
     return None
 
 
+def _artifact_is_structurally_complete(path: Path) -> bool:
+    """Cheap, dependency-free integrity gate for a salvaged render artifact.
+
+    `st_size > 0` is necessary but not sufficient: a child killed mid-write (OOM,
+    SIGKILL, timeout) commonly leaves a present, non-empty, *truncated* file whose
+    container is missing the index it needs to be playable. ffmpeg writes the mp4
+    `moov` atom LAST (no faststart), so a mid-write kill leaves the `mdat` payload
+    but no `moov` -- the exact "incomplete moov atom" corruption the editorial
+    retry would otherwise silently re-use. We byte-scan for the format's terminal
+    marker rather than shelling out to ffprobe (no subprocess under render
+    concurrency, no extra dep). Unknown extensions fall back to size>0 so we never
+    falsely reject a format we don't model.
+    """
+    suffix = path.suffix.lower()
+    try:
+        if suffix in {".mp4", ".mov", ".m4v", ".m4a"}:
+            # The moov atom is small relative to the file; reading the whole thing
+            # is fine for a render artifact and avoids missing a front-faststart
+            # moov on a clean file. A truncated render simply won't contain it.
+            return b"moov" in path.read_bytes()
+        if suffix == ".png":
+            # Canonical PNG end-of-file chunk. A truncated PNG lacks it.
+            return path.read_bytes().rstrip().endswith(b"IEND\xaeB`\x82")
+    except OSError:
+        return False
+    return True
+
+
 def _render_result_artifact_exists(result: dict[str, Any]) -> bool:
     artifact = result.get("video") or result.get("frame")
     if not artifact:
@@ -1099,12 +1163,16 @@ def _render_result_artifact_exists(result: dict[str, Any]) -> bool:
     path = Path(str(artifact))
     # A non-zero child exit can leave a *present but truncated* artifact behind
     # (process killed mid-write). A zero-byte file is never a salvageable render,
-    # so don't pretend the partial mp4 is usable -- treat it as no artifact and
-    # let the caller raise a hard RenderError instead of shipping a corrupt clip.
+    # and neither is a non-zero-byte file whose container is structurally
+    # incomplete (truncated mp4 with no moov atom, half-written png). Reject both
+    # so the caller raises a hard RenderError instead of shipping a corrupt clip
+    # -- or worse, having a silent retry re-use the broken file as if finished.
     try:
-        return path.is_file() and path.stat().st_size > 0
+        if not (path.is_file() and path.stat().st_size > 0):
+            return False
     except OSError:
         return False
+    return _artifact_is_structurally_complete(path)
 
 
 def _asset_type(assets: dict[str, Any], clip: dict[str, Any]) -> str:

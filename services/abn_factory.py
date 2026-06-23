@@ -239,10 +239,13 @@ def _resolve_asset(url_or_path) -> Path:
         # "…/episode.mp4?rev=3"); the static mount ignores it, so the real file is
         # "episode.mp4". Routed through the SINGLE canonical strip so the GC scan,
         # this resolver, and the openshot_bridge compiler can never drift on the name.
-        from services.openshot_bridge import strip_cachebuster
+        from services.openshot_bridge import resolve_managed_asset
 
-        rel = strip_cachebuster(s[len(URL_PREFIX):])
-        return ASSETS / rel
+        # Containment gate: a corrupted/malicious URL like
+        # /agenticnews-assets/_shared/../../../../etc/passwd (or one whose subpath hops a
+        # planted symlink) would otherwise resolve to an out-of-tree file. resolve_managed_asset
+        # realpaths + commonpath-checks the result against ASSETS and RAISES on any escape.
+        return resolve_managed_asset(s[len(URL_PREFIX):], ASSETS)
     p = Path(s)
     if p.is_absolute():
         return p
@@ -524,6 +527,16 @@ def _set(stage, actor, detail, episode_id=None):
 # process' → the whole episode aborts. Serializing the SPAWN (not the run) fixes it without killing
 # parallelism — the slow part (process execution) still overlaps; only the brief spawn is gated.
 _SPAWN_LOCK = asyncio.Semaphore(2)
+
+
+def _nonempty(p):
+    """True iff path exists AND has bytes. ffmpeg can exit 0 yet leave a 0-byte file (disk full,
+    killed mid-flush, or a degenerate filtergraph) — a bare .exists() would pass that broken clip
+    through the compiler cascade and ship a corrupt episode. Guard size, not just presence."""
+    try:
+        return p.exists() and p.stat().st_size > 0
+    except OSError:
+        return False
 
 
 async def _sh(cmd, timeout=600):
@@ -1229,7 +1242,7 @@ async def _kinetic_insert(title, script, source_url, sid):
         return None
     # intermediate html -> per-episode scratch (reaped freely); final mp4 -> css layer
     src_html = scratch_path(sid, f"{sid}_kinetic.html")
-    src_html.write_text(html)
+    _atomic_write_text(src_html, html)
     out = asset_path_from_slug(sid, "kinetic")
     code, log = await _sh(
         f'cd {shlex.quote(str(_REPO))} && NODE_PATH=frontend/node_modules node '
@@ -1319,7 +1332,7 @@ async def _code_demo(title, brief, name):
     # write the snippet to a file and DISPLAY it with bat (syntax-highlighted) — no execution,
     # so we never get 'command not found' errors. This shows clean code, not a broken shell.
     snippet = scratch_path(name, f"{name}_snippet.py")
-    snippet.write_text("\n".join(lines) + "\n")
+    _atomic_write_text(snippet, "\n".join(lines) + "\n")
     bat = "bat" if Path("/opt/homebrew/bin/bat").exists() else "cat"
     # VHS has a path-parse bug on absolute Output, so we cd to a working dir and use a relative
     # Output, then move the result to the gateway path. snippet is shown by absolute path (bat is fine).
@@ -1329,7 +1342,7 @@ async def _code_demo(title, brief, name):
             'Type "# AgenticBuilderNews — live build"', "Enter", "Sleep 500ms",
             # type the bat command that renders the code, then run it ONCE (bat just prints, never errors)
             f'Type "{bat} --style=numbers --color=always {shlex.quote(str(snippet))}"', "Enter", "Sleep 2500ms"]
-    tape.write_text("\n".join(body) + "\n")
+    _atomic_write_text(tape, "\n".join(body) + "\n")
     # cwd = the renders/footage subdir so the relative `Output {out.name}` lands at `out`.
     code_, log = await _sh(f'cd {shlex.quote(str(workdir))} && vhs {shlex.quote(str(tape))} 2>&1', timeout=120)
     if out.exists():
@@ -1442,7 +1455,7 @@ async def _real_demo(repo_url: str, name: str):
                     if len(out_lines) >= 16:
                         break
                 if out_lines:
-                    (repo_dir / "_readme.clean.txt").write_text("\n".join(out_lines) + "\n")
+                    _atomic_write_text(repo_dir / "_readme.clean.txt", "\n".join(out_lines) + "\n")
                     readme_clean = "_readme.clean.txt"
             except Exception:
                 readme_clean = None
@@ -1472,7 +1485,7 @@ async def _real_demo(repo_url: str, name: str):
         elif readme:
             pager = "bat --style=plain --color=always --line-range :22" if shutil.which("bat") else "head -22"
             body += [f'Type "{pager} {readme}"', "Enter", "Sleep 3200ms"]
-        tape.write_text("\n".join(body) + "\n")
+        _atomic_write_text(tape, "\n".join(body) + "\n")
         # VHS runs with cwd = repo_dir, so ls/tree/git/cat all operate on the REAL cloned repo.
         # Output is relative, so we hand VHS an absolute Output by writing it as the first line and
         # moving the produced file (VHS writes Output relative to its cwd).
@@ -2706,10 +2719,18 @@ async def _render_remotion(ep_id, timeline, force=False):
         # construction — the basename fallback bypassed the store's namespace isolation. Then
         # assert containment: a corrupted/traversal musicBed value (e.g. '/agenticnews-assets/../../x')
         # must resolve INSIDE the asset store or be dropped, never read from outside the schema.
-        bedfile = _resolve_asset(bed)
+        from services.openshot_bridge import AssetTraversalError
         try:
-            bedfile.resolve().relative_to(ASSETS.resolve())
-        except ValueError:
+            bedfile = _resolve_asset(bed)
+            # Belt-and-suspenders: the gateway now raises on a traversal/absolute escape, but a
+            # bare-relative bed name can still resolve under ASSETS lexically yet escape after the
+            # OS follows symlinks — keep the realpath containment check too. Validate the REAL
+            # target (resolve() follows symlinks) is in-store, then REBIND bedfile to that resolved
+            # path so ffmpeg reads exactly what passed containment — not the unresolved symlink,
+            # which could still hop outside the store after the check.
+            bedfile = bedfile.resolve()
+            bedfile.relative_to(ASSETS.resolve())
+        except (AssetTraversalError, ValueError):
             BUS.emit("editor-agent", "error", f"musicBed escapes asset store, skipping duck: {bed!r}", episode_id=ep_id)
             bedfile = None
         if bedfile and bedfile.exists():
@@ -2849,17 +2870,19 @@ async def _assemble_episode(ep_id, segments):
                f'-vf {shlex.quote(vf)} -map 0:v -map 1:a '
                f'-c:v libx264 -pix_fmt yuv420p -c:a aac -shortest {shlex.quote(str(clip))}')
         code, log = await _sh(cmd, timeout=180)
-        if code == 0 and clip.exists():
+        if code == 0 and _nonempty(clip):
             seg_clips.append(clip)
             BUS.emit("editor-agent", "assemble.segment", f"rendered segment {i+1}/{len(segments)}",
                      episode_id=ep_id, data={"i": i})
         else:
-            # PARTIAL FAILURE: ffmpeg returned non-zero OR reported ok but wrote no clip. The old
-            # code skipped these silently, so an episode could ship with 3 of 6 segments and nothing
-            # would notice (the empty-`seg_clips` gate below only fires when EVERY segment fails).
-            # Make the drop observable so a truncated episode is never silent.
+            # PARTIAL FAILURE: ffmpeg returned non-zero, reported ok but wrote no clip, OR wrote a
+            # 0-byte clip (exit 0 + empty file — disk full / killed mid-flush). The old code skipped
+            # these silently, so an episode could ship with 3 of 6 segments — or a 0-byte segment that
+            # passed a bare .exists() check — and nothing would notice (the empty-`seg_clips` gate
+            # below only fires when EVERY segment fails). Make the drop observable so a truncated or
+            # corrupt episode is never silent.
             BUS.emit("editor-agent", "assemble.segment.failed",
-                     f"segment {i+1}/{len(segments)} dropped (code={code}, clip_exists={clip.exists()})",
+                     f"segment {i+1}/{len(segments)} dropped (code={code}, clip_ok={_nonempty(clip)})",
                      episode_id=ep_id, data={"i": i, "code": code})
     if not seg_clips:
         raise RuntimeError("no segment clips")
@@ -2873,11 +2896,12 @@ async def _assemble_episode(ep_id, segments):
     final = asset_path(ep_id, "episode")
     code, log = await _sh(
         f'ffmpeg -y -f concat -safe 0 -i {shlex.quote(str(listf))} -c copy {shlex.quote(str(final))}', timeout=180)
-    if code != 0 or not final.exists():
-        # fallback: re-encode concat
+    if code != 0 or not _nonempty(final):
+        # fallback: re-encode concat. Guard SIZE not just presence — a 0-byte final (copy-concat that
+        # exited 0 but flushed nothing) must trigger the re-encode, and a 0-byte re-encode must raise.
         code, log = await _sh(
             f'ffmpeg -y -f concat -safe 0 -i {shlex.quote(str(listf))} -c:v libx264 -pix_fmt yuv420p -c:a aac {shlex.quote(str(final))}', timeout=300)
-        if code != 0 or not final.exists():
+        if code != 0 or not _nonempty(final):
             raise RuntimeError(f"concat: {log[-200:]}")
     return _asset_url(final), await _dur(final)
 

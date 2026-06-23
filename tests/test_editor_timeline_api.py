@@ -2769,3 +2769,172 @@ def test_clip_unsplit_inner_seam_rejects_mutated_split_output():
         match="no longer matches split output",
     ):
         editor_timeline.apply_command(project, bad)
+
+
+# --- editor title-asset materialization + PNG rendering -----------------------
+# These exercise _materialize_editor_title_assets / _render_title_asset_png in
+# routers/agenticnews.py. They render real PIL images with untrusted dimension
+# and text inputs; a renderer crash escapes to a 500, so the blast radius is high
+# and previously had zero direct coverage.
+
+PIL = pytest.importorskip("PIL")
+from PIL import Image  # noqa: E402
+
+
+def _title_project(assets, *, project_id="proj", width=1920, height=1080):
+    return {
+        "projectId": project_id,
+        "width": width,
+        "height": height,
+        "assets": assets,
+    }
+
+
+def test_materialize_title_assets_renders_valid_png(monkeypatch, tmp_path):
+    monkeypatch.setattr(agenticnews_router.db, "ASSETS_DIR", tmp_path)
+    project = _title_project(
+        {
+            "t1": {
+                "id": "t1",
+                "type": "title",
+                "metadata": {
+                    "text": "Breaking news headline",
+                    "sourceUrl": "https://www.example.com/story/42",
+                },
+            }
+        }
+    )
+
+    materialized, changed = agenticnews_router._materialize_editor_title_assets(project)
+
+    assert changed is True
+    assert materialized == [
+        {
+            "type": "title",
+            "assetId": "t1",
+            "path": str(tmp_path / "editor_title_assets" / "proj_t1.png"),
+        }
+    ]
+    # The asset src is rewritten to the served URL.
+    assert project["assets"]["t1"]["src"] == (
+        "/agenticnews-assets/editor_title_assets/proj_t1.png"
+    )
+    # Version stamp recorded so re-runs are skippable.
+    assert project["metadata"]["titleAssetVersion"] == (
+        agenticnews_router.EDITOR_TITLE_ASSET_VERSION
+    )
+    # A real, openable PNG at the requested canvas size was written.
+    out = tmp_path / "editor_title_assets" / "proj_t1.png"
+    with Image.open(out) as img:
+        img.verify()
+    with Image.open(out) as img:
+        assert img.size == (1920, 1080)
+        assert img.mode == "RGBA"
+
+
+def test_materialize_title_assets_is_idempotent(monkeypatch, tmp_path):
+    monkeypatch.setattr(agenticnews_router.db, "ASSETS_DIR", tmp_path)
+    project = _title_project(
+        {"t1": {"id": "t1", "type": "title", "metadata": {"text": "Hi there"}}}
+    )
+
+    first, first_changed = agenticnews_router._materialize_editor_title_assets(project)
+    second, second_changed = agenticnews_router._materialize_editor_title_assets(project)
+
+    assert first_changed is True and first
+    # Asset already exists and version is current -> nothing re-rendered.
+    assert second_changed is False
+    assert second == []
+
+
+def test_materialize_title_assets_rerenders_on_stale_version(monkeypatch, tmp_path):
+    monkeypatch.setattr(agenticnews_router.db, "ASSETS_DIR", tmp_path)
+    project = _title_project(
+        {"t1": {"id": "t1", "type": "title", "metadata": {"text": "Hi"}}}
+    )
+    agenticnews_router._materialize_editor_title_assets(project)
+
+    # Simulate an asset rendered by an older title-asset version.
+    project["metadata"]["titleAssetVersion"] = (
+        agenticnews_router.EDITOR_TITLE_ASSET_VERSION - 1
+    )
+    materialized, changed = agenticnews_router._materialize_editor_title_assets(project)
+
+    assert changed is True
+    assert [m["assetId"] for m in materialized] == ["t1"]
+    assert project["metadata"]["titleAssetVersion"] == (
+        agenticnews_router.EDITOR_TITLE_ASSET_VERSION
+    )
+
+
+def test_materialize_title_assets_ignores_non_title_assets(monkeypatch, tmp_path):
+    monkeypatch.setattr(agenticnews_router.db, "ASSETS_DIR", tmp_path)
+    project = _title_project(
+        {
+            "v1": {"id": "v1", "type": "video", "src": "/x.mp4"},
+            "a1": {"id": "a1", "type": "audio", "src": "/x.wav"},
+        }
+    )
+
+    materialized, changed = agenticnews_router._materialize_editor_title_assets(project)
+
+    assert materialized == []
+    assert changed is False
+    assert not (tmp_path / "editor_title_assets" / "proj_v1.png").exists()
+
+
+def test_materialize_title_assets_sanitizes_unsafe_ids(monkeypatch, tmp_path):
+    monkeypatch.setattr(agenticnews_router.db, "ASSETS_DIR", tmp_path)
+    project = _title_project(
+        {"../../etc": {"id": "../../etc", "type": "title", "metadata": {"text": "x"}}},
+        project_id="proj/../id",
+    )
+
+    materialized, _ = agenticnews_router._materialize_editor_title_assets(project)
+
+    out = tmp_path / "editor_title_assets" / "proj_id_etc.png"
+    # Path is confined to the title dir; no traversal escaped.
+    assert materialized[0]["path"] == str(out)
+    assert out.exists()
+    assert tmp_path in out.parents
+
+
+@pytest.mark.parametrize("dims", [(2, 2), (1, 5000), (3840, 2160)])
+def test_render_title_png_survives_extreme_dimensions(tmp_path, dims):
+    width, height = dims
+    out = tmp_path / "card.png"
+
+    # Untrusted dimensions must not crash the renderer (would surface as a 500).
+    agenticnews_router._render_title_asset_png(
+        out, text="hello world", source_url="https://news.example.com", width=width, height=height
+    )
+
+    assert out.exists()
+    with Image.open(out) as img:
+        assert img.size == (width, height)
+
+
+def test_render_title_png_wraps_and_truncates_long_text(tmp_path):
+    out = tmp_path / "card.png"
+    long_text = " ".join(["headline"] * 40)
+
+    agenticnews_router._render_title_asset_png(
+        out, text=long_text, source_url="", width=1920, height=1080
+    )
+
+    assert out.exists()
+    with Image.open(out) as img:
+        assert img.size == (1920, 1080)
+
+
+def test_render_title_png_handles_empty_text(tmp_path):
+    out = tmp_path / "card.png"
+
+    # Empty/whitespace text must still produce a valid card, not raise.
+    agenticnews_router._render_title_asset_png(
+        out, text="   ", source_url="", width=1280, height=720
+    )
+
+    assert out.exists()
+    with Image.open(out) as img:
+        img.verify()

@@ -329,6 +329,67 @@ def test_rotation_keyframe_filtergraph_actually_renders(tmp_path):
     )
 
 
+def test_visual_filter_color_grade_emits_eq_not_dropped(tmp_path):
+    """The ticket: brightness/saturation effects are validated in the schema and
+    translated by the OpenShot bridge, but the ffmpeg fallback used to silently drop
+    them — ungraded clips shipped on the OpenShot-bindings-missing path. They must now
+    reproduce 1:1 via ffmpeg's `eq` filter (same ranges/neutrals) and NOT be reported
+    as unsupported drops."""
+    r = _renderer(tmp_path)
+    clip = {"id": "grade", "assetId": "i", "duration": 2.0, "sourceStart": 0.0,
+            "transform": {},
+            "effects": [
+                {"id": "fx_br", "type": "brightness", "params": {"value": 0.2}},
+                {"id": "fx_sat", "type": "saturation", "params": {"value": 1.5}},
+            ]}
+    out = r._visual_filter(1, clip, {"type": "image"}, "lbl", 1920, 1080)
+    assert "eq=brightness=0.2000:saturation=1.5000," in out
+    drops = editor_render._ffmpeg_unsupported_drops(clip)
+    names = {d.get("name") for d in drops}
+    assert "brightness" not in names and "saturation" not in names
+
+
+def test_visual_filter_no_color_grade_omits_eq(tmp_path):
+    """A clip with no brightness/saturation effect must NOT emit an `eq` term — the
+    common (ungraded) path stays a no-op so we don't pay a per-frame filter cost."""
+    r = _renderer(tmp_path)
+    clip = {"id": "c", "assetId": "i", "duration": 1.0, "sourceStart": 0.0,
+            "transform": {}}
+    out = r._visual_filter(1, clip, {"type": "image"}, "lbl", 1920, 1080)
+    assert "eq=" not in out
+
+
+def test_visual_filter_single_color_property_uses_neutral_for_other(tmp_path):
+    """A clip carrying only brightness must leave saturation at eq's neutral (1.0)
+    and vice versa — applying one grade must not accidentally desaturate the clip."""
+    r = _renderer(tmp_path)
+    clip = {"id": "c", "assetId": "i", "duration": 1.0, "sourceStart": 0.0,
+            "transform": {},
+            "effects": [{"id": "fx_br", "type": "brightness", "params": {"value": -0.3}}]}
+    out = r._visual_filter(1, clip, {"type": "image"}, "lbl", 1920, 1080)
+    assert "eq=brightness=-0.3000:saturation=1.0000," in out
+
+
+def test_color_grade_filtergraph_actually_renders(tmp_path):
+    """End-to-end: a brightness+saturation grade must produce a filtergraph ffmpeg
+    accepts and a real output file, with no dropped-effect warning. Proves the `eq`
+    placement on the rgba stream is a valid chain (string-only asserts can't)."""
+    card = _solid_png(tmp_path / "card.png", "white", size="16x16")
+    project = _project_with_card("grade_anim", card, x=0.5)
+    project["clips"]["card_clip"]["effects"] = [
+        {"id": "fx_br", "type": "brightness", "params": {"value": 0.3}},
+        {"id": "fx_sat", "type": "saturation", "params": {"value": 0.5}},
+    ]
+    renderer = editor_render.FFmpegLayeredRenderer(tmp_path / "renders")
+    result = renderer.render(project, output_path=tmp_path / "renders" / "grade.mp4")
+    out = Path(result["video"])
+    assert out.exists() and out.stat().st_size > 0
+    assert not any(
+        w.get("name") in {"brightness", "saturation"}
+        for w in (result.get("warnings") or [])
+    )
+
+
 # --- direct unit tests for _build_video_command (no ffmpeg execution) ---
 
 def test_build_video_command_loops_image_over_black_base(tmp_path):
@@ -956,14 +1017,13 @@ def test_bake_fade_with_no_existing_opacity_is_plain_ramp():
 
 
 def test_ffmpeg_fallback_warns_on_dropped_effects_and_keyframes(tmp_path):
-    """The ffmpeg fallback can't composite crossfade/color effects or keyframe
-    envelopes (OpenShot-only). It must SURFACE that as a structured warning, not
-    drop them in silence — that silent drop was the bug this slice fixes."""
+    """The ffmpeg fallback can't composite crossfade or keyframe envelopes
+    (OpenShot-only). It must SURFACE that as a structured warning, not drop them
+    in silence — that silent drop was the bug this slice fixes."""
     red = _solid_png(tmp_path / "red.png", "red")
     project = _project_with_card("warn_fixture", red, x=0.0)
     project["clips"]["card_clip"]["effects"] = [
         {"id": "fx_cf", "type": "crossfade", "params": {"duration": 0.3}},
-        {"id": "fx_br", "type": "brightness", "params": {"value": 0.2}},
     ]
     project["clips"]["card_clip"]["keyframes"] = [
         # scale envelopes stay OpenShot-only (an animated scale re-times
@@ -979,7 +1039,6 @@ def test_ffmpeg_fallback_warns_on_dropped_effects_and_keyframes(tmp_path):
     assert Path(result["video"]).exists()  # still renders
     names = {(w["kind"], w["name"]) for w in result["warnings"]}
     assert ("effect", "crossfade") in names
-    assert ("effect", "brightness") in names
     assert ("keyframe", "scale") in names
     # frame previews carry the same warning contract. Preview INSIDE the crossfade's
     # [0, 0.3] window (at=0.1) — at a later frame the front trim correctly drops the
@@ -1303,6 +1362,50 @@ def test_choose_renderer_stamps_backend_health_and_warnings_on_ffmpeg_fallback(m
     assert result["backendHealth"]["preferred"] == "openshot"
     assert "Python bindings not importable" in result["backendHealth"]["reason"]
     assert "warnings" in result  # uniform contract regardless of backend
+
+
+def test_bridgeless_fallback_render_downgrades_and_lists_effect_dropoffs(monkeypatch, tmp_path):
+    """End-to-end: with OpenShot unavailable, a SINGLE render through
+    choose_renderer must (1) take the ffmpeg fallback's _ffmpeg_unsupported_drops
+    path, (2) mark backendHealth.downgraded=True, and (3) surface the crossfade +
+    keyframe drops on the SAME result. The existing health-stamp test renders a plain
+    card whose warnings list is empty, so it never proves the downgrade and the
+    effect-dropoff visibility co-occur — an editor could ship an episode that silently
+    lost a crossfade while believing the warnings list would have caught it."""
+    monkeypatch.setattr(
+        editor_render,
+        "detect_render_backends",
+        lambda: {
+            "openshot": {"available": False, "preferred": True, "reason": "Python bindings not importable"},
+            "ffmpeg": {"available": True, "preferred": False, "reason": "available"},
+        },
+    )
+    image = _solid_png(tmp_path / "still.png", "blue")
+    project = _project_with_card("dropoff", image)
+    project["clips"]["card_clip"]["effects"] = [
+        {"id": "fx_cf", "type": "crossfade", "params": {"duration": 0.3}},
+    ]
+    project["clips"]["card_clip"]["keyframes"] = [
+        {"property": "scale", "points": [
+            {"t": 0.0, "value": 0.5, "interp": "linear"},
+            {"t": 1.0, "value": 1.0, "interp": "linear"},
+        ]},
+    ]
+
+    renderer = editor_render.choose_renderer(tmp_path / "renders", asset_root=tmp_path)
+    assert renderer.backend == "ffmpeg"
+    result = renderer.render(project, start=0, duration=0.5)
+
+    # (2) silent downgrade is made visible
+    assert result["backendHealth"]["downgraded"] is True
+    assert result["backendHealth"]["selected"] == "ffmpeg"
+    assert result["backendHealth"]["preferred"] == "openshot"
+    # (1)+(3) the dropoff path ran and named what the fallback could not honor —
+    # on the SAME degraded render, not a separate fixture.
+    names = {(w["kind"], w["name"]) for w in result["warnings"]}
+    assert ("effect", "crossfade") in names
+    assert ("keyframe", "scale") in names
+    assert Path(result["video"]).exists()  # still ships an artifact, just a flagged one
 
 
 class _FakeInner:
@@ -1654,7 +1757,10 @@ def test_find_spec_exception_surfaces_as_ffmpeg_fallback_through_choose_renderer
 def test_openshot_subprocess_renderer_salvages_result_from_native_child_exit(monkeypatch, tmp_path):
     output = tmp_path / "renders" / "window.mp4"
     output.parent.mkdir()
-    output.write_bytes(b"rendered")
+    # Structurally-complete enough to pass the salvage integrity gate: a real
+    # render's container carries a `moov` atom. (A child can exit non-zero AFTER
+    # finishing the write -- e.g. a crash during teardown.)
+    output.write_bytes(b"\x00\x00\x00\x14ftypmp42moov\x00rendered")
 
     class Completed:
         returncode = -11
@@ -1712,7 +1818,7 @@ def test_render_result_artifact_exists_rejects_empty_and_missing(tmp_path):
     """The salvage gate distinguishes a usable artifact (present, non-empty) from
     a corrupt one (missing, or present-but-zero-byte)."""
     good = tmp_path / "good.mp4"
-    good.write_bytes(b"rendered")
+    good.write_bytes(b"\x00\x00\x00\x14ftypmp42moov\x00rendered")
     empty = tmp_path / "empty.mp4"
     empty.write_bytes(b"")
 
@@ -1721,6 +1827,39 @@ def test_render_result_artifact_exists_rejects_empty_and_missing(tmp_path):
     assert editor_render._render_result_artifact_exists({"video": str(empty)}) is False
     assert editor_render._render_result_artifact_exists({"video": str(tmp_path / "nope.mp4")}) is False
     assert editor_render._render_result_artifact_exists({}) is False
+
+
+def test_render_result_artifact_exists_rejects_truncated_nonzero_mp4(tmp_path):
+    """The ticket's core gap: a child killed mid-write (OOM / SIGKILL / timeout)
+    leaves a *present, non-zero-byte, but truncated* mp4 -- bytes on disk but no
+    `moov` atom (ffmpeg writes moov last). size>0 alone would wave it through and
+    a silent retry would re-use the corrupt file. The salvage gate must reject it.
+    """
+    truncated = tmp_path / "truncated.mp4"
+    # Non-empty: just the leading ftyp/mdat payload, killed before the trailing
+    # moov atom was written. This is exactly what a SIGKILL'd render leaves behind.
+    truncated.write_bytes(b"\x00\x00\x00\x18ftypmp42" + b"\xde\xad\xbe\xef" * 64)
+    assert truncated.stat().st_size > 0  # would pass the OLD size-only gate
+    assert editor_render._render_result_artifact_exists({"video": str(truncated)}) is False
+
+    # A complete render (carries moov) is still accepted.
+    complete = tmp_path / "complete.mp4"
+    complete.write_bytes(b"\x00\x00\x00\x18ftypmp42" + b"data" * 16 + b"moov" + b"\x00" * 8)
+    assert editor_render._render_result_artifact_exists({"video": str(complete)}) is True
+
+    # Truncated png (no IEND trailer) is rejected; complete png accepted.
+    bad_png = tmp_path / "bad.png"
+    bad_png.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 32)
+    assert editor_render._render_result_artifact_exists({"frame": str(bad_png)}) is False
+    good_png = tmp_path / "good.png"
+    good_png.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 32 + b"IEND\xaeB`\x82")
+    assert editor_render._render_result_artifact_exists({"frame": str(good_png)}) is True
+
+    # Unknown extension: keep the lenient size>0 contract (don't false-reject
+    # a format we don't model).
+    other = tmp_path / "clip.webm"
+    other.write_bytes(b"anything")
+    assert editor_render._render_result_artifact_exists({"video": str(other)}) is True
 
 
 def test_open_shot_audio_mux_keeps_later_timeline_audio_clips(tmp_path):
