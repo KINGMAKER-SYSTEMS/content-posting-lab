@@ -3433,7 +3433,20 @@ def _old_episode_renders():
     low-disk trim may tombstone — never a flat glob, never a symlink, never a non-render file, and
     never a reserved-top dir (`_shared`/`_scratch`/`_published`/`_trash`): those start with `_`, and
     a tombstoned render that landed at `_trash/<ep>/renders/episode.mp4` must not be re-enumerated and
-    re-trimmed. This keeps the enumerator in lockstep with tombstone_render()'s own `_`-prefix guard."""
+    re-trimmed. This keeps the enumerator in lockstep with tombstone_render()'s own `_`-prefix guard.
+
+    STRUCTURAL FAIL-SAFE (this ticket): this enumerator IS the trim-candidate source — anything it
+    returns is a render some caller is about to tombstone. The "skip the trim on an incomplete
+    protection scan" rule has lived only in the CALLERS (purge_disk / _gc_segments), so a FUTURE
+    caller that iterates these renders without re-checking `complete` would silently reignite the
+    render-loss bug. Move the guard to the source: if the Editor Bay protection scan is incomplete
+    (an unreadable timeline JSON, a denied/errored glob) we DON'T know what's still referenced, so we
+    return ZERO trim candidates. No render can be enumerated for tombstoning while the scan is blind —
+    the fail-safe is now impossible to bypass by forgetting the caller-side `complete` check, and it
+    is purely additive to the existing callers (which already short-circuit before reaching here on an
+    incomplete scan, so no behavior they rely on changes)."""
+    if not _editor_timeline_asset_paths_checked()[1]:
+        return []
     out = []
     try:
         for child in ASSETS.iterdir():

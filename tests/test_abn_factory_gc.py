@@ -1479,6 +1479,28 @@ def test_purge_disk_still_trims_when_protection_scan_is_complete(store, monkeypa
     )
 
 
+def test_old_episode_renders_returns_nothing_when_protection_scan_incomplete(store):
+    """STRUCTURAL FAIL-SAFE (this ticket): the enumerator that feeds the destructive render trim is
+    itself the chokepoint, not just the callers. A FUTURE caller that iterates _old_episode_renders()
+    and tombstones each result — WITHOUT re-checking the protection-scan `complete` flag — would
+    reignite the render-loss bug the caller-side guards currently prevent. So the guard now lives at
+    the source: with an unreadable timeline JSON (incomplete scan), the enumerator yields ZERO
+    candidates, so no caller (present or future) can ever get a render to tombstone while the scan is
+    blind. This pins that contract directly, independent of any caller's discipline."""
+    _render(store, "ep_struct0", age_s=9000)
+    _render(store, "ep_struct1", age_s=10)
+    # With a CLEAN (complete) scan the enumerator returns the real renders...
+    assert len(abn_factory._old_episode_renders()) == 2
+
+    # ...but a broken timeline → incomplete scan → the trim-candidate source goes EMPTY.
+    (store / "editor_timelines" / "broken.json").write_text("{ not json at all")
+    assert abn_factory._old_episode_renders() == [], (
+        "_old_episode_renders() handed out trim candidates during an incomplete protection scan — a "
+        "future caller iterating these would tombstone a render the blind scan couldn't confirm is "
+        "unreferenced; the fail-safe must be structural at the enumerator, not only in the callers"
+    )
+
+
 def test_purge_disk_scratch_reap_survives_protection_check_raising(store, monkeypatch):
     """A protection check that RAISES mid-loop (e.g. stat/normalize blowing up on one path) must not
     crash purge_disk or cause it to delete the file it failed to classify — the file is left intact
