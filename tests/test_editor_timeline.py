@@ -197,6 +197,87 @@ def test_import_synthesizes_crossfade_from_shot_transition_for_openshot():
     assert fx["duration"]["Points"][0]["co"]["Y"] == 0.4
 
 
+def test_crossfade_overlaps_incoming_clip_onto_previous_for_real_dissolve():
+    """A synthesized boundary crossfade is a start-anchored Fade-`in` on the incoming
+    clip. ABN shots are laid back-to-back and a following `artifact`/`card`/`hook`
+    shot lands on a DIFFERENT track (graphics_1) than a preceding video shot
+    (video_1). Without temporal overlap the fade-in has no pixels beneath it, so
+    OpenShot composites against nothing and the transition renders as a
+    fade-from-black (or nothing at all on a higher track). The import must pull the
+    incoming clip earlier by the transition duration so it plays over the outgoing
+    clip's tail and the fade reads as a true dissolve."""
+    abn = {
+        "episodeId": "ep_overlap",
+        "segments": [{
+            "segmentId": "s0",
+            "durationSec": 6.0,
+            "shots": [
+                # Outgoing: a video shot on video_1, source seeked to 1.0.
+                {"id": "a", "src": "/agenticnews-assets/a.mp4", "startSec": 0.0,
+                 "durationSec": 3.0, "type": "remotion", "clipStartSec": 1.0},
+                # Incoming: a graphics shot on graphics_1, butting up at t=3.0, with a
+                # 0.5s boundary crossfade. It must slide back to overlap shot a.
+                {"id": "b", "src": "/agenticnews-assets/b.mp4", "startSec": 3.0,
+                 "durationSec": 3.0, "type": "remotion", "clipStartSec": 2.0,
+                 "transitionSec": 0.5},
+            ],
+        }],
+    }
+    project = timeline.project_from_abn_timeline("proj_overlap", abn)
+
+    def clip_for(src):
+        asset_id = next(a["id"] for a in project["assets"].values() if a["src"] == src)
+        return next(c for c in project["clips"].values() if c["assetId"] == asset_id)
+
+    a, b = clip_for("/agenticnews-assets/a.mp4"), clip_for("/agenticnews-assets/b.mp4")
+    # Outgoing clip is untouched: still ends at 3.0.
+    assert a["start"] == 0.0 and a["duration"] == 3.0
+    # Incoming clip slid back by the 0.5s crossfade so it overlaps shot a's tail.
+    assert b["start"] == 2.5, "incoming clip must start 0.5s before the boundary"
+    # Out-point is preserved (start + duration unchanged at 6.0): duration grew by 0.5.
+    assert b["start"] + b["duration"] == 6.0
+    assert b["duration"] == 3.5
+    # sourceStart pulled back by the overlap so the same frames play (2.0 - 0.5).
+    assert b["sourceStart"] == 1.5
+    # The crossfade effect itself is preserved at its authored duration.
+    xf = [e for e in b["effects"] if e["type"] == "crossfade"]
+    assert len(xf) == 1 and xf[0]["params"]["duration"] == 0.5
+    # There is now genuine temporal overlap for OpenShot to composite the fade over.
+    assert b["start"] < a["start"] + a["duration"]
+
+
+def test_crossfade_overlap_clamped_to_source_head_and_previous_tail():
+    """The slide-back is clamped so it never seeks before the incoming clip's first
+    source frame (sourceStart floors at 0) nor consumes more than the outgoing clip's
+    full duration. A clip already at source frame 0 still overlaps on the timeline
+    (its opening frames play during the dissolve) but sourceStart stays 0."""
+    abn = {
+        "episodeId": "ep_clamp",
+        "segments": [{
+            "segmentId": "s0",
+            "durationSec": 5.0,
+            "shots": [
+                # Short outgoing clip (0.3s) — overlap can't exceed its duration.
+                {"id": "a", "src": "/agenticnews-assets/a.mp4", "startSec": 0.0,
+                 "durationSec": 0.3, "type": "remotion"},
+                # Incoming clip at source frame 0 with a 1.0s crossfade.
+                {"id": "b", "src": "/agenticnews-assets/b.mp4", "startSec": 0.3,
+                 "durationSec": 2.0, "type": "remotion", "clipStartSec": 0.0,
+                 "transitionSec": 1.0},
+            ],
+        }],
+    }
+    project = timeline.project_from_abn_timeline("proj_clamp", abn)
+    b = next(c for c in project["clips"].values()
+             if c["assetId"] == next(a["id"] for a in project["assets"].values()
+                                     if a["src"] == "/agenticnews-assets/b.mp4"))
+    # Overlap clamped to the outgoing clip's 0.3s duration, not the 1.0s transition.
+    assert b["start"] == 0.0
+    assert b["duration"] == 2.3
+    # sourceStart cannot go negative — floors at 0 even though we slid back 0.3s.
+    assert b["sourceStart"] == 0.0
+
+
 def test_music_bed_imports_pre_ducked_under_vo():
     """The music bed must import ducked (0.22, the factory convention) so a render has
     music UNDER the VO, not competing with it at full volume. VO stays at 1.0."""

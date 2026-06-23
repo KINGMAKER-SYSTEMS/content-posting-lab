@@ -101,6 +101,14 @@ def project_from_abn_timeline(
         "source": "abn_timeline",
     }
     cursor = 0.0
+    # Tail of the previous VISUAL clip (start, end, source_start, duration). A
+    # synthesized boundary crossfade is a start-anchored fade-in on the incoming
+    # clip; for it to read as a DISSOLVE rather than a fade-from-black, the incoming
+    # clip must temporally overlap the outgoing one so there are real pixels beneath
+    # the ramp. ABN shots are laid back-to-back and often on different tracks
+    # (video_1 vs graphics_1), so without this overlap the crossfade composites
+    # against nothing and OpenShot renders no transition. See _overlap_crossfade.
+    prev_visual: dict[str, float] | None = None
     for seg_index, segment in enumerate(abn_timeline.get("segments") or []):
         segment_id = segment.get("segmentId") or f"s{seg_index}"
         duration = float(segment.get("durationSec") or 0)
@@ -136,11 +144,23 @@ def project_from_abn_timeline(
             # metadata.shot for lossless re-import; this just wires it through so
             # factory crossfades and Ken-Burns reach OpenShot without an extra edit.
             clip["effects"] = _shot_effects(shot)
+            # If this clip carries a synthesized boundary crossfade, pull its start
+            # back to overlap the previous visual clip's tail so the fade-in has
+            # pixels to dissolve over. Mutates clip start/duration/sourceStart in
+            # place and (since duration may grow) is applied before keyframes, which
+            # are spread across the final clip_duration.
+            clip_duration = _overlap_crossfade(clip, prev_visual)
             clip["keyframes"] = _merge_keyframes(
                 _ken_burns_keyframes(shot.get("kenBurns"), clip_duration),
                 _shot_keyframes(shot),
             )
             project["clips"][clip_id] = clip
+            if kind != "audio":
+                prev_visual = {
+                    "start": clip["start"],
+                    "end": clip["start"] + clip["duration"],
+                    "duration": clip["duration"],
+                }
 
         vo = ((segment.get("audio") or {}).get("vo") or {})
         if vo.get("src"):
@@ -423,6 +443,67 @@ def _shot_effects(shot: dict[str, Any]) -> list[dict[str, Any]]:
             except (CommandValidationError, TypeError, ValueError):
                 pass
     return out
+
+
+def _crossfade_duration(clip: dict[str, Any]) -> float:
+    """Longest synthesized/explicit crossfade duration on a clip, else 0.0."""
+    durations = [
+        _safe_param_float(e.get("params", {}).get("duration"))
+        for e in clip.get("effects") or []
+        if e.get("type") == "crossfade"
+    ]
+    return max([d for d in durations if d > 0], default=0.0)
+
+
+def _safe_param_float(value: Any) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _overlap_crossfade(
+    clip: dict[str, Any], prev_visual: dict[str, float] | None
+) -> float:
+    """Slide a clip back so its start-anchored crossfade overlaps the previous clip.
+
+    ABN shots are laid back-to-back, so a synthesized boundary crossfade (a Fade-`in`
+    on this clip) has nothing beneath it to dissolve from and renders as a
+    fade-from-black — or, when the outgoing clip is on a different track (video_1 vs
+    graphics_1), as no visible transition at all because OpenShot has no overlapping
+    pixels to composite. NLEs implement a crossfade as exactly this overlap: pull the
+    incoming clip earlier by the transition duration so it plays over the outgoing
+    clip's tail while fading up.
+
+    Mutates ``clip`` in place: moves ``start`` earlier, grows ``duration`` so the
+    out-point is unchanged, and pulls ``sourceStart`` back so the same media frames
+    play. The overlap is clamped to (a) the crossfade duration, (b) the previous
+    clip's available tail, and (c) the room left in this clip's source head
+    (``sourceStart``) so we never seek before frame 0. Returns the (possibly grown)
+    clip duration so the caller spreads keyframes across the right span. A no-op
+    (returns the original duration) when there's no crossfade or no previous clip.
+    """
+    transition = _crossfade_duration(clip)
+    if transition <= 0 or not prev_visual:
+        return float(clip["duration"])
+    # Only dissolve across an adjacent boundary. If this clip already overlaps the
+    # previous one (gap < 0) or there's black space between them (gap > 0), leave the
+    # authored layout alone — sliding into a gap wouldn't give the fade real pixels
+    # to composite against, and pulling apart an existing overlap would corrupt it.
+    gap = float(clip["start"]) - float(prev_visual["end"])
+    if abs(gap) > 1e-6:
+        return float(clip["duration"])
+    # Overlap = the crossfade duration, clamped so we never consume more of the
+    # outgoing clip than its tail has. The incoming clip starts earlier on the
+    # timeline and its opening source frames play during the dissolve; sourceStart is
+    # pulled back only as far as frame 0 (you can't seek before the media starts).
+    overlap = min(transition, float(prev_visual["duration"]))
+    if overlap <= 1e-6:
+        return float(clip["duration"])
+    clip["start"] = float(clip["start"]) - overlap
+    clip["duration"] = float(clip["duration"]) + overlap
+    clip["sourceStart"] = max(0.0, float(clip["sourceStart"]) - overlap)
+    return float(clip["duration"])
 
 
 def _ken_burns_keyframes(ken_burns: Any, duration: float) -> list[dict[str, Any]]:
