@@ -607,6 +607,7 @@ def _assemble_final_cmd(
 def _run_render_v2(job_id: str, body: RenderV2Request):
     """Synchronous V2 render — runs in thread pool."""
     tmp_dir = None
+    output_path: Path | None = None
     try:
         jobs[job_id] = {"status": "running", "progress": 5, "message": "Preparing..."}
 
@@ -686,6 +687,14 @@ def _run_render_v2(job_id: str, body: RenderV2Request):
 
     except Exception as e:
         jobs[job_id] = {"status": "error", "progress": 0, "message": str(e)}
+        # Remove any partial/corrupt final video ffmpeg left in the persistent
+        # output dir (the finally block only cleans tmp). A failed assembly
+        # pass can leave a half-written mp4 that would otherwise look valid.
+        if output_path is not None:
+            try:
+                output_path.unlink(missing_ok=True)
+            except OSError:
+                pass
     finally:
         if tmp_dir:
             safe_rmtree(tmp_dir)

@@ -2656,6 +2656,78 @@ def test_clip_effect_commands_reject_bad_type_params_and_duplicates(tmp_path):
     assert store.load("proj_effects_bad")["revision"] == 3
 
 
+def test_clip_effect_commands_reject_non_object_params_and_revalidate_updates(tmp_path):
+    """Two effect-validation paths the bad-type/duplicate test misses:
+
+    1. A non-dict `params` payload hits `_validated_effect`'s "effect params must be
+       an object" guard (distinct from the "unsupported effect params" unknown-key
+       path) — for add AND update.
+    2. `clip.effect.update` runs the replacement effect through `_validated_effect`
+       *before* the existence check, so updating an EXISTING effect with an
+       out-of-bounds param is rejected (not silently swapped in). None of the prior
+       tests exercise a bad-bounds payload on the update op.
+
+    Every rejected command must leave the project revision and stored effect untouched.
+    """
+    store = timeline.TimelineStore(tmp_path)
+    _seed_project_with_clip(store, "proj_effects_revalidate")  # revision 2
+
+    # params as a list/string rather than an object — rejected on add.
+    with pytest.raises(timeline.CommandValidationError, match="effect params must be an object"):
+        store.apply_command(
+            "proj_effects_revalidate",
+            {
+                "op": "clip.effect.add",
+                "actor": "agent",
+                "expectedRevision": 2,
+                "payload": {"clipId": "c1", "id": "fx", "type": "fadeIn", "params": ["duration", 1]},
+            },
+        )
+
+    # Land one good effect so the update path has a real target to revalidate against.
+    project = store.apply_command(
+        "proj_effects_revalidate",
+        {
+            "op": "clip.effect.add",
+            "actor": "agent",
+            "expectedRevision": 2,
+            "payload": {"clipId": "c1", "id": "fx_b", "type": "brightness", "params": {"value": 0.2}},
+        },
+    )
+    assert project["revision"] == 3
+
+    # Updating the EXISTING effect with an out-of-bounds value is rejected (the update
+    # op revalidates the replacement, not just its existence).
+    with pytest.raises(timeline.CommandValidationError, match="effect.value must be between"):
+        store.apply_command(
+            "proj_effects_revalidate",
+            {
+                "op": "clip.effect.update",
+                "actor": "agent",
+                "expectedRevision": 3,
+                "payload": {"clipId": "c1", "id": "fx_b", "type": "brightness", "params": {"value": 9}},
+            },
+        )
+
+    # Updating the existing effect with non-object params is likewise rejected.
+    with pytest.raises(timeline.CommandValidationError, match="effect params must be an object"):
+        store.apply_command(
+            "proj_effects_revalidate",
+            {
+                "op": "clip.effect.update",
+                "actor": "agent",
+                "expectedRevision": 3,
+                "payload": {"clipId": "c1", "id": "fx_b", "type": "brightness", "params": "0.2"},
+            },
+        )
+
+    # State is intact: revision held at 3 and the original effect value survived.
+    reloaded = store.load("proj_effects_revalidate")
+    assert reloaded["revision"] == 3
+    fx = [e for e in reloaded["clips"]["c1"]["effects"] if e["id"] == "fx_b"]
+    assert fx and fx[0]["params"]["value"] == 0.2
+
+
 def test_clip_keyframes_command_rejects_bad_property_and_interp(tmp_path):
     store = timeline.TimelineStore(tmp_path)
     _project_with_bed_clip(store, "proj_keyframes_bad")

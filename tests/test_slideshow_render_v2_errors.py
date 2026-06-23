@@ -130,6 +130,60 @@ def test_ffmpeg_failure_at_each_phase(
     _assert_tmp_cleaned(track_tmp)
 
 
+def test_block1_failure_cascades_skip_block2_and_assembly(
+    patched_dirs, track_tmp, monkeypatch
+):
+    """Block 1 failure must short-circuit: Block 2 and Assembly never shell out."""
+    seen = {"block1": False, "block2": False, "assembly": False}
+
+    def fake_run(cmd, *a, **k):
+        joined = " ".join(str(c) for c in cmd)
+        if joined.endswith("block1.mp4"):
+            seen["block1"] = True
+            return _FakeCompleted(1, b"block1-boom")
+        if joined.endswith("block2.mp4"):
+            seen["block2"] = True
+        else:
+            seen["assembly"] = True
+        return _FakeCompleted(0)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    job_id = "job-cascade"
+    _run_render_v2(job_id, _make_body())
+
+    assert jobs[job_id]["status"] == "error"
+    assert "Block 1 FFmpeg failed" in jobs[job_id]["message"]
+    assert seen["block1"] is True
+    assert seen["block2"] is False, "Block 2 ran after Block 1 failed"
+    assert seen["assembly"] is False, "Assembly ran after Block 1 failed"
+    _assert_tmp_cleaned(track_tmp)
+
+
+def test_assembly_failure_removes_partial_output(
+    patched_dirs, track_tmp, monkeypatch
+):
+    """A failed assembly pass must not leave a partial mp4 in the output dir."""
+    output_file = patched_dirs["output"] / "slideshow_job-orph.mp4"
+
+    def fake_run(cmd, *a, **k):
+        joined = " ".join(str(c) for c in cmd)
+        if "concat=n=2" in joined:  # the assembly pass
+            output_file.write_bytes(b"partial-corrupt-mp4")  # ffmpeg half-wrote it
+            return _FakeCompleted(1, b"assembly-boom")
+        return _FakeCompleted(0)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    job_id = "job-orph"
+    _run_render_v2(job_id, _make_body())
+
+    assert jobs[job_id]["status"] == "error"
+    assert "Assembly FFmpeg failed" in jobs[job_id]["message"]
+    assert not output_file.exists(), "partial output mp4 left orphaned on disk"
+    _assert_tmp_cleaned(track_tmp)
+
+
 def test_success_path_records_complete_and_cleans_tmp(
     patched_dirs, track_tmp, monkeypatch
 ):

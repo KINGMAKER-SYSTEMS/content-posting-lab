@@ -4556,3 +4556,270 @@ def test_start_factory_aborts_when_vo_gate_fails(monkeypatch):
 
     asyncio.run(_run())
     assert scheduled == [], "factory loop was scheduled despite the VO gate failing"
+
+
+# ---------------- _fetch_source_text: URL parsing / fetch-failure edge cases ----------------
+#
+# _fetch_source_text grounds the researcher in REAL source facts; if it silently returns ""
+# on every failure path, script briefs ship with no source numbers (the vague-script root cause
+# the function exists to fix). The function has 6 exception handlers and several branches; these
+# pin each one. Every test is offline: urllib.request.urlopen is monkeypatched.
+
+import io
+import urllib.request as _urlreq
+
+
+class _FakeResp:
+    """Minimal context-manager stand-in for an http.client.HTTPResponse."""
+    def __init__(self, body: bytes):
+        self._buf = io.BytesIO(body)
+    def read(self, n=-1):
+        return self._buf.read(n)
+    def __enter__(self):
+        return self
+    def __exit__(self, *a):
+        return False
+
+
+def _patch_urlopen(monkeypatch, handler):
+    """handler(url_or_req, timeout=...) -> _FakeResp, or raises to simulate a fetch failure."""
+    def _fake(url_or_req, timeout=None):
+        url = url_or_req.full_url if hasattr(url_or_req, "full_url") else url_or_req
+        return handler(url)
+    monkeypatch.setattr(_urlreq, "urlopen", _fake)
+
+
+def test_fetch_source_text_empty_url_returns_empty():
+    assert abn_factory._fetch_source_text("") == ""
+    assert abn_factory._fetch_source_text(None) == ""
+
+
+def test_fetch_source_text_github_readme_strips_markup_and_truncates(monkeypatch):
+    """A GitHub URL must resolve to the raw README, strip badges/images/HTML, and respect `limit`."""
+    readme = (
+        "![badge](https://img.shields.io/x)\n"
+        "[![ci](https://x/ci.svg)](https://x/ci)\n"
+        "<h1>CoolTool</h1>\n"
+        "Processes 40000 tokens/sec on a single GPU.\n\n\n\n"
+        "Heavy details. " + ("X" * 5000)
+    )
+
+    def handler(url):
+        # only the first branch/filename combo (main/README.md) should be hit and succeed
+        assert url == "https://raw.githubusercontent.com/acme/cooltool/main/README.md"
+        return _FakeResp(readme.encode())
+
+    _patch_urlopen(monkeypatch, handler)
+    out = abn_factory._fetch_source_text("https://github.com/acme/cooltool", limit=120)
+    assert out  # not silently empty
+    assert "40000 tokens/sec" in out
+    assert "img.shields.io" not in out and "ci.svg" not in out  # badges/images gone
+    assert "<h1>" not in out and "</h1>" not in out             # html tags gone
+    assert len(out) <= 120                                       # truncated to limit
+
+
+def test_fetch_source_text_github_strips_dot_git_suffix(monkeypatch):
+    """`.git` must be trimmed from the repo name when building the raw README URL."""
+    seen = []
+
+    def handler(url):
+        seen.append(url)
+        raise OSError("404")  # force it to exhaust branches/filenames, then fall through
+
+    _patch_urlopen(monkeypatch, handler)
+    abn_factory._fetch_source_text("https://github.com/acme/cooltool.git")
+    raw_urls = [u for u in seen if "raw.githubusercontent.com" in u]
+    assert raw_urls and all("cooltool.git" not in u for u in raw_urls)
+    assert "https://raw.githubusercontent.com/acme/cooltool/main/README.md" in raw_urls
+
+
+def test_fetch_source_text_github_tries_master_when_main_missing(monkeypatch):
+    """README on a `master`-default repo must still be found after `main` 404s."""
+    def handler(url):
+        if "/master/README.md" in url:
+            return _FakeResp(b"Real master README with the number 9000.")
+        raise OSError("404 on main")
+
+    _patch_urlopen(monkeypatch, handler)
+    out = abn_factory._fetch_source_text("https://github.com/acme/cooltool")
+    assert "9000" in out
+
+
+def test_fetch_source_text_github_all_readmes_fail_falls_back_to_page(monkeypatch):
+    """If every raw-README candidate fails, the inner handler must not abort the whole fetch —
+    it falls through to the generic-page path (which here serves the github.com HTML)."""
+    def handler(url):
+        if "raw.githubusercontent.com" in url:
+            raise OSError("readme gone")
+        # the generic page fetch of the original github.com URL
+        return _FakeResp(b"<html><body><script>junk()</script><p>Page fact: 12 stars.</p></body></html>")
+
+    _patch_urlopen(monkeypatch, handler)
+    out = abn_factory._fetch_source_text("https://github.com/acme/cooltool")
+    assert "Page fact: 12 stars." in out
+    assert "junk()" not in out  # script stripped
+
+
+def test_fetch_source_text_github_blank_readme_skips_to_next_candidate(monkeypatch):
+    """A README that exists but is whitespace-only must be skipped, not returned as a 'success'."""
+    def handler(url):
+        if "/main/README.md" in url:
+            return _FakeResp(b"   \n\n  ")  # blank -> must continue
+        if "/main/readme.md" in url:
+            return _FakeResp(b"Lowercase readme has the real spec: 256k context.")
+        raise OSError("nope")
+
+    _patch_urlopen(monkeypatch, handler)
+    out = abn_factory._fetch_source_text("https://github.com/acme/cooltool")
+    assert "256k context" in out
+
+
+def test_fetch_source_text_generic_page_strips_tags_and_truncates(monkeypatch):
+    """A non-GitHub URL strips script/style/nav/footer/header, collapses whitespace, truncates."""
+    html = (
+        b"<html><head><style>.x{color:red}</style></head><body>"
+        b"<nav>menu menu</nav><header>top</header>"
+        b"<p>Launches    at    99   dollars.</p>"
+        b"<footer>copyright</footer><script>track()</script></body></html>"
+    )
+    _patch_urlopen(monkeypatch, lambda url: _FakeResp(html))
+    out = abn_factory._fetch_source_text("https://example.com/post", limit=2500)
+    assert "Launches at 99 dollars." in out  # whitespace collapsed
+    assert "menu" not in out and "copyright" not in out and "track()" not in out
+    assert ".x{color:red}" not in out
+
+
+def test_fetch_source_text_generic_page_respects_limit(monkeypatch):
+    body = b"<p>" + (b"word " * 5000) + b"</p>"
+    _patch_urlopen(monkeypatch, lambda url: _FakeResp(body))
+    out = abn_factory._fetch_source_text("https://example.com/long", limit=200)
+    assert len(out) <= 200
+
+
+def test_fetch_source_text_generic_page_timeout_returns_empty(monkeypatch):
+    """The outer handler must swallow a timeout/connection error and return '' (never raise)."""
+    def handler(url):
+        raise TimeoutError("connect timed out")
+
+    _patch_urlopen(monkeypatch, handler)
+    assert abn_factory._fetch_source_text("https://example.com/dead") == ""
+
+
+def test_fetch_source_text_decode_error_returns_empty(monkeypatch):
+    """A response object whose .read() blows up must not propagate — outer handler returns ''."""
+    class _Boom:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def read(self, n=-1): raise OSError("socket reset mid-read")
+
+    _patch_urlopen(monkeypatch, lambda url: _Boom())
+    assert abn_factory._fetch_source_text("https://example.com/boom") == ""
+
+
+# ---------------------------------------------------------------------------
+# _research_sync expert fallback — the researcher expert is grounding for every
+# script. If services.abn_experts breaks or expert.ask() raises, the brief must
+# degrade to "" WITHOUT propagating the exception (research is not a hard gate),
+# AND the failure must be logged so empty briefs aren't silent. (services/abn_factory.py:831)
+# ---------------------------------------------------------------------------
+
+def test_research_sync_returns_empty_when_abn_experts_import_fails(monkeypatch, caplog):
+    """If `import services.abn_experts` blows up, _research_sync swallows it and
+    returns "" rather than crashing the script pipeline — but logs a warning."""
+    monkeypatch.setattr(abn_factory, "_fetch_source_text", lambda *a, **k: "")
+
+    import builtins
+    real_import = builtins.__import__
+
+    def boom_import(name, *a, **k):
+        if name == "services.abn_experts":
+            raise ImportError("abn_experts is broken")
+        return real_import(name, *a, **k)
+
+    monkeypatch.setattr(builtins, "__import__", boom_import)
+
+    with caplog.at_level("WARNING"):
+        result = abn_factory._research_sync("Some Tool", "https://github.com/x/y")
+
+    assert result == ""
+    assert any("_research_sync" in r.message for r in caplog.records), \
+        "an empty research brief from a broken expert module must be logged"
+
+
+def test_research_sync_returns_empty_when_expert_ask_raises(monkeypatch, caplog):
+    """If expert.ask() raises (LLM/network/auth failure), the brief degrades to ""
+    and the failure is logged — no exception escapes into _script_segment."""
+    monkeypatch.setattr(abn_factory, "_fetch_source_text", lambda *a, **k: "")
+
+    import services.abn_experts as experts
+
+    def boom_ask(role, user, extra_system=""):
+        raise RuntimeError("LLM call failed")
+
+    monkeypatch.setattr(experts, "ask", boom_ask)
+
+    with caplog.at_level("WARNING"):
+        result = abn_factory._research_sync("Some Tool", "https://example.com", angle="speed")
+
+    assert result == ""
+    assert any("_research_sync" in r.message for r in caplog.records)
+
+
+def test_research_sync_returns_empty_string_when_ask_returns_none(monkeypatch):
+    """expert.ask() can legitimately return None; the helper normalises that to ""
+    (so callers never see None) and does NOT treat it as an error."""
+    monkeypatch.setattr(abn_factory, "_fetch_source_text", lambda *a, **k: "")
+
+    import services.abn_experts as experts
+    monkeypatch.setattr(experts, "ask", lambda role, user, extra_system="": None)
+
+    assert abn_factory._research_sync("Some Tool", "https://example.com") == ""
+
+
+# ---------------- SCRIPTWRITER EXPERT FALLBACK ----------------
+# _llm_script_sync() swallows ANY error from the scriptwriter expert (import failure or a
+# raising .ask()) and returns None. The downstream _script_segment() relies on that None to
+# trigger its deterministic fallback template instead of crashing segment generation.
+
+def test_llm_script_sync_returns_none_when_expert_import_fails(monkeypatch):
+    """If services.abn_experts is unavailable (import raises), _llm_script_sync must not
+    propagate — it returns None so the caller can fall back to its template."""
+    import builtins
+    real_import = builtins.__import__
+
+    def boom_import(name, *args, **kwargs):
+        if name == "services.abn_experts" or name.startswith("services.abn_experts"):
+            raise ImportError("abn_experts unavailable")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", boom_import)
+    assert abn_factory._llm_script_sync("Some title", is_hook=False) is None
+
+
+def test_llm_script_sync_returns_none_when_expert_ask_raises(monkeypatch):
+    """If the expert imports fine but .ask() raises (model down, network, bad config),
+    _llm_script_sync still swallows it and returns None."""
+    import services.abn_experts as experts
+
+    def boom_ask(*a, **k):
+        raise RuntimeError("expert call failed")
+
+    monkeypatch.setattr(experts, "ask", boom_ask)
+    assert abn_factory._llm_script_sync("Some title", is_hook=True, research="brief") is None
+
+
+def test_script_segment_uses_template_fallback_when_expert_unavailable(monkeypatch):
+    """End-to-end: when the expert is unavailable (_llm_script_sync -> None), _script_segment
+    must not return None/empty — it falls back to the deterministic template so segment
+    generation keeps working."""
+    monkeypatch.setattr(abn_factory, "_llm_script_sync", lambda *a, **k: None)
+
+    async def _run():
+        return await abn_factory._script_segment(
+            "Anthropic ships X", url="", idx=0, is_hook=False, research="the core detail"
+        )
+
+    txt = asyncio.run(_run())
+    assert txt, "fallback must produce a non-empty script, not None"
+    assert "Anthropic ships X" in txt
+    assert "the core detail" in txt

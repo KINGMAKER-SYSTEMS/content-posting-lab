@@ -398,6 +398,74 @@ def test_burn_video_raises_clearly_when_ffmpeg_missing(monkeypatch, tmp_path):
     assert "ffmpeg not available" in str(exc.value)
 
 
+def test_burn_video_rejects_oversized_overlay_png(tmp_path):
+    """An overlay PNG payload over the 50MB base64 cap is rejected with a clear
+    ValueError before any decode/ffmpeg work — guards against OOM."""
+    src = tmp_path / "in.mp4"
+    src.write_bytes(b"video")
+    out = tmp_path / "out.mp4"
+
+    # 50_000_001 chars of valid base64 alphabet -> exceeds the cap by one byte.
+    oversized = "A" * 50_000_001
+
+    with pytest.raises(ValueError) as exc:
+        asyncio.run(
+            burn_router._burn_video(str(src), oversized, str(out), None)
+        )
+    assert "too large" in str(exc.value).lower()
+    # Nothing was written to the output path.
+    assert not out.exists()
+
+
+def test_burn_video_raises_with_stderr_on_ffmpeg_failure(monkeypatch, tmp_path):
+    """When ffmpeg exits non-zero, _burn_video raises a RuntimeError carrying the
+    tail of stderr, and the temp overlay PNG is cleaned up by the finally-block."""
+    import base64
+
+    monkeypatch.setattr(burn_router.shutil, "which", lambda _name: "/usr/bin/ffmpeg")
+
+    created_overlays = []
+    real_mkstemp = burn_router.tempfile.mkstemp
+
+    def tracking_mkstemp(*args, **kwargs):
+        fd, path = real_mkstemp(*args, **kwargs)
+        created_overlays.append(path)
+        return fd, path
+
+    monkeypatch.setattr(burn_router.tempfile, "mkstemp", tracking_mkstemp)
+
+    class FakeProc:
+        returncode = 1
+
+        async def communicate(self):
+            # stderr (2nd element) holds a long banner then the real error — the
+            # code keeps only the last 2000 chars, so the error must be at the end.
+            return (b"", b"x" * 5000 + b"\nffmpeg: Invalid argument while opening filter\n")
+
+    async def fake_exec(*cmd, **kwargs):
+        return FakeProc()
+
+    monkeypatch.setattr(burn_router.asyncio, "create_subprocess_exec", fake_exec)
+
+    src = tmp_path / "in.mp4"
+    src.write_bytes(b"video")
+    out = tmp_path / "out.mp4"
+    overlay_b64 = base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"fakepng").decode()
+
+    with pytest.raises(RuntimeError) as exc:
+        asyncio.run(
+            burn_router._burn_video(str(src), overlay_b64, str(out), None)
+        )
+    # The error message carries the (tail of) ffmpeg stderr.
+    assert "Invalid argument" in str(exc.value)
+    # stderr is capped to the last 2000 chars.
+    assert len(str(exc.value)) <= 2000
+    # The temp overlay PNG written before the failure was unlinked (finally-block).
+    import os
+    assert created_overlays, "overlay mkstemp was not called"
+    assert all(not os.path.exists(p) for p in created_overlays)
+
+
 def test_burn_background_records_error_when_ffmpeg_missing(monkeypatch, tmp_path):
     """A burn job with a missing ffmpeg is recorded as status=error in
     _burn_jobs rather than crashing the background task."""

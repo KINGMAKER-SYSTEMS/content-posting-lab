@@ -1355,6 +1355,74 @@ def test_effect_add_command_exports_update_action_with_effects(tmp_path):
     assert effects[0]["fade"] == "out"
 
 
+def test_effect_commands_preserve_keyframes_alongside_effects(tmp_path):
+    """clip.effect.add/update/delete all flow through the generic clip.* catch-all,
+    which serializes after['clip'] via clip_json. That same clip carries both the
+    effects array AND the per-property keyframe envelope. Pin that a clip with a
+    pre-existing rotation keyframe keeps its envelope in the exported UpdateAction
+    when an effect is added, edited, and removed — i.e. effects and keyframes
+    coexist through the update path rather than one clobbering the other."""
+    project = _project(tmp_path / "card.png")
+    # Pre-existing animated rotation envelope (the keyframes that must survive).
+    project["clips"]["card_clip"]["keyframes"] = [
+        {"property": "rotation", "points": [{"t": 0.0, "value": 0.0}, {"t": 2.0, "value": 10.0}]},
+    ]
+
+    def _rotation_points(action):
+        return [p["co"]["Y"] for p in action["value"]["rotation"]["Points"]]
+
+    # add
+    project = editor_timeline.apply_command(
+        project,
+        {
+            "id": "cmd_add",
+            "op": "clip.effect.add",
+            "actor": "agent",
+            "expectedRevision": 0,
+            "payload": {"clipId": "card_clip", "effect": {"id": "fx1", "type": "fadeOut", "params": {"duration": 1.0}}},
+        },
+    )
+    # update
+    project = editor_timeline.apply_command(
+        project,
+        {
+            "id": "cmd_update",
+            "op": "clip.effect.update",
+            "actor": "agent",
+            "expectedRevision": 1,
+            "payload": {"clipId": "card_clip", "effect": {"id": "fx1", "type": "fadeOut", "params": {"duration": 0.5}}},
+        },
+    )
+    # delete
+    project = editor_timeline.apply_command(
+        project,
+        {
+            "id": "cmd_delete",
+            "op": "clip.effect.delete",
+            "actor": "agent",
+            "expectedRevision": 2,
+            "payload": {"clipId": "card_clip", "effectId": "fx1"},
+        },
+    )
+
+    actions = {a["transaction"]: a for a in openshot_bridge.flattened_update_actions(project)}
+
+    # add: effect present AND rotation envelope intact (not flattened to a single point)
+    add = actions["cmd_add"]
+    assert add["value"]["effects"][0]["type"] == "Fade"
+    assert _rotation_points(add) == [0.0, 10.0]
+
+    # update: effect duration changed AND rotation envelope still intact
+    upd = actions["cmd_update"]
+    assert upd["value"]["effects"][0]["duration"]["Points"][0]["co"]["Y"] == 0.5
+    assert _rotation_points(upd) == [0.0, 10.0]
+
+    # delete: effects gone AND rotation envelope still intact
+    dele = actions["cmd_delete"]
+    assert dele["value"]["effects"] == []
+    assert _rotation_points(dele) == [0.0, 10.0]
+
+
 def test_unsplit_exports_update_and_delete_actions(tmp_path):
     project = _project(tmp_path / "card.png")
     project = editor_timeline.apply_command(

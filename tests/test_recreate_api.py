@@ -62,6 +62,34 @@ async def test_list_recreate_jobs_empty():
 
 
 @pytest.mark.anyio
+async def test_list_jobs_includes_incomplete_jobs():
+    """A job that failed at the frame-cleaning stage has original frames but no
+    _clean frames. It must still be listed (status='incomplete') so the user can
+    see the failure and delete/retry it — otherwise it's silent data loss."""
+    recreate_dir = get_project_recreate_dir("quick-test")
+
+    complete = recreate_dir / "complete-job"
+    complete.mkdir(parents=True)
+    (complete / "first_frame_original.jpg").write_bytes(b"orig")
+    (complete / "first_frame_clean.png").write_bytes(b"clean")
+
+    incomplete = recreate_dir / "incomplete-job"
+    incomplete.mkdir(parents=True)
+    (incomplete / "first_frame_original.jpg").write_bytes(b"orig")  # no _clean
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        r = await client.get("/api/recreate/jobs", params={"project": "quick-test"})
+    assert r.status_code == 200
+    by_id = {j["job_id"]: j for j in r.json()["jobs"]}
+
+    assert "incomplete-job" in by_id, "failed job must be visible, not silently dropped"
+    assert by_id["incomplete-job"]["status"] == "incomplete"
+    assert by_id["incomplete-job"]["first_clean"] is None
+    assert by_id["complete-job"]["status"] == "complete"
+
+
+@pytest.mark.anyio
 async def test_delete_nonexistent_job_returns_404():
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:

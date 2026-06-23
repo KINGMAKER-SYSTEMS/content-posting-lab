@@ -843,7 +843,10 @@ def _research_sync(title, url, angle=None):
         else:
             q = f"AI/dev item: \"{title}\" (source: {url}). What's the core concept + the story angle a builder needs?{src_block}"
         return experts.ask("researcher", q) or ""
-    except Exception:
+    except Exception as e:
+        # Non-fatal: research briefs are grounding, not a hard gate. But a silent ""
+        # strips ALL grounding from the script, so make the failure visible.
+        _log.warning("_research_sync: researcher expert unavailable for %r (%s); returning empty brief", title, e)
         return ""
 
 

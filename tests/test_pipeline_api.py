@@ -117,6 +117,89 @@ def test_mint_502_when_destinations_fetch_fails(monkeypatch):
     assert "destinations fetch failed" in ei.value.detail.lower()
 
 
+def test_mint_502_when_destinations_fetch_times_out(monkeypatch):
+    """The literal 'CF API timeout' failure mode the ticket calls out: the
+    destinations GET raises httpx.TimeoutException (the request exceeded the
+    15s client timeout) rather than a connect error. It must still surface as a
+    502 with the 'destinations fetch failed' detail, not leak the raw timeout."""
+    _patch_cfg(monkeypatch)
+    _patch_httpx(monkeypatch, httpx.TimeoutException("read timed out"))
+    with pytest.raises(HTTPException) as ei:
+        _run(pipeline._mint_random_alias())
+    assert ei.value.status_code == 502
+    assert "destinations fetch failed" in ei.value.detail.lower()
+
+
+def test_mint_502_when_destinations_status_is_error(monkeypatch):
+    """CF answers the destinations GET with a non-2xx status (e.g. 403 bad
+    token / 500 CF outage). raise_for_status() raises inside the try, so the
+    mint must 502 — there was no test exercising the status path before, only
+    transport-level connect/timeout errors."""
+    _patch_cfg(monkeypatch)
+    # _FakeResp.raise_for_status() raises httpx.HTTPStatusError for status>=400.
+    fake = _FakeAsyncClient(None)
+
+    async def _get(*a, **k):
+        return _FakeResp({"result": []}, status=500)
+
+    fake.get = _get
+    monkeypatch.setattr(pipeline.httpx, "AsyncClient", lambda *a, **k: fake)
+    with pytest.raises(HTTPException) as ei:
+        _run(pipeline._mint_random_alias())
+    assert ei.value.status_code == 502
+    assert "destinations fetch failed" in ei.value.detail.lower()
+
+
+def test_mint_502_when_cf_rejects_rule_create_with_409(monkeypatch):
+    """KNOWN BEHAVIOR (pinned): the local existing-aliases pre-check can MISS a
+    collision (CF list is eventually-consistent / a race between two mints), so
+    Cloudflare itself rejects the rule create with an HTTP 409. That CF-side 409
+    is caught by the broad `except Exception` around cf_create_rule and remapped
+    to a 502 'rule create failed' — it is NOT propagated as a 409 to the caller.
+
+    This documents the current contract: a real CF duplicate-on-create looks
+    like a 502 to the intake desk, not a clean 409 'already taken'. If the
+    router is later taught to detect the CF 409 and re-raise it as a 409, flip
+    this assertion."""
+    _patch_cfg(monkeypatch)
+    monkeypatch.setattr(pipeline, "destination_for_pipeline", lambda p: None)
+    _patch_httpx(monkeypatch, _verified("henry@risingtidesent.com"))
+
+    async def _list():
+        return []  # local pre-check sees no collision
+
+    async def _create(local, dest):
+        # CF API responds 409 Conflict — duplicate matcher already exists.
+        raise httpx.HTTPStatusError(
+            "409 Conflict", request=None, response=httpx.Response(409)
+        )
+
+    monkeypatch.setattr(pipeline, "cf_list_rules", _list)
+    monkeypatch.setattr(pipeline, "cf_create_rule", _create)
+    with pytest.raises(HTTPException) as ei:
+        _run(pipeline._mint_random_alias(desired_local="ok-name"))
+    assert ei.value.status_code == 502
+    assert "rule create failed" in ei.value.detail.lower()
+
+
+def test_mint_502_when_rules_list_times_out(monkeypatch):
+    """The rules-list call (used to build the collision set) can also time out
+    against CF. A TimeoutException there must 502 'rules list failed' rather
+    than crash the mint with an unhandled timeout."""
+    _patch_cfg(monkeypatch)
+    monkeypatch.setattr(pipeline, "destination_for_pipeline", lambda p: None)
+    _patch_httpx(monkeypatch, _verified("henry@risingtidesent.com"))
+
+    async def _timeout():
+        raise httpx.TimeoutException("rules list timed out")
+
+    monkeypatch.setattr(pipeline, "cf_list_rules", _timeout)
+    with pytest.raises(HTTPException) as ei:
+        _run(pipeline._mint_random_alias(desired_local="ok-name"))
+    assert ei.value.status_code == 502
+    assert "rules list failed" in ei.value.detail.lower()
+
+
 def test_mint_409_when_override_destination_unverified(monkeypatch):
     _patch_cfg(monkeypatch)
     _patch_httpx(monkeypatch, _verified("henry@risingtidesent.com"))

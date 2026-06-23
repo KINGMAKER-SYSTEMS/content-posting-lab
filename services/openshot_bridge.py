@@ -238,9 +238,17 @@ def update_action_from_command(
         # touches its own field, never effects. If the after block dropped effects
         # that before carried (e.g. an ABN-import-synthesized crossfade), restore
         # them so the crossfade survives to OpenShot instead of being silently lost.
+        # BUT clip.effect.* ops own the effects array authoritatively: a delete that
+        # empties it is intentional, so restoring before's effects there would
+        # resurrect the just-deleted effect. Skip the restore for those ops.
         target = dict(after["clip"])
         before_clip = before.get("clip")
-        if before_clip is not None and before_clip.get("effects") and not target.get("effects"):
+        if (
+            not op.startswith("clip.effect.")
+            and before_clip is not None
+            and before_clip.get("effects")
+            and not target.get("effects")
+        ):
             target["effects"] = before_clip["effects"]
         return _update_action(
             "update",

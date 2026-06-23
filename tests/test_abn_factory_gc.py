@@ -2417,3 +2417,92 @@ def test_purge_disk_leaves_editor_bay_writes_intact(store):
     abn_factory.purge_disk(intermediate_age_s=1, keep_episodes=1, low_disk_gb=0)
     for p in surface:
         assert p.exists(), f"purge_disk reaped an off-gateway editor write {p}"
+
+
+# --- adhoc_scratch_path(): the unscoped-render escape hole the schema exists to close -------------
+# adhoc_scratch_path lands a genuinely unscoped intermediate under the cross-episode _scratch/ root
+# instead of a flat name at ASSETS_DIR root (where it would be indistinguishable to the GC from a
+# keeper — the exact glob-GC hazard). These pin (1) it lands UNDER _scratch/ so the GC can reap it
+# by location, and (2) its traversal/slash/leading-dot guards RAISE rather than escaping the store.
+
+
+def test_adhoc_scratch_path_lands_under_cross_episode_scratch(store):
+    p = abn_assets.adhoc_scratch_path("vo", "wav")
+    assert p == store / "_scratch" / "vo.wav"
+    assert p.parent.is_dir()  # dir side-effect-created
+    # it lands on the reapable surface, not flat at the store root
+    assert p.parent == store / "_scratch"
+
+
+def test_adhoc_scratch_path_no_ext(store):
+    assert abn_assets.adhoc_scratch_path("clip", "") == store / "_scratch" / "clip"
+
+
+@pytest.mark.parametrize("bad", ["../evil", "a/b", "a\\b", ".hidden", "..", "x\x00y"])
+def test_adhoc_scratch_path_rejects_traversal_and_separators(store, bad):
+    with pytest.raises(abn_assets.AssetPathError):
+        abn_assets.adhoc_scratch_path(bad, "wav")
+
+
+@pytest.mark.parametrize("bad_ext", ["png/../../evil", "pn.g", "p/g", "a\\b"])
+def test_adhoc_scratch_path_rejects_bad_ext(store, bad_ext):
+    with pytest.raises(abn_assets.AssetPathError):
+        abn_assets.adhoc_scratch_path("vo", bad_ext)
+
+
+# --- migration-completion gate: flat_unmigrated() / assert_migration_complete() -------------------
+# These certify the cutover the whole GC invariant rests on: NO flat un-migrated regular file may sit
+# at the store root (it would be exposed to the dead flat-glob GC that ate original VO). Back-compat
+# SYMLINKS the migration leaves must pass; only un-migrated REGULAR files trip the gate.
+
+
+def test_flat_unmigrated_empty_on_clean_store(store):
+    (store / "ep_aabbcc" / "renders").mkdir(parents=True)
+    assert abn_assets.flat_unmigrated() == []
+    abn_assets.assert_migration_complete()  # does not raise
+
+
+def test_flat_unmigrated_flags_legacy_flat_regular_file(store):
+    bad = store / "ep_aabbcc_s0_card.png"
+    bad.write_bytes(b"x")
+    flagged = abn_assets.flat_unmigrated()
+    assert bad in flagged
+    with pytest.raises(abn_assets.AssetPathError):
+        abn_assets.assert_migration_complete()
+
+
+def test_flat_unmigrated_ignores_backcompat_symlink(store):
+    real = store / "ep_aabbcc" / "css"
+    real.mkdir(parents=True)
+    target = real / "s0_card.png"
+    target.write_bytes(b"x")
+    link = store / "ep_aabbcc_s0_card.png"  # legacy-named back-compat shim
+    link.symlink_to(target)
+    # a symlink (even legacy-named) is NOT un-migrated data — gate must pass
+    assert abn_assets.flat_unmigrated() == []
+    abn_assets.assert_migration_complete()
+
+
+def test_flat_unmigrated_ignores_dirs_and_dotfiles(store):
+    (store / "ep_aabbcc").mkdir()        # a schema dir, not a flat file
+    (store / ".DS_Store").write_bytes(b"x")  # dotfile
+    assert abn_assets.flat_unmigrated() == []
+
+
+# --- episode_singleton_path(): READ resolver must never create dirs, never raise on non-ep --------
+
+
+def test_episode_singleton_path_resolves_schema_paths(store):
+    assert abn_assets.episode_singleton_path("ep_aabbcc", "timeline") == store / "ep_aabbcc" / "timeline.json"
+    assert abn_assets.episode_singleton_path("ep_aabbcc", "episode") == store / "ep_aabbcc" / "renders" / "episode.mp4"
+    # READ resolver: must NOT side-effect-create the episode dir
+    assert not (store / "ep_aabbcc").exists()
+
+
+def test_episode_singleton_path_none_for_unscoped_id(store):
+    assert abn_assets.episode_singleton_path("clip", "timeline") is None
+
+
+def test_episode_singleton_path_rejects_non_singleton_kind(store):
+    with pytest.raises(abn_assets.AssetPathError):
+        abn_assets.episode_singleton_path("ep_aabbcc", "card")

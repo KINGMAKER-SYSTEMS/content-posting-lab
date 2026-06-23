@@ -403,6 +403,65 @@ def test_missing_assets_accepts_agenticnews_url_when_episode_subdir_present(tmp_
     assert editor_render._missing_assets(project, asset_root) == []
 
 
+# --- direct unit tests for FFmpegLayeredRenderer._resolve_src ---
+# _resolve_src is the instance-level path resolver the ffmpeg fallback uses before
+# .exists()/-i. It must NEVER raise on a missing or invalid src — it returns the
+# Path it WOULD use so callers can run the existence check and surface a diagnostic
+# (missing_assets), instead of the renderer crashing without telling ops what file
+# it couldn't find. These tests call the method directly (it was previously only
+# exercised transitively through _missing_assets).
+
+def test_resolve_src_missing_agenticnews_asset_returns_path_without_raising(tmp_path):
+    """A dead /agenticnews-assets/ src (episode subdir never created) must resolve
+    to the per-episode Path under asset_root WITHOUT raising — the existence check
+    is the caller's job, and the resolved Path is what makes the gap diagnosable."""
+    asset_root = tmp_path / "agenticnews_assets"
+    asset_root.mkdir()
+    r = editor_render.FFmpegLayeredRenderer(tmp_path / "renders", asset_root=asset_root)
+
+    resolved = r._resolve_src("/agenticnews-assets/ep99/gone.png")
+
+    assert isinstance(resolved, Path)
+    assert resolved == asset_root / "ep99" / "gone.png"
+    # the whole point: it points at a hole, and we still didn't crash.
+    assert not resolved.exists()
+
+
+def test_resolve_src_strips_cachebuster_before_join(tmp_path):
+    """Editor-persisted render-cache URLs carry a ?rev= cache-buster; the resolver
+    must strip it so the Path matches the real file on disk, not a phantom name."""
+    asset_root = tmp_path / "agenticnews_assets"
+    asset_root.mkdir()
+    r = editor_render.FFmpegLayeredRenderer(tmp_path / "renders", asset_root=asset_root)
+
+    resolved = r._resolve_src("/agenticnews-assets/ep99/card.png?rev=3")
+
+    assert resolved == asset_root / "ep99" / "card.png"
+
+
+def test_resolve_src_invalid_plain_path_passes_through(tmp_path):
+    """A non-/agenticnews-assets/ src (a raw/absolute/garbage path) is returned
+    unchanged as a Path — the resolver only rewrites the asset-mount prefix, and an
+    invalid path must reach the existence check rather than being mangled or raising."""
+    asset_root = tmp_path / "agenticnews_assets"
+    asset_root.mkdir()
+    r = editor_render.FFmpegLayeredRenderer(tmp_path / "renders", asset_root=asset_root)
+
+    for raw in ("/no/such/file.png", "relative/missing.mp4", ""):
+        resolved = r._resolve_src(raw)
+        assert resolved == Path(raw)
+
+
+def test_resolve_src_agenticnews_without_asset_root_passes_through(tmp_path):
+    """No asset_root configured (the common non-ABN renderer) means the mount prefix
+    can't be rewritten, so the src passes through verbatim — still no raise."""
+    r = editor_render.FFmpegLayeredRenderer(tmp_path / "renders")
+    assert r.asset_root is None
+
+    src = "/agenticnews-assets/ep99/card.png"
+    assert r._resolve_src(src) == Path(src)
+
+
 def test_build_video_command_adds_audio_map_and_amix(tmp_path):
     """With an audio clip present the command must map a mixed [a] stream and encode
     it (aac, -shortest). A dropped audio map silently ships a silent render."""
@@ -2795,6 +2854,84 @@ def test_split_clip_crossfade_refits_through_render_window_into_openshot_fade():
     assert fades[0]["duration"]["Points"][0]["co"]["Y"] == pytest.approx(1.0)
 
 
+def test_split_clip_crossfade_and_volume_envelope_both_refit_through_render_into_openshot():
+    """End-to-end carry-through with BOTH transformations at once: a clip carrying a
+    start-anchored crossfade AND a volume keyframe envelope is SPLIT, the head is
+    render-windowed (front-trimmed), then exported to OpenShot. The crossfade re-fit
+    (editor_render._refit_effects) and the keyframe shift + sourceStart shift
+    (_shift_keyframes / _windowed_clips) are SEPARATE code paths; this pins that they
+    apply together without interfering — the fade lands as a single Fade-`in` with the
+    re-fit duration, and the volume envelope arrives at the right OpenShot frame
+    numbers (which depend on the shifted sourceStart) with the re-anchored boundary
+    value. The ticket flags this combined path as untested."""
+    project = timeline.new_project("xf_vol_carry", width=64, height=48, fps=10)
+    project["assets"]["a1"] = {"id": "a1", "type": "video", "src": "/x.mp4", "metadata": {}}
+    project["clips"]["c1"] = {
+        "id": "c1", "assetId": "a1", "trackId": "video_1", "kind": "video",
+        "start": 0.0, "duration": 10.0, "sourceStart": 0.0,
+        "enabled": True, "muted": False, "volume": 1.0,
+        "transform": {"x": 0.5, "y": 0.5, "scale": 1.0, "opacity": 1.0},
+        "effects": [{"id": "xf", "type": "crossfade", "params": {"duration": 3.0}}],
+        # Volume ramp 0.2 -> 1.0 over clip-local t=1..5 (linear).
+        "keyframes": [{"property": "volume", "points": [
+            {"t": 1.0, "value": 0.2, "interp": "linear"},
+            {"t": 5.0, "value": 1.0, "interp": "linear"},
+        ]}],
+        "metadata": {},
+    }
+
+    # Split at t=8 -> head [0,8) keeps the full 3s crossfade AND both volume points
+    # (t=1 and t=5 are both before the split offset).
+    split = timeline.apply_command(
+        project,
+        {
+            "op": "clip.split", "actor": "human", "expectedRevision": 0,
+            "payload": {"clipId": "c1", "at": 8.0, "newClipId": "c1_tail"},
+        },
+    )
+    head_split = split["clips"]["c1"]
+    assert [e["type"] for e in head_split["effects"]] == ["crossfade"]
+    # Split keeps t=1,5 and appends a synthetic continuity point at the cut (t=8, value
+    # 1.0 — the envelope holds at 1.0 past t=5), so the head's last value matches the
+    # un-split clip at the seam.
+    assert [p["t"] for p in head_split["keyframes"][0]["points"]] == [1.0, 5.0, 8.0]
+
+    # Render-window the head with a 2s front trim (window t=2..6, duration=4):
+    #   crossfade: 3.0 - 2.0 = 1.0s  (start-anchored, eaten by the trim)
+    #   sourceStart: 0.0 + 2.0 = 2.0
+    #   volume points shift by -2: t=1 -> -1 (dropped, re-anchored at t=0), t=5 -> 3, t=8 -> 6
+    #   re-anchor value at the trim boundary (orig t=2): 0.2 + (1.0-0.2)*((2-1)/(5-1)) = 0.4
+    scoped = editor_render._render_scope_project(split, window_start=2.0, duration=4.0)
+    head_scoped = scoped["clips"]["c1"]
+    assert head_scoped["sourceStart"] == pytest.approx(2.0)
+
+    xf = next(e for e in head_scoped["effects"] if e["id"] == "xf")
+    assert xf["params"]["duration"] == pytest.approx(1.0)
+
+    vol_points = head_scoped["keyframes"][0]["points"]
+    assert [p["t"] for p in vol_points] == pytest.approx([0.0, 3.0, 6.0])
+    assert vol_points[0]["value"] == pytest.approx(0.4)   # re-anchored boundary value
+    assert vol_points[1]["value"] == pytest.approx(1.0)
+    assert vol_points[2]["value"] == pytest.approx(1.0)
+
+    # Export the windowed head to OpenShot. The crossfade and the volume envelope must
+    # BOTH survive in the same clip JSON, each transformed correctly and independently.
+    clip_json = openshot_bridge.clip_json(scoped, head_scoped)
+
+    fades = [e for e in clip_json["effects"] if e["type"] == "Fade"]
+    assert len(fades) == 1
+    assert fades[0]["fade"] == "in"
+    assert fades[0]["duration"]["Points"][0]["co"]["Y"] == pytest.approx(1.0)
+
+    # OpenShot frame X = (sourceStart + t) * fps + 1, so the shifted sourceStart (2.0)
+    # and shifted keyframe t feed into the frame number together. fps=10.
+    vol_kf = clip_json["volume"]["Points"]
+    xs = [p["co"]["X"] for p in vol_kf]
+    ys = [p["co"]["Y"] for p in vol_kf]
+    assert xs == pytest.approx([21.0, 51.0, 81.0])        # (2+{0,3,6})*10+1
+    assert ys == pytest.approx([40.0, 100.0, 100.0])      # 0.4*100, 1.0*100, 1.0*100
+
+
 def _kf_clip(clip_id: str, *, start: float, duration: float, source_start: float,
              tracks: list[dict]) -> dict:
     """A windowing fixture clip that carries keyframe tracks."""
@@ -3453,6 +3590,238 @@ def test_ffmpeg_render_frame_window_shift_preserves_keyframe_source_frames(tmp_p
     # as the OpenShot parallel asserts.
     assert project["clips"]["c1"]["sourceStart"] == pytest.approx(1.0)
     assert project["clips"]["c1"]["keyframes"][0]["points"][0]["t"] == pytest.approx(0.0)
+
+
+# ---------------------------------------------------------------------------
+# render_frame with BOTH fade effects AND keyframe envelopes, across all three
+# render_frame modes. The prior window-shift tests (above) drive render_frame on
+# keyframes ALONE; the fidelity tests (below) round-trip fade+keyframes WITHOUT
+# windowing. The gap the ticket names is their intersection: a render_frame
+# preview that front-trims a clip carrying BOTH effects={fadeIn/fadeOut} AND a
+# keyframe opacity envelope. Windowing re-fits the fade duration (_refit_effects)
+# AND shifts the keyframe t (_shift_keyframes) simultaneously; both must fire and
+# then compose, or a preview frame shows the fade/envelope at the wrong moment vs
+# the full render. One helper feeds all three modes so the SAME clip is checked.
+# ---------------------------------------------------------------------------
+
+
+def _fade_plus_envelope_project(*, asset_type: str = "image", src: str = "/card.png") -> dict:
+    """A clip that BOTH fades in (2.0s fadeIn effect) AND animates opacity 0->1 via
+    a keyframe envelope, spanning timeline t=4..7 with sourceStart=1.0. The fade and
+    the envelope are independent dimensions the windowing path must re-fit (fade
+    duration) and shift (keyframe t) together."""
+    project = timeline.new_project("fade_kf", width=1920, height=1080, fps=30)
+    project["assets"]["a"] = {"id": "a", "type": asset_type, "src": src, "metadata": {}}
+    project["clips"]["c1"] = {
+        "id": "c1", "assetId": "a", "trackId": "graphics_1", "kind": "artifact",
+        "start": 4.0, "duration": 3.0, "sourceStart": 1.0,
+        "enabled": True, "muted": False, "volume": 1.0,
+        "transform": {"x": 0.5, "y": 0.5, "scale": 1.0, "opacity": 1.0},
+        "effects": [{"type": "fadeIn", "params": {"duration": 2.0}}],
+        "keyframes": [
+            {"property": "opacity", "points": [
+                {"t": 0.0, "value": 0.0, "interp": "linear"},
+                {"t": 3.0, "value": 1.0, "interp": "linear"},
+            ]},
+        ],
+        "metadata": {},
+    }
+    return project
+
+
+def test_openshot_subprocess_render_frame_refits_fade_and_shifts_keyframes_together(tmp_path, monkeypatch):
+    """OpenShotRenderer.render_frame (subprocess timeline_json path) on a clip with
+    BOTH a fadeIn effect AND an opacity envelope. A mid-clip window front-trims it, so
+    the fade duration must RE-FIT (2.0 -> 1.0) while the envelope keyframe t's
+    SHIFT/re-anchor — both on the same clip, both reaching the bridge JSON, then the
+    fade composes into the alpha keyframes via _bake_fade_keyframes.
+
+    render_frame uses a fixed 250ms window (too narrow to show the full ramp), so the
+    rich head-vs-mid invariants are checked on the same _render_scope_project the method
+    calls with realistic windows; the real render_frame entrypoint is then driven to
+    prove it threads the combined adjustment into the libopenshot JSON."""
+    fake = _fake_openshot()
+    monkeypatch.setattr(editor_render, "_import_openshot", lambda: (fake, "available", None))
+    renderer = editor_render.OpenShotRenderer(tmp_path / "renders")
+
+    card = tmp_path / "card.png"
+    card.write_bytes(b"")  # only .exists() gates the missing-asset check
+    project = _fade_plus_envelope_project(src=str(card))
+
+    def _scoped_clip(window_start: float, duration: float) -> dict:
+        scoped = editor_render._render_scope_project(project, window_start=window_start, duration=duration)
+        return editor_render.openshot_bridge.timeline_json(scoped)["clips"][0]
+
+    # HEAD window (from the clip start, front_trim=0): fade stays 2.0s and the envelope
+    # keyframe t's pass through. Baked alpha composes fade*envelope sampled at t=0 /
+    # fade-boundary t=2 / tail t=3. X = (sourceStart 1.0 + t)*30 + 1.
+    head = _scoped_clip(4.0, 3.0)
+    head_alpha = [(round(p["co"]["X"], 1), round(p["co"]["Y"], 4)) for p in head["alpha"]["Points"]]
+    assert head_alpha == [(31.0, 0.0), (91.0, 0.6667), (121.0, 1.0)]
+    (head_fade,) = head["effects"]
+    assert head_fade["type"] == "Fade" and head_fade["fade"] == "in"
+    assert head_fade["duration"]["Points"][0]["co"]["Y"] == pytest.approx(2.0)
+
+    # MID window (abs t=5.0 -> front_trim=1.0s): the fade RE-FITS 2.0 -> 1.0 AND the
+    # envelope re-anchors at the origin (boundary value 1/3) then runs to 1.0 at t=2.
+    # sourceStart bumps 1.0 -> 2.0. Baked alpha = fade(1.0s) * envelope, sampled at
+    # t=0 (1/3 * 0 = 0), fade-boundary t=1 (2/3 * 1 = 0.667), tail t=2 (1.0 * 1.0).
+    # X = (2.0 + t)*30 + 1 -> 61, 91, 121.
+    mid = _scoped_clip(5.0, 2.0)
+    mid_alpha = [(round(p["co"]["X"], 1), round(p["co"]["Y"], 4)) for p in mid["alpha"]["Points"]]
+    assert mid_alpha == [(61.0, 0.0), (91.0, 0.6667), (121.0, 1.0)]
+    (mid_fade,) = mid["effects"]
+    assert mid_fade["type"] == "Fade" and mid_fade["fade"] == "in"
+    assert mid_fade["duration"]["Points"][0]["co"]["Y"] == pytest.approx(1.0)  # re-fit, not 2.0
+
+    # The two in-window envelope samples (the fade boundary and the tail) land at the
+    # IDENTICAL source frames in both windows (91, 121): proof the keyframe t-shift and
+    # the sourceStart bump cancel even while the fade is independently re-fitting.
+    assert {x for x, _y in mid_alpha} & {x for x, _y in head_alpha} == {91.0, 121.0}
+
+    # render_frame is the real entrypoint (fixed 250ms window). Capture the JSON it feeds
+    # libopenshot and prove BOTH adjustments threaded through: the fade is re-fit to the
+    # 250ms window AND the envelope origin is re-anchored to the bumped source frame.
+    captured: dict[str, dict] = {}
+
+    class _CapturedFrame:
+        def Save(self, *_a, **_k):
+            pass
+
+    class _CapturingTimeline:
+        def GetFrame(self, _n):
+            return _CapturedFrame()
+
+        def Close(self):
+            pass
+
+    def _capture_timeline(render_project):
+        captured["clip"] = editor_render.openshot_bridge.timeline_json(render_project)["clips"][0]
+        return _CapturingTimeline()
+
+    monkeypatch.setattr(renderer, "_timeline", _capture_timeline)
+    renderer.render_frame(project, at=5.0, output_path=tmp_path / "preview.png")
+    rc = captured["clip"]
+    (rc_fade,) = rc["effects"]
+    assert rc_fade["type"] == "Fade" and rc_fade["fade"] == "in"
+    assert rc_fade["duration"]["Points"][0]["co"]["Y"] <= 0.25 + 1e-6   # re-fit to 250ms window
+    # envelope origin re-anchored into bumped source-frame space: (sourceStart 2.0)*30+1 = 61.
+    assert rc["alpha"]["Points"][0]["co"]["X"] == pytest.approx(61.0)
+
+    # The caller's project is never mutated by the windowing (deep-copy scope): the fade
+    # duration and the envelope origin t survive untouched for the full render.
+    assert project["clips"]["c1"]["effects"][0]["params"]["duration"] == pytest.approx(2.0)
+    assert project["clips"]["c1"]["keyframes"][0]["points"][0]["t"] == pytest.approx(0.0)
+    assert project["clips"]["c1"]["sourceStart"] == pytest.approx(1.0)
+
+
+def test_openshot_inprocess_bake_composes_refit_fade_onto_shifted_envelope(tmp_path):
+    """OpenShot in-process path: _render_scope_project front-trims (re-fit fade +
+    shifted envelope) THEN _bake_fade_keyframes composes the visual fade multiplicatively
+    INTO the opacity envelope (libopenshot has no Fade class, so the fade must live in
+    the alpha keyframes for the in-process render). This is the mode where fade and
+    keyframes collide most directly — both become the same alpha track. Verify the
+    composed envelope equals fade(t) * base(t) at every corner, and never exceeds the
+    base envelope where the fade is darkening it."""
+    project = _fade_plus_envelope_project()
+
+    # Drive exactly what OpenShotRenderer.render_frame's _render_scope_project produces
+    # for a mid-clip 250ms-style window (front_trim=1.0s).
+    scoped = editor_render._render_scope_project(project, window_start=5.0, duration=2.0)
+    clip = scoped["clips"]["c1"]
+    op = [t for t in clip["keyframes"] if t["property"] == "opacity"][0]["points"]
+    composed = [(round(p["t"], 4), round(p["value"], 4)) for p in op]
+
+    # base envelope after shift: 0.333 at origin -> 1.0 at t=2. fade after re-fit: 0..1
+    # over t=0..1. compose at corners t=0 / fade-end t=1 / tail t=2:
+    #   t=0: base 1/3 * fade 0   = 0.0
+    #   t=1: base 2/3 * fade 1   = 0.6667
+    #   t=2: base 1.0 * fade 1   = 1.0
+    assert composed == [(0.0, 0.0), (1.0, 0.6667), (2.0, 1.0)]
+
+    # The fade only darkens: every composed value <= the base envelope value it sits on
+    # (the fade is a 0..1 multiplier, never a brightener). base(1)=2/3, composed(1)=2/3
+    # at the boundary; before the boundary the fade pulls it strictly below base.
+    assert composed[0][1] < (1.0 / 3.0)  # t=0 base is 1/3, fade pulls it to 0
+    assert composed[-1][1] == pytest.approx(1.0)  # past the fade, pure envelope
+
+    # The original opacity envelope had exactly 2 points; the baked output gained the
+    # fade-boundary sample (3 points) without losing either envelope endpoint's shape.
+    assert len(composed) == 3
+    # Source project untouched by the bake+window (deep copy).
+    assert project["clips"]["c1"]["effects"][0]["params"]["duration"] == pytest.approx(2.0)
+    assert len(project["clips"]["c1"]["keyframes"][0]["points"]) == 2
+
+
+def test_ffmpeg_render_frame_refits_fade_and_shifts_keyframes_together(tmp_path):
+    """FFmpegLayeredRenderer.render_frame on a clip with BOTH a fadeIn effect AND an
+    opacity envelope. Unlike OpenShot, the fallback keeps them as INDEPENDENT filters:
+    fadeIn -> a native `fade=t=in` filter (re-fit duration), the envelope -> a `geq`
+    alpha expression (shifted keyframe t). A mid-clip window must re-fit the fade
+    duration AND shift the envelope origin, both in the same built command. No prior
+    test drove render_frame on a clip carrying both on the ffmpeg path."""
+    import re
+
+    clip_video = tmp_path / "clip.mp4"
+    subprocess.run(
+        ["ffmpeg", "-y", "-f", "lavfi", "-i", "color=c=red:s=64x64:r=30:d=8",
+         "-frames:v", "240", str(clip_video)],
+        check=True, capture_output=True, text=True,
+    )
+    renderer = editor_render.FFmpegLayeredRenderer(tmp_path / "renders")
+    project = _fade_plus_envelope_project(asset_type="video", src=str(clip_video))
+
+    def _build(window_start: float, duration: float) -> str:
+        cmd, missing, _ = renderer._build_video_command(
+            project, tmp_path / "renders" / "out.mp4",
+            duration=duration, window_start=window_start,
+        )
+        assert missing == []
+        return cmd[cmd.index("-filter_complex") + 1]
+
+    # HEAD (front_trim=0): native fade is the full 2.0s; the alpha geq ramps from the
+    # un-shifted envelope (slope 1/3 over the 3s clip, origin value 0).
+    head_fc = _build(4.0, 3.0)
+    head_fade = re.search(r"fade=t=in:alpha=1:st=([0-9.]+):d=([0-9.]+)", head_fc)
+    assert head_fade.group(1) == "0" and float(head_fade.group(2)) == pytest.approx(2.0)
+    head_alpha = re.search(r"a='255\*max\(0,min\(1,(.+?)\)\)'", head_fc).group(1)
+    assert _kf_segment_thresholds(head_alpha) == [0.0, 3.0]      # un-shifted origin/tail
+
+    # MID (abs t=5.0 -> front_trim=1.0s): the native fade RE-FITS 2.0 -> 1.0 AND the
+    # alpha envelope re-anchors (the pre-window t=0 point drops, origin holds the
+    # boundary value 1/3) leaving thresholds 0,2 -- both adjustments in one command.
+    mid_fc = _build(5.0, 2.0)
+    mid_fade = re.search(r"fade=t=in:alpha=1:st=([0-9.]+):d=([0-9.]+)", mid_fc)
+    assert mid_fade.group(1) == "0" and float(mid_fade.group(2)) == pytest.approx(1.0)  # re-fit
+    mid_alpha = re.search(r"a='255\*max\(0,min\(1,(.+?)\)\)'", mid_fc).group(1)
+    assert _kf_segment_thresholds(mid_alpha) == [0.0, 2.0]       # shifted/re-anchored
+    # the re-anchored origin carries the envelope's boundary value (1/3), not 0.
+    assert "0.3333" in mid_alpha
+
+    # render_frame is the real entrypoint (fixed 250ms window); its built command must
+    # carry BOTH the re-fit fade and the shifted-origin envelope (proving render_frame,
+    # not just _build_video_command, threads the combined windowing). Capture _run.
+    captured: dict[str, list] = {}
+    original_run = editor_render._run
+    original_probe = editor_render._probe_duration
+    try:
+        editor_render._run = lambda cmd: captured.setdefault("cmds", []).append(cmd)
+        editor_render._probe_duration = lambda *a, **k: 0.25
+        renderer.render_frame(project, at=5.0, output_path=tmp_path / "renders" / "preview.png")
+    finally:
+        editor_render._run = original_run
+        editor_render._probe_duration = original_probe
+    render_cmd = next(c for c in captured["cmds"] if "-filter_complex" in c)
+    rc_fc = render_cmd[render_cmd.index("-filter_complex") + 1]
+    rc_fade = re.search(r"fade=t=in:alpha=1:st=([0-9.]+):d=([0-9.]+)", rc_fc)
+    assert float(rc_fade.group(2)) <= 1.0 + 1e-6        # fade re-fit to the 250ms window
+    rc_alpha = re.search(r"a='255\*max\(0,min\(1,(.+?)\)\)'", rc_fc).group(1)
+    assert _kf_segment_thresholds(rc_alpha)[0] == 0.0   # envelope origin re-anchored
+
+    # The caller's project is never mutated by the windowing (deep-copy scope).
+    assert project["clips"]["c1"]["effects"][0]["params"]["duration"] == pytest.approx(2.0)
+    assert project["clips"]["c1"]["keyframes"][0]["points"][0]["t"] == pytest.approx(0.0)
+    assert project["clips"]["c1"]["sourceStart"] == pytest.approx(1.0)
 
 
 def test_keyframes_effects_and_transform_coexist_in_one_openshot_clip_json():

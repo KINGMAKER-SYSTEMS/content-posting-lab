@@ -372,12 +372,20 @@ async def list_recreate_jobs(project: str = Query(default="quick-test")):
     for job_dir in sorted(recreate_dir.iterdir()):
         if not job_dir.is_dir():
             continue
-        # Only include jobs that have at least the first cleaned frame
+
+        # A job is visible once it has any extracted frame. Jobs that completed
+        # the clean stage are "complete"; jobs that have original frames but no
+        # cleaned ones failed mid-pipeline and must still surface so the user can
+        # see the failure and delete/retry it (otherwise it's silent data loss).
         first_clean = job_dir / "first_frame_clean.png"
-        if not first_clean.exists():
+        first_original = job_dir / "first_frame_original.jpg"
+        if not first_clean.exists() and not first_original.exists():
             continue
 
-        entry: dict = {"job_id": job_dir.name}
+        entry: dict = {
+            "job_id": job_dir.name,
+            "status": "complete" if first_clean.exists() else "incomplete",
+        }
 
         # Return base64 data URIs for all available frames
         for key, filename in [
