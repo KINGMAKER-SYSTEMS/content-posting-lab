@@ -1242,7 +1242,7 @@ async def _kinetic_insert(title, script, source_url, sid):
         return None
     # intermediate html -> per-episode scratch (reaped freely); final mp4 -> css layer
     src_html = scratch_path(sid, f"{sid}_kinetic.html")
-    src_html.write_text(html)
+    _atomic_write_text(src_html, html)
     out = asset_path_from_slug(sid, "kinetic")
     code, log = await _sh(
         f'cd {shlex.quote(str(_REPO))} && NODE_PATH=frontend/node_modules node '
@@ -1332,7 +1332,7 @@ async def _code_demo(title, brief, name):
     # write the snippet to a file and DISPLAY it with bat (syntax-highlighted) — no execution,
     # so we never get 'command not found' errors. This shows clean code, not a broken shell.
     snippet = scratch_path(name, f"{name}_snippet.py")
-    snippet.write_text("\n".join(lines) + "\n")
+    _atomic_write_text(snippet, "\n".join(lines) + "\n")
     bat = "bat" if Path("/opt/homebrew/bin/bat").exists() else "cat"
     # VHS has a path-parse bug on absolute Output, so we cd to a working dir and use a relative
     # Output, then move the result to the gateway path. snippet is shown by absolute path (bat is fine).
@@ -1342,7 +1342,7 @@ async def _code_demo(title, brief, name):
             'Type "# AgenticBuilderNews — live build"', "Enter", "Sleep 500ms",
             # type the bat command that renders the code, then run it ONCE (bat just prints, never errors)
             f'Type "{bat} --style=numbers --color=always {shlex.quote(str(snippet))}"', "Enter", "Sleep 2500ms"]
-    tape.write_text("\n".join(body) + "\n")
+    _atomic_write_text(tape, "\n".join(body) + "\n")
     # cwd = the renders/footage subdir so the relative `Output {out.name}` lands at `out`.
     code_, log = await _sh(f'cd {shlex.quote(str(workdir))} && vhs {shlex.quote(str(tape))} 2>&1', timeout=120)
     if out.exists():
@@ -1455,7 +1455,7 @@ async def _real_demo(repo_url: str, name: str):
                     if len(out_lines) >= 16:
                         break
                 if out_lines:
-                    (repo_dir / "_readme.clean.txt").write_text("\n".join(out_lines) + "\n")
+                    _atomic_write_text(repo_dir / "_readme.clean.txt", "\n".join(out_lines) + "\n")
                     readme_clean = "_readme.clean.txt"
             except Exception:
                 readme_clean = None
@@ -1485,7 +1485,7 @@ async def _real_demo(repo_url: str, name: str):
         elif readme:
             pager = "bat --style=plain --color=always --line-range :22" if shutil.which("bat") else "head -22"
             body += [f'Type "{pager} {readme}"', "Enter", "Sleep 3200ms"]
-        tape.write_text("\n".join(body) + "\n")
+        _atomic_write_text(tape, "\n".join(body) + "\n")
         # VHS runs with cwd = repo_dir, so ls/tree/git/cat all operate on the REAL cloned repo.
         # Output is relative, so we hand VHS an absolute Output by writing it as the first line and
         # moving the produced file (VHS writes Output relative to its cwd).
