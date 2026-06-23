@@ -269,6 +269,29 @@ def test_voice_raises_on_gateway_error_before_shelling_out(monkeypatch, tmp_path
         asyncio.run(abn_factory._voice("hello", "no_episode_prefix"))
 
 
+# ---------------- DURATION PROBE: ffprobe failure modes ----------------
+
+@pytest.mark.parametrize("probe_out", ["", "  \n", "N/A", "garbage", "duration=12.5"])
+def test_dur_returns_zero_on_unparseable_ffprobe_output(monkeypatch, probe_out):
+    """_dur shells out to ffprobe and float()s the result. A corrupt/zero-length output file makes
+    ffprobe emit empty/'N/A'/garbage instead of a number — float() would raise ValueError and crash
+    the whole episode build. _dur must swallow that and return 0.0 so the build degrades gracefully."""
+    async def fake_sh(cmd, timeout=30):
+        return 0, probe_out
+
+    monkeypatch.setattr(abn_factory, "_sh", fake_sh)
+    assert asyncio.run(abn_factory._dur("/tmp/whatever.wav")) == 0.0
+
+
+def test_dur_parses_clean_ffprobe_output(monkeypatch):
+    """Sanity floor: a well-formed numeric probe still round-trips to a float."""
+    async def fake_sh(cmd, timeout=30):
+        return 0, "12.5\n"
+
+    monkeypatch.setattr(abn_factory, "_sh", fake_sh)
+    assert asyncio.run(abn_factory._dur("/tmp/whatever.wav")) == 12.5
+
+
 # ---------------- TITLE CARD: ImageMagick failure modes ----------------
 
 def test_card_raises_when_magick_returns_nonzero(monkeypatch, tmp_path):
