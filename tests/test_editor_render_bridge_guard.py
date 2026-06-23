@@ -72,6 +72,29 @@ def test_empty_bridge_stub_fails_closed_with_recovery_message(tmp_path):
     assert "services/openshot_bridge.py is missing" in proc.stdout
 
 
+def test_partial_bridge_stub_fails_closed_with_recovery_message(tmp_path):
+    # The nastiest case the line-66 tuple check exists for: the file is present
+    # and imports fine and even exposes ONE of the required symbols, but a
+    # merge-clobber / partial-write dropped another. A naive `hasattr` on a
+    # single attr would wave this through and then blow up with a cryptic
+    # AttributeError deep in render(). The tuple check must catch it at load and
+    # name the missing attr.
+    body = textwrap.dedent(
+        """
+        def timeline_json(*a, **k):
+            return "{}"
+        # _resolve_asset_src lost in a merge clobber -- intentionally absent.
+        """
+    )
+    proc = _import_editor_render_with_bridge(tmp_path, bridge_body=body)
+    assert proc.returncode == 0, proc.stderr
+    assert "MNF::" in proc.stdout
+    assert "present-but-broken stub" in proc.stdout
+    assert "_resolve_asset_src" in proc.stdout
+    # The one symbol that WAS present must not be falsely reported as missing.
+    assert "timeline_json" not in proc.stdout
+
+
 def test_valid_bridge_stub_imports_cleanly(tmp_path):
     # A bridge exposing the required surface must import without tripping the
     # guard (no false positive that would block real renders).
