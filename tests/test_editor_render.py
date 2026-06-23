@@ -1364,6 +1364,50 @@ def test_choose_renderer_stamps_backend_health_and_warnings_on_ffmpeg_fallback(m
     assert "warnings" in result  # uniform contract regardless of backend
 
 
+def test_bridgeless_fallback_render_downgrades_and_lists_effect_dropoffs(monkeypatch, tmp_path):
+    """End-to-end: with OpenShot unavailable, a SINGLE render through
+    choose_renderer must (1) take the ffmpeg fallback's _ffmpeg_unsupported_drops
+    path, (2) mark backendHealth.downgraded=True, and (3) surface the crossfade +
+    keyframe drops on the SAME result. The existing health-stamp test renders a plain
+    card whose warnings list is empty, so it never proves the downgrade and the
+    effect-dropoff visibility co-occur — an editor could ship an episode that silently
+    lost a crossfade while believing the warnings list would have caught it."""
+    monkeypatch.setattr(
+        editor_render,
+        "detect_render_backends",
+        lambda: {
+            "openshot": {"available": False, "preferred": True, "reason": "Python bindings not importable"},
+            "ffmpeg": {"available": True, "preferred": False, "reason": "available"},
+        },
+    )
+    image = _solid_png(tmp_path / "still.png", "blue")
+    project = _project_with_card("dropoff", image)
+    project["clips"]["card_clip"]["effects"] = [
+        {"id": "fx_cf", "type": "crossfade", "params": {"duration": 0.3}},
+    ]
+    project["clips"]["card_clip"]["keyframes"] = [
+        {"property": "scale", "points": [
+            {"t": 0.0, "value": 0.5, "interp": "linear"},
+            {"t": 1.0, "value": 1.0, "interp": "linear"},
+        ]},
+    ]
+
+    renderer = editor_render.choose_renderer(tmp_path / "renders", asset_root=tmp_path)
+    assert renderer.backend == "ffmpeg"
+    result = renderer.render(project, start=0, duration=0.5)
+
+    # (2) silent downgrade is made visible
+    assert result["backendHealth"]["downgraded"] is True
+    assert result["backendHealth"]["selected"] == "ffmpeg"
+    assert result["backendHealth"]["preferred"] == "openshot"
+    # (1)+(3) the dropoff path ran and named what the fallback could not honor —
+    # on the SAME degraded render, not a separate fixture.
+    names = {(w["kind"], w["name"]) for w in result["warnings"]}
+    assert ("effect", "crossfade") in names
+    assert ("keyframe", "scale") in names
+    assert Path(result["video"]).exists()  # still ships an artifact, just a flagged one
+
+
 class _FakeInner:
     """Minimal renderer stand-in for proxy tests: exposes render/render_frame plus
     extra methods/attributes the proxy must forward through __getattr__."""
