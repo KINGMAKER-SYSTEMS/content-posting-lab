@@ -1441,10 +1441,11 @@ def ffmpeg_lossy_keyframe_properties() -> frozenset[str]:
 
     Derived from the render module (single source of truth, no hard-coded
     duplicate that could drift) via a local import so the two modules stay
-    decoupled at load time. ``test_ffmpeg_lossy_keyframe_properties`` pins that
-    the two sets cover exactly ``KEYFRAME_PROPERTIES`` — so adding a property to
-    the schema without teaching the fallback (or whitelisting it as lossy) fails
-    loudly instead of becoming a new silent drop."""
+    decoupled at load time.
+    ``test_ffmpeg_lossy_keyframe_properties_names_scale_and_pins_no_silent_drift``
+    pins that the two sets partition ``KEYFRAME_PROPERTIES`` exactly — so adding a
+    property to the schema without teaching the fallback (or whitelisting it as
+    lossy) fails loudly instead of becoming a new silent drop."""
 
     from services.editor_render import _FFMPEG_KEYFRAME_PROPERTIES
 
