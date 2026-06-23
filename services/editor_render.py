@@ -57,6 +57,20 @@ except ModuleNotFoundError as exc:
         raise
     raise ModuleNotFoundError(_MISSING_BRIDGE_MSG) from exc
 
+# The import above only proves a *file* called openshot_bridge.py is importable.
+# A worktree/checkout accident can also leave the file present but truncated
+# (0 bytes, partial write, merge-clobbered stub). That imports fine but is
+# missing the symbols editor_render compiles against, so the real failure would
+# surface much later as a cryptic AttributeError mid-render. Fail closed here
+# with the same recovery message instead. ponytail: a tuple check, no new deps.
+_REQUIRED_BRIDGE_ATTRS = ("timeline_json", "_resolve_asset_src")
+_missing_attrs = [a for a in _REQUIRED_BRIDGE_ATTRS if not hasattr(openshot_bridge, a)]
+if _missing_attrs:
+    raise ModuleNotFoundError(
+        f"services/openshot_bridge.py imported but is missing {_missing_attrs} "
+        f"(present-but-broken stub).\n{_MISSING_BRIDGE_MSG}"
+    )
+
 log = logging.getLogger("editor_render")
 
 
