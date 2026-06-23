@@ -14,9 +14,14 @@ crashed mid-write (a P0). Do not weaken it.
 
 import json
 import os
+import re
 import threading
 from pathlib import Path
 from typing import Any, Callable
+
+# Matches the tmp sidecars atomic_save creates: ``<name>.<pid>.<tid>.tmp``.
+# Used to find orphans left by a crash between fsync and os.replace.
+_TMP_RE = re.compile(r"\.(\d+)\.\d+\.tmp$")
 
 # Per-path reentrant locks so a load-modify-save transaction can be serialized.
 # atomic_save only atomizes the write; it does NOT stop two concurrent
@@ -37,6 +42,47 @@ def lock_for(path: Path | str) -> threading.RLock:
         if lock is None:
             lock = _LOCKS[key] = threading.RLock()
         return lock
+
+
+def _pid_alive(pid: int) -> bool:
+    """True if a process with ``pid`` currently exists (POSIX ``kill(pid, 0)``)."""
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        # Exists but owned by another user — treat as alive (don't reap it).
+        return True
+    except OSError:
+        return True
+    return True
+
+
+def _sweep_orphan_tmps(p: Path) -> None:
+    """Remove tmp sidecars of ``p`` whose owning process is no longer alive.
+
+    A crash between fsync and ``os.replace`` orphans a ``<name>.<pid>.<tid>.tmp``.
+    atomic_load never reads it (it reads ``path``), so it's not a correctness bug,
+    but on the long-lived Railway volume the orphans accumulate and waste space.
+    We only reap tmps whose pid is dead, so an in-flight concurrent writer's tmp
+    is never touched. Best-effort: any error here is swallowed.
+    """
+    try:
+        siblings = list(p.parent.glob(f"{p.name}.*.tmp"))
+    except OSError:
+        return
+    for tmp in siblings:
+        m = _TMP_RE.search(tmp.name)
+        if not m:
+            continue
+        if _pid_alive(int(m.group(1))):
+            continue
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
 
 
 def atomic_load(path: Path | str, *, default: Any = None) -> Any:
@@ -75,6 +121,8 @@ def atomic_save(
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp, p)
+        # Opportunistically reap tmps orphaned by an earlier crash (dead pid).
+        _sweep_orphan_tmps(p)
     except Exception:
         # ponytail: best-effort cleanup; a crash between fsync and replace can
         # still orphan a tmp, but a stale tmp never breaks atomic_load (it reads

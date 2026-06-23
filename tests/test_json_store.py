@@ -214,6 +214,68 @@ def test_concurrent_saves_same_path_no_corruption(tmp_path):
     assert not list(tmp_path.glob("*.tmp")), "tmp leaked under concurrent saves"
 
 
+# --- orphan-tmp sweep: reap crash-leftover tmps by dead pid (this ticket) ----
+
+
+def _dead_pid():
+    """A pid that is essentially guaranteed not to be running."""
+    pid = 999999
+    while json_store._pid_alive(pid):
+        pid += 1
+    return pid
+
+
+def test_save_sweeps_orphan_tmp_of_dead_pid(tmp_path):
+    """A successful save reaps a leftover tmp whose owning process is gone.
+
+    This closes the documented hazard: a crash between fsync and os.replace
+    orphans a <name>.<pid>.<tid>.tmp on the long-lived volume. The next save
+    cleans it up (only when the pid is dead, so live writers are safe).
+    """
+    p = tmp_path / "g.json"
+    atomic_save(p, {"good": 1})
+    orphan = p.with_suffix(p.suffix + f".{_dead_pid()}.123.tmp")
+    orphan.write_text("{ half-written", encoding="utf-8")
+
+    atomic_save(p, {"good": 2})
+
+    assert not orphan.exists(), "orphan tmp of a dead pid was not reaped"
+    assert atomic_load(p) == {"good": 2}
+    assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_save_does_not_sweep_tmp_of_live_pid(tmp_path):
+    """A tmp belonging to a still-running process (e.g. a concurrent writer)
+    must NOT be reaped — only dead-pid orphans are safe to remove."""
+    p = tmp_path / "g.json"
+    atomic_save(p, {"good": 1})
+    # use the current process pid -> it is alive, so the sweep must spare it
+    live = p.with_suffix(p.suffix + f".{os.getpid()}.999999.tmp")
+    live.write_text("in-flight", encoding="utf-8")
+
+    atomic_save(p, {"good": 2})
+
+    assert live.exists(), "sweep removed a live writer's in-flight tmp"
+    live.unlink()
+
+
+def test_sweep_ignores_unrelated_and_malformed_files(tmp_path):
+    """The sweep only touches this path's well-formed tmp sidecars."""
+    p = tmp_path / "g.json"
+    atomic_save(p, {"good": 1})
+    other = tmp_path / "other.json.5.6.tmp"   # different base name
+    other.write_text("x", encoding="utf-8")
+    weird = p.with_suffix(p.suffix + ".notapid.tmp")  # no pid.tid pattern
+    weird.write_text("x", encoding="utf-8")
+
+    atomic_save(p, {"good": 2})
+
+    assert other.exists(), "sweep reaped an unrelated file"
+    assert weird.exists(), "sweep reaped a non-matching tmp"
+    other.unlink()
+    weird.unlink()
+
+
 # --- lock_for(): per-path reentrant transaction guard (this ticket) ----------
 
 
