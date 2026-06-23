@@ -966,6 +966,53 @@ def test_generic_clip_mutation_keeps_before_crossfade(tmp_path, op, mutation):
     )
 
 
+def test_apply_command_clip_keyframes_preserves_synthesized_crossfade_end_to_end(tmp_path):
+    """End-to-end fixture for the ABN-import crossfade survival contract: drive the
+    REAL editor_timeline.apply_command with op='clip.keyframes' on a clip that carries
+    an import-synthesized crossfade effect, then compile the resulting command log
+    through the bridge. The crossfade must reach OpenShot as a Fade.
+
+    The hand-fabricated regression tests above poke the bridge's restore-from-before
+    branch with synthetic log entries; this one exercises the whole pipeline
+    (apply_command -> commandLog before/after blocks -> flattened_update_actions),
+    so a future change to either _mutate_clip (dropping effects) OR the bridge restore
+    path that silently loses the crossfade gets caught."""
+    project = _project(tmp_path / "card.png")
+    # The clip carries the import-synthesized crossfade (same shape _shot_effects emits).
+    project["clips"]["card_clip"]["effects"] = [
+        {"id": "xf_shot", "type": "crossfade", "params": {"duration": 0.5}}
+    ]
+
+    edited = editor_timeline.apply_command(
+        project,
+        {
+            "id": "cmd_kf_e2e",
+            "op": "clip.keyframes",
+            "actor": "tester",
+            "expectedRevision": project["revision"],
+            "payload": {
+                "clipId": "card_clip",
+                "keyframes": [
+                    {
+                        "property": "opacity",
+                        "points": [
+                            {"t": 0.0, "value": 0.0, "interp": "linear"},
+                            {"t": 1.0, "value": 1.0, "interp": "linear"},
+                        ],
+                    }
+                ],
+            },
+        },
+    )
+
+    actions = openshot_bridge.flattened_update_actions(edited)
+    kf_action = next(a for a in actions if a["key"] == ["clips", {"id": "card_clip"}])
+    effects = kf_action["value"].get("effects", [])
+    assert any(e.get("type") == "Fade" for e in effects), (
+        "clip.keyframes edit dropped the import-synthesized crossfade on its way to OpenShot"
+    )
+
+
 def test_clip_keyframe_envelope_translates_to_multipoint_openshot_keyframes(tmp_path):
     """A volume-ducking envelope on the clip becomes a multi-Point OpenShot
     keyframe (frame X = t*fps+1, Y scaled to 0..100), overriding the flat default."""

@@ -88,6 +88,132 @@ def test_burn_list_endpoints(sync_client):
     assert batches[0]["id"] == "batch-x"
 
 
+# ── /zip/{batch_id} streaming download ─────────────────────────────────────
+#
+# Streams all burned_*.mp4 in a batch as a ZIP_STORED archive, chunked so
+# Railway's proxy sees continuous data. Covers: valid archive contents +
+# headers, label-from-meta filename, missing batch, empty batch, bad project,
+# and the tmp-file cleanup after the stream drains.
+
+
+def _seed_burn_batch(project_slug, batch_id, files):
+    """Create a burn batch dir with the given {name: bytes} files. Returns dir."""
+    batch_dir = get_project_burn_dir(project_slug) / batch_id
+    batch_dir.mkdir(parents=True, exist_ok=True)
+    for name, data in files.items():
+        (batch_dir / name).write_bytes(data)
+    return batch_dir
+
+
+def test_burn_zip_download_happy_path(sync_client):
+    """A batch with multiple burned MP4s streams a valid ZIP containing exactly
+    those files, with attachment + Content-Length headers."""
+    import io
+    import zipfile
+
+    sync_client.post("/api/projects", json={"name": "Zip Happy"})
+    _seed_burn_batch(
+        "zip-happy",
+        "batch-z",
+        {
+            "burned_000.mp4": b"first burned bytes",
+            "burned_001.mp4": b"second burned bytes",
+            "notes.txt": b"ignore me",  # non-matching file must be excluded
+        },
+    )
+
+    resp = sync_client.get("/api/burn/zip/batch-z", params={"project": "zip-happy"})
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "application/zip"
+    # Default filename is the batch_id (no metadata label present)
+    assert 'filename="batch-z.zip"' in resp.headers["content-disposition"]
+    assert resp.headers["content-length"] == str(len(resp.content))
+
+    zf = zipfile.ZipFile(io.BytesIO(resp.content))
+    assert zf.testzip() is None  # archive is not corrupt
+    assert sorted(zf.namelist()) == ["burned_000.mp4", "burned_001.mp4"]
+    assert zf.read("burned_000.mp4") == b"first burned bytes"
+    assert zf.read("burned_001.mp4") == b"second burned bytes"
+
+
+def test_burn_zip_download_uses_meta_label_for_filename(sync_client):
+    """When batch_meta.json carries a label, the ZIP filename uses it."""
+    sync_client.post("/api/projects", json={"name": "Zip Label"})
+    batch_dir = _seed_burn_batch(
+        "zip-label", "raw-id-123", {"burned_000.mp4": b"x"}
+    )
+    burn_router._save_batch_meta(batch_dir, {"label": "Rooftop Shoot"})
+
+    resp = sync_client.get(
+        "/api/burn/zip/raw-id-123", params={"project": "zip-label"}
+    )
+    assert resp.status_code == 200
+    assert 'filename="Rooftop Shoot.zip"' in resp.headers["content-disposition"]
+
+
+def test_burn_zip_download_missing_batch_returns_404(sync_client):
+    sync_client.post("/api/projects", json={"name": "Zip Missing"})
+    resp = sync_client.get(
+        "/api/burn/zip/no-such-batch", params={"project": "zip-missing"}
+    )
+    assert resp.status_code == 404
+    assert resp.json()["error"] == "Batch not found"
+
+
+def test_burn_zip_download_empty_batch_returns_404(sync_client):
+    """A batch dir that exists but holds no burned_*.mp4 files is a 404, not an
+    empty/corrupt ZIP."""
+    sync_client.post("/api/projects", json={"name": "Zip Empty"})
+    _seed_burn_batch("zip-empty", "empty-batch", {"stray.txt": b"nothing"})
+
+    resp = sync_client.get(
+        "/api/burn/zip/empty-batch", params={"project": "zip-empty"}
+    )
+    assert resp.status_code == 404
+    assert resp.json()["error"] == "No burned files in batch"
+
+
+def test_burn_zip_download_invalid_project_returns_400(sync_client):
+    """A path-traversal / invalid project name is rejected at the dir-resolve
+    step with a 400 before any filesystem work."""
+    resp = sync_client.get(
+        "/api/burn/zip/whatever", params={"project": "../../etc"}
+    )
+    assert resp.status_code == 400
+    assert "error" in resp.json()
+
+
+def test_burn_zip_download_cleans_up_tmp_file(sync_client, monkeypatch):
+    """After the stream fully drains, the temp ZIP built by mkstemp is unlinked
+    (the _stream_chunks finally-block). Guards against tmp leak on every
+    download."""
+    import os
+    import tempfile
+
+    created_paths = []
+    real_mkstemp = tempfile.mkstemp
+
+    def tracking_mkstemp(*args, **kwargs):
+        fd, path = real_mkstemp(*args, **kwargs)
+        created_paths.append(path)
+        return fd, path
+
+    monkeypatch.setattr(burn_router.tempfile, "mkstemp", tracking_mkstemp)
+
+    sync_client.post("/api/projects", json={"name": "Zip Cleanup"})
+    _seed_burn_batch("zip-cleanup", "cleanup-batch", {"burned_000.mp4": b"data"})
+
+    resp = sync_client.get(
+        "/api/burn/zip/cleanup-batch", params={"project": "zip-cleanup"}
+    )
+    assert resp.status_code == 200
+    _ = resp.content  # force the StreamingResponse body to be consumed
+
+    assert created_paths, "mkstemp was not called"
+    # The streaming finally-block must have removed the temp ZIP.
+    assert all(not os.path.exists(p) for p in created_paths)
+
+
 def test_burn_batch_status_unknown_batch(sync_client):
     """Polling an unknown/not-yet-registered batch returns a safe empty shape,
     never a 500 — the frontend may poll before /overlay registers the batch."""

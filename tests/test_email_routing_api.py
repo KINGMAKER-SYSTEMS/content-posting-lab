@@ -329,6 +329,57 @@ def test_delete_rule_propagates_cf_error_as_502(sync_client, monkeypatch, config
     assert "CF 500" in resp.json()["detail"]
 
 
+# ── _cf_upstream helper: shared 502 conversion across every endpoint ──────────
+
+
+def test_get_destinations_propagates_cf_error_as_502(sync_client, monkeypatch, configured):
+    monkeypatch.setattr(r, "list_destinations", _async_raise(RuntimeError("CF down")))
+    resp = sync_client.get("/api/email/destinations")
+    assert resp.status_code == 502
+    assert "CF down" in resp.json()["detail"]
+
+
+def test_add_destination_propagates_cf_error_as_502(sync_client, monkeypatch, configured):
+    monkeypatch.setattr(r, "add_destination", _async_raise(RuntimeError("CF boom")))
+    resp = sync_client.post("/api/email/destinations", json={"email": "a@b.com"})
+    assert resp.status_code == 502
+    assert "CF boom" in resp.json()["detail"]
+
+
+def test_auto_create_propagates_cf_error_as_502(sync_client, monkeypatch, configured):
+    monkeypatch.setattr(r, "list_rules", _async([]))
+    monkeypatch.setattr(r, "list_destinations", _async([{"email": "a@b.com", "verified": "x"}]))
+    monkeypatch.setattr(r, "create_rule", _async_raise(RuntimeError("CF create failed")))
+    resp = sync_client.post(
+        "/api/email/auto-create",
+        json={"integration_id": "i1", "account_name": "Acme", "destination": "a@b.com"},
+    )
+    assert resp.status_code == 502
+    assert "CF create failed" in resp.json()["detail"]
+
+
+def test_cf_upstream_does_not_mask_deliberate_http_exception():
+    """A handler that raises a real HTTPException (e.g. a 409) inside the context
+    must surface with its own status, not be rewritten to 502."""
+    from fastapi import HTTPException as _HE
+
+    with pytest.raises(_HE) as exc:
+        with r._cf_upstream():
+            raise _HE(status_code=409, detail="conflict")
+    assert exc.value.status_code == 409
+    assert exc.value.detail == "conflict"
+
+
+def test_cf_upstream_converts_bare_exception_to_502():
+    from fastapi import HTTPException as _HE
+
+    with pytest.raises(_HE) as exc:
+        with r._cf_upstream():
+            raise RuntimeError("kaboom")
+    assert exc.value.status_code == 502
+    assert exc.value.detail == "kaboom"
+
+
 # ── Service-level tests for services/email_routing.py ────────────────────────
 #
 # These exercise the real async httpx calls inside the service (not the router).

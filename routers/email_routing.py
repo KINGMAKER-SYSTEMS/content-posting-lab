@@ -4,6 +4,8 @@ Proxies CF Email Routing API for creating/managing forwarding rules
 and destination addresses.
 """
 
+from contextlib import contextmanager
+
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
@@ -30,6 +32,22 @@ def _require_configured():
     if not cfg["configured"]:
         raise HTTPException(status_code=503, detail="CF Email Routing not configured")
     return cfg
+
+
+@contextmanager
+def _cf_upstream():
+    """Translate any failure from the Cloudflare API client into a 502.
+
+    Centralizes the bare-exception → HTTP 502 conversion shared by every
+    endpoint that proxies the CF Email Routing API.
+    """
+    try:
+        yield
+    except HTTPException:
+        # Already a deliberate HTTP error — don't mask it as a 502.
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
 
 
 # ── Status ───────────────────────────────────────────────────────────────────
@@ -69,10 +87,8 @@ async def delete_email_rule(rule_id: str, integration_id: str | None = None):
                 ),
             )
 
-    try:
+    with _cf_upstream():
         await delete_rule(rule_id)
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=str(e))
 
     # Unlink from roster page
     if integration_id and page:
@@ -130,10 +146,8 @@ async def auto_create_for_page(req: AutoCreateRequest):
             detail=f"Destination {req.destination} is not a verified Cloudflare destination",
         )
 
-    try:
+    with _cf_upstream():
         rule = await create_rule(alias, req.destination)
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=str(e))
 
     # Link to roster page
     page = get_page(req.integration_id)
@@ -158,11 +172,9 @@ async def auto_create_for_page(req: AutoCreateRequest):
 async def get_destinations():
     """List verified destination addresses."""
     _require_configured()
-    try:
+    with _cf_upstream():
         destinations = await list_destinations()
-        return {"destinations": destinations}
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=str(e))
+    return {"destinations": destinations}
 
 
 class AddDestinationRequest(BaseModel):
@@ -173,8 +185,6 @@ class AddDestinationRequest(BaseModel):
 async def add_destination_address(req: AddDestinationRequest):
     """Add a new destination address (triggers CF verification email)."""
     _require_configured()
-    try:
+    with _cf_upstream():
         dest = await add_destination(req.email)
-        return {"destination": dest}
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=str(e))
+    return {"destination": dest}

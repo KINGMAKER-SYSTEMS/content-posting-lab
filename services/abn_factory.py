@@ -115,12 +115,18 @@ def _ensure_card_backgrounds(want: int = 6):
                 src = ASSETS / rel.removeprefix("/agenticnews-assets/")
                 # GUARD the source, not just the destination: only promote a keeper that actually
                 # came from a GC-reapable _scratch/ root. If _codex_image ever returned a URL
-                # pointing elsewhere (a regression, a flat ASSETS-root path), src.replace() would
+                # pointing elsewhere (a regression, a flat ASSETS-root path), the promote would
                 # otherwise yank an arbitrary in-store file into the shared pool. scratch_dirs() is
                 # the same reapable-root set _cross_scratch_path() validates writes against.
                 reapable = {d.resolve() for d in scratch_dirs()}
                 if src.exists() and src.resolve().parent in reapable:
-                    src.replace(shared_path("card_backgrounds", f"bg_{idx:02d}.png"))
+                    # ATOMIC promote: the shared bg pool is the cross-episode "config" of which
+                    # backgrounds every future episode reads, so a half-written PNG here silently
+                    # poisons ALL episodes. _atomic_copy_file writes a .tmp sibling in the pool dir,
+                    # fsyncs it, then os.replace()s it into place — so bg_NN.png only ever appears
+                    # fully-flushed. (A bare src.replace() leaves the keeper in _scratch for the GC
+                    # to reap, which is fine; correctness of the pool write is what matters.)
+                    _atomic_copy_file(src, shared_path("card_backgrounds", f"bg_{idx:02d}.png"))
             idx += 1
     except Exception:
         pass

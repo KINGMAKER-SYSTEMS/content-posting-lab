@@ -332,6 +332,42 @@ def test_shot_ducking_envelope_reaches_render_path_unflattened():
         assert "0.7000" in flt and "0.2200" in flt, field
 
 
+def test_vo_ducking_envelope_reaches_render_path_unflattened():
+    """End-to-end guard for an AUDIO/VO clip — the one source the line-295 shot test
+    and the music-bed tests never cover. A voice-over that ships its own ducking
+    envelope (keyframes / keyframesEnvelope / duckingKeyframes on the `vo` dict) must
+    survive import onto the audio_1 clip AND compile through editor_render._volume_filter
+    as its absolute gains, not silently flatten to the clip's default volume=1.0.
+
+    Before _shot_keyframes was wired into the VO branch the VO clip was built with an
+    empty `keyframes` list, so any ducking envelope on the VO was dropped at import and
+    _volume_filter emitted a flat `volume=` — losing the ducking entirely."""
+    from services import editor_render
+
+    for field in ("keyframes", "keyframesEnvelope", "duckingKeyframes"):
+        project = timeline.project_from_abn_timeline("p", {
+            "episodeId": "e", "totalSec": 4.0,
+            "segments": [{"segmentId": "s0", "durationSec": 4.0, "shots": [], "audio": {
+                "vo": {
+                    "src": "/agenticnews-assets/vo_s0.wav", "duration": 4.0,
+                    field: [{"property": "volume", "points": [
+                        {"t": 0.0, "value": 0.7}, {"t": 1.0, "value": 0.22},
+                    ]}],
+                }
+            }}],
+        })
+        clip = next(c for c in project["clips"].values() if c["kind"] == "voiceover")
+        # VO keeps the default flat volume=1.0 so the envelope's absolute gains pass 1:1.
+        assert clip["volume"] == 1.0, field
+        assert any(t["property"] == "volume" for t in clip["keyframes"]), field
+        flt = editor_render._volume_filter(clip, float(clip["volume"]))
+        # Time-varying piecewise expression, not a flat `volume=` (which would mean the
+        # ducking envelope was dropped/flattened at import).
+        assert flt.startswith("volume='") and flt.endswith(":eval=frame"), field
+        assert "if(" in flt, field
+        assert "0.7000" in flt and "0.2200" in flt, field
+
+
 def test_clip_keyframes_command_neutralizes_flat_volume_end_to_end():
     """A `clip.keyframes` command that adds a volume envelope to a pre-ducked music
     bed (flat volume=0.22) must neutralize the flat gain to 1.0, and that
@@ -3215,10 +3251,14 @@ def test_clip_split_partitions_multitrack_keyframes_and_straddling_effects(tmp_p
     assert [p["t"] for p in tail_kf["volume"]["points"]] == [0.0, 3.0]
     assert tail_kf["volume"]["points"][0]["value"] == 0.5
 
-    # opacity has no point on the boundary: head gets only t=1, tail gets t=5 -> t=2.
-    assert [p["t"] for p in head_kf["opacity"]["points"]] == [1.0]
-    assert "opacity" not in tail_kf or [p["t"] for p in tail_kf["opacity"]["points"]] == [2.0]
-    assert [p["t"] for p in tail_kf["opacity"]["points"]] == [2.0]
+    # opacity has no point ON the boundary: the cut crosses the (1,0.2)->(5,0.9) ramp, so
+    # a synthetic boundary point is added at t=3 holding the interpolated value
+    # 0.2 + (0.9-0.2)*(2/4) = 0.55 -- the head ends there, the tail (rebased) starts there
+    # -- so the envelope stays continuous across the cut instead of jumping.
+    assert [p["t"] for p in head_kf["opacity"]["points"]] == [1.0, 3.0]
+    assert head_kf["opacity"]["points"][1]["value"] == pytest.approx(0.55)
+    assert [p["t"] for p in tail_kf["opacity"]["points"]] == [0.0, 2.0]
+    assert tail_kf["opacity"]["points"][0]["value"] == pytest.approx(0.55)
 
     # fadeIn is start-anchored: full on the head; on the tail the 3s front trim fully
     # eats the 0.5s ramp (0.5 - 3.0 <= 0), so it is DROPPED rather than kept as a 0s
@@ -3229,6 +3269,43 @@ def test_clip_split_partitions_multitrack_keyframes_and_straddling_effects(tmp_p
     assert {e["id"] for e in tail["effects"]} == {"fo"}
     tail_fx = {e["id"]: e for e in tail["effects"]}
     assert tail_fx["fo"]["params"]["duration"] == 0.5
+
+
+def test_split_inserts_continuity_keyframe_when_envelope_crosses_cut(tmp_path):
+    """When a split cuts ACROSS a keyframe segment (no point exactly at the cut), both
+    halves must keep the envelope continuous: the head's last point and the tail's first
+    point both carry the value the un-split envelope held at the cut. Without the
+    synthetic boundary point the head loses its tail value and the tail starts at the
+    wrong (later) value, so the animation jumps at the split seam -- the bug the ticket
+    flags for split + windowed render."""
+    store = timeline.TimelineStore(tmp_path)
+    store.save(timeline.new_project("proj_split_cont"))
+    for command in [
+        {"op": "asset.import", "actor": "agent", "expectedRevision": 0,
+         "payload": {"assetId": "a1", "type": "video", "src": "/a.mp4"}},
+        {"op": "clip.create", "actor": "agent", "expectedRevision": 1,
+         "payload": {"clipId": "c1", "assetId": "a1", "trackId": "video_1",
+                     "start": 0.0, "duration": 4.0}},
+        {"op": "clip.keyframes", "actor": "agent", "expectedRevision": 2,
+         "payload": {"clipId": "c1", "keyframes": [
+             {"property": "opacity", "points": [
+                 {"t": 0.0, "value": 0.0, "interp": "linear"},
+                 {"t": 4.0, "value": 1.0, "interp": "linear"},  # ramp, slope 0.25/s
+             ]}]}},
+        # Cut at t=1.0 (clip-local), which is NOT one of the keyframe points.
+        {"op": "clip.split", "actor": "human", "expectedRevision": 3,
+         "payload": {"clipId": "c1", "at": 1.0, "newClipId": "c1_b"}},
+    ]:
+        project = store.apply_command("proj_split_cont", command)
+
+    head_pts = project["clips"]["c1"]["keyframes"][0]["points"]
+    tail_pts = project["clips"]["c1_b"]["keyframes"][0]["points"]
+
+    # Value at the cut (t=1.0) on the 0.25/s ramp is 0.25. Head ends there; tail (rebased
+    # to its own t=0) begins there -- so playing head-then-tail reproduces the original
+    # straight ramp with no discontinuity at the seam.
+    assert [(p["t"], p["value"]) for p in head_pts] == [(0.0, 0.0), (1.0, 0.25)]
+    assert [(p["t"], p["value"]) for p in tail_pts] == [(0.0, 0.25), (3.0, 1.0)]
 
 
 def test_abn_import_skips_unsupported_shot_effects_without_aborting():

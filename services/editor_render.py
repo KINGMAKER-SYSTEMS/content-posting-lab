@@ -1324,13 +1324,50 @@ def _refit_effects(
 
 
 def _shift_keyframes(keyframes: list[dict[str, Any]], delta: float) -> list[dict[str, Any]]:
+    """Shift a keyframe envelope's `t` by `delta` (negative for a front trim).
+
+    Points pushed below t=0 by a front trim are NOT clamped: clamping pins each
+    out-of-window point to t=0 keeping its stale value, which both mis-fires the
+    envelope at the new window start AND can emit several points at t=0 (a corrupt
+    multi-value origin). Instead the sub-zero points are dropped and replaced by ONE
+    synthetic point at t=0 carrying the value the envelope linearly held at the trim
+    boundary, so the windowed clip's animation starts at the right value. This is the
+    split->window seam: a split clip's tail is already rebased to its own t=0, and a
+    window that trims into it past its first keyframe must re-anchor, not clamp."""
+
     shifted: list[dict[str, Any]] = []
     for track in keyframes:
-        points = [
-            {**point, "t": max(0.0, float(point.get("t") or 0.0) + delta)}
-            for point in (track.get("points") or [])
+        raw = sorted(
+            (track.get("points") or []),
+            key=lambda p: float(p.get("t") or 0.0),
+        )
+        moved = [
+            {**point, "t": float(point.get("t") or 0.0) + delta}
+            for point in raw
         ]
-        shifted.append({**track, "points": points})
+        kept = [p for p in moved if p["t"] >= 0.0]
+        below = [p for p in moved if p["t"] < 0.0]
+        if below and (not kept or kept[0]["t"] > 0.0):
+            # Re-anchor at t=0 with the boundary value the envelope held there.
+            last_below = below[-1]
+            if kept:
+                first_above = kept[0]
+                span = first_above["t"] - last_below["t"]
+                v0 = float(last_below.get("value") or 0.0)
+                v1 = float(first_above.get("value") or 0.0)
+                # The crossing segment's interp is the END point's (OpenShot convention).
+                if span <= 0 or str(first_above.get("interp") or "linear") == "constant":
+                    boundary_value = v0
+                else:
+                    boundary_value = v0 + (v1 - v0) * ((0.0 - last_below["t"]) / span)
+            else:
+                # Whole envelope trimmed off the front: hold the last value.
+                boundary_value = float(last_below.get("value") or 0.0)
+            kept.insert(
+                0,
+                {**last_below, "t": 0.0, "value": boundary_value},
+            )
+        shifted.append({**track, "points": kept})
     return shifted
 
 

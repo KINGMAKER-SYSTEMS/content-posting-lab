@@ -152,7 +152,7 @@ def project_from_abn_timeline(
                 "src": vo["src"],
                 "metadata": {"segmentId": segment_id, "role": "voiceover"},
             }
-            project["clips"][clip_id] = _clip(
+            vo_clip = _clip(
                 clip_id,
                 asset_id,
                 "audio_1",
@@ -161,6 +161,17 @@ def project_from_abn_timeline(
                 kind="voiceover",
                 metadata={"segmentId": segment_id},
             )
+            # A VO track can ship its own ducking envelope (keyframes /
+            # keyframesEnvelope / duckingKeyframes), same shape the music bed and
+            # video/graphics shots accept. Without promoting it the envelope is
+            # silently dropped at import (the flat volume=1.0 wins) and the render
+            # loses the ducking. _shot_keyframes reads exactly those fields; the VO
+            # clip keeps the default flat volume=1.0 so the envelope's absolute
+            # gains pass through _volume_filter unflattened.
+            vo_keyframes = _shot_keyframes(vo)
+            if vo_keyframes:
+                vo_clip["keyframes"] = vo_keyframes
+            project["clips"][clip_id] = vo_clip
 
         for lt_index, lower in enumerate(segment.get("lowerThirds") or []):
             asset_id = _stable_id("asset", segment_id, "lower", str(lt_index))
@@ -1186,25 +1197,71 @@ def _mutate_clip(project: dict[str, Any], op: str, clip: dict[str, Any], payload
 _TAIL_ANCHORED_EFFECTS = frozenset({"fadeOut"})
 
 
+def _value_at(points: list[dict[str, Any]], t: float) -> tuple[float, str] | None:
+    """Linearly interpolate (value, interp) of a sorted point list at time ``t``.
+
+    Returns ``None`` when ``t`` falls outside the envelope (no point to anchor on).
+    The interp returned is the END point's of the crossing segment (OpenShot
+    convention: a segment's interpolation belongs to its later point)."""
+    ordered = sorted(points, key=lambda p: float(p.get("t") or 0.0))
+    if not ordered:
+        return None
+    if t <= float(ordered[0]["t"]):
+        return float(ordered[0].get("value") or 0.0), str(ordered[0].get("interp") or "linear")
+    if t >= float(ordered[-1]["t"]):
+        return float(ordered[-1].get("value") or 0.0), str(ordered[-1].get("interp") or "linear")
+    for p0, p1 in zip(ordered, ordered[1:]):
+        t0, t1 = float(p0["t"]), float(p1["t"])
+        if t0 <= t <= t1:
+            v0 = float(p0.get("value") or 0.0)
+            v1 = float(p1.get("value") or 0.0)
+            interp = str(p1.get("interp") or "linear")
+            span = t1 - t0
+            if span <= 0 or interp == "constant":
+                return v0, interp
+            return v0 + (v1 - v0) * ((t - t0) / span), interp
+    return None
+
+
 def _keyframes_before(tracks: Any, offset: float) -> list[dict[str, Any]]:
-    """Trim a keyframe envelope to the head half of a split (t <= offset)."""
+    """Trim a keyframe envelope to the head half of a split (t <= offset).
+
+    If the envelope crosses the split without a point exactly at ``offset``, a synthetic
+    end point is appended at ``offset`` carrying the interpolated boundary value, so the
+    head's last value matches what the un-split clip held there (continuity at the cut)."""
     out: list[dict[str, Any]] = []
     for track in tracks or []:
-        points = [p for p in (track.get("points") or []) if p["t"] <= offset]
+        src = track.get("points") or []
+        points = [p for p in src if p["t"] <= offset]
+        if points and not any(abs(float(p["t"]) - offset) < 1e-9 for p in points):
+            boundary = _value_at(src, offset)
+            if boundary is not None:
+                value, interp = boundary
+                points = [*points, {"t": offset, "value": value, "interp": interp}]
         if points:
             out.append({**track, "points": points})
     return out
 
 
 def _keyframes_after(tracks: Any, offset: float) -> list[dict[str, Any]]:
-    """Rebase a keyframe envelope to the tail half of a split (t >= offset → t -= offset)."""
+    """Rebase a keyframe envelope to the tail half of a split (t >= offset → t -= offset).
+
+    If the envelope crosses the split without a point exactly at ``offset``, a synthetic
+    start point is prepended at the rebased t=0 carrying the interpolated boundary value,
+    so the tail begins at the value the un-split clip held at the cut (continuity)."""
     out: list[dict[str, Any]] = []
     for track in tracks or []:
+        src = track.get("points") or []
         points = [
             {**p, "t": p["t"] - offset}
-            for p in (track.get("points") or [])
+            for p in src
             if p["t"] >= offset
         ]
+        if points and not any(abs(float(p["t"])) < 1e-9 for p in points):
+            boundary = _value_at(src, offset)
+            if boundary is not None:
+                value, interp = boundary
+                points = [{"t": 0.0, "value": value, "interp": interp}, *points]
         if points:
             out.append({**track, "points": points})
     return out

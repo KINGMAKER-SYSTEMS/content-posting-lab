@@ -236,6 +236,74 @@ def test_codex_image_rejects_symlinked_source(store, tmp_path, monkeypatch):
     assert leaked == []
 
 
+# ---------------------------------------------------------------------------
+# _ensure_card_backgrounds PROMOTE atomicity: the shared card_backgrounds/ pool is
+# the cross-episode "config" of which backgrounds every future episode reads. A
+# half-written bg_NN.png there silently poisons ALL episodes. The promote of a keeper
+# from the reapable _scratch/ root into that pool must be ATOMIC (tmp + fsync +
+# os.replace via _atomic_copy_file) — never a partial file visible in the pool, and
+# never any .tmp residue left in the pool dir.
+# ---------------------------------------------------------------------------
+
+def test_promote_to_card_bg_pool_is_atomic_no_partial_no_tmp(store):
+    """_atomic_copy_file (the promoter used by _ensure_card_backgrounds line ~123) lands a
+    keeper into _shared/card_backgrounds/bg_NN.png fully-flushed via a .tmp sibling + os.replace,
+    leaving NO partial file and NO .tmp residue in the pool dir."""
+    src = abn_factory._cross_scratch_path("_tmp_bg_0.png")
+    payload = b"PNGDATA" * 4096
+    src.write_bytes(payload)
+
+    dest = abn_assets.shared_path("card_backgrounds", "bg_00.png")
+    abn_factory._atomic_copy_file(src, dest)
+
+    # Pool file appears complete and on-schema.
+    assert dest.read_bytes() == payload
+    assert abn_assets.is_managed(dest)
+    rel = dest.resolve().relative_to(store.resolve())
+    assert rel.parts[0] == "_shared" and rel.parts[1] == "card_backgrounds"
+    # No .tmp residue left behind in the pool dir.
+    assert list(dest.parent.glob("*.tmp")) == []
+
+
+def test_promote_is_atomic_replace_not_partial_write(store, monkeypatch):
+    """If the promote is interrupted AFTER the tmp is written but the rename can still be
+    inspected, the pool path must NEVER hold a half file: _atomic_copy_file writes to a tmp
+    sibling first, so a crash before os.replace leaves the pool path absent, not truncated."""
+    src = abn_factory._cross_scratch_path("_tmp_bg_1.png")
+    payload = b"X" * 2048
+    src.write_bytes(payload)
+    dest = abn_assets.shared_path("card_backgrounds", "bg_01.png")
+
+    # Simulate a crash at the rename step: bytes were staged to a tmp, but the atomic
+    # publish never happened. The live pool path must be absent (poison-free), not partial.
+    real_replace = abn_factory.os.replace
+    def boom(a, b):
+        raise OSError("simulated crash before publish")
+    monkeypatch.setattr(abn_factory.os, "replace", boom)
+    with pytest.raises(OSError):
+        abn_factory._atomic_copy_file(src, dest)
+    monkeypatch.setattr(abn_factory.os, "replace", real_replace)
+
+    assert not dest.exists()  # never a partial/poisoned bg in the live pool
+
+
+def test_ensure_card_backgrounds_does_not_bare_replace_into_shared_pool():
+    """Source guard: the bg-pool promote must NOT use a bare ``src.replace(shared_path(...))``
+    (a direct move that hands the rename a possibly-not-fully-flushed source straight into the
+    cross-episode config dir). It must go through the atomic tmp+fsync+os.replace promoter so a
+    poisoned/partial bg can never appear in the shared pool that every episode reads."""
+    pat = re.compile(r"\.replace\(\s*shared_path\(")
+    offenders = []
+    for ln in Path(abn_factory.__file__).read_text().splitlines():
+        code = ln.split("#", 1)[0]
+        if pat.search(code):
+            offenders.append(ln.strip())
+    assert not offenders, (
+        "abn_factory promotes a card background with a bare .replace(shared_path(...)) — route "
+        f"the promote through _atomic_copy_file (tmp + fsync + os.replace) instead: {offenders}"
+    )
+
+
 def test_codex_image_rejects_source_escaping_via_symlinked_gen_subdir(store, tmp_path, monkeypatch):
     """Even a file whose path string is *under* gen_dir is rejected if a symlink
     hop in its real path escapes the tree (realpath containment, not string prefix)."""

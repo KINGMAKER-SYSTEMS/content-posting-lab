@@ -37,6 +37,17 @@ def _scratch(assets, ep_id, name, *, age_s=7200, body=b"intermediate"):
     return f
 
 
+def _scratch_cross(assets, name, *, age_s=7200, body=b"intermediate"):
+    """Write a CROSS-EPISODE _scratch/ file aged `age_s` seconds in the past."""
+    d = assets / "_scratch"
+    d.mkdir(parents=True, exist_ok=True)
+    f = d / name
+    f.write_bytes(body)
+    old = time.time() - age_s
+    os.utime(f, (old, old))
+    return f
+
+
 # --- scratch_dirs(): the GC's reapable-root enumerator must never reach a non-scratch surface ----
 # The whole GC safety invariant (abn_assets ~406-431) rests on scratch_dirs() returning ONLY
 # per-episode {ep}/scratch/ + cross-episode _scratch/. These pin the enumerator directly (the reap
@@ -322,7 +333,15 @@ def test_cachebuster_url_protects_and_renders_the_same_file_end_to_end(store):
     busted = f"/agenticnews-assets/{rel}?rev=3"
 
     # 1) The compiler's resolver (the path libopenshot would actually open at render time).
-    rendered = Path(openshot_bridge._resolve_asset_src(busted, asset_root=store))
+    #    Go through reader_json — the public seam the compiler actually calls (openshot_bridge
+    #    ~331), not just the inner _resolve_asset_src — so a drift introduced anywhere between the
+    #    reader build and the strip is caught, not only in the helper. This is the exact entry the
+    #    ticket names: protect 'renders/episode.mp4', ask reader_json to resolve the ?rev=3 URL,
+    #    and assert both land on the SAME real file.
+    reader = openshot_bridge.reader_json(
+        {}, {"src": busted, "type": "video"}, duration=1.0, asset_root=store
+    )
+    rendered = Path(reader["path"])
 
     # 2) The GC protection scan (the path the GC promises never to reap), from a timeline that
     #    persists the exact same cache-buster URL.
@@ -936,7 +955,17 @@ def test_purge_disk_survives_poisoned_enumerator_returning_schema_dir(store, mon
     must NOT reap it. Two independent layers catch it: the loop's `if f.is_file()` test is False for a
     directory so the tombstone call is never reached, and tombstone() itself RAISES on a non-scratch
     dir. We poison the enumerator at the factory call site and prove the schema dir is left fully
-    intact while a legitimately-aged scratch file alongside it is still reaped."""
+    intact while a legitimately-aged scratch file alongside it is still reaped.
+
+    EXTENDED (cross-episode _scratch poisoning): the per-episode scratch case above is only half the
+    reapable surface — purge_disk enumerates {ep}/scratch/ AND the cross-episode _scratch/ together.
+    The nastier leak is a SYMLINK under _scratch/ pointing at a schema keeper (e.g. _scratch/leak.mp4
+    -> ep_a12345/renders/episode.mp4): unlike a bare dir, `is_file()` follows the link and is True, so
+    the scratch-reap loop (which has no is_symlink() consume-site guard) WOULD reach the tombstone
+    call. tombstone()'s own is_symlink() RAISE is then the sole layer standing between a poisoned
+    _scratch enumerator and destroying the real render. This proves that link is left intact, the
+    render it targets survives untouched, and a genuine aged _scratch file alongside it is still
+    reaped."""
     audio_dir = store / "ep_a12345" / "audio"
     audio_dir.mkdir(parents=True)
     vo = audio_dir / "s0_voice.wav"
@@ -946,8 +975,19 @@ def test_purge_disk_survives_poisoned_enumerator_returning_schema_dir(store, mon
 
     legit = _scratch(store, "ep_a12345", "s0_raw.wav", body=b"reapable")
 
-    # Simulate a regressed enumerator that leaks a schema dir into the reapable set.
-    monkeypatch.setattr(abn_factory, "reapable_scratch", lambda: [audio_dir, legit])
+    # Cross-episode _scratch/ poisoning: a real aged scratch file (legitimately reapable) PLUS a
+    # symlink under _scratch/ that points at a schema keeper (a render). is_file() follows the link,
+    # so only tombstone()'s is_symlink() RAISE stops the render from being eaten.
+    cross_legit = _scratch_cross(store, "throwaway.png", body=b"cross-reapable")
+    render = _render(store, "ep_a12345", age_s=10)
+    render_bytes = render.read_bytes()
+    leak_link = store / "_scratch" / "leak.mp4"
+    leak_link.symlink_to(render)
+
+    # Simulate a regressed enumerator that leaks a schema dir AND a _scratch symlink-into-renders.
+    monkeypatch.setattr(
+        abn_factory, "reapable_scratch", lambda: [audio_dir, legit, leak_link, cross_legit]
+    )
     # keep disk healthy so the low-disk render trim path is irrelevant to this assertion
     monkeypatch.setattr(shutil, "disk_usage", lambda _: namedtuple("u", "total used free")(100, 0, 100 * 1e9))
 
@@ -958,6 +998,14 @@ def test_purge_disk_survives_poisoned_enumerator_returning_schema_dir(store, mon
     assert not (store / "_trash" / "ep_a12345" / "audio").exists(), "schema dir must never be tombstoned"
     assert not legit.exists(), "the genuine aged scratch file should still have been reaped"
     assert (store / "_trash" / "ep_a12345" / "scratch" / "s0_raw.wav").exists()
+
+    # cross-episode _scratch/ assertions
+    assert leak_link.is_symlink(), "purge_disk followed+tombstoned a _scratch symlink into renders/"
+    assert render.exists() and render.read_bytes() == render_bytes, (
+        "the render targeted by a poisoned _scratch symlink was destroyed"
+    )
+    assert not cross_legit.exists(), "the genuine aged _scratch file should still have been reaped"
+    assert (store / "_trash" / "_scratch" / "throwaway.png").exists()
 
 
 def test_purge_disk_render_trim_survives_poisoned_enumerator_returning_schema_dir(store, monkeypatch):
@@ -2292,3 +2340,80 @@ def test_purge_disk_protects_render_referenced_by_same_size_inplace_midtrim_edit
         "tombstoned — the live token relied on mtime+inode+size and missed the ctime-only change "
         "(the token-stale TOCTOU this ticket closes)"
     )
+
+
+# --- editor-bay write surface: routers/agenticnews.py writes render results / title assets / -----
+# timelines / review notes DIRECTLY under ASSETS_DIR/<dir> (NOT via abn_assets.asset_path()), e.g.
+#   editor_renders/      _editor_render_dir() / _editor_render_output()  (editor_render.render output)
+#   editor_title_assets/ _materialize_editor_title_assets()
+#   editor_timelines/    _editor_timeline_store()
+#   review_notes.json    _save_review_notes()
+# That is BY DESIGN — these are whitelisted in abn_assets.MANAGED_TOP as "legacy/system dirs that
+# stay where they are". The hard gate is that the GC must NEVER eat them. These tests pin that the
+# render/cache write surface agenticnews.py uses is outside the reapable set, so a future GC change
+# that broadened scratch_dirs() would fail here instead of silently reaping live editor renders.
+
+
+def _editor_surface(store):
+    """Reproduce the exact files routers/agenticnews.py writes outside the asset gateway."""
+    paths = []
+    rd = store / "editor_renders"
+    rd.mkdir(parents=True, exist_ok=True)
+    p = rd / "ep_cafe01.mp4"  # _editor_render_output(project_id, ".mp4")
+    p.write_bytes(b"rendered episode - a cached render result, never reapable")
+    paths.append(p)
+
+    td = store / "editor_title_assets"
+    td.mkdir(parents=True, exist_ok=True)
+    p = td / "editor_title.png"  # _materialize_editor_title_assets()
+    p.write_bytes(b"title card png")
+    paths.append(p)
+
+    tl = store / "editor_timelines"
+    tl.mkdir(parents=True, exist_ok=True)
+    p = tl / "ep_cafe01.json"  # _editor_timeline_store() project save
+    p.write_bytes(b"{}")
+    paths.append(p)
+
+    p = store / "review_notes.json"  # _save_review_notes()
+    p.write_bytes(b"{}")
+    paths.append(p)
+    return paths
+
+
+def test_editor_bay_write_surface_is_never_reapable(store):
+    """The render/cache/timeline files agenticnews.py writes outside the gateway are top-level
+    non-episode dirs, so scratch_dirs()/reapable_scratch() never reach them."""
+    surface = _editor_surface(store)
+    reapable = {f.resolve() for f in abn_assets.reapable_scratch()}
+    for p in surface:
+        assert p.resolve() not in reapable, (
+            f"GC would reap an editor-bay write {p} — agenticnews.py bypasses the gateway for these "
+            f"by design, and the GC must never enumerate them as scratch"
+        )
+    # the three editor SUBDIR writes are recognized as schema-managed top dirs (MANAGED_TOP
+    # whitelist); review_notes.json is a bare top-level file (not a managed dir) but is still
+    # non-reapable (above) and refused by tombstone() (next test).
+    for p in surface:
+        if p.parent.resolve() != store.resolve():
+            assert abn_assets.is_managed(p), f"{p} should be is_managed() (a MANAGED_TOP dir)"
+
+
+def test_tombstone_refuses_editor_bay_writes(store):
+    """Even if a bad GC path handed tombstone() an editor render/title/timeline, it RAISES — the
+    only safe-deletable surface is scratch/ (per-episode) and _scratch/."""
+    for p in _editor_surface(store):
+        with pytest.raises(abn_assets.AssetPathError):
+            abn_assets.tombstone(p)
+
+
+def test_purge_disk_leaves_editor_bay_writes_intact(store):
+    """End-to-end: an aggressive purge_disk run (reap everything, keep 1 episode) must not touch the
+    editor render/cache surface, since agenticnews.py persists render results there off-gateway."""
+    surface = _editor_surface(store)
+    old = time.time() - 99999
+    for p in surface:
+        os.utime(p, (old, old))
+    abn_factory.purge_disk(intermediate_age_s=1, keep_episodes=1, low_disk_gb=0)
+    for p in surface:
+        assert p.exists(), f"purge_disk reaped an off-gateway editor write {p}"

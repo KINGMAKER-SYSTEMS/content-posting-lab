@@ -1798,8 +1798,13 @@ def test_ensure_card_backgrounds_promotes_real_scratch_file_not_symlink(monkeypa
     promoted = list((tmp_path / "_shared" / "card_backgrounds").glob("bg_*.png"))
     assert [p.name for p in promoted] == ["bg_00.png"], "a genuine _scratch keeper must promote"
     assert promoted[0].read_bytes() == b"\x89PNG\r\nREAL"
-    # .replace() is a move: the source must be gone from _scratch/ after promotion
-    assert not (tmp_path / "_scratch" / "_tmp_bg_0.png").exists()
+    # Promotion is an ATOMIC COPY (_atomic_copy_file), not a move: the bg pool is the
+    # cross-episode "config" every future episode reads, so the keeper is written
+    # fully-flushed via a .tmp sibling + os.replace into the pool. The _scratch source is
+    # intentionally LEFT for the GC to reap (correctness of the pool write is what matters),
+    # so it must still be present and intact after promotion.
+    leftover = tmp_path / "_scratch" / "_tmp_bg_0.png"
+    assert leftover.exists() and leftover.read_bytes() == b"\x89PNG\r\nREAL"
 
 
 # ---------------- _build_timeline: schema-aware ABN episode assembly ----------------
@@ -4472,3 +4477,82 @@ def test_kinetic_params_zine_path_when_no_stat(monkeypatch):
     # the 5-word verdict composes from the title, last word ends with a period
     assert P["w5"].endswith(".")
     assert all(P.get(f"w{i}") for i in range(1, 6))
+
+
+# ---------------- VO-LOSS GATE: factory refuses to start on broken VO symlinks ----------------
+#
+# `_assert_vo_links_before_start()` travels WITH the factory (not only in app.py startup) so a
+# script/agent that spawns the factory directly can't bypass the VO-loss fail-safe. The gate
+# imports `assert_migration_complete` and `verify_voice_symlinks` lazily INSIDE the function,
+# so we patch them on their source modules. test_migrate_abn_assets.py already exercises
+# `verify_voice_symlinks` in isolation; these pin that a non-empty problem list (dangling/broken
+# links) or an incomplete migration HARD-STOPS factory startup instead of silently losing VO.
+
+def _patch_vo_gate(monkeypatch, *, migration_ok=True, vo_problems=None):
+    """Stub the two lazily-imported checks the gate calls. Returns nothing; raises through."""
+    import services.abn_assets as _aa
+    import scripts.migrate_abn_assets as _mig
+
+    def _assert_migration():
+        if not migration_ok:
+            raise RuntimeError("migration incomplete: 3 flat files unmigrated")
+
+    monkeypatch.setattr(_aa, "assert_migration_complete", _assert_migration)
+    monkeypatch.setattr(_mig, "verify_voice_symlinks", lambda *a, **k: list(vo_problems or []))
+
+
+def test_vo_gate_raises_when_symlinks_dangling(monkeypatch):
+    """A non-empty verify_voice_symlinks() result must abort startup — the dangling-link case
+    where `_align`'s legacy fallback would otherwise silently return [] (origaudio loss)."""
+    _patch_vo_gate(monkeypatch, migration_ok=True, vo_problems=[
+        ("ep5", "voice/ep5.wav -> missing target"),
+    ])
+    with pytest.raises(RuntimeError) as ei:
+        abn_factory._assert_vo_links_before_start()
+    msg = str(ei.value)
+    assert "symlink audit failed" in msg
+    assert "ep5" in msg  # the broken file is surfaced, not swallowed
+
+
+def test_vo_gate_raises_when_migration_incomplete(monkeypatch):
+    """If the migration itself is incomplete the gate must fail BEFORE the symlink check —
+    assert_migration_complete()'s RuntimeError propagates, not swallowed."""
+    sentinel = []
+
+    def _should_not_run(*a, **k):
+        sentinel.append(1)
+        return []
+
+    import scripts.migrate_abn_assets as _mig
+    _patch_vo_gate(monkeypatch, migration_ok=False)
+    monkeypatch.setattr(_mig, "verify_voice_symlinks", _should_not_run)
+
+    with pytest.raises(RuntimeError, match="migration incomplete"):
+        abn_factory._assert_vo_links_before_start()
+    assert sentinel == [], "symlink check ran despite an incomplete migration"
+
+
+def test_vo_gate_passes_when_links_clean(monkeypatch):
+    """Healthy state: migration complete + no symlink problems -> gate is a no-op (no raise)."""
+    _patch_vo_gate(monkeypatch, migration_ok=True, vo_problems=[])
+    abn_factory._assert_vo_links_before_start()  # must not raise
+
+
+def test_start_factory_aborts_when_vo_gate_fails(monkeypatch):
+    """The gate is wired into start_factory(): a broken VO state must prevent the factory loop
+    from ever being scheduled — proving the fail-safe blocks the real entry point, not just the
+    helper. No run_factory_loop task is created when the gate raises."""
+    _patch_vo_gate(monkeypatch, migration_ok=True, vo_problems=[("ep1", "dangling")])
+
+    scheduled = []
+    monkeypatch.setattr(abn_factory.asyncio, "create_task",
+                        lambda *a, **k: scheduled.append(1))
+    # ensure a clean global so a leftover task doesn't mask the result
+    monkeypatch.setattr(abn_factory, "_task", None)
+
+    async def _run():
+        with pytest.raises(RuntimeError, match="symlink audit failed"):
+            await abn_factory.start_factory()
+
+    asyncio.run(_run())
+    assert scheduled == [], "factory loop was scheduled despite the VO gate failing"

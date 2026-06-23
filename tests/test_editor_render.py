@@ -753,13 +753,15 @@ def test_mux_and_fallback_emit_identical_volume_envelope_when_flat_gain_also_set
 
 def test_windowed_volume_envelope_keeps_absolute_gains_through_window_shift():
     """A ducking volume envelope (absolute gains: 0.6 under intro, 0.22 under VO)
-    must survive _render_scope_project windowing with its GAIN values unchanged --
-    only the keyframe `t` may shift. _shot_keyframes promotes such an envelope onto
-    the clip (editor_timeline ~450-475); if windowing ever mutated `value` the music
-    bed would duck to the wrong level (0.6 -> 0.22 or vice versa) or go silent.
+    must survive _render_scope_project windowing. SURVIVING points keep their GAIN
+    values unchanged -- only their `t` shifts down by the front trim. A point trimmed
+    OFF the front is NOT clamp-pinned to t=0 with its stale gain (that fires the wrong
+    level at the window start); it is replaced by ONE synthetic t=0 point carrying the
+    gain the envelope linearly held at the trim boundary. _shot_keyframes promotes such
+    an envelope onto the clip (editor_timeline ~450-475).
 
-    This locks the invariant at the _shift_keyframes seam directly on a `volume`
-    track -- prior windowing tests only covered `opacity`/`alpha`."""
+    This locks the re-anchor-not-clamp invariant at the _shift_keyframes seam directly
+    on a `volume` track -- prior windowing tests only covered `opacity`/`alpha`."""
 
     # Clip spans timeline [1, 9); the front 1s gets trimmed by the window below.
     # Envelope: full-level intro point, ducked-under-VO point, recovery point.
@@ -768,16 +770,21 @@ def test_windowed_volume_envelope_keeps_absolute_gains_through_window_shift():
         _wclip("bed", start=1.0, duration=8.0, source_start=10.0, keyframes=kfs)
     )
 
-    # Window [2, 8): front_trim = 2 - 1 = 1s. Each point's `t` shifts down by 1
-    # (clamped at 0); every gain `value` must be byte-for-byte identical.
+    # Window [2, 8): front_trim = 2 - 1 = 1s. The first point (t=0.5) shifts to -0.5
+    # (off the front) and is re-anchored at t=0 with the interpolated boundary gain:
+    # the trim boundary is original t=1.0, between (0.5,0.6) and (2.0,0.22) ->
+    # 0.6 + (0.22-0.6)*(0.5/1.5) = 0.47333. Surviving points keep their gains and
+    # shift their t: 2.0 -> 1.0, 6.0 -> 5.0.
     scoped = editor_render._render_scope_project(project, window_start=2.0, duration=6.0)
     windowed = next(iter(scoped["clips"].values()))
 
     vol_track = next(t for t in windowed["keyframes"] if t["property"] == "volume")
     shifted = [(p["t"], p["value"]) for p in vol_track["points"]]
 
-    # t: 0.5 -> 0 (clamped), 2.0 -> 1.0, 6.0 -> 5.0 ; gains untouched.
-    assert shifted == pytest.approx([(0.0, 0.6), (1.0, 0.22), (5.0, 0.6)])
+    assert shifted[0][0] == pytest.approx(0.0)
+    assert shifted[0][1] == pytest.approx(0.47333333)
+    assert shifted[1] == pytest.approx((1.0, 0.22))
+    assert shifted[2] == pytest.approx((5.0, 0.6))
     # The original project envelope is not mutated by windowing.
     orig = project["clips"]["bed"]["keyframes"][0]["points"]
     assert [(p["t"], p["value"]) for p in orig] == [(0.5, 0.6), (2.0, 0.22), (6.0, 0.6)]
@@ -1097,6 +1104,70 @@ def test_opacity_keyframe_actually_ramps_alpha_in_fallback_render(tmp_path):
     late = _frame_png_at(video, tmp_path / "late.png", at=0.85)
     assert _sample_rgb(early, 48, 32)[0] < _sample_rgb(late, 48, 32)[0]
     assert _sample_rgb(late, 48, 32)[0] > 150
+
+
+# --- fade EFFECT + opacity KEYFRAME composed on the same clip ---
+# fade (line ~870) and the geq opacity envelope (line ~883) BOTH write the alpha
+# plane. The two are emitted into the same filter chain (geq first, then fade),
+# so when a clip carries both they must compose — fade multiplying the
+# envelope's alpha — rather than one clobbering the other. Neither earlier test
+# exercised the combination, leaving a silent fidelity risk if the filters
+# conflict. These pin both the emitted string and the real-render behavior.
+
+def test_visual_filter_composes_fade_and_opacity_keyframe(tmp_path):
+    """A clip carrying BOTH a fadeIn effect and an opacity keyframe envelope must
+    emit the geq alpha expression AND the fade=alpha=1 filter, in that order, in a
+    single chain — neither dropped, neither overriding the other."""
+    r = _renderer(tmp_path)
+    clip = {
+        "duration": 1.0, "sourceStart": 0.0,
+        "transform": {"opacity": 1.0, "scale": 1.0},
+        "effects": [{"id": "fx_in", "type": "fadeIn", "params": {"duration": 0.5}}],
+        "keyframes": [
+            {"property": "opacity", "points": [
+                {"t": 0.0, "value": 0.0}, {"t": 1.0, "value": 1.0}]},
+        ],
+    }
+    out = r._visual_filter(1, clip, {"type": "image"}, "lbl", 96, 64)
+    # both filters present
+    assert "geq=" in out and "a='255*max(0,min(1,if(lt(T," in out
+    assert "fade=t=in:alpha=1:st=0:d=0.500" in out
+    assert "colorchannelmixer" not in out  # envelope path, not flat default
+    # geq (alpha envelope) must run BEFORE the fade so fade multiplies the envelope
+    assert out.index("geq=") < out.index("fade=t=in")
+
+
+def test_fade_and_opacity_keyframe_compound_in_fallback_render(tmp_path):
+    """End-to-end: a white card with a 0.5s fadeIn AND an opacity envelope ramping
+    0 -> 1 over its 1s. Both write alpha, so the early frame (both near 0) is darker
+    than a fade-only or envelope-only frame would be at the same instant, and the
+    late frame (both ~1) is bright. Proves the two alpha filters compose in the real
+    render without one clobbering the other and without a dropped-effect warning."""
+    card = _solid_png(tmp_path / "card.png", "white", size="96x64")
+    project = _project_with_card("fade_op_anim", card, x=0.0)
+    project["clips"]["card_clip"]["effects"] = [
+        {"id": "fx_in", "type": "fadeIn", "params": {"duration": 0.5}},
+    ]
+    project["clips"]["card_clip"]["keyframes"] = [
+        {"property": "opacity", "points": [
+            {"t": 0.0, "value": 0.0, "interp": "linear"},
+            {"t": 1.0, "value": 1.0, "interp": "linear"},
+        ]},
+    ]
+    renderer = editor_render.FFmpegLayeredRenderer(tmp_path / "renders")
+    result = renderer.render(project, output_path=tmp_path / "renders" / "fade_op.mp4")
+    assert result["warnings"] == []  # both honored natively, neither dropped
+
+    video = Path(result["video"])
+    early = _frame_png_at(video, tmp_path / "early.png", at=0.05)
+    mid = _frame_png_at(video, tmp_path / "mid.png", at=0.45)
+    late = _frame_png_at(video, tmp_path / "late.png", at=0.85)
+    early_red = _sample_rgb(early, 48, 32)[0]
+    mid_red = _sample_rgb(mid, 48, 32)[0]
+    late_red = _sample_rgb(late, 48, 32)[0]
+    # compound alpha ramps monotonically up over the clip
+    assert early_red < mid_red < late_red
+    assert late_red > 150
 
 
 def test_backend_detection_prefers_openshot_but_reports_local_blocker():
@@ -2388,9 +2459,11 @@ def test_openshot_renders_real_two_layer_timeline_to_valid_mp4(tmp_path):
 
 
 def test_windowed_clip_shifts_keyframe_times_when_front_trimmed():
-    """A clip windowed from a later start has its front trimmed; keyframe `t`
-    (seconds relative to the clip start) must move down by the same trim amount,
-    clamped at 0, so the animation fires at the right time during partial renders."""
+    """A clip windowed from a later start has its front trimmed; surviving keyframe
+    `t` (seconds relative to the clip start) moves down by the trim amount. A point in
+    the trimmed-away front is re-anchored at t=0 with the value the envelope linearly
+    held at the trim boundary -- NOT clamp-pinned to t=0 with its stale value -- so the
+    animation starts at the correct level during partial renders."""
     project = timeline.new_project("kf_window", width=96, height=64, fps=12)
     project["clips"]["card_clip"] = {
         "id": "card_clip",
@@ -2404,14 +2477,15 @@ def test_windowed_clip_shifts_keyframe_times_when_front_trimmed():
             {
                 "property": "opacity",
                 "points": [
-                    {"t": 0.5, "value": 0.0, "interp": "linear"},  # before window -> clamps to 0
+                    {"t": 0.5, "value": 0.0, "interp": "linear"},  # before window -> re-anchored
                     {"t": 3.0, "value": 1.0, "interp": "linear"},  # at timeline t=8
                 ],
             }
         ],
     }
 
-    # Window timeline t=7..9 -> front_trim = 7 - 5 = 2.0s.
+    # Window timeline t=7..9 -> front_trim = 7 - 5 = 2.0s. Trim boundary is original
+    # t=2.0, between (0.5,0.0) and (3.0,1.0) -> 0.0 + 1.0*(1.5/2.5) = 0.6.
     windowed = editor_render._windowed_clips(project, window_start=7.0, duration=2.0)
 
     assert len(windowed) == 1
@@ -2419,9 +2493,10 @@ def test_windowed_clip_shifts_keyframe_times_when_front_trimmed():
     assert clip["start"] == pytest.approx(0.0)  # clip begins at window start
     assert clip["sourceStart"] == pytest.approx(2.0)
     points = clip["keyframes"][0]["points"]
-    assert points[0]["t"] == pytest.approx(0.0)  # 0.5 - 2.0 clamped to 0
+    assert points[0]["t"] == pytest.approx(0.0)  # re-anchored boundary point
     assert points[1]["t"] == pytest.approx(1.0)  # 3.0 - 2.0
-    assert points[0]["value"] == 0.0 and points[1]["value"] == 1.0
+    assert points[0]["value"] == pytest.approx(0.6)  # interpolated at the trim boundary
+    assert points[1]["value"] == 1.0
 
     # Original project clip must be untouched (no aliasing of nested keyframes).
     original = project["clips"]["card_clip"]["keyframes"][0]["points"]
@@ -2461,16 +2536,64 @@ def test_split_then_window_keeps_volume_envelope_aligned(tmp_path):
 
     # Now render-window the tail starting 1s in (window timeline t=5..9 -> front_trim 1s
     # off the tail, which itself starts at timeline t=4). _windowed_clips must shift the
-    # already-rebased tail envelope down by another 1s.
+    # already-rebased tail envelope down by another 1s. The duck-floor point at tail t=0
+    # is now BEFORE the window, so it is re-anchored at t=0 with the value the envelope
+    # held at the trim boundary (tail t=1.0, between (0,0.18) and (4,0.6)) ->
+    # 0.18 + (0.6-0.18)*(1/4) = 0.285. Clamping it to t=0 with the stale 0.18 would
+    # leave the bed ducked a full second past where it should already be ramping back up.
     windowed = editor_render._windowed_clips(split, window_start=5.0, duration=4.0)
     wbed = next(c for c in windowed if c["id"] == "bed_clip_b")
     wpts = wbed["keyframes"][0]["points"]
-    assert wpts[0]["t"] == pytest.approx(0.0)  # 0.0 - 1.0 clamped to 0
+    assert wpts[0]["t"] == pytest.approx(0.0)  # re-anchored boundary point
     assert wpts[1]["t"] == pytest.approx(3.0)  # 4.0 - 1.0
-    assert wpts[0]["value"] == 0.18 and wpts[1]["value"] == 0.6
+    assert wpts[0]["value"] == pytest.approx(0.285) and wpts[1]["value"] == 0.6
     # The ffmpeg mux path reads this same envelope; it must build a keyframe expression,
     # not the flat fallback, proving the envelope survived both passes intact.
     assert "if(" in editor_render._volume_filter(wbed, 1.0)
+
+
+def test_split_then_window_into_clip_body_reanchors_envelope_value_not_just_time(tmp_path):
+    """Ticket regression: split a clip, then windowed-render with a front trim that cuts
+    PAST the tail's first keyframe. The re-anchored origin point must carry the value the
+    envelope linearly HELD at the trim boundary -- a plain clamp (t->0 keeping the stale
+    first-point value) fires the wrong opacity at the window start.
+
+    Opacity ramp 0->1 over an 8s clip: split at timeline t=2 gives a tail whose envelope
+    is rebased to (0, value@t=2), (6, 1.0). Window the tail from timeline t=4 (front_trim
+    2s into the tail): the origin should hold the envelope's value at tail-t=2, NOT the
+    tail's first-point value. The old clamp pinned the stale first value and mis-fired."""
+    project = timeline.new_project("split_win_body", width=96, height=64, fps=12)
+    project["assets"]["card"] = {"id": "card", "type": "image", "src": "/x/card.png"}
+    project["clips"]["c1"] = {
+        "id": "c1", "assetId": "card", "trackId": "graphics_1", "kind": "artifact",
+        "start": 0.0, "duration": 8.0, "sourceStart": 0.0,
+        "enabled": True, "muted": False, "volume": 1.0,
+        "transform": {"x": 0.5, "y": 0.5, "scale": 1.0, "opacity": 1.0}, "effects": [],
+        "keyframes": [{"property": "opacity", "points": [
+            {"t": 0.0, "value": 0.0, "interp": "linear"},
+            {"t": 8.0, "value": 1.0, "interp": "linear"},  # straight ramp, slope 0.125/s
+        ]}],
+    }
+
+    # Split at timeline t=2.0 -> tail rebased: (0, 0.25), (6, 1.0). (value at t=2 = 0.25)
+    split = timeline.apply_command(project, {
+        "op": "clip.split", "actor": "t", "expectedRevision": 0,
+        "payload": {"clipId": "c1", "at": 2.0, "newClipId": "c1_b"},
+    })
+    tail_pts = split["clips"]["c1_b"]["keyframes"][0]["points"]
+    assert [(p["t"], p["value"]) for p in tail_pts] == [(0.0, 0.25), (6.0, 1.0)]
+
+    # Window the tail from timeline t=4.0 (tail starts at t=2.0 -> front_trim 2.0s).
+    # The trim boundary is tail-t=2.0; the straight ramp value there (between (0,0.25)
+    # and (6,1.0)) is 0.25 + (1.0-0.25)*(2/6) = 0.5 -- which is also the original ramp's
+    # value at absolute timeline t=4.0 (0.125 * 4 = 0.5): proof the envelope is intact
+    # end-to-end across split + window, value re-anchored not clamped.
+    windowed = editor_render._windowed_clips(split, window_start=4.0, duration=4.0)
+    wpts = next(c for c in windowed if c["id"] == "c1_b")["keyframes"][0]["points"]
+    assert wpts[0]["t"] == pytest.approx(0.0)
+    assert wpts[0]["value"] == pytest.approx(0.5)       # NOT the stale 0.25 a clamp keeps
+    assert wpts[1]["t"] == pytest.approx(4.0)           # tail t=6 - front_trim 2
+    assert wpts[1]["value"] == pytest.approx(1.0)
 
 
 def test_opacity_keyframe_envelope_actually_animates_through_openshot(tmp_path):
@@ -3082,11 +3205,14 @@ def test_render_scope_windowing_feeds_shifted_envelope_into_bridge_json():
     scoped = editor_render._render_scope_project(project, window_start=5.0, duration=2.0)
     clip = editor_render.openshot_bridge.timeline_json(scoped)["clips"][0]
 
-    # sourceStart bumped 1.0 + 1.0 = 2.0; volume t's shifted down by 1.0 -> [0,0,2]
-    # (first two clamp at 0). Frame X = (2.0 + shifted_t)*30 + 1 -> 61, 61, 121.
-    assert [p["co"]["X"] for p in clip["volume"]["Points"]] == [61.0, 61.0, 121.0]
-    # values ride along with their (re-timed) points unchanged
-    assert [round(p["co"]["Y"], 2) for p in clip["volume"]["Points"]] == [100.0, 20.0, 100.0]
+    # sourceStart bumped 1.0 + 1.0 = 2.0; volume t's shifted down by 1.0. The original
+    # t=0 point (value 1.0) lands at t=-1 (off the front) and is dropped because the next
+    # point (t=1 -> t=0, the constant-interp duck floor 0.2) already sits exactly at the
+    # window origin and carries the boundary value -- so no synthetic dup at t=0. Surviving
+    # points: t=0 (0.2), t=2 (1.0). Frame X = (2.0 + shifted_t)*30 + 1 -> 61, 121.
+    assert [p["co"]["X"] for p in clip["volume"]["Points"]] == [61.0, 121.0]
+    # the boundary point holds the duck floor (constant interp), recovery rides along
+    assert [round(p["co"]["Y"], 2) for p in clip["volume"]["Points"]] == [20.0, 100.0]
     # the source project envelope is untouched (scoping deep-copies, no aliasing)
     assert project["clips"]["c1"]["keyframes"][0]["points"][0]["t"] == pytest.approx(0.0)
     assert project["clips"]["c1"]["sourceStart"] == pytest.approx(1.0)
@@ -3149,24 +3275,30 @@ def test_openshot_render_frame_window_shift_preserves_keyframe_source_frames(tmp
     renderer.render_frame(project, at=5.0, output_path=tmp_path / "preview.png")
     clip = captured["clip"]
 
-    # The shared first volume point (t=1.0 -> abs t=5.0) is the window origin and must
-    # land at the IDENTICAL source frame it had un-windowed (61.0): proof the t-shift
-    # and sourceStart-bump cancel. Points before the window clamp to the origin frame.
+    # The shared volume point at t=1.0 (-> abs t=5.0) is the window origin and lands at
+    # the IDENTICAL source frame it had un-windowed (61.0): proof the t-shift and
+    # sourceStart-bump cancel. The point BEFORE the window (orig t=0) is dropped because
+    # this origin point already sits exactly at t=0 and carries the boundary value -- so
+    # no clamp-collapsed duplicate at frame 61. Surviving: t=0 (0.2), t=2 (1.0).
     win_vol_x = [p["co"]["X"] for p in clip["volume"]["Points"]]
-    assert win_vol_x == [61.0, 61.0, 121.0]
-    assert win_vol_x[1] == head_vol_x[1]            # the in-window point is frame-stable
-    # Volume Y (ducking depth) rides along unchanged: 1.0,0.2,1.0 -> 100,20,100.
-    assert [round(p["co"]["Y"], 2) for p in clip["volume"]["Points"]] == [100.0, 20.0, 100.0]
+    assert win_vol_x == [61.0, 121.0]
+    assert win_vol_x[0] == head_vol_x[1]            # the in-window point is frame-stable
+    # Volume Y: boundary duck floor 0.2 then recovery 1.0 -> 20, 100.
+    assert [round(p["co"]["Y"], 2) for p in clip["volume"]["Points"]] == [20.0, 100.0]
 
-    # Opacity fade: its t=1.0 reveal also sits at abs t=5.0, so it must fire at the
-    # window-origin frame 61.0 (not slip late), with Y still clamped 0..1.
+    # Opacity fade: its t=1.0 reveal sits at abs t=5.0 = the window origin, so the t=0
+    # point (orig) is dropped and the reveal becomes the single origin keyframe at frame
+    # 61 with the full value 1.0 -- not a clamp-collapsed pair at the same frame.
     op = clip["alpha"]["Points"]
-    assert [p["co"]["X"] for p in op] == [61.0, 61.0]   # both <= origin clamp to 61
-    assert [p["co"]["Y"] for p in op] == [0.0, 1.0]
+    assert [p["co"]["X"] for p in op] == [61.0]
+    assert [p["co"]["Y"] for p in op] == [1.0]
 
-    # Position (location_x) envelope shifts in lockstep: x t=0/3 -> frames 61/121.
+    # Position (location_x) envelope: orig x t=0/3 (vals 0/1). The t=0 point falls before
+    # the window so it is re-anchored at the origin with the value the ramp held at the
+    # trim boundary (1/3 of the way: 0.333 -> centered -0.333). Frames 61/121.
     loc_x = [p["co"]["X"] for p in clip["location_x"]["Points"]]
     assert loc_x == [61.0, 121.0]
+    assert clip["location_x"]["Points"][0]["co"]["Y"] == pytest.approx(-0.33333, abs=1e-4)
 
     # The caller's project is never mutated by the windowing (deep-copy scope).
     assert project["clips"]["c1"]["sourceStart"] == pytest.approx(1.0)
@@ -3276,16 +3408,19 @@ def test_ffmpeg_render_frame_window_shift_preserves_keyframe_source_frames(tmp_p
     assert _kf_segment_thresholds(head_x) == [0.0, 3.0]
 
     # MID-CLIP: preview from absolute t=5.0 -> front_trim=1.0s. _windowed_clips shifts
-    # every keyframe t down by 1.0 (clamped at 0) AND the visual trim/audio atrim bump
-    # sourceStart, but PTS reset makes filter-time start at 0. So the keyframe that sat
-    # at absolute t=5.0 (clip-relative 1.0) becomes the window ORIGIN at filter-time 0.
+    # every keyframe t down by 1.0 AND the visual trim/audio atrim bump sourceStart, but
+    # PTS reset makes filter-time start at 0. So the keyframe that sat at absolute t=5.0
+    # (clip-relative 1.0) becomes the window ORIGIN at filter-time 0. Points before the
+    # window are re-anchored to the origin (not clamp-stacked), so no duplicate t=0.
     mid_vol, mid_alpha, mid_x = _exprs(window_start=5.0, duration=2.0)
-    # volume t's 0,1,3 -> shifted 0,0,2 (first two clamp to the origin frame 0).
-    assert _kf_segment_thresholds(mid_vol) == [0.0, 0.0, 2.0]
-    # opacity reveal t=1.0 (abs 5.0) is now the origin -> fires at filter-time 0, not
-    # late: thresholds 0,1 -> 0,0. This is the front-trim misalignment guard.
-    assert _kf_segment_thresholds(mid_alpha) == [0.0, 0.0]
-    # x pan t's 0,3 -> 0,2, shifting in lockstep with volume/opacity.
+    # volume t's 0,1,3 -> the t=0 point drops (the t=1 duck floor already sits exactly at
+    # the origin and carries its value) leaving thresholds 0,2 -- not a [0,0,2] dup.
+    assert _kf_segment_thresholds(mid_vol) == [0.0, 2.0]
+    # opacity reveal t=1.0 (abs 5.0) is now the origin: the t=0 point drops and the reveal
+    # IS the origin, so a single threshold 0 (fires immediately, fully revealed). This is
+    # the front-trim misalignment guard.
+    assert _kf_segment_thresholds(mid_alpha) == [0.0]
+    # x pan t's 0,3 -> the t=0 point drops and is re-anchored at the origin -> 0,2.
     assert _kf_segment_thresholds(mid_x) == [0.0, 2.0]
 
     # The in-window keyframe is frame-stable across both builds: the volume point at
