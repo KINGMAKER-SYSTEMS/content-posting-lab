@@ -41,8 +41,12 @@ def test_scan_failure_is_surfaced_not_swallowed(monkeypatch, caplog):
     assert result["pages"][0]["scan_error"] is True
     assert result["pages"][0]["video_count"] == 0
     assert result["videos"] == []
-    # And the failure was actually logged (with traceback).
-    assert any("scan failed" in r.message for r in caplog.records)
+    # And the failure was actually logged (with traceback) so it surfaces to
+    # monitoring — message alone isn't enough; exc_info must carry the trace.
+    failed = [r for r in caplog.records if "scan failed" in r.message]
+    assert failed, "scan failure was not logged"
+    assert failed[0].levelno == logging.ERROR
+    assert failed[0].exc_info is not None, "log must include the traceback"
 
 
 def test_successful_scan_has_no_scan_error(monkeypatch):
