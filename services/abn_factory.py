@@ -526,6 +526,16 @@ def _set(stage, actor, detail, episode_id=None):
 _SPAWN_LOCK = asyncio.Semaphore(2)
 
 
+def _nonempty(p):
+    """True iff path exists AND has bytes. ffmpeg can exit 0 yet leave a 0-byte file (disk full,
+    killed mid-flush, or a degenerate filtergraph) — a bare .exists() would pass that broken clip
+    through the compiler cascade and ship a corrupt episode. Guard size, not just presence."""
+    try:
+        return p.exists() and p.stat().st_size > 0
+    except OSError:
+        return False
+
+
 async def _sh(cmd, timeout=600):
     async with _SPAWN_LOCK:
         proc = await asyncio.create_subprocess_shell(
@@ -2849,17 +2859,19 @@ async def _assemble_episode(ep_id, segments):
                f'-vf {shlex.quote(vf)} -map 0:v -map 1:a '
                f'-c:v libx264 -pix_fmt yuv420p -c:a aac -shortest {shlex.quote(str(clip))}')
         code, log = await _sh(cmd, timeout=180)
-        if code == 0 and clip.exists():
+        if code == 0 and _nonempty(clip):
             seg_clips.append(clip)
             BUS.emit("editor-agent", "assemble.segment", f"rendered segment {i+1}/{len(segments)}",
                      episode_id=ep_id, data={"i": i})
         else:
-            # PARTIAL FAILURE: ffmpeg returned non-zero OR reported ok but wrote no clip. The old
-            # code skipped these silently, so an episode could ship with 3 of 6 segments and nothing
-            # would notice (the empty-`seg_clips` gate below only fires when EVERY segment fails).
-            # Make the drop observable so a truncated episode is never silent.
+            # PARTIAL FAILURE: ffmpeg returned non-zero, reported ok but wrote no clip, OR wrote a
+            # 0-byte clip (exit 0 + empty file — disk full / killed mid-flush). The old code skipped
+            # these silently, so an episode could ship with 3 of 6 segments — or a 0-byte segment that
+            # passed a bare .exists() check — and nothing would notice (the empty-`seg_clips` gate
+            # below only fires when EVERY segment fails). Make the drop observable so a truncated or
+            # corrupt episode is never silent.
             BUS.emit("editor-agent", "assemble.segment.failed",
-                     f"segment {i+1}/{len(segments)} dropped (code={code}, clip_exists={clip.exists()})",
+                     f"segment {i+1}/{len(segments)} dropped (code={code}, clip_ok={_nonempty(clip)})",
                      episode_id=ep_id, data={"i": i, "code": code})
     if not seg_clips:
         raise RuntimeError("no segment clips")
@@ -2873,11 +2885,12 @@ async def _assemble_episode(ep_id, segments):
     final = asset_path(ep_id, "episode")
     code, log = await _sh(
         f'ffmpeg -y -f concat -safe 0 -i {shlex.quote(str(listf))} -c copy {shlex.quote(str(final))}', timeout=180)
-    if code != 0 or not final.exists():
-        # fallback: re-encode concat
+    if code != 0 or not _nonempty(final):
+        # fallback: re-encode concat. Guard SIZE not just presence — a 0-byte final (copy-concat that
+        # exited 0 but flushed nothing) must trigger the re-encode, and a 0-byte re-encode must raise.
         code, log = await _sh(
             f'ffmpeg -y -f concat -safe 0 -i {shlex.quote(str(listf))} -c:v libx264 -pix_fmt yuv420p -c:a aac {shlex.quote(str(final))}', timeout=300)
-        if code != 0 or not final.exists():
+        if code != 0 or not _nonempty(final):
             raise RuntimeError(f"concat: {log[-200:]}")
     return _asset_url(final), await _dur(final)
 
