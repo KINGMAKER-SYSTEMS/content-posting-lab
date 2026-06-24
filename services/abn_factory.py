@@ -3272,6 +3272,13 @@ async def produce_one_episode(force_deepdive=False, force_lore=None):
     _set("assembling", "editor-agent", f"assembling {len(segments)}-segment episode (~{total_words} words)", ep_id)
     BUS.emit("editor-agent", "assemble.start", f"rendering {len(segments)} segments → episode", episode_id=ep_id)
     timeline = _build_timeline(ep_id, ep_idx, segments, animated_bg=animated_bg)
+    # ponytail: persist the timeline so the Editor Bay can open this episode. The factory builds a
+    # complete timeline but only the (now-fallback) Remotion path saved it; OpenShot didn't, so every
+    # episode opened EMPTY in the editor. Save it here, once, for whichever compiler runs.
+    try:
+        atomic_save(asset_path(ep_id, "timeline"), timeline)
+    except Exception as _tl_e:
+        BUS.emit("editor-agent", "timeline.save_warn", f"could not persist editable timeline: {_tl_e}", episode_id=ep_id)
     try:
         mp4, dur = await _compile_episode(ep_id, timeline, segments)
     except Exception as e2:
