@@ -445,8 +445,9 @@ N_SEGMENTS = 11           # target episode size. 11 stories × ~86s actual + sti
 # These are ENFORCED parameters, not aspirations. An episode that violates a gate does NOT
 # reach 'review' — it is rejected/looped. This is the contract that defines "satisfactory work".
 MIN_EPISODE_SEC = 600     # 10:00 HARD FLOOR. Render shorter than this is auto-rejected (RPM/mid-roll).
-MIN_SEGMENTS    = 8       # floor on segment count so we START long enough to clear MIN_EPISODE_SEC.
-                          # 8 × ~86s actual ≈ 11.5min of VO + cold-open + sting → comfortably clears 10min.
+MIN_SEGMENTS    = 9       # floor on segment count so we START long enough to clear MIN_EPISODE_SEC.
+                          # ponytail: was 8 → real segments run ~73s (not the assumed 86s), so 8 landed
+                          # 9:44 and got rejected 16s short. 9 × ~73s ≈ 11min + sting → reliable headroom.
 
 # Rotating subjects for the autonomous LORE format (every 6th episode) — origin stories builders care about
 _LORE_SUBJECTS = [
