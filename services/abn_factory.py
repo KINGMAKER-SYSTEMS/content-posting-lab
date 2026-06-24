@@ -2997,18 +2997,22 @@ async def produce_one_episode(force_deepdive=False, force_lore=None):
                 break
 
     # FORMAT VARIETY: every 4th episode, do a single-tool DEEP-DIVE instead of a roundup.
-    # Takes the top pick, expands it into 3 focused angles (what/how/why) — the in-the-mud format.
+    # Takes the top pick, expands it into 8 focused angles — enough runtime to clear the 600s floor.
+    # ponytail: was 3 angles → ~4min → ALWAYS auto-rejected. Now floor at MIN_SEGMENTS angles; if the
+    # expert returns fewer than that, ABORT the deep-dive and stay a roundup rather than ship a reject.
     deepdive = False
     try:
         if picks and (force_deepdive or _mem_episodes() % 4 == 3):
             top = picks[0]
             angles = await asyncio.to_thread(experts.ask, "deepdive", f"Tool: {top['title']}\nSource: {top.get('url','')}")
-            lines = [l.strip() for l in (angles or "").splitlines() if l.strip()][:3]
-            if len(lines) == 3:
+            lines = [l.strip() for l in (angles or "").splitlines() if l.strip()][:N_SEGMENTS]
+            if len(lines) >= MIN_SEGMENTS:
                 picks = [{**top, "title": f"{top['title'].split(' — ')[0].split(':')[0]}: {l.split('—')[0].replace('ANGLE:','').strip()}",
                           "url": top.get("url", ""), "_facet": l} for l in lines]
                 deepdive = True
-                BUS.emit("research-agent", "deepdive", f"single-tool deep-dive: {top['title'][:40]}", episode_id=ep_id)
+                BUS.emit("research-agent", "deepdive", f"single-tool deep-dive: {top['title'][:40]} ({len(lines)} angles)", episode_id=ep_id)
+            else:
+                BUS.emit("research-agent", "deepdive.abort", f"only {len(lines)} angles (<{MIN_SEGMENTS}) — staying roundup", episode_id=ep_id)
     except Exception:
         pass
 

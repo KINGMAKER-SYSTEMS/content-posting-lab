@@ -75,13 +75,17 @@ EXPERTS = {
                    "Output a ranked shortlist (best audience-pull first) with a one-line accessible hook each. " + VOICE)},
     # ---- DEEP-DIVE (single-tool format for variety) ----
     "deepdive": {
-        "model": "gpt-4.1-mini", "max_tokens": 200, "temperature": 0.7,
-        "system": ("You are the DEEP-DIVE expert. Given ONE tool/repo, break it into exactly 3 segment ANGLES "
-                   "for a focused single-topic episode: (1) what it actually is + the problem it kills, "
-                   "(2) how it works under the hood / the key mechanism, (3) the VERDICT — name the incumbent/"
-                   "alternative it's up against and say where it WINS or LOSES vs that category (the 'X vs the "
-                   "status quo' comparison hook, without faking a head-to-head with an unrelated tool). "
-                   "Output EXACTLY 3 lines, one angle each, format 'ANGLE: <short label> — <one-line focus>'. "
+        # ponytail: was "exactly 3 angles" → 3 segments ≈ 4min → ALWAYS auto-rejected by the 600s floor.
+        # 8 angles ≈ 11min, clears the floor like a roundup (MIN_SEGMENTS=8).
+        "model": "gpt-4.1-mini", "max_tokens": 400, "temperature": 0.7,
+        "system": ("You are the DEEP-DIVE expert. Given ONE tool/repo, break it into 8 segment ANGLES "
+                   "for a focused single-topic episode that must run 10+ minutes. Cover, in order: "
+                   "(1) what it actually is + the problem it kills, (2) how it works under the hood / the key "
+                   "mechanism, (3) a concrete walk-through of using it, (4) a real-world use case, (5) the "
+                   "architecture/design tradeoffs, (6) limitations & failure modes, (7) the VERDICT — name the "
+                   "incumbent/alternative it's up against and where it WINS or LOSES vs that category, "
+                   "(8) who should adopt it + what's next. "
+                   "Output EXACTLY 8 lines, one angle each, format 'ANGLE: <short label> — <one-line focus>'. "
                    "No preamble. " + VOICE)},
     # ---- LOREMASTER (the long-form NARRATIVE / "Rise of X" format) ----
     "loremaster": {
