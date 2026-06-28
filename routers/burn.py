@@ -455,6 +455,73 @@ async def list_captions(project: str = Query(..., description="Project name")):
         return JSONResponse({"error": str(e)}, status_code=400)
 
 
+@router.post("/import-tos")
+async def import_tos_captions(project: str = Query(..., description="Project name")):
+    """Pull Slingshot TOS captions from Supabase into this project's caption bank.
+
+    Writes one source CSV per song under captions/tos-<slug>/ so the burn UI
+    (and search) can use them. Works on the deployed volume — needs SUPABASE_URL
+    and SUPABASE_SERVICE_KEY/SUPABASE_KEY env vars.
+    """
+    import csv as _csv
+    import re as _re
+    import requests as _requests
+    from project_manager import get_project_caption_dir
+
+    url = (os.getenv("SUPABASE_URL") or "").rstrip("/")
+    key = (os.getenv("SUPABASE_SERVICE_KEY") or os.getenv("SUPABASE_KEY") or "").strip()
+    if not (url and key):
+        return JSONResponse({"error": "SUPABASE_URL / SUPABASE_KEY not configured"}, status_code=400)
+
+    try:
+        r = _requests.get(
+            f"{url}/rest/v1/tos_captions",
+            headers={"apikey": key, "Authorization": f"Bearer {key}"},
+            params={
+                "select": "text_raw,username,video_url,views,sound_id,song_title,campaign_slug",
+                "order": "views.desc",
+            },
+            timeout=60,
+        )
+        r.raise_for_status()
+        rows = [x for x in r.json() if (x.get("text_raw") or "").strip()]
+    except Exception as e:
+        return JSONResponse({"error": f"supabase fetch failed: {e}"}, status_code=502)
+
+    def _slug(s: str) -> str:
+        return _re.sub(r"[^a-z0-9]+", "-", (s or "").lower()).strip("-") or "tos"
+
+    def _vid(u: str) -> str:
+        m = _re.search(r"/video/(\d+)", u or "")
+        return m.group(1) if m else ""
+
+    groups: dict[str, list[dict]] = {}
+    for row in rows:
+        groups.setdefault(row.get("campaign_slug") or row.get("sound_id") or "tos", []).append(row)
+
+    caption_dir = get_project_caption_dir(project)
+    written = []
+    for label, grp in groups.items():
+        grp.sort(key=lambda x: int(x.get("views") or 0), reverse=True)
+        src_dir = caption_dir / f"tos-{_slug(label)}"
+        src_dir.mkdir(parents=True, exist_ok=True)
+        with open(src_dir / "captions.csv", "w", newline="", encoding="utf-8") as f:
+            w = _csv.DictWriter(f, fieldnames=["video_id", "video_url", "caption", "creator", "sound_id", "song", "views"])
+            w.writeheader()
+            for row in grp:
+                w.writerow({
+                    "video_id": _vid(row.get("video_url")),
+                    "video_url": row.get("video_url") or "",
+                    "caption": (row.get("text_raw") or "").strip(),
+                    "creator": (row.get("username") or "").lstrip("@"),
+                    "sound_id": row.get("sound_id") or "",
+                    "song": row.get("song_title") or "",
+                    "views": int(row.get("views") or 0),
+                })
+        written.append({"source": f"tos-{_slug(label)}", "song": grp[0].get("song_title") or label, "count": len(grp)})
+    return {"imported": len(written), "total_captions": len(rows), "sources": written}
+
+
 @router.get("/fonts")
 async def list_fonts():
     """List available fonts from fonts/ directory."""
