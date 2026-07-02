@@ -1,0 +1,13 @@
+[package]
+# Shared data-transfer types: the wire contract between the Axum API and any
+# client (the React app via generated TS, or the Yew/WASM client directly).
+# PURE serde — NO sqlx, NO tokio — so it compiles to wasm32 unchanged.
+name = "dto"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+chrono = { workspace = true }

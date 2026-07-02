@@ -1,0 +1,95 @@
+//! Content Lab — Axum entrypoint.
+//!
+//! One process: JSON API under /api, and (in production) it serves the built
+//! React SPA. State lives in SQLite on the Railway volume — no JSON blobs, no
+//! in-memory job dicts that vanish on restart.
+
+mod paths;
+mod providers;
+mod routes;
+mod state;
+mod telegram;
+
+use std::net::SocketAddr;
+
+use anyhow::Context;
+use axum::extract::DefaultBodyLimit;
+use axum::Router;
+use tower_http::trace::TraceLayer;
+use tracing_subscriber::EnvFilter;
+
+use crate::state::AppState;
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
+        .init();
+
+    // DB path: Railway volume if mounted, else local ./data.
+    let data_dir = std::env::var("RAILWAY_VOLUME_MOUNT_PATH")
+        .ok()
+        .filter(|p| std::path::Path::new(p).exists())
+        .unwrap_or_else(|| "./data".to_string());
+    std::fs::create_dir_all(&data_dir).ok();
+    let db_url = format!("sqlite://{data_dir}/content_lab.db");
+
+    tracing::info!("opening database at {db_url}");
+    let db = clab_core::Db::connect(&db_url)
+        .await
+        .context("failed to open database")?;
+
+    // Reclaim jobs/assets orphaned by a previous crash/restart so clients don't
+    // poll a stuck 'processing' state forever.
+    match clab_core::repo::recover_orphaned(&db).await {
+        Ok((j, a)) if j > 0 || a > 0 => {
+            tracing::warn!("recovered {j} orphaned job(s) and {a} asset(s) from a prior restart");
+        }
+        Ok(_) => {}
+        Err(e) => tracing::error!("orphan recovery failed: {e}"),
+    }
+
+    // Optional Telegram bot (env token). None → distribution endpoints report
+    // "not configured" rather than crashing. We do NOT auto-send on boot.
+    let telegram = crate::telegram::Telegram::from_env();
+    if telegram.is_some() {
+        tracing::info!("telegram: bot configured");
+    } else {
+        tracing::info!("telegram: no TELEGRAM_BOT_TOKEN — distribution disabled");
+    }
+
+    let state = AppState::new(db, telegram);
+
+    // Serve produced media (generated/clips/burned) under /projects/* so a
+    // client's <video src="/projects/.../video.mp4"> resolves. Asset paths are
+    // stored relative to data_dir, so this maps 1:1.
+    let projects_dir = std::path::Path::new(&data_dir).join("projects");
+    std::fs::create_dir_all(&projects_dir).ok();
+    let media = tower_http::services::ServeDir::new(&projects_dir);
+
+    let app = Router::new()
+        .merge(routes::router())
+        .nest_service("/projects", media)
+        // Global request-body ceiling. Axum 0.8 has no default; without this a
+        // huge base64 image/overlay (or any body) would buffer in memory and
+        // OOM the process. 100MB clears the 50MB base64 fields with headroom;
+        // per-field guards in the handlers stay tighter.
+        .layer(DefaultBodyLimit::max(100 * 1024 * 1024))
+        .layer(TraceLayer::new_for_http())
+        .with_state(state);
+
+    let port: u16 = std::env::var("PORT")
+        .ok()
+        .and_then(|p| p.parse().ok())
+        .unwrap_or(8000);
+    let addr = SocketAddr::from(([0, 0, 0, 0], port));
+
+    tracing::info!("content-lab listening on http://{addr}");
+    let listener = tokio::net::TcpListener::bind(addr)
+        .await
+        .with_context(|| format!("failed to bind {addr}"))?;
+    axum::serve(listener, app)
+        .await
+        .context("server error")?;
+    Ok(())
+}

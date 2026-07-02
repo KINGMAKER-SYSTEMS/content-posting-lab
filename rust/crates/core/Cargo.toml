@@ -1,0 +1,23 @@
+[package]
+# Named clab_core (not `core`) so it doesn't shadow Rust's built-in core crate.
+name = "clab_core"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+dto = { path = "../dto" }
+tokio.workspace = true
+sqlx.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+uuid.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+futures = "0.3"

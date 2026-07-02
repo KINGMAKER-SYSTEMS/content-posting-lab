@@ -1,0 +1,15 @@
+# Dev server for the Yew spike. Serves the WASM bundle and proxies API + media
+# to the native backend running on :8099, so the client can call /api/* and load
+# /projects/* videos same-origin (no CORS).
+[serve]
+port = 8090
+
+[[proxy]]
+rewrite = "/api/"
+backend = "http://127.0.0.1:8099/api/"
+
+# Generated videos are served by the backend under /projects/*; proxy them too
+# so the <video src="/projects/..."> resolves during dev.
+[[proxy]]
+rewrite = "/projects/"
+backend = "http://127.0.0.1:8099/projects/"

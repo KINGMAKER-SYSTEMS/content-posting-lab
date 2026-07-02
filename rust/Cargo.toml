@@ -1,0 +1,71 @@
+# Content Lab — Rust rewrite (lean).
+#
+# Lives alongside the legacy Python app during the incremental build. The
+# Python process stays the deployed system until this spine is real; we are
+# NOT porting the mess, we are rebuilding the core loop the right way:
+#   generate/clip  ->  burn  ->  distribute (Telegram)
+#
+# Three crates, dependency-ordered:
+#   core   domain types + the SQLite data layer (replaces the JSON-blob "DB")
+#   media  ffmpeg / yt-dlp subprocess orchestration (shell-out, no bindings)
+#   api    the Axum binary (HTTP + SSE + serves the React SPA)
+[workspace]
+resolver = "2"
+# NB: the Yew client (crates/web) is intentionally EXCLUDED from the workspace —
+# it builds for wasm32 via trunk with its own profile, and pulling it into the
+# native workspace build would force every `cargo build` to resolve wasm-only
+# deps. It depends on `dto` by path directly.
+members = ["crates/core", "crates/media", "crates/api", "crates/dto"]
+exclude = ["crates/web"]
+
+[workspace.package]
+edition = "2021"
+rust-version = "1.82"
+license = "MIT"
+
+# Pinned per the adversarial research pass (2026-05-29):
+#  - axum 0.8 (Tokio-team default; WS routes use any() not get())
+#  - sqlx 0.8 NOT 0.9 — 0.9 was 3 weeks old + mid org-move; 0.8 is battle-tested
+#  - shell out to ffmpeg/yt-dlp via tokio::process (no ffmpeg-next C bindings)
+[workspace.dependencies]
+tokio = { version = "1.43", features = ["full"] }
+axum = { version = "0.8", features = ["macros", "ws"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["fs", "cors", "trace"] }
+sqlx = { version = "0.8", default-features = false, features = [
+    "runtime-tokio",
+    "sqlite",
+    "macros",
+    "migrate",
+    "chrono",
+] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+reqwest = { version = "0.12", default-features = false, features = [
+    "json",
+    "rustls-tls",
+    "stream",
+] }
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4"] }
+anyhow = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+futures = "0.3"
+tokio-stream = "0.1"
+async-trait = "0.1"
+# Telegram Bot API — covers 100% of the send/forward/forum-topic hot path.
+# (Topic *listing* / history scan would need a pyrogram-style MTProto sidecar;
+# deferred — the rewrite stores real inventory rows so it isn't needed for v1.)
+teloxide = { version = "0.17", features = ["macros"] }
+
+# Local crates. NB: the domain crate is `clab_core`, NOT `core` — a crate named
+# `core` shadows Rust's built-in core and breaks macro expansion (thiserror et al
+# expand to `core::fmt::...` meaning the real std core).
+clab_core = { path = "crates/core" }
+media = { path = "crates/media" }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
