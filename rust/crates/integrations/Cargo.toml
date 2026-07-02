@@ -17,6 +17,13 @@ chrono.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+# R2 — S3-compatible; config built synchronously (no aws-config loader needed).
+aws-sdk-s3 = "1"
+# Google Drive service-account auth: RS256 JWT mint + base64 key decode +
+# streamed resumable uploads.
+jsonwebtoken = "9"
+base64 = "0.22"
+tokio-util = { version = "0.7", features = ["io"] }
 
 [dev-dependencies]
 tokio = { version = "1.43", features = ["full", "test-util"] }
