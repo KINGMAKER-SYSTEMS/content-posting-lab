@@ -10,15 +10,19 @@
 //! This file, error.rs, state.rs, and main.rs are integration seams — lead-owned.
 
 mod assets;
+mod burn;
 mod captions;
+mod clipper;
 pub mod distribution;
 mod email;
 mod error;
 pub mod jobs;
 mod miniapp;
 mod projects;
+mod recreate;
 mod roster;
 mod sounds;
+mod video;
 
 use axum::routing::get;
 use axum::Router;
@@ -40,6 +44,10 @@ pub fn router() -> Router<AppState> {
         .merge(roster::router())
         .merge(email::router())
         .merge(miniapp::router())
+        .merge(burn::router())
+        .merge(clipper::router())
+        .merge(video::router())
+        .merge(recreate::router())
 }
 
 /// List the generation models whose API key is configured (usable now).

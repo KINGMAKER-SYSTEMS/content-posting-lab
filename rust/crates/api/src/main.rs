@@ -7,6 +7,7 @@
 mod miniapp_auth;
 mod paths;
 mod providers;
+mod proxy;
 mod routes;
 mod state;
 mod telegram;
@@ -95,7 +96,13 @@ async fn main() -> anyhow::Result<()> {
 
     let app = Router::new()
         .merge(routes::router())
-        .nest_service("/projects", media)
+        .nest_service("/projects", media);
+
+    // ABN reverse-proxy (/api/agenticnews/*, /api/pipeline/*) + /fonts + the
+    // React SPA (frontend/dist with index.html fallback). Owned by proxy.rs.
+    let app = crate::proxy::attach(app, &data_dir);
+
+    let app = app
         // Global request-body ceiling. Axum 0.8 has no default; without this a
         // huge base64 image/overlay (or any body) would buffer in memory and
         // OOM the process. 100MB clears the 50MB base64 fields with headroom;
