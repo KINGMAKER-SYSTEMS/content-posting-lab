@@ -6,11 +6,12 @@
 //! - `distribution` — telegram workstream (also owns crate::telegram, repo::telegram_cfg)
 //! - `email`        — integrations workstream (also owns integrations::{r2,email,drive})
 //! - `miniapp`      — miniapp workstream (also owns crate::miniapp_auth, repo::requests)
+//!
 //! This file, error.rs, state.rs, and main.rs are integration seams — lead-owned.
 
 mod assets;
 mod captions;
-mod distribution;
+pub mod distribution;
 mod email;
 mod error;
 pub mod jobs;

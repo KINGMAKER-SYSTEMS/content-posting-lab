@@ -70,16 +70,21 @@ async fn main() -> anyhow::Result<()> {
         Err(e) => tracing::error!("orphan recovery failed: {e}"),
     }
 
-    // Optional Telegram bot (env token). None → distribution endpoints report
-    // "not configured" rather than crashing. We do NOT auto-send on boot.
-    let telegram = crate::telegram::Telegram::from_env();
-    if telegram.is_some() {
+    // Telegram bot handle — env token beats stored settings token (hard rule);
+    // with neither, the handle boots empty so PUT /api/telegram/bot-token can
+    // install one at runtime. We do NOT auto-send on boot.
+    let telegram = crate::telegram::Telegram::from_env_or_settings(&db).await;
+    if telegram.is_running().await {
         tracing::info!("telegram: bot configured");
     } else {
-        tracing::info!("telegram: no TELEGRAM_BOT_TOKEN — distribution disabled");
+        tracing::info!("telegram: no token yet — distribution disabled until one is installed");
     }
 
-    let state = AppState::new(db, telegram);
+    let state = AppState::new(db, Some(telegram));
+
+    // Daily forward schedule (config-driven; first act is always a sleep, so
+    // nothing sends at startup).
+    routes::distribution::spawn_schedule_loop(state.clone());
 
     // Serve produced media (generated/clips/burned) under /projects/* so a
     // client's <video src="/projects/.../video.mp4"> resolves. Asset paths are

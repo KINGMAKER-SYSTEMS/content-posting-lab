@@ -158,12 +158,11 @@ async fn update_sound(
             return Err(HttpError::not_found("Sound not found"));
         }
     }
-    if b.url.is_some() || b.label.is_some() {
-        if !repo::sounds::update_sound(&st.db, &sound_id, b.url.as_deref(), b.label.as_deref())
+    if (b.url.is_some() || b.label.is_some())
+        && !repo::sounds::update_sound(&st.db, &sound_id, b.url.as_deref(), b.label.as_deref())
             .await?
-        {
-            return Err(HttpError::not_found("Sound not found"));
-        }
+    {
+        return Err(HttpError::not_found("Sound not found"));
     }
     Ok(Json(json!({ "ok": true, "sound_id": sound_id })))
 }

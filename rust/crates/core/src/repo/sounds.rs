@@ -337,8 +337,11 @@ mod tests {
         let s = add_sound(&db, "https://t/1", "L").await.unwrap();
         let v = serde_json::to_value(&s).unwrap();
         let obj = v.as_object().unwrap();
-        let keys: Vec<_> = obj.keys().map(String::as_str).collect();
-        assert_eq!(keys, vec!["id", "url", "label", "active", "added_at"]);
+        // serde_json's Map is a BTreeMap → alphabetical; key ORDER is not part
+        // of the wire contract, presence is.
+        let mut keys: Vec<_> = obj.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(keys, vec!["active", "added_at", "id", "label", "url"]);
         let ts = obj["added_at"].as_str().unwrap();
         assert!(ts.ends_with(".000Z"), "legacy timestamp format: {ts}");
     }

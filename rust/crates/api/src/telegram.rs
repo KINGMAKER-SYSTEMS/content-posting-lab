@@ -52,18 +52,9 @@ impl Telegram {
         }
     }
 
-    /// Build from the TELEGRAM_BOT_TOKEN env var. Returns None if unset, so the
-    /// app boots fine without a bot configured (distribution endpoints then
-    /// report "not configured" rather than crashing).
-    pub fn from_env() -> Option<Self> {
-        env_token().map(|t| Self::with_bot(Some(Bot::new(t))))
-    }
-
-    /// Preferred boot path (seam: wire into main.rs in place of `from_env`):
-    /// env token first (hard rule — env beats stored), then the stored
-    /// settings token. Returns a handle even when NO token is available yet,
-    /// so PUT /api/telegram/bot-token can install one at runtime.
-    #[allow(dead_code)] // awaiting the main.rs seam wiring at integration
+    /// The boot path: env token first (hard rule — env beats stored), then the
+    /// stored settings token. Returns a handle even when NO token is available
+    /// yet, so PUT /api/telegram/bot-token can install one at runtime.
     pub async fn from_env_or_settings(db: &clab_core::Db) -> Self {
         if let Some(t) = env_token() {
             return Self::with_bot(Some(Bot::new(t)));
