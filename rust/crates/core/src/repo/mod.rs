@@ -512,3 +512,4 @@ pub mod requests;
 pub mod roster;
 pub mod sounds;
 pub mod telegram_cfg;
+pub mod clipper;
