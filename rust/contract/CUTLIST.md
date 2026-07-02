@@ -52,7 +52,6 @@
 - `POST /api/telegram/batch/run`
 - `PUT,DELETE /api/telegram/bot-token`
 - `POST /api/telegram/forward/{integration_id}`
-- `DELETE /api/telegram/inventory/scan`
 - `GET,POST /api/telegram/posters`
 - `PUT,DELETE /api/telegram/posters/{poster_id}`
 - `POST /api/telegram/posters/{poster_id}/pages`
@@ -66,8 +65,6 @@
 - `POST /api/telegram/sounds/sync`
 - `DELETE,PUT /api/telegram/sounds/{sound_id}`
 - `GET,PUT /api/telegram/staging-group`
-- `GET,POST /api/telegram/staging-group/discover-topics`
-- `GET,POST /api/telegram/staging-group/scan-inventory`
 - `POST /api/telegram/staging-group/sync-topics`
 - `GET /api/telegram/status`
 - `POST /api/video/color-correct`
