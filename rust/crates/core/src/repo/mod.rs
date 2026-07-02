@@ -512,4 +512,9 @@ pub mod requests;
 pub mod roster;
 pub mod sounds;
 pub mod telegram_cfg;
+
+// ── Wave-2 domain repositories ─────────────────────────────────────────────
+pub mod burn;
+pub mod clipper;
 pub mod projects_ext;
+pub mod video;
