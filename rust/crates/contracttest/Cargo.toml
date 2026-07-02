@@ -17,3 +17,8 @@ reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 anyhow.workspace = true
+# Crate-local deps (contracttest owns its whole tree — free to add within it).
+clap = { version = "4", features = ["derive"] }
+
+[dev-dependencies]
+# none yet — unit tests use inline fixtures only
