@@ -34,6 +34,26 @@ async fn main() -> anyhow::Result<()> {
     std::fs::create_dir_all(&data_dir).ok();
     let db_url = format!("sqlite://{data_dir}/content_lab.db");
 
+    // `migrate` subcommand: one-shot import of the legacy JSON state, then exit.
+    //   cargo run -p api -- migrate [json_dir]
+    // json_dir defaults to the data dir (where the volume keeps the JSON files).
+    // ponytail: std::env::args, no clap — one subcommand doesn't need a parser.
+    let args: Vec<String> = std::env::args().collect();
+    if args.get(1).map(String::as_str) == Some("migrate") {
+        let json_dir = args
+            .get(2)
+            .cloned()
+            .unwrap_or_else(|| data_dir.clone());
+        let db = clab_core::Db::connect(&db_url)
+            .await
+            .context("failed to open database")?;
+        let report = clab_core::import::import_json_state(&db, std::path::Path::new(&json_dir))
+            .await
+            .context("migrate failed — nothing was committed")?;
+        println!("{report}");
+        return Ok(());
+    }
+
     tracing::info!("opening database at {db_url}");
     let db = clab_core::Db::connect(&db_url)
         .await
