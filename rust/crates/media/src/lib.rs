@@ -13,3 +13,4 @@ pub mod probe;
 pub use cc::{build_cc_filter, ColorCorrection};
 pub use crop::{crop_rect, multi_crop, multi_crop_offsets, output_count, CropMode, CropRect};
 pub use probe::{probe, VideoInfo};
+pub mod ytdlp;

@@ -1,11 +1,23 @@
-//! HTTP routes. v1 = the asset spine (projects + assets) and health.
-//! Media jobs (clip/burn) and Telegram distribution mount here as they land.
+//! HTTP routes.
+//!
+//! Wave-1 file ownership (one workstream per module; do not cross-edit):
+//! - `captions`     — captions workstream (also owns media::ytdlp)
+//! - `sounds`, `roster` — sounds/roster workstream (also owns repo::{sounds,roster}, integrations::{notion,hub})
+//! - `distribution` — telegram workstream (also owns crate::telegram, repo::telegram_cfg)
+//! - `email`        — integrations workstream (also owns integrations::{r2,email,drive})
+//! - `miniapp`      — miniapp workstream (also owns crate::miniapp_auth, repo::requests)
+//! This file, error.rs, state.rs, and main.rs are integration seams — lead-owned.
 
 mod assets;
+mod captions;
 mod distribution;
+mod email;
 mod error;
 pub mod jobs;
+mod miniapp;
 mod projects;
+mod roster;
+mod sounds;
 
 use axum::routing::get;
 use axum::Router;
@@ -22,6 +34,11 @@ pub fn router() -> Router<AppState> {
         .merge(assets::router())
         .merge(jobs::router())
         .merge(distribution::router())
+        .merge(captions::router())
+        .merge(sounds::router())
+        .merge(roster::router())
+        .merge(email::router())
+        .merge(miniapp::router())
 }
 
 /// List the generation models whose API key is configured (usable now).

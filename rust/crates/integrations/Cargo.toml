@@ -1,0 +1,22 @@
+# External-service clients: OpenAI, Notion, Campaign Hub, R2, Cloudflare
+# email routing, Google Drive. One shared reqwest client, rust-native, no SDKs
+# except aws-sdk-s3 for R2 (per the 2026-05-29 equivalents research).
+[package]
+name = "integrations"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+tokio.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tokio = { version = "1.43", features = ["full", "test-util"] }

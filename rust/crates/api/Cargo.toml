@@ -12,6 +12,10 @@ path = "src/main.rs"
 [dependencies]
 clab_core.workspace = true
 media.workspace = true
+integrations.workspace = true
+hmac.workspace = true
+sha2.workspace = true
+hex.workspace = true
 tokio.workspace = true
 axum.workspace = true
 tower.workspace = true

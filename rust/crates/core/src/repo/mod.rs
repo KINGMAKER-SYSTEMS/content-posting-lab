@@ -505,3 +505,9 @@ pub async fn mark_forwarded(
     .await?;
     Ok(())
 }
+
+// ── Wave-1 domain repositories (one module per workstream) ─────────────────
+pub mod requests;
+pub mod roster;
+pub mod sounds;
+pub mod telegram_cfg;

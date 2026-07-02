@@ -4,6 +4,7 @@
 //! React SPA. State lives in SQLite on the Railway volume — no JSON blobs, no
 //! in-memory job dicts that vanish on restart.
 
+mod miniapp_auth;
 mod paths;
 mod providers;
 mod routes;
