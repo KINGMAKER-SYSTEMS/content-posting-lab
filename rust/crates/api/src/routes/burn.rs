@@ -129,41 +129,163 @@ async fn list_captions(Query(q): Query<ProjectQuery>) -> Result<Json<Value>, Api
 
 // ── import-tos ───────────────────────────────────────────────────────────────
 //
-// Parity note: the Python endpoint pulls Slingshot TOS captions from Supabase
-// (external HTTP call to `${SUPABASE_URL}/rest/v1/tos_captions`) and writes
-// one `captions.csv` per song under `captions/tos-<slug>/`. That external
-// integration (Supabase client, HTTP fetch) is out of this file's ownership
-// (`repo/burn.rs` + `routes/burn.rs` only — no new integrations module, and
-// `reqwest`/env wiring for a *new* upstream is a seam decision). This port
-// keeps the exact request/response contract (query param, error shapes, 400
-// when unconfigured) but the fetch itself is stubbed as "not configured"
-// unless SUPABASE_URL/KEY env vars are present, in which case it still 502s
-// with a clear message rather than silently no-op-ing — see the seam request
-// in the final report for wiring this fully once integrations decides where
-// a generic Supabase REST client lives.
+// Port of routers/burn.py::import_tos_captions: pull Slingshot TOS captions from
+// Supabase (`${SUPABASE_URL}/rest/v1/tos_captions`) and write one `captions.csv`
+// per campaign/sound group under `captions/tos-<slug>/` — the same CSV schema
+// `repo::burn::parse_captions_csv` reads, so imported rows show up in the burn UI
+// and search. Needs SUPABASE_URL + SUPABASE_SERVICE_KEY/SUPABASE_KEY.
+
+/// Slugify a group label — `[^a-z0-9]+` → `-`, trimmed, fallback "tos"
+/// (mirrors the Python `_slug`).
+fn tos_slug(s: &str) -> String {
+    let mut out = String::new();
+    let mut prev_dash = false;
+    for c in s.to_lowercase().chars() {
+        if c.is_ascii_alphanumeric() {
+            out.push(c);
+            prev_dash = false;
+        } else if !prev_dash {
+            out.push('-');
+            prev_dash = true;
+        }
+    }
+    let trimmed = out.trim_matches('-');
+    if trimmed.is_empty() { "tos".into() } else { trimmed.to_string() }
+}
+
+/// Extract the numeric id from a `.../video/<digits>` TikTok URL (Python `_vid`).
+fn tos_video_id(url: &str) -> String {
+    match url.find("/video/") {
+        Some(i) => url[i + "/video/".len()..]
+            .chars()
+            .take_while(char::is_ascii_digit)
+            .collect(),
+        None => String::new(),
+    }
+}
+
+/// RFC-4180 quote a CSV field iff it contains a delimiter/quote/newline — matches
+/// what `repo::burn::parse_captions_csv` expects on read.
+fn csv_field(s: &str) -> String {
+    if s.contains([',', '"', '\n', '\r']) {
+        format!("\"{}\"", s.replace('"', "\"\""))
+    } else {
+        s.to_string()
+    }
+}
+
+fn tos_str(row: &Value, key: &str) -> String {
+    row.get(key).and_then(Value::as_str).unwrap_or("").to_string()
+}
+
+fn tos_views(row: &Value) -> i64 {
+    match row.get("views") {
+        Some(v) => v
+            .as_i64()
+            .or_else(|| v.as_str().and_then(|s| s.trim().parse().ok()))
+            .unwrap_or(0),
+        None => 0,
+    }
+}
 
 /// POST /api/burn/import-tos
 async fn import_tos(Query(q): Query<ProjectQuery>) -> Result<Json<Value>, ApiError> {
-    let _project = crate::paths::sanitize_project_name(&q.project)
+    let project = crate::paths::sanitize_project_name(&q.project)
         .ok_or_else(|| ApiError::BadRequest("invalid project name".into()))?;
 
     let url = std::env::var("SUPABASE_URL").unwrap_or_default();
+    let url = url.trim().trim_end_matches('/');
     let key = std::env::var("SUPABASE_SERVICE_KEY")
         .or_else(|_| std::env::var("SUPABASE_KEY"))
         .unwrap_or_default();
-    if url.trim().is_empty() || key.trim().is_empty() {
+    let key = key.trim();
+    if url.is_empty() || key.is_empty() {
         return Err(ApiError::BadRequest(
             "SUPABASE_URL / SUPABASE_KEY not configured".into(),
         ));
     }
 
-    // Deferred: see module doc — a full Supabase REST fetch + per-song CSV
-    // writer is out of this file's ownership boundary. Report as a server
-    // error rather than silently fabricating an empty success, so a caller
-    // can tell this path isn't wired yet even though env vars are present.
-    Err(ApiError::Other(anyhow::anyhow!(
-        "import-tos Supabase fetch not yet wired in the Rust port (env is configured; see wave-2 seam request for services::supabase)"
-    )))
+    // Fetch tos_captions, highest-views first.
+    let resp = reqwest::Client::new()
+        .get(format!("{url}/rest/v1/tos_captions"))
+        .header("apikey", key)
+        .header("Authorization", format!("Bearer {key}"))
+        .query(&[
+            ("select", "text_raw,username,video_url,views,sound_id,song_title,campaign_slug"),
+            ("order", "views.desc"),
+        ])
+        .timeout(std::time::Duration::from_secs(60))
+        .send()
+        .await
+        .and_then(|r| r.error_for_status())
+        .map_err(|e| ApiError::Other(anyhow::anyhow!("supabase fetch failed: {e}")))?;
+    let all: Vec<Value> = resp
+        .json()
+        .await
+        .map_err(|e| ApiError::Other(anyhow::anyhow!("supabase returned non-JSON: {e}")))?;
+
+    // Keep rows with non-empty caption text.
+    let rows: Vec<&Value> = all
+        .iter()
+        .filter(|x| !tos_str(x, "text_raw").trim().is_empty())
+        .collect();
+    let total_captions = rows.len();
+
+    // Group by campaign_slug, else sound_id, else "tos".
+    let mut groups: std::collections::BTreeMap<String, Vec<&Value>> = std::collections::BTreeMap::new();
+    for row in &rows {
+        let mut label = tos_str(row, "campaign_slug");
+        if label.trim().is_empty() {
+            label = tos_str(row, "sound_id");
+        }
+        if label.trim().is_empty() {
+            label = "tos".into();
+        }
+        groups.entry(label).or_default().push(row);
+    }
+
+    let cap_dir = caption_dir(&project);
+    let mut written = Vec::new();
+    for (label, mut grp) in groups {
+        grp.sort_by_key(|r| std::cmp::Reverse(tos_views(r)));
+        let slug = tos_slug(&label);
+        let src_dir = cap_dir.join(format!("tos-{slug}"));
+        tokio::fs::create_dir_all(&src_dir)
+            .await
+            .map_err(|e| ApiError::Other(anyhow::anyhow!("create caption dir: {e}")))?;
+
+        let mut csv = String::from("video_id,video_url,caption,creator,sound_id,song,views\n");
+        for row in &grp {
+            let creator = tos_str(row, "username");
+            let fields = [
+                tos_video_id(&tos_str(row, "video_url")),
+                tos_str(row, "video_url"),
+                tos_str(row, "text_raw").trim().to_string(),
+                creator.trim_start_matches('@').to_string(),
+                tos_str(row, "sound_id"),
+                tos_str(row, "song_title"),
+                tos_views(row).to_string(),
+            ];
+            let line: Vec<String> = fields.iter().map(|f| csv_field(f)).collect();
+            csv.push_str(&line.join(","));
+            csv.push('\n');
+        }
+        tokio::fs::write(src_dir.join("captions.csv"), csv)
+            .await
+            .map_err(|e| ApiError::Other(anyhow::anyhow!("write captions.csv: {e}")))?;
+
+        let song = {
+            let s = tos_str(grp[0], "song_title");
+            if s.trim().is_empty() { label.clone() } else { s }
+        };
+        written.push(json!({ "source": format!("tos-{slug}"), "song": song, "count": grp.len() }));
+    }
+
+    Ok(Json(json!({
+        "imported": written.len(),
+        "total_captions": total_captions,
+        "sources": written,
+    })))
 }
 
 // ── Overlay (legacy per-item burn runner) ───────────────────────────────────
@@ -611,6 +733,30 @@ mod tests {
     use axum::body::Body;
     use axum::http::Request;
     use tower::ServiceExt;
+
+    #[test]
+    fn tos_helpers_match_python() {
+        // slug: [^a-z0-9]+ -> '-', trimmed, fallback "tos"
+        assert_eq!(tos_slug("Drake — Release!!"), "drake-release");
+        assert_eq!(tos_slug("  "), "tos");
+        assert_eq!(tos_slug("already-ok_1"), "already-ok-1");
+        // video id from /video/<digits>
+        assert_eq!(tos_video_id("https://www.tiktok.com/@u/video/7412345678?x=1"), "7412345678");
+        assert_eq!(tos_video_id("https://x/no-id"), "");
+        // CSV quoting round-trips through the reader's RFC-4180 parser.
+        let raw = "caption, with \"quotes\"\nand newline";
+        let csv = format!("caption\n{}\n", csv_field(raw));
+        let rows = clab_core::repo::burn::parse_captions_csv(&csv);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].text, raw);
+    }
+
+    #[test]
+    fn tos_views_parses_number_or_string() {
+        assert_eq!(tos_views(&serde_json::json!({"views": 42})), 42);
+        assert_eq!(tos_views(&serde_json::json!({"views": "99"})), 99);
+        assert_eq!(tos_views(&serde_json::json!({})), 0);
+    }
 
     // These tests mutate `RAILWAY_VOLUME_MOUNT_PATH`; the crate-wide guard
     // serializes them against every other env-mutating test in the binary.
