@@ -175,10 +175,21 @@ async fn main() -> Result<()> {
 }
 
 fn resolve_target(endpoint: &Endpoint, fixtures: &BTreeMap<String, String>) -> Result<String, ()> {
-    if has_path_params(&endpoint.path) {
-        substitute_path_params(&endpoint.path, fixtures).ok_or(())
+    let path = if has_path_params(&endpoint.path) {
+        substitute_path_params(&endpoint.path, fixtures).ok_or(())?
     } else {
-        Ok(endpoint.path.clone())
+        endpoint.path.clone()
+    };
+    // Many project-scoped GETs (burn/videos, burn/batches, burn/captions, …)
+    // require a `?project=` and 400 without it. The OpenAPI parse doesn't surface
+    // query params, so supply a default project — harmless for endpoints that
+    // ignore it, and diff mode applies the SAME value to both Rust and Python, so
+    // they still compare apples-to-apples (override via a `project` fixture).
+    if path.starts_with("/api/") && !path.contains('?') {
+        let project = fixtures.get("project").map(String::as_str).unwrap_or("contracttest");
+        Ok(format!("{path}?project={project}"))
+    } else {
+        Ok(path)
     }
 }
 
