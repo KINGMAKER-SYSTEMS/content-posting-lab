@@ -1489,14 +1489,12 @@ mod tests {
 
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
-    use tokio::sync::Mutex;
     use tower::ServiceExt;
 
-    /// These tests mutate the process-global RAILWAY_VOLUME_MOUNT_PATH env var
-    /// (same convention `data_dir()` reads everywhere in this file) — serialize
-    /// them so parallel test threads can't race each other's value (same
-    /// reasoning as recreate.rs / email.rs's ENV_LOCK).
-    static ENV_LOCK: Mutex<()> = Mutex::const_new(());
+    // These tests mutate the process-global RAILWAY_VOLUME_MOUNT_PATH env var;
+    // the crate-wide guard serializes them against every other env-mutating test
+    // (per-file locks don't serialize across files in one test binary).
+    use crate::testlock::ENV_LOCK;
 
     /// A throwaway data dir under the OS tempdir, cleaned up on drop. No
     /// `tempfile` crate dependency in this crate — same pattern routes/projects.rs

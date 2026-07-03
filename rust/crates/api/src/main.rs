@@ -126,3 +126,14 @@ async fn main() -> anyhow::Result<()> {
         .context("server error")?;
     Ok(())
 }
+
+/// Crate-wide serialization point for tests that mutate process-global env
+/// (`RAILWAY_VOLUME_MOUNT_PATH`, `CF_*`, `OPENAI_BASE_URL`, …). `std::env::set_var`
+/// is a process-global data race, so EVERY env-mutating test across every module
+/// must lock THIS one guard — per-file locks don't serialize across files in a
+/// single test binary (that gap raced two wave-3 tests into failure).
+#[cfg(test)]
+pub(crate) mod testlock {
+    use tokio::sync::Mutex;
+    pub static ENV_LOCK: Mutex<()> = Mutex::const_new(());
+}

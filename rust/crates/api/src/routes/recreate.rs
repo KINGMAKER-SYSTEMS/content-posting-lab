@@ -188,12 +188,11 @@ mod tests {
     use serde_json::Value;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
-    use tokio::sync::Mutex;
     use tower::ServiceExt;
 
-    /// generate-prompt hits the real OPENAI_BASE_URL env var — serialize
-    /// tests that touch it (same reasoning as email.rs's ENV_LOCK).
-    static ENV_LOCK: Mutex<()> = Mutex::const_new(());
+    // generate-prompt hits the real OPENAI_BASE_URL env var; the crate-wide guard
+    // serializes it against every other env-mutating test in the binary.
+    use crate::testlock::ENV_LOCK;
 
     async fn test_state() -> AppState {
         let path = std::env::temp_dir().join(format!("recreate-test-{}.db", uuid::Uuid::new_v4()));

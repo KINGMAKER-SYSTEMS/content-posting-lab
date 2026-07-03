@@ -610,13 +610,11 @@ mod tests {
     use super::*;
     use axum::body::Body;
     use axum::http::Request;
-    use tokio::sync::Mutex;
     use tower::ServiceExt;
 
-    /// These tests mutate `RAILWAY_VOLUME_MOUNT_PATH` (the `data_dir()`
-    /// convention shared across every route file) — serialize them, same
-    /// reasoning/pattern as `routes/email.rs`'s `ENV_LOCK`.
-    static ENV_LOCK: Mutex<()> = Mutex::const_new(());
+    // These tests mutate `RAILWAY_VOLUME_MOUNT_PATH`; the crate-wide guard
+    // serializes them against every other env-mutating test in the binary.
+    use crate::testlock::ENV_LOCK;
 
     /// A self-cleaning temp dir (no `tempfile` dev-dependency on this crate —
     /// `api`'s Cargo.toml is out of this file's ownership boundary — so this

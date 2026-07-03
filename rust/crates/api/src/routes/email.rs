@@ -371,14 +371,14 @@ mod tests {
     use super::*;
     use axum::body::Body;
     use axum::http::Request;
-    use tokio::sync::Mutex;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
     use tower::ServiceExt;
 
-    /// These tests mutate CF_* env vars — serialize them (async-aware so the
-    /// guard can be held across awaits without tripping await_holding_lock).
-    static ENV_LOCK: Mutex<()> = Mutex::const_new(());
+    // These tests mutate CF_* env vars; the crate-wide guard serializes them
+    // against every other env-mutating test in the binary (async-aware so it can
+    // be held across awaits without tripping await_holding_lock).
+    use crate::testlock::ENV_LOCK;
 
     fn set_cf_env(base_url: Option<&str>) {
         for k in [
