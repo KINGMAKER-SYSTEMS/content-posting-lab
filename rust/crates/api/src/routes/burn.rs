@@ -29,6 +29,7 @@ use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, patch, post};
 use axum::{Json, Router};
+use clab_core::model::{AssetKind, JobKind};
 use clab_core::repo;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -42,6 +43,7 @@ pub fn router() -> Router<AppState> {
         .route("/api/burn/videos", get(list_burned_videos))
         .route("/api/burn/captions", get(list_captions))
         .route("/api/burn/import-tos", post(import_tos))
+        .route("/api/burn/overlay", post(burn_overlay))
         .route("/api/burn/batches", get(list_batches))
         .route("/api/burn/batch-status/{batch_id}", get(batch_status))
         .route("/api/burn/batches/{batch_id}/rename", patch(rename_batch))
@@ -69,6 +71,20 @@ fn font_dir() -> PathBuf {
 
 fn caption_dir(project: &str) -> PathBuf {
     PathBuf::from(data_dir()).join("projects").join(project).join("captions")
+}
+
+/// Resolve a burn-overlay `videoPath` to a data-dir-relative string, mirroring
+/// `routers/burn.py::burn_overlay` exactly: a path already prefixed with
+/// `clips/` is project-relative as-is; anything else lives under the
+/// project's `videos/` subdir. The result is handed to
+/// `crate::paths::confine_under_data`, which does the actual traversal
+/// checking — this function only reproduces the *prefix* rule.
+fn video_rel_under_data(project: &str, video_path: &str) -> String {
+    if let Some(stripped) = video_path.strip_prefix("clips/") {
+        format!("projects/{project}/clips/{stripped}")
+    } else {
+        format!("projects/{project}/videos/{video_path}")
+    }
 }
 
 // ── Fonts ────────────────────────────────────────────────────────────────
@@ -150,6 +166,116 @@ async fn import_tos(Query(q): Query<ProjectQuery>) -> Result<Json<Value>, ApiErr
     )))
 }
 
+// ── Overlay (legacy per-item burn runner) ───────────────────────────────────
+//
+// **Contract.** `POST /api/burn/overlay` is the endpoint the live Burn.tsx
+// page actually calls (`submitBurnItem`, ~line 947): the frontend generates
+// ONE opaque `batchId` client-side (`makeBatchId`, unrelated to any job id)
+// and POSTs each (video, overlay) pair one at a time, sharing that batchId
+// and carrying its own `index`. It then polls `GET
+// /api/burn/batch-status/{batchId}` (below) expecting `items` to accumulate
+// one entry per index across all the jobs that share that batchId.
+//
+// This is a genuinely different shape from `POST /api/jobs/burn` (jobs.rs,
+// no frontend caller) where `batch_id == job.id` 1:1. To serve the real
+// contract without touching `repo/*` or `jobs.rs`, the external `batchId` +
+// `index` are stashed in `job.params` as JSON (the same "repurpose params
+// once the runner has consumed it" trick `repo::burn::set_batch_label`
+// already uses for the rename label), and `batch_status` below scans jobs
+// for that value instead of doing a job-id primary-key lookup.
+#[derive(Deserialize)]
+struct BurnOverlayRequest {
+    project: String,
+    #[serde(rename = "batchId")]
+    batch_id: String,
+    index: i64,
+    #[serde(rename = "videoPath")]
+    video_path: String,
+    #[serde(rename = "overlayPng")]
+    overlay_png: Option<String>,
+    #[serde(rename = "colorCorrection")]
+    color_correction: Option<media::ColorCorrection>,
+}
+
+/// Strip a `data:image/png;base64,...` prefix if present — the engine
+/// (`run_burn_job` / `media::ffmpeg::burn_overlay`) wants raw base64, but the
+/// browser-side `captureTextOverlay` hands over a full data URI.
+fn strip_data_uri_prefix(s: &str) -> &str {
+    match s.find(",") {
+        Some(idx) if s.starts_with("data:") => &s[idx + 1..],
+        _ => s,
+    }
+}
+
+/// POST /api/burn/overlay — queue one item of a client-tracked burn batch and
+/// return immediately; the frontend polls `batch-status` for progress.
+async fn burn_overlay(
+    State(st): State<AppState>,
+    Json(req): Json<BurnOverlayRequest>,
+) -> Result<Json<Value>, ApiError> {
+    let project = crate::paths::sanitize_project_name(&req.project)
+        .ok_or_else(|| ApiError::BadRequest("invalid project name".into()))?;
+    if req.batch_id.trim().is_empty() {
+        return Err(ApiError::BadRequest("batchId is required".into()));
+    }
+
+    // Resolve videoPath -> confined absolute path, then the data-dir-relative
+    // string `run_burn_job` (jobs.rs) expects — same prefix rule as Python's
+    // `/overlay` (clips/... is project-relative as-is; anything else lives
+    // under videos/).
+    let data_dir = data_dir();
+    let rel_under_data = video_rel_under_data(&project, &req.video_path);
+    let video_abs = crate::paths::confine_under_data(&data_dir, &rel_under_data)
+        .map_err(|e| ApiError::BadRequest(format!("invalid videoPath: {e}")))?;
+    if !video_abs.is_file() {
+        return Err(ApiError::BadRequest(format!("Video not found: {}", req.video_path)));
+    }
+
+    // Guard the overlay size like the old burn.py (50MB base64 cap → OOM
+    // guard) and strip a data-URI prefix if the browser sent one whole.
+    let overlay_raw = req.overlay_png.as_deref().map(strip_data_uri_prefix);
+    if let Some(b64) = overlay_raw {
+        if b64.len() > 50 * 1024 * 1024 {
+            return Err(ApiError::BadRequest("overlay PNG too large".into()));
+        }
+    }
+
+    repo::create_project(&st.db, &project).await?;
+
+    // Find-or-create a Clip asset for this videoPath so `run_burn_job` has a
+    // clip_id + path to consume. This endpoint has no prior asset-id
+    // handshake (unlike /api/jobs/burn) — the frontend only ever knows a
+    // disk path — so a fresh Clip asset is recorded and marked ready
+    // immediately (the file already exists on disk, confirmed above).
+    // ponytail: no dedup against a previously-recorded asset for the same
+    // path — one Clip row per overlay submission. Simplest thing that keeps
+    // correct lineage (burned.parent_id -> this clip); a dedup index would
+    // need a new repo query, which is out of this file's ownership.
+    let clip_meta = json!({ "video_path": req.video_path }).to_string();
+    let clip = repo::create_asset(&st.db, &project, AssetKind::Clip, None, Some(&clip_meta)).await?;
+    repo::mark_asset_ready(&st.db, &clip.id, &rel_under_data).await?;
+
+    let job_meta = json!({ "batch_id": req.batch_id, "index": req.index }).to_string();
+    let job = repo::create_job(&st.db, &project, JobKind::Burn, Some(&clip.id), Some(&job_meta)).await?;
+
+    let db = st.db.clone();
+    let job_id = job.id.clone();
+    let clip_id = clip.id.clone();
+    let overlay_owned = overlay_raw.map(|s| s.to_string());
+    let cc = req.color_correction;
+    tokio::spawn(async move {
+        if let Err(e) =
+            super::jobs::run_burn_job(db.clone(), &job_id, &project, &clip_id, &rel_under_data, overlay_owned, cc)
+                .await
+        {
+            tracing::error!("burn overlay job {job_id} failed: {e:#}");
+            let _ = repo::fail_job(&db, &job_id, &format!("{e:#}")).await;
+        }
+    });
+
+    Ok(Json(json!({ "ok": true, "index": req.index, "status": "queued", "job_id": job.id })))
+}
+
 // ── Batches ──────────────────────────────────────────────────────────────────
 
 /// GET /api/burn/batches — parity shape `{id, label, count, created}` per
@@ -177,52 +303,125 @@ async fn list_batches(
 }
 
 /// GET /api/burn/batch-status/{batch_id} — parity shape with the old
-/// in-memory poller: `{batchId, items, total, done, ok, failed}`. The Rust
-/// burn job runner (jobs.rs) is single-item-per-job (no per-index sub-items),
-/// so `items` here is synthesized from the job's own state: one entry
-/// (index 0) whose status mirrors the job's status. This is a parity
-/// deviation — Python's burn accepted a whole batch of (video, overlay) pairs
-/// per request and tracked N items; the Rust burn job (`POST /api/jobs/burn`)
-/// takes exactly one asset per job, so a "batch" here is really one job.
+/// in-memory poller: `{batchId, items, total, done, ok, failed}`.
+///
+/// `batch_id` here is the frontend's client-generated, opaque `batchId`
+/// (`makeBatchId` in Burn.tsx) — NOT a job id. Every `POST /api/burn/overlay`
+/// item shares one `batchId` across N independent jobs (one job per index),
+/// stashed in `job.params` as `{"batch_id","index"}` at submit time (see
+/// `burn_overlay` above). There is no repo query to look jobs up by an
+/// arbitrary params value (adding one would mean editing `repo/*`, out of
+/// this file's ownership), so this scans every project's jobs and filters
+/// in-process — acceptable at this data scale (SQLite, polled every 2s from
+/// one page). Falls back to a direct job-id lookup (the `POST /api/jobs/burn`
+/// convention, batch_id == job.id) if no params match, so that path — unused
+/// by the frontend today, but exercised by tests — still resolves.
 async fn batch_status(
     State(st): State<AppState>,
     Path(batch_id): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
     use clab_core::model::JobStatus;
 
-    let job = repo::get_job(&st.db, &batch_id).await?.ok_or(ApiError::NotFound)?;
-    let (status_str, ok, failed, done) = match job.status {
-        JobStatus::Queued => ("queued", false, false, false),
-        JobStatus::Processing => ("burning", false, false, false),
-        JobStatus::Done => ("done", true, false, true),
-        JobStatus::Failed => ("error", false, true, true),
+    let jobs = jobs_for_batch(&st.db, &batch_id).await?;
+
+    let jobs = if jobs.is_empty() {
+        // Fall back to direct job-id lookup (POST /api/jobs/burn convention).
+        match repo::get_job(&st.db, &batch_id).await? {
+            Some(j) if j.kind == JobKind::Burn => vec![(0i64, j)],
+            _ => return Err(ApiError::NotFound),
+        }
+    } else {
+        jobs
     };
-    let mut item = json!({
-        "status": status_str,
-        "index": 0,
-        "ok": ok,
-    });
-    if let Some(obj) = item.as_object_mut() {
-        if done && ok {
-            let ids: Vec<String> = serde_json::from_str(&job.result_asset_ids).unwrap_or_default();
-            if let Some(id) = ids.first() {
-                obj.insert("file".into(), json!(id));
-            }
+
+    let mut items = serde_json::Map::new();
+    let mut done_n = 0u64;
+    let mut ok_n = 0u64;
+    let mut failed_n = 0u64;
+
+    for (index, job) in &jobs {
+        let (status_str, ok, failed, done) = match job.status {
+            JobStatus::Queued => ("queued", false, false, false),
+            JobStatus::Processing => ("burning", false, false, false),
+            JobStatus::Done => ("done", true, false, true),
+            JobStatus::Failed => ("error", false, true, true),
+        };
+        if done {
+            done_n += 1;
+        }
+        if ok {
+            ok_n += 1;
         }
         if failed {
-            obj.insert("error".into(), json!(job.error.clone().unwrap_or_default()));
+            failed_n += 1;
         }
+
+        let mut item = json!({
+            "status": status_str,
+            "index": index,
+            "ok": ok,
+        });
+        if let Some(obj) = item.as_object_mut() {
+            if done && ok {
+                if let Some(file) = burned_file_for_job(&st.db, job).await? {
+                    obj.insert("file".into(), json!(file));
+                }
+            }
+            if failed {
+                obj.insert("error".into(), json!(job.error.clone().unwrap_or_default()));
+            }
+        }
+        items.insert(index.to_string(), item);
     }
-    let items = json!({ "0": item });
 
     Ok(Json(json!({
         "batchId": batch_id,
-        "items": items,
-        "total": 1,
-        "done": if done { 1 } else { 0 },
-        "ok": if ok { 1 } else { 0 },
-        "failed": if failed { 1 } else { 0 },
+        "items": Value::Object(items),
+        "total": jobs.len(),
+        "done": done_n,
+        "ok": ok_n,
+        "failed": failed_n,
     })))
+}
+
+/// Find every `Burn` job across all projects whose `params.batch_id` matches
+/// the frontend's opaque batch id, paired with its `params.index`. See
+/// `batch_status` doc for why this is a scan rather than an indexed query.
+async fn jobs_for_batch(
+    db: &clab_core::Db,
+    batch_id: &str,
+) -> Result<Vec<(i64, clab_core::model::Job)>, ApiError> {
+    let mut out = Vec::new();
+    for project in repo::list_projects(db).await? {
+        for job in repo::list_jobs(db, &project.name).await? {
+            if job.kind != JobKind::Burn {
+                continue;
+            }
+            let Some(params) = job.params.as_deref() else { continue };
+            let Ok(v) = serde_json::from_str::<Value>(params) else { continue };
+            let Some(b) = v.get("batch_id").and_then(|b| b.as_str()) else { continue };
+            if b != batch_id {
+                continue;
+            }
+            let index = v.get("index").and_then(|i| i.as_i64()).unwrap_or(0);
+            out.push((index, job));
+        }
+    }
+    out.sort_by_key(|(i, _)| *i);
+    Ok(out)
+}
+
+/// Resolve a finished burn job's output asset to the path fragment the
+/// frontend expects in `file`: relative to `/projects/{project}/burned/`
+/// (mirrors Python's `out_file = f"{batch_id}/burned_{idx:03d}.mp4"`, which
+/// `Burn.tsx` loads via `staticUrl(/projects/{project}/burned/{file})`).
+async fn burned_file_for_job(db: &clab_core::Db, job: &clab_core::model::Job) -> Result<Option<String>, ApiError> {
+    let ids: Vec<String> = serde_json::from_str(&job.result_asset_ids).unwrap_or_default();
+    let Some(id) = ids.first() else { return Ok(None) };
+    let Some(asset) = repo::get_asset(db, id).await? else { return Ok(None) };
+    let Some(path) = asset.path else { return Ok(None) };
+    let prefix = format!("projects/{}/burned/", job.project);
+    Ok(Some(path.strip_prefix(&prefix).unwrap_or(&path).to_string()))
 }
 
 #[derive(Deserialize)]
@@ -404,4 +603,270 @@ async fn download_zip(
         zip_bytes,
     )
         .into_response())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::Request;
+    use tokio::sync::Mutex;
+    use tower::ServiceExt;
+
+    /// These tests mutate `RAILWAY_VOLUME_MOUNT_PATH` (the `data_dir()`
+    /// convention shared across every route file) — serialize them, same
+    /// reasoning/pattern as `routes/email.rs`'s `ENV_LOCK`.
+    static ENV_LOCK: Mutex<()> = Mutex::const_new(());
+
+    /// A self-cleaning temp dir (no `tempfile` dev-dependency on this crate —
+    /// `api`'s Cargo.toml is out of this file's ownership boundary — so this
+    /// hand-rolls the same "unique dir, remove on drop" behavior with
+    /// `std::env::temp_dir()` + `uuid`, both already direct dependencies).
+    struct TempDir(PathBuf);
+    impl TempDir {
+        fn path(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    async fn test_state() -> (AppState, TempDir) {
+        let dir = std::env::temp_dir().join(format!("burn-overlay-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("RAILWAY_VOLUME_MOUNT_PATH", &dir);
+        let db_path = dir.join("db.sqlite");
+        let db = clab_core::Db::connect(&format!("sqlite://{}", db_path.display()))
+            .await
+            .unwrap();
+        (AppState::new(db, None), TempDir(dir))
+    }
+
+    async fn call(st: &AppState, req: Request<Body>) -> (StatusCode, Value) {
+        // main.rs applies a 100MB DefaultBodyLimit app-wide; this bare
+        // sub-router needs the same layer so the oversized-overlay test
+        // exercises our 400 guard rather than axum's un-lifted 2MB default.
+        let app = router()
+            .layer(axum::extract::DefaultBodyLimit::max(100 * 1024 * 1024))
+            .with_state(st.clone());
+        let resp = app.oneshot(req).await.unwrap();
+        let status = resp.status();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let body = if bytes.is_empty() {
+            Value::Null
+        } else {
+            serde_json::from_slice(&bytes).unwrap_or(Value::Null)
+        };
+        (status, body)
+    }
+
+    fn json_req(method: &str, uri: &str, body: Value) -> Request<Body> {
+        Request::builder()
+            .method(method)
+            .uri(uri)
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap()
+    }
+
+    /// Write a tiny real video file under `<data>/projects/<project>/videos/`
+    /// so `burn_overlay`'s `is_file()` + confinement checks pass. A 1x1
+    /// yuv420p mp4 — small enough to generate inline via ffmpeg (present in
+    /// this dev environment; if ffmpeg is missing the test will fail loudly
+    /// rather than silently pass, which is the right failure mode here).
+    async fn write_test_video(dir: &std::path::Path, project: &str, name: &str) -> String {
+        let video_dir = dir.join("projects").join(project).join("videos");
+        tokio::fs::create_dir_all(&video_dir).await.unwrap();
+        let out = video_dir.join(name);
+        let status = tokio::process::Command::new("ffmpeg")
+            .args([
+                "-y", "-f", "lavfi", "-i", "color=c=black:s=32x32:d=1", "-pix_fmt", "yuv420p", "-c:v", "libx264",
+            ])
+            .arg(&out)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .await
+            .unwrap();
+        assert!(status.success(), "ffmpeg failed to build test fixture video");
+        name.to_string()
+    }
+
+    #[tokio::test]
+    async fn overlay_queues_and_batch_status_groups_by_external_batch_id() {
+        let _g = ENV_LOCK.lock().await;
+        let (st, dir) = test_state().await;
+        let video = write_test_video(dir.path(), "proj", "clip.mp4").await;
+
+        let batch_id = "my-batch-2026-abcd";
+        for i in 0..3i64 {
+            let (status, body) = call(
+                &st,
+                json_req(
+                    "POST",
+                    "/api/burn/overlay",
+                    json!({
+                        "project": "proj",
+                        "batchId": batch_id,
+                        "index": i,
+                        "videoPath": video,
+                        "overlayPng": null,
+                        "colorCorrection": null,
+                    }),
+                ),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "submit #{i} body={body:?}");
+            assert_eq!(body["ok"], true);
+            assert_eq!(body["index"], i);
+        }
+
+        // Poll immediately — the three submissions share one external
+        // batchId even though each is backed by its own Job row.
+        let (status, body) = call(&st, get(&format!("/api/burn/batch-status/{batch_id}"))).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["batchId"], batch_id);
+        assert_eq!(body["total"], 3);
+        let items = body["items"].as_object().unwrap();
+        assert_eq!(items.len(), 3);
+        for i in 0..3i64 {
+            let item = &items[&i.to_string()];
+            assert_eq!(item["index"], i);
+            assert!(item["status"].is_string());
+        }
+    }
+
+    #[tokio::test]
+    async fn overlay_strips_data_uri_prefix_and_accepts_color_correction_only() {
+        let _g = ENV_LOCK.lock().await;
+        let (st, dir) = test_state().await;
+        let video = write_test_video(dir.path(), "proj2", "clip.mp4").await;
+
+        // 1x1 transparent PNG, base64-encoded, wrapped as a data URI — same
+        // shape captureTextOverlay hands the endpoint.
+        let png_b64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+        let data_uri = format!("data:image/png;base64,{png_b64}");
+
+        let (status, body) = call(
+            &st,
+            json_req(
+                "POST",
+                "/api/burn/overlay",
+                json!({
+                    "project": "proj2",
+                    "batchId": "b2",
+                    "index": 0,
+                    "videoPath": video,
+                    "overlayPng": data_uri,
+                    "colorCorrection": {"brightness": 10, "contrast": -5},
+                }),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "body={body:?}");
+        assert_eq!(body["ok"], true);
+    }
+
+    #[tokio::test]
+    async fn overlay_rejects_missing_video() {
+        let _g = ENV_LOCK.lock().await;
+        let (st, dir) = test_state().await;
+        tokio::fs::create_dir_all(dir.path().join("projects").join("proj3").join("videos"))
+            .await
+            .unwrap();
+
+        let (status, body) = call(
+            &st,
+            json_req(
+                "POST",
+                "/api/burn/overlay",
+                json!({
+                    "project": "proj3",
+                    "batchId": "b3",
+                    "index": 0,
+                    "videoPath": "does-not-exist.mp4",
+                    "overlayPng": null,
+                    "colorCorrection": null,
+                }),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body["error"].as_str().unwrap().contains("not found"));
+    }
+
+    #[tokio::test]
+    async fn overlay_rejects_oversized_overlay() {
+        let _g = ENV_LOCK.lock().await;
+        let (st, dir) = test_state().await;
+        let video = write_test_video(dir.path(), "proj4", "clip.mp4").await;
+
+        let huge = "A".repeat(51 * 1024 * 1024);
+        let (status, body) = call(
+            &st,
+            json_req(
+                "POST",
+                "/api/burn/overlay",
+                json!({
+                    "project": "proj4",
+                    "batchId": "b4",
+                    "index": 0,
+                    "videoPath": video,
+                    "overlayPng": huge,
+                    "colorCorrection": null,
+                }),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body["error"].as_str().unwrap().contains("too large"));
+    }
+
+    #[tokio::test]
+    async fn batch_status_unknown_id_is_404() {
+        let _g = ENV_LOCK.lock().await;
+        let (st, _dir) = test_state().await;
+        let (status, _) = call(&st, get("/api/burn/batch-status/nonexistent-batch")).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn batch_status_falls_back_to_direct_job_id_lookup() {
+        let _g = ENV_LOCK.lock().await;
+        let (st, _dir) = test_state().await;
+        repo::create_project(&st.db, "proj5").await.unwrap();
+        let job = repo::create_job(&st.db, "proj5", clab_core::model::JobKind::Burn, None, None)
+            .await
+            .unwrap();
+
+        // No params -> jobs_for_batch scan finds nothing -> falls back to
+        // treating the path segment as a literal job id (the POST
+        // /api/jobs/burn convention).
+        let (status, body) = call(&st, get(&format!("/api/burn/batch-status/{}", job.id))).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["total"], 1);
+        assert_eq!(body["items"]["0"]["status"], "queued");
+    }
+
+    #[test]
+    fn video_rel_under_data_matches_python_prefix_rule() {
+        assert_eq!(video_rel_under_data("proj", "foo.mp4"), "projects/proj/videos/foo.mp4");
+        assert_eq!(
+            video_rel_under_data("proj", "clips/job1/clip_000.mp4"),
+            "projects/proj/clips/job1/clip_000.mp4"
+        );
+    }
+
+    #[test]
+    fn strip_data_uri_prefix_handles_both_shapes() {
+        assert_eq!(strip_data_uri_prefix("data:image/png;base64,QUJD"), "QUJD");
+        assert_eq!(strip_data_uri_prefix("QUJD"), "QUJD");
+    }
+
+    fn get(uri: &str) -> Request<Body> {
+        Request::builder().uri(uri).body(Body::empty()).unwrap()
+    }
 }
