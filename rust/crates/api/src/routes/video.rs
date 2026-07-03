@@ -714,11 +714,10 @@ async fn delete_job(
     let mut files_removed = 0u32;
     for job in &jobs {
         let result_ids: Vec<String> = serde_json::from_str(&job.result_asset_ids).unwrap_or_default();
-        let video_dir = project_video_dir(&job.project);
         for asset_id in &result_ids {
             if let Some(asset) = repo::get_asset(&st.db, asset_id).await? {
                 if let Some(rel) = &asset.path {
-                    if let Some(abs) = confine_in_dir(&video_dir, rel) {
+                    if let Some(abs) = confine_project_video(&job.project, rel) {
                         if tokio::fs::remove_file(&abs).await.is_ok() {
                             files_removed += 1;
                         }
@@ -772,8 +771,7 @@ async fn delete_file(Query(q): Query<FileDeleteQuery>) -> Result<Json<Value>, Ap
     if q.path.is_empty() {
         return Err(ApiError::BadRequest("path is required".into()));
     }
-    let video_dir = project_video_dir(&q.project);
-    let target = confine_in_dir(&video_dir, &q.path)
+    let target = confine_project_video(&q.project, &q.path)
         .ok_or_else(|| ApiError::BadRequest("Invalid path".into()))?;
     if !target.exists() {
         return Err(ApiError::NotFound);
@@ -1120,22 +1118,33 @@ fn data_dir() -> String {
         .unwrap_or_else(|| "./data".to_string())
 }
 
-fn project_video_dir(project: &str) -> PathBuf {
-    PathBuf::from(data_dir()).join("projects").join(project).join("videos")
+/// Confine a frontend-supplied video `path` and require it to live under THIS
+/// project. Stored video paths are DATA-DIR-relative and land in several
+/// subdirs — `projects/<p>/generated/<job>/video.mp4` (generate),
+/// `projects/<p>/clips/<job>/...` (crops), `projects/<p>/burned/...` (burns),
+/// `projects/<p>/videos/...` — NOT just `videos/`. The previous helper joined the
+/// path under `<project>/videos` only, which double-prefixed `projects/<p>/` and
+/// rejected/skipped every real generated or clip path (per-tile Delete 400'd,
+/// delete_job orphaned files, color-correct 400'd on generated videos).
+fn confine_project_video(project: &str, path: &str) -> Option<PathBuf> {
+    confine_project_video_in(&data_dir(), project, path)
 }
 
-/// Confine `rel` (a caller-supplied relative path) under `dir`, rejecting any
-/// path that escapes it. Returns `None` on traversal — same containment intent
-/// as `crate::paths::confine_under_data`, scoped to an arbitrary base dir (the
-/// project's video dir here) instead of the whole data dir.
-fn confine_in_dir(dir: &StdPath, rel: &str) -> Option<PathBuf> {
-    let target = normalize_lexically(&dir.join(rel));
-    let dir_norm = normalize_lexically(dir);
-    if target.starts_with(&dir_norm) {
-        Some(target)
-    } else {
-        None
+/// Pure core of `confine_project_video` (data dir injected, so it's unit-testable
+/// without touching process env).
+fn confine_project_video_in(data: &str, project: &str, path: &str) -> Option<PathBuf> {
+    let project = crate::paths::sanitize_project_name(project)?;
+    // Accept an absolute-under-data path (uploaded sources) or a relative one.
+    let rel = crate::paths::relativize_under_data(data, path).ok()?;
+    // Scope to this project's dir — checked on the normalized RELATIVE form so
+    // it's symlink-immune (comparing canonicalized abs paths against a
+    // non-canonical project root would spuriously fail on symlinked data dirs).
+    let norm_rel = normalize_lexically(StdPath::new(&rel));
+    if !norm_rel.starts_with(PathBuf::from("projects").join(&project)) {
+        return None;
     }
+    // confine_under_data does the traversal/absolute-escape rejection + returns abs.
+    crate::paths::confine_under_data(data, &rel).ok()
 }
 
 /// Lexical (non-IO) path normalization — resolves `.`/`..` components without
@@ -1167,8 +1176,7 @@ fn resolve_safe_video_path(project: &str, path: &str) -> Result<PathBuf, ApiErro
     if path.is_empty() {
         return Err(ApiError::BadRequest("path is required".into()));
     }
-    let video_dir = project_video_dir(project);
-    let target = confine_in_dir(&video_dir, path)
+    let target = confine_project_video(project, path)
         .ok_or_else(|| ApiError::BadRequest("Invalid path".into()))?;
     if !target.is_file() {
         return Err(ApiError::NotFound);
@@ -1228,23 +1236,34 @@ mod tests {
     }
 
     #[test]
-    fn confine_allows_clean_relative() {
-        let dir = StdPath::new("/data/projects/p/videos");
-        let r = confine_in_dir(dir, "clip_000.mp4").unwrap();
-        assert_eq!(r, PathBuf::from("/data/projects/p/videos/clip_000.mp4"));
+    fn confine_project_video_accepts_all_subdirs() {
+        // The bug this fixes: generated/clip/burned paths (not just videos/) must resolve.
+        for rel in [
+            "projects/p/generated/job1/video.mp4",
+            "projects/p/clips/job1/clip_000.mp4",
+            "projects/p/burned/job1/burned_000.mp4",
+            "projects/p/videos/clip_000.mp4",
+        ] {
+            let r = confine_project_video_in("/data", "p", rel)
+                .unwrap_or_else(|| panic!("should accept {rel}"));
+            assert_eq!(r, PathBuf::from(format!("/data/{rel}")));
+        }
     }
 
     #[test]
-    fn confine_rejects_traversal() {
-        let dir = StdPath::new("/data/projects/p/videos");
-        assert!(confine_in_dir(dir, "../../etc/passwd").is_none());
-        assert!(confine_in_dir(dir, "../../../secrets").is_none());
+    fn confine_project_video_rejects_cross_project_and_traversal() {
+        // Can't delete another project's files even with a valid-looking path.
+        assert!(confine_project_video_in("/data", "p", "projects/other/videos/x.mp4").is_none());
+        // Traversal + absolute escape still blocked.
+        assert!(confine_project_video_in("/data", "p", "projects/p/../../etc/passwd").is_none());
+        assert!(confine_project_video_in("/data", "p", "/etc/passwd").is_none());
     }
 
     #[test]
-    fn confine_rejects_absolute_escape() {
-        let dir = StdPath::new("/data/projects/p/videos");
-        assert!(confine_in_dir(dir, "/etc/passwd").is_none());
+    fn confine_project_video_accepts_absolute_under_data() {
+        // Uploaded-source case: absolute path under the data dir is relativized.
+        let r = confine_project_video_in("/app/data", "p", "/app/data/projects/p/generated/j/v.mp4");
+        assert_eq!(r, Some(PathBuf::from("/app/data/projects/p/generated/j/v.mp4")));
     }
 
     #[test]
