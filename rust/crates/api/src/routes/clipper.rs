@@ -61,6 +61,18 @@ fn default_project() -> String {
     "quick-test".to_string()
 }
 
+/// A client-supplied `batch_id` becomes a directory-name component
+/// (`_staging_<id>` / `_staging/<id>`), so it must be a plain token — otherwise a
+/// `batch_id` like `../../../etc` is a path-traversal *arbitrary-file-write*
+/// primitive (the upload body is streamed to a file inside that dir). Only
+/// `[A-Za-z0-9_-]` is allowed; server-generated ids (`repo::new_id`) always pass.
+fn ensure_valid_batch_id(id: &str) -> Result<(), ApiError> {
+    if id.is_empty() || !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+        return Err(ApiError::BadRequest("invalid batch_id".into()));
+    }
+    Ok(())
+}
+
 #[derive(Deserialize)]
 struct ProjectQuery {
     #[serde(default = "default_project")]
@@ -1195,6 +1207,8 @@ async fn r2_upload_complete(Json(body): Json<R2UploadCompleteBody>) -> Result<Js
     if body.batch_id.trim().is_empty() {
         return Err(ApiError::BadRequest("batch_id is required".into()));
     }
+    // batch_id becomes a staging dir name below — reject traversal (write primitive).
+    ensure_valid_batch_id(&body.batch_id)?;
     if body.items.is_empty() {
         return Err(ApiError::BadRequest("items[] is required".into()));
     }
@@ -1314,6 +1328,7 @@ async fn stage_streamed(
     let sanitized = crate::paths::sanitize_project_name(&q.project)
         .ok_or_else(|| ApiError::BadRequest("invalid project name".into()))?;
     let batch_id = q.batch_id.unwrap_or_else(repo::new_id);
+    ensure_valid_batch_id(&batch_id)?;
 
     let staging_dir = PathBuf::from(data_dir())
         .join("projects")
@@ -1435,6 +1450,20 @@ async fn probe_basic(path: &FsPath) -> anyhow::Result<(f64, u32, u32)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn batch_id_rejects_traversal() {
+        // Server ids + normal tokens pass.
+        assert!(ensure_valid_batch_id("abc123").is_ok());
+        assert!(ensure_valid_batch_id("a1b2-c3d4-e5f6").is_ok());
+        assert!(ensure_valid_batch_id(&repo::new_id()).is_ok());
+        // Traversal / separators / empty are rejected (would be a write primitive).
+        assert!(ensure_valid_batch_id("../../../etc").is_err());
+        assert!(ensure_valid_batch_id("..").is_err());
+        assert!(ensure_valid_batch_id("a/b").is_err());
+        assert!(ensure_valid_batch_id("a.b").is_err());
+        assert!(ensure_valid_batch_id("").is_err());
+    }
 
     #[test]
     fn clips_in_window_floors_the_span() {
