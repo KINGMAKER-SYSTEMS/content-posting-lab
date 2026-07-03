@@ -1,0 +1,11 @@
+[package]
+name = "leptos-home-spike"
+version = "0.1.0"
+edition = "2021"
+
+# Standalone — deliberately NOT a member of rust/ workspace (keeps the WASM
+# target + leptos deps out of the server build). This is a throwaway spike to
+# evaluate "reproduce the React frontend in Leptos".
+[dependencies]
+leptos = { version = "0.7", features = ["csr"] }
+console_error_panic_hook = "0.1"

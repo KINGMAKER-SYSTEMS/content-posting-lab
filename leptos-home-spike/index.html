@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Content Lab — Leptos spike</title>
+    <link data-trunk rel="rust" data-wasm-opt="0" />
+    <style>
+      /* Brand tokens copied verbatim from frontend/src/index.css (dark chrome).
+         In a real port these come from the SAME Tailwind v4 pipeline the React
+         app uses — see FINDINGS.md. Inlined here so the spike is self-contained. */
+      :root {
+        --bg: #060606; --raised: #0a0a0a; --card: #141414; --border: rgba(255,255,255,0.10);
+        --border-soft: rgba(255,255,255,0.06); --fg: #fafcff; --fg-dim: #b8b9bb;
+        --magenta: #e100c3; --purple: #8500d7; --grad: linear-gradient(90deg,#e100c3,#8500d7);
+        --radius: 8px;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0; background: var(--bg); color: var(--fg);
+        font-family: Poppins, ui-sans-serif, system-ui, -apple-system, sans-serif;
+        -webkit-font-smoothing: antialiased;
+      }
+      .wrap { max-width: 1180px; margin: 0 auto; padding: 40px 28px 80px; }
+      .row { display: flex; align-items: center; }
+      .between { justify-content: space-between; }
+      .eyebrow { font-size: 12px; letter-spacing: .14em; text-transform: uppercase; color: var(--fg-dim); }
+      h1 { font-size: 34px; font-weight: 700; margin: 6px 0 0; letter-spacing: -.02em; }
+      .grad { background: var(--grad); -webkit-background-clip: text; background-clip: text; color: transparent; }
+      .sub { color: var(--fg-dim); margin-top: 6px; font-size: 14px; }
+      .btn {
+        border: 0; border-radius: var(--radius); padding: 10px 16px; font-weight: 600; font-size: 14px;
+        color: #fff; background: var(--grad); cursor: pointer; font-family: inherit;
+        box-shadow: 0 6px 20px -8px rgba(225,0,195,.6); transition: transform .12s ease, filter .12s ease;
+      }
+      .btn:hover { filter: brightness(1.08); transform: translateY(-1px); }
+      .btn.ghost { background: transparent; border: 1px solid var(--border); color: var(--fg); box-shadow: none; }
+      .btn.ghost:hover { background: rgba(255,255,255,.04); }
+      .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px,1fr)); gap: 16px; }
+      .card {
+        background: var(--card); border: 1px solid var(--border-soft); border-radius: 14px; padding: 18px 18px 16px;
+        transition: border-color .15s ease, transform .15s ease; position: relative;
+      }
+      .card:hover { border-color: var(--border); transform: translateY(-2px); }
+      .card.active { border-color: var(--magenta); box-shadow: 0 0 0 1px rgba(225,0,195,.35), 0 10px 30px -14px rgba(225,0,195,.5); }
+      .card h3 { margin: 0; font-size: 17px; font-weight: 600; }
+      .counts { display: flex; gap: 18px; margin-top: 14px; }
+      .count .n { font-size: 20px; font-weight: 700; }
+      .count .l { font-size: 11px; color: var(--fg-dim); text-transform: uppercase; letter-spacing: .08em; }
+      .badge {
+        display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600;
+        padding: 4px 10px; border-radius: 999px; border: 1px solid var(--border);
+      }
+      .badge.active { background: rgba(225,0,195,.14); border-color: rgba(225,0,195,.5); color: #ff77e8; }
+      .badge.info { background: rgba(133,0,215,.14); border-color: rgba(133,0,215,.45); color: #c79bff; }
+      .badge.warn { background: rgba(214,158,0,.14); border-color: rgba(214,158,0,.45); color: #ffd67a; }
+      .dot { width: 7px; height: 7px; border-radius: 999px; background: currentColor; }
+      .stats { display: flex; gap: 14px; margin: 22px 0 30px; flex-wrap: wrap; }
+      .stat { background: var(--raised); border: 1px solid var(--border-soft); border-radius: 12px; padding: 14px 20px; min-width: 130px; }
+      .stat .n { font-size: 26px; font-weight: 700; }
+      .stat .l { font-size: 12px; color: var(--fg-dim); }
+      .section-title { font-size: 13px; letter-spacing: .12em; text-transform: uppercase; color: var(--fg-dim); margin: 34px 0 12px; }
+      .pipeline { display: flex; flex-direction: column; gap: 8px; }
+      .pill-row { display: flex; align-items: center; gap: 10px; padding: 12px 14px; background: var(--raised); border: 1px solid var(--border-soft); border-radius: 10px; }
+      .x { margin-left: auto; color: var(--fg-dim); cursor: pointer; border: 0; background: none; font-size: 16px; }
+      .x:hover { color: var(--fg); }
+      .muted { color: var(--fg-dim); font-size: 13px; }
+    </style>
+  </head>
+  <body></body>
+</html>
