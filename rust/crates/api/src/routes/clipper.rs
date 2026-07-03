@@ -285,7 +285,7 @@ async fn download_all(
     if entries.is_empty() {
         return Err(ApiError::NotFound);
     }
-    let zip_bytes = zipstore::write_stored_zip(&entries);
+    let zip_bytes = repo::burn::build_zip_stored(&entries);
 
     let headers = [
         (header::CONTENT_TYPE, "application/zip".to_string()),
@@ -295,118 +295,6 @@ async fn download_all(
         ),
     ];
     Ok((headers, Body::from(zip_bytes)).into_response())
-}
-
-/// A tiny, dependency-free ZIP writer (STORED = no compression, matching the
-/// Python fallback's `zipfile.ZIP_STORED`). This crate has no `zip` crate
-/// available this wave (api/Cargo.toml is owned by another workstream) — see
-/// seam request in the final report to add a real `zip` dependency later.
-mod zipstore {
-    /// CRC-32 (ISO-HDLC / zip's checksum), computed without any external crate.
-    fn crc32(data: &[u8]) -> u32 {
-        let mut crc: u32 = 0xFFFF_FFFF;
-        for &byte in data {
-            crc ^= byte as u32;
-            for _ in 0..8 {
-                let mask = (crc & 1).wrapping_neg();
-                crc = (crc >> 1) ^ (0xEDB8_8320 & mask);
-            }
-        }
-        !crc
-    }
-
-    /// Build a minimal ZIP archive (local file headers + central directory,
-    /// no compression) from `(name, bytes)` entries.
-    pub fn write_stored_zip(entries: &[(String, Vec<u8>)]) -> Vec<u8> {
-        let mut out = Vec::new();
-        let mut central = Vec::new();
-
-        for (name, data) in entries {
-            let offset = out.len() as u32;
-            let crc = crc32(data);
-            let name_bytes = name.as_bytes();
-
-            // Local file header.
-            out.extend_from_slice(&0x0403_4b50u32.to_le_bytes());
-            out.extend_from_slice(&20u16.to_le_bytes()); // version needed
-            out.extend_from_slice(&0u16.to_le_bytes()); // flags
-            out.extend_from_slice(&0u16.to_le_bytes()); // method = stored
-            out.extend_from_slice(&0u16.to_le_bytes()); // mod time
-            out.extend_from_slice(&0u16.to_le_bytes()); // mod date
-            out.extend_from_slice(&crc.to_le_bytes());
-            out.extend_from_slice(&(data.len() as u32).to_le_bytes()); // compressed size
-            out.extend_from_slice(&(data.len() as u32).to_le_bytes()); // uncompressed size
-            out.extend_from_slice(&(name_bytes.len() as u16).to_le_bytes());
-            out.extend_from_slice(&0u16.to_le_bytes()); // extra field len
-            out.extend_from_slice(name_bytes);
-            out.extend_from_slice(data);
-
-            // Central directory entry (needs the local header's offset, so
-            // buffered separately and appended once all locals are written).
-            central.extend_from_slice(&0x0201_4b50u32.to_le_bytes());
-            central.extend_from_slice(&20u16.to_le_bytes()); // version made by
-            central.extend_from_slice(&20u16.to_le_bytes()); // version needed
-            central.extend_from_slice(&0u16.to_le_bytes()); // flags
-            central.extend_from_slice(&0u16.to_le_bytes()); // method
-            central.extend_from_slice(&0u16.to_le_bytes()); // mod time
-            central.extend_from_slice(&0u16.to_le_bytes()); // mod date
-            central.extend_from_slice(&crc.to_le_bytes());
-            central.extend_from_slice(&(data.len() as u32).to_le_bytes());
-            central.extend_from_slice(&(data.len() as u32).to_le_bytes());
-            central.extend_from_slice(&(name_bytes.len() as u16).to_le_bytes());
-            central.extend_from_slice(&0u16.to_le_bytes()); // extra len
-            central.extend_from_slice(&0u16.to_le_bytes()); // comment len
-            central.extend_from_slice(&0u16.to_le_bytes()); // disk number start
-            central.extend_from_slice(&0u16.to_le_bytes()); // internal attrs
-            central.extend_from_slice(&0u32.to_le_bytes()); // external attrs
-            central.extend_from_slice(&offset.to_le_bytes());
-            central.extend_from_slice(name_bytes);
-        }
-
-        let central_offset = out.len() as u32;
-        let central_size = central.len() as u32;
-        out.extend_from_slice(&central);
-
-        // End of central directory record.
-        out.extend_from_slice(&0x0605_4b50u32.to_le_bytes());
-        out.extend_from_slice(&0u16.to_le_bytes()); // disk number
-        out.extend_from_slice(&0u16.to_le_bytes()); // disk with central dir
-        out.extend_from_slice(&(entries.len() as u16).to_le_bytes());
-        out.extend_from_slice(&(entries.len() as u16).to_le_bytes());
-        out.extend_from_slice(&central_size.to_le_bytes());
-        out.extend_from_slice(&central_offset.to_le_bytes());
-        out.extend_from_slice(&0u16.to_le_bytes()); // comment len
-
-        out
-    }
-
-    #[cfg(test)]
-    mod tests {
-        use super::*;
-
-        #[test]
-        fn crc32_matches_known_vector() {
-            // "123456789" → 0xCBF43926 is the standard CRC-32 check value.
-            assert_eq!(crc32(b"123456789"), 0xCBF4_3926);
-        }
-
-        #[test]
-        fn zip_has_valid_signatures_and_entry_count() {
-            let entries = vec![
-                ("a.txt".to_string(), b"hello".to_vec()),
-                ("b.txt".to_string(), b"world!!".to_vec()),
-            ];
-            let zip = write_stored_zip(&entries);
-            // Starts with a local file header signature.
-            assert_eq!(&zip[0..4], &0x0403_4b50u32.to_le_bytes());
-            // End-of-central-directory signature must appear somewhere near the end.
-            let eocd_sig = 0x0605_4b50u32.to_le_bytes();
-            assert!(zip.windows(4).any(|w| w == eocd_sig));
-            // Entry count in EOCD must be findable in the buffer.
-            let count_bytes = (entries.len() as u16).to_le_bytes();
-            assert!(zip.windows(2).any(|w| w == count_bytes));
-        }
-    }
 }
 
 // ── POST /api/clipper/process-batch ─────────────────────────────────────────
