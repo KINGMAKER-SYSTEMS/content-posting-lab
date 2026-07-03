@@ -1,18 +1,16 @@
-//! Video-generation management/metadata routes — parity port of the
-//! non-generate parts of `routers/video.py` (940 lines in Python).
+//! Video-generation routes — parity port of `routers/video.py` (940 lines in
+//! Python), including the legacy runner this wave brings online:
 //!
-//! The actual generate-job runner (submit → poll → download, multi-crop
-//! fan-out) is wave 3's `POST /api/jobs/generate` (see `routes/jobs.rs`) and is
-//! explicitly out of scope here. This module covers everything *around* it:
-//!
+//!   - `POST /api/video/generate`         — the legacy multipart runner
+//!     (prompt/provider/count/media → job_id). See "count fan-out" below.
 //!   - `GET  /api/video/providers`        — configured-provider list (Python
 //!     `PROVIDERS` shape: id/name/group/key_id/pricing/models)
 //!   - `GET  /api/video/provider-schemas` — per-provider input-param schemas
 //!     (verbatim port of Python's `PROVIDER_SCHEMAS` constant)
 //!   - `GET  /api/video/jobs` + `GET /api/video/jobs/{id}` + `DELETE .../{id}`
-//!     — reshapes `JobKind::Generate` rows (+ their result assets) into the
-//!     old `{id, prompt, provider, count, videos: [...]}` job shape the
-//!     frontend (`frontend/src/types/api.ts` `Job`/`VideoEntry`) expects
+//!     — reshapes `JobKind::Generate` row(s) into the old
+//!     `{id, prompt, provider, count, videos: [...]}` job shape the frontend
+//!     (`frontend/src/types/api.ts` `Job`/`VideoEntry`) expects
 //!   - `GET  /api/video/prompts` + `DELETE /api/video/prompts` — saved prompt
 //!     history (now backed by `repo::video`, see that module's doc comment for
 //!     why it rides the existing `settings` KV table instead of a new one)
@@ -25,6 +23,31 @@
 //! the React `Generate.tsx` page (and its `frontend/src/types/api.ts` contract)
 //! is frozen for this wave and consumes these shapes as-is.
 //!
+//! ## `count` fan-out (design decision)
+//!
+//! `Generate.tsx` submits ONE multipart request with a `count` field and then
+//! polls ONE `job_id`, expecting `Job.videos` to grow to `count` entries with
+//! independent per-index statuses. But `clab_core::model::Job` has exactly one
+//! `result_asset_ids` list and one overall `status` — there is no schema for
+//! "N sub-jobs under one parent" (confirmed against `core/src/model.rs`; adding
+//! a parent/child job column would be a migration, out of scope this wave).
+//!
+//! This reuses the exact tagging trick `routes/recreate.rs` already uses to
+//! group jobs without a schema change (see its `RECREATE_MARKER` / `params
+//! LIKE` doc comment): each of the `count` requested videos becomes its own
+//! real `JobKind::Generate` row, created and run through the *unchanged*
+//! `run_generate_job` engine from `routes/jobs.rs`, but its `params` JSON
+//! carries a `"batch_id"` (a fresh id invented here) and a `"batch_index"`.
+//! The `job_id` returned to the frontend is that batch id, not any single job
+//! row's id. `GET/DELETE /api/video/jobs/{id}` first try to resolve `{id}` as
+//! a batch (N rows sharing that `batch_id`, ordered by `batch_index`) and fall
+//! back to a plain single-job lookup (a job created directly via the older
+//! `POST /api/jobs/generate` path has no batch tag and is still addressable by
+//! its own row id, count=1). This gives real per-index granularity — each
+//! sub-job's own `JobStatus` maps straight to a `VideoEntry.status` — instead
+//! of the single synthetic "generating" placeholder this file previously
+//! reported for the whole job.
+//!
 //! **Parity deviation (documented, not silently dropped):** the Python
 //! `/color-correct` endpoints used a dedicated `STANDARD_ENCODE_ARGS` preset
 //! (preserves source framerate, `-c:a copy`, no forced `-r`). The Rust `media`
@@ -35,11 +58,24 @@
 //! tab's color-correct output; flagged as a seam request for wave 3 (see final
 //! report) to add a `media::ffmpeg::color_correct` primitive with the original
 //! preset.
+//!
+//! **Parity deviation (documented, not silently dropped):** the Python
+//! `GenerateRequest` accepted many model-specific fields (`num_frames`,
+//! `sample_shift`, `sample_steps`, `go_fast`, `interpolate_output`,
+//! `optimize_prompt`, `lora_*`, `negative_prompt` — see
+//! `contract/openapi.json`'s `Body_generate_video_api_video_generate_post`).
+//! `crate::providers::GenParams` (owned by another file this wave, see the
+//! file-ownership rule in the mission brief) only carries
+//! `{prompt, aspect_ratio, resolution, duration, image_data_uri}`. This
+//! endpoint parses and validates those extra multipart fields (so the request
+//! never 422s and `crop_mode` still works) but they are not yet threaded into
+//! the provider call — flagged as a seam request rather than silently
+//! forking `GenParams`.
 
 use std::path::{Path as StdPath, PathBuf};
 
 use axum::body::Body;
-use axum::extract::{Path, Query, State};
+use axum::extract::{Multipart, Path, Query, State};
 use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
@@ -55,6 +91,7 @@ use crate::state::AppState;
 
 pub fn router() -> Router<AppState> {
     Router::new()
+        .route("/api/video/generate", post(generate_video))
         .route("/api/video/providers", get(list_providers))
         .route("/api/video/provider-schemas", get(provider_schemas))
         .route("/api/video/jobs", get(list_jobs))
@@ -67,6 +104,237 @@ pub fn router() -> Router<AppState> {
 
 fn default_project() -> String {
     "quick-test".to_string()
+}
+
+// ── Legacy generate runner (POST /api/video/generate) ───────────────────────
+
+/// Marker prefix embedded in a batch sub-job's `params` JSON — see the module
+/// doc comment's "count fan-out" section. Kept as a plain substring (like
+/// `recreate.rs`'s `RECREATE_MARKER`) so resolving a batch never depends on
+/// SQLite's JSON1 extension being compiled into the sqlx build.
+fn batch_marker(batch_id: &str) -> String {
+    format!("\"batch_id\":\"{batch_id}\"")
+}
+
+/// 50MB base64 guard, shared by `media`/`last_image` — same ceiling
+/// `start_generate` (routes/jobs.rs) and burn use for their data-URI inputs.
+const MAX_IMAGE_B64_LEN: usize = 50 * 1024 * 1024;
+
+/// Standard base64 encode (data URI payload) — avoids pulling the `base64`
+/// crate for this one call site; mirrors the size of the hand-rolled decoder
+/// `routes/jobs.rs` already carries for the opposite direction.
+fn base64_encode(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let b0 = chunk[0];
+        let b1 = *chunk.get(1).unwrap_or(&0);
+        let b2 = *chunk.get(2).unwrap_or(&0);
+        let n = ((b0 as u32) << 16) | ((b1 as u32) << 8) | (b2 as u32);
+        out.push(ALPHABET[(n >> 18 & 0x3F) as usize] as char);
+        out.push(ALPHABET[(n >> 12 & 0x3F) as usize] as char);
+        out.push(if chunk.len() > 1 { ALPHABET[(n >> 6 & 0x3F) as usize] as char } else { '=' });
+        out.push(if chunk.len() > 2 { ALPHABET[(n & 0x3F) as usize] as char } else { '=' });
+    }
+    out
+}
+
+/// One parsed multipart field the frontend may send. `media`/`last_image` are
+/// files; everything else arrives as text. `last_image` and the model-specific
+/// extras (`num_frames`, `sample_shift`, ...) are accepted for contract parity
+/// (see the module doc's ponytail note) but only `media` currently feeds
+/// `GenParams.image_data_uri` — `GenParams` has no slot for a last-frame image
+/// or the other model-specific knobs yet.
+#[derive(Default)]
+struct GenerateForm {
+    prompt: Option<String>,
+    provider: Option<String>,
+    project: Option<String>,
+    count: Option<String>,
+    duration: Option<String>,
+    resolution: Option<String>,
+    aspect_ratio: Option<String>,
+    crop_mode: Option<String>,
+    media_data_uri: Option<String>,
+}
+
+async fn parse_generate_multipart(mut mp: Multipart) -> Result<GenerateForm, ApiError> {
+    let mut form = GenerateForm::default();
+    loop {
+        let field = mp
+            .next_field()
+            .await
+            .map_err(|e| ApiError::BadRequest(format!("invalid multipart body: {e}")))?;
+        let Some(field) = field else { break };
+        let name = field.name().unwrap_or("").to_string();
+        match name.as_str() {
+            "media" | "last_image" => {
+                let content_type = field.content_type().unwrap_or("application/octet-stream").to_string();
+                let bytes = field
+                    .bytes()
+                    .await
+                    .map_err(|e| ApiError::BadRequest(format!("failed to read {name}: {e}")))?;
+                if bytes.is_empty() {
+                    continue;
+                }
+                // Guard against an oversized upload before it's base64-inflated further.
+                if bytes.len() > MAX_IMAGE_B64_LEN {
+                    return Err(ApiError::BadRequest(format!("{name} too large")));
+                }
+                let uri = format!("data:{content_type};base64,{}", base64_encode(&bytes));
+                if uri.len() > MAX_IMAGE_B64_LEN {
+                    return Err(ApiError::BadRequest(format!("{name} too large")));
+                }
+                if name == "media" {
+                    form.media_data_uri = Some(uri);
+                }
+                // last_image is accepted but has nowhere to go yet (see doc comment).
+            }
+            _ => {
+                let text = field
+                    .text()
+                    .await
+                    .map_err(|e| ApiError::BadRequest(format!("failed to read field {name}: {e}")))?;
+                match name.as_str() {
+                    "prompt" => form.prompt = Some(text),
+                    "provider" => form.provider = Some(text),
+                    "project" => form.project = Some(text),
+                    "count" => form.count = Some(text),
+                    "duration" => form.duration = Some(text),
+                    "resolution" => form.resolution = Some(text),
+                    "aspect_ratio" => form.aspect_ratio = Some(text),
+                    "crop_mode" => form.crop_mode = Some(text),
+                    // Model-specific extras (num_frames, sample_shift, go_fast, ...)
+                    // are validated-away (never 422 the request) but not threaded
+                    // through — see the module doc's ponytail note.
+                    _ => {}
+                }
+            }
+        }
+    }
+    Ok(form)
+}
+
+/// `POST /api/video/generate` — the legacy runner. Multipart form → `count`
+/// distinct generate jobs (see module doc's "count fan-out"), returns
+/// `{"job_id": "<batch_id>"}` immediately; the frontend polls
+/// `GET /api/video/jobs/{job_id}`.
+async fn generate_video(State(st): State<AppState>, multipart: Multipart) -> Result<Json<Value>, ApiError> {
+    let form = parse_generate_multipart(multipart).await?;
+
+    let prompt = form.prompt.unwrap_or_default();
+    if prompt.trim().is_empty() {
+        return Err(ApiError::BadRequest("prompt is required".into()));
+    }
+    let provider_id = form.provider.unwrap_or_default();
+    let model = crate::providers::find_model(&provider_id)
+        .ok_or_else(|| ApiError::BadRequest(format!("unknown model: {provider_id}")))?;
+    if model.needs_image && form.media_data_uri.is_none() {
+        return Err(ApiError::BadRequest(format!(
+            "{} is image-to-video — an image is required",
+            model.name
+        )));
+    }
+    let project_input = form.project.filter(|p| !p.is_empty()).unwrap_or_else(default_project);
+    let project = crate::paths::sanitize_project_name(&project_input)
+        .ok_or_else(|| ApiError::BadRequest("invalid project name".into()))?;
+    let count: u32 = form
+        .count
+        .as_deref()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(1)
+        .clamp(1, 20);
+    let duration: u32 = form.duration.as_deref().and_then(|s| s.parse().ok()).unwrap_or(10);
+    let resolution = form.resolution.unwrap_or_else(|| "720p".to_string());
+    let aspect_ratio = form.aspect_ratio.unwrap_or_else(|| "9:16".to_string());
+    let crop_mode = match form.crop_mode.as_deref() {
+        None => media::CropMode::Single,
+        Some(s) => media::CropMode::parse(s)
+            .ok_or_else(|| ApiError::BadRequest(format!("invalid crop_mode: {s}")))?,
+    };
+
+    // Build the provider now so a missing API key fails fast (before any job rows).
+    crate::providers::provider_for(model)
+        .ok_or_else(|| ApiError::BadRequest(format!("{} not configured (set {})", model.name, model.key_env)))?;
+
+    repo::create_project(&st.db, &project).await?;
+
+    let batch_id = uuid::Uuid::new_v4().to_string();
+
+    // Save one prompt-history entry for the whole batch (matches the old
+    // Python behavior: one history row per submit, not one per video).
+    let history = prompts_repo::PromptEntry {
+        prompt: prompt.clone(),
+        provider: provider_id.clone(),
+        count,
+        duration,
+        aspect_ratio: aspect_ratio.clone(),
+        resolution: resolution.clone(),
+        negative_prompt: None,
+        has_media: form.media_data_uri.is_some(),
+        job_id: batch_id.clone(),
+        timestamp: chrono::Utc::now().to_rfc3339(),
+    };
+    let _ = prompts_repo::save_prompt(&st.db, &project, history).await;
+
+    for index in 0..count {
+        // A fresh provider instance per sub-job (the trait object above was
+        // only for the up-front key check) — `provider_for` is cheap (reads
+        // the API key from env), so this rebuild is not worth threading a
+        // `Box<dyn Provider>` through `count` spawned tasks.
+        let provider = crate::providers::provider_for(model).ok_or_else(|| {
+            ApiError::BadRequest(format!("{} not configured (set {})", model.name, model.key_env))
+        })?;
+
+        let meta = json!({
+            "model": model.id,
+            "prompt": prompt,
+            "aspect_ratio": aspect_ratio,
+            "resolution": resolution,
+            "duration": duration,
+            "batch_id": batch_id,
+            "batch_index": index,
+            "batch_count": count,
+            "crop_mode": crop_mode.as_str(),
+        })
+        .to_string();
+        let asset = repo::create_asset(&st.db, &project, clab_core::model::AssetKind::Generated, None, Some(&meta)).await?;
+        let job = repo::create_job(&st.db, &project, JobKind::Generate, Some(&asset.id), Some(&meta)).await?;
+
+        let db = st.db.clone();
+        let job_id = job.id.clone();
+        let asset_id = asset.id.clone();
+        let model_id = model.model_id.to_string();
+        let gen_params = crate::providers::GenParams {
+            prompt: prompt.clone(),
+            aspect_ratio: aspect_ratio.clone(),
+            resolution: resolution.clone(),
+            duration,
+            image_data_uri: form.media_data_uri.clone(),
+        };
+        let project_owned = project.clone();
+        let batch_id_for_log = batch_id.clone();
+        tokio::spawn(async move {
+            if let Err(e) = crate::routes::jobs::run_generate_job(
+                db.clone(),
+                &job_id,
+                &project_owned,
+                &asset_id,
+                provider,
+                &model_id,
+                gen_params,
+                crop_mode,
+            )
+            .await
+            {
+                tracing::error!("generate job {job_id} (batch {batch_id_for_log}) failed: {e:#}");
+                let _ = repo::mark_asset_failed(&db, &asset_id, &format!("{e:#}")).await;
+                let _ = repo::fail_job(&db, &job_id, &format!("{e:#}")).await;
+            }
+        });
+    }
+
+    Ok(Json(json!({ "job_id": batch_id })))
 }
 
 // ── Providers ────────────────────────────────────────────────────────────────
@@ -203,128 +471,263 @@ struct ProjectQuery {
     project: String,
 }
 
-/// Reshape a durable `Job` (+ its result assets) into the old
-/// `{id, prompt, provider, count, project, created_at, videos: [...]}` shape.
-/// `videos` is synthesized from `result_asset_ids` — the new pipeline doesn't
-/// track a queued/generating/polling/downloading progression per clip the way
-/// the in-memory Python dict did (that granularity lives inside the generate
-/// job runner itself, wave 3's concern); a finished job's assets are always
-/// reported "done", an in-progress job reports a single synthetic "generating"
-/// placeholder so the frontend's `isTerminal` polling loop has something to
-/// poll, and a failed job reports "error" with the job's error message.
-async fn job_to_video_json(db: &clab_core::Db, job: &clab_core::model::Job) -> Value {
-    let params: Option<Value> = job.params.as_deref().and_then(|s| serde_json::from_str(s).ok());
-    let prompt = params
-        .as_ref()
-        .and_then(|v| v.get("prompt").and_then(|p| p.as_str()))
-        .unwrap_or_default()
-        .to_string();
-    let provider = params
-        .as_ref()
-        .and_then(|v| v.get("model").and_then(|p| p.as_str()))
-        .unwrap_or_default()
-        .to_string();
-
-    let result_ids: Vec<String> = serde_json::from_str(&job.result_asset_ids).unwrap_or_default();
-
-    let videos: Vec<Value> = match job.status {
+/// Reshape ONE sub-job's result assets into its `VideoEntry` (per the frontend
+/// `VideoEntry` type: `index/status/file/url/error/crops`). Asset ordering
+/// from `run_generate_job` is `[source, crop_0, crop_1, ...]` — the first
+/// result asset is the video itself; any further ones are the multi-crop
+/// fan-out and land in `crops` (matching `CropEntry {file, url}`).
+async fn sub_job_video_entry(db: &clab_core::Db, index: usize, job: &clab_core::model::Job) -> Value {
+    match job.status {
         JobStatus::Done => {
-            let mut out = Vec::with_capacity(result_ids.len());
-            for (i, asset_id) in result_ids.iter().enumerate() {
-                let asset = repo::get_asset(db, asset_id).await.ok().flatten();
-                let file = asset.as_ref().and_then(|a| a.path.clone());
-                let mut entry = json!({
-                    "index": i,
-                    "status": "done",
-                });
-                if let Some(f) = &file {
-                    entry["file"] = json!(f);
-                    entry["url"] = json!(format!("/{f}"));
+            let result_ids: Vec<String> = serde_json::from_str(&job.result_asset_ids).unwrap_or_default();
+            let Some(source_id) = result_ids.first() else {
+                return json!({"index": index, "status": "error", "error": "no output produced"});
+            };
+            let source = repo::get_asset(db, source_id).await.ok().flatten();
+            let file = source.as_ref().and_then(|a| a.path.clone());
+            let mut entry = json!({"index": index, "status": "done"});
+            if let Some(f) = &file {
+                entry["file"] = json!(f);
+                entry["url"] = json!(format!("/{f}"));
+            }
+            if result_ids.len() > 1 {
+                let mut crops = Vec::with_capacity(result_ids.len() - 1);
+                for crop_id in &result_ids[1..] {
+                    if let Some(asset) = repo::get_asset(db, crop_id).await.ok().flatten() {
+                        if let Some(p) = asset.path {
+                            crops.push(json!({"file": p, "url": format!("/{p}")}));
+                        }
+                    }
                 }
-                out.push(entry);
+                if !crops.is_empty() {
+                    entry["crops"] = json!(crops);
+                }
             }
-            if out.is_empty() {
-                vec![json!({"index": 0, "status": "error", "error": "no output produced"})]
-            } else {
-                out
-            }
+            entry
         }
-        JobStatus::Failed => {
-            vec![json!({
-                "index": 0,
-                "status": "error",
-                "error": job.error.clone().unwrap_or_else(|| "generation failed".to_string()),
-            })]
-        }
-        JobStatus::Queued | JobStatus::Processing => {
-            vec![json!({"index": 0, "status": "generating"})]
-        }
-    };
+        JobStatus::Failed => json!({
+            "index": index,
+            "status": "error",
+            "error": job.error.clone().unwrap_or_else(|| "generation failed".to_string()),
+        }),
+        // Queued/Processing both map to the frontend's "generating" status —
+        // `VideoEntry` also has `polling`/`downloading` for finer old-Python
+        // granularity, but the durable job row only tracks one progress float
+        // (see `run_generate_job`), not a named phase. "generating" is enough
+        // for `isTerminal` (which only branches on done/failed/error).
+        JobStatus::Queued | JobStatus::Processing => json!({"index": index, "status": "generating"}),
+    }
+}
+
+/// Extract `"batch_id"` from a sub-job's `params` JSON, if present.
+fn batch_id_of(job: &clab_core::model::Job) -> Option<String> {
+    job.params
+        .as_deref()
+        .and_then(|s| serde_json::from_str::<Value>(s).ok())
+        .and_then(|v| v.get("batch_id").and_then(|b| b.as_str()).map(str::to_string))
+}
+
+/// Fetch every job row sharing `batch_id`, ordered by `batch_index`. Uses the
+/// same `params LIKE` substring match `recreate.rs` established for grouping
+/// jobs without a schema change (see module doc's "count fan-out").
+async fn fetch_batch_jobs(
+    db: &clab_core::Db,
+    project: &str,
+    batch_id: &str,
+) -> Result<Vec<clab_core::model::Job>, sqlx::Error> {
+    let mut jobs: Vec<clab_core::model::Job> = sqlx::query_as(
+        "SELECT * FROM jobs WHERE project = ? AND kind = 'generate' AND params LIKE ? ORDER BY created_at ASC",
+    )
+    .bind(project)
+    .bind(format!("%{}%", batch_marker(batch_id)))
+    .fetch_all(db.reader())
+    .await?;
+    jobs.sort_by_key(|j| {
+        j.params
+            .as_deref()
+            .and_then(|s| serde_json::from_str::<Value>(s).ok())
+            .and_then(|v| v.get("batch_index").and_then(|i| i.as_u64()))
+            .unwrap_or(0)
+    });
+    Ok(jobs)
+}
+
+/// Reshape a batch (one or more sub-jobs sharing a `batch_id`) into the old
+/// `{id, prompt, provider, count, project, crop_mode, created_at, videos}`
+/// shape the frontend `Job` type expects. `jobs` must be non-empty and already
+/// ordered by `batch_index`.
+async fn batch_to_job_json(db: &clab_core::Db, batch_id: &str, jobs: &[clab_core::model::Job]) -> Value {
+    let first = &jobs[0];
+    let params: Option<Value> = first.params.as_deref().and_then(|s| serde_json::from_str(s).ok());
+    let prompt = params.as_ref().and_then(|v| v.get("prompt").and_then(|p| p.as_str())).unwrap_or_default();
+    // `params["model"]` is written as the public registry id (`model.id`,
+    // e.g. "grok") by both this file and `routes/jobs.rs`'s `start_generate` —
+    // pass it straight through as `Job.provider`. The registry lookup is a
+    // defensive fallback only (in case a row's `model` ever holds the
+    // provider-specific `model_id` instead, e.g. "minimax/hailuo-2.3").
+    let model_field = params.as_ref().and_then(|v| v.get("model").and_then(|p| p.as_str())).unwrap_or_default();
+    let provider = crate::providers::MODELS
+        .iter()
+        .find(|m| m.id == model_field || m.model_id == model_field)
+        .map(|m| m.id)
+        .unwrap_or(model_field);
+    // Frontend `Job.crop_mode` is `CropMode | null` where `CropMode` excludes
+    // "single" (no-crop) — only surface it when a real multi-crop mode was
+    // requested, same as the Python UI never sending `crop_mode: "none"`.
+    let crop_mode = params.as_ref().and_then(|v| v.get("crop_mode").and_then(|c| c.as_str()));
+    let crop_mode = crop_mode.filter(|m| *m != "single" && *m != "none");
+
+    let mut videos = Vec::with_capacity(jobs.len());
+    for (i, job) in jobs.iter().enumerate() {
+        videos.push(sub_job_video_entry(db, i, job).await);
+    }
+
+    let created_at = jobs.iter().map(|j| j.created_at).min().unwrap_or(first.created_at);
 
     json!({
-        "id": job.id,
+        "id": batch_id,
         "prompt": prompt,
         "provider": provider,
-        "count": videos.len().max(1),
-        "project": job.project,
-        "created_at": job.created_at.to_rfc3339(),
+        "count": videos.len(),
+        "crop_mode": crop_mode,
+        "project": first.project,
+        "created_at": created_at.to_rfc3339(),
         "videos": videos,
     })
 }
 
-/// `GET /api/video/jobs?project=...` — list generate jobs for a project.
+/// `GET /api/video/jobs?project=...` — list generate jobs for a project, one
+/// entry per batch (a legacy single job with no batch tag is its own
+/// one-video batch).
 async fn list_jobs(
     State(st): State<AppState>,
     Query(q): Query<ProjectQuery>,
 ) -> Result<Json<Vec<Value>>, ApiError> {
     let jobs = repo::list_jobs(&st.db, &q.project).await?;
-    let mut out = Vec::with_capacity(jobs.len());
-    for job in jobs.iter().filter(|j| j.kind == JobKind::Generate) {
-        out.push(job_to_video_json(&st.db, job).await);
+    // Group by batch_id (falling back to the job's own id for un-batched
+    // generate jobs), preserving first-seen order (list_jobs is newest-first).
+    let mut order: Vec<String> = Vec::new();
+    let mut groups: std::collections::HashMap<String, Vec<clab_core::model::Job>> = std::collections::HashMap::new();
+    for job in jobs.into_iter().filter(|j| j.kind == JobKind::Generate) {
+        let key = batch_id_of(&job).unwrap_or_else(|| job.id.clone());
+        if !groups.contains_key(&key) {
+            order.push(key.clone());
+        }
+        groups.entry(key).or_default().push(job);
+    }
+
+    let mut out = Vec::with_capacity(order.len());
+    for key in order {
+        let mut jobs = groups.remove(&key).unwrap_or_default();
+        jobs.sort_by_key(|j| {
+            j.params
+                .as_deref()
+                .and_then(|s| serde_json::from_str::<Value>(s).ok())
+                .and_then(|v| v.get("batch_index").and_then(|i| i.as_u64()))
+                .unwrap_or(0)
+        });
+        out.push(batch_to_job_json(&st.db, &key, &jobs).await);
     }
     Ok(Json(out))
 }
 
-/// `GET /api/video/jobs/{job_id}` — fetch a single generate job by id.
+/// `GET /api/video/jobs/{job_id}` — fetch a single generate job (or batch) by
+/// id. Tries the batch-id path first (the id this file hands back from
+/// `POST /api/video/generate`); falls back to a plain single-job lookup for
+/// ids that came from the older `POST /api/jobs/generate` path.
 async fn get_job(State(st): State<AppState>, Path(job_id): Path<String>) -> Result<Json<Value>, ApiError> {
-    let job = repo::get_job(&st.db, &job_id).await?.ok_or(ApiError::NotFound)?;
-    if job.kind != JobKind::Generate {
+    // Batch lookup needs a project to scope the LIKE query; resolve it via
+    // any one job carrying this batch_id, tried across all projects the
+    // simplest possible way: check the job itself first if job_id happens to
+    // BE a row id (covers the single-job fallback and lets us read its
+    // project), else fall back to a cross-project batch scan.
+    if let Some(job) = repo::get_job(&st.db, &job_id).await? {
+        if job.kind != JobKind::Generate {
+            return Err(ApiError::NotFound);
+        }
+        // This row might itself be one sub-job of a batch (its own id ≠ the
+        // batch id in that case) — resolve the full batch via its project.
+        let jobs = if let Some(batch_id) = batch_id_of(&job) {
+            fetch_batch_jobs(&st.db, &job.project, &batch_id).await?
+        } else {
+            vec![job.clone()]
+        };
+        let batch_id = batch_id_of(&job).unwrap_or_else(|| job.id.clone());
+        return Ok(Json(batch_to_job_json(&st.db, &batch_id, &jobs).await));
+    }
+
+    // job_id wasn't a row id — try it as a batch_id across every project.
+    let jobs: Vec<clab_core::model::Job> = sqlx::query_as(
+        "SELECT * FROM jobs WHERE kind = 'generate' AND params LIKE ? ORDER BY created_at ASC",
+    )
+    .bind(format!("%{}%", batch_marker(&job_id)))
+    .fetch_all(st.db.reader())
+    .await
+    .map_err(ApiError::from)?;
+    if jobs.is_empty() {
         return Err(ApiError::NotFound);
     }
-    Ok(Json(job_to_video_json(&st.db, &job).await))
+    let mut jobs = jobs;
+    jobs.sort_by_key(|j| {
+        j.params
+            .as_deref()
+            .and_then(|s| serde_json::from_str::<Value>(s).ok())
+            .and_then(|v| v.get("batch_index").and_then(|i| i.as_u64()))
+            .unwrap_or(0)
+    });
+    Ok(Json(batch_to_job_json(&st.db, &job_id, &jobs).await))
 }
 
-/// `DELETE /api/video/jobs/{job_id}` — delete a generate job's DB row and the
-/// video files its result assets point to (confined under the project's video
-/// dir, same containment rule as `DELETE /api/video/file`). The row delete
-/// itself goes through `repo::video::delete_job_row` (this module's own repo
-/// file) rather than the shared job-lifecycle functions in `repo::mod`, which
-/// only support create/update/finish/fail — not delete.
+/// `DELETE /api/video/jobs/{job_id}` — delete a generate job (or every
+/// sub-job in a batch) and the video files their result assets point to
+/// (confined under the project's video dir, same containment rule as
+/// `DELETE /api/video/file`). Row deletes go through
+/// `repo::video::delete_job_row` (this module's own repo file) rather than the
+/// shared job-lifecycle functions in `repo::mod`, which only support
+/// create/update/finish/fail — not delete.
 async fn delete_job(
     State(st): State<AppState>,
     Path(job_id): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
-    let job = repo::get_job(&st.db, &job_id).await?.ok_or(ApiError::NotFound)?;
-    if job.kind != JobKind::Generate {
+    // Resolve the same way get_job does: row id first, else batch_id.
+    let jobs: Vec<clab_core::model::Job> = if let Some(job) = repo::get_job(&st.db, &job_id).await? {
+        if job.kind != JobKind::Generate {
+            return Err(ApiError::NotFound);
+        }
+        match batch_id_of(&job) {
+            Some(batch_id) => fetch_batch_jobs(&st.db, &job.project, &batch_id).await?,
+            None => vec![job],
+        }
+    } else {
+        sqlx::query_as::<_, clab_core::model::Job>(
+            "SELECT * FROM jobs WHERE kind = 'generate' AND params LIKE ?",
+        )
+        .bind(format!("%{}%", batch_marker(&job_id)))
+        .fetch_all(st.db.reader())
+        .await
+        .map_err(ApiError::from)?
+    };
+    if jobs.is_empty() {
         return Err(ApiError::NotFound);
     }
 
-    let result_ids: Vec<String> = serde_json::from_str(&job.result_asset_ids).unwrap_or_default();
-    let video_dir = project_video_dir(&job.project);
     let mut files_removed = 0u32;
-    for asset_id in &result_ids {
-        if let Some(asset) = repo::get_asset(&st.db, asset_id).await? {
-            if let Some(rel) = &asset.path {
-                if let Some(abs) = confine_in_dir(&video_dir, rel) {
-                    if tokio::fs::remove_file(&abs).await.is_ok() {
-                        files_removed += 1;
+    for job in &jobs {
+        let result_ids: Vec<String> = serde_json::from_str(&job.result_asset_ids).unwrap_or_default();
+        let video_dir = project_video_dir(&job.project);
+        for asset_id in &result_ids {
+            if let Some(asset) = repo::get_asset(&st.db, asset_id).await? {
+                if let Some(rel) = &asset.path {
+                    if let Some(abs) = confine_in_dir(&video_dir, rel) {
+                        if tokio::fs::remove_file(&abs).await.is_ok() {
+                            files_removed += 1;
+                        }
                     }
                 }
             }
         }
+        prompts_repo::delete_job_row(&st.db, &job.id).await?;
     }
-
-    prompts_repo::delete_job_row(&st.db, &job_id).await?;
 
     Ok(Json(json!({
         "deleted": true,
@@ -882,5 +1285,311 @@ mod tests {
             ..Default::default()
         };
         assert!(!cc_is_default(&Some(cc)));
+    }
+
+    #[test]
+    fn base64_encode_known_vectors() {
+        // Standard RFC 4648 test vectors.
+        assert_eq!(base64_encode(b""), "");
+        assert_eq!(base64_encode(b"f"), "Zg==");
+        assert_eq!(base64_encode(b"fo"), "Zm8=");
+        assert_eq!(base64_encode(b"foo"), "Zm9v");
+        assert_eq!(base64_encode(b"foobar"), "Zm9vYmFy");
+    }
+
+    #[test]
+    fn batch_marker_is_substring_findable() {
+        let m = batch_marker("abc-123");
+        assert_eq!(m, "\"batch_id\":\"abc-123\"");
+        let params = format!("{{\"model\":\"grok\",{m},\"batch_index\":0}}");
+        assert!(params.contains(&batch_marker("abc-123")));
+        assert!(!params.contains(&batch_marker("other-batch")));
+    }
+
+    #[test]
+    fn batch_id_of_reads_params() {
+        let job = clab_core::model::Job {
+            id: "j1".into(),
+            project: "p".into(),
+            kind: JobKind::Generate,
+            status: JobStatus::Done,
+            progress: 1.0,
+            source_asset_id: None,
+            params: Some(r#"{"model":"grok","batch_id":"batch-1","batch_index":0}"#.to_string()),
+            result_asset_ids: "[]".to_string(),
+            error: None,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        };
+        assert_eq!(batch_id_of(&job), Some("batch-1".to_string()));
+
+        let untagged = clab_core::model::Job {
+            params: Some(r#"{"model":"grok"}"#.to_string()),
+            ..job
+        };
+        assert_eq!(batch_id_of(&untagged), None);
+    }
+
+    // ── router-level tests (batch aggregation over real job rows) ──────────
+
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use tower::ServiceExt;
+
+    async fn test_state() -> AppState {
+        let path = std::env::temp_dir().join(format!("video-test-{}.db", uuid::Uuid::new_v4()));
+        let db = clab_core::Db::connect(&format!("sqlite://{}", path.display()))
+            .await
+            .unwrap();
+        AppState::new(db, None)
+    }
+
+    async fn call(st: &AppState, req: Request<Body>) -> (StatusCode, Value) {
+        let app = router().with_state(st.clone());
+        let resp = app.oneshot(req).await.unwrap();
+        let status = resp.status();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let body = if bytes.is_empty() {
+            Value::Null
+        } else {
+            serde_json::from_slice(&bytes).unwrap_or(Value::Null)
+        };
+        (status, body)
+    }
+
+    fn get_req(uri: &str) -> Request<Body> {
+        Request::builder().uri(uri).body(Body::empty()).unwrap()
+    }
+
+    /// Insert a generate job row directly (bypassing `repo::create_job`,
+    /// which doesn't know about the batch marker) so tests can simulate the
+    /// `count` fan-out without spinning up a real provider.
+    #[allow(clippy::too_many_arguments)]
+    async fn insert_generate_job(
+        st: &AppState,
+        id: &str,
+        project: &str,
+        status: &str,
+        result_asset_ids: &str,
+        error: Option<&str>,
+        params: &str,
+    ) {
+        sqlx::query(
+            "INSERT INTO jobs (id, project, kind, status, progress, source_asset_id, params, result_asset_ids, error, created_at, updated_at)
+             VALUES (?, ?, 'generate', ?, 1.0, NULL, ?, ?, ?, ?, ?)",
+        )
+        .bind(id)
+        .bind(project)
+        .bind(status)
+        .bind(params)
+        .bind(result_asset_ids)
+        .bind(error)
+        .bind(chrono::Utc::now())
+        .bind(chrono::Utc::now())
+        .execute(st.db.writer())
+        .await
+        .unwrap();
+    }
+
+    async fn insert_ready_asset(st: &AppState, id: &str, project: &str, path: &str) {
+        sqlx::query(
+            "INSERT INTO assets (id, project, kind, status, path, parent_id, meta, error, created_at, updated_at)
+             VALUES (?, ?, 'generated', 'ready', ?, NULL, NULL, NULL, ?, ?)",
+        )
+        .bind(id)
+        .bind(project)
+        .bind(path)
+        .bind(chrono::Utc::now())
+        .bind(chrono::Utc::now())
+        .execute(st.db.writer())
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn get_job_aggregates_batch_into_one_job_with_per_index_videos() {
+        let st = test_state().await;
+        repo::create_project(&st.db, "p").await.unwrap();
+        insert_ready_asset(&st, "a0", "p", "projects/p/generated/j0/video.mp4").await;
+        insert_ready_asset(&st, "a1", "p", "projects/p/generated/j1/video.mp4").await;
+
+        let params0 = r#"{"model":"grok","prompt":"a cat","batch_id":"batch-1","batch_index":0,"batch_count":2}"#;
+        let params1 = r#"{"model":"grok","prompt":"a cat","batch_id":"batch-1","batch_index":1,"batch_count":2}"#;
+        insert_generate_job(&st, "j0", "p", "done", r#"["a0"]"#, None, params0).await;
+        insert_generate_job(&st, "j1", "p", "processing", "[]", None, params1).await;
+
+        // Fetch by the batch id (what POST /api/video/generate hands back).
+        let (status, body) = call(&st, get_req("/api/video/jobs/batch-1")).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["id"], "batch-1");
+        assert_eq!(body["prompt"], "a cat");
+        assert_eq!(body["provider"], "grok");
+        assert_eq!(body["count"], 2);
+        let videos = body["videos"].as_array().unwrap();
+        assert_eq!(videos.len(), 2);
+        assert_eq!(videos[0]["index"], 0);
+        assert_eq!(videos[0]["status"], "done");
+        assert_eq!(videos[0]["file"], "projects/p/generated/j0/video.mp4");
+        assert_eq!(videos[0]["url"], "/projects/p/generated/j0/video.mp4");
+        assert_eq!(videos[1]["index"], 1);
+        assert_eq!(videos[1]["status"], "generating");
+
+        // Also fetchable via any one sub-job's own row id (resolves to the
+        // same aggregated batch).
+        let (status2, body2) = call(&st, get_req("/api/video/jobs/j0")).await;
+        assert_eq!(status2, StatusCode::OK);
+        assert_eq!(body2["id"], "batch-1");
+        assert_eq!(body2["videos"].as_array().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn get_job_reports_error_status_for_failed_sub_job() {
+        let st = test_state().await;
+        repo::create_project(&st.db, "p").await.unwrap();
+        let params = r#"{"model":"grok","prompt":"x","batch_id":"batch-e","batch_index":0,"batch_count":1}"#;
+        insert_generate_job(&st, "jf", "p", "failed", "[]", Some("provider exploded"), params).await;
+
+        let (status, body) = call(&st, get_req("/api/video/jobs/batch-e")).await;
+        assert_eq!(status, StatusCode::OK);
+        let videos = body["videos"].as_array().unwrap();
+        assert_eq!(videos.len(), 1);
+        assert_eq!(videos[0]["status"], "error");
+        assert_eq!(videos[0]["error"], "provider exploded");
+    }
+
+    #[tokio::test]
+    async fn get_job_surfaces_multi_crop_fanout_as_crops() {
+        let st = test_state().await;
+        repo::create_project(&st.db, "p").await.unwrap();
+        insert_ready_asset(&st, "src", "p", "projects/p/generated/j0/video.mp4").await;
+        insert_ready_asset(&st, "crop0", "p", "projects/p/clips/j0/crop_0.mp4").await;
+        insert_ready_asset(&st, "crop1", "p", "projects/p/clips/j0/crop_1.mp4").await;
+        let params = r#"{"model":"hailuo","prompt":"x","batch_id":"batch-c","batch_index":0,"batch_count":1}"#;
+        insert_generate_job(&st, "j0", "p", "done", r#"["src","crop0","crop1"]"#, None, params).await;
+
+        let (status, body) = call(&st, get_req("/api/video/jobs/batch-c")).await;
+        assert_eq!(status, StatusCode::OK);
+        let videos = body["videos"].as_array().unwrap();
+        assert_eq!(videos.len(), 1);
+        assert_eq!(videos[0]["file"], "projects/p/generated/j0/video.mp4");
+        let crops = videos[0]["crops"].as_array().unwrap();
+        assert_eq!(crops.len(), 2);
+        assert_eq!(crops[0]["file"], "projects/p/clips/j0/crop_0.mp4");
+        assert_eq!(crops[0]["url"], "/projects/p/clips/j0/crop_0.mp4");
+    }
+
+    #[tokio::test]
+    async fn get_job_404_for_unknown_id() {
+        let st = test_state().await;
+        let (status, _) = call(&st, get_req("/api/video/jobs/nope")).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn list_jobs_groups_by_batch_and_scopes_to_project() {
+        let st = test_state().await;
+        repo::create_project(&st.db, "p").await.unwrap();
+        repo::create_project(&st.db, "other").await.unwrap();
+        let p0 = r#"{"model":"grok","prompt":"a","batch_id":"b1","batch_index":0,"batch_count":2}"#;
+        let p1 = r#"{"model":"grok","prompt":"a","batch_id":"b1","batch_index":1,"batch_count":2}"#;
+        insert_generate_job(&st, "j0", "p", "done", "[]", None, p0).await;
+        insert_generate_job(&st, "j1", "p", "done", "[]", None, p1).await;
+        // A legacy single (un-batched) job in the same project.
+        insert_generate_job(&st, "solo", "p", "done", "[]", None, r#"{"model":"grok","prompt":"b"}"#).await;
+        // A job in a different project must not leak in.
+        insert_generate_job(&st, "elsewhere", "other", "done", "[]", None, r#"{"model":"grok","prompt":"c"}"#).await;
+
+        let (status, body) = call(&st, get_req("/api/video/jobs?project=p")).await;
+        assert_eq!(status, StatusCode::OK);
+        let jobs = body.as_array().unwrap();
+        assert_eq!(jobs.len(), 2, "batch b1 collapses to one entry, plus the solo job");
+        let ids: Vec<&str> = jobs.iter().map(|j| j["id"].as_str().unwrap()).collect();
+        assert!(ids.contains(&"b1"));
+        assert!(ids.contains(&"solo"));
+        let batch_entry = jobs.iter().find(|j| j["id"] == "b1").unwrap();
+        assert_eq!(batch_entry["count"], 2);
+    }
+
+    #[tokio::test]
+    async fn delete_job_removes_every_sub_job_in_a_batch() {
+        let st = test_state().await;
+        repo::create_project(&st.db, "p").await.unwrap();
+        let p0 = r#"{"model":"grok","prompt":"a","batch_id":"b-del","batch_index":0,"batch_count":2}"#;
+        let p1 = r#"{"model":"grok","prompt":"a","batch_id":"b-del","batch_index":1,"batch_count":2}"#;
+        insert_generate_job(&st, "d0", "p", "done", "[]", None, p0).await;
+        insert_generate_job(&st, "d1", "p", "done", "[]", None, p1).await;
+
+        let (status, body) = call(
+            &st,
+            Request::builder()
+                .method("DELETE")
+                .uri("/api/video/jobs/b-del")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["deleted"], true);
+
+        assert!(repo::get_job(&st.db, "d0").await.unwrap().is_none());
+        assert!(repo::get_job(&st.db, "d1").await.unwrap().is_none());
+
+        // Second delete of the same (now-gone) batch id 404s.
+        let (status2, _) = call(
+            &st,
+            Request::builder()
+                .method("DELETE")
+                .uri("/api/video/jobs/b-del")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status2, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn generate_video_rejects_missing_prompt() {
+        let st = test_state().await;
+        let body_bytes = b"--X\r\nContent-Disposition: form-data; name=\"provider\"\r\n\r\ngrok\r\n--X--\r\n".to_vec();
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/video/generate")
+            .header("content-type", "multipart/form-data; boundary=X")
+            .body(Body::from(body_bytes))
+            .unwrap();
+        let (status, body) = call(&st, req).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body["error"].as_str().unwrap().contains("prompt"));
+    }
+
+    #[tokio::test]
+    async fn generate_video_rejects_unknown_provider() {
+        let st = test_state().await;
+        let body_bytes = b"--X\r\nContent-Disposition: form-data; name=\"prompt\"\r\n\r\nhello\r\n--X\r\nContent-Disposition: form-data; name=\"provider\"\r\n\r\nnope-not-real\r\n--X--\r\n".to_vec();
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/video/generate")
+            .header("content-type", "multipart/form-data; boundary=X")
+            .body(Body::from(body_bytes))
+            .unwrap();
+        let (status, body) = call(&st, req).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body["error"].as_str().unwrap().contains("unknown model"));
+    }
+
+    #[tokio::test]
+    async fn generate_video_rejects_image_to_video_without_media() {
+        let st = test_state().await;
+        // wan-i2v needs_image=true — omit `media` entirely.
+        let body_bytes = b"--X\r\nContent-Disposition: form-data; name=\"prompt\"\r\n\r\nhello\r\n--X\r\nContent-Disposition: form-data; name=\"provider\"\r\n\r\nwan-i2v\r\n--X--\r\n".to_vec();
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/video/generate")
+            .header("content-type", "multipart/form-data; boundary=X")
+            .body(Body::from(body_bytes))
+            .unwrap();
+        let (status, body) = call(&st, req).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body["error"].as_str().unwrap().contains("image-to-video"));
     }
 }
