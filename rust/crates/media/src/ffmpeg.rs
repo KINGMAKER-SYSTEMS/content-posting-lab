@@ -31,6 +31,18 @@ const TIKTOK_ENCODE: &[&str] = &[
     "-c:a", "aac", "-b:a", "192k",
 ];
 
+/// Source-preserving encode (ports Python's `STANDARD_ENCODE_ARGS`): keeps the
+/// source frame rate (no `-r`), drops the TikTok rate caps, and copies audio
+/// (`-c:a copy`) instead of re-encoding. Used by `/api/video/color-correct` so
+/// tweaking a generated clip doesn't silently resample fps or transcode audio.
+/// `-preset` is added by the caller (Railway-aware, like the other encoders).
+const STANDARD_ENCODE: &[&str] = &[
+    "-c:v", "libx264", "-crf", "18",
+    "-profile:v", "high", "-level", "4.2", "-pix_fmt", "yuv420p",
+    "-movflags", "+faststart",
+    "-c:a", "copy",
+];
+
 /// Pick the x264 preset: `fast` when deployed or for large inputs, else
 /// `medium`. Mirrors the clipper's RAILWAY_ENVIRONMENT / >500MB switch.
 fn preset_for(input: &Path) -> &'static str {
@@ -145,6 +157,37 @@ where
     run_with_progress(&arg_refs, duration_secs, &mut on_progress).await
 }
 
+/// Build the ffmpeg args for a source-preserving color-correct encode. Pure so
+/// it's unit-testable: the whole point of this path (vs `burn_overlay`) is that
+/// it must NOT force `-r 30` or re-encode audio.
+fn cc_args<'a>(input: &'a str, cc_filter: &'a str, preset: &'a str, output: &'a str) -> Vec<&'a str> {
+    let mut args: Vec<&str> = vec!["-y", "-i", input, "-vf", cc_filter, "-preset", preset];
+    args.extend_from_slice(STANDARD_ENCODE);
+    args.extend_from_slice(&["-progress", "pipe:1", "-nostats"]);
+    args.push(output);
+    args
+}
+
+/// Apply a color-correction `-vf` filter (from `build_cc_filter`) to `input`,
+/// writing `output`, WITHOUT the TikTok framerate/bitrate/audio re-encode that
+/// `burn_overlay` bakes in. `cc_filter` may be `"null"` (ffmpeg no-op).
+pub async fn color_correct<F>(
+    input: &Path,
+    cc_filter: &str,
+    output: &Path,
+    duration_secs: f64,
+    mut on_progress: F,
+) -> Result<()>
+where
+    F: FnMut(f64) + Send,
+{
+    let input_s = input.to_str().context("non-utf8 input path")?;
+    let output_s = output.to_str().context("non-utf8 output path")?;
+    let preset = preset_for(input);
+    let args = cc_args(input_s, cc_filter, preset, output_s);
+    run_with_progress(&args, duration_secs, &mut on_progress).await
+}
+
 /// Spawn ffmpeg, stream `-progress` key=value lines from stdout, convert
 /// `out_time_us` to a 0..1 fraction against `total_secs`, and call `on_progress`.
 /// Errors include the tail of stderr on non-zero exit.
@@ -198,4 +241,23 @@ where
     }
     on_progress(1.0);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn color_correct_preserves_source_fps_and_audio() {
+        let args = cc_args("in.mp4", "eq=contrast=1.1", "medium", "out.mp4");
+        // The whole reason this path exists: it must NOT force a framerate or
+        // re-encode audio (that's burn_overlay's TikTok encode).
+        assert!(args.windows(2).any(|w| w == ["-c:a", "copy"]), "audio must be copied");
+        assert!(!args.contains(&"-r"), "must not force an output framerate");
+        assert!(!args.contains(&"aac"), "must not re-encode audio to AAC");
+        // Sanity: the cc filter and I/O are wired.
+        assert!(args.windows(2).any(|w| w == ["-vf", "eq=contrast=1.1"]));
+        assert_eq!(args.first(), Some(&"-y"));
+        assert_eq!(args.last(), Some(&"out.mp4"));
+    }
 }
