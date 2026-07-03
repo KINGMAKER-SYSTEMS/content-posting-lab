@@ -71,6 +71,43 @@ pub fn confine_under_data(data_dir: &str, rel: &str) -> Result<PathBuf, String> 
     Ok(joined)
 }
 
+/// Return `path` as a data-dir-relative string, ready for `confine_under_data`.
+///
+/// Uploaded sources come back from the R2 / stage-streamed endpoints as an
+/// ABSOLUTE path in production (`data_dir()` is the absolute
+/// `RAILWAY_VOLUME_MOUNT_PATH`), then the frontend hands that exact string to
+/// process-batch. `confine_under_data` rejects absolute paths outright, so
+/// without this every uploaded source is un-processable in prod (URL-download
+/// sources return a relative path and were the only ones that worked).
+///
+/// An already-relative path is returned unchanged. An absolute path is accepted
+/// ONLY if it lives under `data_dir` (relativized); an absolute path that
+/// escapes the data dir is rejected. Traversal validation still happens in
+/// `confine_under_data` on the returned value.
+pub fn relativize_under_data(data_dir: &str, path: &str) -> Result<String, String> {
+    let p = Path::new(path);
+    if !p.is_absolute() {
+        return Ok(path.to_string());
+    }
+    let base = PathBuf::from(data_dir);
+    strip_base(p, &base).ok_or_else(|| "absolute path is not under the data directory".into())
+}
+
+/// Strip `base` from `p`, returning the relative remainder as a string. Falls
+/// back to comparing canonicalized forms so symlinked / `.`-laden data dirs still
+/// match. None if `p` is not under `base`.
+fn strip_base(p: &Path, base: &Path) -> Option<String> {
+    if let Ok(rel) = p.strip_prefix(base) {
+        return Some(rel.to_string_lossy().to_string());
+    }
+    if let (Ok(pc), Ok(bc)) = (p.canonicalize(), base.canonicalize()) {
+        if let Ok(rel) = pc.strip_prefix(&bc) {
+            return Some(rel.to_string_lossy().to_string());
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -105,5 +142,35 @@ mod tests {
     fn confine_allows_clean_relative() {
         let r = confine_under_data("/data", "projects/x/clips/source.mp4").unwrap();
         assert!(r.starts_with("/data"));
+    }
+
+    #[test]
+    fn relativize_passes_relative_through() {
+        assert_eq!(
+            relativize_under_data("/data", "projects/x/src.mp4").unwrap(),
+            "projects/x/src.mp4"
+        );
+    }
+
+    #[test]
+    fn relativize_accepts_absolute_under_data() {
+        // The prod upload case: data_dir is absolute, uploads hand back absolute paths.
+        assert_eq!(
+            relativize_under_data("/app/projects", "/app/projects/projects/x/clips/s.mp4").unwrap(),
+            "projects/x/clips/s.mp4"
+        );
+        // …and the relativized form still confines cleanly.
+        let abs = confine_under_data(
+            "/app/projects",
+            &relativize_under_data("/app/projects", "/app/projects/projects/x/clips/s.mp4").unwrap(),
+        )
+        .unwrap();
+        assert!(abs.starts_with("/app/projects"));
+    }
+
+    #[test]
+    fn relativize_rejects_absolute_outside_data() {
+        assert!(relativize_under_data("/app/projects", "/etc/passwd").is_err());
+        assert!(relativize_under_data("/app/projects", "/app/other/x.mp4").is_err());
     }
 }

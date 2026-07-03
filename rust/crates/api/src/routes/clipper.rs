@@ -39,7 +39,13 @@ pub fn router() -> Router<AppState> {
         .route("/api/clipper/cookies/status", get(cookies_status))
         .route("/api/clipper/r2/upload-init", post(r2_upload_init))
         .route("/api/clipper/r2/upload-complete", post(r2_upload_complete))
-        .route("/api/clipper/stage-streamed", post(stage_streamed))
+        // stage-streamed exists for multi-GB source uploads; disable the global
+        // 100MB DefaultBodyLimit for this one route (the handler streams to disk
+        // and enforces MAX_STAGE_UPLOAD_BYTES incrementally).
+        .route(
+            "/api/clipper/stage-streamed",
+            post(stage_streamed).layer(axum::extract::DefaultBodyLimit::disable()),
+        )
 }
 
 // ── shared helpers ───────────────────────────────────────────────────────────
@@ -471,17 +477,24 @@ async fn process_batch_start(
     let mut plan_sources = Vec::with_capacity(body.sources.len());
     let mut abs_paths = Vec::with_capacity(body.sources.len());
     for src in &body.sources {
-        let abs = crate::paths::confine_under_data(&data, &src.path)
+        // Uploaded sources (R2 / stage-streamed) hand back an ABSOLUTE path in
+        // production; relativize it under the data dir before confining, and use
+        // the relative form downstream so the stored asset path stays
+        // project-relative (consistent with URL-download sources). An absolute
+        // path that escapes the data dir is rejected here.
+        let rel = crate::paths::relativize_under_data(&data, &src.path)
+            .map_err(|e| ApiError::BadRequest(format!("invalid source path {}: {e}", src.path)))?;
+        let abs = crate::paths::confine_under_data(&data, &rel)
             .map_err(|e| ApiError::BadRequest(format!("invalid source path {}: {e}", src.path)))?;
         if !abs.is_file() {
             return Err(ApiError::BadRequest(format!("source not found: {}", src.path)));
         }
         let planned = clips_in_window(src.trim_start, src.trim_end, body.clip_length);
-        let meta = json!({ "source_path": src.path, "original_name": src.original_name }).to_string();
+        let meta = json!({ "source_path": rel, "original_name": src.original_name }).to_string();
         let source_asset =
             repo::create_asset(&st.db, &sanitized, clab_core::model::AssetKind::Source, None, Some(&meta))
                 .await?;
-        repo::mark_asset_ready(&st.db, &source_asset.id, &src.path).await?;
+        repo::mark_asset_ready(&st.db, &source_asset.id, &rel).await?;
         plan_sources.push(BatchPlanSource {
             source_asset_id: source_asset.id,
             original_name: src.original_name.clone(),
@@ -1293,21 +1306,14 @@ const MAX_STAGE_UPLOAD_BYTES: u64 = 5 * 1024 * 1024 * 1024; // 5 GiB
 
 async fn stage_streamed(
     Query(q): Query<StageStreamedQuery>,
-    body: axum::body::Bytes,
+    body: axum::body::Body,
 ) -> Result<Json<Value>, ApiError> {
+    use futures::StreamExt;
+    use tokio::io::AsyncWriteExt;
+
     let sanitized = crate::paths::sanitize_project_name(&q.project)
         .ok_or_else(|| ApiError::BadRequest("invalid project name".into()))?;
     let batch_id = q.batch_id.unwrap_or_else(repo::new_id);
-
-    if body.len() as u64 > MAX_STAGE_UPLOAD_BYTES {
-        return Err(ApiError::BadRequest(format!(
-            "File exceeds maximum size of {}GB",
-            MAX_STAGE_UPLOAD_BYTES / (1024 * 1024 * 1024)
-        )));
-    }
-    if body.is_empty() {
-        return Err(ApiError::BadRequest(format!("{}: uploaded file is empty (0 bytes)", q.filename)));
-    }
 
     let staging_dir = PathBuf::from(data_dir())
         .join("projects")
@@ -1320,9 +1326,41 @@ async fn stage_streamed(
 
     let safe_name = format!("src_{:03}.mp4", q.index);
     let dest = staging_dir.join(&safe_name);
-    tokio::fs::write(&dest, &body)
+
+    // Stream the request body straight to disk, enforcing the size cap as we go —
+    // never buffer the (multi-GB) upload in memory. main.rs's global 100MB
+    // DefaultBodyLimit is DISABLED for this route (see router()) so large uploads
+    // reach us; the running-total check below is the real bound.
+    let mut file = tokio::fs::File::create(&dest)
         .await
-        .map_err(|e| ApiError::Other(anyhow::anyhow!("write staged upload: {e}")))?;
+        .map_err(|e| ApiError::Other(anyhow::anyhow!("create staged file: {e}")))?;
+    let mut stream = body.into_data_stream();
+    let mut total: u64 = 0;
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk
+            .map_err(|e| ApiError::BadRequest(format!("{}: upload stream error: {e}", q.filename)))?;
+        total += chunk.len() as u64;
+        if total > MAX_STAGE_UPLOAD_BYTES {
+            drop(file);
+            let _ = tokio::fs::remove_file(&dest).await;
+            return Err(ApiError::BadRequest(format!(
+                "File exceeds maximum size of {}GB",
+                MAX_STAGE_UPLOAD_BYTES / (1024 * 1024 * 1024)
+            )));
+        }
+        file.write_all(&chunk)
+            .await
+            .map_err(|e| ApiError::Other(anyhow::anyhow!("write staged upload: {e}")))?;
+    }
+    file.flush()
+        .await
+        .map_err(|e| ApiError::Other(anyhow::anyhow!("flush staged upload: {e}")))?;
+    drop(file);
+
+    if total == 0 {
+        let _ = tokio::fs::remove_file(&dest).await;
+        return Err(ApiError::BadRequest(format!("{}: uploaded file is empty (0 bytes)", q.filename)));
+    }
 
     let (duration, width, height) = probe_basic(&dest)
         .await
