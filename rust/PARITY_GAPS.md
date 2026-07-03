@@ -1,5 +1,30 @@
 # Remaining parity gaps → 100% (post wave-3-runner merge)
 
+## STATUS (2026-07-03, rust-rewrite @ 4409bb9)
+
+DONE this session:
+- #1 advanced video params threading (GenParams.extra + replicate builders) ✓
+- #2 delete_job path + #3-review delete_file + color-correct confine (unified confine_project_video) ✓
+- #4 color_correct source-preserving preset wired ✓
+- #5 burn/import-tos Supabase fetch ported ✓
+- #6 stage-streamed body limit + true streaming ✓
+- Adversarial-review CRITICAL fixes: (a) uploaded absolute source paths accepted (relativize_under_data);
+  (b) batch_id path-traversal write primitive closed (ensure_valid_batch_id).
+- 277 workspace tests green, clippy clean, contract harness 21 OK / 0 MISSING / 0 SHAPE-MISMATCH.
+
+REMAINING (all low priority — cosmetic / cleanup / infra):
+- #3 provider_schemas advertises 3 dropped models (harmless — picker uses /providers). Optional trim.
+- #7 ZIP writer dedup (3 hand-rolled copies → one helper). Cleanup, non-parity.
+- #8 contract-harness `?project=` query fixtures (burn/{videos,batches,captions} show ERROR w/o one). Infra.
+- #9 ABN WebSocket upgrade passthrough — verify ABN needs it before building.
+
+The core loop (generate/clip/burn/distribute/upload/color-correct/captions/import-tos) is at parity;
+what's left is tidiness + one verify. Next big phase = wave 4 (shadow run + `diff` vs live Python + cutover).
+
+---
+## Original gap list (for reference)
+
+
 Tracking the delta between the Rust binary and the original Python app, so the
 existing React frontend runs unchanged. Ordered by parity impact. Items marked
 BLOCKED-ON-REVIEW touch files the wave3-runner-review workflow is reading; apply
