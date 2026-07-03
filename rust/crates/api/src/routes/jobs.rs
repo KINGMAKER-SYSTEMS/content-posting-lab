@@ -312,6 +312,9 @@ async fn start_generate(
         resolution: req.resolution,
         duration: req.duration,
         image_data_uri: req.image_data_uri,
+        // Internal JSON engine path carries no model-specific knobs; the legacy
+        // multipart runner (routes/video.rs) is what populates these.
+        extra: Default::default(),
     };
     tokio::spawn(async move {
         if let Err(e) = run_generate_job(

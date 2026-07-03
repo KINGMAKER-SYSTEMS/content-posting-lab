@@ -48,29 +48,17 @@
 //! of the single synthetic "generating" placeholder this file previously
 //! reported for the whole job.
 //!
-//! **Parity deviation (documented, not silently dropped):** the Python
-//! `/color-correct` endpoints used a dedicated `STANDARD_ENCODE_ARGS` preset
-//! (preserves source framerate, `-c:a copy`, no forced `-r`). The Rust `media`
-//! crate is frozen this wave and only exposes `media::ffmpeg::burn_overlay`,
-//! which bakes in the TikTok-oriented encode args (`-r 30`, AAC re-encode).
-//! Reused here rather than forking ffmpeg-arg-building logic into this route
-//! file. Framerate/audio-codec output can differ slightly from the old Burn
-//! tab's color-correct output; flagged as a seam request for wave 3 (see final
-//! report) to add a `media::ffmpeg::color_correct` primitive with the original
-//! preset.
+//! `/color-correct` uses `media::ffmpeg::color_correct` (source-framerate
+//! preserving, `-c:a copy`, no forced `-r`) — the port of Python's
+//! `STANDARD_ENCODE_ARGS` — NOT `burn_overlay`'s TikTok encode, so
+//! color-correcting a generated video doesn't resample fps or re-encode audio.
 //!
-//! **Parity deviation (documented, not silently dropped):** the Python
-//! `GenerateRequest` accepted many model-specific fields (`num_frames`,
+//! Model-specific fields the frontend sends per provider-schema (`num_frames`,
 //! `sample_shift`, `sample_steps`, `go_fast`, `interpolate_output`,
-//! `optimize_prompt`, `lora_*`, `negative_prompt` — see
-//! `contract/openapi.json`'s `Body_generate_video_api_video_generate_post`).
-//! `crate::providers::GenParams` (owned by another file this wave, see the
-//! file-ownership rule in the mission brief) only carries
-//! `{prompt, aspect_ratio, resolution, duration, image_data_uri}`. This
-//! endpoint parses and validates those extra multipart fields (so the request
-//! never 422s and `crop_mode` still works) but they are not yet threaded into
-//! the provider call — flagged as a seam request rather than silently
-//! forking `GenParams`.
+//! `optimize_prompt`, `lora_*`, `negative_prompt`) are collected + type-coerced
+//! into `GenParams.extra` and forwarded to the provider input builder (mirrors
+//! the Python router's `extra` dict). `last_image` is parsed but inert — only
+//! the dropped wan-i2v-fast model ever consumed it.
 
 use std::path::{Path as StdPath, PathBuf};
 
@@ -139,12 +127,10 @@ fn base64_encode(bytes: &[u8]) -> String {
     out
 }
 
-/// One parsed multipart field the frontend may send. `media`/`last_image` are
-/// files; everything else arrives as text. `last_image` and the model-specific
-/// extras (`num_frames`, `sample_shift`, ...) are accepted for contract parity
-/// (see the module doc's ponytail note) but only `media` currently feeds
-/// `GenParams.image_data_uri` — `GenParams` has no slot for a last-frame image
-/// or the other model-specific knobs yet.
+/// One parsed multipart request. `media`/`last_image` are files; everything else
+/// arrives as text. `media` becomes `GenParams.image_data_uri`; the model-specific
+/// knobs land type-coerced in `extra` (forwarded to the provider builder).
+/// `last_image` is read but inert — only the dropped wan-i2v-fast model used it.
 #[derive(Default)]
 struct GenerateForm {
     prompt: Option<String>,
@@ -156,6 +142,52 @@ struct GenerateForm {
     aspect_ratio: Option<String>,
     crop_mode: Option<String>,
     media_data_uri: Option<String>,
+    /// Model-specific knobs (num_frames, sample_shift, negative_prompt, lora_*, …)
+    /// collected from the multipart form and forwarded to the provider builder.
+    extra: serde_json::Map<String, Value>,
+}
+
+/// The model-specific fields the frontend sends per provider-schema. Anything
+/// not in this list is ignored (never 422s). `last_image` is deliberately absent
+/// — only the dropped wan-i2v-fast model consumed it.
+const EXTRA_PARAM_KEYS: &[&str] = &[
+    "num_frames",
+    "frames_per_second",
+    "sample_shift",
+    "sample_steps",
+    "go_fast",
+    "interpolate_output",
+    "optimize_prompt",
+    "negative_prompt",
+    "lora_weights_transformer",
+    "lora_scale_transformer",
+    "lora_weights_transformer_2",
+    "lora_scale_transformer_2",
+];
+
+/// Coerce a multipart text value to the JSON type the Replicate input expects.
+/// The frontend sends everything as `String(val)`, so a numeric-looking negative
+/// prompt must stay a string — hence per-key typing rather than a blind JSON parse.
+fn coerce_extra(key: &str, text: &str) -> Option<Value> {
+    let t = text.trim();
+    if t.is_empty() {
+        return None;
+    }
+    match key {
+        "num_frames" | "frames_per_second" | "sample_shift" | "sample_steps" => {
+            t.parse::<i64>().ok().map(Value::from)
+        }
+        "lora_scale_transformer" | "lora_scale_transformer_2" => {
+            t.parse::<f64>().ok().map(Value::from)
+        }
+        "go_fast" | "interpolate_output" | "optimize_prompt" => match t {
+            "true" | "1" | "on" | "yes" => Some(Value::Bool(true)),
+            "false" | "0" | "off" | "no" => Some(Value::Bool(false)),
+            _ => None,
+        },
+        // Everything else (negative_prompt, lora_weights_transformer*) is a string.
+        _ => Some(Value::String(t.to_string())),
+    }
 }
 
 async fn parse_generate_multipart(mut mp: Multipart) -> Result<GenerateForm, ApiError> {
@@ -205,9 +237,15 @@ async fn parse_generate_multipart(mut mp: Multipart) -> Result<GenerateForm, Api
                     "aspect_ratio" => form.aspect_ratio = Some(text),
                     "crop_mode" => form.crop_mode = Some(text),
                     // Model-specific extras (num_frames, sample_shift, go_fast, ...)
-                    // are validated-away (never 422 the request) but not threaded
-                    // through — see the module doc's ponytail note.
-                    _ => {}
+                    // are collected + type-coerced, then forwarded to the provider
+                    // input builder. Unknown fields are ignored (never 422).
+                    other => {
+                        if EXTRA_PARAM_KEYS.contains(&other) {
+                            if let Some(v) = coerce_extra(other, &text) {
+                                form.extra.insert(other.to_string(), v);
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -311,6 +349,7 @@ async fn generate_video(State(st): State<AppState>, multipart: Multipart) -> Res
             resolution: resolution.clone(),
             duration,
             image_data_uri: form.media_data_uri.clone(),
+            extra: form.extra.clone(),
         };
         let project_owned = project.clone();
         let batch_id_for_log = batch_id.clone();
@@ -828,10 +867,11 @@ async fn color_correct_one(Json(req): Json<ColorCorrectOneRequest>) -> Result<Re
 /// cleaning up the temp output regardless of outcome.
 async fn run_cc_encode(src: &StdPath, cc: &Option<media::ColorCorrection>) -> anyhow::Result<Vec<u8>> {
     let info = media::probe(src.to_str().ok_or_else(|| anyhow::anyhow!("non-utf8 path"))?).await?;
-    let cc_filter = media::build_cc_filter(cc.as_ref(), None);
-    let cc_filter = if cc_filter == "null" { None } else { Some(cc_filter.as_str()) };
+    let cc_filter = media::build_cc_filter(cc.as_ref(), None); // "null" = ffmpeg no-op
     let tmp = tempfile_path("mp4");
-    let result = media::ffmpeg::burn_overlay(src, None, cc_filter, &tmp, info.duration_secs, |_| {}).await;
+    // Source-preserving encode (keeps fps, copies audio) — NOT burn_overlay's
+    // TikTok encode, which would silently resample fps + re-encode audio to AAC.
+    let result = media::ffmpeg::color_correct(src, &cc_filter, &tmp, info.duration_secs, |_| {}).await;
     let bytes = match result {
         Ok(()) => tokio::fs::read(&tmp).await,
         Err(e) => {
@@ -1257,6 +1297,21 @@ mod tests {
         // Traversal + absolute escape still blocked.
         assert!(confine_project_video_in("/data", "p", "projects/p/../../etc/passwd").is_none());
         assert!(confine_project_video_in("/data", "p", "/etc/passwd").is_none());
+    }
+
+    #[test]
+    fn coerce_extra_types_each_key_correctly() {
+        assert_eq!(coerce_extra("num_frames", "121"), Some(Value::from(121)));
+        assert_eq!(coerce_extra("lora_scale_transformer", "0.8"), Some(Value::from(0.8)));
+        assert_eq!(coerce_extra("go_fast", "true"), Some(Value::Bool(true)));
+        assert_eq!(coerce_extra("interpolate_output", "false"), Some(Value::Bool(false)));
+        // The critical case: a numeric-looking text field must NOT become a number.
+        assert_eq!(coerce_extra("negative_prompt", "123"), Some(Value::from("123")));
+        assert_eq!(coerce_extra("negative_prompt", "no morphing"), Some(Value::from("no morphing")));
+        // Empty → None (omitted, matches Python's "skip if empty").
+        assert_eq!(coerce_extra("negative_prompt", "  "), None);
+        // Garbage in a numeric field → None (omitted, builder uses its default).
+        assert_eq!(coerce_extra("num_frames", "abc"), None);
     }
 
     #[test]

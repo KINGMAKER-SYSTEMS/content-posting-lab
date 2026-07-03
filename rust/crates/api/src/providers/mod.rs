@@ -22,6 +22,11 @@ pub struct GenParams {
     pub duration: u32,
     /// Optional first-frame image as a data URI (for image-to-video models).
     pub image_data_uri: Option<String>,
+    /// Model-specific knobs the frontend sends per provider-schema (num_frames,
+    /// sample_shift, go_fast, negative_prompt, lora_*, …). Each provider's input
+    /// builder reads the keys it supports (with its own defaults); unknown keys
+    /// are ignored. Mirrors the Python router's `extra` dict.
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 /// A configured generation provider. Implementors own the submit+poll loop and
