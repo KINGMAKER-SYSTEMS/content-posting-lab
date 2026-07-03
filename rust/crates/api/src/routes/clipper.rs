@@ -29,6 +29,10 @@ pub fn router() -> Router<AppState> {
         .route("/api/clipper/jobs/{job_id}", delete(delete_job))
         .route("/api/clipper/jobs/{job_id}/rename", patch(rename_job))
         .route("/api/clipper/jobs/{job_id}/download-all", get(download_all))
+        .route(
+            "/api/clipper/process-batch",
+            post(process_batch_start),
+        )
         .route("/api/clipper/process-batch/{job_id}", get(process_batch_status))
         .route("/api/clipper/download-url", post(download_url))
         .route("/api/clipper/cookies", post(cookies_upload).delete(cookies_delete))
@@ -387,14 +391,235 @@ mod zipstore {
     }
 }
 
+// ── POST /api/clipper/process-batch ─────────────────────────────────────────
+//
+// Ports the frontend's `handleProcessAll` start call: multiple staged sources,
+// each with its own trim window, cut into fixed-length 9:16 clips. Modeled as
+// ONE clip job (`kind = Clip`) whose `params` JSON carries the *plan*
+// (per-source asset id / display name / trim window / planned clip count) —
+// that plan is what `process_batch_status` reads back to reconstruct
+// `clip`/`total`/`source` without a new repo function or in-memory map. Each
+// segment produced is a normal Clip asset (parent_id = that source's asset
+// id), created via the exact same `repo`/`media` calls `run_clip_job` uses —
+// so a batch job's clips are indistinguishable from a single-source job's
+// once done, and show up in `GET /api/clipper/jobs` the same way.
+
+#[derive(Deserialize)]
+struct BatchSource {
+    path: String,
+    trim_start: f64,
+    trim_end: f64,
+    original_name: String,
+}
+
+#[derive(Deserialize)]
+struct ProcessBatchBody {
+    #[serde(default = "default_project")]
+    project: String,
+    #[serde(default)]
+    #[allow(dead_code)] // part of the contract; not needed once sources are staged
+    batch_id: Option<String>,
+    clip_length: f64,
+    sources: Vec<BatchSource>,
+}
+
+/// One planned source's slice of the batch — persisted into the job's `params`
+/// JSON so the status endpoint can reconstruct progress across polls (and
+/// across a process restart, modulo the orphan-recovery sweep).
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
+struct BatchPlanSource {
+    source_asset_id: String,
+    original_name: String,
+    trim_start: f64,
+    trim_end: f64,
+    planned_clips: usize,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
+struct BatchPlan {
+    clip_length: f64,
+    sources: Vec<BatchPlanSource>,
+}
+
+fn clips_in_window(trim_start: f64, trim_end: f64, clip_length: f64) -> usize {
+    if clip_length <= 0.0 {
+        return 0;
+    }
+    let span = (trim_end - trim_start).max(0.0);
+    (span / clip_length).floor() as usize
+}
+
+async fn process_batch_start(
+    State(st): State<AppState>,
+    Json(body): Json<ProcessBatchBody>,
+) -> Result<Json<Value>, ApiError> {
+    let sanitized = crate::paths::sanitize_project_name(&body.project)
+        .ok_or_else(|| ApiError::BadRequest("invalid project name".into()))?;
+    if body.sources.is_empty() {
+        return Err(ApiError::BadRequest("sources[] is required".into()));
+    }
+    if body.clip_length <= 0.0 {
+        return Err(ApiError::BadRequest("clip_length must be positive".into()));
+    }
+
+    repo::create_project(&st.db, &sanitized).await?;
+
+    // Confine + register every source up front so a bad path fails the whole
+    // request before any ffmpeg work starts (same fail-fast contract start_clip
+    // uses for a single source).
+    let data = data_dir();
+    let mut plan_sources = Vec::with_capacity(body.sources.len());
+    let mut abs_paths = Vec::with_capacity(body.sources.len());
+    for src in &body.sources {
+        let abs = crate::paths::confine_under_data(&data, &src.path)
+            .map_err(|e| ApiError::BadRequest(format!("invalid source path {}: {e}", src.path)))?;
+        if !abs.is_file() {
+            return Err(ApiError::BadRequest(format!("source not found: {}", src.path)));
+        }
+        let planned = clips_in_window(src.trim_start, src.trim_end, body.clip_length);
+        let meta = json!({ "source_path": src.path, "original_name": src.original_name }).to_string();
+        let source_asset =
+            repo::create_asset(&st.db, &sanitized, clab_core::model::AssetKind::Source, None, Some(&meta))
+                .await?;
+        repo::mark_asset_ready(&st.db, &source_asset.id, &src.path).await?;
+        plan_sources.push(BatchPlanSource {
+            source_asset_id: source_asset.id,
+            original_name: src.original_name.clone(),
+            trim_start: src.trim_start,
+            trim_end: src.trim_end,
+            planned_clips: planned,
+        });
+        abs_paths.push(abs);
+    }
+
+    let total_clips: usize = plan_sources.iter().map(|s| s.planned_clips).sum();
+    let plan = BatchPlan {
+        clip_length: body.clip_length,
+        sources: plan_sources.clone(),
+    };
+    let params = serde_json::to_string(&plan).unwrap_or_else(|_| "{}".to_string());
+    let job = repo::create_job(&st.db, &sanitized, clab_core::model::JobKind::Clip, None, Some(&params)).await?;
+
+    let db = st.db.clone();
+    let job_id = job.id.clone();
+    let project = sanitized.clone();
+    let clip_length = body.clip_length;
+    tokio::spawn(async move {
+        if let Err(e) =
+            run_batch_clip_job(db.clone(), &job_id, &project, &plan_sources, &abs_paths, clip_length, total_clips)
+                .await
+        {
+            tracing::error!("process-batch job {job_id} failed: {e:#}");
+            let _ = repo::fail_job(&db, &job_id, &format!("{e:#}")).await;
+        }
+    });
+
+    Ok(Json(json!({ "job_id": job.id, "total_clips": total_clips })))
+}
+
+/// Cut every planned segment of every source, in order. Reuses the same
+/// asset/progress lifecycle `run_clip_job` (jobs.rs) uses per-clip — this is
+/// the multi-source loop version, since `run_clip_job` itself only takes one
+/// source and one job. A single source's ffmpeg failure does not abort the
+/// rest of the batch (mirrors `run_clip_job`'s per-clip resilience).
+#[allow(clippy::too_many_arguments)]
+async fn run_batch_clip_job(
+    db: clab_core::Db,
+    job_id: &str,
+    project: &str,
+    sources: &[BatchPlanSource],
+    abs_paths: &[PathBuf],
+    clip_length: f64,
+    total_clips: usize,
+) -> anyhow::Result<()> {
+    let data = data_dir();
+    let out_dir = PathBuf::from(&data).join("projects").join(project).join("clips").join(job_id);
+    tokio::fs::create_dir_all(&out_dir).await?;
+
+    let mut produced = Vec::new();
+    let mut done = 0usize;
+
+    for (src, abs_path) in sources.iter().zip(abs_paths.iter()) {
+        if src.planned_clips == 0 {
+            continue;
+        }
+        let info = match media::probe(&abs_path.to_string_lossy()).await {
+            Ok(i) => i,
+            Err(e) => {
+                tracing::warn!("process-batch: probe failed for {}: {e:#}", src.original_name);
+                done += src.planned_clips;
+                let _ = repo::update_job_progress(&db, job_id, done as f64 / total_clips.max(1) as f64).await;
+                continue;
+            }
+        };
+
+        for i in 0..src.planned_clips {
+            let clip_start = src.trim_start + (i as f64) * clip_length;
+            // Prefix by source asset id so filenames stay unique across sources.
+            let out_name = format!("{}_{i:03}.mp4", &src.source_asset_id);
+            let out_path = out_dir.join(&out_name);
+
+            let meta = json!({
+                "index": i,
+                "source_id": src.source_asset_id,
+                "source_name": src.original_name,
+            })
+            .to_string();
+            let clip_asset = repo::create_asset(
+                &db,
+                project,
+                clab_core::model::AssetKind::Clip,
+                Some(&src.source_asset_id),
+                Some(&meta),
+            )
+            .await?;
+            repo::mark_asset_processing(&db, &clip_asset.id).await?;
+
+            let result = media::ffmpeg::clip_segment(
+                abs_path,
+                &out_path,
+                clip_start,
+                clip_length,
+                &info,
+                |_frac| {}, // ponytail: per-ffmpeg-frame progress folded into the coarser per-clip counter below, not sub-clip granularity
+            )
+            .await;
+
+            match result {
+                Ok(()) => {
+                    let rel = format!("projects/{project}/clips/{job_id}/{out_name}");
+                    repo::mark_asset_ready(&db, &clip_asset.id, &rel).await?;
+                    produced.push(clip_asset.id);
+                }
+                Err(e) => {
+                    repo::mark_asset_failed(&db, &clip_asset.id, &format!("{e:#}")).await?;
+                    tracing::warn!("process-batch: clip {i} of {} failed: {e:#}", src.original_name);
+                }
+            }
+            done += 1;
+            let _ = repo::update_job_progress(&db, job_id, done as f64 / total_clips.max(1) as f64).await;
+        }
+    }
+
+    if produced.is_empty() && total_clips > 0 {
+        repo::fail_job(&db, job_id, "all clips failed — see per-asset errors").await?;
+        return Ok(());
+    }
+
+    repo::finish_job(&db, job_id, &produced).await?;
+    Ok(())
+}
+
 // ── GET /api/clipper/process-batch/{job_id} ─────────────────────────────────
 //
-// The Python in-memory `_batch_jobs` map has no equivalent durable store of
-// its own here — durable clip-job state IS the `jobs` table. This endpoint
-// reports the same shape (`status`, `clip`/`total` progress counters, `clips`,
-// `error`) by reading the `jobs` row: `clip`/`total` are derived from however
-// many result assets exist so far (the wave-3 runner owns the authoritative
-// planned total; until then this reports what's actually been produced).
+// Reshapes the durable `jobs` row (+ its produced Clip assets) into exactly
+// what `handleProcessAll`'s poll loop expects: `clip`/`total` progress
+// counters, the *current* source's display name, an overall `status`, and a
+// `clips[]` array the client filters down to `ok === true` entries for
+// display. The per-source plan lives in `job.params` (written by
+// `process_batch_start`) so this needs no extra repo surface — just the
+// existing `list_assets` to pull back whichever Clip assets this batch has
+// produced so far (matched by `parent_id` against the plan's source ids).
 
 async fn process_batch_status(
     State(st): State<AppState>,
@@ -404,33 +629,132 @@ async fn process_batch_status(
     if job.kind != clab_core::model::JobKind::Clip {
         return Err(ApiError::NotFound);
     }
-    let result_ids: Vec<String> = serde_json::from_str(&job.result_asset_ids).unwrap_or_default();
-    let status = match job.status {
-        clab_core::model::JobStatus::Queued => "running",
-        clab_core::model::JobStatus::Processing => "running",
-        clab_core::model::JobStatus::Done => "done",
+
+    let plan: Option<BatchPlan> = job.params.as_deref().and_then(|p| serde_json::from_str(p).ok());
+
+    let status_str = match job.status {
+        clab_core::model::JobStatus::Queued => "processing",
+        clab_core::model::JobStatus::Processing => "processing",
+        clab_core::model::JobStatus::Done => "complete",
         clab_core::model::JobStatus::Failed => "error",
     };
+
+    let Some(plan) = plan else {
+        // A clip job started via /api/jobs/clip (not this batch endpoint) has
+        // no BatchPlan — report a degenerate-but-valid shape from result ids.
+        let result_ids: Vec<String> = serde_json::from_str(&job.result_asset_ids).unwrap_or_default();
+        return Ok(Json(json!({
+            "job_id": job.id,
+            "status": status_str,
+            "clip": result_ids.len(),
+            "total": result_ids.len(),
+            "source": "",
+            "clips": [],
+            "ok_count": result_ids.len(),
+            "error": job.error,
+        })));
+    };
+
+    let total: usize = plan.sources.iter().map(|s| s.planned_clips).sum();
+    let source_ids: std::collections::HashSet<&str> =
+        plan.sources.iter().map(|s| s.source_asset_id.as_str()).collect();
+    let names_by_id: std::collections::HashMap<&str, &str> = plan
+        .sources
+        .iter()
+        .map(|s| (s.source_asset_id.as_str(), s.original_name.as_str()))
+        .collect();
+
+    let mut all_clips = repo::list_assets(&st.db, &job.project, Some(clab_core::model::AssetKind::Clip))
+        .await?
+        .into_iter()
+        .filter(|a| a.parent_id.as_deref().is_some_and(|p| source_ids.contains(p)))
+        .collect::<Vec<_>>();
+    // list_assets returns newest-first; the client/creation order reads better oldest-first.
+    all_clips.sort_by_key(|a| a.created_at);
+
+    let clip_count = all_clips
+        .iter()
+        .filter(|a| matches!(a.status, clab_core::model::AssetStatus::Ready | clab_core::model::AssetStatus::Failed))
+        .count();
+
+    // "Current" source: the first one (in plan order) whose produced-clip
+    // count hasn't reached its planned count yet. Empty string once the whole
+    // batch is done, matching the frontend's `job.source || ''` fallback.
+    let mut current_source = String::new();
+    if status_str == "processing" {
+        let mut counted: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+        for a in &all_clips {
+            if let Some(pid) = a.parent_id.as_deref() {
+                *counted.entry(pid).or_insert(0) += 1;
+            }
+        }
+        for s in &plan.sources {
+            let done = counted.get(s.source_asset_id.as_str()).copied().unwrap_or(0);
+            if done < s.planned_clips {
+                current_source = s.original_name.clone();
+                break;
+            }
+        }
+    }
+
+    let clips_json: Vec<Value> = all_clips
+        .iter()
+        .map(|a| {
+            let ok = matches!(a.status, clab_core::model::AssetStatus::Ready);
+            let source_name = a.parent_id.as_deref().and_then(|p| names_by_id.get(p)).copied();
+            if ok {
+                let path = a.path.as_deref().unwrap_or_default();
+                let name = FsPath::new(path)
+                    .file_name()
+                    .and_then(|f| f.to_str())
+                    .unwrap_or("clip.mp4");
+                let url = format!("/projects/{}/clips/{}/{name}", job.project, job.id);
+                json!({
+                    "index": all_clips.iter().position(|x| x.id == a.id).unwrap_or(0),
+                    "name": name,
+                    "source_name": source_name,
+                    "ok": true,
+                    "url": url,
+                    "thumb_url": Value::Null,
+                })
+            } else {
+                json!({
+                    "source_name": source_name,
+                    "ok": false,
+                    "error": a.error,
+                })
+            }
+        })
+        .collect();
+
+    let ok_count = all_clips
+        .iter()
+        .filter(|a| matches!(a.status, clab_core::model::AssetStatus::Ready))
+        .count();
+
     Ok(Json(json!({
         "job_id": job.id,
-        "status": status,
-        "clip": result_ids.len(),
-        "total": result_ids.len(),
-        "progress": job.progress,
-        "clips": result_ids,
-        "ok_count": result_ids.len(),
+        "status": status_str,
+        "clip": clip_count,
+        "total": total,
+        "source": current_source,
+        "clips": clips_json,
+        "ok_count": ok_count,
         "error": job.error,
     })))
 }
 
 // ── POST /api/clipper/download-url ──────────────────────────────────────────
 //
-// Deliberately NOT a full download (that's the runner/upload flow's job) —
-// this resolves/validates the URL via yt-dlp's `--dump-json` metadata probe
-// only, so the client can show a preview before committing to a full pull.
+// Actually downloads the source video via yt-dlp and stages it under the
+// project's clips/_staging/<batch_id>/ dir (same staging convention as
+// stage-streamed / r2-upload-complete), so the client can hand the returned
+// `path` straight to process-batch for trimming.
 
 #[derive(Deserialize)]
 struct DownloadUrlBody {
+    #[serde(default = "default_project")]
+    project: String,
     video_url: String,
 }
 
@@ -444,42 +768,84 @@ async fn download_url(Json(body): Json<DownloadUrlBody>) -> Result<Json<Value>, 
     if !(url.starts_with("http://") || url.starts_with("https://")) {
         return Err(ApiError::BadRequest("video_url must be an http(s) URL".into()));
     }
+    let sanitized = crate::paths::sanitize_project_name(&body.project)
+        .ok_or_else(|| ApiError::BadRequest("invalid project name".into()))?;
 
-    let meta = ytdlp_dump_json(url)
+    let batch_id = repo::new_id();
+    let staging_dir = PathBuf::from(data_dir())
+        .join("projects")
+        .join(&sanitized)
+        .join("clips")
+        .join("_staging")
+        .join(&batch_id);
+    tokio::fs::create_dir_all(&staging_dir)
         .await
-        .map_err(|e| ApiError::BadRequest(format!("could not resolve video_url: {e}")))?;
+        .map_err(|e| ApiError::Other(anyhow::anyhow!("create staging dir: {e}")))?;
+
+    let dest = staging_dir.join("src_000.mp4");
+    ytdlp_download(url, &dest)
+        .await
+        .map_err(|e| ApiError::BadRequest(format!("could not download video_url: {e}")))?;
+
+    let (duration, width, height) = probe_basic(&dest)
+        .await
+        .map_err(|e| ApiError::BadRequest(format!("downloaded file is not a readable video: {e}")))?;
+    if duration <= 0.0 {
+        let _ = tokio::fs::remove_file(&dest).await;
+        return Err(ApiError::BadRequest(
+            "downloaded video has no readable duration — likely corrupt or not a video".into(),
+        ));
+    }
+
+    // Best-effort thumbnail; a failure here shouldn't fail the whole download.
+    let thumb_path = staging_dir.join("src_000_thumb.jpg");
+    let thumb_url = match ffmpeg_thumbnail(&dest, &thumb_path).await {
+        Ok(()) => Some(format!(
+            "/projects/{sanitized}/clips/_staging/{batch_id}/src_000_thumb.jpg"
+        )),
+        Err(e) => {
+            tracing::warn!("download-url: thumbnail generation failed: {e}");
+            None
+        }
+    };
+
+    let original_name = url
+        .rsplit('/')
+        .next()
+        .filter(|s| !s.is_empty())
+        .unwrap_or("video.mp4")
+        .to_string();
 
     Ok(Json(json!({
-        "video_url": url,
-        "title": meta.title,
-        "duration": meta.duration,
-        "width": meta.width,
-        "height": meta.height,
-        "thumbnail": meta.thumbnail,
-        "ext": meta.ext,
+        "batch_id": batch_id,
+        "files": [{
+            "index": 0,
+            "original_name": original_name,
+            "path": format!("projects/{sanitized}/clips/_staging/{batch_id}/src_000.mp4"),
+            "url": format!("/projects/{sanitized}/clips/_staging/{batch_id}/src_000.mp4"),
+            "thumb_url": thumb_url,
+            "duration": duration,
+            "width": width,
+            "height": height,
+        }],
     })))
 }
 
-struct YtdlpMeta {
-    title: Option<String>,
-    duration: Option<f64>,
-    width: Option<u32>,
-    height: Option<u32>,
-    thumbnail: Option<String>,
-    ext: Option<String>,
-}
-
-/// Run `yt-dlp --dump-json --no-download <url>` and parse out the fields we
-/// surface. Metadata only — never triggers a video download.
-async fn ytdlp_dump_json(url: &str) -> anyhow::Result<YtdlpMeta> {
+/// Run `yt-dlp -o <dest> <url>` to actually pull the video down (as opposed to
+/// `ytdlp_dump_json`'s metadata-only probe). Re-muxes to mp4 so downstream
+/// ffprobe/ffmpeg always see a consistent container.
+async fn ytdlp_download(url: &str, dest: &FsPath) -> anyhow::Result<()> {
     use anyhow::Context;
     use tokio::process::Command;
 
     let mut args: Vec<String> = vec![
-        "--no-download".into(),
         "--no-warnings".into(),
         "--no-check-certificates".into(),
-        "--dump-json".into(),
+        "--no-playlist".into(),
+        "--merge-output-format".into(),
+        "mp4".into(),
+        "-o".into(),
+        dest.to_string_lossy().into_owned(),
     ];
     if let Some(cookies) = cookies_path() {
         args.push("--cookies".into());
@@ -494,26 +860,55 @@ async fn ytdlp_dump_json(url: &str) -> anyhow::Result<YtdlpMeta> {
         .kill_on_drop(true)
         .spawn()
         .context("yt-dlp not found on PATH")?;
-    let out = tokio::time::timeout(Duration::from_secs(30), child.wait_with_output())
+    // Downloads can legitimately take a while — much longer than the metadata
+    // probe's 30s budget, but still bounded so a wedged process can't hang a
+    // request forever.
+    let out = tokio::time::timeout(Duration::from_secs(600), child.wait_with_output())
         .await
-        .map_err(|_| anyhow::anyhow!("yt-dlp metadata lookup timed out after 30s"))?
+        .map_err(|_| anyhow::anyhow!("yt-dlp download timed out after 600s"))?
         .context("yt-dlp wait failed")?;
     if !out.status.success() {
         let err = String::from_utf8_lossy(&out.stderr);
         anyhow::bail!("yt-dlp failed: {}", tail(err.trim(), 300));
     }
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    // --dump-json prints one JSON object (first line is enough for our fields).
-    let first_line = stdout.lines().next().unwrap_or("");
-    let v: Value = serde_json::from_str(first_line).context("yt-dlp returned non-JSON output")?;
-    Ok(YtdlpMeta {
-        title: v.get("title").and_then(Value::as_str).map(str::to_string),
-        duration: v.get("duration").and_then(Value::as_f64),
-        width: v.get("width").and_then(Value::as_u64).map(|n| n as u32),
-        height: v.get("height").and_then(Value::as_u64).map(|n| n as u32),
-        thumbnail: v.get("thumbnail").and_then(Value::as_str).map(str::to_string),
-        ext: v.get("ext").and_then(Value::as_str).map(str::to_string),
-    })
+    if !dest.is_file() {
+        anyhow::bail!("yt-dlp reported success but produced no output file");
+    }
+    Ok(())
+}
+
+/// A single-frame ffmpeg thumbnail (2s in, or the first frame for very short
+/// clips) — cheaper than a full yt-dlp cover fetch and works for any source.
+async fn ffmpeg_thumbnail(src: &FsPath, dest: &FsPath) -> anyhow::Result<()> {
+    use anyhow::Context;
+    use tokio::process::Command;
+
+    let out = Command::new("ffmpeg")
+        .args(["-y", "-ss", "2", "-i"])
+        .arg(src)
+        .args(["-frames:v", "1", "-q:v", "4"])
+        .arg(dest)
+        .output()
+        .await
+        .context("failed to spawn ffmpeg for thumbnail")?;
+    if !out.status.success() || !dest.is_file() {
+        // Retry at t=0 — a 2s seek can fail on very short clips.
+        let out0 = Command::new("ffmpeg")
+            .args(["-y", "-i"])
+            .arg(src)
+            .args(["-frames:v", "1", "-q:v", "4"])
+            .arg(dest)
+            .output()
+            .await
+            .context("failed to spawn ffmpeg for thumbnail (retry)")?;
+        if !out0.status.success() || !dest.is_file() {
+            anyhow::bail!(
+                "ffmpeg thumbnail failed: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
+        }
+    }
+    Ok(())
 }
 
 /// Last `n` characters of a string (char-boundary safe) — same convention
@@ -1004,6 +1399,16 @@ mod tests {
     use super::*;
 
     #[test]
+    fn clips_in_window_floors_the_span() {
+        assert_eq!(clips_in_window(0.0, 33.0, 10.0), 3);
+        assert_eq!(clips_in_window(5.0, 12.0, 10.0), 0);
+        assert_eq!(clips_in_window(0.0, 10.0, 10.0), 1);
+        // degenerate / inverted windows never panic or go negative.
+        assert_eq!(clips_in_window(10.0, 5.0, 10.0), 0);
+        assert_eq!(clips_in_window(0.0, 100.0, 0.0), 0);
+    }
+
+    #[test]
     fn clip_json_shape_matches_python() {
         let asset = clab_core::model::Asset {
             id: "a1".into(),
@@ -1078,5 +1483,181 @@ mod tests {
         let boundary = "B";
         let body = format!("--{b}\r\nContent-Disposition: form-data; name=\"other\"\r\n\r\nnope\r\n--{b}--\r\n", b = boundary);
         assert!(extract_multipart_field(body.as_bytes(), boundary, "file").is_none());
+    }
+
+    // ── process-batch end-to-end (real ffmpeg/ffprobe) ──────────────────────
+
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use tokio::sync::Mutex;
+    use tower::ServiceExt;
+
+    /// These tests mutate the process-global RAILWAY_VOLUME_MOUNT_PATH env var
+    /// (same convention `data_dir()` reads everywhere in this file) — serialize
+    /// them so parallel test threads can't race each other's value (same
+    /// reasoning as recreate.rs / email.rs's ENV_LOCK).
+    static ENV_LOCK: Mutex<()> = Mutex::const_new(());
+
+    /// A throwaway data dir under the OS tempdir, cleaned up on drop. No
+    /// `tempfile` crate dependency in this crate — same pattern routes/projects.rs
+    /// uses for its throwaway sqlite file.
+    struct TempDataDir(PathBuf);
+    impl Drop for TempDataDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    async fn test_state_with_data_dir() -> (AppState, TempDataDir) {
+        let dir = std::env::temp_dir().join(format!("clipper-test-data-{}", uuid::Uuid::new_v4()));
+        tokio::fs::create_dir_all(&dir).await.unwrap();
+        // Same env-var convention `data_dir()` reads everywhere in this file —
+        // point it at a throwaway dir for the duration of this test.
+        std::env::set_var("RAILWAY_VOLUME_MOUNT_PATH", &dir);
+
+        let db_path = std::env::temp_dir().join(format!("clipper-test-{}.db", uuid::Uuid::new_v4()));
+        let db = clab_core::Db::connect(&format!("sqlite://{}", db_path.display()))
+            .await
+            .unwrap();
+        (AppState::new(db, None), TempDataDir(dir))
+    }
+
+    /// Generate a tiny (2s, 320x568 ~9:16) source video with real ffmpeg so the
+    /// batch pipeline's probe/clip_segment calls run against a genuine file
+    /// rather than a mock.
+    async fn make_test_source(dir: &FsPath, name: &str, secs: u32) -> PathBuf {
+        let path = dir.join(name);
+        tokio::fs::create_dir_all(dir).await.unwrap();
+        let out = tokio::process::Command::new("ffmpeg")
+            .args(["-y", "-f", "lavfi", "-i"])
+            .arg(format!("color=c=blue:s=320x568:d={secs}"))
+            .args(["-c:v", "libx264", "-pix_fmt", "yuv420p", "-t", &secs.to_string()])
+            .arg(&path)
+            .output()
+            .await
+            .expect("failed to spawn ffmpeg for test fixture");
+        assert!(out.status.success(), "ffmpeg fixture failed: {}", String::from_utf8_lossy(&out.stderr));
+        path
+    }
+
+    async fn call(st: &AppState, req: Request<Body>) -> (StatusCode, Value) {
+        let app = router().with_state(st.clone());
+        let resp = app.oneshot(req).await.unwrap();
+        let status = resp.status();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let body = if bytes.is_empty() {
+            Value::Null
+        } else {
+            serde_json::from_slice(&bytes).unwrap()
+        };
+        (status, body)
+    }
+
+    fn json_req(method: &str, uri: &str, body: Value) -> Request<Body> {
+        Request::builder()
+            .method(method)
+            .uri(uri)
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap()
+    }
+
+    fn get_req(uri: &str) -> Request<Body> {
+        Request::builder().uri(uri).body(Body::empty()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn process_batch_cuts_clips_and_status_reshapes_to_contract() {
+        let _guard = ENV_LOCK.lock().await;
+        let (st, data_dir) = test_state_with_data_dir().await;
+
+        // Stage a 6s source directly under the project's clips dir (as if
+        // download-url / stage-streamed had already run) — 6s at 2s/clip = 3 clips.
+        let project = "batchtest";
+        let staging_rel = format!("projects/{project}/clips/_staging/b1");
+        let staging_abs = data_dir.0.join(&staging_rel);
+        make_test_source(&staging_abs, "src_000.mp4", 6).await;
+        let source_rel = format!("{staging_rel}/src_000.mp4");
+
+        let (status, start) = call(
+            &st,
+            json_req(
+                "POST",
+                "/api/clipper/process-batch",
+                json!({
+                    "project": project,
+                    "batch_id": "b1",
+                    "clip_length": 2.0,
+                    "sources": [{
+                        "path": source_rel,
+                        "trim_start": 0.0,
+                        "trim_end": 6.0,
+                        "original_name": "my_video.mp4",
+                    }],
+                }),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "start response: {start}");
+        assert_eq!(start["total_clips"], 3);
+        let job_id = start["job_id"].as_str().unwrap().to_string();
+
+        // Poll until complete (bounded so a real bug fails the test instead of hanging).
+        let mut last = Value::Null;
+        for _ in 0..100 {
+            let (status, poll) = call(&st, get_req(&format!("/api/clipper/process-batch/{job_id}"))).await;
+            assert_eq!(status, StatusCode::OK);
+            last = poll.clone();
+            if poll["status"] == "complete" || poll["status"] == "error" {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+
+        assert_eq!(last["status"], "complete", "job never completed: {last}");
+        assert_eq!(last["total"], 3);
+        assert_eq!(last["clip"], 3);
+        assert_eq!(last["ok_count"], 3);
+        assert_eq!(last["source"], "", "source clears once the batch is done");
+
+        let clips = last["clips"].as_array().unwrap();
+        assert_eq!(clips.len(), 3);
+        for c in clips {
+            assert_eq!(c["ok"], true);
+            assert!(c["thumb_url"].is_null() || c["thumb_url"].as_str().is_some());
+            let url = c["url"].as_str().expect("ok clip must carry a url");
+            assert!(url.starts_with(&format!("/projects/{project}/clips/{job_id}/")));
+        }
+
+        std::env::remove_var("RAILWAY_VOLUME_MOUNT_PATH");
+    }
+
+    #[tokio::test]
+    async fn process_batch_rejects_path_escaping_data_dir() {
+        let _guard = ENV_LOCK.lock().await;
+        let (st, _data_dir) = test_state_with_data_dir().await;
+
+        let (status, body) = call(
+            &st,
+            json_req(
+                "POST",
+                "/api/clipper/process-batch",
+                json!({
+                    "project": "p",
+                    "batch_id": "b1",
+                    "clip_length": 2.0,
+                    "sources": [{
+                        "path": "../../etc/passwd",
+                        "trim_start": 0.0,
+                        "trim_end": 6.0,
+                        "original_name": "evil.mp4",
+                    }],
+                }),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "body: {body}");
+
+        std::env::remove_var("RAILWAY_VOLUME_MOUNT_PATH");
     }
 }
