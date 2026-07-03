@@ -12,14 +12,19 @@ DONE this session:
   (b) batch_id path-traversal write primitive closed (ensure_valid_batch_id).
 - 277 workspace tests green, clippy clean, contract harness 21 OK / 0 MISSING / 0 SHAPE-MISMATCH.
 
-REMAINING (all low priority — cosmetic / cleanup / infra):
-- #3 provider_schemas advertises 3 dropped models (harmless — picker uses /providers). Optional trim.
-- #7 ZIP writer dedup (3 hand-rolled copies → one helper). Cleanup, non-parity.
-- #8 contract-harness `?project=` query fixtures (burn/{videos,batches,captions} show ERROR w/o one). Infra.
-- #9 ABN WebSocket upgrade passthrough — verify ABN needs it before building.
+ALSO DONE (later loop iterations):
+- #7 ZIP writer dedup — clipper's copy folded onto core::build_zip_stored (video keeps its _errors.txt variant). ✓
+- #8 contract-harness `?project=` fixtures — resolve_target appends a default project; single-mode 24 OK / 4 ERROR (all auth/config 503s) / 0 missing / 0 shape-mismatch. ✓
+- #9 ABN WebSocket passthrough — NOT NEEDED: ABN's /stream is SSE (text/event-stream), zero WS endpoints; the proxy's buffer-then-stream already handles it. Verified by inspection. ✓
 
-The core loop (generate/clip/burn/distribute/upload/color-correct/captions/import-tos) is at parity;
-what's left is tidiness + one verify. Next big phase = wave 4 (shadow run + `diff` vs live Python + cutover).
+REMAINING (deliberately skipped — cosmetic, zero behavior impact):
+- #3 provider_schemas advertises 3 dropped models (pruna×2, wan-i2v-fast). Harmless dead JSON — the
+  frontend picker reads /providers (curated set only) and only looks up schemas by selected id, so these
+  are never read. YAGNI; leaving it. (Trim if a future dev finds it confusing.)
+
+Everything with user-visible behavior is at parity. Next phase = wave 4 (shadow run on Railway +
+contracttest `diff` vs live Python + `clab migrate` + cutover w/ rollback) — needs a human (prod deploy
++ go/no-go decision), not autonomous dev.
 
 ---
 ## Original gap list (for reference)
