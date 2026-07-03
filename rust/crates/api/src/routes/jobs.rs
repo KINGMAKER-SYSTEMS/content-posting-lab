@@ -124,7 +124,7 @@ async fn start_clip(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn run_clip_job(
+pub(crate) async fn run_clip_job(
     db: clab_core::Db,
     job_id: &str,
     project: &str,
@@ -336,7 +336,7 @@ async fn start_generate(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn run_generate_job(
+pub(crate) async fn run_generate_job(
     db: clab_core::Db,
     job_id: &str,
     project: &str,
@@ -452,7 +452,7 @@ fn validate_video_url(url: &str) -> anyhow::Result<()> {
 
 /// Stream a remote video URL to a local file. Bounded (no whole-file
 /// buffering), size-capped, and the partial file is removed on failure.
-async fn download_to_file(
+pub(crate) async fn download_to_file(
     client: &reqwest::Client,
     url: &str,
     dest: &std::path::Path,
@@ -569,7 +569,7 @@ async fn start_burn(
     Ok(Json(serde_json::json!({ "job": job })))
 }
 
-async fn run_burn_job(
+pub(crate) async fn run_burn_job(
     db: clab_core::Db,
     job_id: &str,
     project: &str,
