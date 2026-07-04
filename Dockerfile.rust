@@ -1,0 +1,46 @@
+# Rust rewrite deploy image — separate from the Python Dockerfile so the live
+# Python service is untouched during the shadow run. Point a NEW Railway service
+# at this file (railway.rust.toml) for the cutover shadow deploy.
+#
+# 3 stages: build the React frontend → build the Rust binary → slim runtime with
+# the media binaries the server shells out to (ffmpeg / tesseract / yt-dlp).
+
+# ─── Stage 1: React frontend (identical to the Python image's frontend stage) ──
+FROM node:20-bookworm-slim AS frontend
+WORKDIR /app/frontend
+COPY frontend/package.json frontend/package-lock.json* ./
+RUN npm ci --no-audit --no-fund || npm install --no-audit --no-fund
+COPY frontend/ .
+ENV NODE_ENV=production
+RUN npm run build
+
+# ─── Stage 2: Rust binary (`content-lab`) ──────────────────────────────────────
+FROM rust:1-bookworm AS builder
+WORKDIR /build
+COPY rust/ ./rust/
+WORKDIR /build/rust
+# release profile = opt-level 3 + thin LTO (see rust/Cargo.toml)
+RUN cargo build --release -p api
+
+# ─── Stage 3: runtime ──────────────────────────────────────────────────────────
+FROM debian:bookworm-slim
+WORKDIR /app
+
+# The server shells out to these (tokio::process): ffmpeg (clip/burn/color),
+# tesseract (caption OCR fallback), yt-dlp (caption scrape + clipper download).
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ffmpeg tesseract-ocr ca-certificates curl \
+    && curl -fsSL https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp \
+    && chmod a+rx /usr/local/bin/yt-dlp \
+    && rm -rf /var/lib/apt/lists/*
+
+# Binary + the two CWD-relative asset dirs the proxy serves (/fonts, SPA).
+COPY --from=builder /build/rust/target/release/content-lab /usr/local/bin/content-lab
+COPY fonts/ ./fonts/
+COPY --from=frontend /app/frontend/dist ./frontend/dist
+
+# Railway sets PORT; the binary binds 0.0.0.0:$PORT (default 8000). State lives on
+# the mounted volume via RAILWAY_VOLUME_MOUNT_PATH. ABN_UPSTREAM_URL must point at
+# the Python ABN service (the reverse-proxied /api/agenticnews/* + /api/pipeline/*).
+EXPOSE 8000
+CMD ["content-lab"]

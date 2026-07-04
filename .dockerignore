@@ -36,3 +36,8 @@ caption_output
 burn_output
 *.mp4
 *.zip
+
+# Rust build artifacts (rebuilt in the Dockerfile.rust builder stage) + spike
+rust/target
+leptos-home-spike/target
+leptos-home-spike/dist
