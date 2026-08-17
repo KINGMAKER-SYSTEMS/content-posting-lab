@@ -16,6 +16,7 @@ import debug_logger
 from project_manager import PROJECTS_DIR, ensure_default_project
 from providers import PROVIDERS
 from providers.base import API_KEYS
+from routers.control_plane import router as control_plane_router
 from routers.burn import router as burn_router
 from routers.captions import router as captions_router
 from routers.clipper import router as clipper_router
@@ -255,6 +256,7 @@ async def log_requests(request: Request, call_next):
     return response
 
 
+app.include_router(control_plane_router, prefix="/api/control-plane", tags=["control-plane"])
 app.include_router(debug_router, prefix="/api/debug", tags=["debug"])
 app.include_router(video_router, prefix="/api/video", tags=["video"])
 app.include_router(captions_router, prefix="/api/captions", tags=["captions"])
