@@ -17,6 +17,7 @@ from project_manager import PROJECTS_DIR, ensure_default_project
 from providers import PROVIDERS
 from providers.base import API_KEYS
 from routers.control_plane import router as control_plane_router
+from routers.pages import router as pages_router
 from routers.burn import router as burn_router
 from routers.captions import router as captions_router
 from routers.clipper import router as clipper_router
@@ -265,6 +266,7 @@ app.include_router(projects_router, prefix="/api/projects", tags=["projects"])
 app.include_router(recreate_router, prefix="/api/recreate", tags=["recreate"])
 app.include_router(clipper_router, prefix="/api/clipper", tags=["clipper"])
 app.include_router(roster_router, prefix="/api/roster", tags=["roster"])
+app.include_router(pages_router, prefix="/api/pages", tags=["pages"])
 app.include_router(slideshow_router, prefix="/api/slideshow", tags=["slideshow"])
 app.include_router(telegram_router, prefix="/api/telegram", tags=["telegram"])
 app.include_router(miniapp_router, prefix="/api/miniapp", tags=["miniapp"])
