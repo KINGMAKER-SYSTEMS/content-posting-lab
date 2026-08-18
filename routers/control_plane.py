@@ -277,3 +277,301 @@ def roster_snapshot(
         "capturedAt": captured_at,
         "pages": pages,
     }
+
+
+# ── Jobs: library selection under an idempotent, durable contract ────────────
+#
+# What a replenish job IS here: the registered recipes are footage LIBRARIES
+# (trucks ≈ 2,986 clips, silhoutte ≈ 1,183, …), so a job selects `quantity`
+# clips the page has never been served, manifests them with checksums, and
+# records the serving so no page is ever handed the same clip twice. No
+# generation, no provider spend — generation for a dry library is a later
+# phase with its own arming decision, and a library that cannot fill a
+# request fails 409 insufficient_inventory rather than quietly generating.
+#
+# The plane's job contract rejects free-form prompt fields; this side
+# mirrors that rejection so a crafted body dies on whichever side it hits
+# first. Job records are DURABLE (a JSON store under a lock), unlike the
+# in-memory dicts the interactive /api/video routes use — a Railway
+# restart must not forget what was served, or a page gets duplicates.
+
+import secrets as _secrets
+
+from fastapi import Body, Request
+from fastapi.responses import FileResponse
+
+from services.json_store import atomic_load, atomic_save, lock_for
+
+JOBS_STORE_NAME = "control_plane_jobs.json"
+JOB_ID_PREFIX = "cpl-"
+VIDEO_EXTENSIONS = {".mp4", ".mov", ".webm", ".m4v"}
+MAX_JOB_QUANTITY = 100
+MAX_JOB_BODY_BYTES = 16_384
+IDEMPOTENCY_KEY_RE = re.compile(r"^[A-Za-z0-9_.:-]{8,200}$")
+JOB_TOKEN_BYTES = 24
+
+# Defense-in-depth mirror of the plane's assertNoFreeFormPrompt: no field
+# anywhere in the job body may look like prompt text. Recipe authoring
+# stays in the Lab; the plane picks recipes, never words.
+PROMPT_FIELD_RE = re.compile(r"(prompt|instruction|message)", re.IGNORECASE)
+
+JOB_FIELDS = {
+    "pageId", "lane", "engine", "lockedRecipeId", "recipeVersion",
+    "quantity", "constraints", "sourceIsolation", "policyHash",
+}
+
+
+def _jobs_path() -> Path:
+    # Same data dir as the roster cache (Railway volume in production).
+    from services.roster import ROSTER_PATH
+    return ROSTER_PATH.parent / JOBS_STORE_NAME
+
+
+def _empty_jobs() -> dict[str, Any]:
+    return {"version": 1, "jobs": {}, "byIdempotency": {}, "served": {}}
+
+
+def _load_jobs() -> dict[str, Any]:
+    data = atomic_load(_jobs_path(), default=None)
+    if not isinstance(data, dict) or "jobs" not in data:
+        return _empty_jobs()
+    return data
+
+
+def _reject_prompt_fields(value: Any, path: str = "job") -> None:
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if PROMPT_FIELD_RE.search(str(key)):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"free-form prompt fields are not accepted ({path}.{key})",
+                )
+            _reject_prompt_fields(item, f"{path}.{key}")
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            _reject_prompt_fields(item, f"{path}[{index}]")
+
+
+def _scan_library(project: str) -> list[str]:
+    """Every clip in the recipe's library, as sorted project-relative paths.
+
+    Sorted so selection is deterministic: the same library state always
+    yields the same picks for the same served-set, which is what makes a
+    retried job idempotent in practice, not just in key.
+    """
+    video_dir = PROJECTS_DIR / project / "videos"
+    if not video_dir.is_dir():
+        return []
+    out: list[str] = []
+    for path in video_dir.rglob("*"):
+        if path.is_file() and path.suffix.lower() in VIDEO_EXTENSIONS:
+            out.append(str(path.relative_to(video_dir)))
+    return sorted(out)
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _registered_recipe(project: str) -> dict[str, Any] | None:
+    for recipe in _registered_recipes():
+        if recipe["recipeId"] == project:
+            return recipe
+    return None
+
+
+def _clip_manifest(project: str, rel_path: str) -> dict[str, Any] | None:
+    full = PROJECTS_DIR / project / "videos" / rel_path
+    try:
+        size = full.stat().st_size
+    except OSError:
+        return None
+    if size <= 0:
+        # A zero-byte clip is not inventory; handing it out would plant a
+        # corrupt asset in the page's bucket.
+        return None
+    return {
+        "path": rel_path,
+        "name": Path(rel_path).name,
+        "sha256": _sha256(full),
+        "bytes": size,
+    }
+
+
+@router.post("/v1/jobs")
+def create_job(
+    request: Request,
+    x_rt_page_id: str | None = Header(default=None),
+    x_rt_lane: str | None = Header(default=None),
+    idempotency_key: str | None = Header(default=None),
+    body: dict[str, Any] = Body(default=None),
+) -> dict[str, Any]:
+    """Select `quantity` never-served clips from a registered recipe's library.
+
+    Idempotent by header: the same Idempotency-Key returns the original job
+    without selecting again — a retried create can never double-serve.
+    """
+    if not x_rt_page_id or not PAGE_ID_RE.match(x_rt_page_id):
+        raise HTTPException(status_code=400, detail="X-RT-Page-Id header is required")
+    if not x_rt_lane or not LANE_RE.match(x_rt_lane):
+        raise HTTPException(status_code=400, detail="X-RT-Lane header is required")
+    if not idempotency_key or not IDEMPOTENCY_KEY_RE.match(idempotency_key):
+        raise HTTPException(status_code=400, detail="Idempotency-Key header is required (8-200 token chars)")
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="job body must be a JSON object")
+
+    unknown = sorted(set(body.keys()) - JOB_FIELDS)
+    if unknown:
+        raise HTTPException(status_code=400, detail=f"unknown job fields: {', '.join(unknown)}")
+    _reject_prompt_fields(body)
+
+    page_id = str(body.get("pageId") or "")
+    if page_id != x_rt_page_id:
+        raise HTTPException(status_code=400, detail="body pageId must match X-RT-Page-Id")
+    if body.get("engine") != ENGINE:
+        raise HTTPException(status_code=400, detail=f"engine must be {ENGINE}")
+    recipe_id = str(body.get("lockedRecipeId") or "").strip()
+    recipe_version = str(body.get("recipeVersion") or "").strip()
+    policy_hash = str(body.get("policyHash") or "").strip()
+    if not recipe_id or not recipe_version or not policy_hash:
+        raise HTTPException(status_code=400, detail="lockedRecipeId, recipeVersion and policyHash are required")
+    quantity = body.get("quantity")
+    if not isinstance(quantity, int) or quantity <= 0 or quantity > MAX_JOB_QUANTITY:
+        raise HTTPException(status_code=400, detail=f"quantity must be an integer 1..{MAX_JOB_QUANTITY}")
+    constraints = body.get("constraints")
+    if constraints is not None and not isinstance(constraints, dict):
+        raise HTTPException(status_code=400, detail="constraints must be an object")
+    if len(json.dumps(body)) > MAX_JOB_BODY_BYTES:
+        raise HTTPException(status_code=400, detail="job body too large")
+
+    recipe = _registered_recipe(recipe_id)
+    if recipe is None:
+        raise HTTPException(status_code=404, detail="recipe not registered")
+    if quantity > recipe["maxQuantity"]:
+        raise HTTPException(status_code=400, detail=f"quantity exceeds recipe ceiling {recipe['maxQuantity']}")
+    current_version = recipe["recipeVersion"]
+    if recipe_version != current_version:
+        # The plane pinned a version the recipe has moved away from. Serving
+        # anyway would fill a bucket with content the operator never approved.
+        raise HTTPException(status_code=409, detail=f"recipe_version_mismatch: current is {current_version}")
+
+    with lock_for(_jobs_path()):
+        store = _load_jobs()
+        existing_id = store["byIdempotency"].get(idempotency_key)
+        if existing_id and existing_id in store["jobs"]:
+            existing = store["jobs"][existing_id]
+            return {"schema": RESPONSE_SCHEMA, "jobId": existing["jobId"], "status": existing["status"]}
+
+        served_for_page = set(store["served"].get(recipe_id, {}).get(page_id, []))
+        picks: list[dict[str, Any]] = []
+        for rel_path in _scan_library(recipe_id):
+            if rel_path in served_for_page:
+                continue
+            manifest = _clip_manifest(recipe_id, rel_path)
+            if manifest is None:
+                continue
+            picks.append(manifest)
+            if len(picks) >= quantity:
+                break
+        if not picks:
+            # The library cannot fill this page right now. A dry library is
+            # an inventory problem for the operator, never a reason to
+            # generate spend nobody armed.
+            raise HTTPException(status_code=409, detail="insufficient_inventory")
+
+        job_id = JOB_ID_PREFIX + _secrets.token_hex(8)
+        job = {
+            "jobId": job_id,
+            "idempotencyKey": idempotency_key,
+            "pageId": page_id,
+            "lane": str(body.get("lane") or x_rt_lane),
+            "engine": ENGINE,
+            "recipeId": recipe_id,
+            "recipeVersion": recipe_version,
+            "policyHash": policy_hash,
+            "sourceIsolation": body.get("sourceIsolation") or None,
+            "constraints": constraints or {},
+            "quantityRequested": quantity,
+            "status": "completed",
+            "token": _secrets.token_urlsafe(JOB_TOKEN_BYTES),
+            "clips": picks,
+            "createdAt": datetime.now(timezone.utc).isoformat(),
+        }
+        store["jobs"][job_id] = job
+        store["byIdempotency"][idempotency_key] = job_id
+        served = store["served"].setdefault(recipe_id, {}).setdefault(page_id, [])
+        served.extend(pick["path"] for pick in picks)
+        atomic_save(_jobs_path(), store)
+
+    return {"schema": RESPONSE_SCHEMA, "jobId": job_id, "status": "completed"}
+
+
+def _get_job_or_404(job_id: str) -> dict[str, Any]:
+    if not re.match(rf"^{JOB_ID_PREFIX}[0-9a-f]{{16}}$", job_id or ""):
+        raise HTTPException(status_code=404, detail="job not found")
+    job = _load_jobs()["jobs"].get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="job not found")
+    return job
+
+
+@router.get("/v1/jobs/{job_id}")
+def job_status(job_id: str, x_rt_page_id: str | None = Header(default=None)) -> dict[str, Any]:
+    if not x_rt_page_id or not PAGE_ID_RE.match(x_rt_page_id):
+        raise HTTPException(status_code=400, detail="X-RT-Page-Id header is required")
+    job = _get_job_or_404(job_id)
+    if job["pageId"] != x_rt_page_id:
+        # A job answers only to the page it belongs to — cross-page status
+        # reads would leak what other pages were served.
+        raise HTTPException(status_code=404, detail="job not found")
+    return {
+        "schema": RESPONSE_SCHEMA,
+        "jobId": job["jobId"],
+        "status": job["status"],
+        "progress": 100 if job["status"] == "completed" else 0,
+    }
+
+
+@router.get("/v1/jobs/{job_id}/artifacts")
+def job_artifacts(
+    job_id: str,
+    request: Request,
+    x_rt_page_id: str | None = Header(default=None),
+) -> dict[str, Any]:
+    if not x_rt_page_id or not PAGE_ID_RE.match(x_rt_page_id):
+        raise HTTPException(status_code=400, detail="X-RT-Page-Id header is required")
+    job = _get_job_or_404(job_id)
+    if job["pageId"] != x_rt_page_id:
+        raise HTTPException(status_code=404, detail="job not found")
+    proto = request.headers.get("x-forwarded-proto", request.url.scheme)
+    host = request.headers.get("x-forwarded-host", request.url.netloc)
+    base = f"{proto}://{host}"
+    artifacts = [
+        {
+            "url": f"{base}/api/control-plane/v1/jobs/{job_id}/download/{index}?token={job['token']}",
+            "type": "video",
+        }
+        for index in range(len(job["clips"]))
+    ]
+    return {"schema": RESPONSE_SCHEMA, "jobId": job_id, "artifacts": artifacts}
+
+
+@router.get("/v1/jobs/{job_id}/download/{index}")
+def job_download(job_id: str, index: int, token: str = "") -> FileResponse:
+    job = _get_job_or_404(job_id)
+    # The token is the download credential: unguessable, per-job, and the
+    # only thing standing between a clip URL and the open internet.
+    if not token or not _secrets.compare_digest(token, job["token"]):
+        raise HTTPException(status_code=403, detail="invalid download token")
+    if index < 0 or index >= len(job["clips"]):
+        raise HTTPException(status_code=404, detail="artifact not found")
+    rel_path = job["clips"][index]["path"]
+    full = (PROJECTS_DIR / job["recipeId"] / "videos" / rel_path).resolve()
+    video_root = (PROJECTS_DIR / job["recipeId"] / "videos").resolve()
+    if video_root not in full.parents or not full.is_file():
+        raise HTTPException(status_code=404, detail="artifact not found")
+    return FileResponse(full, media_type="video/mp4", filename=job["clips"][index]["name"])
