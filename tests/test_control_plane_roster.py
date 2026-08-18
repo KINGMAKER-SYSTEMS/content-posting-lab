@@ -142,3 +142,10 @@ def test_empty_cache_is_an_empty_snapshot_not_an_error(client):
     assert body["pages"] == []
     assert body["capturedAt"] is None
     assert body["snapshotVersion"].startswith("r")
+
+
+def test_snapshot_carries_the_content_niche(client):
+    _seed(**{"acct:truck-tok-daily": dict(NOTION_ROW, content_niche="TRUCK")})
+    res = client.get("/api/control-plane/v1/roster", headers={"X-RT-Lane": "warner"})
+    [page] = res.json()["pages"]
+    assert page["contentNiche"] == "TRUCK"

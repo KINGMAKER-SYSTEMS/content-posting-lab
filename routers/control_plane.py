@@ -79,6 +79,7 @@ LANE_RE = re.compile(r"^[A-Za-z0-9._:-]{1,64}$")
 ROSTER_SNAPSHOT_FIELDS = (
     "pageId", "handle", "group", "groupLabel", "pageType", "accountType",
     "posterName", "status", "project", "tiktokUrl", "notionPageId", "source",
+    "contentNiche",
 )
 
 MAX_ROSTER_PAGES = 500
@@ -201,6 +202,9 @@ def _snapshot_page(page: dict[str, Any]) -> dict[str, Any] | None:
         "group": page.get("group") or None,
         "groupLabel": page.get("group_label") or None,
         "pageType": page.get("page_type") or None,
+        # The page's niche from Master Pages — the routing vocabulary the
+        # plane's caption themes and campaign routing intersect with.
+        "contentNiche": page.get("content_niche") or None,
         "accountType": page.get("account_type") or None,
         "posterName": page.get("poster_name") or None,
         "status": page.get("status") or None,

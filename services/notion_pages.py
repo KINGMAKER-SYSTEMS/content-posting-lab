@@ -147,6 +147,10 @@ def parse_page(notion_page: dict) -> dict[str, Any] | None:
     # stripping the ontology. Canonical first, legacy as fallback.
     group = _select(props.get("Label", props.get("Group", {})))
     group_label = _select(props.get("Account Group", props.get("Group ", {})))
+    # The page's content niche — the Master Pages half of the routing
+    # vocabulary (posting-documentation/SUBMISSION_FORM_NICHE_ALIGNMENT.md).
+    # The live column name carries a trailing space ("Content Niche ").
+    content_niche = _select(props.get("Content Niche ", props.get("Content Niche", {})))
 
     return {
         "integration_id": mint_integration_id(username),
@@ -167,6 +171,7 @@ def parse_page(notion_page: dict) -> dict[str, Any] | None:
         "status": _select(props.get("Status", {})),
         "pipeline": _select(props.get("Pipeline", {})),
         "page_type": _select(props.get("Page Type", {})),
+        "content_niche": content_niche,  # TRUCK, Coffee, silhouette, POV — Night Core, ...
         "sounds_reference": _url(props.get("Sounds Reference", {})),
         "go_live_date": _date(props.get("Go-Live Date", {})),
         "drive_folder_url": _url(props.get("Drive Folder URL", {})),
@@ -262,6 +267,7 @@ async def sync_into_roster() -> dict[str, Any]:
                 "status": row.get("status"),
                 "pipeline": row.get("pipeline"),
                 "page_type": row.get("page_type"),
+                "content_niche": row.get("content_niche"),
                 "sounds_reference": row.get("sounds_reference"),
                 "go_live_date": row.get("go_live_date"),
                 # drive_folder_url: prefer Notion if set, else existing
