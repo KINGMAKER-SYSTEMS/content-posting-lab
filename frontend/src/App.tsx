@@ -4,6 +4,7 @@ import { MoonIcon, SunIcon } from '@phosphor-icons/react';
 import { HomePage } from './pages/Home';
 import { CreatePage } from './pages/Create';
 import { CaptionsStagePage } from './pages/CaptionsStage';
+import { PagesPage } from './pages/Pages';
 import { DistributionPage } from './pages/Distribution';
 import { MiniApp } from './pages/MiniApp';
 import { PipelinePage } from './pages/Pipeline';
@@ -163,6 +164,7 @@ function AppShell() {
   // ── Active tab detection ────────────────────────────────────────
 
   const activeStage = useMemo(() => {
+    if (location.pathname.startsWith('/pages')) return 'pages';
     if (location.pathname.startsWith('/create')) return 'create';
     if (location.pathname.startsWith('/captions')) return 'captions';
     if (location.pathname.startsWith('/distribute')) return 'distribute';
@@ -241,6 +243,18 @@ function AppShell() {
               }`}
             >
               Home
+            </Link>
+
+            {/* Pages */}
+            <Link
+              to="/pages"
+              className={`relative flex items-center gap-2 px-4 py-2.5 text-sm font-bold transition-colors ${
+                activeStage === 'pages'
+                  ? 'text-foreground after:absolute after:bottom-0 after:left-3 after:right-3 after:h-[2px] after:rounded-full after:bg-[var(--brand-gradient)]'
+                  : 'text-muted-foreground hover:text-foreground hover:bg-muted'
+              }`}
+            >
+              Pages
             </Link>
 
             {/* Create */}
@@ -353,6 +367,13 @@ function AppShell() {
         <div style={{ display: activeStage === 'home' ? 'block' : 'none' }}>
           <HomePage />
         </div>
+
+        {/* Pages stage */}
+        {visitedStages.has('/pages') && (
+          <div style={{ display: activeStage === 'pages' ? 'block' : 'none' }}>
+            <PagesPage />
+          </div>
+        )}
 
         {/* Create stage */}
         {visitedStages.has('/create') && (
