@@ -139,9 +139,14 @@ def parse_page(notion_page: dict) -> dict[str, Any] | None:
     if not username:
         return None
 
-    # The DB has both "Group" and "Group " (with trailing space) — different cols
-    group = _select(props.get("Group", {}))
-    group_label = _select(props.get("Group ", {}))  # trailing space intentional
+    # The live DB calls these columns "Label" (the ATLANTIC / WARNER /
+    # INTERNAL taxonomy) and "Account Group" (the human label — "Warner UGC",
+    # "Mon Rovia"). "Group" / "Group " are the legacy names; an earlier parse
+    # read only those and silently produced empty groups for every row the
+    # moment the schema was renamed — which is how a sync can "succeed" while
+    # stripping the ontology. Canonical first, legacy as fallback.
+    group = _select(props.get("Label", props.get("Group", {})))
+    group_label = _select(props.get("Account Group", props.get("Group ", {})))
 
     return {
         "integration_id": mint_integration_id(username),
