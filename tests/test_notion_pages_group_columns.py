@@ -48,3 +48,14 @@ def test_canonical_wins_when_both_exist():
         }
     ))
     assert row["group"] == "WARNER"
+
+
+def test_content_niche_reads_the_trailing_space_column():
+    row = parse_page(_page(**{"Content Niche ": {"select": {"name": "TRUCK"}}}))
+    assert row["content_niche"] == "TRUCK"
+
+
+def test_content_niche_absent_is_empty_not_missing():
+    row = parse_page(_page())
+    assert "content_niche" in row
+    assert row["content_niche"] == ""
