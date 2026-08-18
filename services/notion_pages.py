@@ -28,13 +28,42 @@ NOTION_PAGES_DB = os.getenv("NOTION_PAGES_DB", "")
 NOTION_API_BASE = "https://api.notion.com/v1"
 NOTION_VERSION = "2022-06-28"
 
+# Reads that touch the database itself need the newer API version: Notion
+# migrated databases to a multi-data-source model, and the 2022-06-28
+# version refuses to query any database that has more than one data source
+# ("Databases with multiple data sources are not supported in this API
+# version"). Under 2025-09-03 a database is queried through its data
+# sources: GET /databases/{id} lists them, POST /data_sources/{id}/query
+# pages each one. Page-shaped results are unchanged, so parse_page and all
+# property extractors work exactly as before. Writes (page create/update)
+# stay on the pinned version — they never hit this failure and re-verifying
+# them against a new version is its own change.
+NOTION_VERSION_DATA_SOURCES = "2025-09-03"
 
-def _headers() -> dict[str, str]:
+
+def _headers(version: str = NOTION_VERSION) -> dict[str, str]:
     return {
         "Authorization": f"Bearer {NOTION_API_KEY}",
-        "Notion-Version": NOTION_VERSION,
+        "Notion-Version": version,
         "Content-Type": "application/json",
     }
+
+
+async def _data_source_ids(client: httpx.AsyncClient) -> list[str]:
+    """Every data source the Master Pages database currently has.
+
+    A single-source database returns one id and behaves exactly like the old
+    database query; a multi-source one returns several and every one is
+    queried, so a second source added in Notion silently splits no rows off
+    the roster.
+    """
+    resp = await client.get(
+        f"{NOTION_API_BASE}/databases/{NOTION_PAGES_DB}",
+        headers=_headers(NOTION_VERSION_DATA_SOURCES),
+    )
+    resp.raise_for_status()
+    sources = resp.json().get("data_sources") or []
+    return [source["id"] for source in sources if source.get("id")]
 
 
 def is_configured() -> bool:
@@ -148,30 +177,32 @@ async def fetch_all_pages() -> list[dict[str, Any]]:
         raise RuntimeError("NOTION_API_KEY and NOTION_PAGES_DB must be set")
 
     parsed: list[dict[str, Any]] = []
-    has_more = True
-    cursor: str | None = None
 
     async with httpx.AsyncClient(timeout=30) as client:
-        while has_more:
-            body: dict[str, Any] = {"page_size": 100}
-            if cursor:
-                body["start_cursor"] = cursor
+        source_ids = await _data_source_ids(client)
+        for source_id in source_ids:
+            has_more = True
+            cursor: str | None = None
+            while has_more:
+                body: dict[str, Any] = {"page_size": 100}
+                if cursor:
+                    body["start_cursor"] = cursor
 
-            resp = await client.post(
-                f"{NOTION_API_BASE}/databases/{NOTION_PAGES_DB}/query",
-                headers=_headers(),
-                json=body,
-            )
-            resp.raise_for_status()
-            data = resp.json()
+                resp = await client.post(
+                    f"{NOTION_API_BASE}/data_sources/{source_id}/query",
+                    headers=_headers(NOTION_VERSION_DATA_SOURCES),
+                    json=body,
+                )
+                resp.raise_for_status()
+                data = resp.json()
 
-            for page in data.get("results", []):
-                row = parse_page(page)
-                if row:
-                    parsed.append(row)
+                for page in data.get("results", []):
+                    row = parse_page(page)
+                    if row:
+                        parsed.append(row)
 
-            has_more = data.get("has_more", False)
-            cursor = data.get("next_cursor")
+                has_more = data.get("has_more", False)
+                cursor = data.get("next_cursor")
 
     return parsed
 
