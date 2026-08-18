@@ -39,6 +39,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -65,6 +66,22 @@ DEFAULT_MAX_QUANTITY = 10
 # filesystem path — but bound them anyway so a hostile value cannot be echoed
 # unboundedly into a log line.
 PAGE_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
+
+# Same discipline for the lane header on the roster snapshot.
+LANE_RE = re.compile(r"^[A-Za-z0-9._:-]{1,64}$")
+
+# The ONLY roster fields the snapshot may carry. The roster cache holds
+# account credentials (password, signup_email, fwd_address, email aliases,
+# drive folder ids) because other parts of the Lab need them; the control
+# plane does not, and a fleet-wide machine endpoint that leaked them would be
+# a credential dump with a schema version on it. Anything not listed here
+# does not cross the boundary.
+ROSTER_SNAPSHOT_FIELDS = (
+    "pageId", "handle", "group", "groupLabel", "pageType", "accountType",
+    "posterName", "status", "project", "tiktokUrl", "notionPageId", "source",
+)
+
+MAX_ROSTER_PAGES = 500
 
 
 def _read_json(path: Path) -> Any:
@@ -163,3 +180,100 @@ def capabilities(
             break
 
     return {"schema": RESPONSE_SCHEMA, "capabilities": entries}
+
+
+def _snapshot_page(page: dict[str, Any]) -> dict[str, Any] | None:
+    """One roster row, reduced to exactly the ontology the plane reconciles.
+
+    Every field is explicit — a null is a true statement ("Notion does not
+    say"), never a dropped key, so the plane can tell "unknown" from
+    "absent" and raise a blocker instead of guessing a lane or page type.
+    """
+    page_id = str(page.get("integration_id") or "").strip()
+    handle = str(page.get("name") or "").strip()
+    if not page_id or not handle:
+        # A row with no stable identity cannot be reconciled to anything —
+        # including it would give the plane a page it can never address.
+        return None
+    return {
+        "pageId": page_id,
+        "handle": handle,
+        "group": page.get("group") or None,
+        "groupLabel": page.get("group_label") or None,
+        "pageType": page.get("page_type") or None,
+        "accountType": page.get("account_type") or None,
+        "posterName": page.get("poster_name") or None,
+        "status": page.get("status") or None,
+        # The page -> recipe link. `project` IS a recipe id when the project
+        # is registered (see the capabilities contract above); the plane
+        # treats anything unregistered as "no recipe attached", never as a
+        # recipe that might exist.
+        "project": page.get("project") or None,
+        "tiktokUrl": page.get("tiktok_url") or None,
+        "notionPageId": page.get("notion_page_id") or None,
+        # "notion" for CRM-synced rows; null for legacy rows that predate the
+        # Notion sync. The plane needs to know whose ontology a row speaks.
+        "source": page.get("source") or None,
+    }
+
+
+@router.get("/v1/roster")
+def roster_snapshot(
+    x_rt_lane: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """Versioned snapshot of the Notion-informed roster, for plane reconcile.
+
+    This is the ONLY door the Master Pages ontology walks through on its way
+    to the control plane — the plane runs no Notion client of its own, by
+    design. Notion syncs into the roster cache (services/notion_pages.py),
+    and this answers with what that cache currently says, content-hashed so
+    the plane can tell "the fleet changed" from "it did not" without
+    diffing 100+ rows.
+
+    The snapshot speaks the Lab's own vocabulary (group: WARNER / ATLANTIC /
+    INTERNAL; project = recipe id). Mapping groups to the plane's lanes is
+    the plane's business — a contract that answered in the consumer's
+    vocabulary would couple every other consumer to it too.
+
+    `capturedAt` is the roster cache's own mtime: the honest answer to "how
+    fresh is this" is "when the last Notion sync landed", not "when you
+    asked". X-RT-Lane is required for the same reason capabilities requires
+    a page id — these endpoints answer scoped machine callers, not bare
+    crawlers.
+    """
+    if not x_rt_lane or not LANE_RE.match(x_rt_lane):
+        raise HTTPException(status_code=400, detail="X-RT-Lane header is required")
+
+    # Imported here so importing this router never touches the roster cache
+    # for a caller that only wanted capabilities.
+    from services.roster import ROSTER_PATH, list_all_pages
+
+    pages: list[dict[str, Any]] = []
+    for raw in list_all_pages():
+        page = _snapshot_page(raw)
+        if page is not None:
+            pages.append(page)
+        if len(pages) >= MAX_ROSTER_PAGES:
+            break
+    pages.sort(key=lambda page: page["pageId"])
+
+    canonical = json.dumps(pages, sort_keys=True, separators=(",", ":"))
+    version = "r" + hashlib.sha256(canonical.encode()).hexdigest()[:12]
+
+    captured_at = None
+    try:
+        captured_at = datetime.fromtimestamp(
+            ROSTER_PATH.stat().st_mtime, timezone.utc
+        ).isoformat()
+    except OSError:
+        # No cache, no freshness claim. The snapshot is empty in that case
+        # anyway; the plane's reconcile treats an empty snapshot as "say
+        # nothing", never as "the fleet is gone".
+        captured_at = None
+
+    return {
+        "schema": RESPONSE_SCHEMA,
+        "snapshotVersion": version,
+        "capturedAt": captured_at,
+        "pages": pages,
+    }
