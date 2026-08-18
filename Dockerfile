@@ -21,6 +21,11 @@ RUN grep -v -E '^(playwright|pytesseract|tiktokautouploader)' requirements.txt >
 
 COPY app.py main.py project_manager.py telegram_bot.py debug_logger.py ./
 COPY routers/ ./routers/
+# Recipe registrations. The image copies named paths rather than the whole
+# tree, so a directory that is committed but not listed here simply does not
+# exist at runtime — which is how the control-plane capability endpoint
+# shipped, deployed green, and answered an empty list.
+COPY recipes/ ./recipes/
 COPY providers/ ./providers/
 COPY scraper/ ./scraper/
 COPY services/ ./services/
