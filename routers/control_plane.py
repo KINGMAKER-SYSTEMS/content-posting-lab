@@ -1,0 +1,148 @@
+"""Machine contract for the Content Bucket Control Plane.
+
+The control plane worker has had a fully-written, fully-tested client for this
+for a while (`control-plane-worker/src/adapters/contentLabClient.js`) and there
+was nothing on this side to answer it: `/api/control-plane/v1/capabilities`
+resolved to the SPA catch-all and returned index.html, indistinguishable from a
+typo'd URL. This is that endpoint.
+
+It answers exactly one question: **which recipes may this page run, at what
+version, and how many at a time.** Nothing here accepts or returns a prompt.
+The plane never sends prompt text — its job contract rejects any field matching
+/(prompt|instruction|message)/i — and recipe authoring stays here, in the Lab,
+where the prompts actually live.
+
+A "recipe" is a Lab PROJECT. That is already the unit that owns a prompts.json,
+so it is the only unit that can be locked and versioned without inventing a
+second vocabulary. Its version is a content hash of that prompts.json: edit the
+prompts and the version changes, which is precisely the signal the plane needs
+to tell "this page is on the recipe I approved" from "someone changed it
+underneath me".
+
+Registration is explicit. `projects/` currently holds 38 directories, most of
+them scratch — quick-test, rename-proj3, probe-test, a dozen slack-* one-shots.
+Offering those to an operator's dropdown would be worse than offering nothing,
+so a project is only a recipe if it carries a `recipe.json` marker. Nothing is
+registered by accident, and registering is a deliberate act with a name on it.
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+import re
+from pathlib import Path
+from typing import Any
+
+from fastapi import APIRouter, Header, HTTPException
+
+from project_manager import PROJECTS_DIR
+
+router = APIRouter()
+
+RESPONSE_SCHEMA = "content-lab.response.v1"
+ENGINE = "content_lab"
+RECIPE_MARKER = "recipe.json"
+PROMPTS = "prompts.json"
+
+# The client caps the response at 200 entries and rejects anything larger, so
+# stay well inside it rather than discovering the ceiling in production.
+MAX_CAPABILITIES = 100
+
+# Default ceiling on clips per job. Overridable per recipe in recipe.json; kept
+# modest because every unit is real spend on a real provider.
+DEFAULT_MAX_QUANTITY = 10
+
+# Page ids arrive in a header and are used only for filtering, never for a
+# filesystem path — but bound them anyway so a hostile value cannot be echoed
+# unboundedly into a log line.
+PAGE_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
+
+
+def _read_json(path: Path) -> Any:
+    try:
+        return json.loads(path.read_text())
+    except (OSError, ValueError):
+        return None
+
+
+def _recipe_version(project_dir: Path) -> str | None:
+    """Content hash of the project's prompts, or None if it has none.
+
+    Versioning on content rather than on a hand-typed number means a recipe
+    cannot be edited without its version moving. A recipe whose prompts changed
+    but whose version did not would let the plane keep asserting an approval
+    that no longer describes anything.
+    """
+    prompts = project_dir / PROMPTS
+    if not prompts.is_file():
+        return None
+    raw = prompts.read_bytes()
+    if not raw.strip():
+        return None
+    return "v" + hashlib.sha256(raw).hexdigest()[:12]
+
+
+def _registered_recipes() -> list[dict[str, Any]]:
+    """Every project explicitly registered as a recipe, with a live version."""
+    if not PROJECTS_DIR.is_dir():
+        return []
+    out: list[dict[str, Any]] = []
+    for project_dir in sorted(PROJECTS_DIR.iterdir()):
+        if not project_dir.is_dir():
+            continue
+        marker = project_dir / RECIPE_MARKER
+        if not marker.is_file():
+            continue
+        meta = _read_json(marker)
+        if not isinstance(meta, dict) or meta.get("registered") is not True:
+            continue
+        version = _recipe_version(project_dir)
+        if version is None:
+            # Registered but its prompts are gone or empty. Silently offering it
+            # would hand the plane a recipe that generates nothing.
+            continue
+        quantity = meta.get("maxQuantity", DEFAULT_MAX_QUANTITY)
+        if not isinstance(quantity, int) or quantity <= 0:
+            quantity = DEFAULT_MAX_QUANTITY
+        out.append({
+            "recipeId": project_dir.name,
+            "engine": ENGINE,
+            "recipeVersion": version,
+            "maxQuantity": quantity,
+            "_pages": meta.get("pages") if isinstance(meta.get("pages"), list) else None,
+        })
+    return out
+
+
+@router.get("/v1/capabilities")
+def capabilities(
+    x_rt_page_id: str | None = Header(default=None),
+    x_page_id: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """Recipes this page may run.
+
+    The page id is required — the plane's client always sends it, and answering
+    without one would let a caller enumerate every recipe in the Lab from a
+    single unscoped request. The header is `X-RT-Page-Id`, which is what
+    ContentLabClient#headers actually emits; `X-Page-Id` is accepted as an
+    alias so this stays testable by hand with curl.
+
+    A recipe with no `pages` list in its marker is available to any page; one
+    with a list is offered only to those pages. That keeps the common case
+    (a shared truck recipe) zero-config while still allowing a recipe to be
+    pinned to the page it was built for.
+    """
+    page_id = x_rt_page_id or x_page_id
+    if not page_id or not PAGE_ID_RE.match(page_id):
+        raise HTTPException(status_code=400, detail="X-RT-Page-Id header is required")
+
+    entries = []
+    for recipe in _registered_recipes():
+        pages = recipe.pop("_pages")
+        if pages is not None and page_id not in pages:
+            continue
+        entries.append(recipe)
+        if len(entries) >= MAX_CAPABILITIES:
+            break
+
+    return {"schema": RESPONSE_SCHEMA, "capabilities": entries}
