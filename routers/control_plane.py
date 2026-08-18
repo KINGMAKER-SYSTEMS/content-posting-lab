@@ -19,11 +19,20 @@ prompts and the version changes, which is precisely the signal the plane needs
 to tell "this page is on the recipe I approved" from "someone changed it
 underneath me".
 
-Registration is explicit. `projects/` currently holds 38 directories, most of
-them scratch — quick-test, rename-proj3, probe-test, a dozen slack-* one-shots.
-Offering those to an operator's dropdown would be worse than offering nothing,
-so a project is only a recipe if it carries a `recipe.json` marker. Nothing is
-registered by accident, and registering is a deliberate act with a name on it.
+Registration is explicit and lives in `recipes/<project>.json`, not inside the
+project directory. `projects/` holds ~96 directories in production and most are
+scratch or one-shot batches; offering those to an operator's dropdown would be
+worse than offering nothing. It is also gitignored wholesale and full of
+renders — an earlier attempt to keep the marker beside the prompts forced git
+to walk thousands of video files and `git add` hung outright. A top-level
+`recipes/` directory costs nothing to scan, needs no gitignore exception, and
+makes registration read as what it is: a reviewable repo-level act.
+
+Registration and content are deliberately separate. A marker only NOMINATES a
+project; the endpoint still refuses to offer it unless that project really
+exists here with prompts in it. So a marker committed for a project that lives
+only on someone's laptop simply does not appear in production — which is how it
+should fail, and how it did.
 """
 from __future__ import annotations
 
@@ -41,7 +50,7 @@ router = APIRouter()
 
 RESPONSE_SCHEMA = "content-lab.response.v1"
 ENGINE = "content_lab"
-RECIPE_MARKER = "recipe.json"
+RECIPES_DIR_NAME = "recipes"
 PROMPTS = "prompts.json"
 
 # The client caps the response at 200 entries and rejects anything larger, so
@@ -82,19 +91,27 @@ def _recipe_version(project_dir: Path) -> str | None:
     return "v" + hashlib.sha256(raw).hexdigest()[:12]
 
 
+def _recipes_dir() -> Path:
+    return PROJECTS_DIR.parent / RECIPES_DIR_NAME
+
+
 def _registered_recipes() -> list[dict[str, Any]]:
     """Every project explicitly registered as a recipe, with a live version."""
-    if not PROJECTS_DIR.is_dir():
+    recipes_dir = _recipes_dir()
+    if not recipes_dir.is_dir() or not PROJECTS_DIR.is_dir():
         return []
     out: list[dict[str, Any]] = []
-    for project_dir in sorted(PROJECTS_DIR.iterdir()):
-        if not project_dir.is_dir():
-            continue
-        marker = project_dir / RECIPE_MARKER
-        if not marker.is_file():
-            continue
+    for marker in sorted(recipes_dir.glob("*.json")):
         meta = _read_json(marker)
         if not isinstance(meta, dict) or meta.get("registered") is not True:
+            continue
+        name = meta.get("project") or marker.stem
+        if not isinstance(name, str) or "/" in name or name in ("", ".", ".."):
+            continue
+        project_dir = PROJECTS_DIR / name
+        if not project_dir.is_dir():
+            # Nominated but absent. A marker for a project that exists only on
+            # someone's laptop must not become a capability here.
             continue
         version = _recipe_version(project_dir)
         if version is None:
@@ -105,7 +122,7 @@ def _registered_recipes() -> list[dict[str, Any]]:
         if not isinstance(quantity, int) or quantity <= 0:
             quantity = DEFAULT_MAX_QUANTITY
         out.append({
-            "recipeId": project_dir.name,
+            "recipeId": name,
             "engine": ENGINE,
             "recipeVersion": version,
             "maxQuantity": quantity,
