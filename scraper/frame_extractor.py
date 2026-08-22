@@ -240,14 +240,81 @@ async def get_thumbnail(video_url: str, dest: Path) -> Path:
     raise RuntimeError("No thumbnail downloaded")
 
 
+def _in_container() -> bool:
+    """True when running on Railway (or any container without a desktop browser).
+
+    Browser-cookie extraction (`--cookies-from-browser`) can never work there: no
+    Chrome/Firefox profile exists on disk. Attempting it burns a subprocess per
+    browser and — worse — fails with messages containing the word "cookies",
+    which used to be misread as "your cookies.txt was rejected".
+    """
+    return bool(
+        os.getenv("RAILWAY_ENVIRONMENT")
+        or os.getenv("RAILWAY_SERVICE_ID")
+        or Path("/.dockerenv").exists()
+    )
+
+
+# yt-dlp prints an interpreter-deprecation banner to stderr on old Pythons, e.g.
+# "Deprecated Feature: Support for Python version 3.10 has been deprecated".
+# It is not a download failure, but when it rode along in the surfaced error it
+# read to users as "the clipper is deprecated". Strip it from user-facing text.
+_NOISE_PREFIXES = (
+    "deprecated feature:",
+    "warning:",
+    "please update to python",
+)
+
+
+def _clean_stderr(raw: str) -> str:
+    """Drop yt-dlp banner noise, keep the lines that explain the failure."""
+    lines = []
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        if any(line.lower().startswith(pfx) for pfx in _NOISE_PREFIXES):
+            continue
+        lines.append(line)
+    return " ".join(lines) if lines else raw.strip()
+
+
+def _classify(err: str) -> str:
+    """Bucket a yt-dlp stderr message: 'auth', 'env', or 'other'.
+
+    'env' means yt-dlp could not read a *browser* cookie store — a property of
+    this machine, not of the user's credentials. Keeping it distinct from 'auth'
+    is what stops a container's five failed browser probes from being reported
+    as "your cookies.txt is expired".
+    """
+    low = err.lower()
+    if "could not find" in low and "cookies" in low:
+        return "env"
+    if "unsupported platform" in low or "cookies database" in low:
+        return "env"
+    if (
+        "sign in" in low
+        or "authenticat" in low
+        or "login required" in low
+        or "private video" in low
+        or "cookies" in low
+    ):
+        return "auth"
+    return "other"
+
+
 async def download_video(
     video_url: str, dest: Path, cookies_file: Path | None = None
 ) -> Path:
-    """Download a TikTok video using yt-dlp. Returns path to the mp4.
+    """Download a video using yt-dlp. Returns path to the mp4.
 
-    Tries strategies in order: explicit cookies file, then browser cookies
-    (chrome, safari, firefox, edge), then no auth. TikTok/YouTube increasingly
-    require cookies to download.
+    Tries strategies in order: explicit cookies file, cookies.txt from the
+    volume/env, then (only off-container) browser cookies, then no auth.
+    TikTok/YouTube increasingly require cookies to download.
+
+    On failure the raised error reports the *cookie-backed* attempt when there
+    was one, not merely whichever strategy ran last — the no-auth attempt is
+    always the least informative, and reporting it hid the real reason.
     """
     _check_deps()
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -276,12 +343,16 @@ async def download_video(
         strategies.append(("cookies-from-env", ["--cookies", str(env_cookies)]))
         if cookies_source is None:
             cookies_source = str(env_cookies)
-    for browser in ("chrome", "safari", "firefox", "edge", "brave"):
-        strategies.append((f"cookies-from-{browser}", ["--cookies-from-browser", browser]))
+    if not _in_container():
+        for browser in ("chrome", "safari", "firefox", "edge", "brave"):
+            strategies.append(
+                (f"cookies-from-{browser}", ["--cookies-from-browser", browser])
+            )
     strategies.append(("no-auth", []))
 
-    last_err = ""
-    saw_auth_error = False
+    # (label, cleaned_error, kind) for every strategy that failed.
+    failures: list[tuple[str, str, str]] = []
+
     for label, extra in strategies:
         cmd = base_cmd + extra + [video_url]
         proc = await asyncio.create_subprocess_exec(
@@ -296,38 +367,52 @@ async def download_video(
                 return dest
             for variant in dest.parent.glob(f"{dest.stem}*"):
                 return variant
-            last_err = f"{label}: completed but output not found"
+            failures.append((label, "completed but output not found", "other"))
             continue
 
-        last_err = f"{label}: {stderr.decode(errors='replace').strip()[-200:]}"
-        low = last_err.lower()
-        is_auth = (
-            "cookies" in low
-            or "sign in" in low
-            or "authenticat" in low
-            or "login required" in low
-        )
-        if is_auth:
-            saw_auth_error = True
-        else:
-            # Non-auth failure — other auth strategies won't help.
+        err = _clean_stderr(stderr.decode(errors="replace"))
+        kind = _classify(err)
+        failures.append((label, err, kind))
+        if kind == "other":
+            # A non-auth failure (404, geo-block, 403, unsupported URL). Other
+            # auth strategies cannot help, so stop burning subprocesses.
             break
 
-    if saw_auth_error and cookies_source is None:
+    # Report the most informative attempt: a cookie-backed one if we made any,
+    # otherwise the last thing we tried.
+    cookie_failures = [f for f in failures if f[0].startswith("cookies-") and f[2] != "env"]
+    label, err, _kind = (cookie_failures or failures)[-1] if failures else ("", "", "other")
+
+    saw_real_auth_error = any(f[2] == "auth" for f in failures)
+    low = err.lower()
+
+    if "403" in low or "forbidden" in low:
+        hint = (
+            " A 403 from a datacenter IP usually means the platform blocked the "
+            "server itself, not you. Valid, fresh cookies for that platform are "
+            "the only reliable fix — re-export cookies.txt while logged in and "
+            "upload it via POST /api/clipper/cookies. If cookies are already "
+            "fresh, download the file locally and use the upload box instead."
+        )
+    elif saw_real_auth_error and cookies_source is None:
         hint = (
             " No cookies configured. On Railway, upload a cookies.txt via "
             "POST /api/clipper/cookies (or set YTDLP_COOKIES_FILE / YTDLP_COOKIES). "
             "See yt-dlp FAQ for exporting cookies."
         )
-    elif saw_auth_error and cookies_source:
+    elif saw_real_auth_error and cookies_source:
         hint = (
             f" Cookies were tried from {cookies_source} but yt-dlp still rejected them — "
-            "they may be expired. Re-export a fresh cookies.txt while logged in."
+            "they may be expired, or be for a different platform than this link. "
+            "Re-export a fresh cookies.txt while logged in."
         )
     else:
         hint = ""
 
-    raise RuntimeError(f"yt-dlp failed: {last_err[-300:]}{hint}")
+    tried = ", ".join(f[0] for f in failures)
+    raise RuntimeError(
+        f"yt-dlp failed: {label}: {err[-300:]}{hint} (tried: {tried})"
+    )
 
 
 async def extract_frame(

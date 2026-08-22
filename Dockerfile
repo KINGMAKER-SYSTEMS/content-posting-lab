@@ -9,7 +9,7 @@ ENV NODE_ENV=production
 RUN npm run build
 
 # Stage 2: Backend
-FROM python:3.10-slim-bookworm
+FROM python:3.11-slim-bookworm
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg \

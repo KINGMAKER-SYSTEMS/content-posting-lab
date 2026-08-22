@@ -8,7 +8,7 @@ playwright-stealth
 openai
 pytesseract
 Pillow
-yt-dlp
+yt-dlp>=2026.8.19
 aiogram>=3.4
 pyrotgfork>=2.2
 TgCrypto

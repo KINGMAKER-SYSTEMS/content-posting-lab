@@ -667,7 +667,20 @@ export function ClipperPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ project: activeProjectName, video_url: videoUrl.trim() }),
       });
-      if (!resp.ok) throw new Error(await resp.text() || `Download failed (${resp.status})`);
+      if (!resp.ok) {
+        // Unwrap FastAPI's {"detail": "..."} instead of dumping raw JSON into the
+        // toast — the raw body is what made a yt-dlp failure look like a wall of
+        // machine noise rather than an actionable message.
+        const raw = await resp.text();
+        let msg = raw;
+        try {
+          const body = JSON.parse(raw);
+          msg = body.detail || body.error || body.message || raw;
+        } catch {
+          // response wasn't JSON — fall through to the raw text
+        }
+        throw new Error(msg || `Download failed (${resp.status})`);
+      }
 
       const data = await resp.json() as {
         batch_id: string;
