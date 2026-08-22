@@ -1,3 +1,8 @@
+# INERT — railway.toml sets `builder = "dockerfile"`, so Railway never reads
+# this file. The real runtime is the Dockerfile (Python version, yt-dlp, ffmpeg
+# all come from there). The python313/yt-dlp entries below are NOT what prod
+# runs; believing them cost a debugging session once already. Kept only for
+# local nixpacks experiments — change the Dockerfile for anything that ships.
 [phases.setup]
 nixPkgs = ["nodejs_20", "python313", "ffmpeg", "yt-dlp", "tesseract"]
 

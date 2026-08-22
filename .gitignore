@@ -19,6 +19,13 @@ __pycache__/
 *.pyo
 
 telegram_config.json
+# Runtime state written to the repo root when no Railway volume is mounted
+# (services/abn_memory.py, services/agenticnews.py). Running the test suite
+# materializes these locally; they are per-machine state, never source.
+abn_memory.json
+agenticnews.db
+agenticnews.db-shm
+agenticnews.db-wal
 
 .DS_Store
 .claude/
