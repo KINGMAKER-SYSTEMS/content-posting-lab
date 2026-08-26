@@ -79,7 +79,8 @@ LANE_RE = re.compile(r"^[A-Za-z0-9._:-]{1,64}$")
 ROSTER_SNAPSHOT_FIELDS = (
     "pageId", "handle", "group", "groupLabel", "pageType", "accountType",
     "posterName", "status", "project", "tiktokUrl", "notionPageId", "source",
-    "contentNiche",
+    "contentNiche", "contentEngine", "automationMode", "vaultUrl", "pipeline",
+    "soundsReference", "archived",
 )
 
 MAX_ROSTER_PAGES = 500
@@ -206,6 +207,15 @@ def _snapshot_page(page: dict[str, Any]) -> dict[str, Any] | None:
         # plane's caption themes and campaign routing intersect with.
         "contentNiche": page.get("content_niche") or None,
         "accountType": page.get("account_type") or None,
+        # Master Pages declares which existing Content Lab backend creates new
+        # clips and where that page's output belongs. These are ontology, not
+        # Railway-volume media pointers.
+        "contentEngine": page.get("content_engine") or None,
+        "automationMode": page.get("automation_mode") or None,
+        "vaultUrl": page.get("vault_url") or None,
+        "pipeline": page.get("pipeline") or None,
+        "soundsReference": page.get("sounds_reference") or None,
+        "archived": bool(page.get("archived")),
         "posterName": page.get("poster_name") or None,
         "status": page.get("status") or None,
         # The page -> recipe link. `project` IS a recipe id when the project

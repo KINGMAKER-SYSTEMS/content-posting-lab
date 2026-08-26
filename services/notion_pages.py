@@ -101,6 +101,37 @@ def _select(prop: dict) -> str:
     sel = prop.get("select")
     return sel.get("name", "") if isinstance(sel, dict) else ""
 
+def _multi_select(prop: dict) -> list[str]:
+    if not isinstance(prop, dict):
+        return []
+    values = prop.get("multi_select")
+    if not isinstance(values, list):
+        return []
+    return [str(value.get("name") or "").strip() for value in values if str(value.get("name") or "").strip()]
+
+
+def _text_or_multi_select(prop: dict) -> str:
+    """Read a human text field across the live and legacy Notion types."""
+    text = _rich_text(prop)
+    if text:
+        return text
+    return ", ".join(_multi_select(prop))
+
+
+def _checkbox(prop: dict) -> bool:
+    return bool(prop.get("checkbox")) if isinstance(prop, dict) else False
+
+
+def _external_file_url(prop: dict) -> str:
+    """First external file URL only; uploaded Notion files are expiring URLs."""
+    files = prop.get("files") if isinstance(prop, dict) else None
+    if not isinstance(files, list):
+        return ""
+    for item in files:
+        external = item.get("external") if isinstance(item, dict) else None
+        if isinstance(external, dict) and external.get("url"):
+            return str(external["url"]).strip()
+    return ""
 
 def _date(prop: dict) -> str:
     if not isinstance(prop, dict):
@@ -152,26 +183,36 @@ def parse_page(notion_page: dict) -> dict[str, Any] | None:
     # The live column name carries a trailing space ("Content Niche ").
     content_niche = _select(props.get("Content Niche ", props.get("Content Niche", {})))
 
+    # These names and types are read from the live Master Pages data source.
+    # They are the page ontology the Dossier consumes: ContentEngine selects
+    # the existing generation backend; Vault Link is the declared page bucket.
+    account_status = _select(props.get("Account Status", props.get("Status", {})))
+    vault_url = _url(props.get("Vault Link", {})) or _external_file_url(props.get("Files & media", {}))
+
     return {
         "integration_id": mint_integration_id(username),
         "name": username,
-        "provider": "tiktok",  # all rows in this DB are TikTok
+        "provider": "tiktok",
         "tiktok_url": _url(props.get("Page URL", {})),
         "signup_email": _email(props.get("email", {})),
-        "fwd_address": _rich_text(props.get("fwd address", {})),
+        "fwd_address": _text_or_multi_select(props.get("fwd address", {})),
         "password": _rich_text(props.get("Password", {})),
-        "poster_name": _rich_text(props.get("Poster", {})),
-        "group": group,                  # ATLANTIC / WARNER / INTERNAL
-        "group_label": group_label,      # "Warner UGC", "Sam Barber (Atlantic)", etc.
+        "poster_name": _text_or_multi_select(props.get("Poster", {})),
+        "group": group,
+        "group_label": group_label,
         "account_type": _select(props.get("Account Type", {})),
         "notes": _rich_text(props.get("Notes", {})),
         "notion_page_id": notion_page.get("id", ""),
         "source": "notion",
-        # Pipeline columns (added in plan §"Notion schema additions")
-        "status": _select(props.get("Status", {})),
+        "status": account_status,
+        "account_status": account_status,
         "pipeline": _select(props.get("Pipeline", {})),
         "page_type": _select(props.get("Page Type", {})),
-        "content_niche": content_niche,  # TRUCK, Coffee, silhouette, POV — Night Core, ...
+        "content_niche": content_niche,
+        "content_engine": _select(props.get("ContentEngine", {})),
+        "automation_mode": _select(props.get("Automation vs Operator", {})),
+        "vault_url": vault_url,
+        "archived": _checkbox(props.get("Archived", {})),
         "sounds_reference": _url(props.get("Sounds Reference", {})),
         "go_live_date": _date(props.get("Go-Live Date", {})),
         "drive_folder_url": _url(props.get("Drive Folder URL", {})),
@@ -270,6 +311,11 @@ async def sync_into_roster() -> dict[str, Any]:
                 "content_niche": row.get("content_niche"),
                 "sounds_reference": row.get("sounds_reference"),
                 "go_live_date": row.get("go_live_date"),
+                "account_status": row.get("account_status"),
+                "content_engine": row.get("content_engine"),
+                "automation_mode": row.get("automation_mode"),
+                "vault_url": row.get("vault_url"),
+                "archived": bool(row.get("archived")),
                 # drive_folder_url: prefer Notion if set, else existing
                 "drive_folder_url": row.get("drive_folder_url") or existing.get("drive_folder_url"),
                 # App-only fields preserved from existing entry:

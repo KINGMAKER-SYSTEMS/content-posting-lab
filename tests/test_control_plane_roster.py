@@ -61,6 +61,12 @@ NOTION_ROW = {
     "tiktok_url": "https://www.tiktok.com/@truck.tok.daily",
     "notion_page_id": "2f4b1c40-aaaa-bbbb-cccc-ddddeeeeffff",
     "source": "notion",
+    "content_engine": "ai_video",
+    "automation_mode": "Automation",
+    "vault_url": "https://shipstream.risingtidesviral.com/vault/truck.tok.daily",
+    "pipeline": "Flow Stage",
+    "sounds_reference": "https://example.com/sounds/trucks",
+    "archived": False,
     # Credentials the cache legitimately holds — none may cross.
     "password": "hunter2",
     "signup_email": "truck@example.com",
@@ -90,6 +96,11 @@ def test_snapshot_carries_the_ontology_and_only_the_ontology(client):
     assert page["posterName"] == "mon"
     assert page["project"] == "trucks"
     assert page["source"] == "notion"
+    assert page["contentEngine"] == "ai_video"
+    assert page["automationMode"] == "Automation"
+    assert page["vaultUrl"] == "https://shipstream.risingtidesviral.com/vault/truck.tok.daily"
+    assert page["pipeline"] == "Flow Stage"
+    assert page["archived"] is False
 
     leaked = json.dumps(page)
     for secret in ("hunter2", "truck@example.com", "secret@example.com", "email_alias", "password"):
@@ -101,9 +112,12 @@ def test_null_fields_are_explicit_never_dropped(client):
     res = client.get("/api/control-plane/v1/roster", headers={"X-RT-Lane": "warner"})
     [page] = res.json()["pages"]
     for field in ("group", "groupLabel", "pageType", "accountType", "posterName",
-                  "status", "project", "tiktokUrl", "notionPageId", "source"):
+                  "status", "project", "tiktokUrl", "notionPageId", "source",
+                  "contentEngine", "automationMode", "vaultUrl", "pipeline",
+                  "soundsReference"):
         assert field in page, f"{field} must be present even when null"
         assert page[field] is None
+    assert page["archived"] is False
 
 
 def test_version_is_a_content_hash_not_a_counter(client):
