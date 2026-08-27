@@ -55,7 +55,7 @@ def test_truck_recipe_resolves_only_with_the_exact_server_owned_provider():
     assert recipe is not None
     assert recipe.family_name == "truck"
     assert recipe.provider_model == "minimax/hailuo-2.3"
-    assert recipe.prompt_catalog_hash == "cb938a3ec9bcfdf04c0c4e196b68027cd0376bdf9ef561c2a295d61f6d6d9b04"
+    assert recipe.prompt_catalog_hash == "259bccb63fa0f03e6f55138236b0f93ecffeab6d924d7d0a32fd8f51f2d5b361"
     assert resolve_generation_recipe(publication(engine="wan-i2v-fast")) is None
 
 

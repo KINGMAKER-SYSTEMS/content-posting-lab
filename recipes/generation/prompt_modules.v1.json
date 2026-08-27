@@ -6,19 +6,17 @@
     "Obsidian prompt-lab are the human-readable source of truth). Edit slots/menus here;",
     "the composer fills {slot} placeholders deterministically with no repeated combination.",
     "providers.*.replicate_model may be overridden without code changes (Lab pattern).",
-    "keepers_per_gen are PLANNING rates from real runs: truck 5-crop dual ~1.0/gen (2026-07-10",
+    "keepers_per_gen are PLANNING rates from real runs: truck complete-frame vertical fit 1.0/gen",
     "dress rehearsal), scenic 42/60=0.70, silhouette 14/16=0.875 (PRODUCTION_ORDER_TRUCKS.md",
     "2026-07-09 delivered run), ugc 0.27 (why it is PARKED), boat unproven -> 0.70 assumed.",
     "COST MODEL (rail supply --fleet / FLEET_SUPPLY_GOAL.md, git history): a post consumes one KEEPER clip, so",
     "the unit economic is cost_per_keeper = provider.cost_per_gen_usd / family.keepers_per_gen.",
     "This is IDENTICAL to what produce.rs actually spends (gens = ceil(keepers/keepers_per_gen),",
     "cost = gens*cost_per_gen), so the forecast can never drift from the generator. There is NO",
-    "clips_per_gen divisor: a crop is not a keeper — keepers_per_gen already measures how many of a",
-    "gen's crops survive QA. (The FLYWHEEL '$0.056/clip' is cost-per-CROP, not per-keeper; using it",
-    "understated truck COGS ~5x.) keepers_per_gen is the UNMETERED yield knob Eric sets from live",
+    "clips_per_gen divisor: a generated candidate is not a keeper — keepers_per_gen already measures",
+    "how many candidates survive QA. keepers_per_gen is the UNMETERED yield knob Eric sets from live",
     "runs; for a capital forecast the default is CONSERVATIVE (truck 1.0/gen -> $0.50/keeper at the",
-    "list gen price). OPEN QUESTION for Eric: is truck ~1 keeper/gen or ~5? that is a 5x COGS swing",
-    "($0.50 vs $0.056/keeper). cost_per_gen_usd 0.50 is a list-price placeholder (~$0.28 observed);",
+    "list gen price). cost_per_gen_usd 0.50 is a list-price placeholder (~$0.28 observed);",
     "meter it. Formats with no family (POV pages) report UNKNOWN — excluded from $, never guessed.",
     "VISUAL RESET 2026-07-22: WINNER_VISUAL_REFERENCE.md is the admission authority. The active truck family returns to dark, muted, natural early iPhone-winner scenes; washed-out daylight, orange-desert, and sharp/crisp product-render output are rejected."
   ],
@@ -49,7 +47,7 @@
       "alternates": [
         "scenic"
       ],
-      "note": "Default remains the native MiniMax/Hailuo five-crop route, but its visual contract was reset 2026-07-22 to the actual early iPhone-Mirroring winners in WINNER_VISUAL_REFERENCE.md. The retained i2v scenic family is historical provenance, not a bypass around the winner-reference QA gate."
+      "note": "Default uses MiniMax/Hailuo with complete-frame vertical fitting because the provider emits 16:9. Its visual contract remains the actual early iPhone-Mirroring winners in WINNER_VISUAL_REFERENCE.md. The retained i2v scenic family is historical provenance, not a bypass around the winner-reference QA gate."
     },
     "silhouette-truck": {
       "family": "silhouette",
@@ -91,10 +89,10 @@
       "motion_prompt": null,
       "base_anchor": null,
       "extra": {
-        "crop_mode": "both",
+        "crop_mode": "contain",
         "optimize_prompt": false
       },
-      "clips_per_gen": 5,
+      "clips_per_gen": 1,
       "visual_reference": {
         "doc": "WINNER_VISUAL_REFERENCE.md",
         "leader_video_ids": [
@@ -109,7 +107,7 @@
           "near-duplicate door, wheel, mirror, or bed fragments across accounts"
         ]
       },
-      "note": "PRIMARY truck bible reset by Smaths 2026-07-22 to the actual early iPhone-Mirroring winners and darkened again 2026-08-14 after the bright batch underperformed. Preserve the MiniMax/Hailuo native five-crop economics only when every crop matches WINNER_VISUAL_REFERENCE.md: dark low-exposure natural truck views, muted lake/grass/field/forest settings, controlled highlights, restrained color, and ordinary camera softness. Washed-out daylight and the former crisp featureless side-on desert product-render look are rejected. OCR plus strict visual and winner-reference QA remain mandatory; generate surplus and reject badges, occupants, plates, morphs, duplicate-looking crops, and visual-profile misses.",
+      "note": "PRIMARY truck bible reset by Smaths 2026-07-22 to the actual early iPhone-Mirroring winners and darkened again 2026-08-14 after the bright batch underperformed. Hailuo is landscape-only, so the complete 16:9 source is fitted into one vertical blurred canvas; positional five-crop output was removed after the 2026-08-27 canary proved it geometrically amputates the required complete truck. WINNER_VISUAL_REFERENCE.md remains the admission authority: dark low-exposure natural truck views, muted lake/grass/field/forest settings, controlled highlights, restrained color, and ordinary camera softness. Washed-out daylight and the former crisp featureless side-on desert product-render look are rejected. OCR plus strict visual and winner-reference QA remain mandatory; reject badges, occupants, plates, morphs, duplicates, and visual-profile misses.",
       "slots": {
         "angle": [
           "front three-quarter near-side view",

@@ -61,6 +61,68 @@ async def crop_to_vertical(src: Path) -> None:
     tmp.replace(src)
 
 
+async def fit_to_vertical(src: Path) -> None:
+    """Fit the complete landscape frame inside a vertical blurred canvas.
+
+    Hailuo emits 16:9 only.  A center/left/right crop can never preserve the
+    same wide subject in every 9:16 output, so dossier recipes that require a
+    complete subject use this framing mode instead.  The foreground is scaled
+    down without cropping and the remaining canvas is filled from a blurred
+    cover copy of the same frame.
+    """
+    tmp = src.with_suffix(".tmp.mp4")
+    probe = await asyncio.create_subprocess_exec(
+        "ffprobe", "-v", "error",
+        "-select_streams", "v:0",
+        "-show_entries", "stream=width,height",
+        "-of", "csv=p=0",
+        str(src),
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await probe.communicate()
+    if probe.returncode != 0:
+        raise RuntimeError(f"ffprobe fit failed: {stderr.decode()[-200:]}")
+    try:
+        src_w, src_h = (int(part) for part in stdout.decode().strip().split(","))
+    except (TypeError, ValueError) as error:
+        raise RuntimeError("ffprobe fit returned invalid dimensions") from error
+    if src_w <= 0 or src_h <= 0:
+        raise RuntimeError("ffprobe fit returned invalid dimensions")
+
+    canvas_w = max(2, int(src_h * 9 / 16))
+    canvas_w -= canvas_w % 2
+    canvas_h = src_h - (src_h % 2)
+    filter_graph = (
+        "[0:v]split=2[background][foreground];"
+        f"[background]scale={canvas_w}:{canvas_h}:force_original_aspect_ratio=increase,"
+        f"crop={canvas_w}:{canvas_h},gblur=sigma=24[blurred];"
+        f"[foreground]scale={canvas_w}:{canvas_h}:force_original_aspect_ratio=decrease[contained];"
+        "[blurred][contained]overlay=(W-w)/2:(H-h)/2,setsar=1[vertical]"
+    )
+    proc = await asyncio.create_subprocess_exec(
+        "ffmpeg", "-y",
+        "-i", str(src),
+        "-filter_complex", filter_graph,
+        "-map", "[vertical]",
+        "-map", "0:a?",
+        "-c:v", "libx264",
+        "-preset", "medium",
+        "-crf", "18",
+        "-pix_fmt", "yuv420p",
+        "-c:a", "copy",
+        "-movflags", "+faststart",
+        str(tmp),
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    _, stderr = await proc.communicate()
+    if proc.returncode != 0:
+        tmp.unlink(missing_ok=True)
+        raise RuntimeError(f"ffmpeg fit failed: {stderr.decode()[-200:]}")
+    tmp.replace(src)
+
+
 async def multi_crop_vertical(src: Path, mode: str) -> list[Path]:
     """Crop a 16:9 video into multiple 9:16 segments.
 
@@ -198,9 +260,17 @@ async def generate_one(
             entry["status"] = "downloading"
             await download_video(client, video_url, dest)
 
-            # Multi-crop mode: split one 16:9 into multiple 9:16 crops
+            # Multi-crop mode: split one 16:9 into multiple 9:16 crops.
+            # Complete-subject dossier recipes instead use ``contain`` so a
+            # landscape-only provider cannot amputate the required subject.
             crop_mode = extra.get("crop_mode")
-            if crop_mode in ("dual", "triptych", "both") and provider in FORCE_LANDSCAPE:
+            if crop_mode == "contain" and provider in FORCE_LANDSCAPE:
+                entry["status"] = "framing"
+                await fit_to_vertical(dest)
+                entry["status"] = "done"
+                entry["file"] = f"{rel_dir}/{filename}"
+                entry["url"] = f"{url_prefix}/{rel_dir}/{filename}"
+            elif crop_mode in ("dual", "triptych", "both") and provider in FORCE_LANDSCAPE:
                 entry["status"] = "cropping"
                 crop_paths = await multi_crop_vertical(dest, crop_mode)
                 # Store crop files in the entry

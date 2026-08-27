@@ -118,7 +118,7 @@ def test_registered_dossier_is_advertised_and_queues_new_media_only(lab, monkeyp
     stored = cp._load_jobs()["jobs"][payload["jobId"]]
     assert stored["sourceKind"] == "generated"
     assert stored["clips"] == []
-    assert stored["promptCatalogHash"] == "cb938a3ec9bcfdf04c0c4e196b68027cd0376bdf9ef561c2a295d61f6d6d9b04"
+    assert stored["promptCatalogHash"] == "259bccb63fa0f03e6f55138236b0f93ecffeab6d924d7d0a32fd8f51f2d5b361"
 
 
 @pytest.mark.asyncio
