@@ -163,3 +163,58 @@ def test_snapshot_carries_the_content_niche(client):
     res = client.get("/api/control-plane/v1/roster", headers={"X-RT-Lane": "warner"})
     [page] = res.json()["pages"]
     assert page["contentNiche"] == "TRUCK"
+
+
+def test_machine_refresh_returns_counts_without_roster_rows(client, monkeypatch):
+    import services.notion_pages as notion_pages
+
+    monkeypatch.setattr(notion_pages, "is_configured", lambda: True)
+    monkeypatch.setenv("CONTROL_PLANE_TOKEN", "test-control-plane-token")
+
+    async def refresh():
+        return {
+            "added": 3,
+            "updated": 19,
+            "total_in_notion": 22,
+            "errors": ["bounded failure"],
+            "pages": [{"password": "must-not-cross"}],
+        }
+
+    monkeypatch.setattr(notion_pages, "sync_into_roster", refresh)
+    response = client.post(
+        "/api/control-plane/v1/roster/refresh",
+        headers={
+            "X-RT-Lane": "content-bucket-control-plane",
+            "Authorization": "Bearer test-control-plane-token",
+        },
+    )
+    assert response.status_code == 200
+    assert response.json() == {
+        "schema": "content-lab.response.v1",
+        "added": 3,
+        "updated": 19,
+        "totalInNotion": 22,
+        "errorCount": 1,
+    }
+    assert "password" not in response.text
+
+
+def test_machine_refresh_requires_lane_and_notion_configuration(client, monkeypatch):
+    import services.notion_pages as notion_pages
+
+    monkeypatch.setenv("CONTROL_PLANE_TOKEN", "test-control-plane-token")
+    assert client.post("/api/control-plane/v1/roster/refresh").status_code == 400
+    unauthorized = client.post(
+        "/api/control-plane/v1/roster/refresh",
+        headers={"X-RT-Lane": "content-bucket-control-plane"},
+    )
+    assert unauthorized.status_code == 401
+    monkeypatch.setattr(notion_pages, "is_configured", lambda: False)
+    response = client.post(
+        "/api/control-plane/v1/roster/refresh",
+        headers={
+            "X-RT-Lane": "content-bucket-control-plane",
+            "Authorization": "Bearer test-control-plane-token",
+        },
+    )
+    assert response.status_code == 503

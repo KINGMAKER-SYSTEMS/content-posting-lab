@@ -37,7 +37,9 @@ should fail, and how it did.
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
+import os
 import re
 from datetime import datetime, timezone
 from pathlib import Path
@@ -290,6 +292,48 @@ def roster_snapshot(
         "snapshotVersion": version,
         "capturedAt": captured_at,
         "pages": pages,
+    }
+
+
+@router.post("/v1/roster/refresh")
+async def refresh_roster_snapshot(
+    x_rt_lane: str | None = Header(default=None),
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """Refresh the Notion cache without returning credential-bearing rows.
+
+    The control-plane cron calls this immediately before reading the sanitized
+    snapshot above. The existing operator sync response includes the full
+    internal roster, so it is intentionally not reused as a machine contract.
+    """
+    if not x_rt_lane or not LANE_RE.match(x_rt_lane):
+        raise HTTPException(status_code=400, detail="X-RT-Lane header is required")
+    expected_token = os.getenv("CONTROL_PLANE_TOKEN", "")
+    supplied_token = (
+        authorization.removeprefix("Bearer ").strip()
+        if isinstance(authorization, str) else ""
+    )
+    if not expected_token:
+        raise HTTPException(status_code=503, detail="Control-plane refresh is not configured")
+    if not hmac.compare_digest(supplied_token, expected_token):
+        raise HTTPException(status_code=401, detail="Invalid control-plane token")
+
+    from services.notion_pages import is_configured, sync_into_roster
+
+    if not is_configured():
+        raise HTTPException(status_code=503, detail="Notion roster is not configured")
+    try:
+        result = await sync_into_roster()
+    except Exception:
+        raise HTTPException(status_code=502, detail="Notion roster refresh failed")
+
+    errors = result.get("errors") if isinstance(result, dict) else None
+    return {
+        "schema": RESPONSE_SCHEMA,
+        "added": int(result.get("added", 0)),
+        "updated": int(result.get("updated", 0)),
+        "totalInNotion": int(result.get("total_in_notion", 0)),
+        "errorCount": len(errors) if isinstance(errors, list) else 0,
     }
 
 
