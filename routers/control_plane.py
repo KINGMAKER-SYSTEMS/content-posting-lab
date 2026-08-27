@@ -48,7 +48,6 @@ from typing import Any
 from fastapi import APIRouter, Header, HTTPException
 
 from project_manager import PROJECTS_DIR
-from routers.control_plane_recipes import list_registered_recipes, load_registered_recipe
 
 router = APIRouter()
 
@@ -176,35 +175,11 @@ def capabilities(
         raise HTTPException(status_code=400, detail="X-RT-Page-Id header is required")
 
     entries = []
-    runnable = _registered_recipes()
-    runnable_by_identity = {
-        (recipe["recipeId"], recipe["engine"]): recipe for recipe in runnable
-    }
-    for recipe in runnable:
-        pages = recipe.get("_pages")
+    for recipe in _registered_recipes():
+        pages = recipe.pop("_pages")
         if pages is not None and page_id not in pages:
             continue
-        entries.append({key: value for key, value in recipe.items() if key != "_pages"})
-        if len(entries) >= MAX_CAPABILITIES:
-            break
-
-    # A dossier publication is a versioned treatment of an existing runnable
-    # Lab recipe, never a new prompt-shaped recipe family. Advertise it only
-    # when that base recipe is still live and page-compatible; create_job
-    # rechecks the same stored tuple before selecting any bytes.
-    for publication in list_registered_recipes(page_id):
-        base = runnable_by_identity.get((publication.get("recipeId"), publication.get("engine")))
-        if base is None:
-            continue
-        pages = base.get("_pages")
-        if pages is not None and page_id not in pages:
-            continue
-        entries.append({
-            "recipeId": publication["recipeId"],
-            "engine": publication["engine"],
-            "recipeVersion": publication["recipeVersion"],
-            "maxQuantity": base["maxQuantity"],
-        })
+        entries.append(recipe)
         if len(entries) >= MAX_CAPABILITIES:
             break
 
@@ -537,12 +512,7 @@ def create_job(
     if quantity > recipe["maxQuantity"]:
         raise HTTPException(status_code=400, detail=f"quantity exceeds recipe ceiling {recipe['maxQuantity']}")
     current_version = recipe["recipeVersion"]
-    dossier_recipe = None
     if recipe_version != current_version:
-        dossier_recipe = load_registered_recipe(
-            page_id, recipe_id, ENGINE, recipe_version,
-        )
-    if recipe_version != current_version and dossier_recipe is None:
         # The plane pinned a version the recipe has moved away from. Serving
         # anyway would fill a bucket with content the operator never approved.
         raise HTTPException(status_code=409, detail=f"recipe_version_mismatch: current is {current_version}")
@@ -580,9 +550,6 @@ def create_job(
             "engine": ENGINE,
             "recipeId": recipe_id,
             "recipeVersion": recipe_version,
-            "dossierRevision": dossier_recipe.get("dossierRevision") if dossier_recipe else None,
-            "recipeSpecHash": dossier_recipe.get("recipeSpecHash") if dossier_recipe else None,
-            "recipeSpecCanonical": dossier_recipe.get("recipeSpecCanonical") if dossier_recipe else None,
             "policyHash": policy_hash,
             "sourceIsolation": body.get("sourceIsolation") or None,
             "constraints": constraints or {},

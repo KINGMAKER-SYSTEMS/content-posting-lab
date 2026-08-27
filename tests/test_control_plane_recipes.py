@@ -7,7 +7,6 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-import routers.control_plane as cp
 import routers.control_plane_recipes as recipes
 
 
@@ -46,29 +45,10 @@ def _payload(**overrides):
 
 @pytest.fixture
 def lab(monkeypatch, tmp_path):
-    projects = tmp_path / "projects"
-    project = projects / "trucks"
-    videos = project / "videos"
-    videos.mkdir(parents=True)
-    prompts = project / "prompts.json"
-    prompts.write_text('[{"prompt":"server-owned and never accepted from ShipStream"}]')
-    (videos / "a.mp4").write_bytes(b"clip-a")
-
-    marker_root = tmp_path / "recipes"
-    marker_root.mkdir()
-    (marker_root / "trucks.json").write_text(json.dumps({
-        "registered": True,
-        "project": "trucks",
-        "maxQuantity": 3,
-    }))
-
     monkeypatch.setenv("CONTROL_PLANE_TOKEN", TOKEN)
     monkeypatch.setenv("CONTENT_LAB_RECIPE_ROOT", str(tmp_path / "dossier-recipes"))
-    monkeypatch.setattr(cp, "PROJECTS_DIR", projects)
-    monkeypatch.setattr(cp, "_jobs_path", lambda: tmp_path / "jobs.json")
 
     app = FastAPI()
-    app.include_router(cp.router, prefix="/api/control-plane")
     app.include_router(recipes.router, prefix="/api/control-plane")
     return TestClient(app)
 
@@ -104,53 +84,20 @@ def test_publication_is_immutable_idempotent_and_requires_dedicated_auth(lab):
     ).status_code == 409
 
 
-def test_registered_dossier_version_is_page_scoped_advertised_and_job_consumed(lab):
+def test_registered_dossier_version_is_page_scoped_and_durably_stored(lab):
     publication = _payload()
     assert lab.post(
         "/api/control-plane/v1/recipes", json=publication, headers=_publication_headers(),
     ).status_code == 200
 
-    capabilities = lab.get(
-        "/api/control-plane/v1/capabilities",
-        headers={"X-RT-Page-Id": PAGE_ID},
-    ).json()["capabilities"]
-    assert {
-        "recipeId": "trucks",
-        "engine": "content_lab",
-        "recipeVersion": publication["recipeVersion"],
-        "maxQuantity": 3,
-    } in capabilities
-    other = lab.get(
-        "/api/control-plane/v1/capabilities",
-        headers={"X-RT-Page-Id": "acct:other"},
-    ).json()["capabilities"]
-    assert not any(item["recipeVersion"] == publication["recipeVersion"] for item in other)
-
-    job = {
-        "pageId": PAGE_ID,
-        "lane": recipes.LANE,
-        "engine": "content_lab",
-        "lockedRecipeId": "trucks",
-        "recipeVersion": publication["recipeVersion"],
-        "quantity": 1,
-        "constraints": {},
-        "sourceIsolation": {"partitionKey": f"page:{PAGE_ID}"},
-        "policyHash": "abc123",
-    }
-    response = lab.post(
-        "/api/control-plane/v1/jobs",
-        json=job,
-        headers={
-            "X-RT-Page-Id": PAGE_ID,
-            "X-RT-Lane": recipes.LANE,
-            "Idempotency-Key": "acct:truck-page:dossier:source",
-        },
+    stored = recipes.load_registered_recipe(
+        PAGE_ID, "trucks", "content_lab", publication["recipeVersion"],
     )
-    assert response.status_code == 200
-    stored = cp._load_jobs()["jobs"][response.json()["jobId"]]
-    assert stored["recipeVersion"] == publication["recipeVersion"]
     assert stored["recipeSpecHash"] == publication["recipeSpecHash"]
     assert stored["dossierRevision"] == publication["dossierRevision"]
+    assert recipes.load_registered_recipe(
+        "acct:other", "trucks", "content_lab", publication["recipeVersion"],
+    ) is None
 
 
 def test_hash_schema_and_prompt_shaped_fields_fail_closed(lab):

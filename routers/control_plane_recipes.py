@@ -1,8 +1,8 @@
 """Immutable dossier recipe publications accepted from ShipStream.
 
-Registration is not execution. The capability and job paths import this
-module and advertise a publication only when its base Content Lab recipe is
-also runnable. Every accepted publication is immutable and page-scoped.
+Registration is not execution. Publications remain absent from the capability
+catalog until a new-media executor can consume the exact typed treatment.
+Every accepted publication is immutable and page-scoped.
 """
 
 from __future__ import annotations
