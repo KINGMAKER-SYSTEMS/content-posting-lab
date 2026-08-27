@@ -58,8 +58,10 @@ from routers.control_plane_recipes import (
 from services.control_plane_generation import (
     MAX_CAPABILITY_QUANTITY,
     compose_prompt,
+    dossier_clip_speed,
     dossier_filters_to_color_correction,
     generation_options,
+    load_generation_anchor,
     resolve_generation_recipe,
 )
 from services.ffmpeg import run_color_correct
@@ -555,6 +557,7 @@ async def _run_dossier_generation(job_id: str) -> None:
     aspect_ratio = str(options.pop("aspect_ratio", "9:16"))
     calls = int(job["providerCallsPlanned"])
     color_correction = dossier_filters_to_color_correction(recipe)
+    clip_speed = dossier_clip_speed(recipe)
     manifests: list[dict[str, Any]] = []
     _update_job(job_id, status="running", progress=0, providerCallsCompleted=0)
 
@@ -567,6 +570,11 @@ async def _run_dossier_generation(job_id: str) -> None:
                 }
             }
             prompt, slots = compose_prompt(recipe, job["idempotencyKey"], call_index)
+            anchor = await load_generation_anchor(
+                recipe, job["idempotencyKey"], call_index,
+            )
+            image_data_uri = anchor[0] if anchor else None
+            anchor_metadata = anchor[1] if anchor else None
             await generate_one(
                 provider_job_id,
                 0,
@@ -575,7 +583,7 @@ async def _run_dossier_generation(job_id: str) -> None:
                 aspect_ratio,
                 resolution,
                 duration,
-                None,
+                image_data_uri,
                 provider_jobs,
                 render_root,
                 "",
@@ -593,15 +601,19 @@ async def _run_dossier_generation(job_id: str) -> None:
                 if render_root.resolve() not in source.parents or not source.is_file():
                     raise RuntimeError("provider_artifact_invalid")
                 artifact = source
-                if color_correction:
+                if color_correction or clip_speed != 1.0:
                     treated_root.mkdir(parents=True, exist_ok=True, mode=0o700)
                     artifact = treated_root / f"g{call_index:02d}-c{candidate_index:02d}.mp4"
                     await run_color_correct(
                         str(source), str(artifact), color_correction, scale=None,
+                        playback_speed=clip_speed,
                     )
                 manifest = _generated_manifest(job_root, artifact)
                 manifest["generationIndex"] = call_index
                 manifest["promptSlots"] = slots
+                manifest["clipSpeed"] = clip_speed
+                if anchor_metadata is not None:
+                    manifest["anchor"] = anchor_metadata
                 manifests.append(manifest)
             _update_job(
                 job_id,

@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import math
 import os
 from pathlib import Path
 from typing import Any
@@ -27,7 +28,8 @@ BODY_FIELDS = {
     "dossierRevision", "recipeSpecHash", "recipeSpecCanonical",
 }
 SPEC_FIELDS = {"schema", "renderTreatment", "demand"}
-RENDER_FIELDS = {"stylePreset", "filters", "captionStyle"}
+RENDER_REQUIRED_FIELDS = {"stylePreset", "filters", "captionStyle"}
+RENDER_OPTIONAL_FIELDS = {"clipSpeed"}
 DEMAND_FIELDS = {"formatMix"}
 TOKEN_CHARS = frozenset(
     "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.:-"
@@ -92,7 +94,11 @@ def _validate_spec(canonical: str) -> dict[str, Any]:
         raise HTTPException(400, "recipe spec schema mismatch")
     render = spec.get("renderTreatment")
     demand = spec.get("demand")
-    if not isinstance(render, dict) or set(render) != RENDER_FIELDS:
+    if (
+        not isinstance(render, dict)
+        or not RENDER_REQUIRED_FIELDS <= set(render)
+        or set(render) - RENDER_REQUIRED_FIELDS - RENDER_OPTIONAL_FIELDS
+    ):
         raise HTTPException(400, "render treatment schema mismatch")
     if not isinstance(demand, dict) or set(demand) != DEMAND_FIELDS:
         raise HTTPException(400, "recipe demand schema mismatch")
@@ -103,6 +109,14 @@ def _validate_spec(canonical: str) -> dict[str, Any]:
     preset = render.get("stylePreset")
     if preset is not None and (not isinstance(preset, str) or not preset.strip()):
         raise HTTPException(400, "stylePreset must be a non-empty string or null")
+    clip_speed = render.get("clipSpeed", 1.0)
+    if (
+        isinstance(clip_speed, bool)
+        or not isinstance(clip_speed, (int, float))
+        or not math.isfinite(float(clip_speed))
+        or not 0.5 <= float(clip_speed) <= 2.0
+    ):
+        raise HTTPException(400, "clipSpeed must be a finite number from 0.5 through 2.0")
     if any(
         part in key.lower()
         for key in _walk_keys(spec)

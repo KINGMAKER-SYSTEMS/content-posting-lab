@@ -268,7 +268,9 @@
         "anchors/silhouette-pool-v1/silhouette-anchor-30.png"
       ],
       "anchor_rotation": "deterministic_without_replacement",
-      "anchor_manifest": "anchors/silhouette-pool-v1/pool-manifest.json"
+      "anchor_manifest": "anchors/silhouette-pool-v1/pool-manifest.json",
+      "anchor_manifest_sha256": "7fca3f0ec13849679a7a7d135b1e4d5c05a61c9267e5b0336ef0af5b99314a89",
+      "anchor_count": 30
     },
     "ugc": {
       "method": "t2v",
@@ -321,6 +323,8 @@
       "template": "Reframe {subject} cruising toward {setting}, {light}, {water}. {guards}.",
       "motion_prompt": "The boat cruises forward across the lake, gentle rocking, small ripples flowing past the hull, warm sun reflections shimmering on the moving water, shoreline drifting past, realistic phone video motion",
       "base_anchor": "anchors/boat.jpg",
+      "base_anchor_sha256": "6fcf8daf2cc422457af7de83032b90f018f66ceec801eba9e22f7d80f7f6a583",
+      "base_anchor_bytes": 55082,
       "extra": null,
       "clips_per_gen": 1,
       "note": null,

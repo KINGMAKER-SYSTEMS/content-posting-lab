@@ -118,7 +118,7 @@ def test_registered_dossier_is_advertised_and_queues_new_media_only(lab, monkeyp
     stored = cp._load_jobs()["jobs"][payload["jobId"]]
     assert stored["sourceKind"] == "generated"
     assert stored["clips"] == []
-    assert stored["promptCatalogHash"] == "5c3578a13714cec97d7b0a007ac5cfea744ae50661e7cac415d0ba42f894c894"
+    assert stored["promptCatalogHash"] == "cb938a3ec9bcfdf04c0c4e196b68027cd0376bdf9ef561c2a295d61f6d6d9b04"
 
 
 @pytest.mark.asyncio
@@ -143,8 +143,10 @@ async def test_generation_runner_lands_treated_artifacts_under_the_isolated_job_
             "file": str(path.relative_to(output_dir)),
         })
 
-    async def fake_color_correct(source, destination, color_correction, scale=None):
-        corrections.append(color_correction)
+    async def fake_color_correct(
+        source, destination, color_correction, scale=None, playback_speed=1.0,
+    ):
+        corrections.append((color_correction, playback_speed))
         shutil.copyfile(source, destination)
 
     monkeypatch.setattr(cp, "generate_one", fake_generate_one)
@@ -156,6 +158,8 @@ async def test_generation_runner_lands_treated_artifacts_under_the_isolated_job_
     assert stored["progress"] == 100
     assert len(stored["clips"]) == 2
     assert len(corrections) == 2
+    assert all(speed == pytest.approx(1.0) for _, speed in corrections)
+    assert all(clip["clipSpeed"] == pytest.approx(1.0) for clip in stored["clips"])
     root = (tmp_path / "generated").resolve()
     assert all(root in (root / PAGE_ID / stored["recipeVersion"] / job_id / clip["path"]).resolve().parents for clip in stored["clips"])
     assert all(clip["sha256"] for clip in stored["clips"])

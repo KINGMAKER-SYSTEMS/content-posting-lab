@@ -22,6 +22,7 @@ def _payload(**overrides):
                 "stylePreset": "warm-truck",
                 "filters": {"brightness": 1.03},
                 "captionStyle": {},
+                "clipSpeed": 1.25,
             },
             "demand": {"formatMix": {"truck-scenic": 1}},
         },
@@ -115,3 +116,27 @@ def test_hash_schema_and_prompt_shaped_fields_fail_closed(lab):
     assert lab.post(
         "/api/control-plane/v1/recipes", json=bad_spec, headers=_publication_headers(),
     ).status_code == 400
+
+
+def test_clip_speed_is_bounded_and_old_recipe_bytes_remain_accepted(lab):
+    old = _payload()
+    decoded = json.loads(old["recipeSpecCanonical"])
+    decoded["renderTreatment"].pop("clipSpeed")
+    canonical = json.dumps(decoded, sort_keys=True, separators=(",", ":"))
+    old["recipeSpecCanonical"] = canonical
+    old["recipeSpecHash"] = "sha256:" + hashlib.sha256(canonical.encode()).hexdigest()
+    assert lab.post(
+        "/api/control-plane/v1/recipes", json=old, headers=_publication_headers(),
+    ).status_code == 200
+
+    for invalid in (0.49, 2.01, True, "fast", float("nan")):
+        body = _payload(dossierRevision=f"rev-{invalid!s}")
+        decoded = json.loads(body["recipeSpecCanonical"])
+        decoded["renderTreatment"]["clipSpeed"] = invalid
+        canonical = json.dumps(decoded, sort_keys=True, separators=(",", ":"))
+        body["recipeSpecCanonical"] = canonical
+        body["recipeSpecHash"] = "sha256:" + hashlib.sha256(canonical.encode()).hexdigest()
+        assert lab.post(
+            "/api/control-plane/v1/recipes", json=body,
+            headers=_publication_headers(**{"Idempotency-Key": f"dossier:speed-{invalid!s}"}),
+        ).status_code == 400
