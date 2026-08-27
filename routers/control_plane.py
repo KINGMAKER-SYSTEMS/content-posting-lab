@@ -36,6 +36,7 @@ should fail, and how it did.
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import json
@@ -48,6 +49,20 @@ from typing import Any
 from fastapi import APIRouter, Header, HTTPException
 
 from project_manager import PROJECTS_DIR
+from providers.base import generate_one
+from routers.control_plane_recipes import (
+    list_registered_recipes,
+    load_registered_recipe,
+    require_control_plane_bearer,
+)
+from services.control_plane_generation import (
+    MAX_CAPABILITY_QUANTITY,
+    compose_prompt,
+    dossier_filters_to_color_correction,
+    generation_options,
+    resolve_generation_recipe,
+)
+from services.ffmpeg import run_color_correct
 
 router = APIRouter()
 
@@ -176,10 +191,26 @@ def capabilities(
 
     entries = []
     for recipe in _registered_recipes():
-        pages = recipe.pop("_pages")
+        pages = recipe.get("_pages")
         if pages is not None and page_id not in pages:
             continue
-        entries.append(recipe)
+        entries.append({key: value for key, value in recipe.items() if key != "_pages"})
+        if len(entries) >= MAX_CAPABILITIES:
+            break
+
+    # A dossier version is executable only when its server-owned base prompt
+    # family, exact provider model, runtime credential, and typed treatment are
+    # all available. Registration alone never becomes a capability.
+    for publication in list_registered_recipes(page_id):
+        recipe = resolve_generation_recipe(publication)
+        if recipe is None:
+            continue
+        entries.append({
+            "recipeId": publication["recipeId"],
+            "engine": publication["engine"],
+            "recipeVersion": publication["recipeVersion"],
+            "maxQuantity": MAX_CAPABILITY_QUANTITY,
+        })
         if len(entries) >= MAX_CAPABILITIES:
             break
 
@@ -337,15 +368,14 @@ async def refresh_roster_snapshot(
     }
 
 
-# ── Jobs: library selection under an idempotent, durable contract ────────────
+# ── Jobs: new generation or approved-library selection, never both ──────────
 #
-# What a replenish job IS here: the registered recipes are footage LIBRARIES
-# (trucks ≈ 2,986 clips, silhoutte ≈ 1,183, …), so a job selects `quantity`
-# clips the page has never been served, manifests them with checksums, and
-# records the serving so no page is ever handed the same clip twice. No
-# generation, no provider spend — generation for a dry library is a later
-# phase with its own arming decision, and a library that cannot fill a
-# request fails 409 insufficient_inventory rather than quietly generating.
+# Legacy registered projects remain approved footage libraries: a job selects
+# `quantity` clips the page has never been served and records that serving.
+# A page-scoped dossier publication instead resolves the hash-pinned prompt
+# catalog and creates new media in an isolated job root. A dry library never
+# falls through to spend, and an unavailable generation executor never falls
+# back to library footage.
 #
 # The plane's job contract rejects free-form prompt fields; this side
 # mirrors that rejection so a crafted body dies on whichever side it hits
@@ -367,6 +397,8 @@ MAX_JOB_QUANTITY = 100
 MAX_JOB_BODY_BYTES = 16_384
 IDEMPOTENCY_KEY_RE = re.compile(r"^[A-Za-z0-9_.:-]{8,200}$")
 JOB_TOKEN_BYTES = 24
+GENERATION_ACTIVE_STATUSES = {"queued", "running"}
+_GENERATION_RUNTIME_ID = _secrets.token_hex(16)
 
 # Defense-in-depth mirror of the plane's assertNoFreeFormPrompt: no field
 # anywhere in the job body may look like prompt text. Recipe authoring
@@ -460,19 +492,165 @@ def _clip_manifest(project: str, rel_path: str) -> dict[str, Any] | None:
     }
 
 
+def _generation_root() -> Path:
+    configured = os.environ.get("CONTENT_LAB_GENERATION_ROOT", "").strip()
+    if configured:
+        root = Path(configured).resolve()
+    else:
+        from services.roster import ROSTER_PATH
+        root = (ROSTER_PATH.parent / "control_plane_generated").resolve()
+    root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    return root
+
+
+def _update_job(job_id: str, **fields: Any) -> dict[str, Any] | None:
+    with lock_for(_jobs_path()):
+        store = _load_jobs()
+        job = store["jobs"].get(job_id)
+        if job is None:
+            return None
+        job.update(fields)
+        atomic_save(_jobs_path(), store)
+        return dict(job)
+
+
+def _generated_manifest(job_root: Path, path: Path) -> dict[str, Any]:
+    root = job_root.resolve()
+    full = path.resolve()
+    if root not in full.parents or not full.is_file():
+        raise RuntimeError("generated artifact escaped its job root")
+    size = full.stat().st_size
+    if size <= 0:
+        raise RuntimeError("generated artifact is empty")
+    return {
+        "path": str(full.relative_to(root)),
+        "name": full.name,
+        "sha256": _sha256(full),
+        "bytes": size,
+    }
+
+
+async def _run_dossier_generation(job_id: str) -> None:
+    job = _get_job_or_404(job_id)
+    publication = load_registered_recipe(
+        job["pageId"], job["recipeId"], job["engine"], job["recipeVersion"],
+    )
+    recipe = resolve_generation_recipe(publication) if publication else None
+    if recipe is None:
+        _update_job(
+            job_id,
+            status="failed",
+            error="recipe_executor_unavailable",
+            completedAt=datetime.now(timezone.utc).isoformat(),
+        )
+        return
+
+    job_root = Path(job["artifactRoot"]).resolve()
+    render_root = job_root / "renders"
+    treated_root = job_root / "treated"
+    render_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    options = generation_options(recipe)
+    duration = int(options.pop("duration", 6))
+    resolution = str(options.pop("resolution", "1080p"))
+    aspect_ratio = str(options.pop("aspect_ratio", "9:16"))
+    calls = int(job["providerCallsPlanned"])
+    color_correction = dossier_filters_to_color_correction(recipe)
+    manifests: list[dict[str, Any]] = []
+    _update_job(job_id, status="running", progress=0, providerCallsCompleted=0)
+
+    try:
+        for call_index in range(calls):
+            provider_job_id = f"{job_id}-g{call_index:02d}"
+            provider_jobs = {
+                provider_job_id: {
+                    "videos": [{"index": 0, "status": "queued"}],
+                }
+            }
+            prompt, slots = compose_prompt(recipe, job["idempotencyKey"], call_index)
+            await generate_one(
+                provider_job_id,
+                0,
+                recipe.engine,
+                prompt,
+                aspect_ratio,
+                resolution,
+                duration,
+                None,
+                provider_jobs,
+                render_root,
+                "",
+                **options,
+            )
+            entry = provider_jobs[provider_job_id]["videos"][0]
+            if entry.get("status") != "done":
+                raise RuntimeError("provider_generation_failed")
+            candidates = entry.get("crops") or [{"file": entry.get("file")}]
+            for candidate_index, candidate in enumerate(candidates):
+                rel_path = candidate.get("file") if isinstance(candidate, dict) else None
+                if not isinstance(rel_path, str) or not rel_path:
+                    raise RuntimeError("provider_artifact_missing")
+                source = (render_root / rel_path).resolve()
+                if render_root.resolve() not in source.parents or not source.is_file():
+                    raise RuntimeError("provider_artifact_invalid")
+                artifact = source
+                if color_correction:
+                    treated_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+                    artifact = treated_root / f"g{call_index:02d}-c{candidate_index:02d}.mp4"
+                    await run_color_correct(
+                        str(source), str(artifact), color_correction, scale=None,
+                    )
+                manifest = _generated_manifest(job_root, artifact)
+                manifest["generationIndex"] = call_index
+                manifest["promptSlots"] = slots
+                manifests.append(manifest)
+            _update_job(
+                job_id,
+                progress=int(((call_index + 1) / calls) * 100),
+                providerCallsCompleted=call_index + 1,
+            )
+    except Exception as error:  # provider and ffmpeg failures are job state
+        _update_job(
+            job_id,
+            status="failed",
+            error=str(error)[:300],
+            completedAt=datetime.now(timezone.utc).isoformat(),
+        )
+        return
+
+    _update_job(
+        job_id,
+        status="completed",
+        progress=100,
+        clips=manifests,
+        completedAt=datetime.now(timezone.utc).isoformat(),
+    )
+
+
+_generation_tasks: dict[str, asyncio.Task] = {}
+
+
+def _start_dossier_generation(job_id: str) -> None:
+    task = asyncio.create_task(_run_dossier_generation(job_id))
+    _generation_tasks[job_id] = task
+    task.add_done_callback(lambda _: _generation_tasks.pop(job_id, None))
+
+
 @router.post("/v1/jobs")
-def create_job(
+async def create_job(
     request: Request,
     x_rt_page_id: str | None = Header(default=None),
     x_rt_lane: str | None = Header(default=None),
     idempotency_key: str | None = Header(default=None),
+    authorization: str | None = Header(default=None),
     body: dict[str, Any] = Body(default=None),
 ) -> dict[str, Any]:
-    """Select `quantity` never-served clips from a registered recipe's library.
+    """Execute an exact recipe version under one durable idempotency key.
 
-    Idempotent by header: the same Idempotency-Key returns the original job
-    without selecting again — a retried create can never double-serve.
+    Legacy `content_lab` project recipes continue to select approved library
+    bytes. A page-scoped dossier version uses only the new-media executor and
+    never scans that library.
     """
+    require_control_plane_bearer(authorization)
     if not x_rt_page_id or not PAGE_ID_RE.match(x_rt_page_id):
         raise HTTPException(status_code=400, detail="X-RT-Page-Id header is required")
     if not x_rt_lane or not LANE_RE.match(x_rt_lane):
@@ -490,8 +668,9 @@ def create_job(
     page_id = str(body.get("pageId") or "")
     if page_id != x_rt_page_id:
         raise HTTPException(status_code=400, detail="body pageId must match X-RT-Page-Id")
-    if body.get("engine") != ENGINE:
-        raise HTTPException(status_code=400, detail=f"engine must be {ENGINE}")
+    if body.get("lane") != x_rt_lane:
+        raise HTTPException(status_code=400, detail="body lane must match X-RT-Lane")
+    engine = str(body.get("engine") or "").strip()
     recipe_id = str(body.get("lockedRecipeId") or "").strip()
     recipe_version = str(body.get("recipeVersion") or "").strip()
     policy_hash = str(body.get("policyHash") or "").strip()
@@ -506,66 +685,121 @@ def create_job(
     if len(json.dumps(body)) > MAX_JOB_BODY_BYTES:
         raise HTTPException(status_code=400, detail="job body too large")
 
-    recipe = _registered_recipe(recipe_id)
-    if recipe is None:
-        raise HTTPException(status_code=404, detail="recipe not registered")
-    if quantity > recipe["maxQuantity"]:
-        raise HTTPException(status_code=400, detail=f"quantity exceeds recipe ceiling {recipe['maxQuantity']}")
-    current_version = recipe["recipeVersion"]
-    if recipe_version != current_version:
-        # The plane pinned a version the recipe has moved away from. Serving
-        # anyway would fill a bucket with content the operator never approved.
-        raise HTTPException(status_code=409, detail=f"recipe_version_mismatch: current is {current_version}")
+    publication = load_registered_recipe(page_id, recipe_id, engine, recipe_version)
+    generation_recipe = resolve_generation_recipe(publication) if publication else None
+    legacy_recipe = None
+    if publication is not None:
+        if generation_recipe is None:
+            raise HTTPException(status_code=409, detail="recipe_executor_unavailable")
+        if quantity > MAX_CAPABILITY_QUANTITY:
+            raise HTTPException(
+                status_code=400,
+                detail=f"quantity exceeds recipe ceiling {MAX_CAPABILITY_QUANTITY}",
+            )
+        try:
+            provider_calls = generation_recipe.planned_provider_calls(quantity)
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+    else:
+        if engine != ENGINE:
+            raise HTTPException(status_code=404, detail="recipe not registered")
+        legacy_recipe = _registered_recipe(recipe_id)
+        if legacy_recipe is None:
+            raise HTTPException(status_code=404, detail="recipe not registered")
+        if quantity > legacy_recipe["maxQuantity"]:
+            raise HTTPException(
+                status_code=400,
+                detail=f"quantity exceeds recipe ceiling {legacy_recipe['maxQuantity']}",
+            )
+        current_version = legacy_recipe["recipeVersion"]
+        if recipe_version != current_version:
+            raise HTTPException(
+                status_code=409,
+                detail=f"recipe_version_mismatch: current is {current_version}",
+            )
 
+    start_generation = False
     with lock_for(_jobs_path()):
         store = _load_jobs()
         existing_id = store["byIdempotency"].get(idempotency_key)
         if existing_id and existing_id in store["jobs"]:
             existing = store["jobs"][existing_id]
+            if (
+                existing.get("sourceKind") == "generated"
+                and existing.get("status") in GENERATION_ACTIVE_STATUSES
+                and existing.get("runtimeId") != _GENERATION_RUNTIME_ID
+            ):
+                existing.update({
+                    "status": "failed",
+                    "error": "generation_runtime_restarted",
+                    "completedAt": datetime.now(timezone.utc).isoformat(),
+                })
+                atomic_save(_jobs_path(), store)
             return {"schema": RESPONSE_SCHEMA, "jobId": existing["jobId"], "status": existing["status"]}
 
-        served_for_page = set(store["served"].get(recipe_id, {}).get(page_id, []))
-        picks: list[dict[str, Any]] = []
-        for rel_path in _scan_library(recipe_id):
-            if rel_path in served_for_page:
-                continue
-            manifest = _clip_manifest(recipe_id, rel_path)
-            if manifest is None:
-                continue
-            picks.append(manifest)
-            if len(picks) >= quantity:
-                break
-        if not picks:
-            # The library cannot fill this page right now. A dry library is
-            # an inventory problem for the operator, never a reason to
-            # generate spend nobody armed.
-            raise HTTPException(status_code=409, detail="insufficient_inventory")
-
         job_id = JOB_ID_PREFIX + _secrets.token_hex(8)
-        job = {
-            "jobId": job_id,
-            "idempotencyKey": idempotency_key,
-            "pageId": page_id,
-            "lane": str(body.get("lane") or x_rt_lane),
-            "engine": ENGINE,
-            "recipeId": recipe_id,
-            "recipeVersion": recipe_version,
-            "policyHash": policy_hash,
+        common = {
+            "jobId": job_id, "idempotencyKey": idempotency_key,
+            "pageId": page_id, "lane": str(body.get("lane") or x_rt_lane),
+            "engine": engine, "recipeId": recipe_id,
+            "recipeVersion": recipe_version, "policyHash": policy_hash,
             "sourceIsolation": body.get("sourceIsolation") or None,
-            "constraints": constraints or {},
-            "quantityRequested": quantity,
-            "status": "completed",
+            "constraints": constraints or {}, "quantityRequested": quantity,
             "token": _secrets.token_urlsafe(JOB_TOKEN_BYTES),
-            "clips": picks,
             "createdAt": datetime.now(timezone.utc).isoformat(),
         }
+        if generation_recipe is not None:
+            job_root = (
+                _generation_root() / page_id / recipe_version / job_id
+            ).resolve()
+            job_root.mkdir(parents=True, exist_ok=False, mode=0o700)
+            job = {
+                **common,
+                "sourceKind": "generated",
+                "status": "queued",
+                "progress": 0,
+                "clips": [],
+                "artifactRoot": str(job_root),
+                "dossierRevision": publication["dossierRevision"],
+                "recipeSpecHash": publication["recipeSpecHash"],
+                "promptCatalogHash": generation_recipe.prompt_catalog_hash,
+                "family": generation_recipe.family_name,
+                "providerModel": generation_recipe.provider_model,
+                "providerCallsPlanned": provider_calls,
+                "providerCallsCompleted": 0,
+                "runtimeId": _GENERATION_RUNTIME_ID,
+            }
+            start_generation = True
+        else:
+            served_for_page = set(store["served"].get(recipe_id, {}).get(page_id, []))
+            picks: list[dict[str, Any]] = []
+            for rel_path in _scan_library(recipe_id):
+                if rel_path in served_for_page:
+                    continue
+                manifest = _clip_manifest(recipe_id, rel_path)
+                if manifest is None:
+                    continue
+                picks.append(manifest)
+                if len(picks) >= quantity:
+                    break
+            if not picks:
+                raise HTTPException(status_code=409, detail="insufficient_inventory")
+            job = {
+                **common,
+                "sourceKind": "approved_library",
+                "status": "completed",
+                "progress": 100,
+                "clips": picks,
+            }
+            served = store["served"].setdefault(recipe_id, {}).setdefault(page_id, [])
+            served.extend(pick["path"] for pick in picks)
         store["jobs"][job_id] = job
         store["byIdempotency"][idempotency_key] = job_id
-        served = store["served"].setdefault(recipe_id, {}).setdefault(page_id, [])
-        served.extend(pick["path"] for pick in picks)
         atomic_save(_jobs_path(), store)
 
-    return {"schema": RESPONSE_SCHEMA, "jobId": job_id, "status": "completed"}
+    if start_generation:
+        _start_dossier_generation(job_id)
+    return {"schema": RESPONSE_SCHEMA, "jobId": job_id, "status": job["status"]}
 
 
 def _get_job_or_404(job_id: str) -> dict[str, Any]:
@@ -578,10 +812,27 @@ def _get_job_or_404(job_id: str) -> dict[str, Any]:
 
 
 @router.get("/v1/jobs/{job_id}")
-def job_status(job_id: str, x_rt_page_id: str | None = Header(default=None)) -> dict[str, Any]:
+def job_status(
+    job_id: str,
+    x_rt_page_id: str | None = Header(default=None),
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    require_control_plane_bearer(authorization)
     if not x_rt_page_id or not PAGE_ID_RE.match(x_rt_page_id):
         raise HTTPException(status_code=400, detail="X-RT-Page-Id header is required")
     job = _get_job_or_404(job_id)
+    if (
+        job.get("sourceKind") == "generated"
+        and job.get("status") in GENERATION_ACTIVE_STATUSES
+        and job.get("runtimeId") != _GENERATION_RUNTIME_ID
+    ):
+        _update_job(
+            job_id,
+            status="failed",
+            error="generation_runtime_restarted",
+            completedAt=datetime.now(timezone.utc).isoformat(),
+        )
+        job = _get_job_or_404(job_id)
     if job["pageId"] != x_rt_page_id:
         # A job answers only to the page it belongs to — cross-page status
         # reads would leak what other pages were served.
@@ -590,7 +841,7 @@ def job_status(job_id: str, x_rt_page_id: str | None = Header(default=None)) -> 
         "schema": RESPONSE_SCHEMA,
         "jobId": job["jobId"],
         "status": job["status"],
-        "progress": 100 if job["status"] == "completed" else 0,
+        "progress": int(job.get("progress") or 0),
     }
 
 
@@ -599,7 +850,9 @@ def job_artifacts(
     job_id: str,
     request: Request,
     x_rt_page_id: str | None = Header(default=None),
+    authorization: str | None = Header(default=None),
 ) -> dict[str, Any]:
+    require_control_plane_bearer(authorization)
     if not x_rt_page_id or not PAGE_ID_RE.match(x_rt_page_id):
         raise HTTPException(status_code=400, detail="X-RT-Page-Id header is required")
     job = _get_job_or_404(job_id)
@@ -628,8 +881,12 @@ def job_download(job_id: str, index: int, token: str = "") -> FileResponse:
     if index < 0 or index >= len(job["clips"]):
         raise HTTPException(status_code=404, detail="artifact not found")
     rel_path = job["clips"][index]["path"]
-    full = (PROJECTS_DIR / job["recipeId"] / "videos" / rel_path).resolve()
-    video_root = (PROJECTS_DIR / job["recipeId"] / "videos").resolve()
+    if job.get("sourceKind") == "generated":
+        video_root = Path(job["artifactRoot"]).resolve()
+        full = (video_root / rel_path).resolve()
+    else:
+        video_root = (PROJECTS_DIR / job["recipeId"] / "videos").resolve()
+        full = (video_root / rel_path).resolve()
     if video_root not in full.parents or not full.is_file():
         raise HTTPException(status_code=404, detail="artifact not found")
     return FileResponse(full, media_type="video/mp4", filename=job["clips"][index]["name"])

@@ -45,7 +45,7 @@ def _root() -> Path:
     return root
 
 
-def _require_bearer(authorization: str | None) -> None:
+def require_control_plane_bearer(authorization: str | None) -> None:
     expected = os.environ.get("CONTROL_PLANE_TOKEN", "")
     if not expected:
         raise HTTPException(503, "Content Lab control-plane credential is not configured")
@@ -218,7 +218,7 @@ def publish_recipe(
     x_rt_page_id: str = Header(alias="X-RT-Page-Id"),
     idempotency_key: str = Header(alias="Idempotency-Key"),
 ):
-    _require_bearer(authorization)
+    require_control_plane_bearer(authorization)
     return register_recipe(
         body, lane=x_rt_lane, page_id=x_rt_page_id, idempotency_key=idempotency_key,
     )

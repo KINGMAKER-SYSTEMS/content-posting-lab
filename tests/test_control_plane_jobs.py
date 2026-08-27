@@ -27,6 +27,8 @@ from fastapi.testclient import TestClient
 
 import routers.control_plane as cp
 
+TOKEN = "test-control-plane-token"
+
 
 @pytest.fixture
 def lab(monkeypatch, tmp_path):
@@ -48,6 +50,7 @@ def lab(monkeypatch, tmp_path):
 
     monkeypatch.setattr(cp, "PROJECTS_DIR", projects)
     monkeypatch.setattr(cp, "_jobs_path", lambda: tmp_path / "control_plane_jobs.json")
+    monkeypatch.setenv("CONTROL_PLANE_TOKEN", TOKEN)
 
     app = FastAPI()
     app.include_router(cp.router, prefix="/api/control-plane")
@@ -73,6 +76,7 @@ def _job_body(version, quantity=2, **overrides):
 
 
 HEADERS = {
+    "Authorization": f"Bearer {TOKEN}",
     "X-RT-Page-Id": "acct:truck-page",
     "X-RT-Lane": "content-bucket-control-plane",
     "Idempotency-Key": "acct:truck-page:hash1:source_replenish",
@@ -158,7 +162,7 @@ def test_freeform_prompt_fields_die_here_too(lab):
 def test_unknown_fields_and_missing_headers_are_rejected(lab):
     client, version = lab
     assert _create(client, _job_body(version, nonsense=1)).status_code == 400
-    assert client.post("/api/control-plane/v1/jobs", json=_job_body(version)).status_code == 400
+    assert client.post("/api/control-plane/v1/jobs", json=_job_body(version)).status_code == 401
     no_key = {k: v for k, v in HEADERS.items() if k != "Idempotency-Key"}
     assert _create(client, _job_body(version), headers=no_key).status_code == 400
 

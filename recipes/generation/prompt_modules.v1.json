@@ -1,0 +1,351 @@
+{
+  "_readme": [
+    "rail produce prompt modules — the pinned production bible (FLYWHEEL pinned strategy).",
+    "Families copied verbatim 2026-07-11 from the Content Lab prompt_library.seed.json",
+    "(itself seeded from ocean-agents content-agent; MASTER-PROMPTS.md + LAWS.md in the",
+    "Obsidian prompt-lab are the human-readable source of truth). Edit slots/menus here;",
+    "the composer fills {slot} placeholders deterministically with no repeated combination.",
+    "providers.*.replicate_model may be overridden without code changes (Lab pattern).",
+    "keepers_per_gen are PLANNING rates from real runs: truck 5-crop dual ~1.0/gen (2026-07-10",
+    "dress rehearsal), scenic 42/60=0.70, silhouette 14/16=0.875 (PRODUCTION_ORDER_TRUCKS.md",
+    "2026-07-09 delivered run), ugc 0.27 (why it is PARKED), boat unproven -> 0.70 assumed.",
+    "COST MODEL (rail supply --fleet / FLEET_SUPPLY_GOAL.md, git history): a post consumes one KEEPER clip, so",
+    "the unit economic is cost_per_keeper = provider.cost_per_gen_usd / family.keepers_per_gen.",
+    "This is IDENTICAL to what produce.rs actually spends (gens = ceil(keepers/keepers_per_gen),",
+    "cost = gens*cost_per_gen), so the forecast can never drift from the generator. There is NO",
+    "clips_per_gen divisor: a crop is not a keeper — keepers_per_gen already measures how many of a",
+    "gen's crops survive QA. (The FLYWHEEL '$0.056/clip' is cost-per-CROP, not per-keeper; using it",
+    "understated truck COGS ~5x.) keepers_per_gen is the UNMETERED yield knob Eric sets from live",
+    "runs; for a capital forecast the default is CONSERVATIVE (truck 1.0/gen -> $0.50/keeper at the",
+    "list gen price). OPEN QUESTION for Eric: is truck ~1 keeper/gen or ~5? that is a 5x COGS swing",
+    "($0.50 vs $0.056/keeper). cost_per_gen_usd 0.50 is a list-price placeholder (~$0.28 observed);",
+    "meter it. Formats with no family (POV pages) report UNKNOWN — excluded from $, never guessed.",
+    "VISUAL RESET 2026-07-22: WINNER_VISUAL_REFERENCE.md is the admission authority. The active truck family returns to dark, muted, natural early iPhone-winner scenes; washed-out daylight, orange-desert, and sharp/crisp product-render output are rejected."
+  ],
+  "providers": {
+    "hailuo": {
+      "replicate_model": "minimax/hailuo-2.3",
+      "base_input": {
+        "prompt_optimizer": false,
+        "duration": 6,
+        "resolution": "1080p"
+      },
+      "cost_per_gen_usd": 0.28,
+      "note": "Smaths 2026-08-16: rail generation must match the Content Lab, which moved to Replicate minimax/hailuo-2.3 (providers/__init__.py, ~$0.28/video). Was minimax/video-01 (original Hailuo, $0.50) since 2026-07-11 — every rail production_run truck batch through 08-14 was old-model. Optimizer OFF per LAWS (gloss villain); 1080p/6s so the 16:9 master gives the five-crop bible ~608px-wide crops instead of video-01's 720p. cost_per_gen_usd = lab-observed."
+    },
+    "wan-i2v-fast": {
+      "replicate_model": "wan-video/wan-2.2-i2v-fast",
+      "base_input": {
+        "resolution": "720p"
+      },
+      "image_input_key": "image",
+      "cost_per_gen_usd": 0.12,
+      "note": "BEST-KNOWN default — the Lab still approximates i2v with kling t2v (flagged in its code), so this model id comes from the MASTER-PROMPTS provider name (Wan 2.2 i2v fast), not from a verified live call. VERIFY on the first live run (rail produce --dry-run prints the exact call); override replicate_model/base_input/image_input_key here if the Replicate schema differs."
+    }
+  },
+  "formats": {
+    "truck-scenic": {
+      "family": "truck",
+      "alternates": [
+        "scenic"
+      ],
+      "note": "Default remains the native MiniMax/Hailuo five-crop route, but its visual contract was reset 2026-07-22 to the actual early iPhone-Mirroring winners in WINNER_VISUAL_REFERENCE.md. The retained i2v scenic family is historical provenance, not a bypass around the winner-reference QA gate."
+    },
+    "silhouette-truck": {
+      "family": "silhouette",
+      "recipe_id": "silhouette-truck:master",
+      "recipe_version": "2026-08-14.1"
+    },
+    "boat-lake": {
+      "family": "boat"
+    },
+    "truck-ugc": {
+      "family": "ugc",
+      "parked": true,
+      "note": "PARKED by Eric 2026-07-09 (0.27 keepers/gen, 'too many inconsistencies'). rail produce refuses this format; unpark by removing this flag once a better master exists."
+    },
+    "pov-scenic": {
+      "clip_mode": true,
+      "note": "cut from masters/ via rail clips cut — NEVER produced on a paid provider"
+    },
+    "pov-night-core": {
+      "clip_mode": true,
+      "note": "cut from masters/ via rail clips cut — NEVER produced on a paid provider"
+    },
+    "pov-dirt-bike": {
+      "clip_mode": true,
+      "note": "cut from masters/ via rail clips cut — NEVER produced on a paid provider"
+    },
+    "pov-dusk-core": {
+      "clip_mode": true,
+      "note": "cut from masters/ via rail clips cut — NEVER produced on a paid provider"
+    }
+  },
+  "families": {
+    "truck": {
+      "method": "t2v",
+      "provider": "hailuo",
+      "fixed_subject": "a clean recognizable dark navy-black full-size crew-cab pickup with natural factory-like proportions, normal panel seams and handles, plain unmarked dark wheels, clear empty windows with no visible occupants, and no readable lettering or license plate",
+      "quality_guards": "low wheel-height front-quarter, rear-quarter, or natural near-side view; the complete truck and meaningful surrounding landscape remain readable throughout; the truck is parked and completely stationary with its wheels and tires not rotating; moody low-exposure phone footage with deep blacks, controlled highlights, natural softness, preserved shadow detail, and muted color; no milky haze, pale high-key daylight, or washed-out grade; plain unmarked vehicle surfaces, no visible occupants, no readable lettering or plates",
+      "template": "Extreme wide low wheel-height {angle} of {subject}, parked {setting}, {light}, {atmosphere}; keep the complete truck and enough landscape visible to establish depth, expose for a dark moody frame with controlled highlights and readable shadow detail, with a static camera or barely perceptible natural drift, photographed like an ordinary understated phone clip rather than a polished product render, {subject_state}",
+      "motion_prompt": null,
+      "base_anchor": null,
+      "extra": {
+        "crop_mode": "both",
+        "optimize_prompt": false
+      },
+      "clips_per_gen": 5,
+      "visual_reference": {
+        "doc": "WINNER_VISUAL_REFERENCE.md",
+        "leader_video_ids": [
+          "7660776429164006686",
+          "7660795244656610591"
+        ],
+        "reject": [
+          "orange-teal or uniformly golden grade",
+          "milky haze, pale high-key daylight, or a washed-out low-contrast grade",
+          "synthetic sharpening halos or product-render crispness",
+          "crushed-black featureless body or window slabs",
+          "near-duplicate door, wheel, mirror, or bed fragments across accounts"
+        ]
+      },
+      "note": "PRIMARY truck bible reset by Smaths 2026-07-22 to the actual early iPhone-Mirroring winners and darkened again 2026-08-14 after the bright batch underperformed. Preserve the MiniMax/Hailuo native five-crop economics only when every crop matches WINNER_VISUAL_REFERENCE.md: dark low-exposure natural truck views, muted lake/grass/field/forest settings, controlled highlights, restrained color, and ordinary camera softness. Washed-out daylight and the former crisp featureless side-on desert product-render look are rejected. OCR plus strict visual and winner-reference QA remain mandatory; generate surplus and reject badges, occupants, plates, morphs, duplicate-looking crops, and visual-profile misses.",
+      "slots": {
+        "angle": [
+          "front three-quarter near-side view",
+          "rear three-quarter near-side view",
+          "natural near-side profile"
+        ],
+        "setting": [
+          "on a gravel shoulder beside a still pond with dormant tan grass on a low hillside",
+          "beside a calm lake edged by muted dry grass under a pale sky",
+          "on a country backroad through subdued wheat fields",
+          "at a quiet field edge with pale winter grass",
+          "at a damp forest pullout among tall pines",
+          "on a mountain pullout with muted pines and gray haze behind",
+          "in a neutral gravel farmyard by a weathered barn",
+          "along a wooden ranch fence in green-brown open pasture",
+          "on a gravel riverbank beside calm water",
+          "at the edge of a broad meadow under low gray clouds"
+        ],
+        "light": [
+          "dark soft-overcast light with controlled pale highlights",
+          "low-key blue-gray morning light",
+          "cool moody post-rain light with deep shadows",
+          "subdued late-afternoon light without a hard orange cast",
+          "deep muted blue-gray dusk",
+          "restrained low-exposure golden-hour light under heavy clouds"
+        ],
+        "atmosphere": [
+          "dark natural muted color with controlled haze and preserved shadow detail",
+          "subtle damp air with restrained reflections and deep blacks",
+          "quiet clear air with controlled highlights and no stylized color cast",
+          "a faint breeze moving grass while the truck remains still in a moody low-exposure frame"
+        ]
+      },
+      "keepers_per_gen": 1.0
+    },
+    "scenic": {
+      "method": "i2v",
+      "provider": "wan-i2v-fast",
+      "fixed_subject": "the same clean debadged glossy black Ford F-150 crew cab with factory wheels, no lettering or license plates anywhere on the truck",
+      "quality_guards": "photorealistic phone photo, vertical 9:16, no lettering, no plates, keep the truck identical to the reference",
+      "template": "Reframe {subject} as a {angle}, parked at {setting}, {light}, {composition}. {guards}.",
+      "motion_prompt": "Faint dust drifts through the warm sunlight, grass sways gently, long shadows creep very slowly, the truck stays perfectly still with its wheels and tires completely stationary and not rotating and nothing else on the truck moving, static camera, no people appear, photorealistic golden hour",
+      "base_anchor": "anchors/scenic-v2.jpg",
+      "extra": null,
+      "clips_per_gen": 1,
+      "note": null,
+      "slots": {
+        "angle": [
+          "front three-quarter view",
+          "full side profile",
+          "rear three-quarter angle",
+          "low dramatic hero angle looking up",
+          "straight-on front view",
+          "high wide establishing angle"
+        ],
+        "setting": [
+          "a gravel country backroad through golden wheat fields",
+          "a dirt farmyard by a weathered red barn",
+          "a mountain pullout with a hazy range behind",
+          "a gravel riverbank beside a calm river",
+          "cracked desert scrub with distant buttes",
+          "a damp forest two-track among tall pines",
+          "a grassy hilltop",
+          "a wooden ranch fence line in open pasture",
+          "coastal sand dunes near the water",
+          "a country dirt road at the edge of a field"
+        ],
+        "light": [
+          "warm golden-hour sun raking low with long shadows",
+          "cool blue-hour dusk just after sunset",
+          "soft pink-gold sunrise mist",
+          "harsh warm late-afternoon sun with dust in the air",
+          "soft overcast diffused light, moody and cool",
+          "a huge dramatic cloudy sunset sky with warm rim light"
+        ],
+        "composition": [
+          "the truck filling most of the frame",
+          "the truck in the lower third under a big sky",
+          "the truck off-center with foreground grass"
+        ]
+      },
+      "keepers_per_gen": 0.7
+    },
+    "silhouette": {
+      "method": "i2v",
+      "provider": "wan-i2v-fast",
+      "fixed_subject": "the same pure black featureless silhouettes of a man and woman embracing, and a clean debadged black Ford F-150, no readable faces or clothing detail, no lettering anywhere",
+      "quality_guards": "photorealistic deep low-exposure dusk photo, vertical 9:16, rich dark sky with controlled highlights and no pale pastel wash, couple stays fully featureless black silhouettes, clean caption sky in the upper frame, keep the couple and truck identical to the reference",
+      "template": "Reframe {subject} with a dark low-exposure {sky} sky, in {setting}, {pose}, {composition}; preserve deep blacks and controlled highlights with no pale or washed-out sky. {guards}.",
+      "motion_prompt": "Gentle breeze moves the tall grass and her hair, the couple holds the same embrace from first frame to last, clouds drift very slowly, the truck stays still, static camera, no new people appear, deep cinematic low-light realism with controlled highlights and no pastel wash",
+      "base_anchor": "anchors/silhouette-pool-v1/silhouette-anchor-01.png",
+      "extra": null,
+      "clips_per_gen": 1,
+      "note": "Locked multi-anchor recipe 2026-08-04, dark-exposure prompt revision 2026-08-14. Thirty independently minted FLUX raw 9:16 hero frames rotate deterministically without replacement; each WAN generation records the exact anchor path and SHA-256. Existing technical, OCR, visual-format, geometry, duplicate, and never-reuse gates remain fail-closed.",
+      "slots": {
+        "sky": [
+          "vast deep purple and muted red dusk gradient",
+          "dark plum and restrained pink twilight",
+          "deep burnt-orange sunset under heavy streaked clouds",
+          "dim bronze afterglow fading into navy blue",
+          "moody near-black violet dusk with a low sun ember",
+          "dark amber horizon beneath a charcoal clearing sky"
+        ],
+        "setting": [
+          "an open dusk field of tall grass",
+          "a wheat field at last light",
+          "a lakeside meadow at dusk",
+          "a country hilltop",
+          "a dirt pullout beside a fence line",
+          "a coastal bluff at sunset"
+        ],
+        "pose": [
+          "foreheads touching",
+          "her head on his shoulder",
+          "a slow embrace facing the sky",
+          "holding each other close, side-on",
+          "a gentle sway together"
+        ],
+        "composition": [
+          "couple lower-left, truck right, big sky above",
+          "couple mid-ground large, truck behind",
+          "wide, couple and truck small under an enormous sky"
+        ]
+      },
+      "keepers_per_gen": 0.875,
+      "anchor_pool": [
+        "anchors/silhouette-pool-v1/silhouette-anchor-01.png",
+        "anchors/silhouette-pool-v1/silhouette-anchor-02.png",
+        "anchors/silhouette-pool-v1/silhouette-anchor-03.png",
+        "anchors/silhouette-pool-v1/silhouette-anchor-04.png",
+        "anchors/silhouette-pool-v1/silhouette-anchor-05.png",
+        "anchors/silhouette-pool-v1/silhouette-anchor-06.png",
+        "anchors/silhouette-pool-v1/silhouette-anchor-07.png",
+        "anchors/silhouette-pool-v1/silhouette-anchor-08.png",
+        "anchors/silhouette-pool-v1/silhouette-anchor-09.png",
+        "anchors/silhouette-pool-v1/silhouette-anchor-10.png",
+        "anchors/silhouette-pool-v1/silhouette-anchor-11.png",
+        "anchors/silhouette-pool-v1/silhouette-anchor-12.png",
+        "anchors/silhouette-pool-v1/silhouette-anchor-13.png",
+        "anchors/silhouette-pool-v1/silhouette-anchor-14.png",
+        "anchors/silhouette-pool-v1/silhouette-anchor-15.png",
+        "anchors/silhouette-pool-v1/silhouette-anchor-16.png",
+        "anchors/silhouette-pool-v1/silhouette-anchor-17.png",
+        "anchors/silhouette-pool-v1/silhouette-anchor-18.png",
+        "anchors/silhouette-pool-v1/silhouette-anchor-19.png",
+        "anchors/silhouette-pool-v1/silhouette-anchor-20.png",
+        "anchors/silhouette-pool-v1/silhouette-anchor-21.png",
+        "anchors/silhouette-pool-v1/silhouette-anchor-22.png",
+        "anchors/silhouette-pool-v1/silhouette-anchor-23.png",
+        "anchors/silhouette-pool-v1/silhouette-anchor-24.png",
+        "anchors/silhouette-pool-v1/silhouette-anchor-25.png",
+        "anchors/silhouette-pool-v1/silhouette-anchor-26.png",
+        "anchors/silhouette-pool-v1/silhouette-anchor-27.png",
+        "anchors/silhouette-pool-v1/silhouette-anchor-28.png",
+        "anchors/silhouette-pool-v1/silhouette-anchor-29.png",
+        "anchors/silhouette-pool-v1/silhouette-anchor-30.png"
+      ],
+      "anchor_rotation": "deterministic_without_replacement",
+      "anchor_manifest": "anchors/silhouette-pool-v1/pool-manifest.json"
+    },
+    "ugc": {
+      "method": "t2v",
+      "provider": "hailuo",
+      "fixed_subject": "lifted black Ford F-150 crew cab on 35-inch mud tires, factory grille with clean legible FORD block letters, no other lettering anywhere",
+      "quality_guards": "the truck is completely stationary with its wheels and tires not rotating, no people visible, no on-screen text, vertical 9:16",
+      "template": "Smartphone UGC clip filmed handheld with gentle phone drift: {subject}, parked {angle} on {setting} at {light}, {atmosphere}, truck fills most of the frame, {subject_state}.",
+      "motion_prompt": null,
+      "base_anchor": null,
+      "extra": {
+        "crop_mode": "dual",
+        "optimize_prompt": false
+      },
+      "clips_per_gen": 1,
+      "note": null,
+      "slots": {
+        "angle": [
+          "three-quarter front",
+          "low front three-quarter emphasizing the lift",
+          "side profile",
+          "front-on"
+        ],
+        "setting": [
+          "a gravel farm drive with a wooden fence and pasture behind",
+          "a muddy backroad at the field's edge",
+          "a gravel lot by a metal gate",
+          "a dirt turnout in front of a treeline",
+          "a ranch driveway with hay bales behind"
+        ],
+        "light": [
+          "golden hour with the low sun flaring softly in the lens",
+          "warm late afternoon",
+          "overcast soft daylight",
+          "early-morning golden light"
+        ],
+        "atmosphere": [
+          "faint dust in the air",
+          "damp after rain with reflections",
+          "dry and dusty",
+          "crisp and clear"
+        ]
+      },
+      "keepers_per_gen": 0.27
+    },
+    "boat": {
+      "method": "i2v",
+      "provider": "wan-i2v-fast",
+      "fixed_subject": "the same white open-hull boat bow, no lettering anywhere",
+      "quality_guards": "realistic action-camera phone footage, vertical 9:16, no people, keep the boat identical to the reference",
+      "template": "Reframe {subject} cruising toward {setting}, {light}, {water}. {guards}.",
+      "motion_prompt": "The boat cruises forward across the lake, gentle rocking, small ripples flowing past the hull, warm sun reflections shimmering on the moving water, shoreline drifting past, realistic phone video motion",
+      "base_anchor": "anchors/boat.jpg",
+      "extra": null,
+      "clips_per_gen": 1,
+      "note": null,
+      "slots": {
+        "setting": [
+          "a pine-lined lake shore",
+          "an open glassy lake with distant hills",
+          "a river bend with overhanging trees",
+          "a wide bay with a far treeline",
+          "a cove with rocky banks"
+        ],
+        "light": [
+          "golden-hour sun low with a starburst",
+          "warm sunset reflections",
+          "soft morning gold",
+          "bright summer afternoon"
+        ],
+        "water": [
+          "light chop with sparkling ripples",
+          "calm water with long light reflections",
+          "gentle wake spreading behind",
+          "small waves catching the sun"
+        ]
+      },
+      "keepers_per_gen": 0.7
+    }
+  }
+}
