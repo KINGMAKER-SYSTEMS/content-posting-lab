@@ -14,6 +14,20 @@
       "baseRecipeId": "between-the-lines-nightcore-pov",
       "baseRecipeVersion": "v886fe1b646f3",
       "maxQuantity": 10
+    },
+    "pov-scenic:master": {
+      "format": "pov-scenic",
+      "engine": "sourced_video",
+      "baseRecipeId": "between-the-lines-nightcore-pov",
+      "baseRecipeVersion": "v886fe1b646f3",
+      "maxQuantity": 10
+    },
+    "pov-dirt-bike:master": {
+      "format": "pov-dirt-bike",
+      "engine": "sourced_video",
+      "baseRecipeId": "pov-dirt-bike-8791-20260828",
+      "baseRecipeVersion": "v32169e75b485",
+      "maxQuantity": 10
     }
   }
 }

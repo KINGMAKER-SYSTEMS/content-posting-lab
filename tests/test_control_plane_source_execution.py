@@ -287,6 +287,54 @@ def test_source_recipe_requires_exact_mapping_typed_format_and_live_base_version
     ) is None
 
 
+@pytest.mark.parametrize(
+    ("recipe_id", "format_slug", "base_recipe_id", "base_recipe_version"),
+    [
+        (
+            "pov-scenic:master",
+            "pov-scenic",
+            "between-the-lines-nightcore-pov",
+            "v886fe1b646f3",
+        ),
+        (
+            "pov-dirt-bike:master",
+            "pov-dirt-bike",
+            "pov-dirt-bike-8791-20260828",
+            "v32169e75b485",
+        ),
+    ],
+)
+def test_new_source_executors_require_the_exact_approved_library_version(
+    recipe_id, format_slug, base_recipe_id, base_recipe_version,
+):
+    payload = publication(recipe_id, format_slug)
+    base = {
+        "recipeId": base_recipe_id,
+        "engine": "content_lab",
+        "recipeVersion": base_recipe_version,
+        "maxQuantity": 20,
+    }
+    resolved = resolve_source_recipe(
+        payload,
+        base_recipe_lookup=lambda requested: dict(base)
+        if requested == base_recipe_id
+        else None,
+    )
+    assert resolved is not None
+    assert resolved.base_recipe_id == base_recipe_id
+    assert resolved.base_recipe_version == base_recipe_version
+
+    drifted = {**base, "recipeVersion": "v-drifted"}
+    assert resolve_source_recipe(
+        payload,
+        base_recipe_lookup=lambda _: drifted,
+    ) is None
+    assert resolve_source_recipe(
+        payload,
+        base_recipe_lookup=lambda _: None,
+    ) is None
+
+
 def test_capability_and_job_bind_exact_source_version_and_select_without_replacement(lab):
     client, _, _, started = lab
     capabilities = client.get(
