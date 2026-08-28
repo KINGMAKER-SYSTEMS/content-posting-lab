@@ -143,6 +143,11 @@ def _typed_recipe_spec(publication: dict[str, Any]) -> dict[str, Any] | None:
     return spec
 
 
+def typed_recipe_spec(publication: dict[str, Any]) -> dict[str, Any] | None:
+    """Public strict decoder shared by generated and sourced executors."""
+    return _typed_recipe_spec(publication)
+
+
 def resolve_generation_recipe(
     publication: dict[str, Any], *, require_runtime: bool = True,
 ) -> GenerationRecipe | None:

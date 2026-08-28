@@ -1,4 +1,4 @@
-"""Dossier versions execute new media and never hydrate legacy library clips."""
+"""Generated dossier versions never hydrate legacy library clips."""
 
 import hashlib
 import json
