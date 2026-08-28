@@ -4,6 +4,7 @@ import hashlib
 import json
 from pathlib import Path
 import shutil
+import subprocess
 
 import pytest
 from fastapi import FastAPI
@@ -24,15 +25,25 @@ BASE_RECIPE = {
 }
 
 
-def publication(recipe_id="coffee-tok:master", format_slug="coffee-tok"):
+def publication(
+    recipe_id="coffee-tok:master",
+    format_slug="coffee-tok",
+    *,
+    clip_speed=1.25,
+    include_clip_speed=True,
+    recipe_version="dossier-feedfacefeedface",
+    dossier_revision="rev-coffee",
+):
+    render_treatment = {
+        "stylePreset": "warm-coffee",
+        "filters": {"brightness": 1.05, "warmth": 0.1},
+        "captionStyle": {},
+    }
+    if include_clip_speed:
+        render_treatment["clipSpeed"] = clip_speed
     canonical = json.dumps({
         "schema": "dossier.recipe-spec.v1",
-        "renderTreatment": {
-            "stylePreset": "warm-coffee",
-            "filters": {"brightness": 1.05, "warmth": 0.1},
-            "captionStyle": {},
-            "clipSpeed": 1.25,
-        },
+        "renderTreatment": render_treatment,
         "demand": {"formatMix": {format_slug: 1.0}},
     }, sort_keys=True, separators=(",", ":"))
     return {
@@ -41,8 +52,8 @@ def publication(recipe_id="coffee-tok:master", format_slug="coffee-tok"):
         "lane": recipes.LANE,
         "recipeId": recipe_id,
         "engine": "sourced_video",
-        "recipeVersion": "dossier-feedfacefeedface",
-        "dossierRevision": "rev-coffee",
+        "recipeVersion": recipe_version,
+        "dossierRevision": dossier_revision,
         "recipeSpecHash": "sha256:" + hashlib.sha256(canonical.encode()).hexdigest(),
         "recipeSpecCanonical": canonical,
     }
@@ -57,8 +68,8 @@ def headers(idempotency="source-job-0001"):
     }
 
 
-def job_body(quantity=2):
-    payload = publication()
+def job_body(quantity=2, payload=None):
+    payload = payload or publication()
     return {
         "pageId": PAGE_ID,
         "lane": recipes.LANE,
@@ -70,6 +81,48 @@ def job_body(quantity=2):
         "sourceIsolation": {"partitionKey": f"page:{PAGE_ID}"},
         "policyHash": "sha256:policy",
     }
+
+
+def _write_av_test_clip(path: Path, duration: float = 2.4) -> None:
+    if shutil.which("ffmpeg") is None:
+        pytest.skip("ffmpeg is required for the real clip-speed render contract")
+    subprocess.run(
+        [
+            "ffmpeg", "-y", "-v", "error",
+            "-f", "lavfi", "-i", "testsrc2=size=320x568:rate=30",
+            "-f", "lavfi", "-i", "sine=frequency=880:sample_rate=48000",
+            "-t", str(duration), "-shortest",
+            "-c:v", "libx264", "-pix_fmt", "yuv420p",
+            "-c:a", "aac", "-movflags", "+faststart",
+            str(path),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
+def _probe_durations(path: Path) -> tuple[float, dict[str, float]]:
+    if shutil.which("ffprobe") is None:
+        pytest.skip("ffprobe is required for the real clip-speed render contract")
+    completed = subprocess.run(
+        [
+            "ffprobe", "-v", "error",
+            "-show_entries", "format=duration:stream=codec_type,duration",
+            "-of", "json", str(path),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    probe = json.loads(completed.stdout)
+    streams = {
+        stream["codec_type"]: float(stream["duration"])
+        for stream in probe["streams"]
+        if stream.get("codec_type") in {"video", "audio"}
+        and stream.get("duration") is not None
+    }
+    return float(probe["format"]["duration"]), streams
 
 
 @pytest.fixture
@@ -100,6 +153,119 @@ def lab(monkeypatch, tmp_path):
     )
     assert response.status_code == 200
     return client, tmp_path, base, started
+
+
+@pytest.mark.parametrize(
+    ("clip_speed", "recipe_version"),
+    [
+        (0.5, "dossier-0505050505050505"),
+        (1.0, "dossier-1010101010101010"),
+        (2.0, "dossier-2020202020202020"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_source_runner_changes_real_video_and_audio_duration_with_provenance(
+    lab, clip_speed, recipe_version,
+):
+    client, tmp_path, _, _ = lab
+    source = (
+        tmp_path / "projects" / BASE_RECIPE["recipeId"] / "videos" / "clip-0.mp4"
+    )
+    _write_av_test_clip(source)
+    source_duration, source_streams = _probe_durations(source)
+    assert set(source_streams) == {"video", "audio"}
+
+    payload = publication(
+        clip_speed=clip_speed,
+        recipe_version=recipe_version,
+        dossier_revision=f"rev-speed-{clip_speed}",
+    )
+    registered = client.post(
+        "/api/control-plane/v1/recipes",
+        json=payload,
+        headers=headers(f"source-register-{recipe_version}"),
+    )
+    assert registered.status_code == 200
+    response = client.post(
+        "/api/control-plane/v1/jobs",
+        json=job_body(1, payload),
+        headers=headers(f"source-job-{recipe_version}"),
+    )
+    assert response.status_code == 200
+    job_id = response.json()["jobId"]
+    selected = cp._load_jobs()["jobs"][job_id]["sourceClips"][0]
+
+    await cp._run_dossier_source(job_id)
+
+    job = cp._load_jobs()["jobs"][job_id]
+    assert job["status"] == "completed"
+    assert len(job["clips"]) == 1
+    clip = job["clips"][0]
+    output = Path(job["artifactRoot"]) / clip["path"]
+    output_duration, output_streams = _probe_durations(output)
+    expected_duration = source_duration / clip_speed
+    assert output_duration == pytest.approx(expected_duration, abs=0.12)
+    assert set(output_streams) == {"video", "audio"}
+    assert output_streams["video"] == pytest.approx(expected_duration, abs=0.12)
+    assert output_streams["audio"] == pytest.approx(expected_duration, abs=0.12)
+    assert clip["clipSpeed"] == pytest.approx(clip_speed)
+    assert clip["bytes"] == output.stat().st_size > 0
+    assert clip["sha256"] == hashlib.sha256(output.read_bytes()).hexdigest()
+    assert clip["sha256"] != selected["sha256"]
+    assert clip["source"] == {
+        "recipeId": BASE_RECIPE["recipeId"],
+        "recipeVersion": BASE_RECIPE["recipeVersion"],
+        "path": selected["path"],
+        "sha256": selected["sha256"],
+        "bytes": selected["bytes"],
+    }
+
+
+@pytest.mark.asyncio
+async def test_source_runner_defaults_legacy_clip_speed_omission_to_real_time(lab):
+    client, tmp_path, _, _ = lab
+    source = (
+        tmp_path / "projects" / BASE_RECIPE["recipeId"] / "videos" / "clip-0.mp4"
+    )
+    _write_av_test_clip(source)
+    source_duration, _ = _probe_durations(source)
+    payload = publication(
+        include_clip_speed=False,
+        recipe_version="dossier-deaddeaddeaddead",
+        dossier_revision="rev-speed-legacy",
+    )
+    assert client.post(
+        "/api/control-plane/v1/recipes",
+        json=payload,
+        headers=headers("source-register-speed-legacy"),
+    ).status_code == 200
+    response = client.post(
+        "/api/control-plane/v1/jobs",
+        json=job_body(1, payload),
+        headers=headers("source-job-speed-legacy"),
+    )
+    assert response.status_code == 200
+    job_id = response.json()["jobId"]
+
+    await cp._run_dossier_source(job_id)
+
+    job = cp._load_jobs()["jobs"][job_id]
+    clip = job["clips"][0]
+    output = Path(job["artifactRoot"]) / clip["path"]
+    output_duration, _ = _probe_durations(output)
+    assert clip["clipSpeed"] == pytest.approx(1.0)
+    assert output_duration == pytest.approx(source_duration, abs=0.12)
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    [0.49, 2.01, True, "fast", float("nan"), float("inf")],
+)
+def test_source_recipe_fails_closed_for_invalid_clip_speed(invalid):
+    assert resolve_source_recipe(
+        publication(clip_speed=invalid),
+        base_recipe_lookup=lambda _: dict(BASE_RECIPE),
+    ) is None
 
 
 def test_source_recipe_requires_exact_mapping_typed_format_and_live_base_version():

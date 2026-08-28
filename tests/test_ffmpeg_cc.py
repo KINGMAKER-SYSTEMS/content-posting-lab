@@ -69,6 +69,12 @@ def test_playback_speed_changes_pts_even_without_color_treatment():
             build_cc_filter(None, playback_speed=invalid)
 
 
+def test_playback_speed_survives_an_effectively_neutral_color_treatment():
+    assert build_cc_filter(
+        {"temperature": 1}, playback_speed=2.0,
+    ) == "setpts=PTS/2.000000"
+
+
 @pytest.mark.asyncio
 async def test_speed_render_keeps_optional_audio_in_lockstep(monkeypatch):
     captured = []

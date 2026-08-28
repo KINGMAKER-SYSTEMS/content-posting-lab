@@ -153,7 +153,7 @@ def build_cc_filter(
         and vignette_raw < 0.001
     )
     if is_default:
-        return scale_filter or "null"
+        return ",".join(item for item in (speed_filter, scale_filter) if item) or "null"
 
     mat = [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
     off = [0.0, 0.0, 0.0]
