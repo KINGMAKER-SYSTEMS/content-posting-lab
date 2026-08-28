@@ -1,0 +1,19 @@
+{
+  "schema": "content-lab.dossier-source-executors.v1",
+  "executors": {
+    "coffee-tok:master": {
+      "format": "coffee-tok",
+      "engine": "sourced_video",
+      "baseRecipeId": "brewpilled-coffee",
+      "baseRecipeVersion": "v62173591b07a",
+      "maxQuantity": 10
+    },
+    "pov-night-core:master": {
+      "format": "pov-night-core",
+      "engine": "sourced_video",
+      "baseRecipeId": "between-the-lines-nightcore-pov",
+      "baseRecipeVersion": "v886fe1b646f3",
+      "maxQuantity": 10
+    }
+  }
+}

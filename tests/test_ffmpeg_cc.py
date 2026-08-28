@@ -12,7 +12,8 @@ import re
 
 import pytest
 
-from services.ffmpeg import build_cc_filter, is_default_cc
+from services import ffmpeg as ffmpeg_module
+from services.ffmpeg import build_cc_filter, is_default_cc, run_color_correct
 
 
 # --- helpers ---------------------------------------------------------------
@@ -48,6 +49,55 @@ def test_is_default_cc_true(cc):
 
 def test_is_default_cc_nonzero():
     assert is_default_cc({"brightness": 5}) is False
+
+
+def test_grain_and_vignette_are_real_non_default_treatments():
+    assert is_default_cc({"grain": 20}) is False
+    assert is_default_cc({"vignette": 30}) is False
+    vf = build_cc_filter({"grain": 20, "vignette": 30})
+    assert "noise=alls=3.00:allf=t+u" in vf
+    assert "vignette=angle=PI/9.600:eval=frame" in vf
+
+
+def test_playback_speed_changes_pts_even_without_color_treatment():
+    assert build_cc_filter(None, playback_speed=1.25) == "setpts=PTS/1.250000"
+    assert build_cc_filter({"grain": 20}, playback_speed=0.75).endswith(
+        "setpts=PTS/0.750000"
+    )
+    for invalid in (0.49, 2.01, True, float("nan")):
+        with pytest.raises(ValueError, match="playback_speed"):
+            build_cc_filter(None, playback_speed=invalid)
+
+
+def test_playback_speed_survives_an_effectively_neutral_color_treatment():
+    assert build_cc_filter(
+        {"temperature": 1}, playback_speed=2.0,
+    ) == "setpts=PTS/2.000000"
+
+
+@pytest.mark.asyncio
+async def test_speed_render_keeps_optional_audio_in_lockstep(monkeypatch):
+    captured = []
+
+    class Process:
+        returncode = 0
+
+        async def communicate(self):
+            return b"", b""
+
+    async def fake_exec(*args, **kwargs):
+        captured.extend(args)
+        return Process()
+
+    monkeypatch.setattr(ffmpeg_module.asyncio, "create_subprocess_exec", fake_exec)
+    await run_color_correct("in.mp4", "out.mp4", None, playback_speed=1.25)
+
+    assert captured[captured.index("-vf") + 1] == "setpts=PTS/1.250000"
+    assert captured[captured.index("-af") + 1] == "atempo=1.250000"
+    video_map = captured.index("-map")
+    assert ["-map", "0:v:0"] == captured[video_map:video_map + 2]
+    assert "0:a?" in captured
+    assert captured[captured.index("-c:a") + 1] == "aac"
 
 
 def test_is_default_cc_string_number_is_truthy_nonzero():

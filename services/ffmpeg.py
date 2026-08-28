@@ -58,7 +58,7 @@ def is_default_cc(cc: dict | None) -> bool:
         return True
     for k in (
         "brightness", "contrast", "saturation", "sharpness",
-        "shadow", "temperature", "tint", "fade",
+        "shadow", "temperature", "tint", "fade", "grain", "vignette",
     ):
         try:
             if float(cc.get(k, 0)) != 0:
@@ -68,30 +68,51 @@ def is_default_cc(cc: dict | None) -> bool:
     return True
 
 
-def build_cc_filter(cc: dict | None, scale: str | None = None) -> str:
+def _validated_playback_speed(value: float) -> float:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(float(value))
+        or not 0.5 <= float(value) <= 2.0
+    ):
+        raise ValueError("playback_speed must be a finite number from 0.5 through 2.0")
+    return float(value)
+
+
+def build_cc_filter(
+    cc: dict | None,
+    scale: str | None = None,
+    playback_speed: float = 1.0,
+) -> str:
     """Build an ffmpeg `-vf` filter string for color correction.
 
     Args:
         cc: Optional dict with keys brightness/contrast/saturation/sharpness/
-            shadow/temperature/tint/fade (each an integer slider value). None
-            or all-default values produces a no-op (see `scale` behavior).
+            shadow/temperature/tint/fade/grain/vignette (each an integer slider
+            value). None or all-default values produces a no-op (see `scale`
+            behavior).
         scale: Optional trailing scale filter.
             - None → no scale filter, input dimensions pass through.
             - "1080:1920" → appends `scale=1080:1920:flags=lanczos,setsar=1`
               (Burn tab's TikTok default).
+        playback_speed: Video and audio playback-rate multiplier, 0.5 through
+            2.0. Video PTS is changed here; `run_color_correct` applies the
+            matching audio tempo when an audio stream exists.
 
     Returns:
         A comma-joined filter string ready for ffmpeg's `-vf` argument. When
         there's nothing to do (default CC + no scale), returns "null" (ffmpeg's
         no-op filter) so the command still validates.
     """
+    speed = _validated_playback_speed(playback_speed)
+    speed_filter = None if speed == 1.0 else f"setpts=PTS/{speed:.6f}"
     scale_filter = (
         f"scale={scale}:flags=lanczos,setsar=1" if scale else None
     )
 
     # Fast path: no CC → just the scale (or null if no scale either).
     if is_default_cc(cc):
-        return scale_filter or "null"
+        return ",".join(item for item in (speed_filter, scale_filter) if item) or "null"
 
     b_raw = float(cc.get("brightness", 0))
     c_raw = float(cc.get("contrast", 0))
@@ -101,6 +122,8 @@ def build_cc_filter(cc: dict | None, scale: str | None = None) -> str:
     t_raw = float(cc.get("temperature", 0))
     ti_raw = float(cc.get("tint", 0))
     f_raw = float(cc.get("fade", 0))
+    grain_raw = max(0.0, min(100.0, float(cc.get("grain", 0))))
+    vignette_raw = max(0.0, min(100.0, float(cc.get("vignette", 0))))
 
     css_brightness = 1 + b_raw / 100
     css_contrast = 1 + c_raw / 100
@@ -126,9 +149,11 @@ def build_cc_filter(cc: dict | None, scale: str | None = None) -> str:
         and abs(t_raw) <= 1
         and abs(ti_raw) <= 1
         and sharpness < 0.001
+        and grain_raw < 0.001
+        and vignette_raw < 0.001
     )
     if is_default:
-        return scale_filter or "null"
+        return ",".join(item for item in (speed_filter, scale_filter) if item) or "null"
 
     mat = [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
     off = [0.0, 0.0, 0.0]
@@ -228,6 +253,17 @@ def build_cc_filter(cc: dict | None, scale: str | None = None) -> str:
     filters = ["format=rgb24", ccm]
     if sharpness >= 0.001:
         filters.append(f"unsharp=5:5:{sharpness:.2f}:5:5:{sharpness:.2f}")
+    if grain_raw >= 0.001:
+        # The dossier dial is 0..1. Keep the generated-media treatment subtle:
+        # at 100 this is visible film grain, never destructive static.
+        filters.append(f"noise=alls={grain_raw * 0.15:.2f}:allf=t+u")
+    if vignette_raw >= 0.001:
+        # FFmpeg's lens angle grows stronger as the PI denominator shrinks.
+        # Map the dossier's 0..1 dial into a restrained PI/12..PI/4 range.
+        denominator = 12.0 - (vignette_raw / 100.0) * 8.0
+        filters.append(f"vignette=angle=PI/{denominator:.3f}:eval=frame")
+    if speed_filter:
+        filters.append(speed_filter)
     if scale_filter:
         filters.append(scale_filter)
 
@@ -240,17 +276,28 @@ async def run_color_correct(
     cc: dict | None,
     scale: str | None = None,
     encode_args: list[str] | None = None,
+    playback_speed: float = 1.0,
 ) -> None:
     """Run ffmpeg to produce a color-corrected copy of a video.
 
     Raises RuntimeError with the last ~500 chars of stderr on ffmpeg failure.
     """
-    vf = build_cc_filter(cc, scale=scale)
-    enc = encode_args if encode_args is not None else STANDARD_ENCODE_ARGS
+    speed = _validated_playback_speed(playback_speed)
+    vf = build_cc_filter(cc, scale=scale, playback_speed=speed)
+    enc = list(encode_args if encode_args is not None else STANDARD_ENCODE_ARGS)
+    audio_args: list[str] = []
+    if speed != 1.0:
+        # `0:a?` preserves silent provider outputs while changing embedded
+        # audio in lockstep when it exists. Filtered audio cannot stream-copy.
+        audio_args = ["-map", "0:v:0", "-map", "0:a?", "-af", f"atempo={speed:.6f}"]
+        for index, argument in enumerate(enc[:-1]):
+            if argument == "-c:a" and enc[index + 1] == "copy":
+                enc[index + 1] = "aac"
     cmd = [
         "ffmpeg", "-y",
         "-i", input_path,
         "-vf", vf,
+        *audio_args,
         *enc,
         output_path,
     ]
