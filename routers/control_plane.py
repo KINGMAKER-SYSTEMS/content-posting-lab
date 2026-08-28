@@ -1041,13 +1041,21 @@ def job_artifacts(
     proto = request.headers.get("x-forwarded-proto", request.url.scheme)
     host = request.headers.get("x-forwarded-host", request.url.netloc)
     base = f"{proto}://{host}"
-    artifacts = [
-        {
+    artifacts = []
+    for index, clip in enumerate(job["clips"]):
+        artifact = {
             "url": f"{base}/api/control-plane/v1/jobs/{job_id}/download/{index}?token={job['token']}",
             "type": "video",
+            # These are claims about the exact bytes behind the signed URL.
+            # ShipStream re-hashes the download before admission, so a stale
+            # or substituted response fails closed instead of becoming D1/R2
+            # supply under provenance that no longer matches its bytes.
+            "sha256": clip["sha256"],
+            "bytes": clip["bytes"],
         }
-        for index in range(len(job["clips"]))
-    ]
+        if isinstance(clip.get("source"), dict):
+            artifact["source"] = clip["source"]
+        artifacts.append(artifact)
     return {"schema": RESPONSE_SCHEMA, "jobId": job_id, "artifacts": artifacts}
 
 

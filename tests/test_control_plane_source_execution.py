@@ -191,6 +191,48 @@ async def test_source_runner_always_treats_into_isolated_root_with_provenance(la
         assert clip["source"]["sha256"]
         assert clip["sha256"]
 
+    response = client.get(
+        f"/api/control-plane/v1/jobs/{job_id}/artifacts",
+        headers={"Authorization": f"Bearer {TOKEN}", "X-RT-Page-Id": PAGE_ID},
+    )
+    assert response.status_code == 200
+    artifacts = response.json()["artifacts"]
+    assert len(artifacts) == 2
+    for artifact, clip in zip(artifacts, job["clips"], strict=True):
+        assert artifact["sha256"] == clip["sha256"]
+        assert artifact["bytes"] == clip["bytes"]
+        assert artifact["source"] == clip["source"]
+
+
+@pytest.mark.asyncio
+async def test_source_runner_fails_closed_when_selected_library_bytes_change(lab, monkeypatch):
+    client, tmp_path, _, _ = lab
+    response = client.post(
+        "/api/control-plane/v1/jobs",
+        json=job_body(1),
+        headers=headers("source-job-mutated"),
+    )
+    job_id = response.json()["jobId"]
+    selected = cp._load_jobs()["jobs"][job_id]["sourceClips"][0]
+    source = (
+        tmp_path / "projects" / BASE_RECIPE["recipeId"] / "videos" / selected["path"]
+    )
+    source.write_bytes(b"changed-after-hash-pinned-selection")
+
+    calls = []
+
+    async def fake_color_correct(*args, **kwargs):
+        calls.append((args, kwargs))
+
+    monkeypatch.setattr(cp, "run_color_correct", fake_color_correct)
+    await cp._run_dossier_source(job_id)
+
+    job = cp._load_jobs()["jobs"][job_id]
+    assert job["status"] == "failed"
+    assert job["error"] == "source_recipe_artifact_changed"
+    assert job["clips"] == []
+    assert calls == []
+
 
 def test_base_version_drift_withdraws_capability_and_refuses_job(lab):
     client, _, base, _ = lab
