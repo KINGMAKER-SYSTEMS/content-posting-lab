@@ -76,6 +76,16 @@ def test_legacy_project_recipe_cannot_execute_without_master_pages_engine_alignm
     assert not cp._jobs_path().exists()
 
 
+def test_legacy_projects_are_never_advertised_as_page_capabilities(lab):
+    client, _, _, _ = lab
+    response = client.get(
+        "/api/control-plane/v1/capabilities",
+        headers={"X-RT-Page-Id": PAGE_ID},
+    )
+    assert response.status_code == 200
+    assert response.json()["capabilities"] == []
+
+
 def test_job_contract_rejects_prompt_fields_unknown_fields_and_missing_auth(lab):
     client, version, intent, revision = lab
     assert client.post(
