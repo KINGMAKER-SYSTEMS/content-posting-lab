@@ -95,6 +95,11 @@ def set_page(integration_id: str, data: dict) -> dict:
             "pipeline": data.get("pipeline", existing.get("pipeline")),
             "page_type": data.get("page_type", existing.get("page_type")),
             "content_niche": data.get("content_niche", existing.get("content_niche")),
+            "content_engine": data.get("content_engine", existing.get("content_engine")),
+            "automation_mode": data.get("automation_mode", existing.get("automation_mode")),
+            "vault_url": data.get("vault_url", existing.get("vault_url")),
+            "account_status": data.get("account_status", existing.get("account_status")),
+            "archived": data.get("archived", existing.get("archived", False)),
             "sounds_reference": data.get("sounds_reference", existing.get("sounds_reference")),
             "go_live_date": data.get("go_live_date", existing.get("go_live_date")),
             # R2 storage (replaces Drive for new pipeline accounts):

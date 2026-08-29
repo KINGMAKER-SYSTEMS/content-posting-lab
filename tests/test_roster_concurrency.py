@@ -37,6 +37,26 @@ def test_set_page_preserves_added_at_on_update(store):
     assert second["name"] == "Page One"  # carried over
 
 
+def test_set_page_persists_master_pages_generation_ontology(store):
+    entry = roster.set_page("acct:miles", {
+        "name": "miles.of.memories77",
+        "content_niche": "POV — Night Core",
+        "content_engine": "sourced_video",
+        "automation_mode": "Automation",
+        "vault_url": "https://shipstream.risingtidesviral.com/vault/miles.of.memories77",
+        "account_status": "active",
+        "archived": False,
+    })
+
+    assert roster.get_page("acct:miles") == entry
+    assert entry["content_niche"] == "POV — Night Core"
+    assert entry["content_engine"] == "sourced_video"
+    assert entry["automation_mode"] == "Automation"
+    assert entry["vault_url"] == "https://shipstream.risingtidesviral.com/vault/miles.of.memories77"
+    assert entry["account_status"] == "active"
+    assert entry["archived"] is False
+
+
 def test_remove_page(store):
     roster.set_page("int1", {"name": "Page One"})
     assert roster.remove_page("int1") is True
