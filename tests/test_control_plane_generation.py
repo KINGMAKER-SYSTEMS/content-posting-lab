@@ -2,10 +2,12 @@
 
 import hashlib
 import json
+from pathlib import Path
 
 import pytest
 
 from providers.base import API_KEYS
+from services.content_engine_registry import REGISTRY_PATH
 from services.control_plane_generation import (
     compose_prompt,
     dossier_clip_speed,
@@ -62,6 +64,26 @@ def test_truck_recipe_resolves_from_the_master_pages_engine_and_server_owned_pro
     assert recipe.engine == "hailuo"
     assert recipe.prompt_catalog_hash == "259bccb63fa0f03e6f55138236b0f93ecffeab6d924d7d0a32fd8f51f2d5b361"
     assert resolve_generation_recipe(publication(engine="wan-i2v-fast")) is None
+
+
+def test_master_pages_niche_cannot_borrow_another_niches_generator():
+    payload = publication()
+    spec = json.loads(payload["recipeSpecCanonical"])
+    intent, revision = master_pages(
+        "tt-tucker-reeves", handle="tucker.reeves",
+        content_niche="Coffee", content_engine="ai_video",
+    )
+    spec["masterPages"] = intent
+    spec["masterPagesHash"] = revision
+    payload["recipeSpecCanonical"] = json.dumps(
+        spec, sort_keys=True, separators=(",", ":"),
+    )
+    assert resolve_generation_recipe(payload) is None
+
+    coffee = _format_publication(
+        "coffee-tok", "coffee-tok:master", "ai_video",
+    )
+    assert resolve_generation_recipe(coffee) is None
 
 
 def test_generation_mode_and_provider_credential_fail_closed(monkeypatch):
@@ -140,6 +162,20 @@ async def test_manifest_anchors_are_hash_verified_and_rotate_without_replacement
     catalog_path.write_text(json.dumps(catalog, sort_keys=True, separators=(",", ":")))
     monkeypatch.setenv("CONTENT_LAB_PROMPT_CATALOG", str(catalog_path))
 
+    # Catalog changes withdraw the executor until the single engine registry is
+    # deliberately rebound to those exact reviewed bytes.
+    payload = _format_publication(
+        "silhouette-truck", "silhouette-truck:master", "ai_video",
+    )
+    assert resolve_generation_recipe(payload) is None
+    registry = json.loads(Path(REGISTRY_PATH).read_text())
+    registry["profiles"]["silhouette-truck"]["executorVersion"] = (
+        "sha256:" + hashlib.sha256(catalog_path.read_bytes()).hexdigest()
+    )
+    registry_path = tmp_path / "engine-registry.json"
+    registry_path.write_text(json.dumps(registry, sort_keys=True, separators=(",", ":")))
+    monkeypatch.setenv("CONTENT_LAB_ENGINE_REGISTRY", str(registry_path))
+
     objects = {
         (manifest_sha, "json"): manifest,
         (first_sha, "png"): first,
@@ -151,9 +187,7 @@ async def test_manifest_anchors_are_hash_verified_and_rotate_without_replacement
         assert len(value) <= max_bytes
         return value
 
-    recipe = resolve_generation_recipe(_format_publication(
-        "silhouette-truck", "silhouette-truck:master", "ai_video",
-    ))
+    recipe = resolve_generation_recipe(payload)
     assert recipe is not None
     anchor0 = await load_generation_anchor(recipe, "stable-run", 0, fetcher=fetcher)
     anchor1 = await load_generation_anchor(recipe, "stable-run", 1, fetcher=fetcher)

@@ -651,7 +651,14 @@ async def _run_dossier_generation(job_id: str) -> None:
         job["pageId"], job["recipeId"], job["engine"], job["recipeVersion"],
     )
     recipe = resolve_generation_recipe(publication) if publication else None
-    if recipe is None:
+    if (
+        recipe is None
+        or job.get("engineRegistryHash") != recipe.engine_registry_hash
+        or job.get("promptCatalogHash") != recipe.prompt_catalog_hash
+        or job.get("executorVersion") != recipe.executor_version
+        or job.get("family") != recipe.family_name
+        or job.get("providerModel") != recipe.provider_model
+    ):
         _update_job(
             job_id,
             status="failed",
@@ -773,7 +780,8 @@ async def _run_dossier_source(job_id: str) -> None:
         recipe is None
         or job.get("baseRecipeId") != recipe.base_recipe_id
         or job.get("baseRecipeVersion") != recipe.base_recipe_version
-        or job.get("sourceCatalogHash") != recipe.catalog_hash
+        or job.get("engineRegistryHash") != recipe.engine_registry_hash
+        or job.get("sourceManifestHash") != recipe.source_manifest_hash
     ):
         _update_job(
             job_id,
@@ -1010,6 +1018,10 @@ async def create_job(
                 "artifactRoot": str(job_root),
                 "dossierRevision": publication["dossierRevision"],
                 "recipeSpecHash": publication["recipeSpecHash"],
+                "engineRegistryHash": generation_recipe.engine_registry_hash,
+                "materialSource": generation_recipe.material_source,
+                "assetType": generation_recipe.asset_type,
+                "executorVersion": generation_recipe.executor_version,
                 "promptCatalogHash": generation_recipe.prompt_catalog_hash,
                 "family": generation_recipe.family_name,
                 "providerModel": generation_recipe.provider_model,
@@ -1046,7 +1058,10 @@ async def create_job(
                 "sourceClips": picks,
                 "baseRecipeId": source_recipe.base_recipe_id,
                 "baseRecipeVersion": source_recipe.base_recipe_version,
-                "sourceCatalogHash": source_recipe.catalog_hash,
+                "engineRegistryHash": source_recipe.engine_registry_hash,
+                "sourceManifestHash": source_recipe.source_manifest_hash,
+                "materialSource": source_recipe.material_source,
+                "assetType": source_recipe.asset_type,
                 "dossierRevision": publication["dossierRevision"],
                 "recipeSpecHash": publication["recipeSpecHash"],
                 "runtimeId": _GENERATION_RUNTIME_ID,

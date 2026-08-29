@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 from providers.base import API_KEYS
 import routers.control_plane as cp
 import routers.control_plane_recipes as recipes
+from services.content_engine_registry import REGISTRY_PATH
 from tests.master_pages_fixtures import bind_current_intent, master_pages
 
 
@@ -127,6 +128,11 @@ def test_registered_dossier_is_advertised_and_queues_new_media_only(lab, monkeyp
     stored = cp._load_jobs()["jobs"][payload["jobId"]]
     assert stored["sourceKind"] == "generated"
     assert stored["clips"] == []
+    assert stored["engineRegistryHash"] == hashlib.sha256(
+        REGISTRY_PATH.read_bytes(),
+    ).hexdigest()
+    assert stored["materialSource"] == "generated_video"
+    assert stored["assetType"] == "video/mp4"
     assert stored["promptCatalogHash"] == "259bccb63fa0f03e6f55138236b0f93ecffeab6d924d7d0a32fd8f51f2d5b361"
 
 

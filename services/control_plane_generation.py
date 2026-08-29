@@ -23,6 +23,7 @@ import httpx
 
 from providers import PROVIDERS
 from providers.base import API_KEYS
+from services.content_engine_registry import resolve_material_profile
 
 
 CATALOG_PATH = (
@@ -58,6 +59,10 @@ class GenerationRecipe:
     family_name: str
     engine: str
     provider_model: str
+    engine_registry_hash: str
+    material_source: str
+    asset_type: str
+    executor_version: str
     prompt_catalog_hash: str
     family: dict[str, Any]
     provider_config: dict[str, Any]
@@ -162,7 +167,19 @@ def resolve_generation_recipe(
         return None
 
     format_slug = recipe_id.removesuffix(":master")
+    profile = resolve_material_profile(publication, spec)
+    if (
+        profile is None
+        or profile.format_slug != format_slug
+        or profile.material_source != "generated_video"
+        or profile.executor_kind != "prompt_family"
+        or profile.executor_id is None
+        or profile.executor_version is None
+    ):
+        return None
     catalog, catalog_hash = load_prompt_catalog()
+    if profile.executor_version != f"sha256:{catalog_hash}":
+        return None
     format_config = catalog["formats"].get(format_slug)
     if not isinstance(format_config, dict):
         return None
@@ -170,7 +187,11 @@ def resolve_generation_recipe(
         return None
     family_name = format_config.get("family")
     family = catalog["families"].get(family_name)
-    if not isinstance(family_name, str) or not isinstance(family, dict):
+    if (
+        not isinstance(family_name, str)
+        or family_name != profile.executor_id
+        or not isinstance(family, dict)
+    ):
         return None
     method = family.get("method")
     if method not in {"t2v", "i2v"}:
@@ -211,20 +232,16 @@ def resolve_generation_recipe(
     if float(provider_config.get("cost_per_gen_usd") or 0) <= 0:
         return None
 
-    format_mix = spec["demand"]["formatMix"]
-    if format_mix:
-        if set(format_mix) != {format_slug}:
-            return None
-        share = format_mix.get(format_slug)
-        if not isinstance(share, (int, float)) or float(share) <= 0:
-            return None
-
     return GenerationRecipe(
         recipe_id=recipe_id,
         format_slug=format_slug,
         family_name=family_name,
         engine=provider_engine,
         provider_model=model,
+        engine_registry_hash=profile.registry_hash,
+        material_source=profile.material_source,
+        asset_type=profile.asset_type,
+        executor_version=profile.executor_version,
         prompt_catalog_hash=catalog_hash,
         family=family,
         provider_config=provider_config,
