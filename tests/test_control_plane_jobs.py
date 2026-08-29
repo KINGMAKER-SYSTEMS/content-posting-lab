@@ -97,7 +97,7 @@ def test_job_master_pages_hash_and_current_roster_are_exact(lab, monkeypatch):
     client, version, intent, revision = lab
     mismatched = job_body(version, intent, "sha256:" + "0" * 64)
     assert client.post("/api/control-plane/v1/jobs", json=mismatched, headers=HEADERS).status_code == 409
-    monkeypatch.setattr(cp, "_current_master_pages_intent", lambda _: None)
+    monkeypatch.setattr(cp, "_current_master_pages_intent", lambda *_: None)
     assert client.post(
         "/api/control-plane/v1/jobs",
         json=job_body(version, intent, revision),

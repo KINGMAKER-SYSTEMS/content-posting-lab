@@ -274,16 +274,39 @@ def _snapshot_page(page: dict[str, Any]) -> dict[str, Any] | None:
     }
 
 
-def _current_master_pages_intent(page_id: str) -> tuple[dict[str, Any], str] | None:
+def _current_master_pages_intent(
+    page_id: str,
+    asserted: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any], str] | None:
+    """Resolve current Notion intent onto one operational control-plane id.
+
+    Content Lab's roster cache mints a stable local integration id, while the
+    posting Rail already owns the durable page id used by policies, slots and
+    buckets. When those ids differ, the immutable Notion page id plus handle
+    are the source identity; the caller's page id is only the operational
+    binding. All other Master Pages fields must still match exactly.
+    """
     from services.roster import list_all_pages
 
     matches = []
     for raw in list_all_pages():
-        if str(raw.get("integration_id") or "").strip() != page_id:
-            continue
         snapshot = _snapshot_page(raw)
-        if snapshot is not None:
-            matches.append({"schema": MASTER_PAGES_SCHEMA, **snapshot})
+        if snapshot is None:
+            continue
+        exact_id = str(raw.get("integration_id") or "").strip() == page_id
+        asserted_identity = (
+            isinstance(asserted, dict)
+            and isinstance(asserted.get("notionPageId"), str)
+            and bool(asserted["notionPageId"].strip())
+            and snapshot.get("notionPageId") == asserted.get("notionPageId")
+            and str(snapshot.get("handle") or "").casefold()
+                == str(asserted.get("handle") or "").casefold()
+        )
+        if not exact_id and not asserted_identity:
+            continue
+        candidate = {"schema": MASTER_PAGES_SCHEMA, **snapshot}
+        candidate["pageId"] = page_id
+        matches.append(candidate)
     if len(matches) != 1:
         return None
     canonical = canonical_intent(matches[0], expected_page_id=page_id)
@@ -905,7 +928,7 @@ async def create_job(
     )
     if master_pages is None or master_pages["contentEngine"] != engine:
         raise HTTPException(status_code=409, detail="job Master Pages intent is missing, stale, or engine-mismatched")
-    current_master_pages = _current_master_pages_intent(page_id)
+    current_master_pages = _current_master_pages_intent(page_id, master_pages)
     if current_master_pages is None or current_master_pages != (master_pages, body["masterPagesHash"]):
         raise HTTPException(status_code=409, detail="job Master Pages intent does not match the current roster")
 

@@ -27,6 +27,7 @@ from fastapi.testclient import TestClient
 
 import services.roster as roster
 from services import json_store
+import routers.control_plane as cp
 from routers.control_plane import router
 
 
@@ -163,6 +164,28 @@ def test_snapshot_carries_the_content_niche(client):
     res = client.get("/api/control-plane/v1/roster", headers={"X-RT-Lane": "warner"})
     [page] = res.json()["pages"]
     assert page["contentNiche"] == "TRUCK"
+
+
+def test_current_intent_rebinds_one_notion_identity_to_the_operational_rail_page_id(client):
+    _seed(**{"acct:miles-of-memories77": dict(
+        NOTION_ROW,
+        name="miles.of.memories77",
+        group="ATLANTIC",
+        content_niche="POV — Night Core",
+        content_engine="sourced_video",
+        notion_page_id="3281465b-b829-807d-b852-dffeb7a48468",
+        vault_url="https://shipstream.risingtidesviral.com/vault/miles.of.memories77",
+    )})
+    snapshot = client.get(
+        "/api/control-plane/v1/roster", headers={"X-RT-Lane": "automation"},
+    ).json()["pages"][0]
+    operational_id = "acct:rail:6880a7944b9f074c700d6218"
+    asserted = {"schema": "master-pages.page-intent.v1", **snapshot, "pageId": operational_id}
+    resolved = cp._current_master_pages_intent(operational_id, asserted)
+    assert resolved is not None
+    intent, revision = resolved
+    assert intent == asserted
+    assert revision.startswith("sha256:")
 
 
 def test_machine_refresh_returns_counts_without_roster_rows(client, monkeypatch):

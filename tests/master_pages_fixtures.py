@@ -42,5 +42,5 @@ def bind_current_intent(monkeypatch, module, intent: dict, revision: str) -> Non
     monkeypatch.setattr(
         module,
         "_current_master_pages_intent",
-        lambda page_id: (intent, revision) if page_id == intent["pageId"] else None,
+        lambda page_id, asserted=None: (intent, revision) if page_id == intent["pageId"] else None,
     )
