@@ -111,7 +111,7 @@ def _typed_recipe_spec(publication: dict[str, Any]) -> dict[str, Any] | None:
         spec = json.loads(publication["recipeSpecCanonical"])
     except (KeyError, TypeError, json.JSONDecodeError):
         return None
-    if not isinstance(spec, dict) or spec.get("schema") != "dossier.recipe-spec.v1":
+    if not isinstance(spec, dict) or spec.get("schema") != "dossier.recipe-spec.v2":
         return None
     render = spec.get("renderTreatment")
     demand = spec.get("demand")
@@ -152,12 +152,10 @@ def resolve_generation_recipe(
     publication: dict[str, Any], *, require_runtime: bool = True,
 ) -> GenerationRecipe | None:
     recipe_id = publication.get("recipeId")
-    engine = publication.get("engine")
+    content_engine = publication.get("engine")
     if not isinstance(recipe_id, str) or not recipe_id.endswith(":master"):
         return None
-    if not isinstance(engine, str) or not engine:
-        return None
-    if require_runtime and not _runtime_ready(engine):
+    if content_engine != "ai_video":
         return None
     spec = _typed_recipe_spec(publication)
     if spec is None:
@@ -198,10 +196,13 @@ def resolve_generation_recipe(
             or not 1 <= family["base_anchor_bytes"] <= MAX_ANCHOR_BYTES
         ):
             return None
-    if family.get("provider") != engine:
+    provider_engine = family.get("provider")
+    if not isinstance(provider_engine, str) or not provider_engine:
         return None
-    provider_config = catalog["providers"].get(engine)
-    runtime_provider = PROVIDERS.get(engine)
+    if require_runtime and not _runtime_ready(provider_engine):
+        return None
+    provider_config = catalog["providers"].get(provider_engine)
+    runtime_provider = PROVIDERS.get(provider_engine)
     if not isinstance(provider_config, dict) or not isinstance(runtime_provider, dict):
         return None
     model = provider_config.get("replicate_model")
@@ -222,7 +223,7 @@ def resolve_generation_recipe(
         recipe_id=recipe_id,
         format_slug=format_slug,
         family_name=family_name,
-        engine=engine,
+        engine=provider_engine,
         provider_model=model,
         prompt_catalog_hash=catalog_hash,
         family=family,

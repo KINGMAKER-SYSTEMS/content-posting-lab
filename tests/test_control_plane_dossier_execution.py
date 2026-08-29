@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 from providers.base import API_KEYS
 import routers.control_plane as cp
 import routers.control_plane_recipes as recipes
+from tests.master_pages_fixtures import bind_current_intent, master_pages
 
 
 TOKEN = "test-control-plane-token"
@@ -24,9 +25,12 @@ HEADERS = {
 
 
 def recipe_publication():
+    intent, revision = master_pages(PAGE_ID, handle="tucker.reeves")
     spec = json.dumps(
         {
-            "schema": "dossier.recipe-spec.v1",
+            "schema": "dossier.recipe-spec.v2",
+            "masterPages": intent,
+            "masterPagesHash": revision,
             "renderTreatment": {
                 "stylePreset": "Dramatic Cool",
                 "filters": {"brightness": 0.94, "contrast": 1.08},
@@ -42,7 +46,7 @@ def recipe_publication():
         "pageId": PAGE_ID,
         "lane": recipes.LANE,
         "recipeId": "truck-scenic:master",
-        "engine": "hailuo",
+        "engine": "ai_video",
         "recipeVersion": "dossier-1234567890abcdef",
         "dossierRevision": "rev-1",
         "recipeSpecHash": "sha256:" + hashlib.sha256(spec.encode()).hexdigest(),
@@ -52,6 +56,7 @@ def recipe_publication():
 
 def job_body(quantity=2):
     publication = recipe_publication()
+    spec = json.loads(publication["recipeSpecCanonical"])
     return {
         "pageId": PAGE_ID,
         "lane": recipes.LANE,
@@ -62,6 +67,8 @@ def job_body(quantity=2):
         "constraints": {},
         "sourceIsolation": {"partitionKey": f"page:{PAGE_ID}"},
         "policyHash": "sha256:policy",
+        "masterPages": spec["masterPages"],
+        "masterPagesHash": spec["masterPagesHash"],
     }
 
 
@@ -73,6 +80,8 @@ def lab(monkeypatch, tmp_path):
     monkeypatch.setitem(API_KEYS, "replicate", "test-key")
     monkeypatch.setattr(cp, "_jobs_path", lambda: tmp_path / "jobs.json")
     monkeypatch.setattr(cp, "_generation_root", lambda: tmp_path / "generated")
+    intent, revision = master_pages(PAGE_ID, handle="tucker.reeves")
+    bind_current_intent(monkeypatch, cp, intent, revision)
     started = []
     monkeypatch.setattr(cp, "_start_dossier_generation", started.append)
 
@@ -149,8 +158,15 @@ async def test_generation_runner_lands_treated_artifacts_under_the_isolated_job_
         corrections.append((color_correction, playback_speed))
         shutil.copyfile(source, destination)
 
+    async def fake_thumbnail(job_root, video, index):
+        target = job_root / "thumbnails" / f"{index:04d}.jpg"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"jpeg-thumbnail")
+        return cp._generated_manifest(job_root, target)
+
     monkeypatch.setattr(cp, "generate_one", fake_generate_one)
     monkeypatch.setattr(cp, "run_color_correct", fake_color_correct)
+    monkeypatch.setattr(cp, "_thumbnail_manifest", fake_thumbnail)
     await cp._run_dossier_generation(job_id)
 
     stored = cp._load_jobs()["jobs"][job_id]

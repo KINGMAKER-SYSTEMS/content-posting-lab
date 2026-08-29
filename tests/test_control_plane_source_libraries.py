@@ -14,6 +14,7 @@ import routers.control_plane_source_libraries as source_router
 import services.control_plane_source_libraries as source_libraries
 import services.control_plane_sources as source_executors
 from scripts.commission_source_library import CommissioningError, verify_local_source
+from tests.master_pages_fixtures import master_pages
 
 
 TOKEN = "test-control-plane-token"
@@ -48,8 +49,14 @@ def _manifest(clips: list[bytes]) -> bytes:
 
 
 def _publication(recipe_version="dossier-d1d1d1d1d1d1d1d1"):
+    intent, revision = master_pages(
+        PAGE_ID, handle="dirt.bike", content_niche="POV - Dirtbike",
+        content_engine="sourced_video", vault_url="https://drive.example/dirt-bike",
+    )
     canonical = json.dumps({
-        "schema": "dossier.recipe-spec.v1",
+        "schema": "dossier.recipe-spec.v2",
+        "masterPages": intent,
+        "masterPagesHash": revision,
         "renderTreatment": {
             "stylePreset": "trail-pov",
             "filters": {},
@@ -103,6 +110,7 @@ def lab(monkeypatch, tmp_path):
             "pov-dirt-bike:master": {
                 "format": "pov-dirt-bike",
                 "engine": "sourced_video",
+                "contentNiche": "POV - Dirtbike",
                 "baseRecipeId": LIBRARY_ID,
                 "baseRecipeVersion": "v" + manifest_sha[:12],
                 "maxQuantity": 10,

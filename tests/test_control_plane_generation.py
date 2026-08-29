@@ -14,11 +14,15 @@ from services.control_plane_generation import (
     load_prompt_catalog,
     resolve_generation_recipe,
 )
+from tests.master_pages_fixtures import master_pages
 
 
 def publication(**overrides):
+    intent, revision = master_pages("tt-tucker-reeves", handle="tucker.reeves")
     spec = {
-        "schema": "dossier.recipe-spec.v1",
+        "schema": "dossier.recipe-spec.v2",
+        "masterPages": intent,
+        "masterPagesHash": revision,
         "renderTreatment": {
             "stylePreset": "Dramatic Cool",
             "filters": {
@@ -36,7 +40,7 @@ def publication(**overrides):
     result = {
         "pageId": "tt-tucker-reeves",
         "recipeId": "truck-scenic:master",
-        "engine": "hailuo",
+        "engine": "ai_video",
         "recipeVersion": "dossier-0123456789abcdef",
         "recipeSpecCanonical": json.dumps(spec, sort_keys=True, separators=(",", ":")),
     }
@@ -50,11 +54,12 @@ def ready_runtime(monkeypatch):
     monkeypatch.setitem(API_KEYS, "replicate", "test-key")
 
 
-def test_truck_recipe_resolves_only_with_the_exact_server_owned_provider():
+def test_truck_recipe_resolves_from_the_master_pages_engine_and_server_owned_provider():
     recipe = resolve_generation_recipe(publication())
     assert recipe is not None
     assert recipe.family_name == "truck"
     assert recipe.provider_model == "minimax/hailuo-2.3"
+    assert recipe.engine == "hailuo"
     assert recipe.prompt_catalog_hash == "259bccb63fa0f03e6f55138236b0f93ecffeab6d924d7d0a32fd8f51f2d5b361"
     assert resolve_generation_recipe(publication(engine="wan-i2v-fast")) is None
 
@@ -70,6 +75,10 @@ def test_generation_mode_and_provider_credential_fail_closed(monkeypatch):
 def _format_publication(format_slug, recipe_id, engine):
     payload = publication(recipeId=recipe_id, engine=engine)
     spec = json.loads(payload["recipeSpecCanonical"])
+    niche = {"boat-lake": "BOAT", "silhouette-truck": "silhouette", "pov-scenic": "POV — Scenic"}.get(format_slug, "TRUCK")
+    intent, revision = master_pages("tt-tucker-reeves", handle="tucker.reeves", content_niche=niche, content_engine=engine)
+    spec["masterPages"] = intent
+    spec["masterPagesHash"] = revision
     spec["demand"]["formatMix"] = {format_slug: 1.0}
     payload["recipeSpecCanonical"] = json.dumps(spec, sort_keys=True, separators=(",", ":"))
     return payload
@@ -77,7 +86,7 @@ def _format_publication(format_slug, recipe_id, engine):
 
 def test_i2v_is_advertised_only_for_hash_bound_anchors_and_clip_mode_stays_blocked():
     boat = resolve_generation_recipe(_format_publication(
-        "boat-lake", "boat-lake:master", "wan-i2v-fast",
+        "boat-lake", "boat-lake:master", "ai_video",
     ))
     assert boat is not None
     assert boat.family_name == "boat"
@@ -143,7 +152,7 @@ async def test_manifest_anchors_are_hash_verified_and_rotate_without_replacement
         return value
 
     recipe = resolve_generation_recipe(_format_publication(
-        "silhouette-truck", "silhouette-truck:master", "wan-i2v-fast",
+        "silhouette-truck", "silhouette-truck:master", "ai_video",
     ))
     assert recipe is not None
     anchor0 = await load_generation_anchor(recipe, "stable-run", 0, fetcher=fetcher)

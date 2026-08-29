@@ -22,7 +22,7 @@ CATALOG_PATH = (
 )
 CATALOG_SCHEMA = "content-lab.dossier-source-executors.v1"
 ENTRY_FIELDS = {
-    "format", "engine", "baseRecipeId", "baseRecipeVersion", "maxQuantity",
+    "format", "engine", "contentNiche", "baseRecipeId", "baseRecipeVersion", "maxQuantity",
 }
 SAFE_TOKEN_CHARS = frozenset(
     "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.:-"
@@ -105,6 +105,13 @@ def resolve_source_recipe(
     ):
         return None
     if recipe_id != f"{format_slug}:master":
+        return None
+    master_pages = spec.get("masterPages")
+    if (
+        not isinstance(master_pages, dict)
+        or master_pages.get("contentEngine") != engine
+        or master_pages.get("contentNiche") != entry.get("contentNiche")
+    ):
         return None
     format_mix = spec["demand"]["formatMix"]
     if set(format_mix) != {format_slug}:

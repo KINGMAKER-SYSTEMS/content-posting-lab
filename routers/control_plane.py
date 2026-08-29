@@ -63,9 +63,11 @@ from services.control_plane_generation import (
     generation_options,
     load_generation_anchor,
     resolve_generation_recipe,
+    typed_recipe_spec,
 )
 from services.control_plane_sources import resolve_source_recipe
 from services.ffmpeg import run_color_correct
+from services.master_pages_contract import SCHEMA as MASTER_PAGES_SCHEMA, canonical_intent, exact_intent, intent_hash
 
 router = APIRouter()
 
@@ -272,6 +274,24 @@ def _snapshot_page(page: dict[str, Any]) -> dict[str, Any] | None:
     }
 
 
+def _current_master_pages_intent(page_id: str) -> tuple[dict[str, Any], str] | None:
+    from services.roster import list_all_pages
+
+    matches = []
+    for raw in list_all_pages():
+        if str(raw.get("integration_id") or "").strip() != page_id:
+            continue
+        snapshot = _snapshot_page(raw)
+        if snapshot is not None:
+            matches.append({"schema": MASTER_PAGES_SCHEMA, **snapshot})
+    if len(matches) != 1:
+        return None
+    canonical = canonical_intent(matches[0], expected_page_id=page_id)
+    if canonical is None:
+        return None
+    return canonical, intent_hash(canonical)
+
+
 @router.get("/v1/roster")
 def roster_snapshot(
     x_rt_lane: str | None = Header(default=None),
@@ -417,6 +437,7 @@ PROMPT_FIELD_RE = re.compile(r"(prompt|instruction|message)", re.IGNORECASE)
 JOB_FIELDS = {
     "pageId", "lane", "engine", "lockedRecipeId", "recipeVersion",
     "quantity", "constraints", "sourceIsolation", "policyHash",
+    "masterPages", "masterPagesHash",
 }
 
 
@@ -466,6 +487,29 @@ def _scan_library(project: str) -> list[str]:
         if path.is_file() and path.suffix.lower() in VIDEO_EXTENSIONS:
             out.append(str(path.relative_to(video_dir)))
     return sorted(out)
+
+
+def _served_paths(store: dict[str, Any], key: str) -> set[str]:
+    """Global without-replacement ledger across every page for one library."""
+    value = store.get("served", {}).get(key, {})
+    if isinstance(value, list):
+        return {item for item in value if isinstance(item, str)}
+    if isinstance(value, dict):
+        return {
+            item
+            for items in value.values() if isinstance(items, list)
+            for item in items if isinstance(item, str)
+        }
+    return set()
+
+
+def _record_served_paths(store: dict[str, Any], key: str, paths: list[str]) -> None:
+    value = store["served"].setdefault(key, {})
+    if not isinstance(value, dict):
+        value = {"__legacy__": list(value) if isinstance(value, list) else []}
+        store["served"][key] = value
+    global_rows = value.setdefault("__global__", [])
+    global_rows.extend(paths)
 
 
 def _sha256(path: Path) -> str:
@@ -551,6 +595,33 @@ def _generated_manifest(job_root: Path, path: Path) -> dict[str, Any]:
     }
 
 
+async def _thumbnail_manifest(job_root: Path, video: Path, index: int) -> dict[str, Any]:
+    thumbnail_root = job_root / "thumbnails"
+    thumbnail_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    target = thumbnail_root / f"{index:04d}.jpg"
+    process = await asyncio.create_subprocess_exec(
+        "ffmpeg", "-y", "-loglevel", "error", "-ss", "0.25", "-i", str(video),
+        "-frames:v", "1", "-vf", "scale=360:-2", str(target),
+        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
+    )
+    _, stderr = await asyncio.wait_for(process.communicate(), timeout=30)
+    if process.returncode != 0 or not target.is_file() or target.stat().st_size <= 0:
+        raise RuntimeError(f"thumbnail_generation_failed:{stderr.decode(errors='replace')[-120:]}")
+    return _generated_manifest(job_root, target)
+
+
+def _source_provenance(job: dict[str, Any], base: dict[str, Any]) -> dict[str, Any]:
+    master = job["masterPages"]
+    return {
+        **base,
+        "pageId": job["pageId"],
+        "masterPagesHash": job["masterPagesHash"],
+        "contentNiche": master["contentNiche"],
+        "contentEngine": master["contentEngine"],
+        "vaultUrl": master["vaultUrl"],
+    }
+
+
 async def _run_dossier_generation(job_id: str) -> None:
     job = _get_job_or_404(job_id)
     publication = load_registered_recipe(
@@ -631,6 +702,17 @@ async def _run_dossier_generation(job_id: str) -> None:
                 manifest["generationIndex"] = call_index
                 manifest["promptSlots"] = slots
                 manifest["clipSpeed"] = clip_speed
+                source_manifest = _generated_manifest(job_root, source)
+                manifest["source"] = _source_provenance(job, {
+                    "recipeId": recipe.recipe_id,
+                    "recipeVersion": job["recipeVersion"],
+                    "path": source_manifest["path"],
+                    "sha256": source_manifest["sha256"],
+                    "bytes": source_manifest["bytes"],
+                })
+                manifest["thumbnail"] = await _thumbnail_manifest(
+                    job_root, artifact, len(manifests),
+                )
                 if anchor_metadata is not None:
                     manifest["anchor"] = anchor_metadata
                 manifests.append(manifest)
@@ -719,13 +801,16 @@ async def _run_dossier_source(job_id: str) -> None:
             )
             manifest = _generated_manifest(job_root, destination)
             manifest["clipSpeed"] = clip_speed
-            manifest["source"] = {
+            manifest["source"] = _source_provenance(job, {
                 "recipeId": recipe.base_recipe_id,
                 "recipeVersion": recipe.base_recipe_version,
                 "path": rel_path,
                 "sha256": source_manifest["sha256"],
                 "bytes": source_manifest["bytes"],
-            }
+            })
+            manifest["thumbnail"] = await _thumbnail_manifest(
+                job_root, destination, len(manifests),
+            )
             manifests.append(manifest)
             _update_job(
                 job_id,
@@ -814,46 +899,46 @@ async def create_job(
     if len(json.dumps(body)) > MAX_JOB_BODY_BYTES:
         raise HTTPException(status_code=400, detail="job body too large")
 
+    master_pages = exact_intent(
+        body.get("masterPages"), body.get("masterPagesHash"),
+        expected_page_id=page_id,
+    )
+    if master_pages is None or master_pages["contentEngine"] != engine:
+        raise HTTPException(status_code=409, detail="job Master Pages intent is missing, stale, or engine-mismatched")
+    current_master_pages = _current_master_pages_intent(page_id)
+    if current_master_pages is None or current_master_pages != (master_pages, body["masterPagesHash"]):
+        raise HTTPException(status_code=409, detail="job Master Pages intent does not match the current roster")
+
     publication = load_registered_recipe(page_id, recipe_id, engine, recipe_version)
+    if publication is None:
+        raise HTTPException(status_code=409, detail="hash-bound dossier publication is required")
+    publication_spec = typed_recipe_spec(publication)
+    if (
+        publication_spec is None
+        or publication_spec.get("masterPages") != master_pages
+        or publication_spec.get("masterPagesHash") != body["masterPagesHash"]
+    ):
+        raise HTTPException(status_code=409, detail="job intent does not match the registered dossier publication")
     generation_recipe = resolve_generation_recipe(publication) if publication else None
     source_recipe = _dossier_source_recipe(publication)
-    legacy_recipe = None
-    if publication is not None:
-        if generation_recipe is None and source_recipe is None:
-            raise HTTPException(status_code=409, detail="recipe_executor_unavailable")
-        capability_ceiling = (
-            MAX_CAPABILITY_QUANTITY
-            if generation_recipe is not None
-            else source_recipe.max_quantity
+    if generation_recipe is None and source_recipe is None:
+        raise HTTPException(status_code=409, detail="recipe_executor_unavailable")
+    capability_ceiling = (
+        MAX_CAPABILITY_QUANTITY
+        if generation_recipe is not None
+        else source_recipe.max_quantity
+    )
+    if quantity > capability_ceiling:
+        raise HTTPException(
+            status_code=400,
+            detail=f"quantity exceeds recipe ceiling {capability_ceiling}",
         )
-        if quantity > capability_ceiling:
-            raise HTTPException(
-                status_code=400,
-                detail=f"quantity exceeds recipe ceiling {capability_ceiling}",
-            )
-        provider_calls = None
-        if generation_recipe is not None:
-            try:
-                provider_calls = generation_recipe.planned_provider_calls(quantity)
-            except ValueError as error:
-                raise HTTPException(status_code=400, detail=str(error)) from error
-    else:
-        if engine != ENGINE:
-            raise HTTPException(status_code=404, detail="recipe not registered")
-        legacy_recipe = _registered_recipe(recipe_id)
-        if legacy_recipe is None:
-            raise HTTPException(status_code=404, detail="recipe not registered")
-        if quantity > legacy_recipe["maxQuantity"]:
-            raise HTTPException(
-                status_code=400,
-                detail=f"quantity exceeds recipe ceiling {legacy_recipe['maxQuantity']}",
-            )
-        current_version = legacy_recipe["recipeVersion"]
-        if recipe_version != current_version:
-            raise HTTPException(
-                status_code=409,
-                detail=f"recipe_version_mismatch: current is {current_version}",
-            )
+    provider_calls = None
+    if generation_recipe is not None:
+        try:
+            provider_calls = generation_recipe.planned_provider_calls(quantity)
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
 
     start_generation = False
     start_source = False
@@ -881,6 +966,8 @@ async def create_job(
             "pageId": page_id, "lane": str(body.get("lane") or x_rt_lane),
             "engine": engine, "recipeId": recipe_id,
             "recipeVersion": recipe_version, "policyHash": policy_hash,
+            "masterPages": master_pages,
+            "masterPagesHash": body["masterPagesHash"],
             "sourceIsolation": body.get("sourceIsolation") or None,
             "constraints": constraints or {}, "quantityRequested": quantity,
             "token": _secrets.token_urlsafe(JOB_TOKEN_BYTES),
@@ -909,9 +996,7 @@ async def create_job(
             }
             start_generation = True
         elif source_recipe is not None:
-            served_for_page = set(
-                store["served"].get(source_recipe.served_ledger_key, {}).get(page_id, [])
-            )
+            served_for_page = _served_paths(store, source_recipe.served_ledger_key)
             picks: list[dict[str, Any]] = []
             for rel_path in _scan_library(source_recipe.base_recipe_id):
                 if rel_path in served_for_page:
@@ -943,34 +1028,11 @@ async def create_job(
                 "recipeSpecHash": publication["recipeSpecHash"],
                 "runtimeId": _GENERATION_RUNTIME_ID,
             }
-            served = store["served"].setdefault(
-                source_recipe.served_ledger_key, {}
-            ).setdefault(page_id, [])
-            served.extend(pick["path"] for pick in picks)
+            _record_served_paths(
+                store, source_recipe.served_ledger_key,
+                [pick["path"] for pick in picks],
+            )
             start_source = True
-        else:
-            served_for_page = set(store["served"].get(recipe_id, {}).get(page_id, []))
-            picks: list[dict[str, Any]] = []
-            for rel_path in _scan_library(recipe_id):
-                if rel_path in served_for_page:
-                    continue
-                manifest = _clip_manifest(recipe_id, rel_path)
-                if manifest is None:
-                    continue
-                picks.append(manifest)
-                if len(picks) >= quantity:
-                    break
-            if not picks:
-                raise HTTPException(status_code=409, detail="insufficient_inventory")
-            job = {
-                **common,
-                "sourceKind": "approved_library",
-                "status": "completed",
-                "progress": 100,
-                "clips": picks,
-            }
-            served = store["served"].setdefault(recipe_id, {}).setdefault(page_id, [])
-            served.extend(pick["path"] for pick in picks)
         store["jobs"][job_id] = job
         store["byIdempotency"][idempotency_key] = job_id
         atomic_save(_jobs_path(), store)
@@ -1052,9 +1114,14 @@ def job_artifacts(
             # supply under provenance that no longer matches its bytes.
             "sha256": clip["sha256"],
             "bytes": clip["bytes"],
+            "source": clip["source"],
+            "thumbnail": {
+                "url": f"{base}/api/control-plane/v1/jobs/{job_id}/thumbnail/{index}?token={job['token']}",
+                "type": "image/jpeg",
+                "sha256": clip["thumbnail"]["sha256"],
+                "bytes": clip["thumbnail"]["bytes"],
+            },
         }
-        if isinstance(clip.get("source"), dict):
-            artifact["source"] = clip["source"]
         artifacts.append(artifact)
     return {"schema": RESPONSE_SCHEMA, "jobId": job_id, "artifacts": artifacts}
 
@@ -1078,3 +1145,20 @@ def job_download(job_id: str, index: int, token: str = "") -> FileResponse:
     if video_root not in full.parents or not full.is_file():
         raise HTTPException(status_code=404, detail="artifact not found")
     return FileResponse(full, media_type="video/mp4", filename=job["clips"][index]["name"])
+
+
+@router.get("/v1/jobs/{job_id}/thumbnail/{index}")
+def job_thumbnail(job_id: str, index: int, token: str = "") -> FileResponse:
+    job = _get_job_or_404(job_id)
+    if not token or not _secrets.compare_digest(token, job["token"]):
+        raise HTTPException(status_code=403, detail="invalid download token")
+    if index < 0 or index >= len(job["clips"]):
+        raise HTTPException(status_code=404, detail="thumbnail not found")
+    thumbnail = job["clips"][index].get("thumbnail")
+    if not isinstance(thumbnail, dict) or not job.get("artifactRoot"):
+        raise HTTPException(status_code=404, detail="thumbnail not found")
+    root = Path(job["artifactRoot"]).resolve()
+    full = (root / str(thumbnail.get("path") or "")).resolve()
+    if root not in full.parents or not full.is_file():
+        raise HTTPException(status_code=404, detail="thumbnail not found")
+    return FileResponse(full, media_type="image/jpeg", filename=thumbnail["name"])

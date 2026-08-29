@@ -18,6 +18,7 @@ from typing import Any
 from fastapi import APIRouter, Header, HTTPException
 
 from services.roster import ROSTER_PATH
+from services.master_pages_contract import exact_intent
 
 
 LANE = "content-bucket-control-plane"
@@ -27,7 +28,7 @@ BODY_FIELDS = {
     "schema", "pageId", "lane", "recipeId", "engine", "recipeVersion",
     "dossierRevision", "recipeSpecHash", "recipeSpecCanonical",
 }
-SPEC_FIELDS = {"schema", "renderTreatment", "demand"}
+SPEC_FIELDS = {"schema", "masterPages", "masterPagesHash", "renderTreatment", "demand"}
 RENDER_REQUIRED_FIELDS = {"stylePreset", "filters", "captionStyle"}
 RENDER_OPTIONAL_FIELDS = {"clipSpeed"}
 DEMAND_FIELDS = {"formatMix"}
@@ -90,8 +91,14 @@ def _validate_spec(canonical: str) -> dict[str, Any]:
         spec = json.loads(canonical)
     except (TypeError, json.JSONDecodeError) as exc:
         raise HTTPException(400, "recipeSpecCanonical is not valid JSON") from exc
-    if not isinstance(spec, dict) or set(spec) != SPEC_FIELDS or spec.get("schema") != "dossier.recipe-spec.v1":
+    if not isinstance(spec, dict) or set(spec) != SPEC_FIELDS or spec.get("schema") != "dossier.recipe-spec.v2":
         raise HTTPException(400, "recipe spec schema mismatch")
+    master_pages = exact_intent(
+        spec.get("masterPages"), spec.get("masterPagesHash"),
+        expected_page_id=str(spec.get("masterPages", {}).get("pageId") or ""),
+    )
+    if master_pages is None:
+        raise HTTPException(400, "recipe spec Master Pages intent is invalid")
     render = spec.get("renderTreatment")
     demand = spec.get("demand")
     if (
@@ -140,7 +147,10 @@ def register_recipe(
     _token(idempotency_key, "Idempotency-Key")
 
     canonical = body["recipeSpecCanonical"]
-    _validate_spec(canonical)
+    spec = _validate_spec(canonical)
+    master_pages = spec["masterPages"]
+    if master_pages["pageId"] != body["pageId"] or master_pages["contentEngine"] != body["engine"]:
+        raise HTTPException(409, "recipe publication does not match Master Pages identity and engine")
     if _hash(canonical) != body["recipeSpecHash"]:
         raise HTTPException(409, "recipeSpecHash does not bind the supplied canonical bytes")
 

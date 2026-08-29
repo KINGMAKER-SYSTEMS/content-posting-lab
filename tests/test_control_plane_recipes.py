@@ -8,6 +8,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 import routers.control_plane_recipes as recipes
+from tests.master_pages_fixtures import master_pages
 
 
 TOKEN = "test-control-plane-token"
@@ -15,9 +16,12 @@ PAGE_ID = "acct:truck-page"
 
 
 def _payload(**overrides):
+    intent, revision = master_pages(PAGE_ID, handle="truck.page")
     spec = json.dumps(
         {
-            "schema": "dossier.recipe-spec.v1",
+            "schema": "dossier.recipe-spec.v2",
+            "masterPages": intent,
+            "masterPagesHash": revision,
             "renderTreatment": {
                 "stylePreset": "warm-truck",
                 "filters": {"brightness": 1.03},
@@ -34,7 +38,7 @@ def _payload(**overrides):
         "pageId": PAGE_ID,
         "lane": recipes.LANE,
         "recipeId": "trucks",
-        "engine": "content_lab",
+        "engine": "ai_video",
         "recipeVersion": "dossier-1234567890abcdef",
         "dossierRevision": "rev-1",
         "recipeSpecHash": "sha256:" + hashlib.sha256(spec.encode()).hexdigest(),
@@ -92,12 +96,12 @@ def test_registered_dossier_version_is_page_scoped_and_durably_stored(lab):
     ).status_code == 200
 
     stored = recipes.load_registered_recipe(
-        PAGE_ID, "trucks", "content_lab", publication["recipeVersion"],
+        PAGE_ID, "trucks", "ai_video", publication["recipeVersion"],
     )
     assert stored["recipeSpecHash"] == publication["recipeSpecHash"]
     assert stored["dossierRevision"] == publication["dossierRevision"]
     assert recipes.load_registered_recipe(
-        "acct:other", "trucks", "content_lab", publication["recipeVersion"],
+        "acct:other", "trucks", "ai_video", publication["recipeVersion"],
     ) is None
 
 
