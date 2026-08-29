@@ -1,0 +1,104 @@
+{
+  "schema": "content-lab.content-engine-registry.v1",
+  "profiles": {
+    "boat-lake": {
+      "contentNiche": "BOAT",
+      "contentEngine": "ai_video",
+      "materialSource": "generated_video",
+      "assetType": "video/mp4",
+      "executionStatus": "commissioned",
+      "executorKind": "prompt_family",
+      "executorId": "boat",
+      "executorVersion": "sha256:259bccb63fa0f03e6f55138236b0f93ecffeab6d924d7d0a32fd8f51f2d5b361",
+      "maxQuantity": 10
+    },
+    "coffee-tok": {
+      "contentNiche": "Coffee",
+      "contentEngine": "ai_video",
+      "materialSource": "generated_video",
+      "assetType": "video/mp4",
+      "executionStatus": "uncommissioned",
+      "executorKind": null,
+      "executorId": null,
+      "executorVersion": null,
+      "maxQuantity": 0
+    },
+    "pov-dirt-bike": {
+      "contentNiche": "POV - Dirtbike",
+      "contentEngine": "sourced_video",
+      "materialSource": "source_library",
+      "assetType": "video/mp4",
+      "executionStatus": "commissioned",
+      "executorKind": "source_library",
+      "executorId": "pov-dirt-bike-8791-20260828",
+      "executorVersion": "sha256:32169e75b485f89b20e79f8a78df968aff490cb256adbbd358cbc13f9e35106e",
+      "maxQuantity": 10
+    },
+    "pov-dusk-core": {
+      "contentNiche": "POV",
+      "contentEngine": "sourced_video",
+      "materialSource": "source_library",
+      "assetType": "video/mp4",
+      "executionStatus": "uncommissioned",
+      "executorKind": null,
+      "executorId": null,
+      "executorVersion": null,
+      "maxQuantity": 0
+    },
+    "pov-night-core": {
+      "contentNiche": "POV — Night Core",
+      "contentEngine": "sourced_video",
+      "materialSource": "source_library",
+      "assetType": "video/mp4",
+      "executionStatus": "uncommissioned",
+      "executorKind": null,
+      "executorId": null,
+      "executorVersion": null,
+      "maxQuantity": 0
+    },
+    "pov-scenic": {
+      "contentNiche": "POV — Scenic",
+      "contentEngine": "sourced_video",
+      "materialSource": "source_library",
+      "assetType": "video/mp4",
+      "executionStatus": "uncommissioned",
+      "executorKind": null,
+      "executorId": null,
+      "executorVersion": null,
+      "maxQuantity": 0
+    },
+    "silhouette-truck": {
+      "contentNiche": "silhouette",
+      "contentEngine": "ai_video",
+      "materialSource": "generated_video",
+      "assetType": "video/mp4",
+      "executionStatus": "commissioned",
+      "executorKind": "prompt_family",
+      "executorId": "silhouette",
+      "executorVersion": "sha256:259bccb63fa0f03e6f55138236b0f93ecffeab6d924d7d0a32fd8f51f2d5b361",
+      "maxQuantity": 10
+    },
+    "truck-scenic": {
+      "contentNiche": "TRUCK",
+      "contentEngine": "ai_video",
+      "materialSource": "generated_video",
+      "assetType": "video/mp4",
+      "executionStatus": "commissioned",
+      "executorKind": "prompt_family",
+      "executorId": "truck",
+      "executorVersion": "sha256:259bccb63fa0f03e6f55138236b0f93ecffeab6d924d7d0a32fd8f51f2d5b361",
+      "maxQuantity": 10
+    },
+    "truck-ugc": {
+      "contentNiche": "TRUCK",
+      "contentEngine": "ai_video",
+      "materialSource": "generated_video",
+      "assetType": "video/mp4",
+      "executionStatus": "uncommissioned",
+      "executorKind": null,
+      "executorId": null,
+      "executorVersion": null,
+      "maxQuantity": 0
+    }
+  }
+}

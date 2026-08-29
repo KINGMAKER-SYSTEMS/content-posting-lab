@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 
 import routers.control_plane as cp
 import routers.control_plane_recipes as recipes
+from services.content_engine_registry import REGISTRY_PATH
 from services.control_plane_sources import resolve_source_recipe
 from tests.master_pages_fixtures import bind_current_intent, master_pages
 
@@ -324,13 +325,6 @@ def test_source_recipe_requires_exact_mapping_typed_format_and_live_base_version
     ),
     [
         (
-            "pov-night-core:master",
-            "pov-night-core",
-            "POV — Night Core",
-            "between-the-lines-nightcore-pov",
-            "v886fe1b646f3",
-        ),
-        (
             "pov-dirt-bike:master",
             "pov-dirt-bike",
             "POV - Dirtbike",
@@ -370,12 +364,34 @@ def test_new_source_executors_require_the_exact_approved_library_version(
     ) is None
 
 
+def test_night_core_rejects_the_visually_invalid_truck_library():
+    payload = publication(
+        "pov-night-core:master",
+        "pov-night-core",
+        content_niche="POV — Night Core",
+    )
+    mislabeled_truck_library = {
+        "recipeId": "between-the-lines-nightcore-pov",
+        "engine": "content_lab",
+        "recipeVersion": "v886fe1b646f3",
+        "maxQuantity": 20,
+    }
+    assert resolve_source_recipe(
+        payload,
+        base_recipe_lookup=lambda _: mislabeled_truck_library,
+    ) is None
+
+
 @pytest.mark.parametrize(
     ("recipe_id", "format_slug", "content_niche", "base_recipe_id", "version"),
     [
         (
             "coffee-tok:master", "coffee-tok", "Coffee",
             "brewpilled-coffee", "v62173591b07a",
+        ),
+        (
+            "pov-night-core:master", "pov-night-core", "POV — Night Core",
+            "between-the-lines-nightcore-pov", "v886fe1b646f3",
         ),
         (
             "pov-scenic:master", "pov-scenic", "POV — Scenic",
@@ -422,6 +438,14 @@ def test_capability_and_job_bind_exact_source_version_and_select_without_replace
     assert job["sourceKind"] == "dossier_approved_library"
     assert job["baseRecipeId"] == BASE_RECIPE["recipeId"]
     assert job["baseRecipeVersion"] == BASE_RECIPE["recipeVersion"]
+    assert job["engineRegistryHash"] == hashlib.sha256(
+        REGISTRY_PATH.read_bytes(),
+    ).hexdigest()
+    assert job["sourceManifestHash"] == (
+        "32169e75b485f89b20e79f8a78df968aff490cb256adbbd358cbc13f9e35106e"
+    )
+    assert job["materialSource"] == "source_library"
+    assert job["assetType"] == "video/mp4"
     assert len(job["sourceClips"]) == 2
     assert all(clip["sha256"] for clip in job["sourceClips"])
 

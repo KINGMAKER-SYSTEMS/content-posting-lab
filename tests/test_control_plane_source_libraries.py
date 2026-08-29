@@ -11,8 +11,8 @@ import pytest
 import routers.control_plane as cp
 import routers.control_plane_recipes as recipes
 import routers.control_plane_source_libraries as source_router
+import services.content_engine_registry as engine_registry
 import services.control_plane_source_libraries as source_libraries
-import services.control_plane_sources as source_executors
 from scripts.commission_source_library import CommissioningError, verify_local_source
 from tests.master_pages_fixtures import master_pages
 
@@ -103,26 +103,29 @@ def lab(monkeypatch, tmp_path):
         "maxQuantity": 10,
         "pages": [],
     }))
-    catalog = tmp_path / "source-executors.json"
-    catalog.write_text(json.dumps({
-        "schema": source_executors.CATALOG_SCHEMA,
-        "executors": {
-            "pov-dirt-bike:master": {
-                "format": "pov-dirt-bike",
-                "engine": "sourced_video",
+    registry = tmp_path / "engine-registry.json"
+    registry.write_text(json.dumps({
+        "schema": engine_registry.REGISTRY_SCHEMA,
+        "profiles": {
+            "pov-dirt-bike": {
                 "contentNiche": "POV - Dirtbike",
-                "baseRecipeId": LIBRARY_ID,
-                "baseRecipeVersion": "v" + manifest_sha[:12],
+                "contentEngine": "sourced_video",
+                "materialSource": "source_library",
+                "assetType": "video/mp4",
+                "executionStatus": "commissioned",
+                "executorKind": "source_library",
+                "executorId": LIBRARY_ID,
+                "executorVersion": "sha256:" + manifest_sha,
                 "maxQuantity": 10,
             },
         },
-    }))
+    }, sort_keys=True, separators=(",", ":")))
     monkeypatch.setenv("CONTROL_PLANE_TOKEN", TOKEN)
     monkeypatch.setenv("CONTENT_LAB_RECIPE_ROOT", str(tmp_path / "publications"))
+    monkeypatch.setenv("CONTENT_LAB_ENGINE_REGISTRY", str(registry))
     monkeypatch.setattr(source_libraries, "MANIFEST_DIR", manifest_dir)
     monkeypatch.setattr(source_libraries, "PROJECTS_DIR", projects)
     monkeypatch.setattr(cp, "PROJECTS_DIR", projects)
-    monkeypatch.setattr(source_executors, "CATALOG_PATH", catalog)
 
     app = FastAPI()
     app.include_router(cp.router, prefix="/api/control-plane")
