@@ -177,7 +177,7 @@ def capabilities(
     x_rt_page_id: str | None = Header(default=None),
     x_page_id: str | None = Header(default=None),
 ) -> dict[str, Any]:
-    """Recipes this page may run.
+    """Exact dossier recipes this page may run.
 
     The page id is required — the plane's client always sends it, and answering
     without one would let a caller enumerate every recipe in the Lab from a
@@ -185,24 +185,17 @@ def capabilities(
     ContentLabClient#headers actually emits; `X-Page-Id` is accepted as an
     alias so this stays testable by hand with curl.
 
-    A recipe with no `pages` list in its marker is available to any page; one
-    with a list is offered only to those pages. That keeps the common case
-    (a shared truck recipe) zero-config while still allowing a recipe to be
-    pinned to the page it was built for.
+    Legacy project markers are executor inventory, not page capabilities. They
+    are deliberately omitted here: advertising every shared project to every
+    page is how a Coffee or POV page appears eligible for truck media. A row is
+    returned only after the page's hash-bound dossier publication resolves
+    through the closed Master Pages content-engine registry.
     """
     page_id = x_rt_page_id or x_page_id
     if not page_id or not PAGE_ID_RE.match(page_id):
         raise HTTPException(status_code=400, detail="X-RT-Page-Id header is required")
 
     entries = []
-    for recipe in _registered_recipes():
-        pages = recipe.get("_pages")
-        if pages is not None and page_id not in pages:
-            continue
-        entries.append({key: value for key, value in recipe.items() if key != "_pages"})
-        if len(entries) >= MAX_CAPABILITIES:
-            break
-
     # A dossier version is executable only when its server-owned base prompt
     # family, exact provider model, runtime credential, and typed treatment are
     # all available. Registration alone never becomes a capability.
@@ -261,10 +254,9 @@ def _snapshot_page(page: dict[str, Any]) -> dict[str, Any] | None:
         "archived": bool(page.get("archived")),
         "posterName": page.get("poster_name") or None,
         "status": page.get("status") or None,
-        # The page -> recipe link. `project` IS a recipe id when the project
-        # is registered (see the capabilities contract above); the plane
-        # treats anything unregistered as "no recipe attached", never as a
-        # recipe that might exist.
+        # Historical Content Lab project linkage. It is roster context, never
+        # an execution grant: only a hash-bound dossier publication resolved
+        # through the content-engine registry becomes a capability.
         "project": page.get("project") or None,
         "tiktokUrl": page.get("tiktok_url") or None,
         "notionPageId": page.get("notion_page_id") or None,
