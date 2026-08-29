@@ -13,27 +13,32 @@ from fastapi.testclient import TestClient
 import routers.control_plane as cp
 import routers.control_plane_recipes as recipes
 from services.control_plane_sources import resolve_source_recipe
+from tests.master_pages_fixtures import bind_current_intent, master_pages
 
 
 TOKEN = "test-control-plane-token"
-PAGE_ID = "tt-coffee"
+PAGE_ID = "tt-dirt-bike"
 BASE_RECIPE = {
-    "recipeId": "brewpilled-coffee",
+    "recipeId": "pov-dirt-bike-8791-20260828",
     "engine": "content_lab",
-    "recipeVersion": "v62173591b07a",
+    "recipeVersion": "v32169e75b485",
     "maxQuantity": 20,
 }
 
 
 def publication(
-    recipe_id="coffee-tok:master",
-    format_slug="coffee-tok",
+    recipe_id="pov-dirt-bike:master",
+    format_slug="pov-dirt-bike",
     *,
     clip_speed=1.25,
     include_clip_speed=True,
     recipe_version="dossier-feedfacefeedface",
-    dossier_revision="rev-coffee",
+    dossier_revision="rev-dirt-bike",
 ):
+    intent, revision = master_pages(
+        PAGE_ID, handle="dirt.bike", content_niche="POV - Dirtbike",
+        content_engine="sourced_video", vault_url="https://drive.example/dirt-bike",
+    )
     render_treatment = {
         "stylePreset": "warm-coffee",
         "filters": {"brightness": 1.05, "warmth": 0.1},
@@ -42,7 +47,9 @@ def publication(
     if include_clip_speed:
         render_treatment["clipSpeed"] = clip_speed
     canonical = json.dumps({
-        "schema": "dossier.recipe-spec.v1",
+        "schema": "dossier.recipe-spec.v2",
+        "masterPages": intent,
+        "masterPagesHash": revision,
         "renderTreatment": render_treatment,
         "demand": {"formatMix": {format_slug: 1.0}},
     }, sort_keys=True, separators=(",", ":"))
@@ -70,6 +77,7 @@ def headers(idempotency="source-job-0001"):
 
 def job_body(quantity=2, payload=None):
     payload = payload or publication()
+    spec = json.loads(payload["recipeSpecCanonical"])
     return {
         "pageId": PAGE_ID,
         "lane": recipes.LANE,
@@ -80,6 +88,8 @@ def job_body(quantity=2, payload=None):
         "constraints": {},
         "sourceIsolation": {"partitionKey": f"page:{PAGE_ID}"},
         "policyHash": "sha256:policy",
+        "masterPages": spec["masterPages"],
+        "masterPagesHash": spec["masterPagesHash"],
     }
 
 
@@ -131,6 +141,11 @@ def lab(monkeypatch, tmp_path):
     monkeypatch.setenv("CONTENT_LAB_RECIPE_ROOT", str(tmp_path / "recipe-publications"))
     monkeypatch.setattr(cp, "_jobs_path", lambda: tmp_path / "jobs.json")
     monkeypatch.setattr(cp, "_generation_root", lambda: tmp_path / "generated")
+    intent, revision = master_pages(
+        PAGE_ID, handle="dirt.bike", content_niche="POV - Dirtbike",
+        content_engine="sourced_video", vault_url="https://drive.example/dirt-bike",
+    )
+    bind_current_intent(monkeypatch, cp, intent, revision)
     projects = tmp_path / "projects"
     videos = projects / BASE_RECIPE["recipeId"] / "videos"
     videos.mkdir(parents=True)
@@ -141,6 +156,12 @@ def lab(monkeypatch, tmp_path):
     monkeypatch.setattr(cp, "_registered_recipes", lambda: [dict(base)])
     started = []
     monkeypatch.setattr(cp, "_start_dossier_source", started.append)
+    async def fake_thumbnail(job_root, video, index):
+        target = job_root / "thumbnails" / f"{index:04d}.jpg"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"jpeg-thumbnail")
+        return cp._generated_manifest(job_root, target)
+    monkeypatch.setattr(cp, "_thumbnail_manifest", fake_thumbnail)
 
     app = FastAPI()
     app.include_router(cp.router, prefix="/api/control-plane")
@@ -218,6 +239,14 @@ async def test_source_runner_changes_real_video_and_audio_duration_with_provenan
         "path": selected["path"],
         "sha256": selected["sha256"],
         "bytes": selected["bytes"],
+        "pageId": PAGE_ID,
+        "masterPagesHash": master_pages(
+            PAGE_ID, handle="dirt.bike", content_niche="POV - Dirtbike",
+            content_engine="sourced_video", vault_url="https://drive.example/dirt-bike",
+        )[1],
+        "contentNiche": "POV - Dirtbike",
+        "contentEngine": "sourced_video",
+        "vaultUrl": "https://drive.example/dirt-bike",
     }
 
 
@@ -275,14 +304,14 @@ def test_source_recipe_requires_exact_mapping_typed_format_and_live_base_version
         base_recipe_lookup=lambda _: dict(BASE_RECIPE),
     )
     assert resolved is not None
-    assert resolved.base_recipe_id == "brewpilled-coffee"
-    assert resolved.base_recipe_version == "v62173591b07a"
-    assert resolved.served_ledger_key.endswith(":v62173591b07a")
+    assert resolved.base_recipe_id == "pov-dirt-bike-8791-20260828"
+    assert resolved.base_recipe_version == "v32169e75b485"
+    assert resolved.served_ledger_key.endswith(":v32169e75b485")
 
     drifted = {**BASE_RECIPE, "recipeVersion": "v-drifted"}
     assert resolve_source_recipe(payload, base_recipe_lookup=lambda _: drifted) is None
     assert resolve_source_recipe(
-        publication("pov-dirt-bike:master", "pov-dirt-bike"),
+        publication("coffee-tok:master", "coffee-tok"),
         base_recipe_lookup=lambda _: dict(BASE_RECIPE),
     ) is None
 
@@ -290,12 +319,6 @@ def test_source_recipe_requires_exact_mapping_typed_format_and_live_base_version
 @pytest.mark.parametrize(
     ("recipe_id", "format_slug", "base_recipe_id", "base_recipe_version"),
     [
-        (
-            "pov-scenic:master",
-            "pov-scenic",
-            "between-the-lines-nightcore-pov",
-            "v886fe1b646f3",
-        ),
         (
             "pov-dirt-bike:master",
             "pov-dirt-bike",

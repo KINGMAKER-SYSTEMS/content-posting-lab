@@ -1,30 +1,10 @@
 {
   "schema": "content-lab.dossier-source-executors.v1",
   "executors": {
-    "coffee-tok:master": {
-      "format": "coffee-tok",
-      "engine": "sourced_video",
-      "baseRecipeId": "brewpilled-coffee",
-      "baseRecipeVersion": "v62173591b07a",
-      "maxQuantity": 10
-    },
-    "pov-night-core:master": {
-      "format": "pov-night-core",
-      "engine": "sourced_video",
-      "baseRecipeId": "between-the-lines-nightcore-pov",
-      "baseRecipeVersion": "v886fe1b646f3",
-      "maxQuantity": 10
-    },
-    "pov-scenic:master": {
-      "format": "pov-scenic",
-      "engine": "sourced_video",
-      "baseRecipeId": "between-the-lines-nightcore-pov",
-      "baseRecipeVersion": "v886fe1b646f3",
-      "maxQuantity": 10
-    },
     "pov-dirt-bike:master": {
       "format": "pov-dirt-bike",
       "engine": "sourced_video",
+      "contentNiche": "POV - Dirtbike",
       "baseRecipeId": "pov-dirt-bike-8791-20260828",
       "baseRecipeVersion": "v32169e75b485",
       "maxQuantity": 10
