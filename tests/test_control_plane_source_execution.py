@@ -30,13 +30,14 @@ def publication(
     recipe_id="pov-dirt-bike:master",
     format_slug="pov-dirt-bike",
     *,
+    content_niche="POV - Dirtbike",
     clip_speed=1.25,
     include_clip_speed=True,
     recipe_version="dossier-feedfacefeedface",
     dossier_revision="rev-dirt-bike",
 ):
     intent, revision = master_pages(
-        PAGE_ID, handle="dirt.bike", content_niche="POV - Dirtbike",
+        PAGE_ID, handle="dirt.bike", content_niche=content_niche,
         content_engine="sourced_video", vault_url="https://drive.example/dirt-bike",
     )
     render_treatment = {
@@ -317,20 +318,31 @@ def test_source_recipe_requires_exact_mapping_typed_format_and_live_base_version
 
 
 @pytest.mark.parametrize(
-    ("recipe_id", "format_slug", "base_recipe_id", "base_recipe_version"),
+    (
+        "recipe_id", "format_slug", "content_niche",
+        "base_recipe_id", "base_recipe_version",
+    ),
     [
+        (
+            "pov-night-core:master",
+            "pov-night-core",
+            "POV — Night Core",
+            "between-the-lines-nightcore-pov",
+            "v886fe1b646f3",
+        ),
         (
             "pov-dirt-bike:master",
             "pov-dirt-bike",
+            "POV - Dirtbike",
             "pov-dirt-bike-8791-20260828",
             "v32169e75b485",
         ),
     ],
 )
 def test_new_source_executors_require_the_exact_approved_library_version(
-    recipe_id, format_slug, base_recipe_id, base_recipe_version,
+    recipe_id, format_slug, content_niche, base_recipe_id, base_recipe_version,
 ):
-    payload = publication(recipe_id, format_slug)
+    payload = publication(recipe_id, format_slug, content_niche=content_niche)
     base = {
         "recipeId": base_recipe_id,
         "engine": "content_lab",
@@ -356,6 +368,32 @@ def test_new_source_executors_require_the_exact_approved_library_version(
         payload,
         base_recipe_lookup=lambda _: None,
     ) is None
+
+
+@pytest.mark.parametrize(
+    ("recipe_id", "format_slug", "content_niche", "base_recipe_id", "version"),
+    [
+        (
+            "coffee-tok:master", "coffee-tok", "Coffee",
+            "brewpilled-coffee", "v62173591b07a",
+        ),
+        (
+            "pov-scenic:master", "pov-scenic", "POV — Scenic",
+            "between-the-lines-nightcore-pov", "v886fe1b646f3",
+        ),
+    ],
+)
+def test_uncommissioned_source_families_remain_unavailable(
+    recipe_id, format_slug, content_niche, base_recipe_id, version,
+):
+    payload = publication(recipe_id, format_slug, content_niche=content_niche)
+    base = {
+        "recipeId": base_recipe_id,
+        "engine": "content_lab",
+        "recipeVersion": version,
+        "maxQuantity": 20,
+    }
+    assert resolve_source_recipe(payload, base_recipe_lookup=lambda _: base) is None
 
 
 def test_capability_and_job_bind_exact_source_version_and_select_without_replacement(lab):
