@@ -46,7 +46,7 @@ def test_only_complete_hash_bound_formats_are_commissioned():
     assert {
         slug for slug, profile in profiles.items()
         if profile.execution_status == "commissioned"
-    } == {"boat-lake", "pov-dirt-bike", "silhouette-truck", "truck-scenic"}
+    } == {"pov-dirt-bike", "truck-scenic"}
     assert all(
         contracts[slug].definition_status == "complete"
         for slug, profile in profiles.items()
@@ -54,6 +54,31 @@ def test_only_complete_hash_bound_formats_are_commissioned():
     )
     assert contracts["truck-ugc"].definition_status == "complete"
     assert profiles["truck-ugc"].execution_status == "uncommissioned"
+    assert contracts["boat-lake"].definition_status == "incomplete"
+    assert profiles["boat-lake"].execution_status == "uncommissioned"
+    assert contracts["silhouette-truck"].definition_status == "incomplete"
+    assert profiles["silhouette-truck"].execution_status == "uncommissioned"
+
+
+def test_failed_ai_visual_libraries_expose_their_real_definition_gaps():
+    contracts, _ = load_format_contracts()
+    assert contracts["boat-lake"].definition_gaps == (
+        "creativeAuthority", "duration", "lighting", "motion",
+        "negativeRules", "referenceExamples", "reviewAuthority", "setting",
+        "shotGrammar", "subject",
+    )
+    assert contracts["silhouette-truck"].definition_gaps == (
+        "creativeAuthority", "duration", "referenceExamples",
+        "reviewAuthority", "setting", "shotGrammar",
+    )
+
+
+def test_failed_legacy_archives_are_not_registered_recipes():
+    recipes_dir = CONTRACTS_PATH.parent
+    for marker in ("jetski-boat-20260722.json", "silhoutte.json"):
+        value = json.loads((recipes_dir / marker).read_text())
+        assert value["registered"] is False
+        assert value["quarantinedReason"] == "failed_visual_dna_review"
 
 
 def test_night_core_is_source_only_and_explicitly_rejects_trucks_and_ai():

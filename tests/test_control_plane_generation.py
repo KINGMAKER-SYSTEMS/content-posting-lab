@@ -2,19 +2,16 @@
 
 import hashlib
 import json
-from pathlib import Path
 
 import pytest
 
 from providers.base import API_KEYS
-from services.content_engine_registry import REGISTRY_PATH
-from services.content_format_contracts import CONTRACTS_PATH
 from services.control_plane_generation import (
+    GenerationRecipe,
     compose_prompt,
     dossier_clip_speed,
     dossier_filters_to_color_correction,
     load_generation_anchor,
-    load_prompt_catalog,
     resolve_generation_recipe,
 )
 from tests.master_pages_fixtures import master_pages
@@ -107,12 +104,13 @@ def _format_publication(format_slug, recipe_id, engine):
     return payload
 
 
-def test_i2v_is_advertised_only_for_hash_bound_anchors_and_clip_mode_stays_blocked():
-    boat = resolve_generation_recipe(_format_publication(
+def test_failed_boat_and_silhouette_visual_libraries_are_not_advertised():
+    assert resolve_generation_recipe(_format_publication(
         "boat-lake", "boat-lake:master", "ai_video",
-    ))
-    assert boat is not None
-    assert boat.family_name == "boat"
+    )) is None
+    assert resolve_generation_recipe(_format_publication(
+        "silhouette-truck", "silhouette-truck:master", "ai_video",
+    )) is None
 
     assert resolve_generation_recipe(_format_publication(
         "pov-scenic", "pov-scenic:master", "sourced_video",
@@ -140,7 +138,7 @@ def test_malformed_or_out_of_range_treatment_is_not_advertised():
 
 
 @pytest.mark.asyncio
-async def test_manifest_anchors_are_hash_verified_and_rotate_without_replacement(monkeypatch, tmp_path):
+async def test_manifest_anchors_are_hash_verified_and_rotate_without_replacement():
     first = b"first-anchor"
     second = b"second-anchor"
     first_sha = hashlib.sha256(first).hexdigest()
@@ -156,44 +154,26 @@ async def test_manifest_anchors_are_hash_verified_and_rotate_without_replacement
         ],
     }, sort_keys=True, separators=(",", ":")).encode()
     manifest_sha = hashlib.sha256(manifest).hexdigest()
-    catalog, _ = load_prompt_catalog()
-    catalog["families"]["silhouette"]["anchor_manifest_sha256"] = manifest_sha
-    catalog["families"]["silhouette"]["anchor_count"] = 2
-    catalog_path = tmp_path / "catalog.json"
-    catalog_path.write_text(json.dumps(catalog, sort_keys=True, separators=(",", ":")))
-    monkeypatch.setenv("CONTENT_LAB_PROMPT_CATALOG", str(catalog_path))
-
-    # Catalog changes withdraw the executor until the single engine registry is
-    # deliberately rebound to those exact reviewed bytes.
-    payload = _format_publication(
-        "silhouette-truck", "silhouette-truck:master", "ai_video",
+    recipe = GenerationRecipe(
+        recipe_id="silhouette-truck:master",
+        format_slug="silhouette-truck",
+        family_name="silhouette",
+        engine="wan-i2v-fast",
+        provider_model="wan-video/wan-2.2-i2v-fast",
+        engine_registry_hash="registry",
+        format_contract_version="contract",
+        material_source="generated_video",
+        asset_type="video/mp4",
+        executor_version="executor",
+        prompt_catalog_hash="catalog",
+        family={
+            "method": "i2v",
+            "anchor_manifest_sha256": manifest_sha,
+            "anchor_count": 2,
+        },
+        provider_config={},
+        recipe_spec={},
     )
-    assert resolve_generation_recipe(payload) is None
-    registry = json.loads(Path(REGISTRY_PATH).read_text())
-    contracts = json.loads(Path(CONTRACTS_PATH).read_text())
-    silhouette_contract = contracts["contracts"]["silhouette-truck"]
-    silhouette_contract["creativeAuthority"]["version"] = (
-        "sha256:" + hashlib.sha256(catalog_path.read_bytes()).hexdigest()
-    )
-    contracts_path = tmp_path / "format-contracts.json"
-    contracts_path.write_text(json.dumps(
-        contracts, sort_keys=True, separators=(",", ":"),
-    ))
-    registry["profiles"]["silhouette-truck"]["formatContractVersion"] = (
-        "sha256:" + hashlib.sha256(json.dumps(
-            silhouette_contract,
-            sort_keys=True,
-            separators=(",", ":"),
-            ensure_ascii=False,
-        ).encode()).hexdigest()
-    )
-    registry["profiles"]["silhouette-truck"]["executorVersion"] = (
-        "sha256:" + hashlib.sha256(catalog_path.read_bytes()).hexdigest()
-    )
-    registry_path = tmp_path / "engine-registry.json"
-    registry_path.write_text(json.dumps(registry, sort_keys=True, separators=(",", ":")))
-    monkeypatch.setenv("CONTENT_LAB_ENGINE_REGISTRY", str(registry_path))
-    monkeypatch.setenv("CONTENT_LAB_FORMAT_CONTRACTS", str(contracts_path))
 
     objects = {
         (manifest_sha, "json"): manifest,
@@ -206,8 +186,6 @@ async def test_manifest_anchors_are_hash_verified_and_rotate_without_replacement
         assert len(value) <= max_bytes
         return value
 
-    recipe = resolve_generation_recipe(payload)
-    assert recipe is not None
     anchor0 = await load_generation_anchor(recipe, "stable-run", 0, fetcher=fetcher)
     anchor1 = await load_generation_anchor(recipe, "stable-run", 1, fetcher=fetcher)
     assert anchor0[1]["sha256"] != anchor1[1]["sha256"]

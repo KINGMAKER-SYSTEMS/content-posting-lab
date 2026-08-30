@@ -1,7 +1,9 @@
 {
-  "registered": true,
+  "registered": false,
   "project": "silhoutte",
-  "note": "silhouette couple + truck, 1183 videos",
+  "note": "Quarantined: the misspelled mixed-provider archive is not an approved silhouette-truck creative authority.",
   "maxQuantity": 20,
-  "registeredBy": "operator"
+  "registeredBy": "operator",
+  "quarantinedAt": "2026-08-30",
+  "quarantinedReason": "failed_visual_dna_review"
 }

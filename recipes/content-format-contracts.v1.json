@@ -6,24 +6,24 @@
       "contentEngine": "ai_video",
       "materialSource": "generated_video",
       "assetType": "video/mp4",
-      "definitionStatus": "complete",
-      "creativeAuthority": {"kind": "prompt_family", "id": "boat", "version": "sha256:259bccb63fa0f03e6f55138236b0f93ecffeab6d924d7d0a32fd8f51f2d5b361"},
+      "definitionStatus": "incomplete",
+      "creativeAuthority": null,
       "dimensions": {
-        "subject": {"status": "defined", "rule": "The same unlettered white open-hull boat bow is preserved from the reference.", "authority": "promptCatalog.families.boat.fixed_subject"},
-        "setting": {"status": "defined", "rule": "Pine-lined lakes, open lakes, river bends, bays, and rocky coves only.", "authority": "promptCatalog.families.boat.slots.setting"},
-        "shotGrammar": {"status": "defined", "rule": "First-person bow view reframed as realistic vertical action-camera phone footage.", "authority": "promptCatalog.families.boat.template"},
-        "lighting": {"status": "defined", "rule": "Golden-hour, sunset, morning gold, or bright summer light from the reviewed menu.", "authority": "promptCatalog.families.boat.slots.light"},
-        "motion": {"status": "defined", "rule": "Forward cruising, gentle rocking, wake and shoreline motion; no people appear.", "authority": "promptCatalog.families.boat.motion_prompt"},
-        "duration": {"status": "defined", "rule": "Duration is bound by the exact commissioned prompt provider configuration.", "authority": "promptCatalog.providers.wan-i2v-fast.base_input"},
+        "subject": {"status": "undefined", "rule": null, "authority": null},
+        "setting": {"status": "undefined", "rule": null, "authority": null},
+        "shotGrammar": {"status": "undefined", "rule": null, "authority": null},
+        "lighting": {"status": "undefined", "rule": null, "authority": null},
+        "motion": {"status": "undefined", "rule": null, "authority": null},
+        "duration": {"status": "undefined", "rule": null, "authority": null},
         "textPolicy": {"status": "defined", "rule": "No lettering anywhere in the generated frame.", "authority": "promptCatalog.families.boat.quality_guards"},
-        "negativeRules": {"status": "defined", "rule": "Reject people, identity drift from the reference boat, lettering, and non-phone visual treatment.", "authority": "promptCatalog.families.boat.quality_guards"},
-        "referenceExamples": {"status": "defined", "rule": "The byte-exact boat anchor is the required visual reference.", "authority": "promptCatalog.families.boat.base_anchor_sha256"}
+        "negativeRules": {"status": "undefined", "rule": null, "authority": null},
+        "referenceExamples": {"status": "undefined", "rule": null, "authority": null}
       },
       "output": {"aspectRatio": "9:16", "container": "video/mp4", "durationPolicy": "executor_bound", "audioPolicy": "campaign_sound_bound_downstream"},
-      "reviewAuthority": "promptCatalog.families.boat.quality_guards",
+      "reviewAuthority": null,
       "reviewGates": ["technical_video", "ocr_text", "visual_dna", "duplicate_and_never_reuse"],
       "distribution": {"captions": "page_binding_required", "sounds": "page_binding_required"},
-      "definitionGaps": []
+      "definitionGaps": ["creativeAuthority", "duration", "lighting", "motion", "negativeRules", "referenceExamples", "reviewAuthority", "setting", "shotGrammar", "subject"]
     },
     "coffee-tok": {
       "contentNiche": "Coffee",
@@ -246,24 +246,24 @@
       "contentEngine": "ai_video",
       "materialSource": "generated_video",
       "assetType": "video/mp4",
-      "definitionStatus": "complete",
-      "creativeAuthority": {"kind": "prompt_family", "id": "silhouette", "version": "sha256:259bccb63fa0f03e6f55138236b0f93ecffeab6d924d7d0a32fd8f51f2d5b361"},
+      "definitionStatus": "incomplete",
+      "creativeAuthority": null,
       "dimensions": {
-        "subject": {"status": "defined", "rule": "A featureless black embracing couple and the same debadged black pickup are preserved from an approved anchor.", "authority": "promptCatalog.families.silhouette.fixed_subject"},
-        "setting": {"status": "defined", "rule": "Dusk fields, meadows, hilltops, fence-line pullouts, and coastal bluffs from the reviewed menu.", "authority": "promptCatalog.families.silhouette.slots.setting"},
-        "shotGrammar": {"status": "defined", "rule": "The couple and truck remain readable beneath a large clean caption sky in one of the reviewed compositions.", "authority": "promptCatalog.families.silhouette.slots.composition"},
+        "subject": {"status": "defined", "rule": "The format centers a featureless black embracing couple and a dark pickup; truck-only frames and non-embracing pairs are outside the format.", "authority": "promptCatalog.families.silhouette.fixed_subject"},
+        "setting": {"status": "undefined", "rule": null, "authority": null},
+        "shotGrammar": {"status": "undefined", "rule": null, "authority": null},
         "lighting": {"status": "defined", "rule": "Deep, low-exposure dusk with controlled highlights; no pale or washed-out sky.", "authority": "promptCatalog.families.silhouette.quality_guards"},
         "motion": {"status": "defined", "rule": "Gentle environmental motion only; couple holds the embrace and truck remains stationary.", "authority": "promptCatalog.families.silhouette.motion_prompt"},
-        "duration": {"status": "defined", "rule": "Duration is bound by the exact commissioned prompt provider configuration.", "authority": "promptCatalog.providers.wan-i2v-fast.base_input"},
+        "duration": {"status": "undefined", "rule": null, "authority": null},
         "textPolicy": {"status": "defined", "rule": "No lettering in the source frame and clean sky is reserved for downstream captions.", "authority": "promptCatalog.families.silhouette.quality_guards"},
-        "negativeRules": {"status": "defined", "rule": "Reject readable faces, clothing detail, lettering, subject drift, pale skies, geometry faults, and reused imagery.", "authority": "promptCatalog.families.silhouette.note"},
-        "referenceExamples": {"status": "defined", "rule": "The 30 byte-exact reviewed anchors rotate without replacement.", "authority": "promptCatalog.families.silhouette.anchor_manifest_sha256"}
+        "negativeRules": {"status": "defined", "rule": "Reject truck-only frames, missing or non-embracing couples, readable faces, clothing detail, lettering, pale skies, geometry faults, repeated anchors, and reused imagery.", "authority": "promptCatalog.families.silhouette.note"},
+        "referenceExamples": {"status": "undefined", "rule": null, "authority": null}
       },
       "output": {"aspectRatio": "9:16", "container": "video/mp4", "durationPolicy": "executor_bound", "audioPolicy": "campaign_sound_bound_downstream"},
-      "reviewAuthority": "promptCatalog.families.silhouette.quality_guards",
+      "reviewAuthority": null,
       "reviewGates": ["technical_video", "ocr_text", "visual_dna", "geometry", "duplicate_and_never_reuse"],
       "distribution": {"captions": "page_binding_required", "sounds": "page_binding_required"},
-      "definitionGaps": []
+      "definitionGaps": ["creativeAuthority", "duration", "referenceExamples", "reviewAuthority", "setting", "shotGrammar"]
     },
     "truck-scenic": {
       "contentNiche": "TRUCK",
