@@ -18,8 +18,8 @@ from typing import Any
 import httpx
 
 from services.roster import (
-    list_all_pages,
     load_roster,
+    mutate_roster,
     set_page,
 )
 
@@ -269,20 +269,47 @@ async def sync_into_roster() -> dict[str, Any]:
         group, account_type, tiktok_url, notes, notion_page_id.
       - Roster JSON is canonical for: project, drive_folder_url/id, email_alias,
         email_rule_id, fwd_destination (CF Email Routing fields).
-      - Existing roster pages keyed by Postiz integration_id are NOT touched —
-        Notion-sourced rows use `acct:{username}` keys, so they coexist.
+      - Existing non-Notion rows keyed by Postiz integration_id are NOT touched.
+      - A prior Notion row absent from the complete successful fetch is pruned;
+        otherwise username changes and removed rows survive as false identities.
+      - Duplicate usernames resolve only when exactly one row is unarchived.
+        Two active rows are ambiguous and remain unchanged instead of being
+        selected by Notion query order.
 
     Returns: {added, updated, total_in_notion, errors}
     """
-    rows = await fetch_all_pages()
+    fetched_rows = await fetch_all_pages()
+
+    rows_by_id: dict[str, dict[str, Any]] = {}
+    ambiguous_ids: set[str] = set()
+    errors: list[str] = []
+    for row in fetched_rows:
+        iid = row["integration_id"]
+        if iid in ambiguous_ids:
+            continue
+        prior = rows_by_id.get(iid)
+        if prior is None:
+            rows_by_id[iid] = row
+            continue
+        active = [candidate for candidate in (prior, row) if not candidate.get("archived")]
+        if len(active) == 1:
+            rows_by_id[iid] = active[0]
+        elif not active:
+            rows_by_id[iid] = min(
+                (prior, row), key=lambda candidate: str(candidate.get("notion_page_id") or ""),
+            )
+        else:
+            rows_by_id.pop(iid, None)
+            ambiguous_ids.add(iid)
+            errors.append(f"{row.get('name', '?')}: duplicate active Master Pages identity")
+
+    rows = [rows_by_id[iid] for iid in sorted(rows_by_id)]
 
     roster = load_roster()
     existing_pages = roster["pages"]
 
     added = 0
     updated = 0
-    errors: list[str] = []
-
     for row in rows:
         try:
             iid = row["integration_id"]
@@ -334,12 +361,19 @@ async def sync_into_roster() -> dict[str, Any]:
         except Exception as exc:
             errors.append(f"{row.get('name', '?')}: {exc}")
 
+    authoritative_ids = set(rows_by_id) | ambiguous_ids
+    with mutate_roster() as current:
+        for iid, page in list(current["pages"].items()):
+            if page.get("source") == "notion" and iid not in authoritative_ids:
+                del current["pages"][iid]
+        pages = list(current["pages"].values())
+
     return {
         "added": added,
         "updated": updated,
-        "total_in_notion": len(rows),
+        "total_in_notion": len(fetched_rows),
         "errors": errors,
-        "pages": list_all_pages(),
+        "pages": pages,
     }
 
 

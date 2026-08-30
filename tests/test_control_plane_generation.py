@@ -8,6 +8,7 @@ import pytest
 
 from providers.base import API_KEYS
 from services.content_engine_registry import REGISTRY_PATH
+from services.content_format_contracts import CONTRACTS_PATH
 from services.control_plane_generation import (
     compose_prompt,
     dossier_clip_speed,
@@ -169,12 +170,30 @@ async def test_manifest_anchors_are_hash_verified_and_rotate_without_replacement
     )
     assert resolve_generation_recipe(payload) is None
     registry = json.loads(Path(REGISTRY_PATH).read_text())
+    contracts = json.loads(Path(CONTRACTS_PATH).read_text())
+    silhouette_contract = contracts["contracts"]["silhouette-truck"]
+    silhouette_contract["creativeAuthority"]["version"] = (
+        "sha256:" + hashlib.sha256(catalog_path.read_bytes()).hexdigest()
+    )
+    contracts_path = tmp_path / "format-contracts.json"
+    contracts_path.write_text(json.dumps(
+        contracts, sort_keys=True, separators=(",", ":"),
+    ))
+    registry["profiles"]["silhouette-truck"]["formatContractVersion"] = (
+        "sha256:" + hashlib.sha256(json.dumps(
+            silhouette_contract,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode()).hexdigest()
+    )
     registry["profiles"]["silhouette-truck"]["executorVersion"] = (
         "sha256:" + hashlib.sha256(catalog_path.read_bytes()).hexdigest()
     )
     registry_path = tmp_path / "engine-registry.json"
     registry_path.write_text(json.dumps(registry, sort_keys=True, separators=(",", ":")))
     monkeypatch.setenv("CONTENT_LAB_ENGINE_REGISTRY", str(registry_path))
+    monkeypatch.setenv("CONTENT_LAB_FORMAT_CONTRACTS", str(contracts_path))
 
     objects = {
         (manifest_sha, "json"): manifest,

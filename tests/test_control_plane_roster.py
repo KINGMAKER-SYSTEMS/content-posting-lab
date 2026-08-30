@@ -109,44 +109,45 @@ def test_snapshot_carries_the_ontology_and_only_the_ontology(client):
 
 
 def test_null_fields_are_explicit_never_dropped(client):
-    _seed(**{"acct:bare": {"name": "bare.page", "source": None, "project": None, "group": None}})
+    _seed(**{"acct:bare": {"name": "bare.page", "source": "notion", "project": None, "group": None}})
     res = client.get("/api/control-plane/v1/roster", headers={"X-RT-Lane": "warner"})
     [page] = res.json()["pages"]
     for field in ("group", "groupLabel", "pageType", "accountType", "posterName",
-                  "status", "project", "tiktokUrl", "notionPageId", "source",
+                  "status", "project", "tiktokUrl", "notionPageId",
                   "contentEngine", "automationMode", "vaultUrl", "pipeline",
                   "soundsReference"):
         assert field in page, f"{field} must be present even when null"
         assert page[field] is None
+    assert page["source"] == "notion"
     assert page["archived"] is False
 
 
 def test_version_is_a_content_hash_not_a_counter(client):
-    _seed(**{"acct:a": {"name": "a.page"}, "acct:b": {"name": "b.page"}})
+    _seed(**{"acct:a": {"name": "a.page", "source": "notion"}, "acct:b": {"name": "b.page", "source": "notion"}})
     first = client.get("/api/control-plane/v1/roster", headers={"X-RT-Lane": "warner"}).json()
     again = client.get("/api/control-plane/v1/roster", headers={"X-RT-Lane": "warner"}).json()
     assert first["snapshotVersion"] == again["snapshotVersion"]
 
-    _seed(**{"acct:a": {"name": "a.page"}, "acct:b": {"name": "b.page", "group": "WARNER"}})
+    _seed(**{"acct:a": {"name": "a.page", "source": "notion"}, "acct:b": {"name": "b.page", "source": "notion", "group": "WARNER"}})
     changed = client.get("/api/control-plane/v1/roster", headers={"X-RT-Lane": "warner"}).json()
     assert changed["snapshotVersion"] != first["snapshotVersion"]
 
 
 def test_pages_are_deterministically_ordered(client):
-    _seed(**{"acct:z": {"name": "z"}, "acct:a": {"name": "a"}, "acct:m": {"name": "m"}})
+    _seed(**{"acct:z": {"name": "z", "source": "notion"}, "acct:a": {"name": "a", "source": "notion"}, "acct:m": {"name": "m", "source": "notion"}})
     pages = client.get("/api/control-plane/v1/roster", headers={"X-RT-Lane": "warner"}).json()["pages"]
     assert [p["pageId"] for p in pages] == ["acct:a", "acct:m", "acct:z"]
 
 
 def test_rows_without_stable_identity_never_cross(client):
-    data = {"version": 1, "pages": {"row-no-name": {"integration_id": "row-no-name"}}}
+    data = {"version": 1, "pages": {"row-no-name": {"integration_id": "row-no-name", "source": "notion"}}}
     roster.save_roster(data)
     pages = client.get("/api/control-plane/v1/roster", headers={"X-RT-Lane": "warner"}).json()["pages"]
     assert pages == []
 
 
 def test_captured_at_is_the_cache_mtime_not_the_request_clock(client):
-    _seed(**{"acct:a": {"name": "a.page"}})
+    _seed(**{"acct:a": {"name": "a.page", "source": "notion"}})
     body = client.get("/api/control-plane/v1/roster", headers={"X-RT-Lane": "warner"}).json()
     mtime = os.path.getmtime(roster.ROSTER_PATH)
     assert abs(body["capturedAt"] and __import__("datetime").datetime.fromisoformat(body["capturedAt"]).timestamp() - mtime) < 1
@@ -157,6 +158,19 @@ def test_empty_cache_is_an_empty_snapshot_not_an_error(client):
     assert body["pages"] == []
     assert body["capturedAt"] is None
     assert body["snapshotVersion"].startswith("r")
+
+
+def test_legacy_operator_rows_do_not_enter_the_master_pages_projection(client):
+    _seed(
+        **{
+            "acct:notion": {"name": "notion.page", "source": "notion"},
+            "postiz:legacy": {"name": "legacy.page", "source": None},
+        },
+    )
+    pages = client.get(
+        "/api/control-plane/v1/roster", headers={"X-RT-Lane": "warner"},
+    ).json()["pages"]
+    assert [page["pageId"] for page in pages] == ["acct:notion"]
 
 
 def test_snapshot_carries_the_content_niche(client):

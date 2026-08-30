@@ -12,6 +12,8 @@ import httpx
 import pytest
 
 import services.notion_pages as np
+import services.roster as roster
+from services import json_store
 
 
 def _notion_page(username, group=None):
@@ -97,3 +99,103 @@ async def test_single_source_database_behaves_like_the_old_query(monkeypatch):
 
     rows = await np.fetch_all_pages()
     assert [r["name"] for r in rows] == ["only.page"]
+
+
+def _parsed_row(name, page_id, *, archived=False):
+    return {
+        "integration_id": np.mint_integration_id(name),
+        "name": name,
+        "provider": "tiktok",
+        "tiktok_url": f"https://www.tiktok.com/@{name}",
+        "signup_email": "",
+        "fwd_address": "",
+        "password": "",
+        "poster_name": "PIXEL-1",
+        "group": "INTERNAL",
+        "group_label": "Internal",
+        "account_type": "theme",
+        "notes": "",
+        "notion_page_id": page_id,
+        "source": "notion",
+        "status": "inactive" if archived else "In Production",
+        "account_status": "inactive" if archived else "In Production",
+        "pipeline": "",
+        "page_type": "",
+        "content_niche": "TRUCK",
+        "content_engine": "ai_video",
+        "automation_mode": "Automation",
+        "vault_url": "https://example.com/vault",
+        "archived": archived,
+        "sounds_reference": "",
+        "go_live_date": "",
+        "drive_folder_url": "",
+    }
+
+
+@pytest.mark.asyncio
+async def test_sync_prunes_stale_notion_rows_but_preserves_legacy_operator_rows(
+    monkeypatch, tmp_path,
+):
+    monkeypatch.setattr(roster, "ROSTER_PATH", tmp_path / "page_roster.json")
+    monkeypatch.setattr(json_store, "_LOCKS", {})
+    roster.save_roster({
+        "version": 1,
+        "pages": {
+            "acct:old-name": {
+                "integration_id": "acct:old-name", "name": "old.name",
+                "source": "notion", "notion_page_id": "page-renamed",
+            },
+            "postiz:operator": {
+                "integration_id": "postiz:operator", "name": "Operator row",
+                "source": None,
+            },
+        },
+    })
+    active = _parsed_row("same.name", "page-active")
+    archived_duplicate = _parsed_row(
+        "same.name", "page-archived", archived=True,
+    )
+    renamed = _parsed_row("new.name", "page-renamed")
+
+    async def fetch():
+        return [archived_duplicate, active, renamed]
+
+    monkeypatch.setattr(np, "fetch_all_pages", fetch)
+    result = await np.sync_into_roster()
+    pages = roster.load_roster()["pages"]
+    assert result["errors"] == []
+    assert result["total_in_notion"] == 3
+    assert "acct:old-name" not in pages
+    assert pages["acct:new-name"]["notion_page_id"] == "page-renamed"
+    assert pages["acct:same-name"]["notion_page_id"] == "page-active"
+    assert pages["postiz:operator"]["name"] == "Operator row"
+
+
+@pytest.mark.asyncio
+async def test_sync_never_chooses_between_two_active_master_pages_rows(
+    monkeypatch, tmp_path,
+):
+    monkeypatch.setattr(roster, "ROSTER_PATH", tmp_path / "page_roster.json")
+    monkeypatch.setattr(json_store, "_LOCKS", {})
+    roster.save_roster({
+        "version": 1,
+        "pages": {
+            "acct:duplicate": {
+                "integration_id": "acct:duplicate", "name": "duplicate",
+                "source": "notion", "notion_page_id": "prior-page",
+            },
+        },
+    })
+
+    async def fetch():
+        return [
+            _parsed_row("duplicate", "page-one"),
+            _parsed_row("duplicate", "page-two"),
+        ]
+
+    monkeypatch.setattr(np, "fetch_all_pages", fetch)
+    result = await np.sync_into_roster()
+    assert result["errors"] == [
+        "duplicate: duplicate active Master Pages identity",
+    ]
+    assert roster.load_roster()["pages"]["acct:duplicate"]["notion_page_id"] == "prior-page"

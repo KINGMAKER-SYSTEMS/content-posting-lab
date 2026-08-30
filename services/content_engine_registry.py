@@ -16,6 +16,8 @@ from pathlib import Path
 import re
 from typing import Any
 
+from services.content_format_contracts import FormatContract, load_format_contracts
+
 
 REGISTRY_PATH = (
     Path(__file__).resolve().parents[1]
@@ -25,7 +27,7 @@ REGISTRY_SCHEMA = "content-lab.content-engine-registry.v1"
 PROFILE_FIELDS = {
     "contentNiche", "contentEngine", "materialSource", "assetType",
     "executionStatus", "executorKind", "executorId", "executorVersion",
-    "maxQuantity",
+    "maxQuantity", "formatContractVersion",
 }
 FORMAT_ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,99}$")
 SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}$")
@@ -33,6 +35,8 @@ SHA256_VERSION = re.compile(r"^sha256:[0-9a-f]{64}$")
 ALLOWED_BINDINGS = {
     "ai_video": ("generated_video", "prompt_family"),
     "sourced_video": ("source_library", "source_library"),
+    "sourced_slideshow": ("image_library", "slideshow_renderer"),
+    "lyrics_slideshows": ("lyric_image_library", "slideshow_renderer"),
 }
 
 
@@ -48,6 +52,7 @@ class MaterialProfile:
     executor_id: str | None
     executor_version: str | None
     max_quantity: int
+    format_contract_version: str
     registry_hash: str
 
 
@@ -65,7 +70,12 @@ def _nonempty(value: Any, maximum: int = 200) -> bool:
     )
 
 
-def _parse_profile(format_slug: str, value: Any, registry_hash: str) -> MaterialProfile:
+def _parse_profile(
+    format_slug: str,
+    value: Any,
+    registry_hash: str,
+    contract: FormatContract,
+) -> MaterialProfile:
     if not FORMAT_ID.fullmatch(format_slug):
         raise ValueError("engine registry format is invalid")
     if not isinstance(value, dict) or set(value) != PROFILE_FIELDS:
@@ -79,12 +89,15 @@ def _parse_profile(format_slug: str, value: Any, registry_hash: str) -> Material
     executor_id = value.get("executorId")
     executor_version = value.get("executorVersion")
     max_quantity = value.get("maxQuantity")
+    format_contract_version = value.get("formatContractVersion")
     if (
         not _nonempty(content_niche)
         or content_engine not in ALLOWED_BINDINGS
         or not _nonempty(material_source)
         or asset_type != "video/mp4"
         or execution_status not in {"commissioned", "uncommissioned"}
+        or not isinstance(format_contract_version, str)
+        or not SHA256_VERSION.fullmatch(format_contract_version)
         or isinstance(max_quantity, bool)
         or not isinstance(max_quantity, int)
     ):
@@ -92,9 +105,21 @@ def _parse_profile(format_slug: str, value: Any, registry_hash: str) -> Material
     expected_source, expected_kind = ALLOWED_BINDINGS[content_engine]
     if material_source != expected_source:
         raise ValueError(f"engine registry profile {format_slug} changes engine semantics")
+    if (
+        contract.format_slug != format_slug
+        or contract.content_niche != content_niche
+        or contract.content_engine != content_engine
+        or contract.material_source != material_source
+        or contract.asset_type != asset_type
+        or format_contract_version != f"sha256:{contract.contract_hash}"
+    ):
+        raise ValueError(f"engine registry profile {format_slug} diverges from its format contract")
     if execution_status == "commissioned":
+        authority = contract.creative_authority
         if (
-            executor_kind != expected_kind
+            contract.definition_status != "complete"
+            or authority is None
+            or executor_kind != expected_kind
             or not isinstance(executor_id, str)
             or not SAFE_ID.fullmatch(executor_id)
             or not isinstance(executor_version, str)
@@ -102,6 +127,12 @@ def _parse_profile(format_slug: str, value: Any, registry_hash: str) -> Material
             or not 1 <= max_quantity <= 20
         ):
             raise ValueError(f"engine registry profile {format_slug} executor is invalid")
+        if (
+            authority.kind != executor_kind
+            or authority.authority_id != executor_id
+            or authority.version != executor_version
+        ):
+            raise ValueError(f"engine registry profile {format_slug} executor diverges from its format contract")
     elif (
         executor_kind is not None
         or executor_id is not None
@@ -120,6 +151,7 @@ def _parse_profile(format_slug: str, value: Any, registry_hash: str) -> Material
         executor_id=executor_id,
         executor_version=executor_version,
         max_quantity=max_quantity,
+        format_contract_version=format_contract_version,
         registry_hash=registry_hash,
     )
 
@@ -136,8 +168,13 @@ def load_engine_registry() -> tuple[dict[str, MaterialProfile], str]:
     ):
         raise ValueError("content engine registry is invalid")
     registry_hash = hashlib.sha256(raw).hexdigest()
+    contracts, _ = load_format_contracts()
+    if set(value["profiles"]) != set(contracts):
+        raise ValueError("engine registry and format contract coverage diverge")
     profiles = {
-        format_slug: _parse_profile(format_slug, profile, registry_hash)
+        format_slug: _parse_profile(
+            format_slug, profile, registry_hash, contracts[format_slug],
+        )
         for format_slug, profile in value["profiles"].items()
     }
     return profiles, registry_hash

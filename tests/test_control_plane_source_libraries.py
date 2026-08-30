@@ -12,6 +12,7 @@ import routers.control_plane as cp
 import routers.control_plane_recipes as recipes
 import routers.control_plane_source_libraries as source_router
 import services.content_engine_registry as engine_registry
+import services.content_format_contracts as format_contracts
 import services.control_plane_source_libraries as source_libraries
 from scripts.commission_source_library import CommissioningError, verify_local_source
 from tests.master_pages_fixtures import master_pages
@@ -103,6 +104,18 @@ def lab(monkeypatch, tmp_path):
         "maxQuantity": 10,
         "pages": [],
     }))
+    contracts_value = json.loads(format_contracts.CONTRACTS_PATH.read_text())
+    dirtbike_contract = contracts_value["contracts"]["pov-dirt-bike"]
+    dirtbike_contract["creativeAuthority"]["version"] = "sha256:" + manifest_sha
+    contracts_value["contracts"] = {"pov-dirt-bike": dirtbike_contract}
+    contracts = tmp_path / "format-contracts.json"
+    contracts.write_text(json.dumps(
+        contracts_value, sort_keys=True, separators=(",", ":"),
+    ))
+    contract_hash = hashlib.sha256(json.dumps(
+        dirtbike_contract, sort_keys=True, separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode()).hexdigest()
     registry = tmp_path / "engine-registry.json"
     registry.write_text(json.dumps({
         "schema": engine_registry.REGISTRY_SCHEMA,
@@ -116,6 +129,7 @@ def lab(monkeypatch, tmp_path):
                 "executorKind": "source_library",
                 "executorId": LIBRARY_ID,
                 "executorVersion": "sha256:" + manifest_sha,
+                "formatContractVersion": "sha256:" + contract_hash,
                 "maxQuantity": 10,
             },
         },
@@ -123,6 +137,7 @@ def lab(monkeypatch, tmp_path):
     monkeypatch.setenv("CONTROL_PLANE_TOKEN", TOKEN)
     monkeypatch.setenv("CONTENT_LAB_RECIPE_ROOT", str(tmp_path / "publications"))
     monkeypatch.setenv("CONTENT_LAB_ENGINE_REGISTRY", str(registry))
+    monkeypatch.setenv("CONTENT_LAB_FORMAT_CONTRACTS", str(contracts))
     monkeypatch.setattr(source_libraries, "MANIFEST_DIR", manifest_dir)
     monkeypatch.setattr(source_libraries, "PROJECTS_DIR", projects)
     monkeypatch.setattr(cp, "PROJECTS_DIR", projects)
