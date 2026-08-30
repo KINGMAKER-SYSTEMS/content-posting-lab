@@ -1,7 +1,9 @@
 {
-  "registered": true,
+  "registered": false,
   "project": "jetski-boat-20260722",
-  "note": "boat / jetski, 768 videos",
+  "note": "Quarantined: the legacy mixed boat and jetski archive is not an approved boat-lake creative authority.",
   "maxQuantity": 20,
-  "registeredBy": "operator"
+  "registeredBy": "operator",
+  "quarantinedAt": "2026-08-30",
+  "quarantinedReason": "failed_visual_dna_review"
 }
