@@ -51,6 +51,7 @@ from fastapi import APIRouter, Header, HTTPException
 from project_manager import PROJECTS_DIR
 from providers.base import generate_one
 from routers.control_plane_recipes import (
+    LANE as CONTROL_PLANE_LANE,
     list_registered_recipes,
     load_registered_recipe,
     require_control_plane_bearer,
@@ -66,6 +67,8 @@ from services.control_plane_generation import (
     typed_recipe_spec,
 )
 from services.control_plane_sources import resolve_source_recipe
+from services.content_engine_registry import load_engine_registry
+from services.content_format_contracts import load_format_contracts
 from services.ffmpeg import run_color_correct
 from services.master_pages_contract import SCHEMA as MASTER_PAGES_SCHEMA, canonical_intent, exact_intent, intent_hash
 
@@ -220,6 +223,74 @@ def capabilities(
     return {"schema": RESPONSE_SCHEMA, "capabilities": entries}
 
 
+@router.get("/v1/format-contracts")
+def format_contract_status(
+    x_rt_lane: str | None = Header(default=None),
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """Machine-readable creative definition and commissioning status.
+
+    The response contains no prompt text or secrets. It is service-authenticated
+    because it is a fleet-wide read model for the control plane and dossier UI,
+    not a public recipe catalog. Incomplete formats remain present with exact
+    missing dimensions so the UI never substitutes a similarly named engine.
+    """
+    if x_rt_lane != CONTROL_PLANE_LANE:
+        raise HTTPException(status_code=400, detail="X-RT-Lane header is invalid")
+    require_control_plane_bearer(authorization)
+    try:
+        contracts, contracts_hash = load_format_contracts()
+        profiles, registry_hash = load_engine_registry()
+    except (OSError, ValueError, json.JSONDecodeError) as error:
+        raise HTTPException(
+            status_code=503, detail="content format contracts are unavailable",
+        ) from error
+
+    formats = []
+    for format_slug in sorted(contracts):
+        contract = contracts[format_slug]
+        profile = profiles[format_slug]
+        formats.append({
+            "formatSlug": format_slug,
+            "contentNiche": contract.content_niche,
+            "contentEngine": contract.content_engine,
+            "materialSource": contract.material_source,
+            "assetType": contract.asset_type,
+            "definitionStatus": contract.definition_status,
+            "executionStatus": profile.execution_status,
+            "creativeAuthority": (
+                {
+                    "kind": contract.creative_authority.kind,
+                    "id": contract.creative_authority.authority_id,
+                    "version": contract.creative_authority.version,
+                }
+                if contract.creative_authority is not None else None
+            ),
+            "dimensions": contract.dimensions,
+            "output": contract.output,
+            "reviewAuthority": contract.review_authority,
+            "reviewGates": list(contract.review_gates),
+            "distribution": contract.distribution,
+            "definitionGaps": list(contract.definition_gaps),
+            "formatContractVersion": profile.format_contract_version,
+            "executor": (
+                {
+                    "kind": profile.executor_kind,
+                    "id": profile.executor_id,
+                    "version": profile.executor_version,
+                    "maxQuantity": profile.max_quantity,
+                }
+                if profile.execution_status == "commissioned" else None
+            ),
+        })
+    return {
+        "schema": "content-lab.format-contract-status.v1",
+        "contractsRegistryVersion": "sha256:" + contracts_hash,
+        "engineRegistryVersion": "sha256:" + registry_hash,
+        "formats": formats,
+    }
+
+
 def _snapshot_page(page: dict[str, Any]) -> dict[str, Any] | None:
     """One roster row, reduced to exactly the ontology the plane reconciles.
 
@@ -340,6 +411,11 @@ def roster_snapshot(
 
     pages: list[dict[str, Any]] = []
     for raw in list_all_pages():
+        # This endpoint is the Master Pages projection. Legacy/Postiz rows stay
+        # available to the operator UI through the roster service, but they do
+        # not carry the ontology and therefore cannot enter control-plane logic.
+        if raw.get("source") != "notion":
+            continue
         page = _snapshot_page(raw)
         if page is not None:
             pages.append(page)
@@ -646,6 +722,7 @@ async def _run_dossier_generation(job_id: str) -> None:
     if (
         recipe is None
         or job.get("engineRegistryHash") != recipe.engine_registry_hash
+        or job.get("formatContractVersion") != recipe.format_contract_version
         or job.get("promptCatalogHash") != recipe.prompt_catalog_hash
         or job.get("executorVersion") != recipe.executor_version
         or job.get("family") != recipe.family_name
@@ -773,6 +850,7 @@ async def _run_dossier_source(job_id: str) -> None:
         or job.get("baseRecipeId") != recipe.base_recipe_id
         or job.get("baseRecipeVersion") != recipe.base_recipe_version
         or job.get("engineRegistryHash") != recipe.engine_registry_hash
+        or job.get("formatContractVersion") != recipe.format_contract_version
         or job.get("sourceManifestHash") != recipe.source_manifest_hash
     ):
         _update_job(
@@ -1011,6 +1089,7 @@ async def create_job(
                 "dossierRevision": publication["dossierRevision"],
                 "recipeSpecHash": publication["recipeSpecHash"],
                 "engineRegistryHash": generation_recipe.engine_registry_hash,
+                "formatContractVersion": generation_recipe.format_contract_version,
                 "materialSource": generation_recipe.material_source,
                 "assetType": generation_recipe.asset_type,
                 "executorVersion": generation_recipe.executor_version,
@@ -1051,6 +1130,7 @@ async def create_job(
                 "baseRecipeId": source_recipe.base_recipe_id,
                 "baseRecipeVersion": source_recipe.base_recipe_version,
                 "engineRegistryHash": source_recipe.engine_registry_hash,
+                "formatContractVersion": source_recipe.format_contract_version,
                 "sourceManifestHash": source_recipe.source_manifest_hash,
                 "materialSource": source_recipe.material_source,
                 "assetType": source_recipe.asset_type,

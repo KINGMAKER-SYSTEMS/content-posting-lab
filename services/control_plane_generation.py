@@ -60,6 +60,7 @@ class GenerationRecipe:
     engine: str
     provider_model: str
     engine_registry_hash: str
+    format_contract_version: str
     material_source: str
     asset_type: str
     executor_version: str
@@ -239,6 +240,7 @@ def resolve_generation_recipe(
         engine=provider_engine,
         provider_model=model,
         engine_registry_hash=profile.registry_hash,
+        format_contract_version=profile.format_contract_version,
         material_source=profile.material_source,
         asset_type=profile.asset_type,
         executor_version=profile.executor_version,

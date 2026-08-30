@@ -10,6 +10,7 @@
       "executorKind": "prompt_family",
       "executorId": "boat",
       "executorVersion": "sha256:259bccb63fa0f03e6f55138236b0f93ecffeab6d924d7d0a32fd8f51f2d5b361",
+      "formatContractVersion": "sha256:ed0569bf87f824f35a4b53fc8b34dd1312ed91fb3c72366d822fcb83f55675bb",
       "maxQuantity": 10
     },
     "coffee-tok": {
@@ -21,6 +22,43 @@
       "executorKind": null,
       "executorId": null,
       "executorVersion": null,
+      "formatContractVersion": "sha256:9dc9c834980046bd485bf357fa4c1c0031b256d5610615c27243bf2376b3643b",
+      "maxQuantity": 0
+    },
+    "construction-scenic": {
+      "contentNiche": "Construction",
+      "contentEngine": "ai_video",
+      "materialSource": "generated_video",
+      "assetType": "video/mp4",
+      "executionStatus": "uncommissioned",
+      "executorKind": null,
+      "executorId": null,
+      "executorVersion": null,
+      "formatContractVersion": "sha256:1626968f80f030392c8d46e54ab239bfdce4ddd7c0c5f40db7aa1734ee04bd77",
+      "maxQuantity": 0
+    },
+    "lyric-edits": {
+      "contentNiche": "lyric-edits",
+      "contentEngine": "lyrics_slideshows",
+      "materialSource": "lyric_image_library",
+      "assetType": "video/mp4",
+      "executionStatus": "uncommissioned",
+      "executorKind": null,
+      "executorId": null,
+      "executorVersion": null,
+      "formatContractVersion": "sha256:148ee110409bae312b59dbb4746d03a082f4dad45d96d18ae868c8f3044435ca",
+      "maxQuantity": 0
+    },
+    "meme-slideshow": {
+      "contentNiche": "meme",
+      "contentEngine": "sourced_slideshow",
+      "materialSource": "image_library",
+      "assetType": "video/mp4",
+      "executionStatus": "uncommissioned",
+      "executorKind": null,
+      "executorId": null,
+      "executorVersion": null,
+      "formatContractVersion": "sha256:1b0f03e25d7d18b0490b868917291fb1a01293c26b051a75421a3110dae10158",
       "maxQuantity": 0
     },
     "pov-dirt-bike": {
@@ -32,6 +70,7 @@
       "executorKind": "source_library",
       "executorId": "pov-dirt-bike-8791-20260828",
       "executorVersion": "sha256:32169e75b485f89b20e79f8a78df968aff490cb256adbbd358cbc13f9e35106e",
+      "formatContractVersion": "sha256:1fad1aec1272c4c1237f45aec8af87b9ecd33943a3376af9801be1b2928ff903",
       "maxQuantity": 10
     },
     "pov-dusk-core": {
@@ -43,6 +82,7 @@
       "executorKind": null,
       "executorId": null,
       "executorVersion": null,
+      "formatContractVersion": "sha256:9b857f7bde4a1d7f570f6f7bfab481e423f22d9b42a60ba300fd59f0d44c6574",
       "maxQuantity": 0
     },
     "pov-night-core": {
@@ -54,6 +94,19 @@
       "executorKind": null,
       "executorId": null,
       "executorVersion": null,
+      "formatContractVersion": "sha256:70b0c1c2c44e84d9c57ee3c1f98e1747ec48238660d59041d8e36aabe6acbb89",
+      "maxQuantity": 0
+    },
+    "pov-night-core-ai": {
+      "contentNiche": "Night Core",
+      "contentEngine": "ai_video",
+      "materialSource": "generated_video",
+      "assetType": "video/mp4",
+      "executionStatus": "uncommissioned",
+      "executorKind": null,
+      "executorId": null,
+      "executorVersion": null,
+      "formatContractVersion": "sha256:318be57f30229f4a028b78b88e4ae59783dc5a08c92259eca78b7b94ae024485",
       "maxQuantity": 0
     },
     "pov-scenic": {
@@ -65,6 +118,7 @@
       "executorKind": null,
       "executorId": null,
       "executorVersion": null,
+      "formatContractVersion": "sha256:11bba6e568ebefbd11c6a7f19b6e4ea1ed046ea5ccc3bca17417c0b452a4576b",
       "maxQuantity": 0
     },
     "silhouette-truck": {
@@ -76,6 +130,7 @@
       "executorKind": "prompt_family",
       "executorId": "silhouette",
       "executorVersion": "sha256:259bccb63fa0f03e6f55138236b0f93ecffeab6d924d7d0a32fd8f51f2d5b361",
+      "formatContractVersion": "sha256:6a7d3e1b84080eb190055a849904408a332965368ff6a8e047543d3e0472207a",
       "maxQuantity": 10
     },
     "truck-scenic": {
@@ -87,6 +142,7 @@
       "executorKind": "prompt_family",
       "executorId": "truck",
       "executorVersion": "sha256:259bccb63fa0f03e6f55138236b0f93ecffeab6d924d7d0a32fd8f51f2d5b361",
+      "formatContractVersion": "sha256:c13f95c6e12c60363a29608960abb7db652984f98ee474e5595e25f6a9d6ac6a",
       "maxQuantity": 10
     },
     "truck-ugc": {
@@ -98,6 +154,7 @@
       "executorKind": null,
       "executorId": null,
       "executorVersion": null,
+      "formatContractVersion": "sha256:aab5b70ae9d2fe77b8817746167441e81549b1927fa2a8ac9e3284c7fad970d9",
       "maxQuantity": 0
     }
   }

@@ -27,6 +27,7 @@ class SourceRecipe:
     base_recipe_version: str
     max_quantity: int
     engine_registry_hash: str
+    format_contract_version: str
     source_manifest_hash: str
     material_source: str
     asset_type: str
@@ -91,6 +92,7 @@ def resolve_source_recipe(
         base_recipe_version=base_recipe_version,
         max_quantity=profile.max_quantity,
         engine_registry_hash=profile.registry_hash,
+        format_contract_version=profile.format_contract_version,
         source_manifest_hash=manifest.sha256,
         material_source=profile.material_source,
         asset_type=profile.asset_type,
