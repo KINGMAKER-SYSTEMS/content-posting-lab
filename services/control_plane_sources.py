@@ -60,11 +60,6 @@ class SourceRecipe:
     asset_type: str
     recipe_spec: dict[str, Any]
 
-    @property
-    def served_ledger_key(self) -> str:
-        return f"source-dna:{self.source_library_id}:{self.source_library_hash}"
-
-
 @dataclass(frozen=True)
 class SourceCut:
     master: MasterSource
@@ -84,12 +79,14 @@ def _executor_contract() -> tuple[dict[str, Any], str]:
     if (
         not isinstance(value, dict)
         or set(value) != {
-            "schema", "executorId", "source", "selection", "controls", "output",
+            "schema", "executorId", "source", "selection", "reservation",
+            "controls", "output",
         }
         or value.get("schema") != EXECUTOR_SCHEMA
         or value.get("executorId") != "source-dna-recut"
         or value.get("source") != "page_scoped_immutable_master"
         or value.get("selection") != "deterministic_without_replacement"
+        or value.get("reservation") != "active_jobs_and_completed_outputs"
     ):
         raise ValueError("source DNA recut executor contract is invalid")
     controls = value.get("controls")
@@ -120,6 +117,7 @@ def source_treatment_capability() -> dict[str, Any]:
     return {
         "scope": "master_source_window",
         "recutWindow": "deterministic_without_replacement",
+        "reservation": executor["reservation"],
         "controls": dict(executor["controls"]),
         "output": dict(executor["output"]),
         **render_treatment_capability(),

@@ -116,6 +116,7 @@ def test_reference_and_source_slots_come_from_real_catalogs(monkeypatch):
                for clip in library["binding"]["clips"])
     assert treatment["binding"]["scope"] == "master_source_window"
     assert treatment["binding"]["recutWindow"] == "deterministic_without_replacement"
+    assert treatment["binding"]["reservation"] == "active_jobs_and_completed_outputs"
     assert treatment["binding"]["output"] == {
         "aspectRatio": "9:16",
         "encodePreset": "tiktok_delivery_v1",

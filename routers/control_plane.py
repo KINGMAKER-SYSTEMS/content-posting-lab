@@ -493,8 +493,10 @@ async def refresh_roster_snapshot(
 
 # ── Jobs: new generation or approved-library selection, never both ──────────
 #
-# Legacy registered projects remain approved footage libraries: a job selects
-# `quantity` clips the page has never been served and records that serving.
+# Legacy registered projects remain approved footage libraries. Source-DNA
+# windows are reserved while a job is queued/running and become permanently
+# unavailable only when the job completes; a failed executor releases its
+# unrendered positions so transport/runtime failures cannot drain the master.
 # A page-scoped dossier publication resolves either the hash-pinned generation
 # catalog or one closed, exact-version approved-library binding. Both execute
 # in an isolated job root. A dry library never falls through to spend, and an
@@ -521,6 +523,7 @@ MAX_JOB_BODY_BYTES = 16_384
 IDEMPOTENCY_KEY_RE = re.compile(r"^[A-Za-z0-9_.:-]{8,200}$")
 JOB_TOKEN_BYTES = 24
 GENERATION_ACTIVE_STATUSES = {"queued", "running"}
+SOURCE_DNA_UNAVAILABLE_STATUSES = {*GENERATION_ACTIVE_STATUSES, "completed"}
 ASYNC_SOURCE_KINDS = {"generated", "dossier_source_dna"}
 _GENERATION_RUNTIME_ID = _secrets.token_hex(16)
 _source_cache_locks: dict[str, asyncio.Lock] = {}
@@ -585,27 +588,32 @@ def _scan_library(project: str) -> list[str]:
     return sorted(out)
 
 
-def _served_paths(store: dict[str, Any], key: str) -> set[str]:
-    """Global without-replacement ledger across every page for one library."""
-    value = store.get("served", {}).get(key, {})
-    if isinstance(value, list):
-        return {item for item in value if isinstance(item, str)}
-    if isinstance(value, dict):
-        return {
-            item
-            for items in value.values() if isinstance(items, list)
-            for item in items if isinstance(item, str)
-        }
-    return set()
+def _source_dna_unavailable_slots(
+    store: dict[str, Any], source_recipe: Any,
+) -> set[str]:
+    """Derive reservations from durable job truth, never a write-only ledger.
 
-
-def _record_served_paths(store: dict[str, Any], key: str, paths: list[str]) -> None:
-    value = store["served"].setdefault(key, {})
-    if not isinstance(value, dict):
-        value = {"__legacy__": list(value) if isinstance(value, list) else []}
-        store["served"][key] = value
-    global_rows = value.setdefault("__global__", [])
-    global_rows.extend(paths)
+    Queued/running jobs reserve their exact windows against concurrency. A
+    completed job keeps them unavailable because output bytes exist and may
+    have crossed the API boundary. Failed jobs release them: no completed
+    output exists, so treating selection alone as "served" would eventually
+    exhaust an immutable master through transport or runtime failures.
+    """
+    slots: set[str] = set()
+    for job in store.get("jobs", {}).values():
+        if (
+            not isinstance(job, dict)
+            or job.get("sourceKind") != "dossier_source_dna"
+            or job.get("sourceLibraryId") != source_recipe.source_library_id
+            or job.get("sourceLibraryHash") != source_recipe.source_library_hash
+            or job.get("status") not in SOURCE_DNA_UNAVAILABLE_STATUSES
+        ):
+            continue
+        for cut in job.get("sourceCuts", []):
+            slot_id = cut.get("slotId") if isinstance(cut, dict) else None
+            if isinstance(slot_id, str) and slot_id:
+                slots.add(slot_id)
+    return slots
 
 
 def _sha256(path: Path) -> str:
@@ -1201,7 +1209,7 @@ async def create_job(
             }
             start_generation = True
         elif source_recipe is not None:
-            served_slots = _served_paths(store, source_recipe.served_ledger_key)
+            served_slots = _source_dna_unavailable_slots(store, source_recipe)
             cuts = plan_source_cuts(source_recipe, quantity, served_slots)
             if len(cuts) != quantity:
                 raise HTTPException(status_code=409, detail="insufficient_inventory")
@@ -1234,10 +1242,6 @@ async def create_job(
                 "recipeSpecHash": publication["recipeSpecHash"],
                 "runtimeId": _GENERATION_RUNTIME_ID,
             }
-            _record_served_paths(
-                store, source_recipe.served_ledger_key,
-                [cut.slot_id for cut in cuts],
-            )
             start_source = True
         store["jobs"][job_id] = job
         store["byIdempotency"][idempotency_key] = job_id
