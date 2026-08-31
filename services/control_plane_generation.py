@@ -24,6 +24,8 @@ import httpx
 from providers import PROVIDERS
 from providers.base import API_KEYS
 from services.content_engine_registry import resolve_material_profile
+from services.content_format_contracts import load_format_contracts
+from services.dossier_catalog_version import dossier_catalog_version
 
 
 CATALOG_PATH = (
@@ -50,6 +52,34 @@ FILTER_RANGES = {
 }
 MIN_CLIP_SPEED = 0.5
 MAX_CLIP_SPEED = 2.0
+MIN_CLIP_CROP_ZOOM = 1.0
+MAX_CLIP_CROP_ZOOM = 3.0
+MIN_CLIP_CROP_FOCUS = 0.0
+MAX_CLIP_CROP_FOCUS = 1.0
+
+
+def render_treatment_capability() -> dict[str, Any]:
+    """Controls accepted by the strict recipe decoder and render executors."""
+    return {
+        "clipSpeed": {
+            "type": "range", "minimum": MIN_CLIP_SPEED,
+            "maximum": MAX_CLIP_SPEED, "default": 1.0,
+        },
+        "clipCrop": {
+            "zoom": {
+                "type": "range", "minimum": MIN_CLIP_CROP_ZOOM,
+                "maximum": MAX_CLIP_CROP_ZOOM, "default": MIN_CLIP_CROP_ZOOM,
+            },
+            "focusX": {
+                "type": "range", "minimum": MIN_CLIP_CROP_FOCUS,
+                "maximum": MAX_CLIP_CROP_FOCUS, "default": 0.5,
+            },
+            "focusY": {
+                "type": "range", "minimum": MIN_CLIP_CROP_FOCUS,
+                "maximum": MAX_CLIP_CROP_FOCUS, "default": 0.5,
+            },
+        },
+    }
 
 
 @dataclass(frozen=True)
@@ -117,7 +147,9 @@ def _typed_recipe_spec(publication: dict[str, Any]) -> dict[str, Any] | None:
         spec = json.loads(publication["recipeSpecCanonical"])
     except (KeyError, TypeError, json.JSONDecodeError):
         return None
-    if not isinstance(spec, dict) or spec.get("schema") != "dossier.recipe-spec.v2":
+    if not isinstance(spec, dict) or spec.get("schema") not in {
+        "dossier.recipe-spec.v2", "dossier.recipe-spec.v3",
+    }:
         return None
     render = spec.get("renderTreatment")
     demand = spec.get("demand")
@@ -157,15 +189,15 @@ def _typed_recipe_spec(publication: dict[str, Any]) -> dict[str, Any] | None:
             isinstance(zoom, bool)
             or not isinstance(zoom, (int, float))
             or not math.isfinite(float(zoom))
-            or not 1.0 <= float(zoom) <= 3.0
+            or not MIN_CLIP_CROP_ZOOM <= float(zoom) <= MAX_CLIP_CROP_ZOOM
             or isinstance(focus_x, bool)
             or not isinstance(focus_x, (int, float))
             or not math.isfinite(float(focus_x))
-            or not 0.0 <= float(focus_x) <= 1.0
+            or not MIN_CLIP_CROP_FOCUS <= float(focus_x) <= MAX_CLIP_CROP_FOCUS
             or isinstance(focus_y, bool)
             or not isinstance(focus_y, (int, float))
             or not math.isfinite(float(focus_y))
-            or not 0.0 <= float(focus_y) <= 1.0
+            or not MIN_CLIP_CROP_FOCUS <= float(focus_y) <= MAX_CLIP_CROP_FOCUS
         ):
             return None
     return spec
@@ -240,7 +272,19 @@ def resolve_generation_recipe(
             or not 1 <= family["base_anchor_bytes"] <= MAX_ANCHOR_BYTES
         ):
             return None
-    provider_engine = family.get("provider")
+    production = spec.get("production") if spec.get("schema") == "dossier.recipe-spec.v3" else {}
+    if not isinstance(production, dict):
+        return None
+    if production.get("promptModuleId") not in (None, family_name):
+        return None
+    if production:
+        _, contracts_hash = load_format_contracts()
+        expected_catalog_version = dossier_catalog_version(
+            contracts_hash, profile.registry_hash, catalog_hash,
+        )
+        if production.get("catalogVersion") != expected_catalog_version:
+            return None
+    provider_engine = production.get("providerId") or family.get("provider")
     if not isinstance(provider_engine, str) or not provider_engine:
         return None
     if require_runtime and not _runtime_ready(provider_engine):
@@ -249,7 +293,7 @@ def resolve_generation_recipe(
     runtime_provider = PROVIDERS.get(provider_engine)
     if not isinstance(provider_config, dict) or not isinstance(runtime_provider, dict):
         return None
-    model = provider_config.get("replicate_model")
+    model = production.get("modelId") or provider_config.get("replicate_model")
     if model not in runtime_provider.get("models", []):
         return None
     if float(provider_config.get("cost_per_gen_usd") or 0) <= 0:
@@ -301,11 +345,14 @@ def compose_prompt(recipe: GenerationRecipe, run_id: str, index: int) -> tuple[s
         stride += 2
     combo = (index * stride + seed) % max(1, space)
     used: dict[str, str] = {}
+    selected_variations = recipe.recipe_spec.get("production", {}).get("variationValues", {})
+    if not isinstance(selected_variations, dict):
+        selected_variations = {}
     for name, values in ordered:
         count = max(1, len(values))
         pick = combo % count
         combo //= count
-        value = str(values[pick]) if values else ""
+        value = str(selected_variations.get(name, values[pick] if values else ""))
         used[name] = value
         prompt = prompt.replace("{" + name + "}", value)
     if "{" in prompt or "}" in prompt:
@@ -454,6 +501,9 @@ def generation_options(recipe: GenerationRecipe) -> dict[str, Any]:
     extra = recipe.family.get("extra")
     if isinstance(extra, dict):
         options.update(extra)
+    selected = recipe.recipe_spec.get("production", {}).get("controls", {})
+    if isinstance(selected, dict):
+        options.update(selected)
     return options
 
 
