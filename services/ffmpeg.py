@@ -32,6 +32,18 @@ TIKTOK_ENCODE_ARGS: list[str] = [
     "-b:a", "192k",
 ]
 
+DELIVERY_ENCODE_PRESETS: dict[str, tuple[str, ...]] = {
+    "tiktok_delivery_v1": tuple(TIKTOK_ENCODE_ARGS),
+}
+
+
+def delivery_encode_args(preset: str) -> list[str]:
+    """Resolve one closed, versioned delivery preset without a fallback."""
+    try:
+        return list(DELIVERY_ENCODE_PRESETS[preset])
+    except (KeyError, TypeError) as exc:
+        raise ValueError("delivery encode preset is unavailable") from exc
+
 
 # Standard encode that preserves the source's frame rate and skips TikTok-
 # specific rate caps. Used by the video router's /color-correct endpoint to
@@ -128,20 +140,37 @@ def _validated_clip_window(
     return start_ms, duration_ms
 
 
-def _clip_crop_filter(value: dict | None) -> str | None:
+def _validated_clip_crop_size(value: tuple[int, int]) -> tuple[int, int]:
+    if (
+        not isinstance(value, tuple)
+        or len(value) != 2
+        or any(isinstance(item, bool) or not isinstance(item, int) for item in value)
+        or any(item <= 0 or item % 2 for item in value)
+    ):
+        raise ValueError("clip_crop_size must contain positive even width and height")
+    return value
+
+
+def _clip_crop_filter(
+    value: dict | None,
+    output_size: tuple[int, int] = (1_080, 1_920),
+) -> str | None:
     crop = _validated_clip_crop(value)
     if crop is None:
         return None
+    output_width, output_height = _validated_clip_crop_size(output_size)
     zoom = crop["zoom"]
     focus_x = crop["focusX"]
     focus_y = crop["focusY"]
-    width = int(round(1080 * zoom))
-    height = int(round(1920 * zoom))
+    width = int(round(output_width * zoom))
+    height = int(round(output_height * zoom))
     width += width % 2
     height += height % 2
     return (
         f"scale={width}:{height}:force_original_aspect_ratio=increase:flags=lanczos,"
-        f"crop=1080:1920:(iw-1080)*{focus_x:.6f}:(ih-1920)*{focus_y:.6f},setsar=1"
+        f"crop={output_width}:{output_height}:"
+        f"(iw-{output_width})*{focus_x:.6f}:"
+        f"(ih-{output_height})*{focus_y:.6f},setsar=1"
     )
 
 
@@ -150,6 +179,7 @@ def build_cc_filter(
     scale: str | None = None,
     playback_speed: float = 1.0,
     clip_crop: dict | None = None,
+    clip_crop_size: tuple[int, int] = (1_080, 1_920),
 ) -> str:
     """Build an ffmpeg `-vf` filter string for color correction.
 
@@ -165,6 +195,9 @@ def build_cc_filter(
         playback_speed: Video and audio playback-rate multiplier, 0.5 through
             2.0. Video PTS is changed here; `run_color_correct` applies the
             matching audio tempo when an audio stream exists.
+        clip_crop_size: Exact even-pixel output width and height used when a
+            normalized crop is present. Sourced executors pass their typed,
+            hash-bound delivery size here.
 
     Returns:
         A comma-joined filter string ready for ffmpeg's `-vf` argument. When
@@ -173,7 +206,7 @@ def build_cc_filter(
     """
     speed = _validated_playback_speed(playback_speed)
     speed_filter = None if speed == 1.0 else f"setpts=PTS/{speed:.6f}"
-    crop_filter = _clip_crop_filter(clip_crop)
+    crop_filter = _clip_crop_filter(clip_crop, clip_crop_size)
     scale_filter = (
         f"scale={scale}:flags=lanczos,setsar=1" if scale else None
     )
@@ -352,6 +385,7 @@ async def run_color_correct(
     encode_args: list[str] | None = None,
     playback_speed: float = 1.0,
     clip_crop: dict | None = None,
+    clip_crop_size: tuple[int, int] = (1_080, 1_920),
     clip_start_ms: int | None = None,
     clip_duration_ms: int | None = None,
 ) -> None:
@@ -366,6 +400,7 @@ async def run_color_correct(
         scale=scale,
         playback_speed=speed,
         clip_crop=clip_crop,
+        clip_crop_size=clip_crop_size,
     )
     enc = list(encode_args if encode_args is not None else STANDARD_ENCODE_ARGS)
     audio_args: list[str] = []

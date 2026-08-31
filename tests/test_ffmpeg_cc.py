@@ -13,7 +13,13 @@ import re
 import pytest
 
 from services import ffmpeg as ffmpeg_module
-from services.ffmpeg import build_cc_filter, is_default_cc, run_color_correct
+from services.ffmpeg import (
+    TIKTOK_ENCODE_ARGS,
+    build_cc_filter,
+    delivery_encode_args,
+    is_default_cc,
+    run_color_correct,
+)
 
 
 # --- helpers ---------------------------------------------------------------
@@ -83,6 +89,36 @@ def test_clip_crop_builds_a_normalized_vertical_filter():
     )
     combined = build_cc_filter(None, playback_speed=0.75, clip_crop=crop)
     assert combined.endswith("setsar=1,setpts=PTS/0.750000")
+
+
+def test_clip_crop_uses_the_typed_executor_output_size():
+    crop = {"zoom": 1.0, "focusX": 0.5, "focusY": 0.5}
+    assert build_cc_filter(
+        None, clip_crop=crop, clip_crop_size=(720, 1280),
+    ) == (
+        "scale=720:1280:force_original_aspect_ratio=increase:flags=lanczos,"
+        "crop=720:1280:(iw-720)*0.500000:(ih-1280)*0.500000,setsar=1"
+    )
+
+
+def test_delivery_encode_preset_is_closed_and_returns_an_isolated_copy():
+    first = delivery_encode_args("tiktok_delivery_v1")
+    second = delivery_encode_args("tiktok_delivery_v1")
+    assert first == second == TIKTOK_ENCODE_ARGS
+    first.append("changed")
+    assert second == TIKTOK_ENCODE_ARGS
+    with pytest.raises(ValueError, match="delivery encode preset"):
+        delivery_encode_args("unregistered")
+
+
+@pytest.mark.parametrize("size", [(0, 1920), (1081, 1920), [1080, 1920]])
+def test_clip_crop_rejects_invalid_output_size(size):
+    with pytest.raises(ValueError, match="clip_crop_size"):
+        build_cc_filter(
+            None,
+            clip_crop={"zoom": 1.0, "focusX": 0.5, "focusY": 0.5},
+            clip_crop_size=size,
+        )
 
 
 @pytest.mark.parametrize(

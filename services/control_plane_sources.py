@@ -53,6 +53,9 @@ class SourceRecipe:
     source_library_hash: str
     masters: tuple[MasterSource, ...]
     cut_duration_ms: int
+    output_width: int
+    output_height: int
+    encode_preset: str
     material_source: str
     asset_type: str
     recipe_spec: dict[str, Any]
@@ -81,7 +84,7 @@ def _executor_contract() -> tuple[dict[str, Any], str]:
     if (
         not isinstance(value, dict)
         or set(value) != {
-            "schema", "executorId", "source", "selection", "controls",
+            "schema", "executorId", "source", "selection", "controls", "output",
         }
         or value.get("schema") != EXECUTOR_SCHEMA
         or value.get("executorId") != "source-dna-recut"
@@ -99,6 +102,16 @@ def _executor_contract() -> tuple[dict[str, Any], str]:
             != (6_000, 8_000, 1_000, 7_000)
     ):
         raise ValueError("source DNA recut controls are invalid")
+    output = value.get("output")
+    if (
+        not isinstance(output, dict)
+        or set(output) != {"aspectRatio", "width", "height", "encodePreset"}
+        or output.get("aspectRatio") != "9:16"
+        or output.get("width") != 1_080
+        or output.get("height") != 1_920
+        or output.get("encodePreset") != "tiktok_delivery_v1"
+    ):
+        raise ValueError("source DNA recut output is invalid")
     return value, hashlib.sha256(raw).hexdigest()
 
 
@@ -108,6 +121,7 @@ def source_treatment_capability() -> dict[str, Any]:
         "scope": "master_source_window",
         "recutWindow": "deterministic_without_replacement",
         "controls": dict(executor["controls"]),
+        "output": dict(executor["output"]),
         **render_treatment_capability(),
     }
 
@@ -208,6 +222,9 @@ def resolve_source_recipe(
         source_library_hash=library.sha256,
         masters=library.masters,
         cut_duration_ms=cut_duration_ms,
+        output_width=executor["output"]["width"],
+        output_height=executor["output"]["height"],
+        encode_preset=executor["output"]["encodePreset"],
         material_source=profile.material_source,
         asset_type=profile.asset_type,
         recipe_spec=spec,
