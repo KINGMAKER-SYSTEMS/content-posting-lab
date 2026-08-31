@@ -16,15 +16,15 @@ from typing import Any
 from urllib.parse import urlparse
 
 
-SCHEMA = "content-lab.source-dna-library.v1"
+SCHEMA = "content-lab.source-dna-library.v2"
 MANIFEST_DIR = Path(__file__).resolve().parents[1] / "recipes/source-dna"
 TOKEN = re.compile(r"^[a-z0-9][a-z0-9-]{0,99}$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 FILENAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._ -]{0,199}$")
-TOP_FIELDS = {"schema", "libraryId", "format", "masters"}
+TOP_FIELDS = {"schema", "libraryId", "format", "pageId", "masters"}
 MASTER_FIELDS = {
     "sourceId", "sha256", "bytes", "filename", "mimeType", "storageKey",
-    "durationMs", "provenance",
+    "durationMs", "sourceOffsetMs", "provenance",
 }
 PROVENANCE_FIELDS = {"sourceUrl", "acquiredAt", "authority"}
 MIME_TYPES = {"video/mp4", "video/quicktime"}
@@ -47,6 +47,7 @@ class MasterSource:
     mime_type: str
     storage_key: str
     duration_ms: int
+    source_offset_ms: int
     provenance: dict[str, str | None]
 
 
@@ -54,6 +55,7 @@ class MasterSource:
 class SourceDnaLibrary:
     library_id: str
     format_slug: str
+    page_id: str
     masters: tuple[MasterSource, ...]
     sha256: str
 
@@ -89,12 +91,15 @@ def parse_source_dna_manifest(raw: bytes, expected_library_id: str | None = None
         raise SourceDnaError("source DNA manifest fields or schema are invalid")
     library_id = value.get("libraryId")
     format_slug = value.get("format")
+    page_id = value.get("pageId")
     if not isinstance(library_id, str) or not TOKEN.fullmatch(library_id):
         raise SourceDnaError("source DNA libraryId is invalid")
     if expected_library_id is not None and library_id != expected_library_id:
         raise SourceDnaError("source DNA libraryId does not match its filename")
     if not isinstance(format_slug, str) or not TOKEN.fullmatch(format_slug):
         raise SourceDnaError("source DNA format is invalid")
+    if not _nonblank(page_id, 128) or not re.fullmatch(r"[A-Za-z0-9._:-]+", page_id):
+        raise SourceDnaError("source DNA pageId is invalid")
     rows = value.get("masters")
     if not isinstance(rows, list) or not 1 <= len(rows) <= MAX_MASTERS:
         raise SourceDnaError("source DNA masters must be a non-empty bounded list")
@@ -112,6 +117,7 @@ def parse_source_dna_manifest(raw: bytes, expected_library_id: str | None = None
         mime_type = row.get("mimeType")
         storage_key = row.get("storageKey")
         duration_ms = row.get("durationMs")
+        source_offset_ms = row.get("sourceOffsetMs")
         provenance = row.get("provenance")
         if not isinstance(source_id, str) or not TOKEN.fullmatch(source_id) or source_id in source_ids:
             raise SourceDnaError(f"source DNA masters[{index}].sourceId is invalid or duplicated")
@@ -125,6 +131,13 @@ def parse_source_dna_manifest(raw: bytes, expected_library_id: str | None = None
             raise SourceDnaError(f"source DNA masters[{index}] media identity is invalid or duplicated")
         if isinstance(duration_ms, bool) or not isinstance(duration_ms, int) or not 1 <= duration_ms <= MAX_DURATION_MS:
             raise SourceDnaError(f"source DNA masters[{index}].durationMs is invalid")
+        if (
+            isinstance(source_offset_ms, bool)
+            or not isinstance(source_offset_ms, int)
+            or not 0 <= source_offset_ms <= MAX_DURATION_MS
+            or source_offset_ms + duration_ms > MAX_DURATION_MS
+        ):
+            raise SourceDnaError(f"source DNA masters[{index}].sourceOffsetMs is invalid")
         if not isinstance(provenance, dict) or set(provenance) != PROVENANCE_FIELDS:
             raise SourceDnaError(f"source DNA masters[{index}].provenance fields are invalid")
         if not _https_or_null(provenance.get("sourceUrl")) \
@@ -136,13 +149,14 @@ def parse_source_dna_manifest(raw: bytes, expected_library_id: str | None = None
         storage_keys.add(storage_key)
         masters.append(MasterSource(
             source_id, sha256, byte_count, filename, mime_type, storage_key,
-            duration_ms, dict(provenance),
+            duration_ms, source_offset_ms, dict(provenance),
         ))
     if [item.source_id for item in masters] != sorted(source_ids):
         raise SourceDnaError("source DNA masters must be sorted by sourceId")
     return SourceDnaLibrary(
         library_id=library_id,
         format_slug=format_slug,
+        page_id=page_id,
         masters=tuple(masters),
         sha256=hashlib.sha256(raw).hexdigest(),
     )
@@ -156,3 +170,15 @@ def load_source_dna_library(library_id: str) -> SourceDnaLibrary:
     except OSError as error:
         raise SourceDnaError("source DNA library is unavailable") from error
     return parse_source_dna_manifest(raw, library_id)
+
+
+def source_dna_catalog_hash() -> str:
+    """Hash the complete valid master registry, including page scope."""
+    rows: list[str] = []
+    for path in sorted(MANIFEST_DIR.glob("*.json")):
+        try:
+            library = parse_source_dna_manifest(path.read_bytes(), path.stem)
+        except (OSError, SourceDnaError):
+            continue
+        rows.append(f"{library.library_id}:{library.sha256}")
+    return hashlib.sha256("\n".join(rows).encode()).hexdigest()

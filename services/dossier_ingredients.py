@@ -20,6 +20,7 @@ from routers.video import PROVIDER_SCHEMAS
 from services.content_engine_registry import MaterialProfile, load_engine_registry
 from services.content_format_contracts import FormatContract, load_format_contracts
 from services.control_plane_generation import load_prompt_catalog, render_treatment_capability
+from services.control_plane_sources import source_treatment_capability
 from services.control_plane_source_libraries import (
     MANIFEST_DIR,
     SourceLibraryError,
@@ -31,6 +32,7 @@ from services.source_dna_registry import (
     MANIFEST_DIR as SOURCE_DNA_MANIFEST_DIR,
     SourceDnaError,
     parse_source_dna_manifest,
+    source_dna_catalog_hash,
 )
 
 
@@ -164,18 +166,19 @@ def _approved_cut_library_options(format_slug: str) -> list[dict[str, Any]]:
     return options
 
 
-def _master_source_options(format_slug: str) -> list[dict[str, Any]]:
+def _master_source_options(format_slug: str, page_id: str) -> list[dict[str, Any]]:
     options: list[dict[str, Any]] = []
     for path in sorted(Path(SOURCE_DNA_MANIFEST_DIR).glob("*.json")):
         try:
             library = parse_source_dna_manifest(path.read_bytes(), path.stem)
         except (OSError, SourceDnaError):
             continue
-        if library.format_slug != format_slug:
+        if library.format_slug != format_slug or library.page_id != page_id:
             continue
         options.append({
             "libraryId": library.library_id,
             "version": f"sha256:{library.sha256}",
+            "pageId": library.page_id,
             "masterCount": len(library.masters),
             "masters": [{
                 "sourceId": master.source_id,
@@ -185,6 +188,7 @@ def _master_source_options(format_slug: str) -> list[dict[str, Any]]:
                 "mimeType": master.mime_type,
                 "storageKey": master.storage_key,
                 "durationMs": master.duration_ms,
+                "sourceOffsetMs": master.source_offset_ms,
                 "provenance": master.provenance,
             } for master in library.masters],
         })
@@ -253,17 +257,27 @@ def _generated_ingredients(
     ]
 
 
-def _sourced_ingredients(format_slug: str, profile: MaterialProfile) -> list[dict[str, Any]]:
+def _sourced_ingredients(
+    format_slug: str,
+    profile: MaterialProfile,
+    page_id: str,
+) -> list[dict[str, Any]]:
     options = _approved_cut_library_options(format_slug)
-    master_options = _master_source_options(format_slug)
+    master_options = _master_source_options(format_slug, page_id)
+    bound_master = master_options[0] if len(master_options) == 1 else None
     selected = next(
         (option for option in options if option["libraryId"] == profile.executor_id),
         None,
     )
+    if selected is None and len(options) == 1:
+        selected = options[0]
     return [
         _ingredient(
             "master-source-video", "master_video_library", required=True,
-            status="selection_required" if master_options else "missing",
+            status="bound" if bound_master is not None else (
+                "selection_required" if master_options else "missing"
+            ),
+            binding=bound_master,
             options=master_options,
         ),
         _ingredient(
@@ -274,11 +288,7 @@ def _sourced_ingredients(format_slug: str, profile: MaterialProfile) -> list[dic
         _ingredient(
             "clip-treatment", "render_treatment", required=True,
             status="bound",
-            binding={
-                "scope": "whole_approved_clip_only",
-                "recutWindow": "not_advertised",
-                **render_treatment_capability(),
-            },
+            binding=source_treatment_capability(),
         ),
     ]
 
@@ -296,11 +306,12 @@ def _format_entry(
     profile: MaterialProfile,
     catalog: dict[str, Any],
     model_options: list[dict[str, Any]],
+    page_id: str,
 ) -> dict[str, Any]:
     if profile.content_engine == "ai_video":
         ingredients = _generated_ingredients(contract.format_slug, catalog, model_options)
     elif profile.content_engine == "sourced_video":
-        ingredients = _sourced_ingredients(contract.format_slug, profile)
+        ingredients = _sourced_ingredients(contract.format_slug, profile, page_id)
     else:
         ingredients = _slideshow_ingredients(profile)
     ingredients.extend([
@@ -354,7 +365,10 @@ def build_dossier_ingredient_catalog(
     prompt_catalog, prompt_hash = load_prompt_catalog()
     model_options = _model_options(prompt_catalog)
     formats = [
-        _format_entry(contracts[format_slug], profiles[format_slug], prompt_catalog, model_options)
+        _format_entry(
+            contracts[format_slug], profiles[format_slug], prompt_catalog,
+            model_options, page_id,
+        )
         for format_slug in sorted(contracts)
     ]
     current_format_candidates = [
@@ -368,7 +382,9 @@ def build_dossier_ingredient_catalog(
         "pageId": page_id,
         "masterPages": intent,
         "masterPagesHash": master_pages_hash,
-        "catalogVersion": dossier_catalog_version(contracts_hash, registry_hash, prompt_hash),
+        "catalogVersion": dossier_catalog_version(
+            contracts_hash, registry_hash, prompt_hash, source_dna_catalog_hash(),
+        ),
         "currentFormatCandidates": current_format_candidates,
         "formats": formats,
     }

@@ -114,8 +114,12 @@ def test_reference_and_source_slots_come_from_real_catalogs(monkeypatch):
     assert len(library["binding"]["clips"]) == 39
     assert all(clip["parentSource"] is None and clip["cutWindow"] is None
                for clip in library["binding"]["clips"])
-    assert treatment["binding"]["scope"] == "whole_approved_clip_only"
-    assert treatment["binding"]["recutWindow"] == "not_advertised"
+    assert treatment["binding"]["scope"] == "master_source_window"
+    assert treatment["binding"]["recutWindow"] == "deterministic_without_replacement"
+    assert treatment["binding"]["controls"]["cutDurationMs"] == {
+        "type": "range", "min": 6000, "max": 8000,
+        "step": 1000, "default": 7000,
+    }
     assert treatment["binding"]["clipSpeed"] == {
         "type": "range", "minimum": 0.5, "maximum": 2.0, "default": 1.0,
     }

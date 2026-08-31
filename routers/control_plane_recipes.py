@@ -188,11 +188,23 @@ def _valid_control_value(value: Any, control: dict[str, Any]) -> bool:
     if kind == "select":
         return value in control.get("options", [])
     if kind == "range":
-        return (
+        valid = (
             not isinstance(value, bool)
             and isinstance(value, (int, float))
             and math.isfinite(float(value))
             and float(control.get("min")) <= float(value) <= float(control.get("max"))
+        )
+        step = control.get("step")
+        if not valid or step is None:
+            return valid
+        return (
+            not isinstance(step, bool)
+            and isinstance(step, (int, float))
+            and float(step) > 0
+            and abs(
+                (float(value) - float(control["min"])) / float(step)
+                - round((float(value) - float(control["min"])) / float(step))
+            ) < 1e-9
         )
     return False
 
@@ -241,6 +253,8 @@ def _validate_production_selection(spec: dict[str, Any]) -> None:
     if source_id is not None and not any(option.get("libraryId") == source_id
                                          for option in (source or {}).get("options", [])):
         raise HTTPException(409, "selected source library is not registered as master source DNA")
+    if source is not None and source.get("required") is True and source_id is None:
+        raise HTTPException(409, "sourceLibraryId is required for sourced master DNA")
 
     variations = production.get("variationValues", {})
     groups = (prompt or {}).get("binding", {}).get("variationGroups", {})
@@ -252,7 +266,11 @@ def _validate_production_selection(spec: dict[str, Any]) -> None:
     controls = production.get("controls", {})
     if not isinstance(controls, dict):
         raise HTTPException(400, "production controls must be an object")
-    advertised = (selected_model or {}).get("controls", {})
+    advertised = dict((selected_model or {}).get("controls", {}))
+    treatment = _ingredient(format_entry, "clip-treatment")
+    treatment_controls = (treatment or {}).get("binding", {}).get("controls", {})
+    if isinstance(treatment_controls, dict):
+        advertised.update(treatment_controls)
     advanced = advertised.get("_advanced", {}) if isinstance(advertised, dict) else {}
     for key, value in controls.items():
         control = advertised.get(key) if isinstance(advertised, dict) else None

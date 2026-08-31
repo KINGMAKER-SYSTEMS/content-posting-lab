@@ -34,7 +34,7 @@ SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}$")
 SHA256_VERSION = re.compile(r"^sha256:[0-9a-f]{64}$")
 ALLOWED_BINDINGS = {
     "ai_video": ("generated_video", "prompt_family"),
-    "sourced_video": ("source_library", "source_library"),
+    "sourced_video": ("source_library", "source_dna_recut"),
     "sourced_slideshow": ("image_library", "slideshow_renderer"),
     "lyrics_slideshows": ("lyric_image_library", "slideshow_renderer"),
 }

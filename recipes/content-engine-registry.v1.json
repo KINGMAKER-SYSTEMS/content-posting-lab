@@ -67,10 +67,10 @@
       "materialSource": "source_library",
       "assetType": "video/mp4",
       "executionStatus": "commissioned",
-      "executorKind": "source_library",
-      "executorId": "pov-dirt-bike-8791-20260828",
-      "executorVersion": "sha256:32169e75b485f89b20e79f8a78df968aff490cb256adbbd358cbc13f9e35106e",
-      "formatContractVersion": "sha256:1fad1aec1272c4c1237f45aec8af87b9ecd33943a3376af9801be1b2928ff903",
+      "executorKind": "source_dna_recut",
+      "executorId": "source-dna-recut",
+      "executorVersion": "sha256:a2cb4f50fdecef702832c7b67bae6d8f61dc9d986f17bba0500051053a4493ca",
+      "formatContractVersion": "sha256:6b46a02a4e48bbe77a73763bf8a7da39ead11347b65de721c41b4bfa4c41010c",
       "maxQuantity": 10
     },
     "pov-dusk-core": {

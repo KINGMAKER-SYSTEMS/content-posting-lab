@@ -10,6 +10,7 @@ def _manifest():
         "schema": SCHEMA,
         "libraryId": "dirt-bike-masters-v1",
         "format": "pov-dirt-bike",
+        "pageId": "tt-dirt-bike",
         "masters": [{
             "sourceId": "ozark-master-01",
             "sha256": "a" * 64,
@@ -18,6 +19,7 @@ def _manifest():
             "mimeType": "video/mp4",
             "storageKey": "source-dna/pov-dirt-bike/ozark-master-01.mp4",
             "durationMs": 900_000,
+            "sourceOffsetMs": 120_000,
             "provenance": {
                 "sourceUrl": "https://source.example/watch/ozark-01",
                 "acquiredAt": "2026-08-31T20:00:00Z",
@@ -34,8 +36,10 @@ def _raw(value):
 def test_master_source_requires_immutable_bytes_storage_duration_and_provenance():
     parsed = parse_source_dna_manifest(_raw(_manifest()), "dirt-bike-masters-v1")
     assert parsed.format_slug == "pov-dirt-bike"
+    assert parsed.page_id == "tt-dirt-bike"
     assert parsed.masters[0].storage_key == "source-dna/pov-dirt-bike/ozark-master-01.mp4"
     assert parsed.masters[0].duration_ms == 900_000
+    assert parsed.masters[0].source_offset_ms == 120_000
 
 
 @pytest.mark.parametrize("field", ["sourceUrl", "acquiredAt", "authority"])

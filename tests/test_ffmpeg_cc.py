@@ -125,6 +125,44 @@ async def test_speed_render_keeps_optional_audio_in_lockstep(monkeypatch):
     assert captured[captured.index("-c:a") + 1] == "aac"
 
 
+@pytest.mark.asyncio
+async def test_source_window_is_an_input_bound_before_speed_treatment(monkeypatch):
+    captured = []
+
+    class Process:
+        returncode = 0
+
+        async def communicate(self):
+            return b"", b""
+
+    async def fake_exec(*args, **kwargs):
+        captured.extend(args)
+        return Process()
+
+    monkeypatch.setattr(ffmpeg_module.asyncio, "create_subprocess_exec", fake_exec)
+    await run_color_correct(
+        "master.mp4", "cut.mp4", None, playback_speed=2.0,
+        clip_start_ms=8_500, clip_duration_ms=7_000,
+    )
+    assert captured[:8] == [
+        "ffmpeg", "-y", "-ss", "8.500", "-t", "7.000", "-i", "master.mp4",
+    ]
+    assert captured[captured.index("-vf") + 1] == "setpts=PTS/2.000000"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("start", "duration"),
+    [(None, 7_000), (0, None), (-1, 7_000), (0, 0), (True, 7_000)],
+)
+async def test_source_window_rejects_incomplete_or_invalid_bounds(start, duration):
+    with pytest.raises(ValueError, match="clip window"):
+        await run_color_correct(
+            "master.mp4", "cut.mp4", None,
+            clip_start_ms=start, clip_duration_ms=duration,
+        )
+
+
 def test_is_default_cc_string_number_is_truthy_nonzero():
     # Values are float()-coerced, so a numeric string still counts as set.
     assert is_default_cc({"brightness": "5"}) is False
