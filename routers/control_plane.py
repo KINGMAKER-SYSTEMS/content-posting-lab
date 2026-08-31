@@ -73,7 +73,7 @@ from services.control_plane_generation import (
 from services.control_plane_sources import plan_source_cuts, resolve_source_recipe
 from services.content_engine_registry import load_engine_registry
 from services.content_format_contracts import load_format_contracts
-from services.ffmpeg import run_color_correct
+from services.ffmpeg import delivery_encode_args, run_color_correct
 from services.master_pages_contract import SCHEMA as MASTER_PAGES_SCHEMA, canonical_intent, exact_intent, intent_hash
 
 router = APIRouter()
@@ -936,7 +936,11 @@ async def _run_dossier_source(job_id: str) -> None:
     treated_root.mkdir(parents=True, exist_ok=True, mode=0o700)
     color_correction = dossier_filters_to_color_correction(recipe)
     clip_speed = dossier_clip_speed(recipe)
-    clip_crop = dossier_clip_crop(recipe)
+    # The sourced format contract always requires 9:16 delivery. A missing
+    # custom crop means the neutral centered crop, not source-aspect output.
+    clip_crop = dossier_clip_crop(recipe) or {
+        "zoom": 1.0, "focusX": 0.5, "focusY": 0.5,
+    }
     source_cuts = job.get("sourceCuts")
     if not isinstance(source_cuts, list) or not source_cuts:
         _update_job(
@@ -971,8 +975,10 @@ async def _run_dossier_source(job_id: str) -> None:
             destination = treated_root / f"source-{index:04d}.mp4"
             await run_color_correct(
                 str(source), str(destination), color_correction, scale=None,
+                encode_args=delivery_encode_args(recipe.encode_preset),
                 playback_speed=clip_speed,
                 clip_crop=clip_crop,
+                clip_crop_size=(recipe.output_width, recipe.output_height),
                 clip_start_ms=start_ms,
                 clip_duration_ms=duration_ms,
             )

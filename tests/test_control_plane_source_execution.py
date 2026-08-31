@@ -167,6 +167,8 @@ def test_source_recipe_requires_v3_page_scoped_master_and_exact_controls():
     assert resolved.masters[0].sha256 == MASTER_SHA
     assert resolved.masters[0].source_offset_ms == 120_000
     assert resolved.cut_duration_ms == 6_000
+    assert (resolved.output_width, resolved.output_height) == (1080, 1920)
+    assert resolved.encode_preset == "tiktok_delivery_v1"
 
     assert resolve_source_recipe(publication(source_library_id="not-registered")) is None
     assert resolve_source_recipe(publication(cut_duration_ms=6_500)) is None
@@ -287,14 +289,61 @@ async def test_runner_passes_exact_cut_speed_and_crop_to_isolated_render(lab, mo
     await cp._run_dossier_source(response.json()["jobId"])
     assert calls[0][3] == {
         "scale": None,
+        "encode_args": cp.delivery_encode_args("tiktok_delivery_v1"),
         "playback_speed": 0.75,
         "clip_crop": crop,
+        "clip_crop_size": (1080, 1920),
         "clip_start_ms": 0,
         "clip_duration_ms": 8_000,
     }
     job = cp._load_jobs()["jobs"][response.json()["jobId"]]
     assert job["status"] == "completed"
     assert Path(job["artifactRoot"]) in Path(calls[0][1]).parents
+
+
+@pytest.mark.asyncio
+async def test_runner_enforces_neutral_vertical_delivery_without_custom_crop(
+    lab, monkeypatch,
+):
+    client, tmp_path, _ = lab
+    source = tmp_path / "master.mp4"
+    source.write_bytes(b"master")
+    payload = publication(
+        clip_crop=None, recipe_version="dossier-neutralcrop0000",
+    )
+    spec = json.loads(payload["recipeSpecCanonical"])
+    spec["renderTreatment"]["clipCrop"] = None
+    canonical = json.dumps(spec, sort_keys=True, separators=(",", ":"))
+    payload["recipeSpecCanonical"] = canonical
+    payload["recipeSpecHash"] = "sha256:" + hashlib.sha256(canonical.encode()).hexdigest()
+    registered = client.post(
+        "/api/control-plane/v1/recipes", json=payload,
+        headers=headers("source-register-neutral-crop"),
+    )
+    assert registered.status_code == 200, registered.json()
+    response = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(1, payload),
+        headers=headers("source-job-neutral-crop"),
+    )
+    calls = []
+
+    async def cached_source(*_):
+        return source
+
+    async def render(src, dst, correction, **kwargs):
+        calls.append((src, dst, correction, kwargs))
+        Path(dst).write_bytes(b"derived")
+
+    monkeypatch.setattr(cp, "_cached_source_master", cached_source)
+    monkeypatch.setattr(cp, "run_color_correct", render)
+    await cp._run_dossier_source(response.json()["jobId"])
+    assert calls[0][3]["clip_crop"] == {
+        "zoom": 1.0, "focusX": 0.5, "focusY": 0.5,
+    }
+    assert calls[0][3]["encode_args"] == cp.delivery_encode_args(
+        "tiktok_delivery_v1",
+    )
+    assert calls[0][3]["clip_crop_size"] == (1080, 1920)
 
 
 def test_source_media_origin_is_explicit_pinned_https(monkeypatch):

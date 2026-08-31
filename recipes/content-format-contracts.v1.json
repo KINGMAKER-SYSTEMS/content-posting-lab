@@ -127,7 +127,7 @@
       "materialSource": "source_library",
       "assetType": "video/mp4",
       "definitionStatus": "complete",
-      "creativeAuthority": {"kind": "source_dna_recut", "id": "source-dna-recut", "version": "sha256:a2cb4f50fdecef702832c7b67bae6d8f61dc9d986f17bba0500051053a4493ca"},
+      "creativeAuthority": {"kind": "source_dna_recut", "id": "source-dna-recut", "version": "sha256:66c072da15e6980958127cfb06ac1d7a1c3355b3661ab744d07b6064ec8e8dcb"},
       "dimensions": {
         "subject": {"status": "defined", "rule": "First-person dirt-bike riding footage from the exact page-scoped master bytes.", "authority": "sourceDna.masters"},
         "setting": {"status": "defined", "rule": "Trail and off-road settings are fixed by the reviewed page-scoped master library.", "authority": "sourceDna.masters"},
