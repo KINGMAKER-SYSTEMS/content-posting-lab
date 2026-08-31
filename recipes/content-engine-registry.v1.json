@@ -69,8 +69,8 @@
       "executionStatus": "commissioned",
       "executorKind": "source_dna_recut",
       "executorId": "source-dna-recut",
-      "executorVersion": "sha256:66c072da15e6980958127cfb06ac1d7a1c3355b3661ab744d07b6064ec8e8dcb",
-      "formatContractVersion": "sha256:e56dc3e8974e3d04de5c4966691775155f05c01ae77863ec29fe7f12fcd12e2f",
+      "executorVersion": "sha256:1bbcb745be141c7b9e835662637110d85785979610f993835ce2d05f31b3d484",
+      "formatContractVersion": "sha256:43cf25cc48767d76425ad6a621fdfa01b0f1a060e289b1520b1330aa5eaae3fa",
       "maxQuantity": 10
     },
     "pov-dusk-core": {

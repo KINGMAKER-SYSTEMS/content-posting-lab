@@ -215,6 +215,61 @@ def test_capability_and_jobs_bind_master_hash_and_unique_windows(lab):
     assert len(started) == 2
 
 
+def test_failed_source_job_releases_unrendered_cut_windows(lab):
+    client, _, _ = lab
+    first = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(2),
+        headers=headers("source-job-release-first"),
+    )
+    assert first.status_code == 200
+    first_id = first.json()["jobId"]
+    first_job = cp._load_jobs()["jobs"][first_id]
+    assert [cut["startMs"] for cut in first_job["sourceCuts"]] == [
+        0, CUT_SLOT_STEP_MS,
+    ]
+    cp._update_job(first_id, status="failed", error="source_dna_master_unavailable")
+
+    retry_payload = publication(recipe_version="dossier-released000000")
+    assert client.post(
+        "/api/control-plane/v1/recipes", json=retry_payload,
+        headers=headers("source-register-release-retry"),
+    ).status_code == 200
+    retry = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(2, retry_payload),
+        headers=headers("source-job-release-retry"),
+    )
+    assert retry.status_code == 200
+    retry_job = cp._load_jobs()["jobs"][retry.json()["jobId"]]
+    assert [cut["startMs"] for cut in retry_job["sourceCuts"]] == [
+        0, CUT_SLOT_STEP_MS,
+    ]
+
+
+def test_completed_source_job_keeps_rendered_cut_windows_unavailable(lab):
+    client, _, _ = lab
+    first = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(2),
+        headers=headers("source-job-completed-first"),
+    )
+    assert first.status_code == 200
+    cp._update_job(first.json()["jobId"], status="completed")
+
+    next_payload = publication(recipe_version="dossier-completed00000")
+    assert client.post(
+        "/api/control-plane/v1/recipes", json=next_payload,
+        headers=headers("source-register-completed-next"),
+    ).status_code == 200
+    following = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(2, next_payload),
+        headers=headers("source-job-completed-next"),
+    )
+    assert following.status_code == 200
+    following_job = cp._load_jobs()["jobs"][following.json()["jobId"]]
+    assert [cut["startMs"] for cut in following_job["sourceCuts"]] == [
+        CUT_SLOT_STEP_MS * 2, CUT_SLOT_STEP_MS * 3,
+    ]
+
+
 @pytest.mark.asyncio
 async def test_runner_cuts_real_window_changes_speed_and_records_original_lineage(
     lab, monkeypatch,
