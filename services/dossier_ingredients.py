@@ -19,7 +19,11 @@ from providers import PROVIDERS
 from routers.video import PROVIDER_SCHEMAS
 from services.content_engine_registry import MaterialProfile, load_engine_registry
 from services.content_format_contracts import FormatContract, load_format_contracts
-from services.control_plane_generation import load_prompt_catalog, render_treatment_capability
+from services.control_plane_generation import (
+    load_prompt_catalog,
+    render_treatment_capability,
+    render_treatment_capability_hash,
+)
 from services.control_plane_sources import source_treatment_capability
 from services.control_plane_source_libraries import (
     MANIFEST_DIR,
@@ -384,6 +388,7 @@ def build_dossier_ingredient_catalog(
         "masterPagesHash": master_pages_hash,
         "catalogVersion": dossier_catalog_version(
             contracts_hash, registry_hash, prompt_hash, source_dna_catalog_hash(),
+            render_treatment_capability_hash(),
         ),
         "currentFormatCandidates": current_format_candidates,
         "formats": formats,

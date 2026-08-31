@@ -62,6 +62,43 @@ MAX_CLIP_CROP_FOCUS = 1.0
 def render_treatment_capability() -> dict[str, Any]:
     """Controls accepted by the strict recipe decoder and render executors."""
     return {
+        "filters": {
+            "brightness": {
+                "type": "range", "minimum": FILTER_RANGES["brightness"][0],
+                "maximum": FILTER_RANGES["brightness"][1], "step": 0.05,
+                "default": 1.0, "label": "Brightness",
+            },
+            "contrast": {
+                "type": "range", "minimum": FILTER_RANGES["contrast"][0],
+                "maximum": FILTER_RANGES["contrast"][1], "step": 0.05,
+                "default": 1.0, "label": "Contrast",
+            },
+            "saturation": {
+                "type": "range", "minimum": FILTER_RANGES["saturation"][0],
+                "maximum": FILTER_RANGES["saturation"][1], "step": 0.05,
+                "default": 1.0, "label": "Saturation",
+            },
+            "warmth": {
+                "type": "range", "minimum": FILTER_RANGES["warmth"][0],
+                "maximum": FILTER_RANGES["warmth"][1], "step": 0.05,
+                "default": 0.0, "label": "Warmth",
+            },
+            "fade": {
+                "type": "range", "minimum": FILTER_RANGES["fade"][0],
+                "maximum": FILTER_RANGES["fade"][1], "step": 0.05,
+                "default": 0.0, "label": "Fade",
+            },
+            "grain": {
+                "type": "range", "minimum": FILTER_RANGES["grain"][0],
+                "maximum": FILTER_RANGES["grain"][1], "step": 0.05,
+                "default": 0.0, "label": "Grain",
+            },
+            "vignette": {
+                "type": "range", "minimum": FILTER_RANGES["vignette"][0],
+                "maximum": FILTER_RANGES["vignette"][1], "step": 0.05,
+                "default": 0.0, "label": "Vignette",
+            },
+        },
         "clipSpeed": {
             "type": "range", "minimum": MIN_CLIP_SPEED,
             "maximum": MAX_CLIP_SPEED, "default": 1.0,
@@ -81,6 +118,14 @@ def render_treatment_capability() -> dict[str, Any]:
             },
         },
     }
+
+
+def render_treatment_capability_hash() -> str:
+    """Hash the exact UI/executor treatment schema into the Dossier catalog."""
+    canonical = json.dumps(
+        render_treatment_capability(), sort_keys=True, separators=(",", ":"),
+    ).encode("utf-8")
+    return "sha256:" + hashlib.sha256(canonical).hexdigest()
 
 
 @dataclass(frozen=True)
