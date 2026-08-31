@@ -109,6 +109,25 @@ def _validated_clip_crop(value: dict | None) -> dict[str, float] | None:
     }
 
 
+def _validated_clip_window(
+    start_ms: int | None,
+    duration_ms: int | None,
+) -> tuple[int, int] | None:
+    if start_ms is None and duration_ms is None:
+        return None
+    if (
+        isinstance(start_ms, bool)
+        or not isinstance(start_ms, int)
+        or start_ms < 0
+        or isinstance(duration_ms, bool)
+        or not isinstance(duration_ms, int)
+        or not 1 <= duration_ms <= 86_400_000
+        or start_ms + duration_ms > 86_400_000
+    ):
+        raise ValueError("clip window requires non-negative start_ms and positive bounded duration_ms")
+    return start_ms, duration_ms
+
+
 def _clip_crop_filter(value: dict | None) -> str | None:
     crop = _validated_clip_crop(value)
     if crop is None:
@@ -333,12 +352,15 @@ async def run_color_correct(
     encode_args: list[str] | None = None,
     playback_speed: float = 1.0,
     clip_crop: dict | None = None,
+    clip_start_ms: int | None = None,
+    clip_duration_ms: int | None = None,
 ) -> None:
     """Run ffmpeg to produce a color-corrected copy of a video.
 
     Raises RuntimeError with the last ~500 chars of stderr on ffmpeg failure.
     """
     speed = _validated_playback_speed(playback_speed)
+    window = _validated_clip_window(clip_start_ms, clip_duration_ms)
     vf = build_cc_filter(
         cc,
         scale=scale,
@@ -354,8 +376,15 @@ async def run_color_correct(
         for index, argument in enumerate(enc[:-1]):
             if argument == "-c:a" and enc[index + 1] == "copy":
                 enc[index + 1] = "aac"
+    input_window = (
+        [
+            "-ss", f"{window[0] / 1000:.3f}",
+            "-t", f"{window[1] / 1000:.3f}",
+        ] if window is not None else []
+    )
     cmd = [
         "ffmpeg", "-y",
+        *input_window,
         "-i", input_path,
         "-vf", vf,
         *audio_args,

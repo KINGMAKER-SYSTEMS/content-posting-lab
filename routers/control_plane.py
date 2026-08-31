@@ -45,6 +45,9 @@ import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote, urlparse
+
+import httpx
 
 from fastapi import APIRouter, Header, HTTPException
 
@@ -67,7 +70,7 @@ from services.control_plane_generation import (
     resolve_generation_recipe,
     typed_recipe_spec,
 )
-from services.control_plane_sources import resolve_source_recipe
+from services.control_plane_sources import plan_source_cuts, resolve_source_recipe
 from services.content_engine_registry import load_engine_registry
 from services.content_format_contracts import load_format_contracts
 from services.ffmpeg import run_color_correct
@@ -518,8 +521,9 @@ MAX_JOB_BODY_BYTES = 16_384
 IDEMPOTENCY_KEY_RE = re.compile(r"^[A-Za-z0-9_.:-]{8,200}$")
 JOB_TOKEN_BYTES = 24
 GENERATION_ACTIVE_STATUSES = {"queued", "running"}
-ASYNC_SOURCE_KINDS = {"generated", "dossier_approved_library"}
+ASYNC_SOURCE_KINDS = {"generated", "dossier_source_dna"}
 _GENERATION_RUNTIME_ID = _secrets.token_hex(16)
+_source_cache_locks: dict[str, asyncio.Lock] = {}
 
 # Defense-in-depth mirror of the plane's assertNoFreeFormPrompt: no field
 # anywhere in the job body may look like prompt text. Recipe authoring
@@ -687,6 +691,68 @@ def _generated_manifest(job_root: Path, path: Path) -> dict[str, Any]:
     }
 
 
+def _source_media_origin() -> str:
+    value = os.environ.get("CONTENT_LAB_CONTROL_PLANE_ORIGIN", "").strip().rstrip("/")
+    parsed = urlparse(value)
+    if (
+        parsed.scheme != "https"
+        or not parsed.netloc
+        or parsed.username
+        or parsed.password
+        or parsed.path not in {"", "/"}
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise RuntimeError("source_dna_control_plane_origin_unavailable")
+    return value
+
+
+async def _cached_source_master(page_id: str, master: Any, job_id: str) -> Path:
+    cache_root = (_generation_root() / "_source_dna").resolve()
+    cache_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    target = cache_root / f"{master.sha256}.mp4"
+    lock = _source_cache_locks.setdefault(master.sha256, asyncio.Lock())
+    async with lock:
+        if (
+            target.is_file()
+            and target.stat().st_size == master.bytes
+            and _sha256(target) == master.sha256
+        ):
+            return target
+        partial = cache_root / f".{master.sha256}.{job_id}.part"
+        partial.unlink(missing_ok=True)
+        url = (
+            f"{_source_media_origin()}/api/control-plane/v1/pages/"
+            f"{quote(page_id, safe='')}/dossier-ingredient-media/source/{master.sha256}"
+        )
+        digest = hashlib.sha256()
+        byte_count = 0
+        try:
+            timeout = httpx.Timeout(connect=10, read=120, write=30, pool=10)
+            async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
+                async with client.stream("GET", url) as response:
+                    if response.status_code != 200:
+                        raise RuntimeError("source_dna_master_unavailable")
+                    content_length = response.headers.get("content-length")
+                    if content_length is not None and content_length != str(master.bytes):
+                        raise RuntimeError("source_dna_master_size_mismatch")
+                    with partial.open("xb") as handle:
+                        async for chunk in response.aiter_bytes(1024 * 1024):
+                            byte_count += len(chunk)
+                            if byte_count > master.bytes:
+                                raise RuntimeError("source_dna_master_size_mismatch")
+                            digest.update(chunk)
+                            handle.write(chunk)
+                        handle.flush()
+                        os.fsync(handle.fileno())
+            if byte_count != master.bytes or digest.hexdigest() != master.sha256:
+                raise RuntimeError("source_dna_master_hash_mismatch")
+            os.replace(partial, target)
+            return target
+        finally:
+            partial.unlink(missing_ok=True)
+
+
 async def _thumbnail_manifest(job_root: Path, video: Path, index: int) -> dict[str, Any]:
     thumbnail_root = job_root / "thumbnails"
     thumbnail_root.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -843,7 +909,7 @@ async def _run_dossier_generation(job_id: str) -> None:
 
 
 async def _run_dossier_source(job_id: str) -> None:
-    """Apply one typed dossier treatment to hash-pinned approved bytes."""
+    """Cut unique windows from one page's immutable source DNA."""
     job = _get_job_or_404(job_id)
     publication = load_registered_recipe(
         job["pageId"], job["recipeId"], job["engine"], job["recipeVersion"],
@@ -851,11 +917,11 @@ async def _run_dossier_source(job_id: str) -> None:
     recipe = _dossier_source_recipe(publication)
     if (
         recipe is None
-        or job.get("baseRecipeId") != recipe.base_recipe_id
-        or job.get("baseRecipeVersion") != recipe.base_recipe_version
+        or job.get("sourceLibraryId") != recipe.source_library_id
+        or job.get("sourceLibraryHash") != recipe.source_library_hash
         or job.get("engineRegistryHash") != recipe.engine_registry_hash
         or job.get("formatContractVersion") != recipe.format_contract_version
-        or job.get("sourceManifestHash") != recipe.source_manifest_hash
+        or job.get("executorVersion") != recipe.executor_version
     ):
         _update_job(
             job_id,
@@ -868,12 +934,11 @@ async def _run_dossier_source(job_id: str) -> None:
     job_root = Path(job["artifactRoot"]).resolve()
     treated_root = job_root / "treated"
     treated_root.mkdir(parents=True, exist_ok=True, mode=0o700)
-    source_root = (PROJECTS_DIR / recipe.base_recipe_id / "videos").resolve()
     color_correction = dossier_filters_to_color_correction(recipe)
     clip_speed = dossier_clip_speed(recipe)
     clip_crop = dossier_clip_crop(recipe)
-    source_clips = job.get("sourceClips")
-    if not isinstance(source_clips, list) or not source_clips:
+    source_cuts = job.get("sourceCuts")
+    if not isinstance(source_cuts, list) or not source_cuts:
         _update_job(
             job_id,
             status="failed",
@@ -884,37 +949,58 @@ async def _run_dossier_source(job_id: str) -> None:
     manifests: list[dict[str, Any]] = []
     _update_job(job_id, status="running", progress=0)
     try:
-        for index, source_manifest in enumerate(source_clips):
-            if not isinstance(source_manifest, dict):
+        masters = {master.sha256: master for master in recipe.masters}
+        for index, source_cut in enumerate(source_cuts):
+            if not isinstance(source_cut, dict):
                 raise RuntimeError("source_recipe_manifest_invalid")
-            rel_path = source_manifest.get("path")
-            if not isinstance(rel_path, str) or not rel_path:
-                raise RuntimeError("source_recipe_path_invalid")
-            source = (source_root / rel_path).resolve()
-            if source_root not in source.parents or not source.is_file():
-                raise RuntimeError("source_recipe_artifact_missing")
+            master = masters.get(source_cut.get("masterSha256"))
+            start_ms = source_cut.get("startMs")
+            duration_ms = source_cut.get("durationMs")
             if (
-                source.stat().st_size != source_manifest.get("bytes")
-                or _sha256(source) != source_manifest.get("sha256")
+                master is None
+                or start_ms != source_cut.get("libraryStartMs")
+                or not isinstance(start_ms, int)
+                or not isinstance(duration_ms, int)
+                or duration_ms != recipe.cut_duration_ms
+                or start_ms < 0
+                or start_ms + duration_ms > master.duration_ms
+                or source_cut.get("slotId") != f"{master.sha256}:{start_ms}"
             ):
-                raise RuntimeError("source_recipe_artifact_changed")
+                raise RuntimeError("source_recipe_cut_invalid")
+            source = await _cached_source_master(job["pageId"], master, job_id)
             destination = treated_root / f"source-{index:04d}.mp4"
-            # Even a neutral treatment renders into the isolated job root, so
-            # a dossier job can never return shared library bytes directly.
             await run_color_correct(
                 str(source), str(destination), color_correction, scale=None,
                 playback_speed=clip_speed,
                 clip_crop=clip_crop,
+                clip_start_ms=start_ms,
+                clip_duration_ms=duration_ms,
             )
             manifest = _generated_manifest(job_root, destination)
             manifest["clipSpeed"] = clip_speed
             manifest["clipCrop"] = clip_crop
             manifest["source"] = _source_provenance(job, {
-                "recipeId": recipe.base_recipe_id,
-                "recipeVersion": recipe.base_recipe_version,
-                "path": rel_path,
-                "sha256": source_manifest["sha256"],
-                "bytes": source_manifest["bytes"],
+                "recipeId": recipe.recipe_id,
+                "sourceLibraryId": recipe.source_library_id,
+                "sourceLibraryVersion": f"sha256:{recipe.source_library_hash}",
+                "master": {
+                    "sourceId": master.source_id,
+                    "sha256": master.sha256,
+                    "bytes": master.bytes,
+                    "filename": master.filename,
+                    "mimeType": master.mime_type,
+                    "storageKey": master.storage_key,
+                    "durationMs": master.duration_ms,
+                    "sourceOffsetMs": master.source_offset_ms,
+                    "provenance": master.provenance,
+                },
+                "cutWindow": {
+                    "libraryStartMs": start_ms,
+                    "libraryEndMs": start_ms + duration_ms,
+                    "durationMs": duration_ms,
+                    "originalStartMs": master.source_offset_ms + start_ms,
+                    "originalEndMs": master.source_offset_ms + start_ms + duration_ms,
+                },
             })
             manifest["thumbnail"] = await _thumbnail_manifest(
                 job_root, destination, len(manifests),
@@ -922,7 +1008,7 @@ async def _run_dossier_source(job_id: str) -> None:
             manifests.append(manifest)
             _update_job(
                 job_id,
-                progress=int(((index + 1) / len(source_clips)) * 100),
+                progress=int(((index + 1) / len(source_cuts)) * 100),
             )
     except Exception as error:
         _update_job(
@@ -1109,18 +1195,9 @@ async def create_job(
             }
             start_generation = True
         elif source_recipe is not None:
-            served_for_page = _served_paths(store, source_recipe.served_ledger_key)
-            picks: list[dict[str, Any]] = []
-            for rel_path in _scan_library(source_recipe.base_recipe_id):
-                if rel_path in served_for_page:
-                    continue
-                manifest = _clip_manifest(source_recipe.base_recipe_id, rel_path)
-                if manifest is None:
-                    continue
-                picks.append(manifest)
-                if len(picks) >= quantity:
-                    break
-            if len(picks) != quantity:
+            served_slots = _served_paths(store, source_recipe.served_ledger_key)
+            cuts = plan_source_cuts(source_recipe, quantity, served_slots)
+            if len(cuts) != quantity:
                 raise HTTPException(status_code=409, detail="insufficient_inventory")
             job_root = (
                 _generation_root() / page_id / recipe_version / job_id
@@ -1128,17 +1205,23 @@ async def create_job(
             job_root.mkdir(parents=True, exist_ok=False, mode=0o700)
             job = {
                 **common,
-                "sourceKind": "dossier_approved_library",
+                "sourceKind": "dossier_source_dna",
                 "status": "queued",
                 "progress": 0,
                 "clips": [],
                 "artifactRoot": str(job_root),
-                "sourceClips": picks,
-                "baseRecipeId": source_recipe.base_recipe_id,
-                "baseRecipeVersion": source_recipe.base_recipe_version,
+                "sourceCuts": [{
+                    "slotId": cut.slot_id,
+                    "masterSha256": cut.master.sha256,
+                    "libraryStartMs": cut.start_ms,
+                    "startMs": cut.start_ms,
+                    "durationMs": cut.duration_ms,
+                } for cut in cuts],
+                "sourceLibraryId": source_recipe.source_library_id,
+                "sourceLibraryHash": source_recipe.source_library_hash,
                 "engineRegistryHash": source_recipe.engine_registry_hash,
                 "formatContractVersion": source_recipe.format_contract_version,
-                "sourceManifestHash": source_recipe.source_manifest_hash,
+                "executorVersion": source_recipe.executor_version,
                 "materialSource": source_recipe.material_source,
                 "assetType": source_recipe.asset_type,
                 "dossierRevision": publication["dossierRevision"],
@@ -1147,7 +1230,7 @@ async def create_job(
             }
             _record_served_paths(
                 store, source_recipe.served_ledger_key,
-                [pick["path"] for pick in picks],
+                [cut.slot_id for cut in cuts],
             )
             start_source = True
         store["jobs"][job_id] = job

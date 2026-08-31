@@ -1,0 +1,1 @@
+{"controls":{"cutDurationMs":{"default":7000,"max":8000,"min":6000,"step":1000,"type":"range"}},"executorId":"source-dna-recut","selection":"deterministic_without_replacement","source":"page_scoped_immutable_master","schema":"content-lab.source-dna-recut-executor.v1"}

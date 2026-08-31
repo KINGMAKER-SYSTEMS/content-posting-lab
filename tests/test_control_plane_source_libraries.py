@@ -245,13 +245,10 @@ def test_partial_finalize_refuses_then_exact_retry_is_idempotent_and_atomic(lab)
         "/api/control-plane/v1/capabilities",
         headers={"X-RT-Page-Id": PAGE_ID},
     ).json()["capabilities"]
-    assert {
-        "recipeId": "pov-dirt-bike:master",
-        "engine": "sourced_video",
-        "recipeVersion": _publication()["recipeVersion"],
-        "maxQuantity": 10,
-    } in capabilities
-    assert all(item["recipeId"] != LIBRARY_ID for item in capabilities)
+    assert all(
+        item["recipeId"] not in {"pov-dirt-bike:master", LIBRARY_ID}
+        for item in capabilities
+    ), "finalized derivative libraries are inventory, never executable page DNA"
 
 
 def test_divergent_preexisting_project_is_never_overwritten(lab):

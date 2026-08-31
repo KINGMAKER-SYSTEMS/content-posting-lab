@@ -26,6 +26,7 @@ from providers.base import API_KEYS
 from services.content_engine_registry import resolve_material_profile
 from services.content_format_contracts import load_format_contracts
 from services.dossier_catalog_version import dossier_catalog_version
+from services.source_dna_registry import source_dna_catalog_hash
 
 
 CATALOG_PATH = (
@@ -281,6 +282,7 @@ def resolve_generation_recipe(
         _, contracts_hash = load_format_contracts()
         expected_catalog_version = dossier_catalog_version(
             contracts_hash, profile.registry_hash, catalog_hash,
+            source_dna_catalog_hash(),
         )
         if production.get("catalogVersion") != expected_catalog_version:
             return None
