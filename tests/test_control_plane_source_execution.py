@@ -34,6 +34,7 @@ def publication(
     content_niche="POV - Dirtbike",
     clip_speed=1.25,
     include_clip_speed=True,
+    clip_crop=None,
     recipe_version="dossier-feedfacefeedface",
     dossier_revision="rev-dirt-bike",
 ):
@@ -48,6 +49,8 @@ def publication(
     }
     if include_clip_speed:
         render_treatment["clipSpeed"] = clip_speed
+    if clip_crop is not None:
+        render_treatment["clipCrop"] = clip_crop
     canonical = json.dumps({
         "schema": "dossier.recipe-spec.v2",
         "masterPages": intent,
@@ -135,6 +138,20 @@ def _probe_durations(path: Path) -> tuple[float, dict[str, float]]:
         and stream.get("duration") is not None
     }
     return float(probe["format"]["duration"]), streams
+
+
+def _probe_video_size(path: Path) -> tuple[int, int]:
+    completed = subprocess.run(
+        [
+            "ffprobe", "-v", "error", "-select_streams", "v:0",
+            "-show_entries", "stream=width,height", "-of", "json", str(path),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    stream = json.loads(completed.stdout)["streams"][0]
+    return int(stream["width"]), int(stream["height"])
 
 
 @pytest.fixture
@@ -288,6 +305,40 @@ async def test_source_runner_defaults_legacy_clip_speed_omission_to_real_time(la
     assert output_duration == pytest.approx(source_duration, abs=0.12)
 
 
+@pytest.mark.asyncio
+async def test_source_runner_renders_crop_and_records_exact_transform(lab):
+    client, tmp_path, _, _ = lab
+    source = (
+        tmp_path / "projects" / BASE_RECIPE["recipeId"] / "videos" / "clip-0.mp4"
+    )
+    _write_av_test_clip(source)
+    crop = {"zoom": 1.75, "focusX": 0.2, "focusY": 0.8}
+    payload = publication(
+        clip_crop=crop,
+        recipe_version="dossier-cropcropcrop01",
+        dossier_revision="rev-crop-1",
+    )
+    assert client.post(
+        "/api/control-plane/v1/recipes", json=payload,
+        headers=headers("source-register-crop"),
+    ).status_code == 200
+    response = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(1, payload),
+        headers=headers("source-job-crop"),
+    )
+    assert response.status_code == 200
+    job_id = response.json()["jobId"]
+
+    await cp._run_dossier_source(job_id)
+
+    job = cp._load_jobs()["jobs"][job_id]
+    assert job["status"] == "completed"
+    clip = job["clips"][0]
+    output = Path(job["artifactRoot"]) / clip["path"]
+    assert _probe_video_size(output) == (1080, 1920)
+    assert clip["clipCrop"] == crop
+
+
 @pytest.mark.parametrize(
     "invalid",
     [0.49, 2.01, True, "fast", float("nan"), float("inf")],
@@ -295,6 +346,23 @@ async def test_source_runner_defaults_legacy_clip_speed_omission_to_real_time(la
 def test_source_recipe_fails_closed_for_invalid_clip_speed(invalid):
     assert resolve_source_recipe(
         publication(clip_speed=invalid),
+        base_recipe_lookup=lambda _: dict(BASE_RECIPE),
+    ) is None
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    [
+        {"zoom": 0.99, "focusX": 0.5, "focusY": 0.5},
+        {"zoom": 3.01, "focusX": 0.5, "focusY": 0.5},
+        {"zoom": 1.0, "focusX": -0.01, "focusY": 0.5},
+        {"zoom": 1.0, "focusX": 0.5, "focusY": 1.01},
+        {"zoom": 1.0, "focusX": 0.5},
+    ],
+)
+def test_source_recipe_fails_closed_for_invalid_clip_crop(invalid):
+    assert resolve_source_recipe(
+        publication(clip_crop=invalid),
         base_recipe_lookup=lambda _: dict(BASE_RECIPE),
     ) is None
 
@@ -469,8 +537,11 @@ async def test_source_runner_always_treats_into_isolated_root_with_provenance(la
     job_id = response.json()["jobId"]
     calls = []
 
-    async def fake_color_correct(source, destination, correction, scale=None, playback_speed=1.0):
-        calls.append((source, destination, correction, playback_speed))
+    async def fake_color_correct(
+        source, destination, correction, scale=None, playback_speed=1.0,
+        clip_crop=None,
+    ):
+        calls.append((source, destination, correction, playback_speed, clip_crop))
         shutil.copyfile(source, destination)
 
     monkeypatch.setattr(cp, "run_color_correct", fake_color_correct)

@@ -59,6 +59,7 @@ from routers.control_plane_recipes import (
 from services.control_plane_generation import (
     MAX_CAPABILITY_QUANTITY,
     compose_prompt,
+    dossier_clip_crop,
     dossier_clip_speed,
     dossier_filters_to_color_correction,
     generation_options,
@@ -747,6 +748,7 @@ async def _run_dossier_generation(job_id: str) -> None:
     calls = int(job["providerCallsPlanned"])
     color_correction = dossier_filters_to_color_correction(recipe)
     clip_speed = dossier_clip_speed(recipe)
+    clip_crop = dossier_clip_crop(recipe)
     manifests: list[dict[str, Any]] = []
     _update_job(job_id, status="running", progress=0, providerCallsCompleted=0)
 
@@ -790,17 +792,19 @@ async def _run_dossier_generation(job_id: str) -> None:
                 if render_root.resolve() not in source.parents or not source.is_file():
                     raise RuntimeError("provider_artifact_invalid")
                 artifact = source
-                if color_correction or clip_speed != 1.0:
+                if color_correction or clip_speed != 1.0 or clip_crop is not None:
                     treated_root.mkdir(parents=True, exist_ok=True, mode=0o700)
                     artifact = treated_root / f"g{call_index:02d}-c{candidate_index:02d}.mp4"
                     await run_color_correct(
                         str(source), str(artifact), color_correction, scale=None,
                         playback_speed=clip_speed,
+                        clip_crop=clip_crop,
                     )
                 manifest = _generated_manifest(job_root, artifact)
                 manifest["generationIndex"] = call_index
                 manifest["promptSlots"] = slots
                 manifest["clipSpeed"] = clip_speed
+                manifest["clipCrop"] = clip_crop
                 source_manifest = _generated_manifest(job_root, source)
                 manifest["source"] = _source_provenance(job, {
                     "recipeId": recipe.recipe_id,
@@ -867,6 +871,7 @@ async def _run_dossier_source(job_id: str) -> None:
     source_root = (PROJECTS_DIR / recipe.base_recipe_id / "videos").resolve()
     color_correction = dossier_filters_to_color_correction(recipe)
     clip_speed = dossier_clip_speed(recipe)
+    clip_crop = dossier_clip_crop(recipe)
     source_clips = job.get("sourceClips")
     if not isinstance(source_clips, list) or not source_clips:
         _update_job(
@@ -899,9 +904,11 @@ async def _run_dossier_source(job_id: str) -> None:
             await run_color_correct(
                 str(source), str(destination), color_correction, scale=None,
                 playback_speed=clip_speed,
+                clip_crop=clip_crop,
             )
             manifest = _generated_manifest(job_root, destination)
             manifest["clipSpeed"] = clip_speed
+            manifest["clipCrop"] = clip_crop
             manifest["source"] = _source_provenance(job, {
                 "recipeId": recipe.base_recipe_id,
                 "recipeVersion": recipe.base_recipe_version,

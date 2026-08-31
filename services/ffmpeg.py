@@ -79,10 +79,58 @@ def _validated_playback_speed(value: float) -> float:
     return float(value)
 
 
+def _validated_clip_crop(value: dict | None) -> dict[str, float] | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict) or set(value) != {"zoom", "focusX", "focusY"}:
+        raise ValueError("clip_crop must contain zoom, focusX, and focusY")
+    zoom = value.get("zoom")
+    focus_x = value.get("focusX")
+    focus_y = value.get("focusY")
+    if (
+        isinstance(zoom, bool)
+        or not isinstance(zoom, (int, float))
+        or not math.isfinite(float(zoom))
+        or not 1.0 <= float(zoom) <= 3.0
+        or isinstance(focus_x, bool)
+        or not isinstance(focus_x, (int, float))
+        or not math.isfinite(float(focus_x))
+        or not 0.0 <= float(focus_x) <= 1.0
+        or isinstance(focus_y, bool)
+        or not isinstance(focus_y, (int, float))
+        or not math.isfinite(float(focus_y))
+        or not 0.0 <= float(focus_y) <= 1.0
+    ):
+        raise ValueError("clip_crop must use 1-3x zoom and normalized 0-1 focal points")
+    return {
+        "zoom": float(zoom),
+        "focusX": float(focus_x),
+        "focusY": float(focus_y),
+    }
+
+
+def _clip_crop_filter(value: dict | None) -> str | None:
+    crop = _validated_clip_crop(value)
+    if crop is None:
+        return None
+    zoom = crop["zoom"]
+    focus_x = crop["focusX"]
+    focus_y = crop["focusY"]
+    width = int(round(1080 * zoom))
+    height = int(round(1920 * zoom))
+    width += width % 2
+    height += height % 2
+    return (
+        f"scale={width}:{height}:force_original_aspect_ratio=increase:flags=lanczos,"
+        f"crop=1080:1920:(iw-1080)*{focus_x:.6f}:(ih-1920)*{focus_y:.6f},setsar=1"
+    )
+
+
 def build_cc_filter(
     cc: dict | None,
     scale: str | None = None,
     playback_speed: float = 1.0,
+    clip_crop: dict | None = None,
 ) -> str:
     """Build an ffmpeg `-vf` filter string for color correction.
 
@@ -106,13 +154,16 @@ def build_cc_filter(
     """
     speed = _validated_playback_speed(playback_speed)
     speed_filter = None if speed == 1.0 else f"setpts=PTS/{speed:.6f}"
+    crop_filter = _clip_crop_filter(clip_crop)
     scale_filter = (
         f"scale={scale}:flags=lanczos,setsar=1" if scale else None
     )
 
     # Fast path: no CC → just the scale (or null if no scale either).
     if is_default_cc(cc):
-        return ",".join(item for item in (speed_filter, scale_filter) if item) or "null"
+        return ",".join(
+            item for item in (crop_filter, speed_filter, scale_filter) if item
+        ) or "null"
 
     b_raw = float(cc.get("brightness", 0))
     c_raw = float(cc.get("contrast", 0))
@@ -153,7 +204,9 @@ def build_cc_filter(
         and vignette_raw < 0.001
     )
     if is_default:
-        return ",".join(item for item in (speed_filter, scale_filter) if item) or "null"
+        return ",".join(
+            item for item in (crop_filter, speed_filter, scale_filter) if item
+        ) or "null"
 
     mat = [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
     off = [0.0, 0.0, 0.0]
@@ -262,6 +315,8 @@ def build_cc_filter(
         # Map the dossier's 0..1 dial into a restrained PI/12..PI/4 range.
         denominator = 12.0 - (vignette_raw / 100.0) * 8.0
         filters.append(f"vignette=angle=PI/{denominator:.3f}:eval=frame")
+    if crop_filter:
+        filters.append(crop_filter)
     if speed_filter:
         filters.append(speed_filter)
     if scale_filter:
@@ -277,13 +332,19 @@ async def run_color_correct(
     scale: str | None = None,
     encode_args: list[str] | None = None,
     playback_speed: float = 1.0,
+    clip_crop: dict | None = None,
 ) -> None:
     """Run ffmpeg to produce a color-corrected copy of a video.
 
     Raises RuntimeError with the last ~500 chars of stderr on ffmpeg failure.
     """
     speed = _validated_playback_speed(playback_speed)
-    vf = build_cc_filter(cc, scale=scale, playback_speed=speed)
+    vf = build_cc_filter(
+        cc,
+        scale=scale,
+        playback_speed=speed,
+        clip_crop=clip_crop,
+    )
     enc = list(encode_args if encode_args is not None else STANDARD_ENCODE_ARGS)
     audio_args: list[str] = []
     if speed != 1.0:

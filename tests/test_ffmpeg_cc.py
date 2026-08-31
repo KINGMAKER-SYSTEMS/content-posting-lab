@@ -75,6 +75,31 @@ def test_playback_speed_survives_an_effectively_neutral_color_treatment():
     ) == "setpts=PTS/2.000000"
 
 
+def test_clip_crop_builds_a_normalized_vertical_filter():
+    crop = {"zoom": 1.5, "focusX": 0.25, "focusY": 0.75}
+    assert build_cc_filter(None, clip_crop=crop) == (
+        "scale=1620:2880:force_original_aspect_ratio=increase:flags=lanczos,"
+        "crop=1080:1920:(iw-1080)*0.250000:(ih-1920)*0.750000,setsar=1"
+    )
+    combined = build_cc_filter(None, playback_speed=0.75, clip_crop=crop)
+    assert combined.endswith("setsar=1,setpts=PTS/0.750000")
+
+
+@pytest.mark.parametrize(
+    "crop",
+    [
+        {"zoom": 0.99, "focusX": 0.5, "focusY": 0.5},
+        {"zoom": 3.01, "focusX": 0.5, "focusY": 0.5},
+        {"zoom": 1.0, "focusX": -0.01, "focusY": 0.5},
+        {"zoom": 1.0, "focusX": 0.5, "focusY": 1.01},
+        {"zoom": 1.0, "focusX": 0.5},
+    ],
+)
+def test_clip_crop_rejects_invalid_values(crop):
+    with pytest.raises(ValueError, match="clip_crop"):
+        build_cc_filter(None, clip_crop=crop)
+
+
 @pytest.mark.asyncio
 async def test_speed_render_keeps_optional_audio_in_lockstep(monkeypatch):
     captured = []

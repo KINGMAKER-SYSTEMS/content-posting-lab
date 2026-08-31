@@ -30,7 +30,8 @@ BODY_FIELDS = {
 }
 SPEC_FIELDS = {"schema", "masterPages", "masterPagesHash", "renderTreatment", "demand"}
 RENDER_REQUIRED_FIELDS = {"stylePreset", "filters", "captionStyle"}
-RENDER_OPTIONAL_FIELDS = {"clipSpeed"}
+RENDER_OPTIONAL_FIELDS = {"clipSpeed", "clipCrop"}
+CLIP_CROP_FIELDS = {"zoom", "focusX", "focusY"}
 DEMAND_FIELDS = {"formatMix"}
 TOKEN_CHARS = frozenset(
     "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.:-"
@@ -124,6 +125,31 @@ def _validate_spec(canonical: str) -> dict[str, Any]:
         or not 0.5 <= float(clip_speed) <= 2.0
     ):
         raise HTTPException(400, "clipSpeed must be a finite number from 0.5 through 2.0")
+    clip_crop = render.get("clipCrop")
+    if clip_crop is not None:
+        if not isinstance(clip_crop, dict) or set(clip_crop) != CLIP_CROP_FIELDS:
+            raise HTTPException(400, "clipCrop schema mismatch")
+        zoom = clip_crop.get("zoom")
+        focus_x = clip_crop.get("focusX")
+        focus_y = clip_crop.get("focusY")
+        if (
+            isinstance(zoom, bool)
+            or not isinstance(zoom, (int, float))
+            or not math.isfinite(float(zoom))
+            or not 1.0 <= float(zoom) <= 3.0
+            or isinstance(focus_x, bool)
+            or not isinstance(focus_x, (int, float))
+            or not math.isfinite(float(focus_x))
+            or not 0.0 <= float(focus_x) <= 1.0
+            or isinstance(focus_y, bool)
+            or not isinstance(focus_y, (int, float))
+            or not math.isfinite(float(focus_y))
+            or not 0.0 <= float(focus_y) <= 1.0
+        ):
+            raise HTTPException(
+                400,
+                "clipCrop must use 1-3x zoom and normalized 0-1 focal points",
+            )
     if any(
         part in key.lower()
         for key in _walk_keys(spec)

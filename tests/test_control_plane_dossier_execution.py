@@ -36,6 +36,8 @@ def recipe_publication():
                 "stylePreset": "Dramatic Cool",
                 "filters": {"brightness": 0.94, "contrast": 1.08},
                 "captionStyle": {},
+                "clipSpeed": 0.75,
+                "clipCrop": {"zoom": 1.5, "focusX": 0.2, "focusY": 0.8},
             },
             "demand": {"formatMix": {"truck-scenic": 1.0}},
         },
@@ -160,8 +162,9 @@ async def test_generation_runner_lands_treated_artifacts_under_the_isolated_job_
 
     async def fake_color_correct(
         source, destination, color_correction, scale=None, playback_speed=1.0,
+        clip_crop=None,
     ):
-        corrections.append((color_correction, playback_speed))
+        corrections.append((color_correction, playback_speed, clip_crop))
         shutil.copyfile(source, destination)
 
     async def fake_thumbnail(job_root, video, index):
@@ -180,8 +183,13 @@ async def test_generation_runner_lands_treated_artifacts_under_the_isolated_job_
     assert stored["progress"] == 100
     assert len(stored["clips"]) == 2
     assert len(corrections) == 2
-    assert all(speed == pytest.approx(1.0) for _, speed in corrections)
-    assert all(clip["clipSpeed"] == pytest.approx(1.0) for clip in stored["clips"])
+    assert all(speed == pytest.approx(0.75) for _, speed, _ in corrections)
+    assert all(crop == {"zoom": 1.5, "focusX": 0.2, "focusY": 0.8} for _, _, crop in corrections)
+    assert all(clip["clipSpeed"] == pytest.approx(0.75) for clip in stored["clips"])
+    assert all(
+        clip["clipCrop"] == {"zoom": 1.5, "focusX": 0.2, "focusY": 0.8}
+        for clip in stored["clips"]
+    )
     root = (tmp_path / "generated").resolve()
     assert all(root in (root / PAGE_ID / stored["recipeVersion"] / job_id / clip["path"]).resolve().parents for clip in stored["clips"])
     assert all(clip["sha256"] for clip in stored["clips"])
