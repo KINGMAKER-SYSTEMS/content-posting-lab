@@ -304,3 +304,27 @@ def test_source_media_origin_is_explicit_pinned_https(monkeypatch):
         monkeypatch.setenv("CONTENT_LAB_CONTROL_PLANE_ORIGIN", invalid)
         with pytest.raises(RuntimeError, match="source_dna_control_plane_origin_unavailable"):
             cp._source_media_origin()
+
+
+def test_failed_source_job_status_exposes_only_the_bounded_terminal_error(lab):
+    client, _, _ = lab
+    response = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(1), headers=headers("source-job-failure"),
+    )
+    job_id = response.json()["jobId"]
+
+    cp._update_job(job_id, status="running", error="must-not-leak-before-terminal")
+    running = client.get(
+        f"/api/control-plane/v1/jobs/{job_id}", headers=headers("source-status-running"),
+    )
+    assert running.status_code == 200
+    assert "error" not in running.json()
+
+    exact_error = "source_dna_master_hash_mismatch:" + ("x" * 400)
+    cp._update_job(job_id, status="failed", error=exact_error)
+    failed = client.get(
+        f"/api/control-plane/v1/jobs/{job_id}", headers=headers("source-status-failed"),
+    )
+    assert failed.status_code == 200
+    assert failed.json()["error"] == exact_error[:300]
+    assert len(failed.json()["error"]) == 300
