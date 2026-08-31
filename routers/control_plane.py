@@ -1279,12 +1279,19 @@ def job_status(
         # A job answers only to the page it belongs to — cross-page status
         # reads would leak what other pages were served.
         raise HTTPException(status_code=404, detail="job not found")
-    return {
+    response = {
         "schema": RESPONSE_SCHEMA,
         "jobId": job["jobId"],
         "status": job["status"],
         "progress": int(job.get("progress") or 0),
     }
+    if job["status"] == "failed" and isinstance(job.get("error"), str):
+        # The executor already persists a bounded terminal reason. Keep it on
+        # the page-scoped, authenticated status contract so the control plane
+        # can report and recover the real seam instead of collapsing every
+        # terminal failure to a generic label.
+        response["error"] = job["error"][:300]
+    return response
 
 
 @router.get("/v1/jobs/{job_id}/artifacts")
