@@ -9,6 +9,7 @@ from providers.base import API_KEYS
 from services.control_plane_generation import (
     GenerationRecipe,
     compose_prompt,
+    dossier_clip_crop,
     dossier_clip_speed,
     dossier_filters_to_color_correction,
     load_generation_anchor,
@@ -34,6 +35,7 @@ def publication(**overrides):
             },
             "captionStyle": {},
             "clipSpeed": 1.25,
+            "clipCrop": {"zoom": 1.6, "focusX": 0.25, "focusY": 0.7},
         },
         "demand": {"formatMix": {"truck-scenic": 1.0}},
     }
@@ -132,6 +134,12 @@ def test_malformed_or_out_of_range_treatment_is_not_advertised():
 
     payload = publication()
     spec = json.loads(payload["recipeSpecCanonical"])
+    spec["renderTreatment"]["clipCrop"]["focusX"] = -0.01
+    payload["recipeSpecCanonical"] = json.dumps(spec, sort_keys=True, separators=(",", ":"))
+    assert resolve_generation_recipe(payload) is None
+
+    payload = publication()
+    spec = json.loads(payload["recipeSpecCanonical"])
     spec["renderTreatment"]["filters"]["brightness"] = "bright"
     payload["recipeSpecCanonical"] = json.dumps(spec, sort_keys=True, separators=(",", ":"))
     assert resolve_generation_recipe(payload) is None
@@ -221,9 +229,17 @@ def test_dossier_filter_units_map_to_the_existing_ffmpeg_slider_contract():
         "vignette": pytest.approx(30.0),
     }
     assert dossier_clip_speed(recipe) == pytest.approx(1.25)
+    assert dossier_clip_crop(recipe) == {
+        "zoom": pytest.approx(1.6),
+        "focusX": pytest.approx(0.25),
+        "focusY": pytest.approx(0.7),
+    }
 
     old = publication()
     spec = json.loads(old["recipeSpecCanonical"])
     spec["renderTreatment"].pop("clipSpeed")
+    spec["renderTreatment"].pop("clipCrop")
     old["recipeSpecCanonical"] = json.dumps(spec, sort_keys=True, separators=(",", ":"))
-    assert dossier_clip_speed(resolve_generation_recipe(old)) == pytest.approx(1.0)
+    legacy = resolve_generation_recipe(old)
+    assert dossier_clip_speed(legacy) == pytest.approx(1.0)
+    assert dossier_clip_crop(legacy) is None

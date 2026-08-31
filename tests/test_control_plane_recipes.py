@@ -27,6 +27,7 @@ def _payload(**overrides):
                 "filters": {"brightness": 1.03},
                 "captionStyle": {},
                 "clipSpeed": 1.25,
+                "clipCrop": {"zoom": 1.6, "focusX": 0.25, "focusY": 0.7},
             },
             "demand": {"formatMix": {"truck-scenic": 1}},
         },
@@ -143,4 +144,37 @@ def test_clip_speed_is_bounded_and_old_recipe_bytes_remain_accepted(lab):
         assert lab.post(
             "/api/control-plane/v1/recipes", json=body,
             headers=_publication_headers(**{"Idempotency-Key": f"dossier:speed-{invalid!s}"}),
+        ).status_code == 400
+
+
+def test_clip_crop_is_bounded_and_old_recipe_bytes_remain_accepted(lab):
+    old = _payload(dossierRevision="rev-no-crop")
+    decoded = json.loads(old["recipeSpecCanonical"])
+    decoded["renderTreatment"].pop("clipCrop")
+    canonical = json.dumps(decoded, sort_keys=True, separators=(",", ":"))
+    old["recipeSpecCanonical"] = canonical
+    old["recipeSpecHash"] = "sha256:" + hashlib.sha256(canonical.encode()).hexdigest()
+    assert lab.post(
+        "/api/control-plane/v1/recipes", json=old,
+        headers=_publication_headers(**{"Idempotency-Key": "dossier:no-crop"}),
+    ).status_code == 200
+
+    invalid_crops = (
+        {"zoom": 0.99, "focusX": 0.5, "focusY": 0.5},
+        {"zoom": 3.01, "focusX": 0.5, "focusY": 0.5},
+        {"zoom": 1.0, "focusX": -0.01, "focusY": 0.5},
+        {"zoom": 1.0, "focusX": 0.5, "focusY": 1.01},
+        {"zoom": True, "focusX": 0.5, "focusY": 0.5},
+        {"zoom": 1.0, "focusX": 0.5},
+    )
+    for index, invalid in enumerate(invalid_crops):
+        body = _payload(dossierRevision=f"rev-crop-{index}")
+        decoded = json.loads(body["recipeSpecCanonical"])
+        decoded["renderTreatment"]["clipCrop"] = invalid
+        canonical = json.dumps(decoded, sort_keys=True, separators=(",", ":"))
+        body["recipeSpecCanonical"] = canonical
+        body["recipeSpecHash"] = "sha256:" + hashlib.sha256(canonical.encode()).hexdigest()
+        assert lab.post(
+            "/api/control-plane/v1/recipes", json=body,
+            headers=_publication_headers(**{"Idempotency-Key": f"dossier:crop-{index}"}),
         ).status_code == 400

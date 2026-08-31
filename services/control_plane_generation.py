@@ -146,6 +146,28 @@ def _typed_recipe_spec(publication: dict[str, Any]) -> dict[str, Any] | None:
         or not MIN_CLIP_SPEED <= float(clip_speed) <= MAX_CLIP_SPEED
     ):
         return None
+    clip_crop = render.get("clipCrop")
+    if clip_crop is not None:
+        if not isinstance(clip_crop, dict) or set(clip_crop) != {"zoom", "focusX", "focusY"}:
+            return None
+        zoom = clip_crop.get("zoom")
+        focus_x = clip_crop.get("focusX")
+        focus_y = clip_crop.get("focusY")
+        if (
+            isinstance(zoom, bool)
+            or not isinstance(zoom, (int, float))
+            or not math.isfinite(float(zoom))
+            or not 1.0 <= float(zoom) <= 3.0
+            or isinstance(focus_x, bool)
+            or not isinstance(focus_x, (int, float))
+            or not math.isfinite(float(focus_x))
+            or not 0.0 <= float(focus_x) <= 1.0
+            or isinstance(focus_y, bool)
+            or not isinstance(focus_y, (int, float))
+            or not math.isfinite(float(focus_y))
+            or not 0.0 <= float(focus_y) <= 1.0
+        ):
+            return None
     return spec
 
 
@@ -462,3 +484,15 @@ def dossier_filters_to_color_correction(recipe: GenerationRecipe) -> dict[str, f
 def dossier_clip_speed(recipe: GenerationRecipe) -> float:
     """Return the validated playback-rate multiplier for a locked recipe."""
     return float(recipe.recipe_spec["renderTreatment"].get("clipSpeed", 1.0))
+
+
+def dossier_clip_crop(recipe: GenerationRecipe) -> dict[str, float] | None:
+    """Return the normalized crop treatment, or None for legacy recipes."""
+    value = recipe.recipe_spec["renderTreatment"].get("clipCrop")
+    if value is None:
+        return None
+    return {
+        "zoom": float(value["zoom"]),
+        "focusX": float(value["focusX"]),
+        "focusY": float(value["focusY"]),
+    }
