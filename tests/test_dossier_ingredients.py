@@ -87,6 +87,15 @@ def test_catalog_is_rooted_in_exact_master_pages_and_content_lab_registries(monk
     assert treatment["binding"]["clipSpeed"] == {
         "type": "range", "minimum": 0.5, "maximum": 2.0, "default": 1.0,
     }
+    assert treatment["binding"]["filters"] == {
+        "brightness": {"type": "range", "minimum": 0.0, "maximum": 3.0, "step": 0.05, "default": 1.0, "label": "Brightness"},
+        "contrast": {"type": "range", "minimum": 0.0, "maximum": 3.0, "step": 0.05, "default": 1.0, "label": "Contrast"},
+        "saturation": {"type": "range", "minimum": 0.0, "maximum": 3.0, "step": 0.05, "default": 1.0, "label": "Saturation"},
+        "warmth": {"type": "range", "minimum": -1.0, "maximum": 1.0, "step": 0.05, "default": 0.0, "label": "Warmth"},
+        "fade": {"type": "range", "minimum": 0.0, "maximum": 1.0, "step": 0.05, "default": 0.0, "label": "Fade"},
+        "grain": {"type": "range", "minimum": 0.0, "maximum": 1.0, "step": 0.05, "default": 0.0, "label": "Grain"},
+        "vignette": {"type": "range", "minimum": 0.0, "maximum": 1.0, "step": 0.05, "default": 0.0, "label": "Vignette"},
+    }
 
 
 def test_reference_and_source_slots_come_from_real_catalogs(monkeypatch):
