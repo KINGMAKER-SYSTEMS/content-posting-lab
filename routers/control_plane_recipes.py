@@ -19,6 +19,7 @@ from fastapi import APIRouter, Header, HTTPException
 
 from services.roster import ROSTER_PATH
 from services.master_pages_contract import exact_intent
+from services.dossier_ingredients import build_dossier_ingredient_catalog
 
 
 LANE = "content-bucket-control-plane"
@@ -28,7 +29,12 @@ BODY_FIELDS = {
     "schema", "pageId", "lane", "recipeId", "engine", "recipeVersion",
     "dossierRevision", "recipeSpecHash", "recipeSpecCanonical",
 }
-SPEC_FIELDS = {"schema", "masterPages", "masterPagesHash", "renderTreatment", "demand"}
+SPEC_FIELDS_V2 = {"schema", "masterPages", "masterPagesHash", "renderTreatment", "demand"}
+SPEC_FIELDS_V3 = SPEC_FIELDS_V2 | {"production"}
+PRODUCTION_FIELDS = {
+    "catalogVersion", "providerId", "modelId", "promptModuleId",
+    "referenceSetId", "sourceLibraryId", "variationValues", "controls",
+}
 RENDER_REQUIRED_FIELDS = {"stylePreset", "filters", "captionStyle"}
 RENDER_OPTIONAL_FIELDS = {"clipSpeed", "clipCrop"}
 CLIP_CROP_FIELDS = {"zoom", "focusX", "focusY"}
@@ -92,7 +98,11 @@ def _validate_spec(canonical: str) -> dict[str, Any]:
         spec = json.loads(canonical)
     except (TypeError, json.JSONDecodeError) as exc:
         raise HTTPException(400, "recipeSpecCanonical is not valid JSON") from exc
-    if not isinstance(spec, dict) or set(spec) != SPEC_FIELDS or spec.get("schema") != "dossier.recipe-spec.v2":
+    schema = spec.get("schema") if isinstance(spec, dict) else None
+    expected_fields = SPEC_FIELDS_V3 if schema == "dossier.recipe-spec.v3" else SPEC_FIELDS_V2
+    if not isinstance(spec, dict) or set(spec) != expected_fields or schema not in {
+        "dossier.recipe-spec.v2", "dossier.recipe-spec.v3",
+    }:
         raise HTTPException(400, "recipe spec schema mismatch")
     master_pages = exact_intent(
         spec.get("masterPages"), spec.get("masterPagesHash"),
@@ -150,13 +160,106 @@ def _validate_spec(canonical: str) -> dict[str, Any]:
                 400,
                 "clipCrop must use 1-3x zoom and normalized 0-1 focal points",
             )
-    if any(
-        part in key.lower()
-        for key in _walk_keys(spec)
-        for part in ("prompt", "instruction", "message")
-    ):
+    if any(key.lower() in {"prompt", "instruction", "instructions", "message", "messages"}
+           for key in _walk_keys(spec)):
         raise HTTPException(400, "free-form instruction fields are not accepted")
+    if schema == "dossier.recipe-spec.v3":
+        _validate_production_selection(spec)
     return spec
+
+
+def _ingredient(format_entry: dict[str, Any], ingredient_id: str) -> dict[str, Any] | None:
+    return next((entry for entry in format_entry.get("ingredients", [])
+                 if entry.get("ingredientId") == ingredient_id), None)
+
+
+def _single_format(spec: dict[str, Any]) -> str:
+    selected = [(key, value) for key, value in spec["demand"]["formatMix"].items()
+                if isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0]
+    if len(selected) != 1 or float(selected[0][1]) != 1.0:
+        raise HTTPException(409, "recipe must select one Content Lab format at weight 1")
+    return selected[0][0]
+
+
+def _valid_control_value(value: Any, control: dict[str, Any]) -> bool:
+    kind = control.get("type")
+    if kind == "toggle":
+        return isinstance(value, bool)
+    if kind == "select":
+        return value in control.get("options", [])
+    if kind == "range":
+        return (
+            not isinstance(value, bool)
+            and isinstance(value, (int, float))
+            and math.isfinite(float(value))
+            and float(control.get("min")) <= float(value) <= float(control.get("max"))
+        )
+    return False
+
+
+def _validate_production_selection(spec: dict[str, Any]) -> None:
+    production = spec.get("production")
+    if not isinstance(production, dict) or set(production) - PRODUCTION_FIELDS:
+        raise HTTPException(400, "production selection schema mismatch")
+    intent = spec["masterPages"]
+    catalog = build_dossier_ingredient_catalog(
+        intent["pageId"], intent, spec["masterPagesHash"],
+    )
+    if production.get("catalogVersion") != catalog["catalogVersion"]:
+        raise HTTPException(409, "production selection uses a stale Content Lab catalog")
+    format_id = _single_format(spec)
+    if format_id not in catalog["currentFormatCandidates"]:
+        raise HTTPException(409, "selected format does not match Master Pages intent")
+    format_entry = next((entry for entry in catalog["formats"]
+                         if entry["formatId"] == format_id), None)
+    if format_entry is None:
+        raise HTTPException(409, "selected format is absent from Content Lab")
+
+    model = _ingredient(format_entry, "visual-model")
+    provider_id = production.get("providerId")
+    model_id = production.get("modelId")
+    if (provider_id is None) != (model_id is None):
+        raise HTTPException(409, "providerId and modelId must be selected together")
+    selected_model = None
+    if provider_id is not None:
+        selected_model = next((option for option in (model or {}).get("options", [])
+                               if option.get("providerId") == provider_id
+                               and option.get("modelId") == model_id), None)
+        if selected_model is None:
+            raise HTTPException(409, "selected model is not advertised by Content Lab")
+
+    prompt_id = production.get("promptModuleId")
+    prompt = _ingredient(format_entry, "prompt-module")
+    if prompt_id is not None and prompt_id != (prompt or {}).get("binding", {}).get("familyId"):
+        raise HTTPException(409, "selected prompt module is not bound to the format")
+    reference_id = production.get("referenceSetId")
+    reference = _ingredient(format_entry, "reference-media")
+    if reference_id is not None and reference_id != (reference or {}).get("binding", {}).get("referenceSetId"):
+        raise HTTPException(409, "selected reference set is not bound to the format")
+    source_id = production.get("sourceLibraryId")
+    source = _ingredient(format_entry, "master-source-video")
+    if source_id is not None and not any(option.get("libraryId") == source_id
+                                         for option in (source or {}).get("options", [])):
+        raise HTTPException(409, "selected source library is not registered as master source DNA")
+
+    variations = production.get("variationValues", {})
+    groups = (prompt or {}).get("binding", {}).get("variationGroups", {})
+    if not isinstance(variations, dict) or any(
+        not isinstance(value, str) or value not in groups.get(key, [])
+        for key, value in variations.items()
+    ):
+        raise HTTPException(409, "prompt variation selection is not advertised by Content Lab")
+    controls = production.get("controls", {})
+    if not isinstance(controls, dict):
+        raise HTTPException(400, "production controls must be an object")
+    advertised = (selected_model or {}).get("controls", {})
+    advanced = advertised.get("_advanced", {}) if isinstance(advertised, dict) else {}
+    for key, value in controls.items():
+        control = advertised.get(key) if isinstance(advertised, dict) else None
+        if control is None and isinstance(advanced, dict):
+            control = advanced.get(key)
+        if not isinstance(control, dict) or not _valid_control_value(value, control):
+            raise HTTPException(409, f"production control {key} is not advertised or valid")
 
 
 def register_recipe(

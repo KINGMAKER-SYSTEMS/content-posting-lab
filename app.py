@@ -17,6 +17,7 @@ from project_manager import PROJECTS_DIR, ensure_default_project
 from providers import PROVIDERS
 from providers.base import API_KEYS
 from routers.control_plane import router as control_plane_router
+from routers.control_plane_dossier import router as control_plane_dossier_router
 from routers.control_plane_recipes import router as control_plane_recipes_router
 from routers.control_plane_source_libraries import (
     router as control_plane_source_libraries_router,
@@ -262,6 +263,11 @@ async def log_requests(request: Request, call_next):
 
 
 app.include_router(control_plane_router, prefix="/api/control-plane", tags=["control-plane"])
+app.include_router(
+    control_plane_dossier_router,
+    prefix="/api/control-plane",
+    tags=["control-plane-dossier"],
+)
 app.include_router(control_plane_recipes_router, prefix="/api/control-plane", tags=["control-plane-recipes"])
 app.include_router(
     control_plane_source_libraries_router,

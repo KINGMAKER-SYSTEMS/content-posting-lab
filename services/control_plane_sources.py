@@ -11,7 +11,10 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from services.content_engine_registry import resolve_material_profile
-from services.control_plane_generation import typed_recipe_spec
+from services.control_plane_generation import (
+    render_treatment_capability,
+    typed_recipe_spec,
+)
 from services.control_plane_source_libraries import (
     SourceLibraryError,
     load_source_library_manifest,
@@ -36,6 +39,17 @@ class SourceRecipe:
     @property
     def served_ledger_key(self) -> str:
         return f"dossier-source:{self.base_recipe_id}:{self.base_recipe_version}"
+
+
+def source_treatment_capability() -> dict[str, Any]:
+    """Return only treatments the current sourced executor actually accepts.
+
+    These bounds are imported from the strict recipe decoder used by execution,
+    so the Dossier cannot drift into advertising a separately maintained set of
+    controls. Trim-window controls remain absent until the executor implements
+    and validates them.
+    """
+    return render_treatment_capability()
 
 
 def resolve_source_recipe(
