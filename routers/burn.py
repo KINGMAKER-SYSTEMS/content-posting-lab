@@ -28,6 +28,13 @@ from project_manager import (
     sanitize_project_name,
 )
 from services.captions import scan_project_captions, caption_facets
+from services.caption_render import (
+    ERROR_SCHEMA as CAPTION_RENDER_ERROR_SCHEMA,
+    CaptionRenderError,
+    CaptionRenderRequest,
+    CaptionRenderResult,
+    render_caption_overlay,
+)
 from services.ffmpeg import TIKTOK_ENCODE_ARGS, build_cc_filter
 from services.fsutil import safe_unlink
 from services.json_store import atomic_load, atomic_save
@@ -526,6 +533,32 @@ async def import_tos_captions(project: str = Query(..., description="Project nam
 async def list_fonts():
     """List available fonts from fonts/ directory."""
     return {"fonts": _list_fonts()}
+
+
+@router.post(
+    "/caption-render/v1",
+    response_model=CaptionRenderResult,
+    response_model_exclude_none=True,
+)
+async def caption_render_v1(request: CaptionRenderRequest):
+    """Render the exact Dossier caption text/style into a 1080x1920 PNG.
+
+    The result is immediately consumable by the existing burn compositor via
+    its ``overlayPng`` field. Unknown fields, unavailable fonts, clipped text,
+    and incomplete styles fail closed before any video bytes are touched.
+    """
+
+    try:
+        return render_caption_overlay(request, font_dir=FONT_DIR)
+    except CaptionRenderError as error:
+        return JSONResponse(
+            {
+                "schema": CAPTION_RENDER_ERROR_SCHEMA,
+                "error": error.code,
+                "message": error.message,
+            },
+            status_code=422,
+        )
 
 
 # ── Background burn job tracking ────────────────────────────────────
