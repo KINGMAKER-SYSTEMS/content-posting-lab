@@ -271,7 +271,7 @@
       "materialSource": "generated_video",
       "assetType": "video/mp4",
       "definitionStatus": "complete",
-      "creativeAuthority": {"kind": "prompt_family", "id": "truck", "version": "sha256:259bccb63fa0f03e6f55138236b0f93ecffeab6d924d7d0a32fd8f51f2d5b361"},
+      "creativeAuthority": {"kind": "prompt_family", "id": "truck", "version": "sha256:c80cc32e6e762be05e6655190432e945c55afeb196fc488f3b09ad2fad51b9f1"},
       "dimensions": {
         "subject": {"status": "defined", "rule": "A clean dark navy-black full-size crew-cab pickup with natural factory proportions, empty windows, and no markings.", "authority": "promptCatalog.families.truck.fixed_subject"},
         "setting": {"status": "defined", "rule": "Muted pond, lake, field, forest, mountain, farmyard, pasture, riverbank, and meadow settings only.", "authority": "promptCatalog.families.truck.slots.setting"},
@@ -295,7 +295,7 @@
       "materialSource": "generated_video",
       "assetType": "video/mp4",
       "definitionStatus": "complete",
-      "creativeAuthority": {"kind": "prompt_family", "id": "ugc", "version": "sha256:259bccb63fa0f03e6f55138236b0f93ecffeab6d924d7d0a32fd8f51f2d5b361"},
+      "creativeAuthority": {"kind": "prompt_family", "id": "ugc", "version": "sha256:c80cc32e6e762be05e6655190432e945c55afeb196fc488f3b09ad2fad51b9f1"},
       "dimensions": {
         "subject": {"status": "defined", "rule": "A lifted black crew-cab pickup on 35-inch mud tires with only the reviewed grille lettering.", "authority": "promptCatalog.families.ugc.fixed_subject"},
         "setting": {"status": "defined", "rule": "Farm, muddy backroad, gravel lot, dirt turnout, and ranch-drive settings from the reviewed menu.", "authority": "promptCatalog.families.ugc.slots.setting"},

@@ -141,8 +141,8 @@
       "executionStatus": "commissioned",
       "executorKind": "prompt_family",
       "executorId": "truck",
-      "executorVersion": "sha256:259bccb63fa0f03e6f55138236b0f93ecffeab6d924d7d0a32fd8f51f2d5b361",
-      "formatContractVersion": "sha256:c13f95c6e12c60363a29608960abb7db652984f98ee474e5595e25f6a9d6ac6a",
+      "executorVersion": "sha256:c80cc32e6e762be05e6655190432e945c55afeb196fc488f3b09ad2fad51b9f1",
+      "formatContractVersion": "sha256:dcb941c585412edbd69e56eb6220f1c555c0e4365cff1a914c49544ae46b2f89",
       "maxQuantity": 10
     },
     "truck-ugc": {
@@ -154,7 +154,7 @@
       "executorKind": null,
       "executorId": null,
       "executorVersion": null,
-      "formatContractVersion": "sha256:aab5b70ae9d2fe77b8817746167441e81549b1927fa2a8ac9e3284c7fad970d9",
+      "formatContractVersion": "sha256:7bd653b962f9c5b9c4182fe7390e36436391722d0ff88509c70139730f288235",
       "maxQuantity": 0
     }
   }
