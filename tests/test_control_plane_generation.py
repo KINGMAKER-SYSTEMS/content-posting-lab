@@ -71,6 +71,10 @@ def test_truck_recipe_resolves_from_the_master_pages_engine_and_server_owned_pro
     assert recipe.prompt_catalog_hash == "c80cc32e6e762be05e6655190432e945c55afeb196fc488f3b09ad2fad51b9f1"
     assert recipe.family["extra"]["crop_mode"] == "both"
     assert recipe.clips_per_generation == 5
+    assert recipe.planned_provider_calls(1) == 1
+    assert recipe.planned_provider_calls(5) == 1
+    assert recipe.planned_provider_calls(6) == 2
+    assert recipe.planned_provider_calls(10) == 2
     assert resolve_generation_recipe(publication(engine="wan-i2v-fast")) is None
 
 

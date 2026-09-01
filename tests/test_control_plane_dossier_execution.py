@@ -346,6 +346,19 @@ async def test_truck_master_recovery_emits_five_crops_without_model_call(lab, mo
     assert artifacts.status_code == 200
     assert len(artifacts.json()["artifacts"]) == 5
 
+    # A job persisted by the former keeper-yield planner could contain more
+    # completed crop groups than its requested delivery count. The transport
+    # contract exposes only one complete five-crop group for quantity=1.
+    store = cp._load_jobs()
+    store["jobs"][job_id]["clips"] = stored["clips"] * 2
+    cp.atomic_save(cp._jobs_path(), store)
+    bounded = client.get(
+        f"/api/control-plane/v1/jobs/{job_id}/artifacts",
+        headers={"Authorization": f"Bearer {TOKEN}", "X-RT-Page-Id": PAGE_ID},
+    )
+    assert bounded.status_code == 200
+    assert len(bounded.json()["artifacts"]) == 5
+
 
 async def _async_value(value):
     return value
@@ -394,8 +407,8 @@ async def test_generation_runner_lands_treated_artifacts_under_the_isolated_job_
     stored = cp._load_jobs()["jobs"][job_id]
     assert stored["status"] == "completed"
     assert stored["progress"] == 100
-    assert len(stored["clips"]) == 2
-    assert len(corrections) == 2
+    assert len(stored["clips"]) == 1
+    assert len(corrections) == 1
     assert all(speed == pytest.approx(0.75) for _, speed, _ in corrections)
     assert all(crop == {"zoom": 1.5, "focusX": 0.2, "focusY": 0.8} for _, _, crop in corrections)
     assert all(clip["clipSpeed"] == pytest.approx(0.75) for clip in stored["clips"])
@@ -459,13 +472,12 @@ async def test_truck_artifacts_trace_five_vertical_crops_to_one_provider_master(
 
     stored = cp._load_jobs()["jobs"][job_id]
     assert stored["status"] == "completed"
-    assert len(stored["clips"]) == 25
-    for generation_index in range(5):
-        group = stored["clips"][generation_index * 5:(generation_index + 1) * 5]
-        master_sha = group[0]["source"]["sha256"]
-        assert len({clip["source"]["sha256"] for clip in group}) == 1
-        assert [clip["delivery"]["crop"]["index"] for clip in group] == list(range(5))
-        assert all(clip["delivery"]["crop"]["groupId"] == f"sha256:{master_sha}" for clip in group)
+    assert len(stored["clips"]) == 5
+    group = stored["clips"]
+    master_sha = group[0]["source"]["sha256"]
+    assert len({clip["source"]["sha256"] for clip in group}) == 1
+    assert [clip["delivery"]["crop"]["index"] for clip in group] == list(range(5))
+    assert all(clip["delivery"]["crop"]["groupId"] == f"sha256:{master_sha}" for clip in group)
     for crop_index, clip in enumerate(stored["clips"][:5]):
         master_sha = clip["source"]["sha256"]
         assert clip["source"]["path"].endswith("provider-master.mp4")

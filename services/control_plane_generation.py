@@ -156,7 +156,13 @@ class GenerationRecipe:
     def planned_provider_calls(self, quantity: int) -> int:
         if not isinstance(quantity, int) or quantity <= 0:
             raise ValueError("quantity must be a positive integer")
-        calls = max(1, math.ceil(quantity / self.keepers_per_generation))
+        # A control-plane quantity is a requested delivery count. Multi-crop
+        # generators emit several independently deliverable clips from one
+        # provider master, so spending must be based on that exact output
+        # count. ``keepers_per_gen`` remains useful for budgeting/forecasting;
+        # it must not make the executor generate five full crop groups for a
+        # request that needs only one group.
+        calls = max(1, math.ceil(quantity / self.clips_per_generation))
         if calls > MAX_PROVIDER_CALLS:
             raise ValueError(f"generation plan exceeds {MAX_PROVIDER_CALLS} provider calls")
         return calls

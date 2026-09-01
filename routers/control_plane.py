@@ -40,6 +40,7 @@ import asyncio
 import hashlib
 import hmac
 import json
+import math
 import os
 import re
 import shutil
@@ -1658,8 +1659,20 @@ def job_artifacts(
     proto = request.headers.get("x-forwarded-proto", request.url.scheme)
     host = request.headers.get("x-forwarded-host", request.url.netloc)
     base = f"{proto}://{host}"
+    # Old queued jobs may have persisted a provider-call count from the former
+    # keeper-yield planner. Never let that historical over-generation flood a
+    # page vault: transport at most the number of complete five-crop groups
+    # needed for the requested truck delivery count. Other executors retain
+    # their exact requested quantity contract.
+    requested = int(job.get("quantityRequested") or len(job["clips"]))
+    artifact_limit = requested
+    if (
+        job.get("recipeId") == TRUCK_RECIPE_ID
+        and job.get("sourceKind") in {"generated", "truck_master_recovery"}
+    ):
+        artifact_limit = math.ceil(requested / TRUCK_CROP_COUNT) * TRUCK_CROP_COUNT
     artifacts = []
-    for index, clip in enumerate(job["clips"]):
+    for index, clip in enumerate(job["clips"][:artifact_limit]):
         artifact = {
             "url": f"{base}/api/control-plane/v1/jobs/{job_id}/download/{index}?token={job['token']}",
             "type": "video",
