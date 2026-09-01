@@ -339,7 +339,7 @@ def resolve_generation_recipe(
         _, contracts_hash = load_format_contracts()
         expected_catalog_version = dossier_catalog_version(
             contracts_hash, profile.registry_hash, catalog_hash,
-            source_dna_catalog_hash(),
+            source_dna_catalog_hash(), render_treatment_capability_hash(),
         )
         if production.get("catalogVersion") != expected_catalog_version:
             return _unavailable(publication, "catalog_version")

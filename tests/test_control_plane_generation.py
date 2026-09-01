@@ -15,6 +15,7 @@ from services.control_plane_generation import (
     load_generation_anchor,
     resolve_generation_recipe,
 )
+from services.dossier_ingredients import build_dossier_ingredient_catalog
 from tests.master_pages_fixtures import master_pages
 
 
@@ -66,6 +67,36 @@ def test_truck_recipe_resolves_from_the_master_pages_engine_and_server_owned_pro
     assert recipe.family["extra"]["crop_mode"] == "both"
     assert recipe.clips_per_generation == 5
     assert resolve_generation_recipe(publication(engine="wan-i2v-fast")) is None
+
+
+def test_typed_v3_truck_recipe_uses_the_exact_advertised_dossier_catalog_version():
+    payload = publication()
+    spec = json.loads(payload["recipeSpecCanonical"])
+    catalog = build_dossier_ingredient_catalog(
+        payload["pageId"], spec["masterPages"], spec["masterPagesHash"],
+    )
+    spec["schema"] = "dossier.recipe-spec.v3"
+    spec["production"] = {
+        "catalogVersion": catalog["catalogVersion"],
+        "providerId": "hailuo",
+        "modelId": "minimax/hailuo-2.3",
+        "promptModuleId": "truck",
+        "referenceSetId": None,
+        "sourceLibraryId": None,
+        "variationValues": {},
+        "controls": {
+            "crop_mode": "both", "duration": 6,
+            "optimize_prompt": False, "resolution": "1080p",
+        },
+    }
+    payload["recipeSpecCanonical"] = json.dumps(
+        spec, sort_keys=True, separators=(",", ":"),
+    )
+
+    recipe = resolve_generation_recipe(payload)
+    assert recipe is not None
+    assert recipe.recipe_spec["production"]["catalogVersion"] == catalog["catalogVersion"]
+    assert recipe.recipe_spec["production"]["controls"]["crop_mode"] == "both"
 
 
 def test_master_pages_niche_cannot_borrow_another_niches_generator():
