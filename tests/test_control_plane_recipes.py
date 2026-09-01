@@ -138,6 +138,45 @@ def test_registered_dossier_version_is_page_scoped_and_durably_stored(lab):
     ) is None
 
 
+def test_registered_recipe_binding_reuses_only_exact_notion_identity_after_page_id_migration(
+    lab,
+):
+    canonical_intent, canonical_hash = master_pages(PAGE_ID, handle="truck.page")
+    operational_id = "acct:rail:legacy-truck"
+    publication = _payload(pageId=operational_id)
+    spec = json.loads(publication["recipeSpecCanonical"])
+    spec["masterPages"] = {**canonical_intent, "pageId": operational_id}
+    spec["masterPagesHash"] = recipes.intent_hash(spec["masterPages"])
+    canonical = json.dumps(spec, sort_keys=True, separators=(",", ":"))
+    publication["recipeSpecCanonical"] = canonical
+    publication["recipeSpecHash"] = "sha256:" + hashlib.sha256(
+        canonical.encode()
+    ).hexdigest()
+
+    headers = _publication_headers(**{
+        "X-RT-Page-Id": operational_id,
+        "Idempotency-Key": "dossier:operational-binding",
+    })
+    assert lab.post(
+        "/api/control-plane/v1/recipes", json=publication, headers=headers,
+    ).status_code == 200
+
+    binding = recipes.load_registered_recipe_binding(
+        PAGE_ID, publication["recipeId"], publication["engine"],
+        publication["recipeVersion"], canonical_intent, canonical_hash,
+    )
+    assert binding is not None
+    assert binding[0] == operational_id
+    assert binding[1]["recipeSpecHash"] == publication["recipeSpecHash"]
+
+    changed = {**canonical_intent, "group": "WARNER"}
+    changed_hash = recipes.intent_hash(changed)
+    assert recipes.load_registered_recipe_binding(
+        PAGE_ID, publication["recipeId"], publication["engine"],
+        publication["recipeVersion"], changed, changed_hash,
+    ) is None
+
+
 def test_hash_schema_and_prompt_shaped_fields_fail_closed(lab):
     bad_hash = _payload(recipeSpecHash="sha256:" + "0" * 64)
     assert lab.post(

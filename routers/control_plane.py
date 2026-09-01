@@ -58,8 +58,11 @@ from project_manager import PROJECTS_DIR
 from providers.base import generate_one, multi_crop_vertical
 from routers.control_plane_recipes import (
     LANE as CONTROL_PLANE_LANE,
+    list_registered_recipe_bindings,
     list_registered_recipes,
     load_registered_recipe,
+    load_registered_recipe_binding,
+    publication_matches_master_pages,
     require_control_plane_bearer,
 )
 from services.control_plane_generation import (
@@ -205,11 +208,18 @@ def capabilities(
     if not page_id or not PAGE_ID_RE.match(page_id):
         raise HTTPException(status_code=400, detail="X-RT-Page-Id header is required")
 
+    current = _current_intent_for_capabilities(page_id)
+    if current is None:
+        return {"schema": RESPONSE_SCHEMA, "capabilities": []}
+    master_pages, master_pages_hash = current
+
     entries = []
     # A dossier version is executable only when its server-owned base prompt
     # family, exact provider model, runtime credential, and typed treatment are
     # all available. Registration alone never becomes a capability.
-    for publication in list_registered_recipes(page_id):
+    for _, publication in list_registered_recipe_bindings(
+        page_id, master_pages, master_pages_hash,
+    ):
         generation_recipe = resolve_generation_recipe(publication)
         source_recipe = _dossier_source_recipe(publication)
         if generation_recipe is None and source_recipe is None:
@@ -383,6 +393,30 @@ def _current_master_pages_intent(
     if canonical is None:
         return None
     return canonical, intent_hash(canonical)
+
+
+def _current_intent_for_capabilities(
+    page_id: str,
+) -> tuple[dict[str, Any], str] | None:
+    """Resolve canonical and pre-canonical operational capability callers.
+
+    Canonical ids resolve directly from the roster.  An older operational id
+    has no standalone roster row, so its own registered publication supplies
+    only the immutable Notion identity needed to ask the same roster resolver.
+    The returned intent is still rebuilt from the current roster and stale
+    publication fields remain unable to pass the later binding check.
+    """
+    direct = _current_master_pages_intent(page_id)
+    if direct is not None:
+        return direct
+    candidates: dict[str, tuple[dict[str, Any], str]] = {}
+    for publication in list_registered_recipes(page_id):
+        spec = typed_recipe_spec(publication)
+        asserted = spec.get("masterPages") if isinstance(spec, dict) else None
+        resolved = _current_master_pages_intent(page_id, asserted)
+        if resolved is not None:
+            candidates[resolved[1]] = resolved
+    return next(iter(candidates.values())) if len(candidates) == 1 else None
 
 
 @router.get("/v1/roster")
@@ -914,7 +948,8 @@ def _source_provenance(job: dict[str, Any], base: dict[str, Any]) -> dict[str, A
 async def _run_dossier_generation(job_id: str) -> None:
     job = _get_job_or_404(job_id)
     publication = load_registered_recipe(
-        job["pageId"], job["recipeId"], job["engine"], job["recipeVersion"],
+        job.get("recipePublicationPageId") or job["pageId"],
+        job["recipeId"], job["engine"], job["recipeVersion"],
     )
     recipe = resolve_generation_recipe(publication) if publication else None
     if (
@@ -1209,7 +1244,8 @@ async def _run_dossier_source(job_id: str) -> None:
     """Cut unique windows from one page's immutable source DNA."""
     job = _get_job_or_404(job_id)
     publication = load_registered_recipe(
-        job["pageId"], job["recipeId"], job["engine"], job["recipeVersion"],
+        job.get("recipePublicationPageId") or job["pageId"],
+        job["recipeId"], job["engine"], job["recipeVersion"],
     )
     recipe = _dossier_source_recipe(publication)
     if (
@@ -1413,14 +1449,15 @@ async def create_job(
     if current_master_pages is None or current_master_pages != (master_pages, body["masterPagesHash"]):
         raise HTTPException(status_code=409, detail="job Master Pages intent does not match the current roster")
 
-    publication = load_registered_recipe(page_id, recipe_id, engine, recipe_version)
-    if publication is None:
+    publication_binding = load_registered_recipe_binding(
+        page_id, recipe_id, engine, recipe_version,
+        master_pages, body["masterPagesHash"],
+    )
+    if publication_binding is None:
         raise HTTPException(status_code=409, detail="hash-bound dossier publication is required")
-    publication_spec = typed_recipe_spec(publication)
-    if (
-        publication_spec is None
-        or publication_spec.get("masterPages") != master_pages
-        or publication_spec.get("masterPagesHash") != body["masterPagesHash"]
+    publication_page_id, publication = publication_binding
+    if not publication_matches_master_pages(
+        publication, master_pages, body["masterPagesHash"],
     ):
         raise HTTPException(status_code=409, detail="job intent does not match the registered dossier publication")
     generation_recipe = resolve_generation_recipe(publication) if publication else None
@@ -1471,6 +1508,7 @@ async def create_job(
             "pageId": page_id, "lane": str(body.get("lane") or x_rt_lane),
             "engine": engine, "recipeId": recipe_id,
             "recipeVersion": recipe_version, "policyHash": policy_hash,
+            "recipePublicationPageId": publication_page_id,
             "masterPages": master_pages,
             "masterPagesHash": body["masterPagesHash"],
             "sourceIsolation": body.get("sourceIsolation") or None,

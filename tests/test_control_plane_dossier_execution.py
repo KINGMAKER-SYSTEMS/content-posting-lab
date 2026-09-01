@@ -162,6 +162,76 @@ def test_registered_dossier_is_advertised_and_queues_new_media_only(lab, monkeyp
     assert stored["promptCatalogHash"] == "c80cc32e6e762be05e6655190432e945c55afeb196fc488f3b09ad2fad51b9f1"
 
 
+def test_canonical_page_queues_from_one_exact_notion_bound_operational_publication(
+    lab, monkeypatch,
+):
+    client, _, started = lab
+    exact = recipe_publication()
+    recipes._record_path(recipes._root(), exact).unlink()
+
+    operational_id = "acct:rail:legacy-tucker"
+    publication = {**exact, "pageId": operational_id}
+    spec = json.loads(publication["recipeSpecCanonical"])
+    spec["masterPages"] = {**spec["masterPages"], "pageId": operational_id}
+    spec["masterPagesHash"] = recipes.intent_hash(spec["masterPages"])
+    canonical = json.dumps(spec, sort_keys=True, separators=(",", ":"))
+    publication["recipeSpecCanonical"] = canonical
+    publication["recipeSpecHash"] = "sha256:" + hashlib.sha256(
+        canonical.encode()
+    ).hexdigest()
+    headers = {
+        **HEADERS,
+        "X-RT-Page-Id": operational_id,
+        "Idempotency-Key": "acct:rail:legacy-tucker:publication",
+    }
+    assert client.post(
+        "/api/control-plane/v1/recipes", json=publication, headers=headers,
+    ).status_code == 200
+
+    target_intent, target_hash = master_pages(PAGE_ID, handle="tucker.reeves")
+
+    def resolve_current(page_id, asserted=None):
+        if page_id == PAGE_ID:
+            return target_intent, target_hash
+        if (
+            page_id == operational_id
+            and isinstance(asserted, dict)
+            and asserted.get("notionPageId") == target_intent["notionPageId"]
+        ):
+            rebound = {**target_intent, "pageId": operational_id}
+            return rebound, recipes.intent_hash(rebound)
+        return None
+
+    monkeypatch.setattr(cp, "_current_master_pages_intent", resolve_current)
+
+    operational_capabilities = client.get(
+        "/api/control-plane/v1/capabilities",
+        headers={"X-RT-Page-Id": operational_id},
+    ).json()["capabilities"]
+    assert len(operational_capabilities) == 1
+
+    capabilities = client.get(
+        "/api/control-plane/v1/capabilities",
+        headers={"X-RT-Page-Id": PAGE_ID},
+    ).json()["capabilities"]
+    assert capabilities == [{
+        "recipeId": publication["recipeId"],
+        "engine": publication["engine"],
+        "recipeVersion": publication["recipeVersion"],
+        "maxQuantity": 10,
+    }]
+
+    response = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(), headers=HEADERS,
+    )
+    assert response.status_code == 200
+    job_id = response.json()["jobId"]
+    stored = cp._load_jobs()["jobs"][job_id]
+    assert stored["pageId"] == PAGE_ID
+    assert stored["recipePublicationPageId"] == operational_id
+    assert started == [job_id]
+
+
 def test_truck_job_reuses_preserved_paid_master_before_new_provider_spend(lab, monkeypatch):
     client, tmp_path, started = lab
     old_root = tmp_path / "generated" / PAGE_ID / "legacy" / "cpl-1111111111111111"
