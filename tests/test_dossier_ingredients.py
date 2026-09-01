@@ -287,34 +287,36 @@ def test_selected_version_differs_from_the_pinned_legacy_fleet_hash():
 def test_live_legacy_exemption_is_bound_to_the_complete_immutable_publication():
     import services.dossier_ingredients as ingredients
 
-    key, catalog_version = next(iter(
-        ingredients.PINNED_LEGACY_DOSSIER_CATALOG_VERSIONS_BY_PUBLICATION.items()
-    ))
-    page_id, recipe_id, recipe_version, dossier_revision, recipe_spec_hash = key
-    assert ingredients.is_pinned_legacy_catalog_version(
-        catalog_version,
-        page_id=page_id,
-        recipe_id=recipe_id,
-        recipe_version=recipe_version,
-        dossier_revision=dossier_revision,
-        recipe_spec_hash=recipe_spec_hash,
+    publications = (
+        ingredients.PINNED_LEGACY_DOSSIER_CATALOG_VERSIONS_BY_PUBLICATION
     )
-    assert not ingredients.is_pinned_legacy_catalog_version(
-        catalog_version,
-        page_id=page_id,
-        recipe_id=recipe_id,
-        recipe_version=recipe_version,
-        dossier_revision=dossier_revision + "-changed",
-        recipe_spec_hash=recipe_spec_hash,
-    )
-    assert not ingredients.is_pinned_legacy_catalog_version(
-        catalog_version,
-        page_id=page_id,
-        recipe_id=recipe_id,
-        recipe_version=recipe_version,
-        dossier_revision=dossier_revision,
-        recipe_spec_hash="sha256:" + "f" * 64,
-    )
+    assert len(publications) == 6
+    for key, catalog_version in publications.items():
+        page_id, recipe_id, recipe_version, dossier_revision, recipe_spec_hash = key
+        assert ingredients.is_pinned_legacy_catalog_version(
+            catalog_version,
+            page_id=page_id,
+            recipe_id=recipe_id,
+            recipe_version=recipe_version,
+            dossier_revision=dossier_revision,
+            recipe_spec_hash=recipe_spec_hash,
+        )
+        assert not ingredients.is_pinned_legacy_catalog_version(
+            catalog_version,
+            page_id=page_id,
+            recipe_id=recipe_id,
+            recipe_version=recipe_version,
+            dossier_revision=dossier_revision + "-changed",
+            recipe_spec_hash=recipe_spec_hash,
+        )
+        assert not ingredients.is_pinned_legacy_catalog_version(
+            catalog_version,
+            page_id=page_id,
+            recipe_id=recipe_id,
+            recipe_version=recipe_version,
+            dossier_revision=dossier_revision,
+            recipe_spec_hash="sha256:" + "f" * 64,
+        )
 
 
 def test_reference_and_source_slots_come_from_real_catalogs(monkeypatch):
