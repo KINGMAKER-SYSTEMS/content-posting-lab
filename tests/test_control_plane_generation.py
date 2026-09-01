@@ -15,7 +15,11 @@ from services.control_plane_generation import (
     load_generation_anchor,
     resolve_generation_recipe,
 )
-from services.dossier_ingredients import build_dossier_ingredient_catalog
+from services.dossier_ingredients import (
+    PINNED_LEGACY_DOSSIER_CATALOG_VERSIONS_BY_PUBLICATION,
+    build_dossier_ingredient_catalog,
+    catalog_selection_version,
+)
 from tests.master_pages_fixtures import master_pages
 
 
@@ -45,6 +49,7 @@ def publication(**overrides):
         "recipeId": "truck-scenic:master",
         "engine": "ai_video",
         "recipeVersion": "dossier-0123456789abcdef",
+        "dossierRevision": "rev-generation",
         "recipeSpecCanonical": json.dumps(spec, sort_keys=True, separators=(",", ":")),
     }
     result.update(overrides)
@@ -76,8 +81,42 @@ def test_typed_v3_truck_recipe_uses_the_exact_advertised_dossier_catalog_version
         payload["pageId"], spec["masterPages"], spec["masterPagesHash"],
     )
     spec["schema"] = "dossier.recipe-spec.v3"
+    production = {
+        "catalogVersion": "",
+        "providerId": "hailuo",
+        "modelId": "minimax/hailuo-2.3",
+        "promptModuleId": "truck",
+        "referenceSetId": None,
+        "sourceLibraryId": None,
+        "variationValues": {},
+        "controls": {
+            "crop_mode": "both", "duration": 6,
+            "optimize_prompt": False, "resolution": "1080p",
+        },
+    }
+    production["catalogVersion"] = catalog_selection_version(
+        catalog, "truck-scenic", production,
+    )
+    spec["production"] = production
+    payload["recipeSpecCanonical"] = json.dumps(
+        spec, sort_keys=True, separators=(",", ":"),
+    )
+
+    recipe = resolve_generation_recipe(payload)
+    assert recipe is not None
+    assert recipe.recipe_spec["production"]["catalogVersion"] == production["catalogVersion"]
+    assert recipe.recipe_spec["production"]["controls"]["crop_mode"] == "both"
+
+
+def test_typed_v3_truck_recipe_accepts_only_a_full_pinned_publication(monkeypatch):
+    payload = publication()
+    spec = json.loads(payload["recipeSpecCanonical"])
+    spec["schema"] = "dossier.recipe-spec.v3"
+    legacy_catalog_version = next(iter(
+        PINNED_LEGACY_DOSSIER_CATALOG_VERSIONS_BY_PUBLICATION.values()
+    ))
     spec["production"] = {
-        "catalogVersion": catalog["catalogVersion"],
+        "catalogVersion": legacy_catalog_version,
         "providerId": "hailuo",
         "modelId": "minimax/hailuo-2.3",
         "promptModuleId": "truck",
@@ -92,11 +131,66 @@ def test_typed_v3_truck_recipe_uses_the_exact_advertised_dossier_catalog_version
     payload["recipeSpecCanonical"] = json.dumps(
         spec, sort_keys=True, separators=(",", ":"),
     )
+    payload["recipeSpecHash"] = "sha256:" + hashlib.sha256(
+        payload["recipeSpecCanonical"].encode(),
+    ).hexdigest()
+    key = (
+        payload["pageId"], payload["recipeId"], payload["recipeVersion"],
+        payload["dossierRevision"], payload["recipeSpecHash"],
+    )
+    monkeypatch.setitem(
+        PINNED_LEGACY_DOSSIER_CATALOG_VERSIONS_BY_PUBLICATION,
+        key,
+        legacy_catalog_version,
+    )
+    assert resolve_generation_recipe(payload) is not None
 
-    recipe = resolve_generation_recipe(payload)
-    assert recipe is not None
-    assert recipe.recipe_spec["production"]["catalogVersion"] == catalog["catalogVersion"]
-    assert recipe.recipe_spec["production"]["controls"]["crop_mode"] == "both"
+    changed_revision = {**payload, "dossierRevision": "rev-other"}
+    assert resolve_generation_recipe(changed_revision) is None
+    changed_hash = {**payload, "recipeSpecHash": "sha256:" + "e" * 64}
+    assert resolve_generation_recipe(changed_hash) is None
+
+
+def test_typed_v3_truck_recipe_rejects_a_pinned_hash_on_another_publication():
+    payload = publication()
+    spec = json.loads(payload["recipeSpecCanonical"])
+    spec["schema"] = "dossier.recipe-spec.v3"
+    spec["production"] = {
+        "catalogVersion": next(iter(
+            PINNED_LEGACY_DOSSIER_CATALOG_VERSIONS_BY_PUBLICATION.values()
+        )),
+        "providerId": "hailuo",
+        "modelId": "minimax/hailuo-2.3",
+        "promptModuleId": "truck",
+        "referenceSetId": None,
+        "sourceLibraryId": None,
+        "variationValues": {},
+        "controls": {},
+    }
+    payload["recipeSpecCanonical"] = json.dumps(
+        spec, sort_keys=True, separators=(",", ":"),
+    )
+    assert resolve_generation_recipe(payload) is None
+
+
+def test_typed_v3_truck_recipe_rejects_an_arbitrary_stale_catalog_version():
+    payload = publication()
+    spec = json.loads(payload["recipeSpecCanonical"])
+    spec["schema"] = "dossier.recipe-spec.v3"
+    spec["production"] = {
+        "catalogVersion": "sha256:" + "f" * 64,
+        "providerId": "hailuo",
+        "modelId": "minimax/hailuo-2.3",
+        "promptModuleId": "truck",
+        "referenceSetId": None,
+        "sourceLibraryId": None,
+        "variationValues": {},
+        "controls": {},
+    }
+    payload["recipeSpecCanonical"] = json.dumps(
+        spec, sort_keys=True, separators=(",", ":"),
+    )
+    assert resolve_generation_recipe(payload) is None
 
 
 def test_master_pages_niche_cannot_borrow_another_niches_generator():

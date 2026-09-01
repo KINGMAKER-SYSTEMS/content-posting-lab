@@ -18,17 +18,13 @@ from typing import Any, Callable
 from services.content_engine_registry import resolve_material_profile
 from services.content_format_contracts import load_format_contracts
 from services.control_plane_generation import (
-    load_prompt_catalog,
     render_treatment_capability,
-    render_treatment_capability_hash,
     typed_recipe_spec,
 )
-from services.dossier_catalog_version import dossier_catalog_version
 from services.source_dna_registry import (
     MasterSource,
     SourceDnaError,
     load_source_dna_library,
-    source_dna_catalog_hash,
 )
 
 
@@ -186,23 +182,45 @@ def resolve_source_recipe(
         return None
     try:
         library = load_source_dna_library(source_library_id)
-        contracts, contracts_hash = load_format_contracts()
-        _, prompt_hash = load_prompt_catalog()
+        contracts, _ = load_format_contracts()
     except (OSError, ValueError, json.JSONDecodeError, SourceDnaError):
         return None
     master_pages = spec.get("masterPages")
-    expected_catalog_version = dossier_catalog_version(
-        contracts_hash,
-        profile.registry_hash,
-        prompt_hash,
-        source_dna_catalog_hash(),
-        render_treatment_capability_hash(),
+    # Local import avoids the ingredient catalog's intentional import of
+    # source_treatment_capability from this module.
+    from services.dossier_ingredients import (
+        is_pinned_legacy_catalog_version,
+        selected_dossier_catalog_version,
     )
+    supplied_catalog_version = production.get("catalogVersion")
+    expected_catalog_version = None
+    pinned_legacy_catalog = is_pinned_legacy_catalog_version(
+        supplied_catalog_version,
+        page_id=str(publication.get("pageId") or ""),
+        recipe_id=str(publication.get("recipeId") or ""),
+        recipe_version=str(publication.get("recipeVersion") or ""),
+        dossier_revision=str(publication.get("dossierRevision") or ""),
+        recipe_spec_hash=str(publication.get("recipeSpecHash") or ""),
+    )
+    if not pinned_legacy_catalog:
+        try:
+            expected_catalog_version = selected_dossier_catalog_version(
+                str(master_pages.get("pageId") or "") if isinstance(master_pages, dict) else "",
+                master_pages,
+                str(spec.get("masterPagesHash") or ""),
+                profile.format_slug,
+                production,
+            )
+        except (OSError, ValueError, json.JSONDecodeError, KeyError):
+            return None
     if (
         library.format_slug != profile.format_slug
         or not isinstance(master_pages, dict)
         or library.page_id != master_pages.get("pageId")
-        or production.get("catalogVersion") != expected_catalog_version
+        or (
+            not pinned_legacy_catalog
+            and supplied_catalog_version != expected_catalog_version
+        )
         or contracts.get(profile.format_slug) is None
     ):
         return None

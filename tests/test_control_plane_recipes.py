@@ -8,6 +8,11 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 import routers.control_plane_recipes as recipes
+from services.dossier_ingredients import (
+    PINNED_LEGACY_DOSSIER_CATALOG_VERSIONS_BY_PUBLICATION,
+    build_dossier_ingredient_catalog,
+    catalog_selection_version,
+)
 from tests.master_pages_fixtures import master_pages
 
 
@@ -46,6 +51,33 @@ def _payload(**overrides):
         "recipeSpecCanonical": spec,
     }
     body.update(overrides)
+    return body
+
+
+def _v3_payload(catalog_version=None, **overrides):
+    body = _payload(recipeId="truck-scenic:master", **overrides)
+    spec = json.loads(body["recipeSpecCanonical"])
+    catalog = build_dossier_ingredient_catalog(
+        PAGE_ID, spec["masterPages"], spec["masterPagesHash"],
+    )
+    production = {
+        "catalogVersion": "",
+        "providerId": "hailuo",
+        "modelId": "minimax/hailuo-2.3",
+        "promptModuleId": "truck",
+        "referenceSetId": None,
+        "sourceLibraryId": None,
+        "variationValues": {},
+        "controls": {},
+    }
+    production["catalogVersion"] = catalog_version or catalog_selection_version(
+        catalog, "truck-scenic", production,
+    )
+    spec["schema"] = "dossier.recipe-spec.v3"
+    spec["production"] = production
+    canonical = json.dumps(spec, sort_keys=True, separators=(",", ":"))
+    body["recipeSpecCanonical"] = canonical
+    body["recipeSpecHash"] = "sha256:" + hashlib.sha256(canonical.encode()).hexdigest()
     return body
 
 
@@ -121,6 +153,92 @@ def test_hash_schema_and_prompt_shaped_fields_fail_closed(lab):
     assert lab.post(
         "/api/control-plane/v1/recipes", json=bad_spec, headers=_publication_headers(),
     ).status_code == 400
+
+
+def test_v3_publish_accepts_exact_and_full_pinned_legacy_but_rejects_reuse(
+    lab, monkeypatch,
+):
+    exact = _v3_payload(
+        dossierRevision="rev-v3-exact", recipeVersion="dossier-v3-exact0001",
+    )
+    assert lab.post(
+        "/api/control-plane/v1/recipes", json=exact,
+        headers=_publication_headers(**{"Idempotency-Key": "dossier:v3-exact"}),
+    ).status_code == 200
+
+    legacy_catalog_version = next(iter(
+        PINNED_LEGACY_DOSSIER_CATALOG_VERSIONS_BY_PUBLICATION.values()
+    ))
+    legacy = _v3_payload(
+        legacy_catalog_version,
+        dossierRevision="rev-v3-legacy",
+        recipeVersion="dossier-v3-legacy001",
+    )
+    monkeypatch.setitem(
+        PINNED_LEGACY_DOSSIER_CATALOG_VERSIONS_BY_PUBLICATION,
+        (
+            legacy["pageId"], legacy["recipeId"], legacy["recipeVersion"],
+            legacy["dossierRevision"], legacy["recipeSpecHash"],
+        ),
+        legacy_catalog_version,
+    )
+    assert lab.post(
+        "/api/control-plane/v1/recipes", json=legacy,
+        headers=_publication_headers(**{"Idempotency-Key": "dossier:v3-legacy"}),
+    ).status_code == 200
+
+    reused = {**legacy, "dossierRevision": "rev-v3-reused"}
+    assert lab.post(
+        "/api/control-plane/v1/recipes", json=reused,
+        headers=_publication_headers(**{"Idempotency-Key": "dossier:v3-reused"}),
+    ).status_code == 409
+
+    changed_spec = json.loads(legacy["recipeSpecCanonical"])
+    changed_spec["renderTreatment"]["clipSpeed"] = 1.5
+    changed_canonical = json.dumps(
+        changed_spec, sort_keys=True, separators=(",", ":"),
+    )
+    changed_bytes = {
+        **legacy,
+        "recipeSpecCanonical": changed_canonical,
+        "recipeSpecHash": "sha256:" + hashlib.sha256(
+            changed_canonical.encode()
+        ).hexdigest(),
+    }
+    assert lab.post(
+        "/api/control-plane/v1/recipes", json=changed_bytes,
+        headers=_publication_headers(**{"Idempotency-Key": "dossier:v3-changed"}),
+    ).status_code == 409
+
+    stale = _v3_payload(
+        "sha256:" + "f" * 64,
+        dossierRevision="rev-v3-stale",
+        recipeVersion="dossier-v3-stale0001",
+    )
+    assert lab.post(
+        "/api/control-plane/v1/recipes", json=stale,
+        headers=_publication_headers(**{"Idempotency-Key": "dossier:v3-stale"}),
+    ).status_code == 409
+
+
+@pytest.mark.parametrize("malformed", [{}, []])
+def test_v3_publish_rejects_non_string_catalog_version_without_500(lab, malformed):
+    body = _v3_payload(
+        dossierRevision="rev-v3-malformed",
+        recipeVersion="dossier-v3-malformed1",
+    )
+    spec = json.loads(body["recipeSpecCanonical"])
+    spec["production"]["catalogVersion"] = malformed
+    canonical = json.dumps(spec, sort_keys=True, separators=(",", ":"))
+    body["recipeSpecCanonical"] = canonical
+    body["recipeSpecHash"] = "sha256:" + hashlib.sha256(canonical.encode()).hexdigest()
+    response = lab.post(
+        "/api/control-plane/v1/recipes", json=body,
+        headers=_publication_headers(**{
+            "Idempotency-Key": f"dossier:v3-malformed-{type(malformed).__name__}",
+        }),
+    )
+    assert response.status_code == 400
 
 
 def test_clip_speed_is_bounded_and_old_recipe_bytes_remain_accepted(lab):

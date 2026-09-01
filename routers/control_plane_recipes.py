@@ -19,7 +19,11 @@ from fastapi import APIRouter, Header, HTTPException
 
 from services.roster import ROSTER_PATH
 from services.master_pages_contract import exact_intent
-from services.dossier_ingredients import build_dossier_ingredient_catalog
+from services.dossier_ingredients import (
+    build_dossier_ingredient_catalog,
+    catalog_selection_version,
+    is_pinned_legacy_catalog_version,
+)
 
 
 LANE = "content-bucket-control-plane"
@@ -91,7 +95,15 @@ def _record_path(root: Path, body: dict[str, Any]) -> Path:
     return root / f"{hashlib.sha256(identity.encode('utf-8')).hexdigest()}.json"
 
 
-def _validate_spec(canonical: str) -> dict[str, Any]:
+def _validate_spec(
+    canonical: str,
+    *,
+    page_id: str,
+    recipe_id: str,
+    recipe_version: str,
+    dossier_revision: str,
+    recipe_spec_hash: str,
+) -> dict[str, Any]:
     if not isinstance(canonical, str) or len(canonical.encode("utf-8")) > MAX_SPEC_BYTES:
         raise HTTPException(400, "recipeSpecCanonical is invalid or too large")
     try:
@@ -164,7 +176,14 @@ def _validate_spec(canonical: str) -> dict[str, Any]:
            for key in _walk_keys(spec)):
         raise HTTPException(400, "free-form instruction fields are not accepted")
     if schema == "dossier.recipe-spec.v3":
-        _validate_production_selection(spec)
+        _validate_production_selection(
+            spec,
+            page_id=page_id,
+            recipe_id=recipe_id,
+            recipe_version=recipe_version,
+            dossier_revision=dossier_revision,
+            recipe_spec_hash=recipe_spec_hash,
+        )
     return spec
 
 
@@ -209,7 +228,15 @@ def _valid_control_value(value: Any, control: dict[str, Any]) -> bool:
     return False
 
 
-def _validate_production_selection(spec: dict[str, Any]) -> None:
+def _validate_production_selection(
+    spec: dict[str, Any],
+    *,
+    page_id: str,
+    recipe_id: str,
+    recipe_version: str,
+    dossier_revision: str,
+    recipe_spec_hash: str,
+) -> None:
     production = spec.get("production")
     if not isinstance(production, dict) or set(production) - PRODUCTION_FIELDS:
         raise HTTPException(400, "production selection schema mismatch")
@@ -217,11 +244,25 @@ def _validate_production_selection(spec: dict[str, Any]) -> None:
     catalog = build_dossier_ingredient_catalog(
         intent["pageId"], intent, spec["masterPagesHash"],
     )
-    if production.get("catalogVersion") != catalog["catalogVersion"]:
-        raise HTTPException(409, "production selection uses a stale Content Lab catalog")
     format_id = _single_format(spec)
     if format_id not in catalog["currentFormatCandidates"]:
         raise HTTPException(409, "selected format does not match Master Pages intent")
+    supplied_catalog_version = production.get("catalogVersion")
+    if not isinstance(supplied_catalog_version, str):
+        raise HTTPException(400, "production catalogVersion must be a string")
+    if (
+        not is_pinned_legacy_catalog_version(
+            supplied_catalog_version,
+            page_id=page_id,
+            recipe_id=recipe_id,
+            recipe_version=recipe_version,
+            dossier_revision=dossier_revision,
+            recipe_spec_hash=recipe_spec_hash,
+        )
+        and supplied_catalog_version
+        != catalog_selection_version(catalog, format_id, production)
+    ):
+        raise HTTPException(409, "production selection uses a stale Content Lab catalog")
     format_entry = next((entry for entry in catalog["formats"]
                          if entry["formatId"] == format_id), None)
     if format_entry is None:
@@ -294,7 +335,14 @@ def register_recipe(
     _token(idempotency_key, "Idempotency-Key")
 
     canonical = body["recipeSpecCanonical"]
-    spec = _validate_spec(canonical)
+    spec = _validate_spec(
+        canonical,
+        page_id=body["pageId"],
+        recipe_id=body["recipeId"],
+        recipe_version=body["recipeVersion"],
+        dossier_revision=body["dossierRevision"],
+        recipe_spec_hash=body["recipeSpecHash"],
+    )
     master_pages = spec["masterPages"]
     if master_pages["pageId"] != body["pageId"] or master_pages["contentEngine"] != body["engine"]:
         raise HTTPException(409, "recipe publication does not match Master Pages identity and engine")
