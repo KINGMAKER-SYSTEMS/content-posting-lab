@@ -11,6 +11,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import logging
 import math
 import os
 import re
@@ -42,6 +43,7 @@ SHA256 = re.compile(r"^[a-f0-9]{64}$")
 SUPPORTED_FILTERS = {
     "brightness", "contrast", "saturation", "warmth", "fade", "grain", "vignette",
 }
+log = logging.getLogger("content_lab.control_plane_generation")
 FILTER_RANGES = {
     "brightness": (0.0, 3.0),
     "contrast": (0.0, 3.0),
@@ -254,18 +256,28 @@ def typed_recipe_spec(publication: dict[str, Any]) -> dict[str, Any] | None:
     return _typed_recipe_spec(publication)
 
 
+def _unavailable(publication: dict[str, Any], reason: str) -> None:
+    """Record one bounded reason without logging recipe bytes or credentials."""
+    log.warning(
+        "registered dossier recipe unavailable page=%s recipe=%s version=%s reason=%s",
+        publication.get("pageId"), publication.get("recipeId"),
+        publication.get("recipeVersion"), reason,
+    )
+    return None
+
+
 def resolve_generation_recipe(
     publication: dict[str, Any], *, require_runtime: bool = True,
 ) -> GenerationRecipe | None:
     recipe_id = publication.get("recipeId")
     content_engine = publication.get("engine")
     if not isinstance(recipe_id, str) or not recipe_id.endswith(":master"):
-        return None
+        return _unavailable(publication, "recipe_identity")
     if content_engine != "ai_video":
-        return None
+        return _unavailable(publication, "content_engine")
     spec = _typed_recipe_spec(publication)
     if spec is None:
-        return None
+        return _unavailable(publication, "typed_recipe_spec")
 
     format_slug = recipe_id.removesuffix(":master")
     profile = resolve_material_profile(publication, spec)
@@ -277,15 +289,15 @@ def resolve_generation_recipe(
         or profile.executor_id is None
         or profile.executor_version is None
     ):
-        return None
+        return _unavailable(publication, "material_profile")
     catalog, catalog_hash = load_prompt_catalog()
     if profile.executor_version != f"sha256:{catalog_hash}":
-        return None
+        return _unavailable(publication, "executor_version")
     format_config = catalog["formats"].get(format_slug)
     if not isinstance(format_config, dict):
-        return None
+        return _unavailable(publication, "format_config")
     if format_config.get("clip_mode") is True or format_config.get("parked") is True:
-        return None
+        return _unavailable(publication, "non_generation_format")
     family_name = format_config.get("family")
     family = catalog["families"].get(family_name)
     if (
@@ -293,36 +305,36 @@ def resolve_generation_recipe(
         or family_name != profile.executor_id
         or not isinstance(family, dict)
     ):
-        return None
+        return _unavailable(publication, "prompt_family")
     method = family.get("method")
     if method not in {"t2v", "i2v"}:
-        return None
+        return _unavailable(publication, "generation_method")
     if method == "t2v" and family.get("base_anchor") not in (None, ""):
-        return None
+        return _unavailable(publication, "unexpected_t2v_anchor")
     if method == "i2v":
         manifest_sha = family.get("anchor_manifest_sha256")
         base_sha = family.get("base_anchor_sha256")
         if bool(manifest_sha) == bool(base_sha):
-            return None
+            return _unavailable(publication, "i2v_anchor_identity")
         if manifest_sha and (
             not isinstance(manifest_sha, str)
             or not SHA256.fullmatch(manifest_sha)
             or not isinstance(family.get("anchor_count"), int)
             or not 1 <= family["anchor_count"] <= 100
         ):
-            return None
+            return _unavailable(publication, "i2v_anchor_manifest")
         if base_sha and (
             not isinstance(base_sha, str)
             or not SHA256.fullmatch(base_sha)
             or not isinstance(family.get("base_anchor_bytes"), int)
             or not 1 <= family["base_anchor_bytes"] <= MAX_ANCHOR_BYTES
         ):
-            return None
+            return _unavailable(publication, "i2v_base_anchor")
     production = spec.get("production") if spec.get("schema") == "dossier.recipe-spec.v3" else {}
     if not isinstance(production, dict):
-        return None
+        return _unavailable(publication, "production_selection")
     if production.get("promptModuleId") not in (None, family_name):
-        return None
+        return _unavailable(publication, "prompt_module")
     if production:
         _, contracts_hash = load_format_contracts()
         expected_catalog_version = dossier_catalog_version(
@@ -330,21 +342,21 @@ def resolve_generation_recipe(
             source_dna_catalog_hash(),
         )
         if production.get("catalogVersion") != expected_catalog_version:
-            return None
+            return _unavailable(publication, "catalog_version")
     provider_engine = production.get("providerId") or family.get("provider")
     if not isinstance(provider_engine, str) or not provider_engine:
-        return None
+        return _unavailable(publication, "provider_identity")
     if require_runtime and not _runtime_ready(provider_engine):
-        return None
+        return _unavailable(publication, "provider_runtime")
     provider_config = catalog["providers"].get(provider_engine)
     runtime_provider = PROVIDERS.get(provider_engine)
     if not isinstance(provider_config, dict) or not isinstance(runtime_provider, dict):
-        return None
+        return _unavailable(publication, "provider_config")
     model = production.get("modelId") or provider_config.get("replicate_model")
     if model not in runtime_provider.get("models", []):
-        return None
+        return _unavailable(publication, "provider_model")
     if float(provider_config.get("cost_per_gen_usd") or 0) <= 0:
-        return None
+        return _unavailable(publication, "provider_cost")
 
     return GenerationRecipe(
         recipe_id=recipe_id,
