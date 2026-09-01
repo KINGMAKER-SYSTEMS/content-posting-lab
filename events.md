@@ -1,5 +1,3 @@
-_________________________________________________________________________________
-
 time: [17:24] [09-01-26]
 agent: [codex] [gpt-5] [caption_renderer_bridge]
 worktree: [feat/typed-caption-render-plan-20260901] /private/tmp/content-lab-caption-renderer
@@ -50,4 +48,22 @@ style SHA `sha256:512514a815f9516244f8aeff4d0f54fa36a068fd3642c3532a11633f1d0f93
 and overlay SHA `sha256:dc3275888cc20abf27552254596daf27cc022a0d85cff5565c7547e5dc1d1d51`.
 Verification: caption-render plus quality-gate tests 24 passed. No video,
 scheduler, slot, lease, device, phone, or post mutation.
+_________________________________________________________________________________
+
+_________________________________________________________________________________
+
+time: [19:22] [09-01-26]
+agent: [codex] [gpt-5] [dossier_recipe_v4_bridge]
+worktree: [fix/dossier-recipe-v4-caption-20260901] /private/tmp/content-lab-caption-renderer
+type: [bug report]: Dossier recipe v4 registration seam
+area: [backend]: Content Lab recipe, generation, and source execution
+
+Added closed support for `dossier.recipe-spec.v4`, preserving the exact
+Control Plane caption corpus, canonical sentiment register, and optional
+slingshot share beside the existing typed production selection. Content Lab
+does not choose or reinterpret the caption selection. Both AI generation and
+sourced-video recut resolution now retain the exact v4 recipe bytes. Focused
+verification: 53 recipe, generation, source-execution, and dossier-execution
+tests passed. No deployment, provider generation, video mutation, scheduler,
+slot, lease, device, phone, or post action.
 _________________________________________________________________________________

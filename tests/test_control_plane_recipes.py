@@ -81,6 +81,21 @@ def _v3_payload(catalog_version=None, **overrides):
     return body
 
 
+def _v4_payload(**overrides):
+    body = _v3_payload(**overrides)
+    spec = json.loads(body["recipeSpecCanonical"])
+    spec["schema"] = "dossier.recipe-spec.v4"
+    spec["captionDiscipline"] = {
+        "captionSet": "truck-tok",
+        "register": ["heartbreak_relationship", "relationship_sincere"],
+        "slingshotShare": None,
+    }
+    canonical = json.dumps(spec, sort_keys=True, separators=(",", ":"))
+    body["recipeSpecCanonical"] = canonical
+    body["recipeSpecHash"] = "sha256:" + hashlib.sha256(canonical.encode()).hexdigest()
+    return body
+
+
 @pytest.fixture
 def lab(monkeypatch, tmp_path):
     monkeypatch.setenv("CONTROL_PLANE_TOKEN", TOKEN)
@@ -258,6 +273,56 @@ def test_v3_publish_accepts_exact_and_full_pinned_legacy_but_rejects_reuse(
         "/api/control-plane/v1/recipes", json=stale,
         headers=_publication_headers(**{"Idempotency-Key": "dossier:v3-stale"}),
     ).status_code == 409
+
+
+def test_v4_publish_preserves_the_exact_caption_selection(lab):
+    body = _v4_payload(
+        dossierRevision="rev-v4-exact", recipeVersion="dossier-v4-exact0001",
+    )
+    response = lab.post(
+        "/api/control-plane/v1/recipes", json=body,
+        headers=_publication_headers(**{"Idempotency-Key": "dossier:v4-exact"}),
+    )
+    assert response.status_code == 200
+    stored = recipes.load_registered_recipe(
+        PAGE_ID, body["recipeId"], body["engine"], body["recipeVersion"],
+    )
+    assert stored["recipeSpecCanonical"] == body["recipeSpecCanonical"]
+    assert json.loads(stored["recipeSpecCanonical"])["captionDiscipline"] == {
+        "captionSet": "truck-tok",
+        "register": ["heartbreak_relationship", "relationship_sincere"],
+        "slingshotShare": None,
+    }
+
+
+@pytest.mark.parametrize(
+    "caption_discipline",
+    [
+        {"captionSet": None, "register": ["relationship_sincere"], "slingshotShare": None},
+        {"captionSet": "Truck Tok", "register": ["relationship_sincere"], "slingshotShare": None},
+        {"captionSet": "truck-tok", "register": [], "slingshotShare": None},
+        {"captionSet": "truck-tok", "register": ["made_up"], "slingshotShare": None},
+        {"captionSet": "truck-tok", "register": [{}], "slingshotShare": None},
+        {"captionSet": "truck-tok", "register": ["faith", "faith"], "slingshotShare": None},
+        {"captionSet": "truck-tok", "register": ["faith"], "slingshotShare": 1.01},
+        {"captionSet": "truck-tok", "register": ["faith"]},
+    ],
+)
+def test_v4_publish_rejects_untyped_caption_selection(lab, caption_discipline):
+    body = _v4_payload(
+        dossierRevision="rev-v4-invalid", recipeVersion="dossier-v4-invalid01",
+    )
+    spec = json.loads(body["recipeSpecCanonical"])
+    spec["captionDiscipline"] = caption_discipline
+    canonical = json.dumps(spec, sort_keys=True, separators=(",", ":"))
+    body["recipeSpecCanonical"] = canonical
+    body["recipeSpecHash"] = "sha256:" + hashlib.sha256(canonical.encode()).hexdigest()
+    assert lab.post(
+        "/api/control-plane/v1/recipes", json=body,
+        headers=_publication_headers(**{
+            "Idempotency-Key": "dossier:v4-invalid-" + hashlib.sha256(canonical.encode()).hexdigest()[:12],
+        }),
+    ).status_code == 400
 
 
 @pytest.mark.parametrize("malformed", [{}, []])

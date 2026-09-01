@@ -34,6 +34,7 @@ def publication(
     cut_duration_ms=6_000,
     source_library_id=LIBRARY_ID,
     recipe_version="dossier-feedfacefeedface",
+    schema="dossier.recipe-spec.v3",
 ):
     intent, revision = master_pages(
         PAGE_ID,
@@ -63,14 +64,23 @@ def publication(
     production["catalogVersion"] = catalog_selection_version(
         catalog, "pov-dirt-bike", production,
     )
-    canonical = json.dumps({
-        "schema": "dossier.recipe-spec.v3",
+    recipe_spec = {
+        "schema": schema,
         "masterPages": intent,
         "masterPagesHash": revision,
         "production": production,
         "renderTreatment": render_treatment,
         "demand": {"formatMix": {"pov-dirt-bike": 1.0}},
-    }, sort_keys=True, separators=(",", ":"))
+    }
+    if schema == "dossier.recipe-spec.v4":
+        recipe_spec["captionDiscipline"] = {
+            "captionSet": "dirt-bike",
+            "register": [
+                "relatable_meme", "relationship_playful", "relationship_sincere",
+            ],
+            "slingshotShare": None,
+        }
+    canonical = json.dumps(recipe_spec, sort_keys=True, separators=(",", ":"))
     return {
         "schema": recipes.REQUEST_SCHEMA,
         "pageId": PAGE_ID,
@@ -235,6 +245,18 @@ def test_source_recipe_requires_v3_page_scoped_master_and_exact_controls():
     spec["schema"] = "dossier.recipe-spec.v2"
     legacy["recipeSpecCanonical"] = json.dumps(spec, sort_keys=True, separators=(",", ":"))
     assert resolve_source_recipe(legacy) is None
+
+
+def test_source_recipe_accepts_v4_and_preserves_the_caption_selection():
+    resolved = resolve_source_recipe(publication(schema="dossier.recipe-spec.v4"))
+    assert resolved is not None
+    assert resolved.recipe_spec["captionDiscipline"] == {
+        "captionSet": "dirt-bike",
+        "register": [
+            "relatable_meme", "relationship_playful", "relationship_sincere",
+        ],
+        "slingshotShare": None,
+    }
 
 
 def test_capability_and_jobs_bind_master_hash_and_unique_windows(lab):

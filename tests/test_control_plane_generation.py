@@ -112,6 +112,46 @@ def test_typed_v3_truck_recipe_uses_the_exact_advertised_dossier_catalog_version
     assert recipe.recipe_spec["production"]["controls"]["crop_mode"] == "both"
 
 
+def test_typed_v4_truck_recipe_preserves_the_control_plane_caption_selection():
+    payload = publication()
+    spec = json.loads(payload["recipeSpecCanonical"])
+    catalog = build_dossier_ingredient_catalog(
+        payload["pageId"], spec["masterPages"], spec["masterPagesHash"],
+    )
+    production = {
+        "catalogVersion": "",
+        "providerId": "hailuo",
+        "modelId": "minimax/hailuo-2.3",
+        "promptModuleId": "truck",
+        "referenceSetId": None,
+        "sourceLibraryId": None,
+        "variationValues": {},
+        "controls": {
+            "crop_mode": "both", "duration": 6,
+            "optimize_prompt": False, "resolution": "1080p",
+        },
+    }
+    production["catalogVersion"] = catalog_selection_version(
+        catalog, "truck-scenic", production,
+    )
+    spec.update({
+        "schema": "dossier.recipe-spec.v4",
+        "production": production,
+        "captionDiscipline": {
+            "captionSet": "truck-tok",
+            "register": ["heartbreak_relationship", "relationship_sincere"],
+            "slingshotShare": None,
+        },
+    })
+    payload["recipeSpecCanonical"] = json.dumps(
+        spec, sort_keys=True, separators=(",", ":"),
+    )
+
+    recipe = resolve_generation_recipe(payload)
+    assert recipe is not None
+    assert recipe.recipe_spec["captionDiscipline"] == spec["captionDiscipline"]
+
+
 def test_typed_v3_truck_recipe_accepts_only_a_full_pinned_publication(monkeypatch):
     payload = publication()
     spec = json.loads(payload["recipeSpecCanonical"])

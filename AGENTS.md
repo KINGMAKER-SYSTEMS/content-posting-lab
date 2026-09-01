@@ -8,6 +8,8 @@
 ## Ownership
 
 - `services/caption_render.py` owns the typed Dossier-to-render caption contract.
+- `services/caption_discipline.py` owns Content Lab's closed validation of the
+  caption corpus/register selection already made by Dossier and Control Plane.
 - `routers/burn.py` exposes caption rendering and final video compositing.
 - `burn_server.py` exposes the same typed caption-render route on the posting
   Mac's canonical port-8002 Burn runtime for Rail consumption.
@@ -16,6 +18,10 @@
 ## Local Contracts
 
 - Caption rendering accepts the existing Rust `CaptionStyle` wire fields only.
+- Dossier recipe v4 is the executable v3 production selection plus the exact
+  Control Plane `captionDiscipline` wire object. Content Lab validates and
+  preserves that immutable selection; it does not choose a corpus, sentiment,
+  caption, or parallel taxonomy.
 - A publishable caption render requires exact caption text and a complete page
   style: font, size, color, position, alignment, and line balance.
 - Resolve fonts only from Content Lab's installed, advertised TikTokSans files.
@@ -45,6 +51,7 @@
 - Run `pytest -q tests/test_caption_render_contract.py` for the typed caption
   contract and `pytest -q tests/test_burn_and_captions_api.py` for Burn API
   regressions. Run `pytest -q tests/test_burn_quality_gate.py` for legacy and
-  typed overlay placement gates.
+  typed overlay placement gates. Run the control-plane recipe, generation, and
+  source-execution test files together when changing a Dossier recipe schema.
 
 ## Child devlog Index
