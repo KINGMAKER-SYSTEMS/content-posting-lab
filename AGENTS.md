@@ -25,6 +25,9 @@
   explicit break or change word order.
 - Return deterministic 1080x1920 overlay bytes plus caption, style, font, plan,
   and artifact hashes so downstream Rail receipts can bind the final post bytes.
+- Legacy quality-gate calls retain the established centered burned_003 geometry.
+  Typed calls validate the overlay against the exact declared position,
+  alignment, and offset instead of forcing every page back to that legacy look.
 - Do not publish or queue a TikTok post from Content Lab without explicit user
   authorization.
 
@@ -41,6 +44,7 @@
 
 - Run `pytest -q tests/test_caption_render_contract.py` for the typed caption
   contract and `pytest -q tests/test_burn_and_captions_api.py` for Burn API
-  regressions.
+  regressions. Run `pytest -q tests/test_burn_quality_gate.py` for legacy and
+  typed overlay placement gates.
 
 ## Child devlog Index
