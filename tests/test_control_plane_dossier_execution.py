@@ -87,6 +87,10 @@ def lab(monkeypatch, tmp_path):
     bind_current_intent(monkeypatch, cp, intent, revision)
     started = []
     monkeypatch.setattr(cp, "_start_dossier_generation", started.append)
+    monkeypatch.setattr(
+        cp, "_start_truck_master_recovery",
+        lambda job_id: started.append(f"recovery:{job_id}"),
+    )
 
     app = FastAPI()
     app.include_router(cp.router, prefix="/api/control-plane")
@@ -136,6 +140,142 @@ def test_registered_dossier_is_advertised_and_queues_new_media_only(lab, monkeyp
     assert stored["materialSource"] == "generated_video"
     assert stored["assetType"] == "video/mp4"
     assert stored["promptCatalogHash"] == "c80cc32e6e762be05e6655190432e945c55afeb196fc488f3b09ad2fad51b9f1"
+
+
+def test_truck_job_reuses_preserved_paid_master_before_new_provider_spend(lab, monkeypatch):
+    client, tmp_path, started = lab
+    old_root = tmp_path / "generated" / PAGE_ID / "legacy" / "cpl-1111111111111111"
+    old_root.mkdir(parents=True)
+    master = old_root / "renders" / "paid-master.mp4"
+    master.parent.mkdir(parents=True)
+    master.write_bytes(b"exact-paid-provider-master")
+    master_sha = hashlib.sha256(master.read_bytes()).hexdigest()
+    intent, revision = master_pages(PAGE_ID, handle="tucker.reeves")
+    store = cp._load_jobs()
+    store["jobs"]["cpl-1111111111111111"] = {
+        "jobId": "cpl-1111111111111111",
+        "pageId": PAGE_ID,
+        "sourceKind": "generated",
+        "status": "completed",
+        "artifactRoot": str(old_root),
+        "createdAt": "2026-08-30T00:00:00+00:00",
+        "clips": [{
+            "path": "renders/paid-master.mp4",
+            "sha256": master_sha,
+            "bytes": master.stat().st_size,
+            "source": {
+                "recipeId": "truck-scenic:master",
+                "recipeVersion": "dossier-legacy0000000",
+                "path": "renders/paid-master.mp4",
+                "sha256": master_sha,
+                "bytes": master.stat().st_size,
+                "pageId": PAGE_ID,
+                "masterPagesHash": revision,
+                "contentNiche": intent["contentNiche"],
+                "contentEngine": intent["contentEngine"],
+                "vaultUrl": intent["vaultUrl"],
+            },
+        }],
+    }
+    cp.atomic_save(cp._jobs_path(), store)
+    monkeypatch.setattr(cp, "_is_exact_16x9_video", lambda _: True)
+
+    response = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(quantity=1), headers=HEADERS,
+    )
+    assert response.status_code == 200
+    job_id = response.json()["jobId"]
+    stored = cp._load_jobs()["jobs"][job_id]
+    assert stored["sourceKind"] == "truck_master_recovery"
+    assert stored["providerCallsPlanned"] == 0
+    assert [entry["sha256"] for entry in stored["recoveryMasters"]] == [master_sha]
+    assert started == [f"recovery:{job_id}"]
+
+
+@pytest.mark.asyncio
+async def test_truck_master_recovery_emits_five_crops_without_model_call(lab, monkeypatch):
+    client, tmp_path, started = lab
+    old_root = tmp_path / "generated" / PAGE_ID / "legacy" / "cpl-2222222222222222"
+    old_root.mkdir(parents=True)
+    master = old_root / "renders" / "paid-master.mp4"
+    master.parent.mkdir(parents=True)
+    master.write_bytes(b"another-exact-paid-provider-master")
+    master_sha = hashlib.sha256(master.read_bytes()).hexdigest()
+    intent, revision = master_pages(PAGE_ID, handle="tucker.reeves")
+    store = cp._load_jobs()
+    store["jobs"]["cpl-2222222222222222"] = {
+        "jobId": "cpl-2222222222222222",
+        "pageId": PAGE_ID,
+        "sourceKind": "generated",
+        "status": "completed",
+        "artifactRoot": str(old_root),
+        "createdAt": "2026-08-30T00:00:00+00:00",
+        "clips": [{
+            "path": "renders/paid-master.mp4",
+            "sha256": master_sha,
+            "bytes": master.stat().st_size,
+            "source": {
+                "recipeId": "truck-scenic:master",
+                "recipeVersion": "dossier-legacy0000000",
+                "path": "renders/paid-master.mp4",
+                "sha256": master_sha,
+                "bytes": master.stat().st_size,
+                "pageId": PAGE_ID,
+                "masterPagesHash": revision,
+                "contentNiche": intent["contentNiche"],
+                "contentEngine": intent["contentEngine"],
+                "vaultUrl": intent["vaultUrl"],
+            },
+        }],
+    }
+    cp.atomic_save(cp._jobs_path(), store)
+    monkeypatch.setattr(cp, "_is_exact_16x9_video", lambda _: True)
+    response = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(quantity=1), headers=HEADERS,
+    )
+    job_id = response.json()["jobId"]
+    assert started == [f"recovery:{job_id}"]
+
+    async def fake_crops(copied, mode):
+        assert mode == "both"
+        paths = []
+        for index in range(5):
+            path = copied.with_stem(f"{copied.stem}_crop{index}")
+            path.write_bytes(f"portrait-crop-{index}".encode())
+            paths.append(path)
+        return paths
+
+    async def fake_thumbnail(job_root, video, index):
+        target = job_root / "thumbnails" / f"{index:04d}.jpg"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(f"jpeg-{index}".encode())
+        return cp._generated_manifest(job_root, target)
+
+    async def fail_generate(*_args, **_kwargs):
+        raise AssertionError("master recovery must not call a provider")
+
+    monkeypatch.setattr(cp, "_video_geometry", lambda _: _async_value((1920, 1080)))
+    monkeypatch.setattr(cp, "_video_geometry_for_delivery", lambda _: _async_value((606, 1080)))
+    monkeypatch.setattr(cp, "multi_crop_vertical", fake_crops)
+    monkeypatch.setattr(cp, "_thumbnail_manifest", fake_thumbnail)
+    monkeypatch.setattr(cp, "generate_one", fail_generate)
+    await cp._run_truck_master_recovery(job_id)
+
+    stored = cp._load_jobs()["jobs"][job_id]
+    assert stored["status"] == "completed"
+    assert len(stored["clips"]) == 5
+    assert [clip["delivery"]["crop"]["index"] for clip in stored["clips"]] == list(range(5))
+    assert {clip["delivery"]["crop"]["sourceSha256"] for clip in stored["clips"]} == {master_sha}
+    artifacts = client.get(
+        f"/api/control-plane/v1/jobs/{job_id}/artifacts",
+        headers={"Authorization": f"Bearer {TOKEN}", "X-RT-Page-Id": PAGE_ID},
+    )
+    assert artifacts.status_code == 200
+    assert len(artifacts.json()["artifacts"]) == 5
+
+
+async def _async_value(value):
+    return value
 
 
 @pytest.mark.asyncio

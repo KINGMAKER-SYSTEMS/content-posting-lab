@@ -42,6 +42,8 @@ import hmac
 import json
 import os
 import re
+import shutil
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -52,7 +54,7 @@ import httpx
 from fastapi import APIRouter, Header, HTTPException
 
 from project_manager import PROJECTS_DIR
-from providers.base import generate_one
+from providers.base import generate_one, multi_crop_vertical
 from routers.control_plane_recipes import (
     LANE as CONTROL_PLANE_LANE,
     list_registered_recipes,
@@ -524,7 +526,10 @@ IDEMPOTENCY_KEY_RE = re.compile(r"^[A-Za-z0-9_.:-]{8,200}$")
 JOB_TOKEN_BYTES = 24
 GENERATION_ACTIVE_STATUSES = {"queued", "running"}
 SOURCE_DNA_UNAVAILABLE_STATUSES = {*GENERATION_ACTIVE_STATUSES, "completed"}
-ASYNC_SOURCE_KINDS = {"generated", "dossier_source_dna"}
+ASYNC_SOURCE_KINDS = {"generated", "dossier_source_dna", "truck_master_recovery"}
+TRUCK_RECIPE_ID = "truck-scenic:master"
+TRUCK_CROP_MODE = "both"
+TRUCK_CROP_COUNT = 5
 _GENERATION_RUNTIME_ID = _secrets.token_hex(16)
 _source_cache_locks: dict[str, asyncio.Lock] = {}
 
@@ -614,6 +619,107 @@ def _source_dna_unavailable_slots(
             if isinstance(slot_id, str) and slot_id:
                 slots.add(slot_id)
     return slots
+
+
+def _truck_master_candidates(
+    store: dict[str, Any], page_id: str, limit: int,
+) -> list[dict[str, Any]]:
+    """Return durable, unused 16:9-era truck outputs for lossless re-cropping.
+
+    A completed recovery reserves its exact masters permanently. Active
+    recoveries reserve them against concurrent replenishment. Failed recovery
+    jobs release them because no new delivery bytes crossed the API boundary.
+    The source files are checked again, byte-for-byte, by the recovery runner.
+    """
+    reserved: set[str] = set()
+    jobs = store.get("jobs", {})
+    for job in jobs.values():
+        if (
+            not isinstance(job, dict)
+            or job.get("sourceKind") != "truck_master_recovery"
+            or job.get("status") not in SOURCE_DNA_UNAVAILABLE_STATUSES
+        ):
+            continue
+        for master in job.get("recoveryMasters", []):
+            sha256 = master.get("sha256") if isinstance(master, dict) else None
+            if isinstance(sha256, str) and re.fullmatch(r"[0-9a-f]{64}", sha256):
+                reserved.add(sha256)
+
+    candidates: list[dict[str, Any]] = []
+    seen = set(reserved)
+    ordered_jobs = sorted(
+        (job for job in jobs.values() if isinstance(job, dict)),
+        key=lambda job: (str(job.get("createdAt") or ""), str(job.get("jobId") or "")),
+    )
+    for job in ordered_jobs:
+        if (
+            job.get("pageId") != page_id
+            or job.get("sourceKind") != "generated"
+            or job.get("status") != "completed"
+            or not isinstance(job.get("artifactRoot"), str)
+        ):
+            continue
+        root = Path(job["artifactRoot"]).resolve()
+        for clip in job.get("clips", []):
+            if not isinstance(clip, dict) or isinstance(clip.get("delivery"), dict):
+                continue
+            rel_path = clip.get("path")
+            sha256 = clip.get("sha256")
+            byte_count = clip.get("bytes")
+            source = clip.get("source")
+            if (
+                not isinstance(rel_path, str)
+                or re.search(r"_crop[0-9]+\.mp4$", rel_path)
+                or not isinstance(sha256, str)
+                or not re.fullmatch(r"[0-9a-f]{64}", sha256)
+                or sha256 in seen
+                or not isinstance(byte_count, int)
+                or byte_count <= 0
+                or not isinstance(source, dict)
+            ):
+                continue
+            full = (root / rel_path).resolve()
+            if (
+                root not in full.parents
+                or not full.is_file()
+                or full.stat().st_size != byte_count
+                or not _is_exact_16x9_video(full)
+            ):
+                continue
+            candidates.append({
+                "sourceJobId": job.get("jobId"),
+                "artifactRoot": str(root),
+                "path": rel_path,
+                "sha256": sha256,
+                "bytes": byte_count,
+                "source": source,
+            })
+            seen.add(sha256)
+            if len(candidates) >= limit:
+                return candidates
+    return candidates
+
+
+def _is_exact_16x9_video(path: Path) -> bool:
+    try:
+        completed = subprocess.run(
+            [
+                "ffprobe", "-v", "error", "-select_streams", "v:0",
+                "-show_entries", "stream=width,height", "-of", "csv=p=0",
+                str(path),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+        parts = completed.stdout.strip().split(",")
+        if completed.returncode != 0 or len(parts) != 2:
+            return False
+        width, height = int(parts[0]), int(parts[1])
+        return width > height > 0 and abs((width / height) - (16 / 9)) <= 0.05
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return False
 
 
 def _sha256(path: Path) -> str:
@@ -956,6 +1062,132 @@ async def _run_dossier_generation(job_id: str) -> None:
     )
 
 
+async def _video_geometry(path: Path) -> tuple[int, int]:
+    process = await asyncio.create_subprocess_exec(
+        "ffprobe", "-v", "error", "-select_streams", "v:0",
+        "-show_entries", "stream=width,height", "-of", "csv=p=0",
+        str(path), stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    stdout, _ = await process.communicate()
+    parts = stdout.decode().strip().split(",")
+    if process.returncode != 0 or len(parts) != 2:
+        raise RuntimeError("truck_master_geometry_unavailable")
+    width, height = int(parts[0]), int(parts[1])
+    if width <= height or abs((width / height) - (16 / 9)) > 0.05:
+        raise RuntimeError("truck_master_not_16x9")
+    return width, height
+
+
+async def _run_truck_master_recovery(job_id: str) -> None:
+    """Turn preserved paid truck masters into five exact portrait deliveries.
+
+    This path never calls a model. It copies and re-hashes the previously
+    completed output, proves it is landscape, then uses the same five-way crop
+    executor as new truck generations. The new job's normal artifact endpoint
+    lets the existing Control Plane replenishment transaction download, hash,
+    admit, scan and approve the results without a parallel write path.
+    """
+    job = _get_job_or_404(job_id)
+    job_root = Path(job["artifactRoot"]).resolve()
+    master_root = job_root / "masters"
+    master_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    masters = job.get("recoveryMasters")
+    if not isinstance(masters, list) or not masters:
+        _update_job(
+            job_id, status="failed", error="truck_master_recovery_empty",
+            completedAt=datetime.now(timezone.utc).isoformat(),
+        )
+        return
+    manifests: list[dict[str, Any]] = []
+    _update_job(job_id, status="running", progress=0)
+    try:
+        for master_index, candidate in enumerate(masters):
+            source_root = Path(candidate["artifactRoot"]).resolve()
+            source = (source_root / candidate["path"]).resolve()
+            if (
+                source_root not in source.parents
+                or not source.is_file()
+                or source.stat().st_size != candidate["bytes"]
+                or _sha256(source) != candidate["sha256"]
+            ):
+                raise RuntimeError("truck_master_bytes_changed")
+            await _video_geometry(source)
+            copied = master_root / f"{candidate['sha256']}.mp4"
+            if not copied.is_file():
+                shutil.copyfile(source, copied)
+            copied_manifest = _generated_manifest(job_root, copied)
+            if (
+                copied_manifest["sha256"] != candidate["sha256"]
+                or copied_manifest["bytes"] != candidate["bytes"]
+            ):
+                raise RuntimeError("truck_master_copy_mismatch")
+            crops = await multi_crop_vertical(copied, TRUCK_CROP_MODE)
+            if len(crops) != TRUCK_CROP_COUNT:
+                raise RuntimeError("truck_master_crop_count_invalid")
+            crop_width, crop_height = await _video_geometry_for_delivery(crops[0])
+            for crop_index, crop in enumerate(crops):
+                geometry = await _video_geometry_for_delivery(crop)
+                if geometry != (crop_width, crop_height):
+                    raise RuntimeError("truck_master_crop_geometry_mismatch")
+                manifest = _generated_manifest(job_root, crop)
+                source_authority = candidate["source"]
+                manifest["source"] = _source_provenance(job, {
+                    "recipeId": source_authority.get("recipeId") or job["recipeId"],
+                    "recipeVersion": source_authority.get("recipeVersion") or job["recipeVersion"],
+                    "path": copied_manifest["path"],
+                    "sha256": copied_manifest["sha256"],
+                    "bytes": copied_manifest["bytes"],
+                })
+                manifest["delivery"] = {
+                    "aspectRatio": "9:16",
+                    "width": crop_width,
+                    "height": crop_height,
+                    "crop": {
+                        "mode": TRUCK_CROP_MODE,
+                        "index": crop_index,
+                        "count": TRUCK_CROP_COUNT,
+                        "groupId": f"sha256:{copied_manifest['sha256']}",
+                        "sourceSha256": copied_manifest["sha256"],
+                    },
+                }
+                manifest["thumbnail"] = await _thumbnail_manifest(
+                    job_root, crop, len(manifests),
+                )
+                manifests.append(manifest)
+            _update_job(
+                job_id,
+                progress=int(((master_index + 1) / len(masters)) * 100),
+            )
+    except Exception as error:
+        _update_job(
+            job_id, status="failed", error=str(error)[:300],
+            completedAt=datetime.now(timezone.utc).isoformat(),
+        )
+        return
+    _update_job(
+        job_id, status="completed", progress=100, clips=manifests,
+        completedAt=datetime.now(timezone.utc).isoformat(),
+    )
+
+
+async def _video_geometry_for_delivery(path: Path) -> tuple[int, int]:
+    process = await asyncio.create_subprocess_exec(
+        "ffprobe", "-v", "error", "-select_streams", "v:0",
+        "-show_entries", "stream=width,height", "-of", "csv=p=0",
+        str(path), stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    stdout, _ = await process.communicate()
+    parts = stdout.decode().strip().split(",")
+    if process.returncode != 0 or len(parts) != 2:
+        raise RuntimeError("truck_crop_geometry_unavailable")
+    width, height = int(parts[0]), int(parts[1])
+    if width <= 0 or height <= 0 or abs((width / height) - (9 / 16)) > 0.003:
+        raise RuntimeError("truck_crop_not_9x16")
+    return width, height
+
+
 async def _run_dossier_source(job_id: str) -> None:
     """Cut unique windows from one page's immutable source DNA."""
     job = _get_job_or_404(job_id)
@@ -1083,6 +1315,7 @@ async def _run_dossier_source(job_id: str) -> None:
 
 _generation_tasks: dict[str, asyncio.Task] = {}
 _source_tasks: dict[str, asyncio.Task] = {}
+_truck_recovery_tasks: dict[str, asyncio.Task] = {}
 
 
 def _start_dossier_generation(job_id: str) -> None:
@@ -1095,6 +1328,12 @@ def _start_dossier_source(job_id: str) -> None:
     task = asyncio.create_task(_run_dossier_source(job_id))
     _source_tasks[job_id] = task
     task.add_done_callback(lambda _: _source_tasks.pop(job_id, None))
+
+
+def _start_truck_master_recovery(job_id: str) -> None:
+    task = asyncio.create_task(_run_truck_master_recovery(job_id))
+    _truck_recovery_tasks[job_id] = task
+    task.add_done_callback(lambda _: _truck_recovery_tasks.pop(job_id, None))
 
 
 @router.post("/v1/jobs")
@@ -1190,6 +1429,7 @@ async def create_job(
 
     start_generation = False
     start_source = False
+    start_truck_recovery = False
     with lock_for(_jobs_path()):
         store = _load_jobs()
         existing_id = store["byIdempotency"].get(idempotency_key)
@@ -1221,7 +1461,42 @@ async def create_job(
             "token": _secrets.token_urlsafe(JOB_TOKEN_BYTES),
             "createdAt": datetime.now(timezone.utc).isoformat(),
         }
-        if generation_recipe is not None:
+        recovery_masters = (
+            _truck_master_candidates(store, page_id, provider_calls)
+            if generation_recipe is not None
+            and recipe_id == TRUCK_RECIPE_ID
+            and master_pages["contentNiche"].strip().upper() == "TRUCK"
+            else []
+        )
+        if generation_recipe is not None and recovery_masters:
+            job_root = (
+                _generation_root() / page_id / recipe_version / job_id
+            ).resolve()
+            job_root.mkdir(parents=True, exist_ok=False, mode=0o700)
+            job = {
+                **common,
+                "sourceKind": "truck_master_recovery",
+                "status": "queued",
+                "progress": 0,
+                "clips": [],
+                "artifactRoot": str(job_root),
+                "recoveryMasters": recovery_masters,
+                "dossierRevision": publication["dossierRevision"],
+                "recipeSpecHash": publication["recipeSpecHash"],
+                "engineRegistryHash": generation_recipe.engine_registry_hash,
+                "formatContractVersion": generation_recipe.format_contract_version,
+                "materialSource": generation_recipe.material_source,
+                "assetType": generation_recipe.asset_type,
+                "executorVersion": generation_recipe.executor_version,
+                "promptCatalogHash": generation_recipe.prompt_catalog_hash,
+                "family": generation_recipe.family_name,
+                "providerModel": generation_recipe.provider_model,
+                "providerCallsPlanned": 0,
+                "providerCallsCompleted": 0,
+                "runtimeId": _GENERATION_RUNTIME_ID,
+            }
+            start_truck_recovery = True
+        elif generation_recipe is not None:
             job_root = (
                 _generation_root() / page_id / recipe_version / job_id
             ).resolve()
@@ -1291,6 +1566,8 @@ async def create_job(
         _start_dossier_generation(job_id)
     elif start_source:
         _start_dossier_source(job_id)
+    elif start_truck_recovery:
+        _start_truck_master_recovery(job_id)
     return {"schema": RESPONSE_SCHEMA, "jobId": job_id, "status": job["status"]}
 
 
