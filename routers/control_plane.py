@@ -879,7 +879,47 @@ async def _run_dossier_generation(job_id: str) -> None:
                 manifest["promptSlots"] = slots
                 manifest["clipSpeed"] = clip_speed
                 manifest["clipCrop"] = clip_crop
-                source_manifest = _generated_manifest(job_root, source)
+                provider_source = source
+                delivery = None
+                if isinstance(candidate, dict) and candidate.get("cropMode") in {
+                    "dual", "triptych", "both",
+                }:
+                    master_rel_path = entry.get("provider_master_file")
+                    if not isinstance(master_rel_path, str) or not master_rel_path:
+                        raise RuntimeError("provider_master_missing")
+                    provider_source = (render_root / master_rel_path).resolve()
+                    if render_root.resolve() not in provider_source.parents or not provider_source.is_file():
+                        raise RuntimeError("provider_master_invalid")
+                    crop_index = candidate.get("cropIndex")
+                    crop_count = candidate.get("cropCount")
+                    crop_width = candidate.get("width")
+                    crop_height = candidate.get("height")
+                    if (
+                        not isinstance(crop_index, int)
+                        or not isinstance(crop_count, int)
+                        or crop_index < 0
+                        or crop_index >= crop_count
+                        or not isinstance(crop_width, int)
+                        or crop_width <= 0
+                        or not isinstance(crop_height, int)
+                        or crop_height <= 0
+                    ):
+                        raise RuntimeError("provider_crop_geometry_invalid")
+                    provider_master = _generated_manifest(job_root, provider_source)
+                    delivery = {
+                        "aspectRatio": "9:16",
+                        "width": crop_width,
+                        "height": crop_height,
+                        "crop": {
+                            "mode": candidate["cropMode"],
+                            "index": crop_index,
+                            "count": crop_count,
+                            "groupId": f"sha256:{provider_master['sha256']}",
+                            "sourceSha256": provider_master["sha256"],
+                        },
+                    }
+                    manifest["delivery"] = delivery
+                source_manifest = _generated_manifest(job_root, provider_source)
                 manifest["source"] = _source_provenance(job, {
                     "recipeId": recipe.recipe_id,
                     "recipeVersion": job["recipeVersion"],
@@ -1339,6 +1379,8 @@ def job_artifacts(
                 "bytes": clip["thumbnail"]["bytes"],
             },
         }
+        if isinstance(clip.get("delivery"), dict):
+            artifact["delivery"] = clip["delivery"]
         artifacts.append(artifact)
     return {"schema": RESPONSE_SCHEMA, "jobId": job_id, "artifacts": artifacts}
 

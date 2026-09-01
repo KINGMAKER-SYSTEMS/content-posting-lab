@@ -195,6 +195,83 @@ async def test_generation_runner_lands_treated_artifacts_under_the_isolated_job_
     assert all(clip["sha256"] for clip in stored["clips"])
 
 
+@pytest.mark.asyncio
+async def test_truck_artifacts_trace_five_vertical_crops_to_one_provider_master(lab, monkeypatch):
+    client, _, _ = lab
+    response = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(quantity=5), headers=HEADERS,
+    )
+    job_id = response.json()["jobId"]
+
+    async def fake_generate_one(
+        provider_job_id, index, provider, prompt, aspect_ratio, resolution,
+        duration, image_data_uri, jobs, output_dir, url_prefix, **extra,
+    ):
+        folder = output_dir / provider / provider_job_id
+        folder.mkdir(parents=True, exist_ok=True)
+        master = folder / "provider-master.mp4"
+        master.write_bytes(f"exact-16x9-provider-master:{provider_job_id}".encode())
+        crops = []
+        for crop_index in range(5):
+            crop = folder / f"provider-master_crop{crop_index}.mp4"
+            crop.write_bytes(f"vertical-crop-{crop_index}".encode())
+            crops.append({
+                "file": str(crop.relative_to(output_dir)),
+                "cropMode": "both", "cropIndex": crop_index, "cropCount": 5,
+                "width": 606, "height": 1080,
+            })
+        jobs[provider_job_id]["videos"][index].update({
+            "status": "done",
+            "file": crops[0]["file"],
+            "provider_master_file": str(master.relative_to(output_dir)),
+            "crops": crops,
+        })
+
+    async def fake_color_correct(
+        source, destination, color_correction, scale=None, playback_speed=1.0,
+        clip_crop=None,
+    ):
+        shutil.copyfile(source, destination)
+
+    async def fake_thumbnail(job_root, video, index):
+        target = job_root / "thumbnails" / f"{index:04d}.jpg"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(f"jpeg-thumbnail-{index}".encode())
+        return cp._generated_manifest(job_root, target)
+
+    monkeypatch.setattr(cp, "generate_one", fake_generate_one)
+    monkeypatch.setattr(cp, "run_color_correct", fake_color_correct)
+    monkeypatch.setattr(cp, "_thumbnail_manifest", fake_thumbnail)
+    await cp._run_dossier_generation(job_id)
+
+    stored = cp._load_jobs()["jobs"][job_id]
+    assert stored["status"] == "completed"
+    assert len(stored["clips"]) == 25
+    for generation_index in range(5):
+        group = stored["clips"][generation_index * 5:(generation_index + 1) * 5]
+        master_sha = group[0]["source"]["sha256"]
+        assert len({clip["source"]["sha256"] for clip in group}) == 1
+        assert [clip["delivery"]["crop"]["index"] for clip in group] == list(range(5))
+        assert all(clip["delivery"]["crop"]["groupId"] == f"sha256:{master_sha}" for clip in group)
+    for crop_index, clip in enumerate(stored["clips"][:5]):
+        master_sha = clip["source"]["sha256"]
+        assert clip["source"]["path"].endswith("provider-master.mp4")
+        assert clip["delivery"] == {
+            "aspectRatio": "9:16", "width": 606, "height": 1080,
+            "crop": {
+                "mode": "both", "index": crop_index, "count": 5,
+                "groupId": f"sha256:{master_sha}", "sourceSha256": master_sha,
+            },
+        }
+
+    artifacts = client.get(
+        f"/api/control-plane/v1/jobs/{job_id}/artifacts",
+        headers={"Authorization": f"Bearer {TOKEN}", "X-RT-Page-Id": PAGE_ID},
+    )
+    assert artifacts.status_code == 200
+    assert [entry["delivery"]["crop"]["index"] for entry in artifacts.json()["artifacts"][:5]] == list(range(5))
+
+
 def test_generation_jobs_require_the_dedicated_bearer(lab):
     client, _, _ = lab
     headers = {key: value for key, value in HEADERS.items() if key != "Authorization"}

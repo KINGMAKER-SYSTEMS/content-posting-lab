@@ -274,14 +274,32 @@ async def generate_one(
             elif crop_mode in ("dual", "triptych", "both") and provider in FORCE_LANDSCAPE:
                 entry["status"] = "cropping"
                 crop_paths = await multi_crop_vertical(dest, crop_mode)
+                crop_probe = await asyncio.create_subprocess_exec(
+                    "ffprobe", "-v", "error", "-select_streams", "v:0",
+                    "-show_entries", "stream=width,height", "-of", "csv=p=0",
+                    str(crop_paths[0]), stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.DEVNULL,
+                )
+                crop_stdout, _ = await crop_probe.communicate()
+                crop_parts = crop_stdout.decode().strip().split(",")
+                if crop_probe.returncode != 0 or len(crop_parts) != 2:
+                    raise RuntimeError("ffprobe crop geometry failed")
+                crop_width, crop_height = int(crop_parts[0]), int(crop_parts[1])
                 # Store crop files in the entry
                 entry["status"] = "done"
                 entry["crops"] = []
-                for cp in crop_paths:
+                entry["provider_master_file"] = f"{rel_dir}/{filename}"
+                entry["provider_master_url"] = f"{url_prefix}/{rel_dir}/{filename}"
+                for crop_index, cp in enumerate(crop_paths):
                     crop_rel = f"{rel_dir}/{cp.name}"
                     entry["crops"].append({
                         "file": crop_rel,
                         "url": f"{url_prefix}/{crop_rel}",
+                        "cropMode": crop_mode,
+                        "cropIndex": crop_index,
+                        "cropCount": len(crop_paths),
+                        "width": crop_width,
+                        "height": crop_height,
                     })
                 # Use the first crop as the primary file
                 entry["file"] = entry["crops"][0]["file"]
