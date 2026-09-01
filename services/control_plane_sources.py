@@ -20,6 +20,7 @@ from services.content_format_contracts import load_format_contracts
 from services.control_plane_generation import (
     load_prompt_catalog,
     render_treatment_capability,
+    render_treatment_capability_hash,
     typed_recipe_spec,
 )
 from services.dossier_catalog_version import dossier_catalog_version
@@ -195,6 +196,7 @@ def resolve_source_recipe(
         profile.registry_hash,
         prompt_hash,
         source_dna_catalog_hash(),
+        render_treatment_capability_hash(),
     )
     if (
         library.format_slug != profile.format_slug
