@@ -1,7 +1,7 @@
 """Page-scoped immutable-master execution for sourced-video dossiers.
 
 Already-cut outputs are historical evidence, never refillable source DNA. A
-sourced recipe becomes executable only when its v3 production selection names
+sourced recipe becomes executable only when its typed production selection names
 one registered master library bound to the exact page and format. The executor
 plans unique cut slots deterministically and records the original-source offset
 beside every output.
@@ -152,7 +152,9 @@ def resolve_source_recipe(
     if not isinstance(recipe_id, str) or engine != "sourced_video":
         return None
     spec = typed_recipe_spec(publication)
-    if spec is None or spec.get("schema") != "dossier.recipe-spec.v3":
+    if spec is None or spec.get("schema") not in {
+        "dossier.recipe-spec.v3", "dossier.recipe-spec.v4",
+    }:
         return None
     profile = resolve_material_profile(publication, spec)
     if (

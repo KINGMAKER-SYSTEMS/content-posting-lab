@@ -25,6 +25,7 @@ import httpx
 from providers import PROVIDERS
 from providers.base import API_KEYS
 from services.content_engine_registry import resolve_material_profile
+from services.caption_discipline import validate_caption_discipline
 from services.content_format_contracts import load_format_contracts
 
 
@@ -200,7 +201,7 @@ def _typed_recipe_spec(publication: dict[str, Any]) -> dict[str, Any] | None:
     except (KeyError, TypeError, json.JSONDecodeError):
         return None
     if not isinstance(spec, dict) or spec.get("schema") not in {
-        "dossier.recipe-spec.v2", "dossier.recipe-spec.v3",
+        "dossier.recipe-spec.v2", "dossier.recipe-spec.v3", "dossier.recipe-spec.v4",
     }:
         return None
     render = spec.get("renderTreatment")
@@ -251,6 +252,11 @@ def _typed_recipe_spec(publication: dict[str, Any]) -> dict[str, Any] | None:
             or not math.isfinite(float(focus_y))
             or not MIN_CLIP_CROP_FOCUS <= float(focus_y) <= MAX_CLIP_CROP_FOCUS
         ):
+            return None
+    if spec.get("schema") == "dossier.recipe-spec.v4":
+        try:
+            validate_caption_discipline(spec.get("captionDiscipline"))
+        except ValueError:
             return None
     return spec
 
@@ -334,7 +340,11 @@ def resolve_generation_recipe(
             or not 1 <= family["base_anchor_bytes"] <= MAX_ANCHOR_BYTES
         ):
             return _unavailable(publication, "i2v_base_anchor")
-    production = spec.get("production") if spec.get("schema") == "dossier.recipe-spec.v3" else {}
+    production = (
+        spec.get("production")
+        if spec.get("schema") in {"dossier.recipe-spec.v3", "dossier.recipe-spec.v4"}
+        else {}
+    )
     if not isinstance(production, dict):
         return _unavailable(publication, "production_selection")
     if production.get("promptModuleId") not in (None, family_name):

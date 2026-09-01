@@ -24,6 +24,7 @@ from services.dossier_ingredients import (
     catalog_selection_version,
     is_pinned_legacy_catalog_version,
 )
+from services.caption_discipline import validate_caption_discipline
 
 
 LANE = "content-bucket-control-plane"
@@ -35,6 +36,7 @@ BODY_FIELDS = {
 }
 SPEC_FIELDS_V2 = {"schema", "masterPages", "masterPagesHash", "renderTreatment", "demand"}
 SPEC_FIELDS_V3 = SPEC_FIELDS_V2 | {"production"}
+SPEC_FIELDS_V4 = SPEC_FIELDS_V3 | {"captionDiscipline"}
 PRODUCTION_FIELDS = {
     "catalogVersion", "providerId", "modelId", "promptModuleId",
     "referenceSetId", "sourceLibraryId", "variationValues", "controls",
@@ -111,9 +113,13 @@ def _validate_spec(
     except (TypeError, json.JSONDecodeError) as exc:
         raise HTTPException(400, "recipeSpecCanonical is not valid JSON") from exc
     schema = spec.get("schema") if isinstance(spec, dict) else None
-    expected_fields = SPEC_FIELDS_V3 if schema == "dossier.recipe-spec.v3" else SPEC_FIELDS_V2
+    expected_fields = {
+        "dossier.recipe-spec.v2": SPEC_FIELDS_V2,
+        "dossier.recipe-spec.v3": SPEC_FIELDS_V3,
+        "dossier.recipe-spec.v4": SPEC_FIELDS_V4,
+    }.get(schema)
     if not isinstance(spec, dict) or set(spec) != expected_fields or schema not in {
-        "dossier.recipe-spec.v2", "dossier.recipe-spec.v3",
+        "dossier.recipe-spec.v2", "dossier.recipe-spec.v3", "dossier.recipe-spec.v4",
     }:
         raise HTTPException(400, "recipe spec schema mismatch")
     master_pages = exact_intent(
@@ -175,7 +181,7 @@ def _validate_spec(
     if any(key.lower() in {"prompt", "instruction", "instructions", "message", "messages"}
            for key in _walk_keys(spec)):
         raise HTTPException(400, "free-form instruction fields are not accepted")
-    if schema == "dossier.recipe-spec.v3":
+    if schema in {"dossier.recipe-spec.v3", "dossier.recipe-spec.v4"}:
         _validate_production_selection(
             spec,
             page_id=page_id,
@@ -184,6 +190,11 @@ def _validate_spec(
             dossier_revision=dossier_revision,
             recipe_spec_hash=recipe_spec_hash,
         )
+    if schema == "dossier.recipe-spec.v4":
+        try:
+            validate_caption_discipline(spec.get("captionDiscipline"))
+        except ValueError as error:
+            raise HTTPException(400, str(error)) from error
     return spec
 
 
