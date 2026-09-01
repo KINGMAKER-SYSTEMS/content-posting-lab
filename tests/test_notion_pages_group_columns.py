@@ -1,12 +1,8 @@
-"""parse_page must read the group taxonomy from the columns the live DB
-actually has.
+"""parse_page must read page placement from the columns the live DB actually has.
 
-The Master Pages DB names them "Label" (ATLANTIC / WARNER / INTERNAL) and
-"Account Group" ("Warner UGC", "Mon Rovia", …). An earlier parse read only
-the legacy "Group" / "Group " names, so a sync could report success
-(added/updated counts, no errors) while writing an empty group for every
-row — observed in production 2026-08-18, when the roster snapshot's groups
-collapsed from 30 pages to 3 immediately after a "successful" sync.
+``Account Group`` is the current assignment authority. ``Label`` is an older
+broad taxonomy and is only a fallback for account groups outside the closed
+reserved mapping.
 """
 
 from services.notion_pages import parse_page
@@ -27,6 +23,33 @@ def test_group_comes_from_label_and_group_label_from_account_group():
     ))
     assert row["group"] == "WARNER"
     assert row["group_label"] == "Warner UGC"
+
+
+def test_account_group_overrides_stale_legacy_label():
+    internal = parse_page(_page(
+        **{
+            "Label": {"select": {"name": "WARNER"}},
+            "Account Group": {"select": {"name": "Internal Page"}},
+        }
+    ))
+    warner = parse_page(_page(
+        **{
+            "Label": {"select": {"name": "INTERNAL"}},
+            "Account Group": {"select": {"name": "Warner UGC"}},
+        }
+    ))
+    assert internal["group"] == "INTERNAL"
+    assert warner["group"] == "WARNER"
+
+
+def test_warner_test_group_does_not_enter_the_live_warner_fleet():
+    row = parse_page(_page(
+        **{
+            "Label": {"select": {"name": "WARNER"}},
+            "Account Group": {"select": {"name": "Warner Test UGC"}},
+        }
+    ))
+    assert row["group"] == "INTERNAL"
 
 
 def test_legacy_column_names_still_parse():
