@@ -18,7 +18,7 @@ from typing import Any
 from fastapi import APIRouter, Header, HTTPException
 
 from services.roster import ROSTER_PATH
-from services.master_pages_contract import exact_intent
+from services.master_pages_contract import exact_intent, intent_hash
 from services.dossier_ingredients import (
     build_dossier_ingredient_catalog,
     catalog_selection_version,
@@ -415,6 +415,131 @@ def load_registered_recipe(
     if record.get("status") != "registered" or any(record.get(key) != value for key, value in expected.items()):
         return None
     return record
+
+
+def publication_matches_master_pages(
+    publication: dict[str, Any],
+    master_pages: dict[str, Any],
+    master_pages_hash: str,
+) -> bool:
+    """Verify one publication against current intent, allowing only an ID rebind.
+
+    The control plane historically minted operational page ids before the
+    Master Pages projection had stable canonical ids.  The immutable Notion
+    identity and every ontology field remain authoritative; only ``pageId``
+    may differ.  This keeps old, reviewed recipe publications usable after an
+    identity migration without allowing a changed page to inherit stale
+    creative authority.
+    """
+    target = exact_intent(
+        master_pages, master_pages_hash,
+        expected_page_id=str(master_pages.get("pageId") or ""),
+    )
+    if target is None:
+        return False
+    try:
+        spec = json.loads(publication["recipeSpecCanonical"])
+    except (KeyError, TypeError, json.JSONDecodeError):
+        return False
+    if not isinstance(spec, dict):
+        return False
+    stored_value = spec.get("masterPages")
+    stored_hash = spec.get("masterPagesHash")
+    stored_page_id = str((stored_value or {}).get("pageId") or "")
+    stored = exact_intent(
+        stored_value, stored_hash, expected_page_id=stored_page_id,
+    )
+    if stored is None or publication.get("pageId") != stored_page_id:
+        return False
+    if stored == target and stored_hash == master_pages_hash:
+        return True
+    if (
+        stored_page_id == target["pageId"]
+        or stored.get("source") != "notion"
+        or target.get("source") != "notion"
+        or not stored.get("notionPageId")
+    ):
+        return False
+    rebound = {**stored, "pageId": target["pageId"]}
+    return rebound == target and intent_hash(target) == master_pages_hash
+
+
+def load_registered_recipe_binding(
+    page_id: str,
+    recipe_id: str,
+    engine: str,
+    recipe_version: str,
+    master_pages: dict[str, Any],
+    master_pages_hash: str,
+) -> tuple[str, dict[str, Any]] | None:
+    """Resolve one exact or Notion-identity-bound publication.
+
+    Ambiguous aliases fail closed.  Exact page-scoped publications always win
+    when they still match the current Master Pages intent.
+    """
+    exact = load_registered_recipe(page_id, recipe_id, engine, recipe_version)
+    if exact is not None and publication_matches_master_pages(
+        exact, master_pages, master_pages_hash,
+    ):
+        return page_id, exact
+
+    matches: list[tuple[str, dict[str, Any]]] = []
+    for path in sorted(_root().glob("*.json")):
+        try:
+            record = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        publication_page_id = str(record.get("pageId") or "")
+        if (
+            publication_page_id == page_id
+            or record.get("status") != "registered"
+            or record.get("recipeId") != recipe_id
+            or record.get("engine") != engine
+            or record.get("recipeVersion") != recipe_version
+            or not publication_matches_master_pages(
+                record, master_pages, master_pages_hash,
+            )
+        ):
+            continue
+        matches.append((publication_page_id, record))
+    return matches[0] if len(matches) == 1 else None
+
+
+def list_registered_recipe_bindings(
+    page_id: str,
+    master_pages: dict[str, Any],
+    master_pages_hash: str,
+) -> list[tuple[str, dict[str, Any]]]:
+    """List current exact/aliased publications, preferring exact tuples."""
+    candidates: dict[tuple[str, str, str], list[tuple[str, dict[str, Any]]]] = {}
+    for path in sorted(_root().glob("*.json")):
+        try:
+            record = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if (
+            record.get("status") != "registered"
+            or not publication_matches_master_pages(
+                record, master_pages, master_pages_hash,
+            )
+        ):
+            continue
+        key = (
+            str(record.get("recipeId") or ""),
+            str(record.get("engine") or ""),
+            str(record.get("recipeVersion") or ""),
+        )
+        candidates.setdefault(key, []).append((str(record.get("pageId") or ""), record))
+
+    resolved: list[tuple[str, dict[str, Any]]] = []
+    for key in sorted(candidates):
+        rows = candidates[key]
+        exact = [row for row in rows if row[0] == page_id]
+        if len(exact) == 1:
+            resolved.append(exact[0])
+        elif len(rows) == 1:
+            resolved.append(rows[0])
+    return resolved
 
 
 def list_registered_recipes(page_id: str) -> list[dict[str, Any]]:
