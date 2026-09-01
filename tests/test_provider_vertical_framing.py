@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
-from providers.base import fit_to_vertical
+from providers.base import fit_to_vertical, multi_crop_vertical
 
 
 async def _run(*args: str) -> tuple[int, bytes, bytes]:
@@ -52,3 +52,32 @@ async def test_fit_to_vertical_preserves_full_landscape_inside_vertical_canvas(t
     middle = [pixels.getpixel((x, pixels.height // 2)) for x in range(pixels.width)]
     assert any(red > 100 and red > green * 1.5 for red, green, _ in middle[:10])
     assert any(green > 60 and green > red * 1.5 for red, green, _ in middle[-10:])
+
+
+@pytest.mark.asyncio
+async def test_truck_both_mode_emits_five_real_vertical_crops(tmp_path: Path):
+    source = tmp_path / "truck-master.mp4"
+    rc, _, stderr = await _run(
+        "ffmpeg", "-y",
+        "-f", "lavfi", "-i", "color=c=black:s=160x90:d=1:r=10",
+        "-c:v", "libx264", "-pix_fmt", "yuv420p", str(source),
+    )
+    assert rc == 0, stderr.decode()
+
+    crops = await multi_crop_vertical(source, "both")
+
+    assert [path.name for path in crops] == [
+        "truck-master_crop0.mp4",
+        "truck-master_crop1.mp4",
+        "truck-master_crop2.mp4",
+        "truck-master_crop3.mp4",
+        "truck-master_crop4.mp4",
+    ]
+    for crop in crops:
+        rc, stdout, stderr = await _run(
+            "ffprobe", "-v", "error", "-select_streams", "v:0",
+            "-show_entries", "stream=width,height", "-of", "json", str(crop),
+        )
+        assert rc == 0, stderr.decode()
+        stream = json.loads(stdout)["streams"][0]
+        assert (stream["width"], stream["height"]) == (50, 90)
