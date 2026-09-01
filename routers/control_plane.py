@@ -622,14 +622,19 @@ def _source_dna_unavailable_slots(
 
 
 def _truck_master_candidates(
-    store: dict[str, Any], page_id: str, limit: int,
+    store: dict[str, Any], page_id: str, limit: int, *,
+    content_engine: str, recipe_id: str, generation_recipe: Any,
 ) -> list[dict[str, Any]]:
-    """Return durable, unused 16:9-era truck outputs for lossless re-cropping.
+    """Return durable, unused, current-authority truck masters for re-cropping.
 
     A completed recovery reserves its exact masters permanently. Active
     recoveries reserve them against concurrent replenishment. Failed recovery
     jobs release them because no new delivery bytes crossed the API boundary.
-    The source files are checked again, byte-for-byte, by the recovery runner.
+    A landscape file alone is not enough: the producing job must match the
+    current recipe, engine registry, prompt catalog, executor and provider
+    model. This prevents old-model or old-prompt renders from silently becoming
+    new five-crop deliveries after the page's creative authority changes. The
+    source files are checked again, byte-for-byte, by the recovery runner.
     """
     reserved: set[str] = set()
     jobs = store.get("jobs", {})
@@ -656,6 +661,13 @@ def _truck_master_candidates(
             job.get("pageId") != page_id
             or job.get("sourceKind") != "generated"
             or job.get("status") != "completed"
+            or job.get("engine") != content_engine
+            or job.get("recipeId") != recipe_id
+            or job.get("engineRegistryHash") != generation_recipe.engine_registry_hash
+            or job.get("formatContractVersion") != generation_recipe.format_contract_version
+            or job.get("executorVersion") != generation_recipe.executor_version
+            or job.get("promptCatalogHash") != generation_recipe.prompt_catalog_hash
+            or job.get("providerModel") != generation_recipe.provider_model
             or not isinstance(job.get("artifactRoot"), str)
         ):
             continue
@@ -676,6 +688,10 @@ def _truck_master_candidates(
                 or not isinstance(byte_count, int)
                 or byte_count <= 0
                 or not isinstance(source, dict)
+                or source.get("pageId") != page_id
+                or source.get("recipeId") != recipe_id
+                or str(source.get("contentNiche") or "").strip().upper() != "TRUCK"
+                or source.get("contentEngine") != content_engine
             ):
                 continue
             full = (root / rel_path).resolve()
@@ -1462,7 +1478,12 @@ async def create_job(
             "createdAt": datetime.now(timezone.utc).isoformat(),
         }
         recovery_masters = (
-            _truck_master_candidates(store, page_id, provider_calls)
+            _truck_master_candidates(
+                store, page_id, provider_calls,
+                content_engine=engine,
+                recipe_id=recipe_id,
+                generation_recipe=generation_recipe,
+            )
             if generation_recipe is not None
             and recipe_id == TRUCK_RECIPE_ID
             and master_pages["contentNiche"].strip().upper() == "TRUCK"
