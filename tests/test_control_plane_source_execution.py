@@ -13,7 +13,11 @@ from fastapi.testclient import TestClient
 import routers.control_plane as cp
 import routers.control_plane_recipes as recipes
 from services.control_plane_sources import CUT_SLOT_STEP_MS, resolve_source_recipe
-from services.dossier_ingredients import build_dossier_ingredient_catalog
+from services.dossier_ingredients import (
+    PINNED_LEGACY_DOSSIER_CATALOG_VERSIONS_BY_PUBLICATION,
+    build_dossier_ingredient_catalog,
+    catalog_selection_version,
+)
 from tests.master_pages_fixtures import bind_current_intent, master_pages
 
 
@@ -46,20 +50,24 @@ def publication(
         "clipSpeed": clip_speed,
         "clipCrop": clip_crop or {"zoom": 1.0, "focusX": 0.5, "focusY": 0.5},
     }
+    production = {
+        "catalogVersion": "",
+        "providerId": None,
+        "modelId": None,
+        "promptModuleId": None,
+        "referenceSetId": None,
+        "sourceLibraryId": source_library_id,
+        "variationValues": {},
+        "controls": {"cutDurationMs": cut_duration_ms},
+    }
+    production["catalogVersion"] = catalog_selection_version(
+        catalog, "pov-dirt-bike", production,
+    )
     canonical = json.dumps({
         "schema": "dossier.recipe-spec.v3",
         "masterPages": intent,
         "masterPagesHash": revision,
-        "production": {
-            "catalogVersion": catalog["catalogVersion"],
-            "providerId": None,
-            "modelId": None,
-            "promptModuleId": None,
-            "referenceSetId": None,
-            "sourceLibraryId": source_library_id,
-            "variationValues": {},
-            "controls": {"cutDurationMs": cut_duration_ms},
-        },
+        "production": production,
         "renderTreatment": render_treatment,
         "demand": {"formatMix": {"pov-dirt-bike": 1.0}},
     }, sort_keys=True, separators=(",", ":"))
@@ -74,6 +82,55 @@ def publication(
         "recipeSpecHash": "sha256:" + hashlib.sha256(canonical.encode()).hexdigest(),
         "recipeSpecCanonical": canonical,
     }
+
+
+def test_source_recipe_accepts_only_a_full_pinned_publication(monkeypatch):
+    payload = publication()
+    spec = json.loads(payload["recipeSpecCanonical"])
+    legacy_catalog_version = next(iter(
+        PINNED_LEGACY_DOSSIER_CATALOG_VERSIONS_BY_PUBLICATION.values()
+    ))
+    spec["production"]["catalogVersion"] = legacy_catalog_version
+    canonical = json.dumps(spec, sort_keys=True, separators=(",", ":"))
+    payload["recipeSpecCanonical"] = canonical
+    payload["recipeSpecHash"] = "sha256:" + hashlib.sha256(canonical.encode()).hexdigest()
+    key = (
+        payload["pageId"], payload["recipeId"], payload["recipeVersion"],
+        payload["dossierRevision"], payload["recipeSpecHash"],
+    )
+    monkeypatch.setitem(
+        PINNED_LEGACY_DOSSIER_CATALOG_VERSIONS_BY_PUBLICATION,
+        key,
+        legacy_catalog_version,
+    )
+    assert resolve_source_recipe(payload) is not None
+
+    assert resolve_source_recipe({**payload, "dossierRevision": "rev-other"}) is None
+    assert resolve_source_recipe({
+        **payload, "recipeSpecHash": "sha256:" + "e" * 64,
+    }) is None
+
+
+def test_source_recipe_rejects_a_pinned_hash_on_another_publication():
+    payload = publication()
+    spec = json.loads(payload["recipeSpecCanonical"])
+    spec["production"]["catalogVersion"] = next(iter(
+        PINNED_LEGACY_DOSSIER_CATALOG_VERSIONS_BY_PUBLICATION.values()
+    ))
+    canonical = json.dumps(spec, sort_keys=True, separators=(",", ":"))
+    payload["recipeSpecCanonical"] = canonical
+    payload["recipeSpecHash"] = "sha256:" + hashlib.sha256(canonical.encode()).hexdigest()
+    assert resolve_source_recipe(payload) is None
+
+
+def test_source_recipe_rejects_an_arbitrary_stale_catalog_version():
+    payload = publication()
+    spec = json.loads(payload["recipeSpecCanonical"])
+    spec["production"]["catalogVersion"] = "sha256:" + "f" * 64
+    canonical = json.dumps(spec, sort_keys=True, separators=(",", ":"))
+    payload["recipeSpecCanonical"] = canonical
+    payload["recipeSpecHash"] = "sha256:" + hashlib.sha256(canonical.encode()).hexdigest()
+    assert resolve_source_recipe(payload) is None
 
 
 def headers(idempotency="source-job-0001"):

@@ -22,7 +22,6 @@ from services.content_format_contracts import FormatContract, load_format_contra
 from services.control_plane_generation import (
     load_prompt_catalog,
     render_treatment_capability,
-    render_treatment_capability_hash,
 )
 from services.control_plane_sources import source_treatment_capability
 from services.control_plane_source_libraries import (
@@ -36,11 +35,199 @@ from services.source_dna_registry import (
     MANIFEST_DIR as SOURCE_DNA_MANIFEST_DIR,
     SourceDnaError,
     parse_source_dna_manifest,
-    source_dna_catalog_hash,
 )
 
 
 SCHEMA = "content-lab.dossier-ingredient-catalog.v1"
+SELECTION_AUTHORITY_SCHEMA = "content-lab.dossier-selection-authority.v1"
+PINNED_LEGACY_DOSSIER_CATALOG_VERSIONS_BY_PUBLICATION = {
+    # Exact active v3 publications inventoried through the live dossier
+    # gateway on 2026-09-01 before this migration. The tuple binding prevents
+    # a legacy fleet hash from authorizing any newly registered publication.
+    (
+        "tt-chase-miles-4l",
+        "pov-dirt-bike:master",
+        "dossier-07c9d7bde75fe1d3",
+        "437-3c0955cd95d9235f",
+        "sha256:07c9d7bde75fe1d3603c74737b96e2ef9ad02b97f87e218b97b1e05ce1251781",
+    ): "sha256:217efb75a3f98ba1ea96dc7dc57a5e012b3f87891b59cbc42ea5ca1db8d66da1",
+    (
+        "acct:rail:bacc74107b722f39adfc0347",
+        "truck-scenic:master",
+        "dossier-bc754ff466dcd88a",
+        "458-71742be29acbf84a",
+        "sha256:bc754ff466dcd88accbde7961c2e3d4b3ada890302e151839189ab768451e60b",
+    ): "sha256:217efb75a3f98ba1ea96dc7dc57a5e012b3f87891b59cbc42ea5ca1db8d66da1",
+    (
+        "tt-warner-beaujenkins",
+        "truck-scenic:master",
+        "dossier-9374e7859261ba0c",
+        "646-fd890ef54d6ae5b8",
+        "sha256:9374e7859261ba0c7945a8652a30d5c5a0023e5cf2c8ef0cbad98719969721ca",
+    ): "sha256:00910ba76b3ba4cba312670fa734e6ac769fd7cfe42ea946d8599b318feb2b69",
+    (
+        "tt-warner-codyjames6-7",
+        "truck-scenic:master",
+        "dossier-d70e3f73aa097590",
+        "648-f5e84a9fb80874b9",
+        "sha256:d70e3f73aa097590f8e6bbb61025e76f186dc94aa49a521ef5de85366f031adf",
+    ): "sha256:00910ba76b3ba4cba312670fa734e6ac769fd7cfe42ea946d8599b318feb2b69",
+}
+PINNED_LEGACY_DOSSIER_CATALOG_VERSIONS = frozenset(
+    PINNED_LEGACY_DOSSIER_CATALOG_VERSIONS_BY_PUBLICATION.values()
+)
+
+
+def is_pinned_legacy_catalog_version(
+    value: Any,
+    *,
+    page_id: str,
+    recipe_id: str,
+    recipe_version: str,
+    dossier_revision: str,
+    recipe_spec_hash: str,
+) -> bool:
+    """Accept a pre-migration hash only for its inventoried publication."""
+    if not isinstance(value, str):
+        return False
+    return value == PINNED_LEGACY_DOSSIER_CATALOG_VERSIONS_BY_PUBLICATION.get(
+        (page_id, recipe_id, recipe_version, dossier_revision, recipe_spec_hash)
+    )
+
+
+def _selected_model_authority(option: dict[str, Any]) -> dict[str, Any]:
+    def execution_shape(value: Any) -> Any:
+        if isinstance(value, dict):
+            return {
+                key: execution_shape(item)
+                for key, item in value.items()
+                if key not in {"label", "note", "placeholder"}
+            }
+        if isinstance(value, list):
+            return [execution_shape(item) for item in value]
+        return value
+
+    return {
+        "providerId": option.get("providerId"),
+        "modelId": option.get("modelId"),
+        "defaults": option.get("defaults"),
+        "inputContract": option.get("inputContract"),
+        "controls": execution_shape(option.get("controls")),
+    }
+
+
+def _selection_catalog_version(
+    format_entry: dict[str, Any],
+    production: dict[str, Any],
+) -> str | None:
+    """Version the exact selected format and ingredients, not alternatives."""
+    ingredients = {
+        entry["ingredientId"]: entry for entry in format_entry.get("ingredients", [])
+    }
+    model = ingredients.get("visual-model")
+    selected_model = None
+    provider_id = production.get("providerId")
+    model_id = production.get("modelId")
+    if (provider_id is None) != (model_id is None):
+        return None
+    if provider_id is not None:
+        selected_model = next((
+            option for option in (model or {}).get("options", [])
+            if option.get("providerId") == provider_id
+            and option.get("modelId") == model_id
+        ), None)
+        if selected_model is None:
+            return None
+
+    prompt = (ingredients.get("prompt-module") or {}).get("binding")
+    if production.get("promptModuleId") != (
+        prompt.get("familyId") if isinstance(prompt, dict) else None
+    ):
+        return None
+    reference = (ingredients.get("reference-media") or {}).get("binding")
+    if production.get("referenceSetId") != (
+        reference.get("referenceSetId") if isinstance(reference, dict) else None
+    ):
+        return None
+    source = ingredients.get("master-source-video")
+    source_id = production.get("sourceLibraryId")
+    selected_source = None
+    if source_id is not None:
+        selected_source = next((
+            option for option in (source or {}).get("options", [])
+            if option.get("libraryId") == source_id
+        ), None)
+        if selected_source is None:
+            return None
+    elif source is not None:
+        return None
+
+    treatment = next((
+        entry.get("binding") for entry in format_entry.get("ingredients", [])
+        if entry.get("ingredientId") in {"clip-treatment", "slideshow-treatment"}
+    ), None)
+    model_binding = (model or {}).get("binding")
+    projection = {
+        "schema": SELECTION_AUTHORITY_SCHEMA,
+        "format": {
+            key: format_entry.get(key) for key in (
+                "formatId", "recipeId", "contentEngine", "materialSource",
+                "definitionStatus", "executionStatus", "formatContractVersion",
+                "executor", "review",
+            )
+        },
+        "selection": {
+            "model": None if selected_model is None else _selected_model_authority(selected_model),
+            "familyOverrides": (
+                model_binding.get("familyOverrides")
+                if isinstance(model_binding, dict) else None
+            ),
+            "prompt": prompt,
+            "reference": reference,
+            "source": selected_source,
+            "treatment": treatment,
+        },
+    }
+    canonical = json.dumps(
+        projection, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+    )
+    return dossier_catalog_version(canonical)
+
+
+def _production_selections(format_entry: dict[str, Any]) -> list[dict[str, Any]]:
+    ingredients = {
+        entry["ingredientId"]: entry for entry in format_entry.get("ingredients", [])
+    }
+    prompt = (ingredients.get("prompt-module") or {}).get("binding")
+    reference = (ingredients.get("reference-media") or {}).get("binding")
+    base = {
+        "promptModuleId": prompt.get("familyId") if isinstance(prompt, dict) else None,
+        "referenceSetId": reference.get("referenceSetId") if isinstance(reference, dict) else None,
+    }
+    model = ingredients.get("visual-model")
+    source = ingredients.get("master-source-video")
+    if model is not None:
+        identities = [{
+            **base,
+            "providerId": option.get("providerId"),
+            "modelId": option.get("modelId"),
+            "sourceLibraryId": None,
+        } for option in model.get("options", [])]
+    elif source is not None:
+        identities = [{
+            **base,
+            "providerId": None,
+            "modelId": None,
+            "sourceLibraryId": option.get("libraryId"),
+        } for option in source.get("options", [])]
+    else:
+        identities = []
+    selections: list[dict[str, Any]] = []
+    for identity in identities:
+        version = _selection_catalog_version(format_entry, identity)
+        if version is not None:
+            selections.append({"catalogVersion": version, **identity})
+    return selections
 
 
 def _advertised_defaults(provider_config: dict[str, Any]) -> dict[str, Any]:
@@ -104,6 +291,7 @@ def _prompt_binding(family_id: str, family: dict[str, Any]) -> dict[str, Any]:
     slots = family.get("slots")
     return {
         "familyId": family_id,
+        "method": family.get("method"),
         "fixedSubject": family.get("fixed_subject"),
         "template": family.get("template"),
         "motion": family.get("motion_prompt"),
@@ -364,9 +552,9 @@ def build_dossier_ingredient_catalog(
     )
     if intent is None:
         raise ValueError("Master Pages intent is invalid")
-    contracts, contracts_hash = load_format_contracts()
-    profiles, registry_hash = load_engine_registry()
-    prompt_catalog, prompt_hash = load_prompt_catalog()
+    contracts, _ = load_format_contracts()
+    profiles, _ = load_engine_registry()
+    prompt_catalog, _ = load_prompt_catalog()
     model_options = _model_options(prompt_catalog)
     formats = [
         _format_entry(
@@ -381,18 +569,75 @@ def build_dossier_ingredient_catalog(
         if entry["contentNiche"] == intent["contentNiche"]
         and entry["contentEngine"] == intent["contentEngine"]
     ]
+    for entry in formats:
+        entry["productionSelections"] = _production_selections(entry)
+    catalog_canonical = json.dumps(
+        {"schema": SCHEMA, "formats": formats},
+        sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+    )
     return {
         "schema": SCHEMA,
         "pageId": page_id,
         "masterPages": intent,
         "masterPagesHash": master_pages_hash,
-        "catalogVersion": dossier_catalog_version(
-            contracts_hash, registry_hash, prompt_hash, source_dna_catalog_hash(),
-            render_treatment_capability_hash(),
-        ),
+        # This versions the complete editor snapshot only. Executable recipes
+        # bind a productionSelections[].catalogVersion instead.
+        "catalogVersion": dossier_catalog_version(catalog_canonical),
         "currentFormatCandidates": current_format_candidates,
         "formats": formats,
     }
+
+
+def selected_dossier_catalog_version(
+    page_id: str,
+    master_pages: dict[str, Any],
+    master_pages_hash: str,
+    format_id: str,
+    production: dict[str, Any],
+) -> str | None:
+    """Resolve the exact selected authority without building every format."""
+    intent = exact_intent(
+        master_pages, master_pages_hash, expected_page_id=page_id,
+    )
+    if intent is None:
+        return None
+    contracts, _ = load_format_contracts()
+    profiles, _ = load_engine_registry()
+    contract = contracts.get(format_id)
+    profile = profiles.get(format_id)
+    if (
+        contract is None
+        or profile is None
+        or contract.content_niche != intent["contentNiche"]
+        or contract.content_engine != intent["contentEngine"]
+    ):
+        return None
+    prompt_catalog, _ = load_prompt_catalog()
+    entry = _format_entry(
+        contract, profile, prompt_catalog, _model_options(prompt_catalog), page_id,
+    )
+    return _selection_catalog_version(entry, production)
+
+
+def catalog_selection_version(
+    catalog: dict[str, Any],
+    format_id: str,
+    production: dict[str, Any],
+) -> str | None:
+    """Read the exact precomputed selection version from an editor catalog."""
+    identity_fields = (
+        "providerId", "modelId", "promptModuleId", "referenceSetId", "sourceLibraryId",
+    )
+    entry = next((
+        item for item in catalog.get("formats", []) if item.get("formatId") == format_id
+    ), None)
+    if entry is None:
+        return None
+    selection = next((
+        item for item in entry.get("productionSelections", [])
+        if all(item.get(field) == production.get(field) for field in identity_fields)
+    ), None)
+    return selection.get("catalogVersion") if isinstance(selection, dict) else None
 
 
 def canonical_catalog_bytes(

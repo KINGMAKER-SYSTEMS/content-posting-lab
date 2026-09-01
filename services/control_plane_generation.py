@@ -26,8 +26,6 @@ from providers import PROVIDERS
 from providers.base import API_KEYS
 from services.content_engine_registry import resolve_material_profile
 from services.content_format_contracts import load_format_contracts
-from services.dossier_catalog_version import dossier_catalog_version
-from services.source_dna_registry import source_dna_catalog_hash
 
 
 CATALOG_PATH = (
@@ -336,13 +334,38 @@ def resolve_generation_recipe(
     if production.get("promptModuleId") not in (None, family_name):
         return _unavailable(publication, "prompt_module")
     if production:
-        _, contracts_hash = load_format_contracts()
-        expected_catalog_version = dossier_catalog_version(
-            contracts_hash, profile.registry_hash, catalog_hash,
-            source_dna_catalog_hash(), render_treatment_capability_hash(),
-        )
-        if production.get("catalogVersion") != expected_catalog_version:
+        master_pages = spec.get("masterPages")
+        master_pages_hash = spec.get("masterPagesHash")
+        if not isinstance(master_pages, dict) or not isinstance(master_pages_hash, str):
             return _unavailable(publication, "catalog_version")
+        supplied_catalog_version = production.get("catalogVersion")
+        # Local import avoids the ingredient catalog's intentional import of
+        # this module for prompt/model bindings.
+        from services.dossier_ingredients import (
+            is_pinned_legacy_catalog_version,
+            selected_dossier_catalog_version,
+        )
+
+        if not is_pinned_legacy_catalog_version(
+            supplied_catalog_version,
+            page_id=str(publication.get("pageId") or ""),
+            recipe_id=str(publication.get("recipeId") or ""),
+            recipe_version=str(publication.get("recipeVersion") or ""),
+            dossier_revision=str(publication.get("dossierRevision") or ""),
+            recipe_spec_hash=str(publication.get("recipeSpecHash") or ""),
+        ):
+            try:
+                expected_catalog_version = selected_dossier_catalog_version(
+                    str(master_pages.get("pageId") or ""),
+                    master_pages,
+                    master_pages_hash,
+                    format_slug,
+                    production,
+                )
+            except (OSError, ValueError, json.JSONDecodeError, KeyError):
+                return _unavailable(publication, "catalog_version")
+            if supplied_catalog_version != expected_catalog_version:
+                return _unavailable(publication, "catalog_version")
     provider_engine = production.get("providerId") or family.get("provider")
     if not isinstance(provider_engine, str) or not provider_engine:
         return _unavailable(publication, "provider_identity")

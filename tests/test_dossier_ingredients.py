@@ -1,5 +1,7 @@
 """The Dossier ingredient view is a projection of existing authorities only."""
 
+import copy
+
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -52,6 +54,21 @@ def _ingredient(format_entry, ingredient_id):
     )
 
 
+def _production_selection(body, format_id, provider_id="hailuo"):
+    selections = _format(body, format_id)["productionSelections"]
+    return next(
+        entry for entry in selections
+        if entry["providerId"] == provider_id
+    )
+
+
+def _source_selection(body, format_id, library_id):
+    return next(
+        entry for entry in _format(body, format_id)["productionSelections"]
+        if entry["sourceLibraryId"] == library_id
+    )
+
+
 def test_catalog_is_rooted_in_exact_master_pages_and_content_lab_registries(monkeypatch):
     response = _client(monkeypatch).post(
         "/api/control-plane/v1/dossier-ingredients",
@@ -83,6 +100,7 @@ def test_catalog_is_rooted_in_exact_master_pages_and_content_lab_registries(monk
     assert prompt["binding"]["template"].startswith("Extreme wide")
     assert "setting" in prompt["binding"]["variationGroups"]
     treatment = _ingredient(truck, "clip-treatment")
+    assert _production_selection(body, "truck-scenic")["catalogVersion"].startswith("sha256:")
     assert treatment["kind"] == "render_treatment"
     assert treatment["binding"]["clipSpeed"] == {
         "type": "range", "minimum": 0.5, "maximum": 2.0, "default": 1.0,
@@ -96,6 +114,207 @@ def test_catalog_is_rooted_in_exact_master_pages_and_content_lab_registries(monk
         "grain": {"type": "range", "minimum": 0.0, "maximum": 1.0, "step": 0.05, "default": 0.0, "label": "Grain"},
         "vignette": {"type": "range", "minimum": 0.0, "maximum": 1.0, "step": 0.05, "default": 0.0, "label": "Vignette"},
     }
+
+
+def test_selected_version_ignores_unrelated_format_authority_changes(monkeypatch):
+    import services.dossier_ingredients as ingredients
+
+    request = _request()
+    before = ingredients.build_dossier_ingredient_catalog(
+        PAGE_ID, request["masterPages"], request["masterPagesHash"],
+    )
+    selected_before = _production_selection(before, "truck-scenic")["catalogVersion"]
+    original = ingredients._format_entry
+
+    def changed_unrelated(contract, profile, catalog, model_options, page_id):
+        entry = original(contract, profile, catalog, model_options, page_id)
+        if entry["formatId"] == "pov-night-core":
+            entry = copy.deepcopy(entry)
+            entry["review"]["gates"].append("new-unrelated-gate")
+        return entry
+
+    monkeypatch.setattr(ingredients, "_format_entry", changed_unrelated)
+    after = ingredients.build_dossier_ingredient_catalog(
+        PAGE_ID, request["masterPages"], request["masterPagesHash"],
+    )
+    assert after["formats"] != before["formats"]
+    assert after["catalogVersion"] != before["catalogVersion"]
+    assert _production_selection(after, "truck-scenic")["catalogVersion"] == selected_before
+
+
+def test_selected_version_ignores_an_unused_same_niche_format(monkeypatch):
+    import services.dossier_ingredients as ingredients
+
+    request = _request()
+    before = ingredients.build_dossier_ingredient_catalog(
+        PAGE_ID, request["masterPages"], request["masterPagesHash"],
+    )
+    selected_before = _production_selection(before, "truck-scenic")["catalogVersion"]
+    original = ingredients._format_entry
+
+    def changed_unused_candidate(contract, profile, catalog, model_options, page_id):
+        entry = original(contract, profile, catalog, model_options, page_id)
+        if entry["formatId"] == "truck-ugc":
+            entry = copy.deepcopy(entry)
+            entry["review"]["gates"].append("new-unused-candidate-gate")
+        return entry
+
+    monkeypatch.setattr(ingredients, "_format_entry", changed_unused_candidate)
+    after = ingredients.build_dossier_ingredient_catalog(
+        PAGE_ID, request["masterPages"], request["masterPagesHash"],
+    )
+    assert _production_selection(after, "truck-scenic")["catalogVersion"] == selected_before
+
+
+def test_selected_version_ignores_an_unselected_model_option(monkeypatch):
+    import services.dossier_ingredients as ingredients
+
+    request = _request()
+    before = ingredients.build_dossier_ingredient_catalog(
+        PAGE_ID, request["masterPages"], request["masterPagesHash"],
+    )
+    selected_before = _production_selection(before, "truck-scenic")["catalogVersion"]
+    original = ingredients._model_options
+
+    def with_unused_model(catalog):
+        options = copy.deepcopy(original(catalog))
+        option = copy.deepcopy(options[0])
+        option["providerId"] = "unused-provider"
+        option["modelId"] = "unused/model"
+        options.append(option)
+        return options
+
+    monkeypatch.setattr(ingredients, "_model_options", with_unused_model)
+    after = ingredients.build_dossier_ingredient_catalog(
+        PAGE_ID, request["masterPages"], request["masterPagesHash"],
+    )
+    assert _production_selection(after, "truck-scenic")["catalogVersion"] == selected_before
+
+
+def test_selected_version_ignores_display_only_model_labels(monkeypatch):
+    import services.dossier_ingredients as ingredients
+
+    request = _request()
+    before = ingredients.build_dossier_ingredient_catalog(
+        PAGE_ID, request["masterPages"], request["masterPagesHash"],
+    )
+    selected_before = _production_selection(before, "truck-scenic")["catalogVersion"]
+    original = ingredients._model_options
+
+    def relabeled(catalog):
+        options = copy.deepcopy(original(catalog))
+        for option in options:
+            if option["providerId"] == "hailuo":
+                option["providerLabel"] = "Display label only"
+                option["controls"]["duration"]["label"] = "Display duration only"
+                option["controls"]["duration"]["note"] = "Display note only"
+        return options
+
+    monkeypatch.setattr(ingredients, "_model_options", relabeled)
+    after = ingredients.build_dossier_ingredient_catalog(
+        PAGE_ID, request["masterPages"], request["masterPagesHash"],
+    )
+    assert _production_selection(after, "truck-scenic")["catalogVersion"] == selected_before
+
+
+def test_selected_source_version_ignores_an_unselected_page_library(monkeypatch):
+    import services.dossier_ingredients as ingredients
+
+    page_id = "tt-chase-miles-4l"
+    intent, revision = master_pages(
+        page_id, handle="chase.miles.4l",
+        content_niche="POV - Dirtbike", content_engine="sourced_video",
+    )
+    before = ingredients.build_dossier_ingredient_catalog(page_id, intent, revision)
+    library_id = "pov-dirt-bike-chase-miles-4l-v1"
+    selected_before = _source_selection(
+        before, "pov-dirt-bike", library_id,
+    )["catalogVersion"]
+    original = ingredients._master_source_options
+
+    def with_unused_source(format_slug, requested_page_id):
+        options = copy.deepcopy(original(format_slug, requested_page_id))
+        if options:
+            unused = copy.deepcopy(options[0])
+            unused["libraryId"] = "unused-page-library"
+            unused["version"] = "sha256:" + "f" * 64
+            options.append(unused)
+        return options
+
+    monkeypatch.setattr(ingredients, "_master_source_options", with_unused_source)
+    after = ingredients.build_dossier_ingredient_catalog(page_id, intent, revision)
+    assert _source_selection(
+        after, "pov-dirt-bike", library_id,
+    )["catalogVersion"] == selected_before
+
+
+def test_selected_version_changes_with_its_exact_format_authority(monkeypatch):
+    import services.dossier_ingredients as ingredients
+
+    request = _request()
+    before = ingredients.build_dossier_ingredient_catalog(
+        PAGE_ID, request["masterPages"], request["masterPagesHash"],
+    )
+    selected_before = _production_selection(before, "truck-scenic")["catalogVersion"]
+    original = ingredients._format_entry
+
+    def changed_current(contract, profile, catalog, model_options, page_id):
+        entry = original(contract, profile, catalog, model_options, page_id)
+        if entry["formatId"] == "truck-scenic":
+            entry = copy.deepcopy(entry)
+            entry["review"]["gates"].append("new-current-format-gate")
+        return entry
+
+    monkeypatch.setattr(ingredients, "_format_entry", changed_current)
+    after = ingredients.build_dossier_ingredient_catalog(
+        PAGE_ID, request["masterPages"], request["masterPagesHash"],
+    )
+    assert _production_selection(after, "truck-scenic")["catalogVersion"] != selected_before
+
+
+def test_selected_version_differs_from_the_pinned_legacy_fleet_hash():
+    import services.dossier_ingredients as ingredients
+
+    request = _request()
+    catalog = ingredients.build_dossier_ingredient_catalog(
+        PAGE_ID, request["masterPages"], request["masterPagesHash"],
+    )
+    assert _production_selection(catalog, "truck-scenic")["catalogVersion"] not in (
+        ingredients.PINNED_LEGACY_DOSSIER_CATALOG_VERSIONS
+    )
+
+
+def test_live_legacy_exemption_is_bound_to_the_complete_immutable_publication():
+    import services.dossier_ingredients as ingredients
+
+    key, catalog_version = next(iter(
+        ingredients.PINNED_LEGACY_DOSSIER_CATALOG_VERSIONS_BY_PUBLICATION.items()
+    ))
+    page_id, recipe_id, recipe_version, dossier_revision, recipe_spec_hash = key
+    assert ingredients.is_pinned_legacy_catalog_version(
+        catalog_version,
+        page_id=page_id,
+        recipe_id=recipe_id,
+        recipe_version=recipe_version,
+        dossier_revision=dossier_revision,
+        recipe_spec_hash=recipe_spec_hash,
+    )
+    assert not ingredients.is_pinned_legacy_catalog_version(
+        catalog_version,
+        page_id=page_id,
+        recipe_id=recipe_id,
+        recipe_version=recipe_version,
+        dossier_revision=dossier_revision + "-changed",
+        recipe_spec_hash=recipe_spec_hash,
+    )
+    assert not ingredients.is_pinned_legacy_catalog_version(
+        catalog_version,
+        page_id=page_id,
+        recipe_id=recipe_id,
+        recipe_version=recipe_version,
+        dossier_revision=dossier_revision,
+        recipe_spec_hash="sha256:" + "f" * 64,
+    )
 
 
 def test_reference_and_source_slots_come_from_real_catalogs(monkeypatch):
