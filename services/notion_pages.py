@@ -159,6 +159,22 @@ def mint_integration_id(username: str) -> str:
     return f"acct:{slugify(username)}"
 
 
+# ``Account Group`` is the operator-maintained assignment in Master Pages.
+# ``Label`` is an older broad taxonomy column and is routinely stale after a
+# page moves between Warner and the internal fleet.  These reserved account
+# groups therefore own the broad lane projection; Label remains a fallback for
+# client/artist groups that have not yet been migrated to the closed mapping.
+ACCOUNT_GROUP_TO_GROUP = {
+    "Internal Page": "INTERNAL",
+    "Warner Test UGC": "INTERNAL",
+    "Warner UGC": "WARNER",
+}
+
+
+def group_from_account_group(group_label: str, legacy_group: str) -> str:
+    return ACCOUNT_GROUP_TO_GROUP.get(group_label, legacy_group)
+
+
 # ── Parse a single Notion page ───────────────────────────────────────────────
 
 
@@ -170,14 +186,13 @@ def parse_page(notion_page: dict) -> dict[str, Any] | None:
     if not username:
         return None
 
-    # The live DB calls these columns "Label" (the ATLANTIC / WARNER /
-    # INTERNAL taxonomy) and "Account Group" (the human label — "Warner UGC",
-    # "Mon Rovia"). "Group" / "Group " are the legacy names; an earlier parse
-    # read only those and silently produced empty groups for every row the
-    # moment the schema was renamed — which is how a sync can "succeed" while
-    # stripping the ontology. Canonical first, legacy as fallback.
-    group = _select(props.get("Label", props.get("Group", {})))
+    # Account Group is the live assignment authority. Label is retained as a
+    # fallback only for account groups outside the closed reserved mapping.
+    # This prevents a stale Label=WARNER from keeping an Internal Page in the
+    # Warner fleet after the operator changes its Account Group in Notion.
+    legacy_group = _select(props.get("Label", props.get("Group", {})))
     group_label = _select(props.get("Account Group", props.get("Group ", {})))
+    group = group_from_account_group(group_label, legacy_group)
     # The page's content niche — the Master Pages half of the routing
     # vocabulary (posting-documentation/SUBMISSION_FORM_NICHE_ALIGNMENT.md).
     # The live column name carries a trailing space ("Content Niche ").
