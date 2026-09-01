@@ -149,6 +149,7 @@ async def multi_crop_vertical(src: Path, mode: str) -> list[Path]:
     src_w, src_h = int(parts[0]), int(parts[1])
 
     crop_w = int(src_h * 9 / 16)  # 9:16 width from height
+    crop_w -= crop_w % 2  # keep H.264/yuv420p output dimensions encodable
     margin = src_w - crop_w
 
     if mode == "both":
