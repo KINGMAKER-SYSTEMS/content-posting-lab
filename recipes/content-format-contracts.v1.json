@@ -174,24 +174,24 @@
       "contentEngine": "sourced_video",
       "materialSource": "source_library",
       "assetType": "video/mp4",
-      "definitionStatus": "incomplete",
-      "creativeAuthority": null,
+      "definitionStatus": "complete",
+      "creativeAuthority": {"kind": "source_dna_recut", "id": "source-dna-recut", "version": "sha256:1bbcb745be141c7b9e835662637110d85785979610f993835ce2d05f31b3d484"},
       "dimensions": {
         "subject": {"status": "defined", "rule": "First-person driving footage only; this is not a truck page and the vehicle itself is not the subject.", "authority": "formatContract.userConfirmed.2026-08-29"},
         "setting": {"status": "defined", "rule": "Night roads and nighttime driving environments only.", "authority": "formatContract.userConfirmed.2026-08-29"},
         "shotGrammar": {"status": "defined", "rule": "Continuous first-person road-facing driving POV sourced from real clips.", "authority": "formatContract.userConfirmed.2026-08-29"},
         "lighting": {"status": "defined", "rule": "Nighttime exposure and road lighting; daylight scenic and truck glamour footage are excluded.", "authority": "formatContract.userConfirmed.2026-08-29"},
         "motion": {"status": "defined", "rule": "Natural forward driving motion from sourced footage; no AI-created motion.", "authority": "formatContract.userConfirmed.2026-08-29"},
-        "duration": {"status": "undefined", "rule": null, "authority": null},
+        "duration": {"status": "defined", "rule": "Each output is a unique 6-8 second window from the selected page-scoped master, transformed only by the typed Dossier playback speed and crop treatment.", "authority": "sourceDnaRecut.cutWindow_and_clipSpeed"},
         "textPolicy": {"status": "defined", "rule": "Source clips must pass OCR/text review before admission.", "authority": "postingDocumentation.LocalContracts.sourced-video"},
         "negativeRules": {"status": "defined", "rule": "Reject trucks as the visual subject, AI-generated visuals, non-driving POV, daylight scenic clips, embedded text, and reused bytes.", "authority": "formatContract.userConfirmed.2026-08-29"},
-        "referenceExamples": {"status": "undefined", "rule": null, "authority": null}
+        "referenceExamples": {"status": "defined", "rule": "The exact page-scoped master SHA-256 set is the complete visual reference library; no other driving footage may substitute for it.", "authority": "sourceDna.masters.sha256"}
       },
       "output": {"aspectRatio": "9:16", "container": "video/mp4", "durationPolicy": "source_bound", "audioPolicy": "campaign_sound_bound_downstream"},
-      "reviewAuthority": null,
-      "reviewGates": ["byte_exact_provenance", "technical_video", "text_scan", "operator_visual_qa", "duplicate_and_never_reuse"],
+      "reviewAuthority": "sourceDna.provenance",
+      "reviewGates": ["byte_exact_provenance", "cut_window_lineage", "technical_video", "text_scan", "operator_visual_qa", "duplicate_and_never_reuse"],
       "distribution": {"captions": "page_binding_required", "sounds": "page_binding_required"},
-      "definitionGaps": ["creativeAuthority", "duration", "referenceExamples", "reviewAuthority"]
+      "definitionGaps": []
     },
     "pov-night-core-ai": {
       "contentNiche": "Night Core",

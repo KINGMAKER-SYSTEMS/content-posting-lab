@@ -2,6 +2,7 @@ import json
 
 import pytest
 
+from services.dossier_ingredients import _master_source_options
 from services.source_dna_registry import SCHEMA, SourceDnaError, parse_source_dna_manifest
 
 
@@ -60,3 +61,22 @@ def test_derived_cut_shape_cannot_be_mistaken_for_master_source():
     }
     with pytest.raises(SourceDnaError):
         parse_source_dna_manifest(_raw(value), "dirt-bike-masters-v1")
+
+
+def test_night_core_masters_are_exactly_page_scoped_and_never_cross_offered():
+    between_page = "tt-warner-between-the-lines66"
+    drive_page = "tt-warner-drivetoclearmymind001"
+    between = _master_source_options("pov-night-core", between_page)
+    drive = _master_source_options("pov-night-core", drive_page)
+
+    assert [row["pageId"] for row in between] == [between_page]
+    assert [row["pageId"] for row in drive] == [drive_page]
+    assert between[0]["masters"][0]["sha256"] == (
+        "3816ff5c4c79d73eff1694cc21f3644aff18bb68c3a97ca5b8306316feda1314"
+    )
+    assert drive[0]["masters"][0]["sha256"] == (
+        "60eb4ca7b2fff7178d88c3a31e77e805165b1b50eaba32b4aebb71da567f5abf"
+    )
+    assert between[0]["masters"][0]["sourceOffsetMs"] == 0
+    assert drive[0]["masters"][0]["sourceOffsetMs"] == 850_000
+    assert _master_source_options("pov-night-core", "tt-warner-other") == []

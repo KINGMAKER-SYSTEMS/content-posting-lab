@@ -90,12 +90,12 @@
       "contentEngine": "sourced_video",
       "materialSource": "source_library",
       "assetType": "video/mp4",
-      "executionStatus": "uncommissioned",
-      "executorKind": null,
-      "executorId": null,
-      "executorVersion": null,
-      "formatContractVersion": "sha256:70b0c1c2c44e84d9c57ee3c1f98e1747ec48238660d59041d8e36aabe6acbb89",
-      "maxQuantity": 0
+      "executionStatus": "commissioned",
+      "executorKind": "source_dna_recut",
+      "executorId": "source-dna-recut",
+      "executorVersion": "sha256:1bbcb745be141c7b9e835662637110d85785979610f993835ce2d05f31b3d484",
+      "formatContractVersion": "sha256:5f5cdf7daf22d8859476bc2d79989bcfb6e7031a475bd0f7f57e48805edcf848",
+      "maxQuantity": 10
     },
     "pov-night-core-ai": {
       "contentNiche": "Night Core",

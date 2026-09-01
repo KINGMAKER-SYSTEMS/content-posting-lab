@@ -46,7 +46,7 @@ def test_only_complete_hash_bound_formats_are_commissioned():
     assert {
         slug for slug, profile in profiles.items()
         if profile.execution_status == "commissioned"
-    } == {"pov-dirt-bike", "truck-scenic"}
+    } == {"pov-dirt-bike", "pov-night-core", "truck-scenic"}
     assert all(
         contracts[slug].definition_status == "complete"
         for slug, profile in profiles.items()
@@ -90,10 +90,11 @@ def test_night_core_is_source_only_and_explicitly_rejects_trucks_and_ai():
     rejects = value["dimensions"]["negativeRules"]["rule"]
     assert "trucks" in rejects
     assert "AI-generated visuals" in rejects
-    assert value["definitionStatus"] == "incomplete"
-    assert value["definitionGaps"] == [
-        "creativeAuthority", "duration", "referenceExamples", "reviewAuthority",
-    ]
+    assert value["definitionStatus"] == "complete"
+    assert value["definitionGaps"] == []
+    assert value["creativeAuthority"]["kind"] == "source_dna_recut"
+    assert value["reviewAuthority"] == "sourceDna.provenance"
+    assert "cut_window_lineage" in value["reviewGates"]
 
 
 def test_contract_drift_with_a_stale_registry_hash_fails_closed(
