@@ -72,6 +72,20 @@ PINNED_LEGACY_DOSSIER_CATALOG_VERSIONS_BY_PUBLICATION = {
         "648-f5e84a9fb80874b9",
         "sha256:d70e3f73aa097590f8e6bbb61025e76f186dc94aa49a521ef5de85366f031adf",
     ): "sha256:00910ba76b3ba4cba312670fa734e6ac769fd7cfe42ea946d8599b318feb2b69",
+    (
+        "tt-warner-between-the-lines66",
+        "pov-night-core:master",
+        "dossier-5e096b7c00e4e84c",
+        "528-ccf647c8c28362b9",
+        "sha256:5e096b7c00e4e84c1958a24c773e5a37d7362f64332b28096fe9c0d4fd138f74",
+    ): "sha256:00910ba76b3ba4cba312670fa734e6ac769fd7cfe42ea946d8599b318feb2b69",
+    (
+        "tt-warner-drivetoclearmymind001",
+        "pov-night-core:master",
+        "dossier-7192f9772f30999b",
+        "534-8243fac0434f0890",
+        "sha256:7192f9772f30999bd06b4938b17549e39de224066096c5daef1294b30d24c21c",
+    ): "sha256:00910ba76b3ba4cba312670fa734e6ac769fd7cfe42ea946d8599b318feb2b69",
 }
 PINNED_LEGACY_DOSSIER_CATALOG_VERSIONS = frozenset(
     PINNED_LEGACY_DOSSIER_CATALOG_VERSIONS_BY_PUBLICATION.values()
