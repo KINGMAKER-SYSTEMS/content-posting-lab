@@ -16,6 +16,16 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from burn_quality_gate import run_quality_check
+from services.caption_render import (
+    ERROR_SCHEMA as CAPTION_RENDER_ERROR_SCHEMA,
+    CaptionRenderError,
+    CaptionRenderRequest,
+    CaptionRenderResult,
+    CaptionStyle,
+    render_caption_overlay,
+)
+
 app = FastAPI()
 
 BASE_DIR = Path(__file__).parent
@@ -24,7 +34,10 @@ CAPTION_DIR = BASE_DIR / "caption_output"
 BURN_DIR = BASE_DIR / "burn_output"
 FONT_DIR = BASE_DIR / "fonts"
 
+VIDEO_DIR.mkdir(exist_ok=True)
+CAPTION_DIR.mkdir(exist_ok=True)
 BURN_DIR.mkdir(exist_ok=True)
+FONT_DIR.mkdir(exist_ok=True)
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -461,6 +474,39 @@ def _build_color_only_filter(color_correction: dict | None) -> str:
 # ── API Routes ───────────────────────────────────────────────────────
 
 
+@app.get("/health")
+async def api_health():
+    """Rail preflight target for the local Burn runtime."""
+    return {"ok": True}
+
+
+@app.post("/api/quality-check")
+async def api_quality_check(request: Request):
+    """Fail-closed caption and overlay gate used by Rail."""
+    body = await request.json()
+    caption_style = None
+    if body.get("captionStyle") is not None:
+        try:
+            caption_style = CaptionStyle.model_validate(body["captionStyle"]).model_dump(
+                mode="json", exclude_none=True
+            )
+        except Exception:
+            return JSONResponse(
+                {"ok": False, "reasons": ["caption_style_invalid"]},
+                status_code=422,
+            )
+    result = run_quality_check(
+        caption=str(body.get("caption") or ""),
+        persona=str(body.get("persona") or "male"),
+        overlay_png=body.get("overlayPng"),
+        require_overlay=True,
+        caption_style=caption_style,
+    )
+    if not result["ok"]:
+        return JSONResponse(result, status_code=422)
+    return result
+
+
 @app.get("/api/videos")
 async def api_videos():
     """List all videos in video-output/ grouped by folder."""
@@ -475,6 +521,27 @@ async def api_captions():
 @app.get("/api/fonts")
 async def api_fonts():
     return {"fonts": list_fonts()}
+
+
+@app.post(
+    "/api/burn/caption-render/v1",
+    response_model=CaptionRenderResult,
+    response_model_exclude_none=True,
+)
+async def caption_render_v1(request: CaptionRenderRequest):
+    """Render the exact Dossier caption text/style for the Rail compositor."""
+
+    try:
+        return render_caption_overlay(request, font_dir=FONT_DIR)
+    except CaptionRenderError as error:
+        return JSONResponse(
+            {
+                "schema": CAPTION_RENDER_ERROR_SCHEMA,
+                "error": error.code,
+                "message": error.message,
+            },
+            status_code=422,
+        )
 
 
 @app.post("/api/burn-overlay")
@@ -655,7 +722,11 @@ class NoCacheHTMLMiddleware(BaseHTTPMiddleware):
 
 app.add_middleware(NoCacheHTMLMiddleware)
 
-app.mount("/", StaticFiles(directory="static/burn", html=True), name="static")
+app.mount(
+    "/",
+    StaticFiles(directory=str(BASE_DIR / "static" / "burn"), html=True, check_dir=False),
+    name="static",
+)
 
 
 if __name__ == "__main__":
