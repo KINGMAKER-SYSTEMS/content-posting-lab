@@ -203,3 +203,40 @@ def test_api_contract_returns_png_and_fail_closed_errors(sync_client, monkeypatc
         json={**payload, "style": {**payload["style"], "stroke_width": 9}},
     )
     assert invented_field.status_code == 422
+
+
+def test_port_8002_burn_server_exposes_the_same_typed_contract(
+    monkeypatch, font_dir, tmp_path
+):
+    from fastapi.testclient import TestClient
+
+    (tmp_path / "static" / "burn").mkdir(parents=True)
+    monkeypatch.chdir(tmp_path)
+    import burn_server
+
+    monkeypatch.setattr(burn_server, "FONT_DIR", font_dir)
+    payload = request(
+        position="top",
+        align="left",
+        background="box",
+        background_color="#112233",
+    ).model_dump(mode="json", by_alias=True, exclude_none=True)
+
+    response = TestClient(burn_server.app).post(
+        "/api/burn/caption-render/v1",
+        json=payload,
+    )
+    assert response.status_code == 200
+    result = response.json()
+    assert result["schema"] == "content-lab.caption-render-result.v1"
+    assert result["plan"]["effective_style"] == payload["style"]
+    overlay = base64.b64decode(result["overlay"]["base64"])
+    assert result["overlay"]["sha256"] == (
+        f"sha256:{hashlib.sha256(overlay).hexdigest()}"
+    )
+
+    invalid = TestClient(burn_server.app).post(
+        "/api/burn/caption-render/v1",
+        json={**payload, "style": {**payload["style"], "weight": 700}},
+    )
+    assert invalid.status_code == 422

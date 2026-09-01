@@ -15,3 +15,20 @@ fonts, unknown fields, incomplete styles, or clipped output. Verification:
 `tests/test_caption_render_contract.py` 14 passed; Burn API regression selection
 40 passed. No deployment, video mutation, phone action, scheduling, or post.
 _________________________________________________________________________________
+
+_________________________________________________________________________________
+
+time: [17:51] [09-01-26]
+agent: [codex] [gpt-5] [caption_renderer_bridge]
+worktree: [feat/typed-caption-render-plan-20260901] /private/tmp/content-lab-caption-renderer
+type: [feature-request]: Port-8002 typed caption runtime
+area: [backend]: Rail-reachable caption render contract
+
+Exposed the existing `content-lab.caption-render-request.v1` contract through
+the posting Mac's standalone `burn_server.py` route at
+`POST /api/burn/caption-render/v1`. The port-8002 route calls the same renderer
+module as the hosted Burn router and preserves the same fail-closed schema and
+artifact hashes. Verification: `tests/test_caption_render_contract.py` 15
+passed, including the standalone FastAPI route. No video, phone, scheduler,
+lease, or post mutation.
+_________________________________________________________________________________

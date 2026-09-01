@@ -16,6 +16,14 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from services.caption_render import (
+    ERROR_SCHEMA as CAPTION_RENDER_ERROR_SCHEMA,
+    CaptionRenderError,
+    CaptionRenderRequest,
+    CaptionRenderResult,
+    render_caption_overlay,
+)
+
 app = FastAPI()
 
 BASE_DIR = Path(__file__).parent
@@ -475,6 +483,27 @@ async def api_captions():
 @app.get("/api/fonts")
 async def api_fonts():
     return {"fonts": list_fonts()}
+
+
+@app.post(
+    "/api/burn/caption-render/v1",
+    response_model=CaptionRenderResult,
+    response_model_exclude_none=True,
+)
+async def caption_render_v1(request: CaptionRenderRequest):
+    """Render the exact Dossier caption text/style for the Rail compositor."""
+
+    try:
+        return render_caption_overlay(request, font_dir=FONT_DIR)
+    except CaptionRenderError as error:
+        return JSONResponse(
+            {
+                "schema": CAPTION_RENDER_ERROR_SCHEMA,
+                "error": error.code,
+                "message": error.message,
+            },
+            status_code=422,
+        )
 
 
 @app.post("/api/burn-overlay")

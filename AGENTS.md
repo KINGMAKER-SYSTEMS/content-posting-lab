@@ -9,6 +9,8 @@
 
 - `services/caption_render.py` owns the typed Dossier-to-render caption contract.
 - `routers/burn.py` exposes caption rendering and final video compositing.
+- `burn_server.py` exposes the same typed caption-render route on the posting
+  Mac's canonical port-8002 Burn runtime for Rail consumption.
 - `events.md` is the repository's append-only chronological ledger.
 
 ## Local Contracts
@@ -32,6 +34,8 @@
   parallel caption-style vocabulary or silently substitute a font.
 - Keep browser preview, backend render, and Rail consumption on one versioned
   contract; unknown fields and clipped output are errors, not fallbacks.
+- The hosted API and the port-8002 Burn runtime must call the same renderer
+  module and return the same versioned schema and hashes.
 
 ## Verification
 
