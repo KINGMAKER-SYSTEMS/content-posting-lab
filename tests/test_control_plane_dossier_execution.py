@@ -75,6 +75,26 @@ def job_body(quantity=2):
     }
 
 
+def current_generation_authority():
+    publication = recipes.load_registered_recipe(
+        PAGE_ID,
+        "truck-scenic:master",
+        "ai_video",
+        "dossier-1234567890abcdef",
+    )
+    recipe = cp.resolve_generation_recipe(publication)
+    assert recipe is not None
+    return {
+        "engine": "ai_video",
+        "recipeId": recipe.recipe_id,
+        "engineRegistryHash": recipe.engine_registry_hash,
+        "formatContractVersion": recipe.format_contract_version,
+        "executorVersion": recipe.executor_version,
+        "promptCatalogHash": recipe.prompt_catalog_hash,
+        "providerModel": recipe.provider_model,
+    }
+
+
 @pytest.fixture
 def lab(monkeypatch, tmp_path):
     monkeypatch.setenv("CONTROL_PLANE_TOKEN", TOKEN)
@@ -153,6 +173,7 @@ def test_truck_job_reuses_preserved_paid_master_before_new_provider_spend(lab, m
     intent, revision = master_pages(PAGE_ID, handle="tucker.reeves")
     store = cp._load_jobs()
     store["jobs"]["cpl-1111111111111111"] = {
+        **current_generation_authority(),
         "jobId": "cpl-1111111111111111",
         "pageId": PAGE_ID,
         "sourceKind": "generated",
@@ -192,6 +213,57 @@ def test_truck_job_reuses_preserved_paid_master_before_new_provider_spend(lab, m
     assert started == [f"recovery:{job_id}"]
 
 
+def test_truck_job_never_recrops_a_master_from_stale_creative_authority(lab, monkeypatch):
+    client, tmp_path, started = lab
+    old_root = tmp_path / "generated" / PAGE_ID / "legacy" / "cpl-3333333333333333"
+    old_root.mkdir(parents=True)
+    master = old_root / "renders" / "stale-master.mp4"
+    master.parent.mkdir(parents=True)
+    master.write_bytes(b"stale-prompt-provider-master")
+    master_sha = hashlib.sha256(master.read_bytes()).hexdigest()
+    intent, revision = master_pages(PAGE_ID, handle="tucker.reeves")
+    stale_authority = current_generation_authority()
+    stale_authority["promptCatalogHash"] = "0" * 64
+    store = cp._load_jobs()
+    store["jobs"]["cpl-3333333333333333"] = {
+        **stale_authority,
+        "jobId": "cpl-3333333333333333",
+        "pageId": PAGE_ID,
+        "sourceKind": "generated",
+        "status": "completed",
+        "artifactRoot": str(old_root),
+        "createdAt": "2026-08-29T00:00:00+00:00",
+        "clips": [{
+            "path": "renders/stale-master.mp4",
+            "sha256": master_sha,
+            "bytes": master.stat().st_size,
+            "source": {
+                "recipeId": "truck-scenic:master",
+                "recipeVersion": "dossier-stale00000000",
+                "path": "renders/stale-master.mp4",
+                "sha256": master_sha,
+                "bytes": master.stat().st_size,
+                "pageId": PAGE_ID,
+                "masterPagesHash": revision,
+                "contentNiche": intent["contentNiche"],
+                "contentEngine": intent["contentEngine"],
+                "vaultUrl": intent["vaultUrl"],
+            },
+        }],
+    }
+    cp.atomic_save(cp._jobs_path(), store)
+    monkeypatch.setattr(cp, "_is_exact_16x9_video", lambda _: True)
+
+    response = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(quantity=1), headers=HEADERS,
+    )
+    assert response.status_code == 200
+    stored = cp._load_jobs()["jobs"][response.json()["jobId"]]
+    assert stored["sourceKind"] == "generated"
+    assert stored["providerCallsPlanned"] == 1
+    assert started == [response.json()["jobId"]]
+
+
 @pytest.mark.asyncio
 async def test_truck_master_recovery_emits_five_crops_without_model_call(lab, monkeypatch):
     client, tmp_path, started = lab
@@ -204,6 +276,7 @@ async def test_truck_master_recovery_emits_five_crops_without_model_call(lab, mo
     intent, revision = master_pages(PAGE_ID, handle="tucker.reeves")
     store = cp._load_jobs()
     store["jobs"]["cpl-2222222222222222"] = {
+        **current_generation_authority(),
         "jobId": "cpl-2222222222222222",
         "pageId": PAGE_ID,
         "sourceKind": "generated",
