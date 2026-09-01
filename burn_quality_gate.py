@@ -177,4 +177,3 @@ def run_quality_check(
         "caption_words": _word_count(caption),
         "persona": persona or "male",
     }
-

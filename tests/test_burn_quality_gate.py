@@ -197,4 +197,3 @@ def test_quality_check_never_honours_force(client):
     )
     assert res.status_code == 422
     assert res.json()["ok"] is False
-
