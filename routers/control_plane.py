@@ -890,6 +890,22 @@ def _source_media_origin() -> str:
     return value
 
 
+def _source_artifact_origin() -> str:
+    value = os.environ.get("CONTENT_LAB_PUBLIC_ORIGIN", "").strip().rstrip("/")
+    parsed = urlparse(value)
+    if (
+        parsed.scheme != "https"
+        or not parsed.netloc
+        or parsed.username
+        or parsed.password
+        or parsed.path not in {"", "/"}
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise RuntimeError("source_import_public_origin_unavailable")
+    return value
+
+
 async def _cached_source_master(page_id: str, master: Any, job_id: str) -> Path:
     cache_root = (_generation_root() / "_source_dna").resolve()
     cache_root.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -1989,8 +2005,9 @@ def job_artifacts(
         raise HTTPException(status_code=404, detail="job not found")
     if job.get("sourceKind") == "page_source_import":
         # The URL carries the per-job download credential. Never derive its
-        # origin from caller-controlled forwarded headers.
-        base = _source_media_origin()
+        # origin from caller-controlled forwarded headers or from the separate
+        # Control Plane origin used to retrieve page-vault source masters.
+        base = _source_artifact_origin()
     else:
         proto = request.headers.get("x-forwarded-proto", request.url.scheme)
         host = request.headers.get("x-forwarded-host", request.url.netloc)
