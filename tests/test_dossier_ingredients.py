@@ -1,6 +1,7 @@
 """The Dossier ingredient view is a projection of existing authorities only."""
 
 import copy
+import json
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -8,6 +9,7 @@ from fastapi.testclient import TestClient
 from routers.control_plane_dossier import REQUEST_SCHEMA, router
 from routers.control_plane_recipes import LANE
 from tests.master_pages_fixtures import master_pages
+from services.master_pages_contract import intent_hash
 
 
 TOKEN = "test-control-plane-token"
@@ -126,8 +128,14 @@ def test_selected_version_ignores_unrelated_format_authority_changes(monkeypatch
     selected_before = _production_selection(before, "truck-scenic")["catalogVersion"]
     original = ingredients._format_entry
 
-    def changed_unrelated(contract, profile, catalog, model_options, page_id):
-        entry = original(contract, profile, catalog, model_options, page_id)
+    def changed_unrelated(
+        contract, profile, catalog, model_options, page_id,
+        shipstream_library=None, shipstream_status=None,
+    ):
+        entry = original(
+            contract, profile, catalog, model_options, page_id,
+            shipstream_library, shipstream_status,
+        )
         if entry["formatId"] == "pov-night-core":
             entry = copy.deepcopy(entry)
             entry["review"]["gates"].append("new-unrelated-gate")
@@ -152,8 +160,14 @@ def test_selected_version_ignores_an_unused_same_niche_format(monkeypatch):
     selected_before = _production_selection(before, "truck-scenic")["catalogVersion"]
     original = ingredients._format_entry
 
-    def changed_unused_candidate(contract, profile, catalog, model_options, page_id):
-        entry = original(contract, profile, catalog, model_options, page_id)
+    def changed_unused_candidate(
+        contract, profile, catalog, model_options, page_id,
+        shipstream_library=None, shipstream_status=None,
+    ):
+        entry = original(
+            contract, profile, catalog, model_options, page_id,
+            shipstream_library, shipstream_status,
+        )
         if entry["formatId"] == "truck-ugc":
             entry = copy.deepcopy(entry)
             entry["review"]["gates"].append("new-unused-candidate-gate")
@@ -232,8 +246,12 @@ def test_selected_source_version_ignores_an_unselected_page_library(monkeypatch)
     )["catalogVersion"]
     original = ingredients._master_source_options
 
-    def with_unused_source(format_slug, requested_page_id):
-        options = copy.deepcopy(original(format_slug, requested_page_id))
+    def with_unused_source(
+        format_slug, requested_page_id, shipstream_library=None,
+    ):
+        options = copy.deepcopy(original(
+            format_slug, requested_page_id, shipstream_library,
+        ))
         if options:
             unused = copy.deepcopy(options[0])
             unused["libraryId"] = "unused-page-library"
@@ -258,8 +276,14 @@ def test_selected_version_changes_with_its_exact_format_authority(monkeypatch):
     selected_before = _production_selection(before, "truck-scenic")["catalogVersion"]
     original = ingredients._format_entry
 
-    def changed_current(contract, profile, catalog, model_options, page_id):
-        entry = original(contract, profile, catalog, model_options, page_id)
+    def changed_current(
+        contract, profile, catalog, model_options, page_id,
+        shipstream_library=None, shipstream_status=None,
+    ):
+        entry = original(
+            contract, profile, catalog, model_options, page_id,
+            shipstream_library, shipstream_status,
+        )
         if entry["formatId"] == "truck-scenic":
             entry = copy.deepcopy(entry)
             entry["review"]["gates"].append("new-current-format-gate")
@@ -365,6 +389,133 @@ def test_reference_and_source_slots_come_from_real_catalogs(monkeypatch):
     coffee = _format(body, "coffee-tok")
     assert _ingredient(coffee, "visual-model")["status"] == "missing"
     assert _ingredient(coffee, "prompt-module")["status"] == "missing"
+
+
+def test_shipstream_page_source_is_bound_only_to_its_matching_format(monkeypatch):
+    import services.dossier_ingredients as ingredients
+    from services.shipstream_source_manifest import parse_shipstream_source_manifest
+
+    page_id = "acct:operator:love-night"
+    intent, revision = master_pages(
+        page_id,
+        handle="lovenightwalks",
+        content_niche="POV — Night Core",
+        content_engine="sourced_video",
+        vault_url="https://shipstream.risingtidesviral.com/vault/lovenightwalks",
+    )
+    intent["notionPageId"] = "3c61465b-b829-8095-86ec-f979f90ee48a"
+    intent["automationMode"] = "Operator"
+    revision = intent_hash(intent)
+    sha256 = "a" * 64
+    manifest = {
+        "schema": "shipstream.source-manifest.v1",
+        "page": "lovenightwalks",
+        "notion": {
+            "pageId": intent["notionPageId"],
+            "contentEngine": intent["contentEngine"],
+            "contentNiche": intent["contentNiche"],
+            "serviceMode": intent["automationMode"],
+        },
+        "format": "pov-night-core",
+        "sourceAuthority": {
+            "kind": "historical_posted_cut_recovery",
+            "pageHandle": "lovenightwalks",
+            "notionPageId": intent["notionPageId"],
+            "pageBound": True,
+            "replacementEligible": True,
+        },
+        "master": None,
+        "historicalPostedCuts": [{
+            "type": "historical_posted_cut",
+            "pageHandle": "lovenightwalks",
+            "notionPageId": intent["notionPageId"],
+            "sha256": sha256,
+            "storageKey": f"vault/lovenightwalks/pool/{sha256}.mp4",
+            "bytes": 12_345_678,
+            "uploadedAt": "2026-08-25T20:35:39.194Z",
+            "media": {"durationSeconds": 10.01},
+        }],
+    }
+    library = parse_shipstream_source_manifest(
+        json.dumps(manifest).encode(), intent, page_id=page_id,
+    )
+    monkeypatch.setattr(
+        ingredients, "load_shipstream_source_dna_library",
+        lambda *args, **kwargs: library,
+    )
+    catalog = ingredients.build_dossier_ingredient_catalog(
+        page_id, intent, revision,
+    )
+    night = _format(catalog, "pov-night-core")
+    master = _ingredient(night, "master-source-video")
+    assert master["status"] == "bound"
+    assert master["binding"]["libraryId"] == library.library_id
+    assert master["binding"]["masters"][0]["storageKey"] == (
+        f"vault/lovenightwalks/pool/{sha256}.mp4"
+    )
+    assert _source_selection(
+        catalog, "pov-night-core", library.library_id,
+    )["catalogVersion"].startswith("sha256:")
+    scenic = _ingredient(_format(catalog, "pov-scenic"), "master-source-video")
+    assert all(option["libraryId"] != library.library_id
+               for option in scenic["options"])
+
+
+def test_shipstream_manifest_format_cannot_override_master_pages_niche(monkeypatch):
+    import services.dossier_ingredients as ingredients
+    import services.shipstream_source_manifest as source_manifest
+
+    page_id = "acct:operator:love-night"
+    intent, _ = master_pages(
+        page_id,
+        handle="lovenightwalks",
+        content_niche="POV — Night Core",
+        content_engine="sourced_video",
+        vault_url="https://shipstream.risingtidesviral.com/vault/lovenightwalks",
+    )
+    intent["notionPageId"] = "3c61465b-b829-8095-86ec-f979f90ee48a"
+    intent["automationMode"] = "Operator"
+    revision = intent_hash(intent)
+    sha256 = "b" * 64
+    manifest = {
+        "schema": "shipstream.source-manifest.v1",
+        "page": "lovenightwalks",
+        "notion": {
+            "pageId": intent["notionPageId"],
+            "contentEngine": intent["contentEngine"],
+            "contentNiche": intent["contentNiche"],
+            "serviceMode": intent["automationMode"],
+        },
+        "format": "pov-scenic",
+        "sourceAuthority": {
+            "kind": "historical_posted_cut_recovery",
+            "pageHandle": "lovenightwalks",
+            "notionPageId": intent["notionPageId"],
+            "pageBound": True,
+            "replacementEligible": True,
+        },
+        "master": None,
+        "historicalPostedCuts": [{
+            "type": "historical_posted_cut",
+            "pageHandle": "lovenightwalks",
+            "notionPageId": intent["notionPageId"],
+            "sha256": sha256,
+            "storageKey": f"vault/lovenightwalks/pool/{sha256}.mp4",
+            "bytes": 12_345_678,
+            "uploadedAt": "2026-08-25T20:35:39.194Z",
+            "media": {"durationSeconds": 10.01},
+        }],
+    }
+    monkeypatch.setattr(
+        source_manifest, "_fetch_manifest", lambda _url: json.dumps(manifest).encode(),
+    )
+    catalog = ingredients.build_dossier_ingredient_catalog(page_id, intent, revision)
+    night = _format(catalog, "pov-night-core")
+    assert _ingredient(night, "master-source-video")["status"] == "invalid"
+    assert "master-source-video:invalid" in night["blockers"]
+    scenic = _ingredient(_format(catalog, "pov-scenic"), "master-source-video")
+    assert all(option.get("masters", [{}])[0].get("sha256") != sha256
+               for option in scenic["options"])
 
 
 def test_request_fails_closed_on_auth_lane_or_master_pages_drift(monkeypatch):

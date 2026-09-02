@@ -143,6 +143,79 @@ def test_source_recipe_rejects_an_arbitrary_stale_catalog_version():
     assert resolve_source_recipe(payload) is None
 
 
+def test_source_recipe_resolves_the_exact_shipstream_page_library(monkeypatch):
+    import services.shipstream_source_manifest as source_manifest
+
+    sha256 = "a" * 64
+    intent, _ = master_pages(
+        PAGE_ID,
+        handle="chase.miles.4l",
+        content_niche="POV - Dirtbike",
+        content_engine="sourced_video",
+        vault_url="https://shipstream.risingtidesviral.com/vault/chase.miles.4l",
+    )
+    manifest = {
+        "schema": "shipstream.source-manifest.v1",
+        "page": "chase.miles.4l",
+        "notion": {
+            "pageId": intent["notionPageId"],
+            "contentEngine": intent["contentEngine"],
+            "contentNiche": intent["contentNiche"],
+            "serviceMode": intent["automationMode"],
+        },
+        "format": "pov-dirt-bike",
+        "sourceAuthority": {
+            "kind": "historical_posted_cut_recovery",
+            "pageHandle": "chase.miles.4l",
+            "notionPageId": intent["notionPageId"],
+            "pageBound": True,
+            "replacementEligible": True,
+        },
+        "master": None,
+        "historicalPostedCuts": [{
+            "type": "historical_posted_cut",
+            "pageHandle": "chase.miles.4l",
+            "notionPageId": intent["notionPageId"],
+            "sha256": sha256,
+            "bytes": 12_345_678,
+            "storageKey": f"vault/chase.miles.4l/pool/{sha256}.mp4",
+            "uploadedAt": "2026-08-25T20:35:39.194Z",
+            "media": {"durationSeconds": 10.0},
+        }],
+    }
+    current_manifest = [manifest]
+    monkeypatch.setattr(
+        source_manifest,
+        "_fetch_manifest",
+        lambda _url: json.dumps(current_manifest[0]).encode(),
+    )
+    library = source_manifest.load_shipstream_source_dna_library(
+        intent, page_id=PAGE_ID, expected_format="pov-dirt-bike",
+    )
+    payload = publication(source_library_id=library.library_id)
+    resolved = resolve_source_recipe(payload)
+    assert resolved is not None
+    assert resolved.source_library_id == library.library_id
+    assert resolved.source_library_hash == library.sha256
+    assert resolved.masters[0].storage_key == (
+        f"vault/chase.miles.4l/pool/{sha256}.mp4"
+    )
+    changed = json.loads(json.dumps(manifest))
+    second_sha = "b" * 64
+    changed["historicalPostedCuts"].append({
+        "type": "historical_posted_cut",
+        "pageHandle": "chase.miles.4l",
+        "notionPageId": intent["notionPageId"],
+        "sha256": second_sha,
+        "bytes": 12_345_679,
+        "storageKey": f"vault/chase.miles.4l/pool/{second_sha}.mp4",
+        "uploadedAt": "2026-08-25T20:36:39.194Z",
+        "media": {"durationSeconds": 10.0},
+    })
+    current_manifest[0] = changed
+    assert resolve_source_recipe(payload) is None
+
+
 def headers(idempotency="source-job-0001"):
     return {
         "Authorization": f"Bearer {TOKEN}",

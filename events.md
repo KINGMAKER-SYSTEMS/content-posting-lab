@@ -67,3 +67,41 @@ verification: 53 recipe, generation, source-execution, and dossier-execution
 tests passed. No deployment, provider generation, video mutation, scheduler,
 slot, lease, device, phone, or post action.
 _________________________________________________________________________________
+
+_________________________________________________________________________________
+
+time: [19:58] [09-01-26]
+agent: [codex] [gpt-5] [shipstream_source_projection]
+worktree: [fix/shipstream-source-projection-20260901] /private/tmp/content-lab-source-vault.hRWhhH
+type: [bug report]: ShipStream page source missing from Dossier and recut execution
+area: [backend]: Master Pages, ShipStream, and Content Lab source projection
+
+Projected each exact Master Pages ShipStream vault source manifest into the
+existing page-scoped source-library contract. Registered page masters and
+explicitly page-bound historical posted cuts now appear as Dossier source
+options and resolve through the recut executor without accepting superseded
+generic masters, foreign pages, or refill-cut drift. Live Love Late Night Walks
+and Things I Left Unsaid manifests parsed successfully with 17 and 12 exact
+page sources. Focused control-plane, Dossier, source-library, and execution
+verification: 105 passed. No generation, bucket write, scheduler, phone, slot,
+lease, or post action.
+_________________________________________________________________________________
+
+_________________________________________________________________________________
+
+time: [20:05] [09-01-26]
+agent: [codex] [gpt-5] [shipstream_source_projection]
+worktree: [fix/shipstream-source-projection-20260901] /private/tmp/content-lab-source-vault.hRWhhH
+type: [review]: Source-manifest authority and availability hardening
+area: [backend]: Dossier source catalog and recut execution
+
+Hardened the projection after independent review. Current exact-page manifests
+whose Notion id lives in source authority remain compatible, manifest format
+must match the Content Lab format selected by Master Pages, chunked responses
+stop at the byte ceiling, transient transport failure is distinct from missing
+or invalid source, and async job execution moves source resolution off the
+event loop. Recipe validation reuses the already-resolved library instead of
+fetching it twice. Manifest-backed version-drift coverage now exercises the
+catalog-to-executor path. Focused verification: 107 passed. No deploy,
+generation, bucket write, scheduler, phone, slot, lease, or post action.
+_________________________________________________________________________________

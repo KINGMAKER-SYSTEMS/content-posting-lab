@@ -22,6 +22,17 @@
   Control Plane `captionDiscipline` wire object. Content Lab validates and
   preserves that immutable selection; it does not choose a corpus, sentiment,
   caption, or parallel taxonomy.
+- For `sourced_video`, the exact Master Pages page and vault may project the
+  page-bound `shipstream.source-manifest.v1` into the existing immutable
+  `SourceDnaLibrary` contract. A valid page master is preferred; an explicitly
+  page-bound historical-posted-cut recovery library is legal when the manifest
+  states the original source is unavailable. Handle, Notion page id, niche,
+  engine, delivery mode, format, SHA, byte count, duration, and R2 key must all
+  match; no niche-wide or cross-page source fallback is allowed.
+  Source-manifest reads are hard size-bounded; transport failure is reported as
+  unavailable rather than falsely reported as missing. The selected Content
+  Lab format must match the Master Pages niche before a source is displayed or
+  executed.
 - A publishable caption render requires exact caption text and a complete page
   style: font, size, color, position, alignment, and line balance.
 - Resolve fonts only from Content Lab's installed, advertised TikTokSans files.
