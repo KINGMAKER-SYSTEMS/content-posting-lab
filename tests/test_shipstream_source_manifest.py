@@ -121,6 +121,10 @@ def test_exact_registered_master_uses_its_own_file_from_offset_zero():
         "notionPageId": NOTION_PAGE_ID,
         "replacementEligible": True,
     }
+    # This is the current normal ShipStream producer shape. The exact Notion
+    # id is present in sourceAuthority even though the older notion block did
+    # not repeat it.
+    manifest["notion"].pop("pageId")
     manifest["master"] = {
         "sha256": sha256,
         "storageKey": f"vault/{HANDLE}/masters/{sha256}.mp4",
@@ -195,3 +199,31 @@ def test_foreign_or_non_shipstream_vault_url_is_never_fetched():
             intent, page_id=PAGE_ID, fetch_manifest=fetch,
         )
     assert called is False
+
+
+def test_http_fetch_stops_when_a_chunked_manifest_exceeds_the_cap(monkeypatch):
+    import services.shipstream_source_manifest as source_manifest
+
+    class Response:
+        status_code = 200
+        headers = {}
+
+        @staticmethod
+        def raise_for_status():
+            return None
+
+        @staticmethod
+        def iter_bytes():
+            yield b"a" * source_manifest.MAX_MANIFEST_BYTES
+            yield b"b"
+
+    class Stream:
+        def __enter__(self):
+            return Response()
+
+        def __exit__(self, *_args):
+            return False
+
+    monkeypatch.setattr(source_manifest.httpx, "stream", lambda *args, **kwargs: Stream())
+    with pytest.raises(ShipStreamSourceError, match="too large"):
+        source_manifest._fetch_manifest(source_manifest.source_manifest_url(HANDLE))

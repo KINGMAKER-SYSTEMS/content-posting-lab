@@ -1247,7 +1247,7 @@ async def _run_dossier_source(job_id: str) -> None:
         job.get("recipePublicationPageId") or job["pageId"],
         job["recipeId"], job["engine"], job["recipeVersion"],
     )
-    recipe = _dossier_source_recipe(publication)
+    recipe = await asyncio.to_thread(_dossier_source_recipe, publication)
     if (
         recipe is None
         or job.get("sourceLibraryId") != recipe.source_library_id
@@ -1461,7 +1461,7 @@ async def create_job(
     ):
         raise HTTPException(status_code=409, detail="job intent does not match the registered dossier publication")
     generation_recipe = resolve_generation_recipe(publication) if publication else None
-    source_recipe = _dossier_source_recipe(publication)
+    source_recipe = await asyncio.to_thread(_dossier_source_recipe, publication)
     if generation_recipe is None and source_recipe is None:
         raise HTTPException(status_code=409, detail="recipe_executor_unavailable")
     capability_ceiling = (

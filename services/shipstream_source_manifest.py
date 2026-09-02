@@ -36,6 +36,14 @@ class ShipStreamSourceError(ValueError):
     pass
 
 
+class ShipStreamSourceMissing(ShipStreamSourceError):
+    pass
+
+
+class ShipStreamSourceUnavailable(ShipStreamSourceError):
+    pass
+
+
 def _nonblank(value: Any, maximum: int = 2_048) -> bool:
     return isinstance(value, str) and value == value.strip() and 0 < len(value) <= maximum
 
@@ -79,18 +87,39 @@ def source_manifest_url(handle: str) -> str:
 
 def _fetch_manifest(url: str) -> bytes:
     try:
-        response = httpx.get(
+        with httpx.stream(
+            "GET",
             url,
             headers={"accept": "application/json"},
             timeout=2.0,
             follow_redirects=False,
-        )
-        response.raise_for_status()
+        ) as response:
+            if response.status_code == 404:
+                raise ShipStreamSourceMissing("ShipStream source manifest is missing")
+            response.raise_for_status()
+            advertised = response.headers.get("content-length")
+            if advertised is not None:
+                try:
+                    if int(advertised) > MAX_MANIFEST_BYTES:
+                        raise ShipStreamSourceError("ShipStream source manifest is too large")
+                except ValueError as error:
+                    raise ShipStreamSourceError(
+                        "ShipStream source manifest content length is invalid"
+                    ) from error
+            chunks = bytearray()
+            for chunk in response.iter_bytes():
+                chunks.extend(chunk)
+                if len(chunks) > MAX_MANIFEST_BYTES:
+                    raise ShipStreamSourceError("ShipStream source manifest is too large")
+    except ShipStreamSourceError:
+        raise
     except httpx.HTTPError as error:
-        raise ShipStreamSourceError("ShipStream source manifest is unavailable") from error
-    raw = response.content
-    if not raw or len(raw) > MAX_MANIFEST_BYTES:
-        raise ShipStreamSourceError("ShipStream source manifest is empty or too large")
+        raise ShipStreamSourceUnavailable(
+            "ShipStream source manifest is unavailable"
+        ) from error
+    raw = bytes(chunks)
+    if not raw:
+        raise ShipStreamSourceError("ShipStream source manifest is empty")
     return raw
 
 
@@ -221,12 +250,24 @@ def parse_shipstream_source_manifest(
     authority = value.get("sourceAuthority") if isinstance(value, dict) else None
     format_slug = value.get("format") if isinstance(value, dict) else None
     notion_page_id = master_pages.get("notionPageId")
+    notion_page_matches = (
+        isinstance(notion, dict)
+        and (
+            notion.get("pageId") == notion_page_id
+            or (
+                notion.get("pageId") is None
+                and isinstance(authority, dict)
+                and authority.get("kind") == "exact_page_binding"
+                and authority.get("notionPageId") == notion_page_id
+            )
+        )
+    )
     if (
         not isinstance(value, dict)
         or value.get("schema") != MANIFEST_SCHEMA
         or value.get("page") != handle
         or not isinstance(notion, dict)
-        or notion.get("pageId") != notion_page_id
+        or not notion_page_matches
         or notion.get("contentNiche") != master_pages.get("contentNiche")
         or notion.get("contentEngine") != master_pages.get("contentEngine")
         or notion.get("serviceMode") != master_pages.get("automationMode")

@@ -130,11 +130,11 @@ def test_selected_version_ignores_unrelated_format_authority_changes(monkeypatch
 
     def changed_unrelated(
         contract, profile, catalog, model_options, page_id,
-        shipstream_library=None,
+        shipstream_library=None, shipstream_status=None,
     ):
         entry = original(
             contract, profile, catalog, model_options, page_id,
-            shipstream_library,
+            shipstream_library, shipstream_status,
         )
         if entry["formatId"] == "pov-night-core":
             entry = copy.deepcopy(entry)
@@ -162,11 +162,11 @@ def test_selected_version_ignores_an_unused_same_niche_format(monkeypatch):
 
     def changed_unused_candidate(
         contract, profile, catalog, model_options, page_id,
-        shipstream_library=None,
+        shipstream_library=None, shipstream_status=None,
     ):
         entry = original(
             contract, profile, catalog, model_options, page_id,
-            shipstream_library,
+            shipstream_library, shipstream_status,
         )
         if entry["formatId"] == "truck-ugc":
             entry = copy.deepcopy(entry)
@@ -278,11 +278,11 @@ def test_selected_version_changes_with_its_exact_format_authority(monkeypatch):
 
     def changed_current(
         contract, profile, catalog, model_options, page_id,
-        shipstream_library=None,
+        shipstream_library=None, shipstream_status=None,
     ):
         entry = original(
             contract, profile, catalog, model_options, page_id,
-            shipstream_library,
+            shipstream_library, shipstream_status,
         )
         if entry["formatId"] == "truck-scenic":
             entry = copy.deepcopy(entry)
@@ -458,6 +458,63 @@ def test_shipstream_page_source_is_bound_only_to_its_matching_format(monkeypatch
     )["catalogVersion"].startswith("sha256:")
     scenic = _ingredient(_format(catalog, "pov-scenic"), "master-source-video")
     assert all(option["libraryId"] != library.library_id
+               for option in scenic["options"])
+
+
+def test_shipstream_manifest_format_cannot_override_master_pages_niche(monkeypatch):
+    import services.dossier_ingredients as ingredients
+    import services.shipstream_source_manifest as source_manifest
+
+    page_id = "acct:operator:love-night"
+    intent, _ = master_pages(
+        page_id,
+        handle="lovenightwalks",
+        content_niche="POV — Night Core",
+        content_engine="sourced_video",
+        vault_url="https://shipstream.risingtidesviral.com/vault/lovenightwalks",
+    )
+    intent["notionPageId"] = "3c61465b-b829-8095-86ec-f979f90ee48a"
+    intent["automationMode"] = "Operator"
+    revision = intent_hash(intent)
+    sha256 = "b" * 64
+    manifest = {
+        "schema": "shipstream.source-manifest.v1",
+        "page": "lovenightwalks",
+        "notion": {
+            "pageId": intent["notionPageId"],
+            "contentEngine": intent["contentEngine"],
+            "contentNiche": intent["contentNiche"],
+            "serviceMode": intent["automationMode"],
+        },
+        "format": "pov-scenic",
+        "sourceAuthority": {
+            "kind": "historical_posted_cut_recovery",
+            "pageHandle": "lovenightwalks",
+            "notionPageId": intent["notionPageId"],
+            "pageBound": True,
+            "replacementEligible": True,
+        },
+        "master": None,
+        "historicalPostedCuts": [{
+            "type": "historical_posted_cut",
+            "pageHandle": "lovenightwalks",
+            "notionPageId": intent["notionPageId"],
+            "sha256": sha256,
+            "storageKey": f"vault/lovenightwalks/pool/{sha256}.mp4",
+            "bytes": 12_345_678,
+            "uploadedAt": "2026-08-25T20:35:39.194Z",
+            "media": {"durationSeconds": 10.01},
+        }],
+    }
+    monkeypatch.setattr(
+        source_manifest, "_fetch_manifest", lambda _url: json.dumps(manifest).encode(),
+    )
+    catalog = ingredients.build_dossier_ingredient_catalog(page_id, intent, revision)
+    night = _format(catalog, "pov-night-core")
+    assert _ingredient(night, "master-source-video")["status"] == "invalid"
+    assert "master-source-video:invalid" in night["blockers"]
+    scenic = _ingredient(_format(catalog, "pov-scenic"), "master-source-video")
+    assert all(option.get("masters", [{}])[0].get("sha256") != sha256
                for option in scenic["options"])
 
 

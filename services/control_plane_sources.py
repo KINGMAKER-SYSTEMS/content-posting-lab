@@ -227,6 +227,8 @@ def resolve_source_recipe(
                 str(spec.get("masterPagesHash") or ""),
                 profile.format_slug,
                 production,
+                shipstream_library=library,
+                load_shipstream=False,
             )
         except (OSError, ValueError, json.JSONDecodeError, KeyError):
             return None

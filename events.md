@@ -86,3 +86,22 @@ page sources. Focused control-plane, Dossier, source-library, and execution
 verification: 105 passed. No generation, bucket write, scheduler, phone, slot,
 lease, or post action.
 _________________________________________________________________________________
+
+_________________________________________________________________________________
+
+time: [20:05] [09-01-26]
+agent: [codex] [gpt-5] [shipstream_source_projection]
+worktree: [fix/shipstream-source-projection-20260901] /private/tmp/content-lab-source-vault.hRWhhH
+type: [review]: Source-manifest authority and availability hardening
+area: [backend]: Dossier source catalog and recut execution
+
+Hardened the projection after independent review. Current exact-page manifests
+whose Notion id lives in source authority remain compatible, manifest format
+must match the Content Lab format selected by Master Pages, chunked responses
+stop at the byte ceiling, transient transport failure is distinct from missing
+or invalid source, and async job execution moves source resolution off the
+event loop. Recipe validation reuses the already-resolved library instead of
+fetching it twice. Manifest-backed version-drift coverage now exercises the
+catalog-to-executor path. Focused verification: 107 passed. No deploy,
+generation, bucket write, scheduler, phone, slot, lease, or post action.
+_________________________________________________________________________________

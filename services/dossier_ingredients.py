@@ -39,6 +39,8 @@ from services.source_dna_registry import (
 )
 from services.shipstream_source_manifest import (
     ShipStreamSourceError,
+    ShipStreamSourceMissing,
+    ShipStreamSourceUnavailable,
     load_shipstream_source_dna_library,
 )
 
@@ -488,6 +490,7 @@ def _sourced_ingredients(
     profile: MaterialProfile,
     page_id: str,
     shipstream_library: SourceDnaLibrary | None,
+    shipstream_status: str | None,
 ) -> list[dict[str, Any]]:
     options = _approved_cut_library_options(format_slug)
     master_options = _master_source_options(format_slug, page_id, shipstream_library)
@@ -502,7 +505,9 @@ def _sourced_ingredients(
         _ingredient(
             "master-source-video", "master_video_library", required=True,
             status="bound" if bound_master is not None else (
-                "selection_required" if master_options else "missing"
+                "selection_required" if master_options else (
+                    shipstream_status or "missing"
+                )
             ),
             binding=bound_master,
             options=master_options,
@@ -535,12 +540,14 @@ def _format_entry(
     model_options: list[dict[str, Any]],
     page_id: str,
     shipstream_library: SourceDnaLibrary | None = None,
+    shipstream_status: str | None = None,
 ) -> dict[str, Any]:
     if profile.content_engine == "ai_video":
         ingredients = _generated_ingredients(contract.format_slug, catalog, model_options)
     elif profile.content_engine == "sourced_video":
         ingredients = _sourced_ingredients(
             contract.format_slug, profile, page_id, shipstream_library,
+            shipstream_status,
         )
     else:
         ingredients = _slideshow_ingredients(profile)
@@ -552,7 +559,9 @@ def _format_entry(
     blockers.extend(
         f'{ingredient["ingredientId"]}:{ingredient["status"]}'
         for ingredient in ingredients
-        if ingredient["required"] and ingredient["status"] in {"missing", "selection_required"}
+        if ingredient["required"] and ingredient["status"] in {
+            "missing", "selection_required", "unavailable", "invalid",
+        }
     )
     return {
         "formatId": contract.format_slug,
@@ -595,17 +604,32 @@ def build_dossier_ingredient_catalog(
     prompt_catalog, _ = load_prompt_catalog()
     model_options = _model_options(prompt_catalog)
     shipstream_library = None
+    shipstream_status = None
+    current_source_formats = [
+        format_slug
+        for format_slug, contract in contracts.items()
+        if contract.content_niche == intent["contentNiche"]
+        and contract.content_engine == intent["contentEngine"]
+    ]
+    expected_source_format = (
+        current_source_formats[0] if len(current_source_formats) == 1 else None
+    )
     if intent["contentEngine"] == "sourced_video":
         try:
             shipstream_library = load_shipstream_source_dna_library(
-                intent, page_id=page_id,
+                intent, page_id=page_id, expected_format=expected_source_format,
             )
+        except ShipStreamSourceMissing:
+            shipstream_status = "missing"
+        except ShipStreamSourceUnavailable:
+            shipstream_status = "unavailable"
         except ShipStreamSourceError:
-            pass
+            shipstream_status = "invalid"
     formats = [
         _format_entry(
             contracts[format_slug], profiles[format_slug], prompt_catalog,
             model_options, page_id, shipstream_library,
+            shipstream_status if format_slug == expected_source_format else None,
         )
         for format_slug in sorted(contracts)
     ]
@@ -640,6 +664,9 @@ def selected_dossier_catalog_version(
     master_pages_hash: str,
     format_id: str,
     production: dict[str, Any],
+    *,
+    shipstream_library: SourceDnaLibrary | None = None,
+    load_shipstream: bool = True,
 ) -> str | None:
     """Resolve the exact selected authority without building every format."""
     intent = exact_intent(
@@ -659,14 +686,13 @@ def selected_dossier_catalog_version(
     ):
         return None
     prompt_catalog, _ = load_prompt_catalog()
-    shipstream_library = None
-    if intent["contentEngine"] == "sourced_video":
+    if intent["contentEngine"] == "sourced_video" and load_shipstream:
         try:
             shipstream_library = load_shipstream_source_dna_library(
-                intent, page_id=page_id,
+                intent, page_id=page_id, expected_format=format_id,
             )
         except ShipStreamSourceError:
-            pass
+            return None
     entry = _format_entry(
         contract, profile, prompt_catalog, _model_options(prompt_catalog), page_id,
         shipstream_library,
