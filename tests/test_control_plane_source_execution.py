@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 import routers.control_plane as cp
 import routers.control_plane_recipes as recipes
 from services.control_plane_sources import CUT_SLOT_STEP_MS, resolve_source_recipe
+from services.source_dna_registry import parse_source_dna_manifest
 from services.dossier_ingredients import (
     PINNED_LEGACY_DOSSIER_CATALOG_VERSIONS_BY_PUBLICATION,
     build_dossier_ingredient_catalog,
@@ -141,6 +142,57 @@ def test_source_recipe_rejects_an_arbitrary_stale_catalog_version():
     payload["recipeSpecCanonical"] = canonical
     payload["recipeSpecHash"] = "sha256:" + hashlib.sha256(canonical.encode()).hexdigest()
     assert resolve_source_recipe(payload) is None
+
+
+def test_source_recipe_resolves_the_exact_shipstream_page_library(monkeypatch):
+    import services.control_plane_sources as sources
+    import services.dossier_ingredients as ingredients
+
+    sha256 = "a" * 64
+    source_document = {
+        "schema": "content-lab.source-dna-library.v2",
+        "libraryId": "shipstream-chase-miles-4l-test",
+        "format": "pov-dirt-bike",
+        "pageId": PAGE_ID,
+        "masters": [{
+            "sourceId": f"history-{sha256}",
+            "sha256": sha256,
+            "bytes": 12_345_678,
+            "filename": f"{sha256}.mp4",
+            "mimeType": "video/mp4",
+            "storageKey": f"vault/chase.miles.4l/pool/{sha256}.mp4",
+            "durationMs": 10_000,
+            "sourceOffsetMs": 0,
+            "provenance": {
+                "sourceUrl": (
+                    "https://shipstream.risingtidesviral.com/assets/"
+                    f"vault%2Fchase.miles.4l%2Fpool%2F{sha256}.mp4"
+                ),
+                "acquiredAt": "2026-08-25T20:35:39.194Z",
+                "authority": "ShipStream exact page source",
+            },
+        }],
+    }
+    library = parse_source_dna_manifest(
+        json.dumps(source_document, sort_keys=True, separators=(",", ":")).encode(),
+        source_document["libraryId"],
+    )
+    monkeypatch.setattr(
+        ingredients, "load_shipstream_source_dna_library",
+        lambda *args, **kwargs: library,
+    )
+    monkeypatch.setattr(
+        sources, "load_shipstream_source_dna_library",
+        lambda *args, **kwargs: library,
+    )
+    payload = publication(source_library_id=library.library_id)
+    resolved = resolve_source_recipe(payload)
+    assert resolved is not None
+    assert resolved.source_library_id == library.library_id
+    assert resolved.source_library_hash == library.sha256
+    assert resolved.masters[0].storage_key == (
+        f"vault/chase.miles.4l/pool/{sha256}.mp4"
+    )
 
 
 def headers(idempotency="source-job-0001"):

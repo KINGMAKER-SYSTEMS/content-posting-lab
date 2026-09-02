@@ -26,6 +26,10 @@ from services.source_dna_registry import (
     SourceDnaError,
     load_source_dna_library,
 )
+from services.shipstream_source_manifest import (
+    ShipStreamSourceError,
+    load_shipstream_source_dna_library,
+)
 
 
 EXECUTOR_PATH = (
@@ -182,12 +186,23 @@ def resolve_source_recipe(
     )
     if not isinstance(source_library_id, str) or not source_library_id:
         return None
+    master_pages = spec.get("masterPages")
     try:
         library = load_source_dna_library(source_library_id)
+    except SourceDnaError:
+        try:
+            library = load_shipstream_source_dna_library(
+                master_pages,
+                page_id=str(master_pages.get("pageId") or "") if isinstance(master_pages, dict) else "",
+                expected_format=profile.format_slug,
+                expected_library_id=source_library_id,
+            )
+        except ShipStreamSourceError:
+            return None
+    try:
         contracts, _ = load_format_contracts()
-    except (OSError, ValueError, json.JSONDecodeError, SourceDnaError):
+    except (OSError, ValueError, json.JSONDecodeError):
         return None
-    master_pages = spec.get("masterPages")
     # Local import avoids the ingredient catalog's intentional import of
     # source_treatment_capability from this module.
     from services.dossier_ingredients import (

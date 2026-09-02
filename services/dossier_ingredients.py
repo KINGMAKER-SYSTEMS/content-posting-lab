@@ -33,8 +33,13 @@ from services.dossier_catalog_version import dossier_catalog_version
 from services.master_pages_contract import exact_intent
 from services.source_dna_registry import (
     MANIFEST_DIR as SOURCE_DNA_MANIFEST_DIR,
+    SourceDnaLibrary,
     SourceDnaError,
     parse_source_dna_manifest,
+)
+from services.shipstream_source_manifest import (
+    ShipStreamSourceError,
+    load_shipstream_source_dna_library,
 )
 
 
@@ -372,7 +377,31 @@ def _approved_cut_library_options(format_slug: str) -> list[dict[str, Any]]:
     return options
 
 
-def _master_source_options(format_slug: str, page_id: str) -> list[dict[str, Any]]:
+def _source_library_option(library: SourceDnaLibrary) -> dict[str, Any]:
+    return {
+        "libraryId": library.library_id,
+        "version": f"sha256:{library.sha256}",
+        "pageId": library.page_id,
+        "masterCount": len(library.masters),
+        "masters": [{
+            "sourceId": master.source_id,
+            "sha256": master.sha256,
+            "bytes": master.bytes,
+            "filename": master.filename,
+            "mimeType": master.mime_type,
+            "storageKey": master.storage_key,
+            "durationMs": master.duration_ms,
+            "sourceOffsetMs": master.source_offset_ms,
+            "provenance": master.provenance,
+        } for master in library.masters],
+    }
+
+
+def _master_source_options(
+    format_slug: str,
+    page_id: str,
+    shipstream_library: SourceDnaLibrary | None = None,
+) -> list[dict[str, Any]]:
     options: list[dict[str, Any]] = []
     for path in sorted(Path(SOURCE_DNA_MANIFEST_DIR).glob("*.json")):
         try:
@@ -381,23 +410,14 @@ def _master_source_options(format_slug: str, page_id: str) -> list[dict[str, Any
             continue
         if library.format_slug != format_slug or library.page_id != page_id:
             continue
-        options.append({
-            "libraryId": library.library_id,
-            "version": f"sha256:{library.sha256}",
-            "pageId": library.page_id,
-            "masterCount": len(library.masters),
-            "masters": [{
-                "sourceId": master.source_id,
-                "sha256": master.sha256,
-                "bytes": master.bytes,
-                "filename": master.filename,
-                "mimeType": master.mime_type,
-                "storageKey": master.storage_key,
-                "durationMs": master.duration_ms,
-                "sourceOffsetMs": master.source_offset_ms,
-                "provenance": master.provenance,
-            } for master in library.masters],
-        })
+        options.append(_source_library_option(library))
+    if (
+        shipstream_library is not None
+        and shipstream_library.format_slug == format_slug
+        and shipstream_library.page_id == page_id
+        and all(option["libraryId"] != shipstream_library.library_id for option in options)
+    ):
+        options.append(_source_library_option(shipstream_library))
     return options
 
 
@@ -467,9 +487,10 @@ def _sourced_ingredients(
     format_slug: str,
     profile: MaterialProfile,
     page_id: str,
+    shipstream_library: SourceDnaLibrary | None,
 ) -> list[dict[str, Any]]:
     options = _approved_cut_library_options(format_slug)
-    master_options = _master_source_options(format_slug, page_id)
+    master_options = _master_source_options(format_slug, page_id, shipstream_library)
     bound_master = master_options[0] if len(master_options) == 1 else None
     selected = next(
         (option for option in options if option["libraryId"] == profile.executor_id),
@@ -513,11 +534,14 @@ def _format_entry(
     catalog: dict[str, Any],
     model_options: list[dict[str, Any]],
     page_id: str,
+    shipstream_library: SourceDnaLibrary | None = None,
 ) -> dict[str, Any]:
     if profile.content_engine == "ai_video":
         ingredients = _generated_ingredients(contract.format_slug, catalog, model_options)
     elif profile.content_engine == "sourced_video":
-        ingredients = _sourced_ingredients(contract.format_slug, profile, page_id)
+        ingredients = _sourced_ingredients(
+            contract.format_slug, profile, page_id, shipstream_library,
+        )
     else:
         ingredients = _slideshow_ingredients(profile)
     ingredients.extend([
@@ -570,10 +594,18 @@ def build_dossier_ingredient_catalog(
     profiles, _ = load_engine_registry()
     prompt_catalog, _ = load_prompt_catalog()
     model_options = _model_options(prompt_catalog)
+    shipstream_library = None
+    if intent["contentEngine"] == "sourced_video":
+        try:
+            shipstream_library = load_shipstream_source_dna_library(
+                intent, page_id=page_id,
+            )
+        except ShipStreamSourceError:
+            pass
     formats = [
         _format_entry(
             contracts[format_slug], profiles[format_slug], prompt_catalog,
-            model_options, page_id,
+            model_options, page_id, shipstream_library,
         )
         for format_slug in sorted(contracts)
     ]
@@ -627,8 +659,17 @@ def selected_dossier_catalog_version(
     ):
         return None
     prompt_catalog, _ = load_prompt_catalog()
+    shipstream_library = None
+    if intent["contentEngine"] == "sourced_video":
+        try:
+            shipstream_library = load_shipstream_source_dna_library(
+                intent, page_id=page_id,
+            )
+        except ShipStreamSourceError:
+            pass
     entry = _format_entry(
         contract, profile, prompt_catalog, _model_options(prompt_catalog), page_id,
+        shipstream_library,
     )
     return _selection_catalog_version(entry, production)
 

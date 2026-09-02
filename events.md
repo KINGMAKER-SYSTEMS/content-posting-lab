@@ -67,3 +67,22 @@ verification: 53 recipe, generation, source-execution, and dossier-execution
 tests passed. No deployment, provider generation, video mutation, scheduler,
 slot, lease, device, phone, or post action.
 _________________________________________________________________________________
+
+_________________________________________________________________________________
+
+time: [19:58] [09-01-26]
+agent: [codex] [gpt-5] [shipstream_source_projection]
+worktree: [fix/shipstream-source-projection-20260901] /private/tmp/content-lab-source-vault.hRWhhH
+type: [bug report]: ShipStream page source missing from Dossier and recut execution
+area: [backend]: Master Pages, ShipStream, and Content Lab source projection
+
+Projected each exact Master Pages ShipStream vault source manifest into the
+existing page-scoped source-library contract. Registered page masters and
+explicitly page-bound historical posted cuts now appear as Dossier source
+options and resolve through the recut executor without accepting superseded
+generic masters, foreign pages, or refill-cut drift. Live Love Late Night Walks
+and Things I Left Unsaid manifests parsed successfully with 17 and 12 exact
+page sources. Focused control-plane, Dossier, source-library, and execution
+verification: 105 passed. No generation, bucket write, scheduler, phone, slot,
+lease, or post action.
+_________________________________________________________________________________
