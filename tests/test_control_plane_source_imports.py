@@ -48,7 +48,10 @@ def lab(monkeypatch, tmp_path):
     bind_current_intent(monkeypatch, cp, intent, revision)
     monkeypatch.setenv("CONTROL_PLANE_TOKEN", TOKEN)
     monkeypatch.setenv(
-        "CONTENT_LAB_CONTROL_PLANE_ORIGIN", "https://content-lab.example.com",
+        "CONTENT_LAB_CONTROL_PLANE_ORIGIN", "https://control.example.com",
+    )
+    monkeypatch.setenv(
+        "CONTENT_LAB_PUBLIC_ORIGIN", "https://content-lab.example.com",
     )
     monkeypatch.setattr(cp, "_jobs_path", lambda: tmp_path / "jobs.json")
     generation_root = tmp_path / "generated"
@@ -341,6 +344,20 @@ def test_source_import_artifact_origin_ignores_forwarded_host(lab, monkeypatch):
     artifact = response.json()["artifacts"][0]
     assert artifact["url"].startswith("https://content-lab.example.com/")
     assert "attacker.example" not in artifact["url"]
+
+
+def test_source_import_artifact_origin_is_independent_from_control_plane(lab, monkeypatch):
+    monkeypatch.setenv("CONTENT_LAB_CONTROL_PLANE_ORIGIN", "https://control.example.com")
+    monkeypatch.setenv("CONTENT_LAB_PUBLIC_ORIGIN", "https://content-lab.example.com")
+    assert cp._source_media_origin() == "https://control.example.com"
+    assert cp._source_artifact_origin() == "https://content-lab.example.com"
+    for invalid in (
+        "", "http://content-lab.example.com", "https://user@content-lab.example.com",
+        "https://content-lab.example.com/path",
+    ):
+        monkeypatch.setenv("CONTENT_LAB_PUBLIC_ORIGIN", invalid)
+        with pytest.raises(RuntimeError, match="source_import_public_origin_unavailable"):
+            cp._source_artifact_origin()
 
 
 def test_source_import_requires_allowlist_configuration(lab, monkeypatch):

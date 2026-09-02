@@ -181,3 +181,20 @@ removes the complete partial workspace. Focused source-import verification: 30
 passed; compileall and diff checks passed. No deploy, storage write, generation,
 scheduler, phone, slot, lease, or post action.
 _________________________________________________________________________________
+
+_________________________________________________________________________________
+
+time: [21:41] [01-09-26]
+agent: [codex] [gpt-5] [source_link_intake_hardening]
+worktree: [fix/source-import-artifact-origin-20260901] /private/tmp/content-lab-source-link-intake
+type: [bug report]: Separate Content Lab artifact and Control Plane origins
+area: [backend]: Source-import artifact transport
+
+Separated the pinned public origin used for Content Lab's tokenized job
+artifacts from the existing Control Plane origin used to retrieve authoritative
+page-vault media. Source imports now require `CONTENT_LAB_PUBLIC_ORIGIN`, while
+`CONTENT_LAB_CONTROL_PLANE_ORIGIN` retains its original responsibility. Focused
+source-import, source-execution, and downloader verification: 45 passed;
+compileall and diff checks passed. No storage write, generation, scheduler,
+phone, slot, lease, or post action.
+_________________________________________________________________________________
