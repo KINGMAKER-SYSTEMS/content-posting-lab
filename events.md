@@ -211,3 +211,18 @@ source-import, source-execution, and downloader verification: 45 passed;
 compileall and diff checks passed. No storage write, generation, scheduler,
 phone, slot, lease, or post action.
 _________________________________________________________________________________
+
+_________________________________________________________________________________
+
+time: [22:27] [09-01-26]
+agent: [codex] [gpt-5] [review_sweep]
+worktree: [codex/review-notion-page-id-20260901]
+type: [review]: Rebase onto approved-cut projection
+area: [backend]: ShipStream manifest authority contracts
+
+Rebased the Notion page-identity fix onto current main while preserving the
+newer approved-cut projection, page-source intake, and artifact-origin
+contracts plus every append-only ledger entry. The source-master authority
+check remains separate from the approved derivative catalog. No generation,
+bucket write, scheduler, slot, lease, device, phone, deployment, or post action.
+_________________________________________________________________________________
