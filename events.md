@@ -105,3 +105,22 @@ fetching it twice. Manifest-backed version-drift coverage now exercises the
 catalog-to-executor path. Focused verification: 107 passed. No deploy,
 generation, bucket write, scheduler, phone, slot, lease, or post action.
 _________________________________________________________________________________
+
+_________________________________________________________________________________
+
+time: [20:48] [01-09-26]
+agent: [codex] [gpt-5] [shipstream_approved_cut_projection]
+worktree: [fix/shipstream-approved-cut-projection-20260901] /private/tmp/content-lab-approved-cuts.lyAYF1
+type: [bug report]: Dossier falsely reports existing ShipStream cuts as missing
+area: [backend]: ShipStream source manifest and Dossier ingredient catalog
+
+Added a separate typed projection for page-scoped approved derivative clips in
+the same ShipStream manifest already used for source resolution. Dossier now
+receives each exact output SHA and R2 key with its parent source, cut window,
+speed, media facts, and review record while keeping source masters as the only
+recut authority. The live recovered manifests parse as 17 parents plus 18 cuts
+for Love Late Night Walks and 12 parents plus 18 cuts for Things I Left Unsaid.
+Focused Dossier, source-manifest, registry, recipe, generation, and source-
+execution verification: 137 passed. No generation, bucket write, scheduler,
+device, phone, slot, lease, or post action.
+_________________________________________________________________________________

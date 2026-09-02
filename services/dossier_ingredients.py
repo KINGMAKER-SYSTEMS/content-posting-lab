@@ -38,10 +38,13 @@ from services.source_dna_registry import (
     parse_source_dna_manifest,
 )
 from services.shipstream_source_manifest import (
+    ShipStreamApprovedCutLibrary,
+    ShipStreamSourceProjection,
     ShipStreamSourceError,
     ShipStreamSourceMissing,
     ShipStreamSourceUnavailable,
     load_shipstream_source_dna_library,
+    load_shipstream_source_projection,
 )
 
 
@@ -379,6 +382,45 @@ def _approved_cut_library_options(format_slug: str) -> list[dict[str, Any]]:
     return options
 
 
+def _shipstream_approved_cut_option(
+    library: ShipStreamApprovedCutLibrary,
+) -> dict[str, Any]:
+    return {
+        "libraryId": library.library_id,
+        "version": f"sha256:{library.sha256}",
+        "pageId": library.page_id,
+        "clipCount": len(library.cuts),
+        "totalBytes": sum(cut.bytes for cut in library.cuts),
+        "selectionAuthority": "shipstream.source-manifest.v1",
+        "role": "approved_derivative_clips",
+        "recutEligible": False,
+        "lineageStatus": "complete",
+        "clips": [{
+            "ordinal": cut.ordinal,
+            "sha256": cut.sha256,
+            "bytes": cut.bytes,
+            "filename": f"{cut.sha256}.mp4",
+            "storageKey": cut.storage_key,
+            "thumbnailStorageKey": (
+                f"{cut.storage_key.rsplit('/', 1)[0]}/thumbs/{cut.sha256}.jpg"
+            ),
+            "parentSource": {
+                "sha256": cut.parent_sha256,
+                "type": cut.parent_type,
+            },
+            "cutWindow": {
+                "sourceStartSeconds": cut.source_start_ms / 1_000,
+                "sourceDurationSeconds": cut.source_duration_ms / 1_000,
+                "outputDurationSeconds": cut.output_duration_ms / 1_000,
+                "playbackSpeed": cut.playback_speed,
+            },
+            "media": cut.media,
+            "review": cut.review,
+            "uploadedAt": cut.uploaded_at,
+        } for cut in library.cuts],
+    }
+
+
 def _source_library_option(library: SourceDnaLibrary) -> dict[str, Any]:
     return {
         "libraryId": library.library_id,
@@ -491,16 +533,33 @@ def _sourced_ingredients(
     page_id: str,
     shipstream_library: SourceDnaLibrary | None,
     shipstream_status: str | None,
+    shipstream_projection: ShipStreamSourceProjection | None = None,
 ) -> list[dict[str, Any]]:
     options = _approved_cut_library_options(format_slug)
+    projected_cuts = None
+    projection_matches = (
+        shipstream_projection is not None
+        and shipstream_projection.source_library.format_slug == format_slug
+        and shipstream_projection.source_library.page_id == page_id
+    )
+    if projection_matches and shipstream_projection.approved_cut_library is not None:
+        projected_cuts = _shipstream_approved_cut_option(
+            shipstream_projection.approved_cut_library,
+        )
+        options.append(projected_cuts)
     master_options = _master_source_options(format_slug, page_id, shipstream_library)
     bound_master = master_options[0] if len(master_options) == 1 else None
-    selected = next(
-        (option for option in options if option["libraryId"] == profile.executor_id),
-        None,
-    )
-    if selected is None and len(options) == 1:
-        selected = options[0]
+    if projection_matches:
+        selected = projected_cuts
+        approved_cut_status = shipstream_projection.approved_cut_status
+    else:
+        selected = next(
+            (option for option in options if option["libraryId"] == profile.executor_id),
+            None,
+        )
+        if selected is None and len(options) == 1:
+            selected = options[0]
+        approved_cut_status = "reference" if selected is not None else "missing"
     return [
         _ingredient(
             "master-source-video", "master_video_library", required=True,
@@ -514,7 +573,7 @@ def _sourced_ingredients(
         ),
         _ingredient(
             "approved-cut-library", "approved_derivative_video_library", required=False,
-            status="reference" if selected is not None else "missing",
+            status=approved_cut_status,
             binding=selected, options=options,
         ),
         _ingredient(
@@ -541,13 +600,14 @@ def _format_entry(
     page_id: str,
     shipstream_library: SourceDnaLibrary | None = None,
     shipstream_status: str | None = None,
+    shipstream_projection: ShipStreamSourceProjection | None = None,
 ) -> dict[str, Any]:
     if profile.content_engine == "ai_video":
         ingredients = _generated_ingredients(contract.format_slug, catalog, model_options)
     elif profile.content_engine == "sourced_video":
         ingredients = _sourced_ingredients(
             contract.format_slug, profile, page_id, shipstream_library,
-            shipstream_status,
+            shipstream_status, shipstream_projection,
         )
     else:
         ingredients = _slideshow_ingredients(profile)
@@ -604,6 +664,7 @@ def build_dossier_ingredient_catalog(
     prompt_catalog, _ = load_prompt_catalog()
     model_options = _model_options(prompt_catalog)
     shipstream_library = None
+    shipstream_projection = None
     shipstream_status = None
     current_source_formats = [
         format_slug
@@ -616,9 +677,10 @@ def build_dossier_ingredient_catalog(
     )
     if intent["contentEngine"] == "sourced_video":
         try:
-            shipstream_library = load_shipstream_source_dna_library(
+            shipstream_projection = load_shipstream_source_projection(
                 intent, page_id=page_id, expected_format=expected_source_format,
             )
+            shipstream_library = shipstream_projection.source_library
         except ShipStreamSourceMissing:
             shipstream_status = "missing"
         except ShipStreamSourceUnavailable:
@@ -630,6 +692,7 @@ def build_dossier_ingredient_catalog(
             contracts[format_slug], profiles[format_slug], prompt_catalog,
             model_options, page_id, shipstream_library,
             shipstream_status if format_slug == expected_source_format else None,
+            shipstream_projection,
         )
         for format_slug in sorted(contracts)
     ]
