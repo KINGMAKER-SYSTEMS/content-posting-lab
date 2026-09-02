@@ -106,6 +106,19 @@ catalog-to-executor path. Focused verification: 107 passed. No deploy,
 generation, bucket write, scheduler, phone, slot, lease, or post action.
 _________________________________________________________________________________
 
+time: [20:16] [09-01-26]
+agent: [codex] [gpt-5] [review_sweep]
+worktree: [codex/review-notion-page-id-20260901]
+type: [bug report]: Missing exact Notion authority on ShipStream source manifests
+area: [review]: Content Lab source projection
+
+Addressed the Codex finding on PR #93. Source projection now refuses a missing
+or blank Master Pages Notion page id before comparing any manifest fields, so
+two omitted values cannot masquerade as an exact page binding. The focused
+test covers null, empty, and whitespace-only authority. No generation, bucket
+write, scheduler, slot, lease, device, phone, or post action.
+_________________________________________________________________________________
+
 _________________________________________________________________________________
 
 time: [20:48] [01-09-26]
@@ -197,4 +210,19 @@ page-vault media. Source imports now require `CONTENT_LAB_PUBLIC_ORIGIN`, while
 source-import, source-execution, and downloader verification: 45 passed;
 compileall and diff checks passed. No storage write, generation, scheduler,
 phone, slot, lease, or post action.
+_________________________________________________________________________________
+
+_________________________________________________________________________________
+
+time: [22:27] [09-01-26]
+agent: [codex] [gpt-5] [review_sweep]
+worktree: [codex/review-notion-page-id-20260901]
+type: [review]: Rebase onto approved-cut projection
+area: [backend]: ShipStream manifest authority contracts
+
+Rebased the Notion page-identity fix onto current main while preserving the
+newer approved-cut projection, page-source intake, and artifact-origin
+contracts plus every append-only ledger entry. The source-master authority
+check remains separate from the approved derivative catalog. No generation,
+bucket write, scheduler, slot, lease, device, phone, deployment, or post action.
 _________________________________________________________________________________
