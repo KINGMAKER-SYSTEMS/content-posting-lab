@@ -182,6 +182,7 @@ def test_source_recipe_resolves_the_exact_shipstream_page_library(monkeypatch):
             "uploadedAt": "2026-08-25T20:35:39.194Z",
             "media": {"durationSeconds": 10.0},
         }],
+        "cuts": [],
     }
     current_manifest = [manifest]
     monkeypatch.setattr(

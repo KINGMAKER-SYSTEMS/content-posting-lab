@@ -33,6 +33,11 @@
   unavailable rather than falsely reported as missing. The selected Content
   Lab format must match the Master Pages niche before a source is displayed or
   executed.
+- Dossier projects the same ShipStream manifest's approved cuts as a separate
+  page-scoped derivative library. Every displayed cut must retain its exact R2
+  key, output SHA, parent SHA/type, source window, speed, output duration, media
+  facts, and review record. Approved cuts never become source masters, never
+  widen across pages, and never change the executable source-library version.
 - A publishable caption render requires exact caption text and a complete page
   style: font, size, color, position, alignment, and line balance.
 - Resolve fonts only from Content Lab's installed, advertised TikTokSans files.

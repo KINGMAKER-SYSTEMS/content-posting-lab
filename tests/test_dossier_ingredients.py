@@ -131,10 +131,11 @@ def test_selected_version_ignores_unrelated_format_authority_changes(monkeypatch
     def changed_unrelated(
         contract, profile, catalog, model_options, page_id,
         shipstream_library=None, shipstream_status=None,
+        shipstream_projection=None,
     ):
         entry = original(
             contract, profile, catalog, model_options, page_id,
-            shipstream_library, shipstream_status,
+            shipstream_library, shipstream_status, shipstream_projection,
         )
         if entry["formatId"] == "pov-night-core":
             entry = copy.deepcopy(entry)
@@ -163,10 +164,11 @@ def test_selected_version_ignores_an_unused_same_niche_format(monkeypatch):
     def changed_unused_candidate(
         contract, profile, catalog, model_options, page_id,
         shipstream_library=None, shipstream_status=None,
+        shipstream_projection=None,
     ):
         entry = original(
             contract, profile, catalog, model_options, page_id,
-            shipstream_library, shipstream_status,
+            shipstream_library, shipstream_status, shipstream_projection,
         )
         if entry["formatId"] == "truck-ugc":
             entry = copy.deepcopy(entry)
@@ -279,10 +281,11 @@ def test_selected_version_changes_with_its_exact_format_authority(monkeypatch):
     def changed_current(
         contract, profile, catalog, model_options, page_id,
         shipstream_library=None, shipstream_status=None,
+        shipstream_projection=None,
     ):
         entry = original(
             contract, profile, catalog, model_options, page_id,
-            shipstream_library, shipstream_status,
+            shipstream_library, shipstream_status, shipstream_projection,
         )
         if entry["formatId"] == "truck-scenic":
             entry = copy.deepcopy(entry)
@@ -393,7 +396,10 @@ def test_reference_and_source_slots_come_from_real_catalogs(monkeypatch):
 
 def test_shipstream_page_source_is_bound_only_to_its_matching_format(monkeypatch):
     import services.dossier_ingredients as ingredients
-    from services.shipstream_source_manifest import parse_shipstream_source_manifest
+    from services.shipstream_source_manifest import (
+        load_shipstream_source_projection,
+        parse_shipstream_source_projection,
+    )
 
     page_id = "acct:operator:love-night"
     intent, revision = master_pages(
@@ -407,6 +413,7 @@ def test_shipstream_page_source_is_bound_only_to_its_matching_format(monkeypatch
     intent["automationMode"] = "Operator"
     revision = intent_hash(intent)
     sha256 = "a" * 64
+    cut_sha = "c" * 64
     manifest = {
         "schema": "shipstream.source-manifest.v1",
         "page": "lovenightwalks",
@@ -435,13 +442,39 @@ def test_shipstream_page_source_is_bound_only_to_its_matching_format(monkeypatch
             "uploadedAt": "2026-08-25T20:35:39.194Z",
             "media": {"durationSeconds": 10.01},
         }],
+        "cuts": [{
+            "ordinal": 0,
+            "sha256": cut_sha,
+            "storageKey": f"vault/lovenightwalks/pool/{cut_sha}.mp4",
+            "parentSha256": sha256,
+            "parentType": "historical_posted_cut",
+            "sourceStartSeconds": 0.5,
+            "sourceDurationSeconds": 6.0,
+            "outputDurationSeconds": 6.0,
+            "playbackSpeed": 1.0,
+            "status": "ready",
+            "review": "technical-pass-and-page-bound-historical-identity",
+            "uploadedAt": "2026-09-01T21:25:40Z",
+            "media": {
+                "audioStreams": 0,
+                "bytes": 5_000_000,
+                "durationSeconds": 6.0,
+                "fps": 30.0,
+                "height": 1920,
+                "pixelFormat": "yuv420p",
+                "videoCodec": "h264",
+                "width": 1080,
+            },
+        }],
     }
-    library = parse_shipstream_source_manifest(
+    projection = parse_shipstream_source_projection(
         json.dumps(manifest).encode(), intent, page_id=page_id,
     )
+    library = projection.source_library
+    current_projection = [projection]
     monkeypatch.setattr(
-        ingredients, "load_shipstream_source_dna_library",
-        lambda *args, **kwargs: library,
+        ingredients, "load_shipstream_source_projection",
+        lambda *args, **kwargs: current_projection[0],
     )
     catalog = ingredients.build_dossier_ingredient_catalog(
         page_id, intent, revision,
@@ -453,12 +486,68 @@ def test_shipstream_page_source_is_bound_only_to_its_matching_format(monkeypatch
     assert master["binding"]["masters"][0]["storageKey"] == (
         f"vault/lovenightwalks/pool/{sha256}.mp4"
     )
-    assert _source_selection(
+    selected_version = _source_selection(
         catalog, "pov-night-core", library.library_id,
-    )["catalogVersion"].startswith("sha256:")
+    )["catalogVersion"]
+    assert selected_version.startswith("sha256:")
+    approved = _ingredient(night, "approved-cut-library")
+    assert approved["status"] == "reference"
+    assert approved["binding"]["pageId"] == page_id
+    assert approved["binding"]["clipCount"] == 1
+    assert approved["binding"]["lineageStatus"] == "complete"
+    assert approved["binding"]["clips"][0]["parentSource"] == {
+        "sha256": sha256,
+        "type": "historical_posted_cut",
+    }
+    assert approved["binding"]["clips"][0]["cutWindow"] == {
+        "sourceStartSeconds": 0.5,
+        "sourceDurationSeconds": 6.0,
+        "outputDurationSeconds": 6.0,
+        "playbackSpeed": 1.0,
+    }
     scenic = _ingredient(_format(catalog, "pov-scenic"), "master-source-video")
     assert all(option["libraryId"] != library.library_id
                for option in scenic["options"])
+
+    changed_manifest = copy.deepcopy(manifest)
+    second_cut = copy.deepcopy(changed_manifest["cuts"][0])
+    second_cut_sha = "d" * 64
+    second_cut.update({
+        "ordinal": 1,
+        "sha256": second_cut_sha,
+        "storageKey": f"vault/lovenightwalks/pool/{second_cut_sha}.mp4",
+        "sourceStartSeconds": 1.5,
+    })
+    changed_manifest["cuts"].append(second_cut)
+    current_projection[0] = parse_shipstream_source_projection(
+        json.dumps(changed_manifest).encode(), intent, page_id=page_id,
+    )
+    after_refill = ingredients.build_dossier_ingredient_catalog(
+        page_id, intent, revision,
+    )
+    assert after_refill["catalogVersion"] != catalog["catalogVersion"]
+    assert _source_selection(
+        after_refill, "pov-night-core", library.library_id,
+    )["catalogVersion"] == selected_version
+
+    invalid_cut_manifest = copy.deepcopy(manifest)
+    invalid_cut_manifest["cuts"][0]["parentSha256"] = "e" * 64
+    current_projection[0] = load_shipstream_source_projection(
+        intent,
+        page_id=page_id,
+        fetch_manifest=lambda _url: json.dumps(invalid_cut_manifest).encode(),
+    )
+    invalid_cuts = ingredients.build_dossier_ingredient_catalog(
+        page_id, intent, revision,
+    )
+    invalid_night = _format(invalid_cuts, "pov-night-core")
+    assert _ingredient(invalid_night, "master-source-video")["status"] == "bound"
+    approved = _ingredient(invalid_night, "approved-cut-library")
+    assert approved["status"] == "invalid"
+    assert approved["binding"] is None
+    assert _source_selection(
+        invalid_cuts, "pov-night-core", library.library_id,
+    )["catalogVersion"] == selected_version
 
 
 def test_shipstream_manifest_format_cannot_override_master_pages_niche(monkeypatch):
