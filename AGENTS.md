@@ -10,6 +10,9 @@
 - `services/caption_render.py` owns the typed Dossier-to-render caption contract.
 - `services/caption_discipline.py` owns Content Lab's closed validation of the
   caption corpus/register selection already made by Dossier and Control Plane.
+- `services/control_plane_source_imports.py` owns bounded public-HTTPS download,
+  exact-byte hashing, media probing, and refillable-master normalization for
+  page-scoped source-link intake.
 - `routers/burn.py` exposes caption rendering and final video compositing.
 - `burn_server.py` exposes the same typed caption-render route on the posting
   Mac's canonical port-8002 Burn runtime for Rail consumption.
@@ -38,6 +41,13 @@
   key, output SHA, parent SHA/type, source window, speed, output duration, media
   facts, and review record. Approved cuts never become source masters, never
   widen across pages, and never change the executable source-library version.
+- Source-link intake requires the authenticated control-plane lane, one exact
+  current Master Pages intent/hash, and the matching sourced-video format. It
+  returns a durable job artifact only after Content Lab has downloaded the URL
+  under time/size limits and normalized it to muted H.264/yuv420p 1080x1920 at
+  30fps. The artifact preserves both normalized and original download hashes,
+  byte counts, and probed media facts. Content Lab never admits that artifact
+  into ShipStream or mutates the page source manifest.
 - A publishable caption render requires exact caption text and a complete page
   style: font, size, color, position, alignment, and line balance.
 - Resolve fonts only from Content Lab's installed, advertised TikTokSans files.

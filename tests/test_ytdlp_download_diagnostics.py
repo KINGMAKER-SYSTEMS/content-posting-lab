@@ -87,6 +87,22 @@ def test_browser_probes_are_skipped_in_a_container(monkeypatch, tmp_path):
     assert not any("--cookies-from-browser" in c for c in calls)
 
 
+def test_bounded_call_forwards_max_filesize_to_ytdlp(monkeypatch, tmp_path):
+    exec_stub, calls = _fake_exec([(lambda cmd: True, 1, b"ERROR: unavailable")])
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", exec_stub)
+    monkeypatch.setattr(fe, "_in_container", lambda: True)
+
+    with pytest.raises(RuntimeError):
+        asyncio.run(fe.download_video(
+            "https://cdn.example.com/video.mp4",
+            tmp_path / "o.mp4",
+            max_filesize=123_456,
+        ))
+
+    command = calls[0]
+    assert command[command.index("--max-filesize") + 1] == "123456"
+
+
 def test_browser_probe_failure_does_not_blame_the_cookies_file(monkeypatch, tmp_path):
     """A missing Chrome profile is an environment fact, not an auth rejection.
 

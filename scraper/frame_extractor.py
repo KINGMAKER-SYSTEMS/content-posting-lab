@@ -304,7 +304,11 @@ def _classify(err: str) -> str:
 
 
 async def download_video(
-    video_url: str, dest: Path, cookies_file: Path | None = None
+    video_url: str,
+    dest: Path,
+    cookies_file: Path | None = None,
+    *,
+    max_filesize: int | None = None,
 ) -> Path:
     """Download a video using yt-dlp. Returns path to the mp4.
 
@@ -331,6 +335,10 @@ async def download_video(
         str(dest),
         "--no-check-certificates",
     ]
+    if max_filesize is not None:
+        if isinstance(max_filesize, bool) or not isinstance(max_filesize, int) or max_filesize < 1:
+            raise ValueError("max_filesize must be a positive integer")
+        base_cmd += ["--max-filesize", str(max_filesize)]
 
     # Build auth strategies in order of preference.
     strategies: list[tuple[str, list[str]]] = []
@@ -360,7 +368,15 @@ async def download_video(
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        _, stderr = await proc.communicate()
+        try:
+            _, stderr = await proc.communicate()
+        except asyncio.CancelledError:
+            # Callers may enforce a bounded import timeout. Do not leave yt-dlp
+            # running after the awaiting task has been cancelled.
+            if proc.returncode is None:
+                proc.kill()
+                await proc.communicate()
+            raise
 
         if proc.returncode == 0:
             if dest.exists():

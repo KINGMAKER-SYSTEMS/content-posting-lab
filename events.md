@@ -124,3 +124,21 @@ Focused Dossier, source-manifest, registry, recipe, generation, and source-
 execution verification: 137 passed. No generation, bucket write, scheduler,
 device, phone, slot, lease, or post action.
 _________________________________________________________________________________
+
+_________________________________________________________________________________
+
+time: [21:09] [01-09-26]
+agent: [codex] [gpt-5] [page_source_link_intake]
+worktree: [feat/page-source-link-intake-20260901] /private/tmp/content-lab-source-link-intake
+type: [feature-request]: Page-scoped source-link intake
+area: [backend]: Control-plane source artifacts and Clipper downloader
+
+Added an authenticated, idempotent source-import job for one exact current
+Master Pages page and sourced-video format. Content Lab reuses the Clipper URL
+downloader under public-HTTPS, time, and byte ceilings, records the exact
+download hash and probed media, then center-crops/scales to muted H.264/yuv420p
+1080x1920 at 30fps before exposing the normalized hash-bound bytes through the
+existing job/status/artifact contract. The route does not write ShipStream,
+admit content, generate media, or mutate any scheduler, device, slot, lease, or
+post state. Focused verification: 48 passed.
+_________________________________________________________________________________
