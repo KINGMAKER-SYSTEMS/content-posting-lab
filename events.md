@@ -198,3 +198,28 @@ source-import, source-execution, and downloader verification: 45 passed;
 compileall and diff checks passed. No storage write, generation, scheduler,
 phone, slot, lease, or post action.
 _________________________________________________________________________________
+
+_________________________________________________________________________________
+
+time: [16:19] [02-09-26]
+agent: [codex desktop] [gpt-5.6-sol]
+worktree: [fix/roster-completeness-proof-20260902] /private/tmp/content-lab-roster.L7umT8
+type: [bug report]: Bind roster refresh completeness to the canonical projection
+area: [backend]: Master Pages roster machine contract
+
+The refresh route now reports the exact bounded canonical projection count,
+legacy short snapshot version, full SHA-256 projection hash, and a server-owned
+completeness flag from the same projection returned by the roster snapshot.
+Raw Notion row count remains diagnostic and no longer stands in for canonical
+page count. Errors or projection overflow force completeness false; a later
+consumer read must match the count, version, and full hash before any
+destructive alias cleanup is eligible. The response remains credential-free.
+
+Focused roster verification passed 15 tests. The complete control-plane,
+Notion, and roster regression set passed 133 tests after the full-hash
+hardening. The repository-wide suite remains
+stopped at collection by the pre-existing missing `factory.formats` package in
+`tests/test_cards_no_shell.py`. Independent P1/P2 review is clean. No
+generation, storage, scheduler, device, phone, slot, lease, or post mutation
+occurred.
+_________________________________________________________________________________
