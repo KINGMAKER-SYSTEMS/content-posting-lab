@@ -35,7 +35,8 @@
   Source-manifest reads are hard size-bounded; transport failure is reported as
   unavailable rather than falsely reported as missing. The selected Content
   Lab format must match the Master Pages niche before a source is displayed or
-  executed.
+  executed. The Master Pages Notion page id itself must be nonblank; a null id
+  never matches omitted manifest fields or establishes exact-page authority.
 - Dossier projects the same ShipStream manifest's approved cuts as a separate
   page-scoped derivative library. Every displayed cut must retain its exact R2
   key, output SHA, parent SHA/type, source window, speed, output duration, media
