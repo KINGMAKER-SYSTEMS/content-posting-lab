@@ -165,3 +165,19 @@ stops during collection because the pre-existing `tests/test_cards_no_shell.py`
 cannot import `factory.formats`. No deploy, storage write, generation,
 scheduler, phone, slot, lease, or post action.
 _________________________________________________________________________________
+
+_________________________________________________________________________________
+
+time: [21:36] [01-09-26]
+agent: [codex] [gpt-5] [source_link_intake_hardening]
+worktree: [feat/page-source-link-intake-20260901] /private/tmp/content-lab-source-link-intake
+type: [bug report]: Recursive source-import workspace accounting
+area: [backend]: Content Lab source downloader resource ceiling
+
+Changed the source-import workspace meter to count every nested regular file,
+including downloader fragment directories, while ignoring symlinks. Added a
+regression proving a nested fragment overflow cancels the active downloader and
+removes the complete partial workspace. Focused source-import verification: 30
+passed; compileall and diff checks passed. No deploy, storage write, generation,
+scheduler, phone, slot, lease, or post action.
+_________________________________________________________________________________

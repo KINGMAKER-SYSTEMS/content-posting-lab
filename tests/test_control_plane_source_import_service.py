@@ -275,6 +275,34 @@ def test_workspace_overflow_cancels_download_and_removes_partial_directory(
     assert not destination.parent.exists()
 
 
+def test_workspace_overflow_counts_nested_downloader_fragments(monkeypatch, tmp_path):
+    monkeypatch.setattr(imports, "MAX_SOURCE_IMPORT_WORKSPACE_BYTES", 4)
+    monkeypatch.setattr(imports, "SOURCE_IMPORT_POLL_SECONDS", 0.001)
+    cancelled = []
+
+    async def downloader(
+        _url, destination, cookies_file=None, *, max_filesize=None,
+        source_import_mode=False,
+    ):
+        fragments = destination.parent / "fragments"
+        fragments.mkdir()
+        (fragments / "part-0001").write_bytes(b"12345")
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancelled.append(True)
+            raise
+
+    monkeypatch.setattr(imports, "download_video", downloader)
+    destination = tmp_path / "source" / "source.mp4"
+    with pytest.raises(imports.SourceImportError, match="workspace limit"):
+        asyncio.run(imports.download_source_video(
+            "https://cdn.example.com/video.mp4", destination,
+        ))
+    assert cancelled == [True]
+    assert not destination.parent.exists()
+
+
 def test_caller_cancellation_removes_partial_directory(monkeypatch, tmp_path):
     started = asyncio.Event()
 

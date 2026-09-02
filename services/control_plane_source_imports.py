@@ -255,7 +255,7 @@ def validate_source_url(
 def _tree_bytes(root: Path) -> int:
     total = 0
     try:
-        paths = root.iterdir()
+        paths = root.rglob("*")
     except FileNotFoundError:
         return 0
     for path in paths:
