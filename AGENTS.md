@@ -76,6 +76,12 @@
   alignment, and offset instead of forcing every page back to that legacy look.
 - Do not publish or queue a TikTok post from Content Lab without explicit user
   authorization.
+- The machine roster refresh and roster snapshot share one sanitized canonical
+  Master Pages projection. Refresh returns that projection's exact count and
+  full SHA-256 content hash plus a server-owned completeness flag; consumers may perform
+  destructive alias retirement only when a subsequent snapshot matches both.
+  Raw Notion row count is diagnostic only and must never stand in for the
+  projected page count.
 
 ## Work Guidance
 

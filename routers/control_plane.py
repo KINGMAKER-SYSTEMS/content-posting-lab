@@ -365,6 +365,53 @@ def _snapshot_page(page: dict[str, Any]) -> dict[str, Any] | None:
     }
 
 
+def _roster_projection() -> tuple[dict[str, Any], bool]:
+    """Build the one canonical Master Pages projection shared by both routes.
+
+    Refresh returns only its count and content hash, while GET returns the rows.
+    A consumer can therefore prove the snapshot it read is the exact projection
+    produced by the completed refresh without comparing it to raw Notion rows.
+    """
+    from services.roster import ROSTER_PATH, list_all_pages
+
+    pages: list[dict[str, Any]] = []
+    for raw in list_all_pages():
+        if raw.get("source") != "notion":
+            continue
+        page = _snapshot_page(raw)
+        if page is not None:
+            pages.append(page)
+    pages.sort(key=lambda page: page["pageId"])
+    projection_complete = len(pages) <= MAX_ROSTER_PAGES
+    pages = pages[:MAX_ROSTER_PAGES]
+
+    canonical = json.dumps(pages, sort_keys=True, separators=(",", ":"))
+    digest = hashlib.sha256(canonical.encode()).hexdigest()
+    version = "r" + digest[:12]
+
+    captured_at = None
+    try:
+        captured_at = datetime.fromtimestamp(
+            ROSTER_PATH.stat().st_mtime, timezone.utc
+        ).isoformat()
+    except OSError:
+        # No cache, no freshness claim. The snapshot is empty in that case
+        # anyway; the plane's reconcile treats an empty snapshot as "say
+        # nothing", never as "the fleet is gone".
+        pass
+
+    return (
+        {
+            "schema": RESPONSE_SCHEMA,
+            "snapshotVersion": version,
+            "projectionHash": "sha256:" + digest,
+            "capturedAt": captured_at,
+            "pages": pages,
+        },
+        projection_complete,
+    )
+
+
 def _current_master_pages_intent(
     page_id: str,
     asserted: dict[str, Any] | None = None,
@@ -457,44 +504,8 @@ def roster_snapshot(
     if not x_rt_lane or not LANE_RE.match(x_rt_lane):
         raise HTTPException(status_code=400, detail="X-RT-Lane header is required")
 
-    # Imported here so importing this router never touches the roster cache
-    # for a caller that only wanted capabilities.
-    from services.roster import ROSTER_PATH, list_all_pages
-
-    pages: list[dict[str, Any]] = []
-    for raw in list_all_pages():
-        # This endpoint is the Master Pages projection. Legacy/Postiz rows stay
-        # available to the operator UI through the roster service, but they do
-        # not carry the ontology and therefore cannot enter control-plane logic.
-        if raw.get("source") != "notion":
-            continue
-        page = _snapshot_page(raw)
-        if page is not None:
-            pages.append(page)
-        if len(pages) >= MAX_ROSTER_PAGES:
-            break
-    pages.sort(key=lambda page: page["pageId"])
-
-    canonical = json.dumps(pages, sort_keys=True, separators=(",", ":"))
-    version = "r" + hashlib.sha256(canonical.encode()).hexdigest()[:12]
-
-    captured_at = None
-    try:
-        captured_at = datetime.fromtimestamp(
-            ROSTER_PATH.stat().st_mtime, timezone.utc
-        ).isoformat()
-    except OSError:
-        # No cache, no freshness claim. The snapshot is empty in that case
-        # anyway; the plane's reconcile treats an empty snapshot as "say
-        # nothing", never as "the fleet is gone".
-        captured_at = None
-
-    return {
-        "schema": RESPONSE_SCHEMA,
-        "snapshotVersion": version,
-        "capturedAt": captured_at,
-        "pages": pages,
-    }
+    projection, _ = _roster_projection()
+    return projection
 
 
 @router.post("/v1/roster/refresh")
@@ -530,12 +541,18 @@ async def refresh_roster_snapshot(
         raise HTTPException(status_code=502, detail="Notion roster refresh failed")
 
     errors = result.get("errors") if isinstance(result, dict) else None
+    error_count = len(errors) if isinstance(errors, list) else 0
+    projection, projection_complete = _roster_projection()
     return {
         "schema": RESPONSE_SCHEMA,
         "added": int(result.get("added", 0)),
         "updated": int(result.get("updated", 0)),
         "totalInNotion": int(result.get("total_in_notion", 0)),
-        "errorCount": len(errors) if isinstance(errors, list) else 0,
+        "projectedCount": len(projection["pages"]),
+        "snapshotVersion": projection["snapshotVersion"],
+        "projectionHash": projection["projectionHash"],
+        "complete": error_count == 0 and projection_complete,
+        "errorCount": error_count,
     }
 
 

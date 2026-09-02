@@ -87,6 +87,8 @@ def test_snapshot_carries_the_ontology_and_only_the_ontology(client):
     body = res.json()
     assert body["schema"] == "content-lab.response.v1"
     assert body["snapshotVersion"].startswith("r")
+    assert body["projectionHash"].startswith("sha256:")
+    assert len(body["projectionHash"]) == 71
 
     [page] = body["pages"]
     assert page["pageId"] == "acct:truck-tok-daily"
@@ -231,9 +233,103 @@ def test_machine_refresh_returns_counts_without_roster_rows(client, monkeypatch)
         "added": 3,
         "updated": 19,
         "totalInNotion": 22,
+        "projectedCount": 0,
+        "snapshotVersion": "r4f53cda18c2b",
+        "projectionHash": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "complete": False,
         "errorCount": 1,
     }
     assert "password" not in response.text
+
+
+def test_machine_refresh_proof_matches_the_immediate_canonical_snapshot(client, monkeypatch):
+    import services.notion_pages as notion_pages
+
+    monkeypatch.setattr(notion_pages, "is_configured", lambda: True)
+    monkeypatch.setenv("CONTROL_PLANE_TOKEN", "test-control-plane-token")
+
+    async def refresh():
+        _seed(
+            **{
+                "acct:canonical": {
+                    "name": "canonical.page",
+                    "source": "notion",
+                    "notion_page_id": "3281465b-b829-8000-8000-000000000001",
+                },
+                "postiz:legacy": {
+                    "name": "legacy.page",
+                    "source": None,
+                },
+            },
+        )
+        return {
+            "added": 1,
+            "updated": 0,
+            "total_in_notion": 2,
+            "errors": [],
+            "pages": [{"password": "must-not-cross"}],
+        }
+
+    monkeypatch.setattr(notion_pages, "sync_into_roster", refresh)
+    refresh_response = client.post(
+        "/api/control-plane/v1/roster/refresh",
+        headers={
+            "X-RT-Lane": "content-bucket-control-plane",
+            "Authorization": "Bearer test-control-plane-token",
+        },
+    )
+    assert refresh_response.status_code == 200
+    proof = refresh_response.json()
+    snapshot = client.get(
+        "/api/control-plane/v1/roster",
+        headers={"X-RT-Lane": "content-bucket-control-plane"},
+    ).json()
+
+    assert proof["complete"] is True
+    assert proof["totalInNotion"] == 2
+    assert proof["projectedCount"] == len(snapshot["pages"]) == 1
+    assert proof["snapshotVersion"] == snapshot["snapshotVersion"]
+    assert proof["projectionHash"] == snapshot["projectionHash"]
+    assert "pages" not in proof
+    assert "password" not in refresh_response.text
+
+
+def test_machine_refresh_never_marks_a_bounded_projection_as_complete(client, monkeypatch):
+    import services.notion_pages as notion_pages
+
+    monkeypatch.setattr(notion_pages, "is_configured", lambda: True)
+    monkeypatch.setenv("CONTROL_PLANE_TOKEN", "test-control-plane-token")
+
+    pages = {
+        f"acct:page-{index:03d}": {
+            "name": f"page.{index:03d}",
+            "source": "notion",
+        }
+        for index in range(cp.MAX_ROSTER_PAGES + 1)
+    }
+
+    async def refresh():
+        _seed(**pages)
+        return {
+            "added": len(pages),
+            "updated": 0,
+            "total_in_notion": len(pages),
+            "errors": [],
+            "pages": [],
+        }
+
+    monkeypatch.setattr(notion_pages, "sync_into_roster", refresh)
+    response = client.post(
+        "/api/control-plane/v1/roster/refresh",
+        headers={
+            "X-RT-Lane": "content-bucket-control-plane",
+            "Authorization": "Bearer test-control-plane-token",
+        },
+    )
+    assert response.status_code == 200
+    proof = response.json()
+    assert proof["projectedCount"] == cp.MAX_ROSTER_PAGES
+    assert proof["complete"] is False
 
 
 def test_machine_refresh_requires_lane_and_notion_configuration(client, monkeypatch):
