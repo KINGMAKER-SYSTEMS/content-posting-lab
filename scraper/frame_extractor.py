@@ -3,6 +3,7 @@
 import asyncio
 import base64
 import os
+import signal
 import shutil
 import tempfile
 from pathlib import Path
@@ -304,7 +305,12 @@ def _classify(err: str) -> str:
 
 
 async def download_video(
-    video_url: str, dest: Path, cookies_file: Path | None = None
+    video_url: str,
+    dest: Path,
+    cookies_file: Path | None = None,
+    *,
+    max_filesize: int | None = None,
+    source_import_mode: bool = False,
 ) -> Path:
     """Download a video using yt-dlp. Returns path to the mp4.
 
@@ -319,6 +325,8 @@ async def download_video(
     _check_deps()
     dest.parent.mkdir(parents=True, exist_ok=True)
 
+    if not isinstance(source_import_mode, bool):
+        raise ValueError("source_import_mode must be a boolean")
     base_cmd = [
         "yt-dlp",
         "--no-warnings",
@@ -329,8 +337,15 @@ async def download_video(
         "mp4",
         "-o",
         str(dest),
-        "--no-check-certificates",
     ]
+    if not source_import_mode:
+        # Preserve the legacy interactive Clipper behavior. Page source imports
+        # are a separate public network boundary and must verify TLS.
+        base_cmd.append("--no-check-certificates")
+    if max_filesize is not None:
+        if isinstance(max_filesize, bool) or not isinstance(max_filesize, int) or max_filesize < 1:
+            raise ValueError("max_filesize must be a positive integer")
+        base_cmd += ["--max-filesize", str(max_filesize)]
 
     # Build auth strategies in order of preference.
     strategies: list[tuple[str, list[str]]] = []
@@ -355,12 +370,32 @@ async def download_video(
 
     for label, extra in strategies:
         cmd = base_cmd + extra + [video_url]
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        _, stderr = await proc.communicate()
+        process_options = {
+            "stdout": asyncio.subprocess.PIPE,
+            "stderr": asyncio.subprocess.PIPE,
+        }
+        if source_import_mode:
+            # yt-dlp may spawn ffmpeg. A bounded source-import timeout must own
+            # and stop the complete subprocess tree, not only the yt-dlp parent.
+            process_options["start_new_session"] = True
+        proc = await asyncio.create_subprocess_exec(*cmd, **process_options)
+        try:
+            _, stderr = await proc.communicate()
+        except asyncio.CancelledError:
+            # Callers may enforce a bounded import timeout. Do not leave yt-dlp
+            # running after the awaiting task has been cancelled.
+            if proc.returncode is None:
+                if source_import_mode and getattr(proc, "pid", None):
+                    try:
+                        os.killpg(proc.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                    except OSError:
+                        proc.kill()
+                else:
+                    proc.kill()
+                await proc.communicate()
+            raise
 
         if proc.returncode == 0:
             if dest.exists():

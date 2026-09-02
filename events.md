@@ -124,3 +124,60 @@ Focused Dossier, source-manifest, registry, recipe, generation, and source-
 execution verification: 137 passed. No generation, bucket write, scheduler,
 device, phone, slot, lease, or post action.
 _________________________________________________________________________________
+
+_________________________________________________________________________________
+
+time: [21:09] [01-09-26]
+agent: [codex] [gpt-5] [page_source_link_intake]
+worktree: [feat/page-source-link-intake-20260901] /private/tmp/content-lab-source-link-intake
+type: [feature-request]: Page-scoped source-link intake
+area: [backend]: Control-plane source artifacts and Clipper downloader
+
+Added an authenticated, idempotent source-import job for one exact current
+Master Pages page and sourced-video format. Content Lab reuses the Clipper URL
+downloader under public-HTTPS, time, and byte ceilings, records the exact
+download hash and probed media, then center-crops/scales to muted H.264/yuv420p
+1080x1920 at 30fps before exposing the normalized hash-bound bytes through the
+existing job/status/artifact contract. The route does not write ShipStream,
+admit content, generate media, or mutate any scheduler, device, slot, lease, or
+post state. Focused verification: 48 passed.
+_________________________________________________________________________________
+
+_________________________________________________________________________________
+
+time: [21:29] [01-09-26]
+agent: [codex] [gpt-5] [source_link_intake_hardening]
+worktree: [feat/page-source-link-intake-20260901] /private/tmp/content-lab-source-link-intake
+type: [bug report]: Public source-link intake deployment gate
+area: [backend]: Content Lab source download, normalization, and artifact transport
+
+Hardened the page-scoped source-link API before public rollout. Intake now
+requires a server-owned exact/subdomain host allowlist, canonical permanent
+URLs without credential query parameters, a complete commissioned format,
+bounded per-page/global admission, TLS-verified owned yt-dlp process groups,
+workspace/disk/duration/output ceilings, failure cleanup, and configured-origin
+artifact URLs. An exact repeat after `source_import_runtime_restarted` safely
+requeues the same durable job; other failures stay terminal. Normalized and
+original byte/hash/media lineage remains exact and the source artifact schema
+is unchanged. Verification: 114 control-plane, format-contract, and downloader
+tests passed; compileall and diff checks passed. The repository-wide suite still
+stops during collection because the pre-existing `tests/test_cards_no_shell.py`
+cannot import `factory.formats`. No deploy, storage write, generation,
+scheduler, phone, slot, lease, or post action.
+_________________________________________________________________________________
+
+_________________________________________________________________________________
+
+time: [21:36] [01-09-26]
+agent: [codex] [gpt-5] [source_link_intake_hardening]
+worktree: [feat/page-source-link-intake-20260901] /private/tmp/content-lab-source-link-intake
+type: [bug report]: Recursive source-import workspace accounting
+area: [backend]: Content Lab source downloader resource ceiling
+
+Changed the source-import workspace meter to count every nested regular file,
+including downloader fragment directories, while ignoring symlinks. Added a
+regression proving a nested fragment overflow cancels the active downloader and
+removes the complete partial workspace. Focused source-import verification: 30
+passed; compileall and diff checks passed. No deploy, storage write, generation,
+scheduler, phone, slot, lease, or post action.
+_________________________________________________________________________________

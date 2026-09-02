@@ -10,6 +10,9 @@
 - `services/caption_render.py` owns the typed Dossier-to-render caption contract.
 - `services/caption_discipline.py` owns Content Lab's closed validation of the
   caption corpus/register selection already made by Dossier and Control Plane.
+- `services/control_plane_source_imports.py` owns bounded public-HTTPS download,
+  exact-byte hashing, media probing, and refillable-master normalization for
+  page-scoped source-link intake.
 - `routers/burn.py` exposes caption rendering and final video compositing.
 - `burn_server.py` exposes the same typed caption-render route on the posting
   Mac's canonical port-8002 Burn runtime for Rail consumption.
@@ -38,6 +41,25 @@
   key, output SHA, parent SHA/type, source window, speed, output duration, media
   facts, and review record. Approved cuts never become source masters, never
   widen across pages, and never change the executable source-library version.
+- Source-link intake requires the authenticated control-plane lane, one exact
+  current Master Pages intent/hash, and the matching complete, commissioned
+  sourced-video format/profile. `CONTENT_LAB_SOURCE_IMPORT_HOSTS` is a required
+  comma-separated server-owned host allowlist; exact hosts and their real
+  subdomains are accepted, while unconfigured, private, or unlisted hosts fail
+  closed. Permanent source URLs may retain necessary platform parameters, but
+  tracking parameters are removed and credential-bearing query parameters are
+  rejected before durable storage. Intake runs through a two-job global gate
+  with one active job per page, bounded TLS-verified yt-dlp/ffmpeg subprocess
+  groups, disk/workspace/duration/byte preflights, and complete partial cleanup.
+  It returns a durable job artifact only after normalization to muted
+  H.264/yuv420p 1080x1920 at 30fps, preserving normalized and original download
+  hashes, byte counts, and media facts. Source-import artifact URLs use only the
+  configured `CONTENT_LAB_CONTROL_PLANE_ORIGIN`. Content Lab never admits that
+  artifact into ShipStream or mutates the page source manifest. A repeat with
+  the same request and idempotency key may resurrect only the exact
+  `source_import_runtime_restarted` failure; it reuses the job id under the
+  current runtime after cleaning its artifact root. Every other terminal
+  failure remains terminal.
 - A publishable caption render requires exact caption text and a complete page
   style: font, size, color, position, alignment, and line balance.
 - Resolve fonts only from Content Lab's installed, advertised TikTokSans files.
