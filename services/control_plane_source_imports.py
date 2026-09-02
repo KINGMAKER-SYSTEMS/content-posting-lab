@@ -16,9 +16,10 @@ import json
 import math
 import os
 from pathlib import Path
+import shutil
 import socket
 from typing import Any, Callable
-from urllib.parse import urlparse
+from urllib.parse import unquote_plus, urlparse, urlunparse
 
 from scraper.frame_extractor import download_video
 from services.ffmpeg import delivery_encode_args
@@ -27,13 +28,30 @@ from services.ffmpeg import delivery_encode_args
 SOURCE_IMPORT_SCHEMA = "content-lab.source-import-request.v1"
 SOURCE_PROVENANCE_SCHEMA = "content-lab.page-source-import-source.v1"
 MAX_SOURCE_URL_CHARS = 4_096
-MAX_SOURCE_IMPORT_BYTES = 5_000_000_000
+SOURCE_IMPORT_HOSTS_ENV = "CONTENT_LAB_SOURCE_IMPORT_HOSTS"
+MAX_SOURCE_IMPORT_BYTES = 1_000_000_000
+MAX_SOURCE_IMPORT_WORKSPACE_BYTES = 2_000_000_000
+MAX_NORMALIZED_SOURCE_BYTES = 2_000_000_000
+MIN_SOURCE_IMPORT_FREE_BYTES = 512_000_000
 MAX_SOURCE_IMPORT_SECONDS = 300
 MAX_SOURCE_NORMALIZE_SECONDS = 600
-MAX_SOURCE_DURATION_MS = 86_400_000
+MAX_SOURCE_DURATION_MS = 720_000
+MAX_NORMALIZED_BITRATE_BPS = 20_000_000
+MAX_CONCURRENT_SOURCE_IMPORTS = 2
+SOURCE_IMPORT_POLL_SECONDS = 0.25
+_TRACKING_QUERY_FIELDS = {"fbclid", "gclid", "msclkid"}
+_CREDENTIAL_QUERY_FIELDS = {
+    "token", "key", "api_key", "apikey", "secret", "signature", "sig",
+    "credential", "authorization", "auth", "expires", "policy",
+}
+_SOURCE_IMPORT_GATE = asyncio.Semaphore(MAX_CONCURRENT_SOURCE_IMPORTS)
 
 
 class SourceImportError(ValueError):
+    pass
+
+
+class SourceImportUnavailable(RuntimeError):
     pass
 
 
@@ -77,10 +95,95 @@ def _public_address(value: str) -> bool:
         return False
 
 
+def _canonical_hostname(value: str) -> str:
+    try:
+        hostname = value.rstrip(".").encode("idna").decode("ascii").casefold()
+    except UnicodeError as error:
+        raise SourceImportUnavailable("source import host allowlist is invalid") from error
+    if (
+        not hostname
+        or len(hostname) > 253
+        or any(
+            not label
+            or len(label) > 63
+            or label.startswith("-")
+            or label.endswith("-")
+            or any(not (char.isalnum() or char == "-") for char in label)
+            for label in hostname.split(".")
+        )
+    ):
+        raise SourceImportUnavailable("source import host allowlist is invalid")
+    return hostname
+
+
+def source_import_hosts(value: str | None = None) -> tuple[str, ...]:
+    raw = os.environ.get(SOURCE_IMPORT_HOSTS_ENV, "") if value is None else value
+    if not isinstance(raw, str) or not raw.strip():
+        raise SourceImportUnavailable("source import host allowlist is unavailable")
+    hosts: list[str] = []
+    for entry in raw.split(","):
+        candidate = entry.strip()
+        if (
+            not candidate
+            or "://" in candidate
+            or "/" in candidate
+            or ":" in candidate
+            or candidate.startswith(".")
+        ):
+            raise SourceImportUnavailable("source import host allowlist is invalid")
+        host = _canonical_hostname(candidate)
+        if "." not in host:
+            raise SourceImportUnavailable("source import host allowlist is invalid")
+        try:
+            ipaddress.ip_address(host)
+        except ValueError:
+            pass
+        else:
+            raise SourceImportUnavailable("source import host allowlist is invalid")
+        if host not in hosts:
+            hosts.append(host)
+    if not hosts:
+        raise SourceImportUnavailable("source import host allowlist is unavailable")
+    return tuple(hosts)
+
+
+def _host_allowed(hostname: str, allowed_hosts: tuple[str, ...]) -> bool:
+    return any(
+        hostname == allowed or hostname.endswith(f".{allowed}")
+        for allowed in allowed_hosts
+    )
+
+
+def _canonical_query(value: str) -> str:
+    kept: list[str] = []
+    for field in value.split("&") if value else ():
+        try:
+            name = unquote_plus(field.partition("=")[0])
+        except UnicodeDecodeError as error:
+            raise SourceImportError("sourceUrl query is invalid") from error
+        lowered = name.casefold()
+        if (
+            lowered in _CREDENTIAL_QUERY_FIELDS
+            or lowered.startswith("x-amz-")
+            or lowered.startswith("x-goog-")
+        ):
+            raise SourceImportError(
+                "sourceUrl must be a permanent link without credential query parameters"
+            )
+        if lowered.startswith("utm_") or lowered in _TRACKING_QUERY_FIELDS:
+            continue
+        # Preserve retained parameter bytes exactly. The control-plane caller
+        # has already canonicalized them with URLSearchParams, and changing
+        # encoding here would break exact cross-service sourceUrl equality.
+        kept.append(field)
+    return "&".join(kept)
+
+
 def validate_source_url(
     value: Any,
     *,
     resolver: Callable[..., list[tuple[Any, ...]]] = socket.getaddrinfo,
+    allowed_hosts: tuple[str, ...] | None = None,
 ) -> str:
     """Return one public HTTPS URL or reject it before yt-dlp sees it."""
     if (
@@ -88,7 +191,7 @@ def validate_source_url(
         or value != value.strip()
         or not value
         or len(value) > MAX_SOURCE_URL_CHARS
-        or any(ord(char) < 32 for char in value)
+        or any(char.isspace() or ord(char) < 32 for char in value)
     ):
         raise SourceImportError("sourceUrl must be a bounded HTTPS URL")
     try:
@@ -109,7 +212,14 @@ def validate_source_url(
     ):
         raise SourceImportError("sourceUrl must be a public HTTPS URL")
     try:
-        literal = ipaddress.ip_address(hostname)
+        canonical_hostname = _canonical_hostname(hostname)
+    except SourceImportUnavailable as error:
+        raise SourceImportError("sourceUrl must be a public HTTPS URL") from error
+    configured_hosts = source_import_hosts() if allowed_hosts is None else allowed_hosts
+    if not configured_hosts or not _host_allowed(canonical_hostname, configured_hosts):
+        raise SourceImportError("sourceUrl host is not allowed for source import")
+    try:
+        literal = ipaddress.ip_address(canonical_hostname)
     except ValueError:
         literal = None
     if literal is not None:
@@ -117,7 +227,7 @@ def validate_source_url(
             raise SourceImportError("sourceUrl must resolve only to public addresses")
         return value
     try:
-        answers = resolver(hostname, 443, type=socket.SOCK_STREAM)
+        answers = resolver(canonical_hostname, 443, type=socket.SOCK_STREAM)
     except OSError as error:
         raise SourceImportError("sourceUrl host could not be resolved") from error
     addresses = {
@@ -130,7 +240,75 @@ def validate_source_url(
     }
     if not addresses or any(not _public_address(address) for address in addresses):
         raise SourceImportError("sourceUrl must resolve only to public addresses")
-    return value
+    canonical_query = _canonical_query(parsed.query)
+    canonical_path = parsed.path or "/"
+    return urlunparse((
+        "https",
+        canonical_hostname,
+        canonical_path,
+        parsed.params,
+        canonical_query,
+        "",
+    ))
+
+
+def _tree_bytes(root: Path) -> int:
+    total = 0
+    try:
+        paths = root.iterdir()
+    except FileNotFoundError:
+        return 0
+    for path in paths:
+        try:
+            if path.is_file() and not path.is_symlink():
+                total += path.stat().st_size
+        except FileNotFoundError:
+            continue
+    return total
+
+
+def _require_free_space(path: Path, required: int) -> None:
+    if shutil.disk_usage(path).free < required:
+        raise SourceImportUnavailable("source import storage capacity is unavailable")
+
+
+def _expected_normalized_bytes(duration_ms: int) -> int:
+    expected = math.ceil(
+        (duration_ms / 1_000) * (MAX_NORMALIZED_BITRATE_BPS / 8) * 1.05
+    )
+    if expected > MAX_NORMALIZED_SOURCE_BYTES:
+        raise SourceImportError("source video duration exceeds the normalized output limit")
+    return max(1, expected)
+
+
+async def _download_with_workspace_limit(source_url: str, target: Path) -> Path:
+    task = asyncio.create_task(download_video(
+        source_url,
+        target,
+        max_filesize=MAX_SOURCE_IMPORT_BYTES,
+        source_import_mode=True,
+    ))
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + MAX_SOURCE_IMPORT_SECONDS
+    try:
+        while True:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                raise SourceImportError("source video download timed out")
+            done, _ = await asyncio.wait(
+                {task}, timeout=min(SOURCE_IMPORT_POLL_SECONDS, remaining),
+            )
+            if task in done:
+                return task.result()
+            if _tree_bytes(target.parent) > MAX_SOURCE_IMPORT_WORKSPACE_BYTES:
+                raise SourceImportError("source video exceeds the import workspace limit")
+    finally:
+        if not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
 
 
 def _sha256_file(path: Path) -> str:
@@ -221,6 +399,7 @@ async def _normalize_video(source: Path, destination: Path) -> None:
             "crop=1080:1920,setsar=1,fps=30,format=yuv420p"
         ),
         *delivery_encode_args("tiktok_delivery_v1"),
+        "-fs", str(MAX_NORMALIZED_SOURCE_BYTES),
         str(destination),
         stdout=asyncio.subprocess.DEVNULL,
         stderr=asyncio.subprocess.PIPE,
@@ -248,55 +427,66 @@ async def download_source_video(source_url: str, destination: Path) -> SourceImp
     destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     original_target = destination.with_name("original.mp4")
     try:
-        downloaded = await asyncio.wait_for(
-            download_video(
-                source_url,
-                original_target,
-                max_filesize=MAX_SOURCE_IMPORT_BYTES,
-            ),
-            timeout=MAX_SOURCE_IMPORT_SECONDS,
+        _require_free_space(
+            destination.parent,
+            MAX_SOURCE_IMPORT_WORKSPACE_BYTES + MIN_SOURCE_IMPORT_FREE_BYTES,
         )
-    except TimeoutError as error:
-        raise SourceImportError("source video download timed out") from error
-    downloaded = Path(downloaded).resolve()
-    root = destination.parent.resolve()
-    if root not in downloaded.parents or not downloaded.is_file() or downloaded.is_symlink():
-        raise SourceImportError("source downloader returned an invalid artifact")
-    original = original_target.resolve()
-    if downloaded != original:
-        if original.exists():
-            original.unlink()
-        os.replace(downloaded, original)
-    original_bytes = original.stat().st_size
-    if not 1 <= original_bytes <= MAX_SOURCE_IMPORT_BYTES:
-        raise SourceImportError("source video exceeds the import size limit")
-    original_media = await _probe_video(original)
-    original_sha256 = await asyncio.to_thread(_sha256_file, original)
+        downloaded = Path(await _download_with_workspace_limit(
+            source_url, original_target,
+        )).resolve()
+        root = destination.parent.resolve()
+        if root not in downloaded.parents or not downloaded.is_file() or downloaded.is_symlink():
+            raise SourceImportError("source downloader returned an invalid artifact")
+        original = original_target.resolve()
+        if downloaded != original:
+            if original.exists():
+                original.unlink()
+            os.replace(downloaded, original)
+        original_bytes = original.stat().st_size
+        if not 1 <= original_bytes <= MAX_SOURCE_IMPORT_BYTES:
+            raise SourceImportError("source video exceeds the import size limit")
+        original_media = await _probe_video(original)
+        expected_output_bytes = _expected_normalized_bytes(original_media.duration_ms)
+        _require_free_space(
+            destination.parent,
+            expected_output_bytes + MIN_SOURCE_IMPORT_FREE_BYTES,
+        )
+        original_sha256 = await asyncio.to_thread(_sha256_file, original)
 
-    exact = destination.resolve()
-    await _normalize_video(original, exact)
-    byte_count = exact.stat().st_size
-    if not 1 <= byte_count <= MAX_SOURCE_IMPORT_BYTES:
-        raise SourceImportError("normalized source video exceeds the import size limit")
-    media = await _probe_video(exact)
-    if (
-        media.width != 1080
-        or media.height != 1920
-        or media.video_codec != "h264"
-        or media.pixel_format != "yuv420p"
-        or abs(media.fps - 30.0) > 0.01
-        or media.audio_streams != 0
-        or abs(media.duration_ms - original_media.duration_ms) > 1_000
-    ):
-        raise SourceImportError("normalized source video does not match the refillable master contract")
-    sha256 = await asyncio.to_thread(_sha256_file, exact)
-    original.unlink(missing_ok=True)
-    return SourceImportArtifact(
-        exact,
-        sha256,
-        byte_count,
-        media,
-        original_sha256,
-        original_bytes,
-        original_media,
-    )
+        exact = destination.resolve()
+        await _normalize_video(original, exact)
+        byte_count = exact.stat().st_size
+        if not 1 <= byte_count <= MAX_NORMALIZED_SOURCE_BYTES:
+            raise SourceImportError("normalized source video exceeds the import size limit")
+        media = await _probe_video(exact)
+        if (
+            media.width != 1080
+            or media.height != 1920
+            or media.video_codec != "h264"
+            or media.pixel_format != "yuv420p"
+            or abs(media.fps - 30.0) > 0.01
+            or media.audio_streams != 0
+            or abs(media.duration_ms - original_media.duration_ms) > 1_000
+        ):
+            raise SourceImportError("normalized source video does not match the refillable master contract")
+        sha256 = await asyncio.to_thread(_sha256_file, exact)
+        original.unlink(missing_ok=True)
+        return SourceImportArtifact(
+            exact,
+            sha256,
+            byte_count,
+            media,
+            original_sha256,
+            original_bytes,
+            original_media,
+        )
+    except asyncio.CancelledError:
+        shutil.rmtree(destination.parent, ignore_errors=True)
+        raise
+    except Exception:
+        shutil.rmtree(destination.parent, ignore_errors=True)
+        raise
+
+
+def source_import_slot() -> asyncio.Semaphore:
+    return _SOURCE_IMPORT_GATE

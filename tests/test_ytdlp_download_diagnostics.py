@@ -103,6 +103,71 @@ def test_bounded_call_forwards_max_filesize_to_ytdlp(monkeypatch, tmp_path):
     assert command[command.index("--max-filesize") + 1] == "123456"
 
 
+def test_source_import_mode_verifies_tls_and_starts_an_owned_process_group(
+    monkeypatch, tmp_path,
+):
+    calls = []
+
+    async def _exec(*cmd, **kwargs):
+        calls.append((list(cmd), kwargs))
+        return _FakeProc(1, b"ERROR: unavailable")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _exec)
+    monkeypatch.setattr(fe, "_in_container", lambda: True)
+
+    with pytest.raises(RuntimeError):
+        asyncio.run(fe.download_video(
+            "https://cdn.example.com/video.mp4",
+            tmp_path / "o.mp4",
+            source_import_mode=True,
+        ))
+
+    command, options = calls[0]
+    assert "--no-check-certificates" not in command
+    assert options["start_new_session"] is True
+
+
+def test_source_import_cancellation_kills_the_complete_process_group(
+    monkeypatch, tmp_path,
+):
+    killed = []
+
+    class BlockingProc:
+        pid = 4321
+        returncode = None
+        calls = 0
+
+        async def communicate(self):
+            self.calls += 1
+            if self.calls == 1:
+                await asyncio.Event().wait()
+            self.returncode = -9
+            return b"", b""
+
+    process = BlockingProc()
+
+    async def _exec(*_cmd, **_kwargs):
+        return process
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _exec)
+    monkeypatch.setattr(fe, "_in_container", lambda: True)
+    monkeypatch.setattr(fe.os, "killpg", lambda pid, sig: killed.append((pid, sig)))
+
+    async def run():
+        task = asyncio.create_task(fe.download_video(
+            "https://cdn.example.com/video.mp4",
+            tmp_path / "o.mp4",
+            source_import_mode=True,
+        ))
+        await asyncio.sleep(0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(run())
+    assert killed == [(4321, fe.signal.SIGKILL)]
+
+
 def test_browser_probe_failure_does_not_blame_the_cookies_file(monkeypatch, tmp_path):
     """A missing Chrome profile is an environment fact, not an auth rejection.
 

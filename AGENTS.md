@@ -42,12 +42,24 @@
   facts, and review record. Approved cuts never become source masters, never
   widen across pages, and never change the executable source-library version.
 - Source-link intake requires the authenticated control-plane lane, one exact
-  current Master Pages intent/hash, and the matching sourced-video format. It
-  returns a durable job artifact only after Content Lab has downloaded the URL
-  under time/size limits and normalized it to muted H.264/yuv420p 1080x1920 at
-  30fps. The artifact preserves both normalized and original download hashes,
-  byte counts, and probed media facts. Content Lab never admits that artifact
-  into ShipStream or mutates the page source manifest.
+  current Master Pages intent/hash, and the matching complete, commissioned
+  sourced-video format/profile. `CONTENT_LAB_SOURCE_IMPORT_HOSTS` is a required
+  comma-separated server-owned host allowlist; exact hosts and their real
+  subdomains are accepted, while unconfigured, private, or unlisted hosts fail
+  closed. Permanent source URLs may retain necessary platform parameters, but
+  tracking parameters are removed and credential-bearing query parameters are
+  rejected before durable storage. Intake runs through a two-job global gate
+  with one active job per page, bounded TLS-verified yt-dlp/ffmpeg subprocess
+  groups, disk/workspace/duration/byte preflights, and complete partial cleanup.
+  It returns a durable job artifact only after normalization to muted
+  H.264/yuv420p 1080x1920 at 30fps, preserving normalized and original download
+  hashes, byte counts, and media facts. Source-import artifact URLs use only the
+  configured `CONTENT_LAB_CONTROL_PLANE_ORIGIN`. Content Lab never admits that
+  artifact into ShipStream or mutates the page source manifest. A repeat with
+  the same request and idempotency key may resurrect only the exact
+  `source_import_runtime_restarted` failure; it reuses the job id under the
+  current runtime after cleaning its artifact root. Every other terminal
+  failure remains terminal.
 - A publishable caption render requires exact caption text and a complete page
   style: font, size, color, position, alignment, and line balance.
 - Resolve fonts only from Content Lab's installed, advertised TikTokSans files.

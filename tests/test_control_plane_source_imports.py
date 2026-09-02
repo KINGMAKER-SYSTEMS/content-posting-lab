@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 import hashlib
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -46,6 +47,9 @@ def lab(monkeypatch, tmp_path):
     revision = intent_hash(intent)
     bind_current_intent(monkeypatch, cp, intent, revision)
     monkeypatch.setenv("CONTROL_PLANE_TOKEN", TOKEN)
+    monkeypatch.setenv(
+        "CONTENT_LAB_CONTROL_PLANE_ORIGIN", "https://content-lab.example.com",
+    )
     monkeypatch.setattr(cp, "_jobs_path", lambda: tmp_path / "jobs.json")
     generation_root = tmp_path / "generated"
     monkeypatch.setattr(cp, "_generation_root", lambda: generation_root)
@@ -110,6 +114,65 @@ def test_source_import_is_authenticated_exact_idempotent_and_durable(lab):
     assert conflict.json()["detail"] == "idempotency key belongs to a different request"
 
 
+def test_runtime_restart_resurrects_only_the_exact_idempotent_source_import(lab):
+    client, intent, revision, started = lab
+    created = client.post(
+        "/api/control-plane/v1/source-imports",
+        headers=HEADERS,
+        json=_body(intent, revision),
+    ).json()
+    job_id = created["jobId"]
+    store = cp._load_jobs()
+    job = store["jobs"][job_id]
+    old_token = job["token"]
+    root = Path(job["artifactRoot"])
+    partial = root / "source" / "original.part"
+    partial.parent.mkdir(parents=True, exist_ok=True)
+    partial.write_bytes(b"partial")
+    job["runtimeId"] = "previous-runtime"
+    cp.atomic_save(cp._jobs_path(), store)
+
+    retried = client.post(
+        "/api/control-plane/v1/source-imports",
+        headers=HEADERS,
+        json=_body(intent, revision),
+    )
+    assert retried.status_code == 200
+    assert retried.json() == {
+        "schema": cp.RESPONSE_SCHEMA,
+        "jobId": job_id,
+        "status": "queued",
+    }
+    recovered = cp._load_jobs()["jobs"][job_id]
+    assert recovered["runtimeId"] == cp._GENERATION_RUNTIME_ID
+    assert recovered["status"] == "queued"
+    assert recovered["progress"] == 0
+    assert recovered["clips"] == []
+    assert "error" not in recovered
+    assert "completedAt" not in recovered
+    assert recovered["token"] != old_token
+    assert root.is_dir()
+    assert not partial.exists()
+    assert started == [job_id, job_id]
+
+    recovered.update({
+        "status": "failed",
+        "error": "source video normalization failed",
+        "completedAt": "2026-09-01T00:00:00+00:00",
+    })
+    store = cp._load_jobs()
+    store["jobs"][job_id] = recovered
+    cp.atomic_save(cp._jobs_path(), store)
+    terminal = client.post(
+        "/api/control-plane/v1/source-imports",
+        headers=HEADERS,
+        json=_body(intent, revision),
+    )
+    assert terminal.status_code == 200
+    assert terminal.json()["status"] == "failed"
+    assert started == [job_id, job_id]
+
+
 def test_source_import_rejects_unscoped_stale_and_wrong_format_requests(lab, monkeypatch):
     client, intent, revision, _ = lab
     body = _body(intent, revision)
@@ -127,7 +190,7 @@ def test_source_import_rejects_unscoped_stale_and_wrong_format_requests(lab, mon
         json=_body(intent, revision, format="pov-scenic"),
     )
     assert wrong_format.status_code == 409
-    assert wrong_format.json()["detail"] == "source import format does not match Master Pages"
+    assert wrong_format.json()["detail"] == "source import format is not complete and commissioned for Master Pages"
     unknown = client.post(
         "/api/control-plane/v1/source-imports",
         headers=HEADERS,
@@ -239,10 +302,142 @@ def test_completed_import_uses_exact_bytes_probe_and_https_artifact(lab, monkeyp
     assert artifact["sha256"] == exact_sha
     assert artifact["bytes"] == len(exact_bytes)
     assert artifact["source"] == source
-    assert artifact["url"].startswith("https://testserver/")
-    assert artifact["thumbnail"]["url"].startswith("https://testserver/")
+    assert artifact["url"].startswith("https://content-lab.example.com/")
+    assert artifact["thumbnail"]["url"].startswith("https://content-lab.example.com/")
 
     download_path = urlsplit(artifact["url"]).path + "?" + urlsplit(artifact["url"]).query
     downloaded = client.get(download_path)
     assert downloaded.status_code == 200
     assert downloaded.content == exact_bytes
+
+
+def test_source_import_artifact_origin_ignores_forwarded_host(lab, monkeypatch):
+    client, intent, revision, _ = lab
+    created = client.post(
+        "/api/control-plane/v1/source-imports",
+        headers=HEADERS,
+        json=_body(intent, revision),
+    ).json()
+    job = cp._load_jobs()["jobs"][created["jobId"]]
+    job["status"] = "completed"
+    job["clips"] = [{
+        "path": "source/source.mp4",
+        "sha256": "a" * 64,
+        "bytes": 1,
+        "source": {},
+        "thumbnail": {"sha256": "b" * 64, "bytes": 1},
+    }]
+    cp._update_job(created["jobId"], status="completed", clips=job["clips"])
+    response = client.get(
+        f"/api/control-plane/v1/jobs/{created['jobId']}/artifacts",
+        headers={
+            "Authorization": f"Bearer {TOKEN}",
+            "X-RT-Page-Id": PAGE_ID,
+            "X-Forwarded-Host": "attacker.example",
+            "X-Forwarded-Proto": "http",
+        },
+    )
+    assert response.status_code == 200
+    artifact = response.json()["artifacts"][0]
+    assert artifact["url"].startswith("https://content-lab.example.com/")
+    assert "attacker.example" not in artifact["url"]
+
+
+def test_source_import_requires_allowlist_configuration(lab, monkeypatch):
+    client, intent, revision, _ = lab
+
+    def unavailable(_value):
+        raise cp.SourceImportUnavailable("source import host allowlist is unavailable")
+
+    monkeypatch.setattr(cp, "validate_source_url", unavailable)
+    response = client.post(
+        "/api/control-plane/v1/source-imports",
+        headers=HEADERS,
+        json=_body(intent, revision),
+    )
+    assert response.status_code == 503
+    assert response.json()["detail"] == "source import host allowlist is unavailable"
+
+
+def test_source_host_resolution_has_a_bounded_timeout(monkeypatch):
+    async def never_complete(*_args, **_kwargs):
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(cp.asyncio, "to_thread", never_complete)
+    monkeypatch.setattr(cp, "SOURCE_URL_RESOLVE_SECONDS", 0.001)
+    with pytest.raises(cp.SourceImportUnavailable, match="timed out"):
+        asyncio.run(cp._validated_source_url(SOURCE_URL))
+
+
+def test_source_import_requires_complete_commissioned_profile(lab, monkeypatch):
+    client, intent, revision, _ = lab
+    profiles, registry_hash = cp.load_engine_registry()
+    profiles["pov-night-core"] = replace(
+        profiles["pov-night-core"], execution_status="uncommissioned",
+    )
+    monkeypatch.setattr(cp, "load_engine_registry", lambda: (profiles, registry_hash))
+    response = client.post(
+        "/api/control-plane/v1/source-imports",
+        headers=HEADERS,
+        json=_body(intent, revision),
+    )
+    assert response.status_code == 409
+    assert "complete and commissioned" in response.json()["detail"]
+
+
+def test_source_import_enforces_one_active_job_per_page_and_global_capacity(lab):
+    client, intent, revision, _ = lab
+    first = client.post(
+        "/api/control-plane/v1/source-imports",
+        headers=HEADERS,
+        json=_body(intent, revision),
+    )
+    assert first.status_code == 200
+    duplicate_page = client.post(
+        "/api/control-plane/v1/source-imports",
+        headers={**HEADERS, "Idempotency-Key": "source:intake:night-walks:other"},
+        json=_body(intent, revision, sourceUrl="https://cdn.example.com/other.mp4"),
+    )
+    assert duplicate_page.status_code == 409
+    assert duplicate_page.json()["detail"] == "source import is already active for this page"
+
+    current = cp._load_jobs()
+    current["jobs"][first.json()["jobId"]]["pageId"] = "acct:other:one"
+    current["jobs"]["cpl-other"] = {
+        "jobId": "cpl-other",
+        "pageId": "acct:other:two",
+        "sourceKind": "page_source_import",
+        "status": "running",
+        "runtimeId": cp._GENERATION_RUNTIME_ID,
+    }
+    cp.atomic_save(cp._jobs_path(), current)
+    capacity = client.post(
+        "/api/control-plane/v1/source-imports",
+        headers={**HEADERS, "Idempotency-Key": "source:intake:night-walks:capacity"},
+        json=_body(intent, revision, sourceUrl="https://cdn.example.com/capacity.mp4"),
+    )
+    assert capacity.status_code == 409
+    assert capacity.json()["detail"] == "source import capacity is currently full"
+
+
+def test_failed_source_import_removes_its_partial_job_directory(lab, monkeypatch):
+    client, intent, revision, _ = lab
+    created = client.post(
+        "/api/control-plane/v1/source-imports",
+        headers=HEADERS,
+        json=_body(intent, revision),
+    ).json()
+    job = cp._load_jobs()["jobs"][created["jobId"]]
+    root = Path(job["artifactRoot"])
+    partial = root / "source" / "original.part"
+    partial.parent.mkdir(parents=True, exist_ok=True)
+    partial.write_bytes(b"partial")
+
+    async def fail(_url, _destination):
+        raise RuntimeError("download failed")
+
+    monkeypatch.setattr(cp, "download_source_video", fail)
+    asyncio.run(cp._run_page_source_import(created["jobId"]))
+    stored = cp._load_jobs()["jobs"][created["jobId"]]
+    assert stored["status"] == "failed"
+    assert not root.exists()

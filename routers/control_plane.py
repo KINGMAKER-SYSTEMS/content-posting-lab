@@ -78,10 +78,13 @@ from services.control_plane_generation import (
 )
 from services.control_plane_sources import plan_source_cuts, resolve_source_recipe
 from services.control_plane_source_imports import (
+    MAX_CONCURRENT_SOURCE_IMPORTS,
     SOURCE_IMPORT_SCHEMA,
     SOURCE_PROVENANCE_SCHEMA,
     SourceImportError,
+    SourceImportUnavailable,
     download_source_video,
+    source_import_slot,
     validate_source_url,
 )
 from services.content_engine_registry import load_engine_registry
@@ -99,6 +102,7 @@ PROMPTS = "prompts.json"
 # The client caps the response at 200 entries and rejects anything larger, so
 # stay well inside it rather than discovering the ceiling in production.
 MAX_CAPABILITIES = 100
+SOURCE_URL_RESOLVE_SECONDS = 10
 
 # Default ceiling on clips per job. Overridable per recipe in recipe.json; kept
 # modest because every unit is real spend on a real provider.
@@ -959,6 +963,16 @@ def _source_provenance(job: dict[str, Any], base: dict[str, Any]) -> dict[str, A
     }
 
 
+async def _validated_source_url(value: Any) -> str:
+    try:
+        return await asyncio.wait_for(
+            asyncio.to_thread(validate_source_url, value),
+            timeout=SOURCE_URL_RESOLVE_SECONDS,
+        )
+    except TimeoutError as error:
+        raise SourceImportUnavailable("source import host resolution timed out") from error
+
+
 async def _run_dossier_generation(job_id: str) -> None:
     job = _get_job_or_404(job_id)
     publication = load_registered_recipe(
@@ -1387,33 +1401,44 @@ async def _run_page_source_import(job_id: str) -> None:
     destination = source_root / "source.mp4"
     _update_job(job_id, status="running", progress=5)
     try:
-        # Resolve the host again immediately before the network boundary so a
-        # queued job cannot rely only on the address observed at admission.
-        source_url = await asyncio.to_thread(validate_source_url, job["sourceUrl"])
-        imported = await download_source_video(source_url, destination)
-        manifest = _generated_manifest(job_root, imported.path)
-        if manifest["sha256"] != imported.sha256 or manifest["bytes"] != imported.bytes:
-            raise RuntimeError("source_import_artifact_identity_mismatch")
-        manifest["source"] = _source_provenance(job, {
-            "schema": SOURCE_PROVENANCE_SCHEMA,
-            "kind": "page_source_import",
-            "format": job["format"],
-            "sourceUrl": source_url,
-            "sha256": imported.sha256,
-            "bytes": imported.bytes,
-            "mimeType": "video/mp4",
-            "media": imported.media.wire(),
-            "original": {
-                "sha256": imported.original_sha256,
-                "bytes": imported.original_bytes,
+        async with source_import_slot():
+            # Resolve the host again immediately before the network boundary so
+            # a queued job cannot rely only on the address observed at admission.
+            source_url = await _validated_source_url(job["sourceUrl"])
+            imported = await download_source_video(source_url, destination)
+            manifest = _generated_manifest(job_root, imported.path)
+            if manifest["sha256"] != imported.sha256 or manifest["bytes"] != imported.bytes:
+                raise RuntimeError("source_import_artifact_identity_mismatch")
+            manifest["source"] = _source_provenance(job, {
+                "schema": SOURCE_PROVENANCE_SCHEMA,
+                "kind": "page_source_import",
+                "format": job["format"],
+                "sourceUrl": source_url,
+                "sha256": imported.sha256,
+                "bytes": imported.bytes,
                 "mimeType": "video/mp4",
-                "media": imported.original_media.wire(),
-            },
-        })
-        manifest["thumbnail"] = await _thumbnail_manifest(
-            job_root, imported.path, 0,
+                "media": imported.media.wire(),
+                "original": {
+                    "sha256": imported.original_sha256,
+                    "bytes": imported.original_bytes,
+                    "mimeType": "video/mp4",
+                    "media": imported.original_media.wire(),
+                },
+            })
+            manifest["thumbnail"] = await _thumbnail_manifest(
+                job_root, imported.path, 0,
+            )
+    except asyncio.CancelledError:
+        shutil.rmtree(job_root, ignore_errors=True)
+        _update_job(
+            job_id,
+            status="failed",
+            error="source_import_cancelled",
+            completedAt=datetime.now(timezone.utc).isoformat(),
         )
+        raise
     except Exception as error:
+        shutil.rmtree(job_root, ignore_errors=True)
         _update_job(
             job_id,
             status="failed",
@@ -1499,9 +1524,11 @@ async def create_source_import(
     if not isinstance(format_slug, str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,99}", format_slug):
         raise HTTPException(status_code=400, detail="format must be an exact bounded slug")
     try:
-        source_url = await asyncio.to_thread(validate_source_url, body.get("sourceUrl"))
+        source_url = await _validated_source_url(body.get("sourceUrl"))
     except SourceImportError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
+    except SourceImportUnavailable as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
 
     master_pages = exact_intent(
         body.get("masterPages"), body.get("masterPagesHash"),
@@ -1515,19 +1542,31 @@ async def create_source_import(
     ):
         raise HTTPException(status_code=409, detail="source import Master Pages intent does not match the current roster")
     contracts, _ = load_format_contracts()
+    profiles, _ = load_engine_registry()
     contract = contracts.get(format_slug)
+    profile = profiles.get(format_slug)
     if (
         contract is None
+        or contract.definition_status != "complete"
         or contract.content_niche != master_pages.get("contentNiche")
         or contract.content_engine != "sourced_video"
         or contract.material_source != "source_library"
         or contract.asset_type != "video/mp4"
+        or profile is None
+        or profile.execution_status != "commissioned"
+        or profile.content_niche != contract.content_niche
+        or profile.content_engine != contract.content_engine
+        or profile.material_source != contract.material_source
+        or profile.asset_type != contract.asset_type
+        or profile.format_contract_version != f"sha256:{contract.contract_hash}"
     ):
-        raise HTTPException(status_code=409, detail="source import format does not match Master Pages")
+        raise HTTPException(status_code=409, detail="source import format is not complete and commissioned for Master Pages")
 
+    canonical_body = {**body, "sourceUrl": source_url}
     fingerprint = "sha256:" + hashlib.sha256(json.dumps(
-        body, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+        canonical_body, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
     ).encode()).hexdigest()
+    restart_existing = False
     with lock_for(_jobs_path()):
         store = _load_jobs()
         existing_id = store["byIdempotency"].get(idempotency_key)
@@ -1547,43 +1586,93 @@ async def create_source_import(
                     "error": "source_import_runtime_restarted",
                     "completedAt": datetime.now(timezone.utc).isoformat(),
                 })
+            if (
+                existing.get("status") == "failed"
+                and existing.get("error") == "source_import_runtime_restarted"
+            ):
+                active_others = [
+                    row for row_id, row in store["jobs"].items()
+                    if row_id != existing_id
+                    and isinstance(row, dict)
+                    and row.get("sourceKind") == "page_source_import"
+                    and row.get("status") in GENERATION_ACTIVE_STATUSES
+                    and row.get("runtimeId") == _GENERATION_RUNTIME_ID
+                ]
+                if any(row.get("pageId") == page_id for row in active_others):
+                    raise HTTPException(status_code=409, detail="source import is already active for this page")
+                if len(active_others) >= MAX_CONCURRENT_SOURCE_IMPORTS:
+                    raise HTTPException(status_code=409, detail="source import capacity is currently full")
+                job_id = existing["jobId"]
+                job_root = (
+                    _generation_root() / page_id / "source-imports" / job_id
+                ).resolve()
+                if Path(existing.get("artifactRoot", "")).resolve() != job_root:
+                    raise HTTPException(status_code=409, detail="source import artifact root is invalid")
+                shutil.rmtree(job_root, ignore_errors=True)
+                job_root.mkdir(parents=True, exist_ok=False, mode=0o700)
+                existing.update({
+                    "status": "queued",
+                    "progress": 0,
+                    "clips": [],
+                    "artifactRoot": str(job_root),
+                    "runtimeId": _GENERATION_RUNTIME_ID,
+                    "token": _secrets.token_urlsafe(JOB_TOKEN_BYTES),
+                    "restartedAt": datetime.now(timezone.utc).isoformat(),
+                })
+                existing.pop("error", None)
+                existing.pop("completedAt", None)
                 atomic_save(_jobs_path(), store)
-            return {
-                "schema": RESPONSE_SCHEMA,
-                "jobId": existing["jobId"],
-                "status": existing["status"],
-            }
+                restart_existing = True
+            else:
+                return {
+                    "schema": RESPONSE_SCHEMA,
+                    "jobId": existing["jobId"],
+                    "status": existing["status"],
+                }
 
-        job_id = JOB_ID_PREFIX + _secrets.token_hex(8)
-        job_root = (
-            _generation_root() / page_id / "source-imports" / job_id
-        ).resolve()
-        job_root.mkdir(parents=True, exist_ok=False, mode=0o700)
-        now = datetime.now(timezone.utc).isoformat()
-        job = {
-            "jobId": job_id,
-            "idempotencyKey": idempotency_key,
-            "sourceImportRequestHash": fingerprint,
-            "pageId": page_id,
-            "lane": x_rt_lane,
-            "engine": "sourced_video",
-            "format": format_slug,
-            "sourceUrl": source_url,
-            "sourceKind": "page_source_import",
-            "status": "queued",
-            "progress": 0,
-            "clips": [],
-            "artifactRoot": str(job_root),
-            "quantityRequested": 1,
-            "token": _secrets.token_urlsafe(JOB_TOKEN_BYTES),
-            "masterPages": master_pages,
-            "masterPagesHash": body["masterPagesHash"],
-            "runtimeId": _GENERATION_RUNTIME_ID,
-            "createdAt": now,
-        }
-        store["jobs"][job_id] = job
-        store["byIdempotency"][idempotency_key] = job_id
-        atomic_save(_jobs_path(), store)
+        if not restart_existing:
+            active_imports = [
+                row for row in store["jobs"].values()
+                if isinstance(row, dict)
+                and row.get("sourceKind") == "page_source_import"
+                and row.get("status") in GENERATION_ACTIVE_STATUSES
+                and row.get("runtimeId") == _GENERATION_RUNTIME_ID
+            ]
+            if any(row.get("pageId") == page_id for row in active_imports):
+                raise HTTPException(status_code=409, detail="source import is already active for this page")
+            if len(active_imports) >= MAX_CONCURRENT_SOURCE_IMPORTS:
+                raise HTTPException(status_code=409, detail="source import capacity is currently full")
+
+            job_id = JOB_ID_PREFIX + _secrets.token_hex(8)
+            job_root = (
+                _generation_root() / page_id / "source-imports" / job_id
+            ).resolve()
+            job_root.mkdir(parents=True, exist_ok=False, mode=0o700)
+            now = datetime.now(timezone.utc).isoformat()
+            job = {
+                "jobId": job_id,
+                "idempotencyKey": idempotency_key,
+                "sourceImportRequestHash": fingerprint,
+                "pageId": page_id,
+                "lane": x_rt_lane,
+                "engine": "sourced_video",
+                "format": format_slug,
+                "sourceUrl": source_url,
+                "sourceKind": "page_source_import",
+                "status": "queued",
+                "progress": 0,
+                "clips": [],
+                "artifactRoot": str(job_root),
+                "quantityRequested": 1,
+                "token": _secrets.token_urlsafe(JOB_TOKEN_BYTES),
+                "masterPages": master_pages,
+                "masterPagesHash": body["masterPagesHash"],
+                "runtimeId": _GENERATION_RUNTIME_ID,
+                "createdAt": now,
+            }
+            store["jobs"][job_id] = job
+            store["byIdempotency"][idempotency_key] = job_id
+            atomic_save(_jobs_path(), store)
 
     _start_page_source_import(job_id)
     return {"schema": RESPONSE_SCHEMA, "jobId": job_id, "status": "queued"}
@@ -1898,13 +1987,14 @@ def job_artifacts(
     job = _get_job_or_404(job_id)
     if job["pageId"] != x_rt_page_id:
         raise HTTPException(status_code=404, detail="job not found")
-    proto = request.headers.get("x-forwarded-proto", request.url.scheme)
-    host = request.headers.get("x-forwarded-host", request.url.netloc)
     if job.get("sourceKind") == "page_source_import":
-        # The control plane downloads these URLs from outside Content Lab. The
-        # authenticated manifest must never advertise a plaintext transport.
-        proto = "https"
-    base = f"{proto}://{host}"
+        # The URL carries the per-job download credential. Never derive its
+        # origin from caller-controlled forwarded headers.
+        base = _source_media_origin()
+    else:
+        proto = request.headers.get("x-forwarded-proto", request.url.scheme)
+        host = request.headers.get("x-forwarded-host", request.url.netloc)
+        base = f"{proto}://{host}"
     # Old queued jobs may have persisted a provider-call count from the former
     # keeper-yield planner. Never let that historical over-generation flood a
     # page vault: transport at most the number of complete five-crop groups

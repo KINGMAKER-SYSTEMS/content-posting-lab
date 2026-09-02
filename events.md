@@ -142,3 +142,26 @@ existing job/status/artifact contract. The route does not write ShipStream,
 admit content, generate media, or mutate any scheduler, device, slot, lease, or
 post state. Focused verification: 48 passed.
 _________________________________________________________________________________
+
+_________________________________________________________________________________
+
+time: [21:29] [01-09-26]
+agent: [codex] [gpt-5] [source_link_intake_hardening]
+worktree: [feat/page-source-link-intake-20260901] /private/tmp/content-lab-source-link-intake
+type: [bug report]: Public source-link intake deployment gate
+area: [backend]: Content Lab source download, normalization, and artifact transport
+
+Hardened the page-scoped source-link API before public rollout. Intake now
+requires a server-owned exact/subdomain host allowlist, canonical permanent
+URLs without credential query parameters, a complete commissioned format,
+bounded per-page/global admission, TLS-verified owned yt-dlp process groups,
+workspace/disk/duration/output ceilings, failure cleanup, and configured-origin
+artifact URLs. An exact repeat after `source_import_runtime_restarted` safely
+requeues the same durable job; other failures stay terminal. Normalized and
+original byte/hash/media lineage remains exact and the source artifact schema
+is unchanged. Verification: 114 control-plane, format-contract, and downloader
+tests passed; compileall and diff checks passed. The repository-wide suite still
+stops during collection because the pre-existing `tests/test_cards_no_shell.py`
+cannot import `factory.formats`. No deploy, storage write, generation,
+scheduler, phone, slot, lease, or post action.
+_________________________________________________________________________________
