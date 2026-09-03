@@ -15,6 +15,7 @@ from services.content_engine_registry import (
 )
 from services.content_format_contracts import (
     CONTRACTS_PATH,
+    CreativeAuthority,
     load_format_contracts,
 )
 
@@ -58,7 +59,7 @@ def test_only_complete_hash_bound_formats_are_commissioned():
     assert profiles["truck-ugc"].execution_status == "uncommissioned"
     assert contracts["boat-lake"].definition_status == "incomplete"
     assert profiles["boat-lake"].execution_status == "uncommissioned"
-    assert contracts["silhouette-truck"].definition_status == "incomplete"
+    assert contracts["silhouette-truck"].definition_status == "complete"
     assert profiles["silhouette-truck"].execution_status == "uncommissioned"
 
 
@@ -69,9 +70,30 @@ def test_failed_ai_visual_libraries_expose_their_real_definition_gaps():
         "negativeRules", "referenceExamples", "reviewAuthority", "setting",
         "shotGrammar", "subject",
     )
-    assert contracts["silhouette-truck"].definition_gaps == (
-        "creativeAuthority", "duration", "referenceExamples",
-        "reviewAuthority", "setting", "shotGrammar",
+
+
+def test_silhouette_contract_is_complete_but_stays_executorially_quarantined():
+    contracts, _ = load_format_contracts()
+    profiles, _ = load_engine_registry()
+    silhouette = contracts["silhouette-truck"]
+    assert silhouette.definition_status == "complete"
+    assert silhouette.definition_gaps == ()
+    # The 8249ba1 quarantine stays in force: definition completion does not
+    # re-commission the executor after a failed visual-DNA review.
+    profile = profiles["silhouette-truck"]
+    assert profile.execution_status == "uncommissioned"
+    assert profile.executor_kind is None
+    assert profile.executor_id is None
+    assert profile.executor_version is None
+    assert profile.max_quantity == 0
+    # The restored rules are hash-bound to the live silhouette prompt family.
+    from services.control_plane_generation import load_prompt_catalog
+    _, catalog_hash = load_prompt_catalog()
+    assert silhouette.creative_authority == CreativeAuthority(
+        "prompt_family", "silhouette", f"sha256:{catalog_hash}",
+    )
+    assert silhouette.review_authority == (
+        "promptCatalog.families.silhouette.quality_guards"
     )
 
 

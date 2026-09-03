@@ -277,7 +277,7 @@ def _format_publication(format_slug, recipe_id, engine):
     return payload
 
 
-def test_failed_boat_and_silhouette_visual_libraries_are_not_advertised():
+def test_quarantined_silhouette_is_not_advertised_until_recommissioned():
     assert resolve_generation_recipe(_format_publication(
         "boat-lake", "boat-lake:master", "ai_video",
     )) is None
