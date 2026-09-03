@@ -7,22 +7,75 @@
       "materialSource": "generated_video",
       "assetType": "video/mp4",
       "definitionStatus": "complete",
-      "creativeAuthority": {"kind": "prompt_family", "id": "boat", "version": "sha256:c80cc32e6e762be05e6655190432e945c55afeb196fc488f3b09ad2fad51b9f1"},
-      "dimensions": {
-        "subject": {"status": "defined", "rule": "The same unlettered white open-hull boat bow is preserved from the reference.", "authority": "promptCatalog.families.boat.fixed_subject"},
-        "setting": {"status": "defined", "rule": "Pine-lined lakes, open lakes, river bends, bays, and rocky coves only.", "authority": "promptCatalog.families.boat.slots.setting"},
-        "shotGrammar": {"status": "defined", "rule": "First-person bow view reframed as realistic vertical action-camera phone footage.", "authority": "promptCatalog.families.boat.template"},
-        "lighting": {"status": "defined", "rule": "Golden-hour, sunset, morning gold, or bright summer light from the reviewed menu.", "authority": "promptCatalog.families.boat.slots.light"},
-        "motion": {"status": "defined", "rule": "Forward cruising, gentle rocking, wake and shoreline motion; no people appear.", "authority": "promptCatalog.families.boat.motion_prompt"},
-        "duration": {"status": "defined", "rule": "Duration is bound by the exact commissioned prompt provider configuration.", "authority": "promptCatalog.providers.wan-i2v-fast.base_input"},
-        "textPolicy": {"status": "defined", "rule": "No lettering anywhere in the generated frame.", "authority": "promptCatalog.families.boat.quality_guards"},
-        "negativeRules": {"status": "defined", "rule": "Reject people, identity drift from the reference boat, lettering, and non-phone visual treatment.", "authority": "promptCatalog.families.boat.quality_guards"},
-        "referenceExamples": {"status": "defined", "rule": "The byte-exact boat anchor is the required visual reference.", "authority": "promptCatalog.families.boat.base_anchor_sha256"}
+      "creativeAuthority": {
+        "kind": "prompt_family",
+        "id": "boat",
+        "version": "sha256:c80cc32e6e762be05e6655190432e945c55afeb196fc488f3b09ad2fad51b9f1"
       },
-      "output": {"aspectRatio": "9:16", "container": "video/mp4", "durationPolicy": "executor_bound", "audioPolicy": "campaign_sound_bound_downstream"},
+      "dimensions": {
+        "subject": {
+          "status": "defined",
+          "rule": "The same unlettered white open-hull boat bow is preserved from the reference.",
+          "authority": "promptCatalog.families.boat.fixed_subject"
+        },
+        "setting": {
+          "status": "defined",
+          "rule": "Pine-lined lakes, open lakes, river bends, bays, and rocky coves only.",
+          "authority": "promptCatalog.families.boat.slots.setting"
+        },
+        "shotGrammar": {
+          "status": "defined",
+          "rule": "First-person bow view reframed as realistic vertical action-camera phone footage.",
+          "authority": "promptCatalog.families.boat.template"
+        },
+        "lighting": {
+          "status": "defined",
+          "rule": "Golden-hour, sunset, morning gold, or bright summer light from the reviewed menu.",
+          "authority": "promptCatalog.families.boat.slots.light"
+        },
+        "motion": {
+          "status": "defined",
+          "rule": "Forward cruising, gentle rocking, wake and shoreline motion; no people appear.",
+          "authority": "promptCatalog.families.boat.motion_prompt"
+        },
+        "duration": {
+          "status": "defined",
+          "rule": "Duration is bound by the exact commissioned prompt provider configuration.",
+          "authority": "promptCatalog.providers.wan-i2v-fast.base_input"
+        },
+        "textPolicy": {
+          "status": "defined",
+          "rule": "No lettering anywhere in the generated frame.",
+          "authority": "promptCatalog.families.boat.quality_guards"
+        },
+        "negativeRules": {
+          "status": "defined",
+          "rule": "Reject people, identity drift from the reference boat, lettering, and non-phone visual treatment.",
+          "authority": "promptCatalog.families.boat.quality_guards"
+        },
+        "referenceExamples": {
+          "status": "defined",
+          "rule": "The byte-exact boat anchor is the required visual reference.",
+          "authority": "promptCatalog.families.boat.base_anchor_sha256"
+        }
+      },
+      "output": {
+        "aspectRatio": "9:16",
+        "container": "video/mp4",
+        "durationPolicy": "executor_bound",
+        "audioPolicy": "campaign_sound_bound_downstream"
+      },
       "reviewAuthority": "promptCatalog.families.boat.quality_guards",
-      "reviewGates": ["technical_video", "ocr_text", "visual_dna", "duplicate_and_never_reuse"],
-      "distribution": {"captions": "page_binding_required", "sounds": "page_binding_required"},
+      "reviewGates": [
+        "technical_video",
+        "ocr_text",
+        "visual_dna",
+        "duplicate_and_never_reuse"
+      ],
+      "distribution": {
+        "captions": "page_binding_required",
+        "sounds": "page_binding_required"
+      },
       "definitionGaps": []
     },
     "coffee-tok": {
@@ -33,21 +86,82 @@
       "definitionStatus": "incomplete",
       "creativeAuthority": null,
       "dimensions": {
-        "subject": {"status": "undefined", "rule": null, "authority": null},
-        "setting": {"status": "undefined", "rule": null, "authority": null},
-        "shotGrammar": {"status": "undefined", "rule": null, "authority": null},
-        "lighting": {"status": "undefined", "rule": null, "authority": null},
-        "motion": {"status": "undefined", "rule": null, "authority": null},
-        "duration": {"status": "undefined", "rule": null, "authority": null},
-        "textPolicy": {"status": "undefined", "rule": null, "authority": null},
-        "negativeRules": {"status": "undefined", "rule": null, "authority": null},
-        "referenceExamples": {"status": "undefined", "rule": null, "authority": null}
+        "subject": {
+          "status": "undefined",
+          "rule": null,
+          "authority": null
+        },
+        "setting": {
+          "status": "undefined",
+          "rule": null,
+          "authority": null
+        },
+        "shotGrammar": {
+          "status": "undefined",
+          "rule": null,
+          "authority": null
+        },
+        "lighting": {
+          "status": "undefined",
+          "rule": null,
+          "authority": null
+        },
+        "motion": {
+          "status": "undefined",
+          "rule": null,
+          "authority": null
+        },
+        "duration": {
+          "status": "undefined",
+          "rule": null,
+          "authority": null
+        },
+        "textPolicy": {
+          "status": "undefined",
+          "rule": null,
+          "authority": null
+        },
+        "negativeRules": {
+          "status": "undefined",
+          "rule": null,
+          "authority": null
+        },
+        "referenceExamples": {
+          "status": "undefined",
+          "rule": null,
+          "authority": null
+        }
       },
-      "output": {"aspectRatio": "9:16", "container": "video/mp4", "durationPolicy": "executor_bound", "audioPolicy": "campaign_sound_bound_downstream"},
+      "output": {
+        "aspectRatio": "9:16",
+        "container": "video/mp4",
+        "durationPolicy": "executor_bound",
+        "audioPolicy": "campaign_sound_bound_downstream"
+      },
       "reviewAuthority": null,
-      "reviewGates": ["technical_video", "ocr_text", "visual_dna", "duplicate_and_never_reuse"],
-      "distribution": {"captions": "page_binding_required", "sounds": "page_binding_required"},
-      "definitionGaps": ["creativeAuthority", "duration", "lighting", "motion", "negativeRules", "referenceExamples", "reviewAuthority", "setting", "shotGrammar", "subject", "textPolicy"]
+      "reviewGates": [
+        "technical_video",
+        "ocr_text",
+        "visual_dna",
+        "duplicate_and_never_reuse"
+      ],
+      "distribution": {
+        "captions": "page_binding_required",
+        "sounds": "page_binding_required"
+      },
+      "definitionGaps": [
+        "creativeAuthority",
+        "duration",
+        "lighting",
+        "motion",
+        "negativeRules",
+        "referenceExamples",
+        "reviewAuthority",
+        "setting",
+        "shotGrammar",
+        "subject",
+        "textPolicy"
+      ]
     },
     "construction-scenic": {
       "contentNiche": "Construction",
@@ -57,21 +171,82 @@
       "definitionStatus": "incomplete",
       "creativeAuthority": null,
       "dimensions": {
-        "subject": {"status": "undefined", "rule": null, "authority": null},
-        "setting": {"status": "undefined", "rule": null, "authority": null},
-        "shotGrammar": {"status": "undefined", "rule": null, "authority": null},
-        "lighting": {"status": "undefined", "rule": null, "authority": null},
-        "motion": {"status": "undefined", "rule": null, "authority": null},
-        "duration": {"status": "undefined", "rule": null, "authority": null},
-        "textPolicy": {"status": "undefined", "rule": null, "authority": null},
-        "negativeRules": {"status": "undefined", "rule": null, "authority": null},
-        "referenceExamples": {"status": "undefined", "rule": null, "authority": null}
+        "subject": {
+          "status": "undefined",
+          "rule": null,
+          "authority": null
+        },
+        "setting": {
+          "status": "undefined",
+          "rule": null,
+          "authority": null
+        },
+        "shotGrammar": {
+          "status": "undefined",
+          "rule": null,
+          "authority": null
+        },
+        "lighting": {
+          "status": "undefined",
+          "rule": null,
+          "authority": null
+        },
+        "motion": {
+          "status": "undefined",
+          "rule": null,
+          "authority": null
+        },
+        "duration": {
+          "status": "undefined",
+          "rule": null,
+          "authority": null
+        },
+        "textPolicy": {
+          "status": "undefined",
+          "rule": null,
+          "authority": null
+        },
+        "negativeRules": {
+          "status": "undefined",
+          "rule": null,
+          "authority": null
+        },
+        "referenceExamples": {
+          "status": "undefined",
+          "rule": null,
+          "authority": null
+        }
       },
-      "output": {"aspectRatio": "9:16", "container": "video/mp4", "durationPolicy": "executor_bound", "audioPolicy": "campaign_sound_bound_downstream"},
+      "output": {
+        "aspectRatio": "9:16",
+        "container": "video/mp4",
+        "durationPolicy": "executor_bound",
+        "audioPolicy": "campaign_sound_bound_downstream"
+      },
       "reviewAuthority": null,
-      "reviewGates": ["technical_video", "ocr_text", "visual_dna", "duplicate_and_never_reuse"],
-      "distribution": {"captions": "page_binding_required", "sounds": "page_binding_required"},
-      "definitionGaps": ["creativeAuthority", "duration", "lighting", "motion", "negativeRules", "referenceExamples", "reviewAuthority", "setting", "shotGrammar", "subject", "textPolicy"]
+      "reviewGates": [
+        "technical_video",
+        "ocr_text",
+        "visual_dna",
+        "duplicate_and_never_reuse"
+      ],
+      "distribution": {
+        "captions": "page_binding_required",
+        "sounds": "page_binding_required"
+      },
+      "definitionGaps": [
+        "creativeAuthority",
+        "duration",
+        "lighting",
+        "motion",
+        "negativeRules",
+        "referenceExamples",
+        "reviewAuthority",
+        "setting",
+        "shotGrammar",
+        "subject",
+        "textPolicy"
+      ]
     },
     "lyric-edits": {
       "contentNiche": "lyric-edits",
@@ -81,21 +256,82 @@
       "definitionStatus": "incomplete",
       "creativeAuthority": null,
       "dimensions": {
-        "subject": {"status": "undefined", "rule": null, "authority": null},
-        "setting": {"status": "undefined", "rule": null, "authority": null},
-        "shotGrammar": {"status": "undefined", "rule": null, "authority": null},
-        "lighting": {"status": "undefined", "rule": null, "authority": null},
-        "motion": {"status": "undefined", "rule": null, "authority": null},
-        "duration": {"status": "undefined", "rule": null, "authority": null},
-        "textPolicy": {"status": "undefined", "rule": null, "authority": null},
-        "negativeRules": {"status": "undefined", "rule": null, "authority": null},
-        "referenceExamples": {"status": "undefined", "rule": null, "authority": null}
+        "subject": {
+          "status": "undefined",
+          "rule": null,
+          "authority": null
+        },
+        "setting": {
+          "status": "undefined",
+          "rule": null,
+          "authority": null
+        },
+        "shotGrammar": {
+          "status": "undefined",
+          "rule": null,
+          "authority": null
+        },
+        "lighting": {
+          "status": "undefined",
+          "rule": null,
+          "authority": null
+        },
+        "motion": {
+          "status": "undefined",
+          "rule": null,
+          "authority": null
+        },
+        "duration": {
+          "status": "undefined",
+          "rule": null,
+          "authority": null
+        },
+        "textPolicy": {
+          "status": "undefined",
+          "rule": null,
+          "authority": null
+        },
+        "negativeRules": {
+          "status": "undefined",
+          "rule": null,
+          "authority": null
+        },
+        "referenceExamples": {
+          "status": "undefined",
+          "rule": null,
+          "authority": null
+        }
       },
-      "output": {"aspectRatio": "9:16", "container": "video/mp4", "durationPolicy": "source_bound", "audioPolicy": "campaign_sound_bound_downstream"},
+      "output": {
+        "aspectRatio": "9:16",
+        "container": "video/mp4",
+        "durationPolicy": "source_bound",
+        "audioPolicy": "campaign_sound_bound_downstream"
+      },
       "reviewAuthority": null,
-      "reviewGates": ["technical_video", "rights_and_provenance", "text_layout", "duplicate_and_never_reuse"],
-      "distribution": {"captions": "page_binding_required", "sounds": "page_binding_required"},
-      "definitionGaps": ["creativeAuthority", "duration", "lighting", "motion", "negativeRules", "referenceExamples", "reviewAuthority", "setting", "shotGrammar", "subject", "textPolicy"]
+      "reviewGates": [
+        "technical_video",
+        "rights_and_provenance",
+        "text_layout",
+        "duplicate_and_never_reuse"
+      ],
+      "distribution": {
+        "captions": "page_binding_required",
+        "sounds": "page_binding_required"
+      },
+      "definitionGaps": [
+        "creativeAuthority",
+        "duration",
+        "lighting",
+        "motion",
+        "negativeRules",
+        "referenceExamples",
+        "reviewAuthority",
+        "setting",
+        "shotGrammar",
+        "subject",
+        "textPolicy"
+      ]
     },
     "meme-slideshow": {
       "contentNiche": "meme",
@@ -105,21 +341,82 @@
       "definitionStatus": "incomplete",
       "creativeAuthority": null,
       "dimensions": {
-        "subject": {"status": "undefined", "rule": null, "authority": null},
-        "setting": {"status": "undefined", "rule": null, "authority": null},
-        "shotGrammar": {"status": "undefined", "rule": null, "authority": null},
-        "lighting": {"status": "undefined", "rule": null, "authority": null},
-        "motion": {"status": "undefined", "rule": null, "authority": null},
-        "duration": {"status": "undefined", "rule": null, "authority": null},
-        "textPolicy": {"status": "undefined", "rule": null, "authority": null},
-        "negativeRules": {"status": "undefined", "rule": null, "authority": null},
-        "referenceExamples": {"status": "undefined", "rule": null, "authority": null}
+        "subject": {
+          "status": "undefined",
+          "rule": null,
+          "authority": null
+        },
+        "setting": {
+          "status": "undefined",
+          "rule": null,
+          "authority": null
+        },
+        "shotGrammar": {
+          "status": "undefined",
+          "rule": null,
+          "authority": null
+        },
+        "lighting": {
+          "status": "undefined",
+          "rule": null,
+          "authority": null
+        },
+        "motion": {
+          "status": "undefined",
+          "rule": null,
+          "authority": null
+        },
+        "duration": {
+          "status": "undefined",
+          "rule": null,
+          "authority": null
+        },
+        "textPolicy": {
+          "status": "undefined",
+          "rule": null,
+          "authority": null
+        },
+        "negativeRules": {
+          "status": "undefined",
+          "rule": null,
+          "authority": null
+        },
+        "referenceExamples": {
+          "status": "undefined",
+          "rule": null,
+          "authority": null
+        }
       },
-      "output": {"aspectRatio": "9:16", "container": "video/mp4", "durationPolicy": "source_bound", "audioPolicy": "campaign_sound_bound_downstream"},
+      "output": {
+        "aspectRatio": "9:16",
+        "container": "video/mp4",
+        "durationPolicy": "source_bound",
+        "audioPolicy": "campaign_sound_bound_downstream"
+      },
       "reviewAuthority": null,
-      "reviewGates": ["technical_video", "rights_and_provenance", "text_layout", "duplicate_and_never_reuse"],
-      "distribution": {"captions": "page_binding_required", "sounds": "page_binding_required"},
-      "definitionGaps": ["creativeAuthority", "duration", "lighting", "motion", "negativeRules", "referenceExamples", "reviewAuthority", "setting", "shotGrammar", "subject", "textPolicy"]
+      "reviewGates": [
+        "technical_video",
+        "rights_and_provenance",
+        "text_layout",
+        "duplicate_and_never_reuse"
+      ],
+      "distribution": {
+        "captions": "page_binding_required",
+        "sounds": "page_binding_required"
+      },
+      "definitionGaps": [
+        "creativeAuthority",
+        "duration",
+        "lighting",
+        "motion",
+        "negativeRules",
+        "referenceExamples",
+        "reviewAuthority",
+        "setting",
+        "shotGrammar",
+        "subject",
+        "textPolicy"
+      ]
     },
     "pov-dirt-bike": {
       "contentNiche": "POV - Dirtbike",
@@ -127,22 +424,77 @@
       "materialSource": "source_library",
       "assetType": "video/mp4",
       "definitionStatus": "complete",
-      "creativeAuthority": {"kind": "source_dna_recut", "id": "source-dna-recut", "version": "sha256:1bbcb745be141c7b9e835662637110d85785979610f993835ce2d05f31b3d484"},
-      "dimensions": {
-        "subject": {"status": "defined", "rule": "First-person dirt-bike riding footage from the exact page-scoped master bytes.", "authority": "sourceDna.masters"},
-        "setting": {"status": "defined", "rule": "Trail and off-road settings are fixed by the reviewed page-scoped master library.", "authority": "sourceDna.masters"},
-        "shotGrammar": {"status": "defined", "rule": "First-person dirt-bike POV only; no substituted scenic or vehicle format.", "authority": "sourceDna.format"},
-        "lighting": {"status": "defined", "rule": "Lighting is source-bound to the exact master bytes and may not be synthesized.", "authority": "sourceDna.masters"},
-        "motion": {"status": "defined", "rule": "Natural ride motion is source-bound to the exact master bytes.", "authority": "sourceDna.masters"},
-        "duration": {"status": "defined", "rule": "Each output is a unique 6-8 second window from the selected master, transformed by the dossier playback speed.", "authority": "sourceDnaRecut.cutWindow_and_clipSpeed"},
-        "textPolicy": {"status": "defined", "rule": "Every derived cut must pass the commissioned text scan before admission.", "authority": "review.text_scan"},
-        "negativeRules": {"status": "defined", "rule": "Reject unregistered masters, repeated cut windows, text-scan failures, QA failures, and content outside dirt-bike POV.", "authority": "sourceDnaRecut.selection"},
-        "referenceExamples": {"status": "defined", "rule": "The selected immutable master SHA-256 set is the complete visual reference library.", "authority": "sourceDna.masters.sha256"}
+      "creativeAuthority": {
+        "kind": "source_dna_recut",
+        "id": "source-dna-recut",
+        "version": "sha256:1bbcb745be141c7b9e835662637110d85785979610f993835ce2d05f31b3d484"
       },
-      "output": {"aspectRatio": "9:16", "container": "video/mp4", "durationPolicy": "source_bound", "audioPolicy": "campaign_sound_bound_downstream"},
+      "dimensions": {
+        "subject": {
+          "status": "defined",
+          "rule": "First-person dirt-bike riding footage from the exact page-scoped master bytes.",
+          "authority": "sourceDna.masters"
+        },
+        "setting": {
+          "status": "defined",
+          "rule": "Trail and off-road settings are fixed by the reviewed page-scoped master library.",
+          "authority": "sourceDna.masters"
+        },
+        "shotGrammar": {
+          "status": "defined",
+          "rule": "First-person dirt-bike POV only; no substituted scenic or vehicle format.",
+          "authority": "sourceDna.format"
+        },
+        "lighting": {
+          "status": "defined",
+          "rule": "Lighting is source-bound to the exact master bytes and may not be synthesized.",
+          "authority": "sourceDna.masters"
+        },
+        "motion": {
+          "status": "defined",
+          "rule": "Natural ride motion is source-bound to the exact master bytes.",
+          "authority": "sourceDna.masters"
+        },
+        "duration": {
+          "status": "defined",
+          "rule": "Each output is a unique 6-8 second window from the selected master, transformed by the dossier playback speed.",
+          "authority": "sourceDnaRecut.cutWindow_and_clipSpeed"
+        },
+        "textPolicy": {
+          "status": "defined",
+          "rule": "Every derived cut must pass the commissioned text scan before admission.",
+          "authority": "review.text_scan"
+        },
+        "negativeRules": {
+          "status": "defined",
+          "rule": "Reject unregistered masters, repeated cut windows, text-scan failures, QA failures, and content outside dirt-bike POV.",
+          "authority": "sourceDnaRecut.selection"
+        },
+        "referenceExamples": {
+          "status": "defined",
+          "rule": "The selected immutable master SHA-256 set is the complete visual reference library.",
+          "authority": "sourceDna.masters.sha256"
+        }
+      },
+      "output": {
+        "aspectRatio": "9:16",
+        "container": "video/mp4",
+        "durationPolicy": "source_bound",
+        "audioPolicy": "campaign_sound_bound_downstream"
+      },
       "reviewAuthority": "sourceDna.provenance",
-      "reviewGates": ["byte_exact_provenance", "cut_window_lineage", "technical_video", "text_scan", "operator_visual_qa", "duplicate_and_never_reuse"],
-      "distribution": {"captions": "page_binding_required", "sounds": "page_binding_required"},
+      "reviewGates": [
+        "byte_exact_provenance",
+        "cut_window_lineage",
+        "technical_video",
+        "text_scan",
+        "operator_visual_qa",
+        "duplicate_and_never_reuse"
+      ],
+      "distribution": {
+        "captions": "page_binding_required",
+        "sounds": "page_binding_required"
+      },
       "definitionGaps": []
     },
     "pov-dusk-core": {
@@ -153,21 +505,83 @@
       "definitionStatus": "incomplete",
       "creativeAuthority": null,
       "dimensions": {
-        "subject": {"status": "undefined", "rule": null, "authority": null},
-        "setting": {"status": "undefined", "rule": null, "authority": null},
-        "shotGrammar": {"status": "undefined", "rule": null, "authority": null},
-        "lighting": {"status": "undefined", "rule": null, "authority": null},
-        "motion": {"status": "undefined", "rule": null, "authority": null},
-        "duration": {"status": "undefined", "rule": null, "authority": null},
-        "textPolicy": {"status": "undefined", "rule": null, "authority": null},
-        "negativeRules": {"status": "undefined", "rule": null, "authority": null},
-        "referenceExamples": {"status": "undefined", "rule": null, "authority": null}
+        "subject": {
+          "status": "undefined",
+          "rule": null,
+          "authority": null
+        },
+        "setting": {
+          "status": "undefined",
+          "rule": null,
+          "authority": null
+        },
+        "shotGrammar": {
+          "status": "undefined",
+          "rule": null,
+          "authority": null
+        },
+        "lighting": {
+          "status": "undefined",
+          "rule": null,
+          "authority": null
+        },
+        "motion": {
+          "status": "undefined",
+          "rule": null,
+          "authority": null
+        },
+        "duration": {
+          "status": "undefined",
+          "rule": null,
+          "authority": null
+        },
+        "textPolicy": {
+          "status": "undefined",
+          "rule": null,
+          "authority": null
+        },
+        "negativeRules": {
+          "status": "undefined",
+          "rule": null,
+          "authority": null
+        },
+        "referenceExamples": {
+          "status": "undefined",
+          "rule": null,
+          "authority": null
+        }
       },
-      "output": {"aspectRatio": "9:16", "container": "video/mp4", "durationPolicy": "source_bound", "audioPolicy": "campaign_sound_bound_downstream"},
+      "output": {
+        "aspectRatio": "9:16",
+        "container": "video/mp4",
+        "durationPolicy": "source_bound",
+        "audioPolicy": "campaign_sound_bound_downstream"
+      },
       "reviewAuthority": null,
-      "reviewGates": ["byte_exact_provenance", "technical_video", "text_scan", "operator_visual_qa", "duplicate_and_never_reuse"],
-      "distribution": {"captions": "page_binding_required", "sounds": "page_binding_required"},
-      "definitionGaps": ["creativeAuthority", "duration", "lighting", "motion", "negativeRules", "referenceExamples", "reviewAuthority", "setting", "shotGrammar", "subject", "textPolicy"]
+      "reviewGates": [
+        "byte_exact_provenance",
+        "technical_video",
+        "text_scan",
+        "operator_visual_qa",
+        "duplicate_and_never_reuse"
+      ],
+      "distribution": {
+        "captions": "page_binding_required",
+        "sounds": "page_binding_required"
+      },
+      "definitionGaps": [
+        "creativeAuthority",
+        "duration",
+        "lighting",
+        "motion",
+        "negativeRules",
+        "referenceExamples",
+        "reviewAuthority",
+        "setting",
+        "shotGrammar",
+        "subject",
+        "textPolicy"
+      ]
     },
     "pov-night-core": {
       "contentNiche": "POV — Night Core",
@@ -175,22 +589,77 @@
       "materialSource": "source_library",
       "assetType": "video/mp4",
       "definitionStatus": "complete",
-      "creativeAuthority": {"kind": "source_dna_recut", "id": "source-dna-recut", "version": "sha256:1bbcb745be141c7b9e835662637110d85785979610f993835ce2d05f31b3d484"},
-      "dimensions": {
-        "subject": {"status": "defined", "rule": "First-person driving footage only; this is not a truck page and the vehicle itself is not the subject.", "authority": "formatContract.userConfirmed.2026-08-29"},
-        "setting": {"status": "defined", "rule": "Night roads and nighttime driving environments only.", "authority": "formatContract.userConfirmed.2026-08-29"},
-        "shotGrammar": {"status": "defined", "rule": "Continuous first-person road-facing driving POV sourced from real clips.", "authority": "formatContract.userConfirmed.2026-08-29"},
-        "lighting": {"status": "defined", "rule": "Nighttime exposure and road lighting; daylight scenic and truck glamour footage are excluded.", "authority": "formatContract.userConfirmed.2026-08-29"},
-        "motion": {"status": "defined", "rule": "Natural forward driving motion from sourced footage; no AI-created motion.", "authority": "formatContract.userConfirmed.2026-08-29"},
-        "duration": {"status": "defined", "rule": "Each output is a unique 6-8 second window from the selected page-scoped master, transformed only by the typed Dossier playback speed and crop treatment.", "authority": "sourceDnaRecut.cutWindow_and_clipSpeed"},
-        "textPolicy": {"status": "defined", "rule": "Source clips must pass OCR/text review before admission.", "authority": "postingDocumentation.LocalContracts.sourced-video"},
-        "negativeRules": {"status": "defined", "rule": "Reject trucks as the visual subject, AI-generated visuals, non-driving POV, daylight scenic clips, embedded text, and reused bytes.", "authority": "formatContract.userConfirmed.2026-08-29"},
-        "referenceExamples": {"status": "defined", "rule": "The exact page-scoped master SHA-256 set is the complete visual reference library; no other driving footage may substitute for it.", "authority": "sourceDna.masters.sha256"}
+      "creativeAuthority": {
+        "kind": "source_dna_recut",
+        "id": "source-dna-recut",
+        "version": "sha256:1bbcb745be141c7b9e835662637110d85785979610f993835ce2d05f31b3d484"
       },
-      "output": {"aspectRatio": "9:16", "container": "video/mp4", "durationPolicy": "source_bound", "audioPolicy": "campaign_sound_bound_downstream"},
+      "dimensions": {
+        "subject": {
+          "status": "defined",
+          "rule": "First-person driving footage only; this is not a truck page and the vehicle itself is not the subject.",
+          "authority": "formatContract.userConfirmed.2026-08-29"
+        },
+        "setting": {
+          "status": "defined",
+          "rule": "Night roads and nighttime driving environments only.",
+          "authority": "formatContract.userConfirmed.2026-08-29"
+        },
+        "shotGrammar": {
+          "status": "defined",
+          "rule": "Continuous first-person road-facing driving POV sourced from real clips.",
+          "authority": "formatContract.userConfirmed.2026-08-29"
+        },
+        "lighting": {
+          "status": "defined",
+          "rule": "Nighttime exposure and road lighting; daylight scenic and truck glamour footage are excluded.",
+          "authority": "formatContract.userConfirmed.2026-08-29"
+        },
+        "motion": {
+          "status": "defined",
+          "rule": "Natural forward driving motion from sourced footage; no AI-created motion.",
+          "authority": "formatContract.userConfirmed.2026-08-29"
+        },
+        "duration": {
+          "status": "defined",
+          "rule": "Each output is a unique 6-8 second window from the selected page-scoped master, transformed only by the typed Dossier playback speed and crop treatment.",
+          "authority": "sourceDnaRecut.cutWindow_and_clipSpeed"
+        },
+        "textPolicy": {
+          "status": "defined",
+          "rule": "Source clips must pass OCR/text review before admission.",
+          "authority": "postingDocumentation.LocalContracts.sourced-video"
+        },
+        "negativeRules": {
+          "status": "defined",
+          "rule": "Reject trucks as the visual subject, AI-generated visuals, non-driving POV, daylight scenic clips, embedded text, and reused bytes.",
+          "authority": "formatContract.userConfirmed.2026-08-29"
+        },
+        "referenceExamples": {
+          "status": "defined",
+          "rule": "The exact page-scoped master SHA-256 set is the complete visual reference library; no other driving footage may substitute for it.",
+          "authority": "sourceDna.masters.sha256"
+        }
+      },
+      "output": {
+        "aspectRatio": "9:16",
+        "container": "video/mp4",
+        "durationPolicy": "source_bound",
+        "audioPolicy": "campaign_sound_bound_downstream"
+      },
       "reviewAuthority": "sourceDna.provenance",
-      "reviewGates": ["byte_exact_provenance", "cut_window_lineage", "technical_video", "text_scan", "operator_visual_qa", "duplicate_and_never_reuse"],
-      "distribution": {"captions": "page_binding_required", "sounds": "page_binding_required"},
+      "reviewGates": [
+        "byte_exact_provenance",
+        "cut_window_lineage",
+        "technical_video",
+        "text_scan",
+        "operator_visual_qa",
+        "duplicate_and_never_reuse"
+      ],
+      "distribution": {
+        "captions": "page_binding_required",
+        "sounds": "page_binding_required"
+      },
       "definitionGaps": []
     },
     "pov-night-core-ai": {
@@ -201,21 +670,82 @@
       "definitionStatus": "incomplete",
       "creativeAuthority": null,
       "dimensions": {
-        "subject": {"status": "undefined", "rule": null, "authority": null},
-        "setting": {"status": "undefined", "rule": null, "authority": null},
-        "shotGrammar": {"status": "undefined", "rule": null, "authority": null},
-        "lighting": {"status": "undefined", "rule": null, "authority": null},
-        "motion": {"status": "undefined", "rule": null, "authority": null},
-        "duration": {"status": "undefined", "rule": null, "authority": null},
-        "textPolicy": {"status": "undefined", "rule": null, "authority": null},
-        "negativeRules": {"status": "undefined", "rule": null, "authority": null},
-        "referenceExamples": {"status": "undefined", "rule": null, "authority": null}
+        "subject": {
+          "status": "undefined",
+          "rule": null,
+          "authority": null
+        },
+        "setting": {
+          "status": "undefined",
+          "rule": null,
+          "authority": null
+        },
+        "shotGrammar": {
+          "status": "undefined",
+          "rule": null,
+          "authority": null
+        },
+        "lighting": {
+          "status": "undefined",
+          "rule": null,
+          "authority": null
+        },
+        "motion": {
+          "status": "undefined",
+          "rule": null,
+          "authority": null
+        },
+        "duration": {
+          "status": "undefined",
+          "rule": null,
+          "authority": null
+        },
+        "textPolicy": {
+          "status": "undefined",
+          "rule": null,
+          "authority": null
+        },
+        "negativeRules": {
+          "status": "undefined",
+          "rule": null,
+          "authority": null
+        },
+        "referenceExamples": {
+          "status": "undefined",
+          "rule": null,
+          "authority": null
+        }
       },
-      "output": {"aspectRatio": "9:16", "container": "video/mp4", "durationPolicy": "executor_bound", "audioPolicy": "campaign_sound_bound_downstream"},
+      "output": {
+        "aspectRatio": "9:16",
+        "container": "video/mp4",
+        "durationPolicy": "executor_bound",
+        "audioPolicy": "campaign_sound_bound_downstream"
+      },
       "reviewAuthority": null,
-      "reviewGates": ["technical_video", "ocr_text", "visual_dna", "duplicate_and_never_reuse"],
-      "distribution": {"captions": "page_binding_required", "sounds": "page_binding_required"},
-      "definitionGaps": ["creativeAuthority", "duration", "lighting", "motion", "negativeRules", "referenceExamples", "reviewAuthority", "setting", "shotGrammar", "subject", "textPolicy"]
+      "reviewGates": [
+        "technical_video",
+        "ocr_text",
+        "visual_dna",
+        "duplicate_and_never_reuse"
+      ],
+      "distribution": {
+        "captions": "page_binding_required",
+        "sounds": "page_binding_required"
+      },
+      "definitionGaps": [
+        "creativeAuthority",
+        "duration",
+        "lighting",
+        "motion",
+        "negativeRules",
+        "referenceExamples",
+        "reviewAuthority",
+        "setting",
+        "shotGrammar",
+        "subject",
+        "textPolicy"
+      ]
     },
     "pov-scenic": {
       "contentNiche": "POV — Scenic",
@@ -223,22 +753,77 @@
       "materialSource": "source_library",
       "assetType": "video/mp4",
       "definitionStatus": "complete",
-      "creativeAuthority": {"kind": "source_dna_recut", "id": "source-dna-recut", "version": "sha256:1bbcb745be141c7b9e835662637110d85785979610f993835ce2d05f31b3d484"},
-      "dimensions": {
-        "subject": {"status": "defined", "rule": "The visual subject is fixed by the exact page-scoped source master selected for this page; another page's footage may not substitute for it.", "authority": "sourceDna.masters"},
-        "setting": {"status": "defined", "rule": "The setting is whatever exists in the page-scoped approved source master and is not synthesized or replaced.", "authority": "sourceDna.masters"},
-        "shotGrammar": {"status": "defined", "rule": "Preserve the source master's original point of view while selecting a new non-repeated cut window.", "authority": "sourceDnaRecut.selection"},
-        "lighting": {"status": "defined", "rule": "Lighting remains source-bound to the exact approved bytes; the recut path does not generate a new scene or lighting treatment.", "authority": "sourceDna.masters"},
-        "motion": {"status": "defined", "rule": "Motion comes only from the approved source footage and the typed Dossier playback speed.", "authority": "sourceDnaRecut.cutWindow_and_clipSpeed"},
-        "duration": {"status": "defined", "rule": "Each output is a unique 6-8 second window from the selected page-scoped master, transformed only by the typed Dossier playback speed and crop treatment.", "authority": "sourceDnaRecut.cutWindow_and_clipSpeed"},
-        "textPolicy": {"status": "defined", "rule": "Every derived cut must pass the commissioned text scan before admission.", "authority": "review.text_scan"},
-        "negativeRules": {"status": "defined", "rule": "Reject unregistered or cross-page source bytes, repeated cut windows, text-scan failures, technical failures, and reused output bytes.", "authority": "sourceDnaRecut.selection"},
-        "referenceExamples": {"status": "defined", "rule": "The exact page-scoped master SHA-256 set is the complete visual reference library for this page.", "authority": "sourceDna.masters.sha256"}
+      "creativeAuthority": {
+        "kind": "source_dna_recut",
+        "id": "source-dna-recut",
+        "version": "sha256:1bbcb745be141c7b9e835662637110d85785979610f993835ce2d05f31b3d484"
       },
-      "output": {"aspectRatio": "9:16", "container": "video/mp4", "durationPolicy": "source_bound", "audioPolicy": "campaign_sound_bound_downstream"},
+      "dimensions": {
+        "subject": {
+          "status": "defined",
+          "rule": "The visual subject is fixed by the exact page-scoped source master selected for this page; another page's footage may not substitute for it.",
+          "authority": "sourceDna.masters"
+        },
+        "setting": {
+          "status": "defined",
+          "rule": "The setting is whatever exists in the page-scoped approved source master and is not synthesized or replaced.",
+          "authority": "sourceDna.masters"
+        },
+        "shotGrammar": {
+          "status": "defined",
+          "rule": "Preserve the source master's original point of view while selecting a new non-repeated cut window.",
+          "authority": "sourceDnaRecut.selection"
+        },
+        "lighting": {
+          "status": "defined",
+          "rule": "Lighting remains source-bound to the exact approved bytes; the recut path does not generate a new scene or lighting treatment.",
+          "authority": "sourceDna.masters"
+        },
+        "motion": {
+          "status": "defined",
+          "rule": "Motion comes only from the approved source footage and the typed Dossier playback speed.",
+          "authority": "sourceDnaRecut.cutWindow_and_clipSpeed"
+        },
+        "duration": {
+          "status": "defined",
+          "rule": "Each output is a unique 6-8 second window from the selected page-scoped master, transformed only by the typed Dossier playback speed and crop treatment.",
+          "authority": "sourceDnaRecut.cutWindow_and_clipSpeed"
+        },
+        "textPolicy": {
+          "status": "defined",
+          "rule": "Every derived cut must pass the commissioned text scan before admission.",
+          "authority": "review.text_scan"
+        },
+        "negativeRules": {
+          "status": "defined",
+          "rule": "Reject unregistered or cross-page source bytes, repeated cut windows, text-scan failures, technical failures, and reused output bytes.",
+          "authority": "sourceDnaRecut.selection"
+        },
+        "referenceExamples": {
+          "status": "defined",
+          "rule": "The exact page-scoped master SHA-256 set is the complete visual reference library for this page.",
+          "authority": "sourceDna.masters.sha256"
+        }
+      },
+      "output": {
+        "aspectRatio": "9:16",
+        "container": "video/mp4",
+        "durationPolicy": "source_bound",
+        "audioPolicy": "campaign_sound_bound_downstream"
+      },
       "reviewAuthority": "sourceDna.provenance",
-      "reviewGates": ["byte_exact_provenance", "cut_window_lineage", "technical_video", "text_scan", "operator_visual_qa", "duplicate_and_never_reuse"],
-      "distribution": {"captions": "page_binding_required", "sounds": "page_binding_required"},
+      "reviewGates": [
+        "byte_exact_provenance",
+        "cut_window_lineage",
+        "technical_video",
+        "text_scan",
+        "operator_visual_qa",
+        "duplicate_and_never_reuse"
+      ],
+      "distribution": {
+        "captions": "page_binding_required",
+        "sounds": "page_binding_required"
+      },
       "definitionGaps": []
     },
     "silhouette-truck": {
@@ -247,22 +832,76 @@
       "materialSource": "generated_video",
       "assetType": "video/mp4",
       "definitionStatus": "complete",
-      "creativeAuthority": {"kind": "prompt_family", "id": "silhouette", "version": "sha256:c80cc32e6e762be05e6655190432e945c55afeb196fc488f3b09ad2fad51b9f1"},
-      "dimensions": {
-        "subject": {"status": "defined", "rule": "The format centers a featureless black embracing couple and a dark pickup; truck-only frames and non-embracing pairs are outside the format.", "authority": "promptCatalog.families.silhouette.fixed_subject"},
-        "setting": {"status": "defined", "rule": "Dusk fields, meadows, hilltops, fence-line pullouts, and coastal bluffs from the reviewed menu.", "authority": "promptCatalog.families.silhouette.slots.setting"},
-        "shotGrammar": {"status": "defined", "rule": "The couple and truck remain readable beneath a large clean caption sky in one of the reviewed compositions.", "authority": "promptCatalog.families.silhouette.slots.composition"},
-        "lighting": {"status": "defined", "rule": "Deep, low-exposure dusk with controlled highlights; no pale or washed-out sky.", "authority": "promptCatalog.families.silhouette.quality_guards"},
-        "motion": {"status": "defined", "rule": "Gentle environmental motion only; couple holds the embrace and truck remains stationary.", "authority": "promptCatalog.families.silhouette.motion_prompt"},
-        "duration": {"status": "defined", "rule": "Duration is bound by the exact commissioned prompt provider configuration.", "authority": "promptCatalog.providers.wan-i2v-fast.base_input"},
-        "textPolicy": {"status": "defined", "rule": "No lettering in the source frame and clean sky is reserved for downstream captions.", "authority": "promptCatalog.families.silhouette.quality_guards"},
-        "negativeRules": {"status": "defined", "rule": "Reject truck-only frames, missing or non-embracing couples, readable faces, clothing detail, lettering, pale skies, geometry faults, repeated anchors, and reused imagery.", "authority": "promptCatalog.families.silhouette.note"},
-        "referenceExamples": {"status": "defined", "rule": "The 30 byte-exact reviewed anchors rotate without replacement.", "authority": "promptCatalog.families.silhouette.anchor_manifest_sha256"}
+      "creativeAuthority": {
+        "kind": "prompt_family",
+        "id": "silhouette",
+        "version": "sha256:c80cc32e6e762be05e6655190432e945c55afeb196fc488f3b09ad2fad51b9f1"
       },
-      "output": {"aspectRatio": "9:16", "container": "video/mp4", "durationPolicy": "executor_bound", "audioPolicy": "campaign_sound_bound_downstream"},
+      "dimensions": {
+        "subject": {
+          "status": "defined",
+          "rule": "A featureless black embracing couple and the same debadged black pickup are preserved from an approved anchor.",
+          "authority": "promptCatalog.families.silhouette.fixed_subject"
+        },
+        "setting": {
+          "status": "defined",
+          "rule": "Dusk fields, meadows, hilltops, fence-line pullouts, and coastal bluffs from the reviewed menu.",
+          "authority": "promptCatalog.families.silhouette.slots.setting"
+        },
+        "shotGrammar": {
+          "status": "defined",
+          "rule": "The couple and truck remain readable beneath a large clean caption sky in one of the reviewed compositions.",
+          "authority": "promptCatalog.families.silhouette.slots.composition"
+        },
+        "lighting": {
+          "status": "defined",
+          "rule": "Deep, low-exposure dusk with controlled highlights; no pale or washed-out sky.",
+          "authority": "promptCatalog.families.silhouette.quality_guards"
+        },
+        "motion": {
+          "status": "defined",
+          "rule": "Gentle environmental motion only; couple holds the embrace and truck remains stationary.",
+          "authority": "promptCatalog.families.silhouette.motion_prompt"
+        },
+        "duration": {
+          "status": "defined",
+          "rule": "Duration is bound by the exact commissioned prompt provider configuration.",
+          "authority": "promptCatalog.providers.wan-i2v-fast.base_input"
+        },
+        "textPolicy": {
+          "status": "defined",
+          "rule": "No lettering in the source frame and clean sky is reserved for downstream captions.",
+          "authority": "promptCatalog.families.silhouette.quality_guards"
+        },
+        "negativeRules": {
+          "status": "defined",
+          "rule": "Reject readable faces, clothing detail, lettering, subject drift, pale skies, geometry faults, and reused imagery.",
+          "authority": "promptCatalog.families.silhouette.note"
+        },
+        "referenceExamples": {
+          "status": "defined",
+          "rule": "The 30 byte-exact reviewed anchors rotate without replacement.",
+          "authority": "promptCatalog.families.silhouette.anchor_manifest_sha256"
+        }
+      },
+      "output": {
+        "aspectRatio": "9:16",
+        "container": "video/mp4",
+        "durationPolicy": "executor_bound",
+        "audioPolicy": "campaign_sound_bound_downstream"
+      },
       "reviewAuthority": "promptCatalog.families.silhouette.quality_guards",
-      "reviewGates": ["technical_video", "ocr_text", "visual_dna", "geometry", "duplicate_and_never_reuse"],
-      "distribution": {"captions": "page_binding_required", "sounds": "page_binding_required"},
+      "reviewGates": [
+        "technical_video",
+        "ocr_text",
+        "visual_dna",
+        "geometry",
+        "duplicate_and_never_reuse"
+      ],
+      "distribution": {
+        "captions": "page_binding_required",
+        "sounds": "page_binding_required"
+      },
       "definitionGaps": []
     },
     "truck-scenic": {
@@ -271,22 +910,76 @@
       "materialSource": "generated_video",
       "assetType": "video/mp4",
       "definitionStatus": "complete",
-      "creativeAuthority": {"kind": "prompt_family", "id": "truck", "version": "sha256:c80cc32e6e762be05e6655190432e945c55afeb196fc488f3b09ad2fad51b9f1"},
-      "dimensions": {
-        "subject": {"status": "defined", "rule": "A clean dark navy-black full-size crew-cab pickup with natural factory proportions, empty windows, and no markings.", "authority": "promptCatalog.families.truck.fixed_subject"},
-        "setting": {"status": "defined", "rule": "Muted pond, lake, field, forest, mountain, farmyard, pasture, riverbank, and meadow settings only.", "authority": "promptCatalog.families.truck.slots.setting"},
-        "shotGrammar": {"status": "defined", "rule": "Extreme-wide, low wheel-height front-quarter, rear-quarter, or near-side view with the complete truck and landscape visible.", "authority": "promptCatalog.families.truck.template"},
-        "lighting": {"status": "defined", "rule": "Dark, low-exposure, muted natural light with controlled highlights and readable shadow detail.", "authority": "promptCatalog.families.truck.slots.light"},
-        "motion": {"status": "defined", "rule": "Truck and wheels remain completely stationary; camera is static or has barely perceptible natural drift.", "authority": "promptCatalog.families.truck.quality_guards"},
-        "duration": {"status": "defined", "rule": "Six-second generation is bound by the exact commissioned Hailuo provider configuration.", "authority": "promptCatalog.providers.hailuo.base_input.duration"},
-        "textPolicy": {"status": "defined", "rule": "No readable lettering, badges, or license plates.", "authority": "promptCatalog.families.truck.quality_guards"},
-        "negativeRules": {"status": "defined", "rule": "Reject occupants, plates, morphs, duplicates, bright washed-out grades, product-render sharpness, and incomplete truck framing.", "authority": "promptCatalog.families.truck.visual_reference.reject"},
-        "referenceExamples": {"status": "defined", "rule": "The two measured early iPhone-Mirroring winner videos are the admission reference.", "authority": "promptCatalog.families.truck.visual_reference.leader_video_ids"}
+      "creativeAuthority": {
+        "kind": "prompt_family",
+        "id": "truck",
+        "version": "sha256:c80cc32e6e762be05e6655190432e945c55afeb196fc488f3b09ad2fad51b9f1"
       },
-      "output": {"aspectRatio": "9:16", "container": "video/mp4", "durationPolicy": "executor_bound", "audioPolicy": "campaign_sound_bound_downstream"},
+      "dimensions": {
+        "subject": {
+          "status": "defined",
+          "rule": "A clean dark navy-black full-size crew-cab pickup with natural factory proportions, empty windows, and no markings.",
+          "authority": "promptCatalog.families.truck.fixed_subject"
+        },
+        "setting": {
+          "status": "defined",
+          "rule": "Muted pond, lake, field, forest, mountain, farmyard, pasture, riverbank, and meadow settings only.",
+          "authority": "promptCatalog.families.truck.slots.setting"
+        },
+        "shotGrammar": {
+          "status": "defined",
+          "rule": "Extreme-wide, low wheel-height front-quarter, rear-quarter, or near-side view with the complete truck and landscape visible.",
+          "authority": "promptCatalog.families.truck.template"
+        },
+        "lighting": {
+          "status": "defined",
+          "rule": "Dark, low-exposure, muted natural light with controlled highlights and readable shadow detail.",
+          "authority": "promptCatalog.families.truck.slots.light"
+        },
+        "motion": {
+          "status": "defined",
+          "rule": "Truck and wheels remain completely stationary; camera is static or has barely perceptible natural drift.",
+          "authority": "promptCatalog.families.truck.quality_guards"
+        },
+        "duration": {
+          "status": "defined",
+          "rule": "Six-second generation is bound by the exact commissioned Hailuo provider configuration.",
+          "authority": "promptCatalog.providers.hailuo.base_input.duration"
+        },
+        "textPolicy": {
+          "status": "defined",
+          "rule": "No readable lettering, badges, or license plates.",
+          "authority": "promptCatalog.families.truck.quality_guards"
+        },
+        "negativeRules": {
+          "status": "defined",
+          "rule": "Reject occupants, plates, morphs, duplicates, bright washed-out grades, product-render sharpness, and incomplete truck framing.",
+          "authority": "promptCatalog.families.truck.visual_reference.reject"
+        },
+        "referenceExamples": {
+          "status": "defined",
+          "rule": "The two measured early iPhone-Mirroring winner videos are the admission reference.",
+          "authority": "promptCatalog.families.truck.visual_reference.leader_video_ids"
+        }
+      },
+      "output": {
+        "aspectRatio": "9:16",
+        "container": "video/mp4",
+        "durationPolicy": "executor_bound",
+        "audioPolicy": "campaign_sound_bound_downstream"
+      },
       "reviewAuthority": "promptCatalog.families.truck.visual_reference",
-      "reviewGates": ["technical_video", "ocr_text", "visual_dna", "complete_subject_geometry", "duplicate_and_never_reuse"],
-      "distribution": {"captions": "page_binding_required", "sounds": "page_binding_required"},
+      "reviewGates": [
+        "technical_video",
+        "ocr_text",
+        "visual_dna",
+        "complete_subject_geometry",
+        "duplicate_and_never_reuse"
+      ],
+      "distribution": {
+        "captions": "page_binding_required",
+        "sounds": "page_binding_required"
+      },
       "definitionGaps": []
     },
     "truck-ugc": {
@@ -295,22 +988,77 @@
       "materialSource": "generated_video",
       "assetType": "video/mp4",
       "definitionStatus": "complete",
-      "creativeAuthority": {"kind": "prompt_family", "id": "ugc", "version": "sha256:c80cc32e6e762be05e6655190432e945c55afeb196fc488f3b09ad2fad51b9f1"},
-      "dimensions": {
-        "subject": {"status": "defined", "rule": "A lifted black crew-cab pickup on 35-inch mud tires with only the reviewed grille lettering.", "authority": "promptCatalog.families.ugc.fixed_subject"},
-        "setting": {"status": "defined", "rule": "Farm, muddy backroad, gravel lot, dirt turnout, and ranch-drive settings from the reviewed menu.", "authority": "promptCatalog.families.ugc.slots.setting"},
-        "shotGrammar": {"status": "defined", "rule": "Handheld smartphone UGC framing with gentle phone drift and the truck filling most of frame.", "authority": "promptCatalog.families.ugc.template"},
-        "lighting": {"status": "defined", "rule": "Golden hour, warm afternoon, overcast daylight, or early-morning gold from the reviewed menu.", "authority": "promptCatalog.families.ugc.slots.light"},
-        "motion": {"status": "defined", "rule": "Handheld camera drift only; the truck and wheels stay completely stationary.", "authority": "promptCatalog.families.ugc.quality_guards"},
-        "duration": {"status": "defined", "rule": "Six-second generation is bound by the exact commissioned Hailuo provider configuration.", "authority": "promptCatalog.providers.hailuo.base_input.duration"},
-        "textPolicy": {"status": "defined", "rule": "No on-screen text and no lettering outside the reviewed grille treatment.", "authority": "promptCatalog.families.ugc.quality_guards"},
-        "negativeRules": {"status": "defined", "rule": "Reject people, wheel motion, geometry inconsistency, unapproved text, and reused imagery.", "authority": "promptCatalog.families.ugc.quality_guards"},
-        "referenceExamples": {"status": "defined", "rule": "The prompt family is fully specified but remains parked because measured keeper yield is unacceptable.", "authority": "promptCatalog.formats.truck-ugc.note"}
+      "creativeAuthority": {
+        "kind": "prompt_family",
+        "id": "ugc",
+        "version": "sha256:c80cc32e6e762be05e6655190432e945c55afeb196fc488f3b09ad2fad51b9f1"
       },
-      "output": {"aspectRatio": "9:16", "container": "video/mp4", "durationPolicy": "executor_bound", "audioPolicy": "campaign_sound_bound_downstream"},
+      "dimensions": {
+        "subject": {
+          "status": "defined",
+          "rule": "A lifted black crew-cab pickup on 35-inch mud tires with only the reviewed grille lettering.",
+          "authority": "promptCatalog.families.ugc.fixed_subject"
+        },
+        "setting": {
+          "status": "defined",
+          "rule": "Farm, muddy backroad, gravel lot, dirt turnout, and ranch-drive settings from the reviewed menu.",
+          "authority": "promptCatalog.families.ugc.slots.setting"
+        },
+        "shotGrammar": {
+          "status": "defined",
+          "rule": "Handheld smartphone UGC framing with gentle phone drift and the truck filling most of frame.",
+          "authority": "promptCatalog.families.ugc.template"
+        },
+        "lighting": {
+          "status": "defined",
+          "rule": "Golden hour, warm afternoon, overcast daylight, or early-morning gold from the reviewed menu.",
+          "authority": "promptCatalog.families.ugc.slots.light"
+        },
+        "motion": {
+          "status": "defined",
+          "rule": "Handheld camera drift only; the truck and wheels stay completely stationary.",
+          "authority": "promptCatalog.families.ugc.quality_guards"
+        },
+        "duration": {
+          "status": "defined",
+          "rule": "Six-second generation is bound by the exact commissioned Hailuo provider configuration.",
+          "authority": "promptCatalog.providers.hailuo.base_input.duration"
+        },
+        "textPolicy": {
+          "status": "defined",
+          "rule": "No on-screen text and no lettering outside the reviewed grille treatment.",
+          "authority": "promptCatalog.families.ugc.quality_guards"
+        },
+        "negativeRules": {
+          "status": "defined",
+          "rule": "Reject people, wheel motion, geometry inconsistency, unapproved text, and reused imagery.",
+          "authority": "promptCatalog.families.ugc.quality_guards"
+        },
+        "referenceExamples": {
+          "status": "defined",
+          "rule": "The prompt family is fully specified but remains parked because measured keeper yield is unacceptable.",
+          "authority": "promptCatalog.formats.truck-ugc.note"
+        }
+      },
+      "output": {
+        "aspectRatio": "9:16",
+        "container": "video/mp4",
+        "durationPolicy": "executor_bound",
+        "audioPolicy": "campaign_sound_bound_downstream"
+      },
       "reviewAuthority": "promptCatalog.families.ugc.quality_guards",
-      "reviewGates": ["technical_video", "ocr_text", "visual_dna", "geometry", "duplicate_and_never_reuse", "keeper_yield_release_gate"],
-      "distribution": {"captions": "page_binding_required", "sounds": "page_binding_required"},
+      "reviewGates": [
+        "technical_video",
+        "ocr_text",
+        "visual_dna",
+        "geometry",
+        "duplicate_and_never_reuse",
+        "keeper_yield_release_gate"
+      ],
+      "distribution": {
+        "captions": "page_binding_required",
+        "sounds": "page_binding_required"
+      },
       "definitionGaps": []
     }
   }
