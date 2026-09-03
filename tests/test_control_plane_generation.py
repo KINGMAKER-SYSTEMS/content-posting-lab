@@ -285,6 +285,8 @@ def test_failed_boat_and_silhouette_visual_libraries_are_not_advertised():
         "silhouette-truck", "silhouette-truck:master", "ai_video",
     )) is None
 
+
+def test_scenic_is_not_misrouted_through_the_ai_video_resolver():
     assert resolve_generation_recipe(_format_publication(
         "pov-scenic", "pov-scenic:master", "sourced_video",
     )) is None

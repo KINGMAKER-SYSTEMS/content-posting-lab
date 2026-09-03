@@ -223,3 +223,21 @@ stopped at collection by the pre-existing missing `factory.formats` package in
 generation, storage, scheduler, device, phone, slot, lease, or post mutation
 occurred.
 _________________________________________________________________________________
+
+_________________________________________________________________________________
+
+time: [03:09] [09-03-26]
+agent: [codex desktop] [gpt-5.6-sol]
+worktree: [codex/commission-pov-scenic-source] /private/tmp/content-lab-scenic.so3ESQ
+type: [bug report]: Commission the existing POV Scenic source libraries
+area: [backend]: Content Lab page-bound source execution
+
+Changed POV Scenic from an undefined blocker to the existing commissioned
+source recut executor. Each page remains bound to its own Master Pages identity
+and ShipStream source library, with unique 6-8 second cut windows, exact source
+lineage, 9:16 output, text scan, and no cross-page or AI fallback. Added a
+positive execution regression for a page-owned Scenic library and retained the
+separate AI resolver boundary. Focused Content Lab verification passed 75 tests;
+the expanded control-plane suite was also run before release. No storage,
+scheduler, device, phone, slot, lease, or post mutation occurred.
+_________________________________________________________________________________
