@@ -231,8 +231,17 @@ def capabilities(
     for _, publication in list_registered_recipe_bindings(
         page_id, master_pages, master_pages_hash,
     ):
-        generation_recipe = resolve_generation_recipe(publication)
-        source_recipe = _dossier_source_recipe(publication)
+        publication_engine = publication.get("engine")
+        generation_recipe = (
+            resolve_generation_recipe(publication)
+            if publication_engine == "ai_video"
+            else None
+        )
+        source_recipe = (
+            _dossier_source_recipe(publication)
+            if publication_engine == "sourced_video"
+            else None
+        )
         if generation_recipe is None and source_recipe is None:
             continue
         entries.append({
@@ -1782,8 +1791,17 @@ async def create_job(
         publication, master_pages, body["masterPagesHash"],
     ):
         raise HTTPException(status_code=409, detail="job intent does not match the registered dossier publication")
-    generation_recipe = resolve_generation_recipe(publication) if publication else None
-    source_recipe = await asyncio.to_thread(_dossier_source_recipe, publication)
+    publication_engine = publication.get("engine") if publication else None
+    generation_recipe = (
+        resolve_generation_recipe(publication)
+        if publication_engine == "ai_video"
+        else None
+    )
+    source_recipe = (
+        await asyncio.to_thread(_dossier_source_recipe, publication)
+        if publication_engine == "sourced_video"
+        else None
+    )
     if generation_recipe is None and source_recipe is None:
         raise HTTPException(status_code=409, detail="recipe_executor_unavailable")
     capability_ceiling = (
