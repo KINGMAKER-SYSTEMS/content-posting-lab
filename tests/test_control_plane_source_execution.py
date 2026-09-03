@@ -217,6 +217,109 @@ def test_source_recipe_resolves_the_exact_shipstream_page_library(monkeypatch):
     assert resolve_source_recipe(payload) is None
 
 
+def test_scenic_source_recipe_resolves_the_pages_own_shipstream_library(monkeypatch):
+    import services.shipstream_source_manifest as source_manifest
+
+    page_id = "acct:scenic:city-pines"
+    handle = "city.pines"
+    source_sha = "c" * 64
+    intent, revision = master_pages(
+        page_id,
+        handle=handle,
+        content_niche="POV — Scenic",
+        content_engine="sourced_video",
+        vault_url=f"https://shipstream.risingtidesviral.com/vault/{handle}",
+    )
+    manifest = {
+        "schema": "shipstream.source-manifest.v1",
+        "page": handle,
+        "notion": {
+            "pageId": intent["notionPageId"],
+            "contentEngine": intent["contentEngine"],
+            "contentNiche": intent["contentNiche"],
+            "serviceMode": intent["automationMode"],
+        },
+        "format": "pov-scenic",
+        "sourceAuthority": {
+            "kind": "historical_posted_cut_recovery",
+            "pageHandle": handle,
+            "notionPageId": intent["notionPageId"],
+            "pageBound": True,
+            "replacementEligible": True,
+        },
+        "master": None,
+        "historicalPostedCuts": [{
+            "type": "historical_posted_cut",
+            "pageHandle": handle,
+            "notionPageId": intent["notionPageId"],
+            "sha256": source_sha,
+            "bytes": 12_345_678,
+            "storageKey": f"vault/{handle}/pool/{source_sha}.mp4",
+            "uploadedAt": "2026-09-03T10:00:00.000Z",
+            "media": {"durationSeconds": 10.0},
+        }],
+        "cuts": [],
+    }
+    monkeypatch.setattr(
+        source_manifest, "_fetch_manifest",
+        lambda _url: json.dumps(manifest).encode(),
+    )
+    library = source_manifest.load_shipstream_source_dna_library(
+        intent, page_id=page_id, expected_format="pov-scenic",
+    )
+    catalog = build_dossier_ingredient_catalog(page_id, intent, revision)
+    production = {
+        "catalogVersion": "",
+        "providerId": None,
+        "modelId": None,
+        "promptModuleId": None,
+        "referenceSetId": None,
+        "sourceLibraryId": library.library_id,
+        "variationValues": {},
+        "controls": {"cutDurationMs": 6_000},
+    }
+    production["catalogVersion"] = catalog_selection_version(
+        catalog, "pov-scenic", production,
+    )
+    spec = {
+        "schema": "dossier.recipe-spec.v4",
+        "masterPages": intent,
+        "masterPagesHash": revision,
+        "production": production,
+        "renderTreatment": {
+            "stylePreset": None,
+            "filters": {},
+            "captionStyle": {},
+            "clipSpeed": 1.0,
+            "clipCrop": {"zoom": 1.0, "focusX": 0.5, "focusY": 0.5},
+        },
+        "captionDiscipline": {
+            "captionSet": "night-core",
+            "register": ["nostalgia"],
+            "slingshotShare": None,
+        },
+        "demand": {"formatMix": {"pov-scenic": 1.0}},
+    }
+    canonical = json.dumps(spec, sort_keys=True, separators=(",", ":"))
+    publication = {
+        "schema": recipes.REQUEST_SCHEMA,
+        "pageId": page_id,
+        "lane": recipes.LANE,
+        "recipeId": "pov-scenic:master",
+        "engine": "sourced_video",
+        "recipeVersion": "dossier-scenic000000",
+        "dossierRevision": "rev-scenic-source",
+        "recipeSpecHash": "sha256:" + hashlib.sha256(canonical.encode()).hexdigest(),
+        "recipeSpecCanonical": canonical,
+    }
+
+    resolved = resolve_source_recipe(publication)
+    assert resolved is not None
+    assert resolved.format_slug == "pov-scenic"
+    assert resolved.source_library_id == library.library_id
+    assert resolved.masters[0].sha256 == source_sha
+
+
 def headers(idempotency="source-job-0001"):
     return {
         "Authorization": f"Bearer {TOKEN}",

@@ -114,12 +114,12 @@
       "contentEngine": "sourced_video",
       "materialSource": "source_library",
       "assetType": "video/mp4",
-      "executionStatus": "uncommissioned",
-      "executorKind": null,
-      "executorId": null,
-      "executorVersion": null,
-      "formatContractVersion": "sha256:11bba6e568ebefbd11c6a7f19b6e4ea1ed046ea5ccc3bca17417c0b452a4576b",
-      "maxQuantity": 0
+      "executionStatus": "commissioned",
+      "executorKind": "source_dna_recut",
+      "executorId": "source-dna-recut",
+      "executorVersion": "sha256:1bbcb745be141c7b9e835662637110d85785979610f993835ce2d05f31b3d484",
+      "formatContractVersion": "sha256:987804bacdc6cc8c0da7f360006c3baa3285a732c643781afa46f96bda2062b1",
+      "maxQuantity": 10
     },
     "silhouette-truck": {
       "contentNiche": "silhouette",

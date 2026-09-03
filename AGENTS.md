@@ -39,6 +39,10 @@
 - Capability and job execution dispatch only to the resolver named by the
   publication's closed content engine. A sourced-video publication never probes
   the AI-video resolver, and an unknown engine exposes no executor.
+- `POV — Scenic` is commissioned through the same page-scoped source recut
+  executor as Night Core and Dirtbike. It may use only the exact source library
+  bound to that Master Pages row; it may not borrow another page's footage or
+  fall back to AI generation.
 - Dossier projects the same ShipStream manifest's approved cuts as a separate
   page-scoped derivative library. Every displayed cut must retain its exact R2
   key, output SHA, parent SHA/type, source window, speed, output duration, media

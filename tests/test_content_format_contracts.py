@@ -46,7 +46,9 @@ def test_only_complete_hash_bound_formats_are_commissioned():
     assert {
         slug for slug, profile in profiles.items()
         if profile.execution_status == "commissioned"
-    } == {"pov-dirt-bike", "pov-night-core", "truck-scenic"}
+    } == {
+        "pov-dirt-bike", "pov-night-core", "pov-scenic", "truck-scenic",
+    }
     assert all(
         contracts[slug].definition_status == "complete"
         for slug, profile in profiles.items()
@@ -95,6 +97,22 @@ def test_night_core_is_source_only_and_explicitly_rejects_trucks_and_ai():
     assert value["creativeAuthority"]["kind"] == "source_dna_recut"
     assert value["reviewAuthority"] == "sourceDna.provenance"
     assert "cut_window_lineage" in value["reviewGates"]
+
+
+def test_scenic_is_page_bound_source_recut_not_a_generated_substitute():
+    value = json.loads(CONTRACTS_PATH.read_text())["contracts"]["pov-scenic"]
+    assert value["contentNiche"] == "POV — Scenic"
+    assert value["contentEngine"] == "sourced_video"
+    assert value["materialSource"] == "source_library"
+    assert value["definitionStatus"] == "complete"
+    assert value["definitionGaps"] == []
+    assert value["creativeAuthority"]["kind"] == "source_dna_recut"
+    assert value["reviewAuthority"] == "sourceDna.provenance"
+    assert "cut_window_lineage" in value["reviewGates"]
+    assert "exact page" in value["dimensions"]["subject"]["rule"]
+    rejects = value["dimensions"]["negativeRules"]["rule"]
+    assert "cross-page" in rejects
+    assert "not synthesized" in value["dimensions"]["setting"]["rule"]
 
 
 def test_contract_drift_with_a_stale_registry_hash_fails_closed(
