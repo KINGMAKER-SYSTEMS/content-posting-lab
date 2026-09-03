@@ -368,6 +368,33 @@ def test_capability_and_jobs_bind_master_hash_and_unique_windows(lab):
     assert len(started) == 2
 
 
+def test_sourced_paths_never_probe_the_ai_video_resolver(lab, monkeypatch):
+    client, _, started = lab
+
+    def unexpected_generation_probe(_publication):
+        raise AssertionError("sourced_video must not probe the ai_video resolver")
+
+    monkeypatch.setattr(cp, "resolve_generation_recipe", unexpected_generation_probe)
+    capabilities = client.get(
+        "/api/control-plane/v1/capabilities",
+        headers={"X-RT-Page-Id": PAGE_ID},
+    )
+    assert capabilities.status_code == 200
+    assert capabilities.json()["capabilities"] == [{
+        "recipeId": "pov-dirt-bike:master",
+        "engine": "sourced_video",
+        "recipeVersion": "dossier-feedfacefeedface",
+        "maxQuantity": 10,
+    }]
+
+    created = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(1),
+        headers=headers("source-job-engine-dispatch"),
+    )
+    assert created.status_code == 200
+    assert len(started) == 1
+
+
 def test_failed_source_job_releases_unrendered_cut_windows(lab):
     client, _, _ = lab
     first = client.post(
