@@ -246,24 +246,24 @@
       "contentEngine": "ai_video",
       "materialSource": "generated_video",
       "assetType": "video/mp4",
-      "definitionStatus": "incomplete",
-      "creativeAuthority": null,
+      "definitionStatus": "complete",
+      "creativeAuthority": {"kind": "prompt_family", "id": "silhouette", "version": "sha256:c80cc32e6e762be05e6655190432e945c55afeb196fc488f3b09ad2fad51b9f1"},
       "dimensions": {
         "subject": {"status": "defined", "rule": "The format centers a featureless black embracing couple and a dark pickup; truck-only frames and non-embracing pairs are outside the format.", "authority": "promptCatalog.families.silhouette.fixed_subject"},
-        "setting": {"status": "undefined", "rule": null, "authority": null},
-        "shotGrammar": {"status": "undefined", "rule": null, "authority": null},
+        "setting": {"status": "defined", "rule": "Dusk fields, meadows, hilltops, fence-line pullouts, and coastal bluffs from the reviewed menu.", "authority": "promptCatalog.families.silhouette.slots.setting"},
+        "shotGrammar": {"status": "defined", "rule": "The couple and truck remain readable beneath a large clean caption sky in one of the reviewed compositions.", "authority": "promptCatalog.families.silhouette.slots.composition"},
         "lighting": {"status": "defined", "rule": "Deep, low-exposure dusk with controlled highlights; no pale or washed-out sky.", "authority": "promptCatalog.families.silhouette.quality_guards"},
         "motion": {"status": "defined", "rule": "Gentle environmental motion only; couple holds the embrace and truck remains stationary.", "authority": "promptCatalog.families.silhouette.motion_prompt"},
-        "duration": {"status": "undefined", "rule": null, "authority": null},
+        "duration": {"status": "defined", "rule": "Duration is bound by the exact commissioned prompt provider configuration.", "authority": "promptCatalog.providers.wan-i2v-fast.base_input"},
         "textPolicy": {"status": "defined", "rule": "No lettering in the source frame and clean sky is reserved for downstream captions.", "authority": "promptCatalog.families.silhouette.quality_guards"},
         "negativeRules": {"status": "defined", "rule": "Reject truck-only frames, missing or non-embracing couples, readable faces, clothing detail, lettering, pale skies, geometry faults, repeated anchors, and reused imagery.", "authority": "promptCatalog.families.silhouette.note"},
-        "referenceExamples": {"status": "undefined", "rule": null, "authority": null}
+        "referenceExamples": {"status": "defined", "rule": "The 30 byte-exact reviewed anchors rotate without replacement.", "authority": "promptCatalog.families.silhouette.anchor_manifest_sha256"}
       },
       "output": {"aspectRatio": "9:16", "container": "video/mp4", "durationPolicy": "executor_bound", "audioPolicy": "campaign_sound_bound_downstream"},
-      "reviewAuthority": null,
+      "reviewAuthority": "promptCatalog.families.silhouette.quality_guards",
       "reviewGates": ["technical_video", "ocr_text", "visual_dna", "geometry", "duplicate_and_never_reuse"],
       "distribution": {"captions": "page_binding_required", "sounds": "page_binding_required"},
-      "definitionGaps": ["creativeAuthority", "duration", "referenceExamples", "reviewAuthority", "setting", "shotGrammar"]
+      "definitionGaps": []
     },
     "truck-scenic": {
       "contentNiche": "TRUCK",
