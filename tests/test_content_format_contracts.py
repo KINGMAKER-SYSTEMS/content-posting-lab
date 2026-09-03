@@ -57,18 +57,36 @@ def test_only_complete_hash_bound_formats_are_commissioned():
     )
     assert contracts["truck-ugc"].definition_status == "complete"
     assert profiles["truck-ugc"].execution_status == "uncommissioned"
-    assert contracts["boat-lake"].definition_status == "incomplete"
+    assert contracts["boat-lake"].definition_status == "complete"
     assert profiles["boat-lake"].execution_status == "uncommissioned"
     assert contracts["silhouette-truck"].definition_status == "complete"
     assert profiles["silhouette-truck"].execution_status == "uncommissioned"
 
 
-def test_failed_ai_visual_libraries_expose_their_real_definition_gaps():
+def test_boat_contract_is_complete_but_stays_executorially_quarantined():
     contracts, _ = load_format_contracts()
-    assert contracts["boat-lake"].definition_gaps == (
-        "creativeAuthority", "duration", "lighting", "motion",
-        "negativeRules", "referenceExamples", "reviewAuthority", "setting",
-        "shotGrammar", "subject",
+    profiles, _ = load_engine_registry()
+    boat = contracts["boat-lake"]
+    assert boat.definition_status == "complete"
+    assert boat.definition_gaps == ()
+    # The 8249ba1 quarantine stays in force for boat-lake too: definition
+    # completion does not re-commission the executor after a failed
+    # visual-DNA review.
+    profile = profiles["boat-lake"]
+    assert profile.execution_status == "uncommissioned"
+    assert profile.executor_kind is None
+    assert profile.executor_id is None
+    assert profile.executor_version is None
+    assert profile.max_quantity == 0
+    # The restored rules are hash-bound to the live boat prompt family.
+    from services.control_plane_generation import load_prompt_catalog
+
+    _, catalog_hash = load_prompt_catalog()
+    assert boat.creative_authority == CreativeAuthority(
+        "prompt_family", "boat", f"sha256:{catalog_hash}",
+    )
+    assert boat.review_authority == (
+        "promptCatalog.families.boat.quality_guards"
     )
 
 
