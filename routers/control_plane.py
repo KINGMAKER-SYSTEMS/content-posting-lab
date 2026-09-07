@@ -261,8 +261,6 @@ def capabilities(
             max_quantity = len(plan_source_cuts(
                 source_recipe, source_recipe.max_quantity, unavailable_slots,
             ))
-            if max_quantity == 0:
-                continue
         else:
             max_quantity = MAX_CAPABILITY_QUANTITY
         entries.append({

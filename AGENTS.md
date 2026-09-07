@@ -41,8 +41,10 @@
   the AI-video resolver, and an unknown engine exposes no executor.
 - Sourced-video capability quantity is the lesser of the executor's per-job
   ceiling and the unique source windows still reservable from durable job truth.
-  Exhausted libraries expose no capability. Job creation remains exact and
-  all-or-nothing; it never silently returns fewer clips than requested.
+  Exhausted libraries remain visible with `maxQuantity: 0` so Control Plane can
+  distinguish source exhaustion from an unregistered recipe. Job creation
+  remains exact and all-or-nothing; it never silently returns fewer clips than
+  requested.
 - `POV — Scenic` is commissioned through the same page-scoped source recut
   executor as Night Core and Dirtbike. It may use only the exact source library
   bound to that Master Pages row; it may not borrow another page's footage or

@@ -260,3 +260,20 @@ complete exhaustion. The expanded Content Lab Control Plane suite passed 88
 tests. No generation, storage, scheduler, device, phone, slot, lease, or post
 mutation occurred.
 _________________________________________________________________________________
+
+_________________________________________________________________________________
+
+time: [09:21pm] [06-09-26]
+agent: [codex desktop] [gpt-5]
+worktree: [fix/zero-capacity-contract-20260906]
+type: [bug report]: Preserve exhausted source recipe identity
+area: [backend]: Content Lab capability contract
+
+Exhausted page-bound source recipes now remain visible to Control Plane with
+`maxQuantity: 0`. This preserves exact recipe identity while allowing the
+deployed consumer to classify source-library exhaustion separately from a
+missing recipe and direct the operator to add a page source master. Job
+creation remains exact and still rejects any quantity above current reservable
+capacity. No generation, storage, scheduler, device, phone, slot, lease, or
+post mutation occurred.
+_________________________________________________________________________________
