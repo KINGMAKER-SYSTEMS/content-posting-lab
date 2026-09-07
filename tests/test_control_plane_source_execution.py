@@ -588,7 +588,12 @@ def test_capability_advertises_only_currently_reservable_source_windows(lab):
         headers={"X-RT-Page-Id": PAGE_ID},
     )
     assert exhausted.status_code == 200
-    assert exhausted.json()["capabilities"] == []
+    assert exhausted.json()["capabilities"] == [{
+        "recipeId": "pov-dirt-bike:master",
+        "engine": "sourced_video",
+        "recipeVersion": "dossier-feedfacefeedface",
+        "maxQuantity": 0,
+    }]
 
 
 @pytest.mark.asyncio
