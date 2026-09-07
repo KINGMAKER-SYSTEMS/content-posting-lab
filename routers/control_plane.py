@@ -225,6 +225,14 @@ def capabilities(
     master_pages, master_pages_hash = current
 
     entries = []
+    # Sourced-video capacity is consumable inventory, not a static executor
+    # ceiling. Load the durable job store lazily and only once for this request
+    # so every sourced capability advertises the number of unique windows that
+    # can actually be reserved right now. Without this, a 10-per-job executor
+    # can advertise 10 after six of a ten-window master have already crossed the
+    # API boundary; Control Plane then asks for six and the exact-quantity job
+    # contract rejects the whole refill even though four safe windows remain.
+    source_job_store = None
     # A dossier version is executable only when its server-owned base prompt
     # family, exact provider model, runtime credential, and typed treatment are
     # all available. Registration alone never becomes a capability.
@@ -244,15 +252,24 @@ def capabilities(
         )
         if generation_recipe is None and source_recipe is None:
             continue
+        if source_recipe is not None:
+            if source_job_store is None:
+                source_job_store = _load_jobs()
+            unavailable_slots = _source_dna_unavailable_slots(
+                source_job_store, source_recipe,
+            )
+            max_quantity = len(plan_source_cuts(
+                source_recipe, source_recipe.max_quantity, unavailable_slots,
+            ))
+            if max_quantity == 0:
+                continue
+        else:
+            max_quantity = MAX_CAPABILITY_QUANTITY
         entries.append({
             "recipeId": publication["recipeId"],
             "engine": publication["engine"],
             "recipeVersion": publication["recipeVersion"],
-            "maxQuantity": (
-                MAX_CAPABILITY_QUANTITY
-                if generation_recipe is not None
-                else source_recipe.max_quantity
-            ),
+            "maxQuantity": max_quantity,
         })
         if len(entries) >= MAX_CAPABILITIES:
             break

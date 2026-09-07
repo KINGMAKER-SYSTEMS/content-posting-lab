@@ -241,3 +241,22 @@ separate AI resolver boundary. Focused Content Lab verification passed 75 tests;
 the expanded control-plane suite was also run before release. No storage,
 scheduler, device, phone, slot, lease, or post mutation occurred.
 _________________________________________________________________________________
+
+_________________________________________________________________________________
+
+time: [21:05] [06-09-26]
+agent: [codex desktop] [gpt-5]
+worktree: [fix/source-capacity-aware-capabilities-20260906]
+type: [bug report]: Bound source refill plans to reservable windows
+area: [backend]: Content Lab sourced-video capability contract
+
+Sourced-video capabilities now advertise only the unique immutable-master
+windows that durable queued, running, and completed jobs have not reserved.
+An exhausted library disappears from capabilities, while job creation remains
+exact and all-or-nothing. This prevents Control Plane from requesting a batch
+larger than remaining source inventory and losing the entire refill instead of
+using the safe remainder. Added focused coverage for declining capacity and
+complete exhaustion. The expanded Content Lab Control Plane suite passed 88
+tests. No generation, storage, scheduler, device, phone, slot, lease, or post
+mutation occurred.
+_________________________________________________________________________________
