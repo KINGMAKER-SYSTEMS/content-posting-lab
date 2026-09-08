@@ -8,6 +8,8 @@
 ## Ownership
 
 - `services/caption_render.py` owns the typed Dossier-to-render caption contract.
+- `services/post_render.py` owns local prepared-final rendering and exact artifact
+  receipts; durable jobs, authenticated routes and admission remain caller-owned.
 - `services/caption_discipline.py` owns Content Lab's closed validation of the
   caption corpus/register selection already made by Dossier and Control Plane.
 - `services/control_plane_source_imports.py` owns bounded public-HTTPS download,
@@ -90,6 +92,21 @@
   Raw Notion row count is diagnostic only and must never stand in for the
   projected page count.
 
+- Prepared-post rendering accepts an immutable slot/source/caption/treatment
+  request. The source must already have the exact requested treatment, proven
+  by caller-supplied source-bound applied-treatment evidence. Unknown or different
+  provenance requires regeneration. This renderer adds the typed caption and
+  delivery encoding only; it never repeats grade, crop or speed.
+- Prepared artifacts require source-byte verification, upright 1080x1920 input,
+  real final H.264/yuv420p probing, complete video decode, and a QA frame extracted
+  from the final MP4. Exact receipt bytes bind the final/source/caption/treatment
+  and QA hashes to the slot, page, program, account and device. The control-plane
+  artifact store owns admission; a renderer receipt alone is not ready authority.
+- Prepared delivery caps final video at 22 MiB and QA JPEG at 2 MiB. One automatic
+  bitrate retry may fit the video budget without changing content or treatment.
+  Persistent overflow or failed decode yields no artifact result. Subprocesses
+  have bounded output and process-group lifetime and cannot use network protocols.
+
 ## Work Guidance
 
 - Reuse the current TikTokSans fonts and production Burn geometry. Do not add a
@@ -100,6 +117,9 @@
   module and return the same versioned schema and hashes.
 
 ## Verification
+
+- Run `pytest -q tests/test_post_render.py` for prepared rendering, actual MP4
+  decode, treatment-once preservation, byte-budget retry and bounded failures.
 
 - Run `pytest -q tests/test_caption_render_contract.py` for the typed caption
   contract and `pytest -q tests/test_burn_and_captions_api.py` for Burn API
