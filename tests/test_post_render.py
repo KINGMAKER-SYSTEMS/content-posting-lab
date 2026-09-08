@@ -12,6 +12,7 @@ from PIL import Image, ImageChops, ImageStat
 from pydantic import ValidationError
 
 from services import post_render as render
+from services.source_treatment import normalized_visual_treatment
 
 NOW = 1_800_000_000_000
 STYLE = {"font": "TikTokSans16pt-Bold.ttf", "size_pt": 24, "color": "#ffffff",
@@ -23,12 +24,14 @@ TREATMENT = {"stylePreset": "treated-source-test", "filters": {"brightness": 0.8
 
 def request(source_sha="a" * 64, **changes):
     treatment = json.dumps(TREATMENT, sort_keys=True, separators=(",", ":"))
+    visual_json = json.dumps(normalized_visual_treatment(TREATMENT), sort_keys=True, separators=(",", ":"))
     payload = {"schema": render.REQUEST_SCHEMA, "slot_id": "slot:page-a:20260908T120000Z",
                "slot_payload_sha256": "b" * 64, "page_id": "page-a", "program_id": "playlist:fixture",
                "device_serial": "fixture-only", "account": "fixture.account", "source_sha256": source_sha,
                "caption": "already treated", "caption_sha256": render.sha256(b"already treated"),
                "render_treatment_json": treatment, "treatment_sha256": render.sha256(treatment.encode()),
-               "applied_treatment_sha256": render.sha256(treatment.encode()),
+               "source_visual_treatment_json": visual_json,
+               "source_visual_treatment_sha256": render.sha256(visual_json.encode()),
                "renderer_id": render.RENDERER_ID, "renderer_version": render.RENDERER_VERSION,
                "created_at_ms": NOW - 1000}
     payload.update(changes)
@@ -83,11 +86,14 @@ def test_real_caption_delivery_decodes_and_preserves_already_applied_treatment(a
         assert max(ImageStat.Stat(caption_difference).mean) > 6
 
 
-@pytest.mark.parametrize("applied", [None, "c" * 64])
+@pytest.mark.parametrize("applied", [None, "different"])
 def test_unknown_or_different_treatment_requires_regeneration_before_any_io(tmp_path, applied):
     output = tmp_path / "render"
+    actual = None if applied is None else json.dumps(normalized_visual_treatment({**TREATMENT, "clipSpeed": 2}))
+    payload = request(source_visual_treatment_json=actual,
+                      source_visual_treatment_sha256=None if actual is None else render.sha256(actual.encode()))
     with pytest.raises(render.PostRenderError) as error:
-        render.render_post(tmp_path / "missing", output, request(applied_treatment_sha256=applied), clock_ms=lambda: NOW)
+        render.render_post(tmp_path / "missing", output, payload, clock_ms=lambda: NOW)
     assert error.value.code == "regeneration_required"
     assert not output.exists()
 
@@ -210,3 +216,13 @@ def test_failed_complete_decode_cannot_leave_a_ready_receipt(actual_source, monk
     assert error.value.code == "final_decode_failed"
     assert not (tmp_path / "render").exists()
     assert actual_source.is_file()
+
+
+def test_caption_only_change_reuses_source_video_treatment():
+    original = request()
+    changed = json.loads(original.render_treatment_json)
+    changed["captionStyle"]["position"] = "top"
+    raw = json.dumps(changed, sort_keys=True, separators=(",", ":"))
+    new_request = request(render_treatment_json=raw, treatment_sha256=render.sha256(raw.encode()))
+    assert original.treatment_sha256 != new_request.treatment_sha256
+    assert render.source_visual_matches(new_request)

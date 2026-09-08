@@ -9,7 +9,11 @@
 
 - `services/caption_render.py` owns the typed Dossier-to-render caption contract.
 - `services/post_render.py` owns local prepared-final rendering and exact artifact
-  receipts; durable jobs, authenticated routes and admission remain caller-owned.
+  receipts; control-plane admission remains downstream authority.
+- `services/post_render_jobs.py` and `routers/post_renders.py` own durable pre-lease
+  render jobs, authenticated page-scoped status/artifacts and source acquisition.
+- `services/source_treatment.py` owns actual applied-video provenance emitted by
+  generation/source/recovery outputs through `routers/control_plane.py`.
 - `services/caption_discipline.py` owns Content Lab's closed validation of the
   caption corpus/register selection already made by Dossier and Control Plane.
 - `services/control_plane_source_imports.py` owns bounded public-HTTPS download,
@@ -93,9 +97,10 @@
   projected page count.
 
 - Prepared-post rendering accepts an immutable slot/source/caption/treatment
-  request. The source must already have the exact requested treatment, proven
-  by caller-supplied source-bound applied-treatment evidence. Unknown or different
-  provenance requires regeneration. This renderer adds the typed caption and
+  request. The source must already have the requested video grade, speed and
+  crop, proven by source-bound applied-video evidence. Caption style belongs to
+  final rendering and may change without regenerating an otherwise matching
+  source. Unknown or different video provenance requires regeneration. This renderer adds the typed caption and
   delivery encoding only; it never repeats grade, crop or speed.
 - Prepared artifacts require source-byte verification, upright 1080x1920 input,
   real final H.264/yuv420p probing, complete video decode, and a QA frame extracted
@@ -106,6 +111,33 @@
   bitrate retry may fit the video budget without changing content or treatment.
   Persistent overflow or failed decode yields no artifact result. Subprocesses
   have bounded output and process-group lifetime and cannot use network protocols.
+
+- New generated and sourced outputs emit `content-lab.source-treatment.v1`
+  evidence after actual rendering and output hashing: source SHA, normalized
+  video treatment, full source recipe context, recipe hash and generation job.
+  Recovery crops inherit proven parent video treatment; they never assert the
+  current desired treatment for historical bytes. `sourceRecipeTreatment` is
+  recipe context and does not claim a caption overlay already exists.
+- Durable preparation is exposed at `/api/control-plane/v1/post-renders`.
+  Every request requires the existing control-plane bearer and exact
+  `X-RT-Page-Id`; enqueue also requires `Idempotency-Key`. Status, retries,
+  provenance updates and final/QA/receipt downloads use the same page boundary.
+  No endpoint accepts a source URL or local path.
+- `CONTENT_LAB_POST_RENDER_ROOT` must name persistent private storage. Two OS
+  worker permits bound concurrency; per-job locks are explicitly unlocked before
+  close. SQLite WAL holds requests, attempts and idempotency records. Restart
+  recovers a completed hash-bound output before rerendering; partial attempts
+  remain unservable. Transient retries back off and stop after three attempts.
+- Source fetch uses only the configured HTTPS `CONTENT_LAB_CONTROL_PLANE_ORIGIN`
+  and fixed pending-artifact source route, authenticated with server-owned
+  `CONTROL_PLANE_SERVICE_ID` / `CONTROL_PLANE_SERVICE_SECRET`. Redirects,
+  unexpected MIME/encoding, missing lengths and source-SHA mismatches fail.
+  Source preparation does not acquire a phone lease.
+- Missing or mismatched source-video evidence becomes a per-job
+  `regeneration_needed` state, leaving other jobs available. A zero-attempt job
+  may accept an authenticated provenance revision while its immutable slot,
+  source, caption and requested treatment stay identical. Original enqueue
+  idempotency records remain immutable; replay returns current job status.
 
 ## Work Guidance
 
@@ -118,6 +150,8 @@
 
 ## Verification
 
+- Run `pytest -q tests/test_post_render_jobs.py tests/test_source_treatment.py`
+  for durable crash/retry/lock/auth/source-grant and applied-video provenance checks.
 - Run `pytest -q tests/test_post_render.py` for prepared rendering, actual MP4
   decode, treatment-once preservation, byte-budget retry and bounded failures.
 

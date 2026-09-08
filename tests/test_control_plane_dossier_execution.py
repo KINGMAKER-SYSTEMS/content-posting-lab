@@ -415,6 +415,7 @@ async def test_truck_master_recovery_emits_five_crops_without_model_call(lab, mo
     )
     assert artifacts.status_code == 200
     assert len(artifacts.json()["artifacts"]) == 5
+    assert all("sourceTreatment" not in row for row in artifacts.json()["artifacts"])  # historical source lacks proof
 
     # A job persisted by the former keeper-yield planner could contain more
     # completed crop groups than its requested delivery count. The transport
@@ -489,6 +490,14 @@ async def test_generation_runner_lands_treated_artifacts_under_the_isolated_job_
     root = (tmp_path / "generated").resolve()
     assert all(root in (root / PAGE_ID / stored["recipeVersion"] / job_id / clip["path"]).resolve().parents for clip in stored["clips"])
     assert all(clip["sha256"] for clip in stored["clips"])
+    for clip in stored["clips"]:
+        proof = clip["sourceTreatment"]
+        assert proof["sourceSha256"] == clip["sha256"]
+        assert proof["generationJobId"] == job_id
+        assert proof["recipeSpecHash"] == stored["recipeSpecHash"]
+        assert proof["visualTreatment"]["clipSpeed"] == pytest.approx(0.75)
+        assert proof["visualTreatment"]["clipCrop"] == {"zoom": 1.5, "focusX": 0.2, "focusY": 0.8}
+        assert "captionStyle" not in proof["visualTreatment"]
 
 
 @pytest.mark.asyncio
@@ -548,6 +557,7 @@ async def test_truck_artifacts_trace_five_vertical_crops_to_one_provider_master(
     assert len({clip["source"]["sha256"] for clip in group}) == 1
     assert [clip["delivery"]["crop"]["index"] for clip in group] == list(range(5))
     assert all(clip["delivery"]["crop"]["groupId"] == f"sha256:{master_sha}" for clip in group)
+    assert all(clip["sourceTreatment"]["sourceSha256"] == clip["sha256"] for clip in group)
     for crop_index, clip in enumerate(stored["clips"][:5]):
         master_sha = clip["source"]["sha256"]
         assert clip["source"]["path"].endswith("provider-master.mp4")

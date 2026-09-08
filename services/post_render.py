@@ -26,6 +26,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from burn_quality_gate import overlay_geometry_reasons
 from services.caption_render import CaptionRenderRequest, CaptionStyle, render_caption_overlay
 from services.ffmpeg import delivery_encode_args
+from services.source_treatment import normalized_visual_treatment
 
 REQUEST_SCHEMA = "content-lab.post-render-request.v1"
 RECEIPT_SCHEMA = "posting-prepared-artifact/v1"
@@ -66,7 +67,8 @@ class PostRenderRequest(BaseModel):
     caption_sha256: Hash
     render_treatment_json: str = Field(min_length=2, max_length=64 * 1024)
     treatment_sha256: Hash
-    applied_treatment_sha256: Hash | None
+    source_visual_treatment_json: str | None = Field(default=None, max_length=64 * 1024)
+    source_visual_treatment_sha256: Hash | None = None
     renderer_id: Literal[RENDERER_ID]
     renderer_version: Literal[RENDERER_VERSION]
     created_at_ms: int = Field(ge=0)
@@ -84,6 +86,15 @@ class PostRenderRequest(BaseModel):
             raise ValueError("caption sha256 mismatch")
         if sha256(self.render_treatment_json.encode()) != self.treatment_sha256:
             raise ValueError("exact render treatment JSON sha256 mismatch")
+        if (self.source_visual_treatment_json is None) != (self.source_visual_treatment_sha256 is None):
+            raise ValueError("source visual evidence must include JSON and hash")
+        if self.source_visual_treatment_json is not None:
+            if sha256(self.source_visual_treatment_json.encode()) != self.source_visual_treatment_sha256:
+                raise ValueError("source visual treatment sha256 mismatch")
+            actual_visual = json.loads(self.source_visual_treatment_json)
+            if not isinstance(actual_visual, dict) or set(actual_visual) != {"filters", "clipSpeed", "clipCrop"}:
+                raise ValueError("source visual evidence must contain only filters, clipSpeed and clipCrop")
+            normalized_visual_treatment(actual_visual)
         _caption_request(self)
         return self
 
@@ -283,6 +294,14 @@ def _encode_final(source: Path, overlay: Path, final: Path, source_probe: MediaP
     raise PostRenderError("delivery_budget_exceeded", "both bounded encodes exceeded the byte or duration contract")
 
 
+def source_visual_matches(request: PostRenderRequest) -> bool:
+    if request.source_visual_treatment_json is None:
+        return False
+    actual = normalized_visual_treatment(json.loads(request.source_visual_treatment_json))
+    desired = normalized_visual_treatment(json.loads(request.render_treatment_json))
+    return actual == desired
+
+
 def render_post(source_path: Path, output_directory: Path, request: PostRenderRequest, *,
                 font_dir: Path | None = None, tools: RenderTools = RenderTools(),
                 clock_ms: Callable[[], int] = lambda: time.time_ns() // 1_000_000) -> RenderedPost:
@@ -293,7 +312,7 @@ def render_post(source_path: Path, output_directory: Path, request: PostRenderRe
     No grade, speed, or crop filter is applied by this function.
     """
     request = PostRenderRequest.model_validate(request.model_dump(by_alias=True))
-    if request.applied_treatment_sha256 != request.treatment_sha256:
+    if not source_visual_matches(request):
         raise PostRenderError("regeneration_required", "source treatment provenance is unknown or differs from the requested treatment")
     if request.created_at_ms > clock_ms():
         raise PostRenderError("request_future_dated", "render request is future-dated")

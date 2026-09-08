@@ -17,6 +17,7 @@ from project_manager import PROJECTS_DIR, ensure_default_project
 from providers import PROVIDERS
 from providers.base import API_KEYS
 from routers.control_plane import router as control_plane_router
+from routers.post_renders import router as post_renders_router, start_workers as start_post_render_workers
 from routers.control_plane_dossier import router as control_plane_dossier_router
 from routers.control_plane_recipes import router as control_plane_recipes_router
 from routers.control_plane_source_libraries import (
@@ -190,7 +191,10 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         log.error("sounds bot: failed (%s)", e)
 
+    post_render_jobs = start_post_render_workers()
     yield
+    if post_render_jobs is not None:
+        post_render_jobs.stop()
 
     # Stop Telegram bot
     try:
@@ -263,6 +267,7 @@ async def log_requests(request: Request, call_next):
 
 
 app.include_router(control_plane_router, prefix="/api/control-plane", tags=["control-plane"])
+app.include_router(post_renders_router, prefix="/api/control-plane", tags=["post-renders"])
 app.include_router(
     control_plane_dossier_router,
     prefix="/api/control-plane",

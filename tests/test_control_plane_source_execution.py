@@ -593,6 +593,12 @@ async def test_runner_cuts_real_window_changes_speed_and_records_original_lineag
         "originalEndMs": 126_000,
     }
     assert lineage["pageId"] == PAGE_ID
+    proof = job["clips"][0]["sourceTreatment"]
+    assert proof["sourceSha256"] == job["clips"][0]["sha256"]
+    assert proof["visualTreatment"]["clipSpeed"] == 2.0
+    assert proof["generationJobId"] == job["jobId"]
+    delivered = client.get(f"/api/control-plane/v1/jobs/{job['jobId']}/artifacts", headers=headers("source-proof-read"))
+    assert delivered.json()["artifacts"][0]["sourceTreatment"] == proof
 
 
 @pytest.mark.asyncio
