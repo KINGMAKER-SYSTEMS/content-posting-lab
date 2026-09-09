@@ -553,6 +553,49 @@ def test_completed_source_job_keeps_rendered_cut_windows_unavailable(lab):
     ]
 
 
+def test_capability_advertises_only_currently_reservable_source_windows(lab):
+    client, _, _ = lab
+    for quantity, idempotency in (
+        (10, "source-capacity-first"),
+        (8, "source-capacity-second"),
+    ):
+        created = client.post(
+            "/api/control-plane/v1/jobs", json=job_body(quantity),
+            headers=headers(idempotency),
+        )
+        assert created.status_code == 200
+        cp._update_job(created.json()["jobId"], status="completed")
+
+    capabilities = client.get(
+        "/api/control-plane/v1/capabilities",
+        headers={"X-RT-Page-Id": PAGE_ID},
+    ).json()["capabilities"]
+    assert capabilities == [{
+        "recipeId": "pov-dirt-bike:master",
+        "engine": "sourced_video",
+        "recipeVersion": "dossier-feedfacefeedface",
+        "maxQuantity": 3,
+    }]
+
+    final = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(3),
+        headers=headers("source-capacity-final"),
+    )
+    assert final.status_code == 200
+    cp._update_job(final.json()["jobId"], status="completed")
+    exhausted = client.get(
+        "/api/control-plane/v1/capabilities",
+        headers={"X-RT-Page-Id": PAGE_ID},
+    )
+    assert exhausted.status_code == 200
+    assert exhausted.json()["capabilities"] == [{
+        "recipeId": "pov-dirt-bike:master",
+        "engine": "sourced_video",
+        "recipeVersion": "dossier-feedfacefeedface",
+        "maxQuantity": 0,
+    }]
+
+
 @pytest.mark.asyncio
 async def test_runner_cuts_real_window_changes_speed_and_records_original_lineage(
     lab, monkeypatch,
