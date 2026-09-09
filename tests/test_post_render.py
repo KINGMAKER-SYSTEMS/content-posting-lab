@@ -38,7 +38,9 @@ def request(source_sha="a" * 64, **changes):
     return render.PostRenderRequest.model_validate(payload)
 
 
-@pytest.fixture(scope="module", params=["1080x1920", "606x1080"])
+@pytest.fixture(scope="module", params=[
+    ("1080x1920", "1"), ("606x1080", "1"), ("606x1080", "0"), ("1080x1920", "0"),
+], ids=["full", "provider-crop", "provider-crop-unspecified-sar", "full-unspecified-sar"])
 def actual_source(tmp_path_factory, request):
     if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
         pytest.skip("ffmpeg/ffprobe are required for actual render proof")
@@ -46,8 +48,8 @@ def actual_source(tmp_path_factory, request):
     path = root / "source.mp4"
     # The source already has nonneutral grade and 1.5x speed; renderer must not repeat either.
     subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-f", "lavfi", "-i",
-                    f"testsrc2=size={request.param}:rate=30:duration=1.2", "-vf",
-                    "eq=brightness=-0.15:saturation=0.5,setpts=PTS/1.5", "-an", "-c:v", "libx264",
+                    f"testsrc2=size={request.param[0]}:rate=30:duration=1.2", "-vf",
+                    f"eq=brightness=-0.15:saturation=0.5,setpts=PTS/1.5,setsar={request.param[1]}", "-an", "-c:v", "libx264",
                     "-preset", "ultrafast", "-crf", "20", "-threads", "2", "-pix_fmt", "yuv420p",
                     "-r", "30", str(path)], check=True, timeout=30, capture_output=True)
     return path
@@ -67,6 +69,7 @@ def test_real_caption_delivery_decodes_and_preserves_already_applied_treatment(a
     assert result.decoded_video_frames > 0
     assert abs(result.source_probe.duration_ms - result.final_probe.duration_ms) <= 80
     assert result.final_probe.video_codec == "h264"
+    assert result.final_probe.sample_aspect_ratio == "1:1"
     assert not (result.final_path.parent / "source.mp4").exists()
     with Image.open(result.qa_frame_path) as qa:
         qa.load()
