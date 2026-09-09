@@ -266,9 +266,15 @@ def _file_hash(path: Path, limit: int) -> tuple[str, int]:
 
 def _encode_final(source: Path, overlay: Path, final: Path, source_probe: MediaProbe,
                   tools: RenderTools) -> MediaProbe:
+    graph = "[0:v:0][1:v:0]overlay=0:0:format=auto[v]"
+    if (source_probe.width, source_probe.height) != (1080, 1920):
+        # The provider's chroma-aligned 9:16 crop may be 606x1080. Fit its
+        # complete frame to delivery size before adding the full-size caption.
+        graph = ("[0:v:0]scale=1080:1920:flags=lanczos,setsar=1[delivery];"
+                 "[delivery][1:v:0]overlay=0:0:format=auto[v]")
     base = [tools.ffmpeg, "-nostdin", "-v", "error", "-xerror", "-protocol_whitelist", "file,pipe",
             "-noautorotate", "-f", "mov", "-i", str(source),
-            "-protocol_whitelist", "file,pipe", "-i", str(overlay), "-filter_complex", "[0:v:0][1:v:0]overlay=0:0:format=auto[v]",
+            "-protocol_whitelist", "file,pipe", "-i", str(overlay), "-filter_complex", graph,
             "-map", "[v]", "-map", "0:a?", "-map_metadata", "-1", "-map_chapters", "-1"]
     for attempt in range(2):
         encode = delivery_encode_args("tiktok_delivery_v1")
@@ -307,8 +313,9 @@ def render_post(source_path: Path, output_directory: Path, request: PostRenderRe
                 clock_ms: Callable[[], int] = lambda: time.time_ns() // 1_000_000) -> RenderedPost:
     """Render one prepared artifact; create a new output directory or leave none on failure.
 
-    The source must already be upright 1080x1920 with the exact requested visual
-    treatment. Unknown or different treatment provenance requires regeneration.
+    The source must already be upright vertical video with the exact requested
+    visual treatment. Delivery encoding fits its full frame to 1080x1920.
+    Unknown or different treatment provenance requires regeneration.
     No grade, speed, or crop filter is applied by this function.
     """
     request = PostRenderRequest.model_validate(request.model_dump(by_alias=True))
@@ -322,8 +329,13 @@ def render_post(source_path: Path, output_directory: Path, request: PostRenderRe
         source = output_directory / "source.mp4"
         _copy_verified_source(source_path, source, request.source_sha256)
         source_probe = _probe(source, tools)
-        if (source_probe.width, source_probe.height, source_probe.sample_aspect_ratio, source_probe.rotation) != (1080, 1920, "1:1", 0):
-            raise PostRenderError("regeneration_required", "source is not already upright square-pixel 1080x1920")
+        # A landscape 1080p provider master produces a 606x1080 9:16 crop
+        # after even-pixel alignment. Preserve that selected frame: delivery
+        # scaling is not another creative crop, grade, or speed treatment.
+        if (source_probe.height < 1080 or source_probe.sample_aspect_ratio != "1:1"
+                or source_probe.rotation != 0
+                or abs(source_probe.width * 16 - source_probe.height * 9) > 32):
+            raise PostRenderError("regeneration_required", "source must be upright square-pixel 9:16 video at least 1080 pixels high")
         caption_request = _caption_request(request)
         overlay = render_caption_overlay(caption_request, font_dir=font_dir or Path(__file__).parents[1] / "fonts")
         overlay_bytes = base64.b64decode(overlay.overlay.base64, validate=True)

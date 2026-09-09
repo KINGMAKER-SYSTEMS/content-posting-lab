@@ -38,15 +38,15 @@ def request(source_sha="a" * 64, **changes):
     return render.PostRenderRequest.model_validate(payload)
 
 
-@pytest.fixture(scope="module")
-def actual_source(tmp_path_factory):
+@pytest.fixture(scope="module", params=["1080x1920", "606x1080"])
+def actual_source(tmp_path_factory, request):
     if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
         pytest.skip("ffmpeg/ffprobe are required for actual render proof")
     root = tmp_path_factory.mktemp("post-render-actual")
     path = root / "source.mp4"
     # The source already has nonneutral grade and 1.5x speed; renderer must not repeat either.
     subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-f", "lavfi", "-i",
-                    "testsrc2=size=1080x1920:rate=30:duration=1.2", "-vf",
+                    f"testsrc2=size={request.param}:rate=30:duration=1.2", "-vf",
                     "eq=brightness=-0.15:saturation=0.5,setpts=PTS/1.5", "-an", "-c:v", "libx264",
                     "-preset", "ultrafast", "-crf", "20", "-threads", "2", "-pix_fmt", "yuv420p",
                     "-r", "30", str(path)], check=True, timeout=30, capture_output=True)
@@ -74,7 +74,8 @@ def test_real_caption_delivery_decodes_and_preserves_already_applied_treatment(a
     # Compare the same source frame outside the caption area. Reapplying grade would shift these pixels.
     reference = tmp_path / "reference.png"
     subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-ss", f"{result.qa_at_ms / 1000:.3f}",
-                    "-i", str(actual_source), "-frames:v", "1", "-update", "1", str(reference)],
+                    "-i", str(actual_source), "-vf", "scale=1080:1920:flags=lanczos,setsar=1",
+                    "-frames:v", "1", "-update", "1", str(reference)],
                    check=True, timeout=20, capture_output=True)
     with Image.open(reference) as before, Image.open(result.qa_frame_path) as after:
         difference = ImageChops.difference(before.convert("RGB").crop((150, 100, 930, 300)),
@@ -194,10 +195,15 @@ def test_size_retry_changes_encoding_only_and_is_bounded_to_two_attempts(monkeyp
     assert not final.exists()
 
 
-def test_wrong_source_geometry_fails_without_compositing(monkeypatch, tmp_path):
+@pytest.mark.parametrize("geometry", [
+    (1920, 1080, "1:1", 0), (600, 1080, "1:1", 0),
+    (606, 1080, "2:1", 0), (1080, 1920, "1:1", 90),
+    (304, 540, "1:1", 0),
+])
+def test_wrong_source_geometry_fails_without_compositing(monkeypatch, tmp_path, geometry):
     source = tmp_path / "source"
     source.write_bytes(b"verified fixture")
-    monkeypatch.setattr(render, "_probe", lambda *_: render.MediaProbe(1920, 1080, 1000, "h264", "yuv420p", "1:1", 0))
+    monkeypatch.setattr(render, "_probe", lambda *_: render.MediaProbe(geometry[0], geometry[1], 1000, "h264", "yuv420p", geometry[2], geometry[3]))
     with pytest.raises(render.PostRenderError) as error:
         render.render_post(source, tmp_path / "render", request(render.sha256(source.read_bytes())), clock_ms=lambda: NOW)
     assert error.value.code == "regeneration_required"

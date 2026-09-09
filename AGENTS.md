@@ -110,7 +110,11 @@
   final rendering and may change without regenerating an otherwise matching
   source. Unknown or different video provenance requires regeneration. This renderer adds the typed caption and
   delivery encoding only; it never repeats grade, crop or speed.
-- Prepared artifacts require source-byte verification, upright 1080x1920 input,
+- Prepared artifacts require source-byte verification and upright square-pixel
+  9:16 input at least 1080 pixels high, allowing at most two horizontal source
+  pixels of chroma-alignment rounding. Delivery encoding scales the complete
+  frame to 1080x1920 before caption composition; it never changes the selected
+  crop, grade, speed, font or caption style. Artifacts require
   real final H.264/yuv420p probing, complete video decode, and a QA frame extracted
   from the final MP4. Exact receipt bytes bind the final/source/caption/treatment
   and QA hashes to the slot, page, program, account and device. The control-plane
