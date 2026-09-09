@@ -209,22 +209,41 @@ def source_response(data=b"source", **headers):
     return httpx.Response(200, headers=values, stream=httpx.ByteStream(data))
 
 
-def test_source_fetch_uses_fixed_authenticated_grant_and_verifies_bytes(tmp_path):
+def test_source_fetch_uses_dedicated_machine_origin_and_preserves_page_media_origin(tmp_path, monkeypatch):
+    from routers.control_plane import _source_media_origin
+
+    monkeypatch.setenv("CONTENT_LAB_CONTROL_PLANE_ORIGIN", "https://control.risingtidesviral.com")
+    monkeypatch.setenv("CONTENT_LAB_POST_RENDER_SOURCE_ORIGIN", "https://content-buckets.risingtidesviral.com/")
+    monkeypatch.setenv("CONTROL_PLANE_SERVICE_ID", "service-id")
+    monkeypatch.setenv("CONTROL_PLANE_SERVICE_SECRET", "service-secret")
     seen = []
     request = submission().request
     def handle(incoming):
         seen.append(incoming)
         return source_response()
-    settings = jobs.SourceSettings("https://control.example", "service-id", "service-secret")
+    settings = jobs.SourceSettings.from_environment()
     target = tmp_path / "source.mp4"
     jobs.fetch_source(request, target, settings, transport=httpx.MockTransport(handle))
     assert target.read_bytes() == b"source"
-    assert seen[0].url.host == "control.example"
+    assert seen[0].url.host == "content-buckets.risingtidesviral.com"
+    assert seen[0].url.path.startswith("/api/control-plane/v1/service/posting/v1/artifacts/")
+    assert _source_media_origin() == "https://control.risingtidesviral.com"
     assert seen[0].url.params["slot_payload_sha256"] == request.slot_payload_sha256
     assert seen[0].headers["CF-Access-Client-Id"] == "service-id"
     assert seen[0].headers["CF-Access-Client-Secret"] == "service-secret"
     assert "%3A" in seen[0].url.raw_path.decode()
     assert "service-secret" not in repr(settings)
+
+
+@pytest.mark.parametrize("missing", ["CONTENT_LAB_POST_RENDER_SOURCE_ORIGIN", "CONTROL_PLANE_SERVICE_ID", "CONTROL_PLANE_SERVICE_SECRET"])
+def test_source_settings_require_machine_configuration_without_browser_fallback(monkeypatch, missing):
+    monkeypatch.setenv("CONTENT_LAB_CONTROL_PLANE_ORIGIN", "https://control.risingtidesviral.com")
+    monkeypatch.setenv("CONTENT_LAB_POST_RENDER_SOURCE_ORIGIN", "https://content-buckets.risingtidesviral.com")
+    monkeypatch.setenv("CONTROL_PLANE_SERVICE_ID", "service-id")
+    monkeypatch.setenv("CONTROL_PLANE_SERVICE_SECRET", "service-secret")
+    monkeypatch.delenv(missing)
+    with pytest.raises(jobs.RenderJobError, match="source_service_not_configured"):
+        jobs.SourceSettings.from_environment()
 
 
 @pytest.mark.parametrize("kind", ["redirect", "forbidden", "missing", "digest", "length", "encoding"])

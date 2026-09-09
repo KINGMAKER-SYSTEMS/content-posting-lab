@@ -12,6 +12,8 @@
   receipts; control-plane admission remains downstream authority.
 - `services/post_render_jobs.py` and `routers/post_renders.py` own durable pre-lease
   render jobs, authenticated page-scoped status/artifacts and source acquisition.
+- `docs/post-render-setup.md` owns prepared-render storage, authentication and
+  separate browser/machine ingress configuration before release.
 - `services/source_treatment.py` owns actual applied-video provenance emitted by
   generation/source/recovery outputs through `routers/control_plane.py`.
 - `services/caption_discipline.py` owns Content Lab's closed validation of the
@@ -134,11 +136,15 @@
   close. SQLite WAL holds requests, attempts and idempotency records. Restart
   recovers a completed hash-bound output before rerendering; partial attempts
   remain unservable. Transient retries back off and stop after three attempts.
-- Source fetch uses only the configured HTTPS `CONTENT_LAB_CONTROL_PLANE_ORIGIN`
+- Prepared source fetch uses only the configured HTTPS
+  `CONTENT_LAB_POST_RENDER_SOURCE_ORIGIN` (production machine ingress:
+  `https://content-buckets.risingtidesviral.com`)
   and fixed pending-artifact source route, authenticated with server-owned
   `CONTROL_PLANE_SERVICE_ID` / `CONTROL_PLANE_SERVICE_SECRET`. Redirects,
   unexpected MIME/encoding, missing lengths and source-SHA mismatches fail.
-  Source preparation does not acquire a phone lease.
+  This setting never falls back to `CONTENT_LAB_CONTROL_PLANE_ORIGIN`, which
+  remains the browser ingress for existing page-vault media. Source preparation
+  does not acquire a phone lease.
 - Missing or mismatched source-video evidence becomes a per-job
   `regeneration_needed` state, leaving other jobs available. A zero-attempt job
   may accept an authenticated provenance revision while its immutable slot,

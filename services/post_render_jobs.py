@@ -96,7 +96,9 @@ class SourceSettings:
 
     @classmethod
     def from_environment(cls):
-        return cls(os.getenv("CONTENT_LAB_CONTROL_PLANE_ORIGIN", "").rstrip("/"),
+        # Prepared source grants use the machine ingress. Page-vault reads keep
+        # their separate CONTENT_LAB_CONTROL_PLANE_ORIGIN browser ingress.
+        return cls(os.getenv("CONTENT_LAB_POST_RENDER_SOURCE_ORIGIN", "").rstrip("/"),
                    os.getenv("CONTROL_PLANE_SERVICE_ID", ""), os.getenv("CONTROL_PLANE_SERVICE_SECRET", ""))
 
 
