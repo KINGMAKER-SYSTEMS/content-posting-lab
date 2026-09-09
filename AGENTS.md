@@ -153,6 +153,9 @@
 
 ## Work Guidance
 
+- The production Docker image uses explicit COPY paths. Include every required
+  backend module and import `app` during the image build; checkout-only imports
+  are not proof that the packaged service can start.
 - Reuse the current TikTokSans fonts and production Burn geometry. Do not add a
   parallel caption-style vocabulary or silently substitute a font.
 - Keep browser preview, backend render, and Rail consumption on one versioned
@@ -162,6 +165,9 @@
 
 ## Verification
 
+- Run `pytest -q tests/test_production_image_imports.py` for isolated imports from
+  the Dockerfile's backend file selection. Build the Docker image for release;
+  its app-import smoke check must pass before deployment.
 - Run `pytest -q tests/test_post_render_jobs.py tests/test_source_treatment.py`
   for durable crash/retry/lock/auth/source-grant and applied-video provenance checks.
 - Run `pytest -q tests/test_post_render.py` for prepared rendering, actual MP4
