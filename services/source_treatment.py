@@ -46,6 +46,43 @@ def source_treatment_receipt(job: dict, recipe_treatment: dict, source_sha256: s
             "recipeSpecHash": job["recipeSpecHash"], "generationJobId": job["jobId"]}
 
 
+def recovery_treatment_matches(receipt: dict | None, job: dict, source_sha256: str,
+                               requested_treatment: dict) -> bool:
+    """Reuse only source-bound video treatment that the final renderer can accept.
+
+    Missing historical evidence is not neutral footage. Skip that master so
+    replenishment can generate new media instead of recycling unpreparable bytes.
+    Caption-only changes do not require a new source render.
+    """
+    if not isinstance(receipt, dict) or set(receipt) != {
+        "schema", "sourceSha256", "visualTreatment", "sourceRecipeTreatment",
+        "recipeSpecHash", "generationJobId",
+    }:
+        return False
+    if (
+        receipt["schema"] != "content-lab.source-treatment.v1"
+        or receipt["sourceSha256"] != source_sha256
+        or not isinstance(source_sha256, str)
+        or not re.fullmatch(r"[0-9a-f]{64}", source_sha256)
+        or not isinstance(job.get("jobId"), str)
+        or not job["jobId"]
+        or receipt["generationJobId"] != job["jobId"]
+        or not isinstance(receipt["recipeSpecHash"], str)
+        or not re.fullmatch(r"(?:sha256:)?[0-9a-f]{64}", receipt["recipeSpecHash"])
+        or receipt["recipeSpecHash"] != job.get("recipeSpecHash")
+    ):
+        return False
+    try:
+        actual = normalized_visual_treatment(receipt["visualTreatment"])
+        return (
+            receipt["visualTreatment"] == actual
+            and actual == normalized_visual_treatment(receipt["sourceRecipeTreatment"])
+            and actual == normalized_visual_treatment(requested_treatment)
+        )
+    except (TypeError, ValueError):
+        return False
+
+
 def derived_source_treatment(parent: dict | None, parent_sha: str, source_sha: str, job_id: str) -> dict | None:
     """Recovery re-crops inherited source; it cannot attest a new requested grade or speed."""
     if parent is None:

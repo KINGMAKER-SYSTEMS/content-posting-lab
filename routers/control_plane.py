@@ -90,7 +90,9 @@ from services.control_plane_source_imports import (
 from services.content_engine_registry import load_engine_registry
 from services.content_format_contracts import load_format_contracts
 from services.ffmpeg import delivery_encode_args, run_color_correct
-from services.source_treatment import source_treatment_receipt, derived_source_treatment
+from services.source_treatment import (
+    source_treatment_receipt, derived_source_treatment, recovery_treatment_matches,
+)
 from services.master_pages_contract import SCHEMA as MASTER_PAGES_SCHEMA, canonical_intent, exact_intent, intent_hash
 
 router = APIRouter()
@@ -730,6 +732,8 @@ def _truck_master_candidates(
     model. This prevents old-model or old-prompt renders from silently becoming
     new five-crop deliveries after the page's creative authority changes. The
     source files are checked again, byte-for-byte, by the recovery runner.
+    Applied-video evidence must also match the requested grade, speed and crop;
+    otherwise normal fresh generation must produce preparable source bytes.
     """
     reserved: set[str] = set()
     jobs = store.get("jobs", {})
@@ -787,6 +791,10 @@ def _truck_master_candidates(
                 or source.get("recipeId") != recipe_id
                 or str(source.get("contentNiche") or "").strip().upper() != "TRUCK"
                 or source.get("contentEngine") != content_engine
+                or not recovery_treatment_matches(
+                    clip.get("sourceTreatment"), job, sha256,
+                    generation_recipe.recipe_spec["renderTreatment"],
+                )
             ):
                 continue
             full = (root / rel_path).resolve()

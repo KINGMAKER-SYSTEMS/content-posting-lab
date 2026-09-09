@@ -126,6 +126,10 @@
   Recovery crops inherit proven parent video treatment; they never assert the
   current desired treatment for historical bytes. `sourceRecipeTreatment` is
   recipe context and does not claim a caption overlay already exists.
+  Truck replenishment reuses a preserved master only when its exact producer
+  receipt proves the requested video grade, speed and crop. Missing, malformed
+  or mismatched treatment skips that master and allows normal fresh generation;
+  caption-only changes still permit reuse. This does not grant content approval.
 - Durable preparation is exposed at `/api/control-plane/v1/post-renders`.
   Every request requires the existing control-plane bearer and exact
   `X-RT-Page-Id`; enqueue also requires `Idempotency-Key`. Status, retries,
