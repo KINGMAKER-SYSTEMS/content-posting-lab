@@ -90,6 +90,7 @@ from services.control_plane_source_imports import (
 from services.content_engine_registry import load_engine_registry
 from services.content_format_contracts import load_format_contracts
 from services.ffmpeg import delivery_encode_args, run_color_correct
+from services.source_treatment import source_treatment_receipt, derived_source_treatment
 from services.master_pages_contract import SCHEMA as MASTER_PAGES_SCHEMA, canonical_intent, exact_intent, intent_hash
 
 router = APIRouter()
@@ -803,6 +804,7 @@ def _truck_master_candidates(
                 "sha256": sha256,
                 "bytes": byte_count,
                 "source": source,
+                "sourceTreatment": clip.get("sourceTreatment"),
             })
             seen.add(sha256)
             if len(candidates) >= limit:
@@ -1122,6 +1124,10 @@ async def _run_dossier_generation(job_id: str) -> None:
                 manifest["promptSlots"] = slots
                 manifest["clipSpeed"] = clip_speed
                 manifest["clipCrop"] = clip_crop
+                manifest["sourceTreatment"] = source_treatment_receipt(
+                    job, recipe.recipe_spec["renderTreatment"], manifest["sha256"],
+                    clip_speed=clip_speed, clip_crop=clip_crop,
+                )
                 provider_source = source
                 delivery = None
                 if isinstance(candidate, dict) and candidate.get("cropMode") in {
@@ -1268,6 +1274,11 @@ async def _run_truck_master_recovery(job_id: str) -> None:
                 if geometry != (crop_width, crop_height):
                     raise RuntimeError("truck_master_crop_geometry_mismatch")
                 manifest = _generated_manifest(job_root, crop)
+                inherited_treatment = derived_source_treatment(
+                    candidate.get("sourceTreatment"), candidate["sha256"], manifest["sha256"], job["jobId"],
+                )
+                if inherited_treatment is not None:
+                    manifest["sourceTreatment"] = inherited_treatment
                 source_authority = candidate["source"]
                 manifest["source"] = _source_provenance(job, {
                     "recipeId": source_authority.get("recipeId") or job["recipeId"],
@@ -1403,6 +1414,10 @@ async def _run_dossier_source(job_id: str) -> None:
             manifest = _generated_manifest(job_root, destination)
             manifest["clipSpeed"] = clip_speed
             manifest["clipCrop"] = clip_crop
+            manifest["sourceTreatment"] = source_treatment_receipt(
+                job, recipe.recipe_spec["renderTreatment"], manifest["sha256"],
+                clip_speed=clip_speed, clip_crop=clip_crop,
+            )
             manifest["source"] = _source_provenance(job, {
                 "recipeId": recipe.recipe_id,
                 "sourceLibraryId": recipe.source_library_id,
@@ -2093,6 +2108,8 @@ def job_artifacts(
                 "bytes": clip["thumbnail"]["bytes"],
             },
         }
+        if isinstance(clip.get("sourceTreatment"), dict):
+            artifact["sourceTreatment"] = clip["sourceTreatment"]
         if isinstance(clip.get("delivery"), dict):
             artifact["delivery"] = clip["delivery"]
         artifacts.append(artifact)

@@ -8,6 +8,14 @@
 ## Ownership
 
 - `services/caption_render.py` owns the typed Dossier-to-render caption contract.
+- `services/post_render.py` owns local prepared-final rendering and exact artifact
+  receipts; control-plane admission remains downstream authority.
+- `services/post_render_jobs.py` and `routers/post_renders.py` own durable pre-lease
+  render jobs, authenticated page-scoped status/artifacts and source acquisition.
+- `docs/post-render-setup.md` owns prepared-render storage, authentication and
+  separate browser/machine ingress configuration before release.
+- `services/source_treatment.py` owns actual applied-video provenance emitted by
+  generation/source/recovery outputs through `routers/control_plane.py`.
 - `services/caption_discipline.py` owns Content Lab's closed validation of the
   caption corpus/register selection already made by Dossier and Control Plane.
 - `services/control_plane_source_imports.py` owns bounded public-HTTPS download,
@@ -96,6 +104,53 @@
   Raw Notion row count is diagnostic only and must never stand in for the
   projected page count.
 
+- Prepared-post rendering accepts an immutable slot/source/caption/treatment
+  request. The source must already have the requested video grade, speed and
+  crop, proven by source-bound applied-video evidence. Caption style belongs to
+  final rendering and may change without regenerating an otherwise matching
+  source. Unknown or different video provenance requires regeneration. This renderer adds the typed caption and
+  delivery encoding only; it never repeats grade, crop or speed.
+- Prepared artifacts require source-byte verification, upright 1080x1920 input,
+  real final H.264/yuv420p probing, complete video decode, and a QA frame extracted
+  from the final MP4. Exact receipt bytes bind the final/source/caption/treatment
+  and QA hashes to the slot, page, program, account and device. The control-plane
+  artifact store owns admission; a renderer receipt alone is not ready authority.
+- Prepared delivery caps final video at 22 MiB and QA JPEG at 2 MiB. One automatic
+  bitrate retry may fit the video budget without changing content or treatment.
+  Persistent overflow or failed decode yields no artifact result. Subprocesses
+  have bounded output and process-group lifetime and cannot use network protocols.
+
+- New generated and sourced outputs emit `content-lab.source-treatment.v1`
+  evidence after actual rendering and output hashing: source SHA, normalized
+  video treatment, full source recipe context, recipe hash and generation job.
+  Recovery crops inherit proven parent video treatment; they never assert the
+  current desired treatment for historical bytes. `sourceRecipeTreatment` is
+  recipe context and does not claim a caption overlay already exists.
+- Durable preparation is exposed at `/api/control-plane/v1/post-renders`.
+  Every request requires the existing control-plane bearer and exact
+  `X-RT-Page-Id`; enqueue also requires `Idempotency-Key`. Status, retries,
+  provenance updates and final/QA/receipt downloads use the same page boundary.
+  No endpoint accepts a source URL or local path.
+- `CONTENT_LAB_POST_RENDER_ROOT` must name persistent private storage. Two OS
+  worker permits bound concurrency; per-job locks are explicitly unlocked before
+  close. SQLite WAL holds requests, attempts and idempotency records. Restart
+  recovers a completed hash-bound output before rerendering; partial attempts
+  remain unservable. Transient retries back off and stop after three attempts.
+- Prepared source fetch uses only the configured HTTPS
+  `CONTENT_LAB_POST_RENDER_SOURCE_ORIGIN` (production machine ingress:
+  `https://content-buckets.risingtidesviral.com`)
+  and fixed pending-artifact source route, authenticated with server-owned
+  `CONTROL_PLANE_SERVICE_ID` / `CONTROL_PLANE_SERVICE_SECRET`. Redirects,
+  unexpected MIME/encoding, missing lengths and source-SHA mismatches fail.
+  This setting never falls back to `CONTENT_LAB_CONTROL_PLANE_ORIGIN`, which
+  remains the browser ingress for existing page-vault media. Source preparation
+  does not acquire a phone lease.
+- Missing or mismatched source-video evidence becomes a per-job
+  `regeneration_needed` state, leaving other jobs available. A zero-attempt job
+  may accept an authenticated provenance revision while its immutable slot,
+  source, caption and requested treatment stay identical. Original enqueue
+  idempotency records remain immutable; replay returns current job status.
+
 ## Work Guidance
 
 - Reuse the current TikTokSans fonts and production Burn geometry. Do not add a
@@ -106,6 +161,11 @@
   module and return the same versioned schema and hashes.
 
 ## Verification
+
+- Run `pytest -q tests/test_post_render_jobs.py tests/test_source_treatment.py`
+  for durable crash/retry/lock/auth/source-grant and applied-video provenance checks.
+- Run `pytest -q tests/test_post_render.py` for prepared rendering, actual MP4
+  decode, treatment-once preservation, byte-budget retry and bounded failures.
 
 - Run `pytest -q tests/test_caption_render_contract.py` for the typed caption
   contract and `pytest -q tests/test_burn_and_captions_api.py` for Burn API
