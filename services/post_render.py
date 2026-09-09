@@ -272,6 +272,8 @@ def _encode_final(source: Path, overlay: Path, final: Path, source_probe: MediaP
         # complete frame to delivery size before adding the full-size caption.
         graph = ("[0:v:0]scale=1080:1920:flags=lanczos,setsar=1[delivery];"
                  "[delivery][1:v:0]overlay=0:0:format=auto[v]")
+    elif source_probe.sample_aspect_ratio != "1:1":
+        graph = "[0:v:0]setsar=1[delivery];[delivery][1:v:0]overlay=0:0:format=auto[v]"
     base = [tools.ffmpeg, "-nostdin", "-v", "error", "-xerror", "-protocol_whitelist", "file,pipe",
             "-noautorotate", "-f", "mov", "-i", str(source),
             "-protocol_whitelist", "file,pipe", "-i", str(overlay), "-filter_complex", graph,
@@ -332,7 +334,9 @@ def render_post(source_path: Path, output_directory: Path, request: PostRenderRe
         # A landscape 1080p provider master produces a 606x1080 9:16 crop
         # after even-pixel alignment. Preserve that selected frame: delivery
         # scaling is not another creative crop, grade, or speed treatment.
-        if (source_probe.height < 1080 or source_probe.sample_aspect_ratio != "1:1"
+        # Provider H.264 crops may omit SAR entirely. Keep their coded frame
+        # and declare square pixels at encode; explicit non-square SAR refuses.
+        if (source_probe.height < 1080 or source_probe.sample_aspect_ratio not in {"1:1", "", "N/A", "0:1"}
                 or source_probe.rotation != 0
                 or abs(source_probe.width * 16 - source_probe.height * 9) > 32):
             raise PostRenderError("regeneration_required", "source must be upright square-pixel 9:16 video at least 1080 pixels high")
