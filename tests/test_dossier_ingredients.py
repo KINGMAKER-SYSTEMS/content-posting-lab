@@ -131,11 +131,12 @@ def test_selected_version_ignores_unrelated_format_authority_changes(monkeypatch
     def changed_unrelated(
         contract, profile, catalog, model_options, page_id,
         shipstream_library=None, shipstream_status=None,
-        shipstream_projection=None,
+        shipstream_projection=None, master_pages=None,
     ):
         entry = original(
             contract, profile, catalog, model_options, page_id,
             shipstream_library, shipstream_status, shipstream_projection,
+            master_pages,
         )
         if entry["formatId"] == "pov-night-core":
             entry = copy.deepcopy(entry)
@@ -164,11 +165,12 @@ def test_selected_version_ignores_an_unused_same_niche_format(monkeypatch):
     def changed_unused_candidate(
         contract, profile, catalog, model_options, page_id,
         shipstream_library=None, shipstream_status=None,
-        shipstream_projection=None,
+        shipstream_projection=None, master_pages=None,
     ):
         entry = original(
             contract, profile, catalog, model_options, page_id,
             shipstream_library, shipstream_status, shipstream_projection,
+            master_pages,
         )
         if entry["formatId"] == "truck-ugc":
             entry = copy.deepcopy(entry)
@@ -281,11 +283,12 @@ def test_selected_version_changes_with_its_exact_format_authority(monkeypatch):
     def changed_current(
         contract, profile, catalog, model_options, page_id,
         shipstream_library=None, shipstream_status=None,
-        shipstream_projection=None,
+        shipstream_projection=None, master_pages=None,
     ):
         entry = original(
             contract, profile, catalog, model_options, page_id,
             shipstream_library, shipstream_status, shipstream_projection,
+            master_pages,
         )
         if entry["formatId"] == "truck-scenic":
             entry = copy.deepcopy(entry)
@@ -372,7 +375,7 @@ def test_reference_and_source_slots_come_from_real_catalogs(monkeypatch):
     assert all(clip["parentSource"] is None and clip["cutWindow"] is None
                for clip in library["binding"]["clips"])
     assert treatment["binding"]["scope"] == "master_source_window"
-    assert treatment["binding"]["recutWindow"] == "deterministic_without_replacement"
+    assert treatment["binding"]["recutWindow"] == "deterministic_varied_duration_without_replacement"
     assert treatment["binding"]["reservation"] == "active_jobs_and_completed_outputs"
     assert treatment["binding"]["output"] == {
         "aspectRatio": "9:16",
@@ -381,7 +384,7 @@ def test_reference_and_source_slots_come_from_real_catalogs(monkeypatch):
         "width": 1080,
     }
     assert treatment["binding"]["controls"]["cutDurationMs"] == {
-        "type": "range", "min": 6000, "max": 8000,
+        "type": "range", "min": 5000, "max": 9000,
         "step": 1000, "default": 7000,
     }
     assert treatment["binding"]["clipSpeed"] == {
@@ -390,8 +393,18 @@ def test_reference_and_source_slots_come_from_real_catalogs(monkeypatch):
     assert "window" not in treatment["binding"]
 
     coffee = _format(body, "coffee-tok")
-    assert _ingredient(coffee, "visual-model")["status"] == "missing"
-    assert _ingredient(coffee, "prompt-module")["status"] == "missing"
+    assert _ingredient(coffee, "visual-model")["status"] == "bound"
+    selected = _production_selection(body, "coffee-tok", "wan-i2v-fast")
+    assert selected["providerId"] == "wan-i2v-fast"
+    assert selected["promptModuleId"] == "coffee"
+    assert _ingredient(coffee, "prompt-module")["status"] == "bound"
+    assert _ingredient(coffee, "reference-media")["status"] == "bound"
+    assert _ingredient(coffee, "reference-media")["binding"]["sha256"] == "ee2dd41949eb6566a858db9c88ae9c9349dcc77a199d08088336143a4e1d1649"
+    assert coffee["blockers"] == []
+
+    construction = _format(body, "construction-scenic")
+    assert _ingredient(construction, "visual-model")["status"] == "missing"
+    assert _ingredient(construction, "prompt-module")["status"] == "missing"
 
 
 def test_shipstream_page_source_is_bound_only_to_its_matching_format(monkeypatch):

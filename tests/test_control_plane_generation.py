@@ -13,6 +13,8 @@ from services.control_plane_generation import (
     dossier_clip_speed,
     dossier_filters_to_color_correction,
     load_generation_anchor,
+    plan_prompt_combinations,
+    prompt_combination_space,
     resolve_generation_recipe,
 )
 from services.dossier_ingredients import (
@@ -68,7 +70,7 @@ def test_truck_recipe_resolves_from_the_master_pages_engine_and_server_owned_pro
     assert recipe.family_name == "truck"
     assert recipe.provider_model == "minimax/hailuo-2.3"
     assert recipe.engine == "hailuo"
-    assert recipe.prompt_catalog_hash == "c80cc32e6e762be05e6655190432e945c55afeb196fc488f3b09ad2fad51b9f1"
+    assert recipe.prompt_catalog_hash == "2da2ce138f2fbd93944d9f9d63a6fb285b4706f61d1e3ee0532c702126dabede"
     assert recipe.family["extra"]["crop_mode"] == "both"
     assert recipe.clips_per_generation == 5
     assert recipe.planned_provider_calls(1) == 1
@@ -252,7 +254,7 @@ def test_master_pages_niche_cannot_borrow_another_niches_generator():
     assert resolve_generation_recipe(payload) is None
 
     coffee = _format_publication(
-        "coffee-tok", "coffee-tok:master", "ai_video",
+        "construction-scenic", "construction-scenic:master", "ai_video",
     )
     assert resolve_generation_recipe(coffee) is None
 
@@ -277,13 +279,17 @@ def _format_publication(format_slug, recipe_id, engine):
     return payload
 
 
-def test_quarantined_silhouette_is_not_advertised_until_recommissioned():
-    assert resolve_generation_recipe(_format_publication(
+def test_recommissioned_boat_and_silhouette_are_advertised_after_operator_lift():
+    # The 8249ba1 quarantine was lifted by operator decision (2026-09-11):
+    # both formats are commissioned again and their recipes resolve.
+    boat = resolve_generation_recipe(_format_publication(
         "boat-lake", "boat-lake:master", "ai_video",
-    )) is None
-    assert resolve_generation_recipe(_format_publication(
+    ))
+    assert boat is not None
+    silhouette = resolve_generation_recipe(_format_publication(
         "silhouette-truck", "silhouette-truck:master", "ai_video",
-    )) is None
+    ))
+    assert silhouette is not None
 
 
 def test_scenic_is_not_misrouted_through_the_ai_video_resolver():
@@ -387,6 +393,22 @@ def test_prompt_rotation_is_deterministic_and_non_repeating():
     assert prompts == [compose_prompt(recipe, "page:policy:job", index)[0] for index in range(20)]
     assert len(set(prompts)) == 20
     assert all("{" not in prompt and "}" not in prompt for prompt in prompts)
+
+
+def test_prompt_planner_counts_only_effective_variations_and_fails_closed_at_exhaustion():
+    recipe = resolve_generation_recipe(publication())
+    selected = recipe.recipe_spec.setdefault("production", {}).setdefault(
+        "variationValues", {},
+    )
+    for name, values in recipe.family["slots"].items():
+        selected[name] = values[0]
+
+    assert prompt_combination_space(recipe) == 1
+    first = plan_prompt_combinations(recipe, "first-job", 1, set())
+    assert len(first) == 1
+    assert plan_prompt_combinations(
+        recipe, "second-job", 1, {first[0]["promptHash"]},
+    ) == []
 
 
 def test_dossier_filter_units_map_to_the_existing_ffmpeg_slider_contract():

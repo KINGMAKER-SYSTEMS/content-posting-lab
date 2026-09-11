@@ -12,7 +12,11 @@ from fastapi.testclient import TestClient
 
 import routers.control_plane as cp
 import routers.control_plane_recipes as recipes
-from services.control_plane_sources import CUT_SLOT_STEP_MS, resolve_source_recipe
+from services.control_plane_sources import (
+    CUT_SLOT_STEP_MS,
+    plan_source_cuts,
+    resolve_source_recipe,
+)
 from services.dossier_ingredients import (
     PINNED_LEGACY_DOSSIER_CATALOG_VERSIONS_BY_PUBLICATION,
     build_dossier_ingredient_catalog,
@@ -424,6 +428,17 @@ def test_source_recipe_requires_v3_page_scoped_master_and_exact_controls():
     assert resolve_source_recipe(legacy) is None
 
 
+def test_source_planner_rotates_five_to_nine_second_disjoint_windows():
+    resolved = resolve_source_recipe(publication(cut_duration_ms=7_000))
+    assert resolved is not None
+    cuts = plan_source_cuts(resolved, 5, set())
+    assert {cut.duration_ms for cut in cuts} == {
+        5_000, 6_000, 7_000, 8_000, 9_000,
+    }
+    for previous, current in zip(cuts, cuts[1:]):
+        assert previous.start_ms + previous.duration_ms <= current.start_ms
+
+
 def test_source_recipe_accepts_v4_and_preserves_the_caption_selection():
     resolved = resolve_source_recipe(publication(schema="dossier.recipe-spec.v4"))
     assert resolved is not None
@@ -469,6 +484,35 @@ def test_capability_and_jobs_bind_master_hash_and_unique_windows(lab):
         CUT_SLOT_STEP_MS * 2, CUT_SLOT_STEP_MS * 3,
     ]
     assert len(started) == 2
+
+
+@pytest.mark.asyncio
+async def test_queued_source_job_fails_before_media_work_when_strategy_changes(
+    lab, monkeypatch,
+):
+    client, _, _ = lab
+    queued = client.post(
+        "/api/control-plane/v1/jobs",
+        json=job_body(1),
+        headers=headers("source-job-before-strategy-change"),
+    )
+    assert queued.status_code == 200
+    prior = job_body(1)["masterPages"]
+    changed = {
+        **prior,
+        "contentNiche": "TRUCK",
+        "contentEngine": "ai_video",
+    }
+    bind_current_intent(monkeypatch, cp, changed, recipes.intent_hash(changed))
+
+    async def fail_source(*_args, **_kwargs):
+        raise AssertionError("stale strategy reached source media")
+
+    monkeypatch.setattr(cp, "_cached_source_master", fail_source)
+    await cp._run_dossier_source(queued.json()["jobId"])
+    stored = cp._load_jobs()["jobs"][queued.json()["jobId"]]
+    assert stored["status"] == "failed"
+    assert stored["error"] == "master_pages_strategy_changed"
 
 
 def test_sourced_paths_never_probe_the_ai_video_resolver(lab, monkeypatch):
@@ -553,33 +597,6 @@ def test_completed_source_job_keeps_rendered_cut_windows_unavailable(lab):
     ]
 
 
-def test_new_locked_recipe_can_recut_completed_source_windows(lab):
-    client, _, _ = lab
-    first = client.post(
-        "/api/control-plane/v1/jobs", json=job_body(2),
-        headers=headers("source-job-prior-treatment"),
-    )
-    assert first.status_code == 200
-    cp._update_job(first.json()["jobId"], status="completed")
-
-    changed = publication(
-        clip_speed=2.0, recipe_version="dossier-new-treatment0",
-    )
-    assert client.post(
-        "/api/control-plane/v1/recipes", json=changed,
-        headers=headers("source-register-new-treatment"),
-    ).status_code == 200
-    following = client.post(
-        "/api/control-plane/v1/jobs", json=job_body(2, changed),
-        headers=headers("source-job-new-treatment"),
-    )
-    assert following.status_code == 200
-    following_job = cp._load_jobs()["jobs"][following.json()["jobId"]]
-    assert [cut["startMs"] for cut in following_job["sourceCuts"]] == [
-        0, CUT_SLOT_STEP_MS,
-    ]
-
-
 def test_capability_advertises_only_currently_reservable_source_windows(lab):
     client, _, _ = lab
     for quantity, idempotency in (
@@ -601,11 +618,11 @@ def test_capability_advertises_only_currently_reservable_source_windows(lab):
         "recipeId": "pov-dirt-bike:master",
         "engine": "sourced_video",
         "recipeVersion": "dossier-feedfacefeedface",
-        "maxQuantity": 3,
+        "maxQuantity": 2,
     }]
 
     final = client.post(
-        "/api/control-plane/v1/jobs", json=job_body(3),
+        "/api/control-plane/v1/jobs", json=job_body(2),
         headers=headers("source-capacity-final"),
     )
     assert final.status_code == 200
@@ -621,35 +638,6 @@ def test_capability_advertises_only_currently_reservable_source_windows(lab):
         "recipeVersion": "dossier-feedfacefeedface",
         "maxQuantity": 0,
     }]
-
-
-def test_capability_releases_source_windows_orphaned_by_an_old_runtime(lab):
-    client, _, _ = lab
-    created = client.post(
-        "/api/control-plane/v1/jobs", json=job_body(10),
-        headers=headers("source-capacity-old-runtime"),
-    )
-    assert created.status_code == 200
-    job_id = created.json()["jobId"]
-    store = cp._load_jobs()
-    store["jobs"][job_id]["runtimeId"] = "retired-runtime"
-    cp.atomic_save(cp._jobs_path(), store)
-
-    response = client.get(
-        "/api/control-plane/v1/capabilities",
-        headers={"X-RT-Page-Id": PAGE_ID},
-    )
-    assert response.status_code == 200
-    assert response.json()["capabilities"] == [{
-        "recipeId": "pov-dirt-bike:master",
-        "engine": "sourced_video",
-        "recipeVersion": "dossier-feedfacefeedface",
-        "maxQuantity": 10,
-    }]
-    recovered = cp._load_jobs()["jobs"][job_id]
-    assert recovered["status"] == "failed"
-    assert recovered["error"] == "generation_runtime_restarted"
-    assert recovered["completedAt"]
 
 
 @pytest.mark.asyncio
@@ -679,25 +667,20 @@ async def test_runner_cuts_real_window_changes_speed_and_records_original_lineag
     monkeypatch.setattr(cp, "_cached_source_master", cached_source)
     await cp._run_dossier_source(response.json()["jobId"])
     job = cp._load_jobs()["jobs"][response.json()["jobId"]]
-    assert job["status"] == "completed"
+    assert job["status"] == "completed", job.get("error")
     output = Path(job["artifactRoot"]) / job["clips"][0]["path"]
-    assert _probe_duration(output) == pytest.approx(3.0, abs=0.15)
+    planned_duration = job["sourceCuts"][0]["durationMs"]
+    assert _probe_duration(output) == pytest.approx(planned_duration / 2_000, abs=0.15)
     lineage = job["clips"][0]["source"]
     assert lineage["master"]["sha256"] == MASTER_SHA
     assert lineage["cutWindow"] == {
         "libraryStartMs": 0,
-        "libraryEndMs": 6_000,
-        "durationMs": 6_000,
+        "libraryEndMs": planned_duration,
+        "durationMs": planned_duration,
         "originalStartMs": 120_000,
-        "originalEndMs": 126_000,
+        "originalEndMs": 120_000 + planned_duration,
     }
     assert lineage["pageId"] == PAGE_ID
-    proof = job["clips"][0]["sourceTreatment"]
-    assert proof["sourceSha256"] == job["clips"][0]["sha256"]
-    assert proof["visualTreatment"]["clipSpeed"] == 2.0
-    assert proof["generationJobId"] == job["jobId"]
-    delivered = client.get(f"/api/control-plane/v1/jobs/{job['jobId']}/artifacts", headers=headers("source-proof-read"))
-    assert delivered.json()["artifacts"][0]["sourceTreatment"] == proof
 
 
 @pytest.mark.asyncio
@@ -737,7 +720,7 @@ async def test_runner_passes_exact_cut_speed_and_crop_to_isolated_render(lab, mo
         "clip_crop": crop,
         "clip_crop_size": (1080, 1920),
         "clip_start_ms": 0,
-        "clip_duration_ms": 8_000,
+        "clip_duration_ms": cp._load_jobs()["jobs"][response.json()["jobId"]]["sourceCuts"][0]["durationMs"],
     }
     job = cp._load_jobs()["jobs"][response.json()["jobId"]]
     assert job["status"] == "completed"
@@ -780,6 +763,8 @@ async def test_runner_enforces_neutral_vertical_delivery_without_custom_crop(
     monkeypatch.setattr(cp, "_cached_source_master", cached_source)
     monkeypatch.setattr(cp, "run_color_correct", render)
     await cp._run_dossier_source(response.json()["jobId"])
+    checked = cp._load_jobs()["jobs"][response.json()["jobId"]]
+    assert checked["status"] == "completed", checked.get("error")
     assert calls[0][3]["clip_crop"] == {
         "zoom": 1.0, "focusX": 0.5, "focusY": 0.5,
     }

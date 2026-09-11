@@ -423,7 +423,40 @@ def fnv1a_64(value: str) -> int:
     return result
 
 
-def compose_prompt(recipe: GenerationRecipe, run_id: str, index: int) -> tuple[str, dict[str, str]]:
+def _effective_prompt_slots(recipe: GenerationRecipe) -> list[tuple[str, list[str]]]:
+    slots = recipe.family.get("slots")
+    if not isinstance(slots, dict):
+        slots = {}
+    selected = recipe.recipe_spec.get("production", {}).get("variationValues", {})
+    if not isinstance(selected, dict):
+        selected = {}
+    ordered: list[tuple[str, list[str]]] = []
+    for name, values in sorted(slots.items()):
+        if not isinstance(values, list):
+            continue
+        if name in selected:
+            ordered.append((name, [str(selected[name])]))
+        else:
+            ordered.append((name, [str(value) for value in values]))
+    return ordered
+
+
+def prompt_combination_space(recipe: GenerationRecipe) -> int:
+    """Count distinct prompts after the dossier's closed slot selections."""
+    return math.prod(max(1, len(values)) for _, values in _effective_prompt_slots(recipe))
+
+
+def _compose_prompt_combination(
+    recipe: GenerationRecipe, combination_id: int,
+) -> tuple[str, dict[str, str]]:
+    space = prompt_combination_space(recipe)
+    if (
+        isinstance(combination_id, bool)
+        or not isinstance(combination_id, int)
+        or combination_id < 0
+        or combination_id >= space
+    ):
+        raise ValueError("prompt combination is outside the effective recipe space")
     template = str(recipe.family.get("template") or "")
     subject = str(recipe.family.get("fixed_subject") or "")
     guards = str(recipe.family.get("quality_guards") or "")
@@ -432,25 +465,13 @@ def compose_prompt(recipe: GenerationRecipe, run_id: str, index: int) -> tuple[s
         .replace("{guards}", guards)
         .replace("{subject_state}", guards)
     )
-    slots = recipe.family.get("slots")
-    if not isinstance(slots, dict):
-        slots = {}
-    ordered = [(name, values) for name, values in sorted(slots.items()) if isinstance(values, list)]
-    space = math.prod(max(1, len(values)) for _, values in ordered)
-    seed = fnv1a_64(run_id)
-    stride = max(1, seed % max(1, space)) | 1
-    while space > 1 and math.gcd(stride, space) != 1:
-        stride += 2
-    combo = (index * stride + seed) % max(1, space)
+    combo = combination_id
     used: dict[str, str] = {}
-    selected_variations = recipe.recipe_spec.get("production", {}).get("variationValues", {})
-    if not isinstance(selected_variations, dict):
-        selected_variations = {}
-    for name, values in ordered:
+    for name, values in _effective_prompt_slots(recipe):
         count = max(1, len(values))
         pick = combo % count
         combo //= count
-        value = str(selected_variations.get(name, values[pick] if values else ""))
+        value = values[pick] if values else ""
         used[name] = value
         prompt = prompt.replace("{" + name + "}", value)
     if "{" in prompt or "}" in prompt:
@@ -461,6 +482,70 @@ def compose_prompt(recipe: GenerationRecipe, run_id: str, index: int) -> tuple[s
             raise ValueError("image-to-video recipe has no server-owned motion prompt")
         prompt = f"{prompt.rstrip('. ')}. Motion: {motion}"
     return prompt, used
+
+
+def prompt_sha256(prompt: str) -> str:
+    return hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+
+
+def plan_prompt_combinations(
+    recipe: GenerationRecipe,
+    run_id: str,
+    count: int,
+    unavailable_hashes: set[str],
+    unavailable_slots: set[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Plan distinct, hash-reserved prompts in one deterministic permutation."""
+    if not isinstance(count, int) or isinstance(count, bool) or count <= 0:
+        raise ValueError("prompt count must be a positive integer")
+    if not isinstance(unavailable_hashes, set) or any(
+        not isinstance(value, str) or not SHA256.fullmatch(value)
+        for value in unavailable_hashes
+    ):
+        raise ValueError("unavailable prompt hashes must be SHA-256 strings")
+    if unavailable_slots is not None and (
+        not isinstance(unavailable_slots, set)
+        or any(not isinstance(value, str) for value in unavailable_slots)
+    ):
+        raise ValueError("unavailable prompt slots must be canonical strings")
+    blocked_hashes = set(unavailable_hashes)
+    blocked_slots = set(unavailable_slots or set())
+    space = prompt_combination_space(recipe)
+    seed = fnv1a_64(run_id)
+    stride = max(1, seed % max(1, space)) | 1
+    while space > 1 and math.gcd(stride, space) != 1:
+        stride += 2
+    planned: list[dict[str, Any]] = []
+    for ordinal in range(space):
+        combination_id = (ordinal * stride + seed) % max(1, space)
+        prompt, slots = _compose_prompt_combination(recipe, combination_id)
+        digest = prompt_sha256(prompt)
+        slot_signature = json.dumps(slots, sort_keys=True, separators=(",", ":"))
+        if digest in blocked_hashes or slot_signature in blocked_slots:
+            continue
+        planned.append({"combinationId": combination_id, "promptHash": digest})
+        blocked_hashes.add(digest)
+        blocked_slots.add(slot_signature)
+        if len(planned) == count:
+            break
+    return planned
+
+
+def compose_prompt_combination(
+    recipe: GenerationRecipe, combination_id: int,
+) -> tuple[str, dict[str, str]]:
+    """Render one already-reserved prompt combination."""
+    return _compose_prompt_combination(recipe, combination_id)
+
+
+def compose_prompt(recipe: GenerationRecipe, run_id: str, index: int) -> tuple[str, dict[str, str]]:
+    """Compatibility helper for deterministic within-run prompt rotation."""
+    if not isinstance(index, int) or isinstance(index, bool) or index < 0:
+        raise ValueError("prompt index must be a non-negative integer")
+    planned = plan_prompt_combinations(recipe, run_id, index + 1, set())
+    if len(planned) <= index:
+        raise ValueError("prompt recipe space is exhausted")
+    return _compose_prompt_combination(recipe, planned[index]["combinationId"])
 
 
 def _anchor_origin() -> str:
