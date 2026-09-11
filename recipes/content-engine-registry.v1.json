@@ -6,12 +6,12 @@
       "contentEngine": "ai_video",
       "materialSource": "generated_video",
       "assetType": "video/mp4",
-      "executionStatus": "uncommissioned",
-      "executorKind": null,
-      "executorId": null,
-      "executorVersion": null,
+      "executionStatus": "commissioned",
+      "executorKind": "prompt_family",
+      "executorId": "boat",
+      "executorVersion": "sha256:c80cc32e6e762be05e6655190432e945c55afeb196fc488f3b09ad2fad51b9f1",
       "formatContractVersion": "sha256:25182fe8c1786772422b7751fd0295ea1ee70ba9cf4617816abc25ca6ce240f0",
-      "maxQuantity": 0
+      "maxQuantity": 10
     },
     "coffee-tok": {
       "contentNiche": "Coffee",
@@ -126,12 +126,12 @@
       "contentEngine": "ai_video",
       "materialSource": "generated_video",
       "assetType": "video/mp4",
-      "executionStatus": "uncommissioned",
-      "executorKind": null,
-      "executorId": null,
-      "executorVersion": null,
+      "executionStatus": "commissioned",
+      "executorKind": "prompt_family",
+      "executorId": "silhouette",
+      "executorVersion": "sha256:c80cc32e6e762be05e6655190432e945c55afeb196fc488f3b09ad2fad51b9f1",
       "formatContractVersion": "sha256:405e3e34d0253c604436effed3acc36e049b77ea29d709cfe59f0257d32fc5c4",
-      "maxQuantity": 0
+      "maxQuantity": 10
     },
     "truck-scenic": {
       "contentNiche": "TRUCK",
