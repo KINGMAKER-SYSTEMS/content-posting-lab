@@ -309,3 +309,20 @@ source execution, dossier, generation, and format contract suites passed 56
 checks. Local Docker release verification was unavailable because the Docker
 daemon was not running; the Railway remote image build remains the release gate.
 _________________________________________________________________________________
+_________________________________________________________________________________
+
+time: [07:16 am] [11-09-26]
+agent: [codex desktop] [gpt-6]
+worktree: [main]
+type: [bug report]
+area: [backend]
+
+Merged PR #108 as 830c530. Railway served the changed recipe-scoped capacity
+behavior: Missed Exit's current dossier recipe advertised ten windows while its
+completed older recipe remained at zero. Two authenticated control-plane refill
+jobs then produced and admitted ten page-bound assets; macOS Vision accepted
+eight and rejected two. The scheduler materialized all five required Missed Exit
+slots for September 11, and the page disappeared from the materializer blocker
+set. Dashboard Confessions and Hopecore remain capacity-exhausted under their
+exact current recipes and require separate source repair.
+_________________________________________________________________________________
