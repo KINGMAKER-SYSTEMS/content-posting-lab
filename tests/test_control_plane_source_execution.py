@@ -553,6 +553,33 @@ def test_completed_source_job_keeps_rendered_cut_windows_unavailable(lab):
     ]
 
 
+def test_new_locked_recipe_can_recut_completed_source_windows(lab):
+    client, _, _ = lab
+    first = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(2),
+        headers=headers("source-job-prior-treatment"),
+    )
+    assert first.status_code == 200
+    cp._update_job(first.json()["jobId"], status="completed")
+
+    changed = publication(
+        clip_speed=2.0, recipe_version="dossier-new-treatment0",
+    )
+    assert client.post(
+        "/api/control-plane/v1/recipes", json=changed,
+        headers=headers("source-register-new-treatment"),
+    ).status_code == 200
+    following = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(2, changed),
+        headers=headers("source-job-new-treatment"),
+    )
+    assert following.status_code == 200
+    following_job = cp._load_jobs()["jobs"][following.json()["jobId"]]
+    assert [cut["startMs"] for cut in following_job["sourceCuts"]] == [
+        0, CUT_SLOT_STEP_MS,
+    ]
+
+
 def test_capability_advertises_only_currently_reservable_source_windows(lab):
     client, _, _ = lab
     for quantity, idempotency in (

@@ -49,6 +49,9 @@
   the AI-video resolver, and an unknown engine exposes no executor.
 - Sourced-video capability quantity is the lesser of the executor's per-job
   ceiling and the unique source windows still reservable from durable job truth.
+  Active jobs reserve their windows across recipe revisions. Completed outputs
+  reserve windows for the exact locked recipe that produced them; a later locked
+  recipe may recut those page-bound windows with its new treatment and provenance.
   Exhausted libraries remain visible with `maxQuantity: 0` so Control Plane can
   distinguish source exhaustion from an unregistered recipe. Job creation
   remains exact and all-or-nothing; it never silently returns fewer clips than

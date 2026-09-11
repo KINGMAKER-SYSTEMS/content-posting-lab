@@ -291,3 +291,21 @@ caption rendering now uses the established 3 px final-resolution outline, and
 the caption contract test pins that value. Fifteen focused caption-render tests
 passed before deployment.
 _________________________________________________________________________________
+_________________________________________________________________________________
+
+time: [07:05 am] [11-09-26]
+agent: [codex desktop] [gpt-6]
+worktree: [fix/reuse-source-windows-after-recipe-change-20260911]
+type: [bug report]
+area: [backend]
+
+Completed source-DNA jobs reserved raw page-bound cut windows across every later
+recipe revision, permanently exhausting finite masters even when a newly locked
+recipe required different video treatment and new provenance. Completed outputs
+now reserve windows only for the exact recipe-spec hash that produced them;
+queued and running jobs remain exclusive across revisions, failed jobs still
+release their windows, and page/library/hash isolation remains unchanged. The
+source execution, dossier, generation, and format contract suites passed 56
+checks. Local Docker release verification was unavailable because the Docker
+daemon was not running; the Railway remote image build remains the release gate.
+_________________________________________________________________________________
