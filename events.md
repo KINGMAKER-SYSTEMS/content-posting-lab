@@ -326,3 +326,18 @@ slots for September 11, and the page disappeared from the materializer blocker
 set. Dashboard Confessions and Hopecore remain capacity-exhausted under their
 exact current recipes and require separate source repair.
 _________________________________________________________________________________
+_________________________________________________________________________________
+
+time: [07:43 am] [11-09-26]
+agent: [codex desktop] [gpt-6]
+worktree: [fix/release-stale-source-job-windows-20260911]
+type: [bug report]
+area: [backend]
+
+Sourced-video capability calculation now applies the existing runtime-restart
+fence before counting reserved source windows. Queued or running async jobs from
+a dead process become failed with their bounded restart reason, releasing only
+their unrendered windows; current-runtime work and completed outputs remain
+unchanged. This prevents abandoned jobs from advertising permanent zero capacity.
+The source execution, dossier, generation, and recipe suites passed 65 checks.
+_________________________________________________________________________________

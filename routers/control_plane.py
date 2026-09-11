@@ -257,7 +257,7 @@ def capabilities(
             continue
         if source_recipe is not None:
             if source_job_store is None:
-                source_job_store = _load_jobs()
+                source_job_store = _load_jobs_with_runtime_recovery()
             unavailable_slots = _source_dna_unavailable_slots(
                 source_job_store, source_recipe,
             )
@@ -657,6 +657,34 @@ def _load_jobs() -> dict[str, Any]:
     if not isinstance(data, dict) or "jobs" not in data:
         return _empty_jobs()
     return data
+
+
+def _load_jobs_with_runtime_recovery() -> dict[str, Any]:
+    """Fail nonterminal async jobs left behind by an earlier process."""
+    with lock_for(_jobs_path()):
+        store = _load_jobs()
+        changed = False
+        completed_at = datetime.now(timezone.utc).isoformat()
+        for job in store.get("jobs", {}).values():
+            if (
+                isinstance(job, dict)
+                and job.get("sourceKind") in ASYNC_SOURCE_KINDS
+                and job.get("status") in GENERATION_ACTIVE_STATUSES
+                and job.get("runtimeId") != _GENERATION_RUNTIME_ID
+            ):
+                job.update({
+                    "status": "failed",
+                    "error": (
+                        "source_import_runtime_restarted"
+                        if job.get("sourceKind") == "page_source_import"
+                        else "generation_runtime_restarted"
+                    ),
+                    "completedAt": completed_at,
+                })
+                changed = True
+        if changed:
+            atomic_save(_jobs_path(), store)
+        return store
 
 
 def _reject_prompt_fields(value: Any, path: str = "job") -> None:

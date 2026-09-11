@@ -623,6 +623,35 @@ def test_capability_advertises_only_currently_reservable_source_windows(lab):
     }]
 
 
+def test_capability_releases_source_windows_orphaned_by_an_old_runtime(lab):
+    client, _, _ = lab
+    created = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(10),
+        headers=headers("source-capacity-old-runtime"),
+    )
+    assert created.status_code == 200
+    job_id = created.json()["jobId"]
+    store = cp._load_jobs()
+    store["jobs"][job_id]["runtimeId"] = "retired-runtime"
+    cp.atomic_save(cp._jobs_path(), store)
+
+    response = client.get(
+        "/api/control-plane/v1/capabilities",
+        headers={"X-RT-Page-Id": PAGE_ID},
+    )
+    assert response.status_code == 200
+    assert response.json()["capabilities"] == [{
+        "recipeId": "pov-dirt-bike:master",
+        "engine": "sourced_video",
+        "recipeVersion": "dossier-feedfacefeedface",
+        "maxQuantity": 10,
+    }]
+    recovered = cp._load_jobs()["jobs"][job_id]
+    assert recovered["status"] == "failed"
+    assert recovered["error"] == "generation_runtime_restarted"
+    assert recovered["completedAt"]
+
+
 @pytest.mark.asyncio
 async def test_runner_cuts_real_window_changes_speed_and_records_original_lineage(
     lab, monkeypatch,
