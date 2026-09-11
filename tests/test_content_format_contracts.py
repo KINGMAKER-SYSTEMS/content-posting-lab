@@ -48,7 +48,8 @@ def test_only_complete_hash_bound_formats_are_commissioned():
         slug for slug, profile in profiles.items()
         if profile.execution_status == "commissioned"
     } == {
-        "pov-dirt-bike", "pov-night-core", "pov-scenic", "truck-scenic",
+        "boat-lake", "pov-dirt-bike", "pov-night-core", "pov-scenic",
+        "silhouette-truck", "truck-scenic",
     }
     assert all(
         contracts[slug].definition_status == "complete"
@@ -57,27 +58,20 @@ def test_only_complete_hash_bound_formats_are_commissioned():
     )
     assert contracts["truck-ugc"].definition_status == "complete"
     assert profiles["truck-ugc"].execution_status == "uncommissioned"
-    assert contracts["boat-lake"].definition_status == "complete"
-    assert profiles["boat-lake"].execution_status == "uncommissioned"
-    assert contracts["silhouette-truck"].definition_status == "complete"
-    assert profiles["silhouette-truck"].execution_status == "uncommissioned"
 
 
-def test_boat_contract_is_complete_but_stays_executorially_quarantined():
+def test_boat_contract_is_commissioned_after_operator_lifted_quarantine():
     contracts, _ = load_format_contracts()
     profiles, _ = load_engine_registry()
     boat = contracts["boat-lake"]
     assert boat.definition_status == "complete"
     assert boat.definition_gaps == ()
-    # The 8249ba1 quarantine stays in force for boat-lake too: definition
-    # completion does not re-commission the executor after a failed
-    # visual-DNA review.
+    # The 8249ba1 quarantine was lifted by operator decision (2026-09-11):
+    # the contract was restored verbatim and the executor re-binds to the
+    # live boat prompt family.
     profile = profiles["boat-lake"]
-    assert profile.execution_status == "uncommissioned"
-    assert profile.executor_kind is None
-    assert profile.executor_id is None
-    assert profile.executor_version is None
-    assert profile.max_quantity == 0
+    assert profile.execution_status == "commissioned"
+    assert profile.max_quantity >= 1
     # The restored rules are hash-bound to the live boat prompt family.
     from services.control_plane_generation import load_prompt_catalog
 
@@ -85,30 +79,36 @@ def test_boat_contract_is_complete_but_stays_executorially_quarantined():
     assert boat.creative_authority == CreativeAuthority(
         "prompt_family", "boat", f"sha256:{catalog_hash}",
     )
+    assert (profile.executor_kind, profile.executor_id, profile.executor_version) == (
+        boat.creative_authority.kind,
+        boat.creative_authority.authority_id,
+        boat.creative_authority.version,
+    )
     assert boat.review_authority == (
         "promptCatalog.families.boat.quality_guards"
     )
 
 
-def test_silhouette_contract_is_complete_but_stays_executorially_quarantined():
+def test_silhouette_contract_is_commissioned_after_operator_lifted_quarantine():
     contracts, _ = load_format_contracts()
     profiles, _ = load_engine_registry()
     silhouette = contracts["silhouette-truck"]
     assert silhouette.definition_status == "complete"
     assert silhouette.definition_gaps == ()
-    # The 8249ba1 quarantine stays in force: definition completion does not
-    # re-commission the executor after a failed visual-DNA review.
+    # The 8249ba1 quarantine was lifted by operator decision (2026-09-11).
     profile = profiles["silhouette-truck"]
-    assert profile.execution_status == "uncommissioned"
-    assert profile.executor_kind is None
-    assert profile.executor_id is None
-    assert profile.executor_version is None
-    assert profile.max_quantity == 0
+    assert profile.execution_status == "commissioned"
+    assert profile.max_quantity >= 1
     # The restored rules are hash-bound to the live silhouette prompt family.
     from services.control_plane_generation import load_prompt_catalog
     _, catalog_hash = load_prompt_catalog()
     assert silhouette.creative_authority == CreativeAuthority(
         "prompt_family", "silhouette", f"sha256:{catalog_hash}",
+    )
+    assert (profile.executor_kind, profile.executor_id, profile.executor_version) == (
+        silhouette.creative_authority.kind,
+        silhouette.creative_authority.authority_id,
+        silhouette.creative_authority.version,
     )
     assert silhouette.review_authority == (
         "promptCatalog.families.silhouette.quality_guards"
