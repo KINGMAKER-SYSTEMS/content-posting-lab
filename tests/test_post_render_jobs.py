@@ -150,6 +150,33 @@ def test_transient_retries_back_off_and_stop_after_three_attempts(tmp_path):
         worker.retry(job["id"])
 
 
+def test_fresh_key_reopens_exhausted_source_response_job_once(tmp_path):
+    def rejected(_request, _path):
+        raise jobs.RenderJobError("source_response_rejected")
+    worker = service(tmp_path, fetcher=rejected)
+    request = submission()
+    job = worker.enqueue(request, "original-source-request")
+    for attempt in range(1, 4):
+        assert worker.run_one()
+        assert worker.status(job["id"])["attempts"] == attempt
+        if attempt < 3:
+            worker.retry(job["id"])
+    assert worker.status(job["id"])["error_code"] == "source_response_rejected"
+
+    recovered = worker.enqueue(request, "source-route-repaired")
+    assert recovered["state"] == "queued"
+    assert recovered["attempts"] == 0
+    worker.fetcher = lambda _request, path: path.write_bytes(b"source")
+    assert worker.run_one()
+    assert worker.status(job["id"])["state"] == "succeeded"
+
+    # The recovery key is durable. Its replay observes success and cannot
+    # reset the same job a second time.
+    replay = service(tmp_path).enqueue(request, "source-route-repaired")
+    assert replay["state"] == "succeeded"
+    assert replay["attempts"] == 1
+
+
 @pytest.mark.parametrize("change", ["wrong_source", "wrong_treatment", "slot_binding", "malformed_slot"])
 def test_missing_or_rebound_provenance_and_slot_are_rejected(change):
     payload = submission().model_dump(by_alias=True)

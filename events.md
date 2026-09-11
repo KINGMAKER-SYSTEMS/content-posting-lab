@@ -341,3 +341,19 @@ their unrendered windows; current-runtime work and completed outputs remain
 unchanged. This prevents abandoned jobs from advertising permanent zero capacity.
 The source execution, dossier, generation, and recipe suites passed 65 checks.
 _________________________________________________________________________________
+
+_________________________________________________________________________________
+
+time: [6:28pm] [09-11-26]
+agent: [Codex desktop] [GPT-6]
+worktree: [fix/reopen-exhausted-source-jobs-20260911]
+type: [bug report]
+area: [backend]
+
+A repaired Control Plane source route could not revive 106 post-render jobs
+because Content Lab retained the terminal slot/hash job at three attempts even
+when the caller supplied a fresh idempotency key. An identical exhausted
+source_response_rejected job now reopens only for a new authenticated key; a
+replay of that recovery key only observes the current job. The focused durable
+post-render suite passed 32 checks.
+_________________________________________________________________________________
