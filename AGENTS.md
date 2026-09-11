@@ -56,6 +56,9 @@
   distinguish source exhaustion from an unregistered recipe. Job creation
   remains exact and all-or-nothing; it never silently returns fewer clips than
   requested.
+  Capability reads fail queued or running async jobs owned by an older process
+  runtime before calculating capacity, so abandoned work cannot reserve finite
+  source windows.
 - `POV — Scenic` is commissioned through the same page-scoped source recut
   executor as Night Core and Dirtbike. It may use only the exact source library
   bound to that Master Pages row; it may not borrow another page's footage or
