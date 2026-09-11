@@ -40,7 +40,9 @@ def request(source_sha="a" * 64, **changes):
 
 @pytest.fixture(scope="module", params=[
     ("1080x1920", "1"), ("606x1080", "1"), ("606x1080", "0"), ("1080x1920", "0"),
-], ids=["full", "provider-crop", "provider-crop-unspecified-sar", "full-unspecified-sar"])
+    ("704x1280", "1"),
+], ids=["full", "provider-crop", "provider-crop-unspecified-sar", "full-unspecified-sar",
+        "wan-near-vertical"])
 def actual_source(tmp_path_factory, request):
     if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
         pytest.skip("ffmpeg/ffprobe are required for actual render proof")
@@ -76,8 +78,12 @@ def test_real_caption_delivery_decodes_and_preserves_already_applied_treatment(a
         assert qa.size == (1080, 1920)
     # Compare the same source frame outside the caption area. Reapplying grade would shift these pixels.
     reference = tmp_path / "reference.png"
+    reference_filter = "scale=1080:1920:flags=lanczos,setsar=1"
+    if actual_source.name and result.source_probe.width == 704:
+        reference_filter = ("scale=1080:1920:force_original_aspect_ratio=increase:flags=lanczos,"
+                            "crop=1080:1920,setsar=1")
     subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-ss", f"{result.qa_at_ms / 1000:.3f}",
-                    "-i", str(actual_source), "-vf", "scale=1080:1920:flags=lanczos,setsar=1",
+                    "-i", str(actual_source), "-vf", reference_filter,
                     "-frames:v", "1", "-update", "1", str(reference)],
                    check=True, timeout=20, capture_output=True)
     with Image.open(reference) as before, Image.open(result.qa_frame_path) as after:
@@ -199,7 +205,7 @@ def test_size_retry_changes_encoding_only_and_is_bounded_to_two_attempts(monkeyp
 
 
 @pytest.mark.parametrize("geometry", [
-    (1920, 1080, "1:1", 0), (600, 1080, "1:1", 0),
+    (1920, 1080, "1:1", 0), (560, 1080, "1:1", 0),
     (606, 1080, "2:1", 0), (1080, 1920, "1:1", 90),
     (304, 540, "1:1", 0),
 ])

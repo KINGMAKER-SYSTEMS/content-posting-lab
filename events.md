@@ -357,3 +357,18 @@ source_response_rejected job now reopens only for a new authenticated key; a
 replay of that recovery key only observes the current job. The focused durable
 post-render suite passed 32 checks.
 _________________________________________________________________________________
+_________________________________________________________________________________
+
+time: [6:37pm] [09-11-26]
+agent: [Codex desktop] [GPT-6]
+worktree: [fix/accept-wan-near-vertical-20260911]
+type: [bug report]
+area: [backend]
+
+Wan I2V can return 704x1280 for a requested vertical clip. The prepared-post
+gate treated that provider-native sizing as regeneration_required even though a
+small center crop makes exact 9:16 delivery without stretching. The renderer now
+accepts upright square-pixel inputs within three percent of 9:16, center-crops
+only the excess edge, and still emits verified 1080x1920 output. The prepared
+render and durable job suites passed 68 checks, including an actual 704x1280 MP4.
+_________________________________________________________________________________
