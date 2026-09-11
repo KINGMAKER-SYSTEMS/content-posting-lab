@@ -245,6 +245,13 @@ class PostRenderJobs:
                 reason = None if matches else "source_treatment_mismatch" if has_provenance else "source_treatment_provenance_missing"
                 db.execute("INSERT INTO jobs(id,slot_id,slot_hash,request_hash,submission_json,state,available_at_ms,created_at_ms,updated_at_ms,error_code) VALUES(?,?,?,?,?,?,?,?,?,?)",
                            (job_id, request.slot_id, request.slot_payload_sha256, request_hash, payload, state, now, now, now, reason))
+            elif (existing["state"] == "failed" and existing["error_code"] == "source_response_rejected"
+                    and existing["attempts"] >= MAX_ATTEMPTS):
+                # A fresh key is an explicit Control Plane recovery request. The
+                # key is stored below, so replaying it returns the current job
+                # instead of repeatedly resetting a persistent source failure.
+                db.execute("UPDATE jobs SET state='queued',attempt_id=NULL,attempts=0,available_at_ms=?,updated_at_ms=?,error_code=NULL,receipt_sha256=NULL WHERE id=?",
+                           (now, now, job_id))
             db.execute("INSERT OR IGNORE INTO idempotency(key,job_id,request_hash) VALUES(?,?,?)", (key, job_id, request_hash))
         return self.status(job_id)
 

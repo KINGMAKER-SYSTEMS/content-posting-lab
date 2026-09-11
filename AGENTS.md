@@ -166,6 +166,10 @@
   may accept an authenticated provenance revision while its immutable slot,
   source, caption and requested treatment stay identical. Original enqueue
   idempotency records remain immutable; replay returns current job status.
+  After a repaired source route, a fresh authenticated idempotency key may
+  reopen the identical job only when it exhausted all attempts with
+  `source_response_rejected`; replaying that recovery key only observes the
+  current job.
 
 ## Work Guidance
 
