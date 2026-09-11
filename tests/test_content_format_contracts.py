@@ -48,8 +48,9 @@ def test_only_complete_hash_bound_formats_are_commissioned():
         slug for slug, profile in profiles.items()
         if profile.execution_status == "commissioned"
     } == {
-        "boat-lake", "pov-dirt-bike", "pov-night-core", "pov-scenic",
-        "silhouette-truck", "truck-scenic",
+        "boat-lake", "coffee-tok", "lyric-edits", "meme-slideshow",
+        "pov-dirt-bike", "pov-night-core", "pov-scenic", "silhouette-truck",
+        "truck-scenic",
     }
     assert all(
         contracts[slug].definition_status == "complete"
@@ -171,26 +172,26 @@ def test_an_incomplete_format_cannot_be_commissioned_by_adding_an_executor(
     monkeypatch, tmp_path,
 ):
     contracts = json.loads(CONTRACTS_PATH.read_text())
-    coffee = contracts["contracts"]["coffee-tok"]
-    coffee["creativeAuthority"] = {
+    construction = contracts["contracts"]["construction-scenic"]
+    construction["creativeAuthority"] = {
         "kind": "prompt_family",
         "id": "coffee",
         "version": "sha256:" + "a" * 64,
     }
-    coffee["definitionGaps"].remove("creativeAuthority")
+    construction["definitionGaps"].remove("creativeAuthority")
     contracts_path = tmp_path / "format-contracts.json"
     contracts_path.write_text(json.dumps(
         contracts, sort_keys=True, separators=(",", ":"),
     ))
 
     registry = json.loads(REGISTRY_PATH.read_text())
-    profile = registry["profiles"]["coffee-tok"]
+    profile = registry["profiles"]["construction-scenic"]
     profile.update({
         "executionStatus": "commissioned",
         "executorKind": "prompt_family",
         "executorId": "coffee",
         "executorVersion": "sha256:" + "a" * 64,
-        "formatContractVersion": "sha256:" + _entry_hash(coffee),
+        "formatContractVersion": "sha256:" + _entry_hash(construction),
         "maxQuantity": 10,
     })
     registry_path = tmp_path / "engine-registry.json"
@@ -203,13 +204,31 @@ def test_an_incomplete_format_cannot_be_commissioned_by_adding_an_executor(
         load_engine_registry()
 
 
-def test_unimplemented_slideshow_engines_are_visible_but_not_executable():
+def test_commissioned_slideshow_engines_are_hash_bound_and_executable():
     contracts, _ = load_format_contracts()
     profiles, _ = load_engine_registry()
     assert contracts["lyric-edits"].content_engine == "lyrics_slideshows"
     assert contracts["meme-slideshow"].content_engine == "sourced_slideshow"
-    assert profiles["lyric-edits"].execution_status == "uncommissioned"
-    assert profiles["meme-slideshow"].execution_status == "uncommissioned"
+    # Commissioning is a hash binding, not a label: the registry must pin the
+    # exact sha256 of the executor contract bytes on disk, and each
+    # commissioned format must be defined inside that same contract.
+    from services.control_plane_slideshows import EXECUTOR_PATH
+
+    executor_digest = hashlib.sha256(EXECUTOR_PATH.read_bytes()).hexdigest()
+    executor = json.loads(EXECUTOR_PATH.read_bytes())
+    for slug in ("lyric-edits", "meme-slideshow"):
+        contract = contracts[slug]
+        profile = profiles[slug]
+        assert contract.definition_status == "complete"
+        assert contract.definition_gaps == ()
+        assert profile.execution_status == "commissioned"
+        assert profile.executor_kind == "slideshow_renderer"
+        assert profile.executor_id == "syzygy-slideshow"
+        assert profile.executor_version == f"sha256:{executor_digest}"
+        assert profile.max_quantity > 0
+        config = executor["formats"][slug]
+        assert config["templates"]
+        assert config["minimumLibraryItems"] >= 1
 
 
 def test_service_read_model_exposes_rules_and_gaps_without_promoting_them(
@@ -234,9 +253,11 @@ def test_service_read_model_exposes_rules_and_gaps_without_promoting_them(
     assert payload["contractsRegistryVersion"].startswith("sha256:")
     by_slug = {row["formatSlug"]: row for row in payload["formats"]}
     assert by_slug["truck-scenic"]["executor"]["id"] == "truck"
-    assert by_slug["coffee-tok"]["executor"] is None
-    assert by_slug["coffee-tok"]["definitionStatus"] == "incomplete"
-    assert "subject" in by_slug["coffee-tok"]["definitionGaps"]
+    assert by_slug["construction-scenic"]["executor"] is None
+    assert by_slug["construction-scenic"]["definitionStatus"] == "incomplete"
+    assert by_slug["coffee-tok"]["executor"]["id"] == "coffee"
+    assert by_slug["coffee-tok"]["definitionStatus"] == "complete"
+    assert "subject" in by_slug["construction-scenic"]["definitionGaps"]
     assert "not a truck page" in (
         by_slug["pov-night-core"]["dimensions"]["subject"]["rule"]
     )

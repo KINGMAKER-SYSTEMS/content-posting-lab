@@ -67,16 +67,35 @@ from routers.control_plane_recipes import (
 )
 from services.control_plane_generation import (
     MAX_CAPABILITY_QUANTITY,
-    compose_prompt,
+    compose_prompt_combination,
     dossier_clip_crop,
     dossier_clip_speed,
     dossier_filters_to_color_correction,
     generation_options,
     load_generation_anchor,
+    plan_prompt_combinations,
+    prompt_combination_space,
+    prompt_sha256,
     resolve_generation_recipe,
     typed_recipe_spec,
 )
-from services.control_plane_sources import plan_source_cuts, resolve_source_recipe
+from services.control_plane_sources import (
+    plan_source_cuts,
+    planned_source_cut_duration,
+    resolve_source_recipe,
+)
+from services.control_plane_slideshows import (
+    SyzygyError,
+    download_syzygy_artifact,
+    load_recipe_library,
+    load_syzygy_library,
+    observe_library_media,
+    plan_slideshows,
+    poll_syzygy_render,
+    resolve_slideshow_recipe,
+    submit_syzygy_render,
+    syzygy_revision,
+)
 from services.control_plane_source_imports import (
     MAX_CONCURRENT_SOURCE_IMPORTS,
     SOURCE_IMPORT_SCHEMA,
@@ -87,12 +106,9 @@ from services.control_plane_source_imports import (
     source_import_slot,
     validate_source_url,
 )
-from services.content_engine_registry import load_engine_registry
+from services.content_engine_registry import load_engine_registry, resolve_material_profile
 from services.content_format_contracts import load_format_contracts
 from services.ffmpeg import delivery_encode_args, run_color_correct
-from services.source_treatment import (
-    source_treatment_receipt, derived_source_treatment, recovery_treatment_matches,
-)
 from services.master_pages_contract import SCHEMA as MASTER_PAGES_SCHEMA, canonical_intent, exact_intent, intent_hash
 
 router = APIRouter()
@@ -235,7 +251,7 @@ def capabilities(
     # can advertise 10 after six of a ten-window master have already crossed the
     # API boundary; Control Plane then asks for six and the exact-quantity job
     # contract rejects the whole refill even though four safe windows remain.
-    source_job_store = None
+    job_store = None
     # A dossier version is executable only when its server-owned base prompt
     # family, exact provider model, runtime credential, and typed treatment are
     # all available. Registration alone never becomes a capability.
@@ -253,19 +269,47 @@ def capabilities(
             if publication_engine == "sourced_video"
             else None
         )
-        if generation_recipe is None and source_recipe is None:
+        slideshow_recipe = (
+            resolve_slideshow_recipe(publication)
+            if publication_engine in {"sourced_slideshow", "lyrics_slideshows"}
+            else None
+        )
+        if (
+            generation_recipe is None
+            and source_recipe is None
+            and slideshow_recipe is None
+        ):
             continue
-        if source_recipe is not None:
-            if source_job_store is None:
-                source_job_store = _load_jobs_with_runtime_recovery()
+        if job_store is None:
+            job_store = _load_jobs()
+        if slideshow_recipe is not None:
+            try:
+                library = load_syzygy_library(slideshow_recipe_profile := (
+                    resolve_material_profile(publication, slideshow_recipe.recipe_spec)
+                ), master_pages)
+            except (SyzygyError, AttributeError):
+                continue
+            if slideshow_recipe_profile is None:
+                continue
+            unavailable = _slideshow_unavailable_signatures(
+                job_store, slideshow_recipe, page_id,
+            )
+            max_quantity = len(plan_slideshows(
+                slideshow_recipe, library, slideshow_recipe.max_quantity,
+                unavailable,
+                f"capability:{page_id}:{slideshow_recipe.executor_version}",
+            ))
+        elif source_recipe is not None:
             unavailable_slots = _source_dna_unavailable_slots(
-                source_job_store, source_recipe,
+                job_store, source_recipe,
             )
             max_quantity = len(plan_source_cuts(
                 source_recipe, source_recipe.max_quantity, unavailable_slots,
             ))
         else:
-            max_quantity = MAX_CAPABILITY_QUANTITY
+            max_quantity = _generated_capability_quantity(
+                job_store, generation_recipe, page_id, master_pages,
+            )
         entries.append({
             "recipeId": publication["recipeId"],
             "engine": publication["engine"],
@@ -618,7 +662,7 @@ GENERATION_ACTIVE_STATUSES = {"queued", "running"}
 SOURCE_DNA_UNAVAILABLE_STATUSES = {*GENERATION_ACTIVE_STATUSES, "completed"}
 ASYNC_SOURCE_KINDS = {
     "generated", "dossier_source_dna", "truck_master_recovery",
-    "page_source_import",
+    "page_source_import", "syzygy_slideshow",
 }
 TRUCK_RECIPE_ID = "truck-scenic:master"
 TRUCK_CROP_MODE = "both"
@@ -659,34 +703,6 @@ def _load_jobs() -> dict[str, Any]:
     return data
 
 
-def _load_jobs_with_runtime_recovery() -> dict[str, Any]:
-    """Fail nonterminal async jobs left behind by an earlier process."""
-    with lock_for(_jobs_path()):
-        store = _load_jobs()
-        changed = False
-        completed_at = datetime.now(timezone.utc).isoformat()
-        for job in store.get("jobs", {}).values():
-            if (
-                isinstance(job, dict)
-                and job.get("sourceKind") in ASYNC_SOURCE_KINDS
-                and job.get("status") in GENERATION_ACTIVE_STATUSES
-                and job.get("runtimeId") != _GENERATION_RUNTIME_ID
-            ):
-                job.update({
-                    "status": "failed",
-                    "error": (
-                        "source_import_runtime_restarted"
-                        if job.get("sourceKind") == "page_source_import"
-                        else "generation_runtime_restarted"
-                    ),
-                    "completedAt": completed_at,
-                })
-                changed = True
-        if changed:
-            atomic_save(_jobs_path(), store)
-        return store
-
-
 def _reject_prompt_fields(value: Any, path: str = "job") -> None:
     if isinstance(value, dict):
         for key, item in value.items():
@@ -724,12 +740,10 @@ def _source_dna_unavailable_slots(
     """Derive reservations from durable job truth, never a write-only ledger.
 
     Queued/running jobs reserve their exact windows against concurrency. A
-    completed job keeps them unavailable for the exact recipe that produced
-    those bytes. A later locked recipe may recut the same page-bound source
-    window because its treatment and provenance produce a new asset. Failed
-    jobs release them: no completed output exists, so treating selection alone
-    as "served" would eventually exhaust an immutable master through transport
-    or runtime failures.
+    completed job keeps them unavailable because output bytes exist and may
+    have crossed the API boundary. Failed jobs release them: no completed
+    output exists, so treating selection alone as "served" would eventually
+    exhaust an immutable master through transport or runtime failures.
     """
     slots: set[str] = set()
     for job in store.get("jobs", {}).values():
@@ -739,10 +753,6 @@ def _source_dna_unavailable_slots(
             or job.get("sourceLibraryId") != source_recipe.source_library_id
             or job.get("sourceLibraryHash") != source_recipe.source_library_hash
             or job.get("status") not in SOURCE_DNA_UNAVAILABLE_STATUSES
-            or (
-                job.get("status") == "completed"
-                and job.get("recipeSpecHash") != source_recipe.recipe_spec_hash
-            )
         ):
             continue
         for cut in job.get("sourceCuts", []):
@@ -750,6 +760,113 @@ def _source_dna_unavailable_slots(
             if isinstance(slot_id, str) and slot_id:
                 slots.add(slot_id)
     return slots
+
+
+def _slideshow_unavailable_signatures(
+    store: dict[str, Any], recipe: Any, page_id: str,
+) -> set[str]:
+    """Reserve every slideshow plan that may already have crossed the API."""
+    signatures: set[str] = set()
+    for job in store.get("jobs", {}).values():
+        if (
+            not isinstance(job, dict)
+            or job.get("sourceKind") != "syzygy_slideshow"
+            or job.get("pageId") != page_id
+            or job.get("sourceLibraryId") != recipe.library_id
+            or job.get("status") not in SOURCE_DNA_UNAVAILABLE_STATUSES
+        ):
+            continue
+        for plan in job.get("slideshowPlan", []):
+            signature = plan.get("signature") if isinstance(plan, dict) else None
+            if isinstance(signature, str) and re.fullmatch(r"[0-9a-f]{64}", signature):
+                signatures.add(signature)
+    return signatures
+
+
+def _generated_unavailable_prompts(
+    store: dict[str, Any], recipe: Any, page_id: str,
+) -> tuple[set[str], set[str]]:
+    """Return active/completed prompt reservations for one page.
+
+    Exact prompt hashes stay unavailable across later recipe revisions so a
+    strategy change cannot accidentally regenerate copy the page already used.
+    Legacy slot-only identities remain scoped to their original prompt
+    authority because slot names have meaning only inside that catalog family.
+    """
+    hashes: set[str] = set()
+    slot_signatures: set[str] = set()
+    for job in store.get("jobs", {}).values():
+        if (
+            not isinstance(job, dict)
+            or job.get("sourceKind") != "generated"
+            or job.get("pageId") != page_id
+            or job.get("status") not in SOURCE_DNA_UNAVAILABLE_STATUSES
+        ):
+            continue
+        for item in job.get("promptPlan", []):
+            digest = item.get("promptHash") if isinstance(item, dict) else None
+            if isinstance(digest, str) and re.fullmatch(r"[0-9a-f]{64}", digest):
+                hashes.add(digest)
+        # Completed jobs written before promptPlan carried the exact selected
+        # slot values on every clip. Preserve those historical prompts across
+        # this migration without trying to recover or persist raw prompt text.
+        for clip in job.get("clips", []):
+            if not isinstance(clip, dict):
+                continue
+            digest = clip.get("promptHash")
+            if isinstance(digest, str) and re.fullmatch(r"[0-9a-f]{64}", digest):
+                hashes.add(digest)
+            if (
+                job.get("promptCatalogHash") == recipe.prompt_catalog_hash
+                and job.get("family") == recipe.family_name
+                and job.get("providerModel") == recipe.provider_model
+            ):
+                slots = clip.get("promptSlots")
+                if isinstance(slots, dict) and all(
+                    isinstance(key, str) and isinstance(value, str)
+                    for key, value in slots.items()
+                ):
+                    slot_signatures.add(json.dumps(
+                        slots, sort_keys=True, separators=(",", ":"),
+                    ))
+    return hashes, slot_signatures
+
+
+def _generated_capability_quantity(
+    store: dict[str, Any], recipe: Any, page_id: str,
+    master_pages: dict[str, Any],
+) -> int:
+    """Advertise only fresh output the current recipe can reserve now."""
+    unavailable_hashes, unavailable_slots = _generated_unavailable_prompts(
+        store, recipe, page_id,
+    )
+    available_calls = len(plan_prompt_combinations(
+        recipe,
+        f"capability:{page_id}:{recipe.prompt_catalog_hash}:{recipe.family_name}",
+        prompt_combination_space(recipe),
+        unavailable_hashes,
+        unavailable_slots,
+    ))
+    fresh_capacity = min(
+        MAX_CAPABILITY_QUANTITY,
+        available_calls * recipe.clips_per_generation,
+    )
+    recovery_capacity = 0
+    if (
+        recipe.recipe_id == TRUCK_RECIPE_ID
+        and str(master_pages.get("contentNiche") or "").strip().upper() == "TRUCK"
+    ):
+        recovery_limit = recipe.planned_provider_calls(MAX_CAPABILITY_QUANTITY)
+        recovery_capacity = min(
+            MAX_CAPABILITY_QUANTITY,
+            len(_truck_master_candidates(
+                store, page_id, recovery_limit,
+                content_engine=recipe.engine,
+                recipe_id=recipe.recipe_id,
+                generation_recipe=recipe,
+            )) * recipe.clips_per_generation,
+        )
+    return max(fresh_capacity, recovery_capacity)
 
 
 def _truck_master_candidates(
@@ -766,8 +883,6 @@ def _truck_master_candidates(
     model. This prevents old-model or old-prompt renders from silently becoming
     new five-crop deliveries after the page's creative authority changes. The
     source files are checked again, byte-for-byte, by the recovery runner.
-    Applied-video evidence must also match the requested grade, speed and crop;
-    otherwise normal fresh generation must produce preparable source bytes.
     """
     reserved: set[str] = set()
     jobs = store.get("jobs", {})
@@ -825,10 +940,6 @@ def _truck_master_candidates(
                 or source.get("recipeId") != recipe_id
                 or str(source.get("contentNiche") or "").strip().upper() != "TRUCK"
                 or source.get("contentEngine") != content_engine
-                or not recovery_treatment_matches(
-                    clip.get("sourceTreatment"), job, sha256,
-                    generation_recipe.recipe_spec["renderTreatment"],
-                )
             ):
                 continue
             full = (root / rel_path).resolve()
@@ -846,7 +957,6 @@ def _truck_master_candidates(
                 "sha256": sha256,
                 "bytes": byte_count,
                 "source": source,
-                "sourceTreatment": clip.get("sourceTreatment"),
             })
             seen.add(sha256)
             if len(candidates) >= limit:
@@ -941,6 +1051,112 @@ def _update_job(job_id: str, **fields: Any) -> dict[str, Any] | None:
         job.update(fields)
         atomic_save(_jobs_path(), store)
         return dict(job)
+
+
+def _claim_unique_generated_clip(
+    job_id: str, manifest: dict[str, Any],
+) -> None:
+    """Atomically reject reused output or a prompt claimed by another call."""
+    digest = manifest.get("sha256")
+    prompt_hash = manifest.get("promptHash")
+    generation_index = manifest.get("generationIndex")
+    if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+        raise RuntimeError("generated_artifact_identity_invalid")
+    if (
+        not isinstance(prompt_hash, str)
+        or not re.fullmatch(r"[0-9a-f]{64}", prompt_hash)
+        or not isinstance(generation_index, int)
+        or isinstance(generation_index, bool)
+        or generation_index < 0
+    ):
+        raise RuntimeError("generated_prompt_identity_invalid")
+    with lock_for(_jobs_path()):
+        store = _load_jobs()
+        job = store.get("jobs", {}).get(job_id)
+        if not isinstance(job, dict) or job.get("status") not in GENERATION_ACTIVE_STATUSES:
+            raise RuntimeError("generated_job_not_active")
+        page_id = job.get("pageId")
+        for other in store.get("jobs", {}).values():
+            if (
+                not isinstance(other, dict)
+                or other.get("pageId") != page_id
+                or other.get("status") not in SOURCE_DNA_UNAVAILABLE_STATUSES
+            ):
+                continue
+            for clip in other.get("clips", []):
+                if not isinstance(clip, dict):
+                    continue
+                if clip.get("sha256") == digest:
+                    raise RuntimeError("duplicate_generated_artifact")
+                if (
+                    other.get("jobId") != job_id
+                    and clip.get("promptHash") == prompt_hash
+                ):
+                    raise RuntimeError("duplicate_generated_prompt")
+                if (
+                    other.get("jobId") == job_id
+                    and clip.get("promptHash") == prompt_hash
+                    and clip.get("generationIndex") != generation_index
+                ):
+                    raise RuntimeError("duplicate_generated_prompt")
+        job.setdefault("clips", []).append(manifest)
+        atomic_save(_jobs_path(), store)
+
+
+def _claim_unique_slideshow_clip(
+    job_id: str, manifest: dict[str, Any], plan_signature: str,
+) -> None:
+    """Atomically admit one fresh render for one reserved slideshow plan."""
+    digest = manifest.get("sha256")
+    if (
+        not isinstance(digest, str)
+        or not re.fullmatch(r"[0-9a-f]{64}", digest)
+        or not isinstance(plan_signature, str)
+        or not re.fullmatch(r"[0-9a-f]{64}", plan_signature)
+    ):
+        raise RuntimeError("slideshow_artifact_identity_invalid")
+    with lock_for(_jobs_path()):
+        store = _load_jobs()
+        job = store.get("jobs", {}).get(job_id)
+        if not isinstance(job, dict) or job.get("status") not in GENERATION_ACTIVE_STATUSES:
+            raise RuntimeError("slideshow_job_not_active")
+        page_id = job.get("pageId")
+        for other in store.get("jobs", {}).values():
+            if (
+                not isinstance(other, dict)
+                or other.get("pageId") != page_id
+                or other.get("status") not in SOURCE_DNA_UNAVAILABLE_STATUSES
+            ):
+                continue
+            for clip in other.get("clips", []):
+                if not isinstance(clip, dict):
+                    continue
+                source = clip.get("source")
+                if clip.get("sha256") == digest:
+                    raise RuntimeError("duplicate_slideshow_artifact")
+                if (
+                    other.get("jobId") != job_id
+                    and isinstance(source, dict)
+                    and source.get("planSignature") == plan_signature
+                ):
+                    raise RuntimeError("duplicate_slideshow_plan")
+        job.setdefault("clips", []).append(manifest)
+        atomic_save(_jobs_path(), store)
+
+
+def _job_matches_current_master_pages(job: dict[str, Any]) -> bool:
+    """Recheck the job's exact page strategy immediately before media work."""
+    page_id = job.get("pageId")
+    if not isinstance(page_id, str):
+        return False
+    intent = exact_intent(
+        job.get("masterPages"), job.get("masterPagesHash"),
+        expected_page_id=page_id,
+    )
+    if intent is None:
+        return False
+    current = _current_master_pages_intent(page_id, intent)
+    return current == (intent, job.get("masterPagesHash"))
 
 
 def _generated_manifest(job_root: Path, path: Path) -> dict[str, Any]:
@@ -1076,6 +1292,14 @@ async def _validated_source_url(value: Any) -> str:
 
 async def _run_dossier_generation(job_id: str) -> None:
     job = _get_job_or_404(job_id)
+    if not _job_matches_current_master_pages(job):
+        _update_job(
+            job_id,
+            status="failed",
+            error="master_pages_strategy_changed",
+            completedAt=datetime.now(timezone.utc).isoformat(),
+        )
+        return
     publication = load_registered_recipe(
         job.get("recipePublicationPageId") or job["pageId"],
         job["recipeId"], job["engine"], job["recipeVersion"],
@@ -1111,17 +1335,43 @@ async def _run_dossier_generation(job_id: str) -> None:
     clip_speed = dossier_clip_speed(recipe)
     clip_crop = dossier_clip_crop(recipe)
     manifests: list[dict[str, Any]] = []
+    prompt_plan = job.get("promptPlan")
+    if (
+        not isinstance(prompt_plan, list)
+        or len(prompt_plan) != calls
+        or any(
+            not isinstance(item, dict)
+            or not isinstance(item.get("combinationId"), int)
+            or not isinstance(item.get("promptHash"), str)
+            or not re.fullmatch(r"[0-9a-f]{64}", item["promptHash"])
+            for item in prompt_plan
+        )
+    ):
+        _update_job(
+            job_id,
+            status="failed",
+            error="prompt_plan_invalid",
+            completedAt=datetime.now(timezone.utc).isoformat(),
+        )
+        return
     _update_job(job_id, status="running", progress=0, providerCallsCompleted=0)
 
     try:
         for call_index in range(calls):
+            if not _job_matches_current_master_pages(job):
+                raise RuntimeError("master_pages_strategy_changed")
             provider_job_id = f"{job_id}-g{call_index:02d}"
             provider_jobs = {
                 provider_job_id: {
                     "videos": [{"index": 0, "status": "queued"}],
                 }
             }
-            prompt, slots = compose_prompt(recipe, job["idempotencyKey"], call_index)
+            prompt_entry = prompt_plan[call_index]
+            prompt, slots = compose_prompt_combination(
+                recipe, prompt_entry["combinationId"],
+            )
+            if prompt_sha256(prompt) != prompt_entry["promptHash"]:
+                raise RuntimeError("prompt_plan_authority_mismatch")
             anchor = await load_generation_anchor(
                 recipe, job["idempotencyKey"], call_index,
             )
@@ -1163,13 +1413,11 @@ async def _run_dossier_generation(job_id: str) -> None:
                     )
                 manifest = _generated_manifest(job_root, artifact)
                 manifest["generationIndex"] = call_index
+                manifest["promptCombinationId"] = prompt_entry["combinationId"]
+                manifest["promptHash"] = prompt_entry["promptHash"]
                 manifest["promptSlots"] = slots
                 manifest["clipSpeed"] = clip_speed
                 manifest["clipCrop"] = clip_crop
-                manifest["sourceTreatment"] = source_treatment_receipt(
-                    job, recipe.recipe_spec["renderTreatment"], manifest["sha256"],
-                    clip_speed=clip_speed, clip_crop=clip_crop,
-                )
                 provider_source = source
                 delivery = None
                 if isinstance(candidate, dict) and candidate.get("cropMode") in {
@@ -1223,6 +1471,9 @@ async def _run_dossier_generation(job_id: str) -> None:
                 )
                 if anchor_metadata is not None:
                     manifest["anchor"] = anchor_metadata
+                if not _job_matches_current_master_pages(job):
+                    raise RuntimeError("master_pages_strategy_changed")
+                _claim_unique_generated_clip(job_id, manifest)
                 manifests.append(manifest)
             _update_job(
                 job_id,
@@ -1238,6 +1489,14 @@ async def _run_dossier_generation(job_id: str) -> None:
         )
         return
 
+    if not _job_matches_current_master_pages(job):
+        _update_job(
+            job_id,
+            status="failed",
+            error="master_pages_strategy_changed",
+            completedAt=datetime.now(timezone.utc).isoformat(),
+        )
+        return
     _update_job(
         job_id,
         status="completed",
@@ -1274,6 +1533,14 @@ async def _run_truck_master_recovery(job_id: str) -> None:
     admit, scan and approve the results without a parallel write path.
     """
     job = _get_job_or_404(job_id)
+    if not _job_matches_current_master_pages(job):
+        _update_job(
+            job_id,
+            status="failed",
+            error="master_pages_strategy_changed",
+            completedAt=datetime.now(timezone.utc).isoformat(),
+        )
+        return
     job_root = Path(job["artifactRoot"]).resolve()
     master_root = job_root / "masters"
     master_root.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -1288,6 +1555,8 @@ async def _run_truck_master_recovery(job_id: str) -> None:
     _update_job(job_id, status="running", progress=0)
     try:
         for master_index, candidate in enumerate(masters):
+            if not _job_matches_current_master_pages(job):
+                raise RuntimeError("master_pages_strategy_changed")
             source_root = Path(candidate["artifactRoot"]).resolve()
             source = (source_root / candidate["path"]).resolve()
             if (
@@ -1316,11 +1585,6 @@ async def _run_truck_master_recovery(job_id: str) -> None:
                 if geometry != (crop_width, crop_height):
                     raise RuntimeError("truck_master_crop_geometry_mismatch")
                 manifest = _generated_manifest(job_root, crop)
-                inherited_treatment = derived_source_treatment(
-                    candidate.get("sourceTreatment"), candidate["sha256"], manifest["sha256"], job["jobId"],
-                )
-                if inherited_treatment is not None:
-                    manifest["sourceTreatment"] = inherited_treatment
                 source_authority = candidate["source"]
                 manifest["source"] = _source_provenance(job, {
                     "recipeId": source_authority.get("recipeId") or job["recipeId"],
@@ -1355,6 +1619,14 @@ async def _run_truck_master_recovery(job_id: str) -> None:
             completedAt=datetime.now(timezone.utc).isoformat(),
         )
         return
+    if not _job_matches_current_master_pages(job):
+        _update_job(
+            job_id,
+            status="failed",
+            error="master_pages_strategy_changed",
+            completedAt=datetime.now(timezone.utc).isoformat(),
+        )
+        return
     _update_job(
         job_id, status="completed", progress=100, clips=manifests,
         completedAt=datetime.now(timezone.utc).isoformat(),
@@ -1381,6 +1653,14 @@ async def _video_geometry_for_delivery(path: Path) -> tuple[int, int]:
 async def _run_dossier_source(job_id: str) -> None:
     """Cut unique windows from one page's immutable source DNA."""
     job = _get_job_or_404(job_id)
+    if not _job_matches_current_master_pages(job):
+        _update_job(
+            job_id,
+            status="failed",
+            error="master_pages_strategy_changed",
+            completedAt=datetime.now(timezone.utc).isoformat(),
+        )
+        return
     publication = load_registered_recipe(
         job.get("recipePublicationPageId") or job["pageId"],
         job["recipeId"], job["engine"], job["recipeVersion"],
@@ -1426,6 +1706,8 @@ async def _run_dossier_source(job_id: str) -> None:
     try:
         masters = {master.sha256: master for master in recipe.masters}
         for index, source_cut in enumerate(source_cuts):
+            if not _job_matches_current_master_pages(job):
+                raise RuntimeError("master_pages_strategy_changed")
             if not isinstance(source_cut, dict):
                 raise RuntimeError("source_recipe_manifest_invalid")
             master = masters.get(source_cut.get("masterSha256"))
@@ -1436,7 +1718,7 @@ async def _run_dossier_source(job_id: str) -> None:
                 or start_ms != source_cut.get("libraryStartMs")
                 or not isinstance(start_ms, int)
                 or not isinstance(duration_ms, int)
-                or duration_ms != recipe.cut_duration_ms
+                or duration_ms != planned_source_cut_duration(recipe, master, start_ms)
                 or start_ms < 0
                 or start_ms + duration_ms > master.duration_ms
                 or source_cut.get("slotId") != f"{master.sha256}:{start_ms}"
@@ -1456,10 +1738,6 @@ async def _run_dossier_source(job_id: str) -> None:
             manifest = _generated_manifest(job_root, destination)
             manifest["clipSpeed"] = clip_speed
             manifest["clipCrop"] = clip_crop
-            manifest["sourceTreatment"] = source_treatment_receipt(
-                job, recipe.recipe_spec["renderTreatment"], manifest["sha256"],
-                clip_speed=clip_speed, clip_crop=clip_crop,
-            )
             manifest["source"] = _source_provenance(job, {
                 "recipeId": recipe.recipe_id,
                 "sourceLibraryId": recipe.source_library_id,
@@ -1499,6 +1777,207 @@ async def _run_dossier_source(job_id: str) -> None:
             completedAt=datetime.now(timezone.utc).isoformat(),
         )
         return
+    if not _job_matches_current_master_pages(job):
+        _update_job(
+            job_id,
+            status="failed",
+            error="master_pages_strategy_changed",
+            completedAt=datetime.now(timezone.utc).isoformat(),
+        )
+        return
+    _update_job(
+        job_id,
+        status="completed",
+        progress=100,
+        clips=manifests,
+        completedAt=datetime.now(timezone.utc).isoformat(),
+    )
+
+
+async def _run_syzygy_slideshow(job_id: str) -> None:
+    """Render reserved Syzygy plans under one page's locked recipe."""
+    job = _get_job_or_404(job_id)
+    if not _job_matches_current_master_pages(job):
+        _update_job(
+            job_id,
+            status="failed",
+            error="master_pages_strategy_changed",
+            completedAt=datetime.now(timezone.utc).isoformat(),
+        )
+        return
+    publication = load_registered_recipe(
+        job.get("recipePublicationPageId") or job["pageId"],
+        job["recipeId"], job["engine"], job["recipeVersion"],
+    )
+    recipe = (
+        resolve_slideshow_recipe(publication)
+        if isinstance(publication, dict)
+        else None
+    )
+    if (
+        recipe is None
+        or job.get("sourceLibraryId") != recipe.library_id
+        or job.get("engineRegistryHash") != recipe.engine_registry_hash
+        or job.get("formatContractVersion") != recipe.format_contract_version
+        or job.get("executorVersion") != recipe.executor_version
+    ):
+        _update_job(
+            job_id,
+            status="failed",
+            error="slideshow_recipe_executor_unavailable",
+            completedAt=datetime.now(timezone.utc).isoformat(),
+        )
+        return
+
+    job_root = Path(job["artifactRoot"]).resolve()
+    treated_root = job_root / "treated"
+    treated_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    renders_root = job_root / "renders"
+    renders_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    color_correction = dossier_filters_to_color_correction(recipe)
+    clip_speed = dossier_clip_speed(recipe)
+    # The slideshow executor always delivers 9:16. A missing custom crop
+    # means the neutral centered crop, never a renderer-default frame.
+    clip_crop = dossier_clip_crop(recipe) or {
+        "zoom": 1.0, "focusX": 0.5, "focusY": 0.5,
+    }
+    plans = job.get("slideshowPlan")
+    if not isinstance(plans, list) or not plans:
+        _update_job(
+            job_id,
+            status="failed",
+            error="slideshow_recipe_selection_missing",
+            completedAt=datetime.now(timezone.utc).isoformat(),
+        )
+        return
+    templates = {template.slug: template for template in recipe.templates}
+    manifests: list[dict[str, Any]] = []
+    _update_job(job_id, status="running", progress=0)
+    try:
+        library = await asyncio.to_thread(load_recipe_library, recipe)
+        if library.library_id != recipe.library_id:
+            raise RuntimeError("slideshow_library_binding_changed")
+        bytes_by_key = {item.key: item.bytes for item in library.objects}
+        for index, plan in enumerate(plans):
+            if not _job_matches_current_master_pages(job):
+                raise RuntimeError("master_pages_strategy_changed")
+            if not isinstance(plan, dict):
+                raise RuntimeError("slideshow_plan_invalid")
+            template_slug = plan.get("templateSlug")
+            media_keys = plan.get("mediaKeys")
+            signature = plan.get("signature")
+            snapshot_hash = plan.get("librarySnapshotHash")
+            planned_media = plan.get("media")
+            template = (
+                templates.get(template_slug)
+                if isinstance(template_slug, str)
+                else None
+            )
+            if (
+                template is None
+                or not isinstance(media_keys, list)
+                or len(media_keys) != template.media_count
+                or any(not isinstance(key, str) for key in media_keys)
+                or not isinstance(signature, str)
+                or not re.fullmatch(r"[0-9a-f]{64}", signature)
+                or signature != hashlib.sha256(json.dumps(
+                    {"templateSlug": template_slug, "mediaKeys": media_keys},
+                    sort_keys=True, separators=(",", ":"),
+                ).encode()).hexdigest()
+                or not isinstance(snapshot_hash, str)
+                or not re.fullmatch(r"[0-9a-f]{64}", snapshot_hash)
+                or not isinstance(planned_media, list)
+                or [
+                    item.get("objectKey") if isinstance(item, dict) else None
+                    for item in planned_media
+                ] != media_keys
+                or any(
+                    not isinstance(item.get("bytes"), int)
+                    or isinstance(item.get("bytes"), bool)
+                    or item.get("bytes") <= 0
+                    for item in planned_media
+                    if isinstance(item, dict)
+                )
+            ):
+                raise RuntimeError("slideshow_plan_invalid")
+            for item in planned_media:
+                if bytes_by_key.get(item["objectKey"]) != item["bytes"]:
+                    raise RuntimeError("slideshow_library_object_changed")
+            before = await observe_library_media(library, media_keys)
+            # The renderer may roll between plans; each artifact records the
+            # exact revision observed immediately before its own submission.
+            renderer_revision = await syzygy_revision()
+            render_job_id, _quality = await submit_syzygy_render(
+                plan,
+                page_id=job["pageId"],
+                recipe_version=job["recipeVersion"],
+            )
+            play_url = await poll_syzygy_render(render_job_id)
+            raw_render = renders_root / f"render-{index:04d}.mp4"
+            await download_syzygy_artifact(play_url, raw_render)
+            after = await observe_library_media(library, media_keys)
+            if after != before:
+                raise RuntimeError("slideshow_source_mutated_during_render")
+            destination = treated_root / f"slideshow-{index:04d}.mp4"
+            await run_color_correct(
+                str(raw_render), str(destination), color_correction,
+                scale=None,
+                encode_args=delivery_encode_args(recipe.encode_preset),
+                playback_speed=clip_speed,
+                clip_crop=clip_crop,
+                clip_crop_size=(recipe.output_width, recipe.output_height),
+            )
+            manifest = _generated_manifest(job_root, destination)
+            manifest["clipSpeed"] = clip_speed
+            manifest["clipCrop"] = clip_crop
+            manifest["source"] = _source_provenance(job, {
+                "schema": "content-lab.syzygy-slideshow-source.v1",
+                "kind": "syzygy_slideshow",
+                "recipeId": recipe.recipe_id,
+                "recipeVersion": job["recipeVersion"],
+                "sourceLibraryId": recipe.library_id,
+                "librarySnapshotHash": snapshot_hash,
+                "templateSlug": template_slug,
+                "planSignature": signature,
+                "rendererRevision": renderer_revision,
+                "renderJobId": render_job_id,
+                "media": after,
+            })
+            manifest["thumbnail"] = await _thumbnail_manifest(
+                job_root, destination, len(manifests),
+            )
+            _claim_unique_slideshow_clip(job_id, manifest, signature)
+            manifests.append(manifest)
+            _update_job(
+                job_id,
+                progress=int(((index + 1) / len(plans)) * 100),
+            )
+    except asyncio.CancelledError:
+        # A cancelled runner must never leave the job stuck in "running"
+        # with partial renders; the reservation releases with the failure.
+        _update_job(
+            job_id,
+            status="failed",
+            error="slideshow_render_cancelled",
+            completedAt=datetime.now(timezone.utc).isoformat(),
+        )
+        raise
+    except Exception as error:
+        _update_job(
+            job_id,
+            status="failed",
+            error=str(error)[:300],
+            completedAt=datetime.now(timezone.utc).isoformat(),
+        )
+        return
+    if not _job_matches_current_master_pages(job):
+        _update_job(
+            job_id,
+            status="failed",
+            error="master_pages_strategy_changed",
+            completedAt=datetime.now(timezone.utc).isoformat(),
+        )
+        return
     _update_job(
         job_id,
         status="completed",
@@ -1510,12 +1989,22 @@ async def _run_dossier_source(job_id: str) -> None:
 
 async def _run_page_source_import(job_id: str) -> None:
     job = _get_job_or_404(job_id)
+    if not _job_matches_current_master_pages(job):
+        _update_job(
+            job_id,
+            status="failed",
+            error="master_pages_strategy_changed",
+            completedAt=datetime.now(timezone.utc).isoformat(),
+        )
+        return
     job_root = Path(job["artifactRoot"]).resolve()
     source_root = job_root / "source"
     destination = source_root / "source.mp4"
     _update_job(job_id, status="running", progress=5)
     try:
         async with source_import_slot():
+            if not _job_matches_current_master_pages(job):
+                raise RuntimeError("master_pages_strategy_changed")
             # Resolve the host again immediately before the network boundary so
             # a queued job cannot rely only on the address observed at admission.
             source_url = await _validated_source_url(job["sourceUrl"])
@@ -1542,6 +2031,8 @@ async def _run_page_source_import(job_id: str) -> None:
             manifest["thumbnail"] = await _thumbnail_manifest(
                 job_root, imported.path, 0,
             )
+            if not _job_matches_current_master_pages(job):
+                raise RuntimeError("master_pages_strategy_changed")
     except asyncio.CancelledError:
         shutil.rmtree(job_root, ignore_errors=True)
         _update_job(
@@ -1560,6 +2051,15 @@ async def _run_page_source_import(job_id: str) -> None:
             completedAt=datetime.now(timezone.utc).isoformat(),
         )
         return
+    if not _job_matches_current_master_pages(job):
+        shutil.rmtree(job_root, ignore_errors=True)
+        _update_job(
+            job_id,
+            status="failed",
+            error="master_pages_strategy_changed",
+            completedAt=datetime.now(timezone.utc).isoformat(),
+        )
+        return
     _update_job(
         job_id,
         status="completed",
@@ -1573,6 +2073,7 @@ _generation_tasks: dict[str, asyncio.Task] = {}
 _source_tasks: dict[str, asyncio.Task] = {}
 _truck_recovery_tasks: dict[str, asyncio.Task] = {}
 _source_import_tasks: dict[str, asyncio.Task] = {}
+_syzygy_slideshow_tasks: dict[str, asyncio.Task] = {}
 
 
 def _start_dossier_generation(job_id: str) -> None:
@@ -1597,6 +2098,14 @@ def _start_page_source_import(job_id: str) -> None:
     task = asyncio.create_task(_run_page_source_import(job_id))
     _source_import_tasks[job_id] = task
     task.add_done_callback(lambda _: _source_import_tasks.pop(job_id, None))
+
+
+def _start_syzygy_slideshow(job_id: str) -> None:
+    task = asyncio.create_task(_run_syzygy_slideshow(job_id))
+    _syzygy_slideshow_tasks[job_id] = task
+    task.add_done_callback(
+        lambda _: _syzygy_slideshow_tasks.pop(job_id, None),
+    )
 
 
 @router.post("/v1/source-imports")
@@ -1874,12 +2383,21 @@ async def create_job(
         if publication_engine == "sourced_video"
         else None
     )
-    if generation_recipe is None and source_recipe is None:
+    slideshow_recipe = (
+        resolve_slideshow_recipe(publication)
+        if publication_engine in {"sourced_slideshow", "lyrics_slideshows"}
+        else None
+    )
+    if (
+        generation_recipe is None
+        and source_recipe is None
+        and slideshow_recipe is None
+    ):
         raise HTTPException(status_code=409, detail="recipe_executor_unavailable")
     capability_ceiling = (
         MAX_CAPABILITY_QUANTITY
         if generation_recipe is not None
-        else source_recipe.max_quantity
+        else (source_recipe or slideshow_recipe).max_quantity
     )
     if quantity > capability_ceiling:
         raise HTTPException(
@@ -1892,10 +2410,24 @@ async def create_job(
             provider_calls = generation_recipe.planned_provider_calls(quantity)
         except ValueError as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
+    slideshow_library = None
+    if slideshow_recipe is not None:
+        # The live library read is network I/O and must happen before the
+        # durable jobs-store lock is held; the reservation itself is planned
+        # and persisted atomically inside the lock below.
+        try:
+            slideshow_library = await asyncio.to_thread(
+                load_recipe_library, slideshow_recipe,
+            )
+        except SyzygyError as error:
+            raise HTTPException(
+                status_code=409, detail="recipe_executor_unavailable",
+            ) from error
 
     start_generation = False
     start_source = False
     start_truck_recovery = False
+    start_slideshow = False
     with lock_for(_jobs_path()):
         store = _load_jobs()
         existing_id = store["byIdempotency"].get(idempotency_key)
@@ -1940,6 +2472,11 @@ async def create_job(
             and master_pages["contentNiche"].strip().upper() == "TRUCK"
             else []
         )
+        if len(recovery_masters) != provider_calls:
+            # Recovery is one complete executor path, not a partial prelude to
+            # a fresh provider call. An undersized candidate set cannot satisfy
+            # this exact-quantity job, so fall through to fresh prompt planning.
+            recovery_masters = []
         if generation_recipe is not None and recovery_masters:
             job_root = (
                 _generation_root() / page_id / recipe_version / job_id
@@ -1969,6 +2506,18 @@ async def create_job(
             }
             start_truck_recovery = True
         elif generation_recipe is not None:
+            unavailable_hashes, unavailable_slots = _generated_unavailable_prompts(
+                store, generation_recipe, page_id,
+            )
+            prompt_plan = plan_prompt_combinations(
+                generation_recipe,
+                idempotency_key,
+                provider_calls,
+                unavailable_hashes,
+                unavailable_slots,
+            )
+            if len(prompt_plan) != provider_calls:
+                raise HTTPException(status_code=409, detail="prompt_inventory_exhausted")
             job_root = (
                 _generation_root() / page_id / recipe_version / job_id
             ).resolve()
@@ -1992,6 +2541,7 @@ async def create_job(
                 "providerModel": generation_recipe.provider_model,
                 "providerCallsPlanned": provider_calls,
                 "providerCallsCompleted": 0,
+                "promptPlan": prompt_plan,
                 "runtimeId": _GENERATION_RUNTIME_ID,
             }
             start_generation = True
@@ -2030,6 +2580,50 @@ async def create_job(
                 "runtimeId": _GENERATION_RUNTIME_ID,
             }
             start_source = True
+        elif slideshow_recipe is not None:
+            unavailable_signatures = _slideshow_unavailable_signatures(
+                store, slideshow_recipe, page_id,
+            )
+            plans = plan_slideshows(
+                slideshow_recipe, slideshow_library, quantity,
+                unavailable_signatures, job_id,
+            )
+            if len(plans) != quantity:
+                raise HTTPException(status_code=409, detail="slideshow_inventory_exhausted")
+            # Pin the exact byte count each planned key carried at admission
+            # so the runner can prove the library still holds those bytes.
+            bytes_by_key = {
+                item.key: item.bytes for item in slideshow_library.objects
+            }
+            for plan in plans:
+                plan["media"] = [
+                    {"objectKey": key, "bytes": bytes_by_key[key]}
+                    for key in plan["mediaKeys"]
+                ]
+            job_root = (
+                _generation_root() / page_id / recipe_version / job_id
+            ).resolve()
+            job_root.mkdir(parents=True, exist_ok=False, mode=0o700)
+            job = {
+                **common,
+                "sourceKind": "syzygy_slideshow",
+                "status": "queued",
+                "progress": 0,
+                "clips": [],
+                "artifactRoot": str(job_root),
+                "slideshowPlan": plans,
+                "sourceLibraryId": slideshow_recipe.library_id,
+                "librarySnapshotHash": slideshow_library.snapshot_hash,
+                "engineRegistryHash": slideshow_recipe.engine_registry_hash,
+                "formatContractVersion": slideshow_recipe.format_contract_version,
+                "executorVersion": slideshow_recipe.executor_version,
+                "materialSource": slideshow_recipe.material_source,
+                "assetType": slideshow_recipe.asset_type,
+                "dossierRevision": publication["dossierRevision"],
+                "recipeSpecHash": publication["recipeSpecHash"],
+                "runtimeId": _GENERATION_RUNTIME_ID,
+            }
+            start_slideshow = True
         store["jobs"][job_id] = job
         store["byIdempotency"][idempotency_key] = job_id
         atomic_save(_jobs_path(), store)
@@ -2040,6 +2634,8 @@ async def create_job(
         _start_dossier_source(job_id)
     elif start_truck_recovery:
         _start_truck_master_recovery(job_id)
+    elif start_slideshow:
+        _start_syzygy_slideshow(job_id)
     return {"schema": RESPONSE_SCHEMA, "jobId": job_id, "status": job["status"]}
 
 
@@ -2150,8 +2746,6 @@ def job_artifacts(
                 "bytes": clip["thumbnail"]["bytes"],
             },
         }
-        if isinstance(clip.get("sourceTreatment"), dict):
-            artifact["sourceTreatment"] = clip["sourceTreatment"]
         if isinstance(clip.get("delivery"), dict):
             artifact["delivery"] = clip["delivery"]
         artifacts.append(artifact)

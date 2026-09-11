@@ -77,6 +77,12 @@
     "pov-dusk-core": {
       "clip_mode": true,
       "note": "cut from masters/ via rail clips cut — NEVER produced on a paid provider"
+    },
+    "coffee-tok": {
+      "family": "coffee",
+      "recipe_id": "coffee-tok:master",
+      "recipe_version": "2026-09-04.1",
+      "note": "Locked CoffeeTok overhead crema-ribbon family; the twelve hash-bound anchors rotate without replacement."
     }
   },
   "families": {
@@ -348,6 +354,35 @@
         ]
       },
       "keepers_per_gen": 0.7
+    },
+    "coffee": {
+      "method": "i2v",
+      "provider": "wan-i2v-fast",
+      "fixed_subject": "one vintage white porcelain teacup (fine bone china) with a thin delicate gold rim and an ornate gold handle to the right, sitting on a matching white porcelain saucer, viewed from directly overhead in a perfect flat-lay, filled with dark near-black coffee, large and positioned in the EXACT dead center of the vertical frame, the cup and saucer filling the width with the saucer edges reaching the left and right edges of the frame, equal black space above and below, on a pure solid black background — the mindfulsources CoffeeTok look",
+      "quality_guards": "photorealistic macro food photograph, EXACTLY ONE vintage white porcelain teacup on its saucer and nothing else, the crema is REAL, clean and appetizing — genuine fresh-coffee foam (golden crema over clean dark coffee), whether a full bright layer or a sparse scatter of fine golden bubbles; NEVER a muddy, uniform, flat, or manufactured dark blob; candid with fine natural micro-foam and tiny bubbles (never latte art, never a milky latte, never a painted or CGI graphic), soft even diffuse studio light, matte surface with no plastic or glossy sheen, flat pure black (#000000) background with NO gradient, vignette, or grey wash, the cup+saucer large and dead-center, saucer edges reaching the left and right frame edges, with equal generous black caption space above and below, absolutely nothing else in frame — no second cup, no spoon, no hands, no arms, no people, no steam, no food, no text, no letters, no numbers, no logos, sharp focus, vertical 9:16 portrait",
+      "template": "Photorealistic top-down flat-lay macro photograph of one vintage white porcelain teacup with a thin gold rim {cup_detail} and an ornate gold handle to the right, on a matching white saucer, filled with dark near-black coffee showing {crema}, centered on a flat pure black (#000000) background with no gradient or vignette. {guards}",
+      "motion_prompt": "Only the coffee surface moves: the tan crema drifts slowly and gently clockwise like real liquid under surface tension, fine micro-foam wisps stretch and relax, tiny rim bubbles hold their size. The white porcelain cup, gold rim, gold handle, and saucer stay perfectly fixed and still — no cup rotation, no drift, no zoom. Locked overhead camera, pure black background, photorealistic, empty closed frame — nothing pours or enters, no pitcher, no jug, no kettle, no pour stream, no liquid poured in, no hand, no arm, no object enters from any edge, the scene is complete and unchanged except the coffee surface, no people, no spoon, no second cup, no steam, no text, gentle seamless loop.",
+      "base_anchor": "anchors/coffee-crema-ribbon-anchor.png",
+      "extra": null,
+      "clips_per_gen": 1,
+      "note": "i2v ANCHOR-BANK, mindfulsources vintage-teacup lock + anti-slop doctrine (Eric correction 2026-07-03, see COFFEE-ANTISLOP.md). CUP IS FIXED: one vintage white porcelain teacup, thin gold rim, ornate gold handle, on a matching white saucer, top-down, pure black — matches the real @mindfulsources page (assessed from their videos). The ONLY variation is the crema/foam swirl (+ a subtle cup-detail flourish); NO alternate vessels/materials/colors (those caused i2v hand-morph slop). Every minted anchor is eyeballed vs the reference and every clip is council-judged (gemini-video watches motion); anything tripping a REJECT rule (hand/person, 2nd cup, spoon, steam, cup rotation, morph/warp, non-black bg, text, CGI look) is discarded, never shipped. Over-generate, keep clean, toss slop. Runner: harness/modular_i2v_batch.py. R14: all 10 clips council-cleared (0 slop) — anti-slop works. Learnings folded: dropped blue-floral (both judges off-brand vs white+gold); hardened pure-black bg (a couple anchors drifted charcoal); bold symmetric swirls read slightly CGI, prefer natural asymmetric crema. Council finals ~7.3 (gemini motion ceiling), all clean+postable. CENTERING RULE (Eric 2026-07-03): the cup is always DEAD CENTER — equal black above/below — as a stable frame for on-screen viral text. Enforced two ways: the anchor-gen asks for dead-center, AND the runner recenters every output clip (crop-to-cup + symmetric black pad) so it's guaranteed regardless of generator drift. ANTI-POUR + EDGE-FRAME (Eric 2026-07-03): hard guard against any pour/pitcher/hand/object entering the frame (closed scene, only the coffee moves); and the saucer fills the width edge-to-edge, dead-center. Runner auto-frames every clip (crop-to-cup, scale saucer to full width, symmetric black pad) so both are guaranteed. LIGHTNESS LOCK (Eric 2026-07-04): crema must stay LIGHT + FULL (pale golden, covering most of the surface, like the 2-full-crema reference) — the darker 'mostly dark coffee / thin ring' crema variants were removed; all crema slots now vary the swirl pattern only while keeping the bright creamy lightness. + 4-marbled reference (Eric 2026-07-04): the crema range spans TWO liked looks — bright full golden crema (2-full-crema) AND an appetizing marbled crema with visible bubbles + a little dark peeking through (4-marbled). Both golden/appetizing; neither is muddy-dark. Kept one marbled variant among the light-full ones. + sparse-foam reference (Eric 2026-07-04): range now spans THREE liked looks — full-bright golden (2-full-crema), appetizing marbled (4-marbled framed), and sparse fine-bubble foam over clean dark coffee (4-marbled Desktop). Guard forbids MUDDINESS, not darkness — sparse/dark is fine when it reads clean+real; muddy uniform blobs are the reject.",
+      "slots": {
+        "crema": [
+          "a full light golden-tan crema covering most of the surface with a soft swirl in the center",
+          "a full light golden crema with a gentle off-center spiral and fine bubbles",
+          "an even bright creamy tan crema blanket with delicate micro-bubbles across the whole surface",
+          "an appetizing marbled golden-tan crema with visible round bubble holes and a little dark coffee peeking through the foam",
+          "mostly clean rich dark black coffee with a delicate sparse scatter of fine golden crema bubbles across the surface",
+          "a bright creamy tan crema with clustered fine bubbles and a soft central eye"
+        ],
+        "cup_detail": [
+          "and a plain clean rim",
+          "with a second fine inner gold band",
+          "with a softly scalloped fluted rim"
+        ]
+      },
+      "base_anchor_sha256": "ee2dd41949eb6566a858db9c88ae9c9349dcc77a199d08088336143a4e1d1649",
+      "base_anchor_bytes": 973371
     }
   }
 }

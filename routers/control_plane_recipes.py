@@ -302,10 +302,20 @@ def _validate_production_selection(
         raise HTTPException(409, "selected reference set is not bound to the format")
     source_id = production.get("sourceLibraryId")
     source = _ingredient(format_entry, "master-source-video")
+    image_library = _ingredient(format_entry, "image-library")
+    source_options = [
+        *(source or {}).get("options", []),
+        *(image_library or {}).get("options", []),
+    ]
     if source_id is not None and not any(option.get("libraryId") == source_id
-                                         for option in (source or {}).get("options", [])):
+                                         for option in source_options):
         raise HTTPException(409, "selected source library is not registered as master source DNA")
-    if source is not None and source.get("required") is True and source_id is None:
+    required_source = next(
+        (entry for entry in (source, image_library)
+         if entry is not None and entry.get("required") is True),
+        None,
+    )
+    if required_source is not None and source_id is None:
         raise HTTPException(409, "sourceLibraryId is required for sourced master DNA")
 
     variations = production.get("variationValues", {})

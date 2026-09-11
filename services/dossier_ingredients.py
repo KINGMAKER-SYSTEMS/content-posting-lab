@@ -24,6 +24,12 @@ from services.control_plane_generation import (
     render_treatment_capability,
 )
 from services.control_plane_sources import source_treatment_capability
+from services.control_plane_slideshows import (
+    SyzygyError,
+    load_syzygy_library,
+    slideshow_library_address,
+    slideshow_treatment_capability,
+)
 from services.control_plane_source_libraries import (
     MANIFEST_DIR,
     SourceLibraryError,
@@ -173,7 +179,10 @@ def _selection_catalog_version(
         reference.get("referenceSetId") if isinstance(reference, dict) else None
     ):
         return None
-    source = ingredients.get("master-source-video")
+    source = (
+        ingredients.get("master-source-video")
+        or ingredients.get("image-library")
+    )
     source_id = production.get("sourceLibraryId")
     selected_source = None
     if source_id is not None:
@@ -208,7 +217,18 @@ def _selection_catalog_version(
             ),
             "prompt": prompt,
             "reference": reference,
-            "source": selected_source,
+            "source": (
+                {
+                    key: selected_source.get(key)
+                    for key in (
+                        "libraryId", "lane", "subject", "role",
+                        "minimumLibraryItems",
+                    )
+                }
+                if isinstance(selected_source, dict)
+                and selected_source.get("role") == "syzygy_r2_library"
+                else selected_source
+            ),
             "treatment": treatment,
         },
     }
@@ -229,7 +249,10 @@ def _production_selections(format_entry: dict[str, Any]) -> list[dict[str, Any]]
         "referenceSetId": reference.get("referenceSetId") if isinstance(reference, dict) else None,
     }
     model = ingredients.get("visual-model")
-    source = ingredients.get("master-source-video")
+    source = (
+        ingredients.get("master-source-video")
+        or ingredients.get("image-library")
+    )
     if model is not None:
         identities = [{
             **base,
@@ -584,11 +607,54 @@ def _sourced_ingredients(
     ]
 
 
-def _slideshow_ingredients(profile: MaterialProfile) -> list[dict[str, Any]]:
+def _slideshow_ingredients(
+    profile: MaterialProfile,
+    master_pages: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
     kind = "lyric_image_library" if profile.content_engine == "lyrics_slideshows" else "image_library"
+    address = (
+        slideshow_library_address(profile, master_pages)
+        if isinstance(master_pages, dict) else None
+    )
+    library_option = None
+    library_status = "missing"
+    if address is not None:
+        try:
+            library = load_syzygy_library(profile, master_pages)
+            treatment = slideshow_treatment_capability(profile.format_slug)
+            minimum = treatment["minimumLibraryItems"]
+            library_option = {
+                "libraryId": library.library_id,
+                "lane": library.lane,
+                "subject": library.subject,
+                "role": "syzygy_r2_library",
+                "minimumLibraryItems": minimum,
+                "mediaCount": len(library.objects),
+                "mediaKinds": sorted({item.media_type for item in library.objects}),
+                "snapshotHash": f"sha256:{library.snapshot_hash}",
+            }
+            library_status = (
+                "bound" if len(library.objects) >= minimum else "missing"
+            )
+        except SyzygyError:
+            library_status = "unavailable"
+        try:
+            treatment_binding = slideshow_treatment_capability(profile.format_slug)
+        except ValueError:
+            treatment_binding = None
+    else:
+        treatment_binding = None
     return [
-        _ingredient("image-library", kind, required=True, status="missing"),
-        _ingredient("slideshow-treatment", "slideshow_treatment", required=True, status="missing"),
+        _ingredient(
+            "image-library", kind, required=True, status=library_status,
+            binding=library_option if library_status == "bound" else None,
+            options=[library_option] if library_option is not None else [],
+        ),
+        _ingredient(
+            "slideshow-treatment", "slideshow_treatment", required=True,
+            status="bound" if treatment_binding is not None else "missing",
+            binding=treatment_binding,
+        ),
     ]
 
 
@@ -601,6 +667,7 @@ def _format_entry(
     shipstream_library: SourceDnaLibrary | None = None,
     shipstream_status: str | None = None,
     shipstream_projection: ShipStreamSourceProjection | None = None,
+    master_pages: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if profile.content_engine == "ai_video":
         ingredients = _generated_ingredients(contract.format_slug, catalog, model_options)
@@ -610,7 +677,7 @@ def _format_entry(
             shipstream_status, shipstream_projection,
         )
     else:
-        ingredients = _slideshow_ingredients(profile)
+        ingredients = _slideshow_ingredients(profile, master_pages)
     ingredients.extend([
         _ingredient("caption-bank", "caption_bank", required=True, status="page_binding_required"),
         _ingredient("sound-collection", "sound_collection", required=True, status="page_binding_required"),
@@ -692,7 +759,7 @@ def build_dossier_ingredient_catalog(
             contracts[format_slug], profiles[format_slug], prompt_catalog,
             model_options, page_id, shipstream_library,
             shipstream_status if format_slug == expected_source_format else None,
-            shipstream_projection,
+            shipstream_projection, intent,
         )
         for format_slug in sorted(contracts)
     ]
@@ -758,7 +825,7 @@ def selected_dossier_catalog_version(
             return None
     entry = _format_entry(
         contract, profile, prompt_catalog, _model_options(prompt_catalog), page_id,
-        shipstream_library,
+        shipstream_library, master_pages=intent,
     )
     return _selection_catalog_version(entry, production)
 

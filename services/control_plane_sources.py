@@ -37,13 +37,12 @@ EXECUTOR_PATH = (
     / "recipes/executors/source-dna-recut.v1.json"
 )
 EXECUTOR_SCHEMA = "content-lab.source-dna-recut-executor.v1"
-CUT_SLOT_STEP_MS = 8_500
+CUT_SLOT_STEP_MS = 9_000
 
 
 @dataclass(frozen=True)
 class SourceRecipe:
     recipe_id: str
-    recipe_spec_hash: str
     format_slug: str
     engine: str
     max_quantity: int
@@ -87,7 +86,7 @@ def _executor_contract() -> tuple[dict[str, Any], str]:
         or value.get("schema") != EXECUTOR_SCHEMA
         or value.get("executorId") != "source-dna-recut"
         or value.get("source") != "page_scoped_immutable_master"
-        or value.get("selection") != "deterministic_without_replacement"
+        or value.get("selection") != "deterministic_varied_duration_without_replacement"
         or value.get("reservation") != "active_jobs_and_completed_outputs"
     ):
         raise ValueError("source DNA recut executor contract is invalid")
@@ -98,7 +97,7 @@ def _executor_contract() -> tuple[dict[str, Any], str]:
         or set(cut) != {"type", "min", "max", "step", "default"}
         or cut.get("type") != "range"
         or (cut.get("min"), cut.get("max"), cut.get("step"), cut.get("default"))
-            != (6_000, 8_000, 1_000, 7_000)
+            != (5_000, 9_000, 1_000, 7_000)
     ):
         raise ValueError("source DNA recut controls are invalid")
     output = value.get("output")
@@ -118,7 +117,7 @@ def source_treatment_capability() -> dict[str, Any]:
     executor, _ = _executor_contract()
     return {
         "scope": "master_source_window",
-        "recutWindow": "deterministic_without_replacement",
+        "recutWindow": "deterministic_varied_duration_without_replacement",
         "reservation": executor["reservation"],
         "controls": dict(executor["controls"]),
         "output": dict(executor["output"]),
@@ -249,7 +248,6 @@ def resolve_source_recipe(
         return None
     return SourceRecipe(
         recipe_id=recipe_id,
-        recipe_spec_hash=str(publication["recipeSpecHash"]),
         format_slug=profile.format_slug,
         engine=engine,
         max_quantity=profile.max_quantity,
@@ -283,11 +281,42 @@ def plan_source_cuts(
         raise ValueError("served_slots must be a string set")
     candidates: list[SourceCut] = []
     for master in recipe.masters:
-        max_start = master.duration_ms - recipe.cut_duration_ms
-        for start_ms in range(0, max_start + 1, CUT_SLOT_STEP_MS):
-            cut = SourceCut(master, start_ms, recipe.cut_duration_ms)
+        # The saved cutDurationMs is the page's target. Each immutable master
+        # deterministically rotates through the target +/- 2 seconds inside
+        # the advertised 5-9 second executor bounds. A 9-second slot grid
+        # keeps even the longest neighboring cuts disjoint, while slot_id
+        # continues to reserve the source position across treatment changes.
+        for start_ms in range(0, master.duration_ms, CUT_SLOT_STEP_MS):
+            duration_ms = planned_source_cut_duration(recipe, master, start_ms)
+            if start_ms + duration_ms > master.duration_ms:
+                continue
+            cut = SourceCut(master, start_ms, duration_ms)
             if cut.slot_id not in served_slots:
                 candidates.append(cut)
             if len(candidates) >= quantity:
                 return candidates
     return candidates
+
+
+def planned_source_cut_duration(
+    recipe: SourceRecipe, master: MasterSource, start_ms: int,
+) -> int:
+    """Return the hash-bound varied duration for one reserved source slot."""
+    if (
+        not isinstance(start_ms, int)
+        or isinstance(start_ms, bool)
+        or start_ms < 0
+        or start_ms % CUT_SLOT_STEP_MS != 0
+    ):
+        raise ValueError("source start must be a non-negative slot boundary")
+    duration_values = list(range(
+        max(5_000, recipe.cut_duration_ms - 2_000),
+        min(9_000, recipe.cut_duration_ms + 2_000) + 1,
+        1_000,
+    ))
+    rotation = int(hashlib.sha256(
+        f"{recipe.source_library_hash}\0{master.sha256}".encode("utf-8"),
+    ).hexdigest()[:8], 16) % len(duration_values)
+    return duration_values[
+        (rotation + (start_ms // CUT_SLOT_STEP_MS)) % len(duration_values)
+    ]

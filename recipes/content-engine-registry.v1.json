@@ -9,8 +9,8 @@
       "executionStatus": "commissioned",
       "executorKind": "prompt_family",
       "executorId": "boat",
-      "executorVersion": "sha256:c80cc32e6e762be05e6655190432e945c55afeb196fc488f3b09ad2fad51b9f1",
-      "formatContractVersion": "sha256:25182fe8c1786772422b7751fd0295ea1ee70ba9cf4617816abc25ca6ce240f0",
+      "executorVersion": "sha256:2da2ce138f2fbd93944d9f9d63a6fb285b4706f61d1e3ee0532c702126dabede",
+      "formatContractVersion": "sha256:63f8d96e01f0329fb5b5cfb8222a422ca8c416545ca6df8f861ef96ef512add6",
       "maxQuantity": 10
     },
     "coffee-tok": {
@@ -18,12 +18,12 @@
       "contentEngine": "ai_video",
       "materialSource": "generated_video",
       "assetType": "video/mp4",
-      "executionStatus": "uncommissioned",
-      "executorKind": null,
-      "executorId": null,
-      "executorVersion": null,
-      "formatContractVersion": "sha256:9dc9c834980046bd485bf357fa4c1c0031b256d5610615c27243bf2376b3643b",
-      "maxQuantity": 0
+      "executionStatus": "commissioned",
+      "executorKind": "prompt_family",
+      "executorId": "coffee",
+      "executorVersion": "sha256:2da2ce138f2fbd93944d9f9d63a6fb285b4706f61d1e3ee0532c702126dabede",
+      "formatContractVersion": "sha256:22a9042cc64c9d9884ee87bb5859e80397cb8f7bb0e5c12c04bef6bb0be5eeef",
+      "maxQuantity": 10
     },
     "construction-scenic": {
       "contentNiche": "Construction",
@@ -42,24 +42,24 @@
       "contentEngine": "lyrics_slideshows",
       "materialSource": "lyric_image_library",
       "assetType": "video/mp4",
-      "executionStatus": "uncommissioned",
-      "executorKind": null,
-      "executorId": null,
-      "executorVersion": null,
-      "formatContractVersion": "sha256:148ee110409bae312b59dbb4746d03a082f4dad45d96d18ae868c8f3044435ca",
-      "maxQuantity": 0
+      "executionStatus": "commissioned",
+      "executorKind": "slideshow_renderer",
+      "executorId": "syzygy-slideshow",
+      "executorVersion": "sha256:485feda76c885d7aab19be256f61c749edcce19417ebc560d265ba92b60974ad",
+      "formatContractVersion": "sha256:bc99dded5acb05ea517ea0d244e2f58481a430dececbd7f3df7bd785a7c9a1a2",
+      "maxQuantity": 10
     },
     "meme-slideshow": {
       "contentNiche": "meme",
       "contentEngine": "sourced_slideshow",
       "materialSource": "image_library",
       "assetType": "video/mp4",
-      "executionStatus": "uncommissioned",
-      "executorKind": null,
-      "executorId": null,
-      "executorVersion": null,
-      "formatContractVersion": "sha256:1b0f03e25d7d18b0490b868917291fb1a01293c26b051a75421a3110dae10158",
-      "maxQuantity": 0
+      "executionStatus": "commissioned",
+      "executorKind": "slideshow_renderer",
+      "executorId": "syzygy-slideshow",
+      "executorVersion": "sha256:485feda76c885d7aab19be256f61c749edcce19417ebc560d265ba92b60974ad",
+      "formatContractVersion": "sha256:62f95a4f421215c59cc352e4c63b60606b5c9653d214e95546a9e60fc28bf459",
+      "maxQuantity": 10
     },
     "pov-dirt-bike": {
       "contentNiche": "POV - Dirtbike",
@@ -69,8 +69,8 @@
       "executionStatus": "commissioned",
       "executorKind": "source_dna_recut",
       "executorId": "source-dna-recut",
-      "executorVersion": "sha256:1bbcb745be141c7b9e835662637110d85785979610f993835ce2d05f31b3d484",
-      "formatContractVersion": "sha256:43cf25cc48767d76425ad6a621fdfa01b0f1a060e289b1520b1330aa5eaae3fa",
+      "executorVersion": "sha256:2d0dd20fad4302f799272e7d5e1ba7de1ecb8b9a85646f68cf9720ac14569171",
+      "formatContractVersion": "sha256:f04e1ffa16ae787111ebb0a102397a196e25f92ddf9ddbb77048b18dee21fbcf",
       "maxQuantity": 10
     },
     "pov-dusk-core": {
@@ -93,8 +93,8 @@
       "executionStatus": "commissioned",
       "executorKind": "source_dna_recut",
       "executorId": "source-dna-recut",
-      "executorVersion": "sha256:1bbcb745be141c7b9e835662637110d85785979610f993835ce2d05f31b3d484",
-      "formatContractVersion": "sha256:5f5cdf7daf22d8859476bc2d79989bcfb6e7031a475bd0f7f57e48805edcf848",
+      "executorVersion": "sha256:2d0dd20fad4302f799272e7d5e1ba7de1ecb8b9a85646f68cf9720ac14569171",
+      "formatContractVersion": "sha256:00e7ff5b0ffcdf602fde7ccab7f38bdbe3a5cdc05b7c513f015d1f1723749ec6",
       "maxQuantity": 10
     },
     "pov-night-core-ai": {
@@ -117,8 +117,8 @@
       "executionStatus": "commissioned",
       "executorKind": "source_dna_recut",
       "executorId": "source-dna-recut",
-      "executorVersion": "sha256:1bbcb745be141c7b9e835662637110d85785979610f993835ce2d05f31b3d484",
-      "formatContractVersion": "sha256:987804bacdc6cc8c0da7f360006c3baa3285a732c643781afa46f96bda2062b1",
+      "executorVersion": "sha256:2d0dd20fad4302f799272e7d5e1ba7de1ecb8b9a85646f68cf9720ac14569171",
+      "formatContractVersion": "sha256:31cbad392107972949f3977383427a344808f653e9022d6284d08d307bec9772",
       "maxQuantity": 10
     },
     "silhouette-truck": {
@@ -129,8 +129,8 @@
       "executionStatus": "commissioned",
       "executorKind": "prompt_family",
       "executorId": "silhouette",
-      "executorVersion": "sha256:c80cc32e6e762be05e6655190432e945c55afeb196fc488f3b09ad2fad51b9f1",
-      "formatContractVersion": "sha256:405e3e34d0253c604436effed3acc36e049b77ea29d709cfe59f0257d32fc5c4",
+      "executorVersion": "sha256:2da2ce138f2fbd93944d9f9d63a6fb285b4706f61d1e3ee0532c702126dabede",
+      "formatContractVersion": "sha256:2104ed9cb36a95144a97d2f1ede8bf769b28faf879ebe66d7766ad009542a8ea",
       "maxQuantity": 10
     },
     "truck-scenic": {
@@ -141,8 +141,8 @@
       "executionStatus": "commissioned",
       "executorKind": "prompt_family",
       "executorId": "truck",
-      "executorVersion": "sha256:c80cc32e6e762be05e6655190432e945c55afeb196fc488f3b09ad2fad51b9f1",
-      "formatContractVersion": "sha256:dcb941c585412edbd69e56eb6220f1c555c0e4365cff1a914c49544ae46b2f89",
+      "executorVersion": "sha256:2da2ce138f2fbd93944d9f9d63a6fb285b4706f61d1e3ee0532c702126dabede",
+      "formatContractVersion": "sha256:e3379f496975761ea02f7a381eee8803ec0f9e6899c90f38e991bfc6982df47e",
       "maxQuantity": 10
     },
     "truck-ugc": {
@@ -154,7 +154,7 @@
       "executorKind": null,
       "executorId": null,
       "executorVersion": null,
-      "formatContractVersion": "sha256:7bd653b962f9c5b9c4182fe7390e36436391722d0ff88509c70139730f288235",
+      "formatContractVersion": "sha256:b7d2183228b0d82efa96d4bc9ab38e2f3c0fda88e79911f272b559d7bdda6a0a",
       "maxQuantity": 0
     }
   }

@@ -73,6 +73,7 @@ async def _best_effort_update(vid: str, patch: dict) -> None:
 
 # v2 anti-slop visual system: deconstruct VO into scenes → designed cards instead of blog
 # screenshots. Imported defensively so a v2 issue can never break the running v1 producer.
+_v2cards = None
 try:
     from factory.formats.scenes import tag_scenes, direct_visuals, hero_number, hero_number_label
     from factory.formats.types import SceneRole
