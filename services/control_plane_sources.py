@@ -43,6 +43,7 @@ CUT_SLOT_STEP_MS = 8_500
 @dataclass(frozen=True)
 class SourceRecipe:
     recipe_id: str
+    recipe_spec_hash: str
     format_slug: str
     engine: str
     max_quantity: int
@@ -248,6 +249,7 @@ def resolve_source_recipe(
         return None
     return SourceRecipe(
         recipe_id=recipe_id,
+        recipe_spec_hash=str(publication["recipeSpecHash"]),
         format_slug=profile.format_slug,
         engine=engine,
         max_quantity=profile.max_quantity,

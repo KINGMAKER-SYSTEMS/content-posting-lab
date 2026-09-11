@@ -696,10 +696,12 @@ def _source_dna_unavailable_slots(
     """Derive reservations from durable job truth, never a write-only ledger.
 
     Queued/running jobs reserve their exact windows against concurrency. A
-    completed job keeps them unavailable because output bytes exist and may
-    have crossed the API boundary. Failed jobs release them: no completed
-    output exists, so treating selection alone as "served" would eventually
-    exhaust an immutable master through transport or runtime failures.
+    completed job keeps them unavailable for the exact recipe that produced
+    those bytes. A later locked recipe may recut the same page-bound source
+    window because its treatment and provenance produce a new asset. Failed
+    jobs release them: no completed output exists, so treating selection alone
+    as "served" would eventually exhaust an immutable master through transport
+    or runtime failures.
     """
     slots: set[str] = set()
     for job in store.get("jobs", {}).values():
@@ -709,6 +711,10 @@ def _source_dna_unavailable_slots(
             or job.get("sourceLibraryId") != source_recipe.source_library_id
             or job.get("sourceLibraryHash") != source_recipe.source_library_hash
             or job.get("status") not in SOURCE_DNA_UNAVAILABLE_STATUSES
+            or (
+                job.get("status") == "completed"
+                and job.get("recipeSpecHash") != source_recipe.recipe_spec_hash
+            )
         ):
             continue
         for cut in job.get("sourceCuts", []):
