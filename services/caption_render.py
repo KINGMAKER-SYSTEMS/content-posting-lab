@@ -36,7 +36,7 @@ _PREVIEW_HEIGHT = 768
 _OUTPUT_SCALE = FRAME_HEIGHT / _PREVIEW_HEIGHT
 _MAX_WIDTH_PCT = 80
 _LINE_HEIGHT_MULTIPLIER = 1.08
-_PREVIEW_STROKE_PX = 4
+_OUTPUT_STROKE_PX = 3
 _POSITION_Y_PCT = {"top": 15, "middle": 50, "bottom": 85}
 
 _FONT_PATTERN = re.compile(r"^TikTokSans[A-Za-z0-9.-]{0,112}\.ttf$")
@@ -283,7 +283,7 @@ def render_caption_overlay(
     style = request.style
     font_path, font_bytes = _resolve_font(font_dir, style.font)
     font_size_px = max(1, round(style.size_pt * _OUTPUT_SCALE))
-    stroke_width_px = round(_PREVIEW_STROKE_PX * _OUTPUT_SCALE) if style.outline else 0
+    stroke_width_px = _OUTPUT_STROKE_PX if style.outline else 0
     line_height_px = max(1, round(font_size_px * _LINE_HEIGHT_MULTIPLIER))
 
     try:

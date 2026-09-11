@@ -277,3 +277,17 @@ creation remains exact and still rejects any quantity above current reservable
 capacity. No generation, storage, scheduler, device, phone, slot, lease, or
 post mutation occurred.
 _________________________________________________________________________________
+_________________________________________________________________________________
+
+time: [01:21P] [11-09-26]
+agent: [codex desktop] [gpt-6]
+worktree: [caption-stroke-fix at origin/main]
+type: [bug report]: Restore caption outline thickness
+area: [backend]: Prepared-post caption rendering
+
+The final-size Pillow renderer incorrectly scaled a 4 px preview stroke to 10 px,
+which merged letters and adjacent lines into heavy black blocks. Prepared-post
+caption rendering now uses the established 3 px final-resolution outline, and
+the caption contract test pins that value. Fifteen focused caption-render tests
+passed before deployment.
+_________________________________________________________________________________

@@ -121,7 +121,7 @@ def test_every_typed_style_control_reaches_the_effective_render_plan(font_dir):
         "line_balance": 100,
     }
     assert result["plan"]["font_size_px"] == 110
-    assert result["plan"]["stroke_width_px"] == 10
+    assert result["plan"]["stroke_width_px"] == 3
     assert {line["x_px"] for line in result["plan"]["lines"]} == {972}
     assert result["plan"]["rendered_text"] == "one\nshort\nline"
 
