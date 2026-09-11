@@ -117,10 +117,11 @@
   source. Unknown or different video provenance requires regeneration. This renderer adds the typed caption and
   delivery encoding only; it never repeats grade, crop or speed.
 - Prepared artifacts require source-byte verification and upright square-pixel
-  9:16 input at least 1080 pixels high, allowing at most two horizontal source
-  pixels of chroma-alignment rounding. Delivery encoding scales the complete
-  frame to 1080x1920 before caption composition; it never changes the selected
-  crop, grade, speed, font or caption style. Missing/unspecified input pixel
+  near-9:16 input at least 1080 pixels high. Exact and chroma-aligned frames
+  scale directly; native provider frames within three percent of 9:16 are
+  center-cropped at the edge and scaled to 1080x1920 before caption composition
+  so provider sizing cannot stretch or block otherwise usable vertical media.
+  Delivery never changes the grade, speed, font or caption style. Missing/unspecified input pixel
   aspect retains the full coded frame and gets explicit square-pixel metadata
   during encoding; an explicit non-square ratio remains rejected. Artifacts require
   real final H.264/yuv420p probing, complete video decode, and a QA frame extracted

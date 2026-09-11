@@ -268,9 +268,17 @@ def _encode_final(source: Path, overlay: Path, final: Path, source_probe: MediaP
                   tools: RenderTools) -> MediaProbe:
     graph = "[0:v:0][1:v:0]overlay=0:0:format=auto[v]"
     if (source_probe.width, source_probe.height) != (1080, 1920):
-        # The provider's chroma-aligned 9:16 crop may be 606x1080. Fit its
-        # complete frame to delivery size before adding the full-size caption.
-        graph = ("[0:v:0]scale=1080:1920:flags=lanczos,setsar=1[delivery];"
+        if abs(source_probe.width * 16 - source_probe.height * 9) <= 32:
+            # Chroma alignment can make an exact provider crop a few pixels
+            # narrow. Preserve its complete selected frame at delivery size.
+            scale = "scale=1080:1920:flags=lanczos,setsar=1"
+        else:
+            # Native vertical generators can return a near-9:16 coded frame
+            # such as 704x1280. Remove the small excess edge before scaling so
+            # delivery is true 9:16 without stretching the image.
+            scale = ("scale=1080:1920:force_original_aspect_ratio=increase:flags=lanczos,"
+                     "crop=1080:1920,setsar=1")
+        graph = (f"[0:v:0]{scale}[delivery];"
                  "[delivery][1:v:0]overlay=0:0:format=auto[v]")
     elif source_probe.sample_aspect_ratio != "1:1":
         graph = "[0:v:0]setsar=1[delivery];[delivery][1:v:0]overlay=0:0:format=auto[v]"
@@ -336,10 +344,11 @@ def render_post(source_path: Path, output_directory: Path, request: PostRenderRe
         # scaling is not another creative crop, grade, or speed treatment.
         # Provider H.264 crops may omit SAR entirely. Keep their coded frame
         # and declare square pixels at encode; explicit non-square SAR refuses.
+        target_width = source_probe.height * 9 / 16
+        near_vertical = abs(source_probe.width - target_width) <= target_width * 0.03
         if (source_probe.height < 1080 or source_probe.sample_aspect_ratio not in {"1:1", "", "N/A", "0:1"}
-                or source_probe.rotation != 0
-                or abs(source_probe.width * 16 - source_probe.height * 9) > 32):
-            raise PostRenderError("regeneration_required", "source must be upright square-pixel 9:16 video at least 1080 pixels high")
+                or source_probe.rotation != 0 or not near_vertical):
+            raise PostRenderError("regeneration_required", "source must be upright square-pixel near-9:16 video at least 1080 pixels high")
         caption_request = _caption_request(request)
         overlay = render_caption_overlay(caption_request, font_dir=font_dir or Path(__file__).parents[1] / "fonts")
         overlay_bytes = base64.b64decode(overlay.overlay.base64, validate=True)
