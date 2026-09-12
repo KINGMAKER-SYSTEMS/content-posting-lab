@@ -382,3 +382,21 @@ area: [backend]
 
 A burst of scheduler refill jobs started independent 1080x1920 libx264 processes in Content Lab and six were killed during encoder initialization. Serialized services.ffmpeg.run_color_correct through one process-local permit so asynchronous jobs wait instead of exhausting the production container. Added a concurrency regression; the focused FFmpeg suite passed 47/47.
 _________________________________________________________________________________
+_________________________________________________________________________________
+time: [12:09am] [09-12-26]
+agent: [codex desktop] [gpt-6]
+worktree: [fix/source-treatment-artifact-receipts-20260912]
+type: [bug report]
+area: [backend]
+
+Content Lab generated and sourced clips with the requested video treatment but omitted the producer treatment receipt from the artifact contract, so Control Plane excluded paid clips before scheduling. Wired source-treatment receipts into generated, sourced-video, slideshow, and inherited truck-recovery manifests. The artifact serializer can recover completed jobs only from persisted applied speed/crop plus the exact registered recipe hash. Focused generation, sourced-video, and receipt tests passed (56).
+_________________________________________________________________________________
+_________________________________________________________________________________
+time: [12:11am] [09-12-26]
+agent: [codex desktop] [gpt-6]
+worktree: [fix/source-treatment-artifact-receipts-20260912]
+type: [bug report]
+area: [backend]
+
+Correction to the preceding entry: this change wires receipts for generated, sourced-video, and slideshow outputs. It leaves truck-master recovery unchanged because that path must preserve its parent producer receipt rather than restate the current job recipe hash. Focused tests remain 56 passing.
+_________________________________________________________________________________

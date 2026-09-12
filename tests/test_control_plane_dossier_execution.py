@@ -649,6 +649,28 @@ async def test_generation_runner_lands_treated_artifacts_under_the_isolated_job_
     root = (tmp_path / "generated").resolve()
     assert all(root in (root / PAGE_ID / stored["recipeVersion"] / job_id / clip["path"]).resolve().parents for clip in stored["clips"])
     assert all(clip["sha256"] for clip in stored["clips"])
+    receipt = stored["clips"][0]["sourceTreatment"]
+    assert receipt["sourceSha256"] == stored["clips"][0]["sha256"]
+    assert receipt["generationJobId"] == job_id
+    assert receipt["visualTreatment"]["clipSpeed"] == pytest.approx(0.75)
+    assert receipt["visualTreatment"]["clipCrop"] == {
+        "zoom": 1.5, "focusX": 0.2, "focusY": 0.8,
+    }
+
+    # Jobs completed while the executor persisted applied speed/crop but the
+    # artifact serializer omitted the receipt can be recovered without another
+    # provider call. The registered recipe and exact job hash are the authority.
+    legacy = cp._load_jobs()
+    legacy["jobs"][job_id]["clips"][0].pop("sourceTreatment")
+    cp.atomic_save(cp._jobs_path(), legacy)
+    artifacts = client.get(
+        f"/api/control-plane/v1/jobs/{job_id}/artifacts",
+        headers={"Authorization": f"Bearer {TOKEN}", "X-RT-Page-Id": PAGE_ID},
+    )
+    assert artifacts.status_code == 200
+    recovered = artifacts.json()["artifacts"][0]["sourceTreatment"]
+    assert recovered["sourceSha256"] == stored["clips"][0]["sha256"]
+    assert recovered["generationJobId"] == job_id
 
 
 @pytest.mark.asyncio
