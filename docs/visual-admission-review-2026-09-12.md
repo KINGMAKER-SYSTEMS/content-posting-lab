@@ -46,6 +46,15 @@ The bounded decoder/OCR/model failures never become clean decisions.
 - Permanent reservations before a rejected scan: Worker peer review confirmed
   and moved the reservation after clean evidence, before the first bucket put.
 
+- Follow-up DeepSeek exclusion-limit cliff: confirmed. Sourced capabilities now
+  expose the current recipe’s canonical original identities so Worker can filter
+  the ledger before applying its bounded 2000-window limit.
+- Follow-up Opus incomplete five-crop claim: confirmed. Producer candidates must
+  match the commissioned mode and full unique index set before artifact work;
+  missing/short/duplicate/wrong-mode/wrong-count provider fixtures fail the job.
+  A two-output request still transports its complete five-crop group. Worker
+  independently verifies the exact publication and whole result groups.
+
 ## Evidence and limits
 
 `artifacts/visual-admission-evidence/worker-lab-http-e2e.json` records the real

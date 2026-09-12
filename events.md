@@ -410,3 +410,7 @@ Added authenticated exact-job/page/SHA/byte-bound visual decisions, native every
 Source planning now skips original timestamps below 60 seconds and consumes the Worker's bounded global source-window exclusions before rendering. Native 1080x1920 throughput: 7s/210 frames in 228.38s with fixture model; 9s/270 frames completed OCR in 211.53s total with unavailable live model evidence. Flash API independently returned 429/provider 1305 overload. Decisions remain unavailable and paid jobs remain resumable; this is not a live-clean claim.
 
 Final focused suite: 77 passing across visual admission, packaged imports, recipe/generation and source execution. Peer review repaired stale wrong-page cached decisions with full identity checks in the sweep and a recovery regression.
+
+Follow-up review: capabilities expose current-recipe canonical source identities before the Worker exclusion limit. Multi-crop provider calls now require complete commissioned groups; the artifact endpoint preserves boundary groups for non-multiple quantities. Malformed candidate sets fail before artifact processing.
+
+Expanded verification passes 105 tests including actual generated-job malformed crop-set regressions and source-identity capability checks. Candidate indices are normalized into order before whole-group transport.

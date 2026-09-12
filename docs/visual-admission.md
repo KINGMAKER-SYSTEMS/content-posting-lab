@@ -52,7 +52,10 @@ A pretrimmed master retains its declared source offset; the 9-second disjoint
 slot grid stays anchored to library time. Generation jobs accept up to 2000
 `constraints.sourceWindowExclusions` records with canonical source identity and
 half-open original start/end milliseconds, populated by the Worker from global
-other-page reservations and historical evidence. Overlapping slots are skipped
+other-page reservations and historical evidence. Sourced capability entries include
+`sourceIdentities` from the parsed current recipe, so the Worker restricts queries
+to that recipe before applying the 2000-window limit. Unknown original identities
+withdraw the capability. Overlapping slots are skipped
 before rendering, including different encodings of the same canonical source.
 Unknown historical timing can exclude the entire source. The Worker retains
 its atomic final reservation guard for concurrent plans. Capability counts
@@ -68,3 +71,14 @@ and carry their own independently verified SHA. They do not introduce text.
 Worker adapter over HTTP, the Lab's asynchronous whole-job scan, native OCR,
 and the Worker admission function. Its GLM reply and bucket are explicitly
 fixture doubles; it proves clean/text routing, not live vendor availability.
+
+## Commissioned crop groups
+
+The producer checks the final recipe `production.controls.crop_mode` (with its
+registered family default) before processing generated artifacts. Dual, triptych
+and both require exactly 2, 3 and 5 candidates with matching modes and counts
+and every unique index from zero. Missing or malformed groups fail the job.
+Artifact serialization preserves a whole boundary group when requested quantity
+is not a multiple of its size. Worker independently binds the group mode to the
+immutable publication before any bucket write; visual rejection can still yield
+an honestly partial admitted group.

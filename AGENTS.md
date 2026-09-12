@@ -14,7 +14,9 @@
   frame receives Tesseract OCR; GLM-4.6v-flash receives up to 16 native frames.
   Both detectors and complete coverage are required for clean.
 - Source cut planning honors the immutable original 60-second minimum and the
-  Worker-supplied global source-window exclusions before rendering; the Worker
+  Worker-supplied global source-window exclusions before rendering. Sourced
+  capabilities expose the current recipe’s canonical source identities so the
+  Worker filters reservations before its bounded exclusion limit; the Worker
   retains final atomic reservation authority for races. Budgets, missing
   tools/credentials, uncertain replies, and changed bytes fail closed.
   This detector has bounded recall; it does not prove semantic absence of all text.

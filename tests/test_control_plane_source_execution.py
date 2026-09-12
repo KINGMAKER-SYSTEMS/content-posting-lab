@@ -530,6 +530,7 @@ def test_sourced_paths_never_probe_the_ai_video_resolver(lab, monkeypatch):
     assert capabilities.json()["capabilities"] == [{
         "recipeId": "pov-dirt-bike:master",
         "engine": "sourced_video",
+        "sourceIdentities": ["https://www.youtube.com/watch?v=vt5im2TRAKw"],
         "recipeVersion": "dossier-feedfacefeedface",
         "maxQuantity": 10,
     }]
@@ -617,6 +618,7 @@ def test_capability_advertises_only_currently_reservable_source_windows(lab):
     assert capabilities == [{
         "recipeId": "pov-dirt-bike:master",
         "engine": "sourced_video",
+        "sourceIdentities": ["https://www.youtube.com/watch?v=vt5im2TRAKw"],
         "recipeVersion": "dossier-feedfacefeedface",
         "maxQuantity": 2,
     }]
@@ -635,6 +637,7 @@ def test_capability_advertises_only_currently_reservable_source_windows(lab):
     assert exhausted.json()["capabilities"] == [{
         "recipeId": "pov-dirt-bike:master",
         "engine": "sourced_video",
+        "sourceIdentities": ["https://www.youtube.com/watch?v=vt5im2TRAKw"],
         "recipeVersion": "dossier-feedfacefeedface",
         "maxQuantity": 0,
     }]
@@ -865,3 +868,16 @@ def test_source_identity_matches_worker_query_and_youtube_rules():
     assert canonical_source_identity('https://youtube.com/watch?v=abcdefghijk&v=12345678901') == 'https://www.youtube.com/watch?v=abcdefghijk'
     assert canonical_source_identity('https://example.com/v?x=~*&utm_source=no') == 'https://example.com/v?x=%7E*'
     assert canonical_source_identity('https://example.com:443/v?b=2&a=1#fragment') == 'https://example.com/v?a=1&b=2'
+
+
+def test_source_capability_suppresses_unknown_original_identity(lab, monkeypatch):
+    from dataclasses import replace
+    client, _, _ = lab
+    resolve = cp._dossier_source_recipe
+    def malformed(publication):
+        recipe = resolve(publication)
+        return replace(recipe, masters=tuple(replace(master, provenance={}) for master in recipe.masters))
+    monkeypatch.setattr(cp, "_dossier_source_recipe", malformed)
+    response = client.get("/api/control-plane/v1/capabilities", headers={"X-RT-Page-Id": PAGE_ID})
+    assert response.status_code == 200
+    assert response.json()["capabilities"] == []
