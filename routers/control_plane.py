@@ -110,6 +110,7 @@ from services.content_engine_registry import load_engine_registry, resolve_mater
 from services.content_format_contracts import load_format_contracts
 from services.ffmpeg import delivery_encode_args, run_color_correct
 from services.master_pages_contract import SCHEMA as MASTER_PAGES_SCHEMA, canonical_intent, exact_intent, intent_hash
+from services.source_treatment import source_treatment_receipt
 
 router = APIRouter()
 
@@ -1418,6 +1419,13 @@ async def _run_dossier_generation(job_id: str) -> None:
                 manifest["promptSlots"] = slots
                 manifest["clipSpeed"] = clip_speed
                 manifest["clipCrop"] = clip_crop
+                manifest["sourceTreatment"] = source_treatment_receipt(
+                    job,
+                    recipe.recipe_spec["renderTreatment"],
+                    manifest["sha256"],
+                    clip_speed=clip_speed,
+                    clip_crop=clip_crop,
+                )
                 provider_source = source
                 delivery = None
                 if isinstance(candidate, dict) and candidate.get("cropMode") in {
@@ -1738,6 +1746,13 @@ async def _run_dossier_source(job_id: str) -> None:
             manifest = _generated_manifest(job_root, destination)
             manifest["clipSpeed"] = clip_speed
             manifest["clipCrop"] = clip_crop
+            manifest["sourceTreatment"] = source_treatment_receipt(
+                job,
+                recipe.recipe_spec["renderTreatment"],
+                manifest["sha256"],
+                clip_speed=clip_speed,
+                clip_crop=clip_crop,
+            )
             manifest["source"] = _source_provenance(job, {
                 "recipeId": recipe.recipe_id,
                 "sourceLibraryId": recipe.source_library_id,
@@ -1930,6 +1945,13 @@ async def _run_syzygy_slideshow(job_id: str) -> None:
             manifest = _generated_manifest(job_root, destination)
             manifest["clipSpeed"] = clip_speed
             manifest["clipCrop"] = clip_crop
+            manifest["sourceTreatment"] = source_treatment_receipt(
+                job,
+                recipe.recipe_spec["renderTreatment"],
+                manifest["sha256"],
+                clip_speed=clip_speed,
+                clip_crop=clip_crop,
+            )
             manifest["source"] = _source_provenance(job, {
                 "schema": "content-lab.syzygy-slideshow-source.v1",
                 "kind": "syzygy_slideshow",
@@ -2693,6 +2715,46 @@ def job_status(
     return response
 
 
+def _artifact_source_treatment(job: dict[str, Any], clip: dict[str, Any]) -> dict[str, Any] | None:
+    """Return producer evidence, including for completed jobs written before it was serialized.
+
+    The legacy recovery is deliberately narrow: the persisted clip must carry
+    the exact applied speed and crop, and the exact registered publication must
+    still resolve to the recipe hash bound into the job. This re-exposes facts
+    already persisted by the executor; it never fills treatment from a caller.
+    """
+    stored = clip.get("sourceTreatment")
+    if isinstance(stored, dict):
+        return stored
+    if (
+        job.get("status") != "completed"
+        or job.get("sourceKind") not in {"generated", "dossier_source_dna", "syzygy_slideshow"}
+        or "clipSpeed" not in clip
+        or "clipCrop" not in clip
+    ):
+        return None
+    publication = load_registered_recipe(
+        job.get("recipePublicationPageId") or job["pageId"],
+        job["recipeId"], job["engine"], job["recipeVersion"],
+    )
+    recipe_spec = typed_recipe_spec(publication) if publication else None
+    if (
+        recipe_spec is None
+        or publication.get("recipeSpecHash") != job.get("recipeSpecHash")
+    ):
+        return None
+    try:
+        return source_treatment_receipt(
+            job,
+            recipe_spec["renderTreatment"],
+            clip["sha256"],
+            clip_speed=clip["clipSpeed"],
+            clip_crop=clip["clipCrop"],
+        )
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
 @router.get("/v1/jobs/{job_id}/artifacts")
 def job_artifacts(
     job_id: str,
@@ -2748,6 +2810,9 @@ def job_artifacts(
         }
         if isinstance(clip.get("delivery"), dict):
             artifact["delivery"] = clip["delivery"]
+        source_treatment = _artifact_source_treatment(job, clip)
+        if source_treatment is not None:
+            artifact["sourceTreatment"] = source_treatment
         artifacts.append(artifact)
     return {"schema": RESPONSE_SCHEMA, "jobId": job_id, "artifacts": artifacts}
 

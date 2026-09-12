@@ -136,6 +136,12 @@
 - New generated and sourced outputs emit `content-lab.source-treatment.v1`
   evidence after actual rendering and output hashing: source SHA, normalized
   video treatment, full source recipe context, recipe hash and generation job.
+  The artifact serializer also reconstructs that receipt for a completed
+  generated, sourced-video, or slideshow job only when the persisted clip
+  already carries its applied speed and crop and the exact registered recipe
+  still matches the job's recipe hash. This recovers paid outputs created while
+  receipt serialization was missing without asserting treatment for older
+  receiptless clips.
   Recovery crops inherit proven parent video treatment; they never assert the
   current desired treatment for historical bytes. `sourceRecipeTreatment` is
   recipe context and does not claim a caption overlay already exists.
