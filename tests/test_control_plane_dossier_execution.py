@@ -95,6 +95,18 @@ def current_generation_authority():
     }
 
 
+def source_treatment_for(job_id, source_sha256, recipe_spec_hash=None):
+    publication = recipe_publication()
+    treatment = json.loads(publication["recipeSpecCanonical"])["renderTreatment"]
+    return cp.source_treatment_receipt(
+        {"jobId": job_id, "recipeSpecHash": recipe_spec_hash or publication["recipeSpecHash"]},
+        treatment,
+        source_sha256,
+        clip_speed=treatment["clipSpeed"],
+        clip_crop=treatment["clipCrop"],
+    )
+
+
 @pytest.fixture
 def lab(monkeypatch, tmp_path):
     monkeypatch.setenv("CONTROL_PLANE_TOKEN", TOKEN)
@@ -392,7 +404,13 @@ def test_canonical_page_queues_from_one_exact_notion_bound_operational_publicati
     assert started == [job_id]
 
 
-def test_truck_job_reuses_preserved_paid_master_before_new_provider_spend(lab, monkeypatch):
+@pytest.mark.parametrize("evidence", [
+    "matching", "caption_only", "missing", "invalid_binding", "prior_recipe",
+    "grade_changed", "speed_changed", "crop_changed",
+])
+def test_truck_job_reuses_only_preparable_paid_master_before_new_provider_spend(
+    lab, monkeypatch, evidence,
+):
     client, tmp_path, started = lab
     old_root = tmp_path / "generated" / PAGE_ID / "legacy" / "cpl-1111111111111111"
     old_root.mkdir(parents=True)
@@ -401,9 +419,33 @@ def test_truck_job_reuses_preserved_paid_master_before_new_provider_spend(lab, m
     master.write_bytes(b"exact-paid-provider-master")
     master_sha = hashlib.sha256(master.read_bytes()).hexdigest()
     intent, revision = master_pages(PAGE_ID, handle="tucker.reeves")
+    producer_recipe_hash = (
+        "sha256:" + "9" * 64
+        if evidence == "prior_recipe"
+        else recipe_publication()["recipeSpecHash"]
+    )
+    actual = source_treatment_for(
+        "cpl-1111111111111111", master_sha, producer_recipe_hash,
+    )
+    if evidence == "caption_only":
+        actual["sourceRecipeTreatment"]["captionStyle"] = {"position": "bottom"}
+    elif evidence == "missing":
+        actual = None
+    elif evidence == "invalid_binding":
+        actual["sourceSha256"] = "0" * 64
+    elif evidence == "grade_changed":
+        actual["visualTreatment"]["filters"]["brightness"] = 1
+        actual["sourceRecipeTreatment"]["filters"]["brightness"] = 1
+    elif evidence == "speed_changed":
+        actual["visualTreatment"]["clipSpeed"] = 1
+        actual["sourceRecipeTreatment"]["clipSpeed"] = 1
+    elif evidence == "crop_changed":
+        actual["visualTreatment"]["clipCrop"]["zoom"] = 1
+        actual["sourceRecipeTreatment"]["clipCrop"]["zoom"] = 1
     store = cp._load_jobs()
     store["jobs"]["cpl-1111111111111111"] = {
         **current_generation_authority(),
+        "recipeSpecHash": producer_recipe_hash,
         "jobId": "cpl-1111111111111111",
         "pageId": PAGE_ID,
         "sourceKind": "generated",
@@ -414,6 +456,7 @@ def test_truck_job_reuses_preserved_paid_master_before_new_provider_spend(lab, m
             "path": "renders/paid-master.mp4",
             "sha256": master_sha,
             "bytes": master.stat().st_size,
+            **({"sourceTreatment": actual} if actual is not None else {}),
             "source": {
                 "recipeId": "truck-scenic:master",
                 "recipeVersion": "dossier-legacy0000000",
@@ -437,10 +480,15 @@ def test_truck_job_reuses_preserved_paid_master_before_new_provider_spend(lab, m
     assert response.status_code == 200
     job_id = response.json()["jobId"]
     stored = cp._load_jobs()["jobs"][job_id]
-    assert stored["sourceKind"] == "truck_master_recovery"
-    assert stored["providerCallsPlanned"] == 0
-    assert [entry["sha256"] for entry in stored["recoveryMasters"]] == [master_sha]
-    assert started == [f"recovery:{job_id}"]
+    if evidence in {"matching", "caption_only"}:
+        assert stored["sourceKind"] == "truck_master_recovery"
+        assert stored["providerCallsPlanned"] == 0
+        assert [entry["sha256"] for entry in stored["recoveryMasters"]] == [master_sha]
+        assert started == [f"recovery:{job_id}"]
+    else:
+        assert stored["sourceKind"] == "generated"
+        assert stored["providerCallsPlanned"] == 1
+        assert started == [job_id]
 
 
 def test_truck_job_never_recrops_a_master_from_stale_creative_authority(lab, monkeypatch):
@@ -507,6 +555,7 @@ async def test_truck_master_recovery_emits_five_crops_without_model_call(lab, mo
     store = cp._load_jobs()
     store["jobs"]["cpl-2222222222222222"] = {
         **current_generation_authority(),
+        "recipeSpecHash": recipe_publication()["recipeSpecHash"],
         "jobId": "cpl-2222222222222222",
         "pageId": PAGE_ID,
         "sourceKind": "generated",
@@ -517,6 +566,9 @@ async def test_truck_master_recovery_emits_five_crops_without_model_call(lab, mo
             "path": "renders/paid-master.mp4",
             "sha256": master_sha,
             "bytes": master.stat().st_size,
+            "sourceTreatment": source_treatment_for(
+                "cpl-2222222222222222", master_sha,
+            ),
             "source": {
                 "recipeId": "truck-scenic:master",
                 "recipeVersion": "dossier-legacy0000000",
@@ -575,6 +627,18 @@ async def test_truck_master_recovery_emits_five_crops_without_model_call(lab, mo
     )
     assert artifacts.status_code == 200
     assert len(artifacts.json()["artifacts"]) == 5
+    parent_treatment = source_treatment_for(
+        "cpl-2222222222222222", master_sha,
+    )
+    for artifact in artifacts.json()["artifacts"]:
+        treatment = artifact["sourceTreatment"]
+        assert treatment["sourceSha256"] == artifact["sha256"]
+        assert treatment["generationJobId"] == job_id
+        assert treatment["visualTreatment"] == parent_treatment["visualTreatment"]
+        assert treatment["derivedFrom"] == {
+            "sourceSha256": master_sha,
+            "generationJobId": "cpl-2222222222222222",
+        }
 
     # A job persisted by the former keeper-yield planner could contain more
     # completed crop groups than its requested delivery count. The transport
