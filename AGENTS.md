@@ -143,6 +143,9 @@
   receipt proves the requested video grade, speed and crop. Missing, malformed
   or mismatched treatment skips that master and allows normal fresh generation;
   caption-only changes still permit reuse. This does not grant content approval.
+- `services.ffmpeg.run_color_correct` serializes its ffmpeg subprocesses within
+  each service process so simultaneous asynchronous refill jobs cannot exhaust
+  container memory during 1080x1920 libx264 encoding.
 - Durable preparation is exposed at `/api/control-plane/v1/post-renders`.
   Every request requires the existing control-plane bearer and exact
   `X-RT-Page-Id`; enqueue also requires `Idempotency-Key`. Status, retries,
