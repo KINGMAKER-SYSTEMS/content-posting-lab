@@ -28,8 +28,12 @@ thread semaphore. The hard limits are 128 MiB input, 600 frames, 4096×2160 pixe
 per frame, 32 MiB total encoded vision input and 420 seconds. Frame decode streams one native RGB frame at a time;
 no decoded-frame disk cache is retained. Each frame is decoded at its native resolution, then receives orientation-aware
 sparse-text OCR (Tesseract PSM12) at the configured OCR working long edge. Set
-`CONTENT_LAB_OCR_LONG_EDGE` to a positive long-edge pixel size (for example 960
-or 720); leave it unset or `0` for the default native OCR. GLM frames are always
+`CONTENT_LAB_OCR_LONG_EDGE` to a positive long-edge pixel size (960 is the
+measured option documented here); leave it unset or `0` for the default native
+OCR. In the synthetic portrait cap-height sweep on a 1920-tall frame, the
+smallest reliably detected cap height was roughly 9 px at native and roughly 17 px
+with `CONTENT_LAB_OCR_LONG_EDGE=960`; this is a detector-floor measurement, not
+a production-content guarantee. No 720 detection-floor number is established here. GLM frames are always
 encoded from the native frames, regardless of this OCR setting. At most two OCR
 subprocesses are in flight. Each frame timeout is derived from the 420-second
 whole-scan budget and the probed frame count, rather than a fixed per-frame cap.
@@ -49,7 +53,9 @@ master returns `frame_budget_exceeded` rather than silently declaring it clean.
 Validation: `pytest -q tests/test_visual_admission.py tests/test_production_image_imports.py`.
 Native fixtures require ffmpeg/ffprobe/tesseract and are explicit skips if absent.
 The working-resolution setting changes only OCR; frame coverage remains every
-decoded native frame and GLM sampling remains up to 16 native frames.
+decoded native frame and GLM sampling remains up to 16 native frames. Because OCR
+is the full-coverage text detector, changing its working edge changes the detector
+floor; native remains the default.
 Live model evidence belongs separately from the hermetic fixture model responses.
 
 ## Source timeline planning
