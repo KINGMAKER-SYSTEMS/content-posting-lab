@@ -33,7 +33,11 @@ measured option documented here); leave it unset or `0` for the default native
 OCR. In the synthetic portrait cap-height sweep on a 1920-tall frame, the
 smallest reliably detected cap height was roughly 9 px at native and roughly 17 px
 with `CONTENT_LAB_OCR_LONG_EDGE=960`; this is a detector-floor measurement, not
-a production-content guarantee. No 720 detection-floor number is established here. GLM frames are always
+a production-content guarantee. No 720 detection-floor number is established here. The Worker admission
+gate accepts only `native` or `960` in `ocr.workingLongEdge`
+(`ALLOWED_OCR_WORKING_LONG_EDGES`) and refuses any other value as
+`ARTIFACT_VISUAL_EVIDENCE_UNAVAILABLE`; deploying another edge requires changing both
+contracts. GLM frames are always
 encoded from the native frames, regardless of this OCR setting. At most two OCR
 subprocesses are in flight. Each frame timeout is derived from the 420-second
 whole-scan budget and the probed frame count, rather than a fixed per-frame cap.
