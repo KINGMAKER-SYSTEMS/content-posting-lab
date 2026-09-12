@@ -7,6 +7,7 @@ default check) so a silent regression can't produce wrong color on the burn
 router's TikTok-optimized encodes.
 """
 
+import asyncio
 import math
 import re
 
@@ -184,6 +185,39 @@ async def test_source_window_is_an_input_bound_before_speed_treatment(monkeypatc
         "ffmpeg", "-y", "-ss", "8.500", "-t", "7.000", "-i", "master.mp4",
     ]
     assert captured[captured.index("-vf") + 1] == "setpts=PTS/2.000000"
+
+
+@pytest.mark.asyncio
+async def test_color_correct_serializes_ffmpeg_processes(monkeypatch):
+    first_started = asyncio.Event()
+    release_first = asyncio.Event()
+    active = 0
+    peak = 0
+
+    class Process:
+        returncode = 0
+
+        async def communicate(self):
+            nonlocal active, peak
+            active += 1
+            peak = max(peak, active)
+            first_started.set()
+            await release_first.wait()
+            active -= 1
+            return b"", b""
+
+    async def fake_exec(*args, **kwargs):
+        return Process()
+
+    monkeypatch.setattr(ffmpeg_module.asyncio, "create_subprocess_exec", fake_exec)
+    first = asyncio.create_task(run_color_correct("one.mp4", "one-out.mp4", None))
+    await first_started.wait()
+    second = asyncio.create_task(run_color_correct("two.mp4", "two-out.mp4", None))
+    await asyncio.sleep(0)
+    assert peak == 1
+    release_first.set()
+    await asyncio.gather(first, second)
+    assert peak == 1
 
 
 @pytest.mark.asyncio

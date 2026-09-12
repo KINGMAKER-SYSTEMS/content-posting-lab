@@ -372,3 +372,13 @@ accepts upright square-pixel inputs within three percent of 9:16, center-crops
 only the excess edge, and still emits verified 1080x1920 output. The prepared
 render and durable job suites passed 68 checks, including an actual 704x1280 MP4.
 _________________________________________________________________________________
+
+_________________________________________________________________________________
+time: [11:39pm] [09-11-26]
+agent: [Codex desktop] [GPT-6]
+worktree: [fix/ffmpeg-source-refill-capacity-20260912]
+type: [bug report]
+area: [backend]
+
+A burst of scheduler refill jobs started independent 1080x1920 libx264 processes in Content Lab and six were killed during encoder initialization. Serialized services.ffmpeg.run_color_correct through one process-local permit so asynchronous jobs wait instead of exhausting the production container. Added a concurrency regression; the focused FFmpeg suite passed 47/47.
+_________________________________________________________________________________

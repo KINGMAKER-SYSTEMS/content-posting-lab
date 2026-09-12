@@ -11,6 +11,14 @@ import math
 
 log = logging.getLogger("ffmpeg")
 
+# A 1080x1920 libx264 encode can consume most of the memory available to the
+# production container. Control-plane jobs are intentionally asynchronous, so
+# a burst of page refills can otherwise start many independent ffmpeg processes
+# at once and have the host kill them during encoder initialization. Keep one
+# encode active per service process; callers remain queued in their durable job
+# state and continue as permits are released.
+_COLOR_CORRECT_GATE = asyncio.Semaphore(1)
+
 
 # TikTok-optimized encode: 1080x1920, 30fps, H.264 High.
 # Used by the burn router to guarantee consistent TikTok-ready output.
@@ -426,12 +434,13 @@ async def run_color_correct(
         *enc,
         output_path,
     ]
-    proc = await asyncio.create_subprocess_exec(
-        *cmd,
-        stdout=asyncio.subprocess.DEVNULL,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    _, stderr = await proc.communicate()
+    async with _COLOR_CORRECT_GATE:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await proc.communicate()
     if proc.returncode != 0:
         tail = stderr.decode("utf-8", errors="replace")[-500:]
         raise RuntimeError(f"ffmpeg color-correct failed: {tail}")
