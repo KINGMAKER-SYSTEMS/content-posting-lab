@@ -725,6 +725,18 @@ async def test_runner_passes_exact_cut_speed_and_crop_to_isolated_render(lab, mo
     job = cp._load_jobs()["jobs"][response.json()["jobId"]]
     assert job["status"] == "completed"
     assert Path(job["artifactRoot"]) in Path(calls[0][1]).parents
+    treatment = job["clips"][0]["sourceTreatment"]
+    assert treatment["sourceSha256"] == job["clips"][0]["sha256"]
+    assert treatment["generationJobId"] == job["jobId"]
+    assert treatment["recipeSpecHash"] == payload["recipeSpecHash"]
+    assert treatment["visualTreatment"]["clipSpeed"] == pytest.approx(0.75)
+    assert treatment["visualTreatment"]["clipCrop"] == crop
+    artifacts = client.get(
+        f"/api/control-plane/v1/jobs/{job['jobId']}/artifacts",
+        headers={"Authorization": f"Bearer {TOKEN}", "X-RT-Page-Id": PAGE_ID},
+    )
+    assert artifacts.status_code == 200
+    assert artifacts.json()["artifacts"][0]["sourceTreatment"] == treatment
 
 
 @pytest.mark.asyncio

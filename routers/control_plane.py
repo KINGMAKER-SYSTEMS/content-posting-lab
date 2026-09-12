@@ -109,6 +109,11 @@ from services.control_plane_source_imports import (
 from services.content_engine_registry import load_engine_registry, resolve_material_profile
 from services.content_format_contracts import load_format_contracts
 from services.ffmpeg import delivery_encode_args, run_color_correct
+from services.source_treatment import (
+    derived_source_treatment,
+    recovery_treatment_matches,
+    source_treatment_receipt,
+)
 from services.master_pages_contract import SCHEMA as MASTER_PAGES_SCHEMA, canonical_intent, exact_intent, intent_hash
 
 router = APIRouter()
@@ -309,6 +314,7 @@ def capabilities(
         else:
             max_quantity = _generated_capability_quantity(
                 job_store, generation_recipe, page_id, master_pages,
+                publication["recipeSpecHash"],
             )
         entries.append({
             "recipeId": publication["recipeId"],
@@ -834,7 +840,7 @@ def _generated_unavailable_prompts(
 
 def _generated_capability_quantity(
     store: dict[str, Any], recipe: Any, page_id: str,
-    master_pages: dict[str, Any],
+    master_pages: dict[str, Any], recipe_spec_hash: str,
 ) -> int:
     """Advertise only fresh output the current recipe can reserve now."""
     unavailable_hashes, unavailable_slots = _generated_unavailable_prompts(
@@ -864,6 +870,7 @@ def _generated_capability_quantity(
                 content_engine=recipe.engine,
                 recipe_id=recipe.recipe_id,
                 generation_recipe=recipe,
+                current_recipe_spec_hash=recipe_spec_hash,
             )) * recipe.clips_per_generation,
         )
     return max(fresh_capacity, recovery_capacity)
@@ -872,6 +879,7 @@ def _generated_capability_quantity(
 def _truck_master_candidates(
     store: dict[str, Any], page_id: str, limit: int, *,
     content_engine: str, recipe_id: str, generation_recipe: Any,
+    current_recipe_spec_hash: str,
 ) -> list[dict[str, Any]]:
     """Return durable, unused, current-authority truck masters for re-cropping.
 
@@ -883,6 +891,8 @@ def _truck_master_candidates(
     model. This prevents old-model or old-prompt renders from silently becoming
     new five-crop deliveries after the page's creative authority changes. The
     source files are checked again, byte-for-byte, by the recovery runner.
+    Applied-video evidence must also match the requested grade, speed and crop;
+    otherwise normal fresh generation must produce preparable source bytes.
     """
     reserved: set[str] = set()
     jobs = store.get("jobs", {})
@@ -940,6 +950,13 @@ def _truck_master_candidates(
                 or source.get("recipeId") != recipe_id
                 or str(source.get("contentNiche") or "").strip().upper() != "TRUCK"
                 or source.get("contentEngine") != content_engine
+                or not isinstance(clip.get("sourceTreatment"), dict)
+                or clip["sourceTreatment"].get("recipeSpecHash")
+                    != current_recipe_spec_hash
+                or not recovery_treatment_matches(
+                    clip.get("sourceTreatment"), job, sha256,
+                    generation_recipe.recipe_spec["renderTreatment"],
+                )
             ):
                 continue
             full = (root / rel_path).resolve()
@@ -957,6 +974,7 @@ def _truck_master_candidates(
                 "sha256": sha256,
                 "bytes": byte_count,
                 "source": source,
+                "sourceTreatment": clip.get("sourceTreatment"),
             })
             seen.add(sha256)
             if len(candidates) >= limit:
@@ -1418,6 +1436,10 @@ async def _run_dossier_generation(job_id: str) -> None:
                 manifest["promptSlots"] = slots
                 manifest["clipSpeed"] = clip_speed
                 manifest["clipCrop"] = clip_crop
+                manifest["sourceTreatment"] = source_treatment_receipt(
+                    job, recipe.recipe_spec["renderTreatment"], manifest["sha256"],
+                    clip_speed=clip_speed, clip_crop=clip_crop,
+                )
                 provider_source = source
                 delivery = None
                 if isinstance(candidate, dict) and candidate.get("cropMode") in {
@@ -1585,6 +1607,12 @@ async def _run_truck_master_recovery(job_id: str) -> None:
                 if geometry != (crop_width, crop_height):
                     raise RuntimeError("truck_master_crop_geometry_mismatch")
                 manifest = _generated_manifest(job_root, crop)
+                inherited_treatment = derived_source_treatment(
+                    candidate.get("sourceTreatment"), candidate["sha256"],
+                    manifest["sha256"], job["jobId"],
+                )
+                if inherited_treatment is not None:
+                    manifest["sourceTreatment"] = inherited_treatment
                 source_authority = candidate["source"]
                 manifest["source"] = _source_provenance(job, {
                     "recipeId": source_authority.get("recipeId") or job["recipeId"],
@@ -1738,6 +1766,10 @@ async def _run_dossier_source(job_id: str) -> None:
             manifest = _generated_manifest(job_root, destination)
             manifest["clipSpeed"] = clip_speed
             manifest["clipCrop"] = clip_crop
+            manifest["sourceTreatment"] = source_treatment_receipt(
+                job, recipe.recipe_spec["renderTreatment"], manifest["sha256"],
+                clip_speed=clip_speed, clip_crop=clip_crop,
+            )
             manifest["source"] = _source_provenance(job, {
                 "recipeId": recipe.recipe_id,
                 "sourceLibraryId": recipe.source_library_id,
@@ -1930,6 +1962,10 @@ async def _run_syzygy_slideshow(job_id: str) -> None:
             manifest = _generated_manifest(job_root, destination)
             manifest["clipSpeed"] = clip_speed
             manifest["clipCrop"] = clip_crop
+            manifest["sourceTreatment"] = source_treatment_receipt(
+                job, recipe.recipe_spec["renderTreatment"], manifest["sha256"],
+                clip_speed=clip_speed, clip_crop=clip_crop,
+            )
             manifest["source"] = _source_provenance(job, {
                 "schema": "content-lab.syzygy-slideshow-source.v1",
                 "kind": "syzygy_slideshow",
@@ -2466,6 +2502,7 @@ async def create_job(
                 content_engine=engine,
                 recipe_id=recipe_id,
                 generation_recipe=generation_recipe,
+                current_recipe_spec_hash=publication["recipeSpecHash"],
             )
             if generation_recipe is not None
             and recipe_id == TRUCK_RECIPE_ID
@@ -2746,6 +2783,8 @@ def job_artifacts(
                 "bytes": clip["thumbnail"]["bytes"],
             },
         }
+        if isinstance(clip.get("sourceTreatment"), dict):
+            artifact["sourceTreatment"] = clip["sourceTreatment"]
         if isinstance(clip.get("delivery"), dict):
             artifact["delivery"] = clip["delivery"]
         artifacts.append(artifact)

@@ -470,12 +470,28 @@ async def test_runner_completes_with_strict_syzygy_provenance(lab, monkeypatch):
         )
         assert clip["clipSpeed"] == 1.0
         assert clip["clipCrop"] == {"zoom": 1.0, "focusX": 0.5, "focusY": 0.5}
+        treatment = clip["sourceTreatment"]
+        assert treatment["sourceSha256"] == clip["sha256"]
+        assert treatment["generationJobId"] == job_id
+        assert treatment["recipeSpecHash"] == payload["recipeSpecHash"]
+        assert treatment["visualTreatment"]["clipSpeed"] == 1.0
+        assert treatment["visualTreatment"]["clipCrop"] == {
+            "zoom": 1.0, "focusX": 0.5, "focusY": 0.5,
+        }
         assert clip["thumbnail"]["sha256"]
         output = Path(job["artifactRoot"]) / clip["path"]
         assert output.read_bytes() == b"derived:" + output.name.encode()
     assert calls["observe"] == 4  # before + after for each of two plans
     assert len(calls["submit"]) == 2
     assert len(calls["download"]) == 2
+    artifacts = client.get(
+        f"/api/control-plane/v1/jobs/{job_id}/artifacts",
+        headers={"Authorization": f"Bearer {TOKEN}", "X-RT-Page-Id": PAGE_ID},
+    )
+    assert artifacts.status_code == 200
+    assert [artifact["sourceTreatment"] for artifact in artifacts.json()["artifacts"]] == [
+        clip["sourceTreatment"] for clip in job["clips"]
+    ]
 
 
 @pytest.mark.asyncio
