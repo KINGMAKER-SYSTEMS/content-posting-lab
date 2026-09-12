@@ -11,7 +11,8 @@
   the authenticated job visual-admission endpoint queues a bounded background
   whole-job sweep and persists algorithm/byte-bound decisions before
   Control Plane can admit ready video into R2. Every decoded native-resolution
-  frame receives Tesseract OCR; GLM-4.6v-flash receives up to 16 native frames.
+  frame receives Tesseract OCR at the configured `CONTENT_LAB_OCR_LONG_EDGE`
+  working edge (default `0`, native); GLM-4.6v-flash receives up to 16 native frames.
   Both detectors and complete coverage are required for clean.
 - Source cut planning honors the immutable original 60-second minimum and the
   Worker-supplied global source-window exclusions before rendering. Sourced

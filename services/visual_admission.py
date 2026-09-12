@@ -1,8 +1,9 @@
 """Bounded, pre-caption visual evidence. Detection is evidence, not a perfect oracle.
 
-Every decoded frame is OCR'd at native resolution. GLM sees up to 16 evenly
-spaced native frames. Clean requires both independent detectors and complete
-coverage. Missing evidence, resource exhaustion and malformed replies fail closed.
+Every decoded frame is decoded at native resolution and OCR'd at the configured
+working long edge. GLM sees up to 16 evenly spaced native frames. Clean requires
+both independent detectors and complete coverage. Missing evidence, resource
+exhaustion and malformed replies fail closed.
 """
 from __future__ import annotations
 
@@ -35,6 +36,9 @@ MAX_FRAMES = 600
 MAX_PIXELS = 4096 * 2160
 MAX_VISION_BYTES = 32 * 1024 * 1024
 TIMEOUT = 420
+# 0 preserves the historical native OCR default. A positive value is the OCR
+# working long edge; decode and GLM inputs remain native regardless.
+OCR_LONG_EDGE = int(os.environ.get("CONTENT_LAB_OCR_LONG_EDGE", "0") or 0)
 _GATE = threading.BoundedSemaphore(1)
 
 
@@ -105,22 +109,31 @@ def _frames(path, width, height, deadline):
         proc.stdout.close()
 
 
-def _ocr(frame, width, height, deadline):
-    # Sparse text with orientation detection passes native cardinal-rotation fixtures.
-    ppm = f"P6\n{width} {height}\n255\n".encode() + frame
+def _ocr(frame, width, height, deadline, frame_budget):
+    # Decode stays native; only the OCR working image may be resized.
+    ocr_width, ocr_height = width, height
+    if OCR_LONG_EDGE > 0 and max(width, height) > OCR_LONG_EDGE:
+        scale = OCR_LONG_EDGE / max(width, height)
+        ocr_width, ocr_height = round(width * scale), round(height * scale)
+        frame = Image.frombytes("RGB", (width, height), frame).resize((ocr_width, ocr_height)).tobytes()
+    ppm = f"P6\n{ocr_width} {ocr_height}\n255\n".encode() + frame
+    # The cap is a share of the whole scan budget, derived from the probed frame
+    # count; it is never a fixed wall-clock allowance per frame.
+    pixel_ratio = (width * height) / max(1, (OCR_LONG_EDGE or max(width, height)) ** 2)
+    per_frame = (TIMEOUT * 4 * pixel_ratio) / max(1, frame_budget)
     text = _run(["tesseract", "stdin", "stdout", "--psm", "12", "-l", "eng"], input=ppm,
-                timeout=min(10, max(.1, deadline-time.monotonic()))).decode("utf-8", "strict")
+                timeout=min(max(.1, deadline-time.monotonic()), max(.1, per_frame))).decode("utf-8", "strict")
     # Any recognized glyph rejects; orientation gibberish is still text evidence.
     return text.strip()[:500]
 
 
-def _scanned_frames(path, width, height, deadline):
+def _scanned_frames(path, width, height, deadline, expected):
     frames = _frames(path, width, height, deadline)
     try:
         with ThreadPoolExecutor(max_workers=2) as pool:
             number = 0
             while batch := list(islice(frames, 2)):
-                pending = [pool.submit(_ocr, frame, width, height, deadline) for frame in batch]
+                pending = [pool.submit(_ocr, frame, width, height, deadline, expected) for frame in batch]
                 for frame, result in zip(batch, pending):
                     yield number, frame, result.result()
                     number += 1
@@ -156,7 +169,7 @@ def _vision(samples, deadline):
     return result
 
 
-ALGORITHM = "tesseract-psm12-native-rgb-v1"
+ALGORITHM = "tesseract-psm12-configured-long-edge-rgb-v2"
 
 
 def pending_decision(*, page_id, job_id, index, sha256, byte_count):
@@ -165,7 +178,7 @@ def pending_decision(*, page_id, job_id, index, sha256, byte_count):
         "scannedAt": datetime.now(timezone.utc).isoformat(), "reason": "scan_pending",
         "sampling": {"mode": "all_frames", "algorithm": ALGORITHM, "frameCount": 0, "expectedFrameCount": 0},
         "model": {"name": MODEL, "status": "unavailable", "sampledFrames": []},
-        "ocr": {"engine": "tesseract", "status": "unavailable", "psm": 12, "languages": ["eng", "osd"]}}
+        "ocr": {"engine": "tesseract", "status": "unavailable", "psm": 12, "languages": ["eng", "osd"], "workingLongEdge": OCR_LONG_EDGE or "native"}}
 
 
 def scan_artifact(path: Path, *, page_id: str, job_id: str, index: int, sha256: str, byte_count: int):
@@ -193,7 +206,7 @@ def scan_artifact(path: Path, *, page_id: str, job_id: str, index: int, sha256: 
                                      durationSeconds=duration, durationMs=round(duration*1000))
         selected = {round(i*(expected-1)/min(15, expected-1)) for i in range(min(16, expected))} if expected > 1 else {0}
         samples = []
-        for number, frame, text in _scanned_frames(path, width, height, deadline):
+        for number, frame, text in _scanned_frames(path, width, height, deadline, expected):
             if number >= expected or number >= MAX_FRAMES:
                 raise RuntimeError("frame_count_mismatch")
             decision["sampling"]["frameCount"] = number + 1

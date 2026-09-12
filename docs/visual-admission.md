@@ -26,8 +26,13 @@ ffprobe and Tesseract English data; the Dockerfile includes these tools.
 One scan per host temp directory is permitted by an OS lock, with a per-process
 thread semaphore. The hard limits are 128 MiB input, 600 frames, 4096×2160 pixels
 per frame, 32 MiB total encoded vision input and 420 seconds. Frame decode streams one native RGB frame at a time;
-no decoded-frame disk cache is retained. Each frame receives orientation-aware sparse-text OCR (Tesseract PSM12), with
-at most two native-frame OCR subprocesses in flight.
+no decoded-frame disk cache is retained. Each frame is decoded at its native resolution, then receives orientation-aware
+sparse-text OCR (Tesseract PSM12) at the configured OCR working long edge. Set
+`CONTENT_LAB_OCR_LONG_EDGE` to a positive long-edge pixel size (for example 960
+or 720); leave it unset or `0` for the default native OCR. GLM frames are always
+encoded from the native frames, regardless of this OCR setting. At most two OCR
+subprocesses are in flight. Each frame timeout is derived from the 420-second
+whole-scan budget and the probed frame count, rather than a fixed per-frame cap.
 Up to 16 evenly spaced native frames also reach the vision model. OCR detects
 transient text even when it falls between model samples. A detected glyph rejects
 the clip immediately. Clean requires complete frame coverage, clean OCR, and a
@@ -43,6 +48,8 @@ master returns `frame_budget_exceeded` rather than silently declaring it clean.
 
 Validation: `pytest -q tests/test_visual_admission.py tests/test_production_image_imports.py`.
 Native fixtures require ffmpeg/ffprobe/tesseract and are explicit skips if absent.
+The working-resolution setting changes only OCR; frame coverage remains every
+decoded native frame and GLM sampling remains up to 16 native frames.
 Live model evidence belongs separately from the hermetic fixture model responses.
 
 ## Source timeline planning
