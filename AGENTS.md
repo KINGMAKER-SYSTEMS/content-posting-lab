@@ -7,6 +7,18 @@
 
 ## Ownership
 
+- `services/visual_admission.py` owns exact-byte pre-caption OCR/GLM decisions;
+  the authenticated job visual-admission endpoint queues a bounded background
+  whole-job sweep and persists algorithm/byte-bound decisions before
+  Control Plane can admit ready video into R2. Every decoded native-resolution
+  frame receives Tesseract OCR; GLM-4.6v-flash receives up to 16 native frames.
+  Both detectors and complete coverage are required for clean.
+- Source cut planning honors the immutable original 60-second minimum and the
+  Worker-supplied global source-window exclusions before rendering; the Worker
+  retains final atomic reservation authority for races. Budgets, missing
+  tools/credentials, uncertain replies, and changed bytes fail closed.
+  This detector has bounded recall; it does not prove semantic absence of all text.
+
 - `services/caption_render.py` owns the typed Dossier-to-render caption contract.
 - `services/post_render.py` owns local prepared-final rendering and exact artifact
   receipts; control-plane admission remains downstream authority.

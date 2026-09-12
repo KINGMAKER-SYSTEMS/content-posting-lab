@@ -52,7 +52,7 @@ from urllib.parse import quote, urlparse
 
 import httpx
 
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Header, HTTPException
 
 from project_manager import PROJECTS_DIR
 from providers.base import generate_one, multi_crop_vertical
@@ -83,6 +83,7 @@ from services.control_plane_sources import (
     plan_source_cuts,
     planned_source_cut_duration,
     resolve_source_recipe,
+    source_window_exclusions,
 )
 from services.control_plane_slideshows import (
     SyzygyError,
@@ -662,6 +663,7 @@ JOB_ID_PREFIX = "cpl-"
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".webm", ".m4v"}
 MAX_JOB_QUANTITY = 100
 MAX_JOB_BODY_BYTES = 16_384
+MAX_GENERATION_JOB_BODY_BYTES = 512_000
 IDEMPOTENCY_KEY_RE = re.compile(r"^[A-Za-z0-9_.:-]{8,200}$")
 JOB_TOKEN_BYTES = 24
 GENERATION_ACTIVE_STATUSES = {"queued", "running"}
@@ -2395,8 +2397,12 @@ async def create_job(
     constraints = body.get("constraints")
     if constraints is not None and not isinstance(constraints, dict):
         raise HTTPException(status_code=400, detail="constraints must be an object")
-    if len(json.dumps(body)) > MAX_JOB_BODY_BYTES:
+    if len(json.dumps(body)) > MAX_GENERATION_JOB_BODY_BYTES:
         raise HTTPException(status_code=400, detail="job body too large")
+    try:
+        excluded_windows = source_window_exclusions((constraints or {}).get("sourceWindowExclusions"))
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
 
     master_pages = exact_intent(
         body.get("masterPages"), body.get("masterPagesHash"),
@@ -2595,7 +2601,7 @@ async def create_job(
             start_generation = True
         elif source_recipe is not None:
             served_slots = _source_dna_unavailable_slots(store, source_recipe)
-            cuts = plan_source_cuts(source_recipe, quantity, served_slots)
+            cuts = plan_source_cuts(source_recipe, quantity, served_slots, excluded_windows)
             if len(cuts) != quantity:
                 raise HTTPException(status_code=409, detail="insufficient_inventory")
             job_root = (
@@ -2879,3 +2885,109 @@ def job_thumbnail(job_id: str, index: int, token: str = "") -> FileResponse:
     if root not in full.parents or not full.is_file():
         raise HTTPException(status_code=404, detail="thumbnail not found")
     return FileResponse(full, media_type="image/jpeg", filename=thumbnail["name"])
+
+
+_VISUAL_RUNTIME = _secrets.token_hex(16)
+
+
+def _mark_visual_sweep(job_id: str, sweep_id: str, running: bool) -> bool:
+    with lock_for(_jobs_path()):
+        store = _load_jobs()
+        job = store["jobs"].get(job_id)
+        if job is None or job.get("visualAdmissionSweep", {}).get("id") != sweep_id:
+            return False
+        job["visualAdmissionSweep"] = {"id": sweep_id, "runtime": _VISUAL_RUNTIME, "running": running, "updatedAt": datetime.now(timezone.utc).isoformat()}
+        atomic_save(_jobs_path(), store)
+        return True
+
+
+def _finish_visual_sweep(job_id: str, sweep_id: str) -> None:
+    """Scan all paid outputs, so a full batch does not require one Cron per clip."""
+    from services.visual_admission import ALGORITHM, SCHEMA, pending_decision, scan_artifact
+    try:
+        job = _get_job_or_404(job_id)
+        root = Path(job["artifactRoot"]).resolve()
+        for index, clip in enumerate(job.get("clips", [])[:100]):
+            previous = _get_job_or_404(job_id).get("visualAdmission", {}).get(str(index), {})
+            if previous.get("schema") == SCHEMA and all(previous.get(key) == value for key, value in {"pageId": job["pageId"], "jobId": job_id, "outputIndex": index, "sha256": clip.get("sha256"), "bytes": clip.get("bytes")}.items()) and previous.get("sampling", {}).get("algorithm") == ALGORITHM and previous.get("verdict") in {"clean", "text"}:
+                continue
+            path = (root / clip["path"]).resolve()
+            if not _mark_visual_sweep(job_id, sweep_id, True):
+                return
+            if root not in path.parents or not path.is_file():
+                decision = pending_decision(page_id=job["pageId"], job_id=job_id, index=index,
+                                            sha256=clip["sha256"], byte_count=clip["bytes"])
+                decision["reason"] = "artifact_missing"
+            else:
+                decision = scan_artifact(path, page_id=job["pageId"], job_id=job_id, index=index,
+                                         sha256=clip["sha256"], byte_count=clip["bytes"])
+            with lock_for(_jobs_path()):
+                store = _load_jobs()
+                current = store["jobs"].get(job_id)
+                if current is None:
+                    return
+                current.setdefault("visualAdmission", {})[str(index)] = decision
+                atomic_save(_jobs_path(), store)
+            if decision["reason"] in {"scanner_busy_retry", "vision_rate_limited", "vision_auth_unavailable", "vision_credentials_unavailable", "vision_service_unavailable", "ocr_or_decoder_unavailable"}:
+                break
+    finally:
+        _mark_visual_sweep(job_id, sweep_id, False)
+
+
+@router.post("/v1/jobs/{job_id}/visual-admission/{index}")
+def job_visual_admission(
+    job_id: str, index: int, body: dict[str, Any], background_tasks: BackgroundTasks,
+    x_rt_page_id: str | None = Header(default=None),
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """Enqueue once, then serve only byte-verified server-owned visual decisions."""
+    require_control_plane_bearer(authorization)
+    if not x_rt_page_id or not PAGE_ID_RE.fullmatch(x_rt_page_id):
+        raise HTTPException(status_code=400, detail="X-RT-Page-Id header is required")
+    job = _get_job_or_404(job_id)
+    if job["pageId"] != x_rt_page_id:
+        raise HTTPException(status_code=404, detail="job not found")
+    if set(body) != {"sha256", "bytes"} or not isinstance(body.get("sha256"), str) or not re.fullmatch(r"[0-9a-f]{64}", body["sha256"]) or type(body.get("bytes")) is not int:
+        raise HTTPException(status_code=400, detail="exact artifact SHA and bytes required")
+    if index < 0 or index >= min(100, len(job.get("clips", []))) or not job.get("artifactRoot"):
+        raise HTTPException(status_code=404, detail="artifact not found")
+    clip = job["clips"][index]
+    if body["sha256"] != clip.get("sha256") or body["bytes"] != clip.get("bytes"):
+        raise HTTPException(status_code=409, detail="artifact identity mismatch")
+    root = Path(job["artifactRoot"]).resolve()
+    path = (root / clip["path"]).resolve()
+    if root not in path.parents or not path.is_file():
+        raise HTTPException(status_code=404, detail="artifact not found")
+    from services.visual_admission import ALGORITHM, MAX_BYTES, SCHEMA, TIMEOUT, _hash, pending_decision
+    decision = pending_decision(page_id=x_rt_page_id, job_id=job_id, index=index,
+                                sha256=body["sha256"], byte_count=body["bytes"])
+    if not 1 <= body["bytes"] <= MAX_BYTES or path.stat().st_size != body["bytes"] or _hash(path) != body["sha256"]:
+        decision["reason"] = "artifact_identity_mismatch"
+        return decision
+    with lock_for(_jobs_path()):
+        store = _load_jobs()
+        current = store["jobs"].get(job_id)
+        if current is None:
+            raise HTTPException(status_code=409, detail="job disappeared during scan")
+        prior = current.get("visualAdmission", {}).get(str(index), {})
+        same = prior.get("schema") == SCHEMA and all(prior.get(k) == decision[k] for k in ("pageId", "jobId", "outputIndex", "sha256", "bytes")) and prior.get("sampling", {}).get("algorithm") == ALGORITHM
+        if same and prior.get("verdict") in {"clean", "text"}:
+            return prior
+        now = datetime.now(timezone.utc)
+        if same:
+            try:
+                if (now - datetime.fromisoformat(prior["scannedAt"])).total_seconds() < 30:
+                    return prior
+            except (ValueError, KeyError, TypeError):
+                pass
+        sweep = current.get("visualAdmissionSweep", {})
+        try:
+            active = sweep.get("runtime") == _VISUAL_RUNTIME and sweep.get("running") is True and (now - datetime.fromisoformat(sweep["updatedAt"])).total_seconds() < TIMEOUT + 70
+        except (ValueError, KeyError, TypeError):
+            active = False
+        if not active:
+            sweep_id = _secrets.token_hex(16)
+            current["visualAdmissionSweep"] = {"id": sweep_id, "runtime": _VISUAL_RUNTIME, "running": True, "updatedAt": now.isoformat()}
+            atomic_save(_jobs_path(), store)
+            background_tasks.add_task(_finish_visual_sweep, job_id, sweep_id)
+    return decision

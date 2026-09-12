@@ -1,0 +1,168 @@
+import hashlib
+import shutil
+import subprocess
+
+import pytest
+
+from services import visual_admission as gate
+
+
+@pytest.fixture(autouse=True)
+def isolated_scanner_lock(monkeypatch, tmp_path):
+    monkeypatch.setattr(gate, '_lock_path', lambda: tmp_path/'scanner.lock')
+
+
+def run_scan(path):
+    return gate.scan_artifact(path, page_id="acct:test", job_id="cpj_0123456789abcdef", index=0,
+                              sha256=hashlib.sha256(path.read_bytes()).hexdigest(), byte_count=path.stat().st_size)
+
+
+def fake_media(monkeypatch, tmp_path):
+    path = tmp_path / 'clip.mp4'
+    path.write_bytes(b'opaque-video')
+    monkeypatch.setattr(gate.shutil, 'which', lambda tool: tool)
+    monkeypatch.setattr(gate, '_probe', lambda *args: (4, 4, 3, 6))
+    monkeypatch.setattr(gate, '_frames', lambda *args: iter([b'\0'*48]*3))
+    monkeypatch.setattr(gate, '_ocr', lambda *args: '')
+    monkeypatch.setattr(gate, '_vision', lambda *args: {'verdict':'clean','reason':'No text visible'})
+    return path
+
+
+def test_clean_requires_all_frames_and_both_detectors(monkeypatch, tmp_path):
+    result = run_scan(fake_media(monkeypatch, tmp_path))
+    assert result['verdict'] == 'clean'
+    assert result['sampling']['frameCount'] == result['sampling']['expectedFrameCount'] == 3
+    assert result['model']['sampledFrames'] == [0, 1, 2]
+    assert result['ocr']['status'] == 'clean'
+
+
+@pytest.mark.parametrize('fault', ['vision', 'ocr', 'decode', 'coverage'])
+def test_unavailable_fails_closed(monkeypatch, tmp_path, fault):
+    path = fake_media(monkeypatch, tmp_path)
+    def fail(*args):
+        raise RuntimeError('provider failed with private credential')
+    if fault == 'vision': monkeypatch.setattr(gate, '_vision', fail)
+    if fault == 'ocr': monkeypatch.setattr(gate, '_ocr', fail)
+    if fault == 'decode': monkeypatch.setattr(gate, '_frames', fail)
+    if fault == 'coverage': monkeypatch.setattr(gate, '_frames', lambda *args: iter([b'\0'*48]))
+    result = run_scan(path)
+    assert result['verdict'] == 'unavailable'
+    assert 'private' not in str(result)
+
+
+def test_single_transient_frame_rejects_without_model(monkeypatch, tmp_path):
+    path = fake_media(monkeypatch, tmp_path)
+    monkeypatch.setattr(gate, '_frames', lambda *args: iter([b'0'*48,b'1'*48,b'2'*48]))
+    monkeypatch.setattr(gate, '_ocr', lambda frame,*args: 'SALE' if frame[0] == 49 else '')
+    monkeypatch.setattr(gate, '_vision', lambda *args: pytest.fail('should not need model to reject'))
+    result = run_scan(path)
+    assert result['verdict'] == 'text'
+    assert result['ocr']['frame'] == 1
+
+
+def test_visual_text_and_uncertainty_reject(monkeypatch, tmp_path):
+    path = fake_media(monkeypatch, tmp_path)
+    for verdict in ['text', 'unavailable']:
+        monkeypatch.setattr(gate, '_vision', lambda *args: {'verdict':verdict,'reason':'evidence'})
+        assert run_scan(path)['verdict'] == verdict
+
+
+def test_mutated_bytes_and_exhausted_budget_fail_closed(monkeypatch, tmp_path):
+    path = fake_media(monkeypatch, tmp_path)
+    result = gate.scan_artifact(path, page_id='acct:test', job_id='job', index=0, sha256='0'*64, byte_count=12)
+    assert result['reason'] == 'artifact_identity_mismatch'
+    gate._GATE.acquire()
+    try:
+        assert run_scan(path)['reason'] == 'scanner_busy_retry'
+    finally:
+        gate._GATE.release()
+
+
+@pytest.mark.skipif(not all(shutil.which(t) for t in ['ffmpeg','ffprobe','tesseract']), reason='native tools required')
+@pytest.mark.parametrize('has_text,rotation', [(False,0), (True,0), (True,90), (True,180), (True,270)])
+def test_real_video_single_frame_text(monkeypatch, tmp_path, has_text, rotation):
+    from PIL import Image, ImageDraw, ImageFont
+    # A single 1/30-second text frame between blank frames must be detected.
+    for n in range(3):
+        frame = Image.new('RGB', (640, 360), 'white')
+        if has_text and n == 1:
+            font_path = '/System/Library/Fonts/Supplemental/Arial.ttf'
+            if not __import__('pathlib').Path(font_path).exists():
+                font_path = '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf'
+            ImageDraw.Draw(frame).text((50, 130), 'EXISTING TEXT', fill='black', font=ImageFont.truetype(font_path, 48))
+        if rotation: frame = frame.rotate(rotation, expand=False)
+        frame.save(tmp_path / f'{n:02}.png')
+    path = tmp_path / 'video.mp4'
+    subprocess.run(['ffmpeg','-v','error','-framerate','30','-i',str(tmp_path/'%02d.png'),
+        '-c:v','libx264','-pix_fmt','yuv420p',str(path)], check=True)
+    monkeypatch.setattr(gate, '_vision', lambda *args: {'verdict':'clean','reason':'fixture mock; independent live model test required'})
+    result = run_scan(path)
+    assert result['verdict'] == ('text' if has_text else 'clean'), result
+    assert result['sampling']['frameCount'] == (2 if has_text else 3)
+
+
+def test_authenticated_endpoint_binds_and_persists_exact_artifact(monkeypatch, tmp_path):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from routers import control_plane as cp
+    path = fake_media(monkeypatch, tmp_path)
+    job_id='cpl-0123456789abcdef'
+    digest=hashlib.sha256(path.read_bytes()).hexdigest()
+    job={'pageId':'acct:test', 'artifactRoot':str(tmp_path), 'clips':[{'path':path.name,'sha256':digest,'bytes':path.stat().st_size}]}
+    job['clips'].append(dict(job['clips'][0]))
+    monkeypatch.setattr(cp, '_jobs_path', lambda: tmp_path/'jobs.json')
+    cp.atomic_save(cp._jobs_path(), {'jobs':{job_id:job}})
+    monkeypatch.setenv('CONTROL_PLANE_TOKEN','test-secret')
+    app=FastAPI(); app.include_router(cp.router,prefix='/api/control-plane')
+    client=TestClient(app)
+    url=f'/api/control-plane/v1/jobs/{job_id}/visual-admission/0'
+    body={'sha256':digest,'bytes':path.stat().st_size}
+    headers={'Authorization':'Bearer test-secret','X-RT-Page-Id':'acct:test'}
+    assert client.post(url,json=body).status_code == 401
+    assert client.post(url,json=body,headers={**headers,'X-RT-Page-Id':'acct:other'}).status_code == 404
+    assert client.post(url,json={**body,'sha256':'0'*64},headers=headers).status_code == 409
+    assert client.post(url,json={**body,'verdict':'clean'},headers=headers).status_code == 400
+    result=client.post(url,json=body,headers=headers)
+    assert result.status_code == 200, result.text
+    assert result.json()['reason'] == 'scan_pending'
+    result=client.post(url,json=body,headers=headers)
+    assert result.json()['verdict'] == 'clean'
+    assert cp._load_jobs()['jobs'][job_id]['visualAdmission']['0'] == result.json()
+    assert cp._load_jobs()['jobs'][job_id]['visualAdmission']['1']['outputIndex'] == 1
+    assert cp._load_jobs()['jobs'][job_id]['visualAdmissionSweep']['running'] is False
+    # A stale decision bound to another page must be repaired by the sweep.
+    store = cp._load_jobs()
+    store['jobs'][job_id]['visualAdmission']['0']['pageId'] = 'acct:wrong'
+    cp.atomic_save(cp._jobs_path(), store)
+    assert client.post(url,json=body,headers=headers).json()['reason'] == 'scan_pending'
+    result = client.post(url,json=body,headers=headers)
+    assert result.json()['pageId'] == 'acct:test'
+    assert result.json()['verdict'] == 'clean'
+    monkeypatch.setattr(gate, '_vision', lambda *args: pytest.fail('cached exact bytes must not trigger another model call'))
+    assert client.post(url,json=body,headers=headers).json() == result.json()
+    path.write_bytes(b'changed')
+    assert client.post(url,json=body,headers=headers).json()['verdict'] == 'unavailable'
+
+
+def test_vision_read_is_bounded_before_response_materialization(monkeypatch):
+    import base64
+    import time
+    import httpx
+    reads=[]
+    class OversizedStream(httpx.SyncByteStream):
+        def __iter__(self):
+            for _ in range(1000):
+                reads.append(1)
+                yield b'x'*4096
+    def handler(request):
+        assert request.url == gate.VISION_URL
+        payload=__import__('json').loads(request.content)
+        assert payload['model'] == gate.MODEL
+        assert payload['messages'][0]['content'][1]['image_url']['url'].startswith('data:image/png;base64,')
+        return httpx.Response(200, stream=OversizedStream())
+    original_client=httpx.Client
+    monkeypatch.setenv('CONTENT_LAB_VISION_API_KEY','fixture-key')
+    monkeypatch.setattr(gate.httpx,'Client',lambda **kw: original_client(transport=httpx.MockTransport(handler),**kw))
+    with pytest.raises(RuntimeError,match='vision_response_oversized'):
+        gate._vision([base64.b64encode(b'fixture-image').decode()],time.monotonic()+5)
+    assert len(reads) == 17
