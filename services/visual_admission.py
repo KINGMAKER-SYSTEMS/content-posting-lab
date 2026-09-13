@@ -24,13 +24,32 @@ import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlparse
 
 import httpx
 from PIL import Image
 
 SCHEMA = "content-lab.visual-admission.v1"
 MODEL = "glm-4.6v-flash"
-VISION_URL = "https://api.z.ai/api/paas/v4/chat/completions"
+DEFAULT_VISION_URL = "https://api.z.ai/api/paas/v4/chat/completions"
+ALLOWED_VISION_URLS = {
+    DEFAULT_VISION_URL,
+    "https://open.bigmodel.cn/api/paas/v4/chat/completions",
+}
+
+
+class VisionConfigurationError(ValueError):
+    pass
+
+
+def _configured_vision_url():
+    url = os.environ.get("CONTENT_LAB_VISION_URL", DEFAULT_VISION_URL).strip()
+    if url not in ALLOWED_VISION_URLS:
+        raise VisionConfigurationError("vision_url_not_allowed")
+    return url
+
+
+VISION_URL = _configured_vision_url()
 VISION_PROVIDER = "z.ai"
 VISION_FALLBACK_URL = os.environ.get(
     "CONTENT_LAB_VISION_FALLBACK_URL", "http://127.0.0.1:11434/v1/chat/completions"
@@ -198,7 +217,7 @@ def _vision_request(samples, deadline, *, url, model, provider, key=""):
                 result = _strict_vision_json(payload["choices"][0]["message"]["content"])
             except (ValueError, KeyError, IndexError, TypeError) as error:
                 raise RuntimeError("vision_response_invalid") from error
-    result["model"] = {"name": model, "provider": provider, "fallback": False, "fallbackReason": None}
+    result["model"] = {"name": model, "provider": provider, "urlHost": urlparse(url).hostname, "fallback": False, "fallbackReason": None}
     return result
 
 
@@ -217,7 +236,7 @@ def _vision(samples, deadline):
             if primary_error not in {"vision_timeout", "vision_rate_limited", "vision_service_unavailable", "vision_provider_1305", "vision_response_invalid", "vision_response_oversized"}:
                 raise
     if VISION_FALLBACK_MODEL not in ALLOWED_VISION_MODELS:
-        raise VisionUnavailable("vision_model_not_allowed", model={"name": VISION_FALLBACK_MODEL, "provider": "ollama", "fallback": True, "fallbackReason": primary_error})
+        raise VisionUnavailable("vision_model_not_allowed", model={"name": VISION_FALLBACK_MODEL, "provider": "ollama", "urlHost": urlparse(VISION_FALLBACK_URL).hostname, "fallback": True, "fallbackReason": primary_error})
     try:
         fallback_key = os.environ.get("CONTENT_LAB_VISION_FALLBACK_API_KEY", "").strip()
         result = _vision_request(samples, deadline, url=VISION_FALLBACK_URL, model=VISION_FALLBACK_MODEL, provider="ollama", key=fallback_key)
@@ -230,7 +249,7 @@ def _vision(samples, deadline):
     except RuntimeError as error:
         fallback_error = str(error)
     raise VisionUnavailable("vision_unavailable_all_providers", model={
-        "name": VISION_FALLBACK_MODEL, "provider": "ollama", "fallback": True,
+        "name": VISION_FALLBACK_MODEL, "provider": "ollama", "urlHost": urlparse(VISION_FALLBACK_URL).hostname, "fallback": True,
         "fallbackReason": primary_error, "fallbackError": fallback_error})
 
 
@@ -242,7 +261,7 @@ def pending_decision(*, page_id, job_id, index, sha256, byte_count):
         "pageId": page_id, "sha256": sha256, "bytes": byte_count,
         "scannedAt": datetime.now(timezone.utc).isoformat(), "reason": "scan_pending",
         "sampling": {"mode": "all_frames", "algorithm": ALGORITHM, "frameCount": 0, "expectedFrameCount": 0},
-        "model": {"name": MODEL, "provider": VISION_PROVIDER, "status": "unavailable", "fallback": False, "fallbackReason": None, "sampledFrames": []},
+        "model": {"name": MODEL, "provider": VISION_PROVIDER, "urlHost": urlparse(VISION_URL).hostname, "status": "unavailable", "fallback": False, "fallbackReason": None, "sampledFrames": []},
         "ocr": {"engine": "tesseract", "status": "unavailable", "psm": 12, "languages": ["eng", "osd"], "workingLongEdge": OCR_LONG_EDGE or "native"}}
 
 

@@ -144,6 +144,18 @@ def test_authenticated_endpoint_binds_and_persists_exact_artifact(monkeypatch, t
     assert client.post(url,json=body,headers=headers).json()['verdict'] == 'unavailable'
 
 
+def test_primary_vision_url_override_is_allowlisted(monkeypatch):
+    override = 'https://open.bigmodel.cn/api/paas/v4/chat/completions'
+    monkeypatch.setenv('CONTENT_LAB_VISION_URL', override)
+    assert gate._configured_vision_url() == override
+
+
+def test_primary_vision_url_rejects_unallowlisted_value(monkeypatch):
+    monkeypatch.setenv('CONTENT_LAB_VISION_URL', 'https://attacker.example/chat/completions')
+    with pytest.raises(gate.VisionConfigurationError, match='vision_url_not_allowed'):
+        gate._configured_vision_url()
+
+
 def test_vision_read_is_bounded_before_response_materialization(monkeypatch):
     import base64
     import time
@@ -166,6 +178,26 @@ def test_vision_read_is_bounded_before_response_materialization(monkeypatch):
     with pytest.raises(RuntimeError,match='vision_response_oversized'):
         gate._vision_request([base64.b64encode(b'fixture-image').decode()],time.monotonic()+5, url=gate.VISION_URL, model=gate.MODEL, provider='z.ai', key='fixture-key')
     assert len(reads) == 17
+
+
+def test_vision_result_records_answering_url_host(monkeypatch):
+    import httpx
+    original_client = gate.httpx.Client
+    monkeypatch.setattr(
+        gate.httpx,
+        'Client',
+        lambda **kw: original_client(transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, json={
+                'choices': [{'message': {'content': '{"verdict":"clean","reason":"ok"}'}}],
+            }),
+        ), **kw),
+    )
+    result = gate._vision_request(
+        ['ZmFrZQ=='], __import__('time').monotonic() + 5,
+        url='https://open.bigmodel.cn/api/paas/v4/chat/completions',
+        model=gate.MODEL, provider='z.ai', key='fixture-key',
+    )
+    assert result['model']['urlHost'] == 'open.bigmodel.cn'
 
 
 def test_vision_primary_ok_names_actual_model_and_no_fallback(monkeypatch):

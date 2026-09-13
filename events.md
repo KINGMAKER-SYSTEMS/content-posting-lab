@@ -426,3 +426,9 @@ Fixed the Lab GLM-to-Ollama vision ladder after adversarial review: httpx transp
 worktree: /Users/ecfromthedc/dev/wt/lab-fleet-vision
 
 Added `CONTENT_LAB_VISION_FALLBACK_API_KEY` as an optional fallback-only credential. The primary Z.AI key is never forwarded to the fallback host; unset fallback credentials produce no Authorization header. Corrected deployment truth: production is Railway at `https://risingtides-content-lab-production.up.railway.app`, so the configured fallback endpoint must be reachable from the Railway container.
+
+## 2026-09-14 — Configurable primary vision endpoint
+
+worktree: /Users/ecfromthedc/dev/wt/lab-fleet-vision
+
+Added the optional `CONTENT_LAB_VISION_URL` override, restricted to the server-owned `api.z.ai` and `open.bigmodel.cn` chat-completions URLs. The selected URL host is recorded in the decision model block. HTTP 429/provider-1305 primary responses remain unavailable and trigger the existing fallback ladder; unallowlisted endpoints fail closed. No API key values are read or logged.

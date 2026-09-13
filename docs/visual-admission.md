@@ -18,9 +18,12 @@ transient unavailable decisions have a 30-second retry cooldown. The Worker
 keeps its paid remote job queued while scans are pending. Originals in the
 source library are not scanned by this ready-clip admission workflow.
 
-`CONTENT_LAB_VISION_API_KEY` supplies a Z.AI key with access to the standard API
-at `https://api.z.ai/api/paas/v4/chat/completions`. Coding-plan text-only transport
-is not a vision substitute. The primary model is `glm-4.6v-flash`; when it has no
+`CONTENT_LAB_VISION_API_KEY` supplies a Z.AI key with access to the standard API.
+The primary endpoint defaults to `https://api.z.ai/api/paas/v4/chat/completions`;
+`CONTENT_LAB_VISION_URL` may select only that URL or
+`https://open.bigmodel.cn/api/paas/v4/chat/completions`. Other values fail closed
+as `vision_url_not_allowed`; this is an endpoint failover control, not a key
+selection control. Coding-plan text-only transport is not a vision substitute. The primary model is `glm-4.6v-flash`; when it has no
 key, is rate-limited (429/1305), times out, is transport-unreachable, or returns
 malformed/oversized response data, the Lab tries the
 OpenAI-compatible fallback at `CONTENT_LAB_VISION_FALLBACK_URL` (default

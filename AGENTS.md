@@ -18,6 +18,10 @@
   `http://127.0.0.1:11434/v1/chat/completions`) and
   `CONTENT_LAB_VISION_FALLBACK_MODEL` configure that fallback; the optional
   `CONTENT_LAB_VISION_FALLBACK_API_KEY` is sent only to the fallback host. The
+  optional `CONTENT_LAB_VISION_URL` primary override accepts only the two
+  server-owned Z.ai/Zhipu chat-completions URLs and records the answering URL
+  host in the decision model block. HTTP 429/provider-1305 primary responses
+  are unavailable and trigger the fallback; other hosts fail closed. The
   decision records the answering model, provider, fallback flag and reason. Both
   detectors and complete coverage are required for clean. Production runs on
   Railway at `https://risingtides-content-lab-production.up.railway.app`; the
