@@ -1052,3 +1052,19 @@ def test_generated_claim_preserves_active_and_same_job_prompt_exclusion(
             "sha256": "c" * 64, "promptHash": "b" * 64, "generationIndex": 1,
         })
     assert cp._load_jobs() == store
+
+@pytest.mark.parametrize("executor_name", [
+    "_run_dossier_generation", "_run_dossier_source", "_run_truck_master_recovery",
+])
+def test_paid_executors_terminalize_cancellation_and_remove_only_their_root(executor_name):
+    """Keep the cancellation contract pinned at every paid executor boundary."""
+    source = __import__("inspect").getsource(getattr(cp, executor_name))
+    assert "except asyncio.CancelledError:" in source
+    assert 'status="failed"' in source
+    assert 'error="generation_cancelled"' in source
+    assert "completedAt=datetime.now(timezone.utc).isoformat()" in source
+    assert "raise" in source
+    assert "shutil.rmtree(job_root, ignore_errors=True)" in source
+    # Cleanup is scoped to the executor's own artifactRoot, never a shared
+    # page root or a candidate's source root.
+    assert 'job_root = Path(job["artifactRoot"]).resolve()' in source
