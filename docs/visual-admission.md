@@ -27,8 +27,8 @@ selection control. Coding-plan text-only transport is not a vision substitute. T
 key, is rate-limited (429/1305), times out, is transport-unreachable, or returns
 malformed/oversized response data, the Lab tries the
 OpenAI-compatible fallback at `CONTENT_LAB_VISION_FALLBACK_URL` (default
-`http://127.0.0.1:11434/v1/chat/completions`) using
-`CONTENT_LAB_VISION_FALLBACK_MODEL` (default `qwen2.5vl:7b`). Every decision names
+`https://api.openai.com/v1/chat/completions`) using
+`CONTENT_LAB_VISION_FALLBACK_MODEL` (default `gpt-4o-mini`). Every decision names
 the answering model and provider and records `fallback` plus `fallbackReason`;
 both failures remain `unavailable` with reason `vision_unavailable_all_providers`. If
 `CONTENT_LAB_VISION_FALLBACK_API_KEY` is set, only the fallback request receives its

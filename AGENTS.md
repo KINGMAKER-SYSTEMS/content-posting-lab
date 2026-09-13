@@ -13,9 +13,9 @@
   Control Plane can admit ready video into R2. Every decoded native-resolution
   frame receives Tesseract OCR at the configured `CONTENT_LAB_OCR_LONG_EDGE`
   working edge (default `0`, native); the primary GLM-4.6v-flash provider receives up to
-  16 native frames, and a named Ollama `qwen2.5vl:7b` fallback may receive the same
+  16 native frames, and a named OpenAI `gpt-4o-mini` fallback may receive the same
   batch when the primary is unavailable. `CONTENT_LAB_VISION_FALLBACK_URL` (default
-  `http://127.0.0.1:11434/v1/chat/completions`) and
+  `https://api.openai.com/v1/chat/completions`) and
   `CONTENT_LAB_VISION_FALLBACK_MODEL` configure that fallback; the optional
   `CONTENT_LAB_VISION_FALLBACK_API_KEY` is sent only to the fallback host. The
   optional `CONTENT_LAB_VISION_URL` primary override accepts only the two

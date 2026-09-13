@@ -2548,6 +2548,25 @@ async def create_job(
                 status_code=409, detail="recipe_executor_unavailable",
             ) from error
 
+    # Fingerprint only the validated, immutable job contract.  Jobs written by
+    # older runtimes have no hash; those legacy rows remain replay-compatible.
+    job_request_body = {
+        "pageId": page_id,
+        "lane": str(body.get("lane") or x_rt_lane),
+        "engine": engine,
+        "lockedRecipeId": recipe_id,
+        "recipeVersion": recipe_version,
+        "quantity": quantity,
+        "constraints": constraints or {},
+        "sourceIsolation": body.get("sourceIsolation") or None,
+        "policyHash": policy_hash,
+        "masterPages": master_pages,
+        "masterPagesHash": body["masterPagesHash"],
+    }
+    job_request_hash = "sha256:" + hashlib.sha256(json.dumps(
+        job_request_body, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+    ).encode()).hexdigest()
+
     start_generation = False
     start_source = False
     start_truck_recovery = False
@@ -2557,6 +2576,10 @@ async def create_job(
         existing_id = store["byIdempotency"].get(idempotency_key)
         if existing_id and existing_id in store["jobs"]:
             existing = store["jobs"][existing_id]
+            # Legacy rows predate request fingerprints; preserve their replay
+            # behavior, but never let a hashed row be reused for new bytes.
+            if existing.get("jobRequestHash") not in (None, job_request_hash):
+                raise HTTPException(status_code=409, detail="idempotency_key_reused_with_different_request")
             if (
                 existing.get("sourceKind") in ASYNC_SOURCE_KINDS
                 and existing.get("status") in GENERATION_ACTIVE_STATUSES
@@ -2573,6 +2596,7 @@ async def create_job(
         job_id = JOB_ID_PREFIX + _secrets.token_hex(8)
         common = {
             "jobId": job_id, "idempotencyKey": idempotency_key,
+            "jobRequestHash": job_request_hash,
             "pageId": page_id, "lane": str(body.get("lane") or x_rt_lane),
             "engine": engine, "recipeId": recipe_id,
             "recipeVersion": recipe_version, "policyHash": policy_hash,
