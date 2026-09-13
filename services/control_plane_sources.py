@@ -12,6 +12,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 import hashlib
 import json
+import re
+from urllib.parse import urlsplit, urlunsplit, parse_qsl, quote_plus
 from pathlib import Path
 from typing import Any, Callable
 
@@ -38,6 +40,7 @@ EXECUTOR_PATH = (
 )
 EXECUTOR_SCHEMA = "content-lab.source-dna-recut-executor.v1"
 CUT_SLOT_STEP_MS = 9_000
+MIN_ORIGINAL_START_MS = 60_000
 
 
 @dataclass(frozen=True)
@@ -268,10 +271,52 @@ def resolve_source_recipe(
     )
 
 
+def canonical_source_identity(value: Any) -> str | None:
+    if not isinstance(value, str) or len(value) > 2048:
+        return None
+    try:
+        url = urlsplit(value)
+        if url.scheme != "https" or not url.hostname or url.username or url.password:
+            return None
+        host = url.hostname.lower()
+        if host in {"youtu.be", "www.youtube.com", "youtube.com", "m.youtube.com"}:
+            video_id = url.path[1:] if host == "youtu.be" else next((val for key, val in parse_qsl(url.query) if key == "v"), None) if url.path == "/watch" else url.path.split("/")[2] if re.match(r"^/(shorts|embed)/", url.path) else None
+            return f"https://www.youtube.com/watch?v={video_id}" if isinstance(video_id, str) and re.fullmatch(r"[\w-]{11}", video_id, re.ASCII) else None
+        query = [(key, val) for key, val in parse_qsl(url.query, keep_blank_values=True) if not key.startswith("utm_") and key not in {"fbclid", "gclid"}]
+        query.sort(key=lambda item: item[0])
+        authority = host + (f":{url.port}" if url.port and url.port != 443 else "")
+        # Match WHATWG URLSearchParams encoding used by the Worker: star is
+        # literal while tilde is escaped; duplicate keys retain stable order.
+        def encode(part: str) -> str:
+            return quote_plus(part, safe="*").replace("~", "%7E")
+        encoded_query = "&".join(f"{encode(key)}={encode(val)}" for key, val in query)
+        return urlunsplit(("https", authority, url.path or "/", encoded_query, ""))
+    except (ValueError, IndexError):
+        return None
+
+
+def source_window_exclusions(value: Any) -> list[tuple[str, int, int]]:
+    if value is None:
+        return []
+    if not isinstance(value, list) or len(value) > 2000:
+        raise ValueError("sourceWindowExclusions must contain at most 2000 windows")
+    windows = []
+    for entry in value:
+        if not isinstance(entry, dict) or set(entry) != {"sourceIdentity", "startMs", "endMs"}:
+            raise ValueError("sourceWindowExclusions fields are invalid")
+        identity = canonical_source_identity(entry["sourceIdentity"])
+        start, end = entry["startMs"], entry["endMs"]
+        if identity is None or type(start) is not int or type(end) is not int or not 0 <= start < end <= 9_007_199_254_740_991:
+            raise ValueError("sourceWindowExclusions identity or timeline is invalid")
+        windows.append((identity, start, end))
+    return windows
+
+
 def plan_source_cuts(
     recipe: SourceRecipe,
     quantity: int,
     served_slots: set[str],
+    exclusions: list[tuple[str, int, int]] | None = None,
 ) -> list[SourceCut]:
     if not isinstance(quantity, int) or isinstance(quantity, bool) or quantity <= 0:
         raise ValueError("quantity must be a positive integer")
@@ -281,14 +326,21 @@ def plan_source_cuts(
         raise ValueError("served_slots must be a string set")
     candidates: list[SourceCut] = []
     for master in recipe.masters:
+        identity = canonical_source_identity(master.provenance.get("sourceUrl"))
+        reserved = [(start, end) for source, start, end in (exclusions or []) if source == identity]
         # The saved cutDurationMs is the page's target. Each immutable master
         # deterministically rotates through the target +/- 2 seconds inside
         # the advertised 5-9 second executor bounds. A 9-second slot grid
         # keeps even the longest neighboring cuts disjoint, while slot_id
         # continues to reserve the source position across treatment changes.
         for start_ms in range(0, master.duration_ms, CUT_SLOT_STEP_MS):
+            if master.source_offset_ms + start_ms < MIN_ORIGINAL_START_MS:
+                continue
             duration_ms = planned_source_cut_duration(recipe, master, start_ms)
             if start_ms + duration_ms > master.duration_ms:
+                continue
+            original_start = master.source_offset_ms + start_ms
+            if any(begin < original_start + duration_ms and end > original_start for begin, end in reserved):
                 continue
             cut = SourceCut(master, start_ms, duration_ms)
             if cut.slot_id not in served_slots:

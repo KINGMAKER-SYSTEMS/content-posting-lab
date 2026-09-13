@@ -7,6 +7,34 @@
 
 ## Ownership
 
+- `services/visual_admission.py` owns exact-byte pre-caption OCR/vision-provider decisions;
+  the authenticated job visual-admission endpoint queues a bounded background
+  whole-job sweep and persists algorithm/byte-bound decisions before
+  Control Plane can admit ready video into R2. Every decoded native-resolution
+  frame receives Tesseract OCR at the configured `CONTENT_LAB_OCR_LONG_EDGE`
+  working edge (default `0`, native); the primary GLM-4.6v-flash provider receives up to
+  16 native frames, and a named Ollama `qwen2.5vl:7b` fallback may receive the same
+  batch when the primary is unavailable. `CONTENT_LAB_VISION_FALLBACK_URL` (default
+  `http://127.0.0.1:11434/v1/chat/completions`) and
+  `CONTENT_LAB_VISION_FALLBACK_MODEL` configure that fallback; the optional
+  `CONTENT_LAB_VISION_FALLBACK_API_KEY` is sent only to the fallback host. The
+  optional `CONTENT_LAB_VISION_URL` primary override accepts only the two
+  server-owned Z.ai/Zhipu chat-completions URLs and records the answering URL
+  host in the decision model block. HTTP 429/provider-1305 primary responses
+  are unavailable and trigger the fallback; other hosts fail closed. The
+  decision records the answering model, provider, fallback flag and reason. Both
+  detectors and complete coverage are required for clean. Production runs on
+  Railway at `https://risingtides-content-lab-production.up.railway.app`; the
+  fallback endpoint must be reachable from the Railway container or the gate
+  remains fail closed.
+- Source cut planning honors the immutable original 60-second minimum and the
+  Worker-supplied global source-window exclusions before rendering. Sourced
+  capabilities expose the current recipe’s canonical source identities so the
+  Worker filters reservations before its bounded exclusion limit; the Worker
+  retains final atomic reservation authority for races. Budgets, missing
+  tools/credentials, uncertain replies, and changed bytes fail closed.
+  This detector has bounded recall; it does not prove semantic absence of all text.
+
 - `services/caption_render.py` owns the typed Dossier-to-render caption contract.
 - `services/post_render.py` owns local prepared-final rendering and exact artifact
   receipts; control-plane admission remains downstream authority.

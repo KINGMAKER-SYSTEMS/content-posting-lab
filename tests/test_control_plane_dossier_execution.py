@@ -721,9 +721,15 @@ async def test_generation_runner_lands_treated_artifacts_under_the_isolated_job_
         folder.mkdir(parents=True, exist_ok=True)
         path = folder / "candidate.mp4"
         path.write_bytes(f"new-media:{provider_job_id}".encode())
+        crops = []
+        for crop_index in range(5):
+            crop = folder / f"crop-{crop_index}.mp4"
+            crop.write_bytes(path.read_bytes() + f":crop-{crop_index}".encode())
+            crops.append({"file": str(crop.relative_to(output_dir)), "cropMode": "both",
+                          "cropIndex": crop_index, "cropCount": 5, "width": 606, "height": 1080})
         jobs[provider_job_id]["videos"][index].update({
-            "status": "done",
-            "file": str(path.relative_to(output_dir)),
+            "status": "done", "file": str(path.relative_to(output_dir)),
+            "provider_master_file": str(path.relative_to(output_dir)), "crops": crops,
         })
 
     async def fake_color_correct(
@@ -747,8 +753,8 @@ async def test_generation_runner_lands_treated_artifacts_under_the_isolated_job_
     stored = cp._load_jobs()["jobs"][job_id]
     assert stored["status"] == "completed"
     assert stored["progress"] == 100
-    assert len(stored["clips"]) == 1
-    assert len(corrections) == 1
+    assert len(stored["clips"]) == 5
+    assert len(corrections) == 5
     assert all(speed == pytest.approx(0.75) for _, speed, _ in corrections)
     assert all(crop == {"zoom": 1.5, "focusX": 0.2, "focusY": 0.8} for _, _, crop in corrections)
     assert all(clip["clipSpeed"] == pytest.approx(0.75) for clip in stored["clips"])
@@ -801,8 +807,15 @@ async def test_generation_runner_refills_completed_prompt_but_rejects_reused_byt
             b"provider-returned-the-exact-same-video" if duplicate_output
             else f"fresh-media:{provider_job_id}".encode()
         )
+        crops = []
+        for crop_index in range(5):
+            crop = folder / f"crop-{crop_index}.mp4"
+            crop.write_bytes(path.read_bytes() + f":crop-{crop_index}".encode())
+            crops.append({"file": str(crop.relative_to(output_dir)), "cropMode": "both",
+                          "cropIndex": crop_index, "cropCount": 5, "width": 606, "height": 1080})
         jobs[provider_job_id]["videos"][index].update({
             "status": "done", "file": str(path.relative_to(output_dir)),
+            "provider_master_file": str(path.relative_to(output_dir)), "crops": crops,
         })
 
     async def fake_color_correct(
@@ -859,10 +872,11 @@ async def test_generation_runner_refills_completed_prompt_but_rejects_reused_byt
 
 
 @pytest.mark.asyncio
-async def test_truck_artifacts_trace_five_vertical_crops_to_one_provider_master(lab, monkeypatch):
+@pytest.mark.parametrize("corruption", [None, "missing", "short", "duplicate", "wrong_mode", "wrong_count"])
+async def test_truck_artifacts_trace_five_vertical_crops_to_one_provider_master(lab, monkeypatch, corruption):
     client, _, _ = lab
     response = client.post(
-        "/api/control-plane/v1/jobs", json=job_body(quantity=5), headers=HEADERS,
+        "/api/control-plane/v1/jobs", json=job_body(quantity=2), headers=HEADERS,
     )
     job_id = response.json()["jobId"]
 
@@ -883,9 +897,15 @@ async def test_truck_artifacts_trace_five_vertical_crops_to_one_provider_master(
                 "cropMode": "both", "cropIndex": crop_index, "cropCount": 5,
                 "width": 606, "height": 1080,
             })
+        crops.reverse()  # Provider order does not define the commissioned index order.
+        if corruption == "missing": crops = []
+        elif corruption == "short": crops.pop()
+        elif corruption == "duplicate": crops[-1]["cropIndex"] = crops[0]["cropIndex"]
+        elif corruption == "wrong_mode": crops[0]["cropMode"] = "dual"
+        elif corruption == "wrong_count": crops[0]["cropCount"] = 3
         jobs[provider_job_id]["videos"][index].update({
             "status": "done",
-            "file": crops[0]["file"],
+            "file": str(master.relative_to(output_dir)),
             "provider_master_file": str(master.relative_to(output_dir)),
             "crops": crops,
         })
@@ -908,6 +928,11 @@ async def test_truck_artifacts_trace_five_vertical_crops_to_one_provider_master(
     await cp._run_dossier_generation(job_id)
 
     stored = cp._load_jobs()["jobs"][job_id]
+    if corruption:
+        assert stored["status"] == "failed"
+        assert stored["error"] == "provider_crop_set_invalid"
+        assert not stored.get("clips")
+        return
     assert stored["status"] == "completed"
     assert len(stored["clips"]) == 5
     group = stored["clips"]

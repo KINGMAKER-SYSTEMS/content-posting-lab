@@ -1,0 +1,49 @@
+{
+  "schema": "content-lab.visual-admission.v1",
+  "verdict": "clean",
+  "jobId": "fixture",
+  "outputIndex": 0,
+  "pageId": "acct:fixture",
+  "sha256": "74bac037915808365f1559c403e3e6e7fd0cbc8e8f9568472d863dbf6f171892",
+  "bytes": 121366,
+  "scannedAt": "2026-09-12T17:23:08.850177+00:00",
+  "reason": "full_frame_ocr_and_glm_clean",
+  "sampling": {
+    "mode": "all_frames",
+    "algorithm": "tesseract-psm12-native-rgb-v1",
+    "frameCount": 210,
+    "expectedFrameCount": 210,
+    "width": 1080,
+    "height": 1920,
+    "durationSeconds": 7.0,
+    "durationMs": 7000
+  },
+  "model": {
+    "name": "glm-4.6v-flash",
+    "status": "clean",
+    "sampledFrames": [
+      0,
+      14,
+      28,
+      42,
+      56,
+      70,
+      84,
+      98,
+      111,
+      125,
+      139,
+      153,
+      167,
+      181,
+      195,
+      209
+    ],
+    "reason": "stub for isolated full-resolution OCR throughput"
+  },
+  "ocr": {
+    "engine": "tesseract",
+    "status": "clean"
+  },
+  "elapsedSeconds": 228.38
+}

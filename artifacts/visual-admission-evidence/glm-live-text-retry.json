@@ -1,0 +1,5 @@
+{
+  "verdict": "unavailable",
+  "errorType": "HTTPStatusError",
+  "httpStatus": 429
+}

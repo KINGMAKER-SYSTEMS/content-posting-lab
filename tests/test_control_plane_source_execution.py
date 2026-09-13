@@ -530,6 +530,7 @@ def test_sourced_paths_never_probe_the_ai_video_resolver(lab, monkeypatch):
     assert capabilities.json()["capabilities"] == [{
         "recipeId": "pov-dirt-bike:master",
         "engine": "sourced_video",
+        "sourceIdentities": ["https://www.youtube.com/watch?v=vt5im2TRAKw"],
         "recipeVersion": "dossier-feedfacefeedface",
         "maxQuantity": 10,
     }]
@@ -617,6 +618,7 @@ def test_capability_advertises_only_currently_reservable_source_windows(lab):
     assert capabilities == [{
         "recipeId": "pov-dirt-bike:master",
         "engine": "sourced_video",
+        "sourceIdentities": ["https://www.youtube.com/watch?v=vt5im2TRAKw"],
         "recipeVersion": "dossier-feedfacefeedface",
         "maxQuantity": 2,
     }]
@@ -635,6 +637,7 @@ def test_capability_advertises_only_currently_reservable_source_windows(lab):
     assert exhausted.json()["capabilities"] == [{
         "recipeId": "pov-dirt-bike:master",
         "engine": "sourced_video",
+        "sourceIdentities": ["https://www.youtube.com/watch?v=vt5im2TRAKw"],
         "recipeVersion": "dossier-feedfacefeedface",
         "maxQuantity": 0,
     }]
@@ -810,3 +813,71 @@ def test_failed_source_job_status_exposes_only_the_bounded_terminal_error(lab):
     assert failed.status_code == 200
     assert failed.json()["error"] == exact_error[:300]
     assert len(failed.json()["error"]) == 300
+
+
+def test_og_source_skips_first_minute_but_preserves_immutable_offsets():
+    from dataclasses import replace
+    recipe = resolve_source_recipe(publication(cut_duration_ms=7_000))
+    original = replace(recipe.masters[0], source_offset_ms=0)
+    whole = replace(recipe, masters=(original,))
+    cuts = plan_source_cuts(whole, 3, set())
+    assert [cut.start_ms for cut in cuts] == [63_000, 72_000, 81_000]
+    assert all(cut.master.source_offset_ms + cut.start_ms >= 60_000 for cut in cuts)
+    offset = replace(recipe, masters=(replace(original, source_offset_ms=60_000),))
+    assert plan_source_cuts(offset, 1, set())[0].start_ms == 0
+    short = replace(whole, masters=(replace(original, duration_ms=60_000),))
+    assert plan_source_cuts(short, 1, set()) == []
+
+
+def test_shared_source_exclusions_skip_other_page_windows_and_reencoding():
+    from dataclasses import replace
+    from services.control_plane_sources import source_window_exclusions
+    recipe = resolve_source_recipe(publication(cut_duration_ms=7_000))
+    master = replace(recipe.masters[0], sha256='f'*64, source_offset_ms=0)
+    recipe = replace(recipe, masters=(master,))
+    excluded = source_window_exclusions([{'sourceIdentity':'https://youtu.be/vt5im2TRAKw?si=x','startMs':60_000,'endMs':80_000}])
+    assert plan_source_cuts(recipe, 1, set(), excluded)[0].start_ms == 81_000
+    # Half-open touching intervals do not block a valid next slot.
+    excluded = source_window_exclusions([{'sourceIdentity':master.provenance['sourceUrl'],'startMs':0,'endMs':63_000}])
+    assert plan_source_cuts(recipe, 1, set(), excluded)[0].start_ms == 63_000
+    # Unknown legacy timing blocks the whole source, not a guessed short window.
+    excluded = source_window_exclusions([{'sourceIdentity':master.provenance['sourceUrl'],'startMs':0,'endMs':9_007_199_254_740_991}])
+    assert plan_source_cuts(recipe, 1, set(), excluded) == []
+
+
+@pytest.mark.parametrize('excluded', [[{'sourceIdentity':'bad','startMs':0,'endMs':1}],
+    [{'sourceIdentity':'https://example.com/v','startMs':True,'endMs':2}],
+    [{'sourceIdentity':'https://example.com/v','startMs':2,'endMs':1}], [{}]*2001])
+def test_source_exclusions_fail_closed(excluded):
+    from services.control_plane_sources import source_window_exclusions
+    with pytest.raises(ValueError): source_window_exclusions(excluded)
+
+
+def test_job_creation_consumes_global_source_exclusions(lab):
+    client, _, _ = lab
+    body = job_body(1)
+    body['constraints']['sourceWindowExclusions'] = [{'sourceIdentity':'https://youtu.be/vt5im2TRAKw','startMs':120_000,'endMs':140_000}]
+    response=client.post('/api/control-plane/v1/jobs',json=body,headers=headers('source-with-exclusions'))
+    assert response.status_code == 200, response.text
+    job=cp._load_jobs()['jobs'][response.json()['jobId']]
+    assert job['sourceCuts'][0]['startMs'] == 27_000
+
+
+def test_source_identity_matches_worker_query_and_youtube_rules():
+    from services.control_plane_sources import canonical_source_identity
+    assert canonical_source_identity('https://youtube.com/watch?v=abcdefghijk&v=12345678901') == 'https://www.youtube.com/watch?v=abcdefghijk'
+    assert canonical_source_identity('https://example.com/v?x=~*&utm_source=no') == 'https://example.com/v?x=%7E*'
+    assert canonical_source_identity('https://example.com:443/v?b=2&a=1#fragment') == 'https://example.com/v?a=1&b=2'
+
+
+def test_source_capability_suppresses_unknown_original_identity(lab, monkeypatch):
+    from dataclasses import replace
+    client, _, _ = lab
+    resolve = cp._dossier_source_recipe
+    def malformed(publication):
+        recipe = resolve(publication)
+        return replace(recipe, masters=tuple(replace(master, provenance={}) for master in recipe.masters))
+    monkeypatch.setattr(cp, "_dossier_source_recipe", malformed)
+    response = client.get("/api/control-plane/v1/capabilities", headers={"X-RT-Page-Id": PAGE_ID})
+    assert response.status_code == 200
+    assert response.json()["capabilities"] == []

@@ -400,3 +400,35 @@ area: [backend]
 
 Correction to the preceding entry: this change wires receipts for generated, sourced-video, and slideshow outputs. It leaves truck-master recovery unchanged because that path must preserve its parent producer receipt rather than restate the current job recipe hash. Focused tests remain 56 passing.
 _________________________________________________________________________________
+
+## 2026-09-12 — Fleet visual admission
+
+worktree: /Users/ecfromthedc/dev/wt/lab-fleet-vision
+
+Added authenticated exact-job/page/SHA/byte-bound visual decisions, native every-frame OCR and GLM-4.6v-flash evidence before ready-clip admission. Decisions persist in job truth. Decoder/OCR/model/coverage failures remain unavailable. Docker installs Tesseract. Tests include real 1/30-second text and endpoint authentication/identity/persistence. Full deployment and live fleet acceptance remain integration-owned.
+
+Source planning now skips original timestamps below 60 seconds and consumes the Worker's bounded global source-window exclusions before rendering. Native 1080x1920 throughput: 7s/210 frames in 228.38s with fixture model; 9s/270 frames completed OCR in 211.53s total with unavailable live model evidence. Flash API independently returned 429/provider 1305 overload. Decisions remain unavailable and paid jobs remain resumable; this is not a live-clean claim.
+
+Final focused suite: 77 passing across visual admission, packaged imports, recipe/generation and source execution. Peer review repaired stale wrong-page cached decisions with full identity checks in the sweep and a recovery regression.
+
+Follow-up review: capabilities expose current-recipe canonical source identities before the Worker exclusion limit. Multi-crop provider calls now require complete commissioned groups; the artifact endpoint preserves boundary groups for non-multiple quantities. Malformed candidate sets fail before artifact processing.
+
+Expanded verification passes 105 tests including actual generated-job malformed crop-set regressions and source-identity capability checks. Candidate indices are normalized into order before whole-group transport.
+
+## 2026-09-13 — Vision fallback transport honesty
+
+worktree: /Users/ecfromthedc/dev/wt/lab-fleet-vision
+
+Fixed the Lab GLM-to-Ollama vision ladder after adversarial review: httpx transport failures now trigger the fallback, and dual transport failure returns `vision_unavailable_all_providers` while naming the Ollama model that actually failed. Primary malformed or oversized responses now trigger the fallback as documented; if both legs fail, the decision remains unavailable. Added behavioral coverage for primary transport fallback, dual transport failure, and oversized-body fallback. Focused visual-admission suite: 22 passed, 1 existing warning.
+
+## 2026-09-14 — Hosted vision fallback credential boundary
+
+worktree: /Users/ecfromthedc/dev/wt/lab-fleet-vision
+
+Added `CONTENT_LAB_VISION_FALLBACK_API_KEY` as an optional fallback-only credential. The primary Z.AI key is never forwarded to the fallback host; unset fallback credentials produce no Authorization header. Corrected deployment truth: production is Railway at `https://risingtides-content-lab-production.up.railway.app`, so the configured fallback endpoint must be reachable from the Railway container.
+
+## 2026-09-14 — Configurable primary vision endpoint
+
+worktree: /Users/ecfromthedc/dev/wt/lab-fleet-vision
+
+Added the optional `CONTENT_LAB_VISION_URL` override, restricted to the server-owned `api.z.ai` and `open.bigmodel.cn` chat-completions URLs. The selected URL host is recorded in the decision model block. HTTP 429/provider-1305 primary responses remain unavailable and trigger the existing fallback ladder; unallowlisted endpoints fail closed. No API key values are read or logged.
