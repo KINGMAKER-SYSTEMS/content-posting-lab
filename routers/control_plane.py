@@ -1075,7 +1075,7 @@ def _update_job(job_id: str, **fields: Any) -> dict[str, Any] | None:
 def _claim_unique_generated_clip(
     job_id: str, manifest: dict[str, Any],
 ) -> None:
-    """Atomically reject reused output or a prompt claimed by another call."""
+    """Reject reused bytes, active prompt collisions, and within-job repeats."""
     digest = manifest.get("sha256")
     prompt_hash = manifest.get("promptHash")
     generation_index = manifest.get("generationIndex")
@@ -1109,6 +1109,7 @@ def _claim_unique_generated_clip(
                     raise RuntimeError("duplicate_generated_artifact")
                 if (
                     other.get("jobId") != job_id
+                    and other.get("status") in GENERATION_ACTIVE_STATUSES
                     and clip.get("promptHash") == prompt_hash
                 ):
                     raise RuntimeError("duplicate_generated_prompt")

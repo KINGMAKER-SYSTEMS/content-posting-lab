@@ -784,8 +784,9 @@ async def test_generation_runner_lands_treated_artifacts_under_the_isolated_job_
 
 
 @pytest.mark.asyncio
-async def test_generation_runner_rejects_an_exact_output_hash_from_an_earlier_job(
-    lab, monkeypatch,
+@pytest.mark.parametrize("duplicate_output", [False, True])
+async def test_generation_runner_refills_completed_prompt_but_rejects_reused_bytes(
+    lab, monkeypatch, duplicate_output,
 ):
     client, _, _ = lab
 
@@ -796,7 +797,10 @@ async def test_generation_runner_rejects_an_exact_output_hash_from_an_earlier_jo
         folder = output_dir / provider / provider_job_id
         folder.mkdir(parents=True, exist_ok=True)
         path = folder / "candidate.mp4"
-        path.write_bytes(b"provider-returned-the-exact-same-video")
+        path.write_bytes(
+            b"provider-returned-the-exact-same-video" if duplicate_output
+            else f"fresh-media:{provider_job_id}".encode()
+        )
         jobs[provider_job_id]["videos"][index].update({
             "status": "done", "file": str(path.relative_to(output_dir)),
         })
@@ -831,10 +835,27 @@ async def test_generation_runner_rejects_an_exact_output_hash_from_an_earlier_jo
     second = client.post(
         "/api/control-plane/v1/jobs", json=job_body(), headers=second_headers,
     )
+    # Reuse the exact approved prompt, exercising the runner and final claim.
+    store = cp._load_jobs()
+    original = store["jobs"][first.json()["jobId"]]
+    store["jobs"][second.json()["jobId"]]["promptPlan"] = original["promptPlan"]
+    cp.atomic_save(cp._jobs_path(), store)
     await cp._run_dossier_generation(second.json()["jobId"])
-    duplicate = cp._load_jobs()["jobs"][second.json()["jobId"]]
-    assert duplicate["status"] == "failed"
-    assert duplicate["error"] == "duplicate_generated_artifact"
+    result = cp._load_jobs()["jobs"][second.json()["jobId"]]
+    if duplicate_output:
+        assert result["status"] == "failed"
+        assert result["error"] == "duplicate_generated_artifact"
+    else:
+        assert result["status"] == "completed"
+        assert result["clips"][0]["promptHash"] == original["clips"][0]["promptHash"]
+        assert result["clips"][0]["sha256"] != original["clips"][0]["sha256"]
+        artifacts = client.get(
+            f"/api/control-plane/v1/jobs/{result['jobId']}/artifacts",
+            headers={"Authorization": f"Bearer {TOKEN}", "X-RT-Page-Id": PAGE_ID},
+        )
+        assert artifacts.status_code == 200
+        assert artifacts.json()["artifacts"][0]["sha256"] == result["clips"][0]["sha256"]
+
 
 
 @pytest.mark.asyncio
@@ -937,3 +958,27 @@ def test_inflight_generation_from_a_previous_runtime_fails_closed(lab):
     ).json()
     assert status["status"] == "failed"
     assert cp._load_jobs()["jobs"][job_id]["error"] == "generation_runtime_restarted"
+
+
+@pytest.mark.parametrize("other_status,same_job", [
+    ("queued", False), ("running", False), ("running", True),
+])
+def test_generated_claim_preserves_active_and_same_job_prompt_exclusion(
+    lab, other_status, same_job,
+):
+    job_id = "cpl-5555555555555555"
+    other_id = job_id if same_job else "cpl-6666666666666666"
+    store = cp._load_jobs()
+    store["jobs"][job_id] = {
+        "jobId": job_id, "pageId": PAGE_ID, "status": "running", "clips": [],
+    }
+    store["jobs"][other_id] = {
+        "jobId": other_id, "pageId": PAGE_ID, "status": other_status,
+        "clips": [{"sha256": "a" * 64, "promptHash": "b" * 64, "generationIndex": 0}],
+    }
+    cp.atomic_save(cp._jobs_path(), store)
+    with pytest.raises(RuntimeError, match="duplicate_generated_prompt"):
+        cp._claim_unique_generated_clip(job_id, {
+            "sha256": "c" * 64, "promptHash": "b" * 64, "generationIndex": 1,
+        })
+    assert cp._load_jobs() == store

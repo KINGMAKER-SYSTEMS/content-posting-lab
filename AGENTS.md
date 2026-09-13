@@ -182,6 +182,8 @@
   current job.
 
 - AI generation reserves prompt combinations only for queued or running jobs.
+  Final clip admission applies the same active-only prompt rule while retaining
+  completed output SHA rejection and within-job prompt exclusion.
   Completed prompts remain approved inputs for fresh rendering; prompt text is
   not consumable media inventory. A new refill uses a new durable job, while
   idempotent replay returns the original job and downstream output-byte checks
