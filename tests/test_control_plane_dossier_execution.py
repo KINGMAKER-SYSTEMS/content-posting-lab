@@ -1,5 +1,6 @@
 """Generated dossier versions never hydrate legacy library clips."""
 
+import asyncio
 import hashlib
 import json
 import shutil
@@ -1053,18 +1054,37 @@ def test_generated_claim_preserves_active_and_same_job_prompt_exclusion(
         })
     assert cp._load_jobs() == store
 
-@pytest.mark.parametrize("executor_name", [
-    "_run_dossier_generation", "_run_dossier_source", "_run_truck_master_recovery",
-])
-def test_paid_executors_terminalize_cancellation_and_remove_only_their_root(executor_name):
-    """Keep the cancellation contract pinned at every paid executor boundary."""
-    source = __import__("inspect").getsource(getattr(cp, executor_name))
-    assert "except asyncio.CancelledError:" in source
-    assert 'status="failed"' in source
-    assert 'error="generation_cancelled"' in source
-    assert "completedAt=datetime.now(timezone.utc).isoformat()" in source
-    assert "raise" in source
-    assert "shutil.rmtree(job_root, ignore_errors=True)" in source
-    # Cleanup is scoped to the executor's own artifactRoot, never a shared
-    # page root or a candidate's source root.
-    assert 'job_root = Path(job["artifactRoot"]).resolve()' in source
+
+@pytest.mark.asyncio
+async def test_truck_recovery_cancel_is_terminal_and_preserves_candidate_root(lab, monkeypatch):
+    _client, tmp_path, _ = lab
+    job_root = tmp_path / "recovery-job"; job_root.mkdir()
+    candidate_root = tmp_path / "candidate"; candidate_root.mkdir()
+    master = candidate_root / "masters" / "paid.mp4"; master.parent.mkdir(); master.write_bytes(b"paid-master")
+    candidate_sha = hashlib.sha256(master.read_bytes()).hexdigest()
+    job_id = "cpl-cancel-recovery"
+    sibling_root = tmp_path / "sibling"; sibling_root.mkdir()
+    store = cp._load_jobs()
+    store["jobs"][job_id] = {"jobId": job_id, "pageId": PAGE_ID, "status": "queued",
+        "artifactRoot": str(job_root), "recoveryMasters": [{"artifactRoot": str(candidate_root),
+        "path": "masters/paid.mp4", "sha256": candidate_sha, "bytes": master.stat().st_size,
+        "source": {"recipeId": "truck-scenic:master"}}]}
+    sibling_id = "cpl-sibling"
+    store["jobs"][sibling_id] = {"jobId": sibling_id, "pageId": PAGE_ID, "status": "completed",
+        "artifactRoot": str(sibling_root), "clips": [{"path": "clip.mp4"}]}
+    cp.atomic_save(cp._jobs_path(), store)
+    started = asyncio.Event(); hold = asyncio.Event()
+    async def stalled_geometry(_path):
+        started.set(); await hold.wait(); return (1920, 1080)
+    monkeypatch.setattr(cp, "_get_job_or_404", lambda _job_id: cp._load_jobs()["jobs"][_job_id])
+    monkeypatch.setattr(cp, "_job_matches_current_master_pages", lambda _job: True)
+    monkeypatch.setattr(cp, "_video_geometry", stalled_geometry)
+    task = asyncio.create_task(cp._run_truck_master_recovery(job_id))
+    await asyncio.wait_for(started.wait(), 5)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError): await task
+    saved = cp._load_jobs()["jobs"][job_id]
+    assert saved["status"] == "failed" and saved["error"] == "generation_cancelled" and saved["completedAt"]
+    assert not job_root.exists()
+    assert sibling_root.exists() and saved["artifactRoot"] != str(sibling_root)
+    assert master.read_bytes() == b"paid-master"
