@@ -1113,3 +1113,24 @@ async def test_generation_cancellation_is_behavioral_and_releases_prompt_reserva
     assert saved["status"] == "failed" and saved["error"] == "generation_cancelled" and saved["completedAt"]
     assert not root.exists()
     assert not (prompt_hashes & cp._generated_unavailable_prompts(cp._load_jobs(), recipe, PAGE_ID)[0])
+
+@pytest.mark.asyncio
+async def test_generation_failure_removes_only_failed_root_and_keeps_completed_sibling(lab, monkeypatch):
+    client, tmp_path, _ = lab
+    failed = client.post("/api/control-plane/v1/jobs", json=job_body(), headers=HEADERS).json()["jobId"]
+    sibling_headers = {**HEADERS, "Idempotency-Key": "tt-tucker-reeves:sibling"}
+    sibling = client.post("/api/control-plane/v1/jobs", json=job_body(), headers=sibling_headers).json()["jobId"]
+    store = cp._load_jobs()
+    sibling_root = Path(store["jobs"][sibling]["artifactRoot"]); sibling_root.mkdir(parents=True, exist_ok=True)
+    (sibling_root / "clip.mp4").write_bytes(b"completed-sibling")
+    store["jobs"][sibling].update({"status": "completed", "clips": [{"path": "clip.mp4"}]})
+    cp.atomic_save(cp._jobs_path(), store)
+    async def failed_provider(*args, **kwargs):
+        raise RuntimeError("provider-boom")
+    monkeypatch.setattr(cp, "generate_one", failed_provider)
+    failed_root = Path(cp._load_jobs()["jobs"][failed]["artifactRoot"])
+    await cp._run_dossier_generation(failed)
+    saved = cp._load_jobs()["jobs"][failed]
+    assert saved["status"] == "failed" and saved["error"] == "provider-boom"
+    assert not failed_root.exists()
+    assert sibling_root.exists() and (sibling_root / "clip.mp4").read_bytes() == b"completed-sibling"

@@ -1,5 +1,6 @@
 """Closed contracts for page-scoped immutable-master recut execution."""
 
+import asyncio
 import hashlib
 import json
 from pathlib import Path
@@ -922,3 +923,28 @@ def test_source_capability_suppresses_unknown_original_identity(lab, monkeypatch
     response = client.get("/api/control-plane/v1/capabilities", headers={"X-RT-Page-Id": PAGE_ID})
     assert response.status_code == 200
     assert response.json()["capabilities"] == []
+
+@pytest.mark.asyncio
+async def test_source_cancellation_releases_windows_and_removes_own_root(lab, monkeypatch):
+    client, tmp_path, _ = lab
+    response = client.post("/api/control-plane/v1/jobs", json=job_body(1), headers=headers("source-cancel"))
+    assert response.status_code == 200
+    job_id = response.json()["jobId"]
+    started = asyncio.Event(); hold = asyncio.Event()
+    async def stalled_source(*args, **kwargs):
+        started.set(); await hold.wait()
+    monkeypatch.setattr(cp, "_cached_source_master", stalled_source)
+    task = asyncio.create_task(cp._run_dossier_source(job_id))
+    await asyncio.wait_for(started.wait(), 5)
+    saved = cp._load_jobs()["jobs"][job_id]
+    root = Path(saved["artifactRoot"])
+    assert root.exists()
+    recipe = cp._dossier_source_recipe(cp.load_registered_recipe(PAGE_ID, saved["recipeId"], saved["engine"], saved["recipeVersion"]))
+    slots = {cut["slotId"] for cut in saved["sourceCuts"]}
+    assert slots & cp._source_dna_unavailable_slots(cp._load_jobs(), recipe)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError): await task
+    saved = cp._load_jobs()["jobs"][job_id]
+    assert saved["status"] == "failed" and saved["error"] == "generation_cancelled" and saved["completedAt"]
+    assert not root.exists()
+    assert not (slots & cp._source_dna_unavailable_slots(cp._load_jobs(), recipe))
