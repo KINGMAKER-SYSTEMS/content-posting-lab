@@ -3,6 +3,7 @@
 import asyncio
 import hashlib
 import json
+from pathlib import Path
 import shutil
 
 import pytest
@@ -1088,3 +1089,27 @@ async def test_truck_recovery_cancel_is_terminal_and_preserves_candidate_root(la
     assert not job_root.exists()
     assert sibling_root.exists() and saved["artifactRoot"] != str(sibling_root)
     assert master.read_bytes() == b"paid-master"
+
+@pytest.mark.asyncio
+async def test_generation_cancellation_is_behavioral_and_releases_prompt_reservation(lab, monkeypatch):
+    client, tmp_path, _ = lab
+    response = client.post("/api/control-plane/v1/jobs", json=job_body(), headers=HEADERS)
+    job_id = response.json()["jobId"]
+    started = asyncio.Event(); hold = asyncio.Event()
+    async def stalled_generate(*args, **kwargs):
+        started.set(); await hold.wait()
+    monkeypatch.setattr(cp, "generate_one", stalled_generate)
+    task = asyncio.create_task(cp._run_dossier_generation(job_id))
+    await asyncio.wait_for(started.wait(), 5)
+    saved = cp._load_jobs()["jobs"][job_id]
+    root = Path(saved["artifactRoot"])
+    assert root.exists()
+    recipe = cp.resolve_generation_recipe(recipe_publication())
+    prompt_hashes = {item["promptHash"] for item in saved["promptPlan"]}
+    assert prompt_hashes & cp._generated_unavailable_prompts(cp._load_jobs(), recipe, PAGE_ID)[0]
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError): await task
+    saved = cp._load_jobs()["jobs"][job_id]
+    assert saved["status"] == "failed" and saved["error"] == "generation_cancelled" and saved["completedAt"]
+    assert not root.exists()
+    assert not (prompt_hashes & cp._generated_unavailable_prompts(cp._load_jobs(), recipe, PAGE_ID)[0])
