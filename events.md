@@ -414,3 +414,9 @@ Final focused suite: 77 passing across visual admission, packaged imports, recip
 Follow-up review: capabilities expose current-recipe canonical source identities before the Worker exclusion limit. Multi-crop provider calls now require complete commissioned groups; the artifact endpoint preserves boundary groups for non-multiple quantities. Malformed candidate sets fail before artifact processing.
 
 Expanded verification passes 105 tests including actual generated-job malformed crop-set regressions and source-identity capability checks. Candidate indices are normalized into order before whole-group transport.
+
+## 2026-09-13 — Vision fallback transport honesty
+
+worktree: /Users/ecfromthedc/dev/wt/lab-fleet-vision
+
+Fixed the Lab GLM-to-Ollama vision ladder after adversarial review: httpx transport failures now trigger the fallback, and dual transport failure returns `vision_unavailable_all_providers` while naming the Ollama model that actually failed. Primary malformed or oversized responses now trigger the fallback as documented; if both legs fail, the decision remains unavailable. Added behavioral coverage for primary transport fallback, dual transport failure, and oversized-body fallback. Focused visual-admission suite: 22 passed, 1 existing warning.

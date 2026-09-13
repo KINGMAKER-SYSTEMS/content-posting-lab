@@ -7,7 +7,7 @@
 
 ## Ownership
 
-- `services/visual_admission.py` owns exact-byte pre-caption OCR/GLM decisions;
+- `services/visual_admission.py` owns exact-byte pre-caption OCR/vision-provider decisions;
   the authenticated job visual-admission endpoint queues a bounded background
   whole-job sweep and persists algorithm/byte-bound decisions before
   Control Plane can admit ready video into R2. Every decoded native-resolution

@@ -208,13 +208,13 @@ def _vision(samples, deadline):
     if primary_error is None:
         try:
             return _vision_request(samples, deadline, url=VISION_URL, model=MODEL, provider=VISION_PROVIDER, key=key)
-        except httpx.TimeoutException:
-            primary_error = "vision_timeout"
+        except httpx.TransportError as error:
+            primary_error = "vision_timeout" if isinstance(error, httpx.TimeoutException) else "vision_transport_unavailable"
         except httpx.HTTPStatusError as error:
             primary_error = "vision_rate_limited" if error.response.status_code == 429 else "vision_service_unavailable"
         except RuntimeError as error:
             primary_error = str(error)
-            if primary_error not in {"vision_timeout", "vision_rate_limited", "vision_service_unavailable", "vision_provider_1305"}:
+            if primary_error not in {"vision_timeout", "vision_rate_limited", "vision_service_unavailable", "vision_provider_1305", "vision_response_invalid", "vision_response_oversized"}:
                 raise
     if VISION_FALLBACK_MODEL not in ALLOWED_VISION_MODELS:
         raise VisionUnavailable("vision_model_not_allowed", model={"name": VISION_FALLBACK_MODEL, "provider": "ollama", "fallback": True, "fallbackReason": primary_error})
@@ -222,13 +222,13 @@ def _vision(samples, deadline):
         result = _vision_request(samples, deadline, url=VISION_FALLBACK_URL, model=VISION_FALLBACK_MODEL, provider="ollama")
         result["model"].update(fallback=True, fallbackReason=primary_error)
         return result
-    except httpx.TimeoutException:
-        fallback_error = "vision_timeout"
+    except httpx.TransportError as error:
+        fallback_error = "vision_timeout" if isinstance(error, httpx.TimeoutException) else "vision_transport_unavailable"
     except httpx.HTTPStatusError:
         fallback_error = "vision_service_unavailable"
     except RuntimeError as error:
         fallback_error = str(error)
-    raise VisionUnavailable("vision_both_providers_unavailable", model={
+    raise VisionUnavailable("vision_unavailable_all_providers", model={
         "name": VISION_FALLBACK_MODEL, "provider": "ollama", "fallback": True,
         "fallbackReason": primary_error, "fallbackError": fallback_error})
 
@@ -307,7 +307,7 @@ def scan_artifact(path: Path, *, page_id: str, job_id: str, index: int, sha256: 
         # No remote body, credentials, or local filenames enter operator evidence.
         allowed = {"artifact_identity_mismatch", "ocr_or_decoder_unavailable", "frame_budget_exceeded",
             "scan_timeout", "incomplete_decode", "frame_count_mismatch", "incomplete_or_changed_artifact",
-            "vision_input_budget_exceeded", "vision_credentials_unavailable", "vision_response_invalid", "vision_response_oversized", "vision_model_not_allowed", "vision_both_providers_unavailable", "detector_process_failed"}
+            "vision_input_budget_exceeded", "vision_credentials_unavailable", "vision_response_invalid", "vision_response_oversized", "vision_model_not_allowed", "vision_unavailable_all_providers", "detector_process_failed"}
         decision["reason"] = str(exc) if str(exc) in allowed else "visual_evidence_unavailable"
     finally:
         decision["scannedAt"] = datetime.now(timezone.utc).isoformat()

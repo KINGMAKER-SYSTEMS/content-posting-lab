@@ -164,7 +164,7 @@ def test_vision_read_is_bounded_before_response_materialization(monkeypatch):
     monkeypatch.setenv('CONTENT_LAB_VISION_API_KEY','fixture-key')
     monkeypatch.setattr(gate.httpx,'Client',lambda **kw: original_client(transport=httpx.MockTransport(handler),**kw))
     with pytest.raises(RuntimeError,match='vision_response_oversized'):
-        gate._vision([base64.b64encode(b'fixture-image').decode()],time.monotonic()+5)
+        gate._vision_request([base64.b64encode(b'fixture-image').decode()],time.monotonic()+5, url=gate.VISION_URL, model=gate.MODEL, provider='z.ai', key='fixture-key')
     assert len(reads) == 17
 
 
@@ -207,7 +207,7 @@ def test_vision_both_fail_is_unavailable_and_named(monkeypatch):
     monkeypatch.setattr(gate, '_vision_request', request)
     with pytest.raises(gate.VisionUnavailable) as error:
         gate._vision(['ZmFrZQ=='], __import__('time').monotonic() + 5)
-    assert str(error.value) == 'vision_both_providers_unavailable'
+    assert str(error.value) == 'vision_unavailable_all_providers'
     assert error.value.model['name'] == 'qwen2.5vl:7b'
     assert error.value.model['fallback'] is True
 
@@ -219,3 +219,52 @@ def test_vision_unknown_fallback_model_is_refused(monkeypatch):
         gate._vision(['ZmFrZQ=='], __import__('time').monotonic() + 5)
     assert str(error.value) == 'vision_model_not_allowed'
     assert error.value.model['name'] == 'unknown-model'
+
+
+def test_vision_primary_transport_failure_falls_back(monkeypatch):
+    import httpx
+    monkeypatch.setenv('CONTENT_LAB_VISION_API_KEY', 'fixture-key')
+    monkeypatch.setattr(gate, 'VISION_FALLBACK_MODEL', 'qwen2.5vl:7b')
+    calls = []
+    def request(*args, **kwargs):
+        calls.append(kwargs['model'])
+        if len(calls) == 1:
+            raise httpx.ConnectError('primary refused')
+        return {'verdict': 'clean', 'reason': 'fallback evidence', 'model': {
+            'name': kwargs['model'], 'provider': kwargs['provider'], 'fallback': False, 'fallbackReason': None}}
+    monkeypatch.setattr(gate, '_vision_request', request)
+    result = gate._vision(['ZmFrZQ=='], __import__('time').monotonic() + 5)
+    assert calls == [gate.MODEL, 'qwen2.5vl:7b']
+    assert result['model']['name'] == 'qwen2.5vl:7b'
+    assert result['model']['fallback'] is True
+    assert result['model']['fallbackReason'] == 'vision_transport_unavailable'
+
+
+def test_vision_both_transport_fail_is_typed_and_names_fallback(monkeypatch):
+    import httpx
+    monkeypatch.setenv('CONTENT_LAB_VISION_API_KEY', 'fixture-key')
+    monkeypatch.setattr(gate, 'VISION_FALLBACK_MODEL', 'qwen2.5vl:7b')
+    monkeypatch.setattr(gate, '_vision_request', lambda *args, **kwargs: (_ for _ in ()).throw(httpx.ConnectError('refused')))
+    with pytest.raises(gate.VisionUnavailable) as error:
+        gate._vision(['ZmFrZQ=='], __import__('time').monotonic() + 5)
+    assert str(error.value) == 'vision_unavailable_all_providers'
+    assert error.value.model['name'] == 'qwen2.5vl:7b'
+    assert error.value.model['fallback'] is True
+    assert error.value.model['fallbackError'] == 'vision_transport_unavailable'
+
+
+def test_vision_primary_oversized_body_falls_back(monkeypatch):
+    monkeypatch.setenv('CONTENT_LAB_VISION_API_KEY', 'fixture-key')
+    monkeypatch.setattr(gate, 'VISION_FALLBACK_MODEL', 'qwen2.5vl:7b')
+    calls = []
+    def request(*args, **kwargs):
+        calls.append(kwargs['model'])
+        if len(calls) == 1:
+            raise RuntimeError('vision_response_oversized')
+        return {'verdict': 'clean', 'reason': 'fallback evidence', 'model': {
+            'name': kwargs['model'], 'provider': kwargs['provider'], 'fallback': False, 'fallbackReason': None}}
+    monkeypatch.setattr(gate, '_vision_request', request)
+    result = gate._vision(['ZmFrZQ=='], __import__('time').monotonic() + 5)
+    assert result['verdict'] == 'clean'
+    assert result['model']['fallback'] is True
+    assert result['model']['fallbackReason'] == 'vision_response_oversized'
