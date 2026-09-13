@@ -792,12 +792,13 @@ def _slideshow_unavailable_signatures(
 def _generated_unavailable_prompts(
     store: dict[str, Any], recipe: Any, page_id: str,
 ) -> tuple[set[str], set[str]]:
-    """Return active/completed prompt reservations for one page.
+    """Reserve approved prompts only while generation is in flight.
 
-    Exact prompt hashes stay unavailable across later recipe revisions so a
-    strategy change cannot accidentally regenerate copy the page already used.
-    Legacy slot-only identities remain scoped to their original prompt
-    authority because slot names have meaning only inside that catalog family.
+    A completed prompt may generate fresh media again; prompt text is not a
+    delivered asset. Existing job idempotency and output-byte admission still
+    prevent replaying completed work as a new delivery. Active hashes remain
+    reserved across recipe revisions, while legacy slot identities are scoped
+    to their original catalog family.
     """
     hashes: set[str] = set()
     slot_signatures: set[str] = set()
@@ -806,16 +807,16 @@ def _generated_unavailable_prompts(
             not isinstance(job, dict)
             or job.get("sourceKind") != "generated"
             or job.get("pageId") != page_id
-            or job.get("status") not in SOURCE_DNA_UNAVAILABLE_STATUSES
+            or job.get("status") not in GENERATION_ACTIVE_STATUSES
         ):
             continue
         for item in job.get("promptPlan", []):
             digest = item.get("promptHash") if isinstance(item, dict) else None
             if isinstance(digest, str) and re.fullmatch(r"[0-9a-f]{64}", digest):
                 hashes.add(digest)
-        # Completed jobs written before promptPlan carried the exact selected
-        # slot values on every clip. Preserve those historical prompts across
-        # this migration without trying to recover or persist raw prompt text.
+        # Older jobs carried selected slot values on their clips. Preserve
+        # those reservations while the job is active without reconstructing
+        # or persisting raw prompt text.
         for clip in job.get("clips", []):
             if not isinstance(clip, dict):
                 continue

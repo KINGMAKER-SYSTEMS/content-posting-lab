@@ -62,7 +62,7 @@ import burn_quality_gate
 from services import post_render
 for module in (app, burn_quality_gate, post_render):
     assert pathlib.Path(module.__file__).resolve().is_relative_to(root)
-assert any(route.path == '/api/control-plane/v1/post-renders' for route in app.app.routes)
+assert '/api/control-plane/v1/post-renders' in app.app.openapi()['paths']
 print('packaged backend imports succeeded')
 """
     # Some development interpreters install dependencies in user site-packages.

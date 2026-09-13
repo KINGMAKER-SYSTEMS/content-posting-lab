@@ -181,6 +181,13 @@
   `source_response_rejected`; replaying that recovery key only observes the
   current job.
 
+- AI generation reserves prompt combinations only for queued or running jobs.
+  Completed prompts remain approved inputs for fresh rendering; prompt text is
+  not consumable media inventory. A new refill uses a new durable job, while
+  idempotent replay returns the original job and downstream output-byte checks
+  continue to prevent duplicate asset admission. Source-video window reservations
+  remain unchanged.
+
 ## Work Guidance
 
 - The production Docker image uses explicit COPY paths. Include every required
