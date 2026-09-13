@@ -432,3 +432,9 @@ Added `CONTENT_LAB_VISION_FALLBACK_API_KEY` as an optional fallback-only credent
 worktree: /Users/ecfromthedc/dev/wt/lab-fleet-vision
 
 Added the optional `CONTENT_LAB_VISION_URL` override, restricted to the server-owned `api.z.ai` and `open.bigmodel.cn` chat-completions URLs. The selected URL host is recorded in the decision model block. HTTP 429/provider-1305 primary responses remain unavailable and trigger the existing fallback ladder; unallowlisted endpoints fail closed. No API key values are read or logged.
+
+## 2026-09-14 — OpenAI-compatible vision fallback
+
+worktree: /Users/ecfromthedc/dev/wt/lab-fleet-vision
+
+Added the allow-listed `gpt-4o-mini` fallback on OpenAI's compatible chat-completions endpoint. Fallback requests retain image data-URL parts, omit provider-specific thinking controls, use the fallback-only credential, and record `name`, `provider`, and fallback status in every decision. Added request-shape and provider attribution coverage.

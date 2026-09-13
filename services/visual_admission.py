@@ -52,12 +52,12 @@ def _configured_vision_url():
 VISION_URL = _configured_vision_url()
 VISION_PROVIDER = "z.ai"
 VISION_FALLBACK_URL = os.environ.get(
-    "CONTENT_LAB_VISION_FALLBACK_URL", "http://127.0.0.1:11434/v1/chat/completions"
+    "CONTENT_LAB_VISION_FALLBACK_URL", "https://api.openai.com/v1/chat/completions"
 ).strip()
 VISION_FALLBACK_MODEL = os.environ.get(
-    "CONTENT_LAB_VISION_FALLBACK_MODEL", "qwen2.5vl:7b"
+    "CONTENT_LAB_VISION_FALLBACK_MODEL", "gpt-4o-mini"
 ).strip()
-ALLOWED_VISION_MODELS = {MODEL, "qwen2.5vl:7b"}
+ALLOWED_VISION_MODELS = {MODEL, "qwen2.5vl:7b", "gpt-4o-mini"}
 MAX_BYTES = 128 * 1024 * 1024
 MAX_FRAMES = 600
 MAX_PIXELS = 4096 * 2160
@@ -201,7 +201,7 @@ def _vision_request(samples, deadline, *, url, model, provider, key=""):
     with httpx.Client(timeout=min(60, max(.1, deadline-time.monotonic())), follow_redirects=False) as client:
         with client.stream("POST", url, headers=headers, json={
             "model": model, "messages": [{"role": "user", "content": content}],
-            "temperature": 0, "max_tokens": 512, "thinking": {"type": "disabled"}}) as response:
+            "temperature": 0, "max_tokens": 512}) as response:
             response.raise_for_status()
             body = bytearray()
             for chunk in response.iter_bytes(chunk_size=4096):
@@ -235,11 +235,12 @@ def _vision(samples, deadline):
             primary_error = str(error)
             if primary_error not in {"vision_timeout", "vision_rate_limited", "vision_service_unavailable", "vision_provider_1305", "vision_response_invalid", "vision_response_oversized"}:
                 raise
+    fallback_provider = "openai" if VISION_FALLBACK_MODEL == "gpt-4o-mini" else "ollama"
     if VISION_FALLBACK_MODEL not in ALLOWED_VISION_MODELS:
-        raise VisionUnavailable("vision_model_not_allowed", model={"name": VISION_FALLBACK_MODEL, "provider": "ollama", "urlHost": urlparse(VISION_FALLBACK_URL).hostname, "fallback": True, "fallbackReason": primary_error})
+        raise VisionUnavailable("vision_model_not_allowed", model={"name": VISION_FALLBACK_MODEL, "provider": fallback_provider, "urlHost": urlparse(VISION_FALLBACK_URL).hostname, "fallback": True, "fallbackReason": primary_error})
     try:
         fallback_key = os.environ.get("CONTENT_LAB_VISION_FALLBACK_API_KEY", "").strip()
-        result = _vision_request(samples, deadline, url=VISION_FALLBACK_URL, model=VISION_FALLBACK_MODEL, provider="ollama", key=fallback_key)
+        result = _vision_request(samples, deadline, url=VISION_FALLBACK_URL, model=VISION_FALLBACK_MODEL, provider=fallback_provider, key=fallback_key)
         result["model"].update(fallback=True, fallbackReason=primary_error)
         return result
     except httpx.TransportError as error:
@@ -249,7 +250,7 @@ def _vision(samples, deadline):
     except RuntimeError as error:
         fallback_error = str(error)
     raise VisionUnavailable("vision_unavailable_all_providers", model={
-        "name": VISION_FALLBACK_MODEL, "provider": "ollama", "urlHost": urlparse(VISION_FALLBACK_URL).hostname, "fallback": True,
+        "name": VISION_FALLBACK_MODEL, "provider": fallback_provider, "urlHost": urlparse(VISION_FALLBACK_URL).hostname, "fallback": True,
         "fallbackReason": primary_error, "fallbackError": fallback_error})
 
 

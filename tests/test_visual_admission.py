@@ -331,3 +331,53 @@ def test_fallback_request_has_no_authorization_when_key_unset(monkeypatch):
                          url='http://fallback.test/v1/chat/completions', model='qwen2.5vl:7b',
                          provider='ollama', key='')
     assert 'authorization' not in seen[0]
+
+
+def test_gpt4o_mini_is_allowed_fallback_and_names_openai(monkeypatch):
+    import httpx
+    monkeypatch.delenv('CONTENT_LAB_VISION_API_KEY', raising=False)
+    monkeypatch.setenv('CONTENT_LAB_VISION_FALLBACK_API_KEY', 'fallback-key')
+    monkeypatch.setattr(gate, 'VISION_FALLBACK_MODEL', 'gpt-4o-mini')
+    monkeypatch.setattr(gate, '_vision_request', lambda *args, **kwargs: {
+        'verdict': 'clean', 'reason': 'fallback evidence', 'model': {
+            'name': kwargs['model'], 'provider': kwargs['provider'],
+            'fallback': False, 'fallbackReason': None,
+        },
+    })
+    result = gate._vision(['ZmFrZQ=='], __import__('time').monotonic() + 5)
+    assert 'gpt-4o-mini' in gate.ALLOWED_VISION_MODELS
+    assert result['model']['name'] == 'gpt-4o-mini'
+    assert result['model']['provider'] == 'openai'
+    assert result['model']['fallback'] is True
+
+
+def test_openai_compatible_fallback_request_uses_data_url_parts(monkeypatch):
+    import httpx
+    seen = []
+    def handler(request):
+        seen.append(request)
+        return httpx.Response(200, json={'choices': [{'message': {
+            'content': '{"verdict":"clean","reason":"ok"}',
+        }}]})
+    original_client = gate.httpx.Client
+    monkeypatch.setattr(
+        gate.httpx, 'Client',
+        lambda **kw: original_client(transport=httpx.MockTransport(handler), **kw),
+    )
+    gate._vision_request(
+        ['ZmFrZQ=='], __import__('time').monotonic() + 5,
+        url='https://api.openai.com/v1/chat/completions',
+        model='gpt-4o-mini', provider='openai', key='fallback-secret',
+    )
+    payload = seen[0].read()
+    import json
+    body = json.loads(payload)
+    content = body['messages'][0]['content']
+    assert body['model'] == 'gpt-4o-mini'
+    assert body['messages'][0]['role'] == 'user'
+    assert content[1] == {
+        'type': 'image_url',
+        'image_url': {'url': 'data:image/png;base64,ZmFrZQ=='},
+    }
+    assert 'thinking' not in body
+    assert seen[0].headers['authorization'] == 'Bearer fallback-secret'
