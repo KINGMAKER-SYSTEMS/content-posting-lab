@@ -57,10 +57,10 @@ def recipe_publication():
     }
 
 
-def job_body(quantity=2):
+def job_body(quantity=2, **overrides):
     publication = recipe_publication()
     spec = json.loads(publication["recipeSpecCanonical"])
-    return {
+    body = {
         "pageId": PAGE_ID,
         "lane": recipes.LANE,
         "engine": publication["engine"],
@@ -73,6 +73,8 @@ def job_body(quantity=2):
         "masterPages": spec["masterPages"],
         "masterPagesHash": spec["masterPagesHash"],
     }
+    body.update(overrides)
+    return body
 
 
 def current_generation_authority():
@@ -176,7 +178,41 @@ def test_registered_dossier_is_advertised_and_queues_new_media_only(lab, monkeyp
     assert set(stored["promptPlan"][0]) == {"combinationId", "promptHash"}
 
 
-def test_active_generated_jobs_reserve_distinct_prompt_hashes(lab):
+def test_job_idempotency_rejects_a_different_validated_request(lab):
+    client, _, _ = lab
+    first = client.post("/api/control-plane/v1/jobs", json=job_body(), headers=HEADERS)
+    assert first.status_code == 200
+    same = client.post("/api/control-plane/v1/jobs", json=job_body(), headers=HEADERS)
+    assert same.status_code == 200
+    assert same.json()["jobId"] == first.json()["jobId"]
+
+    different_quantity = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(quantity=3), headers=HEADERS,
+    )
+    assert different_quantity.status_code == 409
+    assert different_quantity.json()["detail"] == "idempotency_key_reused_with_different_request"
+
+    different_recipe_context = client.post(
+        "/api/control-plane/v1/jobs",
+        json=job_body(policyHash="sha256:other-policy"),
+        headers=HEADERS,
+    )
+    assert different_recipe_context.status_code == 409
+    assert different_recipe_context.json()["detail"] == "idempotency_key_reused_with_different_request"
+
+
+def test_job_idempotency_replays_a_legacy_row_without_a_request_hash(lab):
+    client, _, _ = lab
+    first = client.post("/api/control-plane/v1/jobs", json=job_body(), headers=HEADERS)
+    assert first.status_code == 200
+    store = cp._load_jobs()
+    store["jobs"][first.json()["jobId"]].pop("jobRequestHash", None)
+    cp.atomic_save(cp._jobs_path(), store)
+    replay = client.post("/api/control-plane/v1/jobs", json=job_body(), headers=HEADERS)
+    assert replay.status_code == 200
+    assert replay.json()["jobId"] == first.json()["jobId"]
+
+
     client, _, _ = lab
     first = client.post(
         "/api/control-plane/v1/jobs", json=job_body(), headers=HEADERS,
