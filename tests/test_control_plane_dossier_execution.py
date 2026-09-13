@@ -1,7 +1,9 @@
 """Generated dossier versions never hydrate legacy library clips."""
 
+import asyncio
 import hashlib
 import json
+from pathlib import Path
 import shutil
 
 import pytest
@@ -1052,3 +1054,83 @@ def test_generated_claim_preserves_active_and_same_job_prompt_exclusion(
             "sha256": "c" * 64, "promptHash": "b" * 64, "generationIndex": 1,
         })
     assert cp._load_jobs() == store
+
+
+@pytest.mark.asyncio
+async def test_truck_recovery_cancel_is_terminal_and_preserves_candidate_root(lab, monkeypatch):
+    _client, tmp_path, _ = lab
+    job_root = tmp_path / "recovery-job"; job_root.mkdir()
+    candidate_root = tmp_path / "candidate"; candidate_root.mkdir()
+    master = candidate_root / "masters" / "paid.mp4"; master.parent.mkdir(); master.write_bytes(b"paid-master")
+    candidate_sha = hashlib.sha256(master.read_bytes()).hexdigest()
+    job_id = "cpl-cancel-recovery"
+    sibling_root = tmp_path / "sibling"; sibling_root.mkdir()
+    store = cp._load_jobs()
+    store["jobs"][job_id] = {"jobId": job_id, "pageId": PAGE_ID, "status": "queued",
+        "artifactRoot": str(job_root), "recoveryMasters": [{"artifactRoot": str(candidate_root),
+        "path": "masters/paid.mp4", "sha256": candidate_sha, "bytes": master.stat().st_size,
+        "source": {"recipeId": "truck-scenic:master"}}]}
+    sibling_id = "cpl-sibling"
+    store["jobs"][sibling_id] = {"jobId": sibling_id, "pageId": PAGE_ID, "status": "completed",
+        "artifactRoot": str(sibling_root), "clips": [{"path": "clip.mp4"}]}
+    cp.atomic_save(cp._jobs_path(), store)
+    started = asyncio.Event(); hold = asyncio.Event()
+    async def stalled_geometry(_path):
+        started.set(); await hold.wait(); return (1920, 1080)
+    monkeypatch.setattr(cp, "_get_job_or_404", lambda _job_id: cp._load_jobs()["jobs"][_job_id])
+    monkeypatch.setattr(cp, "_job_matches_current_master_pages", lambda _job: True)
+    monkeypatch.setattr(cp, "_video_geometry", stalled_geometry)
+    task = asyncio.create_task(cp._run_truck_master_recovery(job_id))
+    await asyncio.wait_for(started.wait(), 5)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError): await task
+    saved = cp._load_jobs()["jobs"][job_id]
+    assert saved["status"] == "failed" and saved["error"] == "generation_cancelled" and saved["completedAt"]
+    assert not job_root.exists()
+    assert sibling_root.exists() and saved["artifactRoot"] != str(sibling_root)
+    assert master.read_bytes() == b"paid-master"
+
+@pytest.mark.asyncio
+async def test_generation_cancellation_is_behavioral_and_releases_prompt_reservation(lab, monkeypatch):
+    client, tmp_path, _ = lab
+    response = client.post("/api/control-plane/v1/jobs", json=job_body(), headers=HEADERS)
+    job_id = response.json()["jobId"]
+    started = asyncio.Event(); hold = asyncio.Event()
+    async def stalled_generate(*args, **kwargs):
+        started.set(); await hold.wait()
+    monkeypatch.setattr(cp, "generate_one", stalled_generate)
+    task = asyncio.create_task(cp._run_dossier_generation(job_id))
+    await asyncio.wait_for(started.wait(), 5)
+    saved = cp._load_jobs()["jobs"][job_id]
+    root = Path(saved["artifactRoot"])
+    assert root.exists()
+    recipe = cp.resolve_generation_recipe(recipe_publication())
+    prompt_hashes = {item["promptHash"] for item in saved["promptPlan"]}
+    assert prompt_hashes & cp._generated_unavailable_prompts(cp._load_jobs(), recipe, PAGE_ID)[0]
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError): await task
+    saved = cp._load_jobs()["jobs"][job_id]
+    assert saved["status"] == "failed" and saved["error"] == "generation_cancelled" and saved["completedAt"]
+    assert not root.exists()
+    assert not (prompt_hashes & cp._generated_unavailable_prompts(cp._load_jobs(), recipe, PAGE_ID)[0])
+
+@pytest.mark.asyncio
+async def test_generation_failure_removes_only_failed_root_and_keeps_completed_sibling(lab, monkeypatch):
+    client, tmp_path, _ = lab
+    failed = client.post("/api/control-plane/v1/jobs", json=job_body(), headers=HEADERS).json()["jobId"]
+    sibling_headers = {**HEADERS, "Idempotency-Key": "tt-tucker-reeves:sibling"}
+    sibling = client.post("/api/control-plane/v1/jobs", json=job_body(), headers=sibling_headers).json()["jobId"]
+    store = cp._load_jobs()
+    sibling_root = Path(store["jobs"][sibling]["artifactRoot"]); sibling_root.mkdir(parents=True, exist_ok=True)
+    (sibling_root / "clip.mp4").write_bytes(b"completed-sibling")
+    store["jobs"][sibling].update({"status": "completed", "clips": [{"path": "clip.mp4"}]})
+    cp.atomic_save(cp._jobs_path(), store)
+    async def failed_provider(*args, **kwargs):
+        raise RuntimeError("provider-boom")
+    monkeypatch.setattr(cp, "generate_one", failed_provider)
+    failed_root = Path(cp._load_jobs()["jobs"][failed]["artifactRoot"])
+    await cp._run_dossier_generation(failed)
+    saved = cp._load_jobs()["jobs"][failed]
+    assert saved["status"] == "failed" and saved["error"] == "provider-boom"
+    assert not failed_root.exists()
+    assert sibling_root.exists() and (sibling_root / "clip.mp4").read_bytes() == b"completed-sibling"

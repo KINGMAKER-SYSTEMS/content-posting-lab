@@ -1580,7 +1580,17 @@ async def _run_dossier_generation(job_id: str) -> None:
                 progress=int(((call_index + 1) / calls) * 100),
                 providerCallsCompleted=call_index + 1,
             )
+    except asyncio.CancelledError:
+        shutil.rmtree(job_root, ignore_errors=True)
+        _update_job(
+            job_id,
+            status="failed",
+            error="generation_cancelled",
+            completedAt=datetime.now(timezone.utc).isoformat(),
+        )
+        raise
     except Exception as error:  # provider and ffmpeg failures are job state
+        shutil.rmtree(job_root, ignore_errors=True)
         _update_job(
             job_id,
             status="failed",
@@ -1719,7 +1729,17 @@ async def _run_truck_master_recovery(job_id: str) -> None:
                 job_id,
                 progress=int(((master_index + 1) / len(masters)) * 100),
             )
+    except asyncio.CancelledError:
+        shutil.rmtree(job_root, ignore_errors=True)
+        _update_job(
+            job_id,
+            status="failed",
+            error="generation_cancelled",
+            completedAt=datetime.now(timezone.utc).isoformat(),
+        )
+        raise
     except Exception as error:
+        shutil.rmtree(job_root, ignore_errors=True)
         _update_job(
             job_id, status="failed", error=str(error)[:300],
             completedAt=datetime.now(timezone.utc).isoformat(),
@@ -1882,7 +1902,17 @@ async def _run_dossier_source(job_id: str) -> None:
                 job_id,
                 progress=int(((index + 1) / len(source_cuts)) * 100),
             )
+    except asyncio.CancelledError:
+        shutil.rmtree(job_root, ignore_errors=True)
+        _update_job(
+            job_id,
+            status="failed",
+            error="generation_cancelled",
+            completedAt=datetime.now(timezone.utc).isoformat(),
+        )
+        raise
     except Exception as error:
+        shutil.rmtree(job_root, ignore_errors=True)
         _update_job(
             job_id,
             status="failed",
