@@ -31,6 +31,14 @@ from PIL import Image
 SCHEMA = "content-lab.visual-admission.v1"
 MODEL = "glm-4.6v-flash"
 VISION_URL = "https://api.z.ai/api/paas/v4/chat/completions"
+VISION_PROVIDER = "z.ai"
+VISION_FALLBACK_URL = os.environ.get(
+    "CONTENT_LAB_VISION_FALLBACK_URL", "http://127.0.0.1:11434/v1/chat/completions"
+).strip()
+VISION_FALLBACK_MODEL = os.environ.get(
+    "CONTENT_LAB_VISION_FALLBACK_MODEL", "qwen2.5vl:7b"
+).strip()
+ALLOWED_VISION_MODELS = {MODEL, "qwen2.5vl:7b"}
 MAX_BYTES = 128 * 1024 * 1024
 MAX_FRAMES = 600
 MAX_PIXELS = 4096 * 2160
@@ -141,32 +149,88 @@ def _scanned_frames(path, width, height, deadline, expected):
         frames.close() if hasattr(frames, "close") else None
 
 
-def _vision(samples, deadline):
-    key = os.environ.get("CONTENT_LAB_VISION_API_KEY", "").strip()
-    if not key:
-        raise RuntimeError("vision_credentials_unavailable")
+class VisionUnavailable(RuntimeError):
+    def __init__(self, reason, *, model):
+        super().__init__(reason)
+        self.reason = reason
+        self.model = model
+
+
+def _strict_vision_json(content):
+    if not isinstance(content, str):
+        raise RuntimeError("vision_response_invalid")
+    candidate = content.strip()
+    if candidate.startswith("```") and candidate.endswith("```"):
+        candidate = candidate[3:-3].strip()
+        if candidate.startswith("json"):
+            candidate = candidate[4:].lstrip()
+    try:
+        result = json.loads(candidate)
+    except (ValueError, TypeError) as error:
+        raise RuntimeError("vision_response_invalid") from error
+    if (not isinstance(result, dict) or result.get("verdict") not in {"clean", "text", "unavailable"}
+            or not isinstance(result.get("reason"), str) or not result["reason"].strip()):
+        raise RuntimeError("vision_response_invalid")
+    return {"verdict": result["verdict"], "reason": result["reason"]}
+
+
+def _vision_request(samples, deadline, *, url, model, provider, key=""):
     content = [{"type": "text", "text": 'Inspect every supplied frame for any existing writing, captions, logos with letters, numbers or watermarks. Return ONLY JSON {"verdict":"clean"|"text"|"unavailable","reason":"describe the visible scene and any text actually observed"}. Use unavailable when unreadable or uncertain. Any text, even brief or tiny, means text. These frames precede our caption stage.'}]
     for sample in samples:
         content.append({"type": "image_url", "image_url": {"url": "data:image/png;base64," + sample}})
+    headers = {"Authorization": f"Bearer {key}"} if key else {}
     with httpx.Client(timeout=min(60, max(.1, deadline-time.monotonic())), follow_redirects=False) as client:
-        with client.stream("POST", VISION_URL, headers={"Authorization": f"Bearer {key}"}, json={
-            "model": MODEL, "messages": [{"role": "user", "content": content}],
+        with client.stream("POST", url, headers=headers, json={
+            "model": model, "messages": [{"role": "user", "content": content}],
             "temperature": 0, "max_tokens": 512, "thinking": {"type": "disabled"}}) as response:
             response.raise_for_status()
             body = bytearray()
             for chunk in response.iter_bytes(chunk_size=4096):
                 if time.monotonic() > deadline:
-                    raise RuntimeError("scan_timeout")
+                    raise RuntimeError("vision_timeout")
                 if len(body) + len(chunk) > 65536:
                     raise RuntimeError("vision_response_oversized")
                 body.extend(chunk)
             try:
-                result = json.loads(json.loads(body)["choices"][0]["message"]["content"])
+                payload = json.loads(body)
+                if isinstance(payload, dict) and str(payload.get("code")) == "1305":
+                    raise RuntimeError("vision_provider_1305")
+                result = _strict_vision_json(payload["choices"][0]["message"]["content"])
             except (ValueError, KeyError, IndexError, TypeError) as error:
                 raise RuntimeError("vision_response_invalid") from error
-    if result.get("verdict") not in {"clean", "text", "unavailable"} or not isinstance(result.get("reason"), str) or not result["reason"].strip():
-        raise RuntimeError("vision_response_invalid")
+    result["model"] = {"name": model, "provider": provider, "fallback": False, "fallbackReason": None}
     return result
+
+
+def _vision(samples, deadline):
+    key = os.environ.get("CONTENT_LAB_VISION_API_KEY", "").strip()
+    primary_error = "vision_credentials_unavailable" if not key else None
+    if primary_error is None:
+        try:
+            return _vision_request(samples, deadline, url=VISION_URL, model=MODEL, provider=VISION_PROVIDER, key=key)
+        except httpx.TimeoutException:
+            primary_error = "vision_timeout"
+        except httpx.HTTPStatusError as error:
+            primary_error = "vision_rate_limited" if error.response.status_code == 429 else "vision_service_unavailable"
+        except RuntimeError as error:
+            primary_error = str(error)
+            if primary_error not in {"vision_timeout", "vision_rate_limited", "vision_service_unavailable", "vision_provider_1305"}:
+                raise
+    if VISION_FALLBACK_MODEL not in ALLOWED_VISION_MODELS:
+        raise VisionUnavailable("vision_model_not_allowed", model={"name": VISION_FALLBACK_MODEL, "provider": "ollama", "fallback": True, "fallbackReason": primary_error})
+    try:
+        result = _vision_request(samples, deadline, url=VISION_FALLBACK_URL, model=VISION_FALLBACK_MODEL, provider="ollama")
+        result["model"].update(fallback=True, fallbackReason=primary_error)
+        return result
+    except httpx.TimeoutException:
+        fallback_error = "vision_timeout"
+    except httpx.HTTPStatusError:
+        fallback_error = "vision_service_unavailable"
+    except RuntimeError as error:
+        fallback_error = str(error)
+    raise VisionUnavailable("vision_both_providers_unavailable", model={
+        "name": VISION_FALLBACK_MODEL, "provider": "ollama", "fallback": True,
+        "fallbackReason": primary_error, "fallbackError": fallback_error})
 
 
 ALGORITHM = "tesseract-psm12-configured-long-edge-rgb-v2"
@@ -177,7 +241,7 @@ def pending_decision(*, page_id, job_id, index, sha256, byte_count):
         "pageId": page_id, "sha256": sha256, "bytes": byte_count,
         "scannedAt": datetime.now(timezone.utc).isoformat(), "reason": "scan_pending",
         "sampling": {"mode": "all_frames", "algorithm": ALGORITHM, "frameCount": 0, "expectedFrameCount": 0},
-        "model": {"name": MODEL, "status": "unavailable", "sampledFrames": []},
+        "model": {"name": MODEL, "provider": VISION_PROVIDER, "status": "unavailable", "fallback": False, "fallbackReason": None, "sampledFrames": []},
         "ocr": {"engine": "tesseract", "status": "unavailable", "psm": 12, "languages": ["eng", "osd"], "workingLongEdge": OCR_LONG_EDGE or "native"}}
 
 
@@ -226,10 +290,13 @@ def scan_artifact(path: Path, *, page_id: str, job_id: str, index: int, sha256: 
             raise RuntimeError("incomplete_or_changed_artifact")
         decision["ocr"]["status"] = "clean"
         model = _vision(samples, deadline)
-        decision["model"].update(status=model["verdict"], reason=model["reason"][:500])
-        decision.update(verdict=model["verdict"], reason="full_frame_ocr_and_glm_clean" if model["verdict"] == "clean" else "pre_existing_text_glm" if model["verdict"] == "text" else "vision_uncertain")
+        decision["model"].update(model.get("model", {}), status=model["verdict"], reason=model["reason"][:500])
+        decision.update(verdict=model["verdict"], reason="full_frame_ocr_and_vision_clean" if model["verdict"] == "clean" else "pre_existing_text_vision" if model["verdict"] == "text" else "vision_uncertain")
     except subprocess.TimeoutExpired:
         decision["reason"] = "scan_timeout"
+    except VisionUnavailable as exc:
+        decision["reason"] = exc.reason
+        decision["model"].update(exc.model)
     except httpx.TimeoutException:
         decision["reason"] = "vision_timeout"
     except httpx.HTTPStatusError as exc:
@@ -240,7 +307,7 @@ def scan_artifact(path: Path, *, page_id: str, job_id: str, index: int, sha256: 
         # No remote body, credentials, or local filenames enter operator evidence.
         allowed = {"artifact_identity_mismatch", "ocr_or_decoder_unavailable", "frame_budget_exceeded",
             "scan_timeout", "incomplete_decode", "frame_count_mismatch", "incomplete_or_changed_artifact",
-            "vision_input_budget_exceeded", "vision_credentials_unavailable", "vision_response_invalid", "vision_response_oversized", "detector_process_failed"}
+            "vision_input_budget_exceeded", "vision_credentials_unavailable", "vision_response_invalid", "vision_response_oversized", "vision_model_not_allowed", "vision_both_providers_unavailable", "detector_process_failed"}
         decision["reason"] = str(exc) if str(exc) in allowed else "visual_evidence_unavailable"
     finally:
         decision["scannedAt"] = datetime.now(timezone.utc).isoformat()

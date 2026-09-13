@@ -12,8 +12,15 @@
   whole-job sweep and persists algorithm/byte-bound decisions before
   Control Plane can admit ready video into R2. Every decoded native-resolution
   frame receives Tesseract OCR at the configured `CONTENT_LAB_OCR_LONG_EDGE`
-  working edge (default `0`, native); GLM-4.6v-flash receives up to 16 native frames.
-  Both detectors and complete coverage are required for clean.
+  working edge (default `0`, native); the primary GLM-4.6v-flash provider receives up to
+  16 native frames, and a named Ollama `qwen2.5vl:7b` fallback may receive the same
+  batch when the primary is unavailable. `CONTENT_LAB_VISION_FALLBACK_URL` (default
+  `http://127.0.0.1:11434/v1/chat/completions`) and
+  `CONTENT_LAB_VISION_FALLBACK_MODEL` configure that fallback; the decision records
+  the answering model, provider, fallback flag and reason. Both detectors and
+  complete coverage are required for clean. On seeno, the Docker deployment needs a
+  reachable Ollama host for fallback; otherwise fallback is unavailable and the gate
+  remains fail closed.
 - Source cut planning honors the immutable original 60-second minimum and the
   Worker-supplied global source-window exclusions before rendering. Sourced
   capabilities expose the current recipe’s canonical source identities so the

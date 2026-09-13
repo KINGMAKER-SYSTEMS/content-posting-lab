@@ -20,8 +20,16 @@ source library are not scanned by this ready-clip admission workflow.
 
 `CONTENT_LAB_VISION_API_KEY` supplies a Z.AI key with access to the standard API
 at `https://api.z.ai/api/paas/v4/chat/completions`. Coding-plan text-only transport
-is not a vision substitute. The fixed model is `glm-4.6v-flash`. Install ffmpeg,
-ffprobe and Tesseract English data; the Dockerfile includes these tools.
+is not a vision substitute. The primary model is `glm-4.6v-flash`; when it has no
+key, is rate-limited (429/1305), times out or is unavailable, the Lab tries the
+OpenAI-compatible fallback at `CONTENT_LAB_VISION_FALLBACK_URL` (default
+`http://127.0.0.1:11434/v1/chat/completions`) using
+`CONTENT_LAB_VISION_FALLBACK_MODEL` (default `qwen2.5vl:7b`). Every decision names
+the answering model and provider and records `fallback` plus `fallbackReason`;
+both failures remain `unavailable`. The seeno Docker deployment must have a
+reachable Ollama host for fallback; without one, fallback is unavailable and is
+never represented as clean. Install ffmpeg, ffprobe and Tesseract English data;
+the Dockerfile includes these tools.
 
 One scan per host temp directory is permitted by an OS lock, with a per-process
 thread semaphore. The hard limits are 128 MiB input, 600 frames, 4096×2160 pixels
