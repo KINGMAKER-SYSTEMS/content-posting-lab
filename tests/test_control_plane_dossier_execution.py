@@ -176,14 +176,13 @@ def test_registered_dossier_is_advertised_and_queues_new_media_only(lab, monkeyp
     assert set(stored["promptPlan"][0]) == {"combinationId", "promptHash"}
 
 
-def test_generated_jobs_reserve_fresh_prompt_hashes_across_durable_jobs(lab):
+def test_active_generated_jobs_reserve_distinct_prompt_hashes(lab):
     client, _, _ = lab
     first = client.post(
         "/api/control-plane/v1/jobs", json=job_body(), headers=HEADERS,
     )
     assert first.status_code == 200
     first_job = cp._load_jobs()["jobs"][first.json()["jobId"]]
-    cp._update_job(first.json()["jobId"], status="completed")
 
     second_headers = {
         **HEADERS,
@@ -199,7 +198,8 @@ def test_generated_jobs_reserve_fresh_prompt_hashes_across_durable_jobs(lab):
     }.isdisjoint({item["promptHash"] for item in second_job["promptPlan"]})
 
 
-def test_capability_reaches_zero_when_every_fresh_prompt_is_reserved(lab):
+@pytest.mark.parametrize("status", ["queued", "running"])
+def test_capability_reaches_zero_when_every_active_prompt_is_reserved(lab, status):
     client, _, started = lab
     publication = recipes.load_registered_recipe(
         PAGE_ID,
@@ -223,7 +223,8 @@ def test_capability_reaches_zero_when_every_fresh_prompt_is_reserved(lab):
         "jobId": "cpl-4444444444444444",
         "pageId": PAGE_ID,
         "sourceKind": "generated",
-        "status": "completed",
+        "status": status,
+        "runtimeId": cp._GENERATION_RUNTIME_ID,
         "family": recipe.family_name,
         "promptPlan": every_prompt,
         "clips": [],
@@ -249,6 +250,51 @@ def test_capability_reaches_zero_when_every_fresh_prompt_is_reserved(lab):
     assert response.status_code == 409
     assert response.json()["detail"] == "prompt_inventory_exhausted"
     assert started == []
+
+
+
+def test_completed_prompt_space_can_refill_with_new_job_without_reusing_media(lab):
+    client, _, started = lab
+    publication = recipes.load_registered_recipe(
+        PAGE_ID, "truck-scenic:master", "ai_video", "dossier-1234567890abcdef",
+    )
+    recipe = cp.resolve_generation_recipe(publication)
+    every_prompt = cp.plan_prompt_combinations(
+        recipe, "completed-approved-prompts", cp.prompt_combination_space(recipe), set(),
+    )
+    old_id = "cpl-4444444444444444"
+    old_clip = {"sha256": "a" * 64, "path": "old-delivery.mp4"}
+    store = cp._load_jobs()
+    store["jobs"][old_id] = {
+        **current_generation_authority(),
+        "jobId": old_id, "pageId": PAGE_ID, "sourceKind": "generated",
+        "status": "completed", "family": recipe.family_name,
+        "promptPlan": every_prompt, "clips": [old_clip],
+    }
+    cp.atomic_save(cp._jobs_path(), store)
+
+    capabilities = client.get(
+        "/api/control-plane/v1/capabilities", headers={"X-RT-Page-Id": PAGE_ID},
+    ).json()["capabilities"]
+    assert capabilities[0]["maxQuantity"] > 0
+    headers = {**HEADERS, "Idempotency-Key": "refill-completed-prompt-space"}
+    response = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(quantity=1), headers=headers,
+    )
+    assert response.status_code == 200
+    new_id = response.json()["jobId"]
+    assert new_id != old_id
+    stored = cp._load_jobs()
+    assert stored["jobs"][old_id]["clips"] == [old_clip]
+    assert stored["jobs"][new_id]["sourceKind"] == "generated"
+    assert stored["jobs"][new_id]["clips"] == []
+    assert started == [new_id]
+    replay = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(quantity=1), headers=headers,
+    )
+    assert replay.status_code == 200
+    assert replay.json()["jobId"] == new_id
+    assert started == [new_id]
 
 
 def test_master_pages_strategy_change_withdraws_old_capability_and_job(lab, monkeypatch):
@@ -306,7 +352,7 @@ async def test_queued_generation_fails_before_provider_when_page_strategy_change
     assert stored["error"] == "master_pages_strategy_changed"
 
 
-def test_prompt_hash_reservation_survives_later_recipe_authority(lab):
+def test_active_prompt_reservation_survives_later_recipe_authority(lab):
     _, _, _ = lab
     store = cp._load_jobs()
     prompt_hash = "a" * 64
@@ -314,7 +360,7 @@ def test_prompt_hash_reservation_survives_later_recipe_authority(lab):
         "jobId": "cpl-authority-old000",
         "pageId": PAGE_ID,
         "sourceKind": "generated",
-        "status": "completed",
+        "status": "running",
         "promptCatalogHash": "b" * 64,
         "family": "retired-family",
         "providerModel": "retired-model",
