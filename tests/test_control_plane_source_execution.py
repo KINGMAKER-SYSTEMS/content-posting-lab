@@ -515,6 +515,47 @@ async def test_queued_source_job_fails_before_media_work_when_strategy_changes(
     assert stored["error"] == "master_pages_strategy_changed"
 
 
+
+
+def test_capabilities_include_only_completed_page_source_import_identities(lab):
+    client, _, _ = lab
+    cp.atomic_save(cp._jobs_path(), {
+        **cp._empty_jobs(),
+        "jobs": {
+            "completed-import": {
+                "pageId": PAGE_ID,
+                "sourceKind": "page_source_import",
+                "status": "completed",
+                "sourceUrl": "https://cdn.example.com/imported-master.mp4",
+            },
+            "pending-import": {
+                "pageId": PAGE_ID,
+                "sourceKind": "page_source_import",
+                "status": "running",
+                "sourceUrl": "https://cdn.example.com/pending-master.mp4",
+            },
+        },
+    })
+    headers_for_page = {"X-RT-Page-Id": PAGE_ID}
+    capabilities = client.get(
+        "/api/control-plane/v1/capabilities", headers=headers_for_page,
+    ).json()["capabilities"]
+    assert capabilities[0]["sourceIdentities"] == [
+        "https://cdn.example.com/imported-master.mp4",
+        "https://www.youtube.com/watch?v=vt5im2TRAKw",
+    ]
+
+    store = cp._load_jobs()
+    store["jobs"]["completed-import"]["status"] = "failed"
+    cp.atomic_save(cp._jobs_path(), store)
+    capabilities = client.get(
+        "/api/control-plane/v1/capabilities", headers=headers_for_page,
+    ).json()["capabilities"]
+    assert capabilities[0]["sourceIdentities"] == [
+        "https://www.youtube.com/watch?v=vt5im2TRAKw",
+    ]
+
+
 def test_sourced_paths_never_probe_the_ai_video_resolver(lab, monkeypatch):
     client, _, started = lab
 

@@ -251,6 +251,17 @@ def capabilities(
     master_pages, master_pages_hash = current
 
     entries = []
+    job_store = _load_jobs()
+    completed_import_identities = sorted({
+        identity
+        for job in job_store.get("jobs", {}).values()
+        if isinstance(job, dict)
+        and job.get("pageId") == page_id
+        and job.get("sourceKind") == "page_source_import"
+        and job.get("status") == "completed"
+        for identity in [canonical_source_identity(job.get("sourceUrl"))]
+        if identity is not None
+    })
     registered_bindings = list_registered_recipe_bindings(
         page_id, master_pages, master_pages_hash,
     )
@@ -275,6 +286,9 @@ def capabilities(
             "engine": bootstrap.content_engine,
             "recipeVersion": bootstrap.format_contract_version,
             "maxQuantity": bootstrap.max_quantity,
+            **({"sourceIdentities": completed_import_identities}
+               if bootstrap.content_engine == "sourced_video" and completed_import_identities
+               else {}),
         })
     # Sourced-video capacity is consumable inventory, not a static executor
     # ceiling. Load the durable job store lazily and only once for this request
@@ -283,7 +297,8 @@ def capabilities(
     # can advertise 10 after six of a ten-window master have already crossed the
     # API boundary; Control Plane then asks for six and the exact-quantity job
     # contract rejects the whole refill even though four safe windows remain.
-    job_store = None
+    # The store was loaded above so completed page-source imports can contribute
+    # their canonical identities to both bootstrap and registered capabilities.
     # A dossier version is executable only when its server-owned base prompt
     # family, exact provider model, runtime credential, and typed treatment are
     # all available. Registration alone never becomes a capability.
@@ -310,8 +325,6 @@ def capabilities(
             and slideshow_recipe is None
         ):
             continue
-        if job_store is None:
-            job_store = _load_jobs()
         if slideshow_recipe is not None:
             try:
                 library = load_syzygy_library(slideshow_recipe_profile := (
@@ -344,6 +357,7 @@ def capabilities(
         source_identities = None
         if source_recipe is not None:
             identities = [canonical_source_identity(master.provenance.get("sourceUrl")) for master in source_recipe.masters]
+            identities.extend(completed_import_identities)
             if not identities or any(identity is None for identity in identities):
                 continue
             source_identities = sorted(set(identities))
