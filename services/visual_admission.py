@@ -256,6 +256,26 @@ def _vision(samples, deadline):
 
 ALGORITHM = "tesseract-psm12-configured-long-edge-rgb-v2"
 
+# These failures describe a service/runtime that can be retried next cycle.
+# Identity mismatches and positive text detections deliberately remain terminal.
+_TRANSIENT_REASONS = frozenset({
+    "scanner_busy_retry", "scan_timeout", "ocr_or_decoder_unavailable",
+    "vision_rate_limited", "vision_auth_unavailable",
+    "vision_credentials_unavailable", "vision_service_unavailable",
+    "vision_transport_unavailable", "vision_timeout", "vision_response_invalid",
+    "vision_response_oversized", "vision_provider_1305",
+    "vision_unavailable_all_providers", "visual_evidence_unavailable",
+})
+
+
+def _defer_transient(decision, reason):
+    if reason not in _TRANSIENT_REASONS:
+        return
+    decision["verdict"] = "unavailable"
+    decision["reason"] = "scan_pending"
+    decision["model"]["status"] = "unavailable"
+    decision["model"]["reason"] = reason
+
 
 def pending_decision(*, page_id, job_id, index, sha256, byte_count):
     return {"schema": SCHEMA, "verdict": "unavailable", "jobId": job_id, "outputIndex": index,
@@ -271,6 +291,7 @@ def scan_artifact(path: Path, *, page_id: str, job_id: str, index: int, sha256: 
     decision["reason"] = "scan_unavailable"
     if not _GATE.acquire(blocking=False):
         decision["reason"] = "scanner_busy_retry"
+        _defer_transient(decision, decision["reason"])
         return decision
     deadline = time.monotonic() + TIMEOUT
     lock_file = None
@@ -331,6 +352,8 @@ def scan_artifact(path: Path, *, page_id: str, job_id: str, index: int, sha256: 
             "vision_input_budget_exceeded", "vision_credentials_unavailable", "vision_response_invalid", "vision_response_oversized", "vision_model_not_allowed", "vision_unavailable_all_providers", "detector_process_failed"}
         decision["reason"] = str(exc) if str(exc) in allowed else "visual_evidence_unavailable"
     finally:
+        _defer_transient(decision, decision["reason"])
+
         decision["scannedAt"] = datetime.now(timezone.utc).isoformat()
         if lock_file is not None:
             lock_file.close()

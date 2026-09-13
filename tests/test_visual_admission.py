@@ -73,7 +73,7 @@ def test_mutated_bytes_and_exhausted_budget_fail_closed(monkeypatch, tmp_path):
     assert result['reason'] == 'artifact_identity_mismatch'
     gate._GATE.acquire()
     try:
-        assert run_scan(path)['reason'] == 'scanner_busy_retry'
+        assert run_scan(path)['reason'] == 'scan_pending'
     finally:
         gate._GATE.release()
 
@@ -381,3 +381,31 @@ def test_openai_compatible_fallback_request_uses_data_url_parts(monkeypatch):
     }
     assert 'thinking' not in body
     assert seen[0].headers['authorization'] == 'Bearer fallback-secret'
+
+
+def test_transient_vision_failure_returns_pending_for_next_cycle(monkeypatch, tmp_path):
+    path = fake_media(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        gate, '_vision',
+        lambda *args: (_ for _ in ()).throw(gate.VisionUnavailable(
+            'vision_unavailable_all_providers',
+            model={'name': 'gpt-4o-mini', 'provider': 'openai', 'fallback': True},
+        )),
+    )
+    result = run_scan(path)
+    assert result['verdict'] == 'unavailable'
+    assert result['reason'] == 'scan_pending'
+    assert result['model']['status'] == 'unavailable'
+    assert result['model']['reason'] == 'vision_unavailable_all_providers'
+
+
+def test_scanner_busy_is_pending_not_terminal(monkeypatch, tmp_path):
+    path = fake_media(monkeypatch, tmp_path)
+    gate._GATE.acquire()
+    try:
+        result = run_scan(path)
+    finally:
+        gate._GATE.release()
+    assert result['verdict'] == 'unavailable'
+    assert result['reason'] == 'scan_pending'
+    assert result['model']['reason'] == 'scanner_busy_retry'

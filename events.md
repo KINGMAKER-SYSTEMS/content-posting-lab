@@ -438,3 +438,9 @@ Added the optional `CONTENT_LAB_VISION_URL` override, restricted to the server-o
 worktree: /Users/ecfromthedc/dev/wt/lab-fleet-vision
 
 Added the allow-listed `gpt-4o-mini` fallback on OpenAI's compatible chat-completions endpoint. Fallback requests retain image data-URL parts, omit provider-specific thinking controls, use the fallback-only credential, and record `name`, `provider`, and fallback status in every decision. Added request-shape and provider attribution coverage.
+
+## 2026-09-14 — Remove Lab posting obstacles without bypassing evidence
+
+worktree: /Users/ecfromthedc/dev/wt/lab-fleet-vision
+
+Capabilities now expose the commissioned format route implied by a page's current Master Pages niche/engine before its first registered Dossier publication, while registered versions remain authoritative. Transient visual-admission/provider/runtime failures now persist as retryable `scan_pending` decisions; positive text and artifact identity refusals remain unchanged. Added coverage for bootstrap capabilities and retry behavior.

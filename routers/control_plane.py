@@ -251,6 +251,31 @@ def capabilities(
     master_pages, master_pages_hash = current
 
     entries = []
+    registered_bindings = list_registered_recipe_bindings(
+        page_id, master_pages, master_pages_hash,
+    )
+    # A page-bound intent is itself enough to expose the commissioned format
+    # route before its first dossier publication. The publication list below
+    # remains authoritative for versions already registered; this bootstrap
+    # entry lets a new page reach the Dossier editor instead of becoming an
+    # empty-capability dead end.
+    try:
+        profiles, _ = load_engine_registry()
+    except (OSError, ValueError, json.JSONDecodeError):
+        profiles = {}
+    intent_niche = master_pages.get("contentNiche")
+    intent_engine = master_pages.get("contentEngine")
+    bootstrap = next((profile for profile in profiles.values()
+                      if profile.content_niche == intent_niche
+                      and profile.content_engine == intent_engine
+                      and profile.execution_status == "commissioned"), None)
+    if bootstrap is not None and not registered_bindings:
+        entries.append({
+            "recipeId": f"{bootstrap.format_slug}:master",
+            "engine": bootstrap.content_engine,
+            "recipeVersion": bootstrap.format_contract_version,
+            "maxQuantity": bootstrap.max_quantity,
+        })
     # Sourced-video capacity is consumable inventory, not a static executor
     # ceiling. Load the durable job store lazily and only once for this request
     # so every sourced capability advertises the number of unique windows that
@@ -262,9 +287,7 @@ def capabilities(
     # A dossier version is executable only when its server-owned base prompt
     # family, exact provider model, runtime credential, and typed treatment are
     # all available. Registration alone never becomes a capability.
-    for _, publication in list_registered_recipe_bindings(
-        page_id, master_pages, master_pages_hash,
-    ):
+    for _, publication in registered_bindings:
         publication_engine = publication.get("engine")
         generation_recipe = (
             resolve_generation_recipe(publication)
@@ -324,13 +347,18 @@ def capabilities(
             if not identities or any(identity is None for identity in identities):
                 continue
             source_identities = sorted(set(identities))
-        entries.append({
+        registered_entry = {
             **({"sourceIdentities": source_identities} if source_identities is not None else {}),
             "recipeId": publication["recipeId"],
             "engine": publication["engine"],
             "recipeVersion": publication["recipeVersion"],
             "maxQuantity": max_quantity,
-        })
+        }
+        if not any(entry["recipeId"] == registered_entry["recipeId"]
+                   and entry["engine"] == registered_entry["engine"]
+                   and entry["recipeVersion"] == registered_entry["recipeVersion"]
+                   for entry in entries):
+            entries.append(registered_entry)
         if len(entries) >= MAX_CAPABILITIES:
             break
 

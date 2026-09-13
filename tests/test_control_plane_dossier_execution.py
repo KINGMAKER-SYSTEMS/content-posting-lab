@@ -311,7 +311,16 @@ def test_master_pages_strategy_change_withdraws_old_capability_and_job(lab, monk
         "/api/control-plane/v1/capabilities",
         headers={"X-RT-Page-Id": PAGE_ID},
     ).json()["capabilities"]
-    assert capabilities == []
+    assert capabilities == [{
+        "recipeId": "pov-night-core:master",
+        "engine": "sourced_video",
+        "recipeVersion": next(
+            profile.format_contract_version
+            for profile in cp.load_engine_registry()[0].values()
+            if profile.format_slug == "pov-night-core"
+        ),
+        "maxQuantity": 10,
+    }]
 
     response = client.post(
         "/api/control-plane/v1/jobs",
