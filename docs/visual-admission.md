@@ -27,10 +27,14 @@ OpenAI-compatible fallback at `CONTENT_LAB_VISION_FALLBACK_URL` (default
 `http://127.0.0.1:11434/v1/chat/completions`) using
 `CONTENT_LAB_VISION_FALLBACK_MODEL` (default `qwen2.5vl:7b`). Every decision names
 the answering model and provider and records `fallback` plus `fallbackReason`;
-both failures remain `unavailable` with reason `vision_unavailable_all_providers`. The seeno Docker deployment must have a
-reachable Ollama host for fallback; without one, fallback is unavailable and is
-never represented as clean. Install ffmpeg, ffprobe and Tesseract English data;
-the Dockerfile includes these tools.
+both failures remain `unavailable` with reason `vision_unavailable_all_providers`. If
+`CONTENT_LAB_VISION_FALLBACK_API_KEY` is set, only the fallback request receives its
+Bearer credential; the primary key is never sent to the fallback host. Production
+runs on Railway at `https://risingtides-content-lab-production.up.railway.app`, so
+`CONTENT_LAB_VISION_FALLBACK_URL` must be reachable from the Railway container;
+without a reachable fallback, it is unavailable and is never represented as clean.
+Install ffmpeg, ffprobe and Tesseract English data; the Dockerfile includes these
+tools.
 
 One scan per host temp directory is permitted by an OS lock, with a per-process
 thread semaphore. The hard limits are 128 MiB input, 600 frames, 4096×2160 pixels

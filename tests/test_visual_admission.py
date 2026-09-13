@@ -182,17 +182,19 @@ def test_vision_primary_ok_names_actual_model_and_no_fallback(monkeypatch):
 def test_vision_primary_429_falls_back_and_names_reason(monkeypatch):
     import httpx
     monkeypatch.setenv('CONTENT_LAB_VISION_API_KEY', 'fixture-key')
+    monkeypatch.setenv('CONTENT_LAB_VISION_FALLBACK_API_KEY', 'fallback-key')
     monkeypatch.setattr(gate, 'VISION_FALLBACK_MODEL', 'qwen2.5vl:7b')
     calls = []
     def request(*args, **kwargs):
-        calls.append(kwargs['model'])
+        calls.append((kwargs['model'], kwargs.get('key', '')))
+
         if len(calls) == 1:
             raise httpx.HTTPStatusError('rate limited', request=httpx.Request('POST', 'https://primary'), response=httpx.Response(429))
         return {'verdict': 'clean', 'reason': 'fallback evidence', 'model': {
             'name': kwargs['model'], 'provider': kwargs['provider'], 'fallback': False, 'fallbackReason': None}}
     monkeypatch.setattr(gate, '_vision_request', request)
     result = gate._vision(['ZmFrZQ=='], __import__('time').monotonic() + 5)
-    assert calls == [gate.MODEL, 'qwen2.5vl:7b']
+    assert calls == [(gate.MODEL, 'fixture-key'), ('qwen2.5vl:7b', 'fallback-key')]
     assert result['model']['name'] == 'qwen2.5vl:7b'
     assert result['model']['provider'] == 'ollama'
     assert result['model']['fallback'] is True
@@ -268,3 +270,32 @@ def test_vision_primary_oversized_body_falls_back(monkeypatch):
     assert result['verdict'] == 'clean'
     assert result['model']['fallback'] is True
     assert result['model']['fallbackReason'] == 'vision_response_oversized'
+
+
+def test_fallback_request_uses_only_fallback_key(monkeypatch):
+    import httpx
+    seen = []
+    def handler(request):
+        seen.append(dict(request.headers))
+        return httpx.Response(200, json={'choices': [{'message': {'content': '{"verdict":"clean","reason":"ok"}'}}]})
+    original_client = gate.httpx.Client
+    monkeypatch.setattr(gate.httpx, 'Client', lambda **kw: original_client(transport=httpx.MockTransport(handler), **kw))
+    gate._vision_request(['ZmFrZQ=='], __import__('time').monotonic() + 5,
+                         url='http://fallback.test/v1/chat/completions', model='qwen2.5vl:7b',
+                         provider='ollama', key='fallback-secret')
+    assert seen[0]['authorization'] == 'Bearer fallback-secret'
+    assert 'primary-secret' not in str(seen[0])
+
+
+def test_fallback_request_has_no_authorization_when_key_unset(monkeypatch):
+    import httpx
+    seen = []
+    def handler(request):
+        seen.append(dict(request.headers))
+        return httpx.Response(200, json={'choices': [{'message': {'content': '{"verdict":"clean","reason":"ok"}'}}]})
+    original_client = gate.httpx.Client
+    monkeypatch.setattr(gate.httpx, 'Client', lambda **kw: original_client(transport=httpx.MockTransport(handler), **kw))
+    gate._vision_request(['ZmFrZQ=='], __import__('time').monotonic() + 5,
+                         url='http://fallback.test/v1/chat/completions', model='qwen2.5vl:7b',
+                         provider='ollama', key='')
+    assert 'authorization' not in seen[0]

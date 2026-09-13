@@ -420,3 +420,9 @@ Expanded verification passes 105 tests including actual generated-job malformed 
 worktree: /Users/ecfromthedc/dev/wt/lab-fleet-vision
 
 Fixed the Lab GLM-to-Ollama vision ladder after adversarial review: httpx transport failures now trigger the fallback, and dual transport failure returns `vision_unavailable_all_providers` while naming the Ollama model that actually failed. Primary malformed or oversized responses now trigger the fallback as documented; if both legs fail, the decision remains unavailable. Added behavioral coverage for primary transport fallback, dual transport failure, and oversized-body fallback. Focused visual-admission suite: 22 passed, 1 existing warning.
+
+## 2026-09-14 — Hosted vision fallback credential boundary
+
+worktree: /Users/ecfromthedc/dev/wt/lab-fleet-vision
+
+Added `CONTENT_LAB_VISION_FALLBACK_API_KEY` as an optional fallback-only credential. The primary Z.AI key is never forwarded to the fallback host; unset fallback credentials produce no Authorization header. Corrected deployment truth: production is Railway at `https://risingtides-content-lab-production.up.railway.app`, so the configured fallback endpoint must be reachable from the Railway container.

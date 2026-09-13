@@ -16,10 +16,12 @@
   16 native frames, and a named Ollama `qwen2.5vl:7b` fallback may receive the same
   batch when the primary is unavailable. `CONTENT_LAB_VISION_FALLBACK_URL` (default
   `http://127.0.0.1:11434/v1/chat/completions`) and
-  `CONTENT_LAB_VISION_FALLBACK_MODEL` configure that fallback; the decision records
-  the answering model, provider, fallback flag and reason. Both detectors and
-  complete coverage are required for clean. On seeno, the Docker deployment needs a
-  reachable Ollama host for fallback; otherwise fallback is unavailable and the gate
+  `CONTENT_LAB_VISION_FALLBACK_MODEL` configure that fallback; the optional
+  `CONTENT_LAB_VISION_FALLBACK_API_KEY` is sent only to the fallback host. The
+  decision records the answering model, provider, fallback flag and reason. Both
+  detectors and complete coverage are required for clean. Production runs on
+  Railway at `https://risingtides-content-lab-production.up.railway.app`; the
+  fallback endpoint must be reachable from the Railway container or the gate
   remains fail closed.
 - Source cut planning honors the immutable original 60-second minimum and the
   Worker-supplied global source-window exclusions before rendering. Sourced

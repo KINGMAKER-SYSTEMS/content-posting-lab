@@ -219,7 +219,8 @@ def _vision(samples, deadline):
     if VISION_FALLBACK_MODEL not in ALLOWED_VISION_MODELS:
         raise VisionUnavailable("vision_model_not_allowed", model={"name": VISION_FALLBACK_MODEL, "provider": "ollama", "fallback": True, "fallbackReason": primary_error})
     try:
-        result = _vision_request(samples, deadline, url=VISION_FALLBACK_URL, model=VISION_FALLBACK_MODEL, provider="ollama")
+        fallback_key = os.environ.get("CONTENT_LAB_VISION_FALLBACK_API_KEY", "").strip()
+        result = _vision_request(samples, deadline, url=VISION_FALLBACK_URL, model=VISION_FALLBACK_MODEL, provider="ollama", key=fallback_key)
         result["model"].update(fallback=True, fallbackReason=primary_error)
         return result
     except httpx.TransportError as error:
