@@ -349,11 +349,12 @@ def scan_artifact(path: Path, *, page_id: str, job_id: str, index: int, sha256: 
         vision_bytes = 0
         decision["model"]["batches"] = []
 
-        def verify_samples():
+        def verify_samples(images, numbers):
             # OCR locates candidates; the actual frame must corroborate them.
             # Every candidate is included, including transient frames outside
             # the uniform sample. Batches keep model inputs and memory bounded.
-            model = _vision(samples, deadline)
+            decision["model"]["sampledFrames"].extend(numbers)
+            model = _vision(images, deadline)
             previous_name = decision["model"].get("name")
             current_name = model.get("model", {}).get("name", previous_name)
             if decision["model"]["batches"] and current_name != previous_name:
@@ -363,13 +364,11 @@ def scan_artifact(path: Path, *, page_id: str, job_id: str, index: int, sha256: 
             decision["model"].update(model.get("model", {}), status=model["verdict"], reason=model["reason"][:500])
             decision["model"]["batches"].append({
                 **model.get("model", {}), "status": model["verdict"],
-                "sampledFrames": list(sample_numbers), "reason": model["reason"][:500],
+                "sampledFrames": list(numbers), "reason": model["reason"][:500],
             })
             if model["verdict"] != "clean":
                 decision.update(verdict=model["verdict"], reason="pre_existing_text_vision" if model["verdict"] == "text" else "vision_uncertain")
                 return False
-            samples.clear()
-            sample_numbers.clear()
             return True
 
         for number, frame, text in _scanned_frames(path, width, height, deadline, expected):
@@ -386,14 +385,22 @@ def scan_artifact(path: Path, *, page_id: str, job_id: str, index: int, sha256: 
                 vision_bytes += len(sample)
                 if vision_bytes > MAX_VISION_BYTES:
                     raise RuntimeError("vision_input_budget_exceeded")
-                samples.append(sample)
-                sample_numbers.append(number)
-                decision["model"]["sampledFrames"].append(number)
-                if len(samples) == 16 and not verify_samples():
-                    return decision
+                if text:
+                    # A brief caption was missed when hidden among 15 scenery
+                    # frames. Present each OCR candidate on its own.
+                    if not verify_samples([sample], [number]):
+                        return decision
+                else:
+                    samples.append(sample)
+                    sample_numbers.append(number)
+                    if len(samples) == 16:
+                        if not verify_samples(samples, sample_numbers):
+                            return decision
+                        samples.clear()
+                        sample_numbers.clear()
         if decision["sampling"]["frameCount"] != expected or _hash(path) != sha256:
             raise RuntimeError("incomplete_or_changed_artifact")
-        if samples and not verify_samples():
+        if samples and not verify_samples(samples, sample_numbers):
             return decision
         if _hash(path) != sha256:
             raise RuntimeError("incomplete_or_changed_artifact")

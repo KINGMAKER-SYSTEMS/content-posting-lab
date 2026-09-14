@@ -39,8 +39,9 @@
   two alphanumeric characters. Isolated layout glyphs and low-confidence
   guesses are not positive text evidence. A frame without recognized words is
   checked again at 180 degrees under the same deadline. Every candidate frame
-  joins the native visual sample, including brief candidates between uniformly
-  sampled frames; only visual corroboration may reject it as text. All batches
+  receives its own single-frame visual check, including brief candidates between
+  uniformly sampled frames; only visual corroboration may reject it as text. A
+  scenery batch must not dilute a transient text candidate. All remaining batches
   of at most 16 frames must be clean within the existing cumulative byte/time
   budgets, and their provider/frame evidence is retained. The algorithm id
   versions these rules so cached decisions from the glyph-based detector are

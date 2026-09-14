@@ -131,6 +131,21 @@ def test_mixed_batch_providers_defer_instead_of_hiding_first_model(monkeypatch, 
     assert result['model']['reason'] == 'vision_model_changed'
 
 
+def test_brief_candidate_is_presented_alone_not_hidden_in_scenery_batch(monkeypatch, tmp_path):
+    path = fake_media(monkeypatch, tmp_path)
+    monkeypatch.setattr(gate, '_probe', lambda *args: (4, 4, 30, 6))
+    monkeypatch.setattr(gate, '_frames', lambda *args: iter([bytes([n])*48 for n in range(30)]))
+    monkeypatch.setattr(gate, '_ocr', lambda frame,*args: 'EXISTING TEXT' if frame[0] == 7 else '')
+    def vision(samples, deadline):
+        assert len(samples) == 1
+        return {'verdict':'text', 'reason':'Existing caption visible on this frame'}
+    monkeypatch.setattr(gate, '_vision', vision)
+    result = run_scan(path)
+    assert result['verdict'] == 'text'
+    assert result['model']['sampledFrames'] == [7]
+    assert result['sampling']['frameCount'] == 8
+
+
 def test_artifact_changed_during_visual_confirmation_cannot_pass(monkeypatch, tmp_path):
     path = fake_media(monkeypatch, tmp_path)
     def vision(*args):
@@ -180,7 +195,7 @@ def test_real_video_single_frame_text(monkeypatch, tmp_path, has_text, rotation)
     monkeypatch.setattr(gate, '_vision', lambda *args: {'verdict':'text' if has_text else 'clean','reason':'fixture model; live original replay is verified separately'})
     result = run_scan(path)
     assert result['verdict'] == ('text' if has_text else 'clean'), result
-    assert result['sampling']['frameCount'] == 3
+    assert result['sampling']['frameCount'] == (2 if has_text else 3)
     if has_text:
         assert result['ocr']['candidateFrames'] == [1]
         assert 1 in result['model']['sampledFrames']
