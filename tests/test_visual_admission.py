@@ -1,10 +1,53 @@
 import hashlib
 import shutil
 import subprocess
+import time
 
 import pytest
 
 from services import visual_admission as gate
+
+
+def test_rejected_boat_frame_ocr_noise_is_not_text():
+    # Captured word/confidence rows from cpl-f3d545fa8cfac071 output0, frame0.
+    # The frame shows a boat on a lake; rails and reflections produced glyphs.
+    tsv = "level\tconf\ttext\n" + "\n".join([
+        "5\t14.277382\tTg", "5\t0.000000\tfail)",
+        "5\t60.585262\tmM", "5\t81.099945\ti",
+        "5\t3.059891\tWily", "5\t85.793335\t\\",
+        "5\t89.040390\t\\", "5\t50.927628\tme",
+    ])
+    assert gate._recognized_words(tsv) == ""
+
+
+def test_readable_words_numbers_and_short_logos_remain_text():
+    assert gate._recognized_words(
+        "level\tconf\ttext\n5\t95.864319\tEXISTING\n"
+        "5\t96.126114\tTEXT\n5\t92\tAI\n5\t90\t24\n"
+    ) == "EXISTING TEXT AI 24"
+
+
+@pytest.mark.parametrize('tsv', ['garbage', 'level\tconf\ttext\n5\tnan\tTEXT',
+                                  'level\tconf\ttext\n5\t101\tTEXT'])
+def test_malformed_ocr_does_not_become_clean(tsv):
+    with pytest.raises((RuntimeError, ValueError)):
+        gate._recognized_words(tsv)
+
+
+def test_upside_down_low_confidence_rechecks_same_pixels(monkeypatch):
+    replies = iter([b"level\tconf\ttext\n5\t40.197716\tONILSIXA\n",
+                    b"level\tconf\ttext\n5\t95.864319\tEXISTING\n"])
+    seen = []
+    def run(args, *, input, timeout):
+        seen.append((args, input, timeout))
+        return next(replies)
+    monkeypatch.setattr(gate, '_run', run)
+    pixels = bytes(range(12))
+    assert gate._ocr(pixels, 2, 2, time.monotonic()+30, 1) == 'EXISTING'
+    assert len(seen) == 2
+    assert seen[0][1].endswith(pixels)
+    assert seen[1][1].endswith(pixels[9:12]+pixels[6:9]+pixels[3:6]+pixels[0:3])
+    assert seen[1][2] <= seen[0][2]
 
 
 @pytest.fixture(autouse=True)
@@ -50,14 +93,53 @@ def test_unavailable_fails_closed(monkeypatch, tmp_path, fault):
     assert 'private' not in str(result)
 
 
-def test_single_transient_frame_rejects_without_model(monkeypatch, tmp_path):
+def test_single_transient_ocr_frame_requires_visual_corroboration(monkeypatch, tmp_path):
     path = fake_media(monkeypatch, tmp_path)
     monkeypatch.setattr(gate, '_frames', lambda *args: iter([b'0'*48,b'1'*48,b'2'*48]))
     monkeypatch.setattr(gate, '_ocr', lambda frame,*args: 'SALE' if frame[0] == 49 else '')
-    monkeypatch.setattr(gate, '_vision', lambda *args: pytest.fail('should not need model to reject'))
+    monkeypatch.setattr(gate, '_vision', lambda *args: {'verdict':'text','reason':'SALE visible'})
     result = run_scan(path)
     assert result['verdict'] == 'text'
-    assert result['ocr']['frame'] == 1
+    assert result['ocr']['candidateFrames'] == [1]
+    assert 1 in result['model']['sampledFrames']
+
+
+def test_ocr_candidate_outside_uniform_sample_cannot_be_dropped(monkeypatch, tmp_path):
+    path = fake_media(monkeypatch, tmp_path)
+    monkeypatch.setattr(gate, '_probe', lambda *args: (4, 4, 30, 6))
+    monkeypatch.setattr(gate, '_frames', lambda *args: iter([bytes([n])*48 for n in range(30)]))
+    monkeypatch.setattr(gate, '_ocr', lambda frame,*args: 'AW' if frame[0] == 1 else '')
+    result = run_scan(path)
+    assert result['verdict'] == 'clean'
+    assert result['ocr']['candidateFrames'] == [1]
+    assert 1 in result['model']['sampledFrames']
+    assert len(result['model']['batches']) == 2
+    assert all(b['status'] == 'clean' for b in result['model']['batches'])
+
+
+def test_mixed_batch_providers_defer_instead_of_hiding_first_model(monkeypatch, tmp_path):
+    path = fake_media(monkeypatch, tmp_path)
+    monkeypatch.setattr(gate, '_probe', lambda *args: (4, 4, 17, 6))
+    monkeypatch.setattr(gate, '_frames', lambda *args: iter([b'0'*48]*17))
+    monkeypatch.setattr(gate, '_ocr', lambda *args: 'AW')
+    names = iter(['glm-4.6v-flash', 'gpt-4o-mini'])
+    monkeypatch.setattr(gate, '_vision', lambda *args: {
+        'verdict':'clean', 'reason':'No visible writing', 'model':{'name':next(names)}})
+    result = run_scan(path)
+    assert result['verdict'] == 'unavailable'
+    assert result['reason'] == 'scan_pending'
+    assert result['model']['reason'] == 'vision_model_changed'
+
+
+def test_artifact_changed_during_visual_confirmation_cannot_pass(monkeypatch, tmp_path):
+    path = fake_media(monkeypatch, tmp_path)
+    def vision(*args):
+        path.write_bytes(b'different-video')
+        return {'verdict':'clean', 'reason':'Visible sample clean'}
+    monkeypatch.setattr(gate, '_vision', vision)
+    result = run_scan(path)
+    assert result['verdict'] == 'unavailable'
+    assert result['reason'] == 'incomplete_or_changed_artifact'
 
 
 def test_visual_text_and_uncertainty_reject(monkeypatch, tmp_path):
@@ -95,10 +177,13 @@ def test_real_video_single_frame_text(monkeypatch, tmp_path, has_text, rotation)
     path = tmp_path / 'video.mp4'
     subprocess.run(['ffmpeg','-v','error','-framerate','30','-i',str(tmp_path/'%02d.png'),
         '-c:v','libx264','-pix_fmt','yuv420p',str(path)], check=True)
-    monkeypatch.setattr(gate, '_vision', lambda *args: {'verdict':'clean','reason':'fixture mock; independent live model test required'})
+    monkeypatch.setattr(gate, '_vision', lambda *args: {'verdict':'text' if has_text else 'clean','reason':'fixture model; live original replay is verified separately'})
     result = run_scan(path)
     assert result['verdict'] == ('text' if has_text else 'clean'), result
-    assert result['sampling']['frameCount'] == (2 if has_text else 3)
+    assert result['sampling']['frameCount'] == 3
+    if has_text:
+        assert result['ocr']['candidateFrames'] == [1]
+        assert 1 in result['model']['sampledFrames']
 
 
 def test_authenticated_endpoint_binds_and_persists_exact_artifact(monkeypatch, tmp_path):

@@ -8,6 +8,7 @@ exhaustion and malformed replies fail closed.
 from __future__ import annotations
 
 import base64
+import csv
 from concurrent.futures import ThreadPoolExecutor
 from itertools import islice
 import hashlib
@@ -66,6 +67,7 @@ TIMEOUT = 420
 # 0 preserves the historical native OCR default. A positive value is the OCR
 # working long edge; decode and GLM inputs remain native regardless.
 OCR_LONG_EDGE = int(os.environ.get("CONTENT_LAB_OCR_LONG_EDGE", "0") or 0)
+OCR_WORD_CONFIDENCE = 80
 _GATE = threading.BoundedSemaphore(1)
 
 
@@ -136,6 +138,24 @@ def _frames(path, width, height, deadline):
         proc.stdout.close()
 
 
+def _recognized_words(tsv):
+    """Only word-level recognition is positive evidence; layout glyphs are not."""
+    rows = csv.DictReader(io.StringIO(tsv), delimiter="\t")
+    if not rows.fieldnames or not {"level", "conf", "text"}.issubset(rows.fieldnames):
+        raise RuntimeError("ocr_response_invalid")
+    words = []
+    for row in rows:
+        if row["level"] != "5":
+            continue
+        confidence = float(row["conf"])
+        text = row["text"] or ""
+        if not -1 <= confidence <= 100:
+            raise RuntimeError("ocr_response_invalid")
+        if confidence >= OCR_WORD_CONFIDENCE and sum(char.isalnum() for char in text) >= 2:
+            words.append(text)
+    return " ".join(words)[:500]
+
+
 def _ocr(frame, width, height, deadline, frame_budget):
     # Decode stays native; only the OCR working image may be resized.
     ocr_width, ocr_height = width, height
@@ -143,15 +163,28 @@ def _ocr(frame, width, height, deadline, frame_budget):
         scale = OCR_LONG_EDGE / max(width, height)
         ocr_width, ocr_height = round(width * scale), round(height * scale)
         frame = Image.frombytes("RGB", (width, height), frame).resize((ocr_width, ocr_height)).tobytes()
-    ppm = f"P6\n{ocr_width} {ocr_height}\n255\n".encode() + frame
     # The cap is a share of the whole scan budget, derived from the probed frame
     # count; it is never a fixed wall-clock allowance per frame.
     pixel_ratio = (width * height) / max(1, (OCR_LONG_EDGE or max(width, height)) ** 2)
     per_frame = (TIMEOUT * 4 * pixel_ratio) / max(1, frame_budget)
-    text = _run(["tesseract", "stdin", "stdout", "--psm", "12", "-l", "eng"], input=ppm,
-                timeout=min(max(.1, deadline-time.monotonic()), max(.1, per_frame))).decode("utf-8", "strict")
-    # Any recognized glyph rejects; orientation gibberish is still text evidence.
-    return text.strip()[:500]
+    # PSM12 orientation detection can misread upside-down words at low confidence.
+    # Retry the opposite orientation before calling the frame OCR-clean. Both
+    # subprocesses share the original per-frame and whole-scan deadlines.
+    ocr_deadline = min(deadline, time.monotonic() + per_frame)
+    for rotation in (0, 180):
+        pixels = frame if rotation == 0 else Image.frombytes(
+            "RGB", (ocr_width, ocr_height), frame
+        ).transpose(Image.Transpose.ROTATE_180).tobytes()
+        ppm = f"P6\n{ocr_width} {ocr_height}\n255\n".encode() + pixels
+        remaining = ocr_deadline - time.monotonic()
+        if remaining <= 0:
+            raise RuntimeError("scan_timeout")
+        tsv = _run(["tesseract", "stdin", "stdout", "--psm", "12", "-l", "eng", "tsv"],
+                   input=ppm, timeout=remaining).decode("utf-8", "strict")
+        text = _recognized_words(tsv)
+        if text:
+            return text
+    return ""
 
 
 def _scanned_frames(path, width, height, deadline, expected):
@@ -254,7 +287,7 @@ def _vision(samples, deadline):
         "fallbackReason": primary_error, "fallbackError": fallback_error})
 
 
-ALGORITHM = "tesseract-psm12-configured-long-edge-rgb-v2"
+ALGORITHM = "tesseract-psm12-words-vision-corroborated-v3"
 
 # These failures describe a service/runtime that can be retried next cycle.
 # Identity mismatches and positive text detections deliberately remain terminal.
@@ -265,6 +298,7 @@ _TRANSIENT_REASONS = frozenset({
     "vision_transport_unavailable", "vision_timeout", "vision_response_invalid",
     "vision_response_oversized", "vision_provider_1305",
     "vision_unavailable_all_providers", "visual_evidence_unavailable",
+    "vision_model_changed",
 })
 
 
@@ -283,7 +317,7 @@ def pending_decision(*, page_id, job_id, index, sha256, byte_count):
         "scannedAt": datetime.now(timezone.utc).isoformat(), "reason": "scan_pending",
         "sampling": {"mode": "all_frames", "algorithm": ALGORITHM, "frameCount": 0, "expectedFrameCount": 0},
         "model": {"name": MODEL, "provider": VISION_PROVIDER, "urlHost": urlparse(VISION_URL).hostname, "status": "unavailable", "fallback": False, "fallbackReason": None, "sampledFrames": []},
-        "ocr": {"engine": "tesseract", "status": "unavailable", "psm": 12, "languages": ["eng", "osd"], "workingLongEdge": OCR_LONG_EDGE or "native"}}
+        "ocr": {"engine": "tesseract", "status": "unavailable", "psm": 12, "languages": ["eng", "osd"], "workingLongEdge": OCR_LONG_EDGE or "native", "minimumWordConfidence": OCR_WORD_CONFIDENCE, "minimumAlphanumericCharacters": 2, "orientations": [0, 180], "candidateFrames": []}}
 
 
 def scan_artifact(path: Path, *, page_id: str, job_id: str, index: int, sha256: str, byte_count: int):
@@ -311,29 +345,60 @@ def scan_artifact(path: Path, *, page_id: str, job_id: str, index: int, sha256: 
         decision["sampling"].update(expectedFrameCount=expected, width=width, height=height,
                                      durationSeconds=duration, durationMs=round(duration*1000))
         selected = {round(i*(expected-1)/min(15, expected-1)) for i in range(min(16, expected))} if expected > 1 else {0}
-        samples = []
+        samples, sample_numbers = [], []
+        vision_bytes = 0
+        decision["model"]["batches"] = []
+
+        def verify_samples():
+            # OCR locates candidates; the actual frame must corroborate them.
+            # Every candidate is included, including transient frames outside
+            # the uniform sample. Batches keep model inputs and memory bounded.
+            model = _vision(samples, deadline)
+            previous_name = decision["model"].get("name")
+            current_name = model.get("model", {}).get("name", previous_name)
+            if decision["model"]["batches"] and current_name != previous_name:
+                # The v1 consumer validates one answering model for the whole
+                # decision. Never hide an earlier provider behind the last one.
+                raise VisionUnavailable("vision_model_changed", model=model.get("model", {}))
+            decision["model"].update(model.get("model", {}), status=model["verdict"], reason=model["reason"][:500])
+            decision["model"]["batches"].append({
+                **model.get("model", {}), "status": model["verdict"],
+                "sampledFrames": list(sample_numbers), "reason": model["reason"][:500],
+            })
+            if model["verdict"] != "clean":
+                decision.update(verdict=model["verdict"], reason="pre_existing_text_vision" if model["verdict"] == "text" else "vision_uncertain")
+                return False
+            samples.clear()
+            sample_numbers.clear()
+            return True
+
         for number, frame, text in _scanned_frames(path, width, height, deadline, expected):
             if number >= expected or number >= MAX_FRAMES:
                 raise RuntimeError("frame_count_mismatch")
             decision["sampling"]["frameCount"] = number + 1
             if text:
-                decision["ocr"].update(status="text", frame=number, text=text)
-                decision.update(verdict="text", reason="pre_existing_text_ocr")
-                return decision
-            if number in selected:
+                decision["ocr"]["candidateFrames"].append(number)
+            if number in selected or text:
                 image = Image.frombytes("RGB", (width, height), frame)
                 encoded = io.BytesIO()
                 image.save(encoded, format="PNG")
-                samples.append(base64.b64encode(encoded.getvalue()).decode())
-                if sum(len(sample) for sample in samples) > MAX_VISION_BYTES:
+                sample = base64.b64encode(encoded.getvalue()).decode()
+                vision_bytes += len(sample)
+                if vision_bytes > MAX_VISION_BYTES:
                     raise RuntimeError("vision_input_budget_exceeded")
+                samples.append(sample)
+                sample_numbers.append(number)
                 decision["model"]["sampledFrames"].append(number)
+                if len(samples) == 16 and not verify_samples():
+                    return decision
         if decision["sampling"]["frameCount"] != expected or _hash(path) != sha256:
             raise RuntimeError("incomplete_or_changed_artifact")
+        if samples and not verify_samples():
+            return decision
+        if _hash(path) != sha256:
+            raise RuntimeError("incomplete_or_changed_artifact")
         decision["ocr"]["status"] = "clean"
-        model = _vision(samples, deadline)
-        decision["model"].update(model.get("model", {}), status=model["verdict"], reason=model["reason"][:500])
-        decision.update(verdict=model["verdict"], reason="full_frame_ocr_and_vision_clean" if model["verdict"] == "clean" else "pre_existing_text_vision" if model["verdict"] == "text" else "vision_uncertain")
+        decision.update(verdict="clean", reason="full_frame_ocr_and_vision_clean")
     except subprocess.TimeoutExpired:
         decision["reason"] = "scan_timeout"
     except VisionUnavailable as exc:
