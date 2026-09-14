@@ -298,7 +298,6 @@ _TRANSIENT_REASONS = frozenset({
     "vision_transport_unavailable", "vision_timeout", "vision_response_invalid",
     "vision_response_oversized", "vision_provider_1305",
     "vision_unavailable_all_providers", "visual_evidence_unavailable",
-    "vision_model_changed",
 })
 
 
@@ -355,12 +354,6 @@ def scan_artifact(path: Path, *, page_id: str, job_id: str, index: int, sha256: 
             # the uniform sample. Batches keep model inputs and memory bounded.
             decision["model"]["sampledFrames"].extend(numbers)
             model = _vision(images, deadline)
-            previous_name = decision["model"].get("name")
-            current_name = model.get("model", {}).get("name", previous_name)
-            if decision["model"]["batches"] and current_name != previous_name:
-                # The v1 consumer validates one answering model for the whole
-                # decision. Never hide an earlier provider behind the last one.
-                raise VisionUnavailable("vision_model_changed", model=model.get("model", {}))
             decision["model"].update(model.get("model", {}), status=model["verdict"], reason=model["reason"][:500])
             decision["model"]["batches"].append({
                 **model.get("model", {}), "status": model["verdict"],

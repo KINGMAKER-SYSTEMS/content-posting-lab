@@ -117,18 +117,18 @@ def test_ocr_candidate_outside_uniform_sample_cannot_be_dropped(monkeypatch, tmp
     assert all(b['status'] == 'clean' for b in result['model']['batches'])
 
 
-def test_mixed_batch_providers_defer_instead_of_hiding_first_model(monkeypatch, tmp_path):
+def test_batch_provenance_retains_each_answering_provider(monkeypatch, tmp_path):
     path = fake_media(monkeypatch, tmp_path)
-    monkeypatch.setattr(gate, '_probe', lambda *args: (4, 4, 17, 6))
-    monkeypatch.setattr(gate, '_frames', lambda *args: iter([b'0'*48]*17))
+    monkeypatch.setattr(gate, '_probe', lambda *args: (4, 4, 2, 6))
+    monkeypatch.setattr(gate, '_frames', lambda *args: iter([b'0'*48]*2))
     monkeypatch.setattr(gate, '_ocr', lambda *args: 'AW')
     names = iter(['glm-4.6v-flash', 'gpt-4o-mini'])
     monkeypatch.setattr(gate, '_vision', lambda *args: {
         'verdict':'clean', 'reason':'No visible writing', 'model':{'name':next(names)}})
     result = run_scan(path)
-    assert result['verdict'] == 'unavailable'
-    assert result['reason'] == 'scan_pending'
-    assert result['model']['reason'] == 'vision_model_changed'
+    assert result['verdict'] == 'clean'
+    assert [b['name'] for b in result['model']['batches']] == ['glm-4.6v-flash', 'gpt-4o-mini']
+    assert all(b['status'] == 'clean' for b in result['model']['batches'])
 
 
 def test_brief_candidate_is_presented_alone_not_hidden_in_scenery_batch(monkeypatch, tmp_path):

@@ -47,8 +47,7 @@
   versions these rules so cached decisions from the glyph-based detector are
   rescanned against the same original bytes. Confidence is detector evidence,
   not a calibrated probability or a guarantee of text absence.
-  A provider change between batches defers the scan because the v1 consumer
-  authorizes one answering model for the whole decision.
+  Each batch retains its answering provider, including the configured fallback.
 
 - `services/caption_render.py` owns the typed Dossier-to-render caption contract.
 - `services/post_render.py` owns local prepared-final rendering and exact artifact
