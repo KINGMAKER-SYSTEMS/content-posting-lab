@@ -9,8 +9,8 @@
       "executionStatus": "commissioned",
       "executorKind": "prompt_family",
       "executorId": "boat",
-      "executorVersion": "sha256:2da2ce138f2fbd93944d9f9d63a6fb285b4706f61d1e3ee0532c702126dabede",
-      "formatContractVersion": "sha256:63f8d96e01f0329fb5b5cfb8222a422ca8c416545ca6df8f861ef96ef512add6",
+      "executorVersion": "sha256:e7c2a13a818da636bb32ea3027cd3d2be1a88fd8c9c74e87cf67206f3188ceff",
+      "formatContractVersion": "sha256:ebc1e3d2c48261f872916e6767bba0bd8706cc0327112bfcbb3b407085dc364f",
       "maxQuantity": 10
     },
     "coffee-tok": {
@@ -21,8 +21,8 @@
       "executionStatus": "commissioned",
       "executorKind": "prompt_family",
       "executorId": "coffee",
-      "executorVersion": "sha256:2da2ce138f2fbd93944d9f9d63a6fb285b4706f61d1e3ee0532c702126dabede",
-      "formatContractVersion": "sha256:22a9042cc64c9d9884ee87bb5859e80397cb8f7bb0e5c12c04bef6bb0be5eeef",
+      "executorVersion": "sha256:e7c2a13a818da636bb32ea3027cd3d2be1a88fd8c9c74e87cf67206f3188ceff",
+      "formatContractVersion": "sha256:ef0b121a66ec33c500c992a12e20a963c6234237017443da08747fc7a6753bfc",
       "maxQuantity": 10
     },
     "construction-scenic": {
@@ -129,8 +129,8 @@
       "executionStatus": "commissioned",
       "executorKind": "prompt_family",
       "executorId": "silhouette",
-      "executorVersion": "sha256:2da2ce138f2fbd93944d9f9d63a6fb285b4706f61d1e3ee0532c702126dabede",
-      "formatContractVersion": "sha256:2104ed9cb36a95144a97d2f1ede8bf769b28faf879ebe66d7766ad009542a8ea",
+      "executorVersion": "sha256:e7c2a13a818da636bb32ea3027cd3d2be1a88fd8c9c74e87cf67206f3188ceff",
+      "formatContractVersion": "sha256:3c2bb8dd9c081e6b8d8d026d7077a3d476838af15ca3d19112fcc7dd85dc1f8f",
       "maxQuantity": 10
     },
     "truck-scenic": {
@@ -141,8 +141,8 @@
       "executionStatus": "commissioned",
       "executorKind": "prompt_family",
       "executorId": "truck",
-      "executorVersion": "sha256:2da2ce138f2fbd93944d9f9d63a6fb285b4706f61d1e3ee0532c702126dabede",
-      "formatContractVersion": "sha256:e3379f496975761ea02f7a381eee8803ec0f9e6899c90f38e991bfc6982df47e",
+      "executorVersion": "sha256:e7c2a13a818da636bb32ea3027cd3d2be1a88fd8c9c74e87cf67206f3188ceff",
+      "formatContractVersion": "sha256:89bb6c2718e3720302e8bee167660d8a2528a1dbe15fed43aaacea88e6671851",
       "maxQuantity": 10
     },
     "truck-ugc": {
@@ -154,7 +154,7 @@
       "executorKind": null,
       "executorId": null,
       "executorVersion": null,
-      "formatContractVersion": "sha256:b7d2183228b0d82efa96d4bc9ab38e2f3c0fda88e79911f272b559d7bdda6a0a",
+      "formatContractVersion": "sha256:18e41f914afada14bbf46f5abe18bf1f3885ad680bd24bda908b417191110aae",
       "maxQuantity": 0
     }
   }

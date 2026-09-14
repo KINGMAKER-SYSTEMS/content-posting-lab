@@ -175,7 +175,7 @@ def test_registered_dossier_is_advertised_and_queues_new_media_only(lab, monkeyp
     ).hexdigest()
     assert stored["materialSource"] == "generated_video"
     assert stored["assetType"] == "video/mp4"
-    assert stored["promptCatalogHash"] == "2da2ce138f2fbd93944d9f9d63a6fb285b4706f61d1e3ee0532c702126dabede"
+    assert stored["promptCatalogHash"] == "e7c2a13a818da636bb32ea3027cd3d2be1a88fd8c9c74e87cf67206f3188ceff"
     assert len(stored["promptPlan"]) == 1
     assert set(stored["promptPlan"][0]) == {"combinationId", "promptHash"}
 

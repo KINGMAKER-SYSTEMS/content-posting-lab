@@ -10,7 +10,7 @@
       "creativeAuthority": {
         "kind": "prompt_family",
         "id": "boat",
-        "version": "sha256:2da2ce138f2fbd93944d9f9d63a6fb285b4706f61d1e3ee0532c702126dabede"
+        "version": "sha256:e7c2a13a818da636bb32ea3027cd3d2be1a88fd8c9c74e87cf67206f3188ceff"
       },
       "dimensions": {
         "subject": {
@@ -87,7 +87,7 @@
       "creativeAuthority": {
         "kind": "prompt_family",
         "id": "coffee",
-        "version": "sha256:2da2ce138f2fbd93944d9f9d63a6fb285b4706f61d1e3ee0532c702126dabede"
+        "version": "sha256:e7c2a13a818da636bb32ea3027cd3d2be1a88fd8c9c74e87cf67206f3188ceff"
       },
       "dimensions": {
         "subject": {
@@ -811,7 +811,7 @@
       "creativeAuthority": {
         "kind": "prompt_family",
         "id": "silhouette",
-        "version": "sha256:2da2ce138f2fbd93944d9f9d63a6fb285b4706f61d1e3ee0532c702126dabede"
+        "version": "sha256:e7c2a13a818da636bb32ea3027cd3d2be1a88fd8c9c74e87cf67206f3188ceff"
       },
       "dimensions": {
         "subject": {
@@ -856,7 +856,7 @@
         },
         "referenceExamples": {
           "status": "defined",
-          "rule": "The 30 byte-exact reviewed anchors rotate without replacement.",
+          "rule": "The 19 byte-exact reviewed anchors rotate without replacement.",
           "authority": "promptCatalog.families.silhouette.anchor_manifest_sha256"
         }
       },
@@ -889,7 +889,7 @@
       "creativeAuthority": {
         "kind": "prompt_family",
         "id": "truck",
-        "version": "sha256:2da2ce138f2fbd93944d9f9d63a6fb285b4706f61d1e3ee0532c702126dabede"
+        "version": "sha256:e7c2a13a818da636bb32ea3027cd3d2be1a88fd8c9c74e87cf67206f3188ceff"
       },
       "dimensions": {
         "subject": {
@@ -967,7 +967,7 @@
       "creativeAuthority": {
         "kind": "prompt_family",
         "id": "ugc",
-        "version": "sha256:2da2ce138f2fbd93944d9f9d63a6fb285b4706f61d1e3ee0532c702126dabede"
+        "version": "sha256:e7c2a13a818da636bb32ea3027cd3d2be1a88fd8c9c74e87cf67206f3188ceff"
       },
       "dimensions": {
         "subject": {
