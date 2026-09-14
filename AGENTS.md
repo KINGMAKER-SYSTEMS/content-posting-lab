@@ -13,10 +13,11 @@
   Control Plane can admit ready video into R2. Every decoded native-resolution
   frame receives Tesseract OCR at the configured `CONTENT_LAB_OCR_LONG_EDGE`
   working edge (default `0`, native); the primary GLM-4.6v-flash provider receives up to
-  16 native frames, and a named OpenAI `gpt-4o-mini` fallback may receive the same
+  16 native frames per batch, and a named OpenAI `gpt-4o-mini` or Ollama
+  `qwen2.5vl:7b` fallback may receive the same
   batch when the primary is unavailable. `CONTENT_LAB_VISION_FALLBACK_URL` (default
   `https://api.openai.com/v1/chat/completions`) and
-  `CONTENT_LAB_VISION_FALLBACK_MODEL` configure that fallback; the optional
+  `CONTENT_LAB_VISION_FALLBACK_MODEL` (default `gpt-4o-mini`) configure that fallback; the optional
   `CONTENT_LAB_VISION_FALLBACK_API_KEY` is sent only to the fallback host. The
   optional `CONTENT_LAB_VISION_URL` primary override accepts only the two
   server-owned Z.ai/Zhipu chat-completions URLs and records the answering URL
@@ -34,6 +35,19 @@
   retains final atomic reservation authority for races. Budgets, missing
   tools/credentials, uncertain replies, and changed bytes fail closed.
   This detector has bounded recall; it does not prove semantic absence of all text.
+- OCR candidates require Tesseract word confidence of at least 80 and at least
+  two alphanumeric characters. Isolated layout glyphs and low-confidence
+  guesses are not positive text evidence. A frame without recognized words is
+  checked again at 180 degrees under the same deadline. Every candidate frame
+  receives its own single-frame visual check, including brief candidates between
+  uniformly sampled frames; only visual corroboration may reject it as text. A
+  scenery batch must not dilute a transient text candidate. All remaining batches
+  of at most 16 frames must be clean within the existing cumulative byte/time
+  budgets, and their provider/frame evidence is retained. The algorithm id
+  versions these rules so cached decisions from the glyph-based detector are
+  rescanned against the same original bytes. Confidence is detector evidence,
+  not a calibrated probability or a guarantee of text absence.
+  Each batch retains its answering provider, including the configured fallback.
 
 - `services/caption_render.py` owns the typed Dossier-to-render caption contract.
 - `services/post_render.py` owns local prepared-final rendering and exact artifact
@@ -231,6 +245,10 @@
   module and return the same versioned schema and hashes.
 
 ## Verification
+
+- Run `pytest -q tests/test_visual_admission.py` for observed boat-frame OCR
+  noise, short readable text, rotated single-frame text, complete coverage,
+  unavailable providers, exact-byte binding, and cached-decision behavior.
 
 - Run `pytest -q tests/test_production_image_imports.py` for isolated imports from
   the Dockerfile's backend file selection. Build the Docker image for release;
