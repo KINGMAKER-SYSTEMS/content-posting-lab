@@ -320,7 +320,7 @@ def test_live_legacy_exemption_is_bound_to_the_complete_immutable_publication():
     publications = (
         ingredients.PINNED_LEGACY_DOSSIER_CATALOG_VERSIONS_BY_PUBLICATION
     )
-    assert len(publications) == 6
+    assert len(publications) == 27
     for key, catalog_version in publications.items():
         page_id, recipe_id, recipe_version, dossier_revision, recipe_spec_hash = key
         assert ingredients.is_pinned_legacy_catalog_version(
