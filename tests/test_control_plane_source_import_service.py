@@ -216,6 +216,50 @@ def test_download_source_video_reuses_clipper_and_hashes_exact_bytes(monkeypatch
     assert not destination.with_name("original.mp4").exists()
 
 
+def test_download_source_video_keeps_an_exact_refillable_master_without_reencoding(
+    monkeypatch, tmp_path,
+):
+    original = b"already-refillable-master"
+    media = imports.SourceImportMedia(
+        duration_ms=7_500,
+        width=1080,
+        height=1920,
+        video_codec="h264",
+        pixel_format="yuv420p",
+        fps=30.0,
+        audio_streams=0,
+    )
+
+    async def downloader(
+        _url, destination, cookies_file=None, *, max_filesize=None,
+        source_import_mode=False,
+    ):
+        destination.write_bytes(original)
+        return destination
+
+    async def never_normalize(_source, _destination):
+        raise AssertionError("an exact refillable master must not be re-encoded")
+
+    monkeypatch.setattr(imports, "download_video", downloader)
+    monkeypatch.setattr(imports, "_probe_video", lambda _path: asyncio.sleep(0, result=media))
+    monkeypatch.setattr(imports, "_normalize_video", never_normalize)
+    monkeypatch.setattr(imports, "_require_free_space", lambda *_args: None)
+
+    destination = tmp_path / "source" / "source.mp4"
+    result = asyncio.run(imports.download_source_video(
+        "https://cdn.example.com/video.mp4", destination,
+    ))
+    expected_sha = hashlib.sha256(original).hexdigest()
+    assert destination.read_bytes() == original
+    assert result.sha256 == expected_sha
+    assert result.original_sha256 == expected_sha
+    assert result.bytes == len(original)
+    assert result.original_bytes == len(original)
+    assert result.media == media
+    assert result.original_media == media
+    assert not destination.with_name("original.mp4").exists()
+
+
 def test_download_source_video_rejects_post_download_size_drift(monkeypatch, tmp_path):
     monkeypatch.setattr(imports, "MAX_SOURCE_IMPORT_BYTES", 4)
 
