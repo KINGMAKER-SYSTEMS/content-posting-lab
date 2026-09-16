@@ -344,7 +344,7 @@ def capabilities(
             ))
         elif source_recipe is not None:
             unavailable_slots = _source_dna_unavailable_slots(
-                job_store, source_recipe,
+                job_store, source_recipe, publication["recipeVersion"],
             )
             max_quantity = len(plan_source_cuts(
                 source_recipe, source_recipe.max_quantity, unavailable_slots,
@@ -793,15 +793,15 @@ def _scan_library(project: str) -> list[str]:
 
 
 def _source_dna_unavailable_slots(
-    store: dict[str, Any], source_recipe: Any,
+    store: dict[str, Any], source_recipe: Any, recipe_version: str,
 ) -> set[str]:
     """Derive reservations from durable job truth, never a write-only ledger.
 
-    Queued/running jobs reserve their exact windows against concurrency. A
-    completed job keeps them unavailable because output bytes exist and may
-    have crossed the API boundary. Failed jobs release them: no completed
-    output exists, so treating selection alone as "served" would eventually
-    exhaust an immutable master through transport or runtime failures.
+    Queued/running jobs reserve their exact windows across recipe revisions so
+    concurrent work cannot cut the same source position. A completed job keeps
+    a window unavailable only for the exact locked recipe that produced it; a
+    later recipe may recut that page-bound window with its new treatment and
+    provenance. Failed jobs release their windows.
     """
     slots: set[str] = set()
     for job in store.get("jobs", {}).values():
@@ -811,6 +811,10 @@ def _source_dna_unavailable_slots(
             or job.get("sourceLibraryId") != source_recipe.source_library_id
             or job.get("sourceLibraryHash") != source_recipe.source_library_hash
             or job.get("status") not in SOURCE_DNA_UNAVAILABLE_STATUSES
+            or (
+                job.get("status") == "completed"
+                and job.get("recipeVersion") != recipe_version
+            )
         ):
             continue
         for cut in job.get("sourceCuts", []):
@@ -2725,8 +2729,12 @@ async def create_job(
             }
             start_generation = True
         elif source_recipe is not None:
-            served_slots = _source_dna_unavailable_slots(store, source_recipe)
-            cuts = plan_source_cuts(source_recipe, quantity, served_slots, excluded_windows)
+            served_slots = _source_dna_unavailable_slots(
+                store, source_recipe, publication["recipeVersion"],
+            )
+            cuts = plan_source_cuts(
+                source_recipe, quantity, served_slots, excluded_windows,
+            )
             if len(cuts) != quantity:
                 raise HTTPException(status_code=409, detail="insufficient_inventory")
             job_root = (

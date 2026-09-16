@@ -70,7 +70,9 @@
 
 ## Local Contracts
 
-- Caption rendering accepts the existing Rust `CaptionStyle` wire fields only. The black outline is 3 px at final 1080x1920 resolution; it is not scaled from preview coordinates.
+- Caption rendering accepts the shared `CaptionStyle` wire fields only. A saved
+  caption layout may supply exact line breaks and final-frame outline width;
+  otherwise the established outline remains 3 px at 1080x1920.
 - Dossier recipe v4 is the executable v3 production selection plus the exact
   Control Plane `captionDiscipline` wire object. Content Lab validates and
   preserves that immutable selection; it does not choose a corpus, sentiment,
@@ -91,6 +93,9 @@
   the AI-video resolver, and an unknown engine exposes no executor.
 - Sourced-video capability quantity is the lesser of the executor's per-job
   ceiling and the unique source windows still reservable from durable job truth.
+  Every sourced-video capability also returns the unique immutable source URLs
+  used by those masters so Control Plane can exclude already-used cross-page
+  windows before it creates paid work.
   Active jobs reserve their windows across recipe revisions. Completed outputs
   reserve windows for the exact locked recipe that produced them; a later locked
   recipe may recut those page-bound windows with its new treatment and provenance.

@@ -30,6 +30,7 @@ TOKEN = "test-control-plane-token"
 PAGE_ID = "tt-chase-miles-4l"
 LIBRARY_ID = "pov-dirt-bike-chase-miles-4l-v1"
 MASTER_SHA = "c434bf9678fbaa20b9b081c68260cca75eb3dd109ddc1cb82df556ec59ae5bd5"
+SOURCE_IDENTITY = "https://www.youtube.com/watch?v=vt5im2TRAKw"
 
 
 def publication(
@@ -575,6 +576,7 @@ def test_sourced_paths_never_probe_the_ai_video_resolver(lab, monkeypatch):
         "sourceIdentities": ["https://www.youtube.com/watch?v=vt5im2TRAKw"],
         "recipeVersion": "dossier-feedfacefeedface",
         "maxQuantity": 10,
+        "sourceIdentities": [SOURCE_IDENTITY],
     }]
 
     created = client.post(
@@ -615,7 +617,7 @@ def test_failed_source_job_releases_unrendered_cut_windows(lab):
     ]
 
 
-def test_completed_source_job_keeps_rendered_cut_windows_unavailable(lab):
+def test_later_recipe_may_recut_completed_source_windows(lab):
     client, _, _ = lab
     first = client.post(
         "/api/control-plane/v1/jobs", json=job_body(2),
@@ -632,6 +634,30 @@ def test_completed_source_job_keeps_rendered_cut_windows_unavailable(lab):
     following = client.post(
         "/api/control-plane/v1/jobs", json=job_body(2, next_payload),
         headers=headers("source-job-completed-next"),
+    )
+    assert following.status_code == 200
+    following_job = cp._load_jobs()["jobs"][following.json()["jobId"]]
+    assert [cut["startMs"] for cut in following_job["sourceCuts"]] == [
+        0, CUT_SLOT_STEP_MS,
+    ]
+
+
+def test_active_source_job_reserves_windows_across_recipe_revisions(lab):
+    client, _, _ = lab
+    first = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(2),
+        headers=headers("source-job-active-first"),
+    )
+    assert first.status_code == 200
+
+    next_payload = publication(recipe_version="dossier-active00000000")
+    assert client.post(
+        "/api/control-plane/v1/recipes", json=next_payload,
+        headers=headers("source-register-active-next"),
+    ).status_code == 200
+    following = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(2, next_payload),
+        headers=headers("source-job-active-next"),
     )
     assert following.status_code == 200
     following_job = cp._load_jobs()["jobs"][following.json()["jobId"]]
@@ -663,6 +689,7 @@ def test_capability_advertises_only_currently_reservable_source_windows(lab):
         "sourceIdentities": ["https://www.youtube.com/watch?v=vt5im2TRAKw"],
         "recipeVersion": "dossier-feedfacefeedface",
         "maxQuantity": 2,
+        "sourceIdentities": [SOURCE_IDENTITY],
     }]
 
     final = client.post(
@@ -682,6 +709,7 @@ def test_capability_advertises_only_currently_reservable_source_windows(lab):
         "sourceIdentities": ["https://www.youtube.com/watch?v=vt5im2TRAKw"],
         "recipeVersion": "dossier-feedfacefeedface",
         "maxQuantity": 0,
+        "sourceIdentities": [SOURCE_IDENTITY],
     }]
 
 
@@ -941,10 +969,14 @@ async def test_source_cancellation_releases_windows_and_removes_own_root(lab, mo
     assert root.exists()
     recipe = cp._dossier_source_recipe(cp.load_registered_recipe(PAGE_ID, saved["recipeId"], saved["engine"], saved["recipeVersion"]))
     slots = {cut["slotId"] for cut in saved["sourceCuts"]}
-    assert slots & cp._source_dna_unavailable_slots(cp._load_jobs(), recipe)
+    assert slots & cp._source_dna_unavailable_slots(
+        cp._load_jobs(), recipe, saved["recipeVersion"],
+    )
     task.cancel()
     with pytest.raises(asyncio.CancelledError): await task
     saved = cp._load_jobs()["jobs"][job_id]
     assert saved["status"] == "failed" and saved["error"] == "generation_cancelled" and saved["completedAt"]
     assert not root.exists()
-    assert not (slots & cp._source_dna_unavailable_slots(cp._load_jobs(), recipe))
+    assert not (slots & cp._source_dna_unavailable_slots(
+        cp._load_jobs(), recipe, saved["recipeVersion"],
+    ))

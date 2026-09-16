@@ -68,6 +68,8 @@ class CaptionStyle(BaseModel):
     background_color: str | None = None
     offset_pct: float = Field(default=0, ge=-40, le=40, strict=True)
     line_balance: int = Field(ge=0, le=100, strict=True)
+    outline_width_px: int | None = Field(default=None, ge=0, le=20, strict=True)
+    line_breaks: list[str] | None = None
 
     @field_validator("font")
     @classmethod
@@ -91,6 +93,15 @@ class CaptionStyle(BaseModel):
             raise ValueError("background_color is required for box or highlight")
         return self
 
+    @field_validator("line_breaks")
+    @classmethod
+    def validate_line_breaks(cls, value: list[str] | None) -> list[str] | None:
+        if value is None:
+            return None
+        if not 1 <= len(value) <= 24 or any("\n" in line or "\r" in line or len(line) > 500 for line in value):
+            raise ValueError("line_breaks must be 1 through 24 bounded lines")
+        return value
+
 
 class CaptionRenderRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", serialize_by_alias=True)
@@ -107,6 +118,14 @@ class CaptionRenderRequest(BaseModel):
         if "\x00" in value:
             raise ValueError("caption must not contain NUL")
         return value
+
+    @model_validator(mode="after")
+    def validate_exact_lines(self) -> "CaptionRenderRequest":
+        if self.style.line_breaks is not None:
+            canonical = lambda value: " ".join(value.split()).lower()
+            if canonical(" ".join(self.style.line_breaks)) != canonical(self.caption):
+                raise ValueError("line_breaks must preserve the caption text")
+        return self
 
 
 class CaptionRendererIdentity(BaseModel):
@@ -283,7 +302,7 @@ def render_caption_overlay(
     style = request.style
     font_path, font_bytes = _resolve_font(font_dir, style.font)
     font_size_px = max(1, round(style.size_pt * _OUTPUT_SCALE))
-    stroke_width_px = _OUTPUT_STROKE_PX if style.outline else 0
+    stroke_width_px = (style.outline_width_px if style.outline_width_px is not None else _OUTPUT_STROKE_PX) if style.outline else 0
     line_height_px = max(1, round(font_size_px * _LINE_HEIGHT_MULTIPLIER))
 
     try:
@@ -295,7 +314,9 @@ def render_caption_overlay(
         ) from error
 
     rendered_source = _cased(request.caption, style.case)
-    lines = _wrap_preserving_explicit_newlines(rendered_source, style.line_balance)
+    lines = ([_cased(line, style.case) for line in style.line_breaks]
+             if style.line_breaks is not None
+             else _wrap_preserving_explicit_newlines(rendered_source, style.line_balance))
     if not lines:
         raise CaptionRenderError("CAPTION_EMPTY", "caption produced no renderable lines")
 

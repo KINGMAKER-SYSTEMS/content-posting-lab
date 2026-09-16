@@ -444,3 +444,17 @@ Added the allow-listed `gpt-4o-mini` fallback on OpenAI's compatible chat-comple
 worktree: /Users/ecfromthedc/dev/wt/lab-fleet-vision
 
 Capabilities now expose the commissioned format route implied by a page's current Master Pages niche/engine before its first registered Dossier publication, while registered versions remain authoritative. Transient visual-admission/provider/runtime failures now persist as retryable `scan_pending` decisions; positive text and artifact identity refusals remain unchanged. Added coverage for bootstrap capabilities and retry behavior.
+_________________________________________________________________________________
+
+time: [03:46pm] [16-09-26]
+agent: [codex desktop] [gpt-6]
+worktree: [fix/dossier-capacity-20260916] /private/tmp/content-lab-caption-capacity-20260916
+type: [bug report]: Restore sourced-video refill after dossier revisions
+area: [backend]: Content Lab capability and source-window authority
+
+Completed sourced-video jobs now reserve windows only for the exact locked
+recipe that produced them, while active jobs still reserve windows across
+revisions. Sourced capabilities also return their immutable source identities
+so Control Plane can calculate cross-page exclusions before job creation. The
+focused source, dossier, and source-library suite passed 53 tests.
+_________________________________________________________________________________
