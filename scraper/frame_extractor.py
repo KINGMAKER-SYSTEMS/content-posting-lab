@@ -347,22 +347,25 @@ async def download_video(
             raise ValueError("max_filesize must be a positive integer")
         base_cmd += ["--max-filesize", str(max_filesize)]
 
-    # Build auth strategies in order of preference.
+    # Page source imports accept only validated public, permanent URLs. Keep
+    # that lane independent from the shared TikTok/browser cookie stores: a
+    # stale or oversized cookie jar must not delay a public MP4 import.
     strategies: list[tuple[str, list[str]]] = []
     cookies_source: str | None = None
-    if cookies_file and cookies_file.exists():
-        strategies.append(("cookies-file", ["--cookies", str(cookies_file)]))
-        cookies_source = "explicit cookies_file arg"
-    env_cookies = get_cookies_path()
-    if env_cookies is not None and env_cookies.exists():
-        strategies.append(("cookies-from-env", ["--cookies", str(env_cookies)]))
-        if cookies_source is None:
-            cookies_source = str(env_cookies)
-    if not _in_container():
-        for browser in ("chrome", "safari", "firefox", "edge", "brave"):
-            strategies.append(
-                (f"cookies-from-{browser}", ["--cookies-from-browser", browser])
-            )
+    if not source_import_mode:
+        if cookies_file and cookies_file.exists():
+            strategies.append(("cookies-file", ["--cookies", str(cookies_file)]))
+            cookies_source = "explicit cookies_file arg"
+        env_cookies = get_cookies_path()
+        if env_cookies is not None and env_cookies.exists():
+            strategies.append(("cookies-from-env", ["--cookies", str(env_cookies)]))
+            if cookies_source is None:
+                cookies_source = str(env_cookies)
+        if not _in_container():
+            for browser in ("chrome", "safari", "firefox", "edge", "brave"):
+                strategies.append(
+                    (f"cookies-from-{browser}", ["--cookies-from-browser", browser])
+                )
     strategies.append(("no-auth", []))
 
     # (label, cleaned_error, kind) for every strategy that failed.
