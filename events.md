@@ -502,3 +502,19 @@ expired the resumed job on every status poll. The regression now proves an
 expired job is retired once, restarts under the same idempotency key, and then
 remains queued inside its fresh runtime window. All 12 source-import tests pass.
 _________________________________________________________________________________
+_________________________________________________________________________________
+
+time:      [05:36pm] [09-16-26]
+agent:     [codex desktop] [gpt-6]
+worktree:  [fix/source-import-exact-copy-20260916]
+type:      [bug report]
+area:      [backend]
+
+Page source intake now retains an input byte-for-byte when it already satisfies
+the refillable master contract: 1080x1920 H.264/yuv420p at 30 fps with no audio.
+The live Healing and Soul inputs both have exactly those facts, so re-encoding
+them consumed minutes without changing their deliverable shape. Nonconforming
+inputs still use the bounded normalization path and the final contract check.
+The exact-copy regression plus all 12 source-import route tests pass, and both
+production-image import checks pass.
+_________________________________________________________________________________

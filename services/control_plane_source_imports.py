@@ -422,6 +422,17 @@ async def _normalize_video(source: Path, destination: Path) -> None:
         raise SourceImportError(f"source video normalization failed: {detail}")
 
 
+def _is_refillable_master(media: SourceImportMedia) -> bool:
+    return (
+        media.width == 1080
+        and media.height == 1920
+        and media.video_codec == "h264"
+        and media.pixel_format == "yuv420p"
+        and abs(media.fps - 30.0) <= 0.01
+        and media.audio_streams == 0
+    )
+
+
 async def download_source_video(source_url: str, destination: Path) -> SourceImportArtifact:
     """Download one URL and return one normalized refillable master artifact."""
     destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -446,19 +457,25 @@ async def download_source_video(source_url: str, destination: Path) -> SourceImp
         if not 1 <= original_bytes <= MAX_SOURCE_IMPORT_BYTES:
             raise SourceImportError("source video exceeds the import size limit")
         original_media = await _probe_video(original)
-        expected_output_bytes = _expected_normalized_bytes(original_media.duration_ms)
-        _require_free_space(
-            destination.parent,
-            expected_output_bytes + MIN_SOURCE_IMPORT_FREE_BYTES,
-        )
         original_sha256 = await asyncio.to_thread(_sha256_file, original)
 
         exact = destination.resolve()
-        await _normalize_video(original, exact)
+        if _is_refillable_master(original_media):
+            os.replace(original, exact)
+            media = original_media
+        else:
+            expected_output_bytes = _expected_normalized_bytes(
+                original_media.duration_ms,
+            )
+            _require_free_space(
+                destination.parent,
+                expected_output_bytes + MIN_SOURCE_IMPORT_FREE_BYTES,
+            )
+            await _normalize_video(original, exact)
+            media = await _probe_video(exact)
         byte_count = exact.stat().st_size
         if not 1 <= byte_count <= MAX_NORMALIZED_SOURCE_BYTES:
             raise SourceImportError("normalized source video exceeds the import size limit")
-        media = await _probe_video(exact)
         if (
             media.width != 1080
             or media.height != 1920
@@ -469,7 +486,11 @@ async def download_source_video(source_url: str, destination: Path) -> SourceImp
             or abs(media.duration_ms - original_media.duration_ms) > 1_000
         ):
             raise SourceImportError("normalized source video does not match the refillable master contract")
-        sha256 = await asyncio.to_thread(_sha256_file, exact)
+        sha256 = (
+            original_sha256
+            if media is original_media
+            else await asyncio.to_thread(_sha256_file, exact)
+        )
         original.unlink(missing_ok=True)
         return SourceImportArtifact(
             exact,

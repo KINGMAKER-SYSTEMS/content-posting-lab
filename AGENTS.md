@@ -129,7 +129,9 @@
   groups, disk/workspace/duration/byte preflights, and complete partial cleanup.
   It returns a durable job artifact only after normalization to muted
   H.264/yuv420p 1080x1920 at 30fps, preserving normalized and original download
-  hashes, byte counts, and media facts. Source-import artifact URLs use only the
+  hashes, byte counts, and media facts. An input already matching that exact
+  refillable contract is retained byte-for-byte without another encode.
+  Source-import artifact URLs use only the
   configured `CONTENT_LAB_PUBLIC_ORIGIN`; the separate
   `CONTENT_LAB_CONTROL_PLANE_ORIGIN` remains the authority for reading page-vault
   media from Control Plane. Content Lab never admits that artifact into
