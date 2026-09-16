@@ -41,6 +41,10 @@ EXECUTOR_PATH = (
 EXECUTOR_SCHEMA = "content-lab.source-dna-recut-executor.v1"
 CUT_SLOT_STEP_MS = 9_000
 MIN_ORIGINAL_START_MS = 60_000
+SHIPSTREAM_PAGE_MASTER_AUTHORITY = "ShipStream source-manifest.v1 exact page master"
+SHIPSTREAM_HISTORICAL_AUTHORITY_PREFIX = (
+    "ShipStream source-manifest.v1 page-bound historical posted cut;"
+)
 
 
 @dataclass(frozen=True)
@@ -338,6 +342,22 @@ def plan_source_cuts(
     candidates: list[SourceCut] = []
     for master in recipe.masters:
         identity = canonical_source_identity(master.provenance.get("sourceUrl"))
+        authority = master.provenance.get("authority")
+        # ShipStream page manifests describe immutable bytes that have already
+        # been extracted for this exact page. Applying the original-source
+        # one-minute skip to those bytes makes every short imported page master
+        # advertise zero capacity. The 60-second floor remains intact for raw
+        # source libraries; exact page-bound masters and the explicit historical
+        # recovery form may use their first frame.
+        minimum_start_ms = (
+            0
+            if authority == SHIPSTREAM_PAGE_MASTER_AUTHORITY
+            or (
+                isinstance(authority, str)
+                and authority.startswith(SHIPSTREAM_HISTORICAL_AUTHORITY_PREFIX)
+            )
+            else MIN_ORIGINAL_START_MS
+        )
         reserved = [
             (start, end)
             for source, master_sha256, start, end in (exclusions or [])
@@ -349,7 +369,7 @@ def plan_source_cuts(
         # keeps even the longest neighboring cuts disjoint, while slot_id
         # continues to reserve the source position across treatment changes.
         for start_ms in range(0, master.duration_ms, CUT_SLOT_STEP_MS):
-            if master.source_offset_ms + start_ms < MIN_ORIGINAL_START_MS:
+            if master.source_offset_ms + start_ms < minimum_start_ms:
                 continue
             duration_ms = planned_source_cut_duration(recipe, master, start_ms)
             if start_ms + duration_ms > master.duration_ms:
@@ -381,6 +401,17 @@ def planned_source_cut_duration(
         min(9_000, recipe.cut_duration_ms + 2_000) + 1,
         1_000,
     ))
+    # A curated page master may itself be a finished short-form clip rather
+    # than a long source recording. Keep the same deterministic duration
+    # vocabulary, but choose only values that fit the immutable bytes instead
+    # of rotating onto an 8- or 9-second cut and declaring a 7.5-second master
+    # to have no capacity at all.
+    fitting_values = [
+        duration for duration in duration_values
+        if start_ms + duration <= master.duration_ms
+    ]
+    if fitting_values:
+        duration_values = fitting_values
     rotation = int(hashlib.sha256(
         f"{recipe.source_library_hash}\0{master.sha256}".encode("utf-8"),
     ).hexdigest()[:8], 16) % len(duration_values)

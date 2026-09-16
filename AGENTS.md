@@ -28,8 +28,11 @@
   Railway at `https://risingtides-content-lab-production.up.railway.app`; the
   fallback endpoint must be reachable from the Railway container or the gate
   remains fail closed.
-- Source cut planning honors the immutable original 60-second minimum and the
-  Worker-supplied global source-window exclusions before rendering. Sourced
+- Source cut planning honors the immutable original 60-second minimum for raw
+  source libraries and the Worker-supplied global source-window exclusions
+  before rendering. Exact page-bound ShipStream masters are already extracted
+  immutable bytes, so they may use their first frame; applying the raw-source
+  offset again would make every short imported page master unusable. Sourced
   capabilities expose the current recipe’s canonical source identities so the
   Worker filters reservations before its bounded exclusion limit; the Worker
   binds each exclusion to the exact master SHA when one source URL represents

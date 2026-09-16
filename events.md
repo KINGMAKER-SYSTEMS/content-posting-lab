@@ -551,3 +551,13 @@ aligns the Dossier reader with the source-registration producer while rejecting
 a different page id. The source-manifest and Dossier ingredient suites pass 36
 tests.
 _________________________________________________________________________________
+_________________________________________________________________________________
+
+time:      [06:27pm] [09-16-26]
+agent:     [codex desktop] [gpt-6]
+worktree:  [fix/accept-imported-source-authority-20260916] /private/tmp/content-lab-caption-capacity-20260916
+type:      [bug report]: Restore capacity for short imported page masters
+area:      [backend]: Content Lab source cut planning
+
+Exact page-bound ShipStream masters now begin at their first immutable frame instead of receiving the raw-source 60-second skip a second time. Deterministic cut duration selection uses only durations that fit the remaining master bytes, so a valid 7.5-second imported master advertises and executes one cut instead of zero. Raw original-source libraries retain the 60-second minimum. The source execution, source library, and dossier execution suites pass 76 tests.
+_________________________________________________________________________________
