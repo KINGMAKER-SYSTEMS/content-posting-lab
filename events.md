@@ -471,3 +471,19 @@ share one library URL do not suppress each other's timelines. Legacy exclusions
 without a master SHA stay broad. The focused source and dossier suites passed
 69 tests.
 _________________________________________________________________________________
+_________________________________________________________________________________
+
+time:      [05:10pm] [09-16-26]
+agent:     [codex desktop] [gpt-6]
+worktree:  [fix/source-import-active-deadline-20260916]
+type:      [bug report]
+area:      [backend]
+
+Content Lab status now retires a page-source import that remains active beyond
+its 20-minute bounded download and normalization runtime, using the existing
+idempotent runtime-restart path. This prevents a dead running job from holding
+the page's only dossier import slot and the two-job global capacity indefinitely.
+The exact source-import suite passes 12 tests and the production-image import
+suite passes 2 tests. A local Docker build could not start because Docker Desktop
+was not running; the repository's packaged-app import checks passed.
+_________________________________________________________________________________
