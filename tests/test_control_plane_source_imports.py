@@ -216,6 +216,14 @@ def test_status_restarts_a_source_import_past_its_bounded_runtime(lab):
     }
     assert started == [job_id, job_id]
 
+    current = client.get(
+        f"/api/control-plane/v1/jobs/{job_id}",
+        headers={"Authorization": f"Bearer {TOKEN}", "X-RT-Page-Id": PAGE_ID},
+    )
+    assert current.status_code == 200
+    assert current.json()["status"] == "queued"
+    assert "error" not in current.json()
+
 
 def test_source_import_rejects_unscoped_stale_and_wrong_format_requests(lab, monkeypatch):
     client, intent, revision, _ = lab

@@ -487,3 +487,18 @@ The exact source-import suite passes 12 tests and the production-image import
 suite passes 2 tests. A local Docker build could not start because Docker Desktop
 was not running; the repository's packaged-app import checks passed.
 _________________________________________________________________________________
+_________________________________________________________________________________
+
+time:      [05:26pm] [09-16-26]
+agent:     [codex desktop] [gpt-6]
+worktree:  [fix/source-import-restart-clock-20260916]
+type:      [bug report]
+area:      [backend]
+
+Corrected the page-source import deadline to measure from restartedAt when an
+old durable job is resumed. The first live rollout exposed that createdAt stays
+immutable across a restart; using it as the active-runtime clock immediately
+expired the resumed job on every status poll. The regression now proves an
+expired job is retired once, restarts under the same idempotency key, and then
+remains queued inside its fresh runtime window. All 12 source-import tests pass.
+_________________________________________________________________________________
