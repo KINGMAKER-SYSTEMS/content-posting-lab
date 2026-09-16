@@ -32,7 +32,9 @@
   Worker-supplied global source-window exclusions before rendering. Sourced
   capabilities expose the current recipe’s canonical source identities so the
   Worker filters reservations before its bounded exclusion limit; the Worker
-  retains final atomic reservation authority for races. Budgets, missing
+  binds each exclusion to the exact master SHA when one source URL represents
+  a multi-file library. Legacy exclusions without a master SHA remain broad.
+  The Worker retains final atomic reservation authority for races. Budgets, missing
   tools/credentials, uncertain replies, and changed bytes fail closed.
   This detector has bounded recall; it does not prove semantic absence of all text.
 - OCR candidates require Tesseract word confidence of at least 80 and at least
