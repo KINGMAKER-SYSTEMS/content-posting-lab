@@ -899,6 +899,29 @@ def test_og_source_skips_first_minute_but_preserves_immutable_offsets():
     assert plan_source_cuts(short, 1, set()) == []
 
 
+@pytest.mark.parametrize("authority", [
+    "ShipStream source-manifest.v1 exact page master",
+    (
+        "ShipStream source-manifest.v1 page-bound historical posted cut; "
+        "original source unavailable"
+    ),
+])
+def test_page_bound_shipstream_master_can_use_first_frame(authority):
+    from dataclasses import replace
+    recipe = resolve_source_recipe(publication(cut_duration_ms=7_000))
+    original = recipe.masters[0]
+    page_master = replace(
+        original,
+        duration_ms=7_500,
+        source_offset_ms=0,
+        provenance={**original.provenance, "authority": authority},
+    )
+    cuts = plan_source_cuts(replace(recipe, masters=(page_master,)), 2, set())
+    assert len(cuts) == 1
+    assert cuts[0].start_ms == 0
+    assert cuts[0].duration_ms <= 7_500
+
+
 def test_shared_source_exclusions_skip_other_page_windows_and_reencoding():
     from dataclasses import replace
     from services.control_plane_sources import source_window_exclusions
