@@ -93,6 +93,9 @@
   the AI-video resolver, and an unknown engine exposes no executor.
 - Sourced-video capability quantity is the lesser of the executor's per-job
   ceiling and the unique source windows still reservable from durable job truth.
+  Every sourced-video capability also returns the unique immutable source URLs
+  used by those masters so Control Plane can exclude already-used cross-page
+  windows before it creates paid work.
   Active jobs reserve their windows across recipe revisions. Completed outputs
   reserve windows for the exact locked recipe that produced them; a later locked
   recipe may recut those page-bound windows with its new treatment and provenance.
