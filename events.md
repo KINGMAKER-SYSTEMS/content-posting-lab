@@ -518,3 +518,20 @@ inputs still use the bounded normalization path and the final contract check.
 The exact-copy regression plus all 12 source-import route tests pass, and both
 production-image import checks pass.
 _________________________________________________________________________________
+
+_________________________________________________________________________________
+
+time:      [05:51pm] [09-16-26]
+agent:     [codex desktop] [gpt-6]
+worktree:  [fix/source-import-public-no-auth-20260916]
+type:      [bug report]
+area:      [backend]
+
+Page source intake now bypasses every shared platform and browser cookie store.
+This lane already accepts only validated public, permanent URLs, so loading a
+stale or oversized TikTok cookie jar added latency without adding access. The
+regression proves source-import yt-dlp calls use verified TLS, one owned process
+group, and no cookie flags. All 9 downloader diagnostics and all 12 page-source
+import route tests pass. The broader local media-service suite could not run its
+2.5 GB free-space preflight because this Mac had under 400 MB free.
+_________________________________________________________________________________

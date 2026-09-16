@@ -134,7 +134,8 @@
   Source-import artifact URLs use only the
   configured `CONTENT_LAB_PUBLIC_ORIGIN`; the separate
   `CONTENT_LAB_CONTROL_PLANE_ORIGIN` remains the authority for reading page-vault
-  media from Control Plane. Content Lab never admits that artifact into
+  media from Control Plane. Source imports never load shared platform/browser
+  cookie stores because their allowlisted permanent URLs are public. Content Lab never admits that artifact into
   ShipStream or mutates the page source manifest. A repeat with
   the same request and idempotency key may resurrect only the exact
   `source_import_runtime_restarted` failure; it reuses the job id under the

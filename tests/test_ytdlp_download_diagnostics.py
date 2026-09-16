@@ -114,6 +114,9 @@ def test_source_import_mode_verifies_tls_and_starts_an_owned_process_group(
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", _exec)
     monkeypatch.setattr(fe, "_in_container", lambda: True)
+    cookies = tmp_path / "cookies.txt"
+    cookies.write_text("stale")
+    monkeypatch.setattr(fe, "get_cookies_path", lambda: cookies)
 
     with pytest.raises(RuntimeError):
         asyncio.run(fe.download_video(
@@ -124,6 +127,8 @@ def test_source_import_mode_verifies_tls_and_starts_an_owned_process_group(
 
     command, options = calls[0]
     assert "--no-check-certificates" not in command
+    assert "--cookies" not in command
+    assert "--cookies-from-browser" not in command
     assert options["start_new_session"] is True
 
 
