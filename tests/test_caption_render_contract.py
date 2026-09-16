@@ -205,6 +205,27 @@ def test_api_contract_returns_png_and_fail_closed_errors(sync_client, monkeypatc
     assert invented_field.status_code == 422
 
 
+def test_reusable_layout_uses_exact_lines_and_saved_outline_geometry(font_dir):
+    payload = request(
+        line_balance=100,
+        line_breaks=["one", "short line"],
+        outline_width_px=7,
+    )
+
+    result = render_caption_overlay(payload, font_dir=font_dir).model_dump(
+        mode="json", by_alias=True, exclude_none=True
+    )
+
+    assert result["plan"]["rendered_text"] == "one\nshort line"
+    assert [line["text"] for line in result["plan"]["lines"]] == ["one", "short line"]
+    assert result["plan"]["stroke_width_px"] == 7
+
+
+def test_reusable_layout_cannot_change_the_caption_words():
+    with pytest.raises(ValidationError, match="line_breaks must preserve the caption text"):
+        request(line_breaks=["different", "words"])
+
+
 def test_port_8002_burn_server_exposes_the_same_typed_contract(
     monkeypatch, font_dir, tmp_path
 ):
