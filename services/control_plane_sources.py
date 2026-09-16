@@ -295,20 +295,31 @@ def canonical_source_identity(value: Any) -> str | None:
         return None
 
 
-def source_window_exclusions(value: Any) -> list[tuple[str, int, int]]:
+def source_window_exclusions(value: Any) -> list[tuple[str, str | None, int, int]]:
     if value is None:
         return []
     if not isinstance(value, list) or len(value) > 2000:
         raise ValueError("sourceWindowExclusions must contain at most 2000 windows")
     windows = []
     for entry in value:
-        if not isinstance(entry, dict) or set(entry) != {"sourceIdentity", "startMs", "endMs"}:
+        fields = set(entry) if isinstance(entry, dict) else set()
+        if fields not in (
+            {"sourceIdentity", "startMs", "endMs"},
+            {"sourceIdentity", "masterSha256", "startMs", "endMs"},
+        ):
             raise ValueError("sourceWindowExclusions fields are invalid")
         identity = canonical_source_identity(entry["sourceIdentity"])
+        master_sha256 = entry.get("masterSha256")
         start, end = entry["startMs"], entry["endMs"]
-        if identity is None or type(start) is not int or type(end) is not int or not 0 <= start < end <= 9_007_199_254_740_991:
+        if (
+            identity is None
+            or (master_sha256 is not None and not re.fullmatch(r"[0-9a-f]{64}", master_sha256))
+            or type(start) is not int
+            or type(end) is not int
+            or not 0 <= start < end <= 9_007_199_254_740_991
+        ):
             raise ValueError("sourceWindowExclusions identity or timeline is invalid")
-        windows.append((identity, start, end))
+        windows.append((identity, master_sha256, start, end))
     return windows
 
 
@@ -327,7 +338,11 @@ def plan_source_cuts(
     candidates: list[SourceCut] = []
     for master in recipe.masters:
         identity = canonical_source_identity(master.provenance.get("sourceUrl"))
-        reserved = [(start, end) for source, start, end in (exclusions or []) if source == identity]
+        reserved = [
+            (start, end)
+            for source, master_sha256, start, end in (exclusions or [])
+            if source == identity and (master_sha256 is None or master_sha256 == master.sha256)
+        ]
         # The saved cutDurationMs is the page's target. Each immutable master
         # deterministically rotates through the target +/- 2 seconds inside
         # the advertised 5-9 second executor bounds. A 9-second slot grid

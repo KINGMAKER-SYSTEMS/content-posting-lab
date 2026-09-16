@@ -915,6 +915,26 @@ def test_shared_source_exclusions_skip_other_page_windows_and_reencoding():
     assert plan_source_cuts(recipe, 1, set(), excluded) == []
 
 
+def test_shared_folder_exclusions_bind_to_the_exact_master_file():
+    from dataclasses import replace
+    from services.control_plane_sources import source_window_exclusions
+    recipe = resolve_source_recipe(publication(cut_duration_ms=7_000))
+    folder_url = 'https://drive.google.com/drive/folders/library'
+    first = replace(recipe.masters[0], sha256='a'*64, source_offset_ms=0,
+                    provenance={'sourceUrl': folder_url})
+    second = replace(recipe.masters[0], sha256='b'*64, source_offset_ms=0,
+                     provenance={'sourceUrl': folder_url})
+    recipe = replace(recipe, masters=(first, second))
+    excluded = source_window_exclusions([{
+        'sourceIdentity': folder_url,
+        'masterSha256': first.sha256,
+        'startMs': 0,
+        'endMs': 9_007_199_254_740_991,
+    }])
+    cuts = plan_source_cuts(recipe, 1, set(), excluded)
+    assert cuts[0].master.sha256 == second.sha256
+
+
 @pytest.mark.parametrize('excluded', [[{'sourceIdentity':'bad','startMs':0,'endMs':1}],
     [{'sourceIdentity':'https://example.com/v','startMs':True,'endMs':2}],
     [{'sourceIdentity':'https://example.com/v','startMs':2,'endMs':1}], [{}]*2001])

@@ -458,3 +458,16 @@ revisions. Sourced capabilities also return their immutable source identities
 so Control Plane can calculate cross-page exclusions before job creation. The
 focused source, dossier, and source-library suite passed 53 tests.
 _________________________________________________________________________________
+_________________________________________________________________________________
+
+time: [04:11pm] [16-09-26]
+agent: [codex desktop] [gpt-6]
+worktree: [fix/source-window-master-binding-20260916] /private/tmp/content-lab-caption-capacity-20260916
+type: [bug report]: Bind shared-library exclusions to one master clip
+area: [backend]: Content Lab source cut planning
+
+Source-window exclusions now accept an exact master SHA so separate clips that
+share one library URL do not suppress each other's timelines. Legacy exclusions
+without a master SHA stay broad. The focused source and dossier suites passed
+69 tests.
+_________________________________________________________________________________
