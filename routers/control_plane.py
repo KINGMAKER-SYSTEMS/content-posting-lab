@@ -714,6 +714,7 @@ VIDEO_EXTENSIONS = {".mp4", ".mov", ".webm", ".m4v"}
 MAX_JOB_QUANTITY = 100
 MAX_JOB_BODY_BYTES = 16_384
 MAX_GENERATION_JOB_BODY_BYTES = 512_000
+SOURCE_IMPORT_ACTIVE_DEADLINE_SECONDS = 20 * 60
 IDEMPOTENCY_KEY_RE = re.compile(r"^[A-Za-z0-9_.:-]{8,200}$")
 JOB_TOKEN_BYTES = 24
 GENERATION_ACTIVE_STATUSES = {"queued", "running"}
@@ -2835,6 +2836,23 @@ def _get_job_or_404(job_id: str) -> dict[str, Any]:
     return job
 
 
+def _source_import_active_deadline_expired(job: dict[str, Any]) -> bool:
+    if (
+        job.get("sourceKind") != "page_source_import"
+        or job.get("status") not in GENERATION_ACTIVE_STATUSES
+    ):
+        return False
+    try:
+        created_at = datetime.fromisoformat(job["createdAt"])
+        if created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=timezone.utc)
+    except (KeyError, TypeError, ValueError):
+        return True
+    return (
+        datetime.now(timezone.utc) - created_at
+    ).total_seconds() >= SOURCE_IMPORT_ACTIVE_DEADLINE_SECONDS
+
+
 @router.get("/v1/jobs/{job_id}")
 def job_status(
     job_id: str,
@@ -2848,7 +2866,10 @@ def job_status(
     if (
         job.get("sourceKind") in ASYNC_SOURCE_KINDS
         and job.get("status") in GENERATION_ACTIVE_STATUSES
-        and job.get("runtimeId") != _GENERATION_RUNTIME_ID
+        and (
+            job.get("runtimeId") != _GENERATION_RUNTIME_ID
+            or _source_import_active_deadline_expired(job)
+        )
     ):
         _update_job(
             job_id,

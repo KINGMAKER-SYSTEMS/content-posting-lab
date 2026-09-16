@@ -136,8 +136,9 @@
   ShipStream or mutates the page source manifest. A repeat with
   the same request and idempotency key may resurrect only the exact
   `source_import_runtime_restarted` failure; it reuses the job id under the
-  current runtime after cleaning its artifact root. Every other terminal
-  failure remains terminal.
+  current runtime after cleaning its artifact root. A status read retires an
+  active import after its 20-minute bounded runtime and sends it through that
+  same idempotent restart path. Every other terminal failure remains terminal.
 - A publishable caption render requires exact caption text and a complete page
   style: font, size, color, position, alignment, and line balance.
 - Resolve fonts only from Content Lab's installed, advertised TikTokSans files.

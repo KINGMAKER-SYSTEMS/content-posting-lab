@@ -6,6 +6,7 @@ import asyncio
 from dataclasses import replace
 import hashlib
 from pathlib import Path
+from datetime import datetime, timedelta, timezone
 from urllib.parse import urlsplit
 
 from fastapi import FastAPI
@@ -173,6 +174,46 @@ def test_runtime_restart_resurrects_only_the_exact_idempotent_source_import(lab)
     )
     assert terminal.status_code == 200
     assert terminal.json()["status"] == "failed"
+    assert started == [job_id, job_id]
+
+
+def test_status_restarts_a_source_import_past_its_bounded_runtime(lab):
+    client, intent, revision, started = lab
+    created = client.post(
+        "/api/control-plane/v1/source-imports",
+        headers=HEADERS,
+        json=_body(intent, revision),
+    ).json()
+    job_id = created["jobId"]
+    store = cp._load_jobs()
+    store["jobs"][job_id].update({
+        "status": "running",
+        "createdAt": (
+            datetime.now(timezone.utc)
+            - timedelta(seconds=cp.SOURCE_IMPORT_ACTIVE_DEADLINE_SECONDS + 1)
+        ).isoformat(),
+    })
+    cp.atomic_save(cp._jobs_path(), store)
+
+    status = client.get(
+        f"/api/control-plane/v1/jobs/{job_id}",
+        headers={"Authorization": f"Bearer {TOKEN}", "X-RT-Page-Id": PAGE_ID},
+    )
+    assert status.status_code == 200
+    assert status.json()["status"] == "failed"
+    assert status.json()["error"] == "source_import_runtime_restarted"
+
+    retried = client.post(
+        "/api/control-plane/v1/source-imports",
+        headers=HEADERS,
+        json=_body(intent, revision),
+    )
+    assert retried.status_code == 200
+    assert retried.json() == {
+        "schema": cp.RESPONSE_SCHEMA,
+        "jobId": job_id,
+        "status": "queued",
+    }
     assert started == [job_id, job_id]
 
 
