@@ -258,6 +258,40 @@ def test_exact_registered_master_uses_its_own_file_from_offset_zero():
     assert projection.approved_cut_library.cuts[0].parent_type == "page_master"
 
 
+def test_content_lab_import_authority_is_an_exact_page_binding():
+    intent, _ = _intent()
+    sha256 = "b" * 64
+    manifest = _historical_manifest()
+    manifest["sourceAuthority"] = {
+        "kind": "content_lab_page_source_import",
+        "pageId": PAGE_ID,
+        "pageHandle": HANDLE,
+        "notionPageId": NOTION_PAGE_ID,
+        "replacementEligible": True,
+    }
+    manifest["master"] = {
+        "sha256": sha256,
+        "storageKey": f"vault/{HANDLE}/masters/{sha256}.mp4",
+        "bytes": 20_000_000,
+        "media": {"durationSeconds": 7.5},
+        "originSourceUrl": "https://cdn.example/source.mp4",
+        "originWindowSeconds": [0.0, 7.5],
+        "registeredAt": "2026-09-16T22:02:10Z",
+    }
+    manifest["historicalPostedCuts"] = []
+
+    library = parse_shipstream_source_manifest(
+        _raw(manifest), intent, page_id=PAGE_ID, expected_format=FORMAT,
+    )
+    assert library.masters[0].sha256 == sha256
+
+    manifest["sourceAuthority"]["pageId"] = "acct:other-page"
+    with pytest.raises(ShipStreamSourceError, match="diverges from Master Pages"):
+        parse_shipstream_source_manifest(
+            _raw(manifest), intent, page_id=PAGE_ID, expected_format=FORMAT,
+        )
+
+
 @pytest.mark.parametrize(
     ("path", "value"),
     [

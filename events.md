@@ -535,3 +535,19 @@ group, and no cookie flags. All 9 downloader diagnostics and all 12 page-source
 import route tests pass. The broader local media-service suite could not run its
 2.5 GB free-space preflight because this Mac had under 400 MB free.
 _________________________________________________________________________________
+
+_________________________________________________________________________________
+
+time:      [06:06pm] [09-16-26]
+agent:     [codex desktop] [gpt-6]
+worktree:  [fix/accept-imported-source-authority-20260916]
+type:      [bug report]
+area:      [backend]
+
+Content Lab now projects ShipStream `content_lab_page_source_import` masters as
+exact page-bound source libraries when the authority repeats the active Control
+Plane page id, page handle, Notion page id, and replacement eligibility. This
+aligns the Dossier reader with the source-registration producer while rejecting
+a different page id. The source-manifest and Dossier ingredient suites pass 36
+tests.
+_________________________________________________________________________________

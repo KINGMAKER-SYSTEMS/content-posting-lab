@@ -460,6 +460,17 @@ def parse_shipstream_source_manifest(
     authority = value.get("sourceAuthority") if isinstance(value, dict) else None
     format_slug = value.get("format") if isinstance(value, dict) else None
     notion_page_id = master_pages.get("notionPageId")
+    exact_page_authority = (
+        isinstance(authority, dict)
+        and (
+            authority.get("pageBound") is True
+            or authority.get("kind") == "exact_page_binding"
+            or (
+                authority.get("kind") == "content_lab_page_source_import"
+                and authority.get("pageId") == page_id
+            )
+        )
+    )
     notion_page_matches = (
         isinstance(notion, dict)
         and (
@@ -484,10 +495,7 @@ def parse_shipstream_source_manifest(
         or not isinstance(authority, dict)
         or authority.get("pageHandle") != handle
         or authority.get("notionPageId") != notion_page_id
-        or (
-            authority.get("pageBound") is not True
-            and authority.get("kind") != "exact_page_binding"
-        )
+        or not exact_page_authority
         or authority.get("replacementEligible") is not True
         or not isinstance(format_slug, str)
         or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,99}", format_slug)
