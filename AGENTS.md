@@ -28,7 +28,9 @@
 
 ## Local Contracts
 
-- Caption rendering accepts the existing Rust `CaptionStyle` wire fields only. The black outline is 3 px at final 1080x1920 resolution; it is not scaled from preview coordinates.
+- Caption rendering accepts the shared `CaptionStyle` wire fields only. A saved
+  caption layout may supply exact line breaks and final-frame outline width;
+  otherwise the established outline remains 3 px at 1080x1920.
 - Dossier recipe v4 is the executable v3 production selection plus the exact
   Control Plane `captionDiscipline` wire object. Content Lab validates and
   preserves that immutable selection; it does not choose a corpus, sentiment,
