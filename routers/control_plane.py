@@ -2843,13 +2843,15 @@ def _source_import_active_deadline_expired(job: dict[str, Any]) -> bool:
     ):
         return False
     try:
-        created_at = datetime.fromisoformat(job["createdAt"])
-        if created_at.tzinfo is None:
-            created_at = created_at.replace(tzinfo=timezone.utc)
+        active_since = datetime.fromisoformat(
+            job.get("restartedAt") or job["createdAt"],
+        )
+        if active_since.tzinfo is None:
+            active_since = active_since.replace(tzinfo=timezone.utc)
     except (KeyError, TypeError, ValueError):
         return True
     return (
-        datetime.now(timezone.utc) - created_at
+        datetime.now(timezone.utc) - active_since
     ).total_seconds() >= SOURCE_IMPORT_ACTIVE_DEADLINE_SECONDS
 
 
