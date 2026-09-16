@@ -143,6 +143,10 @@
   active import after its 20-minute bounded runtime, measured from the latest
   restart, and sends it through that same idempotent restart path. Every other
   terminal failure remains terminal.
+- ShipStream `content_lab_page_source_import` manifests are executable only
+  when their authority repeats the exact Control Plane page id, page handle,
+  Notion page id, and replacement eligibility required by the active Master
+  Pages projection.
 - A publishable caption render requires exact caption text and a complete page
   style: font, size, color, position, alignment, and line balance.
 - Resolve fonts only from Content Lab's installed, advertised TikTokSans files.
