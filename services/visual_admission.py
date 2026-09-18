@@ -227,7 +227,42 @@ def _strict_vision_json(content):
 
 
 def _vision_request(samples, deadline, *, url, model, provider, key=""):
-    content = [{"type": "text", "text": 'Inspect every supplied frame for any existing writing, captions, logos with letters, numbers or watermarks. Return ONLY JSON {"verdict":"clean"|"text"|"unavailable","reason":"describe the visible scene and any text actually observed"}. Use unavailable when unreadable or uncertain. Any text, even brief or tiny, means text. These frames precede our caption stage.'}]
+    # The gate exists to keep ADDED text off a clip, not to refuse footage that
+    # happens to contain writing. Owner ruling, 2026-09-18: "there can be text on
+    # road signs, etc. ... if it's a part of the scene, there can be text on
+    # screen: road sign digits, hub logos, etc. All of that is fine. It's a part
+    # of the clip. I'm talking about added text on screen."
+    #
+    # The previous instruction ended "Any text, even brief or tiny, means text"
+    # and named "logos with letters, numbers" as positive evidence, so a legible
+    # road sign or wheel badge was a refusal. Measured against production over
+    # 2026-09-15..18: 104 of 166 scanned clips rejected (62.7%), and
+    # ARTIFACT_PREEXISTING_TEXT carried 38 of the 40 jobs that rejected anything.
+    #
+    # Tesseract upstream is only a CANDIDATE LOCATOR ("OCR locates candidates;
+    # the actual frame must corroborate them", scan_artifact below) and cannot
+    # tell overlaid text from filmed text. This prompt is the only place the
+    # distinction can be drawn, so it is drawn explicitly rather than by degree.
+    content = [{"type": "text", "text": (
+        'Decide whether any text in these frames was ADDED ON TOP of the picture after it was '
+        'filmed or generated, as opposed to being part of the scene that was filmed.\n\n'
+        'Return verdict "text" ONLY for ADDED text lying flat on the frame: meme or joke captions, '
+        'burned-in subtitles, titles and lower-thirds, watermarks, app or platform logos, '
+        'screen-recording or user-interface chrome, stickers, word emoji, and timestamps or '
+        'progress bars drawn over the picture. Size and duration do not matter; a brief or tiny '
+        'overlay is still added text.\n\n'
+        'Return verdict "clean" when the only writing is SCENE TEXT that physically exists in the '
+        'filmed world and moves, tilts, blurs and is lit together with the shot: road signs and '
+        'their numbers, licence plates, wheel and hub logos, badges and brand marks on vehicles or '
+        'clothing, street and storefront signage, packaging and product labels, printed paper in '
+        'shot, graffiti, and instrument dials or gauges. Scene text is normal content and must NOT '
+        'be reported as text, however large or legible it is.\n\n'
+        'Return verdict "unavailable" when a frame is unreadable, or when you genuinely cannot tell '
+        'whether the writing is overlaid or part of the scene.\n\n'
+        'Return ONLY JSON {"verdict":"clean"|"text"|"unavailable","reason":"describe the visible '
+        'scene, any writing you saw, and whether it is overlaid or part of the scene"}. '
+        'These frames precede our own caption stage, so our captions are not present yet.'
+    )}]
     for sample in samples:
         content.append({"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + sample}})
     headers = {"Authorization": f"Bearer {key}"} if key else {}
@@ -289,7 +324,13 @@ def _vision(samples, deadline):
 
 # v4: vision frames are native-resolution JPEG (quality 95) instead of PNG, so
 # the 32 MiB vision budget holds ~50 detailed 1080x1920 frames instead of ~14.
-ALGORITHM = "tesseract-psm12-words-vision-corroborated-v4"
+# Bumped to v5 alongside the scene-text ruling in _vision_request. This token is
+# what invalidates cached verdicts: _finish_visual_sweep skips a re-scan only
+# while a stored decision's sampling.algorithm still equals this constant
+# (routers/control_plane.py). A prompt change WITHOUT a bump would leave every
+# clip already judged under the old wording serving its stale verdict for ever,
+# which is exactly the population this change exists to re-judge.
+ALGORITHM = "tesseract-psm12-words-vision-corroborated-v5"
 VISION_JPEG_QUALITY = 95
 
 # These failures describe a service/runtime that can be retried next cycle.

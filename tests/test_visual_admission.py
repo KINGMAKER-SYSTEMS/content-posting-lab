@@ -580,3 +580,71 @@ def test_final_unavailable_decision_is_served_and_never_rescanned(monkeypatch, t
 ])
 def test_final_decision_classification(decision, final):
     assert gate.is_final_decision(decision) is final
+
+
+def test_vision_prompt_admits_scene_text_and_refuses_only_added_text(monkeypatch):
+    """The gate keeps ADDED text off a clip; it does not refuse filmed writing.
+
+    Owner ruling 2026-09-18: "if it's a part of the scene, there can be text on
+    screen: road sign digits, hub logos, etc. All of that is fine ... I'm talking
+    about added text on screen."
+
+    The prompt is the ONLY place this distinction can be drawn -- tesseract
+    upstream is a candidate locator and cannot tell overlaid text from filmed
+    text -- so the contract is pinned here rather than left to wording drift.
+    The prior prompt ended "Any text, even brief or tiny, means text" and listed
+    "logos with letters, numbers" as positive evidence, which refused a legible
+    road sign or wheel badge.
+    """
+    import httpx
+    seen = {}
+    original_client = gate.httpx.Client
+
+    def handler(request):
+        payload = __import__('json').loads(request.content)
+        seen['prompt'] = payload['messages'][0]['content'][0]['text']
+        return httpx.Response(200, json={
+            'choices': [{'message': {'content': '{"verdict":"clean","reason":"ok"}'}}],
+        })
+
+    monkeypatch.setattr(gate.httpx, 'Client',
+                        lambda **kw: original_client(transport=httpx.MockTransport(handler), **kw))
+    gate._vision_request(['ZmFrZQ=='], time.monotonic() + 5,
+                         url=gate.VISION_URL, model=gate.MODEL, provider='z.ai', key='fixture-key')
+    prompt = seen['prompt'].lower()
+
+    # The blanket rule that made scene text a refusal must not come back.
+    assert 'any text, even brief or tiny, means text' not in prompt
+
+    # Scene text must be named as admissible, with the owner's own examples.
+    for admissible in ('road sign', 'licence plate', 'hub logo', 'storefront'):
+        assert admissible in prompt, f'prompt no longer admits scene text: {admissible}'
+    assert 'must not be reported as text' in prompt
+
+    # Added text must still be named as the refusal, or the gate stops working.
+    for refused in ('caption', 'subtitle', 'watermark', 'sticker'):
+        assert refused in prompt, f'prompt no longer refuses added text: {refused}'
+
+    # The three-way verdict contract is unchanged.
+    for verdict in ('"clean"', '"text"', '"unavailable"'):
+        assert verdict in seen['prompt']
+
+
+def test_scene_text_ruling_carries_an_algorithm_bump():
+    """A prompt change must invalidate the verdicts judged under the old wording.
+
+    routers/control_plane.py's _finish_visual_sweep skips re-scanning a clip only
+    while its stored decision's sampling.algorithm still equals ALGORITHM. So a
+    prompt change shipped WITHOUT bumping this token leaves every clip already
+    judged under the old wording serving its cached verdict for ever -- and those
+    clips are precisely the population the scene-text ruling exists to re-judge.
+
+    v4 is the token every currently-cached 'text' verdict was written under.
+    """
+    assert gate.ALGORITHM == 'tesseract-psm12-words-vision-corroborated-v5', (
+        'the scene-text prompt and this token ship together; bump it again if the '
+        'prompt changes, or stale verdicts keep being served'
+    )
+    assert gate.pending_decision(
+        page_id='p', job_id='j', index=0, sha256='a' * 64, byte_count=1,
+    )['sampling']['algorithm'] == gate.ALGORITHM
