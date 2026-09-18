@@ -3065,13 +3065,13 @@ def _mark_visual_sweep(job_id: str, sweep_id: str, running: bool) -> bool:
 
 def _finish_visual_sweep(job_id: str, sweep_id: str) -> None:
     """Scan all paid outputs, so a full batch does not require one Cron per clip."""
-    from services.visual_admission import ALGORITHM, SCHEMA, pending_decision, scan_artifact
+    from services.visual_admission import ALGORITHM, SCHEMA, is_final_decision, pending_decision, scan_artifact
     try:
         job = _get_job_or_404(job_id)
         root = Path(job["artifactRoot"]).resolve()
         for index, clip in enumerate(job.get("clips", [])[:100]):
             previous = _get_job_or_404(job_id).get("visualAdmission", {}).get(str(index), {})
-            if previous.get("schema") == SCHEMA and all(previous.get(key) == value for key, value in {"pageId": job["pageId"], "jobId": job_id, "outputIndex": index, "sha256": clip.get("sha256"), "bytes": clip.get("bytes")}.items()) and previous.get("sampling", {}).get("algorithm") == ALGORITHM and previous.get("verdict") in {"clean", "text"}:
+            if previous.get("schema") == SCHEMA and all(previous.get(key) == value for key, value in {"pageId": job["pageId"], "jobId": job_id, "outputIndex": index, "sha256": clip.get("sha256"), "bytes": clip.get("bytes")}.items()) and previous.get("sampling", {}).get("algorithm") == ALGORITHM and is_final_decision(previous):
                 continue
             path = (root / clip["path"]).resolve()
             if not _mark_visual_sweep(job_id, sweep_id, True):
@@ -3120,7 +3120,7 @@ def job_visual_admission(
     path = (root / clip["path"]).resolve()
     if root not in path.parents or not path.is_file():
         raise HTTPException(status_code=404, detail="artifact not found")
-    from services.visual_admission import ALGORITHM, MAX_BYTES, SCHEMA, TIMEOUT, _hash, pending_decision
+    from services.visual_admission import ALGORITHM, MAX_BYTES, SCHEMA, TIMEOUT, _hash, is_final_decision, pending_decision
     decision = pending_decision(page_id=x_rt_page_id, job_id=job_id, index=index,
                                 sha256=body["sha256"], byte_count=body["bytes"])
     if not 1 <= body["bytes"] <= MAX_BYTES or path.stat().st_size != body["bytes"] or _hash(path) != body["sha256"]:
@@ -3133,7 +3133,7 @@ def job_visual_admission(
             raise HTTPException(status_code=409, detail="job disappeared during scan")
         prior = current.get("visualAdmission", {}).get(str(index), {})
         same = prior.get("schema") == SCHEMA and all(prior.get(k) == decision[k] for k in ("pageId", "jobId", "outputIndex", "sha256", "bytes")) and prior.get("sampling", {}).get("algorithm") == ALGORITHM
-        if same and prior.get("verdict") in {"clean", "text"}:
+        if same and is_final_decision(prior):
             return prior
         now = datetime.now(timezone.utc)
         if same:

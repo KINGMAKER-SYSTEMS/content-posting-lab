@@ -229,7 +229,7 @@ def _strict_vision_json(content):
 def _vision_request(samples, deadline, *, url, model, provider, key=""):
     content = [{"type": "text", "text": 'Inspect every supplied frame for any existing writing, captions, logos with letters, numbers or watermarks. Return ONLY JSON {"verdict":"clean"|"text"|"unavailable","reason":"describe the visible scene and any text actually observed"}. Use unavailable when unreadable or uncertain. Any text, even brief or tiny, means text. These frames precede our caption stage.'}]
     for sample in samples:
-        content.append({"type": "image_url", "image_url": {"url": "data:image/png;base64," + sample}})
+        content.append({"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + sample}})
     headers = {"Authorization": f"Bearer {key}"} if key else {}
     with httpx.Client(timeout=min(60, max(.1, deadline-time.monotonic())), follow_redirects=False) as client:
         with client.stream("POST", url, headers=headers, json={
@@ -287,7 +287,10 @@ def _vision(samples, deadline):
         "fallbackReason": primary_error, "fallbackError": fallback_error})
 
 
-ALGORITHM = "tesseract-psm12-words-vision-corroborated-v3"
+# v4: vision frames are native-resolution JPEG (quality 95) instead of PNG, so
+# the 32 MiB vision budget holds ~50 detailed 1080x1920 frames instead of ~14.
+ALGORITHM = "tesseract-psm12-words-vision-corroborated-v4"
+VISION_JPEG_QUALITY = 95
 
 # These failures describe a service/runtime that can be retried next cycle.
 # Identity mismatches and positive text detections deliberately remain terminal.
@@ -308,6 +311,23 @@ def _defer_transient(decision, reason):
     decision["reason"] = "scan_pending"
     decision["model"]["status"] = "unavailable"
     decision["model"]["reason"] = reason
+
+
+def is_final_decision(decision) -> bool:
+    """A stored decision that rescanning the same bytes cannot change.
+
+    Clean and text are final, and so is every unavailable reason that
+    `_defer_transient` did not turn into `scan_pending` (budget, identity and
+    decode refusals). Serving these instead of a fresh `scan_pending` stops a
+    clip that can never pass from being rescanned every poll, where it holds
+    the single scanner ahead of every other job.
+    """
+    if not isinstance(decision, dict):
+        return False
+    verdict = decision.get("verdict")
+    if verdict in {"clean", "text"}:
+        return True
+    return verdict == "unavailable" and decision.get("reason") not in {None, "scan_pending"}
 
 
 def pending_decision(*, page_id, job_id, index, sha256, byte_count):
@@ -373,7 +393,7 @@ def scan_artifact(path: Path, *, page_id: str, job_id: str, index: int, sha256: 
             if number in selected or text:
                 image = Image.frombytes("RGB", (width, height), frame)
                 encoded = io.BytesIO()
-                image.save(encoded, format="PNG")
+                image.save(encoded, format="JPEG", quality=VISION_JPEG_QUALITY)
                 sample = base64.b64encode(encoded.getvalue()).decode()
                 vision_bytes += len(sample)
                 if vision_bytes > MAX_VISION_BYTES:
