@@ -324,7 +324,13 @@ def _vision(samples, deadline):
 
 # v4: vision frames are native-resolution JPEG (quality 95) instead of PNG, so
 # the 32 MiB vision budget holds ~50 detailed 1080x1920 frames instead of ~14.
-ALGORITHM = "tesseract-psm12-words-vision-corroborated-v4"
+# Bumped to v5 alongside the scene-text ruling in _vision_request. This token is
+# what invalidates cached verdicts: _finish_visual_sweep skips a re-scan only
+# while a stored decision's sampling.algorithm still equals this constant
+# (routers/control_plane.py). A prompt change WITHOUT a bump would leave every
+# clip already judged under the old wording serving its stale verdict for ever,
+# which is exactly the population this change exists to re-judge.
+ALGORITHM = "tesseract-psm12-words-vision-corroborated-v5"
 VISION_JPEG_QUALITY = 95
 
 # These failures describe a service/runtime that can be retried next cycle.

@@ -628,3 +628,23 @@ def test_vision_prompt_admits_scene_text_and_refuses_only_added_text(monkeypatch
     # The three-way verdict contract is unchanged.
     for verdict in ('"clean"', '"text"', '"unavailable"'):
         assert verdict in seen['prompt']
+
+
+def test_scene_text_ruling_carries_an_algorithm_bump():
+    """A prompt change must invalidate the verdicts judged under the old wording.
+
+    routers/control_plane.py's _finish_visual_sweep skips re-scanning a clip only
+    while its stored decision's sampling.algorithm still equals ALGORITHM. So a
+    prompt change shipped WITHOUT bumping this token leaves every clip already
+    judged under the old wording serving its cached verdict for ever -- and those
+    clips are precisely the population the scene-text ruling exists to re-judge.
+
+    v4 is the token every currently-cached 'text' verdict was written under.
+    """
+    assert gate.ALGORITHM == 'tesseract-psm12-words-vision-corroborated-v5', (
+        'the scene-text prompt and this token ship together; bump it again if the '
+        'prompt changes, or stale verdicts keep being served'
+    )
+    assert gate.pending_decision(
+        page_id='p', job_id='j', index=0, sha256='a' * 64, byte_count=1,
+    )['sampling']['algorithm'] == gate.ALGORITHM
