@@ -87,7 +87,12 @@ under its current recipe, the same footage is re-cut from the grid shifted by
 3 s and then 6 s (`RECUT_PHASES_MS`), so a 90-second page master yields 29 cuts
 rather than 10. Fresh grid slots are always cut first, each start position is
 cut once per recipe version, one job never holds two overlapping cuts of the
-same master, and other pages' windows still exclude re-cuts. Generation jobs accept up to 2000
+same master, and other pages' windows still exclude re-cuts. When every phase is spent,
+the footage is cut once more into 6-second clips (`RECUT_FIXED_DURATION_MS`) on a
+6-second grid plus one clip ending on the last frame; their slot ids carry the
+length (`sha:start:6000`), so a 7.5-second page master still yields 0-6 s and
+1.5-7.5 s. `source_cut_is_planned` is the one check the executor runs before
+rendering, so a queued job can only hold windows the planner can emit. Generation jobs accept up to 2000
 `constraints.sourceWindowExclusions` records with canonical source identity and
 half-open original start/end milliseconds, populated by the Worker from global
 other-page reservations and historical evidence. Sourced capability entries include

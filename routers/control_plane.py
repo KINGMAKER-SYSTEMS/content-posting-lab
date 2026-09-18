@@ -82,7 +82,7 @@ from services.control_plane_generation import (
 from services.control_plane_sources import (
     canonical_source_identity,
     plan_source_cuts,
-    planned_source_cut_duration,
+    source_cut_is_planned,
     resolve_source_recipe,
     source_window_exclusions,
 )
@@ -1847,12 +1847,9 @@ async def _run_dossier_source(job_id: str) -> None:
             if (
                 master is None
                 or start_ms != source_cut.get("libraryStartMs")
-                or not isinstance(start_ms, int)
-                or not isinstance(duration_ms, int)
-                or duration_ms != planned_source_cut_duration(recipe, master, start_ms)
-                or start_ms < 0
-                or start_ms + duration_ms > master.duration_ms
-                or source_cut.get("slotId") != f"{master.sha256}:{start_ms}"
+                or not source_cut_is_planned(
+                    recipe, master, start_ms, duration_ms, source_cut.get("slotId"),
+                )
             ):
                 raise RuntimeError("source_recipe_cut_invalid")
             source = await _cached_source_master(job["pageId"], master, job_id)
