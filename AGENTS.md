@@ -18,7 +18,10 @@
   batch when the primary is unavailable. If both configured providers are
   unavailable and `REPLICATE_API_TOKEN` exists, the fixed official
   `google/gemini-2.5-flash` Replicate model receives bounded batches of at most
-  ten of those same JPEG frames; all batches must return a valid verdict.
+  ten of those same JPEG frames under a short natural-language JSON contract;
+  all batches must return a complete valid verdict. A transient pending verdict
+  stops the rest of that job's sweep so provider trouble cannot monopolize the
+  serialized scanner ahead of other pages.
   `CONTENT_LAB_VISION_FALLBACK_URL` (default
   `https://api.openai.com/v1/chat/completions`) and
   `CONTENT_LAB_VISION_FALLBACK_MODEL` (default `gpt-4o-mini`) configure that fallback; the optional
