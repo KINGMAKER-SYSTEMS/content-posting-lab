@@ -561,3 +561,25 @@ area:      [backend]: Content Lab source cut planning
 
 Exact page-bound ShipStream masters now begin at their first immutable frame instead of receiving the raw-source 60-second skip a second time. Deterministic cut duration selection uses only durations that fit the remaining master bytes, so a valid 7.5-second imported master advertises and executes one cut instead of zero. Raw original-source libraries retain the 60-second minimum. The source execution, source library, and dossier execution suites pass 76 tests.
 _________________________________________________________________________________
+
+_________________________________________________________________________________
+
+time:      [10:21] [09-18-26]
+agent:     [codex desktop] [gpt-5]
+worktree:  [fix/visual-replicate-fallback-20260918] /tmp/content-lab-live.VMR5lI/repo
+type:      [bug report]: Unblock fail-closed visual admission for automatic source recuts
+area:      [backend]: Content Lab visual admission and bucket replenishment
+
+Live Control Plane and Content Lab evidence showed that automatic sourced-video
+replenishment is producing new six-second outputs from the same approved page
+masters with distinct output hashes. Those completed recuts remained outside
+ready buckets because Z.ai was rate-limited and the configured OpenAI fallback
+had exhausted quota. Visual admission now uses the already-configured Replicate
+token as a third, fixed-host fallback through the official
+google/gemini-2.5-flash model. It sends every sampled frame in bounded batches
+of at most ten, validates strict JSON verdicts, polls only fixed Replicate
+prediction URLs, and still fails closed on missing, invalid, incomplete, or
+uncertain evidence. Existing two-provider error attribution is unchanged when
+Replicate is not configured. Visual admission, sourced-video execution, and
+production-image import verification pass 96 tests.
+_________________________________________________________________________________
