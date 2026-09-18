@@ -15,6 +15,7 @@ import routers.control_plane as cp
 import routers.control_plane_recipes as recipes
 from services.control_plane_sources import (
     CUT_SLOT_STEP_MS,
+    RECUT_PHASES_MS,
     plan_source_cuts,
     resolve_source_recipe,
 )
@@ -667,43 +668,44 @@ def test_active_source_job_reserves_windows_across_recipe_revisions(lab):
 
 
 def test_capability_advertises_only_currently_reservable_source_windows(lab):
+    # Capacity is exactly the positions a job could still reserve: the clean
+    # 9-second grid first, then the same footage re-cut from +3 s and +6 s
+    # (RECUT_PHASES_MS). Every position is cut once, and capacity reaches 0
+    # only when every phase is spent.
     client, _, _ = lab
-    for quantity, idempotency in (
-        (10, "source-capacity-first"),
-        (8, "source-capacity-second"),
-    ):
+
+    def capability():
+        response = client.get(
+            "/api/control-plane/v1/capabilities",
+            headers={"X-RT-Page-Id": PAGE_ID},
+        )
+        assert response.status_code == 200
+        return response.json()["capabilities"]
+
+    starts: list[int] = []
+    slots: list[str] = []
+    round_number = 0
+    while (quantity := capability()[0]["maxQuantity"]) > 0:
+        round_number += 1
+        assert round_number < 20, "capacity never drained"
         created = client.post(
             "/api/control-plane/v1/jobs", json=job_body(quantity),
-            headers=headers(idempotency),
+            headers=headers(f"source-capacity-{round_number}"),
         )
         assert created.status_code == 200
+        job = cp._load_jobs()["jobs"][created.json()["jobId"]]
+        assert len(job["sourceCuts"]) == quantity
+        starts.extend(cut["startMs"] for cut in job["sourceCuts"])
+        slots.extend(cut["slotId"] for cut in job["sourceCuts"])
         cp._update_job(created.json()["jobId"], status="completed")
 
-    capabilities = client.get(
-        "/api/control-plane/v1/capabilities",
-        headers={"X-RT-Page-Id": PAGE_ID},
-    ).json()["capabilities"]
-    assert capabilities == [{
-        "recipeId": "pov-dirt-bike:master",
-        "engine": "sourced_video",
-        "sourceIdentities": ["https://www.youtube.com/watch?v=vt5im2TRAKw"],
-        "recipeVersion": "dossier-feedfacefeedface",
-        "maxQuantity": 2,
-        "sourceIdentities": [SOURCE_IDENTITY],
-    }]
-
-    final = client.post(
-        "/api/control-plane/v1/jobs", json=job_body(2),
-        headers=headers("source-capacity-final"),
-    )
-    assert final.status_code == 200
-    cp._update_job(final.json()["jobId"], status="completed")
-    exhausted = client.get(
-        "/api/control-plane/v1/capabilities",
-        headers={"X-RT-Page-Id": PAGE_ID},
-    )
-    assert exhausted.status_code == 200
-    assert exhausted.json()["capabilities"] == [{
+    assert len(slots) == len(set(slots)), "a source position was cut twice"
+    phases = [start % CUT_SLOT_STEP_MS for start in starts]
+    assert set(phases) == set(RECUT_PHASES_MS), "every re-cut phase is reached"
+    assert phases == sorted(phases), "fresh grid footage is cut before any re-cut"
+    grid = phases.count(0)
+    assert grid == 20 and len(slots) > 2 * grid, (grid, len(slots))
+    assert capability() == [{
         "recipeId": "pov-dirt-bike:master",
         "engine": "sourced_video",
         "sourceIdentities": ["https://www.youtube.com/watch?v=vt5im2TRAKw"],
@@ -920,6 +922,53 @@ def test_page_bound_shipstream_master_can_use_first_frame(authority):
     assert len(cuts) == 1
     assert cuts[0].start_ms == 0
     assert cuts[0].duration_ms <= 7_500
+
+
+def test_used_page_master_is_recut_at_shifted_points_not_declared_exhausted():
+    from services.control_plane_sources import source_window_exclusions
+    # Production 2026-09-18: bambisrevenge11 and tender.acres each have one
+    # 90-second page master, i.e. ten 9-second grid slots, and read
+    # capability_capacity_exhausted once those ten were cut. The same footage
+    # is now re-cut from +3 s and +6 s before the page is called exhausted.
+    import hashlib
+    from dataclasses import replace
+    recipe = resolve_source_recipe(publication(cut_duration_ms=7_000))
+    original = recipe.masters[0]
+    page_master = replace(
+        original, duration_ms=90_000, source_offset_ms=0,
+        provenance={**original.provenance, "authority": "ShipStream source-manifest.v1 exact page master"},
+    )
+    recipe = replace(recipe, masters=(page_master,))
+    grid = plan_source_cuts(recipe, 100, set())
+    assert [cut.start_ms % CUT_SLOT_STEP_MS for cut in grid][:10] == [0] * 10
+    served = {cut.slot_id for cut in grid if cut.start_ms % CUT_SLOT_STEP_MS == 0}
+    recut = plan_source_cuts(recipe, 100, served)
+    assert recut, "a used page master must still offer re-cuts"
+    assert {cut.start_ms % CUT_SLOT_STEP_MS for cut in recut} <= {3_000, 6_000}
+    assert all(cut.start_ms + cut.duration_ms <= 90_000 for cut in recut)
+    assert all(5_000 <= cut.duration_ms <= 9_000 for cut in recut)
+    for i, left in enumerate(recut):
+        for right in recut[i + 1:]:
+            assert not (left.start_ms < right.start_ms + right.duration_ms
+                        and right.start_ms < left.start_ms + left.duration_ms), (left, right)
+    total = {cut.slot_id for cut in grid} | served
+    while more := plan_source_cuts(recipe, 100, total):
+        total |= {cut.slot_id for cut in more}
+    assert len(total) >= 25, len(total)
+    assert plan_source_cuts(recipe, 100, total) == []
+    # Another page's window still blocks a re-cut, exactly like a grid cut.
+    everything = source_window_exclusions([{
+        "sourceIdentity": page_master.provenance["sourceUrl"], "startMs": 0, "endMs": 90_000,
+    }])
+    assert plan_source_cuts(recipe, 100, served, everything) == []
+    # Grid-slot durations are byte-for-byte the pre-phase formula, so a job
+    # already queued under the old planner still validates when it runs.
+    values = list(range(5_000, 9_001, 1_000))
+    rotation = int(hashlib.sha256(
+        f"{recipe.source_library_hash}\0{page_master.sha256}".encode(),
+    ).hexdigest()[:8], 16) % len(values)
+    for cut in grid[:10]:
+        assert cut.duration_ms == values[(rotation + cut.start_ms // CUT_SLOT_STEP_MS) % len(values)]
 
 
 def test_shared_source_exclusions_skip_other_page_windows_and_reencoding():

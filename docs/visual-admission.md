@@ -82,7 +82,12 @@ Live model evidence belongs separately from the hermetic fixture model responses
 
 New whole-master cuts skip the first 60 seconds in the immutable source timeline.
 A pretrimmed master retains its declared source offset; the 9-second disjoint
-slot grid stays anchored to library time. Generation jobs accept up to 2000
+slot grid stays anchored to library time. When a page has cut every grid slot
+under its current recipe, the same footage is re-cut from the grid shifted by
+3 s and then 6 s (`RECUT_PHASES_MS`), so a 90-second page master yields 29 cuts
+rather than 10. Fresh grid slots are always cut first, each start position is
+cut once per recipe version, one job never holds two overlapping cuts of the
+same master, and other pages' windows still exclude re-cuts. Generation jobs accept up to 2000
 `constraints.sourceWindowExclusions` records with canonical source identity and
 half-open original start/end milliseconds, populated by the Worker from global
 other-page reservations and historical evidence. Sourced capability entries include
