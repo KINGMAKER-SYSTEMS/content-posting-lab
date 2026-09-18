@@ -48,6 +48,13 @@ CUT_SLOT_STEP_MS = 9_000
 # is still used once per recipe version (slot_id), and cuts are never shared
 # across pages.
 RECUT_PHASES_MS = (0, 3_000, 6_000)
+# Fixed-length re-cuts (operator decision 2026-09-18: "do 6-second clips of the
+# same footage"). Once every phase is spent, the footage is cut again into
+# 6-second clips on a 6-second grid plus one clip ending on the last frame, so
+# even a 7.5-second page master yields 0-6 s and 1.5-7.5 s. A fixed-length
+# cut's slot_id carries its length, so it is a different clip from an earlier
+# cut that started at the same point.
+RECUT_FIXED_DURATION_MS = 6_000
 MIN_ORIGINAL_START_MS = 60_000
 SHIPSTREAM_PAGE_MASTER_AUTHORITY = "ShipStream source-manifest.v1 exact page master"
 SHIPSTREAM_HISTORICAL_AUTHORITY_PREFIX = (
@@ -81,12 +88,16 @@ class SourceCut:
     master: MasterSource
     start_ms: int
     duration_ms: int
+    fixed_length: bool = False
 
     @property
     def slot_id(self) -> str:
         # Deliberately excludes duration/speed/crop. Once a source position is
         # used, a cosmetically altered near-duplicate may not re-enter a job.
         # A re-cut phase is a different position (start_ms), so it has its own id.
+        # A fixed-length re-cut names its length: same start, different clip.
+        if self.fixed_length:
+            return f"{self.master.sha256}:{self.start_ms}:{self.duration_ms}"
         return f"{self.master.sha256}:{self.start_ms}"
 
 
@@ -381,29 +392,78 @@ def plan_source_cuts(
     # continues to reserve the source position across treatment changes.
     # Phases run in order, so fresh footage is always cut before a re-cut, and
     # one plan never holds two overlapping cuts of the same master.
+    def admit(master, minimum_start_ms, reserved, start_ms, duration_ms, fixed_length):
+        if master.source_offset_ms + start_ms < minimum_start_ms:
+            return
+        if start_ms + duration_ms > master.duration_ms:
+            return
+        original_start = master.source_offset_ms + start_ms
+        if any(begin < original_start + duration_ms and end > original_start for begin, end in reserved):
+            return
+        if any(
+            chosen.master.sha256 == master.sha256
+            and chosen.start_ms < start_ms + duration_ms
+            and start_ms < chosen.start_ms + chosen.duration_ms
+            for chosen in candidates
+        ):
+            return
+        cut = SourceCut(master, start_ms, duration_ms, fixed_length)
+        if cut.slot_id not in served_slots:
+            candidates.append(cut)
+
     for phase_ms in RECUT_PHASES_MS:
         for master, minimum_start_ms, reserved in lanes:
             for start_ms in range(phase_ms, master.duration_ms, CUT_SLOT_STEP_MS):
-                if master.source_offset_ms + start_ms < minimum_start_ms:
-                    continue
                 duration_ms = planned_source_cut_duration(recipe, master, start_ms)
-                if start_ms + duration_ms > master.duration_ms:
-                    continue
-                original_start = master.source_offset_ms + start_ms
-                if any(begin < original_start + duration_ms and end > original_start for begin, end in reserved):
-                    continue
-                if any(
-                    chosen.master.sha256 == master.sha256
-                    and chosen.start_ms < start_ms + duration_ms
-                    and start_ms < chosen.start_ms + chosen.duration_ms
-                    for chosen in candidates
-                ):
-                    continue
-                cut = SourceCut(master, start_ms, duration_ms)
-                if cut.slot_id not in served_slots:
-                    candidates.append(cut)
+                admit(master, minimum_start_ms, reserved, start_ms, duration_ms, False)
                 if len(candidates) >= quantity:
                     return candidates
+    for master, minimum_start_ms, reserved in lanes:
+        for start_ms in fixed_length_recut_starts(master):
+            admit(master, minimum_start_ms, reserved, start_ms, RECUT_FIXED_DURATION_MS, True)
+            if len(candidates) >= quantity:
+                return candidates
+    return candidates
+
+
+def fixed_length_recut_starts(master: MasterSource) -> list[int]:
+    """Start points of the 6-second re-cut pass: a 6-second grid plus one
+    clip that ends on the master's last frame."""
+    last = master.duration_ms - RECUT_FIXED_DURATION_MS
+    if last < 0:
+        return []
+    starts = list(range(0, last + 1, RECUT_FIXED_DURATION_MS))
+    if starts[-1] != last:
+        starts.append(last)
+    return starts
+
+
+def source_cut_is_planned(
+    recipe: SourceRecipe, master: MasterSource, start_ms: object,
+    duration_ms: object, slot_id: object,
+) -> bool:
+    """True only for a cut plan_source_cuts can emit for this master.
+
+    The executor re-derives every queued cut through this one function before
+    rendering, so a stored job can never carry a window the planner would not.
+    """
+    if (
+        not isinstance(start_ms, int) or isinstance(start_ms, bool)
+        or not isinstance(duration_ms, int) or isinstance(duration_ms, bool)
+        or start_ms < 0 or start_ms + duration_ms > master.duration_ms
+    ):
+        return False
+    if slot_id == f"{master.sha256}:{start_ms}:{duration_ms}":
+        return (
+            duration_ms == RECUT_FIXED_DURATION_MS
+            and start_ms in fixed_length_recut_starts(master)
+        )
+    if slot_id != f"{master.sha256}:{start_ms}":
+        return False
+    try:
+        return duration_ms == planned_source_cut_duration(recipe, master, start_ms)
+    except ValueError:
+        return False
     return candidates
     return candidates
 
