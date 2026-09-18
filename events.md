@@ -624,3 +624,23 @@ not spend calls or hold the serialized scanner ahead of other pages. Visual
 admission, sourced-video execution, and production-image import verification
 pass 98 tests.
 _________________________________________________________________________________
+
+_________________________________________________________________________________
+
+time:      [11:35] [09-18-26]
+agent:     [codex desktop] [gpt-5]
+worktree:  [fix/fair-visual-sweep-queue-20260918] /tmp/content-lab-live.VMR5lI/repo
+type:      [bug report]: Make visual-admission queue fair across pages
+area:      [backend]: Content Lab admission throughput
+
+Live inspection after serialized scanning showed fourteen active whole-job
+sweeps. Ten-output jobs could hold the only scanner for minutes while a
+one-output sourced recut waited behind the entire batch. A sweep executor turn
+now scans one nonfinal artifact. A final decision requeues any remaining work
+at the tail under the same runtime-bound sweep id; a transient pending decision
+stops until the next authenticated poll. This preserves one scanner and exact
+full-frame QA while giving small depleted pages a turn between large batches.
+Visual admission, sourced-video execution, and production-image import
+verification pass 99 tests, including one-artifact tail-requeue and peak-one
+concurrency regressions.
+_________________________________________________________________________________

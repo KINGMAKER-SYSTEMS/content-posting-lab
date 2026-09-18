@@ -3071,36 +3071,65 @@ def _mark_visual_sweep(job_id: str, sweep_id: str, running: bool) -> bool:
 
 
 def _finish_visual_sweep(job_id: str, sweep_id: str) -> None:
-    """Scan all paid outputs, so a full batch does not require one Cron per clip."""
+    """Scan one paid output, then requeue at the tail for fleet fairness."""
     from services.visual_admission import ALGORITHM, SCHEMA, is_final_decision, pending_decision, scan_artifact
+    requeued = False
+
+    def final_for(job, index, clip):
+        previous = job.get("visualAdmission", {}).get(str(index), {})
+        return (
+            previous.get("schema") == SCHEMA
+            and all(previous.get(key) == value for key, value in {
+                "pageId": job["pageId"], "jobId": job_id,
+                "outputIndex": index, "sha256": clip.get("sha256"),
+                "bytes": clip.get("bytes"),
+            }.items())
+            and previous.get("sampling", {}).get("algorithm") == ALGORITHM
+            and is_final_decision(previous)
+        )
+
     try:
         job = _get_job_or_404(job_id)
         root = Path(job["artifactRoot"]).resolve()
+        selected = None
         for index, clip in enumerate(job.get("clips", [])[:100]):
-            previous = _get_job_or_404(job_id).get("visualAdmission", {}).get(str(index), {})
-            if previous.get("schema") == SCHEMA and all(previous.get(key) == value for key, value in {"pageId": job["pageId"], "jobId": job_id, "outputIndex": index, "sha256": clip.get("sha256"), "bytes": clip.get("bytes")}.items()) and previous.get("sampling", {}).get("algorithm") == ALGORITHM and is_final_decision(previous):
+            if final_for(job, index, clip):
                 continue
-            path = (root / clip["path"]).resolve()
-            if not _mark_visual_sweep(job_id, sweep_id, True):
+            selected = (index, clip)
+            break
+        if selected is None:
+            return
+        index, clip = selected
+        path = (root / clip["path"]).resolve()
+        if not _mark_visual_sweep(job_id, sweep_id, True):
+            return
+        if root not in path.parents or not path.is_file():
+            decision = pending_decision(page_id=job["pageId"], job_id=job_id, index=index,
+                                        sha256=clip["sha256"], byte_count=clip["bytes"])
+            decision["reason"] = "artifact_missing"
+        else:
+            decision = scan_artifact(path, page_id=job["pageId"], job_id=job_id, index=index,
+                                     sha256=clip["sha256"], byte_count=clip["bytes"])
+        with lock_for(_jobs_path()):
+            store = _load_jobs()
+            current = store["jobs"].get(job_id)
+            if current is None:
                 return
-            if root not in path.parents or not path.is_file():
-                decision = pending_decision(page_id=job["pageId"], job_id=job_id, index=index,
-                                            sha256=clip["sha256"], byte_count=clip["bytes"])
-                decision["reason"] = "artifact_missing"
-            else:
-                decision = scan_artifact(path, page_id=job["pageId"], job_id=job_id, index=index,
-                                         sha256=clip["sha256"], byte_count=clip["bytes"])
-            with lock_for(_jobs_path()):
-                store = _load_jobs()
-                current = store["jobs"].get(job_id)
-                if current is None:
-                    return
-                current.setdefault("visualAdmission", {})[str(index)] = decision
-                atomic_save(_jobs_path(), store)
-            if decision["reason"] == "scan_pending":
-                break
+            current.setdefault("visualAdmission", {})[str(index)] = decision
+            atomic_save(_jobs_path(), store)
+        if decision["reason"] != "scan_pending" and any(
+            not final_for(current, candidate_index, candidate)
+            for candidate_index, candidate in enumerate(current.get("clips", [])[:100])
+        ):
+            requeued = True
+            try:
+                _submit_visual_sweep(job_id, sweep_id)
+            except Exception:
+                requeued = False
+                raise
     finally:
-        _mark_visual_sweep(job_id, sweep_id, False)
+        if not requeued:
+            _mark_visual_sweep(job_id, sweep_id, False)
 
 
 @router.post("/v1/jobs/{job_id}/visual-admission/{index}")

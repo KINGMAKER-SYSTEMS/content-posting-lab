@@ -36,8 +36,10 @@
   fallback endpoint must be reachable from the Railway container or the gate
   remains fail closed. Authenticated job sweeps enter one process-wide executor
   so concurrent Control Plane polls queue behind the single scanner instead of
-  persisting `scanner_busy_retry`; a restart safely makes the prior runtime's
-  queued sweep eligible for resubmission.
+  persisting `scanner_busy_retry`. Each executor turn scans at most one artifact
+  and requeues remaining finalizable artifacts at the tail, preventing a large
+  batch from blocking a one-output page. A restart safely makes the prior
+  runtime's queued sweep eligible for resubmission.
 - Source cut planning honors the immutable original 60-second minimum for raw
   source libraries and the Worker-supplied global source-window exclusions
   before rendering. Exact page-bound ShipStream masters are already extracted
