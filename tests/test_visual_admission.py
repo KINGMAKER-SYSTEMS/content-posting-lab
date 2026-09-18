@@ -1,4 +1,5 @@
 import hashlib
+import io
 import shutil
 import subprocess
 import time
@@ -270,7 +271,7 @@ def test_vision_read_is_bounded_before_response_materialization(monkeypatch):
         assert request.url == gate.VISION_URL
         payload=__import__('json').loads(request.content)
         assert payload['model'] == gate.MODEL
-        assert payload['messages'][0]['content'][1]['image_url']['url'].startswith('data:image/png;base64,')
+        assert payload['messages'][0]['content'][1]['image_url']['url'].startswith('data:image/jpeg;base64,')
         return httpx.Response(200, stream=OversizedStream())
     original_client=httpx.Client
     monkeypatch.setenv('CONTENT_LAB_VISION_API_KEY','fixture-key')
@@ -477,7 +478,7 @@ def test_openai_compatible_fallback_request_uses_data_url_parts(monkeypatch):
     assert body['messages'][0]['role'] == 'user'
     assert content[1] == {
         'type': 'image_url',
-        'image_url': {'url': 'data:image/png;base64,ZmFrZQ=='},
+        'image_url': {'url': 'data:image/jpeg;base64,ZmFrZQ=='},
     }
     assert 'thinking' not in body
     assert seen[0].headers['authorization'] == 'Bearer fallback-secret'
@@ -509,3 +510,73 @@ def test_scanner_busy_is_pending_not_terminal(monkeypatch, tmp_path):
     assert result['verdict'] == 'unavailable'
     assert result['reason'] == 'scan_pending'
     assert result['model']['reason'] == 'scanner_busy_retry'
+
+
+def test_vision_frames_are_native_resolution_jpeg(monkeypatch, tmp_path):
+    # PNG frames of detailed 1080x1920 footage are ~2.4 MB each after base64, so
+    # the 32 MiB vision budget ran out after ~14 frames and every such clip was
+    # refused as vision_input_budget_exceeded. JPEG keeps native pixels.
+    import base64
+    from PIL import Image
+    path = fake_media(monkeypatch, tmp_path)
+    seen = []
+    def vision(samples, deadline):
+        seen.extend(samples)
+        return {'verdict': 'clean', 'reason': 'No text visible'}
+    monkeypatch.setattr(gate, '_vision', vision)
+    assert run_scan(path)['verdict'] == 'clean'
+    assert len(seen) == 3
+    for sample in seen:
+        raw = base64.b64decode(sample)
+        assert raw[:3] == b'\xff\xd8\xff'
+        assert Image.open(io.BytesIO(raw)).size == (4, 4)
+
+
+def test_final_unavailable_decision_is_served_and_never_rescanned(monkeypatch, tmp_path):
+    # A refusal that rescanning cannot change (here the vision byte budget) must
+    # reach the Worker. Masking it as scan_pending rescanned it every poll, and
+    # the oldest such job held the single scanner ahead of every newer job.
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from routers import control_plane as cp
+    path = fake_media(monkeypatch, tmp_path)
+    monkeypatch.setattr(gate, 'MAX_VISION_BYTES', 1)
+    job_id = 'cpl-0123456789abcdef'
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    job = {'pageId': 'acct:test', 'artifactRoot': str(tmp_path),
+           'clips': [{'path': path.name, 'sha256': digest, 'bytes': path.stat().st_size}]}
+    monkeypatch.setattr(cp, '_jobs_path', lambda: tmp_path/'jobs.json')
+    cp.atomic_save(cp._jobs_path(), {'jobs': {job_id: job}})
+    monkeypatch.setenv('CONTROL_PLANE_TOKEN', 'test-secret')
+    app = FastAPI(); app.include_router(cp.router, prefix='/api/control-plane')
+    client = TestClient(app)
+    url = f'/api/control-plane/v1/jobs/{job_id}/visual-admission/0'
+    body = {'sha256': digest, 'bytes': path.stat().st_size}
+    headers = {'Authorization': 'Bearer test-secret', 'X-RT-Page-Id': 'acct:test'}
+    assert client.post(url, json=body, headers=headers).json()['reason'] == 'scan_pending'
+    first = client.post(url, json=body, headers=headers).json()
+    assert first['verdict'] == 'unavailable'
+    assert first['reason'] == 'vision_input_budget_exceeded'
+    monkeypatch.setattr(gate, 'scan_artifact', lambda *args, **kwargs: pytest.fail('a final decision must not be rescanned'))
+    later = __import__('datetime').datetime.now(__import__('datetime').timezone.utc) + __import__('datetime').timedelta(minutes=5)
+    class LaterDatetime(__import__('datetime').datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return later
+    monkeypatch.setattr(cp, 'datetime', LaterDatetime)
+    assert client.post(url, json=body, headers=headers).json() == first
+    assert cp._load_jobs()['jobs'][job_id]['visualAdmission']['0'] == first
+
+
+@pytest.mark.parametrize('decision,final', [
+    ({'verdict': 'clean', 'reason': 'full_frame_ocr_and_vision_clean'}, True),
+    ({'verdict': 'text', 'reason': 'pre_existing_text_vision'}, True),
+    ({'verdict': 'unavailable', 'reason': 'vision_input_budget_exceeded'}, True),
+    ({'verdict': 'unavailable', 'reason': 'artifact_identity_mismatch'}, True),
+    ({'verdict': 'unavailable', 'reason': 'scan_pending'}, False),
+    ({'verdict': 'unavailable'}, False),
+    ({}, False),
+    (None, False),
+])
+def test_final_decision_classification(decision, final):
+    assert gate.is_final_decision(decision) is final
