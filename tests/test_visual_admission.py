@@ -271,6 +271,40 @@ def test_visual_sweep_executor_serializes_jobs(monkeypatch):
     assert peak == 1
 
 
+def test_visual_sweep_stops_job_after_transient_pending_decision(monkeypatch, tmp_path):
+    from routers import control_plane as cp
+    path = tmp_path / 'clip.mp4'
+    path.write_bytes(b'fixture')
+    clip = {
+        'path': path.name,
+        'sha256': hashlib.sha256(path.read_bytes()).hexdigest(),
+        'bytes': path.stat().st_size,
+    }
+    job_id = 'cpl-abcdef0123456789'
+    sweep_id = 'sweep-1'
+    monkeypatch.setattr(cp, '_jobs_path', lambda: tmp_path / 'jobs.json')
+    cp.atomic_save(cp._jobs_path(), {'jobs': {job_id: {
+        'pageId': 'acct:test', 'artifactRoot': str(tmp_path),
+        'clips': [clip, dict(clip)],
+        'visualAdmissionSweep': {
+            'id': sweep_id, 'runtime': cp._VISUAL_RUNTIME, 'running': True,
+        },
+    }}})
+    calls = []
+
+    def pending_scan(path, *, page_id, job_id, index, sha256, byte_count):
+        calls.append(index)
+        return gate.pending_decision(
+            page_id=page_id, job_id=job_id, index=index,
+            sha256=sha256, byte_count=byte_count,
+        )
+
+    monkeypatch.setattr(gate, 'scan_artifact', pending_scan)
+    cp._finish_visual_sweep(job_id, sweep_id)
+    assert calls == [0]
+    assert cp._load_jobs()['jobs'][job_id]['visualAdmissionSweep']['running'] is False
+
+
 def test_primary_vision_url_override_is_allowlisted(monkeypatch):
     override = 'https://open.bigmodel.cn/api/paas/v4/chat/completions'
     monkeypatch.setenv('CONTENT_LAB_VISION_URL', override)
@@ -506,7 +540,7 @@ def test_replicate_fallback_batches_at_ten_and_uses_only_replicate_token(monkeyp
         requests.append(request)
         return httpx.Response(201, json={
             'status': 'succeeded',
-            'output': ['{"verdict":"clean","reason":"no text"}'],
+            'output': ['```json\n{"verdict":"clean",', '"reason":"no text"}\n```'],
         })
     original_client = gate.httpx.Client
     monkeypatch.setattr(
@@ -524,6 +558,8 @@ def test_replicate_fallback_batches_at_ten_and_uses_only_replicate_token(monkeyp
     import json
     bodies = [json.loads(request.read()) for request in requests]
     assert [len(body['input']['images']) for body in bodies] == [10, 6]
+    assert all('Keep reason under 200 characters' in body['input']['prompt'] for body in bodies)
+    assert all(body['input']['max_output_tokens'] == 1024 for body in bodies)
     assert all(request.headers['authorization'] == 'Bearer replicate-secret' for request in requests)
     assert 'fallback-secret' not in str(requests)
 

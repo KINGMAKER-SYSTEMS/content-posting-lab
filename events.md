@@ -604,3 +604,23 @@ sourced-video execution, and production-image import verification pass 97
 tests, including an overlap regression that proves peak scanner concurrency is
 one.
 _________________________________________________________________________________
+
+_________________________________________________________________________________
+
+time:      [10:59] [09-18-26]
+agent:     [codex desktop] [gpt-5]
+worktree:  [fix/replicate-verdict-contract-20260918] /tmp/content-lab-live.VMR5lI/repo
+type:      [bug report]: Require complete Replicate visual verdicts
+area:      [backend]: Content Lab visual admission
+
+The first serialized live sweep reached Replicate but its response stopped in
+the middle of the reason string under the old pseudo-JSON union prompt. Strict
+parsing correctly refused that evidence. A live bounded probe established that
+the same official model returns complete JSON when given a natural-language
+two-field schema, a reason limit, and a 1024-token ceiling. The fixed prompt
+retains strict verdict parsing and complete sampled-frame coverage. A transient
+pending verdict now stops the rest of that job's sweep so provider trouble does
+not spend calls or hold the serialized scanner ahead of other pages. Visual
+admission, sourced-video execution, and production-image import verification
+pass 98 tests.
+_________________________________________________________________________________

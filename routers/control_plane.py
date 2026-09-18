@@ -3097,7 +3097,7 @@ def _finish_visual_sweep(job_id: str, sweep_id: str) -> None:
                     return
                 current.setdefault("visualAdmission", {})[str(index)] = decision
                 atomic_save(_jobs_path(), store)
-            if decision["reason"] in {"scanner_busy_retry", "vision_rate_limited", "vision_auth_unavailable", "vision_credentials_unavailable", "vision_service_unavailable", "ocr_or_decoder_unavailable"}:
+            if decision["reason"] == "scan_pending":
                 break
     finally:
         _mark_visual_sweep(job_id, sweep_id, False)

@@ -285,11 +285,13 @@ def _replicate_vision_request(samples, deadline, *, token):
     }
     prompt = (
         'Inspect every supplied frame for any existing writing, captions, logos '
-        'with letters, numbers or watermarks. Return ONLY JSON '
-        '{"verdict":"clean"|"text"|"unavailable","reason":"describe the visible '
-        'scene and any text actually observed"}. Use unavailable when unreadable '
-        'or uncertain. Any text, even brief or tiny, means text. These frames '
-        'precede our caption stage.'
+        'containing letters or numbers, or watermarks. Return exactly one JSON '
+        'object and nothing else. It must contain exactly two string fields named '
+        'verdict and reason. verdict must be exactly clean, text, or unavailable. '
+        'Keep reason under 200 characters and describe the visible scene plus any '
+        'text actually observed. Choose unavailable if any frame is unreadable or '
+        'uncertain. Any text, however brief or tiny, requires verdict text. These '
+        'frames precede our caption stage.'
     )
     with httpx.Client(timeout=min(60, max(.1, deadline-time.monotonic())), follow_redirects=False) as client:
         for start in range(0, len(samples), REPLICATE_VISION_BATCH):
@@ -300,7 +302,7 @@ def _replicate_vision_request(samples, deadline, *, token):
                     "images": ["data:image/jpeg;base64," + sample for sample in batch],
                     "temperature": 0,
                     "thinking_budget": 0,
-                    "max_output_tokens": 512,
+                    "max_output_tokens": 1024,
                 },
             }) as response:
                 response.raise_for_status()
