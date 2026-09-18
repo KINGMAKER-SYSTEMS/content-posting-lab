@@ -58,6 +58,12 @@ VISION_FALLBACK_URL = os.environ.get(
 VISION_FALLBACK_MODEL = os.environ.get(
     "CONTENT_LAB_VISION_FALLBACK_MODEL", "gpt-4o-mini"
 ).strip()
+REPLICATE_VISION_MODEL = "google/gemini-2.5-flash"
+REPLICATE_VISION_URL = (
+    "https://api.replicate.com/v1/models/"
+    f"{REPLICATE_VISION_MODEL}/predictions"
+)
+REPLICATE_VISION_BATCH = 10
 ALLOWED_VISION_MODELS = {MODEL, "qwen2.5vl:7b", "gpt-4o-mini"}
 MAX_BYTES = 128 * 1024 * 1024
 MAX_FRAMES = 600
@@ -254,6 +260,92 @@ def _vision_request(samples, deadline, *, url, model, provider, key=""):
     return result
 
 
+def _bounded_response_json(response, deadline):
+    body = bytearray()
+    for chunk in response.iter_bytes(chunk_size=4096):
+        if time.monotonic() > deadline:
+            raise RuntimeError("vision_timeout")
+        if len(body) + len(chunk) > 65536:
+            raise RuntimeError("vision_response_oversized")
+        body.extend(chunk)
+    try:
+        return json.loads(body)
+    except (ValueError, TypeError) as error:
+        raise RuntimeError("vision_response_invalid") from error
+
+
+def _replicate_vision_request(samples, deadline, *, token):
+    if not token:
+        raise RuntimeError("vision_credentials_unavailable")
+    results = []
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+        "Prefer": "wait=60",
+    }
+    prompt = (
+        'Inspect every supplied frame for any existing writing, captions, logos '
+        'with letters, numbers or watermarks. Return ONLY JSON '
+        '{"verdict":"clean"|"text"|"unavailable","reason":"describe the visible '
+        'scene and any text actually observed"}. Use unavailable when unreadable '
+        'or uncertain. Any text, even brief or tiny, means text. These frames '
+        'precede our caption stage.'
+    )
+    with httpx.Client(timeout=min(60, max(.1, deadline-time.monotonic())), follow_redirects=False) as client:
+        for start in range(0, len(samples), REPLICATE_VISION_BATCH):
+            batch = samples[start:start + REPLICATE_VISION_BATCH]
+            with client.stream("POST", REPLICATE_VISION_URL, headers=headers, json={
+                "input": {
+                    "prompt": prompt,
+                    "images": ["data:image/jpeg;base64," + sample for sample in batch],
+                    "temperature": 0,
+                    "thinking_budget": 0,
+                    "max_output_tokens": 512,
+                },
+            }) as response:
+                response.raise_for_status()
+                payload = _bounded_response_json(response, deadline)
+            while payload.get("status") in {"starting", "processing"}:
+                poll_url = payload.get("urls", {}).get("get")
+                parsed = urlparse(poll_url) if isinstance(poll_url, str) else None
+                if (parsed is None or parsed.scheme != "https"
+                        or parsed.hostname != "api.replicate.com"
+                        or not parsed.path.startswith("/v1/predictions/")):
+                    raise RuntimeError("vision_response_invalid")
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise RuntimeError("vision_timeout")
+                time.sleep(min(1, remaining))
+                with client.stream("GET", poll_url, headers={
+                    "Authorization": f"Bearer {token}",
+                }) as response:
+                    response.raise_for_status()
+                    payload = _bounded_response_json(response, deadline)
+            if payload.get("status") != "succeeded" or not isinstance(payload.get("output"), list):
+                raise RuntimeError("vision_service_unavailable")
+            if not all(isinstance(part, str) for part in payload["output"]):
+                raise RuntimeError("vision_response_invalid")
+            results.append(_strict_vision_json("".join(payload["output"])))
+    if any(result["verdict"] == "text" for result in results):
+        verdict = "text"
+    elif any(result["verdict"] == "unavailable" for result in results):
+        verdict = "unavailable"
+    else:
+        verdict = "clean"
+    reason = "; ".join(result["reason"] for result in results)
+    return {
+        "verdict": verdict,
+        "reason": reason,
+        "model": {
+            "name": REPLICATE_VISION_MODEL,
+            "provider": "replicate",
+            "urlHost": "api.replicate.com",
+            "fallback": False,
+            "fallbackReason": None,
+        },
+    }
+
+
 def _vision(samples, deadline):
     key = os.environ.get("CONTENT_LAB_VISION_API_KEY", "").strip()
     primary_error = "vision_credentials_unavailable" if not key else None
@@ -282,9 +374,30 @@ def _vision(samples, deadline):
         fallback_error = "vision_service_unavailable"
     except RuntimeError as error:
         fallback_error = str(error)
+    replicate_key = os.environ.get("REPLICATE_API_TOKEN", "").strip()
+    if not replicate_key:
+        raise VisionUnavailable("vision_unavailable_all_providers", model={
+            "name": VISION_FALLBACK_MODEL, "provider": fallback_provider,
+            "urlHost": urlparse(VISION_FALLBACK_URL).hostname, "fallback": True,
+            "fallbackReason": primary_error, "fallbackError": fallback_error})
+    try:
+        result = _replicate_vision_request(samples, deadline, token=replicate_key)
+        result["model"].update(
+            fallback=True,
+            fallbackReason=primary_error,
+            priorFallbackError=fallback_error,
+        )
+        return result
+    except httpx.TransportError as error:
+        replicate_error = "vision_timeout" if isinstance(error, httpx.TimeoutException) else "vision_transport_unavailable"
+    except httpx.HTTPStatusError as error:
+        replicate_error = "vision_rate_limited" if error.response.status_code == 429 else "vision_service_unavailable"
+    except RuntimeError as error:
+        replicate_error = str(error)
     raise VisionUnavailable("vision_unavailable_all_providers", model={
-        "name": VISION_FALLBACK_MODEL, "provider": fallback_provider, "urlHost": urlparse(VISION_FALLBACK_URL).hostname, "fallback": True,
-        "fallbackReason": primary_error, "fallbackError": fallback_error})
+        "name": REPLICATE_VISION_MODEL, "provider": "replicate", "urlHost": "api.replicate.com", "fallback": True,
+        "fallbackReason": primary_error, "priorFallbackError": fallback_error,
+        "fallbackError": replicate_error})
 
 
 # v4: vision frames are native-resolution JPEG (quality 95) instead of PNG, so

@@ -452,6 +452,72 @@ def test_gpt4o_mini_is_allowed_fallback_and_names_openai(monkeypatch):
     assert result['model']['fallback'] is True
 
 
+def test_replicate_is_third_fallback_when_primary_and_openai_are_unavailable(monkeypatch):
+    import httpx
+    monkeypatch.setenv('CONTENT_LAB_VISION_API_KEY', 'fixture-key')
+    monkeypatch.setenv('CONTENT_LAB_VISION_FALLBACK_API_KEY', 'fallback-key')
+    monkeypatch.setenv('REPLICATE_API_TOKEN', 'replicate-key')
+    monkeypatch.setattr(gate, '_vision_request', lambda *args, **kwargs: (_ for _ in ()).throw(
+        httpx.HTTPStatusError('unavailable', request=httpx.Request('POST', kwargs['url']), response=httpx.Response(429))))
+    monkeypatch.setattr(gate, '_replicate_vision_request', lambda *args, **kwargs: {
+        'verdict': 'clean', 'reason': 'replicate evidence', 'model': {
+            'name': gate.REPLICATE_VISION_MODEL, 'provider': 'replicate',
+            'urlHost': 'api.replicate.com', 'fallback': False, 'fallbackReason': None,
+        },
+    })
+    result = gate._vision(['ZmFrZQ=='], __import__('time').monotonic() + 5)
+    assert result['verdict'] == 'clean'
+    assert result['model']['provider'] == 'replicate'
+    assert result['model']['fallback'] is True
+    assert result['model']['fallbackReason'] == 'vision_rate_limited'
+    assert result['model']['priorFallbackError'] == 'vision_service_unavailable'
+
+
+def test_replicate_fallback_batches_at_ten_and_uses_only_replicate_token(monkeypatch):
+    import httpx
+    requests = []
+    def handler(request):
+        requests.append(request)
+        return httpx.Response(201, json={
+            'status': 'succeeded',
+            'output': ['{"verdict":"clean","reason":"no text"}'],
+        })
+    original_client = gate.httpx.Client
+    monkeypatch.setattr(
+        gate.httpx,
+        'Client',
+        lambda **kw: original_client(transport=httpx.MockTransport(handler), **kw),
+    )
+    result = gate._replicate_vision_request(
+        ['ZmFrZQ=='] * 16, __import__('time').monotonic() + 5,
+        token='replicate-secret',
+    )
+    assert result['verdict'] == 'clean'
+    assert result['model']['provider'] == 'replicate'
+    assert len(requests) == 2
+    import json
+    bodies = [json.loads(request.read()) for request in requests]
+    assert [len(body['input']['images']) for body in bodies] == [10, 6]
+    assert all(request.headers['authorization'] == 'Bearer replicate-secret' for request in requests)
+    assert 'fallback-secret' not in str(requests)
+
+
+def test_all_three_vision_providers_fail_closed(monkeypatch):
+    import httpx
+    monkeypatch.setenv('CONTENT_LAB_VISION_API_KEY', 'fixture-key')
+    monkeypatch.setenv('CONTENT_LAB_VISION_FALLBACK_API_KEY', 'fallback-key')
+    monkeypatch.setenv('REPLICATE_API_TOKEN', 'replicate-key')
+    monkeypatch.setattr(gate, '_vision_request', lambda *args, **kwargs: (_ for _ in ()).throw(
+        httpx.ConnectError('refused')))
+    monkeypatch.setattr(gate, '_replicate_vision_request', lambda *args, **kwargs: (_ for _ in ()).throw(
+        RuntimeError('vision_service_unavailable')))
+    with pytest.raises(gate.VisionUnavailable) as error:
+        gate._vision(['ZmFrZQ=='], __import__('time').monotonic() + 5)
+    assert str(error.value) == 'vision_unavailable_all_providers'
+    assert error.value.model['provider'] == 'replicate'
+    assert error.value.model['fallbackError'] == 'vision_service_unavailable'
+
+
 def test_openai_compatible_fallback_request_uses_data_url_parts(monkeypatch):
     import httpx
     seen = []

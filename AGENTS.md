@@ -15,7 +15,11 @@
   working edge (default `0`, native); the primary GLM-4.6v-flash provider receives up to
   16 native frames per batch, and a named OpenAI `gpt-4o-mini` or Ollama
   `qwen2.5vl:7b` fallback may receive the same
-  batch when the primary is unavailable. `CONTENT_LAB_VISION_FALLBACK_URL` (default
+  batch when the primary is unavailable. If both configured providers are
+  unavailable and `REPLICATE_API_TOKEN` exists, the fixed official
+  `google/gemini-2.5-flash` Replicate model receives bounded batches of at most
+  ten of those same JPEG frames; all batches must return a valid verdict.
+  `CONTENT_LAB_VISION_FALLBACK_URL` (default
   `https://api.openai.com/v1/chat/completions`) and
   `CONTENT_LAB_VISION_FALLBACK_MODEL` (default `gpt-4o-mini`) configure that fallback; the optional
   `CONTENT_LAB_VISION_FALLBACK_API_KEY` is sent only to the fallback host. The
