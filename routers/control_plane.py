@@ -37,6 +37,7 @@ should fail, and how it did.
 from __future__ import annotations
 
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import hmac
 import json
@@ -52,7 +53,7 @@ from urllib.parse import quote, urlparse
 
 import httpx
 
-from fastapi import APIRouter, BackgroundTasks, Header, HTTPException
+from fastapi import APIRouter, Header, HTTPException
 
 from project_manager import PROJECTS_DIR
 from providers.base import generate_one, multi_crop_vertical
@@ -3047,6 +3048,15 @@ def job_thumbnail(job_id: str, index: int, token: str = "") -> FileResponse:
 
 
 _VISUAL_RUNTIME = _secrets.token_hex(16)
+_VISUAL_SWEEP_EXECUTOR = ThreadPoolExecutor(
+    max_workers=1,
+    thread_name_prefix="content-lab-visual-admission",
+)
+
+
+def _submit_visual_sweep(job_id: str, sweep_id: str):
+    """Queue sweeps behind the one process-wide scanner instead of racing it."""
+    return _VISUAL_SWEEP_EXECUTOR.submit(_finish_visual_sweep, job_id, sweep_id)
 
 
 def _mark_visual_sweep(job_id: str, sweep_id: str, running: bool) -> bool:
@@ -3095,7 +3105,7 @@ def _finish_visual_sweep(job_id: str, sweep_id: str) -> None:
 
 @router.post("/v1/jobs/{job_id}/visual-admission/{index}")
 def job_visual_admission(
-    job_id: str, index: int, body: dict[str, Any], background_tasks: BackgroundTasks,
+    job_id: str, index: int, body: dict[str, Any],
     x_rt_page_id: str | None = Header(default=None),
     authorization: str | None = Header(default=None),
 ) -> dict[str, Any]:
@@ -3117,12 +3127,13 @@ def job_visual_admission(
     path = (root / clip["path"]).resolve()
     if root not in path.parents or not path.is_file():
         raise HTTPException(status_code=404, detail="artifact not found")
-    from services.visual_admission import ALGORITHM, MAX_BYTES, SCHEMA, TIMEOUT, _hash, is_final_decision, pending_decision
+    from services.visual_admission import ALGORITHM, MAX_BYTES, SCHEMA, _hash, is_final_decision, pending_decision
     decision = pending_decision(page_id=x_rt_page_id, job_id=job_id, index=index,
                                 sha256=body["sha256"], byte_count=body["bytes"])
     if not 1 <= body["bytes"] <= MAX_BYTES or path.stat().st_size != body["bytes"] or _hash(path) != body["sha256"]:
         decision["reason"] = "artifact_identity_mismatch"
         return decision
+    queued_sweep = None
     with lock_for(_jobs_path()):
         store = _load_jobs()
         current = store["jobs"].get(job_id)
@@ -3140,13 +3151,12 @@ def job_visual_admission(
             except (ValueError, KeyError, TypeError):
                 pass
         sweep = current.get("visualAdmissionSweep", {})
-        try:
-            active = sweep.get("runtime") == _VISUAL_RUNTIME and sweep.get("running") is True and (now - datetime.fromisoformat(sweep["updatedAt"])).total_seconds() < TIMEOUT + 70
-        except (ValueError, KeyError, TypeError):
-            active = False
+        active = sweep.get("runtime") == _VISUAL_RUNTIME and sweep.get("running") is True
         if not active:
             sweep_id = _secrets.token_hex(16)
             current["visualAdmissionSweep"] = {"id": sweep_id, "runtime": _VISUAL_RUNTIME, "running": True, "updatedAt": now.isoformat()}
             atomic_save(_jobs_path(), store)
-            background_tasks.add_task(_finish_visual_sweep, job_id, sweep_id)
+            queued_sweep = (job_id, sweep_id)
+    if queued_sweep is not None:
+        _submit_visual_sweep(*queued_sweep)
     return decision

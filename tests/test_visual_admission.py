@@ -212,6 +212,7 @@ def test_authenticated_endpoint_binds_and_persists_exact_artifact(monkeypatch, t
     job={'pageId':'acct:test', 'artifactRoot':str(tmp_path), 'clips':[{'path':path.name,'sha256':digest,'bytes':path.stat().st_size}]}
     job['clips'].append(dict(job['clips'][0]))
     monkeypatch.setattr(cp, '_jobs_path', lambda: tmp_path/'jobs.json')
+    monkeypatch.setattr(cp, '_submit_visual_sweep', lambda job_id, sweep_id: cp._finish_visual_sweep(job_id, sweep_id))
     cp.atomic_save(cp._jobs_path(), {'jobs':{job_id:job}})
     monkeypatch.setenv('CONTROL_PLANE_TOKEN','test-secret')
     app=FastAPI(); app.include_router(cp.router,prefix='/api/control-plane')
@@ -243,6 +244,31 @@ def test_authenticated_endpoint_binds_and_persists_exact_artifact(monkeypatch, t
     assert client.post(url,json=body,headers=headers).json() == result.json()
     path.write_bytes(b'changed')
     assert client.post(url,json=body,headers=headers).json()['verdict'] == 'unavailable'
+
+
+def test_visual_sweep_executor_serializes_jobs(monkeypatch):
+    from routers import control_plane as cp
+    import threading
+    import time
+    active = 0
+    peak = 0
+    lock = threading.Lock()
+
+    def sweep(job_id, sweep_id):
+        nonlocal active, peak
+        with lock:
+            active += 1
+            peak = max(peak, active)
+        time.sleep(0.03)
+        with lock:
+            active -= 1
+
+    monkeypatch.setattr(cp, '_finish_visual_sweep', sweep)
+    first = cp._submit_visual_sweep('job-a', 'sweep-a')
+    second = cp._submit_visual_sweep('job-b', 'sweep-b')
+    first.result(timeout=2)
+    second.result(timeout=2)
+    assert peak == 1
 
 
 def test_primary_vision_url_override_is_allowlisted(monkeypatch):

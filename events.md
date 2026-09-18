@@ -583,3 +583,24 @@ uncertain evidence. Existing two-provider error attribution is unchanged when
 Replicate is not configured. Visual admission, sourced-video execution, and
 production-image import verification pass 96 tests.
 _________________________________________________________________________________
+
+_________________________________________________________________________________
+
+time:      [10:43] [09-18-26]
+agent:     [codex desktop] [gpt-5]
+worktree:  [fix/serialize-visual-sweeps-20260918] /tmp/content-lab-live.VMR5lI/repo
+type:      [bug report]: Serialize automatic visual-admission sweeps
+area:      [backend]: Content Lab admission throughput
+
+The first live autonomous poll after the Replicate fallback deployed proved a
+second blocker: Control Plane concurrently requested several completed jobs,
+while Content Lab allowed only one scanner. The winning sweep ran and the rest
+persisted `scan_pending` with `scanner_busy_retry`, including Soul's new
+same-master six-second recut. Authenticated whole-job sweeps now enter a single
+process-wide executor. They remain page and byte bound, execute one at a time,
+do not duplicate while queued in the current runtime, and become eligible for
+resubmission immediately after a process restart. Visual admission,
+sourced-video execution, and production-image import verification pass 97
+tests, including an overlap regression that proves peak scanner concurrency is
+one.
+_________________________________________________________________________________
