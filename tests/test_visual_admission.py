@@ -305,6 +305,49 @@ def test_visual_sweep_stops_job_after_transient_pending_decision(monkeypatch, tm
     assert cp._load_jobs()['jobs'][job_id]['visualAdmissionSweep']['running'] is False
 
 
+def test_visual_sweep_requeues_at_tail_after_one_final_artifact(monkeypatch, tmp_path):
+    from routers import control_plane as cp
+    path = tmp_path / 'clip.mp4'
+    path.write_bytes(b'fixture')
+    clip = {
+        'path': path.name,
+        'sha256': hashlib.sha256(path.read_bytes()).hexdigest(),
+        'bytes': path.stat().st_size,
+    }
+    job_id = 'cpl-fedcba9876543210'
+    sweep_id = 'sweep-fair'
+    monkeypatch.setattr(cp, '_jobs_path', lambda: tmp_path / 'jobs.json')
+    cp.atomic_save(cp._jobs_path(), {'jobs': {job_id: {
+        'pageId': 'acct:test', 'artifactRoot': str(tmp_path),
+        'clips': [clip, dict(clip)],
+        'visualAdmissionSweep': {
+            'id': sweep_id, 'runtime': cp._VISUAL_RUNTIME, 'running': True,
+        },
+    }}})
+    calls = []
+    queued = []
+
+    def clean_scan(path, *, page_id, job_id, index, sha256, byte_count):
+        calls.append(index)
+        decision = gate.pending_decision(
+            page_id=page_id, job_id=job_id, index=index,
+            sha256=sha256, byte_count=byte_count,
+        )
+        decision.update(verdict='clean', reason='full_frame_ocr_and_vision_clean')
+        return decision
+
+    monkeypatch.setattr(gate, 'scan_artifact', clean_scan)
+    monkeypatch.setattr(cp, '_submit_visual_sweep', lambda *args: queued.append(args))
+    cp._finish_visual_sweep(job_id, sweep_id)
+    assert calls == [0]
+    assert queued == [(job_id, sweep_id)]
+    assert cp._load_jobs()['jobs'][job_id]['visualAdmissionSweep']['running'] is True
+    cp._finish_visual_sweep(*queued.pop())
+    assert calls == [0, 1]
+    assert queued == []
+    assert cp._load_jobs()['jobs'][job_id]['visualAdmissionSweep']['running'] is False
+
+
 def test_primary_vision_url_override_is_allowlisted(monkeypatch):
     override = 'https://open.bigmodel.cn/api/paas/v4/chat/completions'
     monkeypatch.setenv('CONTENT_LAB_VISION_URL', override)
