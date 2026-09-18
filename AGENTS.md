@@ -31,7 +31,10 @@
   detectors and complete coverage are required for clean. Production runs on
   Railway at `https://risingtides-content-lab-production.up.railway.app`; the
   fallback endpoint must be reachable from the Railway container or the gate
-  remains fail closed.
+  remains fail closed. Authenticated job sweeps enter one process-wide executor
+  so concurrent Control Plane polls queue behind the single scanner instead of
+  persisting `scanner_busy_retry`; a restart safely makes the prior runtime's
+  queued sweep eligible for resubmission.
 - Source cut planning honors the immutable original 60-second minimum for raw
   source libraries and the Worker-supplied global source-window exclusions
   before rendering. Exact page-bound ShipStream masters are already extracted
