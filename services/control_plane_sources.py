@@ -40,6 +40,14 @@ EXECUTOR_PATH = (
 )
 EXECUTOR_SCHEMA = "content-lab.source-dna-recut-executor.v1"
 CUT_SLOT_STEP_MS = 9_000
+# Re-cut phases. The 0 ms grid is cut first; once a page has used every clean
+# grid slot of its footage, the same footage is cut again from grid slots
+# shifted by 3 s and then 6 s (operator decision 2026-09-18: re-cutting the
+# same source at different points is fine). A 90-second page master yields 10
+# cuts on the plain grid and ~29 across the three phases. Each start position
+# is still used once per recipe version (slot_id), and cuts are never shared
+# across pages.
+RECUT_PHASES_MS = (0, 3_000, 6_000)
 MIN_ORIGINAL_START_MS = 60_000
 SHIPSTREAM_PAGE_MASTER_AUTHORITY = "ShipStream source-manifest.v1 exact page master"
 SHIPSTREAM_HISTORICAL_AUTHORITY_PREFIX = (
@@ -78,6 +86,7 @@ class SourceCut:
     def slot_id(self) -> str:
         # Deliberately excludes duration/speed/crop. Once a source position is
         # used, a cosmetically altered near-duplicate may not re-enter a job.
+        # A re-cut phase is a different position (start_ms), so it has its own id.
         return f"{self.master.sha256}:{self.start_ms}"
 
 
@@ -340,6 +349,7 @@ def plan_source_cuts(
     ):
         raise ValueError("served_slots must be a string set")
     candidates: list[SourceCut] = []
+    lanes = []
     for master in recipe.masters:
         identity = canonical_source_identity(master.provenance.get("sourceUrl"))
         authority = master.provenance.get("authority")
@@ -363,25 +373,38 @@ def plan_source_cuts(
             for source, master_sha256, start, end in (exclusions or [])
             if source == identity and (master_sha256 is None or master_sha256 == master.sha256)
         ]
-        # The saved cutDurationMs is the page's target. Each immutable master
-        # deterministically rotates through the target +/- 2 seconds inside
-        # the advertised 5-9 second executor bounds. A 9-second slot grid
-        # keeps even the longest neighboring cuts disjoint, while slot_id
-        # continues to reserve the source position across treatment changes.
-        for start_ms in range(0, master.duration_ms, CUT_SLOT_STEP_MS):
-            if master.source_offset_ms + start_ms < minimum_start_ms:
-                continue
-            duration_ms = planned_source_cut_duration(recipe, master, start_ms)
-            if start_ms + duration_ms > master.duration_ms:
-                continue
-            original_start = master.source_offset_ms + start_ms
-            if any(begin < original_start + duration_ms and end > original_start for begin, end in reserved):
-                continue
-            cut = SourceCut(master, start_ms, duration_ms)
-            if cut.slot_id not in served_slots:
-                candidates.append(cut)
-            if len(candidates) >= quantity:
-                return candidates
+        lanes.append((master, minimum_start_ms, reserved))
+    # The saved cutDurationMs is the page's target. Each immutable master
+    # deterministically rotates through the target +/- 2 seconds inside the
+    # advertised 5-9 second executor bounds. Within one phase the 9-second slot
+    # grid keeps even the longest neighboring cuts disjoint, while slot_id
+    # continues to reserve the source position across treatment changes.
+    # Phases run in order, so fresh footage is always cut before a re-cut, and
+    # one plan never holds two overlapping cuts of the same master.
+    for phase_ms in RECUT_PHASES_MS:
+        for master, minimum_start_ms, reserved in lanes:
+            for start_ms in range(phase_ms, master.duration_ms, CUT_SLOT_STEP_MS):
+                if master.source_offset_ms + start_ms < minimum_start_ms:
+                    continue
+                duration_ms = planned_source_cut_duration(recipe, master, start_ms)
+                if start_ms + duration_ms > master.duration_ms:
+                    continue
+                original_start = master.source_offset_ms + start_ms
+                if any(begin < original_start + duration_ms and end > original_start for begin, end in reserved):
+                    continue
+                if any(
+                    chosen.master.sha256 == master.sha256
+                    and chosen.start_ms < start_ms + duration_ms
+                    and start_ms < chosen.start_ms + chosen.duration_ms
+                    for chosen in candidates
+                ):
+                    continue
+                cut = SourceCut(master, start_ms, duration_ms)
+                if cut.slot_id not in served_slots:
+                    candidates.append(cut)
+                if len(candidates) >= quantity:
+                    return candidates
+    return candidates
     return candidates
 
 
@@ -393,9 +416,10 @@ def planned_source_cut_duration(
         not isinstance(start_ms, int)
         or isinstance(start_ms, bool)
         or start_ms < 0
-        or start_ms % CUT_SLOT_STEP_MS != 0
+        or start_ms % CUT_SLOT_STEP_MS not in RECUT_PHASES_MS
     ):
         raise ValueError("source start must be a non-negative slot boundary")
+    phase = RECUT_PHASES_MS.index(start_ms % CUT_SLOT_STEP_MS)
     duration_values = list(range(
         max(5_000, recipe.cut_duration_ms - 2_000),
         min(9_000, recipe.cut_duration_ms + 2_000) + 1,
@@ -416,5 +440,5 @@ def planned_source_cut_duration(
         f"{recipe.source_library_hash}\0{master.sha256}".encode("utf-8"),
     ).hexdigest()[:8], 16) % len(duration_values)
     return duration_values[
-        (rotation + (start_ms // CUT_SLOT_STEP_MS)) % len(duration_values)
+        (rotation + (start_ms // CUT_SLOT_STEP_MS) + phase) % len(duration_values)
     ]
