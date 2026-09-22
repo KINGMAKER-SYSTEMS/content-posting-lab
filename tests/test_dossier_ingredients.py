@@ -118,6 +118,51 @@ def test_catalog_is_rooted_in_exact_master_pages_and_content_lab_registries(monk
     }
 
 
+def test_non_slideshow_catalog_does_not_query_live_syzygy(monkeypatch):
+    import services.dossier_ingredients as ingredients
+
+    calls = []
+
+    def unexpected_read(*args, **kwargs):
+        calls.append((args, kwargs))
+        raise AssertionError("an unrelated slideshow library was queried")
+
+    monkeypatch.setattr(ingredients, "load_syzygy_library", unexpected_read)
+    request = _request()
+    catalog = ingredients.build_dossier_ingredient_catalog(
+        PAGE_ID, request["masterPages"], request["masterPagesHash"],
+    )
+
+    assert catalog["currentFormatCandidates"] == ["truck-scenic", "truck-ugc"]
+    assert calls == []
+
+
+def test_current_slideshow_library_read_finishes_inside_dossier_budget(monkeypatch):
+    import services.dossier_ingredients as ingredients
+
+    calls = []
+
+    def unavailable(profile, master_pages, *, timeout):
+        calls.append((profile.format_slug, master_pages["contentEngine"], timeout))
+        raise ingredients.SyzygyError("test unavailable")
+
+    monkeypatch.setattr(ingredients, "load_syzygy_library", unavailable)
+    intent, revision = master_pages(
+        PAGE_ID,
+        handle="meme.page",
+        content_niche="meme",
+        content_engine="sourced_slideshow",
+    )
+    catalog = ingredients.build_dossier_ingredient_catalog(PAGE_ID, intent, revision)
+
+    assert catalog["currentFormatCandidates"] == ["meme-slideshow"]
+    assert calls == [(
+        "meme-slideshow", "sourced_slideshow",
+        ingredients.DOSSIER_LIBRARY_TIMEOUT_SECONDS,
+    )]
+    assert ingredients.DOSSIER_LIBRARY_TIMEOUT_SECONDS < 5
+
+
 def test_selected_version_ignores_unrelated_format_authority_changes(monkeypatch):
     import services.dossier_ingredients as ingredients
 
