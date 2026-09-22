@@ -56,6 +56,7 @@ from services.shipstream_source_manifest import (
 
 SCHEMA = "content-lab.dossier-ingredient-catalog.v1"
 SELECTION_AUTHORITY_SCHEMA = "content-lab.dossier-selection-authority.v1"
+DOSSIER_LIBRARY_TIMEOUT_SECONDS = 2.0
 PINNED_LEGACY_DOSSIER_CATALOG_VERSIONS_BY_PUBLICATION = {
     # Exact active v3 publications inventoried through the live dossier
     # gateway on 2026-09-01 before this migration. The tuple binding prevents
@@ -772,7 +773,9 @@ def _slideshow_ingredients(
     library_status = "missing"
     if address is not None:
         try:
-            library = load_syzygy_library(profile, master_pages)
+            library = load_syzygy_library(
+                profile, master_pages, timeout=DOSSIER_LIBRARY_TIMEOUT_SECONDS,
+            )
             treatment = slideshow_treatment_capability(profile.format_slug)
             minimum = treatment["minimumLibraryItems"]
             library_option = {
@@ -829,7 +832,19 @@ def _format_entry(
             shipstream_status, shipstream_projection,
         )
     else:
-        ingredients = _slideshow_ingredients(profile, master_pages)
+        # A catalog contains every registered format, but the page can select
+        # only formats matching its Master Pages niche and engine. Querying the
+        # live Syzygy library for every unrelated slideshow format made one
+        # stalled slideshow service consume the whole Dossier request budget
+        # for every page in the fleet.
+        current_slideshow_page = (
+            master_pages
+            if isinstance(master_pages, dict)
+            and contract.content_niche == master_pages.get("contentNiche")
+            and contract.content_engine == master_pages.get("contentEngine")
+            else None
+        )
+        ingredients = _slideshow_ingredients(profile, current_slideshow_page)
     ingredients.extend([
         _ingredient("caption-bank", "caption_bank", required=True, status="page_binding_required"),
         _ingredient("sound-collection", "sound_collection", required=True, status="page_binding_required"),

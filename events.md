@@ -644,3 +644,22 @@ Visual admission, sourced-video execution, and production-image import
 verification pass 99 tests, including one-artifact tail-requeue and peak-one
 concurrency regressions.
 _________________________________________________________________________________
+
+_________________________________________________________________________________
+
+time:      [6:56pm] [09-22-26]
+agent:     [codex desktop] [gpt-5]
+worktree:  [codex/dossier-syzygy-timeout] /tmp/content-lab-probe.Wlgd6c
+type:      [bug report]: Restore fleet-wide Dossier loading
+area:      [backend]: Content Lab Dossier ingredient catalog
+
+Live Control Plane probes showed every tested Dossier timing out on the shared
+ingredient catalog while fonts, captions, and ShipStream manifests remained
+available. The catalog queried both live Syzygy slideshow libraries for every
+page, including unrelated AI and sourced-video pages, and each query could hold
+15 seconds behind the Control Plane's five-second request budget. The catalog
+now reads Syzygy only for the page's exact Master Pages slideshow niche and
+engine, and bounds that one relevant read to two seconds. Verification: 15
+Dossier ingredient tests and 88 recipe, generation, source, and slideshow
+execution tests passed. No production deployment or service mutation occurred.
+_________________________________________________________________________________
