@@ -1392,7 +1392,7 @@ def _validated_provider_candidates(entry: dict[str, Any], crop_mode: Any) -> lis
 async def _run_dossier_generation(job_id: str) -> None:
     job = _get_job_or_404(job_id)
     if not _job_matches_current_master_pages(job):
-        _update_job(
+        await asyncio.to_thread(_update_job,
             job_id,
             status="failed",
             error="master_pages_strategy_changed",
@@ -1413,7 +1413,7 @@ async def _run_dossier_generation(job_id: str) -> None:
         or job.get("family") != recipe.family_name
         or job.get("providerModel") != recipe.provider_model
     ):
-        _update_job(
+        await asyncio.to_thread(_update_job,
             job_id,
             status="failed",
             error="recipe_executor_unavailable",
@@ -1446,14 +1446,14 @@ async def _run_dossier_generation(job_id: str) -> None:
             for item in prompt_plan
         )
     ):
-        _update_job(
+        await asyncio.to_thread(_update_job,
             job_id,
             status="failed",
             error="prompt_plan_invalid",
             completedAt=datetime.now(timezone.utc).isoformat(),
         )
         return
-    _update_job(job_id, status="running", progress=0, providerCallsCompleted=0)
+    await asyncio.to_thread(_update_job,job_id, status="running", progress=0, providerCallsCompleted=0)
 
     try:
         for call_index in range(calls):
@@ -1581,14 +1581,14 @@ async def _run_dossier_generation(job_id: str) -> None:
                     raise RuntimeError("master_pages_strategy_changed")
                 _claim_unique_generated_clip(job_id, manifest)
                 manifests.append(manifest)
-            _update_job(
+            await asyncio.to_thread(_update_job,
                 job_id,
                 progress=int(((call_index + 1) / calls) * 100),
                 providerCallsCompleted=call_index + 1,
             )
     except asyncio.CancelledError:
         shutil.rmtree(job_root, ignore_errors=True)
-        _update_job(
+        await asyncio.to_thread(_update_job,
             job_id,
             status="failed",
             error="generation_cancelled",
@@ -1597,7 +1597,7 @@ async def _run_dossier_generation(job_id: str) -> None:
         raise
     except Exception as error:  # provider and ffmpeg failures are job state
         shutil.rmtree(job_root, ignore_errors=True)
-        _update_job(
+        await asyncio.to_thread(_update_job,
             job_id,
             status="failed",
             error=str(error)[:300],
@@ -1606,14 +1606,14 @@ async def _run_dossier_generation(job_id: str) -> None:
         return
 
     if not _job_matches_current_master_pages(job):
-        _update_job(
+        await asyncio.to_thread(_update_job,
             job_id,
             status="failed",
             error="master_pages_strategy_changed",
             completedAt=datetime.now(timezone.utc).isoformat(),
         )
         return
-    _update_job(
+    await asyncio.to_thread(_update_job,
         job_id,
         status="completed",
         progress=100,
@@ -1650,7 +1650,7 @@ async def _run_truck_master_recovery(job_id: str) -> None:
     """
     job = _get_job_or_404(job_id)
     if not _job_matches_current_master_pages(job):
-        _update_job(
+        await asyncio.to_thread(_update_job,
             job_id,
             status="failed",
             error="master_pages_strategy_changed",
@@ -1662,13 +1662,13 @@ async def _run_truck_master_recovery(job_id: str) -> None:
     master_root.mkdir(parents=True, exist_ok=True, mode=0o700)
     masters = job.get("recoveryMasters")
     if not isinstance(masters, list) or not masters:
-        _update_job(
+        await asyncio.to_thread(_update_job,
             job_id, status="failed", error="truck_master_recovery_empty",
             completedAt=datetime.now(timezone.utc).isoformat(),
         )
         return
     manifests: list[dict[str, Any]] = []
-    _update_job(job_id, status="running", progress=0)
+    await asyncio.to_thread(_update_job,job_id, status="running", progress=0)
     try:
         for master_index, candidate in enumerate(masters):
             if not _job_matches_current_master_pages(job):
@@ -1731,13 +1731,13 @@ async def _run_truck_master_recovery(job_id: str) -> None:
                     job_root, crop, len(manifests),
                 )
                 manifests.append(manifest)
-            _update_job(
+            await asyncio.to_thread(_update_job,
                 job_id,
                 progress=int(((master_index + 1) / len(masters)) * 100),
             )
     except asyncio.CancelledError:
         shutil.rmtree(job_root, ignore_errors=True)
-        _update_job(
+        await asyncio.to_thread(_update_job,
             job_id,
             status="failed",
             error="generation_cancelled",
@@ -1746,20 +1746,20 @@ async def _run_truck_master_recovery(job_id: str) -> None:
         raise
     except Exception as error:
         shutil.rmtree(job_root, ignore_errors=True)
-        _update_job(
+        await asyncio.to_thread(_update_job,
             job_id, status="failed", error=str(error)[:300],
             completedAt=datetime.now(timezone.utc).isoformat(),
         )
         return
     if not _job_matches_current_master_pages(job):
-        _update_job(
+        await asyncio.to_thread(_update_job,
             job_id,
             status="failed",
             error="master_pages_strategy_changed",
             completedAt=datetime.now(timezone.utc).isoformat(),
         )
         return
-    _update_job(
+    await asyncio.to_thread(_update_job,
         job_id, status="completed", progress=100, clips=manifests,
         completedAt=datetime.now(timezone.utc).isoformat(),
     )
@@ -1786,7 +1786,7 @@ async def _run_dossier_source(job_id: str) -> None:
     """Cut unique windows from one page's immutable source DNA."""
     job = _get_job_or_404(job_id)
     if not _job_matches_current_master_pages(job):
-        _update_job(
+        await asyncio.to_thread(_update_job,
             job_id,
             status="failed",
             error="master_pages_strategy_changed",
@@ -1806,7 +1806,7 @@ async def _run_dossier_source(job_id: str) -> None:
         or job.get("formatContractVersion") != recipe.format_contract_version
         or job.get("executorVersion") != recipe.executor_version
     ):
-        _update_job(
+        await asyncio.to_thread(_update_job,
             job_id,
             status="failed",
             error="source_recipe_executor_unavailable",
@@ -1826,7 +1826,7 @@ async def _run_dossier_source(job_id: str) -> None:
     }
     source_cuts = job.get("sourceCuts")
     if not isinstance(source_cuts, list) or not source_cuts:
-        _update_job(
+        await asyncio.to_thread(_update_job,
             job_id,
             status="failed",
             error="source_recipe_selection_missing",
@@ -1834,7 +1834,7 @@ async def _run_dossier_source(job_id: str) -> None:
         )
         return
     manifests: list[dict[str, Any]] = []
-    _update_job(job_id, status="running", progress=0)
+    await asyncio.to_thread(_update_job,job_id, status="running", progress=0)
     try:
         masters = {master.sha256: master for master in recipe.masters}
         for index, source_cut in enumerate(source_cuts):
@@ -1901,13 +1901,13 @@ async def _run_dossier_source(job_id: str) -> None:
                 job_root, destination, len(manifests),
             )
             manifests.append(manifest)
-            _update_job(
+            await asyncio.to_thread(_update_job,
                 job_id,
                 progress=int(((index + 1) / len(source_cuts)) * 100),
             )
     except asyncio.CancelledError:
         shutil.rmtree(job_root, ignore_errors=True)
-        _update_job(
+        await asyncio.to_thread(_update_job,
             job_id,
             status="failed",
             error="generation_cancelled",
@@ -1916,7 +1916,7 @@ async def _run_dossier_source(job_id: str) -> None:
         raise
     except Exception as error:
         shutil.rmtree(job_root, ignore_errors=True)
-        _update_job(
+        await asyncio.to_thread(_update_job,
             job_id,
             status="failed",
             error=str(error)[:300],
@@ -1924,14 +1924,14 @@ async def _run_dossier_source(job_id: str) -> None:
         )
         return
     if not _job_matches_current_master_pages(job):
-        _update_job(
+        await asyncio.to_thread(_update_job,
             job_id,
             status="failed",
             error="master_pages_strategy_changed",
             completedAt=datetime.now(timezone.utc).isoformat(),
         )
         return
-    _update_job(
+    await asyncio.to_thread(_update_job,
         job_id,
         status="completed",
         progress=100,
@@ -1944,7 +1944,7 @@ async def _run_syzygy_slideshow(job_id: str) -> None:
     """Render reserved Syzygy plans under one page's locked recipe."""
     job = _get_job_or_404(job_id)
     if not _job_matches_current_master_pages(job):
-        _update_job(
+        await asyncio.to_thread(_update_job,
             job_id,
             status="failed",
             error="master_pages_strategy_changed",
@@ -1967,7 +1967,7 @@ async def _run_syzygy_slideshow(job_id: str) -> None:
         or job.get("formatContractVersion") != recipe.format_contract_version
         or job.get("executorVersion") != recipe.executor_version
     ):
-        _update_job(
+        await asyncio.to_thread(_update_job,
             job_id,
             status="failed",
             error="slideshow_recipe_executor_unavailable",
@@ -1989,7 +1989,7 @@ async def _run_syzygy_slideshow(job_id: str) -> None:
     }
     plans = job.get("slideshowPlan")
     if not isinstance(plans, list) or not plans:
-        _update_job(
+        await asyncio.to_thread(_update_job,
             job_id,
             status="failed",
             error="slideshow_recipe_selection_missing",
@@ -1998,7 +1998,7 @@ async def _run_syzygy_slideshow(job_id: str) -> None:
         return
     templates = {template.slug: template for template in recipe.templates}
     manifests: list[dict[str, Any]] = []
-    _update_job(job_id, status="running", progress=0)
+    await asyncio.to_thread(_update_job,job_id, status="running", progress=0)
     try:
         library = await asyncio.to_thread(load_recipe_library, recipe)
         if library.library_id != recipe.library_id:
@@ -2101,14 +2101,14 @@ async def _run_syzygy_slideshow(job_id: str) -> None:
             )
             _claim_unique_slideshow_clip(job_id, manifest, signature)
             manifests.append(manifest)
-            _update_job(
+            await asyncio.to_thread(_update_job,
                 job_id,
                 progress=int(((index + 1) / len(plans)) * 100),
             )
     except asyncio.CancelledError:
         # A cancelled runner must never leave the job stuck in "running"
         # with partial renders; the reservation releases with the failure.
-        _update_job(
+        await asyncio.to_thread(_update_job,
             job_id,
             status="failed",
             error="slideshow_render_cancelled",
@@ -2116,7 +2116,7 @@ async def _run_syzygy_slideshow(job_id: str) -> None:
         )
         raise
     except Exception as error:
-        _update_job(
+        await asyncio.to_thread(_update_job,
             job_id,
             status="failed",
             error=str(error)[:300],
@@ -2124,14 +2124,14 @@ async def _run_syzygy_slideshow(job_id: str) -> None:
         )
         return
     if not _job_matches_current_master_pages(job):
-        _update_job(
+        await asyncio.to_thread(_update_job,
             job_id,
             status="failed",
             error="master_pages_strategy_changed",
             completedAt=datetime.now(timezone.utc).isoformat(),
         )
         return
-    _update_job(
+    await asyncio.to_thread(_update_job,
         job_id,
         status="completed",
         progress=100,
@@ -2143,7 +2143,7 @@ async def _run_syzygy_slideshow(job_id: str) -> None:
 async def _run_page_source_import(job_id: str) -> None:
     job = _get_job_or_404(job_id)
     if not _job_matches_current_master_pages(job):
-        _update_job(
+        await asyncio.to_thread(_update_job,
             job_id,
             status="failed",
             error="master_pages_strategy_changed",
@@ -2153,7 +2153,7 @@ async def _run_page_source_import(job_id: str) -> None:
     job_root = Path(job["artifactRoot"]).resolve()
     source_root = job_root / "source"
     destination = source_root / "source.mp4"
-    _update_job(job_id, status="running", progress=5)
+    await asyncio.to_thread(_update_job,job_id, status="running", progress=5)
     try:
         async with source_import_slot():
             if not _job_matches_current_master_pages(job):
@@ -2188,7 +2188,7 @@ async def _run_page_source_import(job_id: str) -> None:
                 raise RuntimeError("master_pages_strategy_changed")
     except asyncio.CancelledError:
         shutil.rmtree(job_root, ignore_errors=True)
-        _update_job(
+        await asyncio.to_thread(_update_job,
             job_id,
             status="failed",
             error="source_import_cancelled",
@@ -2197,7 +2197,7 @@ async def _run_page_source_import(job_id: str) -> None:
         raise
     except Exception as error:
         shutil.rmtree(job_root, ignore_errors=True)
-        _update_job(
+        await asyncio.to_thread(_update_job,
             job_id,
             status="failed",
             error=str(error)[:300],
@@ -2206,14 +2206,14 @@ async def _run_page_source_import(job_id: str) -> None:
         return
     if not _job_matches_current_master_pages(job):
         shutil.rmtree(job_root, ignore_errors=True)
-        _update_job(
+        await asyncio.to_thread(_update_job,
             job_id,
             status="failed",
             error="master_pages_strategy_changed",
             completedAt=datetime.now(timezone.utc).isoformat(),
         )
         return
-    _update_job(
+    await asyncio.to_thread(_update_job,
         job_id,
         status="completed",
         progress=100,
