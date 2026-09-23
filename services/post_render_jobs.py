@@ -428,14 +428,13 @@ class PostRenderJobs:
         row = self._row(old["id"])
         attempt_root = self._output(row).parent
         attempt_root.mkdir(parents=True, exist_ok=False, mode=0o700)
+        source = attempt_root / "source.mp4"
         try:
             submission = RenderJobSubmission.model_validate_json(row["submission_json"])
-            source = attempt_root / "source.mp4"
             self.fetcher(submission.request, source)
             self.renderer(source, self._output(row), submission.request, clock_ms=self.clock_ms)
             receipt_sha = self._verify_output(row)
             self._finish(row, receipt_sha)
-            source.unlink(missing_ok=True)
         except Exception as error:
             code = getattr(error, "code", "render_failed")
             log.warning("post render attempt failed job=%s attempt=%s reason=%s", row["id"], attempt_id, code)
@@ -445,6 +444,13 @@ class PostRenderJobs:
                 db.execute("UPDATE jobs SET state=?,error_code=?,available_at_ms=?,updated_at_ms=? WHERE id=? AND attempt_id=? AND state='running'",
                            (state, code, now + 5000 * row["attempts"], now, row["id"], attempt_id))
                 db.execute("UPDATE attempts SET state='failed',error_code=?,ended_at_ms=? WHERE id=?", (code, now, attempt_id))
+        finally:
+            # This authenticated download is scratch, not an artifact or receipt.
+            # Failed attempts must not fill the persistent render volume.
+            try:
+                source.unlink(missing_ok=True)
+            except OSError:
+                log.exception("post render source cleanup failed job=%s attempt=%s", row["id"], attempt_id)
 
     def start(self):
         if any(thread.is_alive() for thread in self._threads):

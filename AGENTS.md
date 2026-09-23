@@ -235,6 +235,9 @@
   close. SQLite WAL holds requests, attempts and idempotency records. Restart
   recovers a completed hash-bound output before rerendering; partial attempts
   remain unservable. Transient retries back off and stop after three attempts.
+  Downloaded attempt `source.mp4` files are disposable scratch and are removed
+  after successful or failed execution, including partial fetches. Cleanup must
+  preserve final artifacts, receipts and the original attempt outcome.
 - Prepared source fetch uses only the configured HTTPS
   `CONTENT_LAB_POST_RENDER_SOURCE_ORIGIN` (production machine ingress:
   `https://content-buckets.risingtidesviral.com`)

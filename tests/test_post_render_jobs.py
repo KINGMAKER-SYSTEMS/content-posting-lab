@@ -72,6 +72,30 @@ class Crash(BaseException):
     pass
 
 
+@pytest.mark.parametrize("stage", ["fetch", "render", "success"])
+def test_attempt_cleans_source_scratch_without_removing_output(tmp_path, stage):
+    def fetch(_request, path):
+        path.write_bytes(b"source")
+        if stage == "fetch":
+            raise jobs.RenderJobError("source_unavailable")
+
+    def render(source, output, request, **kwargs):
+        assert source.read_bytes() == b"source"
+        fake_render(source, output, request, **kwargs)
+        if stage == "render":
+            raise ValueError("render verification failed")
+
+    worker = service(tmp_path, fetcher=fetch, renderer=render)
+    job = worker.enqueue(submission(), "scratch-cleanup")
+    assert worker.run_one()
+    row = worker._row(job["id"])
+    assert not (worker._output(row).parent / "source.mp4").exists()
+    assert row["state"] == {"fetch": "queued", "render": "failed", "success": "succeeded"}[stage]
+    if stage != "fetch":
+        assert (worker._output(row) / "final.mp4").exists()
+        assert (worker._output(row) / "receipt.json").exists()
+
+
 def test_restart_recovers_completed_uncommitted_result_without_rendering_twice(tmp_path, monkeypatch):
     calls = []
     def renderer(*args, **kwargs):
