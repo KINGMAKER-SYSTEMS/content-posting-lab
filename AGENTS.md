@@ -42,6 +42,8 @@
   runtime's queued sweep eligible for resubmission.
 - Source cut duration accounts for the saved playback speed so both normal and
   fixed recuts deliver 6-11 seconds; preserve the saved speed and video treatment.
+  Normalize cut timestamps and extend a fractional missing tail frame to the
+  planned output duration; source-window provenance remains unchanged.
 - Source cut planning honors the immutable original 60-second minimum for raw
   source libraries and the Worker-supplied global source-window exclusions
   before rendering. Exact page-bound ShipStream masters are already extracted
