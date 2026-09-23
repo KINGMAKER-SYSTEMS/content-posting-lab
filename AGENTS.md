@@ -91,6 +91,10 @@
 
 ## Local Contracts
 
+- Atomic JSON stores use compact one-shot encoding; preserve flush, fsync,
+  atomic replacement and failure cleanup so large job histories do not stall API writes.
+  Async production runners perform progress writes in worker threads.
+
 - Caption rendering accepts the shared `CaptionStyle` wire fields only. A saved
   caption layout may supply exact line breaks and final-frame outline width;
   otherwise the established outline remains 3 px at 1080x1920.
