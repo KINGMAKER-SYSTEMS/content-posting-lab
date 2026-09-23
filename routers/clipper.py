@@ -988,6 +988,23 @@ async def download_url(body: dict):
     try:
         await download_video(video_url, dest)
     except Exception as e:
+        # A failed download leaves every yt-dlp intermediate behind: the .part
+        # files, the separately-fetched video and audio streams, the .temp
+        # remux. Nothing ever collects them -- there is no job record for a
+        # download that never produced one, so neither /api/clipper/jobs nor
+        # the project delete can see them.
+        #
+        # MEASURED on production 2026-09-23: two abandoned attempts from a
+        # four-minute window held 20.7 GB between them (an 8.61 GB `f401`
+        # video stream, a 5.08 GB `.temp`, and a 6.92 GB `.part`), on a volume
+        # that was 98.6% full. Every source import after that failed with
+        # "source import storage capacity is unavailable" -- so one video the
+        # clipper could not fetch stopped content for every page on the fleet.
+        #
+        # Every sibling handler in this module already clears its staging on
+        # the way out (`upload_batch`, `trim_batch`); this was the one path
+        # that did not.
+        safe_rmtree(staging_dir)
         raise HTTPException(500, f"Download failed: {e}")
 
     try:
