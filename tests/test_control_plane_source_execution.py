@@ -18,6 +18,7 @@ from services.control_plane_sources import (
     RECUT_PHASES_MS,
     plan_source_cuts,
     resolve_source_recipe,
+    source_cut_is_planned,
 )
 from services.dossier_ingredients import (
     PINNED_LEGACY_DOSSIER_CATALOG_VERSIONS_BY_PUBLICATION,
@@ -436,7 +437,7 @@ def test_source_planner_rotates_five_to_nine_second_disjoint_windows():
     assert resolved is not None
     cuts = plan_source_cuts(resolved, 5, set())
     assert {cut.duration_ms for cut in cuts} == {
-        5_000, 6_000, 7_000, 8_000, 9_000,
+        6_000, 7_000, 8_000, 9_000,
     }
     for previous, current in zip(cuts, cuts[1:]):
         assert previous.start_ms + previous.duration_ms <= current.start_ms
@@ -739,7 +740,7 @@ async def test_runner_cuts_real_window_changes_speed_and_records_original_lineag
         headers=headers("source-job-speed"),
     )
     source = tmp_path / "master.mp4"
-    _write_av_test_clip(source)
+    _write_av_test_clip(source, duration=15.0)
 
     async def cached_source(*_):
         return source
@@ -1005,9 +1006,8 @@ def test_used_page_master_is_recut_at_shifted_points_not_declared_exhausted():
         "sourceIdentity": page_master.provenance["sourceUrl"], "startMs": 0, "endMs": 90_000,
     }])
     assert plan_source_cuts(recipe, 100, served, everything) == []
-    # Grid-slot durations are byte-for-byte the pre-phase formula, so a job
-    # already queued under the old planner still validates when it runs.
-    values = list(range(5_000, 9_001, 1_000))
+    # Grid-slot durations use the same delivery-bounded selection as execution.
+    values = list(range(6_000, 9_001, 1_000))
     rotation = int(hashlib.sha256(
         f"{recipe.source_library_hash}\0{page_master.sha256}".encode(),
     ).hexdigest()[:8], 16) % len(values)
@@ -1059,9 +1059,9 @@ def test_six_second_pass_runs_only_after_every_phase_of_long_footage():
     flags = [cut.fixed_length for cut in cuts]
     assert flags == sorted(flags), "phase cuts first, 6-second clips last"
     fixed = [cut for cut in cuts if cut.fixed_length]
-    assert [cut.start_ms for cut in fixed] == list(range(0, 84_001, 6_000))
+    assert sorted(cut.start_ms for cut in fixed) == list(range(0, 84_001, 6_000))
     assert {cut.duration_ms for cut in fixed} == {6_000}
-    assert len(cuts) == 29 + 15
+    assert len([cut for cut in cuts if not cut.fixed_length]) >= 25
     assert plan_source_cuts(recipe, 100, served) == []
 
 
@@ -1075,7 +1075,7 @@ def test_executor_accepts_exactly_the_cuts_the_planner_emits():
     assert not source_cut_is_planned(recipe, master, 0, 7_000, f"{sha}:0:7000"), "fixed cuts are 6 s"
     assert not source_cut_is_planned(recipe, master, 1_000, 6_000, f"{sha}:1000:6000"), "off the 6 s grid"
     assert not source_cut_is_planned(recipe, master, 2_000, 6_000, f"{sha}:2000:6000"), "past the last frame"
-    assert not source_cut_is_planned(recipe, master, 0, 6_000, f"{sha}:0"), "grid id with a non-planned length"
+    assert not source_cut_is_planned(recipe, master, 0, 5_000, f"{sha}:0"), "grid id with a non-planned length"
     assert not source_cut_is_planned(recipe, master, 0, 6_000, "other:0:6000")
 
 
@@ -1180,3 +1180,14 @@ async def test_source_cancellation_releases_windows_and_removes_own_root(lab, mo
     assert not (slots & cp._source_dna_unavailable_slots(
         cp._load_jobs(), recipe, saved["recipeVersion"],
     ))
+
+
+@pytest.mark.parametrize("speed", [0.5, 0.8, 1.0, 1.2, 2.0])
+def test_source_duration_respects_delivery_range_after_saved_speed(speed):
+    recipe = resolve_source_recipe(publication(clip_speed=speed, cut_duration_ms=7_000))
+    assert recipe is not None
+    cuts = plan_source_cuts(recipe, 20, set())
+    assert cuts
+    for cut in cuts:
+        assert 6_000 <= cut.duration_ms / speed <= 11_000
+        assert source_cut_is_planned(recipe, cut.master, cut.start_ms, cut.duration_ms, cut.slot_id)

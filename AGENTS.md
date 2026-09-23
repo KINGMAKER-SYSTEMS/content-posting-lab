@@ -40,6 +40,8 @@
   and requeues remaining finalizable artifacts at the tail, preventing a large
   batch from blocking a one-output page. A restart safely makes the prior
   runtime's queued sweep eligible for resubmission.
+- Source cut duration accounts for the saved playback speed so both normal and
+  fixed recuts deliver 6-11 seconds; preserve the saved speed and video treatment.
 - Source cut planning honors the immutable original 60-second minimum for raw
   source libraries and the Worker-supplied global source-window exclusions
   before rendering. Exact page-bound ShipStream masters are already extracted
