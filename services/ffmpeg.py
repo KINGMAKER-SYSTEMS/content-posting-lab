@@ -411,6 +411,12 @@ async def run_color_correct(
         clip_crop_size=clip_crop_size,
     )
     enc = list(encode_args if encode_args is not None else STANDARD_ENCODE_ARGS)
+    output_window: list[str] = []
+    if window is not None:
+        # A millisecond seek at a master's tail can lose one frame. Normalize
+        # timestamps and extend only that fractional tail to the declared cut.
+        vf += ",setpts=PTS-STARTPTS,tpad=stop_mode=clone:stop_duration=0.1"
+        output_window = ["-t", f"{window[1] / 1000 / speed:.6f}"]
     audio_args: list[str] = []
     if speed != 1.0:
         # `0:a?` preserves silent provider outputs while changing embedded
@@ -432,6 +438,7 @@ async def run_color_correct(
         "-vf", vf,
         *audio_args,
         *enc,
+        *output_window,
         output_path,
     ]
     async with _COLOR_CORRECT_GATE:

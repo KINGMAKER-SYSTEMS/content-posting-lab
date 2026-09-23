@@ -184,7 +184,8 @@ async def test_source_window_is_an_input_bound_before_speed_treatment(monkeypatc
     assert captured[:8] == [
         "ffmpeg", "-y", "-ss", "8.500", "-t", "7.000", "-i", "master.mp4",
     ]
-    assert captured[captured.index("-vf") + 1] == "setpts=PTS/2.000000"
+    assert captured[captured.index("-vf") + 1].startswith("setpts=PTS/2.000000,")
+    assert captured[-3:] == ["-t", "3.500000", "cut.mp4"]
 
 
 @pytest.mark.asyncio
@@ -386,3 +387,30 @@ def test_sharpness_alone_keeps_identity_mixer():
     # Sharpness doesn't touch the color matrix; the mixer stays identity.
     vf = build_cc_filter({"sharpness": 25})
     assert _is_identity(vf)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(('speed', 'raw_ms'), [(1.0, 6000), (0.8, 5000), (2.0, 12000)])
+async def test_tail_cut_keeps_delivery_duration_at_fractional_frame(tmp_path, speed, raw_ms):
+    import shutil
+    import subprocess
+    if not shutil.which('ffmpeg') or not shutil.which('ffprobe'):
+        pytest.skip('ffmpeg and ffprobe required')
+    source = tmp_path / 'master.mp4'
+    output = tmp_path / 'cut.mp4'
+    subprocess.run([
+        'ffmpeg', '-y', '-v', 'error', '-f', 'lavfi', '-i',
+        'testsrc2=size=180x320:rate=30', '-t', f'{(raw_ms + 1534) / 1000}',
+        '-c:v', 'libx264', '-pix_fmt', 'yuv420p', str(source),
+    ], check=True, capture_output=True)
+    await run_color_correct(
+        str(source), str(output), None, playback_speed=speed,
+        encode_args=delivery_encode_args('tiktok_delivery_v1'),
+        clip_start_ms=1534, clip_duration_ms=raw_ms,
+    )
+    actual = float(subprocess.check_output([
+        'ffprobe', '-v', 'error', '-show_entries', 'format=duration',
+        '-of', 'default=nokey=1:noprint_wrappers=1', str(output),
+    ], text=True).strip())
+    assert 6 <= actual <= 11
+    assert actual == pytest.approx(raw_ms / 1000 / speed, abs=1 / 30)
