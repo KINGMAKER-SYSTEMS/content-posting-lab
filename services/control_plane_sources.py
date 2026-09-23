@@ -12,6 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import hashlib
 import json
+import math
 import re
 from urllib.parse import urlsplit, urlunsplit, parse_qsl, quote_plus
 from pathlib import Path
@@ -20,6 +21,7 @@ from typing import Any, Callable
 from services.content_engine_registry import resolve_material_profile
 from services.content_format_contracts import load_format_contracts
 from services.control_plane_generation import (
+    dossier_clip_speed,
     render_treatment_capability,
     typed_recipe_spec,
 )
@@ -386,10 +388,10 @@ def plan_source_cuts(
         ]
         lanes.append((master, minimum_start_ms, reserved))
     # The saved cutDurationMs is the page's target. Each immutable master
-    # deterministically rotates through the target +/- 2 seconds inside the
-    # advertised 5-9 second executor bounds. Within one phase the 9-second slot
-    # grid keeps even the longest neighboring cuts disjoint, while slot_id
-    # continues to reserve the source position across treatment changes.
+    # deterministically rotates around that target, adjusted for 6-11 second
+    # delivery at the saved speed. Admission skips overlapping source windows
+    # when faster playback needs a cut longer than the 9-second grid spacing.
+    # slot_id continues to reserve positions across treatment changes.
     # Phases run in order, so fresh footage is always cut before a re-cut, and
     # one plan never holds two overlapping cuts of the same master.
     def admit(master, minimum_start_ms, reserved, start_ms, duration_ms, fixed_length):
@@ -418,21 +420,21 @@ def plan_source_cuts(
                 admit(master, minimum_start_ms, reserved, start_ms, duration_ms, False)
                 if len(candidates) >= quantity:
                     return candidates
+    fixed_duration = delivery_cut_duration(recipe, RECUT_FIXED_DURATION_MS)
     for master, minimum_start_ms, reserved in lanes:
-        for start_ms in fixed_length_recut_starts(master):
-            admit(master, minimum_start_ms, reserved, start_ms, RECUT_FIXED_DURATION_MS, True)
+        for start_ms in fixed_length_recut_starts(master, fixed_duration):
+            admit(master, minimum_start_ms, reserved, start_ms, fixed_duration, True)
             if len(candidates) >= quantity:
                 return candidates
     return candidates
 
 
-def fixed_length_recut_starts(master: MasterSource) -> list[int]:
-    """Start points of the 6-second re-cut pass: a 6-second grid plus one
-    clip that ends on the master's last frame."""
-    last = master.duration_ms - RECUT_FIXED_DURATION_MS
+def fixed_length_recut_starts(master: MasterSource, duration_ms: int = RECUT_FIXED_DURATION_MS) -> list[int]:
+    """Fixed recut grid, plus one clip ending on the master's last frame."""
+    last = master.duration_ms - duration_ms
     if last < 0:
         return []
-    starts = list(range(0, last + 1, RECUT_FIXED_DURATION_MS))
+    starts = list(range(0, last + 1, duration_ms))
     if starts[-1] != last:
         starts.append(last)
     return starts
@@ -455,8 +457,8 @@ def source_cut_is_planned(
         return False
     if slot_id == f"{master.sha256}:{start_ms}:{duration_ms}":
         return (
-            duration_ms == RECUT_FIXED_DURATION_MS
-            and start_ms in fixed_length_recut_starts(master)
+            duration_ms == delivery_cut_duration(recipe, RECUT_FIXED_DURATION_MS)
+            and start_ms in fixed_length_recut_starts(master, duration_ms)
         )
     if slot_id != f"{master.sha256}:{start_ms}":
         return False
@@ -466,6 +468,14 @@ def source_cut_is_planned(
         return False
     return candidates
     return candidates
+
+
+def delivery_cut_duration(recipe: SourceRecipe, duration_ms: int) -> int:
+    """Select whole source seconds that deliver 6-11 seconds at saved speed."""
+    speed = dossier_clip_speed(recipe)
+    minimum = math.ceil(6 * speed) * 1_000
+    maximum = math.floor(11 * speed) * 1_000
+    return min(max(duration_ms, minimum), maximum)
 
 
 def planned_source_cut_duration(
@@ -485,6 +495,7 @@ def planned_source_cut_duration(
         min(9_000, recipe.cut_duration_ms + 2_000) + 1,
         1_000,
     ))
+    duration_values = list(dict.fromkeys(delivery_cut_duration(recipe, ms) for ms in duration_values))
     # A curated page master may itself be a finished short-form clip rather
     # than a long source recording. Keep the same deterministic duration
     # vocabulary, but choose only values that fit the immutable bytes instead
