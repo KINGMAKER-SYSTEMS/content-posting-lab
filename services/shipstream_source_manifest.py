@@ -33,6 +33,11 @@ MAX_MANIFEST_BYTES = 2_097_152
 MAX_SOURCES = 500
 MAX_CUTS = 500
 MAX_MEDIA_BYTES = 20_000_000_000
+ORIGIN_DURATION_TOLERANCE_MS = 1_000
+# Any timestamp that could round to a legal millisecond value is far below this
+# bound; rejecting larger magnitudes as integers keeps ``float(value)`` from
+# raising OverflowError on absurd manifest numbers.
+MAX_TIMESTAMP_SECONDS = 100_000
 
 
 class ShipStreamSourceError(ValueError):
@@ -164,7 +169,13 @@ def _fetch_manifest(url: str) -> bytes:
 
 
 def _milliseconds(value: Any, label: str) -> int:
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or (isinstance(value, float) and not math.isfinite(value))
+        or value < -1
+        or value > MAX_TIMESTAMP_SECONDS
+    ):
         raise ShipStreamSourceError(f"{label} is invalid")
     result = round(float(value) * 1_000)
     if result < 1 or result > 86_400_000:
@@ -173,7 +184,13 @@ def _milliseconds(value: Any, label: str) -> int:
 
 
 def _milliseconds_allow_zero(value: Any, label: str) -> int:
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or (isinstance(value, float) and not math.isfinite(value))
+        or value < -1
+        or value > MAX_TIMESTAMP_SECONDS
+    ):
         raise ShipStreamSourceError(f"{label} is invalid")
     result = round(float(value) * 1_000)
     if result < 0 or result > 86_400_000:
@@ -363,6 +380,7 @@ def _master_from_page_master(row: Any, handle: str) -> dict[str, Any]:
     ):
         raise ShipStreamSourceError("ShipStream page master identity is invalid")
     duration_ms = _milliseconds(media.get("durationSeconds"), "ShipStream page master duration")
+    source_offset_ms = 0
     if isinstance(origin_window, list) and len(origin_window) == 2:
         start, end = origin_window
         if (
@@ -376,6 +394,16 @@ def _master_from_page_master(row: Any, handle: str) -> dict[str, Any]:
             or float(end) <= float(start)
         ):
             raise ShipStreamSourceError("ShipStream page master origin window is invalid")
+        source_offset_ms = _milliseconds_allow_zero(
+            start, "ShipStream page master origin window start",
+        )
+        origin_end_ms = _milliseconds_allow_zero(
+            end, "ShipStream page master origin window end",
+        )
+        if abs((origin_end_ms - source_offset_ms) - duration_ms) > ORIGIN_DURATION_TOLERANCE_MS:
+            raise ShipStreamSourceError(
+                "ShipStream page master origin window does not match media duration"
+            )
     source_url = row.get("originSourceUrl")
     if source_url is not None and not _https(source_url):
         raise ShipStreamSourceError("ShipStream page master source URL is invalid")
@@ -387,10 +415,10 @@ def _master_from_page_master(row: Any, handle: str) -> dict[str, Any]:
         "mimeType": "video/mp4",
         "storageKey": storage_key,
         "durationMs": duration_ms,
-        # ``storageKey`` is the already-extracted page master. The origin
-        # window describes its lineage in the upstream file, not an offset to
-        # apply again while cutting these registered bytes.
-        "sourceOffsetMs": 0,
+        # Reads remain local to the already-extracted ``storageKey`` bytes.
+        # This offset records where local zero sits on the upstream timeline so
+        # source-floor and cross-page exclusion checks use original time.
+        "sourceOffsetMs": source_offset_ms,
         "provenance": {
             "sourceUrl": source_url or f"{SHIPSTREAM_ORIGIN}/assets/{quote(storage_key, safe='')}",
             "acquiredAt": registered_at,
@@ -517,27 +545,43 @@ def parse_shipstream_source_manifest(
     if len({row["sha256"] for row in masters}) != len(masters):
         raise ShipStreamSourceError("ShipStream source manifest contains duplicate source bytes")
     masters.sort(key=lambda row: row["sourceId"])
-    identity = hashlib.sha256(json.dumps(
-        {"pageId": page_id, "format": format_slug, "masters": masters},
-        sort_keys=True, separators=(",", ":"), ensure_ascii=False,
-    ).encode()).hexdigest()
-    slug = re.sub(r"[^a-z0-9]+", "-", handle.lower()).strip("-")[:48]
-    library_id = f"shipstream-{slug}-{identity[:16]}"
-    if expected_library_id is not None and library_id != expected_library_id:
+
+    def projected_library(projected_masters: list[dict[str, Any]]) -> SourceDnaLibrary:
+        identity = hashlib.sha256(json.dumps(
+            {"pageId": page_id, "format": format_slug, "masters": projected_masters},
+            sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+        ).encode()).hexdigest()
+        slug = re.sub(r"[^a-z0-9]+", "-", handle.lower()).strip("-")[:48]
+        library_id = f"shipstream-{slug}-{identity[:16]}"
+        document = {
+            "schema": "content-lab.source-dna-library.v2",
+            "libraryId": library_id,
+            "format": format_slug,
+            "pageId": page_id,
+            "masters": projected_masters,
+        }
+        try:
+            return parse_source_dna_manifest(json.dumps(
+                document, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+            ).encode(), library_id)
+        except SourceDnaError as error:
+            raise ShipStreamSourceError(str(error)) from error
+
+    current_library = projected_library(masters)
+    # Before source floors existed, page-master origin offsets were projected as
+    # zero. Existing immutable publications remain executable against that exact
+    # legacy identity and behavior; new selections receive the offset-aware
+    # identity. This is a compatibility branch, not a silent version rewrite.
+    legacy_masters = [
+        {**master, "sourceOffsetMs": 0}
+        for master in masters
+    ]
+    legacy_library = projected_library(legacy_masters)
+    if expected_library_id == legacy_library.library_id:
+        return legacy_library
+    if expected_library_id is not None and expected_library_id != current_library.library_id:
         raise ShipStreamSourceError("ShipStream source library version changed")
-    document = {
-        "schema": "content-lab.source-dna-library.v2",
-        "libraryId": library_id,
-        "format": format_slug,
-        "pageId": page_id,
-        "masters": masters,
-    }
-    try:
-        return parse_source_dna_manifest(json.dumps(
-            document, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
-        ).encode(), library_id)
-    except SourceDnaError as error:
-        raise ShipStreamSourceError(str(error)) from error
+    return current_library
 
 
 def parse_shipstream_source_projection(

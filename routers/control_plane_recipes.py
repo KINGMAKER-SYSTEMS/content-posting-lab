@@ -27,6 +27,7 @@ from services.dossier_ingredients import (
     is_pinned_legacy_catalog_version,
 )
 from services.caption_discipline import validate_caption_discipline
+from services.source_controls import source_start_ms
 
 
 LANE = "content-bucket-control-plane"
@@ -261,8 +262,8 @@ def _valid_control_value(value: Any, control: dict[str, Any]) -> bool:
         valid = (
             not isinstance(value, bool)
             and isinstance(value, (int, float))
-            and math.isfinite(float(value))
-            and float(control.get("min")) <= float(value) <= float(control.get("max"))
+            and (not isinstance(value, float) or math.isfinite(value))
+            and control.get("min") <= value <= control.get("max")
         )
         step = control.get("step")
         if not valid or step is None:
@@ -277,6 +278,20 @@ def _valid_control_value(value: Any, control: dict[str, Any]) -> bool:
             ) < 1e-9
         )
     return False
+
+
+def _valid_source_start_control(value: Any, intent: dict[str, Any]) -> bool:
+    """Validate the reserved page-specific upstream source floor.
+
+    This control deliberately stays outside the shared executor catalog: adding
+    it there would change the catalog hash and invalidate every already-locked
+    sourced-video publication. It is accepted only for sourced-video pages and
+    only as a bounded whole-second timestamp.
+    """
+    return (
+        intent.get("contentEngine") == "sourced_video"
+        and source_start_ms(value) is not None
+    )
 
 
 def _validate_production_selection(
@@ -375,6 +390,8 @@ def _validate_production_selection(
         advertised.update(treatment_controls)
     advanced = advertised.get("_advanced", {}) if isinstance(advertised, dict) else {}
     for key, value in controls.items():
+        if key == "sourceStartMs" and _valid_source_start_control(value, intent):
+            continue
         control = advertised.get(key) if isinstance(advertised, dict) else None
         if control is None and isinstance(advanced, dict):
             control = advanced.get(key)

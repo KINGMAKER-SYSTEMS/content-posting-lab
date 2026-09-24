@@ -34,6 +34,7 @@ from services.shipstream_source_manifest import (
     ShipStreamSourceError,
     load_shipstream_source_dna_library,
 )
+from services.source_controls import source_start_ms
 
 
 EXECUTOR_PATH = (
@@ -58,7 +59,6 @@ RECUT_PHASES_MS = (0, 3_000, 6_000)
 # cut that started at the same point.
 RECUT_FIXED_DURATION_MS = 6_000
 MIN_ORIGINAL_START_MS = 60_000
-MAX_SOURCE_START_MS = 2 * 60 * 60 * 1_000
 SHIPSTREAM_PAGE_MASTER_AUTHORITY = "ShipStream source-manifest.v1 exact page master"
 SHIPSTREAM_HISTORICAL_AUTHORITY_PREFIX = (
     "ShipStream source-manifest.v1 page-bound historical posted cut;"
@@ -166,7 +166,7 @@ def _cut_duration(spec: dict[str, Any], executor: dict[str, Any]) -> int | None:
     if (
         isinstance(value, bool)
         or not isinstance(value, (int, float))
-        or not math.isfinite(value)
+        or (isinstance(value, float) and not math.isfinite(value))
         or int(value) != value
         or not control["min"] <= int(value) <= control["max"]
         or (int(value) - control["min"]) % control["step"] != 0
@@ -188,16 +188,7 @@ def _minimum_source_start(spec: dict[str, Any]) -> int | None:
     controls = production.get("controls") if isinstance(production, dict) else None
     if not isinstance(controls, dict):
         return None
-    value = controls.get("sourceStartMs", 0)
-    if (
-        isinstance(value, bool)
-        or not isinstance(value, (int, float))
-        or not math.isfinite(value)
-        or int(value) != value
-        or not 0 <= int(value) <= MAX_SOURCE_START_MS
-    ):
-        return None
-    return int(value)
+    return source_start_ms(controls.get("sourceStartMs", 0))
 
 
 def resolve_source_recipe(
@@ -395,25 +386,7 @@ def plan_source_cuts(
     lanes = []
     for master in recipe.masters:
         identity = canonical_source_identity(master.provenance.get("sourceUrl"))
-        authority = master.provenance.get("authority")
-        # ShipStream page manifests describe immutable bytes that have already
-        # been extracted for this exact page. Applying the original-source
-        # one-minute skip to those bytes makes every short imported page master
-        # advertise zero capacity. The 60-second floor remains intact for raw
-        # source libraries; exact page-bound masters and the explicit historical
-        # recovery form may use their first frame.
-        default_minimum_start_ms = (
-            0
-            if authority == SHIPSTREAM_PAGE_MASTER_AUTHORITY
-            or (
-                isinstance(authority, str)
-                and authority.startswith(SHIPSTREAM_HISTORICAL_AUTHORITY_PREFIX)
-            )
-            else MIN_ORIGINAL_START_MS
-        )
-        minimum_start_ms = max(
-            default_minimum_start_ms, recipe.minimum_source_start_ms,
-        )
+        minimum_start_ms = minimum_original_start_ms(recipe, master)
         reserved = [
             (start, end)
             for source, master_sha256, start, end in (exclusions or [])
@@ -486,6 +459,7 @@ def source_cut_is_planned(
         not isinstance(start_ms, int) or isinstance(start_ms, bool)
         or not isinstance(duration_ms, int) or isinstance(duration_ms, bool)
         or start_ms < 0 or start_ms + duration_ms > master.duration_ms
+        or master.source_offset_ms + start_ms < minimum_original_start_ms(recipe, master)
     ):
         return False
     if slot_id == f"{master.sha256}:{start_ms}:{duration_ms}":
@@ -499,8 +473,26 @@ def source_cut_is_planned(
         return duration_ms == planned_source_cut_duration(recipe, master, start_ms)
     except ValueError:
         return False
-    return candidates
-    return candidates
+
+
+def minimum_original_start_ms(recipe: SourceRecipe, master: MasterSource) -> int:
+    """Return the earliest allowed timestamp on the upstream source timeline."""
+    authority = master.provenance.get("authority")
+    # ShipStream page manifests describe immutable bytes already extracted for
+    # this exact page. They can begin at their recorded upstream origin. The
+    # explicit historical recovery form has no trustworthy upstream offset and
+    # therefore remains locally anchored at zero. Raw source libraries retain
+    # the default one-minute lead-in skip.
+    default_minimum_start_ms = (
+        0
+        if authority == SHIPSTREAM_PAGE_MASTER_AUTHORITY
+        or (
+            isinstance(authority, str)
+            and authority.startswith(SHIPSTREAM_HISTORICAL_AUTHORITY_PREFIX)
+        )
+        else MIN_ORIGINAL_START_MS
+    )
+    return max(default_minimum_start_ms, recipe.minimum_source_start_ms)
 
 
 def delivery_cut_duration(recipe: SourceRecipe, duration_ms: int) -> int:
