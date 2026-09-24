@@ -53,6 +53,7 @@ from typing import Any
 from urllib.parse import quote, urlparse
 
 import httpx
+import anyio
 
 from fastapi import APIRouter, Header, HTTPException
 
@@ -381,8 +382,13 @@ def capabilities(
     return {"schema": RESPONSE_SCHEMA, "capabilities": entries}
 
 
+# Registry reads must not queue behind network-heavy capability/catalog work
+# in Starlette's shared synchronous endpoint pool. Keep disk IO off the loop.
+_FORMAT_READ_LIMITER = anyio.CapacityLimiter(2)
+
+
 @router.get("/v1/format-contracts")
-def format_contract_status(
+async def format_contract_status(
     x_rt_lane: str | None = Header(default=None),
     authorization: str | None = Header(default=None),
 ) -> dict[str, Any]:
@@ -396,6 +402,12 @@ def format_contract_status(
     if x_rt_lane != CONTROL_PLANE_LANE:
         raise HTTPException(status_code=400, detail="X-RT-Lane header is invalid")
     require_control_plane_bearer(authorization)
+    return await anyio.to_thread.run_sync(
+        _format_contract_snapshot, limiter=_FORMAT_READ_LIMITER,
+    )
+
+
+def _format_contract_snapshot() -> dict[str, Any]:
     try:
         contracts, contracts_hash = load_format_contracts()
         profiles, registry_hash = load_engine_registry()

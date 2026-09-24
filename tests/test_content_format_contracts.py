@@ -2,7 +2,11 @@
 
 import hashlib
 import json
+import asyncio
+import threading
 
+import anyio
+import httpx
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -24,6 +28,62 @@ def _entry_hash(value):
     return hashlib.sha256(json.dumps(
         value, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
     ).encode()).hexdigest()
+
+
+@pytest.mark.asyncio
+async def test_format_http_read_bypasses_saturated_shared_endpoint_pool(monkeypatch):
+    monkeypatch.setenv("CONTROL_PLANE_TOKEN", "format-contract-test-token")
+    app = FastAPI()
+    app.include_router(control_plane.router, prefix="/api/control-plane")
+    started = threading.Event()
+    release = threading.Event()
+    limiter = anyio.to_thread.current_default_thread_limiter()
+    previous = limiter.total_tokens
+    limiter.total_tokens = 1
+
+    def blocked_sync_work():
+        started.set()
+        release.wait(10)
+
+    blocker = asyncio.create_task(anyio.to_thread.run_sync(blocked_sync_work))
+    try:
+        async with asyncio.timeout(3):
+            while not started.is_set():
+                await asyncio.sleep(0.001)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test",
+        ) as client:
+            response = await asyncio.wait_for(client.get(
+                "/api/control-plane/v1/format-contracts", headers={
+                    "X-RT-Lane": recipes.LANE,
+                    "Authorization": "Bearer format-contract-test-token",
+                },
+            ), timeout=2)
+        assert response.status_code == 200
+        assert response.json() == control_plane._format_contract_snapshot()
+        assert not release.is_set()
+    finally:
+        release.set()
+        await blocker
+        limiter.total_tokens = previous
+
+
+def test_format_http_read_observes_changed_registry_and_fails_closed(monkeypatch, tmp_path):
+    monkeypatch.setenv("CONTROL_PLANE_TOKEN", "format-contract-test-token")
+    path = tmp_path / "contracts.json"
+    path.write_bytes(CONTRACTS_PATH.read_bytes())
+    monkeypatch.setenv("CONTENT_LAB_FORMAT_CONTRACTS", str(path))
+    app = FastAPI()
+    app.include_router(control_plane.router, prefix="/api/control-plane")
+    with TestClient(app) as client:
+        headers = {"X-RT-Lane": recipes.LANE,
+                   "Authorization": "Bearer format-contract-test-token"}
+        endpoint = "/api/control-plane/v1/format-contracts"
+        assert client.get(endpoint, headers=headers).status_code == 200
+        path.write_text("{}")
+        assert client.get(endpoint, headers=headers).status_code == 503
+        path.write_bytes(CONTRACTS_PATH.read_bytes())
+        assert client.get(endpoint, headers=headers).status_code == 200
 
 
 def test_every_known_format_has_a_strict_contract_and_registry_binding():

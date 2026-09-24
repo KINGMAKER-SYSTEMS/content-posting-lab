@@ -91,6 +91,10 @@
 
 ## Local Contracts
 
+- Format-contract HTTP reads use a separate two-permit thread limiter, not the
+  shared synchronous endpoint pool. Preserve per-request registry validation,
+  authentication, current-file visibility and fail-closed errors; disk reads
+  must remain off the event loop.
 - Atomic JSON stores use compact one-shot encoding; preserve flush, fsync,
   atomic replacement and failure cleanup so large job histories do not stall API writes.
   Async production runners perform progress writes in worker threads.
