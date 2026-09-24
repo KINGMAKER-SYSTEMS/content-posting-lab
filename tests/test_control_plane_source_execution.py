@@ -429,14 +429,48 @@ def test_source_recipe_requires_v3_page_scoped_master_and_exact_controls():
     assert resolve_source_recipe(publication(source_library_id="not-registered")) is None
     assert resolve_source_recipe(publication(cut_duration_ms=6_500)) is None
     assert resolve_source_recipe(publication(source_start_ms=True)) is None
+    assert resolve_source_recipe(publication(source_start_ms=210_000.0)) is None
+    assert resolve_source_recipe(publication(source_start_ms=210_500)) is None
     assert resolve_source_recipe(publication(source_start_ms=float("nan"))) is None
     assert resolve_source_recipe(publication(source_start_ms=7_200_001)) is None
+    assert resolve_source_recipe(publication(source_start_ms=10**1_000)) is None
+    assert resolve_source_recipe(publication(source_start_ms=-(10**1_000))) is None
+    assert resolve_source_recipe(publication(cut_duration_ms=10**1_000)) is None
     legacy = publication()
     spec = json.loads(legacy["recipeSpecCanonical"])
     spec.pop("production")
     spec["schema"] = "dossier.recipe-spec.v2"
     legacy["recipeSpecCanonical"] = json.dumps(spec, sort_keys=True, separators=(",", ":"))
     assert resolve_source_recipe(legacy) is None
+
+
+def test_source_start_is_accepted_by_the_publication_api(lab):
+    client, _, _ = lab
+    payload = publication(
+        source_start_ms=210_000,
+        recipe_version="dossier-source-floor0001",
+    )
+    response = client.post(
+        "/api/control-plane/v1/recipes",
+        json=payload,
+        headers=headers("source-register-floor-0001"),
+    )
+    assert response.status_code == 200, response.text
+
+
+@pytest.mark.parametrize("value", [True, 210_500, -1_000, 7_201_000])
+def test_source_start_publication_rejects_invalid_values(lab, value):
+    client, _, _ = lab
+    payload = publication(
+        source_start_ms=value,
+        recipe_version=f"dossier-invalid-floor-{str(value).replace('-', 'n').lower()}",
+    )
+    response = client.post(
+        "/api/control-plane/v1/recipes",
+        json=payload,
+        headers=headers(f"source-register-invalid-{str(value).replace('-', 'n').lower()}"),
+    )
+    assert response.status_code == 409
 
 
 def test_source_planner_rotates_five_to_nine_second_disjoint_windows():
@@ -459,6 +493,31 @@ def test_source_planner_honors_page_earliest_original_timestamp():
     assert all(
         cut.master.source_offset_ms + cut.start_ms >= 210_000
         for cut in cuts
+    )
+
+
+def test_page_master_floor_is_compared_on_the_original_timeline():
+    from dataclasses import replace
+
+    recipe = resolve_source_recipe(publication(source_start_ms=135_000))
+    assert recipe is not None
+    master = replace(
+        recipe.masters[0],
+        source_offset_ms=120_000,
+        provenance={
+            **recipe.masters[0].provenance,
+            "authority": "ShipStream source-manifest.v1 exact page master",
+        },
+    )
+    recipe = replace(recipe, masters=(master,))
+    cuts = plan_source_cuts(recipe, 1, set())
+    assert cuts[0].start_ms == 18_000
+    assert not source_cut_is_planned(
+        recipe,
+        master,
+        0,
+        6_000,
+        f"{master.sha256}:0",
     )
 
 
