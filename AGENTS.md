@@ -94,6 +94,9 @@
 - Atomic JSON stores use compact one-shot encoding; preserve flush, fsync,
   atomic replacement and failure cleanup so large job histories do not stall API writes.
   Async production runners perform progress writes in worker threads.
+- Recipe listing reuses unchanged file bytes after checking every current file's
+  inode, size and timestamps; additions, edits and removals apply on the next read.
+  Callers receive independent matching rows, not mutable shared cache entries.
 
 - Caption rendering accepts the shared `CaptionStyle` wire fields only. A saved
   caption layout may supply exact line breaks and final-frame outline width;

@@ -12,7 +12,9 @@ import hmac
 import json
 import math
 import os
+from copy import deepcopy
 from pathlib import Path
+from threading import Lock
 from typing import Any
 
 from fastapi import APIRouter, Header, HTTPException
@@ -51,6 +53,44 @@ TOKEN_CHARS = frozenset(
 MAX_SPEC_BYTES = 131_072
 
 router = APIRouter()
+
+_recipe_cache_lock = Lock()
+_recipe_cache: dict[Path, tuple[tuple[int, ...], dict[str, Any]]] = {}
+
+
+def _file_signature(stat: os.stat_result) -> tuple[int, ...]:
+    return (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+
+
+def _registered_records() -> tuple[dict[str, Any], ...]:
+    """Reuse unchanged publication bytes, never an old directory snapshot.
+
+    Capability polls used to reread every page's publications twice, filling
+    the API thread pool. Stat each current file and read only changed bytes.
+    The lock coalesces concurrent cold scans; callers copy only matching rows.
+    """
+    with _recipe_cache_lock:
+        current = {}
+        for path in sorted(_root().glob("*.json")):
+            try:
+                signature = _file_signature(path.stat())
+                cached = _recipe_cache.get(path)
+                if cached is None or cached[0] != signature:
+                    with path.open("r", encoding="utf-8") as handle:
+                        before = _file_signature(os.fstat(handle.fileno()))
+                        record = json.load(handle)
+                        after = _file_signature(os.fstat(handle.fileno()))
+                    # Publication creation writes its new inode in place. A
+                    # concurrent write must not become a reusable snapshot.
+                    if before != after or not isinstance(record, dict):
+                        continue
+                    cached = (after, record)
+                current[path] = cached
+            except (OSError, ValueError):
+                continue
+        _recipe_cache.clear()
+        _recipe_cache.update(current)
+        return tuple(record for _, record in current.values())
 
 
 def _root() -> Path:
@@ -505,11 +545,7 @@ def load_registered_recipe_binding(
         return page_id, exact
 
     matches: list[tuple[str, dict[str, Any]]] = []
-    for path in sorted(_root().glob("*.json")):
-        try:
-            record = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            continue
+    for record in _registered_records():
         publication_page_id = str(record.get("pageId") or "")
         if (
             publication_page_id == page_id
@@ -522,7 +558,7 @@ def load_registered_recipe_binding(
             )
         ):
             continue
-        matches.append((publication_page_id, record))
+        matches.append((publication_page_id, deepcopy(record)))
     return matches[0] if len(matches) == 1 else None
 
 
@@ -533,11 +569,7 @@ def list_registered_recipe_bindings(
 ) -> list[tuple[str, dict[str, Any]]]:
     """List current exact/aliased publications, preferring exact tuples."""
     candidates: dict[tuple[str, str, str], list[tuple[str, dict[str, Any]]]] = {}
-    for path in sorted(_root().glob("*.json")):
-        try:
-            record = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            continue
+    for record in _registered_records():
         if (
             record.get("status") != "registered"
             or not publication_matches_master_pages(
@@ -557,21 +589,17 @@ def list_registered_recipe_bindings(
         rows = candidates[key]
         exact = [row for row in rows if row[0] == page_id]
         if len(exact) == 1:
-            resolved.append(exact[0])
+            resolved.append(deepcopy(exact[0]))
         elif len(rows) == 1:
-            resolved.append(rows[0])
+            resolved.append(deepcopy(rows[0]))
     return resolved
 
 
 def list_registered_recipes(page_id: str) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
-    for path in sorted(_root().glob("*.json")):
-        try:
-            record = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            continue
+    for record in _registered_records():
         if record.get("status") == "registered" and record.get("pageId") == page_id:
-            records.append(record)
+            records.append(deepcopy(record))
     return records
 
 
