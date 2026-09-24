@@ -752,10 +752,11 @@ async def _async_value(value):
 
 
 @pytest.mark.asyncio
-async def test_generation_runner_lands_treated_artifacts_under_the_isolated_job_root(lab, monkeypatch):
+@pytest.mark.parametrize("later_provider_failure", [False, True])
+async def test_generation_runner_lands_treated_artifacts_under_the_isolated_job_root(lab, monkeypatch, later_provider_failure):
     client, tmp_path, _ = lab
     response = client.post(
-        "/api/control-plane/v1/jobs", json=job_body(), headers=HEADERS,
+        "/api/control-plane/v1/jobs", json=job_body(quantity=6 if later_provider_failure else 2), headers=HEADERS,
     )
     job_id = response.json()["jobId"]
     corrections = []
@@ -764,6 +765,9 @@ async def test_generation_runner_lands_treated_artifacts_under_the_isolated_job_
         provider_job_id, index, provider, prompt, aspect_ratio, resolution,
         duration, image_data_uri, jobs, output_dir, url_prefix, **extra,
     ):
+        if later_provider_failure and provider_job_id.endswith("-g01"):
+            jobs[provider_job_id]["videos"][index].update({"status": "error", "error": "provider timed out"})
+            return
         folder = output_dir / provider / provider_job_id
         folder.mkdir(parents=True, exist_ok=True)
         path = folder / "candidate.mp4"
@@ -801,6 +805,16 @@ async def test_generation_runner_lands_treated_artifacts_under_the_isolated_job_
     assert stored["status"] == "completed"
     assert stored["progress"] == 100
     assert len(stored["clips"]) == 5
+    assert stored["providerCallsCompleted"] == 1
+    if later_provider_failure:
+        assert stored["error"] == "provider_generation_failed"
+        assert stored["quantityRequested"] == 6
+        assert stored["providerCallsPlanned"] == 2
+        replay = client.post("/api/control-plane/v1/jobs", json=job_body(quantity=6), headers=HEADERS)
+        assert replay.status_code == 200 and replay.json()["jobId"] == job_id
+        assert lab[2] == [job_id], "idempotent replay must not start paid generation again"
+    for clip in stored["clips"]:
+        assert (Path(stored["artifactRoot"]) / clip["path"]).is_file()
     assert len(corrections) == 5
     assert all(speed == pytest.approx(0.75) for _, speed, _ in corrections)
     assert all(crop == {"zoom": 1.5, "focusX": 0.2, "focusY": 0.8} for _, _, crop in corrections)
