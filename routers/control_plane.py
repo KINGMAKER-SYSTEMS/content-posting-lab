@@ -2290,7 +2290,29 @@ def _start_truck_master_recovery(job_id: str) -> None:
 def _start_page_source_import(job_id: str) -> None:
     task = asyncio.create_task(_run_page_source_import(job_id))
     _source_import_tasks[job_id] = task
-    task.add_done_callback(lambda _: _source_import_tasks.pop(job_id, None))
+    task.add_done_callback(
+        lambda completed: (
+            _source_import_tasks.pop(job_id, None)
+            if _source_import_tasks.get(job_id) is completed
+            else None
+        ),
+    )
+
+
+async def _cancel_page_source_import(job_id: str) -> bool:
+    """Cancel and join the owned runner before its artifact root can be reused."""
+    task = _source_import_tasks.get(job_id)
+    if task is None:
+        return False
+    cancel_requested = task.cancel() if not task.done() else False
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+    finally:
+        if _source_import_tasks.get(job_id) is task:
+            _source_import_tasks.pop(job_id, None)
+    return cancel_requested
 
 
 def _start_syzygy_slideshow(job_id: str) -> None:
@@ -2894,7 +2916,7 @@ def _source_import_active_deadline_expired(job: dict[str, Any]) -> bool:
 
 
 @router.get("/v1/jobs/{job_id}")
-def job_status(
+async def job_status(
     job_id: str,
     x_rt_page_id: str | None = Header(default=None),
     authorization: str | None = Header(default=None),
@@ -2903,24 +2925,30 @@ def job_status(
     if not x_rt_page_id or not PAGE_ID_RE.match(x_rt_page_id):
         raise HTTPException(status_code=400, detail="X-RT-Page-Id header is required")
     job = _get_job_or_404(job_id)
-    if (
+    should_expire = (
         job.get("sourceKind") in ASYNC_SOURCE_KINDS
         and job.get("status") in GENERATION_ACTIVE_STATUSES
         and (
             job.get("runtimeId") != _GENERATION_RUNTIME_ID
             or _source_import_active_deadline_expired(job)
         )
-    ):
-        _update_job(
-            job_id,
-            status="failed",
-            error=(
-                "source_import_runtime_restarted"
-                if job.get("sourceKind") == "page_source_import"
-                else "generation_runtime_restarted"
-            ),
-            completedAt=datetime.now(timezone.utc).isoformat(),
-        )
+    )
+    if should_expire:
+        cancelled_local_runner = False
+        if job.get("sourceKind") == "page_source_import":
+            cancelled_local_runner = await _cancel_page_source_import(job_id)
+        current = _get_job_or_404(job_id)
+        if cancelled_local_runner or current.get("status") in GENERATION_ACTIVE_STATUSES:
+            _update_job(
+                job_id,
+                status="failed",
+                error=(
+                    "source_import_runtime_restarted"
+                    if job.get("sourceKind") == "page_source_import"
+                    else "generation_runtime_restarted"
+                ),
+                completedAt=datetime.now(timezone.utc).isoformat(),
+            )
         job = _get_job_or_404(job_id)
     if job["pageId"] != x_rt_page_id:
         # A job answers only to the page it belongs to — cross-page status

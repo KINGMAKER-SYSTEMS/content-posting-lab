@@ -6,6 +6,7 @@ import asyncio
 from dataclasses import replace
 import hashlib
 from pathlib import Path
+import threading
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlsplit
 
@@ -223,6 +224,80 @@ def test_status_restarts_a_source_import_past_its_bounded_runtime(lab):
     assert current.status_code == 200
     assert current.json()["status"] == "queued"
     assert "error" not in current.json()
+
+
+def test_expired_live_import_is_cancelled_and_joined_before_retry_reuses_root(
+    lab, monkeypatch,
+):
+    client, intent, revision, _ = lab
+    started = threading.Event()
+    cancelled = threading.Event()
+
+    async def blocking_download(_source_url, destination):
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(b"partial-old-attempt")
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+
+    def start_owned_import(job_id):
+        task = asyncio.create_task(cp._run_page_source_import(job_id))
+        cp._source_import_tasks[job_id] = task
+        task.add_done_callback(
+            lambda completed: (
+                cp._source_import_tasks.pop(job_id, None)
+                if cp._source_import_tasks.get(job_id) is completed
+                else None
+            ),
+        )
+
+    monkeypatch.setattr(cp, "download_source_video", blocking_download)
+    monkeypatch.setattr(cp, "_start_page_source_import", start_owned_import)
+    cp._source_import_tasks.clear()
+
+    with client:
+        created = client.post(
+            "/api/control-plane/v1/source-imports",
+            headers=HEADERS,
+            json=_body(intent, revision),
+        ).json()
+        job_id = created["jobId"]
+        assert started.wait(2), "the first import runner did not reach its download"
+        store = cp._load_jobs()
+        root = Path(store["jobs"][job_id]["artifactRoot"])
+        store["jobs"][job_id]["createdAt"] = (
+            datetime.now(timezone.utc)
+            - timedelta(seconds=cp.SOURCE_IMPORT_ACTIVE_DEADLINE_SECONDS + 1)
+        ).isoformat()
+        cp.atomic_save(cp._jobs_path(), store)
+
+        status = client.get(
+            f"/api/control-plane/v1/jobs/{job_id}",
+            headers={"Authorization": f"Bearer {TOKEN}", "X-RT-Page-Id": PAGE_ID},
+        )
+        assert status.status_code == 200
+        assert status.json()["error"] == "source_import_runtime_restarted"
+        assert cancelled.is_set()
+        assert job_id not in cp._source_import_tasks
+        assert not root.exists()
+
+        restarted = []
+        monkeypatch.setattr(cp, "_start_page_source_import", restarted.append)
+        retry = client.post(
+            "/api/control-plane/v1/source-imports",
+            headers=HEADERS,
+            json=_body(intent, revision),
+        )
+        assert retry.status_code == 200
+        assert retry.json()["status"] == "queued"
+        assert restarted == [job_id]
+        assert root.is_dir()
+        assert not (root / "source" / "source.mp4").exists()
+
+    cp._source_import_tasks.clear()
 
 
 def test_source_import_rejects_unscoped_stale_and_wrong_format_requests(lab, monkeypatch):

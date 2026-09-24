@@ -327,12 +327,18 @@ async def download_video(
 
     if not isinstance(source_import_mode, bool):
         raise ValueError("source_import_mode must be a boolean")
+    format_selector = (
+        "source/bestvideo[ext=mp4]+bestaudio[ext=m4a]/"
+        "bestvideo+bestaudio/best[ext=mp4]/best"
+        if source_import_mode
+        else "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best[ext=mp4]/best"
+    )
     base_cmd = [
         "yt-dlp",
         "--no-warnings",
         "--no-playlist",
         "-f",
-        "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best[ext=mp4]/best",
+        format_selector,
         "--merge-output-format",
         "mp4",
         "-o",

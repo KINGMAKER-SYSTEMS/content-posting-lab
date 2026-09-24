@@ -157,6 +157,7 @@ def test_download_source_video_reuses_clipper_and_hashes_exact_bytes(monkeypatch
     original = b"downloaded-video"
     normalized = b"normalized-vertical-video"
     calls = []
+    space_requirements = []
 
     async def downloader(
         url, destination, cookies_file=None, *, max_filesize=None,
@@ -195,6 +196,10 @@ def test_download_source_video_reuses_clipper_and_hashes_exact_bytes(monkeypatch
     monkeypatch.setattr(imports, "download_video", downloader)
     monkeypatch.setattr(imports, "_probe_video", probe)
     monkeypatch.setattr(imports, "_normalize_video", normalize)
+    monkeypatch.setattr(
+        imports, "_require_free_space",
+        lambda _path, required: space_requirements.append(required),
+    )
     destination = tmp_path / "source" / "source.mp4"
     result = asyncio.run(imports.download_source_video(
         "https://cdn.example.com/video.mp4", destination,
@@ -214,6 +219,11 @@ def test_download_source_video_reuses_clipper_and_hashes_exact_bytes(monkeypatch
     assert result.original_bytes == len(original)
     assert result.original_media == original_media
     assert not destination.with_name("original.mp4").exists()
+    assert space_requirements == [
+        imports.MIN_SOURCE_IMPORT_FREE_BYTES,
+        imports._expected_normalized_bytes(original_media.duration_ms)
+        + imports.MIN_SOURCE_IMPORT_FREE_BYTES,
+    ]
 
 
 def test_download_source_video_keeps_an_exact_refillable_master_without_reencoding(

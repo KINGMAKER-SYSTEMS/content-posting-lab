@@ -477,7 +477,7 @@ async def download_source_video(source_url: str, destination: Path) -> SourceImp
             )
             _require_free_space(
                 destination.parent,
-                original_bytes + expected_output_bytes + MIN_SOURCE_IMPORT_FREE_BYTES,
+                expected_output_bytes + MIN_SOURCE_IMPORT_FREE_BYTES,
             )
             await _normalize_video(original, exact)
             media = await _probe_video(exact)
