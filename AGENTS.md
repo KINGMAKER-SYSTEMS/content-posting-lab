@@ -279,6 +279,13 @@
   idempotent replay returns the original job and downstream output-byte checks
   continue to prevent duplicate asset admission. Source-video window reservations
   remain unchanged.
+- `silhouette-truck` is a still-first format. FLUX.2 Pro creates one native 9:16
+  photograph of exactly two embracing adult silhouettes beside one complete
+  pickup in a field; WAN/I2V, anchor drift, and synthetic motion are not legal
+  substitutes. Retain the exact provider image and its hash in the artifact
+  manifest, then hold that image without pan, zoom, or interpolation in a
+  seven-second 1080x1920 MP4 so the existing caption, sound, QA, and posting
+  contracts remain unchanged.
 
 ## Work Guidance
 

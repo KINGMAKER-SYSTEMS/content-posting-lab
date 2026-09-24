@@ -10,7 +10,7 @@
       "creativeAuthority": {
         "kind": "prompt_family",
         "id": "boat",
-        "version": "sha256:e7c2a13a818da636bb32ea3027cd3d2be1a88fd8c9c74e87cf67206f3188ceff"
+        "version": "sha256:5844d95f71e5a9cc6c51dab9c8f8ed2273974b2dc077158ca72d47ab618ed3be"
       },
       "dimensions": {
         "subject": {
@@ -87,7 +87,7 @@
       "creativeAuthority": {
         "kind": "prompt_family",
         "id": "coffee",
-        "version": "sha256:e7c2a13a818da636bb32ea3027cd3d2be1a88fd8c9c74e87cf67206f3188ceff"
+        "version": "sha256:5844d95f71e5a9cc6c51dab9c8f8ed2273974b2dc077158ca72d47ab618ed3be"
       },
       "dimensions": {
         "subject": {
@@ -811,17 +811,17 @@
       "creativeAuthority": {
         "kind": "prompt_family",
         "id": "silhouette",
-        "version": "sha256:e7c2a13a818da636bb32ea3027cd3d2be1a88fd8c9c74e87cf67206f3188ceff"
+        "version": "sha256:5844d95f71e5a9cc6c51dab9c8f8ed2273974b2dc077158ca72d47ab618ed3be"
       },
       "dimensions": {
         "subject": {
           "status": "defined",
-          "rule": "A featureless black embracing couple and the same debadged black pickup are preserved from an approved anchor.",
+          "rule": "Exactly two adult featureless black silhouettes embrace beside one complete unbadged dark pickup in an open field.",
           "authority": "promptCatalog.families.silhouette.fixed_subject"
         },
         "setting": {
           "status": "defined",
-          "rule": "Dusk fields, meadows, hilltops, fence-line pullouts, and coastal bluffs from the reviewed menu.",
+          "rule": "Dusk fields, wheat fields, meadows, grassy hilltops, and field tracks from the reviewed menu.",
           "authority": "promptCatalog.families.silhouette.slots.setting"
         },
         "shotGrammar": {
@@ -836,13 +836,13 @@
         },
         "motion": {
           "status": "defined",
-          "rule": "Gentle environmental motion only; couple holds the embrace and truck remains stationary.",
-          "authority": "promptCatalog.families.silhouette.motion_prompt"
+          "rule": "The generated photo is held completely static with no synthetic subject or camera motion.",
+          "authority": "promptCatalog.families.silhouette.method"
         },
         "duration": {
           "status": "defined",
-          "rule": "Duration is bound by the exact commissioned prompt provider configuration.",
-          "authority": "promptCatalog.providers.wan-i2v-fast.base_input"
+          "rule": "The exact generated still is held for seven seconds by the commissioned provider configuration.",
+          "authority": "promptCatalog.providers.flux-image.base_input"
         },
         "textPolicy": {
           "status": "defined",
@@ -856,8 +856,8 @@
         },
         "referenceExamples": {
           "status": "defined",
-          "rule": "The 19 byte-exact reviewed anchors rotate without replacement.",
-          "authority": "promptCatalog.families.silhouette.anchor_manifest_sha256"
+          "rule": "Every artifact retains the exact generated FLUX.2 source still and its byte hash.",
+          "authority": "promptCatalog.providers.flux-image.replicate_model"
         }
       },
       "output": {
@@ -889,7 +889,7 @@
       "creativeAuthority": {
         "kind": "prompt_family",
         "id": "truck",
-        "version": "sha256:e7c2a13a818da636bb32ea3027cd3d2be1a88fd8c9c74e87cf67206f3188ceff"
+        "version": "sha256:5844d95f71e5a9cc6c51dab9c8f8ed2273974b2dc077158ca72d47ab618ed3be"
       },
       "dimensions": {
         "subject": {
@@ -967,7 +967,7 @@
       "creativeAuthority": {
         "kind": "prompt_family",
         "id": "ugc",
-        "version": "sha256:e7c2a13a818da636bb32ea3027cd3d2be1a88fd8c9c74e87cf67206f3188ceff"
+        "version": "sha256:5844d95f71e5a9cc6c51dab9c8f8ed2273974b2dc077158ca72d47ab618ed3be"
       },
       "dimensions": {
         "subject": {

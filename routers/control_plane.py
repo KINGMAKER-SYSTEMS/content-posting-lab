@@ -1525,6 +1525,7 @@ async def _run_dossier_generation(job_id: str) -> None:
                 provider_jobs,
                 render_root,
                 "",
+                model_id=recipe.provider_model,
                 **options,
             )
             entry = provider_jobs[provider_job_id]["videos"][0]
@@ -1562,6 +1563,14 @@ async def _run_dossier_generation(job_id: str) -> None:
                     clip_crop=clip_crop,
                 )
                 provider_source = source
+                provider_image_rel_path = entry.get("provider_image_file")
+                provider_image = None
+                if provider_image_rel_path is not None:
+                    if not isinstance(provider_image_rel_path, str) or not provider_image_rel_path:
+                        raise RuntimeError("provider_image_missing")
+                    provider_image = (render_root / provider_image_rel_path).resolve()
+                    if render_root.resolve() not in provider_image.parents or not provider_image.is_file():
+                        raise RuntimeError("provider_image_invalid")
                 delivery = None
                 if isinstance(candidate, dict) and candidate.get("cropMode") in {
                     "dual", "triptych", "both",
@@ -1614,6 +1623,8 @@ async def _run_dossier_generation(job_id: str) -> None:
                 )
                 if anchor_metadata is not None:
                     manifest["anchor"] = anchor_metadata
+                if provider_image is not None:
+                    manifest["generatedStill"] = _generated_manifest(job_root, provider_image)
                 if not _job_matches_current_master_pages(job):
                     raise RuntimeError("master_pages_strategy_changed")
                 _claim_unique_generated_clip(job_id, manifest)

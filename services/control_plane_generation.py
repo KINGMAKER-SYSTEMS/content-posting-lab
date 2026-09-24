@@ -317,10 +317,10 @@ def resolve_generation_recipe(
     ):
         return _unavailable(publication, "prompt_family")
     method = family.get("method")
-    if method not in {"t2v", "i2v"}:
+    if method not in {"t2v", "i2v", "t2i"}:
         return _unavailable(publication, "generation_method")
-    if method == "t2v" and family.get("base_anchor") not in (None, ""):
-        return _unavailable(publication, "unexpected_t2v_anchor")
+    if method in {"t2v", "t2i"} and family.get("base_anchor") not in (None, ""):
+        return _unavailable(publication, "unexpected_generation_anchor")
     if method == "i2v":
         manifest_sha = family.get("anchor_manifest_sha256")
         base_sha = family.get("base_anchor_sha256")

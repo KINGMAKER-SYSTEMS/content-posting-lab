@@ -1,4 +1,4 @@
-"""Shared utilities for all video generation providers."""
+"""Shared utilities for generated video and still-backed video providers."""
 
 import asyncio
 import logging
@@ -29,13 +29,35 @@ API_KEYS = {
 FORCE_LANDSCAPE = {"hailuo", "pruna-pvideo"}
 
 
-async def download_video(client: httpx.AsyncClient, url: str, dest: Path):
-    """Download a video from URL to local file."""
+async def download_media(client: httpx.AsyncClient, url: str, dest: Path):
+    """Download one provider artifact to a local file."""
     async with client.stream("GET", url, timeout=120) as resp:
         resp.raise_for_status()
         with open(dest, "wb") as f:
             async for chunk in resp.aiter_bytes(8192):
                 f.write(chunk)
+
+
+async def still_to_video(image: Path, dest: Path, duration: int) -> None:
+    """Hold one portrait still without motion in a delivery-compatible MP4."""
+    bounded_duration = max(1, min(int(duration), 30))
+    proc = await asyncio.create_subprocess_exec(
+        "ffmpeg", "-y", "-loop", "1", "-i", str(image),
+        "-t", str(bounded_duration),
+        "-vf",
+        (
+            "scale=1080:1920:force_original_aspect_ratio=increase,"
+            "crop=1080:1920,fps=30,setsar=1,format=yuv420p"
+        ),
+        "-an", "-c:v", "libx264", "-preset", "medium", "-crf", "18",
+        "-movflags", "+faststart", str(dest),
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    _, stderr = await proc.communicate()
+    if proc.returncode != 0 or not dest.is_file() or dest.stat().st_size <= 0:
+        dest.unlink(missing_ok=True)
+        raise RuntimeError(f"ffmpeg still hold failed: {stderr.decode()[-200:]}")
 
 
 async def crop_to_vertical(src: Path) -> None:
@@ -216,7 +238,7 @@ async def generate_one(
     on_complete=None,
     **extra,
 ):
-    """Orchestrate a single video generation: call provider, download, crop.
+    """Generate one delivery video, including a motionless still-backed video.
 
     Args:
         output_dir: Base directory for video files. Defaults to OUTPUT_DIR.
@@ -254,12 +276,22 @@ async def generate_one(
                 **extra,
             }
 
-            video_url = await mod.generate(prompt, params, client)
+            media_url = await mod.generate(prompt, params, client)
 
             filename = f"{job_id}_{index}.mp4"
             dest = sub_dir / filename
             entry["status"] = "downloading"
-            await download_video(client, video_url, dest)
+            if provider_info.get("output_kind") == "image":
+                output_format = str(params.get("output_format") or "jpg")
+                image_name = f"{job_id}_{index}.{output_format}"
+                image_dest = sub_dir / image_name
+                await download_media(client, media_url, image_dest)
+                entry["status"] = "holding"
+                await still_to_video(image_dest, dest, duration)
+                entry["provider_image_file"] = f"{rel_dir}/{image_name}"
+                entry["provider_image_url"] = f"{url_prefix}/{rel_dir}/{image_name}"
+            else:
+                await download_media(client, media_url, dest)
 
             # Multi-crop mode: split one 16:9 into multiple 9:16 crops.
             # Complete-subject dossier recipes instead use ``contain`` so a

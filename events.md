@@ -682,3 +682,27 @@ type: [bug report] [refactor]: Capability job-history decode herd
 area: [backend] [testing]
 
 PR #150 merged as 11ddc57; branch deleted; Railway deployment 336ad350-c7cf-4a0e-9c3a-3f8600f043a5 and Docker app-import succeeded. Authenticated format registry and Healing/Chase catalogs initially returned 200 in 79/262/189ms; both live Dossiers reopened. Sustained verification caught renewed timeouts on the next capability burst, so that release is not full outage resolution. Live stack sampling found concurrent capability calls still decoding the entire 28 MB jobs store while recipe readers waited. Capability planning now shares a file-identity-checked read-only history snapshot; transaction writers still use fresh mutable loads and existing locks. All 171 focused tests pass, including immediate progress updates, same-size replacement with retained mtime, corrupt/missing history, and 120 concurrent reads decoding once. A separate read-only production-volume benchmark produced identical complete capability responses, improving 16 calls from 8.999s to 1.893s. Root AGENTS records read-only ownership; no child boundaries changed. No paid work, provider substitution, account changes or phone action performed. Follow-up live burst verification remains required.
+
+
+_________________________________________________________________________________
+time: [09:52am] [24-09-26]
+agent: [Codex desktop] [gpt-6-astra]
+worktree: [codex/silhouette-static-still-20260924] [/Users/smathdaddy-macbook/content-posting-lab-silhouette-still]
+type: [feature-request] [refactor]: Replace silhouette I2V with a static generated photo
+area: [backend] [research] [testing]
+
+Replicate model research selected official Black Forest Labs FLUX.2 Pro for the
+silhouette format's portrait-native photorealistic stills. The prompt family now
+produces exactly two adult lovers embracing beside one complete pickup in a field,
+keeps the upper 45 percent as clean caption sky, and rejects anatomy, vehicle,
+count, text, and geometry failures. Content Lab retains the exact generated JPG
+and byte hash, then holds it without pan, zoom, interpolation, or subject motion
+in a seven-second 1080x1920 MP4 so downstream captions, sounds, QA, and posting
+remain unchanged. The WAN I2V provider, motion prompt, and anchor pool are removed
+from this format. The focused provider, contract, Dossier, and ffmpeg suites pass
+86 tests. A broader run reached 1,535 passes and 23 skips before the machine filled
+its temporary disk; its two genuine failures are pre-existing Agentic Broadcast
+Network card-background promotion tests, unrelated to the files changed here.
+No production deployment or paid Replicate generation was performed; no local
+Replicate credential is configured.
+_________________________________________________________________________________

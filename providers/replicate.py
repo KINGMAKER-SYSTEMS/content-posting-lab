@@ -1,4 +1,4 @@
-"""Replicate API provider — Hailuo 2.3, Wan 2.2 T2V, Wan 2.2 I2V."""
+"""Replicate API provider — video models plus FLUX.2 still generation."""
 
 import asyncio
 import time
@@ -151,11 +151,35 @@ def _build_wan_i2v_fast_input(prompt: str, params: dict) -> dict:
     return inp
 
 
+def _build_flux_2_pro_input(prompt: str, params: dict) -> dict:
+    """Build a portrait-native FLUX.2 Pro still-image request."""
+    aspect_ratio = params.get("aspect_ratio", "9:16")
+    if aspect_ratio != "9:16":
+        raise ValueError("FLUX silhouette stills require a 9:16 aspect ratio")
+    resolution = params.get("image_resolution", "2 MP")
+    if resolution not in {"1 MP", "2 MP"}:
+        raise ValueError("FLUX silhouette still resolution must be 1 MP or 2 MP")
+    output_format = params.get("output_format", "jpg")
+    if output_format not in {"jpg", "png", "webp"}:
+        raise ValueError("FLUX output format is unsupported")
+    quality = int(params.get("output_quality", 95))
+    if not 1 <= quality <= 100:
+        raise ValueError("FLUX output quality must be between 1 and 100")
+    return {
+        "prompt": prompt,
+        "aspect_ratio": aspect_ratio,
+        "resolution": resolution,
+        "output_format": output_format,
+        "output_quality": quality,
+    }
+
+
 _INPUT_BUILDERS = {
     "minimax/hailuo-2.3": _build_hailuo_input,
     "wan-video/wan-2.2-t2v-fast": _build_wan_t2v_input,
     "wan-video/wan-2.2-i2v-a14b": _build_wan_i2v_input,
     "wan-video/wan-2.2-i2v-fast": _build_wan_i2v_fast_input,
+    "black-forest-labs/flux-2-pro": _build_flux_2_pro_input,
     "prunaai/p-video": _build_pvideo_input,
 }
 

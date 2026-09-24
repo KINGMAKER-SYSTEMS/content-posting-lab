@@ -70,7 +70,7 @@ def test_truck_recipe_resolves_from_the_master_pages_engine_and_server_owned_pro
     assert recipe.family_name == "truck"
     assert recipe.provider_model == "minimax/hailuo-2.3"
     assert recipe.engine == "hailuo"
-    assert recipe.prompt_catalog_hash == "e7c2a13a818da636bb32ea3027cd3d2be1a88fd8c9c74e87cf67206f3188ceff"
+    assert recipe.prompt_catalog_hash == "5844d95f71e5a9cc6c51dab9c8f8ed2273974b2dc077158ca72d47ab618ed3be"
     assert recipe.family["extra"]["crop_mode"] == "both"
     assert recipe.clips_per_generation == 5
     assert recipe.planned_provider_calls(1) == 1
@@ -290,6 +290,14 @@ def test_recommissioned_boat_and_silhouette_are_advertised_after_operator_lift()
         "silhouette-truck", "silhouette-truck:master", "ai_video",
     ))
     assert silhouette is not None
+    assert silhouette.family["method"] == "t2i"
+    assert silhouette.engine == "flux-image"
+    assert silhouette.provider_model == "black-forest-labs/flux-2-pro"
+    assert silhouette.family.get("base_anchor") is None
+    prompt, _ = compose_prompt(silhouette, "static-silhouette", 0)
+    assert "pickup truck parked in an open field" in prompt
+    assert "single still photograph" in prompt
+    assert "Motion:" not in prompt
 
 
 def test_scenic_is_not_misrouted_through_the_ai_video_resolver():
