@@ -40,6 +40,7 @@ def publication(
     clip_speed=1.0,
     clip_crop=None,
     cut_duration_ms=6_000,
+    source_start_ms=None,
     source_library_id=LIBRARY_ID,
     recipe_version="dossier-feedfacefeedface",
     schema="dossier.recipe-spec.v3",
@@ -69,6 +70,8 @@ def publication(
         "variationValues": {},
         "controls": {"cutDurationMs": cut_duration_ms},
     }
+    if source_start_ms is not None:
+        production["controls"]["sourceStartMs"] = source_start_ms
     production["catalogVersion"] = catalog_selection_version(
         catalog, "pov-dirt-bike", production,
     )
@@ -419,11 +422,15 @@ def test_source_recipe_requires_v3_page_scoped_master_and_exact_controls():
     assert resolved.masters[0].sha256 == MASTER_SHA
     assert resolved.masters[0].source_offset_ms == 120_000
     assert resolved.cut_duration_ms == 6_000
+    assert resolved.minimum_source_start_ms == 0
     assert (resolved.output_width, resolved.output_height) == (1080, 1920)
     assert resolved.encode_preset == "tiktok_delivery_v1"
 
     assert resolve_source_recipe(publication(source_library_id="not-registered")) is None
     assert resolve_source_recipe(publication(cut_duration_ms=6_500)) is None
+    assert resolve_source_recipe(publication(source_start_ms=True)) is None
+    assert resolve_source_recipe(publication(source_start_ms=float("nan"))) is None
+    assert resolve_source_recipe(publication(source_start_ms=7_200_001)) is None
     legacy = publication()
     spec = json.loads(legacy["recipeSpecCanonical"])
     spec.pop("production")
@@ -441,6 +448,18 @@ def test_source_planner_rotates_five_to_nine_second_disjoint_windows():
     }
     for previous, current in zip(cuts, cuts[1:]):
         assert previous.start_ms + previous.duration_ms <= current.start_ms
+
+
+def test_source_planner_honors_page_earliest_original_timestamp():
+    resolved = resolve_source_recipe(publication(source_start_ms=210_000))
+    assert resolved is not None
+    assert resolved.minimum_source_start_ms == 210_000
+    cuts = plan_source_cuts(resolved, 5, set())
+    assert len(cuts) == 5
+    assert all(
+        cut.master.source_offset_ms + cut.start_ms >= 210_000
+        for cut in cuts
+    )
 
 
 def test_source_recipe_accepts_v4_and_preserves_the_caption_selection():
