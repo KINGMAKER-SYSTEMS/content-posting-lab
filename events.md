@@ -663,3 +663,12 @@ engine, and bounds that one relevant read to two seconds. Verification: 15
 Dossier ingredient tests and 88 recipe, generation, source, and slideshow
 execution tests passed. No production deployment or service mutation occurred.
 _________________________________________________________________________________
+
+_________________________________________________________________________________
+time: [05:09 EDT] [24-09-26]
+agent: [Codex desktop] [gpt-6-astra]
+worktree: [codex/page-scoped-recipe-reads] [/tmp/rt-lab-registry.WCseqY]
+type: [bug report] [refactor]: Shared Content Lab capability-read congestion
+area: [backend] [testing]
+
+Railway live stack sampling found all 40 AnyIO request workers inside capability reads, predominantly reopening all 402 immutable recipe publications. The last 300 upstream requests to capabilities, Dossier ingredients and format contracts timed out at about three seconds; a container-local authenticated registry read also timed out while health answered. The volume has 143 GiB free, so this is not disk exhaustion. Recipe listing now coalesces cold reads and reuses each unchanged file only after checking its device/inode/size/mtime/ctime; additions, removals, corruption and edits remain immediately visible, and selected records are copied before returning to callers. Exact page/Notion identity and ambiguous-alias checks are unchanged. All 166 targeted recipe, Dossier, generation, source, format and production-image-import tests passed. A separate read-only process on the production volume returned identical results for 16 concurrent page registry probes, improving 2.787s to 0.405s. No production source, settings, content, or posting authority was changed during this test. Root AGENTS records cache freshness/copy ownership; no child boundary changed. Separately, Replicate rejected Dallas and Rhett refills for insufficient credit; no purchase or provider substitution was made. Release and authenticated post-deploy proof follow separately.
