@@ -215,7 +215,12 @@ def test_clipper_uses_safe_rmtree():
 
     src = Path(clipper.__file__).read_text()
     assert "shutil.rmtree" not in src
-    assert src.count("safe_rmtree(") == 4
+    # The guarantee is "no bare shutil.rmtree", which the line above pins. The
+    # exact count used to be `== 4`, which pinned a NUMBER rather than the
+    # property -- so it failed the moment cleanups were ADDED to close four real
+    # staging leaks, making the test an argument against fixing them. A floor
+    # keeps the "the helper is actually used" half without punishing that.
+    assert src.count("safe_rmtree(") >= 4
 
 
 def test_clipper_uses_safe_unlink():
