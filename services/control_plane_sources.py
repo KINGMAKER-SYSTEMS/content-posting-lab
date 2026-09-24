@@ -58,6 +58,7 @@ RECUT_PHASES_MS = (0, 3_000, 6_000)
 # cut that started at the same point.
 RECUT_FIXED_DURATION_MS = 6_000
 MIN_ORIGINAL_START_MS = 60_000
+MAX_SOURCE_START_MS = 2 * 60 * 60 * 1_000
 SHIPSTREAM_PAGE_MASTER_AUTHORITY = "ShipStream source-manifest.v1 exact page master"
 SHIPSTREAM_HISTORICAL_AUTHORITY_PREFIX = (
     "ShipStream source-manifest.v1 page-bound historical posted cut;"
@@ -78,6 +79,7 @@ class SourceRecipe:
     source_library_hash: str
     masters: tuple[MasterSource, ...]
     cut_duration_ms: int
+    minimum_source_start_ms: int
     output_width: int
     output_height: int
     encode_preset: str
@@ -164,9 +166,35 @@ def _cut_duration(spec: dict[str, Any], executor: dict[str, Any]) -> int | None:
     if (
         isinstance(value, bool)
         or not isinstance(value, (int, float))
+        or not math.isfinite(value)
         or int(value) != value
         or not control["min"] <= int(value) <= control["max"]
         or (int(value) - control["min"]) % control["step"] != 0
+    ):
+        return None
+    return int(value)
+
+
+def _minimum_source_start(spec: dict[str, Any]) -> int | None:
+    """Return the page's durable earliest original-source timestamp.
+
+    The scalar lives in the existing open production-controls map so an
+    operator can pin a page away from an unusable lead-in without changing the
+    shared executor catalog (and therefore without invalidating every sourced
+    page's already-locked catalog version). Absence preserves the established
+    raw-library/page-master defaults.
+    """
+    production = spec.get("production")
+    controls = production.get("controls") if isinstance(production, dict) else None
+    if not isinstance(controls, dict):
+        return None
+    value = controls.get("sourceStartMs", 0)
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(value)
+        or int(value) != value
+        or not 0 <= int(value) <= MAX_SOURCE_START_MS
     ):
         return None
     return int(value)
@@ -273,7 +301,8 @@ def resolve_source_recipe(
     ):
         return None
     cut_duration_ms = _cut_duration(spec, executor)
-    if cut_duration_ms is None:
+    minimum_source_start_ms = _minimum_source_start(spec)
+    if cut_duration_ms is None or minimum_source_start_ms is None:
         return None
     return SourceRecipe(
         recipe_id=recipe_id,
@@ -288,6 +317,7 @@ def resolve_source_recipe(
         source_library_hash=library.sha256,
         masters=library.masters,
         cut_duration_ms=cut_duration_ms,
+        minimum_source_start_ms=minimum_source_start_ms,
         output_width=executor["output"]["width"],
         output_height=executor["output"]["height"],
         encode_preset=executor["output"]["encodePreset"],
@@ -372,7 +402,7 @@ def plan_source_cuts(
         # advertise zero capacity. The 60-second floor remains intact for raw
         # source libraries; exact page-bound masters and the explicit historical
         # recovery form may use their first frame.
-        minimum_start_ms = (
+        default_minimum_start_ms = (
             0
             if authority == SHIPSTREAM_PAGE_MASTER_AUTHORITY
             or (
@@ -380,6 +410,9 @@ def plan_source_cuts(
                 and authority.startswith(SHIPSTREAM_HISTORICAL_AUTHORITY_PREFIX)
             )
             else MIN_ORIGINAL_START_MS
+        )
+        minimum_start_ms = max(
+            default_minimum_start_ms, recipe.minimum_source_start_ms,
         )
         reserved = [
             (start, end)

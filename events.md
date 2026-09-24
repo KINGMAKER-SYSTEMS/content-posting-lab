@@ -702,3 +702,19 @@ type: [bug report] [refactor]: Capability job-history decode herd
 area: [backend] [testing]
 
 PR #150 merged as 11ddc57; branch deleted; Railway deployment 336ad350-c7cf-4a0e-9c3a-3f8600f043a5 and Docker app-import succeeded. Authenticated format registry and Healing/Chase catalogs initially returned 200 in 79/262/189ms; both live Dossiers reopened. Sustained verification caught renewed timeouts on the next capability burst, so that release is not full outage resolution. Live stack sampling found concurrent capability calls still decoding the entire 28 MB jobs store while recipe readers waited. Capability planning now shares a file-identity-checked read-only history snapshot; transaction writers still use fresh mutable loads and existing locks. All 171 focused tests pass, including immediate progress updates, same-size replacement with retained mtime, corrupt/missing history, and 120 concurrent reads decoding once. A separate read-only production-volume benchmark produced identical complete capability responses, improving 16 calls from 8.999s to 1.893s. Root AGENTS records read-only ownership; no child boundaries changed. No paid work, provider substitution, account changes or phone action performed. Follow-up live burst verification remains required.
+
+_________________________________________________________________________________
+time: [17:26 EDT] [24-09-26]
+agent: [Codex desktop] [gpt-6-astra]
+worktree: [feat/source-start-floor-20260924] [/Users/ecfromthedc/dev/wt/source-master-loop]
+type: [feature]: Durable per-page earliest source timestamp
+area: [backend] [source recut planning]
+
+Sourced-video recipes may now carry an optional `sourceStartMs` scalar in the
+existing production-controls map. The recut planner combines that page choice
+with the established raw-library/page-master minimum, so every refill skips the
+same unusable lead-in while absent controls preserve current behavior. The
+control is bounded to the supported two-hour master duration and invalid values
+make the recipe unexecutable. This deliberately leaves the shared executor
+catalog bytes unchanged, avoiding a fleet-wide catalog-version invalidation.
+The focused source-execution suite passes: 46 tests.
