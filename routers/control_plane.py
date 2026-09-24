@@ -716,7 +716,10 @@ VIDEO_EXTENSIONS = {".mp4", ".mov", ".webm", ".m4v"}
 MAX_JOB_QUANTITY = 100
 MAX_JOB_BODY_BYTES = 16_384
 MAX_GENERATION_JOB_BODY_BYTES = 512_000
-SOURCE_IMPORT_ACTIVE_DEADLINE_SECONDS = 20 * 60
+# Long creator masters are deliberately retained for recurring replenishment.
+# Their bounded download plus normalization can legitimately outlast the old
+# twenty-minute one-clip deadline, so do not recycle a healthy import midway.
+SOURCE_IMPORT_ACTIVE_DEADLINE_SECONDS = 6 * 60 * 60
 IDEMPOTENCY_KEY_RE = re.compile(r"^[A-Za-z0-9_.:-]{8,200}$")
 JOB_TOKEN_BYTES = 24
 GENERATION_ACTIVE_STATUSES = {"queued", "running"}

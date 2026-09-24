@@ -291,6 +291,20 @@ def test_expected_output_and_disk_capacity_fail_before_normalization(monkeypatch
         imports._require_free_space(tmp_path, 10)
 
 
+def test_long_creator_masters_fit_the_refillable_source_import_contract():
+    """One long master must remain a viable source for many future recuts."""
+    thirty_minutes_ms = 30 * 60 * 1_000
+    one_hour_ms = 60 * 60 * 1_000
+
+    assert imports.MAX_SOURCE_IMPORT_BYTES >= 3_080_000_000
+    assert imports.MAX_SOURCE_DURATION_MS >= one_hour_ms
+    assert imports._expected_normalized_bytes(thirty_minutes_ms) <= imports.MAX_NORMALIZED_SOURCE_BYTES
+    assert imports._expected_normalized_bytes(one_hour_ms) <= imports.MAX_NORMALIZED_SOURCE_BYTES
+    assert imports.MAX_SOURCE_IMPORT_WORKSPACE_BYTES >= (
+        imports.MAX_SOURCE_IMPORT_BYTES + imports.MAX_NORMALIZED_SOURCE_BYTES
+    )
+
+
 def test_workspace_overflow_cancels_download_and_removes_partial_directory(
     monkeypatch, tmp_path,
 ):
