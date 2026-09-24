@@ -1636,6 +1636,21 @@ async def _run_dossier_generation(job_id: str) -> None:
         )
         raise
     except Exception as error:  # provider and ffmpeg failures are job state
+        if (str(error) == "provider_generation_failed" and manifests
+                and _job_matches_current_master_pages(job)):
+            # Earlier calls already produced fully treated, claimed clips. A
+            # later provider failure ends this batch, not those paid outputs.
+            # Preserve requested/completed counts and the error; the consumer
+            # admits the actual artifacts and plans the remaining deficit.
+            await asyncio.to_thread(_update_job,
+                job_id,
+                status="completed",
+                progress=100,
+                clips=manifests,
+                error=str(error),
+                completedAt=datetime.now(timezone.utc).isoformat(),
+            )
+            return
         shutil.rmtree(job_root, ignore_errors=True)
         await asyncio.to_thread(_update_job,
             job_id,

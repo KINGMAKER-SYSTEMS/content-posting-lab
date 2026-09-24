@@ -272,6 +272,11 @@
   current job.
 
 - AI generation reserves prompt combinations only for queued or running jobs.
+  A later provider failure preserves already treated, claimed outputs as a
+  completed underfilled batch, retaining the provider error and planned/completed
+  call counts. Artifact count stays truthful; downstream refill plans the deficit
+  with a new job rather than replaying the failed provider call. Zero-output
+  failures, cancellation and changed page strategy retain their failure behavior.
   Final clip admission applies the same active-only prompt rule while retaining
   completed output SHA rejection and within-job prompt exclusion.
   Completed prompts remain approved inputs for fresh rendering; prompt text is
