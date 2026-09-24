@@ -100,6 +100,10 @@
 - Capability planning shares one read-only job-history snapshot per unchanged
   file identity. Job creation/progress/admission still load fresh mutable data
   under their existing transaction lock; never mutate the capability snapshot.
+- Generated capability planning stops after enough distinct available prompts
+  to reach the delivery ceiling; it still searches through reservations and
+  duplicate prompts to prove partial capacity or exhaustion. This does not
+  change generation quantities, reservation semantics or source recut policy.
 
 - Caption rendering accepts the shared `CaptionStyle` wire fields only. A saved
   caption layout may supply exact line breaks and final-frame outline width;

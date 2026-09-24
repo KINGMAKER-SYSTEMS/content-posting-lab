@@ -948,7 +948,7 @@ def _generated_capability_quantity(
     available_calls = len(plan_prompt_combinations(
         recipe,
         f"capability:{page_id}:{recipe.prompt_catalog_hash}:{recipe.family_name}",
-        prompt_combination_space(recipe),
+        recipe.planned_provider_calls(MAX_CAPABILITY_QUANTITY),
         unavailable_hashes,
         unavailable_slots,
     ))

@@ -236,6 +236,33 @@ def test_job_idempotency_replays_a_legacy_row_without_a_request_hash(lab):
     }.isdisjoint({item["promptHash"] for item in second_job["promptPlan"]})
 
 
+@pytest.mark.parametrize("remaining", [0, 1, 2, 10000])
+def test_generated_capability_bounds_planning_without_changing_capacity(lab, monkeypatch, remaining):
+    publication = recipes.load_registered_recipe(
+        PAGE_ID, "truck-scenic:master", "ai_video", "dossier-1234567890abcdef",
+    )
+    recipe = cp.resolve_generation_recipe(publication)
+    assert recipe is not None
+    planner = cp.plan_prompt_combinations
+    all_prompts = planner(recipe, "test-capacity", cp.prompt_combination_space(recipe), set())
+    available = min(remaining, len(all_prompts))
+    blocked = {row["promptHash"] for row in all_prompts[:len(all_prompts) - available]}
+    monkeypatch.setattr(cp, "_generated_unavailable_prompts", lambda *args: (blocked, set()))
+    requested = []
+
+    def observed_planner(recipe, run_id, count, hashes, slots):
+        requested.append(count)
+        return planner(recipe, run_id, count, hashes, slots)
+
+    monkeypatch.setattr(cp, "plan_prompt_combinations", observed_planner)
+    # Isolate fresh-generation capacity from the separately tested truck recuts.
+    quantity = cp._generated_capability_quantity(
+        {"jobs": {}}, recipe, PAGE_ID, {"contentNiche": "COFFEE"}, publication["recipeSpecHash"],
+    )
+    assert quantity == min(cp.MAX_CAPABILITY_QUANTITY, available * recipe.clips_per_generation)
+    assert requested == [recipe.planned_provider_calls(cp.MAX_CAPABILITY_QUANTITY)]
+
+
 @pytest.mark.parametrize("status", ["queued", "running"])
 def test_capability_reaches_zero_when_every_active_prompt_is_reserved(lab, status):
     client, _, started = lab
