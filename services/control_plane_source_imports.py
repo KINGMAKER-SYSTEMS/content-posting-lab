@@ -29,13 +29,18 @@ SOURCE_IMPORT_SCHEMA = "content-lab.source-import-request.v1"
 SOURCE_PROVENANCE_SCHEMA = "content-lab.page-source-import-source.v1"
 MAX_SOURCE_URL_CHARS = 4_096
 SOURCE_IMPORT_HOSTS_ENV = "CONTENT_LAB_SOURCE_IMPORT_HOSTS"
-MAX_SOURCE_IMPORT_BYTES = 1_000_000_000
-MAX_SOURCE_IMPORT_WORKSPACE_BYTES = 2_000_000_000
-MAX_NORMALIZED_SOURCE_BYTES = 2_000_000_000
+# A source import is the page's replenishable master, not a single posting
+# clip.  Keep enough room for the long originals creators supply (and for the
+# normalized master that exists beside the download during transcode).  The
+# source-DNA contract already accepts 20 GB masters; these limits must not
+# reject them before that contract gets a chance to own the bytes.
+MAX_SOURCE_IMPORT_BYTES = 20_000_000_000
+MAX_SOURCE_IMPORT_WORKSPACE_BYTES = 40_000_000_000
+MAX_NORMALIZED_SOURCE_BYTES = 20_000_000_000
 MIN_SOURCE_IMPORT_FREE_BYTES = 512_000_000
-MAX_SOURCE_IMPORT_SECONDS = 300
-MAX_SOURCE_NORMALIZE_SECONDS = 600
-MAX_SOURCE_DURATION_MS = 720_000
+MAX_SOURCE_IMPORT_SECONDS = 7_200
+MAX_SOURCE_NORMALIZE_SECONDS = 10_800
+MAX_SOURCE_DURATION_MS = 7_200_000
 MAX_NORMALIZED_BITRATE_BPS = 20_000_000
 MAX_CONCURRENT_SOURCE_IMPORTS = 2
 SOURCE_IMPORT_POLL_SECONDS = 0.25
@@ -438,10 +443,13 @@ async def download_source_video(source_url: str, destination: Path) -> SourceImp
     destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     original_target = destination.with_name("original.mp4")
     try:
-        _require_free_space(
-            destination.parent,
-            MAX_SOURCE_IMPORT_WORKSPACE_BYTES + MIN_SOURCE_IMPORT_FREE_BYTES,
-        )
+        # The source size is not knowable until yt-dlp has acquired it.  Do not
+        # require the full worst-case workspace up front: that turns a small
+        # usable master into a false "disk full" failure merely because the
+        # configured ceiling is large.  The live workspace meter remains the
+        # hard upper bound while downloading, and the exact two-file demand is
+        # checked before transcode below.
+        _require_free_space(destination.parent, MIN_SOURCE_IMPORT_FREE_BYTES)
         downloaded = Path(await _download_with_workspace_limit(
             source_url, original_target,
         )).resolve()
