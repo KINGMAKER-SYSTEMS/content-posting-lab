@@ -48,6 +48,7 @@ import shutil
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
+from threading import Lock
 from typing import Any
 from urllib.parse import quote, urlparse
 
@@ -252,7 +253,7 @@ def capabilities(
     master_pages, master_pages_hash = current
 
     entries = []
-    job_store = _load_jobs()
+    job_store = _read_jobs_snapshot()
     completed_import_identities = sorted({
         identity
         for job in job_store.get("jobs", {}).values()
@@ -761,6 +762,42 @@ def _load_jobs() -> dict[str, Any]:
     if not isinstance(data, dict) or "jobs" not in data:
         return _empty_jobs()
     return data
+
+
+_jobs_snapshot_lock = Lock()
+_jobs_snapshot: tuple[Path, tuple[int, ...], dict[str, Any]] | None = None
+
+
+def _jobs_signature(stat: os.stat_result) -> tuple[int, ...]:
+    return (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+
+
+def _read_jobs_snapshot() -> dict[str, Any]:
+    """Read-only capability input; mutations always use fresh _load_jobs().
+
+    Concurrent page polls must not each decode the entire growing job history.
+    Check the current file on every call and coalesce decoding of unchanged
+    bytes. Atomic replacement makes completed writes visible immediately.
+    """
+    global _jobs_snapshot
+    path = _jobs_path()
+    with _jobs_snapshot_lock:
+        try:
+            signature = _jobs_signature(path.stat())
+            if _jobs_snapshot is not None and _jobs_snapshot[:2] == (path, signature):
+                return _jobs_snapshot[2]
+            with path.open("r", encoding="utf-8") as handle:
+                before = _jobs_signature(os.fstat(handle.fileno()))
+                data = json.load(handle)
+                after = _jobs_signature(os.fstat(handle.fileno()))
+            if before != after or not isinstance(data, dict) or "jobs" not in data:
+                _jobs_snapshot = None
+                return _empty_jobs()
+            _jobs_snapshot = (path, after, data)
+            return data
+        except (OSError, ValueError):
+            _jobs_snapshot = None
+            return _empty_jobs()
 
 
 def _reject_prompt_fields(value: Any, path: str = "job") -> None:
