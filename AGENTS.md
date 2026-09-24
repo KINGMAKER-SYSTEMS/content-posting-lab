@@ -169,7 +169,7 @@
   the same request and idempotency key may resurrect only the exact
   `source_import_runtime_restarted` failure; it reuses the job id under the
   current runtime after cleaning its artifact root. A status read retires an
-  active import after its 20-minute bounded runtime, measured from the latest
+  active import after its six-hour bounded runtime, measured from the latest
   restart, and sends it through that same idempotent restart path. Every other
   terminal failure remains terminal.
 - ShipStream `content_lab_page_source_import` manifests are executable only
