@@ -294,7 +294,9 @@ def test_youtube_source_import_falls_back_to_cookies_after_the_bot_check(
     assert out == tmp_path / "o.mp4"
     (public, public_options), (retry, retry_options) = calls
     assert "--cookies" not in public
-    assert retry[retry.index("--cookies") + 1] == str(cookies)
+    private = Path(retry[retry.index("--cookies") + 1])
+    assert private != cookies and private.parent == tmp_path
+    assert not private.exists()
     for command, options in ((public, public_options), (retry, retry_options)):
         assert "--no-check-certificates" not in command
         assert "--cookies-from-browser" not in command
@@ -336,3 +338,35 @@ def test_public_youtube_source_import_succeeds_without_touching_cookies(
 
     assert len(calls) == 1
     assert "--cookies" not in calls[0][0]
+
+
+def test_youtube_source_import_never_writes_the_shared_cookie_jar(monkeypatch, tmp_path):
+    """yt-dlp rewrites its --cookies file on exit; imports run concurrently."""
+    seen = []
+
+    async def _exec(*cmd, **kwargs):
+        cmd = list(cmd)
+        if "--cookies" in cmd:
+            jar = Path(cmd[cmd.index("--cookies") + 1])
+            seen.append(jar.read_text())
+            jar.write_text("# rewritten by yt-dlp\n")
+            Path(cmd[cmd.index("-o") + 1]).write_bytes(b"mp4")
+            return _FakeProc(0, b"")
+        return _FakeProc(1, _BOT_CHECK)
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _exec)
+    monkeypatch.setattr(fe, "_in_container", lambda: True)
+    shared = tmp_path / "shared" / "cookies.txt"
+    shared.parent.mkdir()
+    shared.write_text("# Netscape HTTP Cookie File\nshared\n")
+    monkeypatch.setattr(fe, "get_cookies_path", lambda: shared)
+    work = tmp_path / "work"
+    work.mkdir()
+
+    asyncio.run(fe.download_video(
+        "https://www.youtube.com/watch?v=bxkIIQKC8aA", work / "o.mp4", source_import_mode=True,
+    ))
+
+    assert seen == ["# Netscape HTTP Cookie File\nshared\n"]
+    assert shared.read_text() == "# Netscape HTTP Cookie File\nshared\n"
+    assert sorted(p.name for p in work.iterdir()) == ["o.mp4"]
