@@ -7,6 +7,24 @@ import shutil
 log = logging.getLogger("fsutil")
 
 
+def is_within(target, root) -> bool:
+    """True if ``target``'s real path is strictly inside ``root``'s real path.
+
+    Use this for path containment instead of a string-prefix test:
+    ``"/projects/p"`` is a string prefix of ``"/projects/page_roster.json"``
+    and of ``"/projects/p-evil/x"``. Symlinks and ``..`` are resolved first,
+    and ``root`` itself does not count as inside.
+    """
+    real_root = os.path.realpath(root)
+    real = os.path.realpath(target)
+    if real == real_root:
+        return False
+    try:
+        return os.path.commonpath([real, real_root]) == real_root
+    except ValueError:  # different drives / mixed absolute and relative
+        return False
+
+
 def safe_rmtree(path) -> bool:
     """Best-effort recursive delete of directory ``path``; never raises.
 

@@ -111,6 +111,11 @@
   `/send-batch` and `/assign-batch` take one batch-dir segment and skip files
   that resolve outside it. `routers/video.py` accepts `project` only as one
   directory name under the projects root and checks containment on real paths.
+- Path containment uses `services.fsutil.is_within` (real paths, component-wise),
+  never a string prefix: project `p` is a string prefix of
+  `projects/page_roster.json`. `/api/burn/overlay` also takes `batchId` as one
+  directory name. While APP_API_KEY is unset these server-side checks are the
+  only guard on `/api/*`.
 - Format-contract HTTP reads use a separate two-permit thread limiter, not the
   shared synchronous endpoint pool. Preserve per-request registry validation,
   authentication, current-file visibility and fail-closed errors; disk reads

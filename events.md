@@ -889,3 +889,11 @@ unset in production; while it is, the middleware stays inert there, and the
 `/send` confinement is what applies. Campaign Hub's sound-assignment proxies call
 /api/telegram without a key and will need one if APP_API_KEY is set. New tests
 fail on main (150 of 163) and pass here. No deploy was performed.
+Follow-up in the same branch: `/api/burn/overlay` checked its source with a
+string prefix, so project `p` (a prefix of `projects/page_roster.json`) or `c`
+(`cookies.txt`) queued a copy of that file into
+`projects/<p>/burned/<batch>/burned_000.mp4`, which /send and the /projects
+mount then serve. It now uses the shared real-path `services.fsutil.is_within`
+and takes `batchId` as one directory name. A sweep of routers/ and services/
+found no other string-prefix filesystem containment. New burn tests fail on
+main (10 of 13) and pass here.

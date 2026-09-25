@@ -20,7 +20,7 @@ from project_manager import PROJECTS_DIR, get_project_video_dir
 from providers import PROVIDERS
 from providers.base import API_KEYS, generate_one
 from services.ffmpeg import is_default_cc, run_color_correct
-from services.fsutil import safe_unlink
+from services.fsutil import is_within as _contained_in, safe_unlink
 from services.json_store import atomic_save
 
 log = logging.getLogger("video")
@@ -70,13 +70,6 @@ def _require_project(project) -> str:
         return _safe_project(project)
     except ValueError:
         raise HTTPException(400, "Invalid project")
-
-
-def _contained_in(target: Path, root: Path) -> bool:
-    """True if ``target``'s real path is strictly inside ``root``'s real path."""
-    real_root = Path(os.path.realpath(root))
-    real = Path(os.path.realpath(target))
-    return real != real_root and real.is_relative_to(real_root)
 
 
 def _resolve_safe_video_path(project: str, path: str) -> Path:
