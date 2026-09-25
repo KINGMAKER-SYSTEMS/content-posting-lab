@@ -41,6 +41,7 @@ from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import hmac
 import json
+import logging
 import math
 import os
 import re
@@ -59,7 +60,12 @@ from fastapi import APIRouter, Header, HTTPException
 
 from project_manager import PROJECTS_DIR
 from providers import PROVIDERS
-from providers.base import classify_provider_error, generate_one, multi_crop_vertical
+from providers.base import (
+    classify_provider_error,
+    generate_one,
+    multi_crop_vertical,
+    provider_error_code,
+)
 from routers.control_plane_recipes import (
     LANE as CONTROL_PLANE_LANE,
     list_registered_recipe_bindings,
@@ -123,6 +129,7 @@ from services.source_treatment import (
 )
 
 router = APIRouter()
+log = logging.getLogger("control_plane")
 
 RESPONSE_SCHEMA = "content-lab.response.v1"
 ENGINE = "content_lab"
@@ -1658,8 +1665,10 @@ async def _run_owned_dossier_generation(job_id: str) -> None:
                 # not, and credit exhaustion needs a different response than
                 # a transient provider fault.
                 provider_error = str(entry.get("error") or "")
+                error_class = classify_provider_error(provider_error)
+                error_detail = provider_error_code(provider_error)
                 failure = {
-                    "class": classify_provider_error(provider_error),
+                    "class": error_class,
                     "provider": recipe.engine,
                     "model": recipe.provider_model,
                     "generationIndex": call_index,
@@ -1668,8 +1677,17 @@ async def _run_owned_dossier_generation(job_id: str) -> None:
                     "at": datetime.now(timezone.utc).isoformat(),
                 }
                 provider_failures.append(failure)
+                # errorClass/errorDetail (latest failure) are job-record and log
+                # facts only: the Worker rejects unknown fields on
+                # GET /v1/jobs/{id}, so the status response is left unchanged.
+                log.warning(
+                    "job=%s generation=%d provider=%s errorClass=%s errorDetail=%s",
+                    job_id, call_index, recipe.engine, error_class, error_detail,
+                )
                 await asyncio.to_thread(_update_job,
                     job_id,
+                    errorClass=error_class,
+                    errorDetail=error_detail,
                     providerFailure=failure,
                     providerFailures=provider_failures,
                 )

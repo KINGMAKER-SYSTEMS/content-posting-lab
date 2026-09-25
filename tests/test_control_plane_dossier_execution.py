@@ -1217,3 +1217,54 @@ async def test_zero_output_provider_failure_records_its_class_without_changing_t
     ).json()
     assert set(status) == {"schema", "jobId", "status", "progress", "error"}
     assert status["error"] == "provider_generation_failed"
+
+
+@pytest.mark.asyncio
+async def test_moderation_failure_records_error_class_and_code_on_the_job_only(lab, monkeypatch, caplog):
+    # 2026-09-25: silhouette FLUX calls failed with Replicate E005 "flagged as
+    # sensitive" and the Worker saw only provider_generation_failed. The class
+    # and short provider code are kept on the job record and in the Lab log;
+    # the Worker rejects unknown status fields, so that response is unchanged.
+    client, _, _ = lab
+    job_id = client.post("/api/control-plane/v1/jobs", json=job_body(quantity=2), headers=HEADERS).json()["jobId"]
+
+    async def flagged(provider_job_id, index, provider, prompt, aspect_ratio, resolution,
+                      duration, image_data_uri, jobs, output_dir, url_prefix, **extra):
+        jobs[provider_job_id]["videos"][index].update({
+            "status": "error",
+            "provider_request_id": "pred-1",
+            "error": (
+                "Replicate failed: The input or output was flagged as sensitive. "
+                "Please try again with different inputs. (E005)"
+            ),
+        })
+
+    monkeypatch.setattr(cp, "generate_one", flagged)
+    with caplog.at_level("WARNING", logger="control_plane"):
+        await cp._run_dossier_generation(job_id)
+
+    stored = cp._load_jobs()["jobs"][job_id]
+    assert stored["status"] == "failed"
+    assert stored["error"] == "provider_generation_failed"
+    assert stored["errorClass"] == "moderation"
+    assert stored["errorDetail"] == "E005"
+    assert stored["providerFailure"]["class"] == "moderation"
+    assert "errorClass=moderation errorDetail=E005" in caplog.text
+
+    status = client.get(
+        f"/api/control-plane/v1/jobs/{job_id}",
+        headers={"Authorization": f"Bearer {TOKEN}", "X-RT-Page-Id": PAGE_ID},
+    ).json()
+    assert set(status) == {"schema", "jobId", "status", "progress", "error"}
+    assert status["error"] == "provider_generation_failed"
+
+
+def test_provider_error_code_is_short_and_carries_no_message_text():
+    from providers.base import provider_error_code
+
+    assert provider_error_code("Replicate failed: flagged as sensitive (E005)") == "E005"
+    assert provider_error_code(
+        'Replicate start failed: {"title":"Insufficient credit","status":402}'
+    ) == "HTTP 402"
+    assert provider_error_code("Replicate failed: interrupted (code: PA)") == "PA"
+    assert provider_error_code("ReadTimeout('')") is None

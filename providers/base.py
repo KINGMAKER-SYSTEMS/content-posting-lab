@@ -243,6 +243,22 @@ def classify_provider_error(message: object) -> str:
     return "other"
 
 
+_PROVIDER_ERROR_CODE = re.compile(r"\((?:code:\s*)?(E\d{3,4}|PA)\)")
+_PROVIDER_HTTP_STATUS = re.compile(r'"status":\s*(\d{3})')
+
+
+def provider_error_code(message: object) -> str | None:
+    """Extract a short, non-secret provider code such as ``E005`` or ``HTTP 402``."""
+    text = str(message or "")
+    code = _PROVIDER_ERROR_CODE.search(text)
+    if code:
+        return code.group(1)
+    status = _PROVIDER_HTTP_STATUS.search(text)
+    if status:
+        return f"HTTP {status.group(1)}"
+    return None
+
+
 def slugify(text: str, max_len: int = 40) -> str:
     """Turn a prompt into a filesystem-safe folder name."""
     s = text.lower().strip()
