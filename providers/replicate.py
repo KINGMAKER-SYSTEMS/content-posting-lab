@@ -1,11 +1,13 @@
 """Replicate API provider — video models plus FLUX.2 still generation."""
 
 import asyncio
+import re
 import time
 
 import httpx
 
 from .base import API_KEYS
+from services.generation_recovery import input_hash
 
 REPLICATE_API = "https://api.replicate.com/v1"
 
@@ -283,12 +285,18 @@ async def _cancel_prediction(client: httpx.AsyncClient, headers: dict, pred_id: 
 
 async def _await_prediction(
     client: httpx.AsyncClient, headers: dict, pred_id: str,
+    *, remaining_seconds: float | None = None,
 ) -> tuple[str, object]:
     """Poll one existing prediction. Returns ("succeeded", output) or (status, error)."""
     poll_url = f"{REPLICATE_API}/predictions/{pred_id}"
-    deadline = _now() + PREDICTION_DEADLINE_SECONDS
+    deadline = _now() + (PREDICTION_DEADLINE_SECONDS if remaining_seconds is None else max(0, remaining_seconds))
     transient = 0
-    while _now() < deadline:
+    # A completed prediction may have finished while the process was down.
+    # Observe that exact id once even past its processing deadline, never
+    # extend the time allowed for a still-running recovered prediction.
+    first = remaining_seconds is not None
+    while first or _now() < deadline:
+        first = False
         data = None
         try:
             r = await client.get(poll_url, headers=headers, timeout=30)
@@ -336,11 +344,51 @@ async def generate(prompt: str, params: dict, client: httpx.AsyncClient) -> str:
         raise RuntimeError(f"No input builder for model: {model_id}")
     input_params = builder(prompt, params)
 
-    for submission in range(INTERRUPTED_RESUBMITS + 1):
-        pred_id = await _start_prediction(client, headers, model_id, input_params)
+    checkpoint = entry.get("_prediction_checkpoint")
+    record = checkpoint.record if checkpoint is not None else None
+    fingerprint = input_hash(model_id, input_params)
+    if record:
+        if record.get("model") != model_id or record.get("inputHash") != fingerprint:
+            raise RuntimeError("generation_checkpoint_input_mismatch")
+        if record.get("state") not in {"submitted", "retry_ready"}:
+            raise RuntimeError("generation_submission_uncertain")
+        if type(record.get("submission")) is not int or not 0 <= record["submission"] <= INTERRUPTED_RESUBMITS:
+            raise RuntimeError("generation_checkpoint_invalid")
+    first_submission = record["submission"] if record else 0
+
+    for submission in range(first_submission, INTERRUPTED_RESUBMITS + 1):
+        record = checkpoint.record if checkpoint is not None else None
+        resume = bool(record and record.get("state") == "submitted")
+        if resume:
+            pred_id = record.get("predictionId")
+            if not isinstance(pred_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", pred_id):
+                raise RuntimeError("generation_checkpoint_invalid")
+            started = record.get("submittedAt")
+            if type(started) not in (int, float) or not 0 < started <= time.time() + 1:
+                raise RuntimeError("generation_checkpoint_invalid")
+        else:
+            started = time.time()
+            state = {"model": model_id, "inputHash": fingerprint,
+                     "submission": submission, "submittedAt": started,
+                     "state": "submitting"}
+            if checkpoint is not None:
+                await checkpoint.save(state)
+            pred_id = await _start_prediction(client, headers, model_id, input_params)
+            # Safe 429/connection backoff precedes acceptance, not processing.
+            # Preserve the original ten-minute budget from the accepted id.
+            started = time.time()
+            if checkpoint is not None:
+                await checkpoint.save({**state, "state": "submitted", "predictionId": pred_id,
+                                       "submittedAt": started})
         entry["provider_request_id"] = pred_id
         entry["status"] = "polling"
-        status, result = await _await_prediction(client, headers, pred_id)
+        if checkpoint is not None:
+            status, result = await _await_prediction(
+                client, headers, pred_id,
+                remaining_seconds=PREDICTION_DEADLINE_SECONDS - (time.time() - started),
+            )
+        else:
+            status, result = await _await_prediction(client, headers, pred_id)
         if status == "succeeded":
             if isinstance(result, str):
                 return result
@@ -352,6 +400,10 @@ async def generate(prompt: str, params: dict, client: httpx.AsyncClient) -> str:
             and _INTERRUPTED_MARKER in str(result)
             and submission < INTERRUPTED_RESUBMITS
         ):
+            if checkpoint is not None:
+                await checkpoint.save({"model": model_id, "inputHash": fingerprint,
+                                       "submission": submission + 1, "state": "retry_ready",
+                                       "interruptedPredictionId": pred_id})
             continue
         raise RuntimeError(f"Replicate {status}: {result}")
     raise RuntimeError("Replicate generation failed: resubmissions exhausted")  # pragma: no cover

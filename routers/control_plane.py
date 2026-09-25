@@ -58,6 +58,7 @@ import anyio
 from fastapi import APIRouter, Header, HTTPException
 
 from project_manager import PROJECTS_DIR
+from providers import PROVIDERS
 from providers.base import classify_provider_error, generate_one, multi_crop_vertical
 from routers.control_plane_recipes import (
     LANE as CONTROL_PLANE_LANE,
@@ -720,7 +721,8 @@ import secrets as _secrets
 from fastapi import Body, Request
 from fastapi.responses import FileResponse
 
-from services.json_store import atomic_load, atomic_save, lock_for
+from services.json_store import atomic_load, atomic_save
+from services.generation_recovery import PredictionCheckpoint, runner_lock, store_lock as lock_for
 
 JOBS_STORE_NAME = "control_plane_jobs.json"
 JOB_ID_PREFIX = "cpl-"
@@ -1182,6 +1184,39 @@ def _update_job(job_id: str, **fields: Any) -> dict[str, Any] | None:
         return dict(job)
 
 
+def _checkpointed_generation(job: dict[str, Any]) -> bool:
+    return job.get("sourceKind") == "generated" and job.get("generationCheckpointVersion") == 1
+
+
+def _needs_generation_resume(job: dict[str, Any]) -> bool:
+    return (_checkpointed_generation(job) and job.get("status") in GENERATION_ACTIVE_STATUSES
+            and (job.get("runtimeId") != _GENERATION_RUNTIME_ID or job.get("resumePending") is True))
+
+
+def _save_prediction_checkpoint(job_id: str, call_index: int, record: dict) -> None:
+    with lock_for(_jobs_path()):
+        store = _load_jobs()
+        job = store["jobs"][job_id]
+        if job.get("status") not in GENERATION_ACTIVE_STATUSES:
+            raise RuntimeError("generation_checkpoint_job_not_active")
+        job.setdefault("providerCheckpoints", {})[str(call_index)] = record
+        atomic_save(_jobs_path(), store)
+
+
+def _verify_preserved_generation(job_root: Path, clips: list) -> None:
+    for clip in clips:
+        for artifact in [clip, clip.get("source"), clip.get("thumbnail"), clip.get("generatedStill")]:
+            if artifact is None:
+                continue
+            if not isinstance(artifact, dict) or not isinstance(artifact.get("path"), str):
+                raise RuntimeError("generation_checkpoint_artifact_invalid")
+            path = (job_root / artifact["path"]).resolve()
+            if (job_root not in path.parents or not path.is_file()
+                    or path.stat().st_size != artifact.get("bytes")
+                    or _sha256(path) != artifact.get("sha256")):
+                raise RuntimeError("generation_checkpoint_artifact_mismatch")
+
+
 def _claim_unique_generated_clip(
     job_id: str, manifest: dict[str, Any],
 ) -> None:
@@ -1442,6 +1477,18 @@ def _validated_provider_candidates(entry: dict[str, Any], crop_mode: Any) -> lis
 
 
 async def _run_dossier_generation(job_id: str) -> None:
+    _get_job_or_404(job_id)  # Validate the id before deriving a lock filename.
+    with runner_lock(_jobs_path(), job_id) as acquired:
+        if not acquired:
+            return  # Another live runtime still owns this exact provider work.
+        job = _get_job_or_404(job_id)
+        if job.get("status") not in GENERATION_ACTIVE_STATUSES:
+            return
+        await asyncio.to_thread(_update_job, job_id, runtimeId=_GENERATION_RUNTIME_ID)
+        await _run_owned_dossier_generation(job_id)
+
+
+async def _run_owned_dossier_generation(job_id: str) -> None:
     job = _get_job_or_404(job_id)
     if not _job_matches_current_master_pages(job):
         await asyncio.to_thread(_update_job,
@@ -1474,7 +1521,11 @@ async def _run_dossier_generation(job_id: str) -> None:
         return
 
     job_root = Path(job["artifactRoot"]).resolve()
-    render_root = job_root / "renders"
+    durable = _checkpointed_generation(job)
+    resuming = durable and bool(job.get("providerCheckpoints") or job.get("clips"))
+    # Never rewrite bytes already referenced by a preserved manifest when an
+    # interrupted crop/treatment is rebuilt from the same paid prediction.
+    render_root = job_root / ("renders-resume-" + _secrets.token_hex(6) if resuming else "renders")
     treated_root = job_root / "treated"
     render_root.mkdir(parents=True, exist_ok=True, mode=0o700)
     options = generation_options(recipe)
@@ -1485,9 +1536,10 @@ async def _run_dossier_generation(job_id: str) -> None:
     color_correction = dossier_filters_to_color_correction(recipe)
     clip_speed = dossier_clip_speed(recipe)
     clip_crop = dossier_clip_crop(recipe)
-    manifests: list[dict[str, Any]] = []
-    provider_failures: list[dict[str, Any]] = []
-    provider_calls_completed = 0
+    manifests: list[dict[str, Any]] = list(job.get("clips", [])) if durable else []
+    provider_failures: list[dict[str, Any]] = list(job.get("providerFailures", [])) if durable else []
+    completed_calls = list(job.get("completedGenerationCalls", [])) if durable else []
+    provider_calls_completed = len(completed_calls)
     prompt_plan = job.get("promptPlan")
     if (
         not isinstance(prompt_plan, list)
@@ -1507,18 +1559,71 @@ async def _run_dossier_generation(job_id: str) -> None:
             completedAt=datetime.now(timezone.utc).isoformat(),
         )
         return
-    await asyncio.to_thread(_update_job,job_id, status="running", progress=0, providerCallsCompleted=0)
+    await asyncio.to_thread(_update_job,job_id, status="running", resumePending=False,
+                           providerCallsCompleted=provider_calls_completed)
 
     try:
+        if (any(type(index) is not int or index < 0 or index >= calls for index in completed_calls)
+                or len(completed_calls) != len(set(completed_calls))):
+            raise RuntimeError("generation_checkpoint_invalid")
+        if manifests:
+            await asyncio.to_thread(_verify_preserved_generation, job_root, manifests)
+        expected_crops = {"dual": 2, "triptych": 3, "both": 5}.get(options.get("crop_mode"), 1)
+        seen_candidates = set()
+        for clip in manifests:
+            index = clip.get("generationIndex")
+            crop = clip.get("delivery", {}).get("crop", {})
+            candidate_index = crop.get("index", 0)
+            if (type(index) is not int or not 0 <= index < calls
+                    or clip.get("promptHash") != prompt_plan[index]["promptHash"]
+                    or clip.get("promptCombinationId") != prompt_plan[index]["combinationId"]
+                    or type(candidate_index) is not int or not 0 <= candidate_index < expected_crops
+                    or (index, candidate_index) in seen_candidates
+                    or (expected_crops > 1 and crop.get("count") != expected_crops)
+                    or clip.get("sourceTreatment") != source_treatment_receipt(
+                        job, recipe.recipe_spec["renderTreatment"], clip["sha256"],
+                        clip_speed=clip_speed, clip_crop=clip_crop)):
+                raise RuntimeError("generation_checkpoint_provenance_mismatch")
+            seen_candidates.add((index, candidate_index))
+        for index in range(calls):
+            group = [clip for clip in manifests if clip.get("generationIndex") == index]
+            complete = (len(group) == expected_crops
+                        and {clip.get("delivery", {}).get("crop", {}).get("index", 0) for clip in group}
+                        == set(range(expected_crops))
+                        and all(clip.get("promptHash") == prompt_plan[index]["promptHash"] for clip in group))
+            if complete and index not in completed_calls:
+                # The last claim may have been committed immediately before
+                # death, without the subsequent completed-call counter write.
+                completed_calls.append(index)
+            elif index in completed_calls and not complete:
+                raise RuntimeError("generation_checkpoint_incomplete_call")
+        provider_calls_completed = len(completed_calls)
         for call_index in range(calls):
             if not _job_matches_current_master_pages(job):
                 raise RuntimeError("master_pages_strategy_changed")
+            if call_index in completed_calls:
+                continue
+            prior_failure = next((failure for failure in provider_failures
+                                  if failure.get("generationIndex") == call_index), None)
+            if prior_failure is not None:
+                if (prior_failure.get("class") == "moderation"
+                        and isinstance(prior_failure.get("providerRequestId"), str)
+                        and prior_failure["providerRequestId"].strip()
+                        and str(prior_failure.get("detail", "")).startswith("Replicate failed:")):
+                    continue
+                raise RuntimeError("provider_generation_failed")
             provider_job_id = f"{job_id}-g{call_index:02d}"
             provider_jobs = {
                 provider_job_id: {
                     "videos": [{"index": 0, "status": "queued"}],
                 }
             }
+            if durable:
+                def persist(record, index=call_index):
+                    _save_prediction_checkpoint(job_id, index, record)
+                provider_jobs[provider_job_id]["videos"][0]["_prediction_checkpoint"] = PredictionCheckpoint(
+                    job.get("providerCheckpoints", {}).get(str(call_index)), persist,
+                )
             prompt_entry = prompt_plan[call_index]
             prompt, slots = compose_prompt_combination(
                 recipe, prompt_entry["combinationId"],
@@ -1581,6 +1686,10 @@ async def _run_dossier_generation(job_id: str) -> None:
                 raise RuntimeError("provider_generation_failed")
             candidates = _validated_provider_candidates(entry, options.get("crop_mode"))
             for candidate_index, candidate in enumerate(candidates):
+                if any(clip.get("generationIndex") == call_index
+                       and clip.get("delivery", {}).get("crop", {}).get("index", 0) == candidate_index
+                       for clip in manifests):
+                    continue  # Exact preserved bytes were checked above.
                 rel_path = candidate.get("file") if isinstance(candidate, dict) else None
                 if not isinstance(rel_path, str) or not rel_path:
                     raise RuntimeError("provider_artifact_missing")
@@ -1678,16 +1787,23 @@ async def _run_dossier_generation(job_id: str) -> None:
                 _claim_unique_generated_clip(job_id, manifest)
                 manifests.append(manifest)
             provider_calls_completed += 1
+            completed_calls.append(call_index)
             await asyncio.to_thread(_update_job,
                 job_id,
                 progress=int(((call_index + 1) / calls) * 100),
                 providerCallsCompleted=provider_calls_completed,
+                completedGenerationCalls=completed_calls,
             )
         if provider_failures:
             # Retain the same truthful partial/zero-output terminal handling,
             # including the error, after all independent planned candidates.
             raise RuntimeError("provider_generation_failed")
-    except asyncio.CancelledError:
+    except asyncio.CancelledError as cancelled:
+        if durable and cancelled.args == ("generation_runtime_shutdown",):
+            # Only application shutdown pauses work. An explicit cancellation
+            # or changed strategy retains its existing terminal behavior.
+            await asyncio.to_thread(_update_job, job_id, status="queued", resumePending=True)
+            raise
         shutil.rmtree(job_root, ignore_errors=True)
         await asyncio.to_thread(_update_job,
             job_id,
@@ -1697,7 +1813,9 @@ async def _run_dossier_generation(job_id: str) -> None:
         )
         raise
     except Exception as error:  # provider and ffmpeg failures are job state
-        if (str(error) == "provider_generation_failed" and manifests
+        complete_manifests = [clip for clip in manifests
+                              if not durable or clip.get("generationIndex") in completed_calls]
+        if (str(error) == "provider_generation_failed" and complete_manifests
                 and _job_matches_current_master_pages(job)):
             # Earlier calls already produced fully treated, claimed clips. A
             # later provider failure ends this batch, not those paid outputs.
@@ -1707,12 +1825,16 @@ async def _run_dossier_generation(job_id: str) -> None:
                 job_id,
                 status="completed",
                 progress=100,
-                clips=manifests,
+                clips=complete_manifests,
+                uncompletedGenerationClips=[clip for clip in manifests if clip not in complete_manifests],
+                providerCallsCompleted=len(completed_calls),
+                completedGenerationCalls=completed_calls,
                 error=str(error),
                 completedAt=datetime.now(timezone.utc).isoformat(),
             )
             return
-        shutil.rmtree(job_root, ignore_errors=True)
+        if not resuming:
+            shutil.rmtree(job_root, ignore_errors=True)
         await asyncio.to_thread(_update_job,
             job_id,
             status="failed",
@@ -1734,6 +1856,8 @@ async def _run_dossier_generation(job_id: str) -> None:
         status="completed",
         progress=100,
         clips=manifests,
+        providerCallsCompleted=len(completed_calls),
+        completedGenerationCalls=completed_calls,
         completedAt=datetime.now(timezone.utc).isoformat(),
     )
 
@@ -2346,9 +2470,22 @@ _syzygy_slideshow_tasks: dict[str, asyncio.Task] = {}
 
 
 def _start_dossier_generation(job_id: str) -> None:
+    current = _generation_tasks.get(job_id)
+    if current is not None and not current.done():
+        return
     task = asyncio.create_task(_run_dossier_generation(job_id))
     _generation_tasks[job_id] = task
-    task.add_done_callback(lambda _: _generation_tasks.pop(job_id, None))
+    task.add_done_callback(lambda completed: _generation_tasks.pop(job_id, None)
+                           if _generation_tasks.get(job_id) is completed else None)
+
+
+async def shutdown_dossier_generation() -> None:
+    """Checkpoint before the event loop's undifferentiated task cancellation."""
+    tasks = list(_generation_tasks.values())
+    for task in tasks:
+        task.cancel("generation_runtime_shutdown")
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
 
 
 def _start_dossier_source(job_id: str) -> None:
@@ -2751,6 +2888,11 @@ async def create_job(
             # behavior, but never let a hashed row be reused for new bytes.
             if existing.get("jobRequestHash") not in (None, job_request_hash):
                 raise HTTPException(status_code=409, detail="idempotency_key_reused_with_different_request")
+            if (_checkpointed_generation(existing)
+                    and existing.get("status") in GENERATION_ACTIVE_STATUSES):
+                if _needs_generation_resume(existing):
+                    _start_dossier_generation(existing["jobId"])
+                return {"schema": RESPONSE_SCHEMA, "jobId": existing["jobId"], "status": existing["status"]}
             if (
                 existing.get("sourceKind") in ASYNC_SOURCE_KINDS
                 and existing.get("status") in GENERATION_ACTIVE_STATUSES
@@ -2862,6 +3004,9 @@ async def create_job(
                 "providerCallsPlanned": provider_calls,
                 "providerCallsCompleted": 0,
                 "promptPlan": prompt_plan,
+                "generationCheckpointVersion": 1 if PROVIDERS[generation_recipe.engine]["key_id"] == "replicate" else None,
+                "providerCheckpoints": {},
+                "completedGenerationCalls": [],
                 "runtimeId": _GENERATION_RUNTIME_ID,
             }
             start_generation = True
@@ -3001,8 +3146,13 @@ async def job_status(
     if not x_rt_page_id or not PAGE_ID_RE.match(x_rt_page_id):
         raise HTTPException(status_code=400, detail="X-RT-Page-Id header is required")
     job = _get_job_or_404(job_id)
+    if job["pageId"] != x_rt_page_id:
+        raise HTTPException(status_code=404, detail="job not found")
+    if _needs_generation_resume(job):
+        _start_dossier_generation(job_id)
     should_expire = (
         job.get("sourceKind") in ASYNC_SOURCE_KINDS
+        and not _checkpointed_generation(job)
         and job.get("status") in GENERATION_ACTIVE_STATUSES
         and (
             job.get("runtimeId") != _GENERATION_RUNTIME_ID

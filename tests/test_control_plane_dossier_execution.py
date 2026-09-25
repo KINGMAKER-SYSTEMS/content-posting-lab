@@ -1064,6 +1064,7 @@ def test_inflight_generation_from_a_previous_runtime_fails_closed(lab):
 
     store = cp._load_jobs()
     store["jobs"][job_id]["runtimeId"] = "previous-process"
+    store["jobs"][job_id].pop("generationCheckpointVersion", None)  # Legacy, no durable request identity.
     cp.atomic_save(cp._jobs_path(), store)
 
     status = client.get(

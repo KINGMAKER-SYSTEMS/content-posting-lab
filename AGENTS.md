@@ -79,6 +79,8 @@
   separate browser/machine ingress configuration before release.
 - `services/source_treatment.py` owns actual applied-video provenance emitted by
   generation/source/recovery outputs through `routers/control_plane.py`.
+- `services/generation_recovery.py` owns private provider checkpoints and
+  cross-process generation/store locks. Checkpoints are not admission authority.
 - `services/caption_discipline.py` owns Content Lab's closed validation of the
   caption corpus/register selection already made by Dossier and Control Plane.
 - `services/control_plane_source_imports.py` owns bounded public-HTTPS download,
@@ -148,9 +150,10 @@
   distinguish source exhaustion from an unregistered recipe. Job creation
   remains exact and all-or-nothing; it never silently returns fewer clips than
   requested.
-  Capability reads fail queued or running async jobs owned by an older process
-  runtime before calculating capacity, so abandoned work cannot reserve finite
-  source windows.
+  Legacy async jobs without recoverable checkpoints fail closed after runtime
+  replacement; generated jobs with durable provider identity retain their
+  original prompt reservations while the same job resumes. Source-window
+  reservation and source-import restart rules remain independent.
 - `POV — Scenic` is commissioned through the same page-scoped source recut
   executor as Night Core and Dirtbike. It may use only the exact source library
   bound to that Master Pages row; it may not borrow another page's footage or
@@ -312,7 +315,7 @@
   completed underfilled batch, retaining the provider error and planned/completed
   call counts. Artifact count stays truthful; downstream refill plans the deficit
   with a new job rather than replaying the failed provider call. All-zero-output
-  failures, cancellation and changed page strategy retain their failure behavior.
+  failures, explicit cancellation and changed page strategy retain their failure behavior.
   Final clip admission applies the same active-only prompt rule while retaining
   completed output SHA rejection and within-job prompt exclusion.
   Completed prompts remain approved inputs for fresh rendering; prompt text is
@@ -320,6 +323,25 @@
   idempotent replay returns the original job and downstream output-byte checks
   continue to prevent duplicate asset admission. Source-video window reservations
   remain unchanged.
+- New Replicate generation jobs durably record submission intent before the
+  request and the accepted prediction id before polling. Resumption validates
+  the exact model/input hash and polls that same id; an intent with no known id
+  is ambiguous and must never be submitted again. The existing one-time PA
+  interruption retry remains bounded across restarts. Processing deadlines do
+  not reset; an already-completed prediction may still be read after downtime.
+- Application shutdown pauses checkpointed generation instead of deleting its
+  paid artifacts. Authenticated, exact-page status/idempotency reads resume the
+  same active job after replacement. A kernel-held per-job lock prevents two
+  runtimes driving it, and the existing JSON transaction lock also serializes
+  cross-process writers. Lock-file presence alone is not ownership. Explicit
+  cancellation and legacy jobs without checkpoints remain terminal.
+- Recovery verifies preserved artifact paths, sizes and hashes and rechecks
+  the current page intent, recipe and executor. Completed calls/crop sets are
+  retained exactly; unfinished candidates render into a separate directory so
+  they cannot overwrite claimed bytes. Incomplete crop sets are never admitted
+  as complete calls. Corrupt recovery evidence remains private for inspection;
+  it is not served or replaced by fresh paid work. No provider safety, caption,
+  sound, treatment, public status schema or downstream QA rule changes.
 - `silhouette-truck` is a still-first format. FLUX.2 Pro creates one native 9:16
   photograph of exactly two embracing adult silhouettes beside one complete
   pickup in a field; WAN/I2V, anchor drift, and synthetic motion are not legal
@@ -352,6 +374,9 @@
 - Run `pytest -q tests/test_production_image_imports.py` for isolated imports from
   the Dockerfile's backend file selection. Build the Docker image for release;
   its app-import smoke check must pass before deployment.
+- Run `pytest -q tests/test_generation_restart_recovery.py tests/test_replicate_generation_retry.py`
+  for paid-request identity, ambiguous submission, shutdown, crop recovery,
+  processing deadlines and cross-process checkpoint transaction checks.
 - Run `pytest -q tests/test_post_render_jobs.py tests/test_source_treatment.py`
   for durable crash/retry/lock/auth/source-grant and applied-video provenance checks.
 - Run `pytest -q tests/test_post_render.py` for prepared rendering, actual MP4
