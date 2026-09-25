@@ -200,6 +200,15 @@ def projects(tmp_path):
     rec.mkdir()
     (rec / "r.json").write_bytes(SENTINEL)
     (tmp_path / "vol" / "outside.txt").write_bytes(SENTINEL)
+    # Symlinks planted under allowed media dirs that resolve to volume state.
+    (root / "demo" / "videos" / "roster.mp4").symlink_to(root / "page_roster.json")
+    (root / "demo" / "videos" / "ck.mp4").symlink_to(root / "cookies.txt")
+    (root / "demo" / "videos" / "gen.mp4").symlink_to(gen / "g.mp4")
+    (root / "demo" / "videos" / "jobs.mp4").symlink_to(root / "demo" / "jobs.json")
+    (root / "demo" / "clips" / "job1" / "out.mp4").symlink_to(tmp_path / "vol" / "outside.txt")
+    (root / "demo" / "clips" / "linkdir").symlink_to(root / "control_plane_generated")
+    # A symlink that stays inside project media is still served.
+    (root / "demo" / "videos" / "alias.mp4").symlink_to(root / "demo" / "videos" / "a.mp4")
     asgi = Starlette(routes=[
         Mount("/projects", app=app_module.ProjectMediaFiles(directory=str(root), check_dir=False)),
     ])
@@ -213,6 +222,7 @@ def test_projects_mount_serves_project_media(projects):
     assert client.get("/projects/demo/clips/job1/clip_000.mp4").content == b"CLIP-0"
     assert client.get("/projects/demo/slideshow-images/i.jpg").content == b"IMG"
     assert _asgi_get(projects, "/projects/demo/videos/a.mp4") == (200, b"VIDEO-A")
+    assert client.get("/projects/demo/videos/alias.mp4").content == b"VIDEO-A"
 
 
 def test_projects_mount_refuses_volume_state_and_traversal(projects):
@@ -237,6 +247,13 @@ def test_projects_mount_refuses_volume_state_and_traversal(projects):
         "/projects/%2e%2e/outside.txt",
         "/projects/demo/videos/../../../outside.txt",
         "/projects//" + "page_roster.json",
+        "/projects/demo/videos/roster.mp4",
+        "/projects/demo/videos/ck.mp4",
+        "/projects/demo/videos/gen.mp4",
+        "/projects/demo/videos/jobs.mp4",
+        "/projects/demo/clips/job1/out.mp4",
+        "/projects/demo/clips/linkdir/page1/videos/g.mp4",
+        "/projects/demo/videos/a.mp4%00",
     ]
     client = TestClient(projects)
     for payload in payloads:
@@ -250,3 +267,18 @@ def test_real_app_projects_mount_is_confined():
     mounts = [r for r in app_module.app.routes if isinstance(r, Mount) and r.path == "/projects"]
     assert len(mounts) == 1
     assert isinstance(mounts[0].app, app_module.ProjectMediaFiles)
+
+
+def test_other_static_mounts_404_on_nul(tmp_path):
+    (tmp_path / "a.txt").write_bytes(b"A")
+    asgi = Starlette(routes=[
+        Mount("/f", app=app_module.SafeStaticFiles(directory=str(tmp_path), check_dir=False)),
+    ])
+    assert _asgi_get(asgi, "/f/a.txt") == (200, b"A")
+    assert _asgi_get(asgi, "/f/a.txt%00.png")[0] == 404
+
+
+def test_real_app_static_mounts_are_nul_safe():
+    mounts = {r.path: r.app for r in app_module.app.routes if isinstance(r, Mount)}
+    for path in ("/fonts", "/agenticnews-assets", "/projects", "/output", "/caption-output", "/burn-output"):
+        assert isinstance(mounts[path], app_module.SafeStaticFiles), path

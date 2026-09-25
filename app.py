@@ -336,11 +336,20 @@ async def health_check():
     }
 
 
-app.mount("/fonts", StaticFiles(directory="fonts", check_dir=False), name="fonts")
+class SafeStaticFiles(StaticFiles):
+    """StaticFiles that answers 404, not 500, for a NUL byte in the path."""
+
+    async def get_response(self, path: str, scope):
+        if "\x00" in path:
+            raise HTTPException(status_code=404)
+        return await super().get_response(path, scope)
+
+
+app.mount("/fonts", SafeStaticFiles(directory="fonts", check_dir=False), name="fonts")
 # AgenticBuilderNews: rendered assets + the workspace SPA
 app.mount(
     "/agenticnews-assets",
-    StaticFiles(directory=str(agenticnews_db.ASSETS_DIR), check_dir=False),
+    SafeStaticFiles(directory=str(agenticnews_db.ASSETS_DIR), check_dir=False),
     name="agenticnews-assets",
 )
 
@@ -391,11 +400,24 @@ def _is_public_project_path(path: str) -> bool:
     )
 
 
-class ProjectMediaFiles(StaticFiles):
-    """StaticFiles that refuses anything but project media (see above)."""
+class ProjectMediaFiles(SafeStaticFiles):
+    """StaticFiles that refuses anything but project media (see above).
+
+    The allowlist is applied to the requested path AND to the resolved real
+    path, so a symlink under a media dir that points at volume-root state
+    (page_roster.json, cookies.txt, ...) is refused too.
+    """
 
     async def get_response(self, path: str, scope):
         if not _is_public_project_path(path):
+            raise HTTPException(status_code=404)
+        try:
+            root = os.path.realpath(self.directory)
+            real = os.path.realpath(os.path.join(root, path))
+        except (OSError, ValueError):
+            raise HTTPException(status_code=404)
+        rel = os.path.relpath(real, root)
+        if rel == ".." or rel.startswith(".." + os.sep) or not _is_public_project_path(rel):
             raise HTTPException(status_code=404)
         return await super().get_response(path, scope)
 
@@ -405,15 +427,15 @@ app.mount(
     ProjectMediaFiles(directory="projects", check_dir=False),
     name="projects",
 )
-app.mount("/output", StaticFiles(directory="output", check_dir=False), name="output")
+app.mount("/output", SafeStaticFiles(directory="output", check_dir=False), name="output")
 app.mount(
     "/caption-output",
-    StaticFiles(directory="caption_output", check_dir=False),
+    SafeStaticFiles(directory="caption_output", check_dir=False),
     name="caption-output",
 )
 app.mount(
     "/burn-output",
-    StaticFiles(directory="burn_output", check_dir=False),
+    SafeStaticFiles(directory="burn_output", check_dir=False),
     name="burn-output",
 )
 
