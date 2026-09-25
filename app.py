@@ -383,13 +383,23 @@ async def serve_abn_editor(ep_id: str = ""):
 _PROJECT_MEDIA_KINDS = frozenset(
     {"videos", "clips", "burned", "captions", "recreate", "slideshow-images", "slideshow-audio"}
 )
+# Media the app writes into those dirs (routers/projects.py _VIDEO_EXTS,
+# routers/slideshow.py VALID_EXTENSIONS / VALID_AUDIO_EXTENSIONS, clipper
+# thumbnails) plus subtitle sidecars. JSON sidecars (_state.json,
+# job_meta.json, jobs.json, prompts.json) are read through the API only.
+_PROJECT_MEDIA_SUFFIXES = frozenset(
+    {".mp4", ".mov", ".webm", ".mkv", ".m4v",
+     ".jpg", ".jpeg", ".png", ".webp", ".gif",
+     ".mp3", ".wav", ".m4a", ".aac", ".ogg",
+     ".srt", ".vtt"}
+)
 _NON_PROJECT_VOLUME_DIRS = frozenset(
     {"control_plane_generated", "control_plane_recipes", "agenticnews_assets", "lost+found"}
 )
 
 
 def _is_public_project_path(path: str) -> bool:
-    """True only for `<project>/<media kind>/<file...>` under the projects mount."""
+    """True only for `<project>/<media kind>/<...>/<media file>` under the projects mount."""
     parts = [p for p in path.replace("\\", "/").split("/") if p not in ("", ".")]
     if any(p == ".." or p.startswith(".") or "\x00" in p for p in parts):
         return False
@@ -397,6 +407,7 @@ def _is_public_project_path(path: str) -> bool:
         len(parts) >= 3
         and parts[0] not in _NON_PROJECT_VOLUME_DIRS
         and parts[1] in _PROJECT_MEDIA_KINDS
+        and os.path.splitext(parts[-1])[1].lower() in _PROJECT_MEDIA_SUFFIXES
     )
 
 

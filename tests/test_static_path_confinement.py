@@ -192,6 +192,20 @@ def projects(tmp_path):
                  "agenticnews.db", "abn_memory.json", ".env"):
         (root / name).write_bytes(SENTINEL)
     (root / "demo" / "jobs.json").write_bytes(SENTINEL)
+    # JSON/text sidecars inside media dirs are API-only state, never public.
+    (root / "demo" / "clips" / "job1" / "_state.json").write_bytes(SENTINEL)
+    (root / "demo" / "clips" / "job1" / "job_meta.json").write_bytes(SENTINEL)
+    (root / "demo" / "clips" / "job1" / "clips.zip").write_bytes(SENTINEL)
+    (root / "demo" / "videos" / "prompts.json").write_bytes(SENTINEL)
+    (root / "demo" / "burned" / "b1").mkdir(parents=True)
+    (root / "demo" / "burned" / "b1" / "batch_meta.json").write_bytes(SENTINEL)
+    (root / "demo" / "burned" / "b1" / "burned_000.MP4").write_bytes(b"BURNED")
+    (root / "demo" / "captions" / "artist").mkdir(parents=True)
+    (root / "demo" / "captions" / "artist" / "captions.csv").write_bytes(SENTINEL)
+    (root / "demo" / "videos" / "noext").write_bytes(SENTINEL)
+    (root / "demo" / "clips" / "job1" / "clip_000_thumb.jpg").write_bytes(b"THUMB")
+    (root / "demo" / "slideshow-audio").mkdir(parents=True)
+    (root / "demo" / "slideshow-audio" / "t.m4a").write_bytes(b"AUDIO")
     (root / "demo" / "videos" / ".secret").write_bytes(SENTINEL)
     gen = root / "control_plane_generated" / "page1" / "videos"
     gen.mkdir(parents=True)
@@ -223,6 +237,9 @@ def test_projects_mount_serves_project_media(projects):
     assert client.get("/projects/demo/slideshow-images/i.jpg").content == b"IMG"
     assert _asgi_get(projects, "/projects/demo/videos/a.mp4") == (200, b"VIDEO-A")
     assert client.get("/projects/demo/videos/alias.mp4").content == b"VIDEO-A"
+    assert client.get("/projects/demo/clips/job1/clip_000_thumb.jpg").content == b"THUMB"
+    assert client.get("/projects/demo/burned/b1/burned_000.MP4").content == b"BURNED"
+    assert client.get("/projects/demo/slideshow-audio/t.m4a").content == b"AUDIO"
 
 
 def test_projects_mount_refuses_volume_state_and_traversal(projects):
@@ -254,6 +271,13 @@ def test_projects_mount_refuses_volume_state_and_traversal(projects):
         "/projects/demo/clips/job1/out.mp4",
         "/projects/demo/clips/linkdir/page1/videos/g.mp4",
         "/projects/demo/videos/a.mp4%00",
+        "/projects/demo/clips/job1/_state.json",
+        "/projects/demo/clips/job1/job_meta.json",
+        "/projects/demo/clips/job1/clips.zip",
+        "/projects/demo/videos/prompts.json",
+        "/projects/demo/burned/b1/batch_meta.json",
+        "/projects/demo/captions/artist/captions.csv",
+        "/projects/demo/videos/noext",
     ]
     client = TestClient(projects)
     for payload in payloads:
