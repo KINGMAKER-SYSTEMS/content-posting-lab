@@ -762,3 +762,23 @@ paid prediction, cancels timed-out predictions, and persists a closed
 `providerFailure` class in the job store without changing the status response
 the Control Plane validates strictly. New tests fail on main and pass here. No
 paid generation, purchase, provider substitution or deploy was performed.
+
+_________________________________________________________________________________
+time: [15:52 EDT] [26-09-25]
+agent: [Claude Code] [claude-opus-5-5]
+worktree: [fix/recipe-reregister-identical-bytes] [/Users/ecfromthedc/dev/wt/lab-recipe-reregister]
+type: [bug report]: identical-bytes recipe re-registration no longer 409s
+area: [backend] [control-plane] [testing]
+
+A content-neutral Dossier relock of page rhett re-sent the exact recipe bytes
+already registered for its tuple under a new dossier revision and idempotency
+key. `register_recipe` compared the whole stored record, so those two fields
+alone produced `409 recipe tuple is already registered with different bytes`
+on every retry, and the Worker could only recover by forcing a new recipe
+version. Byte-identical re-registration now succeeds, advances the stored
+revision/key atomically and keeps the superseded pairs; replays of any known
+pair are answered without a rewrite; different bytes still 409. Validation,
+including exact pinned-legacy catalog binding, runs before the store as
+before. The recipe test file goes from 3 failed / 18 passed on main to 21
+passed; the six recipe, generation and execution test files pass: 151 tests.
+No deploy was performed.

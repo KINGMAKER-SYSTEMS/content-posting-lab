@@ -2,7 +2,9 @@
 
 Registration is not execution. Publications remain absent from the capability
 catalog until a new-media executor can consume the exact typed treatment.
-Every accepted publication is immutable and page-scoped.
+Every accepted publication is page-scoped and its recipe bytes are immutable.
+A later Dossier lock of byte-identical recipe bytes may advance the stored
+dossier revision and idempotency key; the superseded pair is kept as history.
 """
 
 from __future__ import annotations
@@ -12,6 +14,7 @@ import hmac
 import json
 import math
 import os
+import threading
 from copy import deepcopy
 from pathlib import Path
 from threading import Lock
@@ -19,6 +22,7 @@ from typing import Any
 
 from fastapi import APIRouter, Header, HTTPException
 
+from services.json_store import lock_for
 from services.roster import ROSTER_PATH
 from services.master_pages_contract import exact_intent, intent_hash
 from services.dossier_ingredients import (
@@ -52,6 +56,10 @@ TOKEN_CHARS = frozenset(
     "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.:-"
 )
 MAX_SPEC_BYTES = 131_072
+# Which Dossier lock registered a tuple; may advance while the bytes stay fixed.
+REGISTRATION_FIELDS = frozenset({"dossierRevision", "idempotencyKey"})
+PRIOR_REGISTRATIONS_FIELD = "priorRegistrations"
+MAX_PRIOR_REGISTRATIONS = 64
 
 router = APIRouter()
 
@@ -429,21 +437,87 @@ def register_recipe(
 
     record = {**body, "idempotencyKey": idempotency_key, "status": "registered"}
     path = _record_path(_root(), body)
-    encoded = json.dumps(
+    with lock_for(path):
+        try:
+            descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            existing = json.loads(path.read_text(encoding="utf-8"))
+            if not _same_recipe_bytes(existing, record):
+                raise HTTPException(409, "recipe tuple is already registered with different bytes")
+            registration = _registration_of(record)
+            prior = existing.get(PRIOR_REGISTRATIONS_FIELD, [])
+            if registration != _registration_of(existing) and registration not in prior:
+                # A content-neutral dossier relock: identical recipe bytes under
+                # a new dossier revision/key. Advance the registration and keep
+                # the superseded one; replays of any known registration are
+                # answered below without rewriting (or rewinding) the record.
+                _replace_record(path, {
+                    **record,
+                    PRIOR_REGISTRATIONS_FIELD: [
+                        *prior, _registration_of(existing),
+                    ][-MAX_PRIOR_REGISTRATIONS:],
+                })
+        else:
+            with os.fdopen(descriptor, "wb") as handle:
+                handle.write(_encode_record(record))
+                handle.flush()
+                os.fsync(handle.fileno())
+    return _registration_response(record)
+
+
+def _encode_record(record: dict[str, Any]) -> bytes:
+    return json.dumps(
         record, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
     ).encode("utf-8")
+
+
+def _registration_of(record: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "dossierRevision": record.get("dossierRevision"),
+        "idempotencyKey": record.get("idempotencyKey"),
+    }
+
+
+def _same_recipe_bytes(existing: Any, record: dict[str, Any]) -> bool:
+    """True when a stored tuple holds exactly the recipe being registered.
+
+    The dossier revision and idempotency key say which Dossier lock asked for
+    the recipe; they are not recipe bytes. Everything else, including the
+    canonical spec and its hash, must be byte-identical. Unknown stored fields
+    fail closed.
+    """
+    if not isinstance(existing, dict):
+        return False
+    prior = existing.get(PRIOR_REGISTRATIONS_FIELD, [])
+    if not isinstance(prior, list) or set(existing) - {PRIOR_REGISTRATIONS_FIELD} != set(record):
+        return False
+    return all(
+        existing[field] == value
+        for field, value in record.items()
+        if field not in REGISTRATION_FIELDS
+    )
+
+
+def _replace_record(path: Path, record: dict[str, Any]) -> None:
+    """Atomically replace one publication, keeping fresh-record mode and bytes."""
+    temporary = path.with_name(
+        f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp"
+    )
     try:
-        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    except FileExistsError:
-        existing = json.loads(path.read_text(encoding="utf-8"))
-        if existing != record:
-            raise HTTPException(409, "recipe tuple is already registered with different bytes")
-    else:
+        descriptor = os.open(
+            temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600,
+        )
         with os.fdopen(descriptor, "wb") as handle:
-            handle.write(encoded)
+            handle.write(_encode_record(record))
             handle.flush()
             os.fsync(handle.fileno())
-    return _registration_response(record)
+        os.replace(temporary, path)
+    except BaseException:
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+        raise
 
 
 def _walk_keys(value: Any):
