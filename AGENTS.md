@@ -101,6 +101,12 @@
 - Recipe listing reuses unchanged file bytes after checking every current file's
   inode, size and timestamps; additions, edits and removals apply on the next read.
   Callers receive independent matching rows, not mutable shared cache entries.
+- A registered recipe tuple's bytes are immutable: different bytes under the
+  same page/recipe/engine/version remain a 409. Byte-identical bytes from a
+  later Dossier lock succeed and advance the stored dossier revision and
+  idempotency key atomically, keeping the superseded pairs in
+  `priorRegistrations`; replaying any known pair returns success without a
+  rewrite. Jobs keep the revision they were created under.
 - Capability planning shares one read-only job-history snapshot per unchanged
   file identity. Job creation/progress/admission still load fresh mutable data
   under their existing transaction lock; never mutate the capability snapshot.

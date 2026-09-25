@@ -13,6 +13,7 @@ from services.dossier_ingredients import (
     build_dossier_ingredient_catalog,
     catalog_selection_version,
 )
+from services.control_plane_generation import resolve_generation_recipe
 from tests.master_pages_fixtures import master_pages
 
 
@@ -117,6 +118,21 @@ def _publication_headers(**overrides):
     return headers
 
 
+def _with_spec(body, mutate):
+    spec = json.loads(body["recipeSpecCanonical"])
+    mutate(spec)
+    canonical = json.dumps(spec, sort_keys=True, separators=(",", ":"))
+    return {
+        **body,
+        "recipeSpecCanonical": canonical,
+        "recipeSpecHash": "sha256:" + hashlib.sha256(canonical.encode()).hexdigest(),
+    }
+
+
+def _record_file(publication):
+    return recipes._record_path(recipes._root(), publication)
+
+
 def test_publication_is_immutable_idempotent_and_requires_dedicated_auth(lab):
     first = lab.post(
         "/api/control-plane/v1/recipes", json=_payload(), headers=_publication_headers(),
@@ -131,10 +147,130 @@ def test_publication_is_immutable_idempotent_and_requires_dedicated_auth(lab):
     missing.pop("Authorization")
     assert lab.post("/api/control-plane/v1/recipes", json=_payload(), headers=missing).status_code == 401
 
-    changed = _payload(dossierRevision="rev-2")
+    changed = _with_spec(
+        _payload(), lambda spec: spec["renderTreatment"].update(clipSpeed=1.5),
+    )
     assert lab.post(
         "/api/control-plane/v1/recipes", json=changed, headers=_publication_headers(),
     ).status_code == 409
+
+
+def test_identical_recipe_bytes_reregister_under_a_new_dossier_revision(lab):
+    """A content-neutral dossier relock re-registers the same recipe tuple.
+
+    Only the dossier revision and idempotency key change; the recipe bytes are
+    identical. That must succeed like a fresh registration, advance the stored
+    registration, and keep the superseded one as history.
+    """
+    original = _payload()
+    assert lab.post(
+        "/api/control-plane/v1/recipes", json=original,
+        headers=_publication_headers(**{"Idempotency-Key": "dossier:727"}),
+    ).status_code == 200
+
+    relocked = _payload(dossierRevision="rev-901")
+    response = lab.post(
+        "/api/control-plane/v1/recipes", json=relocked,
+        headers=_publication_headers(**{"Idempotency-Key": "dossier:901"}),
+    )
+    assert response.status_code == 200, response.text
+    assert response.json() == {
+        "schema": recipes.RESPONSE_SCHEMA,
+        "recipeId": relocked["recipeId"],
+        "engine": relocked["engine"],
+        "recipeVersion": relocked["recipeVersion"],
+        "dossierRevision": "rev-901",
+        "recipeSpecHash": original["recipeSpecHash"],
+        "status": "registered",
+    }
+
+    stored = recipes.load_registered_recipe(
+        PAGE_ID, "trucks", "ai_video", original["recipeVersion"],
+    )
+    assert stored["dossierRevision"] == "rev-901"
+    assert stored["idempotencyKey"] == "dossier:901"
+    assert stored["recipeSpecCanonical"] == original["recipeSpecCanonical"]
+    assert stored["recipeSpecHash"] == original["recipeSpecHash"]
+    assert stored["priorRegistrations"] == [
+        {"dossierRevision": "rev-1", "idempotencyKey": "dossier:727"},
+    ]
+    # The capability listing sees the advanced registration, not a stale cache.
+    listed = recipes.list_registered_recipes(PAGE_ID)
+    assert [row["dossierRevision"] for row in listed] == ["rev-901"]
+    assert _record_file(original).stat().st_mode & 0o777 == 0o600
+
+
+def test_different_recipe_bytes_under_a_registered_tuple_still_conflict(lab):
+    original = _payload()
+    assert lab.post(
+        "/api/control-plane/v1/recipes", json=original,
+        headers=_publication_headers(**{"Idempotency-Key": "dossier:727"}),
+    ).status_code == 200
+    before = _record_file(original).read_bytes()
+
+    mutations = (
+        lambda spec: spec["renderTreatment"].update(clipSpeed=1.5),
+        lambda spec: spec["renderTreatment"]["filters"].update(brightness=1.04),
+        lambda spec: spec["renderTreatment"]["captionStyle"].update(case="as_written"),
+    )
+    for index, mutate in enumerate(mutations):
+        for revision, key in (("rev-1", "dossier:727"), (f"rev-x{index}", f"dossier:x{index}")):
+            changed = _with_spec(_payload(dossierRevision=revision), mutate)
+            response = lab.post(
+                "/api/control-plane/v1/recipes", json=changed,
+                headers=_publication_headers(**{"Idempotency-Key": key}),
+            )
+            assert response.status_code == 409
+            assert response.json()["detail"] == (
+                "recipe tuple is already registered with different bytes"
+            )
+    assert _record_file(original).read_bytes() == before
+
+
+def test_registration_replays_are_idempotent_and_never_rewind_the_record(lab):
+    original = _payload()
+    original_headers = _publication_headers(**{"Idempotency-Key": "dossier:727"})
+    first = lab.post(
+        "/api/control-plane/v1/recipes", json=original, headers=original_headers,
+    )
+    assert first.status_code == 200
+    replay = lab.post(
+        "/api/control-plane/v1/recipes", json=original, headers=original_headers,
+    )
+    assert replay.status_code == 200
+    assert replay.json() == first.json()
+
+    relocked = _payload(dossierRevision="rev-901")
+    relocked_headers = _publication_headers(**{"Idempotency-Key": "dossier:901"})
+    advanced = lab.post(
+        "/api/control-plane/v1/recipes", json=relocked, headers=relocked_headers,
+    )
+    assert advanced.status_code == 200
+    settled = _record_file(original).read_bytes()
+
+    # Exact replay of the newest registration: same answer, no rewrite.
+    again = lab.post(
+        "/api/control-plane/v1/recipes", json=relocked, headers=relocked_headers,
+    )
+    assert again.status_code == 200
+    assert again.json() == advanced.json()
+    assert _record_file(original).read_bytes() == settled
+
+    # A late retry of the superseded request answers for itself (the Worker
+    # checks the echoed dossierRevision) without rewinding the stored record.
+    late = lab.post(
+        "/api/control-plane/v1/recipes", json=original, headers=original_headers,
+    )
+    assert late.status_code == 200
+    assert late.json() == first.json()
+    assert _record_file(original).read_bytes() == settled
+    stored = recipes.load_registered_recipe(
+        PAGE_ID, "trucks", "ai_video", original["recipeVersion"],
+    )
+    assert stored["dossierRevision"] == "rev-901"
+    assert stored["priorRegistrations"] == [
+        {"dossierRevision": "rev-1", "idempotencyKey": "dossier:727"},
+    ]
 
 
 def test_registered_dossier_version_is_page_scoped_and_durably_stored(lab):
@@ -246,6 +382,25 @@ def test_v3_publish_accepts_exact_and_full_pinned_legacy_but_rejects_reuse(
         "/api/control-plane/v1/recipes", json=reused,
         headers=_publication_headers(**{"Idempotency-Key": "dossier:v3-reused"}),
     ).status_code == 409
+    # The pin belongs to one exact publication; identical bytes under another
+    # revision are refused before the stored pinned record can be advanced.
+    pinned = recipes.load_registered_recipe(
+        PAGE_ID, legacy["recipeId"], "ai_video", legacy["recipeVersion"],
+    )
+    assert pinned["dossierRevision"] == "rev-v3-legacy"
+    assert pinned["idempotencyKey"] == "dossier:v3-legacy"
+    assert "priorRegistrations" not in pinned
+
+    relocked = {**exact, "dossierRevision": "rev-v3-relocked"}
+    assert lab.post(
+        "/api/control-plane/v1/recipes", json=relocked,
+        headers=_publication_headers(**{"Idempotency-Key": "dossier:v3-relocked"}),
+    ).status_code == 200
+    advanced = recipes.load_registered_recipe(
+        PAGE_ID, exact["recipeId"], "ai_video", exact["recipeVersion"],
+    )
+    assert advanced["dossierRevision"] == "rev-v3-relocked"
+    assert resolve_generation_recipe(advanced, require_runtime=False) is not None
 
     changed_spec = json.loads(legacy["recipeSpecCanonical"])
     changed_spec["renderTreatment"]["clipSpeed"] = 1.5
