@@ -81,6 +81,9 @@ async def post_message(
         return {"ok": False, "error": str(exc)}
 
 
+PASSWORD_POINTER = "see Notion"
+
+
 async def post_pipeline_handoff(page: dict[str, Any]) -> dict[str, Any]:
     """Send a pipeline handoff bundle to Slack.
 
@@ -88,8 +91,10 @@ async def post_pipeline_handoff(page: dict[str, Any]) -> dict[str, Any]:
     `pipeline` value. Both webhooks fall back to SLACK_WEBHOOK_URL if their
     pipeline-specific one isn't set.
 
-    The bundle includes everything the recipient needs to start work:
-    handle, email, password, poster, sounds reference, notes, Notion link.
+    The bundle includes what the recipient needs to start work: handle,
+    email, poster, sounds reference, notes, Notion link. It never carries the
+    account password: Slack history is not a credential store, so the
+    message points at Notion (the canonical row) instead.
     """
     pipeline = (page.get("pipeline") or "").strip()
     webhook_url = _webhook_for_pipeline(pipeline)
@@ -111,7 +116,7 @@ async def post_pipeline_handoff(page: dict[str, Any]) -> dict[str, Any]:
 
     handle = page.get("name") or page.get("integration_id", "unknown")
     email = page.get("email_alias") or page.get("signup_email") or "(none)"
-    password = page.get("password") or "(check Notion)"
+    password = PASSWORD_POINTER
     poster = page.get("poster_name") or "(unassigned)"
     sounds = page.get("sounds_reference") or ""
     notes = page.get("notes") or ""

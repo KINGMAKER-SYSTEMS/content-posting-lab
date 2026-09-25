@@ -2,6 +2,12 @@
 Cloudflare Email Routing router.
 Proxies CF Email Routing API for creating/managing forwarding rules
 and destination addresses.
+
+Credential boundary: roster rows leave through public_page and every JSON
+body through the CredentialGuardRoute scrub. The alias an auto-create just
+minted and the team's verified destination inboxes (which the operator picks
+from to mint) are the only credential-shaped keys served, via
+allow_credential_keys; a page's own alias/rule/signup/password never are.
 """
 
 from contextlib import contextmanager
@@ -18,13 +24,22 @@ from services.email_routing import (
     list_rules,
 )
 from services.roster import get_page, set_page
+from services.roster_public import (
+    CredentialGuardRoute,
+    allow_credential_keys,
+    public_page,
+)
+
+
+def _public_or_none(page: dict | None) -> dict | None:
+    return public_page(page) if page else None
 
 
 def _destination_email(d: dict) -> str:
     return (d.get("email") or "").strip().lower()
 
 
-router = APIRouter()
+router = APIRouter(route_class=CredentialGuardRoute)
 
 
 def _require_configured():
@@ -111,6 +126,7 @@ class AutoCreateRequest(BaseModel):
 
 
 @router.post("/auto-create")
+@allow_credential_keys("alias")  # the alias this request just created
 async def auto_create_for_page(req: AutoCreateRequest):
     """Auto-generate an email alias for a roster page and create the CF rule.
 
@@ -161,7 +177,7 @@ async def auto_create_for_page(req: AutoCreateRequest):
     return {
         "rule": rule,
         "alias": full_alias,
-        "page": get_page(req.integration_id),
+        "page": _public_or_none(get_page(req.integration_id)),
     }
 
 
@@ -169,6 +185,7 @@ async def auto_create_for_page(req: AutoCreateRequest):
 
 
 @router.get("/destinations")
+@allow_credential_keys("email")  # team inboxes the operator mints aliases to
 async def get_destinations():
     """List verified destination addresses."""
     _require_configured()
@@ -182,6 +199,7 @@ class AddDestinationRequest(BaseModel):
 
 
 @router.post("/destinations")
+@allow_credential_keys("email")  # the address this request just added
 async def add_destination_address(req: AddDestinationRequest):
     """Add a new destination address (triggers CF verification email)."""
     _require_configured()

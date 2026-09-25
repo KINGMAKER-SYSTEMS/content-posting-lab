@@ -23,11 +23,14 @@ whenever APP_API_KEY is unset (as in production). So:
 from __future__ import annotations
 
 import hmac
+import json
 import os
 import re
-from typing import Any
+from typing import Any, Callable
 
-from fastapi import Header, HTTPException
+from fastapi import Header, HTTPException, Request
+from fastapi.responses import JSONResponse, Response
+from fastapi.routing import APIRoute
 
 # Safe roster row fields. Mirrors the ontology the Control Plane snapshot
 # already carries (routers/control_plane.py ROSTER_SNAPSHOT_FIELDS) plus the
@@ -77,15 +80,25 @@ _CREDENTIAL_SUBSTRINGS = (
     "passw", "passcode", "passphrase", "secret", "token", "credential",
     "cookie", "session", "apikey", "api_key", "email", "e_mail", "mail_address",
     "fwd", "forward", "alias", "notes", "recovery", "backup_code",
-    "login", "signin", "sign_in", "totp", "mfa", "2fa",
+    "login", "signin", "sign_in", "totp", "mfa", "2fa", "private_key",
+    "access_key",
 )
 _CREDENTIAL_WORDS = frozenset({
-    "pw", "pwd", "pass", "pin", "otp", "note", "auth", "key", "mail",
+    "pw", "pwd", "pass", "pin", "otp", "note", "auth", "mail",
 })
 
-# Counters on the dedup/telegram surfaces that merely contain the word
-# "forward" (inventory_forwarded) are counts, not addresses.
-_CREDENTIAL_KEY_ALLOW = frozenset({"inventory_forwarded"})
+# Keys that merely contain a credential word but name something else. Their
+# values are still scrubbed recursively.
+#   inventory_forwarded     dedup/telegram count, not an address
+#   cookie_status           "valid"/"missing" upload-cookie state, not the cookie
+#   cf_alias, notion_email_writeback
+#                           pipeline setup step names; values are ok/reason dicts
+_CREDENTIAL_KEY_ALLOW = frozenset({
+    "inventory_forwarded",
+    "cookie_status",
+    "cf_alias",
+    "notion_email_writeback",
+})
 
 _CAMEL_RE = re.compile(r"(?<=[a-z])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
 _SEPARATOR_RE = re.compile(r"[^a-z0-9]+")
@@ -100,9 +113,9 @@ def is_credential_key(key: object) -> bool:
     """True when a response key names a credential and must not be serialised."""
     if not isinstance(key, str):
         return False
-    if key in _CREDENTIAL_KEY_ALLOW:
-        return False
     norm = _normalise_key(key)
+    if norm in _CREDENTIAL_KEY_ALLOW:
+        return False
     if any(stem in norm for stem in _CREDENTIAL_SUBSTRINGS):
         return True
     # A trailing version digit does not change the word: `pass2`, `pin1`.
@@ -126,17 +139,82 @@ def public_pages(pages: Any) -> list[dict[str, Any]]:
     return [public_page(page) for page in (pages or []) if isinstance(page, dict)]
 
 
-def scrub_credentials(value: Any) -> Any:
-    """Return ``value`` with every credential-shaped dict key removed, at any depth."""
+def _is_presence_flag(key: object, value: Any) -> bool:
+    """`has_email_alias: true` says a credential exists, not what it is."""
+    return isinstance(key, str) and key.startswith("has_") and isinstance(value, bool)
+
+
+def scrub_credentials(value: Any, keep: frozenset[str] = frozenset()) -> Any:
+    """Return ``value`` with every credential-shaped dict key removed, at any depth.
+
+    ``keep`` names keys a route is explicitly allowed to serialise (see
+    ``allow_credential_keys``); boolean ``has_*`` presence flags always stay.
+    """
     if isinstance(value, dict):
         return {
-            key: scrub_credentials(item)
+            key: scrub_credentials(item, keep)
             for key, item in value.items()
-            if not is_credential_key(key)
+            if key in keep or _is_presence_flag(key, item) or not is_credential_key(key)
         }
     if isinstance(value, (list, tuple)):
-        return [scrub_credentials(item) for item in value]
+        return [scrub_credentials(item, keep) for item in value]
     return value
+
+
+_ALLOWED_KEYS_ATTR = "__credential_keys_allowed__"
+
+
+def allow_credential_keys(*keys: str) -> Callable:
+    """Let one endpoint serialise the named credential-shaped keys.
+
+    Only for values the caller already holds or just created in the same
+    request (a freshly minted alias echoed to the operator who minted it, the
+    destination inbox the operator typed) -- never a pre-existing roster
+    credential. Every use is pinned by a test, so a new one is reviewed.
+    """
+    allowed = frozenset(keys)
+
+    def mark(endpoint: Callable) -> Callable:
+        setattr(endpoint, _ALLOWED_KEYS_ATTR, allowed)
+        return endpoint
+
+    return mark
+
+
+def allowed_credential_keys(endpoint: Callable) -> frozenset[str]:
+    return getattr(endpoint, _ALLOWED_KEYS_ATTR, frozenset())
+
+
+class CredentialGuardRoute(APIRoute):
+    """Backstop: strip credential-shaped keys from every JSON body a router returns.
+
+    Routes already build their rows with public_page; this catches a route
+    that forgets to, including routes added later. Install it with
+    ``APIRouter(route_class=CredentialGuardRoute)``.
+    """
+
+    def get_route_handler(self):
+        original = super().get_route_handler()
+        keep = allowed_credential_keys(self.endpoint)
+
+        async def guarded(request: Request) -> Response:
+            response = await original(request)
+            if not isinstance(response, JSONResponse):
+                return response
+            try:
+                body = json.loads(response.body)
+            except ValueError:
+                return response
+            cleaned = scrub_credentials(body, keep)
+            if cleaned == body:
+                return response
+            return JSONResponse(
+                content=cleaned,
+                status_code=response.status_code,
+                background=response.background,
+            )
+
+        return guarded
 
 
 def _configured_tokens() -> list[bytes]:

@@ -16,6 +16,7 @@ import { useWorkflowStore } from '../stores/workflowStore';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import type { PipelineWorkspace, WorkspaceR2Object } from '../types/api';
+import { PASSWORD_HIDDEN_LABEL, ROSTER_HIDDEN_LABEL, rosterEmailHidden } from '@/lib/rosterRedaction';
 
 export function PipelineWorkspacePage() {
   const location = useLocation();
@@ -194,12 +195,12 @@ export function PipelineWorkspacePage() {
             <div className="text-xs font-mono truncate" title={page.email_alias}>
               {page.email_alias}
             </div>
+          ) : rosterEmailHidden(page) ? (
+            <div className="text-xs"><span className="italic text-muted-foreground/60" title="Credential fields are no longer served to the unauthenticated UI">{ROSTER_HIDDEN_LABEL}</span></div>
           ) : (
             <div className="text-xs text-muted-foreground">— not minted —</div>
           )}
-          {page.password && (
-            <div className="text-[10px] text-muted-foreground">pw: <span className="font-mono">{page.password}</span></div>
-          )}
+          <div className="text-[10px] text-muted-foreground">pw: <span className="italic">{PASSWORD_HIDDEN_LABEL}</span></div>
         </div>
 
         {/* Telegram card */}

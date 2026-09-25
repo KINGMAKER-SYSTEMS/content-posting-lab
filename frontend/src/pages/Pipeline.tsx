@@ -14,6 +14,7 @@ import {
   PlusIcon,
 } from '@phosphor-icons/react';
 import { apiUrl } from '../lib/api';
+import { ROSTER_HIDDEN_LABEL, rosterEmailHidden } from '@/lib/rosterRedaction';
 import { useWorkflowStore } from '../stores/workflowStore';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -415,12 +416,17 @@ function PipelineCard({
             <span className="text-foreground">{page.poster_name}</span>
           </div>
         )}
-        {page.email_alias && (
+        {page.email_alias ? (
           <div className="flex items-center gap-1 truncate" title={page.email_alias}>
             <EnvelopeSimpleIcon size={9} weight="bold" />
             <span className="font-mono truncate">{page.email_alias}</span>
           </div>
-        )}
+        ) : rosterEmailHidden(page) ? (
+          <div className="flex items-center gap-1 truncate">
+            <EnvelopeSimpleIcon size={9} weight="bold" />
+            <span className="italic text-muted-foreground/60" title="Credential fields are no longer served to the unauthenticated UI">{ROSTER_HIDDEN_LABEL}</span>
+          </div>
+        ) : null}
         {page.r2_prefix && (
           <div className="flex items-center gap-1 truncate" title={`R2: ${page.r2_bucket}/${page.r2_prefix}`}>
             <FolderIcon size={9} weight="bold" />

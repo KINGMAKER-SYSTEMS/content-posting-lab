@@ -87,9 +87,12 @@
   exact-byte hashing, media probing, and refillable-master normalization for
   page-scoped source-link intake.
 - `routers/burn.py` exposes caption rendering and final video compositing.
-- `services/roster_public.py` owns what `/api/roster` may serialise: an allowlist
-  of roster row fields plus a credential-key scrub applied to every roster
-  router response. Signup email, password, forwarding address, email
+- `services/roster_public.py` owns what `/api/roster`, `/api/pipeline` and
+  `/api/email` may serialise: an allowlist of roster row fields plus a
+  credential-key scrub (`CredentialGuardRoute`) applied to every response of
+  those routers. `allow_credential_keys` exemptions are pinned by a test and
+  may only echo values the request itself created. The Slack pipeline handoff
+  says "see Notion" instead of carrying the password. Signup email, password, forwarding address, email
   alias/rule/destination and notes stay in the roster cache and never cross
   HTTP there. It also owns the roster machine credential (CONTROL_PLANE_TOKEN
   or APP_API_KEY) required on roster routes no unauthenticated UI calls.
