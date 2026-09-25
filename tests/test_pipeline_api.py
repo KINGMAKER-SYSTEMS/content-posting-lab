@@ -87,6 +87,17 @@ def _run(coro):
     return asyncio.run(coro)
 
 
+# Placeholder only. The intake endpoints refuse to run without the server-owned
+# DEFAULT_INTAKE_PASSWORD, so every test starts with a configured value; the
+# fail-closed tests below remove it explicitly.
+TEST_INTAKE_PASSWORD = "test-intake-placeholder"
+
+
+@pytest.fixture(autouse=True)
+def _intake_password_configured(monkeypatch):
+    monkeypatch.setenv("DEFAULT_INTAKE_PASSWORD", TEST_INTAKE_PASSWORD)
+
+
 # ── configuration / destination guards ───────────────────────────────────────
 
 
@@ -1129,3 +1140,137 @@ def test_health_reports_counts_and_topic(monkeypatch):
     assert h["telegram_topic_name"] == "My Topic"
     assert h["has_email_alias"] is True
     assert h["cookie_status"] == "valid"
+
+
+# ── intake password: server-owned, fail closed ───────────────────────────────
+# DEFAULT_INTAKE_PASSWORD is the password written to each new intake's Notion
+# row. It must come only from the server environment. When it is unset or
+# blank, /mint-alias and /intake refuse with a typed 503 before minting an
+# alias or writing Notion/roster state; there is no hard-coded fallback.
+
+
+def _forbid(name):
+    async def _async_forbidden(*args, **kwargs):
+        raise AssertionError(f"{name} must not run when the intake password is unset")
+
+    return _async_forbidden
+
+
+def _forbid_intake_side_effects(monkeypatch):
+    monkeypatch.setattr(pipeline, "notion_configured", lambda: True)
+    for name in ("_mint_random_alias", "create_intake_page", "update_intake_page", "sync_into_roster"):
+        monkeypatch.setattr(pipeline, name, _forbid(name))
+
+    def _no_set_page(*args, **kwargs):
+        raise AssertionError("roster must not be written when the intake password is unset")
+
+    import services.roster as roster_service
+
+    monkeypatch.setattr(roster_service, "set_page", _no_set_page)
+
+
+@pytest.mark.parametrize("value", [None, "", "   "])
+def test_mint_alias_503_when_intake_password_not_configured(monkeypatch, value):
+    if value is None:
+        monkeypatch.delenv("DEFAULT_INTAKE_PASSWORD", raising=False)
+    else:
+        monkeypatch.setenv("DEFAULT_INTAKE_PASSWORD", value)
+    _forbid_intake_side_effects(monkeypatch)
+    with pytest.raises(HTTPException) as ei:
+        _run(pipeline.mint_random_alias_endpoint(pipeline.MintAliasRequest(pipeline="Flow Stage")))
+    assert ei.value.status_code == 503
+    assert ei.value.detail == "intake_password_not_configured"
+
+
+@pytest.mark.parametrize("notion_page_id", [None, "notion-123"])
+@pytest.mark.parametrize("value", [None, "", "   "])
+def test_submit_intake_503_when_intake_password_not_configured(monkeypatch, value, notion_page_id):
+    if value is None:
+        monkeypatch.delenv("DEFAULT_INTAKE_PASSWORD", raising=False)
+    else:
+        monkeypatch.setenv("DEFAULT_INTAKE_PASSWORD", value)
+    _forbid_intake_side_effects(monkeypatch)
+    req = pipeline.IntakeRequest(
+        account_username="newhandle",
+        email_alias="acct-n@risingtidesviral.com",
+        notion_page_id=notion_page_id,
+    )
+    with pytest.raises(HTTPException) as ei:
+        _run(pipeline.submit_intake(req))
+    assert ei.value.status_code == 503
+    assert ei.value.detail == "intake_password_not_configured"
+
+
+def test_mint_alias_writes_configured_intake_password(monkeypatch):
+    monkeypatch.setenv("DEFAULT_INTAKE_PASSWORD", "  configured-placeholder  ")
+
+    async def _mint(pipeline=None, destination_override=None, desired_local=None):
+        return {"alias": "acct-p@risingtidesviral.com", "destination": "d@x.com", "rule_id": "r9"}
+
+    monkeypatch.setattr(pipeline, "_mint_random_alias", _mint)
+    monkeypatch.setattr(pipeline, "notion_configured", lambda: True)
+    seen = {}
+
+    async def _create(**kwargs):
+        seen.update(kwargs)
+        return {"id": "notion-p"}
+
+    monkeypatch.setattr(pipeline, "create_intake_page", _create)
+    out = _run(pipeline.mint_random_alias_endpoint(pipeline.MintAliasRequest()))
+    assert out.notion_page_id == "notion-p"
+    assert seen["password"] == "configured-placeholder"
+
+
+def test_submit_intake_create_path_writes_configured_intake_password(monkeypatch):
+    monkeypatch.setattr(pipeline, "notion_configured", lambda: True)
+    seen = {}
+
+    async def _create(**kwargs):
+        seen.update(kwargs)
+        return {"id": "notion-new"}
+
+    async def _sync():
+        return {"added": 1, "updated": 0}
+
+    monkeypatch.setattr(pipeline, "create_intake_page", _create)
+    monkeypatch.setattr(pipeline, "update_intake_page", _forbid("update_intake_page"))
+    monkeypatch.setattr(pipeline, "sync_into_roster", _sync)
+    import services.roster as roster_service
+
+    monkeypatch.setattr(roster_service, "set_page", lambda *a, **k: None)
+    req = pipeline.IntakeRequest(account_username="newhandle", email_alias="acct-n@risingtidesviral.com")
+    out = _run(pipeline.submit_intake(req))
+    assert out["ok"] is True
+    assert out["notion_page_id"] == "notion-new"
+    assert seen["password"] == TEST_INTAKE_PASSWORD
+
+
+def test_backend_has_no_intake_password_fallback():
+    """No getenv/environ.get of DEFAULT_INTAKE_PASSWORD may carry a default."""
+    import ast
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    offenders = []
+    for path in root.rglob("*.py"):
+        if any(part in {"node_modules", ".venv", "venv", ".git"} for part in path.parts):
+            continue
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+        except (SyntaxError, UnicodeDecodeError):
+            continue
+        consts = {
+            node.targets[0].id: node.value.value
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Assign) and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name) and isinstance(node.value, ast.Constant)
+        }
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                    and node.func.attr in {"getenv", "get"} and node.args):
+                continue
+            key = node.args[0]
+            name = key.value if isinstance(key, ast.Constant) else consts.get(getattr(key, "id", None))
+            if name == "DEFAULT_INTAKE_PASSWORD" and (len(node.args) > 1 or node.keywords):
+                offenders.append(f"{path.relative_to(root)}:{node.lineno}")
+    assert not offenders, f"DEFAULT_INTAKE_PASSWORD read with a fallback default: {offenders}"

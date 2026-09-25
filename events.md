@@ -787,17 +787,24 @@ ________________________________________________________________________________
 time: [18:46 EDT] [26-09-25]
 agent: [Claude Code] [claude-opus-5-5]
 worktree: [fix/frontend-no-default-password] [/Users/ecfromthedc/dev/wt/lab-fe-default-pw]
-type: [security]: default account password removed from the public frontend bundle
-area: [frontend] [security] [testing]
+type: [security]: default account password removed from the bundle; intake fails closed
+area: [frontend] [backend] [security] [testing]
 
 The Pipeline intake modal printed the shared default TikTok account password
 as literal text in three places, so Vite compiled it into the public JS bundle
 (3 occurrences in the live production bundle). It has been in the frontend
-since the Pipeline tab landed (#38, 2026-04-29); the backend copy was already
-moved to the server-side `DEFAULT_INTAKE_PASSWORD` env var on 2026-06-19. The
-modal now refers to "the team's standard intake password", which the server
-still records on the Notion row. `tests/test_no_shipped_default_password.py`
-stores only a SHA-256 digest and fails if the value reappears in repository
-text sources or in a built `frontend/dist`. The value remains in git history
-and in previously served bundles and must be rotated by the operator; history
-was not rewritten. No deploy was performed.
+since the Pipeline tab landed (#38, 2026-04-29). The backend copy moved to the
+`DEFAULT_INTAKE_PASSWORD` env var on 2026-06-19 but kept a guessable hard-coded
+fallback, and that variable is unset in production, so intakes since then
+wrote the fallback to Notion while the UI still named the old literal. The
+modal now refers to "the team's standard intake password"; `/mint-alias` and
+`/intake` read the env var per request and return 503
+`intake_password_not_configured` before minting an alias or writing Notion or
+roster state when it is unset or blank. The fallback literal is gone and
+`.env.example` documents the variable. `tests/test_no_shipped_default_password.py`
+stores only SHA-256 digests of both retired values and fails if either appears
+in backend sources, other repository text or a built `frontend/dist`. Both
+values remain in git history (including the messages of 0649233 and 4e03918)
+and previously served bundles; the old literal must be rotated by the
+operator, and history was not rewritten. Until the operator sets
+`DEFAULT_INTAKE_PASSWORD`, intake is refused. No deploy was performed.

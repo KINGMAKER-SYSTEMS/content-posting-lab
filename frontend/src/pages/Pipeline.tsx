@@ -618,6 +618,18 @@ function IntakeModal({
   const update = (field: keyof typeof form, value: string) =>
     setForm((prev) => ({ ...prev, [field]: value }));
 
+  // The server refuses intake (typed 503) until DEFAULT_INTAKE_PASSWORD is set.
+  const intakeErrorMessage = (text: string, status: number) => {
+    try {
+      if (JSON.parse(text)?.detail === 'intake_password_not_configured') {
+        return 'Intake is paused: the server has no intake password configured (DEFAULT_INTAKE_PASSWORD). Ask the operator to set it, then retry.';
+      }
+    } catch {
+      // not JSON; fall through to the raw text
+    }
+    return text || `Request failed (${status})`;
+  };
+
   // Step 1: mint email (also creates placeholder Notion row) + open TikTok
   const mintAndGo = async () => {
     if (!form.pipeline_choice) {
@@ -636,7 +648,7 @@ function IntakeModal({
       });
       if (!resp.ok) {
         const text = await resp.text();
-        throw new Error(text || `Request failed (${resp.status})`);
+        throw new Error(intakeErrorMessage(text, resp.status));
       }
       const result = await resp.json();
       const email = result.alias as string;
@@ -699,7 +711,7 @@ function IntakeModal({
       });
       if (!resp.ok) {
         const text = await resp.text();
-        throw new Error(text || `Request failed (${resp.status})`);
+        throw new Error(intakeErrorMessage(text, resp.status));
       }
       const result = await resp.json();
       addNotification('success', `${form.account_username} added to pipeline`);

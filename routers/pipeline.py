@@ -46,7 +46,21 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-DEFAULT_INTAKE_PASSWORD = os.getenv("DEFAULT_INTAKE_PASSWORD", "changeme")
+INTAKE_PASSWORD_ENV = "DEFAULT_INTAKE_PASSWORD"
+INTAKE_PASSWORD_NOT_CONFIGURED = "intake_password_not_configured"
+
+
+def _intake_password() -> str:
+    """Return the server-owned intake password, or refuse the intake.
+
+    Read at request time from the environment only. There is no fallback: an
+    unset or blank value raises a typed 503 before any alias, Notion row or
+    roster entry is written, so an intake can never record a guessable default.
+    """
+    value = (os.getenv(INTAKE_PASSWORD_ENV) or "").strip()
+    if not value:
+        raise HTTPException(status_code=503, detail=INTAKE_PASSWORD_NOT_CONFIGURED)
+    return value
 
 
 # Pipeline stages — must match the Notion Status select values exactly.
@@ -256,6 +270,7 @@ async def mint_random_alias_endpoint(req: MintAliasRequest | None = None) -> Min
     User can also specify a custom name (`desired_local`) so emails are
     human-readable in the inbox (e.g. "samb-truck-04@..." instead of random).
     """
+    intake_password = _intake_password()
     pipeline = (req.pipeline if req else None) or None
     desired_local = (req.desired_local if req else None) or None
     info = await _mint_random_alias(pipeline=pipeline, desired_local=desired_local)
@@ -272,7 +287,7 @@ async def mint_random_alias_endpoint(req: MintAliasRequest | None = None) -> Min
                 pipeline_choice=pipeline,
                 email=info["alias"],
                 fwd_address=info["alias"],
-                password=DEFAULT_INTAKE_PASSWORD,
+                password=intake_password,
             )
             notion_page_id = created.get("id")
         except Exception as exc:
@@ -298,6 +313,7 @@ async def submit_intake(req: IntakeRequest):
 
     Either way, status stays "New — Pending Setup" so it lands in lane 1.
     """
+    intake_password = _intake_password()
     if not notion_configured():
         raise HTTPException(
             status_code=503,
@@ -358,7 +374,7 @@ async def submit_intake(req: IntakeRequest):
                 account_type=req.account_type,
                 email=email_alias,
                 fwd_address=email_alias,
-                password=DEFAULT_INTAKE_PASSWORD,
+                password=intake_password,
             )
             created_id = created.get("id", "")
     except httpx.HTTPStatusError as exc:
