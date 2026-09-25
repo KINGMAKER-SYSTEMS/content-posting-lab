@@ -290,6 +290,14 @@ def test_recommissioned_boat_and_silhouette_are_advertised_after_operator_lift()
         "silhouette-truck", "silhouette-truck:master", "ai_video",
     ))
     assert silhouette is not None
+    assert silhouette.family["method"] == "t2i"
+    assert silhouette.engine == "flux-image"
+    assert silhouette.provider_model == "black-forest-labs/flux-2-pro"
+    assert silhouette.family.get("base_anchor") is None
+    prompt, _ = compose_prompt(silhouette, "static-silhouette", 0)
+    assert "pickup truck parked in an open field" in prompt
+    assert "single still photograph" in prompt
+    assert "Motion:" not in prompt
 
 
 def test_scenic_is_not_misrouted_through_the_ai_video_resolver():

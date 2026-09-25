@@ -129,8 +129,8 @@
       "executionStatus": "commissioned",
       "executorKind": "prompt_family",
       "executorId": "silhouette",
-      "executorVersion": "sha256:e7c2a13a818da636bb32ea3027cd3d2be1a88fd8c9c74e87cf67206f3188ceff",
-      "formatContractVersion": "sha256:3c2bb8dd9c081e6b8d8d026d7077a3d476838af15ca3d19112fcc7dd85dc1f8f",
+      "executorVersion": "sha256:2ba10a69a2a25eb0c60ed238b9badb5b7531a994a364e0f06ef4acfcc7bda3a0",
+      "formatContractVersion": "sha256:95608c1d7c9be8646ad571333e8a19de2c7e6b046d5370a7642e189758eed7d6",
       "maxQuantity": 10
     },
     "truck-scenic": {

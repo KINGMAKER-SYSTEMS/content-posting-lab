@@ -162,7 +162,7 @@ def test_silhouette_contract_is_commissioned_after_operator_lifted_quarantine():
     assert profile.max_quantity >= 1
     # The restored rules are hash-bound to the live silhouette prompt family.
     from services.control_plane_generation import load_prompt_catalog
-    _, catalog_hash = load_prompt_catalog()
+    _, catalog_hash = load_prompt_catalog("silhouette-truck")
     assert silhouette.creative_authority == CreativeAuthority(
         "prompt_family", "silhouette", f"sha256:{catalog_hash}",
     )
@@ -174,6 +174,22 @@ def test_silhouette_contract_is_commissioned_after_operator_lifted_quarantine():
     assert silhouette.review_authority == (
         "promptCatalog.families.silhouette.quality_guards"
     )
+
+
+def test_silhouette_stills_do_not_reversion_unrelated_prompt_families():
+    from services.control_plane_generation import load_prompt_catalog
+
+    shared, shared_hash = load_prompt_catalog()
+    still, still_hash = load_prompt_catalog("silhouette-truck")
+    assert shared_hash == "e7c2a13a818da636bb32ea3027cd3d2be1a88fd8c9c74e87cf67206f3188ceff"
+    assert still_hash != shared_hash
+    assert still == shared
+    assert still["families"]["silhouette"]["method"] == "t2i"
+    assert still["families"]["silhouette"]["provider"] == "flux-image"
+    profiles, _ = load_engine_registry()
+    for slug in ("boat-lake", "coffee-tok", "truck-scenic"):
+        assert profiles[slug].executor_version == f"sha256:{shared_hash}"
+    assert profiles["silhouette-truck"].executor_version == f"sha256:{still_hash}"
 
 
 def test_failed_legacy_archives_are_not_registered_recipes():
