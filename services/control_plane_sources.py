@@ -63,6 +63,10 @@ RECUT_FIXED_DURATION_MS = 6_000
 # plan is reproducible from its seed.
 CUT_START_STEP_MS = 1_000
 CAPABILITY_PLAN_SEED = "capability"
+# Above this many candidate time frames a plan samples fresh footage in seeded
+# order instead of scoring every candidate (a 24 h master has ~345,000).
+FULL_SCAN_CANDIDATES = 5_000
+SAMPLE_ATTEMPTS_PER_CUT = 64
 MASTER_WINDOWS_EXHAUSTED = "master_windows_exhausted"
 MIN_ORIGINAL_START_MS = 60_000
 SHIPSTREAM_PAGE_MASTER_AUTHORITY = "ShipStream source-manifest.v1 exact page master"
@@ -392,17 +396,6 @@ def source_cut_durations(recipe: SourceRecipe) -> tuple[int, ...]:
     return tuple(sorted(durations))
 
 
-def _time_frame_starts(master: MasterSource, first_ms: int, duration_ms: int) -> list[int]:
-    """Whole-second starts from ``first_ms``, plus one ending on the last frame."""
-    last = master.duration_ms - duration_ms
-    if last < first_ms:
-        return []
-    starts = list(range(first_ms, last + 1, CUT_START_STEP_MS))
-    if starts[-1] != last:
-        starts.append(last)
-    return starts
-
-
 def _first_start_ms(recipe: SourceRecipe, master: MasterSource) -> int:
     """Earliest whole-second library start honoring the original-timeline floor."""
     minimum = minimum_original_start_ms(recipe, master) - master.source_offset_ms
@@ -445,6 +438,60 @@ def _overlap_with_used(frames: list[tuple[int, int]], longest: int, start: int, 
     return best
 
 
+def _merged_reservations(
+    master: MasterSource, identity: str | None,
+    exclusions: list[tuple[str, str | None, int, int]] | None,
+) -> list[tuple[int, int]]:
+    """Other pages' reservations of this master on its library timeline, merged."""
+    merged: list[list[int]] = []
+    for begin, end in sorted(
+        (start - master.source_offset_ms, end - master.source_offset_ms)
+        for source, master_sha256, start, end in (exclusions or [])
+        if source == identity and (master_sha256 is None or master_sha256 == master.sha256)
+    ):
+        if merged and begin < merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], end)
+        else:
+            merged.append([begin, end])
+    return [(begin, end) for begin, end in merged]
+
+
+def _start_runs(
+    master: MasterSource, first_ms: int, duration_ms: int,
+    reserved: list[tuple[int, int]],
+) -> list[tuple[int, int, int]]:
+    """Candidate starts for one length as ascending ``(first, step, count)`` runs.
+
+    Whole-second starts from ``first_ms``, then one start ending on the last
+    frame, minus every start whose window overlaps a reservation. Reserved
+    stretches are skipped arithmetically, never enumerated.
+    """
+    last = master.duration_ms - duration_ms
+    if last < first_ms:
+        return []
+
+    def free(start: int) -> bool:
+        index = bisect_left(reserved, (start + duration_ms, -1))
+        return not (index and reserved[index - 1][1] > start)
+
+    runs: list[tuple[int, int, int]] = []
+    low = first_ms
+    for begin, end in [*reserved, (last + duration_ms, last + duration_ms)]:
+        # Starts in [low, begin - duration] do not reach this reservation.
+        high = min(last, begin - duration_ms)
+        if high >= low:
+            k_low = -(-(low - first_ms) // CUT_START_STEP_MS)
+            k_high = (high - first_ms) // CUT_START_STEP_MS
+            if k_high >= k_low:
+                runs.append((first_ms + k_low * CUT_START_STEP_MS, CUT_START_STEP_MS, k_high - k_low + 1))
+        low = max(low, end)
+        if low > last:
+            break
+    if (last - first_ms) % CUT_START_STEP_MS and free(last):
+        runs.append((last, CUT_START_STEP_MS, 1))
+    return runs
+
+
 def plan_source_cuts(
     recipe: SourceRecipe,
     quantity: int,
@@ -465,6 +512,11 @@ def plan_source_cuts(
     ordered by ``seed``, so the same seed and inputs always yield the same plan.
     Fewer than ``quantity`` cuts means the master's unique time frames are
     exhausted (see MASTER_WINDOWS_EXHAUSTED).
+
+    A library with more than FULL_SCAN_CANDIDATES candidates first samples
+    never-overlapped time frames in seeded order and stops at ``quantity``, so
+    a long master costs O(quantity + prior cuts), not O(starts x lengths). Only
+    when fresh footage is too sparse to sample does it fall back to the scan.
     """
     if not isinstance(quantity, int) or isinstance(quantity, bool) or quantity <= 0:
         raise ValueError("quantity must be a positive integer")
@@ -476,46 +528,95 @@ def plan_source_cuts(
         raise ValueError("seed must be a string")
     used = _used_time_frames(recipe, served_slots)
     durations = source_cut_durations(recipe)
-    candidates: list[tuple[int, float, SourceCut]] = []
-    rng = random.Random(hashlib.sha256(
-        f"{seed}\0{recipe.source_library_hash}".encode("utf-8"),
-    ).digest())
+    lanes = []
+    total = 0
     for master in recipe.masters:
         identity = canonical_source_identity(master.provenance.get("sourceUrl"))
-        reserved = sorted(
-            (start, end)
-            for source, master_sha256, start, end in (exclusions or [])
-            if source == identity and (master_sha256 is None or master_sha256 == master.sha256)
-        )
+        reserved = _merged_reservations(master, identity, exclusions)
         frames = used[master.sha256]
-        taken = set(frames)
-        longest = max((duration for _, duration in frames), default=0)
         first = _first_start_ms(recipe, master)
-        for duration_ms in durations:
-            for start_ms in _time_frame_starts(master, first, duration_ms):
-                if (start_ms, duration_ms) in taken:
-                    continue
-                original_start = master.source_offset_ms + start_ms
-                original_end = original_start + duration_ms
-                if any(begin < original_end and end > original_start for begin, end in reserved):
-                    continue
-                cut = SourceCut(master, start_ms, duration_ms, True)
-                if cut.slot_id in served_slots:
-                    continue
-                overlap = _overlap_with_used(frames, longest, start_ms, start_ms + duration_ms)
-                candidates.append((overlap, rng.random(), cut))
-    candidates.sort(key=lambda row: (row[0], row[1]))
-    chosen: list[SourceCut] = []
-    for _, _, cut in candidates:
-        if any(
+        runs = [
+            (duration_ms, _start_runs(master, first, duration_ms, reserved))
+            for duration_ms in durations
+        ]
+        total += sum(count for _, rows in runs for _, _, count in rows)
+        lanes.append((
+            master, frames, set(frames),
+            max((duration for _, duration in frames), default=0), runs,
+        ))
+
+    def overlaps_chosen(chosen: list[SourceCut], cut: SourceCut) -> bool:
+        return any(
             other.master.sha256 == cut.master.sha256
             and other.start_ms < cut.start_ms + cut.duration_ms
             and cut.start_ms < other.start_ms + other.duration_ms
             for other in chosen
-        ):
+        )
+
+    if total > FULL_SCAN_CANDIDATES:
+        sampled = _sample_fresh_cuts(lanes, total, quantity, served_slots, seed,
+                                     recipe.source_library_hash, overlaps_chosen)
+        if len(sampled) == quantity:
+            return sampled
+
+    candidates: list[tuple[int, float, SourceCut]] = []
+    rng = random.Random(hashlib.sha256(
+        f"{seed}\0{recipe.source_library_hash}".encode("utf-8"),
+    ).digest())
+    for master, frames, taken, longest, runs in lanes:
+        for duration_ms, rows in runs:
+            for run_first, step, count in rows:
+                for start_ms in range(run_first, run_first + step * count, step):
+                    if (start_ms, duration_ms) in taken:
+                        continue
+                    cut = SourceCut(master, start_ms, duration_ms, True)
+                    if cut.slot_id in served_slots:
+                        continue
+                    overlap = _overlap_with_used(frames, longest, start_ms, start_ms + duration_ms)
+                    candidates.append((overlap, rng.random(), cut))
+    candidates.sort(key=lambda row: (row[0], row[1]))
+    chosen: list[SourceCut] = []
+    for _, _, cut in candidates:
+        if overlaps_chosen(chosen, cut):
             continue
         chosen.append(cut)
         if len(chosen) >= quantity:
+            break
+    return chosen
+
+
+def _sample_fresh_cuts(lanes, total, quantity, served_slots, seed, library_hash, overlaps_chosen):
+    """Draw never-overlapped candidates in seeded order until ``quantity``."""
+    index: list[tuple[int, Any, list[tuple[int, int]], int, int, int, int]] = []
+    offset = 0
+    for master, frames, _, longest, runs in lanes:
+        for duration_ms, rows in runs:
+            for run_first, step, count in rows:
+                index.append((offset, master, frames, longest, duration_ms, run_first, step))
+                offset += count
+    offsets = [row[0] for row in index]
+    rng = random.Random(hashlib.sha256(
+        f"{seed}\0sample\0{library_hash}".encode("utf-8"),
+    ).digest())
+    chosen: list[SourceCut] = []
+    seen: set[int] = set()
+    for _ in range(SAMPLE_ATTEMPTS_PER_CUT * quantity):
+        position = rng.randrange(total)
+        if position in seen:
+            continue
+        seen.add(position)
+        row = index[bisect_left(offsets, position + 1) - 1]
+        run_offset, master, frames, longest, duration_ms, run_first, step = row
+        start_ms = run_first + (position - run_offset) * step
+        cut = SourceCut(master, start_ms, duration_ms, True)
+        if (
+            cut.slot_id in served_slots
+            or _overlap_with_used(frames, longest, start_ms, start_ms + duration_ms)
+            or overlaps_chosen(chosen, cut)
+        ):
+            continue
+        chosen.append(cut)
+        if len(chosen) == quantity:
             break
     return chosen
 

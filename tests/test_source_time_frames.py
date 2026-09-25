@@ -209,3 +209,71 @@ def test_a_tiny_master_reports_master_windows_exhausted(lab, monkeypatch):
     )
     assert exhausted.status_code == 409
     assert exhausted.json()["detail"] == MASTER_WINDOWS_EXHAUSTED == "master_windows_exhausted"
+
+
+def test_a_24_hour_master_plans_and_answers_capacity_within_100_ms():
+    # Review of #165: scoring every candidate cost ~0.7-12 s on a 24 h master
+    # (the registry maximum) under the jobs lock, on create and on every
+    # capability poll. A long master now samples fresh footage and stops at
+    # the requested count.
+    import time
+    from services.control_plane_sources import source_window_exclusions
+
+    recipe, master = _long_page_master_recipe(duration_ms=86_400_000, floor_ms=0)
+    served: set[str] = set()
+    run = 0
+    while len(served) < 400:
+        served |= {cut.slot_id for cut in plan_source_cuts(recipe, 10, served, seed=f"prior-{run}")}
+        run += 1
+    frames = sorted((int(s.split(":")[1]), int(s.split(":")[2])) for s in served)
+
+    def timed(**kwargs):
+        started = time.perf_counter()
+        cuts = plan_source_cuts(recipe, 10, served, **kwargs)
+        return cuts, time.perf_counter() - started
+
+    created, create_seconds = timed(seed="job-seed")
+    capacity, capacity_seconds = timed()
+    assert create_seconds < 0.1, create_seconds
+    assert capacity_seconds < 0.1, capacity_seconds
+    assert len(created) == len(capacity) == 10
+    for cut in created:
+        assert cut.slot_id not in served
+        assert source_cut_is_planned(recipe, master, cut.start_ms, cut.duration_ms, cut.slot_id)
+        # Fresh footage: no overlap with any earlier cut, none within the plan.
+        assert not any(
+            start < cut.start_ms + cut.duration_ms and cut.start_ms < start + length
+            for start, length in frames
+        )
+    assert not any(
+        _overlaps(left, right)
+        for i, left in enumerate(created) for right in created[i + 1:]
+    )
+    assert [c.slot_id for c in created] == [c.slot_id for c in timed(seed="job-seed")[0]]
+
+    # Another page holding the whole source leaves nothing, also without a scan.
+    everything = source_window_exclusions([{
+        "sourceIdentity": master.provenance["sourceUrl"],
+        "startMs": 0, "endMs": 9_007_199_254_740_991,
+    }])
+    started = time.perf_counter()
+    assert plan_source_cuts(recipe, 10, served, everything) == []
+    assert time.perf_counter() - started < 0.1
+
+
+def test_reserved_windows_are_skipped_on_long_and_short_masters_alike():
+    from services.control_plane_sources import source_window_exclusions
+    for duration_ms in (120_000, 7_200_000):
+        recipe, master = _long_page_master_recipe(duration_ms=duration_ms, floor_ms=0)
+        excluded = source_window_exclusions([{
+            "sourceIdentity": master.provenance["sourceUrl"],
+            "startMs": 10_000, "endMs": duration_ms - 30_000,
+        }])
+        cuts = []
+        served: set[str] = set()
+        while batch := plan_source_cuts(recipe, 10, served, excluded, seed=f"x{len(cuts)}"):
+            cuts.extend(batch)
+            served |= {cut.slot_id for cut in batch}
+        assert cuts
+        for cut in cuts:
+            assert cut.start_ms + cut.duration_ms <= 10_000 or cut.start_ms >= duration_ms - 30_000
