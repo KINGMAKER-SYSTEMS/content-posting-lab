@@ -834,4 +834,27 @@ unchanged. Separately, the `duplicates` counts on Worker source_replenish rows
 are mostly the Worker's own multi-pass continuation re-counting clips the same
 Lab job admitted in an earlier pass (admitted + duplicates equals that job's
 asset count on every row checked); that accounting is Worker-side and not
+
+_________________________________________________________________________________
+time: [18:00 EDT] [26-09-25]
+agent: [Claude Code] [claude-opus-5-5]
+worktree: [fix/roster-routes-auth] [/Users/ecfromthedc/dev/wt/lab-roster-auth]
+type: [security]: /api/roster no longer serialises account credentials
+area: [backend] [security] [testing]
+
+Production does not set APP_API_KEY, so the /api key middleware is off and
+every /api/roster route answers the public internet. GET /api/roster/, GET
+/api/roster/project/{name}, PUT /api/roster/{id} and POST
+/api/roster/sync-notion and /sync returned full roster rows, including the
+Notion signup email and password, forwarding address and Cloudflare email
+alias/rule/destination. Every roster row now leaves through an allowlist
+(`services/roster_public.py`) and every roster router JSON body through a
+credential-key scrub; the credentials stay in the roster cache for the
+server-side code that uses them. DELETE /api/roster/{id}, which no UI calls,
+now requires CONTROL_PLANE_TOKEN or APP_API_KEY and fails closed when neither
+is configured. The operator UI sends no credential, so the routes it calls
+stay unauthenticated; their responses are credential-free. The UI's email
+alias columns and alias-removal button lose the alias/rule values they read
+from /api/roster. New HTTP tests fail on main (12 of 16) and pass here.
+/api/pipeline and /api/email still serialise full roster rows and are not
 changed here. No deploy was performed.

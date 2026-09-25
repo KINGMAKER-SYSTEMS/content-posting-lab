@@ -87,6 +87,12 @@
   exact-byte hashing, media probing, and refillable-master normalization for
   page-scoped source-link intake.
 - `routers/burn.py` exposes caption rendering and final video compositing.
+- `services/roster_public.py` owns what `/api/roster` may serialise: an allowlist
+  of roster row fields plus a credential-key scrub applied to every roster
+  router response. Signup email, password, forwarding address, email
+  alias/rule/destination and notes stay in the roster cache and never cross
+  HTTP there. It also owns the roster machine credential (CONTROL_PLANE_TOKEN
+  or APP_API_KEY) required on roster routes no unauthenticated UI calls.
 - `burn_server.py` exposes the same typed caption-render route on the posting
   Mac's canonical port-8002 Burn runtime for Rail consumption.
 - `events.md` is the repository's append-only chronological ledger.
