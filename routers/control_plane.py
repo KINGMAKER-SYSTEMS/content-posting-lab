@@ -1486,6 +1486,8 @@ async def _run_dossier_generation(job_id: str) -> None:
     clip_speed = dossier_clip_speed(recipe)
     clip_crop = dossier_clip_crop(recipe)
     manifests: list[dict[str, Any]] = []
+    provider_failures: list[dict[str, Any]] = []
+    provider_calls_completed = 0
     prompt_plan = job.get("promptPlan")
     if (
         not isinstance(prompt_plan, list)
@@ -1551,18 +1553,31 @@ async def _run_dossier_generation(job_id: str) -> None:
                 # not, and credit exhaustion needs a different response than
                 # a transient provider fault.
                 provider_error = str(entry.get("error") or "")
+                failure = {
+                    "class": classify_provider_error(provider_error),
+                    "provider": recipe.engine,
+                    "model": recipe.provider_model,
+                    "generationIndex": call_index,
+                    "providerRequestId": entry.get("provider_request_id"),
+                    "detail": provider_error[:300],
+                    "at": datetime.now(timezone.utc).isoformat(),
+                }
+                provider_failures.append(failure)
                 await asyncio.to_thread(_update_job,
                     job_id,
-                    providerFailure={
-                        "class": classify_provider_error(provider_error),
-                        "provider": recipe.engine,
-                        "model": recipe.provider_model,
-                        "generationIndex": call_index,
-                        "providerRequestId": entry.get("provider_request_id"),
-                        "detail": provider_error[:300],
-                        "at": datetime.now(timezone.utc).isoformat(),
-                    },
+                    providerFailure=failure,
+                    providerFailures=provider_failures,
                 )
+                if (failure["class"] == "moderation"
+                        and isinstance(failure["providerRequestId"], str)
+                        and failure["providerRequestId"].strip()
+                        and provider_error.startswith("Replicate failed:")):
+                    # A confirmed refused prediction stays refused. Continue
+                    # only to the next distinct candidate already in this
+                    # job's immutable plan; no replacement prompt or retry.
+                    await asyncio.to_thread(_update_job, job_id,
+                        progress=int(((call_index + 1) / calls) * 100))
+                    continue
                 raise RuntimeError("provider_generation_failed")
             candidates = _validated_provider_candidates(entry, options.get("crop_mode"))
             for candidate_index, candidate in enumerate(candidates):
@@ -1662,11 +1677,16 @@ async def _run_dossier_generation(job_id: str) -> None:
                     raise RuntimeError("master_pages_strategy_changed")
                 _claim_unique_generated_clip(job_id, manifest)
                 manifests.append(manifest)
+            provider_calls_completed += 1
             await asyncio.to_thread(_update_job,
                 job_id,
                 progress=int(((call_index + 1) / calls) * 100),
-                providerCallsCompleted=call_index + 1,
+                providerCallsCompleted=provider_calls_completed,
             )
+        if provider_failures:
+            # Retain the same truthful partial/zero-output terminal handling,
+            # including the error, after all independent planned candidates.
+            raise RuntimeError("provider_generation_failed")
     except asyncio.CancelledError:
         shutil.rmtree(job_root, ignore_errors=True)
         await asyncio.to_thread(_update_job,
