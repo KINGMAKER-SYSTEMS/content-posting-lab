@@ -119,6 +119,15 @@ async def lifespan(app: FastAPI):
     # Initialize structured logging before anything else
     debug_logger.setup_logging()
 
+    # A hard-killed source import skips its cleanup; nothing imports at boot,
+    # so any private cookie-jar copy still present here is stale.
+    try:
+        from scraper.frame_extractor import sweep_private_cookie_jars
+        sweep_private_cookie_jars()
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(f"cookie-jar sweep failed: {e}")
+
     Path("output").mkdir(parents=True, exist_ok=True)
     Path("caption_output").mkdir(parents=True, exist_ok=True)
     Path("burn_output").mkdir(parents=True, exist_ok=True)
