@@ -120,7 +120,10 @@ async def lifespan(app: FastAPI):
     debug_logger.setup_logging()
 
     # A hard-killed source import skips its cleanup; nothing imports at boot,
-    # so any private cookie-jar copy still present here is stale.
+    # so any private cookie-jar copy still present here is stale. This is only
+    # true because the server runs ONE process (main.py uvicorn.run, no
+    # workers): with workers > 1 a later worker's sweep could delete another
+    # worker's in-flight copy, so move this sweep to a pre-fork hook first.
     try:
         from scraper.frame_extractor import sweep_private_cookie_jars
         sweep_private_cookie_jars()
