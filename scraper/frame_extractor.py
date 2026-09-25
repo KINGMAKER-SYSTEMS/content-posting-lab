@@ -304,6 +304,21 @@ def _classify(err: str) -> str:
     return "other"
 
 
+_YOUTUBE_HOSTS = frozenset({
+    "youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be",
+})
+
+
+def _is_youtube_url(url: str) -> bool:
+    from urllib.parse import urlsplit
+
+    try:
+        host = (urlsplit(url).hostname or "").lower()
+    except ValueError:
+        return False
+    return host in _YOUTUBE_HOSTS
+
+
 async def download_video(
     video_url: str,
     dest: Path,
@@ -353,9 +368,9 @@ async def download_video(
             raise ValueError("max_filesize must be a positive integer")
         base_cmd += ["--max-filesize", str(max_filesize)]
 
-    # Page source imports accept only validated public, permanent URLs. Keep
-    # that lane independent from the shared TikTok/browser cookie stores: a
-    # stale or oversized cookie jar must not delay a public MP4 import.
+    # Page source imports accept only validated public, permanent URLs. They
+    # never use browser cookies, and a stale or oversized cookie jar must not
+    # delay a public MP4 import: the public attempt always runs first.
     strategies: list[tuple[str, list[str]]] = []
     cookies_source: str | None = None
     if not source_import_mode:
@@ -373,6 +388,16 @@ async def download_video(
                     (f"cookies-from-{browser}", ["--cookies-from-browser", browser])
                 )
     strategies.append(("no-auth", []))
+    # YouTube refuses anonymous downloads from datacenter IPs ("Sign in to
+    # confirm you're not a bot"), so every YouTube page import failed on
+    # Railway (15/15 through 2026-09-25). The public attempt still runs first;
+    # only its auth refusal falls back to the operator-managed cookies.txt, and
+    # only for YouTube, so other hosts never receive the jar.
+    if source_import_mode and _is_youtube_url(video_url):
+        env_cookies = get_cookies_path()
+        if env_cookies is not None and env_cookies.exists():
+            strategies.append(("cookies-from-env", ["--cookies", str(env_cookies)]))
+            cookies_source = str(env_cookies)
 
     # (label, cleaned_error, kind) for every strategy that failed.
     failures: list[tuple[str, str, str]] = []
