@@ -281,8 +281,10 @@
 
 - Replicate video generation (`providers/replicate.py`) retries only faults
   that cannot buy a second prediction: submission HTTP 429 (honouring
-  `retry_after`, capped) and 500/502/503/504 or a never-established
-  connection, at most four submissions; poll transport/429/5xx/unparseable
+  `retry_after`, capped), 500 and 503 (no prediction id returned in every
+  observed case) or a never-established connection, at most four
+  submissions; 502/504 gateway results may hide a created prediction and
+  are terminal; poll transport/429/5xx/unparseable
   replies on the same prediction within its 600-second deadline; and one
   resubmission of Replicate's "Prediction interrupted (code: PA)". A read or
   write fault after the submission may have reached Replicate is not retried.

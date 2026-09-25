@@ -104,6 +104,15 @@ async def test_submission_5xx_is_retried(code):
     assert url == VIDEO
 
 
+@pytest.mark.parametrize("code", [502, 504])
+async def test_gateway_submission_result_is_not_resubmitted(code):
+    # A gateway error may hide a prediction the upstream already created.
+    script = Script(creates=[httpx.Response(code, text="<html>gateway</html>"), created()], polls=[done()])
+    with pytest.raises(RuntimeError, match="Replicate start failed"):
+        await run(script)
+    assert script.count("POST", "predictions") == 1
+
+
 async def test_unreachable_submission_is_retried_because_nothing_was_sent():
     script = Script(creates=[httpx.ConnectTimeout(""), created()], polls=[done()])
     url, _ = await run(script)

@@ -169,8 +169,10 @@ _INPUT_BUILDERS = {
 # such job blocked its page's refill for hours downstream.  Only failures that
 # cannot create a second paid prediction are retried here:
 #
-# * submission: HTTP 429 (honouring ``retry_after``) and 500/502/503/504, or a
-#   connection that was never established.  A read/write failure after the
+# * submission: HTTP 429 (honouring ``retry_after``), 500 and 503 -- Replicate
+#   returned no prediction id in every observed case (2026-09-24) -- or a
+#   connection that was never established.  502/504 are gateway results whose
+#   upstream may already have created the prediction, so they are NOT retried.  A read/write failure after the
 #   request body may have reached Replicate is ambiguous and is NOT retried,
 #   so a lost response can never become a duplicate paid prediction.
 # * polling: the prediction already exists, so a transport error, 429, 5xx or
@@ -184,7 +186,7 @@ _INPUT_BUILDERS = {
 # provider a recipe pinned.
 # ---------------------------------------------------------------------------
 START_ATTEMPTS = 4
-START_RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
+START_RETRY_STATUSES = frozenset({429, 500, 503})
 START_BACKOFF_SECONDS = (2.0, 5.0, 10.0)
 RETRY_AFTER_CAP_SECONDS = 30.0
 POLL_INTERVAL_SECONDS = 5.0
