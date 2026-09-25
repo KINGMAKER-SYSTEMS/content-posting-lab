@@ -13,6 +13,7 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Literal
 from urllib.parse import quote, urlsplit
@@ -30,6 +31,63 @@ log = logging.getLogger("content_lab.post_render_jobs")
 JOB_SCHEMA = "content-lab.post-render-job.v1"
 MAX_ATTEMPTS = 3
 RETRY_CODES = {"source_unavailable", "source_timeout", "process_timeout", "process_unavailable"}
+DEFAULT_WORKER_COUNT = 2
+MIN_WORKER_COUNT = 1
+MAX_WORKER_COUNT = 4
+
+
+def _worker_count() -> int:
+    """Concurrent render workers. Default 2, clamped 1..4; invalid falls back to 2."""
+    raw = os.getenv("CONTENT_LAB_POST_RENDER_WORKERS", "").strip()
+    if not raw:
+        return DEFAULT_WORKER_COUNT
+    try:
+        value = int(raw)
+    except ValueError:
+        log.warning("invalid CONTENT_LAB_POST_RENDER_WORKERS=%r, falling back to %d", raw, DEFAULT_WORKER_COUNT)
+        return DEFAULT_WORKER_COUNT
+    if not MIN_WORKER_COUNT <= value <= MAX_WORKER_COUNT:
+        log.warning("CONTENT_LAB_POST_RENDER_WORKERS=%d out of range [%d,%d], falling back to %d",
+                    value, MIN_WORKER_COUNT, MAX_WORKER_COUNT, DEFAULT_WORKER_COUNT)
+        return DEFAULT_WORKER_COUNT
+    return value
+
+
+def _planned_at_ms(slot_payload_json: str) -> int | None:
+    """Extract the slot's planned posting time (ms epoch) from the payload, if present.
+
+    The slot payload is `cp_schedule_slots.payload_json` as the Worker sends it (see
+    docs/post-render-setup.md). Its top-level `planned_at` is an ISO 8601 string with
+    a trailing `Z`, e.g. "2026-09-25T18:20:00.000Z" — that is the real field and is
+    parsed into epoch ms. `planned_at_ms` (a plain integer) is accepted as a fallback
+    when `planned_at` is absent or unparseable. Anything malformed returns None, in
+    which case claim order falls back to created_at_ms for that job.
+    """
+    try:
+        slot = json.loads(slot_payload_json)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(slot, dict):
+        return None
+    planned_at = slot.get("planned_at")
+    if isinstance(planned_at, str):
+        try:
+            parsed = datetime.fromisoformat(planned_at.replace("Z", "+00:00"))
+        except ValueError:
+            parsed = None
+        if parsed is not None:
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            try:
+                value = round(parsed.timestamp() * 1000)
+            except (OverflowError, OSError, ValueError):
+                value = None
+            if value is not None and value >= 0:
+                return value
+    value = slot.get("planned_at_ms")
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return None
+    return value
 
 
 class RenderJobError(ValueError):
@@ -181,6 +239,7 @@ class PostRenderJobs:
         if not root.is_absolute():
             raise RenderJobError("job_root_must_be_absolute")
         self.root, self.renderer, self.clock_ms = root, renderer, clock_ms
+        self.worker_count = _worker_count()
         self.fetcher = fetcher or (lambda request, path: fetch_source(request, path, SourceSettings.from_environment()))
         for directory in (root, root / "locks", root / "attempts"):
             directory.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -196,6 +255,7 @@ class PostRenderJobs:
                     attempt_id TEXT, attempts INTEGER NOT NULL DEFAULT 0,
                     available_at_ms INTEGER NOT NULL, created_at_ms INTEGER NOT NULL,
                     updated_at_ms INTEGER NOT NULL, error_code TEXT, receipt_sha256 TEXT,
+                    planned_at_ms INTEGER,
                     UNIQUE(slot_id,slot_hash));
                 CREATE TABLE IF NOT EXISTS idempotency (
                     key TEXT PRIMARY KEY, job_id TEXT NOT NULL REFERENCES jobs(id), request_hash TEXT NOT NULL);
@@ -206,6 +266,24 @@ class PostRenderJobs:
                     id TEXT PRIMARY KEY, job_id TEXT NOT NULL REFERENCES jobs(id),
                     state TEXT NOT NULL, started_at_ms INTEGER NOT NULL, ended_at_ms INTEGER, error_code TEXT);
             """)
+            # Idempotent migration for databases created before planned_at_ms existed.
+            columns = {row["name"] for row in db.execute("PRAGMA table_info(jobs)").fetchall()}
+            if "planned_at_ms" not in columns:
+                db.execute("ALTER TABLE jobs ADD COLUMN planned_at_ms INTEGER")
+            # One-time backfill, safe to run on every init: only NULL rows in states that
+            # still matter for claim order are touched, so already-backfilled or terminal
+            # rows are never revisited. Without this, jobs already queued/running at
+            # deploy would sort after every newly enqueued job with a real planned_at.
+            for row in db.execute("""
+                SELECT id, submission_json FROM jobs
+                WHERE planned_at_ms IS NULL AND state IN ('queued','running','failed','regeneration_needed')
+            """).fetchall():
+                try:
+                    planned = _planned_at_ms(RenderJobSubmission.model_validate_json(row["submission_json"]).slot_payload_json)
+                except Exception:
+                    continue
+                if planned is not None:
+                    db.execute("UPDATE jobs SET planned_at_ms=? WHERE id=?", (planned, row["id"]))
 
     @contextlib.contextmanager
     def _db(self):
@@ -243,15 +321,22 @@ class PostRenderJobs:
                 matches = has_provenance and source_visual_matches(request)
                 state = "queued" if matches else "regeneration_needed"
                 reason = None if matches else "source_treatment_mismatch" if has_provenance else "source_treatment_provenance_missing"
-                db.execute("INSERT INTO jobs(id,slot_id,slot_hash,request_hash,submission_json,state,available_at_ms,created_at_ms,updated_at_ms,error_code) VALUES(?,?,?,?,?,?,?,?,?,?)",
-                           (job_id, request.slot_id, request.slot_payload_sha256, request_hash, payload, state, now, now, now, reason))
+                planned_at_ms = _planned_at_ms(submission.slot_payload_json)
+                db.execute("INSERT INTO jobs(id,slot_id,slot_hash,request_hash,submission_json,state,available_at_ms,created_at_ms,updated_at_ms,error_code,planned_at_ms) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                           (job_id, request.slot_id, request.slot_payload_sha256, request_hash, payload, state, now, now, now, reason, planned_at_ms))
             elif (existing["state"] == "failed" and existing["error_code"] == "source_response_rejected"
                     and existing["attempts"] >= MAX_ATTEMPTS):
                 # A fresh key is an explicit Control Plane recovery request. The
                 # key is stored below, so replaying it returns the current job
                 # instead of repeatedly resetting a persistent source failure.
-                db.execute("UPDATE jobs SET state='queued',attempt_id=NULL,attempts=0,available_at_ms=?,updated_at_ms=?,error_code=NULL,receipt_sha256=NULL WHERE id=?",
-                           (now, now, job_id))
+                # request_hash matched above, so submission.slot_payload_json is the
+                # same payload already stored; backfill planned_at_ms here too, in case
+                # this row predates the column and the schema-init backfill hasn't run.
+                planned_at_ms = existing["planned_at_ms"]
+                if planned_at_ms is None:
+                    planned_at_ms = _planned_at_ms(submission.slot_payload_json)
+                db.execute("UPDATE jobs SET state='queued',attempt_id=NULL,attempts=0,available_at_ms=?,updated_at_ms=?,error_code=NULL,receipt_sha256=NULL,planned_at_ms=? WHERE id=?",
+                           (now, now, planned_at_ms, job_id))
             db.execute("INSERT OR IGNORE INTO idempotency(key,job_id,request_hash) VALUES(?,?,?)", (key, job_id, request_hash))
         return self.status(job_id)
 
@@ -391,12 +476,25 @@ class PostRenderJobs:
             db.execute("UPDATE attempts SET state='succeeded',ended_at_ms=? WHERE id=?", (now, row["attempt_id"]))
 
     def run_one(self) -> bool:
-        permit = next((lock for index in range(2) if (lock := _locked(self.root / "locks" / f"worker-{index}.lock")) is not None), None)
+        permit = next((lock for index in range(self.worker_count) if (lock := _locked(self.root / "locks" / f"worker-{index}.lock")) is not None), None)
         if permit is None:
             return False
         with permit:
             with self._db() as db:
-                rows = db.execute("SELECT * FROM jobs WHERE state IN ('queued','running') AND available_at_ms<=? ORDER BY created_at_ms LIMIT 100", (self.clock_ms(),)).fetchall()
+                # Running rows (restart recovery) stay at least as prioritized as before by
+                # always sorting ahead of queued rows. Among the rest, earliest planned
+                # posting time first; rows with no planned_at_ms (the slot payload carried
+                # no parseable planned_at/planned_at_ms, e.g. legacy rows) sort last and
+                # fall back to created_at_ms.
+                rows = db.execute("""
+                    SELECT * FROM jobs WHERE state IN ('queued','running') AND available_at_ms<=?
+                    ORDER BY
+                        CASE WHEN state = 'running' THEN 0 ELSE 1 END,
+                        CASE WHEN planned_at_ms IS NULL THEN 1 ELSE 0 END,
+                        planned_at_ms,
+                        created_at_ms
+                    LIMIT 100
+                """, (self.clock_ms(),)).fetchall()
             for row in rows:
                 lock = _locked(self.root / "locks" / (row["id"] + ".lock"))
                 if lock is None:
@@ -465,7 +563,7 @@ class PostRenderJobs:
                     worked = False
                 if not worked:
                     self._stop.wait(1)
-        self._threads = [threading.Thread(target=worker, name=f"post-render-{index}", daemon=True) for index in range(2)]
+        self._threads = [threading.Thread(target=worker, name=f"post-render-{index}", daemon=True) for index in range(self.worker_count)]
         for thread in self._threads:
             thread.start()
 

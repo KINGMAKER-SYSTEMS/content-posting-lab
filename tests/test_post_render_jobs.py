@@ -1,6 +1,7 @@
 import concurrent.futures
 import json
 import threading
+from datetime import datetime, timezone
 from pathlib import Path
 
 import httpx
@@ -15,12 +16,23 @@ from services.post_render import PostRenderRequest, sha256
 from tests.test_post_render import NOW, actual_source, request as render_request
 
 
-def submission(*, slot_id="slot:fixture-a", source=b"source", program_id="playlist:fixture"):
+def _iso_ms(ms: int) -> str:
+    """The real Worker-sent shape: an ISO 8601 string with milliseconds and a `Z` suffix."""
+    dt = datetime.fromtimestamp(ms / 1000, tz=timezone.utc)
+    return dt.strftime("%Y-%m-%dT%H:%M:%S.") + f"{ms % 1000:03d}Z"
+
+
+def submission(*, slot_id="slot:fixture-a", source=b"source", program_id="playlist:fixture",
+               planned_at=None, planned_at_ms=None):
     request = render_request(sha256(source), slot_id=slot_id, program_id=program_id)
     slot = {"schema_version": 4, "slot_id": request.slot_id, "page_id": request.page_id,
             "handle": request.account, "asset": {"sha256": request.source_sha256},
             "device_hint": {"device_serial": request.device_serial},
             "caption": {"text": request.caption}, "render_treatment": json.loads(request.render_treatment_json)}
+    if planned_at is not None:
+        slot["planned_at"] = planned_at
+    if planned_at_ms is not None:
+        slot["planned_at_ms"] = planned_at_ms
     raw = json.dumps(slot, separators=(",", ":"))
     request = PostRenderRequest.model_validate({**request.model_dump(by_alias=True), "slot_payload_sha256": sha256(raw.encode())})
     return jobs.RenderJobSubmission.model_validate({"schema": jobs.JOB_SCHEMA, "request": request,
@@ -154,6 +166,184 @@ def test_busy_job_does_not_block_another_and_cannot_be_claimed_twice(tmp_path):
         assert second.status(slow["id"])["attempts"] == 1
         release.set()
         assert future.result(timeout=2)
+
+
+@pytest.mark.parametrize("raw,expected", [
+    (None, 2), ("1", 1), ("2", 2), ("4", 4), ("0", 2), ("5", 2), ("-1", 2), ("abc", 2), (" 3 ", 3),
+])
+def test_worker_count_env_clamped_1_to_4_with_fallback_on_invalid(monkeypatch, raw, expected):
+    if raw is None:
+        monkeypatch.delenv("CONTENT_LAB_POST_RENDER_WORKERS", raising=False)
+    else:
+        monkeypatch.setenv("CONTENT_LAB_POST_RENDER_WORKERS", raw)
+    assert jobs._worker_count() == expected
+
+
+def test_worker_count_drives_both_permit_count_and_thread_count(tmp_path, monkeypatch):
+    monkeypatch.setenv("CONTENT_LAB_POST_RENDER_WORKERS", "3")
+    worker = service(tmp_path)
+    assert worker.worker_count == 3
+    worker.start()
+    try:
+        assert len(worker._threads) == 3
+        assert all(thread.is_alive() for thread in worker._threads)
+    finally:
+        worker.stop()
+
+
+def test_worker_count_of_one_limits_concurrent_permits_to_one(tmp_path, monkeypatch):
+    monkeypatch.setenv("CONTENT_LAB_POST_RENDER_WORKERS", "1")
+    entered, release = threading.Event(), threading.Event()
+    def renderer(source, output, request, **kwargs):
+        if request.slot_id == "slot:slow":
+            entered.set()
+            assert release.wait(5)
+        fake_render(source, output, request, **kwargs)
+    first = service(tmp_path, renderer=renderer)
+    assert first.worker_count == 1
+    slow = first.enqueue(submission(slot_id="slot:slow"), "slow-request")
+    fast = first.enqueue(submission(slot_id="slot:fast"), "fast-request")
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(first.run_one)
+        assert entered.wait(2)
+        second = service(tmp_path, renderer=renderer)
+        assert second.worker_count == 1
+        # The single configured permit is already held by `first`; a second
+        # worker configured the same way must not be able to acquire one.
+        assert second.run_one() is False
+        release.set()
+        assert future.result(timeout=2)
+    assert first.status(slow["id"])["state"] == "succeeded"
+    assert first.status(fast["id"])["state"] == "queued"
+
+
+def test_planned_at_iso_string_is_parsed_from_a_realistic_worker_payload_fragment():
+    # The real cp_schedule_slots.payload_json shape the Worker sends as slot_payload_json:
+    # a top-level ISO 8601 `planned_at` with a trailing Z, not `planned_at_ms`.
+    fragment = json.dumps({"planned_at": "2026-09-25T18:20:00.000Z",
+                            "expires_at": "2026-09-25T19:20:00.000Z", "format": "truck-scenic"})
+    expected = int(datetime(2026, 9, 25, 18, 20, 0, tzinfo=timezone.utc).timestamp() * 1000)
+    assert jobs._planned_at_ms(fragment) == expected
+
+
+@pytest.mark.parametrize("slot_json,expected", [
+    (json.dumps({"planned_at_ms": 123}), 123),
+    (json.dumps({"planned_at": "not-a-timestamp", "planned_at_ms": 456}), 456),
+    (json.dumps({"planned_at": "not-a-timestamp"}), None),
+    (json.dumps({}), None),
+    ("not json", None),
+    (json.dumps([1, 2, 3]), None),
+    (json.dumps({"planned_at_ms": -5}), None),
+    (json.dumps({"planned_at_ms": True}), None),
+    (json.dumps({"planned_at": None, "planned_at_ms": 789}), 789),
+])
+def test_planned_at_ms_is_the_fallback_and_malformed_input_returns_none(slot_json, expected):
+    assert jobs._planned_at_ms(slot_json) == expected
+
+
+def test_earlier_planned_job_claimed_before_older_created_later_planned_job(tmp_path):
+    now = [NOW]
+    worker = service(tmp_path, clock=lambda: now[0])
+    older_but_far = worker.enqueue(submission(slot_id="slot:far-deadline", planned_at=_iso_ms(NOW + 10_000_000)), "far-deadline")
+    now[0] += 60_000
+    newer_but_near = worker.enqueue(submission(slot_id="slot:near-deadline", planned_at=_iso_ms(NOW + 1_000)), "near-deadline")
+    assert worker.status(older_but_far["id"])["created_at_ms"] < worker.status(newer_but_near["id"])["created_at_ms"]
+
+    assert worker.run_one()
+    assert worker.status(newer_but_near["id"])["state"] == "succeeded"
+    assert worker.status(older_but_far["id"])["state"] == "queued"
+
+    assert worker.run_one()
+    assert worker.status(older_but_far["id"])["state"] == "succeeded"
+
+
+def test_jobs_without_planned_at_fall_back_to_created_at_ms_fifo_and_sort_after_planned(tmp_path):
+    now = [NOW]
+    worker = service(tmp_path, clock=lambda: now[0])
+    unplanned_first = worker.enqueue(submission(slot_id="slot:unplanned-first"), "unplanned-first")
+    now[0] += 1_000
+    planned = worker.enqueue(submission(slot_id="slot:planned", planned_at=_iso_ms(NOW + 500_000)), "planned-job")
+    now[0] += 1_000
+    unplanned_second = worker.enqueue(submission(slot_id="slot:unplanned-second"), "unplanned-second")
+
+    # Any job carrying a parseable planned_at is claimed before unplanned (NULL) jobs,
+    # regardless of creation order; unplanned jobs then fall back to created_at_ms FIFO
+    # among themselves.
+    assert worker.run_one()
+    assert worker.status(planned["id"])["state"] == "succeeded"
+    assert worker.status(unplanned_first["id"])["state"] == "queued"
+    assert worker.status(unplanned_second["id"])["state"] == "queued"
+
+    assert worker.run_one()
+    assert worker.status(unplanned_first["id"])["state"] == "succeeded"
+    assert worker.status(unplanned_second["id"])["state"] == "queued"
+
+    assert worker.run_one()
+    assert worker.status(unplanned_second["id"])["state"] == "succeeded"
+
+
+def test_running_restart_recovery_row_is_claimed_before_a_near_deadline_queued_job(tmp_path):
+    now = [NOW]
+    worker = service(tmp_path, clock=lambda: now[0])
+    stuck = worker.enqueue(submission(slot_id="slot:stuck-running"), "stuck-running")
+    with worker._db() as db:
+        db.execute("UPDATE jobs SET state='running', attempt_id=? WHERE id=?", ("stale-attempt", stuck["id"]))
+    now[0] += 1_000
+    near_deadline = worker.enqueue(submission(slot_id="slot:near-deadline-queued", planned_at=_iso_ms(NOW + 1_000)), "near-deadline-queued")
+
+    # _execute() treats a 'running' row it can't recover as a fresh attempt; either
+    # way it must be picked ahead of a queued job with an earlier planned_at.
+    assert worker.run_one()
+    assert worker.status(stuck["id"])["state"] in {"running", "succeeded", "failed"}
+    assert worker.status(near_deadline["id"])["state"] == "queued"
+
+
+_LEGACY_JOBS_SCHEMA = """
+    CREATE TABLE jobs (
+        id TEXT PRIMARY KEY, slot_id TEXT NOT NULL, slot_hash TEXT NOT NULL,
+        request_hash TEXT NOT NULL, submission_json TEXT NOT NULL,
+        state TEXT NOT NULL CHECK(state IN ('queued','running','succeeded','failed','regeneration_needed')),
+        attempt_id TEXT, attempts INTEGER NOT NULL DEFAULT 0,
+        available_at_ms INTEGER NOT NULL, created_at_ms INTEGER NOT NULL,
+        updated_at_ms INTEGER NOT NULL, error_code TEXT, receipt_sha256 TEXT,
+        UNIQUE(slot_id,slot_hash));
+    CREATE TABLE idempotency (
+        key TEXT PRIMARY KEY, job_id TEXT NOT NULL REFERENCES jobs(id), request_hash TEXT NOT NULL);
+    CREATE TABLE provenance_updates (
+        id INTEGER PRIMARY KEY, job_id TEXT NOT NULL REFERENCES jobs(id),
+        old_submission_json TEXT NOT NULL, new_request_hash TEXT NOT NULL, updated_at_ms INTEGER NOT NULL);
+    CREATE TABLE attempts (
+        id TEXT PRIMARY KEY, job_id TEXT NOT NULL REFERENCES jobs(id),
+        state TEXT NOT NULL, started_at_ms INTEGER NOT NULL, ended_at_ms INTEGER, error_code TEXT);
+"""
+
+
+def test_old_schema_db_backfills_planned_at_ms_on_next_init_and_skips_bad_rows(tmp_path):
+    import sqlite3
+    good_payload = submission(slot_id="slot:pre-deploy", planned_at=_iso_ms(NOW + 1_000)).model_dump_json(by_alias=True)
+    connection = sqlite3.connect(tmp_path / "jobs.sqlite")
+    connection.executescript(_LEGACY_JOBS_SCHEMA)
+    connection.executemany(
+        "INSERT INTO jobs(id,slot_id,slot_hash,request_hash,submission_json,state,available_at_ms,created_at_ms,updated_at_ms) "
+        "VALUES(?,?,?,?,?,?,?,?,?)",
+        [("render_pre_deploy", "slot:pre-deploy", "legacy-hash-a", "legacy-request-a", good_payload, "queued", NOW, NOW, NOW),
+         ("render_pre_deploy_bad", "slot:pre-deploy-bad", "legacy-hash-b", "legacy-request-b", "not valid json", "failed", NOW, NOW, NOW)])
+    connection.commit()
+    connection.close()
+
+    worker = service(tmp_path)
+
+    with worker._db() as db:
+        columns = {row["name"] for row in db.execute("PRAGMA table_info(jobs)").fetchall()}
+    assert "planned_at_ms" in columns
+    assert worker._row("render_pre_deploy")["planned_at_ms"] == NOW + 1_000
+    assert worker._row("render_pre_deploy_bad")["planned_at_ms"] is None
+
+    # A restart (a second init against the same durable root) must be idempotent:
+    # the already-backfilled row and the already-attempted bad row are left alone.
+    again = service(tmp_path)
+    assert again._row("render_pre_deploy")["planned_at_ms"] == NOW + 1_000
+    assert again._row("render_pre_deploy_bad")["planned_at_ms"] is None
 
 
 def test_transient_retries_back_off_and_stop_after_three_attempts(tmp_path):
