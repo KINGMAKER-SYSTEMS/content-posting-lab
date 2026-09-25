@@ -862,3 +862,30 @@ pending operator auth. The key scrub normalises spellings and also removes
 notes, pwd/pw/pass, passcode, recovery/backup codes, email and login keys. New HTTP tests fail on main (12 of 16) and pass here.
 /api/pipeline and /api/email still serialise full roster rows and are not
 changed here. No deploy was performed.
+
+_________________________________________________________________________________
+time: [19:45 EDT] [26-09-25]
+agent: [Claude Code] [claude-opus-5-5]
+worktree: [fix/telegram-auth] [/Users/ecfromthedc/dev/seats/LAB-TELEGRAM-AUTH]
+type: [security]: /api/telegram behind the API key; /send confined to media
+area: [backend] [frontend] [security] [testing]
+
+`app.py` exempted every `/api/telegram/` route from the API-key middleware and
+the Telegram router has no auth of its own, so with APP_API_KEY set anyone
+could still replace or delete the bot token, repoint the staging group and
+`POST /api/telegram/send` any file under the repo root to that chat. The
+Railway volume is mounted at /app/projects, so that included the roster
+(passwords), cookies.txt, control_plane_jobs.json and telegram_config.json.
+The bot long-polls; no webhook route exists, so the prefix is no longer
+exempt (only /api/health and the initData-verified /api/miniapp/ remain).
+`/send` now accepts only a media file whose real path is inside a project
+media dir or the legacy output dirs; `/send-batch` and `/assign-batch` refuse
+a traversing batch id and skip files that resolve outside the batch. The
+video router's `project` parameter is one safe directory name, and its
+string-prefix containment checks (which let `videos-evil/` pass as inside
+`videos/`) are real-path checks. The Distribution and Slideshow Telegram calls
+now send the key through `withApiKey`. Earlier reviews report APP_API_KEY
+unset in production; while it is, the middleware stays inert there, and the
+`/send` confinement is what applies. Campaign Hub's sound-assignment proxies call
+/api/telegram without a key and will need one if APP_API_KEY is set. New tests
+fail on main (150 of 163) and pass here. No deploy was performed.

@@ -99,6 +99,18 @@
 
 ## Local Contracts
 
+- The `/api/` key middleware (`app.py` `_AUTH_SKIP`) exempts only `/api/health`
+  and `/api/miniapp/*`, which verifies Telegram `initData` itself.
+  `/api/telegram/*` needs the key like every other `/api/` route: the bot
+  long-polls, so there is no webhook route to exempt. The UI sends the key
+  through `frontend/src/lib/api.ts` (`fetchApi` / `withApiKey`).
+- `POST /api/telegram/send` delivers only a media file whose real path is under
+  `projects/<project>/<videos|clips|burned|recreate|slideshow-images>/` or the
+  legacy `output`/`burn_output` dirs. The volume root beside those dirs holds
+  the roster, cookies and Telegram config and is never sendable.
+  `/send-batch` and `/assign-batch` take one batch-dir segment and skip files
+  that resolve outside it. `routers/video.py` accepts `project` only as one
+  directory name under the projects root and checks containment on real paths.
 - Format-contract HTTP reads use a separate two-permit thread limiter, not the
   shared synchronous endpoint pool. Preserve per-request registry validation,
   authentication, current-file visibility and fail-closed errors; disk reads

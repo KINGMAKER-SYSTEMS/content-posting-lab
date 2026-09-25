@@ -227,7 +227,11 @@ app.add_middleware(
 
 
 _APP_API_KEY = os.getenv("APP_API_KEY")
-_AUTH_SKIP = ("/api/health", "/api/miniapp/", "/api/telegram/")
+# Only routes with their own authentication may skip the API key:
+# /api/miniapp/* verifies Telegram initData (HMAC over the bot token).
+# /api/telegram/* is NOT exempt: the bot long-polls (no webhook route), and the
+# router can replace the bot token, repoint the staging group and send files.
+_AUTH_SKIP = ("/api/health", "/api/miniapp/")
 
 
 @app.middleware("http")
