@@ -193,6 +193,8 @@ async def lifespan(app: FastAPI):
 
     post_render_jobs = start_post_render_workers()
     yield
+    from routers.control_plane import shutdown_dossier_generation
+    await shutdown_dossier_generation()
     if post_render_jobs is not None:
         post_render_jobs.stop()
 
