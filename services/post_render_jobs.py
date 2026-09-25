@@ -270,6 +270,20 @@ class PostRenderJobs:
             columns = {row["name"] for row in db.execute("PRAGMA table_info(jobs)").fetchall()}
             if "planned_at_ms" not in columns:
                 db.execute("ALTER TABLE jobs ADD COLUMN planned_at_ms INTEGER")
+            # One-time backfill, safe to run on every init: only NULL rows in states that
+            # still matter for claim order are touched, so already-backfilled or terminal
+            # rows are never revisited. Without this, jobs already queued/running at
+            # deploy would sort after every newly enqueued job with a real planned_at.
+            for row in db.execute("""
+                SELECT id, submission_json FROM jobs
+                WHERE planned_at_ms IS NULL AND state IN ('queued','running','failed','regeneration_needed')
+            """).fetchall():
+                try:
+                    planned = _planned_at_ms(RenderJobSubmission.model_validate_json(row["submission_json"]).slot_payload_json)
+                except Exception:
+                    continue
+                if planned is not None:
+                    db.execute("UPDATE jobs SET planned_at_ms=? WHERE id=?", (planned, row["id"]))
 
     @contextlib.contextmanager
     def _db(self):
@@ -315,8 +329,14 @@ class PostRenderJobs:
                 # A fresh key is an explicit Control Plane recovery request. The
                 # key is stored below, so replaying it returns the current job
                 # instead of repeatedly resetting a persistent source failure.
-                db.execute("UPDATE jobs SET state='queued',attempt_id=NULL,attempts=0,available_at_ms=?,updated_at_ms=?,error_code=NULL,receipt_sha256=NULL WHERE id=?",
-                           (now, now, job_id))
+                # request_hash matched above, so submission.slot_payload_json is the
+                # same payload already stored; backfill planned_at_ms here too, in case
+                # this row predates the column and the schema-init backfill hasn't run.
+                planned_at_ms = existing["planned_at_ms"]
+                if planned_at_ms is None:
+                    planned_at_ms = _planned_at_ms(submission.slot_payload_json)
+                db.execute("UPDATE jobs SET state='queued',attempt_id=NULL,attempts=0,available_at_ms=?,updated_at_ms=?,error_code=NULL,receipt_sha256=NULL,planned_at_ms=? WHERE id=?",
+                           (now, now, planned_at_ms, job_id))
             db.execute("INSERT OR IGNORE INTO idempotency(key,job_id,request_hash) VALUES(?,?,?)", (key, job_id, request_hash))
         return self.status(job_id)
 

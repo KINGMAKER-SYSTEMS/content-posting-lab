@@ -298,6 +298,54 @@ def test_running_restart_recovery_row_is_claimed_before_a_near_deadline_queued_j
     assert worker.status(near_deadline["id"])["state"] == "queued"
 
 
+_LEGACY_JOBS_SCHEMA = """
+    CREATE TABLE jobs (
+        id TEXT PRIMARY KEY, slot_id TEXT NOT NULL, slot_hash TEXT NOT NULL,
+        request_hash TEXT NOT NULL, submission_json TEXT NOT NULL,
+        state TEXT NOT NULL CHECK(state IN ('queued','running','succeeded','failed','regeneration_needed')),
+        attempt_id TEXT, attempts INTEGER NOT NULL DEFAULT 0,
+        available_at_ms INTEGER NOT NULL, created_at_ms INTEGER NOT NULL,
+        updated_at_ms INTEGER NOT NULL, error_code TEXT, receipt_sha256 TEXT,
+        UNIQUE(slot_id,slot_hash));
+    CREATE TABLE idempotency (
+        key TEXT PRIMARY KEY, job_id TEXT NOT NULL REFERENCES jobs(id), request_hash TEXT NOT NULL);
+    CREATE TABLE provenance_updates (
+        id INTEGER PRIMARY KEY, job_id TEXT NOT NULL REFERENCES jobs(id),
+        old_submission_json TEXT NOT NULL, new_request_hash TEXT NOT NULL, updated_at_ms INTEGER NOT NULL);
+    CREATE TABLE attempts (
+        id TEXT PRIMARY KEY, job_id TEXT NOT NULL REFERENCES jobs(id),
+        state TEXT NOT NULL, started_at_ms INTEGER NOT NULL, ended_at_ms INTEGER, error_code TEXT);
+"""
+
+
+def test_old_schema_db_backfills_planned_at_ms_on_next_init_and_skips_bad_rows(tmp_path):
+    import sqlite3
+    good_payload = submission(slot_id="slot:pre-deploy", planned_at=_iso_ms(NOW + 1_000)).model_dump_json(by_alias=True)
+    connection = sqlite3.connect(tmp_path / "jobs.sqlite")
+    connection.executescript(_LEGACY_JOBS_SCHEMA)
+    connection.executemany(
+        "INSERT INTO jobs(id,slot_id,slot_hash,request_hash,submission_json,state,available_at_ms,created_at_ms,updated_at_ms) "
+        "VALUES(?,?,?,?,?,?,?,?,?)",
+        [("render_pre_deploy", "slot:pre-deploy", "legacy-hash-a", "legacy-request-a", good_payload, "queued", NOW, NOW, NOW),
+         ("render_pre_deploy_bad", "slot:pre-deploy-bad", "legacy-hash-b", "legacy-request-b", "not valid json", "failed", NOW, NOW, NOW)])
+    connection.commit()
+    connection.close()
+
+    worker = service(tmp_path)
+
+    with worker._db() as db:
+        columns = {row["name"] for row in db.execute("PRAGMA table_info(jobs)").fetchall()}
+    assert "planned_at_ms" in columns
+    assert worker._row("render_pre_deploy")["planned_at_ms"] == NOW + 1_000
+    assert worker._row("render_pre_deploy_bad")["planned_at_ms"] is None
+
+    # A restart (a second init against the same durable root) must be idempotent:
+    # the already-backfilled row and the already-attempted bad row are left alone.
+    again = service(tmp_path)
+    assert again._row("render_pre_deploy")["planned_at_ms"] == NOW + 1_000
+    assert again._row("render_pre_deploy_bad")["planned_at_ms"] is None
+
+
 def test_transient_retries_back_off_and_stop_after_three_attempts(tmp_path):
     now = [NOW]
     def unavailable(_request, _path):
