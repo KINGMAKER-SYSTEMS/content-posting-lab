@@ -1,6 +1,7 @@
 import concurrent.futures
 import json
 import threading
+from datetime import datetime, timezone
 from pathlib import Path
 
 import httpx
@@ -15,12 +16,21 @@ from services.post_render import PostRenderRequest, sha256
 from tests.test_post_render import NOW, actual_source, request as render_request
 
 
-def submission(*, slot_id="slot:fixture-a", source=b"source", program_id="playlist:fixture", planned_at_ms=None):
+def _iso_ms(ms: int) -> str:
+    """The real Worker-sent shape: an ISO 8601 string with milliseconds and a `Z` suffix."""
+    dt = datetime.fromtimestamp(ms / 1000, tz=timezone.utc)
+    return dt.strftime("%Y-%m-%dT%H:%M:%S.") + f"{ms % 1000:03d}Z"
+
+
+def submission(*, slot_id="slot:fixture-a", source=b"source", program_id="playlist:fixture",
+               planned_at=None, planned_at_ms=None):
     request = render_request(sha256(source), slot_id=slot_id, program_id=program_id)
     slot = {"schema_version": 4, "slot_id": request.slot_id, "page_id": request.page_id,
             "handle": request.account, "asset": {"sha256": request.source_sha256},
             "device_hint": {"device_serial": request.device_serial},
             "caption": {"text": request.caption}, "render_treatment": json.loads(request.render_treatment_json)}
+    if planned_at is not None:
+        slot["planned_at"] = planned_at
     if planned_at_ms is not None:
         slot["planned_at_ms"] = planned_at_ms
     raw = json.dumps(slot, separators=(",", ":"))
@@ -207,12 +217,36 @@ def test_worker_count_of_one_limits_concurrent_permits_to_one(tmp_path, monkeypa
     assert first.status(fast["id"])["state"] == "queued"
 
 
+def test_planned_at_iso_string_is_parsed_from_a_realistic_worker_payload_fragment():
+    # The real cp_schedule_slots.payload_json shape the Worker sends as slot_payload_json:
+    # a top-level ISO 8601 `planned_at` with a trailing Z, not `planned_at_ms`.
+    fragment = json.dumps({"planned_at": "2026-09-25T18:20:00.000Z",
+                            "expires_at": "2026-09-25T19:20:00.000Z", "format": "truck-scenic"})
+    expected = int(datetime(2026, 9, 25, 18, 20, 0, tzinfo=timezone.utc).timestamp() * 1000)
+    assert jobs._planned_at_ms(fragment) == expected
+
+
+@pytest.mark.parametrize("slot_json,expected", [
+    (json.dumps({"planned_at_ms": 123}), 123),
+    (json.dumps({"planned_at": "not-a-timestamp", "planned_at_ms": 456}), 456),
+    (json.dumps({"planned_at": "not-a-timestamp"}), None),
+    (json.dumps({}), None),
+    ("not json", None),
+    (json.dumps([1, 2, 3]), None),
+    (json.dumps({"planned_at_ms": -5}), None),
+    (json.dumps({"planned_at_ms": True}), None),
+    (json.dumps({"planned_at": None, "planned_at_ms": 789}), 789),
+])
+def test_planned_at_ms_is_the_fallback_and_malformed_input_returns_none(slot_json, expected):
+    assert jobs._planned_at_ms(slot_json) == expected
+
+
 def test_earlier_planned_job_claimed_before_older_created_later_planned_job(tmp_path):
     now = [NOW]
     worker = service(tmp_path, clock=lambda: now[0])
-    older_but_far = worker.enqueue(submission(slot_id="slot:far-deadline", planned_at_ms=NOW + 10_000_000), "far-deadline")
+    older_but_far = worker.enqueue(submission(slot_id="slot:far-deadline", planned_at=_iso_ms(NOW + 10_000_000)), "far-deadline")
     now[0] += 60_000
-    newer_but_near = worker.enqueue(submission(slot_id="slot:near-deadline", planned_at_ms=NOW + 1_000), "near-deadline")
+    newer_but_near = worker.enqueue(submission(slot_id="slot:near-deadline", planned_at=_iso_ms(NOW + 1_000)), "near-deadline")
     assert worker.status(older_but_far["id"])["created_at_ms"] < worker.status(newer_but_near["id"])["created_at_ms"]
 
     assert worker.run_one()
@@ -223,17 +257,18 @@ def test_earlier_planned_job_claimed_before_older_created_later_planned_job(tmp_
     assert worker.status(older_but_far["id"])["state"] == "succeeded"
 
 
-def test_jobs_without_planned_at_ms_fall_back_to_created_at_ms_fifo_and_sort_after_planned(tmp_path):
+def test_jobs_without_planned_at_fall_back_to_created_at_ms_fifo_and_sort_after_planned(tmp_path):
     now = [NOW]
     worker = service(tmp_path, clock=lambda: now[0])
     unplanned_first = worker.enqueue(submission(slot_id="slot:unplanned-first"), "unplanned-first")
     now[0] += 1_000
-    planned = worker.enqueue(submission(slot_id="slot:planned", planned_at_ms=NOW + 500_000), "planned-job")
+    planned = worker.enqueue(submission(slot_id="slot:planned", planned_at=_iso_ms(NOW + 500_000)), "planned-job")
     now[0] += 1_000
     unplanned_second = worker.enqueue(submission(slot_id="slot:unplanned-second"), "unplanned-second")
 
-    # Any job carrying planned_at_ms is claimed before unplanned (NULL) jobs, regardless
-    # of creation order; unplanned jobs then fall back to created_at_ms FIFO among themselves.
+    # Any job carrying a parseable planned_at is claimed before unplanned (NULL) jobs,
+    # regardless of creation order; unplanned jobs then fall back to created_at_ms FIFO
+    # among themselves.
     assert worker.run_one()
     assert worker.status(planned["id"])["state"] == "succeeded"
     assert worker.status(unplanned_first["id"])["state"] == "queued"
@@ -254,10 +289,10 @@ def test_running_restart_recovery_row_is_claimed_before_a_near_deadline_queued_j
     with worker._db() as db:
         db.execute("UPDATE jobs SET state='running', attempt_id=? WHERE id=?", ("stale-attempt", stuck["id"]))
     now[0] += 1_000
-    near_deadline = worker.enqueue(submission(slot_id="slot:near-deadline-queued", planned_at_ms=NOW + 1_000), "near-deadline-queued")
+    near_deadline = worker.enqueue(submission(slot_id="slot:near-deadline-queued", planned_at=_iso_ms(NOW + 1_000)), "near-deadline-queued")
 
     # _execute() treats a 'running' row it can't recover as a fresh attempt; either
-    # way it must be picked ahead of a queued job with an earlier planned_at_ms.
+    # way it must be picked ahead of a queued job with an earlier planned_at.
     assert worker.run_one()
     assert worker.status(stuck["id"])["state"] in {"running", "succeeded", "failed"}
     assert worker.status(near_deadline["id"])["state"] == "queued"

@@ -13,6 +13,7 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Literal
 from urllib.parse import quote, urlsplit
@@ -53,11 +54,14 @@ def _worker_count() -> int:
 
 
 def _planned_at_ms(slot_payload_json: str) -> int | None:
-    """Extract the slot's planned posting time (ms epoch) if the payload carries one.
+    """Extract the slot's planned posting time (ms epoch) from the payload, if present.
 
-    The slot payload is produced upstream (see docs/post-render-setup.md); until a
-    producer emits `planned_at_ms`, this returns None and claim order falls back to
-    created_at_ms, so this is a no-op until the field shows up on the wire.
+    The slot payload is `cp_schedule_slots.payload_json` as the Worker sends it (see
+    docs/post-render-setup.md). Its top-level `planned_at` is an ISO 8601 string with
+    a trailing `Z`, e.g. "2026-09-25T18:20:00.000Z" — that is the real field and is
+    parsed into epoch ms. `planned_at_ms` (a plain integer) is accepted as a fallback
+    when `planned_at` is absent or unparseable. Anything malformed returns None, in
+    which case claim order falls back to created_at_ms for that job.
     """
     try:
         slot = json.loads(slot_payload_json)
@@ -65,6 +69,21 @@ def _planned_at_ms(slot_payload_json: str) -> int | None:
         return None
     if not isinstance(slot, dict):
         return None
+    planned_at = slot.get("planned_at")
+    if isinstance(planned_at, str):
+        try:
+            parsed = datetime.fromisoformat(planned_at.replace("Z", "+00:00"))
+        except ValueError:
+            parsed = None
+        if parsed is not None:
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            try:
+                value = round(parsed.timestamp() * 1000)
+            except (OverflowError, OSError, ValueError):
+                value = None
+            if value is not None and value >= 0:
+                return value
     value = slot.get("planned_at_ms")
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         return None
@@ -444,8 +463,9 @@ class PostRenderJobs:
             with self._db() as db:
                 # Running rows (restart recovery) stay at least as prioritized as before by
                 # always sorting ahead of queued rows. Among the rest, earliest planned
-                # posting time first; rows with no planned_at_ms (not yet populated by a
-                # producer, or legacy rows) sort last and fall back to created_at_ms.
+                # posting time first; rows with no planned_at_ms (the slot payload carried
+                # no parseable planned_at/planned_at_ms, e.g. legacy rows) sort last and
+                # fall back to created_at_ms.
                 rows = db.execute("""
                     SELECT * FROM jobs WHERE state IN ('queued','running') AND available_at_ms<=?
                     ORDER BY
