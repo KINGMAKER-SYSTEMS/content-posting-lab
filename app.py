@@ -366,9 +366,43 @@ async def serve_abn_editor(ep_id: str = ""):
     return FileResponse(Path(__file__).resolve().parent / "yt-pipeline" / "editor.html", media_type="text/html")
 
 
+# The Railway volume is mounted AT /app/projects (railway.toml), so this
+# directory's root is also the volume root that holds page_roster.json,
+# telegram_config.json, cookies.txt, control_plane_jobs.json, agenticnews.db
+# and the bearer-gated control_plane_generated/ tree. A plain StaticFiles mount
+# served all of it without auth. Only project media is public.
+_PROJECT_MEDIA_KINDS = frozenset(
+    {"videos", "clips", "burned", "captions", "recreate", "slideshow-images", "slideshow-audio"}
+)
+_NON_PROJECT_VOLUME_DIRS = frozenset(
+    {"control_plane_generated", "control_plane_recipes", "agenticnews_assets", "lost+found"}
+)
+
+
+def _is_public_project_path(path: str) -> bool:
+    """True only for `<project>/<media kind>/<file...>` under the projects mount."""
+    parts = [p for p in path.replace("\\", "/").split("/") if p not in ("", ".")]
+    if any(p == ".." or p.startswith(".") or "\x00" in p for p in parts):
+        return False
+    return (
+        len(parts) >= 3
+        and parts[0] not in _NON_PROJECT_VOLUME_DIRS
+        and parts[1] in _PROJECT_MEDIA_KINDS
+    )
+
+
+class ProjectMediaFiles(StaticFiles):
+    """StaticFiles that refuses anything but project media (see above)."""
+
+    async def get_response(self, path: str, scope):
+        if not _is_public_project_path(path):
+            raise HTTPException(status_code=404)
+        return await super().get_response(path, scope)
+
+
 app.mount(
     "/projects",
-    StaticFiles(directory="projects", check_dir=False),
+    ProjectMediaFiles(directory="projects", check_dir=False),
     name="projects",
 )
 app.mount("/output", StaticFiles(directory="output", check_dir=False), name="output")
@@ -394,22 +428,49 @@ async def serve_font_preview():
     raise HTTPException(status_code=404, detail="font_preview.html not found")
 
 
+def _frontend_file(full_path: str, dist_dir: Path) -> Path | None:
+    """Return the regular file inside ``dist_dir`` that ``full_path`` names, else None.
+
+    ``full_path`` is attacker-controlled and this route is not under /api/, so
+    APP_API_KEY never guards it. Before any file is opened this refuses:
+    absolute paths (``//etc/passwd`` arrives here as ``/etc/passwd``), empty,
+    ``.`` and ``..`` segments, backslashes, NUL bytes, any residual ``%``
+    (Starlette already percent-decoded once, so ``%`` means double encoding),
+    and any path, symlinks included, that resolves outside ``dist_dir``.
+    """
+    if not full_path or full_path.startswith("/"):
+        return None
+    if any(ch in full_path for ch in ("\\", "\x00", "%")):
+        return None
+    if any(seg in ("", ".", "..") for seg in full_path.split("/")):
+        return None
+    try:
+        root = dist_dir.resolve(strict=True)
+        candidate = (root / full_path).resolve(strict=True)
+    except (OSError, RuntimeError, ValueError):
+        return None
+    if not candidate.is_relative_to(root) or not candidate.is_file():
+        return None
+    return candidate
+
+
+async def serve_frontend(full_path: str):
+    requested = _frontend_file(full_path, FRONTEND_DIR)
+    if requested is not None:
+        return FileResponse(requested)
+
+    index_path = FRONTEND_DIR / "index.html"
+    if index_path.is_file():
+        return FileResponse(index_path)
+
+    raise HTTPException(
+        status_code=404,
+        detail="Frontend not built. Run 'npm run build' in frontend/ directory.",
+    )
+
+
 if FRONTEND_DIR.exists():
-
-    @app.get("/{full_path:path}")
-    async def serve_frontend(full_path: str):
-        requested = FRONTEND_DIR / full_path
-        if full_path and requested.exists() and requested.is_file():
-            return FileResponse(requested)
-
-        index_path = FRONTEND_DIR / "index.html"
-        if index_path.exists():
-            return FileResponse(index_path)
-
-        raise HTTPException(
-            status_code=404,
-            detail="Frontend not built. Run 'npm run build' in frontend/ directory.",
-        )
+    app.get("/{full_path:path}")(serve_frontend)
 
 
 if __name__ == "__main__":
