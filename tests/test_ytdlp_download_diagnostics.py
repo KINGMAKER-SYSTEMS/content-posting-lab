@@ -129,6 +129,7 @@ def test_source_import_mode_verifies_tls_and_starts_an_owned_process_group(
     assert "--no-check-certificates" not in command
     assert "--cookies" not in command
     assert "--cookies-from-browser" not in command
+    assert command[command.index("-f") + 1].startswith("source/")
     assert options["start_new_session"] is True
 
 

@@ -53,6 +53,7 @@ from typing import Any
 from urllib.parse import quote, urlparse
 
 import httpx
+import anyio
 
 from fastapi import APIRouter, Header, HTTPException
 
@@ -381,8 +382,13 @@ def capabilities(
     return {"schema": RESPONSE_SCHEMA, "capabilities": entries}
 
 
+# Registry reads must not queue behind network-heavy capability/catalog work
+# in Starlette's shared synchronous endpoint pool. Keep disk IO off the loop.
+_FORMAT_READ_LIMITER = anyio.CapacityLimiter(2)
+
+
 @router.get("/v1/format-contracts")
-def format_contract_status(
+async def format_contract_status(
     x_rt_lane: str | None = Header(default=None),
     authorization: str | None = Header(default=None),
 ) -> dict[str, Any]:
@@ -396,6 +402,12 @@ def format_contract_status(
     if x_rt_lane != CONTROL_PLANE_LANE:
         raise HTTPException(status_code=400, detail="X-RT-Lane header is invalid")
     require_control_plane_bearer(authorization)
+    return await anyio.to_thread.run_sync(
+        _format_contract_snapshot, limiter=_FORMAT_READ_LIMITER,
+    )
+
+
+def _format_contract_snapshot() -> dict[str, Any]:
     try:
         contracts, contracts_hash = load_format_contracts()
         profiles, registry_hash = load_engine_registry()
@@ -716,7 +728,10 @@ VIDEO_EXTENSIONS = {".mp4", ".mov", ".webm", ".m4v"}
 MAX_JOB_QUANTITY = 100
 MAX_JOB_BODY_BYTES = 16_384
 MAX_GENERATION_JOB_BODY_BYTES = 512_000
-SOURCE_IMPORT_ACTIVE_DEADLINE_SECONDS = 20 * 60
+# Long creator masters are deliberately retained for recurring replenishment.
+# Their bounded download plus normalization can legitimately outlast the old
+# twenty-minute one-clip deadline, so do not recycle a healthy import midway.
+SOURCE_IMPORT_ACTIVE_DEADLINE_SECONDS = 6 * 60 * 60
 IDEMPOTENCY_KEY_RE = re.compile(r"^[A-Za-z0-9_.:-]{8,200}$")
 JOB_TOKEN_BYTES = 24
 GENERATION_ACTIVE_STATUSES = {"queued", "running"}
@@ -945,7 +960,7 @@ def _generated_capability_quantity(
     available_calls = len(plan_prompt_combinations(
         recipe,
         f"capability:{page_id}:{recipe.prompt_catalog_hash}:{recipe.family_name}",
-        prompt_combination_space(recipe),
+        recipe.planned_provider_calls(MAX_CAPABILITY_QUANTITY),
         unavailable_hashes,
         unavailable_slots,
     ))
@@ -1644,6 +1659,21 @@ async def _run_dossier_generation(job_id: str) -> None:
         )
         raise
     except Exception as error:  # provider and ffmpeg failures are job state
+        if (str(error) == "provider_generation_failed" and manifests
+                and _job_matches_current_master_pages(job)):
+            # Earlier calls already produced fully treated, claimed clips. A
+            # later provider failure ends this batch, not those paid outputs.
+            # Preserve requested/completed counts and the error; the consumer
+            # admits the actual artifacts and plans the remaining deficit.
+            await asyncio.to_thread(_update_job,
+                job_id,
+                status="completed",
+                progress=100,
+                clips=manifests,
+                error=str(error),
+                completedAt=datetime.now(timezone.utc).isoformat(),
+            )
+            return
         shutil.rmtree(job_root, ignore_errors=True)
         await asyncio.to_thread(_update_job,
             job_id,
@@ -2298,7 +2328,29 @@ def _start_truck_master_recovery(job_id: str) -> None:
 def _start_page_source_import(job_id: str) -> None:
     task = asyncio.create_task(_run_page_source_import(job_id))
     _source_import_tasks[job_id] = task
-    task.add_done_callback(lambda _: _source_import_tasks.pop(job_id, None))
+    task.add_done_callback(
+        lambda completed: (
+            _source_import_tasks.pop(job_id, None)
+            if _source_import_tasks.get(job_id) is completed
+            else None
+        ),
+    )
+
+
+async def _cancel_page_source_import(job_id: str) -> bool:
+    """Cancel and join the owned runner before its artifact root can be reused."""
+    task = _source_import_tasks.get(job_id)
+    if task is None:
+        return False
+    cancel_requested = task.cancel() if not task.done() else False
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+    finally:
+        if _source_import_tasks.get(job_id) is task:
+            _source_import_tasks.pop(job_id, None)
+    return cancel_requested
 
 
 def _start_syzygy_slideshow(job_id: str) -> None:
@@ -2902,7 +2954,7 @@ def _source_import_active_deadline_expired(job: dict[str, Any]) -> bool:
 
 
 @router.get("/v1/jobs/{job_id}")
-def job_status(
+async def job_status(
     job_id: str,
     x_rt_page_id: str | None = Header(default=None),
     authorization: str | None = Header(default=None),
@@ -2911,24 +2963,30 @@ def job_status(
     if not x_rt_page_id or not PAGE_ID_RE.match(x_rt_page_id):
         raise HTTPException(status_code=400, detail="X-RT-Page-Id header is required")
     job = _get_job_or_404(job_id)
-    if (
+    should_expire = (
         job.get("sourceKind") in ASYNC_SOURCE_KINDS
         and job.get("status") in GENERATION_ACTIVE_STATUSES
         and (
             job.get("runtimeId") != _GENERATION_RUNTIME_ID
             or _source_import_active_deadline_expired(job)
         )
-    ):
-        _update_job(
-            job_id,
-            status="failed",
-            error=(
-                "source_import_runtime_restarted"
-                if job.get("sourceKind") == "page_source_import"
-                else "generation_runtime_restarted"
-            ),
-            completedAt=datetime.now(timezone.utc).isoformat(),
-        )
+    )
+    if should_expire:
+        cancelled_local_runner = False
+        if job.get("sourceKind") == "page_source_import":
+            cancelled_local_runner = await _cancel_page_source_import(job_id)
+        current = _get_job_or_404(job_id)
+        if cancelled_local_runner or current.get("status") in GENERATION_ACTIVE_STATUSES:
+            _update_job(
+                job_id,
+                status="failed",
+                error=(
+                    "source_import_runtime_restarted"
+                    if job.get("sourceKind") == "page_source_import"
+                    else "generation_runtime_restarted"
+                ),
+                completedAt=datetime.now(timezone.utc).isoformat(),
+            )
         job = _get_job_or_404(job_id)
     if job["pageId"] != x_rt_page_id:
         # A job answers only to the page it belongs to — cross-page status

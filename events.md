@@ -14,6 +14,26 @@ fonts, unknown fields, incomplete styles, or clipped output. Verification:
 40 passed. No deployment, video mutation, phone action, scheduling, or post.
 _________________________________________________________________________________
 
+time: [17:00 EDT] [24-09-26]
+agent: [Codex desktop] [gpt-6-astra]
+worktree: [fix/source-master-loop-20260924] [/Users/ecfromthedc/dev/wt/source-master-loop]
+type: [bug report] [durability]: Preserve full creator masters and safe retries
+area: [backend] [testing]
+
+Adversarial review of the long-master intake found that source-import mode still
+preferred a Google Drive streaming derivative over its original `source` format,
+the post-download capacity gate counted bytes already present on disk, and an
+expired live runner could continue deleting or writing inside a retry's reused
+artifact root. Source imports now prefer the original source format with bounded
+fallbacks, reserve only the additional normalized output after download, and
+cancel plus join an owned expired runner before allowing an idempotent retry.
+The task registry also removes only the exact completed task so an old callback
+cannot evict a replacement. The expanded source-import, yt-dlp, execution, and
+production-image suites pass 82 tests; a live extractor probe selects the 28:22
+Google Drive master as format `source` rather than the 137+140 derivative.
+
+_________________________________________________________________________________
+
 _________________________________________________________________________________
 
 time: [17:51] [09-01-26]
@@ -706,3 +726,18 @@ Network card-background promotion tests, unrelated to the files changed here.
 No production deployment or paid Replicate generation was performed; no local
 Replicate credential is configured.
 _________________________________________________________________________________
+_________________________________________________________________________________
+time: [17:26 EDT] [24-09-26]
+agent: [Codex desktop] [gpt-6-astra]
+worktree: [feat/source-start-floor-20260924] [/Users/ecfromthedc/dev/wt/source-master-loop]
+type: [feature]: Durable per-page earliest source timestamp
+area: [backend] [source recut planning]
+
+Sourced-video recipes may now carry an optional `sourceStartMs` scalar in the
+existing production-controls map. The recut planner combines that page choice
+with the established raw-library/page-master minimum, so every refill skips the
+same unusable lead-in while absent controls preserve current behavior. The
+control is bounded to the supported two-hour master duration and invalid values
+make the recipe unexecutable. This deliberately leaves the shared executor
+catalog bytes unchanged, avoiding a fleet-wide catalog-version invalidation.
+The focused source-execution suite passes: 46 tests.

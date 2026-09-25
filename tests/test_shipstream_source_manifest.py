@@ -219,7 +219,7 @@ def test_refill_cuts_and_manifest_timestamp_do_not_change_source_version():
     assert second.sha256 == first.sha256
 
 
-def test_exact_registered_master_uses_its_own_file_from_offset_zero():
+def test_exact_registered_master_preserves_its_upstream_timeline_offset():
     intent, _ = _intent()
     sha256 = "a" * 64
     manifest = _historical_manifest()
@@ -252,10 +252,102 @@ def test_exact_registered_master_uses_its_own_file_from_offset_zero():
     library = projection.source_library
     assert len(library.masters) == 1
     assert library.masters[0].storage_key.endswith(f"masters/{sha256}.mp4")
-    assert library.masters[0].source_offset_ms == 0
+    assert library.masters[0].source_offset_ms == 120_000
     assert library.masters[0].duration_ms == 42_500
     assert projection.approved_cut_library is not None
     assert projection.approved_cut_library.cuts[0].parent_type == "page_master"
+
+
+def test_exact_master_keeps_legacy_publication_identity_and_local_timeline():
+    intent, _ = _intent()
+    sha256 = "a" * 64
+    manifest = _historical_manifest()
+    manifest["sourceAuthority"] = {
+        "kind": "exact_page_binding",
+        "pageHandle": HANDLE,
+        "notionPageId": NOTION_PAGE_ID,
+        "replacementEligible": True,
+    }
+    manifest["master"] = {
+        "sha256": sha256,
+        "storageKey": f"vault/{HANDLE}/masters/{sha256}.mp4",
+        "bytes": 20_000_000,
+        "media": {"durationSeconds": 42.5},
+        "originSourceUrl": "https://cdn.example/source.mp4",
+        "originWindowSeconds": [120.0, 162.5],
+        "registeredAt": "2026-09-01T21:25:29Z",
+    }
+    manifest.pop("historicalPostedCuts")
+
+    legacy = parse_shipstream_source_manifest(
+        _raw(manifest),
+        intent,
+        page_id=PAGE_ID,
+        expected_library_id="shipstream-lovenightwalks-db979fe6e2714894",
+    )
+    current = parse_shipstream_source_manifest(_raw(manifest), intent, page_id=PAGE_ID)
+    assert legacy.library_id == "shipstream-lovenightwalks-db979fe6e2714894"
+    assert legacy.masters[0].source_offset_ms == 0
+    assert current.library_id != legacy.library_id
+    assert current.masters[0].source_offset_ms == 120_000
+
+
+def test_exact_master_rejects_origin_window_duration_mismatch():
+    intent, _ = _intent()
+    sha256 = "a" * 64
+    manifest = _historical_manifest()
+    manifest["sourceAuthority"] = {
+        "kind": "exact_page_binding",
+        "pageHandle": HANDLE,
+        "notionPageId": NOTION_PAGE_ID,
+        "replacementEligible": True,
+    }
+    manifest["master"] = {
+        "sha256": sha256,
+        "storageKey": f"vault/{HANDLE}/masters/{sha256}.mp4",
+        "bytes": 20_000_000,
+        "media": {"durationSeconds": 42.5},
+        "originSourceUrl": "https://cdn.example/source.mp4",
+        "originWindowSeconds": [120.0, 121.0],
+        "registeredAt": "2026-09-01T21:25:29Z",
+    }
+    manifest.pop("historicalPostedCuts")
+    with pytest.raises(ShipStreamSourceError, match="does not match media duration"):
+        parse_shipstream_source_manifest(_raw(manifest), intent, page_id=PAGE_ID)
+
+
+def test_page_master_huge_timestamps_fail_with_the_typed_error():
+    intent, _ = _intent()
+    sha256 = "a" * 64
+    manifest = _historical_manifest()
+    manifest["sourceAuthority"] = {
+        "kind": "exact_page_binding",
+        "pageHandle": HANDLE,
+        "notionPageId": NOTION_PAGE_ID,
+        "replacementEligible": True,
+    }
+    manifest["master"] = {
+        "sha256": sha256,
+        "storageKey": f"vault/{HANDLE}/masters/{sha256}.mp4",
+        "bytes": 20_000_000,
+        "media": {"durationSeconds": 10**400},
+        "originSourceUrl": "https://cdn.example/source.mp4",
+        "originWindowSeconds": [10**400, 10**400],
+        "registeredAt": "2026-09-01T21:25:29Z",
+    }
+    manifest.pop("historicalPostedCuts")
+    with pytest.raises(ShipStreamSourceError, match="is invalid"):
+        parse_shipstream_source_manifest(_raw(manifest), intent, page_id=PAGE_ID)
+
+
+def test_approved_cut_huge_timestamp_fails_with_the_typed_error():
+    intent, _ = _intent()
+    manifest = _historical_manifest()
+    row = _cut_row(0)
+    row["sourceStartSeconds"] = 10**400
+    manifest["cuts"] = [row]
+    with pytest.raises(ShipStreamSourceError, match="is invalid"):
+        parse_shipstream_source_projection(_raw(manifest), intent, page_id=PAGE_ID)
 
 
 def test_content_lab_import_authority_is_an_exact_page_binding():

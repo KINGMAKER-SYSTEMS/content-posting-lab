@@ -91,6 +91,10 @@
 
 ## Local Contracts
 
+- Format-contract HTTP reads use a separate two-permit thread limiter, not the
+  shared synchronous endpoint pool. Preserve per-request registry validation,
+  authentication, current-file visibility and fail-closed errors; disk reads
+  must remain off the event loop.
 - Atomic JSON stores use compact one-shot encoding; preserve flush, fsync,
   atomic replacement and failure cleanup so large job histories do not stall API writes.
   Async production runners perform progress writes in worker threads.
@@ -100,6 +104,10 @@
 - Capability planning shares one read-only job-history snapshot per unchanged
   file identity. Job creation/progress/admission still load fresh mutable data
   under their existing transaction lock; never mutate the capability snapshot.
+- Generated capability planning stops after enough distinct available prompts
+  to reach the delivery ceiling; it still searches through reservations and
+  duplicate prompts to prove partial capacity or exhaustion. This does not
+  change generation quantities, reservation semantics or source recut policy.
 
 - Caption rendering accepts the shared `CaptionStyle` wire fields only. A saved
   caption layout may supply exact line breaks and final-frame outline width;
@@ -169,7 +177,7 @@
   the same request and idempotency key may resurrect only the exact
   `source_import_runtime_restarted` failure; it reuses the job id under the
   current runtime after cleaning its artifact root. A status read retires an
-  active import after its 20-minute bounded runtime, measured from the latest
+  active import after its six-hour bounded runtime, measured from the latest
   restart, and sends it through that same idempotent restart path. Every other
   terminal failure remains terminal.
 - ShipStream `content_lab_page_source_import` manifests are executable only
@@ -272,6 +280,11 @@
   current job.
 
 - AI generation reserves prompt combinations only for queued or running jobs.
+  A later provider failure preserves already treated, claimed outputs as a
+  completed underfilled batch, retaining the provider error and planned/completed
+  call counts. Artifact count stays truthful; downstream refill plans the deficit
+  with a new job rather than replaying the failed provider call. Zero-output
+  failures, cancellation and changed page strategy retain their failure behavior.
   Final clip admission applies the same active-only prompt rule while retaining
   completed output SHA rejection and within-job prompt exclusion.
   Completed prompts remain approved inputs for fresh rendering; prompt text is
