@@ -1,0 +1,69 @@
+{
+  "providers": {
+    "flux-image": {
+      "replicate_model": "black-forest-labs/flux-2-pro",
+      "base_input": {
+        "aspect_ratio": "9:16",
+        "duration": 7,
+        "resolution": "1080p",
+        "image_resolution": "2 MP",
+        "output_format": "jpg",
+        "output_quality": 95
+      },
+      "cost_per_gen_usd": 0.03,
+      "note": "Portrait-native FLUX.2 Pro still. The provider output is retained as the exact generated base image and wrapped without motion in a 7-second 1080x1920 MP4 so existing captions, sounds, QA, and posting delivery remain unchanged."
+    }
+  },
+  "formats": {
+    "silhouette-truck": {
+      "family": "silhouette",
+      "recipe_id": "silhouette-truck:master",
+      "recipe_version": "2026-09-24.1"
+    }
+  },
+  "families": {
+    "silhouette": {
+      "method": "t2i",
+      "provider": "flux-image",
+      "fixed_subject": "two adult lovers shown only as pure black featureless full-body silhouettes, holding each other beside one clean unbadged dark full-size crew-cab pickup truck parked in an open field",
+      "quality_guards": "one photorealistic deep low-exposure dusk photograph, native vertical 9:16 composition, realistic human anatomy and natural embrace, exactly two adults and exactly one complete pickup, both people and the entire truck clearly separated and readable above the field horizon, rich dark sky with controlled highlights, upper 45 percent is uncluttered clean sky reserved for downstream caption text, no visible faces, no clothing detail, no extra people, no extra vehicles, no readable badge, plate, logo, lettering, watermark, border, collage, illustration, CGI sheen, pale pastel wash, blur, duplicated limbs, fused bodies, malformed hands, or distorted vehicle geometry",
+      "template": "A quiet cinematic photograph of {subject}. {setting}. The couple is {pose}. {composition}. The sky is {sky}. Preserve deep blacks and controlled highlights; this is a single still photograph with no implied camera movement. {guards}.",
+      "motion_prompt": null,
+      "base_anchor": null,
+      "extra": null,
+      "clips_per_gen": 1,
+      "note": "Static-still reset 2026-09-24: FLUX.2 Pro creates one native 9:16 photo of two embracing adult silhouettes beside one complete pickup in a field. The exact JPG is retained in artifact provenance, then held without pan, zoom, interpolation, or subject motion in a 7-second 1080x1920 MP4 for the unchanged downstream caption/sound/posting contract. Reject anatomy, vehicle, count, text, caption-space, and duplicate failures; never substitute an I2V model.",
+      "slots": {
+        "sky": [
+          "a vast deep purple and muted red dusk gradient",
+          "dark plum twilight with a restrained pink horizon",
+          "a deep burnt-orange sunset under heavy streaked clouds",
+          "a dim bronze afterglow fading into navy blue",
+          "near-black violet dusk with one low sun ember",
+          "a dark amber horizon beneath a charcoal clearing sky"
+        ],
+        "setting": [
+          "They stand in an open field of tall grass at dusk",
+          "They stand at the edge of a wheat field at last light",
+          "They stand in a broad meadow bordered by a distant tree line",
+          "They stand on a low grassy country hilltop",
+          "They stand beside a quiet dirt track crossing an open field",
+          "They stand in a dry late-summer field beneath a huge sky"
+        ],
+        "pose": [
+          "embracing with their foreheads touching",
+          "embracing with her head resting on his shoulder",
+          "holding each other close while facing the horizon",
+          "embracing naturally in a side-on profile",
+          "standing chest to chest with both arms around each other"
+        ],
+        "composition": [
+          "Place the couple in the lower-left and the truck to their right, close enough to read as one scene, with a huge clean sky above",
+          "Place the couple in the lower center and the truck immediately behind and to the right, leaving the upper frame empty",
+          "Use a wide environmental composition with the couple and truck together in the lower third beneath an enormous clean sky"
+        ]
+      },
+      "keepers_per_gen": 0.7
+    }
+  }
+}

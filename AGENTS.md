@@ -299,6 +299,9 @@
   manifest, then hold that image without pan, zoom, or interpolation in a
   seven-second 1080x1920 MP4 so the existing caption, sound, QA, and posting
   contracts remain unchanged.
+- `recipes/generation/silhouette_stills.v1.json` versions only the silhouette
+  replacement. Keep the shared prompt catalog and unrelated format/profile
+  versions unchanged so switching silhouettes does not invalidate other pages.
 
 ## Work Guidance
 

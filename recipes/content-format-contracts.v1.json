@@ -10,7 +10,7 @@
       "creativeAuthority": {
         "kind": "prompt_family",
         "id": "boat",
-        "version": "sha256:5844d95f71e5a9cc6c51dab9c8f8ed2273974b2dc077158ca72d47ab618ed3be"
+        "version": "sha256:e7c2a13a818da636bb32ea3027cd3d2be1a88fd8c9c74e87cf67206f3188ceff"
       },
       "dimensions": {
         "subject": {
@@ -87,7 +87,7 @@
       "creativeAuthority": {
         "kind": "prompt_family",
         "id": "coffee",
-        "version": "sha256:5844d95f71e5a9cc6c51dab9c8f8ed2273974b2dc077158ca72d47ab618ed3be"
+        "version": "sha256:e7c2a13a818da636bb32ea3027cd3d2be1a88fd8c9c74e87cf67206f3188ceff"
       },
       "dimensions": {
         "subject": {
@@ -811,7 +811,7 @@
       "creativeAuthority": {
         "kind": "prompt_family",
         "id": "silhouette",
-        "version": "sha256:5844d95f71e5a9cc6c51dab9c8f8ed2273974b2dc077158ca72d47ab618ed3be"
+        "version": "sha256:2ba10a69a2a25eb0c60ed238b9badb5b7531a994a364e0f06ef4acfcc7bda3a0"
       },
       "dimensions": {
         "subject": {
@@ -889,7 +889,7 @@
       "creativeAuthority": {
         "kind": "prompt_family",
         "id": "truck",
-        "version": "sha256:5844d95f71e5a9cc6c51dab9c8f8ed2273974b2dc077158ca72d47ab618ed3be"
+        "version": "sha256:e7c2a13a818da636bb32ea3027cd3d2be1a88fd8c9c74e87cf67206f3188ceff"
       },
       "dimensions": {
         "subject": {
@@ -967,7 +967,7 @@
       "creativeAuthority": {
         "kind": "prompt_family",
         "id": "ugc",
-        "version": "sha256:5844d95f71e5a9cc6c51dab9c8f8ed2273974b2dc077158ca72d47ab618ed3be"
+        "version": "sha256:e7c2a13a818da636bb32ea3027cd3d2be1a88fd8c9c74e87cf67206f3188ceff"
       },
       "dimensions": {
         "subject": {

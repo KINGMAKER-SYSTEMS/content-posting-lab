@@ -70,7 +70,7 @@ def test_truck_recipe_resolves_from_the_master_pages_engine_and_server_owned_pro
     assert recipe.family_name == "truck"
     assert recipe.provider_model == "minimax/hailuo-2.3"
     assert recipe.engine == "hailuo"
-    assert recipe.prompt_catalog_hash == "5844d95f71e5a9cc6c51dab9c8f8ed2273974b2dc077158ca72d47ab618ed3be"
+    assert recipe.prompt_catalog_hash == "e7c2a13a818da636bb32ea3027cd3d2be1a88fd8c9c74e87cf67206f3188ceff"
     assert recipe.family["extra"]["crop_mode"] == "both"
     assert recipe.clips_per_generation == 5
     assert recipe.planned_provider_calls(1) == 1
