@@ -808,3 +808,30 @@ values remain in git history (including the messages of 0649233 and 4e03918)
 and previously served bundles; the old literal must be rotated by the
 operator, and history was not rewritten. Until the operator sets
 `DEFAULT_INTAKE_PASSWORD`, intake is refused. No deploy was performed.
+
+_________________________________________________________________________________
+time: [15:25 EDT] [25-09-26]
+agent: [Claude Code] [claude-opus-5-5]
+worktree: [fix/replenish-unique-cuts] [/Users/ecfromthedc/dev/wt/lab-unique-cuts]
+type: [bug report]: sourced replenish re-cut the same time frames after every recipe revision
+area: [backend] [testing]
+
+Sourced-video cut planning walked one fixed 9-second grid (+3 s/+6 s phases,
+then a 6-second grid) from the page floor, with each slot's length a pure hash
+of library and master. Completed cuts reserved their positions only for the
+exact recipe version that made them, so every dossier republish re-cut the same
+time frames from the first slot; and a grid id (`sha:start`) and a 6-second id
+(`sha:start:6000`) could name the same time frame, so one version could cut it
+twice. Control Plane D1 (read-only, 2026-09-25) holds page masters whose
+identical original windows were cut 3-5 times, e.g. ourbriefhourstogether
+0-6 s four times across three recipe versions (twice within one) and 18-26 s
+four times across four. The planner now enumerates every whole-second start at every allowed
+length, excludes every time frame already cut from the same master under any
+recipe or library version, prefers the least-overlapping fresh footage, and
+orders ties by a per-job seed recorded as `cutPlanSeed`. Exhaustion answers 409
+`master_windows_exhausted`. Output-SHA duplicate checks in Control Plane are
+unchanged. Separately, the `duplicates` counts on Worker source_replenish rows
+are mostly the Worker's own multi-pass continuation re-counting clips the same
+Lab job admitted in an earlier pass (admitted + duplicates equals that job's
+asset count on every row checked); that accounting is Worker-side and not
+changed here. No deploy was performed.

@@ -3,16 +3,18 @@
 Already-cut outputs are historical evidence, never refillable source DNA. A
 sourced recipe becomes executable only when its typed production selection names
 one registered master library bound to the exact page and format. The executor
-plans unique cut slots deterministically and records the original-source offset
-beside every output.
+plans unique cut time frames from a recorded per-job seed and records the
+original-source offset beside every output.
 """
 
 from __future__ import annotations
 
+from bisect import bisect_left
 from dataclasses import dataclass
 import hashlib
 import json
 import math
+import random
 import re
 from urllib.parse import urlsplit, urlunsplit, parse_qsl, quote_plus
 from pathlib import Path
@@ -42,22 +44,26 @@ EXECUTOR_PATH = (
     / "recipes/executors/source-dna-recut.v1.json"
 )
 EXECUTOR_SCHEMA = "content-lab.source-dna-recut-executor.v1"
+# Legacy grid (before 2026-09-25). Jobs queued by an older runtime carry
+# position ids from this 9-second grid, its +3 s/+6 s re-cut phases and the
+# 6-second fixed grid; source_cut_is_planned still verifies them. New plans
+# no longer walk this grid: it held only ~(duration / 9 s) x 3 positions per
+# master, and every recipe revision walked it again from the same first slot.
 CUT_SLOT_STEP_MS = 9_000
-# Re-cut phases. The 0 ms grid is cut first; once a page has used every clean
-# grid slot of its footage, the same footage is cut again from grid slots
-# shifted by 3 s and then 6 s (operator decision 2026-09-18: re-cutting the
-# same source at different points is fine). A 90-second page master yields 10
-# cuts on the plain grid and ~29 across the three phases. Each start position
-# is still used once per recipe version (slot_id), and cuts are never shared
-# across pages.
 RECUT_PHASES_MS = (0, 3_000, 6_000)
-# Fixed-length re-cuts (operator decision 2026-09-18: "do 6-second clips of the
-# same footage"). Once every phase is spent, the footage is cut again into
-# 6-second clips on a 6-second grid plus one clip ending on the last frame, so
-# even a 7.5-second page master yields 0-6 s and 1.5-7.5 s. A fixed-length
-# cut's slot_id carries its length, so it is a different clip from an earlier
-# cut that started at the same point.
 RECUT_FIXED_DURATION_MS = 6_000
+# Time-frame planning (operator rule 2026-09-25: only the EXACT posted clip may
+# never post again; a different time frame of the same master -- another start
+# or another length -- is a new video). Every whole-second start on the master
+# (plus one start ending on its last frame) times every allowed length is a
+# candidate. A time frame already cut from this master, under any recipe
+# revision, is never planned again. Fresh footage is preferred: candidates that
+# overlap previously cut footage least come first, and ties are broken by a
+# seed recorded on the job, so each run cuts different time frames and every
+# plan is reproducible from its seed.
+CUT_START_STEP_MS = 1_000
+CAPABILITY_PLAN_SEED = "capability"
+MASTER_WINDOWS_EXHAUSTED = "master_windows_exhausted"
 MIN_ORIGINAL_START_MS = 60_000
 SHIPSTREAM_PAGE_MASTER_AUTHORITY = "ShipStream source-manifest.v1 exact page master"
 SHIPSTREAM_HISTORICAL_AUTHORITY_PREFIX = (
@@ -96,10 +102,10 @@ class SourceCut:
 
     @property
     def slot_id(self) -> str:
-        # Deliberately excludes duration/speed/crop. Once a source position is
-        # used, a cosmetically altered near-duplicate may not re-enter a job.
-        # A re-cut phase is a different position (start_ms), so it has its own id.
-        # A fixed-length re-cut names its length: same start, different clip.
+        # A time-frame id names master, start and length: the same start at a
+        # different length is a different clip. Speed/crop are deliberately
+        # excluded, so a cosmetic re-treatment of a used time frame is not new.
+        # Legacy grid positions (fixed_length=False) excluded their length.
         if self.fixed_length:
             return f"{self.master.sha256}:{self.start_ms}:{self.duration_ms}"
         return f"{self.master.sha256}:{self.start_ms}"
@@ -370,80 +376,148 @@ def source_window_exclusions(value: Any) -> list[tuple[str, str | None, int, int
     return windows
 
 
+def source_cut_durations(recipe: SourceRecipe) -> tuple[int, ...]:
+    """Allowed source lengths: the page target +/- 2 s, plus the 6 s re-cut.
+
+    Every value is adjusted by delivery_cut_duration so the delivered clip
+    stays 6-11 seconds at the saved playback speed.
+    """
+    values = range(
+        max(5_000, recipe.cut_duration_ms - 2_000),
+        min(9_000, recipe.cut_duration_ms + 2_000) + 1,
+        1_000,
+    )
+    durations = {delivery_cut_duration(recipe, ms) for ms in values}
+    durations.add(delivery_cut_duration(recipe, RECUT_FIXED_DURATION_MS))
+    return tuple(sorted(durations))
+
+
+def _time_frame_starts(master: MasterSource, first_ms: int, duration_ms: int) -> list[int]:
+    """Whole-second starts from ``first_ms``, plus one ending on the last frame."""
+    last = master.duration_ms - duration_ms
+    if last < first_ms:
+        return []
+    starts = list(range(first_ms, last + 1, CUT_START_STEP_MS))
+    if starts[-1] != last:
+        starts.append(last)
+    return starts
+
+
+def _first_start_ms(recipe: SourceRecipe, master: MasterSource) -> int:
+    """Earliest whole-second library start honoring the original-timeline floor."""
+    minimum = minimum_original_start_ms(recipe, master) - master.source_offset_ms
+    return max(0, -(-minimum // CUT_START_STEP_MS) * CUT_START_STEP_MS)
+
+
+def _used_time_frames(
+    recipe: SourceRecipe, served_slots: set[str],
+) -> dict[str, list[tuple[int, int]]]:
+    """Parse served slot ids into (start, duration) time frames per master."""
+    masters = {master.sha256: master for master in recipe.masters}
+    used: dict[str, set[tuple[int, int]]] = {sha: set() for sha in masters}
+    for slot in served_slots:
+        parts = slot.split(":")
+        master = masters.get(parts[0])
+        if master is None or not all(part.isdigit() for part in parts[1:]):
+            continue
+        if len(parts) == 3:
+            used[master.sha256].add((int(parts[1]), int(parts[2])))
+        elif len(parts) == 2:
+            # A legacy grid position id: recover the length it was cut at.
+            try:
+                duration = planned_source_cut_duration(recipe, master, int(parts[1]))
+            except ValueError:
+                continue
+            used[master.sha256].add((int(parts[1]), duration))
+    return {sha: sorted(frames) for sha, frames in used.items()}
+
+
+def _overlap_with_used(frames: list[tuple[int, int]], longest: int, start: int, end: int) -> int:
+    """Largest overlap (ms) between [start, end) and any used time frame."""
+    best = 0
+    index = bisect_left(frames, (start - longest, -1))
+    while index < len(frames) and frames[index][0] < end:
+        used_start, used_duration = frames[index]
+        overlap = min(end, used_start + used_duration) - max(start, used_start)
+        if overlap > best:
+            best = overlap
+        index += 1
+    return best
+
+
 def plan_source_cuts(
     recipe: SourceRecipe,
     quantity: int,
     served_slots: set[str],
     exclusions: list[tuple[str, int, int]] | None = None,
+    *,
+    seed: str = CAPABILITY_PLAN_SEED,
 ) -> list[SourceCut]:
+    """Plan ``quantity`` never-cut time frames, freshest footage first.
+
+    ``served_slots`` holds every time frame already cut or reserved (slot ids
+    ``sha:start:duration``; legacy ``sha:start`` grid ids are resolved to the
+    length they were cut at). Those exact time frames are never returned.
+    Windows overlapping another page's reservation (``exclusions``) and windows
+    before the page's original-timeline floor are never candidates. One plan
+    never holds two overlapping cuts of the same master. Among the remaining
+    candidates, the least overlap with already-cut footage wins; ties are
+    ordered by ``seed``, so the same seed and inputs always yield the same plan.
+    Fewer than ``quantity`` cuts means the master's unique time frames are
+    exhausted (see MASTER_WINDOWS_EXHAUSTED).
+    """
     if not isinstance(quantity, int) or isinstance(quantity, bool) or quantity <= 0:
         raise ValueError("quantity must be a positive integer")
     if not isinstance(served_slots, set) or any(
         not isinstance(value, str) for value in served_slots
     ):
         raise ValueError("served_slots must be a string set")
-    candidates: list[SourceCut] = []
-    lanes = []
+    if not isinstance(seed, str):
+        raise ValueError("seed must be a string")
+    used = _used_time_frames(recipe, served_slots)
+    durations = source_cut_durations(recipe)
+    candidates: list[tuple[int, float, SourceCut]] = []
+    rng = random.Random(hashlib.sha256(
+        f"{seed}\0{recipe.source_library_hash}".encode("utf-8"),
+    ).digest())
     for master in recipe.masters:
         identity = canonical_source_identity(master.provenance.get("sourceUrl"))
-        minimum_start_ms = minimum_original_start_ms(recipe, master)
-        reserved = [
+        reserved = sorted(
             (start, end)
             for source, master_sha256, start, end in (exclusions or [])
             if source == identity and (master_sha256 is None or master_sha256 == master.sha256)
-        ]
-        lanes.append((master, minimum_start_ms, reserved))
-    # The saved cutDurationMs is the page's target. Each immutable master
-    # deterministically rotates around that target, adjusted for 6-11 second
-    # delivery at the saved speed. Admission skips overlapping source windows
-    # when faster playback needs a cut longer than the 9-second grid spacing.
-    # slot_id continues to reserve positions across treatment changes.
-    # Phases run in order, so fresh footage is always cut before a re-cut, and
-    # one plan never holds two overlapping cuts of the same master.
-    def admit(master, minimum_start_ms, reserved, start_ms, duration_ms, fixed_length):
-        if master.source_offset_ms + start_ms < minimum_start_ms:
-            return
-        if start_ms + duration_ms > master.duration_ms:
-            return
-        original_start = master.source_offset_ms + start_ms
-        if any(begin < original_start + duration_ms and end > original_start for begin, end in reserved):
-            return
+        )
+        frames = used[master.sha256]
+        taken = set(frames)
+        longest = max((duration for _, duration in frames), default=0)
+        first = _first_start_ms(recipe, master)
+        for duration_ms in durations:
+            for start_ms in _time_frame_starts(master, first, duration_ms):
+                if (start_ms, duration_ms) in taken:
+                    continue
+                original_start = master.source_offset_ms + start_ms
+                original_end = original_start + duration_ms
+                if any(begin < original_end and end > original_start for begin, end in reserved):
+                    continue
+                cut = SourceCut(master, start_ms, duration_ms, True)
+                if cut.slot_id in served_slots:
+                    continue
+                overlap = _overlap_with_used(frames, longest, start_ms, start_ms + duration_ms)
+                candidates.append((overlap, rng.random(), cut))
+    candidates.sort(key=lambda row: (row[0], row[1]))
+    chosen: list[SourceCut] = []
+    for _, _, cut in candidates:
         if any(
-            chosen.master.sha256 == master.sha256
-            and chosen.start_ms < start_ms + duration_ms
-            and start_ms < chosen.start_ms + chosen.duration_ms
-            for chosen in candidates
+            other.master.sha256 == cut.master.sha256
+            and other.start_ms < cut.start_ms + cut.duration_ms
+            and cut.start_ms < other.start_ms + other.duration_ms
+            for other in chosen
         ):
-            return
-        cut = SourceCut(master, start_ms, duration_ms, fixed_length)
-        if cut.slot_id not in served_slots:
-            candidates.append(cut)
-
-    for phase_ms in RECUT_PHASES_MS:
-        for master, minimum_start_ms, reserved in lanes:
-            for start_ms in range(phase_ms, master.duration_ms, CUT_SLOT_STEP_MS):
-                duration_ms = planned_source_cut_duration(recipe, master, start_ms)
-                admit(master, minimum_start_ms, reserved, start_ms, duration_ms, False)
-                if len(candidates) >= quantity:
-                    return candidates
-    fixed_duration = delivery_cut_duration(recipe, RECUT_FIXED_DURATION_MS)
-    for master, minimum_start_ms, reserved in lanes:
-        for start_ms in fixed_length_recut_starts(master, fixed_duration):
-            admit(master, minimum_start_ms, reserved, start_ms, fixed_duration, True)
-            if len(candidates) >= quantity:
-                return candidates
-    return candidates
-
-
-def fixed_length_recut_starts(master: MasterSource, duration_ms: int = RECUT_FIXED_DURATION_MS) -> list[int]:
-    """Fixed recut grid, plus one clip ending on the master's last frame."""
-    last = master.duration_ms - duration_ms
-    if last < 0:
-        return []
-    starts = list(range(0, last + 1, duration_ms))
-    if starts[-1] != last:
-        starts.append(last)
-    return starts
+            continue
+        chosen.append(cut)
+        if len(chosen) >= quantity:
+            break
+    return chosen
 
 
 def source_cut_is_planned(
@@ -463,10 +537,13 @@ def source_cut_is_planned(
     ):
         return False
     if slot_id == f"{master.sha256}:{start_ms}:{duration_ms}":
-        return (
-            duration_ms == delivery_cut_duration(recipe, RECUT_FIXED_DURATION_MS)
-            and start_ms in fixed_length_recut_starts(master, duration_ms)
+        # A time frame: an allowed length at a whole-second start, or ending on
+        # the master's last frame. This also covers every legacy 6 s re-cut.
+        return duration_ms in source_cut_durations(recipe) and (
+            start_ms % CUT_START_STEP_MS == 0
+            or start_ms == master.duration_ms - duration_ms
         )
+    # Legacy grid position ids from jobs queued before time-frame planning.
     if slot_id != f"{master.sha256}:{start_ms}":
         return False
     try:
@@ -506,7 +583,11 @@ def delivery_cut_duration(recipe: SourceRecipe, duration_ms: int) -> int:
 def planned_source_cut_duration(
     recipe: SourceRecipe, master: MasterSource, start_ms: int,
 ) -> int:
-    """Return the hash-bound varied duration for one reserved source slot."""
+    """Return the hash-bound duration of one legacy 9-second-grid position.
+
+    Used only to verify jobs queued before time-frame planning and to resolve a
+    legacy ``sha:start`` id to the exact time frame it reserved.
+    """
     if (
         not isinstance(start_ms, int)
         or isinstance(start_ms, bool)

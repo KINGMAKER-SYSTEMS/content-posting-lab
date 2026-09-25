@@ -143,13 +143,18 @@
   Every sourced-video capability also returns the unique immutable source URLs
   used by those masters so Control Plane can exclude already-used cross-page
   windows before it creates paid work.
-  Active jobs reserve their windows across recipe revisions. Completed outputs
-  reserve windows for the exact locked recipe that produced them; a later locked
-  recipe may recut those page-bound windows with its new treatment and provenance.
+  A source window is a time frame: master SHA, start and length. Every
+  whole-second start (plus one ending on the last frame) at every allowed
+  length is a distinct clip. Queued, running and completed jobs reserve their
+  exact time frames across recipe revisions and library versions of the same
+  master bytes, so a new recipe cuts new time frames instead of re-cutting
+  delivered ones; failed jobs release theirs. Plans prefer footage that
+  overlaps earlier cuts least, break ties by a per-job seed recorded as
+  `cutPlanSeed`, and never hold two overlapping cuts of one master.
   Exhausted libraries remain visible with `maxQuantity: 0` so Control Plane can
-  distinguish source exhaustion from an unregistered recipe. Job creation
-  remains exact and all-or-nothing; it never silently returns fewer clips than
-  requested.
+  distinguish source exhaustion from an unregistered recipe; job creation then
+  answers 409 `master_windows_exhausted`. Job creation remains exact and
+  all-or-nothing; it never silently returns fewer clips than requested.
   Legacy async jobs without recoverable checkpoints fail closed after runtime
   replacement; generated jobs with durable provider identity retain their
   original prompt reservations while the same job resumes. Source-window
