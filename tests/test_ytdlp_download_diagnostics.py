@@ -253,3 +253,86 @@ def test_tried_strategies_are_listed_for_debugging(monkeypatch, tmp_path):
         asyncio.run(fe.download_video("https://example.com/x", tmp_path / "o.mp4"))
 
     assert "tried: no-auth" in str(exc.value)
+
+
+_BOT_CHECK = (
+    b"ERROR: [youtube] bxkIIQKC8aA: Sign in to confirm you\xe2\x80\x99re not a bot. "
+    b"Use --cookies-from-browser or --cookies for the authentication."
+)
+
+
+def _source_import_exec(results):
+    calls = []
+
+    async def _exec(*cmd, **kwargs):
+        calls.append((list(cmd), kwargs))
+        rc, err = results[min(len(calls), len(results)) - 1]
+        if rc == 0:
+            Path(cmd[cmd.index("-o") + 1]).write_bytes(b"mp4")
+        return _FakeProc(rc, err)
+
+    return _exec, calls
+
+
+def test_youtube_source_import_falls_back_to_cookies_after_the_bot_check(
+    monkeypatch, tmp_path,
+):
+    """Live 2026-09-25: every YouTube page import failed `no-auth` on Railway."""
+    exec_stub, calls = _source_import_exec([(1, _BOT_CHECK), (0, b"")])
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", exec_stub)
+    monkeypatch.setattr(fe, "_in_container", lambda: True)
+    cookies = tmp_path / "cookies.txt"
+    cookies.write_text("# Netscape HTTP Cookie File\n")
+    monkeypatch.setattr(fe, "get_cookies_path", lambda: cookies)
+
+    out = asyncio.run(fe.download_video(
+        "https://www.youtube.com/watch?v=bxkIIQKC8aA",
+        tmp_path / "o.mp4",
+        source_import_mode=True,
+    ))
+
+    assert out == tmp_path / "o.mp4"
+    (public, public_options), (retry, retry_options) = calls
+    assert "--cookies" not in public
+    assert retry[retry.index("--cookies") + 1] == str(cookies)
+    for command, options in ((public, public_options), (retry, retry_options)):
+        assert "--no-check-certificates" not in command
+        assert "--cookies-from-browser" not in command
+        assert options["start_new_session"] is True
+
+
+def test_non_youtube_source_import_never_receives_the_cookie_jar(monkeypatch, tmp_path):
+    exec_stub, calls = _source_import_exec([(1, _BOT_CHECK)])
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", exec_stub)
+    monkeypatch.setattr(fe, "_in_container", lambda: True)
+    cookies = tmp_path / "cookies.txt"
+    cookies.write_text("# Netscape HTTP Cookie File\n")
+    monkeypatch.setattr(fe, "get_cookies_path", lambda: cookies)
+
+    with pytest.raises(RuntimeError):
+        asyncio.run(fe.download_video(
+            "https://youtube.com.example.net/watch?v=x",
+            tmp_path / "o.mp4",
+            source_import_mode=True,
+        ))
+
+    assert len(calls) == 1
+    assert "--cookies" not in calls[0][0]
+
+
+def test_public_youtube_source_import_succeeds_without_touching_cookies(
+    monkeypatch, tmp_path,
+):
+    exec_stub, calls = _source_import_exec([(0, b"")])
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", exec_stub)
+    monkeypatch.setattr(fe, "_in_container", lambda: True)
+    cookies = tmp_path / "cookies.txt"
+    cookies.write_text("# Netscape HTTP Cookie File\n")
+    monkeypatch.setattr(fe, "get_cookies_path", lambda: cookies)
+
+    asyncio.run(fe.download_video(
+        "https://youtu.be/bxkIIQKC8aA", tmp_path / "o.mp4", source_import_mode=True,
+    ))
+
+    assert len(calls) == 1
+    assert "--cookies" not in calls[0][0]
