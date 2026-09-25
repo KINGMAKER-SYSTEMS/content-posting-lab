@@ -58,7 +58,7 @@ import anyio
 from fastapi import APIRouter, Header, HTTPException
 
 from project_manager import PROJECTS_DIR
-from providers.base import generate_one, multi_crop_vertical
+from providers.base import classify_provider_error, generate_one, multi_crop_vertical
 from routers.control_plane_recipes import (
     LANE as CONTROL_PLANE_LANE,
     list_registered_recipe_bindings,
@@ -1544,6 +1544,24 @@ async def _run_dossier_generation(job_id: str) -> None:
             )
             entry = provider_jobs[provider_job_id]["videos"][0]
             if entry.get("status") != "done":
+                # Keep the terminal error contract unchanged (the Control
+                # Plane validates status responses strictly), but persist why
+                # the provider failed: Railway logs rotate, the job store does
+                # not, and credit exhaustion needs a different response than
+                # a transient provider fault.
+                provider_error = str(entry.get("error") or "")
+                await asyncio.to_thread(_update_job,
+                    job_id,
+                    providerFailure={
+                        "class": classify_provider_error(provider_error),
+                        "provider": recipe.engine,
+                        "model": recipe.provider_model,
+                        "generationIndex": call_index,
+                        "providerRequestId": entry.get("provider_request_id"),
+                        "detail": provider_error[:300],
+                        "at": datetime.now(timezone.utc).isoformat(),
+                    },
+                )
                 raise RuntimeError("provider_generation_failed")
             candidates = _validated_provider_candidates(entry, options.get("crop_mode"))
             for candidate_index, candidate in enumerate(candidates):

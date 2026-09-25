@@ -718,3 +718,24 @@ control is bounded to the supported two-hour master duration and invalid values
 make the recipe unexecutable. This deliberately leaves the shared executor
 catalog bytes unchanged, avoiding a fleet-wide catalog-version invalidation.
 The focused source-execution suite passes: 46 tests.
+
+_________________________________________________________________________________
+time: [08:12 EDT] [25-09-26]
+agent: [Claude Code] [claude-opus-5-5]
+worktree: [fix/ai-gen-transient-retry] [/Users/ecfromthedc/dev/wt/lab-gen-retry]
+type: [bug report]: AI refill `provider_generation_failed` classified; transient Replicate faults retried
+area: [backend] [providers] [testing]
+
+All 70 `provider_generation_failed` AI refills since 2026-09-20 in Control Plane
+D1 were joined to Railway provider logs (69 classified, 1 log expired). 52 were
+Replicate account credit: 43 HTTP 402 insufficient credit plus 9 HTTP 429
+throttles that Replicate applies while credit is under $5. The throttles are now
+retried, but credit exhaustion itself needs an operator top-up/auto-reload. The other 17 were transient:
+6 submission 5xx, 6 600-second prediction timeouts, 3 transport faults (two on
+the poll of an already-created prediction), 1 "interrupted (code: PA)", and 1
+provider-side moderation 401. There was no retry anywhere in the generation
+path. Replicate generation now retries only faults that cannot create a second
+paid prediction, cancels timed-out predictions, and persists a closed
+`providerFailure` class in the job store without changing the status response
+the Control Plane validates strictly. New tests fail on main and pass here. No
+paid generation, purchase, provider substitution or deploy was performed.

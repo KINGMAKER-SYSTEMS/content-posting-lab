@@ -194,6 +194,33 @@ async def multi_crop_vertical(src: Path, mode: str) -> list[Path]:
     return outputs
 
 
+# Closed vocabulary for why a provider call produced no video. The first
+# production classification (2026-09-24) found most failures were account
+# credit exhaustion, which no retry can fix, mixed with transient provider
+# trouble that a retry does fix; one generic label hid that difference.
+_PROVIDER_FAILURE_RULES = (
+    ("insufficient_credit", re.compile(r'"status":\s*402|insufficient credit', re.I)),
+    ("rate_limited", re.compile(r'"status":\s*429|throttled', re.I)),
+    ("provider_5xx", re.compile(r'"status":\s*5\d\d', re.I)),
+    ("prediction_timeout", re.compile(r"timed out after", re.I)),
+    ("prediction_interrupted", re.compile(r"\(code: PA\)")),
+    ("moderation", re.compile(r"moderation|safety|nsfw|flagged", re.I)),
+    ("poll_unavailable", re.compile(r"poll unavailable", re.I)),
+    ("transport", re.compile(
+        r"^(Connect|Read|Write|Pool)(Error|Timeout)\(|RemoteProtocolError|NetworkError",
+    )),
+)
+
+
+def classify_provider_error(message: object) -> str:
+    """Map a provider error message onto a small stable failure class."""
+    text = str(message or "")
+    for name, pattern in _PROVIDER_FAILURE_RULES:
+        if pattern.search(text):
+            return name
+    return "other"
+
+
 def slugify(text: str, max_len: int = 40) -> str:
     """Turn a prompt into a filesystem-safe folder name."""
     s = text.lower().strip()
