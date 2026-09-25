@@ -782,3 +782,22 @@ including exact pinned-legacy catalog binding, runs before the store as
 before. The recipe test file goes from 3 failed / 18 passed on main to 21
 passed; the six recipe, generation and execution test files pass: 151 tests.
 No deploy was performed.
+
+_________________________________________________________________________________
+time: [18:46 EDT] [26-09-25]
+agent: [Claude Code] [claude-opus-5-5]
+worktree: [fix/frontend-no-default-password] [/Users/ecfromthedc/dev/wt/lab-fe-default-pw]
+type: [security]: default account password removed from the public frontend bundle
+area: [frontend] [security] [testing]
+
+The Pipeline intake modal printed the shared default TikTok account password
+as literal text in three places, so Vite compiled it into the public JS bundle
+(3 occurrences in the live production bundle). It has been in the frontend
+since the Pipeline tab landed (#38, 2026-04-29); the backend copy was already
+moved to the server-side `DEFAULT_INTAKE_PASSWORD` env var on 2026-06-19. The
+modal now refers to "the team's standard intake password", which the server
+still records on the Notion row. `tests/test_no_shipped_default_password.py`
+stores only a SHA-256 digest and fails if the value reappears in repository
+text sources or in a built `frontend/dist`. The value remains in git history
+and in previously served bundles and must be rotated by the operator; history
+was not rewritten. No deploy was performed.

@@ -382,6 +382,10 @@
 - Run `pytest -q tests/test_post_render.py` for prepared rendering, actual MP4
   decode, treatment-once preservation, byte-budget retry and bounded failures.
 
+- Run `pytest -q tests/test_no_shipped_default_password.py` after `npm run build`
+  in `frontend/`; it fails if a retired credential (stored only as a SHA-256
+  digest) appears in repository sources or the built bundle.
+
 - Run `pytest -q tests/test_caption_render_contract.py` for the typed caption
   contract and `pytest -q tests/test_burn_and_captions_api.py` for Burn API
   regressions. Run `pytest -q tests/test_burn_quality_gate.py` for legacy and

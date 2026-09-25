@@ -731,8 +731,8 @@ function IntakeModal({
             </h2>
             <p className="text-xs text-muted-foreground">
               {step === 1
-                ? <>Step 1 mints a fresh email and logs the intake row in Notion immediately, then opens TikTok. Sign up there w that email + password <span className="font-mono text-foreground">Risingtides123$</span>, pick whatever handle's available, then come back for step 2.</>
-                : <>Use password <span className="font-mono text-foreground">Risingtides123$</span> on TikTok. Once you've got the account, fill in the actual handle below — your row is already in Notion, we're just patching it.</>
+                ? <>Step 1 mints a fresh email and logs the intake row in Notion immediately, then opens TikTok. Sign up there w that email + the team's standard intake password (it's also saved to the new Notion row's Password field), pick whatever handle's available, then come back for step 2.</>
+                : <>Use the team's standard intake password on TikTok (it's saved to this row's Password field in Notion). Once you've got the account, fill in the actual handle below — your row is already in Notion, we're just patching it.</>
               }
             </p>
           </div>
@@ -815,7 +815,7 @@ function IntakeModal({
                   <li>Backend creates the Cloudflare alias <span className="font-mono">{previewEmail}</span> forwarding to the right person</li>
                   <li>Email gets copied to your clipboard</li>
                   <li>TikTok signup opens in a new tab</li>
-                  <li>You paste email + use password <span className="font-mono text-foreground">Risingtides123$</span></li>
+                  <li>You paste email + use the team's standard intake password (saved to the Notion row's Password field)</li>
                   <li>Pick any TikTok handle that's available</li>
                   <li>Come back here → fill out the rest of the form (step 2)</li>
                 </ol>
