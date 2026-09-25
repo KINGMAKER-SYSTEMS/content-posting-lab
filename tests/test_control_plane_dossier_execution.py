@@ -1175,3 +1175,44 @@ async def test_generation_failure_removes_only_failed_root_and_keeps_completed_s
     assert saved["status"] == "failed" and saved["error"] == "provider-boom"
     assert not failed_root.exists()
     assert sibling_root.exists() and (sibling_root / "clip.mp4").read_bytes() == b"completed-sibling"
+
+
+@pytest.mark.asyncio
+async def test_zero_output_provider_failure_records_its_class_without_changing_the_status_contract(lab, monkeypatch):
+    # 2026-09-24: 43 of 70 failed AI refills were Replicate 402 "insufficient
+    # credit", indistinguishable from transient faults behind one label once
+    # the Railway logs rotated. The job store keeps the class; the strictly
+    # validated Control Plane status response keeps its exact shape.
+    client, _, _ = lab
+    job_id = client.post("/api/control-plane/v1/jobs", json=job_body(quantity=2), headers=HEADERS).json()["jobId"]
+
+    async def refused(provider_job_id, index, provider, prompt, aspect_ratio, resolution,
+                      duration, image_data_uri, jobs, output_dir, url_prefix, **extra):
+        jobs[provider_job_id]["videos"][index].update({
+            "status": "error",
+            "provider_request_id": None,
+            "error": 'Replicate start failed: {"title":"Insufficient credit","detail":"x","status":402}',
+        })
+
+    monkeypatch.setattr(cp, "generate_one", refused)
+    await cp._run_dossier_generation(job_id)
+
+    stored = cp._load_jobs()["jobs"][job_id]
+    assert stored["status"] == "failed"
+    assert stored["error"] == "provider_generation_failed"
+    failure = stored["providerFailure"]
+    assert failure["class"] == "insufficient_credit"
+    recipe = cp.resolve_generation_recipe(recipes.load_registered_recipe(
+        PAGE_ID, "truck-scenic:master", "ai_video", "dossier-1234567890abcdef",
+    ))
+    assert failure["provider"] == recipe.engine
+    assert failure["model"] == current_generation_authority()["providerModel"]
+    assert failure["generationIndex"] == 0
+    assert "Insufficient credit" in failure["detail"]
+
+    status = client.get(
+        f"/api/control-plane/v1/jobs/{job_id}",
+        headers={"Authorization": f"Bearer {TOKEN}", "X-RT-Page-Id": PAGE_ID},
+    ).json()
+    assert set(status) == {"schema", "jobId", "status", "progress", "error"}
+    assert status["error"] == "provider_generation_failed"

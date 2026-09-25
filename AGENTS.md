@@ -279,6 +279,20 @@
   `source_response_rejected`; replaying that recovery key only observes the
   current job.
 
+- Replicate video generation (`providers/replicate.py`) retries only faults
+  that cannot buy a second prediction: submission HTTP 429 (honouring
+  `retry_after`, capped) and 500/502/503/504 or a never-established
+  connection, at most four submissions; poll transport/429/5xx/unparseable
+  replies on the same prediction within its 600-second deadline; and one
+  resubmission of Replicate's "Prediction interrupted (code: PA)". A read or
+  write fault after the submission may have reached Replicate is not retried.
+  402 insufficient credit, validation and provider-side failures are terminal.
+  Deadline or persistent poll loss cancels the prediction. Model, input and
+  recipe-pinned provider never change between attempts.
+- A zero-output provider failure keeps the terminal `provider_generation_failed`
+  status contract and additionally persists `providerFailure` (closed `class`,
+  provider, model, call index, prediction id, bounded detail) in the job store
+  only; the Control Plane's strict status schema is unchanged.
 - AI generation reserves prompt combinations only for queued or running jobs.
   A later provider failure preserves already treated, claimed outputs as a
   completed underfilled batch, retaining the provider error and planned/completed
