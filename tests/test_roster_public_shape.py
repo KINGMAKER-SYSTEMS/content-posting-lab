@@ -8,6 +8,7 @@ public or private, so a new credential column cannot slip out by default.
 """
 
 import random
+import re
 import string
 
 import pytest
@@ -35,20 +36,74 @@ PRIVATE_PAGE_FIELDS = frozenset({
     "notes",
 })
 
-CREDENTIAL_STEMS = (
-    "password", "passwd", "secret", "token", "credential", "cookie", "session",
-    "api_key", "apikey", "signup_email", "signupEmail", "fwd", "fwd_address",
-    "forwarding_address", "forward_to", "email_alias", "emailAlias",
-    "email_rule_id", "emailRuleId", "alias", "totp", "mfa", "2fa",
+# Credential concepts as WORD LISTS, written independently of the matcher in
+# services/roster_public.py (several were missed by the first version of it:
+# pwd, pw, passcode, recovery code, backup code, notes, plain email, login).
+CREDENTIAL_CONCEPTS = (
+    ("password",), ("passwd",), ("pwd",), ("pw",), ("pass",), ("passcode",),
+    ("passphrase",), ("pin",), ("secret",), ("client", "secret"), ("token",),
+    ("access", "token"), ("refresh", "token"), ("credential",), ("credentials",),
+    ("cookie",), ("cookies",), ("session",), ("session", "id"), ("api", "key"),
+    ("apikey",), ("auth",), ("otp",), ("totp",), ("mfa",), ("2fa",),
+    ("recovery", "code"), ("recovery", "codes"), ("recovery", "email"),
+    ("backup", "code"), ("backup", "codes"), ("email",), ("e", "mail"),
+    ("mail",), ("signup", "email"), ("login", "email"), ("login",),
+    ("sign", "in", "email"), ("user", "email"), ("fwd",), ("fwd", "address"),
+    ("forward", "to"), ("forwarding", "address"), ("forward", "destination"),
+    ("email", "alias"), ("alias",), ("email", "rule", "id"), ("notes",),
+    ("note",), ("private", "key"), ("key",),
+)
+
+# The same idea for keys the roster surface legitimately returns: styling a
+# public field must never make it look like a credential.
+SAFE_KEYS = tuple(PUBLIC_PAGE_FIELDS) + (
+    "added", "updated", "total_in_notion", "errors", "pages", "page", "removed",
+    "removed_names", "inventory_merged", "topics_cleaned", "remaining",
+    "total_pages", "duplicate_names", "duplicates", "count", "entries",
+    "has_topic", "topic_id", "topic_name", "inventory_total",
+    "inventory_pending", "has_project", "has_drive", "deleted", "configured",
+)
+
+# The first shipped matcher, kept only to prove the generator below is not
+# tautological: it must produce spellings this one misses.
+_FIRST_MATCHER = re.compile(
+    r"passw|secret|token|credential|cookie|session|api_?key|signup_?email|fwd"
+    r"|forward(ing)?_?(address|destination|to)|email_?(alias|rule)|alias"
+    r"|(^|_)otp($|_)|2fa|mfa|totp",
+    re.IGNORECASE,
 )
 
 
+def _style(words, rng: random.Random) -> str:
+    style = rng.randrange(8)
+    if style == 0:
+        return "_".join(words)
+    if style == 1:
+        return words[0] + "".join(w.title() for w in words[1:])
+    if style == 2:
+        return "".join(w.title() for w in words)
+    if style == 3:
+        return "-".join(words)
+    if style == 4:
+        return "_".join(words).upper()
+    if style == 5:
+        return ".".join(words)
+    if style == 6:
+        return " ".join(words)
+    return "__".join(w.upper() if rng.random() < 0.5 else w for w in words)
+
+
 def _credential_variant(rng: random.Random) -> str:
-    stem = rng.choice(CREDENTIAL_STEMS)
-    stem = rng.choice([stem, stem.upper(), stem.title()])
-    prefix = rng.choice(["", "account_", "tiktok", "x_", "old_"])
-    suffix = rng.choice(["", "_2", "_hash", "Value", "_id"])
-    return f"{prefix}{stem}{suffix}"
+    words = list(rng.choice(CREDENTIAL_CONCEPTS))
+    if rng.random() < 0.5:
+        words.insert(0, rng.choice(["account", "tiktok", "x", "old", "user", "notion"]))
+    if rng.random() < 0.5:
+        words.append(rng.choice(["2", "hash", "value", "raw", "v1"]))
+    return _style(words, rng)
+
+
+def _safe_variant(rng: random.Random) -> str:
+    return _style(rng.choice(SAFE_KEYS).split("_"), rng)
 
 
 def _random_key(rng: random.Random) -> str:
@@ -83,11 +138,31 @@ def _keys_anywhere(value):
 
 def test_every_credential_spelling_is_recognised():
     rng = random.Random(1)
-    for _ in range(2000):
+    for _ in range(5000):
         key = _credential_variant(rng)
         assert is_credential_key(key), key
     for key in PRIVATE_PAGE_FIELDS:
-        assert is_credential_key(key) or key == "notes", key
+        assert is_credential_key(key), key
+
+
+def test_credential_generator_is_not_tautological():
+    """The generator must reach spellings the first matcher missed."""
+    rng = random.Random(2)
+    missed_by_first = {
+        key for key in (_credential_variant(rng) for _ in range(5000))
+        if not _FIRST_MATCHER.search(key)
+    }
+    assert len(missed_by_first) > 100
+    for key in ("notes", "pwd", "recovery_code", "backupCodes", "loginEmail", "passcode"):
+        assert not _FIRST_MATCHER.search(key)
+        assert is_credential_key(key), key
+
+
+def test_styled_safe_keys_are_never_scrubbed():
+    rng = random.Random(3)
+    for _ in range(5000):
+        key = _safe_variant(rng)
+        assert not is_credential_key(key), key
 
 
 def test_public_fields_contain_no_credential_key():
@@ -125,6 +200,11 @@ def test_scrub_credentials_property(seed):
         assert not [k for k in _keys_anywhere(cleaned) if is_credential_key(k)]
         # Idempotent, and a body with nothing to strip is returned unchanged.
         assert scrub_credentials(cleaned) == cleaned
+
+
+def test_scrub_removes_notes_at_any_depth():
+    body = {"notes": "backup code 123456", "pages": [{"name": "n", "Notes": "x", "meta": {"note": "y"}}]}
+    assert scrub_credentials(body) == {"pages": [{"name": "n", "meta": {}}]}
 
 
 def test_scrub_keeps_dedup_counters():

@@ -854,7 +854,11 @@ server-side code that uses them. DELETE /api/roster/{id}, which no UI calls,
 now requires CONTROL_PLANE_TOKEN or APP_API_KEY and fails closed when neither
 is configured. The operator UI sends no credential, so the routes it calls
 stay unauthenticated; their responses are credential-free. The UI's email
-alias columns and alias-removal button lose the alias/rule values they read
-from /api/roster. New HTTP tests fail on main (12 of 16) and pass here.
+alias, signup and forward columns now read "hidden pending operator auth"
+(the Create/Mint alias buttons are hidden with them, since the alias state is
+unknown), and alias removal reports that it is disabled pending operator auth
+instead of silently doing nothing. POST /dedup and PUT /{id} remain anonymous
+pending operator auth. The key scrub normalises spellings and also removes
+notes, pwd/pw/pass, passcode, recovery/backup codes, email and login keys. New HTTP tests fail on main (12 of 16) and pass here.
 /api/pipeline and /api/email still serialise full roster rows and are not
 changed here. No deploy was performed.

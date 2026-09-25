@@ -24,6 +24,7 @@ import { TelegramTab } from './distribution/TelegramTab';
 import { SoundsTab } from './distribution/SoundsTab';
 import { UploadsTab } from './distribution/UploadsTab';
 import { EmailTab } from './distribution/EmailTab';
+import { ALIAS_REMOVAL_DISABLED, rosterEmailHidden } from '@/lib/rosterRedaction';
 
 // ---------------------------------------------------------------------------
 // Helpers (shared across tabs)
@@ -855,7 +856,10 @@ export function DistributionPage() {
   }, [verifiedDestinations, rosterPages, storeSetRosterPages, addNotification]);
 
   const deleteEmailAlias = useCallback(async (page: RosterPage) => {
-    if (!page.email_rule_id) return;
+    if (!page.email_rule_id) {
+      if (rosterEmailHidden(page)) addNotification('error', ALIAS_REMOVAL_DISABLED);
+      return;
+    }
     try {
       const resp = await fetch(apiUrl(`/api/email/rules/${page.email_rule_id}?integration_id=${page.integration_id}`), { method: 'DELETE' });
       if (!resp.ok) throw new Error('Failed to delete');

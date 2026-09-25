@@ -11,8 +11,10 @@ whenever APP_API_KEY is unset (as in production). So:
   not named in ``PUBLIC_PAGE_FIELDS`` never crosses, including fields added to
   the roster cache later.
 * The whole response body then passes ``scrub_credentials``, which removes any
-  credential-shaped key at any depth. It is the backstop for a route that
-  forgets ``public_page``, not a replacement for it.
+  credential-shaped key at any depth (including free-text ``notes``) under
+  camelCase, kebab, dotted or upper-case spellings. It is a key-name backstop
+  for a route that forgets ``public_page``, not a replacement for it: a
+  credential value under an innocent key is only stopped by the allowlist.
 * ``require_roster_auth`` guards routes no unauthenticated UI calls. It accepts
   the Control Plane bearer (CONTROL_PLANE_TOKEN) or the app key (APP_API_KEY)
   and fails closed (503) when neither is configured.
@@ -65,30 +67,33 @@ PUBLIC_PAGE_FIELDS: tuple[str, ...] = (
     "staging_topic_name",
 )
 
-# Keys that carry, or point at, an account credential. Matched
-# case-insensitively as a substring so `signupEmail`, `fwd_destination`,
-# `email_rule_id`, `api_key`, `session_cookie` etc. are all caught.
-_CREDENTIAL_KEY_RE = re.compile(
-    r"passw"
-    r"|secret"
-    r"|token"
-    r"|credential"
-    r"|cookie"
-    r"|session"
-    r"|api_?key"
-    r"|signup_?email"
-    r"|fwd"
-    r"|forward(ing)?_?(address|destination|to)"
-    r"|email_?(alias|rule)"
-    r"|alias"
-    r"|(^|_)otp($|_)"
-    r"|2fa|mfa|totp",
-    re.IGNORECASE,
+# Keys that carry, or point at, an account credential (or free text that may
+# hold one). A key is normalised first -- camelCase split, every separator
+# folded to "_", lowercased -- so `signupEmail`, `SIGNUP-EMAIL`, `signup.email`
+# and `signup_email` are the same key. Long unambiguous stems match anywhere
+# in the normalised key; short stems (`pw`, `pin`, `otp`, ...) only as a whole
+# `_`-delimited word, so `pwa_manifest` or `pinned` are not caught.
+_CREDENTIAL_SUBSTRINGS = (
+    "passw", "passcode", "passphrase", "secret", "token", "credential",
+    "cookie", "session", "apikey", "api_key", "email", "e_mail", "mail_address",
+    "fwd", "forward", "alias", "notes", "recovery", "backup_code",
+    "login", "signin", "sign_in", "totp", "mfa", "2fa",
 )
+_CREDENTIAL_WORDS = frozenset({
+    "pw", "pwd", "pass", "pin", "otp", "note", "auth", "key", "mail",
+})
 
 # Counters on the dedup/telegram surfaces that merely contain the word
 # "forward" (inventory_forwarded) are counts, not addresses.
 _CREDENTIAL_KEY_ALLOW = frozenset({"inventory_forwarded"})
+
+_CAMEL_RE = re.compile(r"(?<=[a-z])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
+_SEPARATOR_RE = re.compile(r"[^a-z0-9]+")
+
+
+def _normalise_key(key: str) -> str:
+    split = _CAMEL_RE.sub("_", key).lower()
+    return _SEPARATOR_RE.sub("_", split).strip("_")
 
 
 def is_credential_key(key: object) -> bool:
@@ -97,7 +102,14 @@ def is_credential_key(key: object) -> bool:
         return False
     if key in _CREDENTIAL_KEY_ALLOW:
         return False
-    return bool(_CREDENTIAL_KEY_RE.search(key))
+    norm = _normalise_key(key)
+    if any(stem in norm for stem in _CREDENTIAL_SUBSTRINGS):
+        return True
+    # A trailing version digit does not change the word: `pass2`, `pin1`.
+    return any(
+        word in _CREDENTIAL_WORDS or word.rstrip("0123456789") in _CREDENTIAL_WORDS
+        for word in norm.split("_")
+    )
 
 
 def public_page(page: dict[str, Any]) -> dict[str, Any]:
