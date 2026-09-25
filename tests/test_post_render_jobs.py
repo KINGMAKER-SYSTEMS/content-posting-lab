@@ -15,12 +15,14 @@ from services.post_render import PostRenderRequest, sha256
 from tests.test_post_render import NOW, actual_source, request as render_request
 
 
-def submission(*, slot_id="slot:fixture-a", source=b"source", program_id="playlist:fixture"):
+def submission(*, slot_id="slot:fixture-a", source=b"source", program_id="playlist:fixture", planned_at_ms=None):
     request = render_request(sha256(source), slot_id=slot_id, program_id=program_id)
     slot = {"schema_version": 4, "slot_id": request.slot_id, "page_id": request.page_id,
             "handle": request.account, "asset": {"sha256": request.source_sha256},
             "device_hint": {"device_serial": request.device_serial},
             "caption": {"text": request.caption}, "render_treatment": json.loads(request.render_treatment_json)}
+    if planned_at_ms is not None:
+        slot["planned_at_ms"] = planned_at_ms
     raw = json.dumps(slot, separators=(",", ":"))
     request = PostRenderRequest.model_validate({**request.model_dump(by_alias=True), "slot_payload_sha256": sha256(raw.encode())})
     return jobs.RenderJobSubmission.model_validate({"schema": jobs.JOB_SCHEMA, "request": request,
@@ -154,6 +156,111 @@ def test_busy_job_does_not_block_another_and_cannot_be_claimed_twice(tmp_path):
         assert second.status(slow["id"])["attempts"] == 1
         release.set()
         assert future.result(timeout=2)
+
+
+@pytest.mark.parametrize("raw,expected", [
+    (None, 2), ("1", 1), ("2", 2), ("4", 4), ("0", 2), ("5", 2), ("-1", 2), ("abc", 2), (" 3 ", 3),
+])
+def test_worker_count_env_clamped_1_to_4_with_fallback_on_invalid(monkeypatch, raw, expected):
+    if raw is None:
+        monkeypatch.delenv("CONTENT_LAB_POST_RENDER_WORKERS", raising=False)
+    else:
+        monkeypatch.setenv("CONTENT_LAB_POST_RENDER_WORKERS", raw)
+    assert jobs._worker_count() == expected
+
+
+def test_worker_count_drives_both_permit_count_and_thread_count(tmp_path, monkeypatch):
+    monkeypatch.setenv("CONTENT_LAB_POST_RENDER_WORKERS", "3")
+    worker = service(tmp_path)
+    assert worker.worker_count == 3
+    worker.start()
+    try:
+        assert len(worker._threads) == 3
+        assert all(thread.is_alive() for thread in worker._threads)
+    finally:
+        worker.stop()
+
+
+def test_worker_count_of_one_limits_concurrent_permits_to_one(tmp_path, monkeypatch):
+    monkeypatch.setenv("CONTENT_LAB_POST_RENDER_WORKERS", "1")
+    entered, release = threading.Event(), threading.Event()
+    def renderer(source, output, request, **kwargs):
+        if request.slot_id == "slot:slow":
+            entered.set()
+            assert release.wait(5)
+        fake_render(source, output, request, **kwargs)
+    first = service(tmp_path, renderer=renderer)
+    assert first.worker_count == 1
+    slow = first.enqueue(submission(slot_id="slot:slow"), "slow-request")
+    fast = first.enqueue(submission(slot_id="slot:fast"), "fast-request")
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(first.run_one)
+        assert entered.wait(2)
+        second = service(tmp_path, renderer=renderer)
+        assert second.worker_count == 1
+        # The single configured permit is already held by `first`; a second
+        # worker configured the same way must not be able to acquire one.
+        assert second.run_one() is False
+        release.set()
+        assert future.result(timeout=2)
+    assert first.status(slow["id"])["state"] == "succeeded"
+    assert first.status(fast["id"])["state"] == "queued"
+
+
+def test_earlier_planned_job_claimed_before_older_created_later_planned_job(tmp_path):
+    now = [NOW]
+    worker = service(tmp_path, clock=lambda: now[0])
+    older_but_far = worker.enqueue(submission(slot_id="slot:far-deadline", planned_at_ms=NOW + 10_000_000), "far-deadline")
+    now[0] += 60_000
+    newer_but_near = worker.enqueue(submission(slot_id="slot:near-deadline", planned_at_ms=NOW + 1_000), "near-deadline")
+    assert worker.status(older_but_far["id"])["created_at_ms"] < worker.status(newer_but_near["id"])["created_at_ms"]
+
+    assert worker.run_one()
+    assert worker.status(newer_but_near["id"])["state"] == "succeeded"
+    assert worker.status(older_but_far["id"])["state"] == "queued"
+
+    assert worker.run_one()
+    assert worker.status(older_but_far["id"])["state"] == "succeeded"
+
+
+def test_jobs_without_planned_at_ms_fall_back_to_created_at_ms_fifo_and_sort_after_planned(tmp_path):
+    now = [NOW]
+    worker = service(tmp_path, clock=lambda: now[0])
+    unplanned_first = worker.enqueue(submission(slot_id="slot:unplanned-first"), "unplanned-first")
+    now[0] += 1_000
+    planned = worker.enqueue(submission(slot_id="slot:planned", planned_at_ms=NOW + 500_000), "planned-job")
+    now[0] += 1_000
+    unplanned_second = worker.enqueue(submission(slot_id="slot:unplanned-second"), "unplanned-second")
+
+    # Any job carrying planned_at_ms is claimed before unplanned (NULL) jobs, regardless
+    # of creation order; unplanned jobs then fall back to created_at_ms FIFO among themselves.
+    assert worker.run_one()
+    assert worker.status(planned["id"])["state"] == "succeeded"
+    assert worker.status(unplanned_first["id"])["state"] == "queued"
+    assert worker.status(unplanned_second["id"])["state"] == "queued"
+
+    assert worker.run_one()
+    assert worker.status(unplanned_first["id"])["state"] == "succeeded"
+    assert worker.status(unplanned_second["id"])["state"] == "queued"
+
+    assert worker.run_one()
+    assert worker.status(unplanned_second["id"])["state"] == "succeeded"
+
+
+def test_running_restart_recovery_row_is_claimed_before_a_near_deadline_queued_job(tmp_path):
+    now = [NOW]
+    worker = service(tmp_path, clock=lambda: now[0])
+    stuck = worker.enqueue(submission(slot_id="slot:stuck-running"), "stuck-running")
+    with worker._db() as db:
+        db.execute("UPDATE jobs SET state='running', attempt_id=? WHERE id=?", ("stale-attempt", stuck["id"]))
+    now[0] += 1_000
+    near_deadline = worker.enqueue(submission(slot_id="slot:near-deadline-queued", planned_at_ms=NOW + 1_000), "near-deadline-queued")
+
+    # _execute() treats a 'running' row it can't recover as a fresh attempt; either
+    # way it must be picked ahead of a queued job with an earlier planned_at_ms.
+    assert worker.run_one()
+    assert worker.status(stuck["id"])["state"] in {"running", "succeeded", "failed"}
+    assert worker.status(near_deadline["id"])["state"] == "queued"
 
 
 def test_transient_retries_back_off_and_stop_after_three_attempts(tmp_path):
