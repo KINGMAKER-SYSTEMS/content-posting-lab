@@ -1008,7 +1008,12 @@ as "unavailable", the state an unreachable vault already produced. The
 docstring no longer names the Supabase project. tests/test_no_production_host_guard.py
 fails on any production hostname in app Python, and on production URLs in
 other tracked files outside a justified docs allowlist. A conftest audit hook
-refuses and fails any test that looks up or connects to a non-loopback host.
+refuses and fails any test that looks up or connects to a non-loopback host. Its first
+full run found two live leaks in the suite: every TestClient lifespan started
+the ABN factory, which scraped HN, GitHub, Reddit and lobste.rs, and the
+source-execution tests fetched page manifests from the production ShipStream
+vault. Only TestClient lifespans now get an idle factory start, and those
+tests answer manifest reads as an unreachable vault.
 Production needs CAMPAIGN_HUB_URL and SHIPSTREAM_VAULT_ORIGIN set before this
 deploys; neither was set on 2026-09-26. No deploy was performed.
 

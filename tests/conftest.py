@@ -1,3 +1,4 @@
+import contextlib
 import ipaddress
 import socket
 import sys
@@ -154,6 +155,37 @@ def no_live_codex_image(monkeypatch):
     except Exception:
         return
     monkeypatch.setattr(abn_factory, "_codex_image", lambda *a, **k: None, raising=False)
+
+
+@pytest.fixture(autouse=True, scope="session")
+def no_autonomous_abn_factory():
+    """A TestClient lifespan must not start the autonomous ABN factory: its
+    loop scrapes HN, GitHub, Reddit and lobste.rs for real (the offline guard
+    refuses those lookups and fails the test). Session scope, so module-scoped
+    clients are covered too. Tests that exercise the factory call
+    start_factory, run_factory_loop or app.lifespan directly and are
+    unaffected; only the TestClient-driven lifespan gets the idle start."""
+    import services.abn_factory as abn_factory
+
+    real_lifespan = app.router.lifespan_context
+
+    async def idle_start_factory():
+        return None
+
+    @contextlib.asynccontextmanager
+    async def lifespan_without_factory(app_):
+        real_start = abn_factory.start_factory
+        abn_factory.start_factory = idle_start_factory
+        try:
+            async with real_lifespan(app_) as state:
+                abn_factory.start_factory = real_start
+                yield state
+        finally:
+            abn_factory.start_factory = real_start
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(app.router, "lifespan_context", lifespan_without_factory)
+        yield
 
 
 @pytest.fixture
