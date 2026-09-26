@@ -33,6 +33,20 @@ MASTER_SHA = "c434bf9678fbaa20b9b081c68260cca75eb3dd109ddc1cb82df556ec59ae5bd5"
 SOURCE_IDENTITY = "https://www.youtube.com/watch?v=vt5im2TRAKw"
 
 
+@pytest.fixture(autouse=True)
+def offline_shipstream_manifest(monkeypatch):
+    """publication() builds the Dossier catalog for a sourced page, which reads
+    that page's ShipStream manifest. Tests that need a manifest patch
+    _fetch_manifest themselves; any other read answers as an unreachable
+    vault instead of leaving the process."""
+    import services.shipstream_source_manifest as source_manifest
+
+    def unreachable(_url):
+        raise source_manifest.ShipStreamSourceUnavailable("ShipStream vault is offline in tests")
+
+    monkeypatch.setattr(source_manifest, "_fetch_manifest", unreachable)
+
+
 def publication(
     *,
     clip_speed=1.0,
@@ -48,7 +62,7 @@ def publication(
         handle="chase.miles.4l",
         content_niche="POV - Dirtbike",
         content_engine="sourced_video",
-        vault_url="https://shipstream.risingtidesviral.com/vault/chase.miles.4l",
+        vault_url="https://shipstream.test/vault/chase.miles.4l",
     )
     catalog = build_dossier_ingredient_catalog(PAGE_ID, intent, revision)
     render_treatment = {
@@ -161,7 +175,7 @@ def test_source_recipe_resolves_the_exact_shipstream_page_library(monkeypatch):
         handle="chase.miles.4l",
         content_niche="POV - Dirtbike",
         content_engine="sourced_video",
-        vault_url="https://shipstream.risingtidesviral.com/vault/chase.miles.4l",
+        vault_url="https://shipstream.test/vault/chase.miles.4l",
     )
     manifest = {
         "schema": "shipstream.source-manifest.v1",
@@ -237,7 +251,7 @@ def test_scenic_source_recipe_resolves_the_pages_own_shipstream_library(monkeypa
         handle=handle,
         content_niche="POV — Scenic",
         content_engine="sourced_video",
-        vault_url=f"https://shipstream.risingtidesviral.com/vault/{handle}",
+        vault_url=f"https://shipstream.test/vault/{handle}",
     )
     manifest = {
         "schema": "shipstream.source-manifest.v1",
@@ -411,7 +425,7 @@ def lab(monkeypatch, tmp_path):
         handle="chase.miles.4l",
         content_niche="POV - Dirtbike",
         content_engine="sourced_video",
-        vault_url="https://shipstream.risingtidesviral.com/vault/chase.miles.4l",
+        vault_url="https://shipstream.test/vault/chase.miles.4l",
     )
     bind_current_intent(monkeypatch, cp, intent, revision)
     started = []

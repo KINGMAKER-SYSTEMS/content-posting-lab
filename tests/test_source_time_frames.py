@@ -21,6 +21,7 @@ from tests.test_control_plane_source_execution import (  # noqa: F401 (fixture)
     headers,
     job_body,
     lab,
+    offline_shipstream_manifest,
     publication,
 )
 

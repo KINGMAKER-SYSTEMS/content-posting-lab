@@ -1486,10 +1486,7 @@ async def sync_sounds_unified():
     AI-assisted fuzzy matching bridges naming differences.
     """
     if not hub_configured():
-        raise HTTPException(
-            status_code=400,
-            detail="Campaign Hub URL not configured.",
-        )
+        raise HTTPException(status_code=503, detail="Campaign Hub not configured")
 
     # Fetch Notion data if available (optional — sync still works without it)
     notion_data = None

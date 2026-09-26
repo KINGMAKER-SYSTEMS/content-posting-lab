@@ -465,7 +465,7 @@ def test_shipstream_page_source_is_bound_only_to_its_matching_format(monkeypatch
         handle="lovenightwalks",
         content_niche="POV — Night Core",
         content_engine="sourced_video",
-        vault_url="https://shipstream.risingtidesviral.com/vault/lovenightwalks",
+        vault_url="https://shipstream.test/vault/lovenightwalks",
     )
     intent["notionPageId"] = "3c61465b-b829-8095-86ec-f979f90ee48a"
     intent["automationMode"] = "Operator"
@@ -618,7 +618,7 @@ def test_shipstream_manifest_format_cannot_override_master_pages_niche(monkeypat
         handle="lovenightwalks",
         content_niche="POV — Night Core",
         content_engine="sourced_video",
-        vault_url="https://shipstream.risingtidesviral.com/vault/lovenightwalks",
+        vault_url="https://shipstream.test/vault/lovenightwalks",
     )
     intent["notionPageId"] = "3c61465b-b829-8095-86ec-f979f90ee48a"
     intent["automationMode"] = "Operator"
