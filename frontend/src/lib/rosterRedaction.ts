@@ -1,7 +1,7 @@
 import type { RosterPage } from '@/types/api';
 
 /**
- * /api/roster no longer serialises account credentials (signup email,
+ * /api/roster, /api/pipeline and /api/email no longer serialise account credentials (signup email,
  * forwarding address, Cloudflare alias/rule/destination): the operator UI
  * sends no credential, so anything it can read, anyone can read. The keys are
  * removed, not nulled, so an absent key means "hidden", while null still
@@ -9,6 +9,8 @@ import type { RosterPage } from '@/types/api';
  */
 export const ROSTER_HIDDEN_LABEL = 'hidden pending operator auth';
 export const ALIAS_REMOVAL_DISABLED = 'Alias removal is disabled pending operator auth';
+/** Passwords are read from Notion / the password manager, never from the Lab. */
+export const PASSWORD_HIDDEN_LABEL = 'hidden pending operator auth — see Notion';
 
 export function rosterEmailHidden(page: RosterPage): boolean {
   return !('email_alias' in page) && !('signup_email' in page);

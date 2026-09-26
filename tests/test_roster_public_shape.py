@@ -51,7 +51,7 @@ CREDENTIAL_CONCEPTS = (
     ("sign", "in", "email"), ("user", "email"), ("fwd",), ("fwd", "address"),
     ("forward", "to"), ("forwarding", "address"), ("forward", "destination"),
     ("email", "alias"), ("alias",), ("email", "rule", "id"), ("notes",),
-    ("note",), ("private", "key"), ("key",),
+    ("note",), ("private", "key"), ("access", "key"), ("secret", "key"),
 )
 
 # The same idea for keys the roster surface legitimately returns: styling a
@@ -62,6 +62,12 @@ SAFE_KEYS = tuple(PUBLIC_PAGE_FIELDS) + (
     "total_pages", "duplicate_names", "duplicates", "count", "entries",
     "has_topic", "topic_id", "topic_name", "inventory_total",
     "inventory_pending", "has_project", "has_drive", "deleted", "configured",
+    # /api/pipeline and /api/email non-credential keys.
+    "key", "r2_key", "file_id", "message_id", "topic_id", "chat_id", "url",
+    "filename", "cookie_status", "cf_alias", "notion_email_writeback",
+    "slack_handoff", "status_flip", "poster_assign", "telegram_topic",
+    "r2_prefix", "notion_r2_writeback", "object_count", "destination",
+    "domain", "rule", "steps", "completed", "reason", "skipped",
 )
 
 # The first shipped matcher, kept only to prove the generator below is not
@@ -250,3 +256,46 @@ def test_roster_router_uses_the_guard_route_class():
     assert roster_router.router.routes
     for route in roster_router.router.routes:
         assert isinstance(route, roster_router._CredentialGuardRoute), route.path
+
+
+# ── /api/pipeline and /api/email use the same guard ──────────────────────────
+
+
+def test_pipeline_and_email_routers_use_the_guard_route_class():
+    from routers import email_routing, pipeline
+    from services.roster_public import CredentialGuardRoute
+
+    for module in (pipeline, email_routing):
+        assert module.router.routes
+        for route in module.router.routes:
+            assert isinstance(route, CredentialGuardRoute), (module.__name__, route.path)
+
+
+def test_credential_key_allowances_are_pinned():
+    """Every route that may serialise a credential-shaped key is listed here.
+
+    Adding one is a security decision: it must echo only what the request
+    itself created or the operator already holds, never a stored credential.
+    """
+    from routers import email_routing, pipeline, roster as roster_routes
+    from services.roster_public import allowed_credential_keys
+
+    found = {}
+    for prefix, module in (("/api/pipeline", pipeline), ("/api/email", email_routing), ("/api/roster", roster_routes)):
+        for route in module.router.routes:
+            keys = allowed_credential_keys(route.endpoint)
+            if keys:
+                for method in route.methods:
+                    found[(method, prefix + route.path)] = keys
+    assert found == {
+        ("POST", "/api/pipeline/mint-alias"): frozenset({"alias"}),
+        ("POST", "/api/pipeline/intake"): frozenset({"email_alias", "fwd_destination"}),
+        ("POST", "/api/email/auto-create"): frozenset({"alias"}),
+        ("GET", "/api/email/destinations"): frozenset({"email"}),
+        ("POST", "/api/email/destinations"): frozenset({"email"}),
+    }
+
+
+def test_presence_flags_survive_the_scrub_but_values_do_not():
+    body = {"has_email_alias": True, "has_password": False, "has_email_alias_value": "x@y", "password": "p"}
+    assert scrub_credentials(body) == {"has_email_alias": True, "has_password": False}

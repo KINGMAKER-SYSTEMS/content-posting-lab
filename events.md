@@ -905,3 +905,28 @@ did not skip `_post_render`. `sanitize_project_name` now refuses
 `project_manager.is_reserved_volume_dir` names (that set plus any leading
 underscore), listings skip them and `/send` uses the same predicate. New
 tests: 37 of 45 fail before, 45 pass.
+
+_________________________________________________________________________________
+time: [19:50 EDT] [26-09-25]
+agent: [Claude Code] [claude-opus-5-5]
+worktree: [fix/pipeline-email-credential-scrub] [/Users/ecfromthedc/dev/wt/lab-pipeline-scrub]
+type: [security]: /api/pipeline and /api/email no longer serialise account credentials
+area: [backend] [frontend] [security] [testing]
+
+The same unauthenticated exposure as /api/roster existed one router over:
+GET /api/pipeline/stages returned every page's full roster row (signup email,
+password, forwarding address, email alias/rule/destination, notes), and
+/workspace, /setup, /transition and POST /api/email/auto-create returned the
+full row for one page. Both routers now use the roster credential guard route
+and the public row allowlist. The only credential-shaped keys still served are
+the alias a mint/intake/auto-create request itself just created and the team's
+verified destination inboxes, each pinned by a test. The Slack pipeline
+handoff now says "see Notion" instead of carrying the password. The Pipeline
+workspace, stage cards, Roster and Email tabs label the hidden fields
+"hidden pending operator auth". New HTTP tests fail on main (16 of 21) and pass
+here. A whole-app sweep test calls all 104 non-streaming GET routes
+(anonymously and with every machine credential) against a roster seeded with
+sentinel credentials; on main it catches /api/roster/, /api/roster/project,
+/api/pipeline/stages and /api/pipeline/{id}/workspace, and here it passes.
+Pages, miniapp/poster content and telegram routes build named safe fields.
+No deploy was performed.

@@ -11,14 +11,11 @@ scrub_credentials (see _CredentialGuardRoute). Routes that no unauthenticated
 UI calls require the machine credential (require_roster_auth).
 """
 
-import json
 import os
 import re
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import JSONResponse, Response
-from fastapi.routing import APIRoute
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from services.roster import (
@@ -32,10 +29,10 @@ from services.roster import (
     set_page,
 )
 from services.roster_public import (
+    CredentialGuardRoute,
     public_page,
     public_pages,
     require_roster_auth,
-    scrub_credentials,
 )
 
 # Regex to strip emoji and other non-alphanumeric/space characters for dedup matching
@@ -54,34 +51,8 @@ def _normalize_name(name: str) -> str:
     return re.sub(r"\s+", " ", name).lower().strip()
 
 
-class _CredentialGuardRoute(APIRoute):
-    """Backstop: strip credential-shaped keys from every JSON body this router returns.
-
-    Routes already build their rows with public_page; this catches a route
-    that forgets to, including routes added later.
-    """
-
-    def get_route_handler(self):
-        original = super().get_route_handler()
-
-        async def guarded(request: Request) -> Response:
-            response = await original(request)
-            if not isinstance(response, JSONResponse):
-                return response
-            try:
-                body = json.loads(response.body)
-            except ValueError:
-                return response
-            cleaned = scrub_credentials(body)
-            if cleaned == body:
-                return response
-            return JSONResponse(
-                content=cleaned,
-                status_code=response.status_code,
-                background=response.background,
-            )
-
-        return guarded
+# Kept under its original name for the tests that pin it.
+_CredentialGuardRoute = CredentialGuardRoute
 
 
 router = APIRouter(route_class=_CredentialGuardRoute)

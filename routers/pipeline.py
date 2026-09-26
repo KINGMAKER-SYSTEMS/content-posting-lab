@@ -4,6 +4,14 @@ Pipeline router — page sale handoff operations.
 Reads roster pages grouped by Notion `Status`, exposes per-stage actions
 (setup, transition, health). Notion is the canonical source; all status
 changes also write back to Notion.
+
+Credential boundary: roster rows carry account credentials (signup email,
+password, forwarding address, email alias/rule, notes). This router answers
+an unauthenticated UI, so every row leaves through
+services.roster_public.public_page and every JSON body through the
+CredentialGuardRoute scrub. The only credential-shaped keys it serialises
+are values the caller just created in the same request (the minted alias and
+its destination), marked with allow_credential_keys.
 """
 
 import hashlib
@@ -36,6 +44,15 @@ from services.notion_pages import (
 )
 from services.poster_router import resolve_poster_for_page
 from services.roster import get_page, list_all_pages, set_page
+from services.roster_public import (
+    CredentialGuardRoute,
+    allow_credential_keys,
+    public_page,
+)
+
+
+def _public_or_none(page: dict | None) -> dict | None:
+    return public_page(page) if page else None
 from services.telegram import (
     assign_page_to_poster,
     get_poster,
@@ -44,7 +61,7 @@ from services.upload import get_cookie_status
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter()
+router = APIRouter(route_class=CredentialGuardRoute)
 
 
 INTAKE_PASSWORD_ENV = "DEFAULT_INTAKE_PASSWORD"
@@ -273,6 +290,7 @@ class MintAliasResponse(BaseModel):
 
 
 @router.post("/mint-alias")
+@allow_credential_keys("alias")  # the alias this request just minted, for the TikTok signup
 async def mint_random_alias_endpoint(req: MintAliasRequest | None = None) -> MintAliasResponse:
     """Step 1 of intake: mint a CF email alias AND create a placeholder Notion row.
 
@@ -322,6 +340,7 @@ async def mint_random_alias_endpoint(req: MintAliasRequest | None = None) -> Min
 
 
 @router.post("/intake")
+@allow_credential_keys("email_alias", "fwd_destination")  # echo of this request's own alias
 async def submit_intake(req: IntakeRequest):
     """Step 2 of intake: fill in TikTok handle + page details.
 
@@ -451,10 +470,10 @@ async def get_stages():
     for page in pages:
         status = (page.get("status") or "").strip()
         if status in by_status:
-            by_status[status].append(page)
+            by_status[status].append(public_page(page))
         elif status:
             # Unknown status — bucket separately so user can spot data drift
-            unassigned.append({**page, "_unknown_status": status})
+            unassigned.append({**public_page(page), "_unknown_status": status})
         # No status at all = legacy/active page that didn't come through the
         # sale-handoff intake. Skip — the Pipeline tab is ONLY for pages
         # currently moving through the onboarding lifecycle. Operational
@@ -553,7 +572,7 @@ async def run_setup(integration_id: str, req: SetupRequest | None = None):
             ),
         )
 
-    result["steps"]["cf_alias"] = {"ok": True, "skipped": True, "alias": existing_alias}
+    result["steps"]["cf_alias"] = {"ok": True, "skipped": True}
 
     # ── Step 2: Write email back to Notion (shared — both pipelines need this) ─
     fresh = get_page(integration_id) or {}
@@ -615,7 +634,7 @@ async def run_setup(integration_id: str, req: SetupRequest | None = None):
             result["steps"]["status_flip"] = {"ok": True, "new_status": "In Production", "local_only": True}
 
         result["completed"] = True
-        result["page"] = get_page(integration_id)
+        result["page"] = _public_or_none(get_page(integration_id))
         return result
 
     # ── King Maker path (this app handles delivery via R2 + Telegram) ───
@@ -748,7 +767,7 @@ async def run_setup(integration_id: str, req: SetupRequest | None = None):
         }
 
     result["completed"] = True
-    result["page"] = get_page(integration_id)
+    result["page"] = _public_or_none(get_page(integration_id))
     return result
 
 
@@ -781,7 +800,7 @@ async def transition_status(integration_id: str, req: TransitionRequest):
             raise HTTPException(status_code=502, detail=f"Notion update failed: {exc}")
 
     set_page(integration_id, {"status": req.status, "updated_at": _today_utc_iso()})
-    return {"ok": True, "page": get_page(integration_id)}
+    return {"ok": True, "page": _public_or_none(get_page(integration_id))}
 
 
 # ── King Maker workspace ─────────────────────────────────────────────────────
@@ -803,7 +822,7 @@ async def get_workspace(integration_id: str):
         raise HTTPException(status_code=404, detail=f"Page {integration_id} not found")
 
     workspace: dict[str, Any] = {
-        "page": page,
+        "page": public_page(page),
         "r2": {
             "configured": r2.is_configured(),
             "prefix": page.get("r2_prefix"),
