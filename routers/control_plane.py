@@ -84,6 +84,8 @@ from services.control_plane_generation import (
     typed_recipe_spec,
 )
 from services.control_plane_sources import (
+    CAPABILITY_PLAN_SEED,
+    MASTER_WINDOWS_EXHAUSTED,
     canonical_source_identity,
     plan_source_cuts,
     source_cut_is_planned,
@@ -854,29 +856,43 @@ def _source_dna_unavailable_slots(
     """Derive reservations from durable job truth, never a write-only ledger.
 
     Queued/running jobs reserve their exact windows across recipe revisions so
-    concurrent work cannot cut the same source position. A completed job keeps
-    a window unavailable only for the exact locked recipe that produced it; a
-    later recipe may recut that page-bound window with its new treatment and
-    provenance. Failed jobs release their windows.
+    concurrent work cannot cut the same source position. Every queued, running
+    or completed cut also reserves its exact time frame
+    (``masterSha:startMs:durationMs``) for every recipe revision and library
+    version that contains the same master bytes: a new recipe re-treats fresh
+    time frames instead of re-cutting the ones already delivered. Failed jobs
+    release their windows.
     """
+    master_shas = {master.sha256 for master in source_recipe.masters}
     slots: set[str] = set()
     for job in store.get("jobs", {}).values():
         if (
             not isinstance(job, dict)
             or job.get("sourceKind") != "dossier_source_dna"
-            or job.get("sourceLibraryId") != source_recipe.source_library_id
-            or job.get("sourceLibraryHash") != source_recipe.source_library_hash
             or job.get("status") not in SOURCE_DNA_UNAVAILABLE_STATUSES
-            or (
-                job.get("status") == "completed"
-                and job.get("recipeVersion") != recipe_version
-            )
         ):
             continue
+        same_library_slot = (
+            job.get("sourceLibraryId") == source_recipe.source_library_id
+            and job.get("sourceLibraryHash") == source_recipe.source_library_hash
+            and (
+                job.get("status") != "completed"
+                or job.get("recipeVersion") == recipe_version
+            )
+        )
         for cut in job.get("sourceCuts", []):
-            slot_id = cut.get("slotId") if isinstance(cut, dict) else None
-            if isinstance(slot_id, str) and slot_id:
+            if not isinstance(cut, dict):
+                continue
+            slot_id = cut.get("slotId")
+            if same_library_slot and isinstance(slot_id, str) and slot_id:
                 slots.add(slot_id)
+            master_sha = cut.get("masterSha256")
+            start_ms, duration_ms = cut.get("startMs"), cut.get("durationMs")
+            if (
+                master_sha in master_shas
+                and type(start_ms) is int and type(duration_ms) is int
+            ):
+                slots.add(f"{master_sha}:{start_ms}:{duration_ms}")
     return slots
 
 
@@ -3014,9 +3030,25 @@ async def create_job(
             served_slots = _source_dna_unavailable_slots(
                 store, source_recipe, publication["recipeVersion"],
             )
+            # A per-job seed varies the time frames each run cuts; it is
+            # recorded so the plan is reproducible. Capability counted with
+            # the capability seed, so fall back to it rather than refuse a
+            # quantity that seed can still fill near exhaustion.
+            cut_plan_seed = hashlib.sha256(
+                f"{idempotency_key}\0{job_id}".encode(),
+            ).hexdigest()[:16]
             cuts = plan_source_cuts(
                 source_recipe, quantity, served_slots, excluded_windows,
+                seed=cut_plan_seed,
             )
+            if len(cuts) != quantity:
+                cut_plan_seed = CAPABILITY_PLAN_SEED
+                cuts = plan_source_cuts(
+                    source_recipe, quantity, served_slots, excluded_windows,
+                    seed=cut_plan_seed,
+                )
+            if not cuts:
+                raise HTTPException(status_code=409, detail=MASTER_WINDOWS_EXHAUSTED)
             if len(cuts) != quantity:
                 raise HTTPException(status_code=409, detail="insufficient_inventory")
             job_root = (
@@ -3037,6 +3069,7 @@ async def create_job(
                     "startMs": cut.start_ms,
                     "durationMs": cut.duration_ms,
                 } for cut in cuts],
+                "cutPlanSeed": cut_plan_seed,
                 "sourceLibraryId": source_recipe.source_library_id,
                 "sourceLibraryHash": source_recipe.source_library_hash,
                 "engineRegistryHash": source_recipe.engine_registry_hash,
