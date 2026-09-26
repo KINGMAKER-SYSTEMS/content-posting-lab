@@ -22,6 +22,7 @@ WORKER_TOKEN = "dummy-worker-bearer-not-a-secret"
 HUB_KEY = "dummy-hub-key-not-a-secret"
 APP_KEY = "dummy-app-api-key-not-a-secret"
 TEAM_DOMAIN = "https://dummy-team.cloudflareaccess.com"
+LAB_ORIGIN = "https://lab.example.invalid"
 ACCESS_AUD = "dummy-lab-aud-tag-0000000000000000"
 KID = "dummy-kid-1"
 
@@ -85,6 +86,7 @@ def install_idp(monkeypatch, jwks: dict | None = None, *, fail: bool = False) ->
 
 
 def configure_all(monkeypatch) -> None:
+    monkeypatch.setenv("LAB_ALLOWED_ORIGINS", LAB_ORIGIN)
     monkeypatch.setenv("CONTROL_PLANE_TOKEN", WORKER_TOKEN)
     monkeypatch.setenv("LAB_HUB_API_KEY", HUB_KEY)
     monkeypatch.setenv("LAB_ACCESS_TEAM_DOMAIN", TEAM_DOMAIN)
@@ -93,7 +95,7 @@ def configure_all(monkeypatch) -> None:
 
 
 def unconfigure_all(monkeypatch) -> None:
-    for name in ("CONTROL_PLANE_TOKEN", "LAB_HUB_API_KEY", "LAB_ACCESS_TEAM_DOMAIN", "LAB_ACCESS_AUD"):
+    for name in ("CONTROL_PLANE_TOKEN", "LAB_HUB_API_KEY", "LAB_ACCESS_TEAM_DOMAIN", "LAB_ACCESS_AUD", "LAB_ALLOWED_ORIGINS"):
         monkeypatch.delenv(name, raising=False)
 
 
@@ -103,7 +105,8 @@ def valid_headers(caller: str) -> dict[str, str]:
     if caller == route_auth.HUB:
         return {"X-API-Key": HUB_KEY}
     if caller == route_auth.ACCESS:
-        return {"Cf-Access-Jwt-Assertion": mint()}
+        # What the Lab UI's own same-origin fetch carries after the edge adds the JWT.
+        return {"Cf-Access-Jwt-Assertion": mint(), "Sec-Fetch-Site": "same-origin"}
     raise ValueError(caller)
 
 

@@ -124,8 +124,11 @@
   JWT (LAB_ACCESS_TEAM_DOMAIN + LAB_ACCESS_AUD). 503 when unconfigured, 401 on
   a missing or wrong credential. Every served route is classified in
   `tests/test_route_auth_guard.py` (reviewed copy: `docs/route-auth-table.md`);
-  an unclassified route fails CI. `/api/miniapp/agent/*` fails closed (503)
-  without MINIAPP_AGENT_KEY.
+  an unclassified route fails CI. An Access-authenticated write or websocket
+  also needs `Sec-Fetch-Site: same-origin` or an Origin in LAB_ALLOWED_ORIGINS
+  (403 otherwise: CSRF via the login cookie). `RouteAuthMiddleware` enforces
+  the route's dependency before the body is read. `/api/miniapp/agent/*`
+  fails closed (503) without MINIAPP_AGENT_KEY.
 - `burn_server.py` exposes the same typed caption-render route on the posting
   Mac's canonical port-8002 Burn runtime for Rail consumption.
 - `events.md` is the repository's append-only chronological ledger.

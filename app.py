@@ -40,7 +40,7 @@ from routers.upload import router as upload_router
 from routers.video import router as video_router
 from routers.agenticnews import router as agenticnews_router
 import services.agenticnews as agenticnews_db
-from services.route_auth import require_access
+from services.route_auth import RouteAuthMiddleware, require_access
 
 load_dotenv()
 
@@ -223,6 +223,10 @@ app = FastAPI(
     openapi_url=None,
 )
 
+# Added first, so it runs innermost (inside CORS): route_auth-gated routes are
+# authenticated here before FastAPI reads the body; the per-route dependency
+# repeats the check.
+app.add_middleware(RouteAuthMiddleware, routes_owner=app.router)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=CORS_ORIGINS,

@@ -21,8 +21,20 @@ credential from those classes is accepted, nothing else):
   ``exp``/``iat`` required). An unverified header is never trusted.
 
 Status codes: 503 when none of the route's caller classes is configured
-(missing env), 401 when no presented credential is valid for the route. The
-handler never runs in either case.
+(missing env), 401 when no presented credential is valid for the route, 403
+for a cross-origin Access-authenticated write. The handler never runs.
+
+CSRF: the edge adds the Access JWT from the operator's login cookie, so a
+cross-site form POST or websocket from another page would arrive with a valid
+JWT. An Access-authenticated unsafe request (POST/PUT/PATCH/DELETE, or any
+websocket) therefore also needs a same-origin signal: ``Sec-Fetch-Site:
+same-origin``, or an ``Origin`` listed in ``LAB_ALLOWED_ORIGINS``
+(comma-separated, e.g. the Lab's Access hostname). Bearer and Hub-key callers
+are not cookie-borne and need neither.
+
+``RouteAuthMiddleware`` runs the same check before routing hands the request
+to FastAPI, so an unauthenticated body is never parsed (no 422, no multipart
+spool); the per-route dependency stays as defence in depth.
 """
 
 from __future__ import annotations
@@ -49,6 +61,8 @@ ENV_WORKER_TOKEN = "CONTROL_PLANE_TOKEN"
 ENV_HUB_KEY = "LAB_HUB_API_KEY"
 ENV_ACCESS_TEAM_DOMAIN = "LAB_ACCESS_TEAM_DOMAIN"
 ENV_ACCESS_AUD = "LAB_ACCESS_AUD"
+ENV_ALLOWED_ORIGINS = "LAB_ALLOWED_ORIGINS"
+UNSAFE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 
 ACCESS_JWT_HEADER = "cf-access-jwt-assertion"
 ACCESS_ALGORITHMS = ["RS256"]
@@ -160,6 +174,22 @@ def _presented_valid(conn: HTTPConnection, caller: str, worker_token_in_x_api_ke
     raise ValueError(caller)
 
 
+def _same_origin(conn: HTTPConnection) -> bool:
+    """True when the request carries a same-origin signal (see the module docstring)."""
+    site = conn.headers.get("sec-fetch-site", "").strip().lower()
+    if site:
+        return site == "same-origin"
+    origin = conn.headers.get("origin", "").strip()
+    allowed = {o.strip().rstrip("/") for o in _env(ENV_ALLOWED_ORIGINS).split(",") if o.strip()}
+    return bool(origin) and origin.rstrip("/") in allowed
+
+
+def _needs_origin(conn: HTTPConnection) -> bool:
+    if conn.scope.get("type") == "websocket":
+        return True
+    return conn.scope.get("method", "GET").upper() in UNSAFE_METHODS
+
+
 def _deny(conn: HTTPConnection, status: int, detail: str):
     if conn.scope.get("type") == "websocket":
         raise WebSocketException(code=WS_1008_POLICY_VIOLATION, reason=detail)
@@ -167,17 +197,23 @@ def _deny(conn: HTTPConnection, status: int, detail: str):
 
 
 def authorize(conn: HTTPConnection, callers: Iterable[str], worker_token_in_x_api_key: bool = False) -> str:
-    """Return the caller class that authenticated, or raise 503/401."""
+    """Return the caller class that authenticated, or raise 503/401/403."""
     live = [c for c in callers if configured(c)]
     if not live:
         _deny(conn, 503, "Route authentication is not configured")
     unavailable = False
+    cross_origin = False
     for caller in live:
         try:
             if _presented_valid(conn, caller, worker_token_in_x_api_key):
+                if caller == ACCESS and _needs_origin(conn) and not _same_origin(conn):
+                    cross_origin = True
+                    continue
                 return caller
         except _Unavailable:
             unavailable = True
+    if cross_origin:
+        _deny(conn, 403, "Cross-origin request refused")
     if unavailable:
         log.warning("Access certs unavailable; refusing %s", conn.url.path)
         _deny(conn, 503, "Operator identity verification is unavailable")
@@ -209,7 +245,6 @@ def require_callers(*callers: str, worker_token_in_x_api_key: bool = False) -> C
 require_worker = require_callers(WORKER)
 require_access = require_callers(ACCESS)
 require_access_or_hub = require_callers(ACCESS, HUB)
-require_access_or_worker = require_callers(ACCESS, WORKER)
 # Email routing (#176): CONTROL_PLANE_TOKEN as Bearer or X-API-Key, or an operator.
 require_access_or_control_plane_token = require_callers(ACCESS, WORKER, worker_token_in_x_api_key=True)
 
@@ -217,6 +252,69 @@ ALL_DEPENDENCIES = (
     require_worker,
     require_access,
     require_access_or_hub,
-    require_access_or_worker,
     require_access_or_control_plane_token,
 )
+
+
+# ── pre-routing enforcement ──────────────────────────────────────────
+
+
+def route_requirement(route) -> tuple[frozenset[str], bool] | None:
+    """(callers, worker_token_in_x_api_key) of a route's route_auth dependency, if any."""
+    dependant = getattr(route, "dependant", None)
+    stack = list(dependant.dependencies) if dependant is not None else []
+    while stack:
+        dep = stack.pop()
+        callers = getattr(dep.call, "route_auth_callers", None)
+        if callers:
+            return callers, bool(getattr(dep.call, "worker_token_in_x_api_key", False))
+        stack.extend(dep.dependencies)
+    return None
+
+
+class RouteAuthMiddleware:
+    """Authenticate route_auth-gated routes before the body is read.
+
+    Finds the route the router would pick (first full match) and, when it
+    carries a route_auth dependency, runs ``authorize`` with the same caller
+    classes. A refusal is answered here: FastAPI never parses the body.
+    """
+
+    def __init__(self, app, routes_owner) -> None:
+        self.app = app
+        self._owner = routes_owner
+        self._cache: dict[int, tuple[frozenset[str], bool] | None] = {}
+
+    def _requirement(self, scope):
+        from starlette.routing import Match
+
+        for route in self._owner.routes:
+            match, _ = route.matches(scope)
+            if match == Match.FULL:
+                key = id(route)
+                if key not in self._cache:
+                    self._cache[key] = route_requirement(route)
+                return self._cache[key]
+        return None
+
+    async def __call__(self, scope, receive, send) -> None:
+        if scope["type"] not in ("http", "websocket"):
+            await self.app(scope, receive, send)
+            return
+        requirement = self._requirement(scope)
+        if requirement is not None:
+            callers, token_in_key = requirement
+            conn = HTTPConnection(scope)
+            try:
+                authorize(conn, tuple(sorted(callers)), worker_token_in_x_api_key=token_in_key)
+            except HTTPException as exc:
+                from fastapi.responses import JSONResponse
+
+                await JSONResponse({"detail": exc.detail}, status_code=exc.status_code)(scope, receive, send)
+                return
+            except WebSocketException as exc:
+                from starlette.websockets import WebSocketClose
+
+                await WebSocketClose(code=exc.code, reason=exc.reason or "")(scope, receive, send)
+                return
+        await self.app(scope, receive, send)

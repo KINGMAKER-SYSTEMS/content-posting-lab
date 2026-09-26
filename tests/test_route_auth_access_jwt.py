@@ -172,3 +172,23 @@ def test_email_routing_dependency_keeps_the_176_token_forms(monkeypatch):
     assert len(calls) == 3
     s.unconfigure_all(monkeypatch)
     assert client.post("/x", headers={"X-API-Key": s.WORKER_TOKEN}).status_code == 503
+
+
+def test_access_writes_need_a_same_origin_signal(monkeypatch):
+    """Review D1: the edge adds the JWT from the login cookie, so an Access-authenticated
+    write needs Sec-Fetch-Site: same-origin or an allowlisted Origin, else 403."""
+    s.configure_all(monkeypatch)
+    for dep in (route_auth.require_access, route_auth.require_access_or_hub,
+                route_auth.require_access_or_control_plane_token):
+        client, calls = _app(dep)
+        jwt_only = {"Cf-Access-Jwt-Assertion": s.mint()}
+        for extra in ({}, {"Origin": "https://evil.example"}, {"Sec-Fetch-Site": "cross-site"},
+                      {"Sec-Fetch-Site": "same-site"}, {"Origin": "null"},
+                      {"Sec-Fetch-Site": "cross-site", "Origin": s.LAB_ORIGIN}):
+            assert client.post("/x", headers={**jwt_only, **extra}).status_code == 403, (dep.__name__, extra)
+        assert calls == []
+        assert client.post("/x", headers={**jwt_only, "Sec-Fetch-Site": "same-origin"}).status_code == 200
+        assert client.post("/x", headers={**jwt_only, "Origin": s.LAB_ORIGIN}).status_code == 200
+        monkeypatch.delenv("LAB_ALLOWED_ORIGINS")
+        assert client.post("/x", headers={**jwt_only, "Origin": s.LAB_ORIGIN}).status_code == 403
+        monkeypatch.setenv("LAB_ALLOWED_ORIGINS", s.LAB_ORIGIN)

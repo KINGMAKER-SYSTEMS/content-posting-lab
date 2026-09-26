@@ -429,7 +429,7 @@ def test_pipeline_mint_alias_needs_an_operator_not_the_email_token(client, token
         "/api/pipeline/mint-alias", json=body, headers={"Authorization": f"Bearer {TOKEN}"}
     ).status_code == 401
     assert created == {}
-    resp = client.post("/api/pipeline/mint-alias", json=body, headers={"Cf-Access-Jwt-Assertion": ras.mint()})
+    resp = client.post("/api/pipeline/mint-alias", json=body, headers=ras.valid_headers("access"))
     assert resp.status_code == 200, resp.text
     assert resp.json()["alias"] == "samb-truck-99@rt.example"
     assert created == {"alias_local": "samb-truck-99", "destination": "henry@risingtidesent.com"}

@@ -15,7 +15,12 @@ own through `services/route_auth.py`, independent of `APP_API_KEY`:
 
 - no credential, or a wrong one: **401** (websocket: close 1008), and the handler never runs;
 - none of the route's caller classes configured: **503**, fail closed, the handler never runs;
-- a route admits **any one** valid credential among the classes listed for it, and nothing else.
+- a route admits **any one** valid credential among the classes listed for it, and nothing else;
+- an Access-authenticated write (POST/PUT/PATCH/DELETE) or websocket without a same-origin
+  signal: **403** (CSRF, see below);
+- `RouteAuthMiddleware` applies the same check before FastAPI reads the body, so an
+  unauthenticated request is never parsed (no 422, no multipart spool); the per-route
+  dependency repeats it.
 
 ## Caller classes and what each caller must configure
 
@@ -26,10 +31,23 @@ and its tests use dummy values only.
 |---|---|---|---|
 | **W**: control-plane Worker | `Authorization: Bearer <token>`, constant-time | `CONTROL_PLANE_TOKEN` (already set) | Worker secret `CONTENT_LAB_TOKEN` (already sent on every contentLabClient call; no change) |
 | **H**: Campaign Hub proxies | `X-API-Key: <key>`, constant-time. Not `APP_API_KEY` | `LAB_HUB_API_KEY` (new) | Hub env `CONTENT_LAB_HUB_API_KEY` (new, same value) in the Flask and Rust Hub services. Code change needed in both: Flask `blueprints/sound_assignments.py` `_proxy` and Rust `crates/api/src/content_lab.rs` send no headers today |
-| **A**: operators (and scripts) through Cloudflare Access | `Cf-Access-Jwt-Assertion`, verified: RS256 signature against `<team>/cdn-cgi/access/certs`, `aud` = the Lab Access app's AUD tag, `iss` = the team domain, `exp`/`iat` required. The unverified header, `Cf-Access-Authenticated-User-Email` or any other identity header is never trusted | `LAB_ACCESS_TEAM_DOMAIN` (`https://<team>.cloudflareaccess.com`) and `LAB_ACCESS_AUD` (the Lab Access application's AUD tag; comma-separated for several) | Browsers: an Access login on the Lab hostname. Scripts: an Access service token (`CF-Access-Client-Id/Secret`, e.g. `RT_ACCESS_CLIENT_ID/SECRET`) against the Access-protected hostname; Access then adds the JWT |
+| **A**: operators (and scripts) through Cloudflare Access | `Cf-Access-Jwt-Assertion`, verified: RS256 signature against `<team>/cdn-cgi/access/certs`, `aud` = the Lab Access app's AUD tag, `iss` = the team domain, `exp`/`iat` required. The unverified header, `Cf-Access-Authenticated-User-Email` or any other identity header is never trusted | `LAB_ACCESS_TEAM_DOMAIN` (`https://<team>.cloudflareaccess.com`) and `LAB_ACCESS_AUD` (the Lab Access application's AUD tag; comma-separated for several) | Browsers: an Access login on the Lab hostname. Scripts: an Access service token (`CF-Access-Client-Id/Secret`, e.g. `RT_ACCESS_CLIENT_ID/SECRET`) against the Access-protected hostname; Access then adds the JWT. Scripts also send `Origin: <Lab origin>` on writes (next section) |
 
 No secret is baked into the frontend bundle. The UI keeps calling same-origin
 `/api/*`; Cloudflare adds the JWT at the edge.
+
+### CSRF on the Access class
+
+The edge adds the JWT from the operator's `CF_Authorization` login cookie, so a
+cross-site form POST or websocket from another page would arrive with a valid JWT.
+An Access-authenticated write or websocket is therefore admitted only with
+`Sec-Fetch-Site: same-origin` (every current browser sends it on the UI's own
+fetches) or an `Origin` listed in `LAB_ALLOWED_ORIGINS` (Lab env, comma-separated;
+set it to the Lab's Access hostname, e.g. `https://lab.<zone>`). Anything else is 403
+and the handler never runs. GETs are not checked: a cross-site page cannot read the
+response. Bearer and Hub-key callers are not cookie-borne and need no Origin. Set the
+Access application's cookie to **SameSite=Lax (or Strict) and HttpOnly** as defence in
+depth.
 
 ## Ships only after the Cloudflare Access edge gate (a) is live
 
@@ -41,9 +59,11 @@ public pages and the email-status line would get 401**. Deploy order:
 
 1. (a) live: custom domain on the Lab, proxied DNS, Access app with the bypass list
    (`/api/control-plane/*`, `/api/health`, `/fonts/*`, `/api/burn/fonts`, `/m*`,
-   `/assets/*`, `/api/miniapp/*`, `/projects/*`), operators log in on that hostname.
+   `/assets/*`, `/api/miniapp/*`, `/projects/*`), cookie SameSite=Lax or Strict and
+   HttpOnly; operators log in on that hostname.
 2. Hub code sends `X-API-Key` from `CONTENT_LAB_HUB_API_KEY` (both Hubs), deployed.
-3. Set `LAB_HUB_API_KEY`, `LAB_ACCESS_TEAM_DOMAIN`, `LAB_ACCESS_AUD` on the Lab
+3. Set `LAB_HUB_API_KEY`, `LAB_ACCESS_TEAM_DOMAIN`, `LAB_ACCESS_AUD`,
+   `LAB_ALLOWED_ORIGINS` on the Lab, and confirm `MINIAPP_AGENT_KEY` is set
    (Railway), then deploy this change in a Lab gap (11:40/14:40/17:40/20:40 ET).
 4. Keep `APP_API_KEY` unset. It is no longer needed for protection; setting it would
    still break the Worker (it sends the control-plane bearer, not `APP_API_KEY`).
@@ -57,14 +77,14 @@ Before step 3 the new routes answer 503 (fail closed), never open.
 | MONEY | 5 | A (5) |
 | WRITE (state-changing / destructive) | 136 | A (121, incl. mint-alias and intake), A or H (7), A or W (3: email routing), W (5: control-plane writes that validated the body before their inline bearer check) |
 | PII-READ | 25 | A (17), A or H (6), A or W (1: `GET /api/email/destinations`), W (1: `GET /api/control-plane/v1/roster`) |
-| READ (gated with its router, no PII/spend) | 53 | A (51), A or H (1: `GET /api/telegram/sounds`), A or W (1: `GET /api/control-plane/v1/capabilities`) |
+| READ (gated with its router, no PII/spend) | 53 | A (51), A or H (1: `GET /api/telegram/sounds`), W (1: `GET /api/control-plane/v1/capabilities`) |
 | TOKEN (unchanged, credential inside the route) | 23 | bearer / per-job token / agent key |
 | HMAC (Telegram initData) | 4 | Mini App |
 | PUBLIC (keyless allowlist) | 17 | none |
 | KNOWN-OPEN | 0 | (mint-alias and intake are operator-only since lead decision 5) |
 | **Total** | **263** | |
 
-By credential set over the 219 must-auth routes: A only 194, A or H 14, A or W 5, W only 6.
+By credential set over the 219 must-auth routes: A only 194, A or H 14, A or W 4, W only 7.
 "A or W" on the four email-routing routes means an Access JWT or CONTROL_PLANE_TOKEN
 as Bearer **or** X-API-Key (the #176 contract is kept).
 
@@ -79,11 +99,11 @@ as Bearer **or** X-API-Key (the #176 contract is kept).
 | ShipStream Worker (branch only) | `/v1/jobs/{id}/download|thumbnail/{i}?token=` | per-job token | unchanged |
 | `shipstream-internal-posting/reconcile_lab_projects.py` (launchd daily 07:15) | `GET /api/projects/`, `GET /api/pages/`, `POST /api/pages/{id}/project` | no headers | **breaks** until it uses an Access service token on the Access hostname |
 | `tools/deliver_lab_clips_to_vault.sh` (manual) | `GET /api/pages/{id}/content`, `/projects/*` | none | pages call needs an Access service token; media stays public |
-| `tools/supply_projection.py`, `zcode/lab-capacity-check.sh` (manual) | `GET /api/control-plane/v1/capabilities` | `X-RT-Page-Id` only | needs an Access service token (the access-kit tools branch adds one) or the bearer |
+| `tools/supply_projection.py`, `zcode/lab-capacity-check.sh` (manual) | `GET /api/control-plane/v1/capabilities` | `X-RT-Page-Id` only | **needs the bearer** (`CONTROL_PLANE_TOKEN`): Access bypasses `/api/control-plane/*`, so no JWT is ever added there |
 | Prompt/batch scripts: `agents/prompting-agent/*`, ocean content-agent harness, `content/prompt-bible/*`, `rt/content-distro/gen_pipeline.py`, `skills/telegram-distro` (manual) | `/api/video/generate`, `/api/video/jobs/{id}`, `/api/video/prompts`, `/api/projects/*` | none (the ocean harness: optional Bearer `CONTENT_LAB_API_KEY`) | **break** until they use an Access service token (these are the paid-generation routes) |
 | `agents/core-core-music-editor-agent` (manual) | `/api/clipper/download-url`, `/api/clipper/trim-batch` | none | Access service token |
 | `agents/slideshow-agent` (manual) | `/api/health`, `/api/slideshow/*`, `/projects/*`, `/fonts/*` | none | slideshow calls need an Access service token |
-| `rt/rt-command-center/dashboard.html` (Lab iframe) | the SPA | the viewer's browser | works for a viewer logged in to Access, if the Access cookie is allowed in the iframe |
+| `rt/rt-command-center/dashboard.html` (Lab iframe) | the SPA | the viewer's browser | a cross-site iframe would need the Access cookie as SameSite=None, which this change does not recommend (CSRF); open the Lab in its own tab |
 | Lab UI `frontend/src` | the rows marked UI below | no credential (optional `VITE_APP_API_KEY` is unset) | works once (a) is live; see the next section |
 
 ## UI routes and the edge gate (a)
@@ -118,7 +138,7 @@ UI = the Lab frontend calls this path (grep of `frontend/src`, path-level).
 
 | Method | Path | Class | Credential | UI | Other callers | Note |
 |---|---|---|---|---|---|---|
-| `GET` | `/api/control-plane/v1/capabilities` | READ | Access JWT or Worker bearer |  | Worker, supply_projection.py, lab-capacity-check.sh | page recipe catalog (no PII); Worker bearer, or Access for manual tools via an Access service token |
+| `GET` | `/api/control-plane/v1/capabilities` | READ | Worker bearer |  | Worker, supply_projection.py, lab-capacity-check.sh | page recipe catalog (no PII); the Worker and manual tools send the bearer (Access bypasses /api/control-plane/*) |
 | `GET` | `/api/control-plane/v1/format-contracts` | TOKEN | - |  | Worker | CONTROL_PLANE_TOKEN bearer (inline) |
 | `GET` | `/api/control-plane/v1/roster` | PII-READ | Worker bearer |  | Worker | roster/poster/account data |
 | `POST` | `/api/control-plane/v1/roster/refresh` | TOKEN | - |  | Worker | CONTROL_PLANE_TOKEN bearer (inline) |
@@ -315,7 +335,7 @@ UI = the Lab frontend calls this path (grep of `frontend/src`, path-level).
 | `GET` | `/api/pipeline/{integration_id}/workspace` | PII-READ | Access JWT | yes |  | roster/poster/account data |
 | `POST` | `/api/pipeline/{integration_id}/upload-presign` | WRITE | Access JWT | yes |  |  |
 | `POST` | `/api/pipeline/{integration_id}/forward-to-topic` | WRITE | Access JWT | yes |  |  |
-| `GET` | `/api/pipeline/{integration_id}/health` | PUBLIC | - |  |  | setup-check booleans only |
+| `GET` | `/api/pipeline/{integration_id}/health` | PUBLIC | - |  |  | setup checks: booleans, R2 object count, cookie status, Telegram topic name; no credentials (triggers one R2 list) |
 | `POST` | `/api/upload/submit` | WRITE | Access JWT | yes |  |  |
 | `GET` | `/api/upload/jobs` | PII-READ | Access JWT | yes |  | roster/poster/account data |
 | `GET` | `/api/upload/jobs/{job_id}` | PII-READ | Access JWT |  |  | roster/poster/account data |

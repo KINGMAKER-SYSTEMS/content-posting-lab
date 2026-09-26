@@ -56,7 +56,7 @@ OPTIONAL = {("GET", "/{full_path:path}")}
 
 # (method, path) -> (class, callers, justification / provider call / owner+PR)
 TABLE = {
-    ('GET', '/api/control-plane/v1/capabilities'): ('READ', 'A|W', 'page recipe catalog (no PII); Worker bearer, or Access for manual tools via an Access service token'),
+    ('GET', '/api/control-plane/v1/capabilities'): ('READ', 'W', 'page recipe catalog (no PII); the Worker and manual tools send the bearer (Access bypasses /api/control-plane/*)'),
     ('GET', '/api/control-plane/v1/format-contracts'): ('TOKEN', '', 'CONTROL_PLANE_TOKEN bearer (inline)'),
     ('GET', '/api/control-plane/v1/roster'): ('PII-READ', 'W', 'roster/poster/account data'),
     ('POST', '/api/control-plane/v1/roster/refresh'): ('TOKEN', '', 'CONTROL_PLANE_TOKEN bearer (inline)'),
@@ -253,7 +253,7 @@ TABLE = {
     ('GET', '/api/pipeline/{integration_id}/workspace'): ('PII-READ', 'A', 'roster/poster/account data'),
     ('POST', '/api/pipeline/{integration_id}/upload-presign'): ('WRITE', 'A', ''),
     ('POST', '/api/pipeline/{integration_id}/forward-to-topic'): ('WRITE', 'A', ''),
-    ('GET', '/api/pipeline/{integration_id}/health'): ('PUBLIC', '', 'setup-check booleans only'),
+    ('GET', '/api/pipeline/{integration_id}/health'): ('PUBLIC', '', 'setup checks: booleans, R2 object count, cookie status, Telegram topic name; no credentials (triggers one R2 list)'),
     ('POST', '/api/upload/submit'): ('WRITE', 'A', ''),
     ('GET', '/api/upload/jobs'): ('PII-READ', 'A', 'roster/poster/account data'),
     ('GET', '/api/upload/jobs/{job_id}'): ('PII-READ', 'A', 'roster/poster/account data'),
@@ -768,6 +768,99 @@ def test_miniapp_agent_routes_fail_closed_without_the_agent_key(key, configured,
         assert r.status_code == 503, (key, r.status_code)
     assert content_requests.list_requests(status=None) == before
     assert side_effects == []
+
+
+# ── 5b. CSRF: an edge-added Access JWT rides the login cookie (review D1) ─
+
+UNSAFE = {"POST", "PUT", "PATCH", "DELETE"}
+ACCESS_KEYS = [k for k in MUST_KEYS if "A" in TABLE[k][1].split("|")]
+ACCESS_UNSAFE = [k for k in ACCESS_KEYS if k[0] in UNSAFE]
+ACCESS_WS = [k for k in ACCESS_KEYS if k[0] == "WS"]
+JWT = lambda: {"Cf-Access-Jwt-Assertion": s.mint()}  # noqa: E731
+
+
+@pytest.mark.parametrize("key", ACCESS_UNSAFE, ids=lambda k: f"{k[0]} {k[1]}")
+def test_cross_origin_access_writes_are_refused(key, configured, sentinel):
+    """A cross-site form POST carrying the operator's cookie (so the edge adds a valid
+    JWT) is 403 and never reaches the handler; the UI's same-origin fetch passes."""
+    client = TestClient(app, raise_server_exceptions=False)
+    method, path = key
+    form = {"data": {"x": "1"}} if method != "DELETE" else {}
+    for label, headers in {
+        "foreign origin": {**JWT(), "Origin": "https://evil.example"},
+        "cross-site fetch metadata": {**JWT(), "Sec-Fetch-Site": "cross-site", "Origin": "https://evil.example"},
+        "same-site sibling": {**JWT(), "Sec-Fetch-Site": "same-site", "Origin": s.LAB_ORIGIN},
+        "no origin signal": JWT(),
+        "null origin": {**JWT(), "Origin": "null"},
+    }.items():
+        r = client.request(method, s.fill(path), headers=headers, **form)
+        assert r.status_code == 403, f"{key} {label} -> {r.status_code}"
+    assert sentinel == []
+    for headers in ({**JWT(), "Sec-Fetch-Site": "same-origin"}, {**JWT(), "Origin": s.LAB_ORIGIN}):
+        assert _send(client, key, headers) in (200, 422)
+
+
+@pytest.mark.parametrize("key", ACCESS_WS, ids=lambda k: f"{k[0]} {k[1]}")
+def test_cross_origin_access_websockets_are_refused(key, configured, sentinel):
+    client = TestClient(app, raise_server_exceptions=False)
+    assert _send(client, key, {**JWT(), "Origin": "https://evil.example"}) == 1008
+    assert _send(client, key, JWT()) == 1008
+    assert sentinel == []
+    assert _send(client, key, {**JWT(), "Origin": s.LAB_ORIGIN}) == 101
+    assert sentinel == [key]
+
+
+def test_machine_callers_need_no_origin(configured, sentinel):
+    """Bearer and Hub-key callers are not cookie-borne, so no Origin is required."""
+    client = TestClient(app, raise_server_exceptions=False)
+    assert client.post("/api/roster/dedup", headers=JWT()).status_code == 403
+    # past auth (422: the empty body then fails validation)
+    assert client.post("/api/control-plane/v1/recipes", headers=s.valid_headers(route_auth.WORKER)).status_code in (200, 422)
+    assert client.post("/api/telegram/sounds/sync", headers=s.valid_headers(route_auth.HUB)).status_code == 200
+    # a safe method with the cookie JWT is not a CSRF write
+    assert client.get("/api/roster/", headers={**JWT(), "Sec-Fetch-Site": "cross-site"}).status_code == 200
+
+
+# ── 5c. auth runs before the body is read (review D3) ───────────────
+
+
+def test_anonymous_malformed_bodies_are_401_not_422(configured, sentinel):
+    client = TestClient(app, raise_server_exceptions=False)
+    bad = []
+    for method, path in MUST_KEYS:
+        if method not in ("POST", "PUT", "PATCH"):
+            continue
+        for body in ({"content": b"{not json", "headers": {"content-type": "application/json"}},
+                     {"content": b"--x\r\nbroken", "headers": {"content-type": "multipart/form-data; boundary=x"}}):
+            status = client.request(method, s.fill(path), **body).status_code
+            if status != 401:
+                bad.append((method, path, status))
+    assert not bad, bad[:20]
+    assert sentinel == []
+
+
+def test_anonymous_multipart_upload_is_not_parsed_or_spooled(configured, monkeypatch, tmp_path_factory):
+    import tempfile
+
+    from starlette import formparsers
+
+    spool = tmp_path_factory.mktemp("spool")
+    monkeypatch.setattr(tempfile, "tempdir", str(spool))
+    parsed = []
+    real_parse = formparsers.MultiPartParser.parse
+
+    async def spy(self):
+        parsed.append(1)
+        return await real_parse(self)
+
+    monkeypatch.setattr(formparsers.MultiPartParser, "parse", spy)
+    client = TestClient(app, raise_server_exceptions=False)
+    big = b"\0" * (2 * 1024 * 1024)  # past SpooledTemporaryFile's in-memory limit
+    for path in ("/api/video/generate", "/api/clipper/upload", "/api/slideshow/upload", "/api/slideshow/audio/upload"):
+        r = client.post(path, files={"file": ("a.mp4", big, "video/mp4")}, data={"prompt": "x"})
+        assert r.status_code == 401, (path, r.status_code)
+    assert parsed == []
+    assert list(spool.iterdir()) == []
 
 
 # ── 6. mounts and the SPA fallback: traversal ───────────────────────

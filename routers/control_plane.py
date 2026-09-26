@@ -123,7 +123,7 @@ from services.control_plane_source_imports import (
 from services.content_engine_registry import load_engine_registry, resolve_material_profile
 from services.content_format_contracts import load_format_contracts
 from services.ffmpeg import delivery_encode_args, run_color_correct
-from services.route_auth import require_access_or_worker, require_worker
+from services.route_auth import require_worker
 from services.master_pages_contract import SCHEMA as MASTER_PAGES_SCHEMA, canonical_intent, exact_intent, intent_hash
 from services.source_treatment import (
     derived_source_treatment,
@@ -236,7 +236,7 @@ def _registered_recipes() -> list[dict[str, Any]]:
     return out
 
 
-@router.get("/v1/capabilities", dependencies=[Depends(require_access_or_worker)])
+@router.get("/v1/capabilities", dependencies=[Depends(require_worker)])
 def capabilities(
     x_rt_page_id: str | None = Header(default=None),
     x_page_id: str | None = Header(default=None),
