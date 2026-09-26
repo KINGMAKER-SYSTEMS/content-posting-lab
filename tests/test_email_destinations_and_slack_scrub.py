@@ -504,3 +504,44 @@ def test_control_plane_token_may_reuse_a_live_notion_id(world):
         authorization=f"Bearer {TOKEN}", x_api_key=None,
     ))
     assert out["ok"] is True
+
+
+def test_n1_renamed_pending_page_is_not_a_placeholder(world):
+    """N1: a page step 2 already renamed (name != alias local part) is protected
+    even while still New — Pending Setup."""
+    notion, writes, calls = world
+    notion["done-npid"] = _row("done-npid", "real.handle_01", "acct-bbbb2222@alias.example",
+                               status="New — Pending Setup")
+    asyncio.run(notion_pages.sync_into_roster())
+    before = json.dumps(roster_service.list_all_pages(), sort_keys=True)
+    with pytest.raises(HTTPException) as exc:
+        _intake(
+            account_username="fresh-unused-handle",
+            notion_page_id="done-npid",
+            email_alias="acct-bbbb2222@alias.example",
+        )
+    assert exc.value.status_code == 409
+    assert calls["update"] == 0
+    assert json.dumps(roster_service.list_all_pages(), sort_keys=True) == before
+
+
+# ── unicode / slug-fallback coverage for the handle guard (DS review gap) ────
+
+
+def test_handle_guard_catches_unicode_that_folds_to_a_live_handle(client, intake_env):
+    """KELVIN SIGN lowercases to ASCII 'k': both id forms land on the live page."""
+    store, calls = intake_env
+    store["acct:kingmaker"] = {"integration_id": "acct:kingmaker", "email_alias": "km@alias.example"}
+    resp = client.post("/api/pipeline/intake", json={"account_username": "Kingmaker"})
+    assert resp.status_code == 409, resp.text
+    assert calls == {"mint": 0, "create": 0, "update": 0}
+
+
+def test_handle_guard_catches_slug_fallback_collision(client, intake_env):
+    """A handle with no slug characters maps to acct:unknown under both id forms;
+    an existing acct:unknown page is protected like any other."""
+    store, calls = intake_env
+    store["acct:unknown"] = {"integration_id": "acct:unknown", "email_alias": "u@alias.example"}
+    resp = client.post("/api/pipeline/intake", json={"account_username": "!!!"})
+    assert resp.status_code == 409, resp.text
+    assert calls == {"mint": 0, "create": 0, "update": 0}
