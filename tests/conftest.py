@@ -54,7 +54,7 @@ def route_auth_bypass(request, monkeypatch):
         return
     from services import route_auth
 
-    monkeypatch.setattr(route_auth, "authorize", lambda conn, callers: "test-bypass")
+    monkeypatch.setattr(route_auth, "authorize", lambda conn, callers, **kwargs: "test-bypass")
 
 
 @pytest.fixture(autouse=True)

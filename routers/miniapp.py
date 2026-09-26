@@ -17,6 +17,7 @@ let the external content agent read/work the request queue:
   PATCH /api/miniapp/agent/requests/{request_id}
 """
 
+import hmac
 import os
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
@@ -53,11 +54,12 @@ def _require_poster(request: Request) -> dict:
 
 
 def _require_agent_key(x_agent_key: str | None) -> None:
-    """Gate agent endpoints behind MINIAPP_AGENT_KEY when it is configured."""
+    """Gate agent endpoints behind MINIAPP_AGENT_KEY; fail closed (503) when unset."""
     expected = os.getenv("MINIAPP_AGENT_KEY", "").strip()
     if not expected:
-        return  # not configured → open, consistent with the rest of the app
-    if not x_agent_key or x_agent_key.strip() != expected:
+        raise HTTPException(status_code=503, detail="agent endpoints disabled (set MINIAPP_AGENT_KEY)")
+    supplied = (x_agent_key or "").strip()
+    if not supplied or not hmac.compare_digest(supplied.encode("utf-8"), expected.encode("utf-8")):
         raise HTTPException(status_code=401, detail="invalid or missing agent key")
 
 

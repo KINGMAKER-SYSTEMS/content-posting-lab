@@ -294,7 +294,7 @@ class MintAliasResponse(BaseModel):
     notion_page_id: str | None = None
 
 
-@router.post("/mint-alias")
+@router.post("/mint-alias", dependencies=[Depends(require_access)])
 @allow_credential_keys("alias")  # the alias this request just minted, for the TikTok signup
 async def mint_random_alias_endpoint(req: MintAliasRequest | None = None) -> MintAliasResponse:
     """Step 1 of intake: mint a CF email alias AND create a placeholder Notion row.
@@ -411,7 +411,7 @@ def _refuse_anonymous_intake_tamper(req: "IntakeRequest", notion_page_id: str) -
         raise HTTPException(status_code=409, detail=_INTAKE_CONFLICT)
 
 
-@router.post("/intake")
+@router.post("/intake", dependencies=[Depends(require_access)])
 @allow_credential_keys("email_alias", "fwd_destination")  # echo of this request's own alias
 async def submit_intake(
     req: IntakeRequest,

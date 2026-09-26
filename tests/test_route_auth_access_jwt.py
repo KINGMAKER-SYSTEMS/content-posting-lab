@@ -109,7 +109,10 @@ def test_wrong_credentials_never_pass(monkeypatch):
     for dep in route_auth.ALL_DEPENDENCIES:
         client, calls = _app(dep)
         assert client.post("/x").status_code == 401
-        for label, headers in s.wrong_header_sets().items():
+        wrong = s.wrong_header_sets()
+        if getattr(dep, "worker_token_in_x_api_key", False):
+            wrong.pop("worker-token-as-x-api-key")
+        for label, headers in wrong.items():
             assert client.post("/x", headers=headers).status_code == 401, (dep.__name__, label)
         assert calls == []
 
@@ -150,3 +153,22 @@ def test_unknown_caller_class_refused():
         route_auth.require_callers("anyone")
     with pytest.raises(ValueError):
         route_auth.require_callers()
+
+
+def test_email_routing_dependency_keeps_the_176_token_forms(monkeypatch):
+    """require_access_or_control_plane_token: Access JWT, or CONTROL_PLANE_TOKEN as
+    Bearer or X-API-Key (the #176 contract); never the Hub key or APP_API_KEY."""
+    s.configure_all(monkeypatch)
+    monkeypatch.setenv("APP_API_KEY", s.APP_KEY)
+    dep = route_auth.require_access_or_control_plane_token
+    assert dep in route_auth.ALL_DEPENDENCIES
+    client, calls = _app(dep)
+    for headers in (s.valid_headers(route_auth.ACCESS), s.valid_headers(route_auth.WORKER),
+                    {"X-API-Key": s.WORKER_TOKEN}):
+        assert client.post("/x", headers=headers).status_code == 200
+    for headers in (s.valid_headers(route_auth.HUB), {"X-API-Key": s.APP_KEY},
+                    {"Authorization": f"Bearer {s.APP_KEY}"}, {"X-API-Key": "wrong"}):
+        assert client.post("/x", headers=headers).status_code == 401
+    assert len(calls) == 3
+    s.unconfigure_all(monkeypatch)
+    assert client.post("/x", headers={"X-API-Key": s.WORKER_TOKEN}).status_code == 503

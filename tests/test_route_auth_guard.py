@@ -238,15 +238,15 @@ TABLE = {
     ('GET', '/api/miniapp/videos'): ('HMAC', '', 'Telegram initData HMAC (services/miniapp_auth.py)'),
     ('GET', '/api/miniapp/requests'): ('HMAC', '', 'Telegram initData HMAC (services/miniapp_auth.py)'),
     ('POST', '/api/miniapp/requests'): ('HMAC', '', 'Telegram initData HMAC (services/miniapp_auth.py)'),
-    ('GET', '/api/miniapp/agent/requests'): ('TOKEN', '', 'MINIAPP_AGENT_KEY (fail-OPEN when unset: residual F4)'),
-    ('PATCH', '/api/miniapp/agent/requests/{request_id}'): ('TOKEN', '', 'MINIAPP_AGENT_KEY (fail-OPEN when unset: residual F4)'),
+    ('GET', '/api/miniapp/agent/requests'): ('TOKEN', '', 'MINIAPP_AGENT_KEY (X-Agent-Key); 503 when unset'),
+    ('PATCH', '/api/miniapp/agent/requests/{request_id}'): ('TOKEN', '', 'MINIAPP_AGENT_KEY (X-Agent-Key); 503 when unset'),
     ('GET', '/api/email/status'): ('PUBLIC', '', 'configured flag + mail domain only'),
-    ('DELETE', '/api/email/rules/{rule_id}'): ('TOKEN', '', 'require_control_plane_auth (#176)'),
-    ('POST', '/api/email/auto-create'): ('TOKEN', '', 'require_control_plane_auth (#176)'),
-    ('GET', '/api/email/destinations'): ('TOKEN', '', 'require_control_plane_auth (#177)'),
-    ('POST', '/api/email/destinations'): ('TOKEN', '', 'require_control_plane_auth (#176)'),
-    ('POST', '/api/pipeline/mint-alias'): ('KNOWN-OPEN', '', 'public onboarding step 1; owner: Eric (decision) / the wake; PR #177 (strict-id guard); needs a rate limit'),
-    ('POST', '/api/pipeline/intake'): ('KNOWN-OPEN', '', 'public onboarding step 2; owner: Eric (decision) / the wake; PR #177 (canonical notion_page_id + anonymous tamper refusal); needs a rate limit'),
+    ('DELETE', '/api/email/rules/{rule_id}'): ('WRITE', 'A|W', 'deletes a CF rule; CONTROL_PLANE_TOKEN (Bearer or X-API-Key) or Access (lead decision 4)'),
+    ('POST', '/api/email/auto-create'): ('WRITE', 'A|W', 'creates a CF rule; CONTROL_PLANE_TOKEN (Bearer or X-API-Key) or Access (lead decision 4)'),
+    ('GET', '/api/email/destinations'): ('PII-READ', 'A|W', 'team inboxes; CONTROL_PLANE_TOKEN (Bearer or X-API-Key) or Access (lead decision 4)'),
+    ('POST', '/api/email/destinations'): ('WRITE', 'A|W', 'adds a CF destination; CONTROL_PLANE_TOKEN (Bearer or X-API-Key) or Access (lead decision 4)'),
+    ('POST', '/api/pipeline/mint-alias'): ('WRITE', 'A', 'mints a CF alias + Notion placeholder; operator-only (lead decision 5)'),
+    ('POST', '/api/pipeline/intake'): ('WRITE', 'A', 'Notion + roster writes; operator-only (lead decision 5); the #177 tamper guard stays'),
     ('GET', '/api/pipeline/stages'): ('PII-READ', 'A', 'roster/poster/account data'),
     ('POST', '/api/pipeline/{integration_id}/setup'): ('WRITE', 'A', ''),
     ('POST', '/api/pipeline/{integration_id}/transition'): ('WRITE', 'A', ''),
@@ -385,7 +385,9 @@ def test_keyless_allowlist_is_the_reviewed_one():
         ("GET", "/api/pipeline/{integration_id}/health"), ("GET", "/api/roster/sync-notion/status"),
         ("GET", "/api/burn/fonts"),
     }
-    assert set(KNOWN_OPEN_KEYS) == {("POST", "/api/pipeline/mint-alias"), ("POST", "/api/pipeline/intake")}
+    # Empty since lead decision 5 (mint-alias and intake are operator-only). A new
+    # KNOWN-OPEN row must carry an owner and a PR and be added here deliberately.
+    assert set(KNOWN_OPEN_KEYS) == set()
 
 
 def test_must_auth_routes_declare_exactly_their_callers():
@@ -461,11 +463,26 @@ def _send(client, key, headers):
 REFUSED = {401, 403, 1008}
 
 
+def _wrong_sets_for(key):
+    """Wrong credentials for this route. The email-routing routes keep #176's
+    CONTROL_PLANE_TOKEN-in-X-API-Key form, so that one set is right for them."""
+    sets = s.wrong_header_sets()
+    if key in EMAIL_ROUTING:
+        sets.pop("worker-token-as-x-api-key")
+    return sets
+
+
+EMAIL_ROUTING = {
+    ("DELETE", "/api/email/rules/{rule_id}"), ("POST", "/api/email/auto-create"),
+    ("GET", "/api/email/destinations"), ("POST", "/api/email/destinations"),
+}
+
+
 @pytest.mark.parametrize("key", MUST_KEYS, ids=lambda k: f"{k[0]} {k[1]}")
 def test_must_auth_refuses_missing_and_wrong_credentials(key, configured, sentinel):
     client = TestClient(app, raise_server_exceptions=False)
     assert _send(client, key, {}) in REFUSED, f"{key} without credentials"
-    for label, headers in s.wrong_header_sets().items():
+    for label, headers in _wrong_sets_for(key).items():
         status = _send(client, key, headers)
         assert status in REFUSED, f"{key} with {label} -> {status}"
     assert sentinel == [], f"{key}: handler ran without a valid credential"
@@ -586,7 +603,7 @@ def test_must_auth_real_handlers_refuse_with_no_side_effect(configured, side_eff
     bad = []
     for key in MUST_KEYS:
         method, path = key
-        for label, headers in {"none": {}, **s.wrong_header_sets()}.items():
+        for label, headers in {"none": {}, **_wrong_sets_for(key)}.items():
             if method == "WS":
                 status = _send(client, key, headers)
             else:
@@ -713,8 +730,43 @@ def test_named_holes_are_closed(configured, side_effects):
                          ("POST", "/api/email/destinations"), ("PUT", "/api/telegram/bot-token"),
                          ("GET", "/api/control-plane/v1/roster"), ("POST", "/api/roster/dedup"),
                          ("DELETE", "/api/projects/dummy-project"), ("POST", "/api/agenticnews/gc"),
-                         ("POST", "/api/video/generate")):
+                         ("POST", "/api/video/generate"), ("POST", "/api/pipeline/mint-alias"),
+                         ("POST", "/api/pipeline/intake"), ("DELETE", "/api/email/rules/dummy-rule")):
         assert client.request(method, path, headers=LANE, **_body(method)).status_code == 401, path
+    assert side_effects == []
+
+
+@pytest.mark.parametrize("key", sorted(EMAIL_ROUTING), ids=lambda k: f"{k[0]} {k[1]}")
+def test_email_routing_admits_access_and_the_control_plane_token_in_either_slot(key, configured, sentinel):
+    """Lead decision 4: the UI's Access login works on the email buttons, and the
+    #176 machine credential (CONTROL_PLANE_TOKEN as Bearer OR X-API-Key) still does."""
+    client = TestClient(app, raise_server_exceptions=False)
+    for headers in (s.valid_headers(route_auth.ACCESS), s.valid_headers(route_auth.WORKER),
+                    {"X-API-Key": s.WORKER_TOKEN}):
+        assert _send(client, key, headers) in (200, 422), (key, headers.keys())
+    for headers in (s.valid_headers(route_auth.HUB), {"X-API-Key": s.APP_KEY}):
+        assert _send(client, key, headers) == 401, (key, headers.keys())
+
+
+@pytest.mark.parametrize("key", [("GET", "/api/miniapp/agent/requests"),
+                                 ("PATCH", "/api/miniapp/agent/requests/{request_id}")],
+                         ids=lambda k: f"{k[0]} {k[1]}")
+def test_miniapp_agent_routes_fail_closed_without_the_agent_key(key, configured, monkeypatch, side_effects, tmp_path_factory):
+    """Lead decision 6 (ds_labsec F4): MINIAPP_AGENT_KEY unset is 503, never open."""
+    import services.content_requests as content_requests
+
+    # outside tmp_path, which the side_effects fixture byte-compares
+    monkeypatch.setattr(content_requests, "REQUESTS_PATH", tmp_path_factory.mktemp("requests") / "r.json")
+    content_requests.add_request(poster_id="p", poster_name="P", text="dummy", page_id=None,
+                                 page_name=None, quantity=None, source="miniapp")
+    before = content_requests.list_requests(status=None)
+    monkeypatch.delenv("MINIAPP_AGENT_KEY", raising=False)
+    client = TestClient(app, raise_server_exceptions=False)
+    method, path = key
+    for headers in ({}, {"X-Agent-Key": "anything"}, s.all_valid_headers()):
+        r = client.request(method, s.fill(path), headers=headers, **_body(method))
+        assert r.status_code == 503, (key, r.status_code)
+    assert content_requests.list_requests(status=None) == before
     assert side_effects == []
 
 

@@ -9,7 +9,8 @@ Caller classes (a route lists the classes that may call it; ANY ONE valid
 credential from those classes is accepted, nothing else):
 
 - ``WORKER``: the control-plane Worker. ``Authorization: Bearer`` equal to
-  ``CONTROL_PLANE_TOKEN``.
+  ``CONTROL_PLANE_TOKEN``. The email-routing routes also take that token as
+  ``X-API-Key`` (the #176 contract), via ``worker_token_in_x_api_key``.
 - ``HUB``: the Campaign Hub proxies (and other server-side scripts given the
   same key). ``X-API-Key`` equal to ``LAB_HUB_API_KEY``. APP_API_KEY is never
   accepted here: the frontend can bake it into its public bundle.
@@ -144,11 +145,14 @@ def _same(supplied: str, expected: str) -> bool:
     return bool(supplied) and hmac.compare_digest(supplied.encode("utf-8"), expected.encode("utf-8"))
 
 
-def _presented_valid(conn: HTTPConnection, caller: str) -> bool:
+def _presented_valid(conn: HTTPConnection, caller: str, worker_token_in_x_api_key: bool = False) -> bool:
     headers = conn.headers
     if caller == WORKER:
+        expected = _env(ENV_WORKER_TOKEN)
         auth = headers.get("authorization", "")
-        return auth.startswith("Bearer ") and _same(auth[len("Bearer "):].strip(), _env(ENV_WORKER_TOKEN))
+        if auth.startswith("Bearer ") and _same(auth[len("Bearer "):].strip(), expected):
+            return True
+        return worker_token_in_x_api_key and _same(headers.get("x-api-key", "").strip(), expected)
     if caller == HUB:
         return _same(headers.get("x-api-key", "").strip(), _env(ENV_HUB_KEY))
     if caller == ACCESS:
@@ -162,7 +166,7 @@ def _deny(conn: HTTPConnection, status: int, detail: str):
     raise HTTPException(status_code=status, detail=detail)
 
 
-def authorize(conn: HTTPConnection, callers: Iterable[str]) -> str:
+def authorize(conn: HTTPConnection, callers: Iterable[str], worker_token_in_x_api_key: bool = False) -> str:
     """Return the caller class that authenticated, or raise 503/401."""
     live = [c for c in callers if configured(c)]
     if not live:
@@ -170,7 +174,7 @@ def authorize(conn: HTTPConnection, callers: Iterable[str]) -> str:
     unavailable = False
     for caller in live:
         try:
-            if _presented_valid(conn, caller):
+            if _presented_valid(conn, caller, worker_token_in_x_api_key):
                 return caller
         except _Unavailable:
             unavailable = True
@@ -181,17 +185,23 @@ def authorize(conn: HTTPConnection, callers: Iterable[str]) -> str:
     raise AssertionError("unreachable")
 
 
-def require_callers(*callers: str) -> Callable[[HTTPConnection], None]:
+def require_callers(*callers: str, worker_token_in_x_api_key: bool = False) -> Callable[[HTTPConnection], None]:
     """Build a FastAPI dependency admitting exactly these caller classes."""
     allowed = tuple(dict.fromkeys(callers))
     if not allowed or any(c not in CALLER_CLASSES for c in allowed):
         raise ValueError(f"unknown caller classes: {callers}")
+    if worker_token_in_x_api_key and WORKER not in allowed:
+        raise ValueError("worker_token_in_x_api_key needs the worker class")
 
     def dependency(conn: HTTPConnection) -> None:
-        authorize(conn, allowed)
+        if worker_token_in_x_api_key:
+            authorize(conn, allowed, worker_token_in_x_api_key=True)
+        else:
+            authorize(conn, allowed)
 
     dependency.__name__ = "require_" + "_or_".join(allowed)
     dependency.route_auth_callers = frozenset(allowed)  # type: ignore[attr-defined]
+    dependency.worker_token_in_x_api_key = worker_token_in_x_api_key  # type: ignore[attr-defined]
     return dependency
 
 
@@ -200,10 +210,13 @@ require_worker = require_callers(WORKER)
 require_access = require_callers(ACCESS)
 require_access_or_hub = require_callers(ACCESS, HUB)
 require_access_or_worker = require_callers(ACCESS, WORKER)
+# Email routing (#176): CONTROL_PLANE_TOKEN as Bearer or X-API-Key, or an operator.
+require_access_or_control_plane_token = require_callers(ACCESS, WORKER, worker_token_in_x_api_key=True)
 
 ALL_DEPENDENCIES = (
     require_worker,
     require_access,
     require_access_or_hub,
     require_access_or_worker,
+    require_access_or_control_plane_token,
 )

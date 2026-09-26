@@ -14,7 +14,8 @@ forwarding to the attacker). These tests pin:
   that same value is both validated and sent to Cloudflare;
 * EMAIL_DESTINATION_DOMAINS, when set, refuses destinations outside it;
 * auto-create never silently re-points an alias a roster page already records;
-* the Pipeline intake mint-alias flow (direct service call) is not gated.
+* the Pipeline mint-alias flow calls the CF service directly; it is gated by
+  operator (Access) auth, not by this token.
 """
 
 import pytest
@@ -23,6 +24,9 @@ from fastapi.testclient import TestClient
 import routers.email_routing as r
 import routers.pipeline as pipeline_router
 from app import app
+
+# The real route-auth dependency (not the conftest bypass): these tests pin who may call.
+pytestmark = pytest.mark.real_route_auth
 
 TOKEN = "lockdown-test-token"
 APP_KEY = "lockdown-app-key"
@@ -370,7 +374,7 @@ def test_auto_create_replace_true_still_requires_auth(client, cf_forbidden, toke
     assert resp.status_code == 401, resp.text
 
 
-# ── Pipeline intake mint-alias stays ungated ─────────────────────────────────
+# ── Pipeline mint-alias: operator (Access) only, not the email-routing token ──
 
 
 class _FakeResp:
@@ -395,7 +399,12 @@ class _FakeAsyncClient:
         return _FakeResp()
 
 
-def test_pipeline_mint_alias_unaffected_without_credentials(client, token_set, monkeypatch):
+def test_pipeline_mint_alias_needs_an_operator_not_the_email_token(client, token_set, monkeypatch):
+    from tests import route_auth_support as ras
+
+    monkeypatch.setenv("LAB_ACCESS_TEAM_DOMAIN", ras.TEAM_DOMAIN)
+    monkeypatch.setenv("LAB_ACCESS_AUD", ras.ACCESS_AUD)
+    ras.install_idp(monkeypatch)
     monkeypatch.setenv("EMAIL_DESTINATION_DOMAINS", "risingtidesent.com")
     monkeypatch.delenv("EMAIL_HANDOFF_DEFAULT", raising=False)
     monkeypatch.setattr(pipeline_router, "_intake_password", lambda: "intake-test")
@@ -414,7 +423,13 @@ def test_pipeline_mint_alias_unaffected_without_credentials(client, token_set, m
         return {"id": "rule-mint"}
 
     monkeypatch.setattr(pipeline_router, "cf_create_rule", _create)
-    resp = client.post("/api/pipeline/mint-alias", json={"desired_local": "samb-truck-99"})
+    body = {"desired_local": "samb-truck-99"}
+    assert client.post("/api/pipeline/mint-alias", json=body).status_code == 401
+    assert client.post(
+        "/api/pipeline/mint-alias", json=body, headers={"Authorization": f"Bearer {TOKEN}"}
+    ).status_code == 401
+    assert created == {}
+    resp = client.post("/api/pipeline/mint-alias", json=body, headers={"Cf-Access-Jwt-Assertion": ras.mint()})
     assert resp.status_code == 200, resp.text
     assert resp.json()["alias"] == "samb-truck-99@rt.example"
     assert created == {"alias_local": "samb-truck-99", "destination": "henry@risingtidesent.com"}

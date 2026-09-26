@@ -55,16 +55,18 @@ Before step 3 the new routes answer 503 (fail closed), never open.
 | Class | Routes | Credential |
 |---|---|---|
 | MONEY | 5 | A (5) |
-| WRITE (state-changing / destructive) | 131 | A (119), A or H (7), W (5: control-plane writes that validated the body before their inline bearer check) |
-| PII-READ | 24 | A (17), A or H (6), W (1: `GET /api/control-plane/v1/roster`) |
+| WRITE (state-changing / destructive) | 136 | A (121, incl. mint-alias and intake), A or H (7), A or W (3: email routing), W (5: control-plane writes that validated the body before their inline bearer check) |
+| PII-READ | 25 | A (17), A or H (6), A or W (1: `GET /api/email/destinations`), W (1: `GET /api/control-plane/v1/roster`) |
 | READ (gated with its router, no PII/spend) | 53 | A (51), A or H (1: `GET /api/telegram/sounds`), A or W (1: `GET /api/control-plane/v1/capabilities`) |
-| TOKEN (unchanged, credential inside the route) | 27 | bearer / per-job token / agent key |
+| TOKEN (unchanged, credential inside the route) | 23 | bearer / per-job token / agent key |
 | HMAC (Telegram initData) | 4 | Mini App |
 | PUBLIC (keyless allowlist) | 17 | none |
-| KNOWN-OPEN | 2 | none (owner decision) |
+| KNOWN-OPEN | 0 | (mint-alias and intake are operator-only since lead decision 5) |
 | **Total** | **263** | |
 
-By credential set over the 213 must-auth routes: A only 192, A or H 14, W only 6, A or W 1.
+By credential set over the 219 must-auth routes: A only 194, A or H 14, A or W 5, W only 6.
+"A or W" on the four email-routing routes means an Access JWT or CONTROL_PLANE_TOKEN
+as Bearer **or** X-API-Key (the #176 contract is kept).
 
 ## Callers found (grep, 2026-09-26) and what changes for them
 
@@ -87,28 +89,28 @@ By credential set over the 213 must-auth routes: A only 192, A or H 14, W only 6
 ## UI routes and the edge gate (a)
 
 - **Work before and after (a):** `/api/health`, `/api/email/status`, `/api/burn/fonts`,
-  the Mini App (`/api/miniapp/*`, HMAC), `POST /api/pipeline/mint-alias` and
-  `POST /api/pipeline/intake` (KNOWN-OPEN), static media and the SPA shell.
-- **Need (a):** every route marked UI with credential A below (124 rows: video,
-  recreate, captions websocket, burn, clipper, projects, slideshow, pages, roster,
-  pipeline stages/workspace/setup/transition/upload-presign/forward-to-topic,
-  telegram, upload, agenticnews and editor). Before (a) is live they answer 401 (or
-  503 until the Lab env is set).
-- **Broken in the UI before this change, unchanged by it:** the email routing
-  buttons (`POST /api/email/auto-create`, `GET`/`POST /api/email/destinations`,
-  `DELETE /api/email/rules/{id}`) accept only `CONTROL_PLANE_TOKEN` since #176/#177,
-  which the browser does not have. Owner decision: accept an Access JWT there too, or
-  keep them machine-only.
+  the Mini App (`/api/miniapp/*`, HMAC), static media and the SPA shell.
+- **Need (a):** every route marked UI with an Access credential below (130 rows:
+  video, recreate, captions websocket, burn, clipper, projects, slideshow, pages,
+  roster, the whole pipeline flow including mint-alias and intake, telegram, upload,
+  agenticnews and editor, and the email-routing buttons). Before (a) is live they
+  answer 401 (or 503 until the Lab env is set).
+- **Fixed by (a):** the email-routing buttons (`POST /api/email/auto-create`,
+  `GET`/`POST /api/email/destinations`, `DELETE /api/email/rules/{id}`), broken in
+  the UI since #176/#177, accept the operator's Access JWT alongside
+  `CONTROL_PLANE_TOKEN` (lead decision 4).
 
 ## KNOWN-OPEN
 
-| Route | Owner | PR | Needed before closing |
-|---|---|---|---|
-| `POST /api/pipeline/mint-alias` | Eric (decision: public onboarding or operator-only), the wake | #177 | rate limit; the #177 strict-id guard |
-| `POST /api/pipeline/intake` | Eric (same decision), the wake | #177 (canonical `notion_page_id`, anonymous tamper refusal) | rate limit |
+None. `POST /api/pipeline/mint-alias` and `POST /api/pipeline/intake` are
+operator-only (Access) by default (lead decision 5). The #177 guards stay: intake
+still refuses a live handle or a live page's `notion_page_id` unless the caller also
+presents `CONTROL_PLANE_TOKEN` (so that override now needs Access **and** the token).
+Public intake with a rate limit comes back only if Eric decides new-account intake
+must stay public; there is deliberately no env switch that reopens it.
 
-Residual outside this change: `/api/miniapp/agent/*` (TOKEN) is fail-open when
-`MINIAPP_AGENT_KEY` is unset (ds_labsec F4).
+`/api/miniapp/agent/*` (TOKEN, `X-Agent-Key`) fails closed (503) when
+`MINIAPP_AGENT_KEY` is unset (lead decision 6, ds_labsec F4).
 
 ## Every route
 
@@ -298,15 +300,15 @@ UI = the Lab frontend calls this path (grep of `frontend/src`, path-level).
 | `GET` | `/api/miniapp/videos` | HMAC | - | yes |  | Telegram initData HMAC (services/miniapp_auth.py) |
 | `GET` | `/api/miniapp/requests` | HMAC | - | yes |  | Telegram initData HMAC (services/miniapp_auth.py) |
 | `POST` | `/api/miniapp/requests` | HMAC | - | yes |  | Telegram initData HMAC (services/miniapp_auth.py) |
-| `GET` | `/api/miniapp/agent/requests` | TOKEN | - |  |  | MINIAPP_AGENT_KEY (fail-OPEN when unset: residual F4) |
-| `PATCH` | `/api/miniapp/agent/requests/{request_id}` | TOKEN | - |  |  | MINIAPP_AGENT_KEY (fail-OPEN when unset: residual F4) |
+| `GET` | `/api/miniapp/agent/requests` | TOKEN | - |  |  | MINIAPP_AGENT_KEY (X-Agent-Key); 503 when unset |
+| `PATCH` | `/api/miniapp/agent/requests/{request_id}` | TOKEN | - |  |  | MINIAPP_AGENT_KEY (X-Agent-Key); 503 when unset |
 | `GET` | `/api/email/status` | PUBLIC | - | yes |  | configured flag + mail domain only |
-| `DELETE` | `/api/email/rules/{rule_id}` | TOKEN | - | yes |  | require_control_plane_auth (#176) |
-| `POST` | `/api/email/auto-create` | TOKEN | - | yes |  | require_control_plane_auth (#176) |
-| `GET` | `/api/email/destinations` | TOKEN | - | yes |  | require_control_plane_auth (#177) |
-| `POST` | `/api/email/destinations` | TOKEN | - | yes |  | require_control_plane_auth (#176) |
-| `POST` | `/api/pipeline/mint-alias` | KNOWN-OPEN | - | yes |  | public onboarding step 1; owner: Eric (decision) / the wake; PR #177 (strict-id guard); needs a rate limit |
-| `POST` | `/api/pipeline/intake` | KNOWN-OPEN | - | yes |  | public onboarding step 2; owner: Eric (decision) / the wake; PR #177 (canonical notion_page_id + anonymous tamper refusal); needs a rate limit |
+| `DELETE` | `/api/email/rules/{rule_id}` | WRITE | Access JWT or Worker bearer | yes |  | deletes a CF rule; CONTROL_PLANE_TOKEN (Bearer or X-API-Key) or Access (lead decision 4) |
+| `POST` | `/api/email/auto-create` | WRITE | Access JWT or Worker bearer | yes |  | creates a CF rule; CONTROL_PLANE_TOKEN (Bearer or X-API-Key) or Access (lead decision 4) |
+| `GET` | `/api/email/destinations` | PII-READ | Access JWT or Worker bearer | yes |  | team inboxes; CONTROL_PLANE_TOKEN (Bearer or X-API-Key) or Access (lead decision 4) |
+| `POST` | `/api/email/destinations` | WRITE | Access JWT or Worker bearer | yes |  | adds a CF destination; CONTROL_PLANE_TOKEN (Bearer or X-API-Key) or Access (lead decision 4) |
+| `POST` | `/api/pipeline/mint-alias` | WRITE | Access JWT | yes |  | mints a CF alias + Notion placeholder; operator-only (lead decision 5) |
+| `POST` | `/api/pipeline/intake` | WRITE | Access JWT | yes |  | Notion + roster writes; operator-only (lead decision 5); the #177 tamper guard stays |
 | `GET` | `/api/pipeline/stages` | PII-READ | Access JWT | yes |  | roster/poster/account data |
 | `POST` | `/api/pipeline/{integration_id}/setup` | WRITE | Access JWT | yes |  |  |
 | `POST` | `/api/pipeline/{integration_id}/transition` | WRITE | Access JWT | yes |  |  |
