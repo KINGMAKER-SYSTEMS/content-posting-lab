@@ -6,9 +6,12 @@ DELETE /api/email/rules/{id} (drop the page's forwarding rule) and
 POST /api/email/auto-create (recreate the same account_name-derived alias
 forwarding to the attacker). These tests pin:
 
-* all three require CONTROL_PLANE_TOKEN (Bearer or X-API-Key); missing or
-  wrong credentials are 401 and touch neither Cloudflare nor the roster;
+* all three require CONTROL_PLANE_TOKEN (Bearer or X-API-Key) and ONLY it --
+  the browser-bundled APP_API_KEY is refused; missing or wrong credentials
+  are 401 and touch neither Cloudflare nor the roster;
   an unset CONTROL_PLANE_TOKEN fails closed (503) even when APP_API_KEY is set;
+* destinations are normalised once (ASCII, exactly one '@', lowercased) and
+  that same value is both validated and sent to Cloudflare;
 * EMAIL_DESTINATION_DOMAINS, when set, refuses destinations outside it;
 * auto-create never silently re-points an alias a roster page already records;
 * the Pipeline intake mint-alias flow (direct service call) is not gated.
@@ -143,12 +146,17 @@ def test_authenticated_add_destination_reaches_cf(client, monkeypatch, token_set
     assert seen["email"] == "ops@risingtides.test"
 
 
-def test_app_api_key_accepted_once_control_plane_token_is_set(client, monkeypatch, token_set):
+@pytest.mark.parametrize("route", ROUTES)
+@pytest.mark.parametrize("header", ["X-API-Key", "Authorization"])
+def test_app_api_key_is_refused_even_when_control_plane_token_is_set(
+    client, cf_forbidden, monkeypatch, token_set, route, header
+):
+    """APP_API_KEY ships in the public frontend bundle (VITE_APP_API_KEY); it
+    must never unlock the mail-re-pointing routes."""
     monkeypatch.setenv("APP_API_KEY", APP_KEY)
-    monkeypatch.setattr(r, "get_config", lambda: {"configured": True, "domain": "rt.example"})
-    monkeypatch.setattr(r, "delete_rule", _async(True))
-    resp = client.delete("/api/email/rules/rule_1", headers={"X-API-Key": APP_KEY})
-    assert resp.status_code == 200, resp.text
+    value = APP_KEY if header == "X-API-Key" else f"Bearer {APP_KEY}"
+    resp = _call(client, route, headers={header: value})
+    assert resp.status_code == 401, resp.text
 
 
 def test_read_routes_stay_open(client, monkeypatch, token_set):
@@ -172,7 +180,36 @@ def test_allowlist_refuses_lookalike_subdomain_and_suffix(client, cf_forbidden, 
     monkeypatch.setenv("EMAIL_DESTINATION_DOMAINS", "risingtidesent.com")
     for email in ("x@evil.risingtidesent.com", "x@risingtidesent.com.evil.test", "risingtidesent.com", "@risingtidesent.com"):
         resp = client.post("/api/email/destinations", json={"email": email}, headers=AUTH)
-        assert resp.status_code == 403, (email, resp.text)
+        assert resp.status_code in (400, 403), (email, resp.text)
+
+
+KELVIN = "x@\u212aingmaker.com"  # KELVIN SIGN: lowercases to ASCII "k"
+
+
+@pytest.mark.parametrize(
+    "email",
+    [KELVIN, "a@evil.test@kingmaker.com", "a b@kingmaker.com", "a@king\tmaker.com", "a@", "@kingmaker.com"],
+)
+@pytest.mark.parametrize("route", ["destinations", "auto-create"])
+def test_malformed_or_non_ascii_destination_is_refused(client, cf_forbidden, token_set, monkeypatch, email, route):
+    """What the allowlist checks must be exactly what CF receives: Unicode that
+    lowercases into an allowed domain, or a second '@', must not slip past."""
+    monkeypatch.setenv("EMAIL_DESTINATION_DOMAINS", "kingmaker.com")
+    if route == "destinations":
+        resp = client.post("/api/email/destinations", json={"email": email}, headers=AUTH)
+    else:
+        resp = client.post(
+            "/api/email/auto-create",
+            json={"integration_id": "i1", "account_name": "Acme", "destination": email},
+            headers=AUTH,
+        )
+    assert resp.status_code in (400, 403), (email, resp.text)
+
+
+def test_malformed_destination_refused_even_without_allowlist(client, cf_forbidden, token_set):
+    for email in (KELVIN, "a@evil.test@kingmaker.com"):
+        resp = client.post("/api/email/destinations", json={"email": email}, headers=AUTH)
+        assert resp.status_code == 400, (email, resp.text)
 
 
 def test_allowlist_refuses_outside_domain_on_auto_create(client, cf_forbidden, token_set, monkeypatch):
@@ -184,9 +221,42 @@ def test_allowlist_refuses_outside_domain_on_auto_create(client, cf_forbidden, t
 def test_allowlist_admits_listed_domain(client, token_set, monkeypatch):
     monkeypatch.setenv("EMAIL_DESTINATION_DOMAINS", "RisingTidesEnt.com")
     monkeypatch.setattr(r, "get_config", lambda: {"configured": True, "domain": "rt.example"})
-    monkeypatch.setattr(r, "add_destination", _async({"email": "ops@risingtidesent.com"}))
-    resp = client.post("/api/email/destinations", json={"email": "Ops@RisingTidesEnt.com"}, headers=AUTH)
+    sent = {}
+
+    async def _add(email):
+        sent["email"] = email
+        return {"email": email}
+
+    monkeypatch.setattr(r, "add_destination", _add)
+    resp = client.post("/api/email/destinations", json={"email": "  Ops@RisingTidesEnt.com "}, headers=AUTH)
     assert resp.status_code == 200, resp.text
+    # CF receives the same normalised value the allowlist validated.
+    assert sent["email"] == "ops@risingtidesent.com"
+
+
+def test_auto_create_sends_normalised_destination_to_cf(client, token_set, monkeypatch):
+    monkeypatch.setenv("EMAIL_DESTINATION_DOMAINS", "risingtidesent.com")
+    monkeypatch.setattr(r, "get_config", lambda: {"configured": True, "domain": "rt.example"})
+    monkeypatch.setattr(r, "list_rules", _async([]))
+    monkeypatch.setattr(r, "list_destinations", _async([{"email": "Henry@RisingTidesEnt.com", "verified": "x"}]))
+    monkeypatch.setattr(r, "get_page", lambda iid: {"integration_id": iid})
+    monkeypatch.setattr(r, "list_all_pages", lambda: [], raising=False)
+    saved, created = {}, {}
+    monkeypatch.setattr(r, "set_page", lambda iid, fields: saved.update(fields))
+
+    async def _create(alias, destination):
+        created["destination"] = destination
+        return {"id": "rule_n"}
+
+    monkeypatch.setattr(r, "create_rule", _create)
+    resp = client.post(
+        "/api/email/auto-create",
+        json={"integration_id": "i1", "account_name": "Acme", "destination": " HENRY@risingtidesent.COM "},
+        headers=AUTH,
+    )
+    assert resp.status_code == 200, resp.text
+    assert created["destination"] == "henry@risingtidesent.com"
+    assert saved["fwd_destination"] == "henry@risingtidesent.com"
 
 
 def test_allowlist_unset_does_not_block_but_warns(client, token_set, monkeypatch, caplog):

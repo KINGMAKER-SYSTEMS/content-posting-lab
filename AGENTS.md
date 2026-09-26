@@ -98,8 +98,9 @@
   or APP_API_KEY) required on roster routes no unauthenticated UI calls.
 - `routers/email_routing.py` routes that can change where a page's mail goes
   (POST /destinations, DELETE /rules/{id}, POST /auto-create) require
-  `require_control_plane_auth` (fails closed unless CONTROL_PLANE_TOKEN is
-  set), honour the optional EMAIL_DESTINATION_DOMAINS allowlist, and
+  `require_control_plane_auth` (CONTROL_PLANE_TOKEN only, never the
+  browser-bundled APP_API_KEY; fails closed when unset), normalise the
+  destination once and send that value to Cloudflare, honour the optional EMAIL_DESTINATION_DOMAINS allowlist, and
   auto-create never re-points an alias a roster page records without
   `replace: true`. Pipeline mint-alias calls the CF service directly and is
   not gated by these routes.

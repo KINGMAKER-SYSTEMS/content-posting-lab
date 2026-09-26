@@ -20,7 +20,8 @@ whenever APP_API_KEY is unset (as in production). So:
   and fails closed (503) when neither is configured.
 * ``require_control_plane_auth`` guards the email-routing routes that can
   add forwarding destinations or delete/recreate a page's forwarding rule.
-  It fails closed (503) unless CONTROL_PLANE_TOKEN itself is configured.
+  It accepts only CONTROL_PLANE_TOKEN (never the browser-bundled APP_API_KEY)
+  and fails closed (503) when CONTROL_PLANE_TOKEN is not configured.
 """
 
 from __future__ import annotations
@@ -267,10 +268,11 @@ def require_control_plane_auth(
 ) -> None:
     """FastAPI dependency for routes that can re-point account mail (email routing).
 
-    Stricter than ``require_roster_auth``: CONTROL_PLANE_TOKEN must be configured,
-    otherwise the route fails closed (503) even when APP_API_KEY is set. Once
-    CONTROL_PLANE_TOKEN is configured, either it or APP_API_KEY (if set) is
-    accepted, as Bearer or X-API-Key, compared in constant time.
+    Accepts ONLY CONTROL_PLANE_TOKEN (Bearer or X-API-Key, constant time) and
+    fails closed (503) when it is unset or blank. APP_API_KEY is deliberately
+    NOT accepted: the frontend bakes it into its public bundle
+    (VITE_APP_API_KEY), so honouring it here would reopen the forwarding
+    takeover to anyone who reads the bundle.
     """
     control_plane = (os.getenv("CONTROL_PLANE_TOKEN") or "").strip()
     if not control_plane:
@@ -278,7 +280,6 @@ def require_control_plane_auth(
             status_code=503,
             detail="Email routing authentication is not configured (CONTROL_PLANE_TOKEN)",
         )
-    tokens = _configured_tokens()
-    if _credential_matches(tokens, authorization, x_api_key):
+    if _credential_matches([control_plane.encode("utf-8")], authorization, x_api_key):
         return None
     raise HTTPException(status_code=401, detail="Invalid or missing machine credential")

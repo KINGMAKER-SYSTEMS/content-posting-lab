@@ -61,26 +61,47 @@ def _allowed_destination_domains() -> set[str]:
     }
 
 
-def _require_allowed_destination(email: str) -> None:
-    """Refuse a forwarding destination outside EMAIL_DESTINATION_DOMAINS, when set.
+def _normalise_destination(email: str) -> str:
+    """Return the one canonical form of a destination address, or 400.
 
+    Stripped, ASCII only (no Unicode that lowercases into an allowed domain,
+    e.g. the Kelvin sign), no whitespace, exactly one '@' with a non-empty
+    local part and domain, lowercased. Callers validate AND send this value,
+    so what the allowlist checks is exactly what Cloudflare receives.
+    """
+    address = (email or "").strip()
+    if not address.isascii() or any(c.isspace() or ord(c) < 32 or ord(c) == 127 for c in address):
+        raise HTTPException(status_code=400, detail="Destination must be a plain ASCII email address")
+    if address.count("@") != 1:
+        raise HTTPException(status_code=400, detail="Destination must contain exactly one '@'")
+    local, _, domain = address.partition("@")
+    if not local or not domain:
+        raise HTTPException(status_code=400, detail="Destination must have a local part and a domain")
+    return address.lower()
+
+
+def _require_allowed_destination(email: str) -> str:
+    """Normalise a forwarding destination and enforce EMAIL_DESTINATION_DOMAINS.
+
+    Returns the normalised address, which is the value to send to Cloudflare.
     Exact domain match (no subdomains). Unset means no restriction beyond auth,
     which is logged so the gap stays visible.
     """
+    address = _normalise_destination(email)
     allowed = _allowed_destination_domains()
     if not allowed:
         logger.warning(
             "EMAIL_DESTINATION_DOMAINS is unset; email forwarding destinations are "
             "not domain-restricted (auth still required)"
         )
-        return
-    address = (email or "").strip().lower()
-    local, sep, domain = address.rpartition("@")
-    if not sep or not local or domain not in allowed:
+        return address
+    domain = address.partition("@")[2]
+    if domain not in allowed:
         raise HTTPException(
             status_code=403,
             detail="Destination domain is not in EMAIL_DESTINATION_DOMAINS",
         )
+    return address
 
 
 router = APIRouter(route_class=CredentialGuardRoute)
@@ -177,7 +198,7 @@ def _same_forwarding(page: dict, full_alias: str, destination: str) -> bool:
     )
 
 
-def _refuse_silent_repoint(req: AutoCreateRequest, full_alias: str) -> None:
+def _refuse_silent_repoint(req: AutoCreateRequest, full_alias: str, destination: str) -> None:
     """409 when this would re-point mail a roster row already owns, unless replace.
 
     Covers both the named page (it already has an alias) and any other roster
@@ -188,7 +209,6 @@ def _refuse_silent_repoint(req: AutoCreateRequest, full_alias: str) -> None:
     """
     if req.replace:
         return
-    destination = req.destination.strip().lower()
     page = get_page(req.integration_id)
     if page and (page.get("email_alias") or "").strip():
         if not _same_forwarding(page, full_alias, destination):
@@ -223,7 +243,7 @@ async def auto_create_for_page(req: AutoCreateRequest):
     alias a roster page already records unless ``replace`` is true.
     """
     cfg = _require_configured()
-    _require_allowed_destination(req.destination)
+    destination = _require_allowed_destination(req.destination)
 
     # Sanitize account name to valid email local part
     alias = "".join(c if c.isalnum() or c in "-_." else "-" for c in req.account_name.lower()).strip("-.")
@@ -232,7 +252,7 @@ async def auto_create_for_page(req: AutoCreateRequest):
 
     full_alias = f"{alias}@{cfg['domain']}"
 
-    _refuse_silent_repoint(req, full_alias)
+    _refuse_silent_repoint(req, full_alias, destination)
 
     # Check if alias already exists
     existing_rules = await list_rules()
@@ -249,14 +269,14 @@ async def auto_create_for_page(req: AutoCreateRequest):
         for d in destinations
         if d.get("verified")  # CF returns an ISO timestamp (truthy) when verified, null otherwise
     }
-    if req.destination.strip().lower() not in verified:
+    if destination not in verified:
         raise HTTPException(
             status_code=422,
-            detail=f"Destination {req.destination} is not a verified Cloudflare destination",
+            detail=f"Destination {destination} is not a verified Cloudflare destination",
         )
 
     with _cf_upstream():
-        rule = await create_rule(alias, req.destination)
+        rule = await create_rule(alias, destination)
 
     # Link to roster page
     page = get_page(req.integration_id)
@@ -264,7 +284,7 @@ async def auto_create_for_page(req: AutoCreateRequest):
         set_page(req.integration_id, {
             "email_alias": full_alias,
             "email_rule_id": rule.get("id", ""),
-            "fwd_destination": req.destination,
+            "fwd_destination": destination,
         })
 
     return {
@@ -300,7 +320,7 @@ async def add_destination_address(req: AddDestinationRequest):
     EMAIL_DESTINATION_DOMAINS when that allowlist is set.
     """
     _require_configured()
-    _require_allowed_destination(req.email)
+    email = _require_allowed_destination(req.email)
     with _cf_upstream():
-        dest = await add_destination(req.email)
+        dest = await add_destination(email)
     return {"destination": dest}
