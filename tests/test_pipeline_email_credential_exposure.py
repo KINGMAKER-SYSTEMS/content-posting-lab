@@ -49,6 +49,9 @@ def isolate(monkeypatch, tmp_path):
     monkeypatch.setattr(json_store, "_LOCKS", {})
     monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
     monkeypatch.delenv("APP_API_KEY", raising=False)
+    # Intake refuses to run without the operator's intake password (#171);
+    # a test value, never a real one.
+    monkeypatch.setenv("DEFAULT_INTAKE_PASSWORD", "intake-test-value-not-real")
     # Pipeline externals: nothing configured, nothing reachable.
     monkeypatch.setattr(pipeline_router, "notion_configured", lambda: False)
     monkeypatch.setattr(pipeline_router, "slack_configured", lambda: False)
