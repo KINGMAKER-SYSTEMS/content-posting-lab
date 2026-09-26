@@ -1058,3 +1058,24 @@ to people-free prompts (variant ids bumped to `family-safe.v2` and
 pin the durable reservation before the paid retry, in-flight retries counting
 against the page budget, and the prediction-id + "Replicate failed:" guard;
 each is killed by its mutation. No deployment was performed.
+
+_________________________________________________________________________________
+time: [08:57 EDT] [26-09-26]
+agent: [Claude Code] [claude-opus-5-5]
+worktree: [claude/lab-moderation-retry] [/Users/ecfromthedc/dev/seats/LAB-MODRETRY]
+type: [bug-fix] [supply self-healing]: #181 review round 3, negation-aware person gate and wider status guard
+area: [backend] [testing]
+
+The person-wording gate for moderation-retry rewordings matched negations, so
+the scenic, ugc, boat and coffee catalog families ("no people") would have
+received "fully clothed" / silhouette-adult wording on an E005 retry. A person
+term now counts only when no negation (no, without, zero, not any, free of,
+devoid of, never) precedes it within three words of the same clause;
+"figure(s)" and "body/bodies" are no longer person terms. A test composes
+every combination of every catalog family. The embedded-HTTP-status guard
+that blocks a retry even with (E005) is now pinned and also matches
+`Error code 429`, `{'status': 500}`, `status_code=429`, `HTTP 503` and httpx
+`Server error '503 …'`; the real 09-25 E005 message is pinned as retried. By
+lead decision, the moderation model's own 401/403 keeps class `provider_auth`
+with errorDetail `moderation model HTTP 401`/`403`; our own token keeps
+`HTTP 401`/`403`. No deployment was performed.
