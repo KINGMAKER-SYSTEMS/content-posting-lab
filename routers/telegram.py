@@ -92,9 +92,6 @@ _SENDABLE_MEDIA_EXTENSIONS = frozenset(
 _SENDABLE_PROJECT_MEDIA_KINDS = frozenset(
     {"videos", "clips", "burned", "recreate", "slideshow-images"}
 )
-_NON_PROJECT_VOLUME_DIRS = frozenset(
-    {"control_plane_generated", "control_plane_recipes", "agenticnews_assets", "lost+found"}
-)
 _SENDABLE_OUTPUT_DIRS = ("output", "burn_output")
 
 
@@ -116,7 +113,7 @@ def _sendable_media_path(raw: str) -> Path | None:
         parts = real.relative_to(projects_root).parts
         if (
             len(parts) >= 3
-            and parts[0] not in _NON_PROJECT_VOLUME_DIRS
+            and not project_manager.is_reserved_volume_dir(parts[0])
             and parts[1] in _SENDABLE_PROJECT_MEDIA_KINDS
             and not any(p.startswith(".") for p in parts)
         ):
@@ -139,7 +136,11 @@ def _is_single_path_segment(value: str) -> bool:
 
 
 def _burned_batch_videos(project: str, batch_id: str) -> list[Path]:
-    """The burned_*.mp4 files of one burn batch, confined to that batch dir."""
+    """The burned_*.mp4 files of one burn batch, confined to that batch dir.
+
+    get_project_burn_dir refuses reserved volume dirs (_post_render,
+    control_plane_generated, ...) via sanitize_project_name.
+    """
     from project_manager import get_project_burn_dir
 
     try:

@@ -897,3 +897,11 @@ mount then serve. It now uses the shared real-path `services.fsutil.is_within`
 and takes `batchId` as one directory name. A sweep of routers/ and services/
 found no other string-prefix filesystem containment. New burn tests fail on
 main (10 of 13) and pass here.
+Second follow-up: `/api/burn/overlay`, `/send-batch`, `/assign-batch` and the
+video router still accepted service-state volume dirs as a project name
+(`_post_render` holds jobs.sqlite and private renders; also
+control_plane_generated/recipes), and `/send` and the recent-videos listing
+did not skip `_post_render`. `sanitize_project_name` now refuses
+`project_manager.is_reserved_volume_dir` names (that set plus any leading
+underscore), listings skip them and `/send` uses the same predicate. New
+tests: 37 of 45 fail before, 45 pass.

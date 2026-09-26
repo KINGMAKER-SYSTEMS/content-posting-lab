@@ -16,7 +16,7 @@ from pathlib import Path
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 
-from project_manager import PROJECTS_DIR, get_project_video_dir
+from project_manager import PROJECTS_DIR, get_project_video_dir, is_reserved_volume_dir
 from providers import PROVIDERS
 from providers.base import API_KEYS, generate_one
 from services.ffmpeg import is_default_cc, run_color_correct
@@ -56,6 +56,7 @@ def _safe_project(project) -> str:
         or not project
         or project.startswith(".")
         or any(ch in project for ch in ("/", "\\", "\x00"))
+        or is_reserved_volume_dir(project)
     ):
         raise ValueError("Invalid project")
     root = Path(os.path.realpath(PROJECTS_DIR))

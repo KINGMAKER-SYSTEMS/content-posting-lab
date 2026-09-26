@@ -14,6 +14,25 @@ PROJECTS_DIR = BASE_DIR / "projects"
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".webm", ".mkv"}
 CAPTION_EXTENSIONS = {".csv"}
 
+# The Railway volume is mounted AT projects/, so it also holds service state
+# that is never a project: these directories, and any operator-chosen private
+# root named with a leading underscore (e.g. CONTENT_LAB_POST_RENDER_ROOT=
+# /app/projects/_post_render). A project name must never resolve to one.
+RESERVED_VOLUME_DIRS = frozenset(
+    {
+        "_post_render",
+        "control_plane_generated",
+        "control_plane_recipes",
+        "agenticnews_assets",
+        "lost+found",
+    }
+)
+
+
+def is_reserved_volume_dir(name: str) -> bool:
+    """True if ``name`` (one path segment) is service state, not a project."""
+    return name in RESERVED_VOLUME_DIRS or name.startswith("_")
+
 
 def sanitize_project_name(name: str) -> str:
     """
@@ -32,7 +51,8 @@ def sanitize_project_name(name: str) -> str:
         Sanitized project name
 
     Raises:
-        ValueError: If name contains path traversal attempts or is empty after sanitization
+        ValueError: If name contains path traversal attempts, is empty after
+            sanitization, or names a reserved volume dir (is_reserved_volume_dir)
     """
     if not name or not isinstance(name, str):
         raise ValueError("Project name must be a non-empty string")
@@ -57,6 +77,9 @@ def sanitize_project_name(name: str) -> str:
         raise ValueError(
             "Project name must contain at least one alphanumeric character"
         )
+
+    if is_reserved_volume_dir(sanitized):
+        raise ValueError(f"'{sanitized}' is reserved for service state, not a project")
 
     return sanitized
 
@@ -165,7 +188,7 @@ def list_projects() -> list[dict]:
 
     projects = []
     for project_dir in sorted(PROJECTS_DIR.iterdir()):
-        if not project_dir.is_dir():
+        if not project_dir.is_dir() or is_reserved_volume_dir(project_dir.name):
             continue
 
         projects.append(_project_info(project_dir))
