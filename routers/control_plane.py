@@ -1675,11 +1675,12 @@ async def _run_owned_dossier_generation(job_id: str) -> None:
             )
             entry = provider_jobs[provider_job_id]["videos"][0]
             if entry.get("status") != "done":
-                # Keep the terminal error contract unchanged (the Control
-                # Plane validates status responses strictly), but persist why
-                # the provider failed: Railway logs rotate, the job store does
-                # not, and credit exhaustion needs a different response than
-                # a transient provider fault.
+                # Keep the terminal error code stable and persist why the
+                # provider failed: Railway logs rotate, the job store does not,
+                # and credit exhaustion needs a different response than a
+                # transient provider fault. The status route returns the safe
+                # class/code only for a terminal provider failure (see
+                # _job_status_failure_cause).
                 provider_error = str(entry.get("error") or "")
                 error_class = classify_provider_error(provider_error)
                 error_detail = provider_error_code(provider_error)
@@ -1693,9 +1694,11 @@ async def _run_owned_dossier_generation(job_id: str) -> None:
                     "at": datetime.now(timezone.utc).isoformat(),
                 }
                 provider_failures.append(failure)
-                # errorClass/errorDetail (latest failure) are job-record and log
-                # facts only: the Worker rejects unknown fields on
-                # GET /v1/jobs/{id}, so the status response is left unchanged.
+                # errorClass/errorDetail (latest failure) are logged and stored
+                # on the job. GET /v1/jobs/{id} returns them only once the job
+                # ends failed with provider_generation_failed, sanitised to the
+                # Worker's tolerant status validator (opus/lab-errorclass),
+                # which must be live before this Lab change is deployed.
                 log.warning(
                     "job=%s generation=%d provider=%s errorClass=%s errorDetail=%s",
                     job_id, call_index, recipe.engine, error_class, error_detail,
@@ -3243,7 +3246,46 @@ async def job_status(
         # can report and recover the real seam instead of collapsing every
         # terminal failure to a generic label.
         response["error"] = job["error"][:300]
+    response.update(_job_status_failure_cause(job))
     return response
+
+
+# Provider failure cause on the status contract. These patterns mirror the
+# Control Plane Worker's tolerant status validator (isLabFailureClass /
+# isLabFailureDetail in contentLabClient.js) exactly; a value that does not
+# match is dropped, never truncated or rewritten.
+_STATUS_FAILURE_CLASS = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,31}")
+_STATUS_FAILURE_DETAIL = re.compile(r"[A-Za-z0-9 _.:,;/()#=+-]{1,64}")
+_STATUS_FAILURE_TERMINAL = frozenset({"failed", "error", "cancelled"})
+
+
+def _job_status_failure_cause(job: dict[str, Any]) -> dict[str, str]:
+    """Return the safe errorClass/errorDetail pair for a terminal provider failure.
+
+    Only a job that ended in a terminal failure *because of the provider*
+    carries the cause, so a class recorded by an isolated refusal can never be
+    attached to an unrelated later failure (ffmpeg, cancellation, restart).
+    The values are the short classifier label and provider code the executor
+    stored, never the provider message; URL-shaped details are dropped too.
+    """
+    if (
+        job.get("status") not in _STATUS_FAILURE_TERMINAL
+        or job.get("error") != "provider_generation_failed"
+    ):
+        return {}
+    cause: dict[str, str] = {}
+    error_class = job.get("errorClass")
+    if isinstance(error_class, str) and _STATUS_FAILURE_CLASS.fullmatch(error_class):
+        cause["errorClass"] = error_class
+    detail = job.get("errorDetail")
+    if (
+        isinstance(detail, str)
+        and detail.strip(" ") == detail
+        and _STATUS_FAILURE_DETAIL.fullmatch(detail)
+        and "://" not in detail
+    ):
+        cause["errorDetail"] = detail
+    return cause
 
 
 def _artifact_source_treatment(job: dict[str, Any], clip: dict[str, Any]) -> dict[str, Any] | None:
