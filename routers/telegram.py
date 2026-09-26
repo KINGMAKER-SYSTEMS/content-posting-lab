@@ -80,6 +80,94 @@ router = APIRouter()
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
+# What /send may deliver to Telegram. The Railway volume is mounted AT
+# /app/projects (railway.toml), so the projects root also holds
+# page_roster.json, cookies.txt, telegram_config.json, control_plane_jobs.json
+# and bearer-gated trees. Only a media file inside a project media dir
+# (<project>/<kind>/...) or a legacy output dir qualifies, judged on the real
+# path so a symlink or `..` cannot point it anywhere else.
+_SENDABLE_MEDIA_EXTENSIONS = frozenset(
+    {".mp4", ".mov", ".avi", ".mkv", ".webm", ".jpg", ".jpeg", ".png", ".webp"}
+)
+_SENDABLE_PROJECT_MEDIA_KINDS = frozenset(
+    {"videos", "clips", "burned", "recreate", "slideshow-images"}
+)
+_SENDABLE_OUTPUT_DIRS = ("output", "burn_output")
+
+
+def _sendable_media_path(raw: str) -> Path | None:
+    """Return the real path of an allowed media file ``raw`` names, else None."""
+    if not raw or "\x00" in raw:
+        return None
+    try:
+        real = Path(os.path.realpath(raw))
+    except (OSError, ValueError):
+        return None
+    if real.suffix.lower() not in _SENDABLE_MEDIA_EXTENSIONS:
+        return None
+
+    import project_manager  # read at call time: tests repoint PROJECTS_DIR
+
+    projects_root = Path(os.path.realpath(project_manager.PROJECTS_DIR))
+    if real.is_relative_to(projects_root):
+        parts = real.relative_to(projects_root).parts
+        if (
+            len(parts) >= 3
+            and not project_manager.is_reserved_volume_dir(parts[0])
+            and parts[1] in _SENDABLE_PROJECT_MEDIA_KINDS
+            and not any(p.startswith(".") for p in parts)
+        ):
+            return real
+        return None
+    for name in _SENDABLE_OUTPUT_DIRS:
+        root = Path(os.path.realpath(PROJECT_ROOT / name))
+        if real.is_relative_to(root) and real != root:
+            if not any(p.startswith(".") for p in real.relative_to(root).parts):
+                return real
+    return None
+
+
+def _is_single_path_segment(value: str) -> bool:
+    return (
+        bool(value)
+        and not value.startswith(".")
+        and not any(ch in value for ch in ("/", "\\", "\x00"))
+    )
+
+
+def _burned_batch_videos(project: str, batch_id: str) -> list[Path]:
+    """The burned_*.mp4 files of one burn batch, confined to that batch dir.
+
+    get_project_burn_dir refuses reserved volume dirs (_post_render,
+    control_plane_generated, ...) via sanitize_project_name.
+    """
+    from project_manager import get_project_burn_dir
+
+    try:
+        burn_dir = get_project_burn_dir(project)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if not _is_single_path_segment(batch_id):
+        raise HTTPException(status_code=400, detail="Invalid batch id")
+
+    burn_root = Path(os.path.realpath(burn_dir))
+    batch_dir = Path(os.path.realpath(burn_dir / batch_id))
+    if batch_dir.parent != burn_root:
+        raise HTTPException(status_code=400, detail="Invalid batch id")
+    if not batch_dir.is_dir():
+        raise HTTPException(status_code=404, detail=f"Batch '{batch_id}' not found")
+
+    mp4s: list[Path] = []
+    for mp4 in sorted(batch_dir.glob("burned_*.mp4")):
+        real = Path(os.path.realpath(mp4))
+        if real.parent == batch_dir and real.is_file():
+            mp4s.append(mp4)
+        else:
+            logger.warning("skipping %s: resolves outside batch %s", mp4.name, batch_id)
+    if not mp4s:
+        raise HTTPException(status_code=404, detail="No burned videos in batch")
+    return mp4s
+
 
 # ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -1026,10 +1114,10 @@ async def send_content(req: SendRequest):
     """Send a media file to the staging topic for a page."""
     _require_bot()
 
-    file_path = Path(req.file_path).resolve()
-    if not file_path.is_relative_to(PROJECT_ROOT):
-        raise HTTPException(status_code=400, detail="File path outside project root")
-    if not file_path.exists():
+    file_path = _sendable_media_path(req.file_path)
+    if file_path is None:
+        raise HTTPException(status_code=400, detail="File is not a project media file")
+    if not file_path.is_file():
         raise HTTPException(status_code=404, detail="File not found")
 
     staging = get_staging_group()
@@ -1071,20 +1159,7 @@ async def send_batch(req: SendBatchRequest):
     """
     _require_bot()
 
-    from project_manager import get_project_burn_dir, sanitize_project_name
-
-    try:
-        burn_dir = get_project_burn_dir(req.project)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-    batch_dir = burn_dir / req.batch_id
-    if not batch_dir.exists() or not batch_dir.is_dir():
-        raise HTTPException(status_code=404, detail=f"Batch '{req.batch_id}' not found")
-
-    mp4s = sorted(batch_dir.glob("burned_*.mp4"))
-    if not mp4s:
-        raise HTTPException(status_code=404, detail="No burned videos in batch")
+    mp4s = _burned_batch_videos(req.project, req.batch_id)
 
     staging = get_staging_group()
     if not staging or not staging.get("chat_id"):
@@ -1151,20 +1226,7 @@ async def assign_batch(req: AssignBatchRequest):
     _active_assign_batches.add(batch_key)
 
     try:
-        from project_manager import get_project_burn_dir
-
-        try:
-            burn_dir = get_project_burn_dir(req.project)
-        except ValueError as e:
-            raise HTTPException(status_code=400, detail=str(e))
-
-        batch_dir = burn_dir / req.batch_id
-        if not batch_dir.exists() or not batch_dir.is_dir():
-            raise HTTPException(status_code=404, detail=f"Batch '{req.batch_id}' not found")
-
-        mp4s = sorted(batch_dir.glob("burned_*.mp4"))
-        if not mp4s:
-            raise HTTPException(status_code=404, detail="No burned videos in batch")
+        mp4s = _burned_batch_videos(req.project, req.batch_id)
 
         if not req.integration_ids:
             raise HTTPException(status_code=400, detail="No pages selected")

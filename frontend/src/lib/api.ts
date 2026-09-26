@@ -35,6 +35,16 @@ export function staticUrl(path: string): string {
 }
 
 /**
+ * Add the API key header (when one is configured) to a RequestInit, for
+ * callers that use fetch() directly instead of fetchApi.
+ */
+export function withApiKey(init?: RequestInit): RequestInit {
+  const headers = new Headers(init?.headers);
+  if (API_KEY && !headers.has('x-api-key')) headers.set('x-api-key', API_KEY);
+  return { ...init, headers };
+}
+
+/**
  * Fetch wrapper with standardized error handling.
  *
  * - Prepends apiUrl() to the path
@@ -46,9 +56,7 @@ export async function fetchApi<T = unknown>(
   path: string,
   init?: RequestInit,
 ): Promise<T> {
-  const headers = new Headers(init?.headers);
-  if (API_KEY && !headers.has('x-api-key')) headers.set('x-api-key', API_KEY);
-  const res = await fetch(apiUrl(path), { ...init, headers });
+  const res = await fetch(apiUrl(path), withApiKey(init));
   if (!res.ok) {
     let msg = `Request failed (${res.status})`;
     try {

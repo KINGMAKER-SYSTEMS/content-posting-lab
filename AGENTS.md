@@ -99,6 +99,29 @@
 
 ## Local Contracts
 
+- The `/api/` key middleware (`app.py` `_AUTH_SKIP`) exempts only `/api/health`
+  and `/api/miniapp/*`, which verifies Telegram `initData` itself.
+  `/api/telegram/*` needs the key like every other `/api/` route: the bot
+  long-polls, so there is no webhook route to exempt. The UI sends the key
+  through `frontend/src/lib/api.ts` (`fetchApi` / `withApiKey`).
+- `POST /api/telegram/send` delivers only a media file whose real path is under
+  `projects/<project>/<videos|clips|burned|recreate|slideshow-images>/` or the
+  legacy `output`/`burn_output` dirs. The volume root beside those dirs holds
+  the roster, cookies and Telegram config and is never sendable.
+  `/send-batch` and `/assign-batch` take one batch-dir segment and skip files
+  that resolve outside it. `routers/video.py` accepts `project` only as one
+  directory name under the projects root and checks containment on real paths.
+- Path containment uses `services.fsutil.is_within` (real paths, component-wise),
+  never a string prefix: project `p` is a string prefix of
+  `projects/page_roster.json`. `/api/burn/overlay` also takes `batchId` as one
+  directory name. While APP_API_KEY is unset these server-side checks are the
+  only guard on `/api/*`.
+- `project_manager.is_reserved_volume_dir` names the service-state dirs on the
+  projects volume (`_post_render`, `control_plane_generated`,
+  `control_plane_recipes`, `agenticnews_assets`, `lost+found`, and any name
+  starting with `_`). `sanitize_project_name` refuses them, project listings
+  skip them, and `/send` never serves from them. Put new private volume roots
+  under a leading-underscore name.
 - Format-contract HTTP reads use a separate two-permit thread limiter, not the
   shared synchronous endpoint pool. Preserve per-request registry validation,
   authentication, current-file visibility and fail-closed errors; disk reads
