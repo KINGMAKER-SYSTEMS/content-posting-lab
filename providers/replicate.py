@@ -216,15 +216,17 @@ _INPUT_BUILDERS = {
 # Production evidence (2026-09-23/24): paid-for Replicate predictions were
 # abandoned because one poll GET hit a ReadError/ConnectTimeout, and whole
 # replenishment jobs failed on a 429 throttle or a 5xx at submission.  Each
-# such job blocked its page's refill for hours downstream.  Only failures that
-# cannot create a second paid prediction are retried here:
+# such job blocked its page's refill for hours downstream.  Retries are limited
+# to failures that almost certainly created nothing:
 #
-# * submission: HTTP 429 (honouring ``retry_after``), 500 and 503 -- Replicate
-#   returned no prediction id in every observed case (2026-09-24) -- or a
-#   connection that was never established.  502/504 are gateway results whose
-#   upstream may already have created the prediction, so they are NOT retried.  A read/write failure after the
-#   request body may have reached Replicate is ambiguous and is NOT retried,
-#   so a lost response can never become a duplicate paid prediction.
+# * submission: a connection that was never established (nothing was sent),
+#   HTTP 429 (a throttle rejects before work; ``retry_after`` honoured), and
+#   HTTP 500/503.  The 5xx retry is an EMPIRICAL bet, not a guarantee: every
+#   500/503 observed on 2026-09-24 returned no prediction id, but a 5xx sent
+#   after Replicate created the prediction would buy a second one.  502/504
+#   gateway results are more likely to hide a created prediction and are NOT
+#   retried, nor is a read/write failure after the request body may have
+#   reached Replicate (a lost response must not become a duplicate).
 # * polling: the prediction already exists, so a transport error, 429, 5xx or
 #   unparseable body is retried on the SAME prediction until the deadline.
 # * "Prediction interrupted; please retry (code: PA)" is resubmitted once.

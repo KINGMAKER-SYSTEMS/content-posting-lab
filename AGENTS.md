@@ -351,9 +351,10 @@
   current job.
 
 - Replicate video generation (`providers/replicate.py`) retries only faults
-  that cannot buy a second prediction: submission HTTP 429 (honouring
-  `retry_after`, capped), 500 and 503 (no prediction id returned in every
-  observed case) or a never-established connection, at most four
+  that almost certainly created nothing: submission HTTP 429 (honouring
+  `retry_after`, capped), a never-established connection, and 500/503 -- an
+  empirical bet (no prediction id in every case observed on 2026-09-24; a
+  5xx after creation would buy a second prediction) -- at most four
   submissions; 502/504 gateway results may hide a created prediction and
   are terminal; poll transport/429/5xx/unparseable
   replies on the same prediction within its 600-second deadline; and one
