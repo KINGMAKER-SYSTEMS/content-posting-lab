@@ -262,6 +262,24 @@ def require_roster_auth(
     raise HTTPException(status_code=401, detail="Invalid or missing roster credential")
 
 
+def has_control_plane_credential(authorization: object, x_api_key: object) -> bool:
+    """True only when CONTROL_PLANE_TOKEN is configured and the caller presents it.
+
+    Non-raising form of ``require_control_plane_auth`` for routes that are
+    anonymous in general but must refuse one dangerous case without the token.
+    Non-string inputs (e.g. an unresolved FastAPI ``Header`` default when a
+    handler is called directly) count as absent.
+    """
+    control_plane = (os.getenv("CONTROL_PLANE_TOKEN") or "").strip()
+    if not control_plane:
+        return False
+    return _credential_matches(
+        [control_plane.encode("utf-8")],
+        authorization if isinstance(authorization, str) else None,
+        x_api_key if isinstance(x_api_key, str) else None,
+    )
+
+
 def require_control_plane_auth(
     authorization: str | None = Header(default=None),
     x_api_key: str | None = Header(default=None),

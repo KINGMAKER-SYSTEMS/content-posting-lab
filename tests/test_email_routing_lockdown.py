@@ -159,12 +159,11 @@ def test_app_api_key_is_refused_even_when_control_plane_token_is_set(
     assert resp.status_code == 401, resp.text
 
 
-def test_read_routes_stay_open(client, monkeypatch, token_set):
-    """status and destination listing are reads the UI still makes without a key."""
+def test_status_read_stays_open(client, monkeypatch, token_set):
+    """/status (configured + alias domain, no addresses) is still anonymous.
+    GET /destinations is gated; see tests/test_email_destinations_and_slack_scrub.py."""
     monkeypatch.setattr(r, "get_config", lambda: {"configured": True, "domain": "rt.example"})
-    monkeypatch.setattr(r, "list_destinations", _async([]))
     assert client.get("/api/email/status").status_code == 200
-    assert client.get("/api/email/destinations").status_code == 200
 
 
 # ── (b) destination domain allowlist ─────────────────────────────────────────

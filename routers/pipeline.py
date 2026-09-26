@@ -21,7 +21,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 import httpx
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel
 
 from services import r2
@@ -36,6 +36,7 @@ from services.email_routing import (
 from services.notion_pages import (
     create_intake_page,
     is_configured as notion_configured,
+    mint_integration_id,
     sync_into_roster,
     update_intake_page,
     update_page_drive_folder,
@@ -43,6 +44,7 @@ from services.notion_pages import (
     update_page_status,
 )
 from services.poster_router import resolve_poster_for_page
+from services.roster_public import has_control_plane_credential
 from services.roster import get_page, list_all_pages, set_page
 from services.roster_public import (
     CredentialGuardRoute,
@@ -220,7 +222,8 @@ async def _mint_random_alias(
         if full_alias in existing_aliases:
             raise HTTPException(
                 status_code=409,
-                detail=f"Email '{full_alias}' is already taken — pick a different name",
+                # Generic: never echo the alias (existence oracle).
+                detail="That email name is already taken — pick a different name",
             )
     else:
         alias_local = _random_alias_local()
@@ -339,9 +342,30 @@ async def mint_random_alias_endpoint(req: MintAliasRequest | None = None) -> Min
     )
 
 
+def _existing_page_for_handle(account_username: str) -> dict | None:
+    """The roster page an intake for this handle would write to, if any.
+
+    Intake writes ``acct:{_slug_alias(handle)}``; the Notion sync mints
+    ``acct:{slugify(handle)}``. They differ for handles with '.' or '_', so
+    both are checked.
+    """
+    for integration_id in (
+        f"acct:{_slug_alias(account_username)}",
+        mint_integration_id(account_username),
+    ):
+        page = get_page(integration_id)
+        if page:
+            return page
+    return None
+
+
 @router.post("/intake")
 @allow_credential_keys("email_alias", "fwd_destination")  # echo of this request's own alias
-async def submit_intake(req: IntakeRequest):
+async def submit_intake(
+    req: IntakeRequest,
+    authorization: str | None = Header(default=None),
+    x_api_key: str | None = Header(default=None),
+):
     """Step 2 of intake: fill in TikTok handle + page details.
 
     If `notion_page_id` is provided (step 1 already created the placeholder
@@ -358,6 +382,19 @@ async def submit_intake(req: IntakeRequest):
         )
     if not req.account_username.strip():
         raise HTTPException(status_code=400, detail="account_username is required")
+
+    # An intake for a handle that already has a roster page would overwrite
+    # that live page's email alias/destination and drop its rule link (then
+    # /setup writes it back to Notion). Anonymous callers are refused before
+    # any mint, Notion or roster write; an operator with CONTROL_PLANE_TOKEN
+    # may still re-run intake for an existing handle.
+    if _existing_page_for_handle(req.account_username) and not has_control_plane_credential(
+        authorization, x_api_key
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="An account with this handle already exists — ask an operator to update it",
+        )
 
     # Email alias is expected to have been minted in step 1 (POST /mint-alias)
     # before the user did the TikTok signup. If it's missing here, mint one

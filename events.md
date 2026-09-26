@@ -953,3 +953,27 @@ add-destination, create-alias and remove-alias buttons send no credential and
 now fail until operator auth exists; GET status/destinations stay open.
 Pipeline mint-alias/intake call the CF service directly and are unchanged.
 No deploy was performed.
+
+_________________________________________________________________________________
+time: [23:20 EDT] [26-09-25]
+agent: [Claude Code] [claude-opus-5-5]
+worktree: [fix/email-destinations-and-slack-scrub] [/Users/ecfromthedc/dev/wt/lab-email-dest-slack]
+type: [security]: team inbox list and Slack handoff stop carrying addresses
+area: [backend] [security] [testing]
+
+Follow-up to #176, stacked on it for require_control_plane_auth. GET
+/api/email/destinations served every Cloudflare forwarding destination (the
+team's real inboxes) to anonymous callers; it now requires CONTROL_PLANE_TOKEN
+and fails closed. The Distribution Email tab reads it without a credential and
+shows an empty destination list; Pipeline mint-alias reads destinations
+server-side and is unaffected. The Slack pipeline handoff no longer posts the
+page login email, password or free-text notes (notes can hold backup codes);
+those fields say "see Notion" and the Notion button remains. An anonymous
+POST /api/pipeline/intake naming a handle that already has a roster page
+(checked under both the intake id and the Notion-sync id) is refused with a
+generic 409 before any mint, Notion or roster write, so it can no longer
+overwrite a live page's alias/destination or drop its rule link;
+CONTROL_PLANE_TOKEN holders may still re-run it. The mint-alias and
+auto-create 409s no longer echo the alias or a page's recorded alias. No
+deploy was performed.
+
