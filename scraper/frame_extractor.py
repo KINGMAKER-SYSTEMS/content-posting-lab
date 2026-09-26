@@ -319,6 +319,29 @@ def _is_youtube_url(url: str) -> bool:
     return host in _YOUTUBE_HOSTS
 
 
+def _private_jar_dir() -> Path:
+    """Container-local home for per-attempt cookie-jar copies.
+
+    Kept off the persistent volume on purpose: a hard kill (SIGKILL, OOM,
+    Railway replacement) skips the attempt's ``finally``, and a copy left in
+    an import workspace would outlive the process. Container temp storage is
+    discarded on replacement, and ``sweep_private_cookie_jars`` clears what a
+    killed process left behind within the same container at the next boot.
+    """
+    root = Path(tempfile.gettempdir()) / "ytdlp-private-jars"
+    root.mkdir(mode=0o700, exist_ok=True)
+    return root
+
+
+def sweep_private_cookie_jars() -> int:
+    """Delete stale cookie-jar copies. Call only at startup, before any import runs."""
+    removed = 0
+    for leftover in _private_jar_dir().glob(".ytdlp-cookies-*"):
+        leftover.unlink(missing_ok=True)
+        removed += 1
+    return removed
+
+
 async def _communicate_or_kill(proc, source_import_mode: bool):
     try:
         return await proc.communicate()
@@ -428,7 +451,7 @@ async def download_video(
 
     for label, extra in strategies:
         if "<private-jar>" in extra:
-            fd, name = tempfile.mkstemp(prefix=".ytdlp-cookies-", suffix=".txt", dir=dest.parent)
+            fd, name = tempfile.mkstemp(prefix=".ytdlp-cookies-", suffix=".txt", dir=_private_jar_dir())
             os.close(fd)
             private_jar = Path(name)
             shutil.copyfile(get_cookies_path(), private_jar)

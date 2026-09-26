@@ -295,7 +295,8 @@ def test_youtube_source_import_falls_back_to_cookies_after_the_bot_check(
     (public, public_options), (retry, retry_options) = calls
     assert "--cookies" not in public
     private = Path(retry[retry.index("--cookies") + 1])
-    assert private != cookies and private.parent == tmp_path
+    assert private != cookies and private.parent == fe._private_jar_dir()
+    assert private.parent != tmp_path, "the copy must never land in the import workspace"
     assert not private.exists()
     for command, options in ((public, public_options), (retry, retry_options)):
         assert "--no-check-certificates" not in command
@@ -370,3 +371,15 @@ def test_youtube_source_import_never_writes_the_shared_cookie_jar(monkeypatch, t
     assert seen == ["# Netscape HTTP Cookie File\nshared\n"]
     assert shared.read_text() == "# Netscape HTTP Cookie File\nshared\n"
     assert sorted(p.name for p in work.iterdir()) == ["o.mp4"]
+
+
+def test_private_jar_copies_left_by_a_hard_kill_are_swept_at_startup(monkeypatch, tmp_path):
+    monkeypatch.setattr(fe.tempfile, "gettempdir", lambda: str(tmp_path))
+    jars = fe._private_jar_dir()
+    (jars / ".ytdlp-cookies-abc.txt").write_text("# jar")
+    (jars / ".ytdlp-cookies-def.txt").write_text("# jar")
+    (jars / "unrelated.txt").write_text("keep")
+
+    assert fe.sweep_private_cookie_jars() == 2
+    assert sorted(p.name for p in jars.iterdir()) == ["unrelated.txt"]
+    assert oct(jars.stat().st_mode & 0o777) == "0o700"
