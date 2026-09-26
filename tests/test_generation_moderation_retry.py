@@ -640,6 +640,16 @@ E005_WITH_HTTP_STATUS = {
                            "for url 'https://moderation.invalid/v1' (E005)"),
     "error-code-no-colon": "Replicate failed: Moderation check failed: Error code 429 - quota (E005)",
     "status-code-kwarg": "Replicate failed: Moderation check failed: status_code=429 (E005)",
+    # Round 4: any standalone 4xx/5xx number blocks the retry, whatever wraps it.
+    "bare-429-reason": "Replicate failed: Moderation check failed: 429 Too Many Requests (E005)",
+    "bare-503-reason": "Replicate failed: Safety check failed: 503 Service Unavailable (E005)",
+    "e005-before-429": "Replicate failed: Moderation check failed: (E005) 429 Too Many Requests",
+    "json-code-key": 'Replicate failed: safety check returned {"code": 500, "message": "internal"} (E005)',
+    "urllib-http-error": "Replicate failed: Safety check failed: HTTP Error 503: Service Unavailable (E005)",
+    "requests-client-error": ("Replicate failed: Moderation check failed: 429 Client Error: Too Many Requests "
+                              "for url: https://moderation.invalid/v1/moderations (E005)"),
+    "error-code-kwarg": "Replicate failed: Moderation check failed: error_code=503 (E005)",
+    "ratelimiterror-429": "Replicate failed: Moderation check failed: RateLimitError 429 (E005)",
 }
 
 
@@ -688,3 +698,22 @@ def test_auth_detail_names_the_moderation_model_or_our_token(message, detail):
     assert base.provider_error_code(message) == detail
     assert WORKER_CLASS.fullmatch("provider_auth") and WORKER_DETAIL.fullmatch(detail)
     assert LAB_DETAIL.fullmatch(detail) and detail.strip() == detail
+
+
+# Round 4: the E005 retry refuses ANY standalone 4xx/5xx number outside a URL.
+@pytest.mark.parametrize("message", [
+    CENSUS_E005,
+    MODERATION,
+    "Replicate failed: flagged as sensitive (code: E005)",
+    # A URL is excluded narrowly: a port or path number there is not a status.
+    "Replicate failed: The input or output was flagged as sensitive. "
+    "See https://replicate.invalid:443/docs/errors/500 (E005)",
+])
+def test_real_e005_shapes_carry_no_status_number_and_stay_retryable(message):
+    assert moderation_retry.retry_blocked(message) is None
+
+
+def test_a_clause_break_ends_a_negation():
+    # Without the clause split, "No" is within three words of "adults".
+    assert moderation_retry.depicts_people("No cars; adults walk at dusk.") is True
+    assert "clothed" in moderation_retry.variant_prompt("No cars; adults walk at dusk.", 1)[0]

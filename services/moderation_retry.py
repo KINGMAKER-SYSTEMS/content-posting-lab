@@ -98,19 +98,21 @@ _AUTH_IN_MODERATION = re.compile(r"error code:\s*40[13]\b|deactivated", re.I)
 # in the 2026-09-25 census). The broad moderation class also matches any
 # "moderation|safety|nsfw|flagged" text, e.g. a 429/5xx from the provider's
 # moderation dependency or a failed prediction's logs echoing a safety
-# setting; retrying those spends money for nothing. A message that carries an
-# embedded HTTP status is a dependency failure even if it also names E005:
-# "Error code: 503" / "Error code 429" (OpenAI client), JSON or Python-repr
-# "status": 500, status_code=429, "HTTP 503" / "HTTP/1.1 503", and httpx's
-# "Server error '503 Service Unavailable'".
+# setting; retrying those spends money for nothing.
+#
+# A status-bearing message is refused even when it also names E005. Rather
+# than enumerating client formats ("Error code: 503", "429 Too Many Requests",
+# "HTTP Error 503", {"code": 500}, status_code=429, RateLimitError 429, ...),
+# ANY standalone 4xx/5xx number refuses the retry. The real E005 message
+# ("The input or output was flagged as sensitive. Please try again with
+# different inputs. (E005)", all 23 of the 2026-09-25 census) carries no
+# number at all, and the poll path's "Replicate failed: <error>" carries no
+# prediction id. Only URLs are excluded, narrowly, since a port (":443") or a
+# path segment ("/500") there is not a status.
 _E005 = re.compile(r"\((?:code:\s*)?E005\)")
-_EMBEDDED_HTTP_STATUS = re.compile(
-    r"\berror[ _]code:?\s*\d{3}\b"
-    r"|['\"]?\bstatus(?:[ _]?code)?['\"]?\s*[:=]\s*\d{3}\b"
-    r"|\bHTTP(?:/\d(?:\.\d)?)?\s+\d{3}\b"
-    r"|\b(?:client|server) error '\d{3}\b",
-    re.I,
-)
+_URL = re.compile(r"https?://\S+", re.I)
+_STATUS_NUMBER = re.compile(r"\b[45]\d\d\b")
+
 
 # Flat per-attempt cost estimates in USD, keyed by Replicate model. A refused
 # prediction is billed like a successful one, so a refused attempt records the
@@ -181,7 +183,7 @@ def retry_blocked(detail: str) -> str | None:
     """
     if _AUTH_IN_MODERATION.search(detail):
         return AUTH_NOT_RETRIED
-    if not _E005.search(detail) or _EMBEDDED_HTTP_STATUS.search(detail):
+    if not _E005.search(detail) or _STATUS_NUMBER.search(_URL.sub(" ", detail)):
         return NOT_E005_NOT_RETRIED
     return None
 

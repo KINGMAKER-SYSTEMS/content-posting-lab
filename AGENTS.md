@@ -375,9 +375,10 @@
   and the immutable prompt plan never change and no alternate engine is used.
   Other moderation-class text (a 429/5xx from the provider's moderation
   dependency, failed-prediction logs that mention "safety") is never retried.
-  An HTTP status anywhere in the message (`Error code: 503`, `Error code 429`,
-  `"status": 500`/`{'status': 500}`, `status_code=429`, `HTTP 503`, httpx
-  `Server error '503 …'`) blocks the retry even when `(E005)` is present.
+  Any standalone 4xx/5xx number in the message outside a URL (`Error code: 503`,
+  `429 Too Many Requests`, `HTTP Error 503`, `{"code": 500}`, `status_code=429`,
+  …) blocks the retry even when `(E005)` is present; the real E005 message
+  carries no number.
   A rewording never adds a subject the prompt lacks: person wording applies
   only to prompts that depict people, and a person term preceded in its clause
   by a negation ("no people", "without any people", "free of people") does not

@@ -1079,3 +1079,18 @@ that blocks a retry even with (E005) is now pinned and also matches
 lead decision, the moderation model's own 401/403 keeps class `provider_auth`
 with errorDetail `moderation model HTTP 401`/`403`; our own token keeps
 `HTTP 401`/`403`. No deployment was performed.
+
+_________________________________________________________________________________
+time: [09:32 EDT] [26-09-26]
+agent: [Claude Code] [claude-opus-5-5]
+worktree: [claude/lab-moderation-retry] [/Users/ecfromthedc/dev/seats/LAB-MODRETRY]
+type: [bug-fix] [supply self-healing]: #181 review round 4, any 4xx/5xx number blocks an E005 retry
+area: [backend] [testing]
+
+The E005 retry no longer enumerates HTTP-status formats. Any standalone
+4xx/5xx number outside a URL refuses the retry even when (E005) is present,
+which also catches "429 Too Many Requests", urllib "HTTP Error 503", requests
+"429 Client Error", JSON "code": 500, error_code=503 and "RateLimitError 429".
+The real 09-25 E005 message carries no number and stays retried. A test pins
+the clause split of the person gate ("No cars; adults walk at dusk." depicts
+people). No deployment was performed.
