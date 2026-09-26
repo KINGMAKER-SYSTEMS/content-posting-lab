@@ -153,6 +153,26 @@ def _build_wan_i2v_fast_input(prompt: str, params: dict) -> dict:
     return inp
 
 
+FLUX_SAFETY_TOLERANCE_RANGE = (1, 5)  # 1 strictest, 5 most permissive
+
+
+def _flux_safety_tolerance(params: dict) -> int | None:
+    """Return the caller's explicit FLUX moderation level, or None to omit it.
+
+    Omitting the field keeps Replicate's default (2).  Only a recipe that opts
+    in -- today the silhouette family, see ``generation_options`` -- sends one.
+    """
+    value = params.get("safety_tolerance")
+    if value is None:
+        return None
+    low, high = FLUX_SAFETY_TOLERANCE_RANGE
+    if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= high:
+        raise ValueError(
+            f"FLUX safety_tolerance must be an integer from {low} to {high}"
+        )
+    return value
+
+
 def _build_flux_2_pro_input(prompt: str, params: dict) -> dict:
     """Build a portrait-native FLUX.2 Pro still-image request."""
     aspect_ratio = params.get("aspect_ratio", "9:16")
@@ -167,13 +187,17 @@ def _build_flux_2_pro_input(prompt: str, params: dict) -> dict:
     quality = int(params.get("output_quality", 95))
     if not 1 <= quality <= 100:
         raise ValueError("FLUX output quality must be between 1 and 100")
-    return {
+    safety_tolerance = _flux_safety_tolerance(params)
+    payload = {
         "prompt": prompt,
         "aspect_ratio": aspect_ratio,
         "resolution": resolution,
         "output_format": output_format,
         "output_quality": quality,
     }
+    if safety_tolerance is not None:
+        payload["safety_tolerance"] = safety_tolerance
+    return payload
 
 
 _INPUT_BUILDERS = {

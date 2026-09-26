@@ -6,13 +6,16 @@ import json
 import pytest
 
 from providers.base import API_KEYS
+from providers.replicate import _build_flux_2_pro_input
 from services.control_plane_generation import (
     GenerationRecipe,
     compose_prompt,
     dossier_clip_crop,
     dossier_clip_speed,
     dossier_filters_to_color_correction,
+    generation_options,
     load_generation_anchor,
+    load_prompt_catalog,
     plan_prompt_combinations,
     prompt_combination_space,
     resolve_generation_recipe,
@@ -298,6 +301,43 @@ def test_recommissioned_boat_and_silhouette_are_advertised_after_operator_lift()
     assert "pickup truck parked in an open field" in prompt
     assert "single still photograph" in prompt
     assert "Motion:" not in prompt
+
+
+def test_only_the_silhouette_flux_recipe_sends_a_raised_safety_tolerance():
+    # 2026-09-25: at Replicate's default tolerance (2) the silhouette stills
+    # were flagged E005 "sensitive" on 23 of 83 FLUX calls. Only that recipe
+    # opts in, at the lowest step above the default.
+    silhouette = resolve_generation_recipe(_format_publication(
+        "silhouette-truck", "silhouette-truck:master", "ai_video",
+    ))
+    options = generation_options(silhouette)
+    assert options["safety_tolerance"] == 3
+    prompt, _ = compose_prompt(silhouette, "static-silhouette", 0)
+    assert _build_flux_2_pro_input(prompt, options)["safety_tolerance"] == 3
+
+    for format_slug in ("truck-scenic", "boat-lake"):
+        other = resolve_generation_recipe(_format_publication(
+            format_slug, f"{format_slug}:master", "ai_video",
+        ))
+        assert other is not None
+        assert "safety_tolerance" not in generation_options(other)
+
+
+def test_safety_tolerance_leaves_the_silhouette_catalog_and_prompt_plan_unchanged():
+    # The silhouette catalog bytes are its version and the prompt-plan
+    # authority; the moderation level must not re-version saved recipes.
+    _, version = load_prompt_catalog("silhouette-truck")
+    assert version == "2ba10a69a2a25eb0c60ed238b9badb5b7531a994a364e0f06ef4acfcc7bda3a0"
+    silhouette = resolve_generation_recipe(_format_publication(
+        "silhouette-truck", "silhouette-truck:master", "ai_video",
+    ))
+    assert silhouette.executor_version == f"sha256:{version}"
+    assert "safety_tolerance" not in silhouette.provider_config["base_input"]
+    assert plan_prompt_combinations(silhouette, "flux-safety-pin", 3, set()) == [
+        {"combinationId": 325, "promptHash": "02729f7c6fc68c9747f67cc7e38413a679c65d119e5dbddeab3dfca8c11dced0"},
+        {"combinationId": 114, "promptHash": "a39b61f0f356e44af8f6fb786a5f60ed97ed8ae409c644d79b67b802ba4301ef"},
+        {"combinationId": 443, "promptHash": "dfbc78c02af227f048c76266aa8458fc569ef72fa2a6d7f091e7eb86482da8ca"},
+    ]
 
 
 def test_scenic_is_not_misrouted_through_the_ai_video_resolver():

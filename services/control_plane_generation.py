@@ -693,6 +693,18 @@ async def load_generation_anchor(
     return data_uri, metadata
 
 
+# Per-recipe provider moderation level, keyed by (prompt family, engine).  Only
+# the FLUX silhouette stills opt in: at Replicate's default of 2 their benign
+# embracing-silhouette prompts were flagged E005 "sensitive" on 23 of 83 calls
+# (2026-09-25).  3 is the lowest step above the default; raise it only on
+# measured flag rates.  This lives in code, not in silhouette_stills.v1.json,
+# because those catalog bytes are the silhouette catalog version and the
+# prompt-plan authority.  Every other recipe sends no safety_tolerance.
+PROVIDER_SAFETY_TOLERANCE: dict[tuple[str, str], int] = {
+    ("silhouette", "flux-image"): 3,
+}
+
+
 def generation_options(recipe: GenerationRecipe) -> dict[str, Any]:
     base = recipe.provider_config.get("base_input")
     options = dict(base) if isinstance(base, dict) else {}
@@ -704,6 +716,10 @@ def generation_options(recipe: GenerationRecipe) -> dict[str, Any]:
     selected = recipe.recipe_spec.get("production", {}).get("controls", {})
     if isinstance(selected, dict):
         options.update(selected)
+    tolerance = PROVIDER_SAFETY_TOLERANCE.get((recipe.family_name, recipe.engine))
+    if tolerance is not None:
+        # An explicit catalog value still wins; the provider builder validates it.
+        options.setdefault("safety_tolerance", tolerance)
     return options
 
 
