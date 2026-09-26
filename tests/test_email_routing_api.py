@@ -89,12 +89,26 @@ import pytest  # noqa: E402
 import routers.email_routing as r  # noqa: E402
 
 
+_TEST_TOKEN = "test-control-plane-token"
+
+
 @pytest.fixture
-def configured(monkeypatch):
-    """Pretend CF Email Routing is configured for the test."""
+def configured(monkeypatch, sync_client):
+    """Pretend CF Email Routing is configured, and authenticate the client.
+
+    The mutating email routes require the machine credential; these behavioural
+    tests exercise the authenticated path. Unauthenticated behaviour lives in
+    tests/test_email_routing_lockdown.py. The roster is stubbed empty so no test
+    reads the real page_roster.json.
+    """
     monkeypatch.setattr(
         r, "get_config", lambda: {"configured": True, "domain": "rt.example"}
     )
+    monkeypatch.setenv("CONTROL_PLANE_TOKEN", _TEST_TOKEN)
+    monkeypatch.delenv("EMAIL_DESTINATION_DOMAINS", raising=False)
+    monkeypatch.setattr(r, "get_page", lambda iid: None)
+    monkeypatch.setattr(r, "list_all_pages", lambda: [])
+    sync_client.headers["Authorization"] = f"Bearer {_TEST_TOKEN}"
 
 
 def _async(value):
@@ -114,6 +128,8 @@ def _async_raise(exc):
 
 def test_auto_create_requires_configured(sync_client, monkeypatch):
     monkeypatch.setattr(r, "get_config", lambda: {"configured": False, "domain": ""})
+    monkeypatch.setenv("CONTROL_PLANE_TOKEN", _TEST_TOKEN)
+    sync_client.headers["Authorization"] = f"Bearer {_TEST_TOKEN}"
     resp = sync_client.post(
         "/api/email/auto-create",
         json={"integration_id": "i1", "account_name": "Acme", "destination": "a@b.com"},

@@ -96,6 +96,14 @@
   alias/rule/destination and notes stay in the roster cache and never cross
   HTTP there. It also owns the roster machine credential (CONTROL_PLANE_TOKEN
   or APP_API_KEY) required on roster routes no unauthenticated UI calls.
+- `routers/email_routing.py` routes that can change where a page's mail goes
+  (POST /destinations, DELETE /rules/{id}, POST /auto-create) require
+  `require_control_plane_auth` (CONTROL_PLANE_TOKEN only, never the
+  browser-bundled APP_API_KEY; fails closed when unset), normalise the
+  destination once and send that value to Cloudflare, honour the optional EMAIL_DESTINATION_DOMAINS allowlist, and
+  auto-create never re-points an alias a roster page records without
+  `replace: true`. Pipeline mint-alias calls the CF service directly and is
+  not gated by these routes.
 - `burn_server.py` exposes the same typed caption-render route on the posting
   Mac's canonical port-8002 Burn runtime for Rail consumption.
 - `events.md` is the repository's append-only chronological ledger.

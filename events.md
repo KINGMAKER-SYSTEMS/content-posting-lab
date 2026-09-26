@@ -929,4 +929,27 @@ here. A whole-app sweep test calls all 104 non-streaming GET routes
 sentinel credentials; on main it catches /api/roster/, /api/roster/project,
 /api/pipeline/stages and /api/pipeline/{id}/workspace, and here it passes.
 Pages, miniapp/poster content and telegram routes build named safe fields.
+time: [22:10 EDT] [26-09-25]
+agent: [Claude Code] [claude-opus-5-5]
+worktree: [fix/email-routing-lockdown] [/Users/ecfromthedc/dev/wt/lab-email-lockdown]
+type: [security]: email routing routes no longer re-point page mail anonymously
+area: [backend] [security] [testing]
+
+POST /api/email/destinations, DELETE /api/email/rules/{id} and POST
+/api/email/auto-create were unauthenticated in production and chained into a
+forwarding takeover: add and self-verify a destination, delete a page's rule
+(its id had leaked via /api/roster and /api/pipeline), recreate the same
+account_name-derived alias forwarding to that destination, then receive the
+page's TikTok reset mail. All three now require CONTROL_PLANE_TOKEN (Bearer or
+X-API-Key, constant time) and only it: APP_API_KEY ships in the public
+frontend bundle, so it is refused here. They fail closed (503) when
+CONTROL_PLANE_TOKEN is unset. Destinations are normalised once (ASCII, exactly
+one '@', lowercased) and that same value is validated and sent to Cloudflare. An optional
+EMAIL_DESTINATION_DOMAINS allowlist refuses outside domains on add-destination
+and auto-create. Auto-create refuses (409) to re-point an alias that any roster
+page records with a different alias/destination unless replace=true; recreating
+the identical alias -> destination pair still works. The Distribution tab's
+add-destination, create-alias and remove-alias buttons send no credential and
+now fail until operator auth exists; GET status/destinations stay open.
+Pipeline mint-alias/intake call the CF service directly and are unchanged.
 No deploy was performed.
