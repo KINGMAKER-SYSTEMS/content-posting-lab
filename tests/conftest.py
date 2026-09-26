@@ -18,10 +18,15 @@ import pytest
 # failure path; the recorded attempt then fails the test at teardown even if
 # that code swallowed the error. Subprocesses (yt-dlp, ffmpeg) are outside the
 # hook's reach, so tests keep stubbing those as they already do.
+# Reverse lookups (gethostbyaddr, getnameinfo) and sendmsg are covered too;
+# the machine's own hostname counts as local because socket.getfqdn() (used by
+# smtplib and email.utils) reverse-resolves it.
 _NETWORK_EVENTS = frozenset({
     "socket.getaddrinfo", "socket.gethostbyname", "socket.gethostbyname_ex",
-    "socket.connect", "socket.sendto",
+    "socket.gethostbyaddr", "socket.getnameinfo",
+    "socket.connect", "socket.sendto", "socket.sendmsg",
 })
+_SENT_TO = {"socket.connect": 1, "socket.sendto": -1, "socket.sendmsg": 1}
 _network_attempts: list[str] = []
 _network_attempts_lock = threading.Lock()
 
@@ -30,13 +35,22 @@ class NetworkBlockedInTests(OSError):
     pass
 
 
+_OWN_HOSTNAME = socket.gethostname().strip().rstrip(".").lower()
+
+
+def _host_text(host) -> str:
+    if isinstance(host, (bytes, bytearray)):
+        # anyio (httpx.AsyncClient) passes bytes. The idna codec accepts only
+        # "strict", so decode as ASCII: a non-ASCII host stays non-local.
+        return bytes(host).decode("ascii", "replace")
+    return str(host)
+
+
 def _is_local_host(host) -> bool:
     if host is None:
         return True
-    if isinstance(host, bytes):
-        host = host.decode("idna", "replace")
-    host = str(host).strip().rstrip(".").lower()
-    if host in {"", "localhost"} or host.endswith(".localhost"):
+    host = _host_text(host).strip().rstrip(".").lower()
+    if host in {"", "localhost", _OWN_HOSTNAME} or host.endswith(".localhost"):
         return True
     try:
         address = ipaddress.ip_address(host.split("%", 1)[0])
@@ -48,16 +62,18 @@ def _is_local_host(host) -> bool:
 def _network_audit(event, args):
     if event not in _NETWORK_EVENTS:
         return
-    if event in {"socket.connect", "socket.sendto"}:
-        address = args[1] if event == "socket.connect" else args[-1]
-        if not isinstance(address, tuple) or not address:
-            return  # AF_UNIX paths and other local socket families
-        host = address[0]
+    if event in _SENT_TO:
+        address = args[_SENT_TO[event]]
+    elif event == "socket.getnameinfo":
+        address = args[0]
     else:
-        host = args[0]
+        address = (args[0],)
+    if not isinstance(address, tuple) or not address:
+        return  # AF_UNIX paths, connected sendmsg (None) and other local families
+    host = address[0]
     if _is_local_host(host):
         return
-    target = f"{event} {host!r}"
+    target = f"{event} {_host_text(host)!r}"
     with _network_attempts_lock:
         _network_attempts.append(target)
     raise NetworkBlockedInTests(f"test network guard: refused {target}; stub the call")
@@ -76,6 +92,9 @@ def no_real_network():
         _network_attempts.clear()
     if attempts:
         pytest.fail("test attempted real network access: " + "; ".join(attempts))
+
+
+# ── End offline guard
 
 
 @pytest.fixture
