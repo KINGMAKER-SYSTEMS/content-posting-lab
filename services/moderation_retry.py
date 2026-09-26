@@ -1,10 +1,11 @@
 """Bounded, class-aware retry of a confirmed provider moderation refusal.
 
 A confirmed refusal (Replicate "failed" with a prediction id, classified
-``moderation``, e.g. E005) may be retried at most ``RETRIES_PER_CALL`` times
-with a deterministic prompt rewording. Every other failure class keeps its
-existing fail-fast behaviour: retrying credit, auth, quota or unknown faults
-spends money for nothing.
+``moderation``) whose code is exactly E005 may be retried at most
+``RETRIES_PER_CALL`` times with a deterministic prompt rewording. Any other
+moderation-class text stays a terminal refusal, and every other failure class
+keeps its existing fail-fast behaviour: retrying credit, auth, quota or unknown
+faults spends money for nothing.
 
 No alternate engine is used: swapping the engine changes the recipe's visual
 contract, catalog version and cost, so the explicit allowlist stays empty.
@@ -28,34 +29,57 @@ DEFAULT_DAILY_BUDGET = 6
 RETRIES_EXHAUSTED = "moderation_retries_exhausted"
 BUDGET_EXHAUSTED = "moderation_retry_budget_exhausted"
 AUTH_NOT_RETRIED = "moderation_provider_auth_not_retried"
+NOT_E005_NOT_RETRIED = "moderation_not_e005_not_retried"
 
 # Ordered, fixed rewordings. Variant k (attempt k >= 1) of a call is a pure
-# function of the base prompt and k. Replacements apply only where the phrase
-# occurs; the observed silhouette E005 trigger was the "featureless" / "no
-# clothing detail" wording of unclothed-looking embracing bodies.
-PROMPT_VARIANTS: tuple[tuple[str, tuple[tuple[str, str], ...], str], ...] = (
+# function of the base prompt and k. A variant never introduces a subject the
+# prompt did not already have: the neutral suffix applies to every prompt, and
+# the person-specific wording (replacements and clause) applies only when the
+# base prompt already depicts people. The observed silhouette E005 trigger was
+# the "featureless" / "no clothing detail" wording of embracing bodies.
+_PERSON_TERMS = re.compile(
+    r"\b(?:people|persons?|man|men|woman|women|adults?|couples?|lovers?|figures?"
+    r"|bod(?:y|ies)|humans?|child(?:ren)?|girls?|boys?|dancers?|someone|everyone)\b",
+    re.I,
+)
+
+# (variant id, person-only replacements, neutral suffix, person-only clause)
+PROMPT_VARIANTS: tuple[tuple[str, tuple[tuple[str, str], ...], str, str], ...] = (
     (
-        "clothed-family-safe.v1",
+        "family-safe.v2",
         (),
-        "Fully clothed figures, family-friendly, non-explicit.",
+        "Family-friendly, tasteful and non-explicit.",
+        "Everyone shown is fully clothed.",
     ),
     (
-        "backlit-silhouette-shapes.v1",
+        "backlit-shapes.v2",
         (
             ("pure black featureless full-body silhouettes",
              "solid black backlit silhouette shapes of fully clothed adults"),
             ("no clothing detail", "clothing shown only as solid black shape"),
             ("featureless", "solid black backlit"),
         ),
+        "Calm, understated scene with no graphic detail; family-friendly and non-explicit.",
         "Render every person as a solid black backlit silhouette shape of a fully "
-        "clothed adult with no body detail; family-friendly and non-explicit.",
+        "clothed adult with no body detail.",
     ),
 )
 
 # A moderation-class message that is really an authentication failure inside
 # the provider's own moderation check (observed 2026-09-25: "Moderation check
-# failed: Error code: 401 ... account ... deactivated") would fail again.
+# failed: Error code: 401 ... account ... deactivated") would fail again. The
+# classifier now names that shape provider_auth; this stays as a second guard.
 _AUTH_IN_MODERATION = re.compile(r"error code:\s*40[13]\b|deactivated", re.I)
+
+# The ONLY retry trigger: Replicate's own content refusal code, E005 ("The
+# input or output was flagged as sensitive. (E005)"; 23/23 confirmed refusals
+# in the 2026-09-25 census). The broad moderation class also matches any
+# "moderation|safety|nsfw|flagged" text, e.g. a 429/5xx from the provider's
+# moderation dependency or a failed prediction's logs echoing a safety
+# setting; retrying those spends money for nothing. A message that carries an
+# embedded HTTP status is a dependency failure even if it also names E005.
+_E005 = re.compile(r"\((?:code:\s*)?E005\)")
+_EMBEDDED_HTTP_STATUS = re.compile(r'error code:\s*\d{3}\b|"status":\s*\d{3}\b', re.I)
 
 # Flat per-attempt cost estimates in USD, keyed by Replicate model. A refused
 # prediction is billed like a successful one, so a refused attempt records the
@@ -80,10 +104,12 @@ def variant_prompt(base_prompt: str, attempt: int) -> tuple[str, str | None]:
         raise ValueError("moderation_retry_attempt_invalid")
     if attempt == 0:
         return base_prompt, None
-    variant_id, replacements, suffix = PROMPT_VARIANTS[attempt - 1]
+    variant_id, replacements, suffix, person_clause = PROMPT_VARIANTS[attempt - 1]
     prompt = base_prompt
-    for old, new in replacements:
-        prompt = prompt.replace(old, new)
+    if _PERSON_TERMS.search(base_prompt):
+        for old, new in replacements:
+            prompt = prompt.replace(old, new)
+        suffix = f"{suffix} {person_clause}"
     prompt = prompt.rstrip()
     separator = " " if prompt.endswith((".", "!", "?")) else ". "
     return prompt + separator + suffix, variant_id
@@ -117,8 +143,16 @@ def confirmed_refusal(error_class: str, request_id: Any, detail: str) -> bool:
             and detail.startswith("Replicate failed:"))
 
 
-def retryable_refusal(detail: str) -> bool:
-    return not _AUTH_IN_MODERATION.search(detail)
+def retry_blocked(detail: str) -> str | None:
+    """Why a confirmed refusal must NOT be retried, or None when it may be.
+
+    Only an exact E005 refusal is retried; everything else stays terminal.
+    """
+    if _AUTH_IN_MODERATION.search(detail):
+        return AUTH_NOT_RETRIED
+    if not _E005.search(detail) or _EMBEDDED_HTTP_STATUS.search(detail):
+        return NOT_E005_NOT_RETRIED
+    return None
 
 
 def retries_used(store: dict[str, Any], page_id: str, utc_day: str) -> int:

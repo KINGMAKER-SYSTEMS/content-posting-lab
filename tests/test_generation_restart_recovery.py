@@ -153,7 +153,8 @@ async def test_restart_does_not_reset_processing_deadline(finished):
                                 ("POST", "/v1/predictions/paid-id/cancel")]
 
 
-def install_journal_provider(monkeypatch, *, interrupt_poll=None, interrupt_render=None, refuse=None):
+def install_journal_provider(monkeypatch, *, interrupt_poll=None, interrupt_render=None, refuse=None,
+                             refusal=None):
     calls = []
     seen = {"creates": 0, "interrupted": False}
 
@@ -167,7 +168,7 @@ def install_journal_provider(monkeypatch, *, interrupt_poll=None, interrupt_rend
             seen["interrupted"] = True
             raise asyncio.CancelledError("generation_runtime_shutdown")
         if prediction == refuse:
-            return status("failed", error="The input or output was flagged as sensitive. (E005)")
+            return status("failed", **(refusal or {"error": "The input or output was flagged as sensitive. (E005)"}))
         return status("succeeded", output="https://replicate.delivery/" + prediction)
 
     async def generate(job_id, index, provider, prompt, aspect_ratio, resolution, duration,

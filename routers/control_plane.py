@@ -1809,8 +1809,8 @@ async def _run_owned_dossier_generation(job_id: str) -> None:
                             "outcome": "refused" if refused else "failed"})
                 if not refused:
                     break
-                if not moderation_retry.retryable_refusal(provider_error):
-                    terminal = moderation_retry.AUTH_NOT_RETRIED
+                terminal = moderation_retry.retry_blocked(provider_error)
+                if terminal is not None:
                     break
                 await asyncio.to_thread(_update_job, job_id,
                     generationAttempts=attempts,

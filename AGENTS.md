@@ -368,10 +368,16 @@
   only; the Control Plane's strict status schema is unchanged.
 - AI generation reserves prompt combinations only for queued or running jobs.
   A confirmed Replicate moderation refusal (class `moderation`, prediction id,
-  "Replicate failed:") retains its prediction and may be retried at most twice
+  "Replicate failed:") retains its prediction. Only an exact E005 refusal
+  (with no embedded HTTP status) may be retried, at most twice
   for that planned call (`services/moderation_retry.py`), each time with the
   next fixed, deterministic prompt rewording; provider, model, safety settings
   and the immutable prompt plan never change and no alternate engine is used.
+  Other moderation-class text (a 429/5xx from the provider's moderation
+  dependency, failed-prediction logs that mention "safety") is never retried.
+  A rewording never adds a subject the prompt lacks: person wording applies
+  only to prompts that already depict people. The per-attempt cost table is
+  pinned equal to the `recipes/generation` catalog by a test.
   Retries draw on a per-page UTC-day budget
   (`CONTENT_LAB_MODERATION_RETRY_DAILY_BUDGET`, default 6, 0 disables),
   counted from every job's durable `generationAttempts` rows; first attempts
@@ -380,13 +386,14 @@
   and `promptVariant`; recovery accepts a variant hash only from a succeeded
   attempt row of that call. Each attempt records its estimated cost, and the
   job keeps `moderationRetryCostUsd`. When retries or budget are spent (or the
-  refusal is an auth failure inside the moderation check), the refusal stays
+  refusal is not an exact E005), the refusal stays
   terminal with a named `terminal` reason in `providerFailures`, and only the
   other distinct candidates of the original plan continue; the status contract
   is unchanged. Persist every failure in the private job store and count only
-  successful calls as completed. Credit (402), provider auth (401/403),
-  transport, ambiguous submission and other failures are never retried and
-  still stop the remaining plan.
+  successful calls as completed. Credit (402), provider auth (401/403,
+  including "Error code: 401" raised inside the moderation check), transport,
+  ambiguous submission and other failures are never retried and still stop the
+  remaining plan.
   Provider failures preserve already treated, claimed outputs as a
   completed underfilled batch, retaining the provider error and planned/completed
   call counts. Artifact count stays truthful; downstream refill plans the deficit
