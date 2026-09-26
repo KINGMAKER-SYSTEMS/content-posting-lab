@@ -367,12 +367,26 @@
   provider, model, call index, prediction id, bounded detail) in the job store
   only; the Control Plane's strict status schema is unchanged.
 - AI generation reserves prompt combinations only for queued or running jobs.
-  A confirmed Replicate moderation refusal retains its prediction and never
-  retries or changes its prompt, provider or safety settings. Continue only
-  through the other distinct candidates in that job's original bounded plan;
-  do not buy replacement calls. Persist every failure in the private job store
-  and count only successful calls as completed. Credit, transport, ambiguous
-  submission and other failures still stop the remaining plan.
+  A confirmed Replicate moderation refusal (class `moderation`, prediction id,
+  "Replicate failed:") retains its prediction and may be retried at most twice
+  for that planned call (`services/moderation_retry.py`), each time with the
+  next fixed, deterministic prompt rewording; provider, model, safety settings
+  and the immutable prompt plan never change and no alternate engine is used.
+  Retries draw on a per-page UTC-day budget
+  (`CONTENT_LAB_MODERATION_RETRY_DAILY_BUDGET`, default 6, 0 disables),
+  counted from every job's durable `generationAttempts` rows; first attempts
+  never consume it. Each retry has its own prediction checkpoint key `i:k`.
+  A retried clip records the sent `promptHash`, the plan's `basePromptHash`
+  and `promptVariant`; recovery accepts a variant hash only from a succeeded
+  attempt row of that call. Each attempt records its estimated cost, and the
+  job keeps `moderationRetryCostUsd`. When retries or budget are spent (or the
+  refusal is an auth failure inside the moderation check), the refusal stays
+  terminal with a named `terminal` reason in `providerFailures`, and only the
+  other distinct candidates of the original plan continue; the status contract
+  is unchanged. Persist every failure in the private job store and count only
+  successful calls as completed. Credit (402), provider auth (401/403),
+  transport, ambiguous submission and other failures are never retried and
+  still stop the remaining plan.
   Provider failures preserve already treated, claimed outputs as a
   completed underfilled batch, retaining the provider error and planned/completed
   call counts. Artifact count stays truthful; downstream refill plans the deficit
@@ -439,6 +453,9 @@
 - Run `pytest -q tests/test_generation_restart_recovery.py tests/test_replicate_generation_retry.py`
   for paid-request identity, ambiguous submission, shutdown, crop recovery,
   processing deadlines and cross-process checkpoint transaction checks.
+- Run `pytest -q tests/test_generation_moderation_retry.py tests/test_generation_moderation_isolation.py`
+  for bounded varied moderation retries, the daily retry budget, fail-fast
+  credit/auth classes and restart of a retried call.
 - Run `pytest -q tests/test_post_render_jobs.py tests/test_source_treatment.py`
   for durable crash/retry/lock/auth/source-grant and applied-video provenance checks.
 - Run `pytest -q tests/test_post_render.py` for prepared rendering, actual MP4

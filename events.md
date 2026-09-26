@@ -1017,3 +1017,23 @@ tests answer manifest reads as an unreachable vault.
 Production needs CAMPAIGN_HUB_URL and SHIPSTREAM_VAULT_ORIGIN set before this
 deploys; neither was set on 2026-09-26. No deploy was performed.
 
+_________________________________________________________________________________
+time: [04:59 EDT] [26-09-26]
+agent: [Claude Code] [claude-opus-5-5]
+worktree: [claude/lab-moderation-retry] [/Users/ecfromthedc/dev/seats/LAB-MODRETRY]
+type: [feature-request] [supply self-healing]: Bounded varied retry of a confirmed moderation refusal
+area: [backend] [testing]
+
+A confirmed Replicate moderation refusal (E005) on a planned generation call
+is now retried at most twice, each time with the next fixed deterministic
+prompt rewording (`services/moderation_retry.py`), on the same engine, model
+and safety settings. Retries draw on a per-page UTC-day budget
+(`CONTENT_LAB_MODERATION_RETRY_DAILY_BUDGET`, default 6) counted from durable
+`generationAttempts` rows; first attempts never consume it. Each retry has its
+own prediction checkpoint, records its estimated cost, and a retried clip
+records the sent prompt hash plus the plan's base hash and variant id, which
+restart recovery accepts only from a succeeded attempt row. Credit (402),
+provider auth (401/403, new `provider_auth` class) and all other classes still
+fail fast with no retry; the job status contract is unchanged. New tests in
+`tests/test_generation_moderation_retry.py` fail on main and pass here. No
+deployment was performed.

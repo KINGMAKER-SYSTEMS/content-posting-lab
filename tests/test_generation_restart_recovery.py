@@ -301,6 +301,7 @@ def test_status_restarts_only_exact_page_and_checkpointed_active_job(lab, monkey
 
 @pytest.mark.asyncio
 async def test_restart_keeps_refusal_terminal_and_continues_original_next_candidate(lab, monkeypatch):
+    monkeypatch.setenv("CONTENT_LAB_MODERATION_RETRY_DAILY_BUDGET", "0")  # no varied retry available
     job_id, _, _ = queue_silhouettes(lab, monkeypatch, 2)
     calls = install_journal_provider(monkeypatch, interrupt_poll="p2", refuse="p1")
     with pytest.raises(asyncio.CancelledError):
