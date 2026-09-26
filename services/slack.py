@@ -82,6 +82,8 @@ async def post_message(
 
 
 PASSWORD_POINTER = "see Notion"
+# Login email and free-text notes follow the same rule as the password.
+NOTION_POINTER = "see Notion"
 
 
 async def post_pipeline_handoff(page: dict[str, Any]) -> dict[str, Any]:
@@ -92,9 +94,10 @@ async def post_pipeline_handoff(page: dict[str, Any]) -> dict[str, Any]:
     pipeline-specific one isn't set.
 
     The bundle includes what the recipient needs to start work: handle,
-    email, poster, sounds reference, notes, Notion link. It never carries the
-    account password: Slack history is not a credential store, so the
-    message points at Notion (the canonical row) instead.
+    poster, page type/group, sounds reference and the Notion link. It never
+    carries the account login email, password or free-text notes (notes can
+    hold credentials): Slack history is not a credential store, so those
+    fields point at Notion, the canonical row, instead.
     """
     pipeline = (page.get("pipeline") or "").strip()
     webhook_url = _webhook_for_pipeline(pipeline)
@@ -115,11 +118,10 @@ async def post_pipeline_handoff(page: dict[str, Any]) -> dict[str, Any]:
         title = f"{pipeline or 'Pipeline'} handoff"
 
     handle = page.get("name") or page.get("integration_id", "unknown")
-    email = page.get("email_alias") or page.get("signup_email") or "(none)"
+    email = NOTION_POINTER
     password = PASSWORD_POINTER
     poster = page.get("poster_name") or "(unassigned)"
     sounds = page.get("sounds_reference") or ""
-    notes = page.get("notes") or ""
     page_type = page.get("page_type") or ""
     group = page.get("group_label") or page.get("group") or ""
     notion_pid = (page.get("notion_page_id") or "").replace("-", "")
@@ -146,8 +148,8 @@ async def post_pipeline_handoff(page: dict[str, Any]) -> dict[str, Any]:
             "type": "section",
             "fields": [
                 {"type": "mrkdwn", "text": f"*Handle:*\n`{handle}`"},
-                {"type": "mrkdwn", "text": f"*Email:*\n`{email}`"},
-                {"type": "mrkdwn", "text": f"*Password:*\n`{password}`"},
+                {"type": "mrkdwn", "text": f"*Email:*\n{email}"},
+                {"type": "mrkdwn", "text": f"*Password:*\n{password}"},
                 {"type": "mrkdwn", "text": f"*Poster:*\n{poster}"},
             ],
         },
@@ -166,12 +168,6 @@ async def post_pipeline_handoff(page: dict[str, Any]) -> dict[str, Any]:
         blocks.append({
             "type": "section",
             "text": {"type": "mrkdwn", "text": f"*Sounds reference:*\n{sounds}"},
-        })
-
-    if notes:
-        blocks.append({
-            "type": "section",
-            "text": {"type": "mrkdwn", "text": f"*Notes:*\n{notes}"},
         })
 
     if notion_url:

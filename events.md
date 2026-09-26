@@ -953,3 +953,39 @@ add-destination, create-alias and remove-alias buttons send no credential and
 now fail until operator auth exists; GET status/destinations stay open.
 Pipeline mint-alias/intake call the CF service directly and are unchanged.
 No deploy was performed.
+
+_________________________________________________________________________________
+time: [23:20 EDT] [26-09-25]
+agent: [Claude Code] [claude-opus-5-5]
+worktree: [fix/email-destinations-and-slack-scrub] [/Users/ecfromthedc/dev/wt/lab-email-dest-slack]
+type: [security]: team inbox list and Slack handoff stop carrying addresses
+area: [backend] [security] [testing]
+
+Follow-up to #176, stacked on it for require_control_plane_auth. GET
+/api/email/destinations served every Cloudflare forwarding destination (the
+team's real inboxes) to anonymous callers; it now requires CONTROL_PLANE_TOKEN
+and fails closed. The Distribution Email tab reads it without a credential and
+shows an empty destination list; Pipeline mint-alias reads destinations
+server-side and is unaffected. The Slack pipeline handoff no longer posts the
+page login email, password or free-text notes (notes can hold backup codes);
+those fields say "see Notion" and the Notion button remains. An anonymous
+POST /api/pipeline/intake is refused with a generic 409, before any mint,
+Notion or roster write, when its handle names an existing roster page (under
+both the intake id and the Notion-sync id) or its notion_page_id names a roster
+page that is not an unfinished step-1 placeholder; completing a placeholder
+anonymously also requires that placeholder's own alias, and a placeholder
+synced before step 2 (handle == email name) may still be completed. Before
+this, a fresh handle plus a live page's notion_page_id renamed that Notion row,
+the sync pruned the live roster page and its rule link, and /setup wrote the
+caller's alias into the row's Notion email. The notion_page_id is first
+reduced to one canonical Notion page id (32 lowercase hex, dashes optional);
+anything else, such as a '#', '?', '/', '%', inner whitespace or non-ASCII
+digits, is a 400 for every caller before any lookup or write, and that same
+canonical value is used for the roster check and every Notion call. The Notion
+write-back helper also refuses a non-canonical id before any request. A page
+whose Notion row is absent from the roster cannot be matched by the ownership
+check. CONTROL_PLANE_TOKEN holders may override the ownership check, not the
+id format. The mint-alias and
+auto-create 409s no longer echo the alias or a page's recorded alias. No
+deploy was performed.
+

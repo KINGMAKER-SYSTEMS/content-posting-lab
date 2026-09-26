@@ -214,10 +214,7 @@ def _refuse_silent_repoint(req: AutoCreateRequest, full_alias: str, destination:
         if not _same_forwarding(page, full_alias, destination):
             raise HTTPException(
                 status_code=409,
-                detail=(
-                    f"Page {req.integration_id} already has email alias "
-                    f"{page.get('email_alias')}; pass replace=true to re-point it"
-                ),
+                detail="Page already has an email alias; pass replace=true to re-point it",
             )
     for other in list_all_pages():
         if (other.get("email_alias") or "").strip().lower() != full_alias.lower():
@@ -226,8 +223,8 @@ def _refuse_silent_repoint(req: AutoCreateRequest, full_alias: str, destination:
             raise HTTPException(
                 status_code=409,
                 detail=(
-                    f"Alias {full_alias} is recorded for another roster page with a "
-                    f"different destination; pass replace=true to re-point it"
+                    "Alias is recorded for another roster page with a different "
+                    "destination; pass replace=true to re-point it"
                 ),
             )
 
@@ -259,7 +256,8 @@ async def auto_create_for_page(req: AutoCreateRequest):
     for rule in existing_rules:
         for matcher in rule.get("matchers", []):
             if matcher.get("value") == full_alias:
-                raise HTTPException(status_code=409, detail=f"Alias {full_alias} already exists")
+                # Generic: never echo the alias (existence oracle).
+                raise HTTPException(status_code=409, detail="Alias already exists")
 
     # Reject destinations CF hasn't verified — a rule pointing at an unverified
     # address silently drops mail, breaking the sale-intake handoff.
@@ -297,10 +295,16 @@ async def auto_create_for_page(req: AutoCreateRequest):
 # ── Destinations ─────────────────────────────────────────────────────────────
 
 
-@router.get("/destinations")
+@router.get("/destinations", dependencies=[Depends(require_control_plane_auth)])
 @allow_credential_keys("email")  # team inboxes the operator mints aliases to
 async def get_destinations():
-    """List verified destination addresses."""
+    """List destination addresses (the team's real inboxes).
+
+    Machine credential required: anonymously this served every forwarding
+    inbox address to the public internet. The Distribution Email tab reads it
+    without a credential and now shows an empty list; Pipeline mint-alias
+    reads destinations server-side and is unaffected.
+    """
     _require_configured()
     with _cf_upstream():
         destinations = await list_destinations()

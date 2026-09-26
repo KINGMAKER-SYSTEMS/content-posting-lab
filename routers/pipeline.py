@@ -21,7 +21,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 import httpx
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel
 
 from services import r2
@@ -34,8 +34,10 @@ from services.email_routing import (
     list_rules as cf_list_rules,
 )
 from services.notion_pages import (
+    canonical_notion_page_id,
     create_intake_page,
     is_configured as notion_configured,
+    mint_integration_id,
     sync_into_roster,
     update_intake_page,
     update_page_drive_folder,
@@ -43,6 +45,7 @@ from services.notion_pages import (
     update_page_status,
 )
 from services.poster_router import resolve_poster_for_page
+from services.roster_public import has_control_plane_credential
 from services.roster import get_page, list_all_pages, set_page
 from services.roster_public import (
     CredentialGuardRoute,
@@ -220,7 +223,8 @@ async def _mint_random_alias(
         if full_alias in existing_aliases:
             raise HTTPException(
                 status_code=409,
-                detail=f"Email '{full_alias}' is already taken — pick a different name",
+                # Generic: never echo the alias (existence oracle).
+                detail="That email name is already taken — pick a different name",
             )
     else:
         alias_local = _random_alias_local()
@@ -339,9 +343,80 @@ async def mint_random_alias_endpoint(req: MintAliasRequest | None = None) -> Min
     )
 
 
+def _existing_page_for_handle(account_username: str) -> dict | None:
+    """The roster page an intake for this handle would write to, if any.
+
+    Intake writes ``acct:{_slug_alias(handle)}``; the Notion sync mints
+    ``acct:{slugify(handle)}``. They differ for handles with '.' or '_', so
+    both are checked.
+    """
+    for integration_id in (
+        f"acct:{_slug_alias(account_username)}",
+        mint_integration_id(account_username),
+    ):
+        page = get_page(integration_id)
+        if page:
+            return page
+    return None
+
+
+_PLACEHOLDER_STATUS = "New — Pending Setup"
+_INTAKE_CONFLICT = "An account with this handle already exists — ask an operator to update it"
+
+
+def _is_unfinished_placeholder(page: dict) -> bool:
+    """A step-1 (mint-alias) placeholder that step 2 has not completed yet.
+
+    Still pending, never linked to a CF rule, and still titled with its own
+    alias local part (step 2 renames it to the real handle). A live or
+    renamed page fails at least one of these.
+    """
+    signup = str(page.get("signup_email") or "").strip().lower()
+    local = signup.partition("@")[0] if "@" in signup else ""
+    return (
+        (page.get("status") or "") == _PLACEHOLDER_STATUS
+        and not page.get("email_rule_id")
+        and bool(local)
+        and str(page.get("name") or "").strip().lower() == local
+    )
+
+
+def _refuse_anonymous_intake_tamper(req: "IntakeRequest", notion_page_id: str) -> None:
+    """Refuse (409) an anonymous intake that would touch an existing page's identity.
+
+    1. ``notion_page_id`` naming a roster page that is not an unfinished
+       placeholder: intake would rename that live row, the sync would prune its
+       roster page (dropping its rule link) and /setup would write the caller's
+       alias into its Notion email. Completing a placeholder also requires the
+       caller to send that placeholder's own alias.
+    2. ``account_username`` naming an existing page, unless that page is the
+       same unfinished placeholder this request is completing (step 1's row
+       synced before step 2 with handle == email name).
+    """
+    own: dict | None = None
+    if notion_page_id:  # already canonical (see submit_intake)
+        for page in list_all_pages():
+            if canonical_notion_page_id(page.get("notion_page_id")) != notion_page_id:
+                continue
+            alias = (req.email_alias or "").strip().lower()
+            signup = str(page.get("signup_email") or "").strip().lower()
+            if not _is_unfinished_placeholder(page) or alias != signup:
+                raise HTTPException(status_code=409, detail=_INTAKE_CONFLICT)
+            own = page
+    existing = _existing_page_for_handle(req.account_username)
+    if existing and not (
+        own is not None and existing.get("integration_id") == own.get("integration_id")
+    ):
+        raise HTTPException(status_code=409, detail=_INTAKE_CONFLICT)
+
+
 @router.post("/intake")
 @allow_credential_keys("email_alias", "fwd_destination")  # echo of this request's own alias
-async def submit_intake(req: IntakeRequest):
+async def submit_intake(
+    req: IntakeRequest,
+    authorization: str | None = Header(default=None),
+    x_api_key: str | None = Header(default=None),
+):
     """Step 2 of intake: fill in TikTok handle + page details.
 
     If `notion_page_id` is provided (step 1 already created the placeholder
@@ -359,12 +434,26 @@ async def submit_intake(req: IntakeRequest):
     if not req.account_username.strip():
         raise HTTPException(status_code=400, detail="account_username is required")
 
+    # One canonical Notion page id (32 lowercase hex) or a 400, for every
+    # caller: the same value drives the ownership check below and every
+    # Notion call, so the raw input never reaches a Notion URL.
+    notion_page_id = ""
+    if (req.notion_page_id or "").strip():
+        notion_page_id = canonical_notion_page_id(req.notion_page_id) or ""
+        if not notion_page_id:
+            raise HTTPException(status_code=400, detail="notion_page_id must be a Notion page id")
+
+    # An anonymous intake must not touch an existing page's email identity,
+    # by handle or by notion_page_id. Refused before any mint, Notion or
+    # roster write; an operator with CONTROL_PLANE_TOKEN may override.
+    if not has_control_plane_credential(authorization, x_api_key):
+        _refuse_anonymous_intake_tamper(req, notion_page_id)
+
     # Email alias is expected to have been minted in step 1 (POST /mint-alias)
     # before the user did the TikTok signup. If it's missing here, mint one
     # now as a fallback (covers cases where step 1 was skipped or failed).
     email_alias = (req.email_alias or "").strip()
     fwd_destination = (req.fwd_destination or "").strip()
-    notion_page_id = (req.notion_page_id or "").strip()
     rule_id = ""
 
     if not email_alias:

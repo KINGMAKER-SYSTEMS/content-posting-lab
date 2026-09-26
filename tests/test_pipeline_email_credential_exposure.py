@@ -204,7 +204,7 @@ def test_intake_echoes_its_own_alias_and_not_the_synced_roster(client, monkeypat
         "account_username": "newhandle",
         "email_alias": "fresh-02@rt.example",
         "fwd_destination": "team@rt.example",
-        "notion_page_id": "notion-new",
+        "notion_page_id": "0123456789abcdef0123456789abcdef",  # canonical id (#177 N8)
     })
     assert r.status_code == 200
     body = r.json()
@@ -345,9 +345,11 @@ def test_slack_handoff_never_carries_the_password(monkeypatch):
     everything = sent["text"] + repr(sent["blocks"])
     assert SENTINELS["password"] not in everything
     assert "see Notion" in everything
-    # The handle and login email still reach the recipient.
+    # The handle still reaches the recipient; since #177 the login email and
+    # notes do not (they point at Notion like the password).
     assert "acct1" in everything
-    assert SENTINELS["email_alias"] in everything
+    for key in ("email_alias", "signup_email", "notes"):
+        assert SENTINELS[key] not in everything, key
 
 
 def test_rule_mismatch_409_does_not_echo_the_linked_rule_id(client, cf):
