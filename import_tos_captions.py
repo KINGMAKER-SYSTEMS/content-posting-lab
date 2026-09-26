@@ -13,7 +13,7 @@ Mood is classified with the lab's existing scraper.sentiment_analyzer
 (reuses OPENAI_API_KEY from .env). Pass --no-mood to skip it.
 
 Usage:
-    SUPABASE_URL=https://imxflhdsfxkfmvsufwvr.supabase.co \
+    SUPABASE_URL=https://<project-ref>.supabase.co \
     SUPABASE_KEY=sb_publishable_... \
     python3 import_tos_captions.py --project my-project --all
     python3 import_tos_captions.py --project my-project --sound-id 7649157011083134977

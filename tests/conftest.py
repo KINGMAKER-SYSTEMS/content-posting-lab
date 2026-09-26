@@ -1,9 +1,117 @@
+import contextlib
+import ipaddress
+import socket
+import sys
+import threading
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
 import httpx
 import pytest
-from fastapi.testclient import TestClient
+
+
+# ── Offline guard ─────────────────────────────────────────────────────────
+# Tests reach only loopback. A Python audit hook sees every DNS lookup and
+# socket connect made in this process, including through references bound
+# before a test could monkeypatch them, and refuses any non-loopback target.
+# The refusal is an OSError so code under test takes its ordinary network
+# failure path; the recorded attempt then fails the test at teardown even if
+# that code swallowed the error. Subprocesses (yt-dlp, ffmpeg) are outside the
+# hook's reach, so tests keep stubbing those as they already do.
+# Reverse lookups (gethostbyaddr, getnameinfo) and sendmsg are covered too;
+# the machine's own hostname counts as local because socket.getfqdn() (used by
+# smtplib and email.utils) reverse-resolves it.
+_NETWORK_EVENTS = frozenset({
+    "socket.getaddrinfo", "socket.gethostbyname", "socket.gethostbyname_ex",
+    "socket.gethostbyaddr", "socket.getnameinfo",
+    "socket.connect", "socket.sendto", "socket.sendmsg",
+})
+_SENT_TO = {"socket.connect": 1, "socket.sendto": -1, "socket.sendmsg": 1}
+_network_attempts: list[str] = []
+_network_attempts_lock = threading.Lock()
+
+
+class NetworkBlockedInTests(OSError):
+    pass
+
+
+_OWN_HOSTNAME = socket.gethostname().strip().rstrip(".").lower()
+
+
+def _host_text(host) -> str:
+    if isinstance(host, (bytes, bytearray)):
+        # anyio (httpx.AsyncClient) passes bytes. The idna codec accepts only
+        # "strict", so decode as ASCII: a non-ASCII host stays non-local.
+        return bytes(host).decode("ascii", "replace")
+    return str(host)
+
+
+def _is_local_host(host) -> bool:
+    if host is None:
+        return True
+    host = _host_text(host).strip().rstrip(".").lower()
+    if host in {"", "localhost", _OWN_HOSTNAME} or host.endswith(".localhost"):
+        return True
+    try:
+        address = ipaddress.ip_address(host.split("%", 1)[0])
+    except ValueError:
+        return False
+    return address.is_loopback or address.is_unspecified
+
+
+def _network_audit(event, args):
+    if event not in _NETWORK_EVENTS:
+        return
+    if event in _SENT_TO:
+        address = args[_SENT_TO[event]]
+    elif event == "socket.getnameinfo":
+        address = args[0]
+    else:
+        address = (args[0],)
+    if not isinstance(address, tuple) or not address:
+        return  # AF_UNIX paths, connected sendmsg (None) and other local families
+    host = address[0]
+    if _is_local_host(host):
+        return
+    target = f"{event} {_host_text(host)!r}"
+    with _network_attempts_lock:
+        _network_attempts.append(target)
+    raise NetworkBlockedInTests(f"test network guard: refused {target}; stub the call")
+
+
+sys.addaudithook(_network_audit)
+
+
+@pytest.fixture(autouse=True)
+def no_real_network():
+    with _network_attempts_lock:
+        _network_attempts.clear()
+    yield
+    with _network_attempts_lock:
+        attempts = list(_network_attempts)
+        _network_attempts.clear()
+    if attempts:
+        pytest.fail("test attempted real network access: " + "; ".join(attempts))
+
+
+# ── End offline guard
+
+
+@pytest.fixture
+def network_guard_attempts():
+    """The live attempt record, for the guard's own tests to inspect and clear."""
+    return _network_attempts
+
+
+@pytest.fixture(autouse=True)
+def no_production_service_env(monkeypatch):
+    """No test inherits a Campaign Hub origin from the shell or a local .env,
+    and the ShipStream vault origin is a dummy host that never resolves."""
+    monkeypatch.delenv("CAMPAIGN_HUB_URL", raising=False)
+    monkeypatch.setenv("SHIPSTREAM_VAULT_ORIGIN", "https://shipstream.test")
+
+
+from fastapi.testclient import TestClient  # noqa: E402
 
 import app as app_module
 import project_manager
@@ -66,6 +174,37 @@ def no_live_codex_image(monkeypatch):
     except Exception:
         return
     monkeypatch.setattr(abn_factory, "_codex_image", lambda *a, **k: None, raising=False)
+
+
+@pytest.fixture(autouse=True, scope="session")
+def no_autonomous_abn_factory():
+    """A TestClient lifespan must not start the autonomous ABN factory: its
+    loop scrapes HN, GitHub, Reddit and lobste.rs for real (the offline guard
+    refuses those lookups and fails the test). Session scope, so module-scoped
+    clients are covered too. Tests that exercise the factory call
+    start_factory, run_factory_loop or app.lifespan directly and are
+    unaffected; only the TestClient-driven lifespan gets the idle start."""
+    import services.abn_factory as abn_factory
+
+    real_lifespan = app.router.lifespan_context
+
+    async def idle_start_factory():
+        return None
+
+    @contextlib.asynccontextmanager
+    async def lifespan_without_factory(app_):
+        real_start = abn_factory.start_factory
+        abn_factory.start_factory = idle_start_factory
+        try:
+            async with real_lifespan(app_) as state:
+                abn_factory.start_factory = real_start
+                yield state
+        finally:
+            abn_factory.start_factory = real_start
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(app.router, "lifespan_context", lifespan_without_factory)
+        yield
 
 
 @pytest.fixture

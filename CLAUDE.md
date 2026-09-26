@@ -312,7 +312,8 @@ Some pages use CSS-based tab switching (display:none for inactive) to preserve s
 | `MINIAPP_INITDATA_MAX_AGE` | Max age (s) of Mini App `initData` auth_date; `0` disables (default `86400`) |
 | `MINIAPP_AGENT_KEY` | If set, Mini App agent endpoints require matching `X-Agent-Key` |
 | `MINIAPP_DEV_AUTH` | `1` enables the `X-Dev-Poster-Id` bypass — **local dev only** |
-| `CAMPAIGN_HUB_URL` | Campaign Hub base URL (default deployed URL) |
+| `CAMPAIGN_HUB_URL` | Campaign Hub base URL. Required, no default: unset = sound sync/prepare answer 503, library calls raise `ConfigError` |
+| `SHIPSTREAM_VAULT_ORIGIN` | ShipStream vault origin (https, no path). Required, no default: unset = sourced pages read the vault as "unavailable" |
 | `POSTIZ_API_KEY` | Postiz API |
 | `R2_ACCESS_KEY` / `R2_SECRET_KEY` / `R2_BUCKET` | Cloudflare R2 |
 | `GOOGLE_OAUTH_*` | Google Drive OAuth |

@@ -989,3 +989,108 @@ id format. The mint-alias and
 auto-create 409s no longer echo the alias or a page's recorded alias. No
 deploy was performed.
 
+_________________________________________________________________________________
+time: [04:56 EDT] [26-09-26]
+agent: [Claude Code] [claude-opus-5-5]
+worktree: [sec/lab-no-prod-defaults] [/Users/ecfromthedc/dev/wt/lab-no-prod-defaults]
+type: [security]: no Lab code defaults to a production URL
+area: [backend] [security] [testing]
+
+During a review a local probe ran the sound-sync handler un-stubbed; its
+hardcoded Campaign Hub default made one unauthenticated read-only GET to
+production /api/campaigns (404, nothing written). CAMPAIGN_HUB_URL and the new
+SHIPSTREAM_VAULT_ORIGIN are now required: unset or malformed, the Hub and
+ShipStream vault code raise ConfigError before building a request, and
+POST /api/telegram/sounds/sync and /api/slideshow/sounds/prepare answer 503
+"Campaign Hub not configured". A ShipStream vault that is not configured reads
+as "unavailable", the state an unreachable vault already produced. The
+.env.example template no longer carries production origins, and a usage
+docstring no longer names the Supabase project. tests/test_no_production_host_guard.py
+fails on any production hostname in app Python, and on production URLs in
+other tracked files outside a justified docs allowlist. A conftest audit hook
+refuses and fails any test that looks up or connects to a non-loopback host. Its first
+full run found two live leaks in the suite: every TestClient lifespan started
+the ABN factory, which scraped HN, GitHub, Reddit and lobste.rs, and the
+source-execution tests fetched page manifests from the production ShipStream
+vault. Only TestClient lifespans now get an idle factory start, and those
+tests answer manifest reads as an unreachable vault.
+Production needs CAMPAIGN_HUB_URL and SHIPSTREAM_VAULT_ORIGIN set before this
+deploys; neither was set on 2026-09-26. No deploy was performed.
+
+_________________________________________________________________________________
+time: [04:59 EDT] [26-09-26]
+agent: [Claude Code] [claude-opus-5-5]
+worktree: [claude/lab-moderation-retry] [/Users/ecfromthedc/dev/seats/LAB-MODRETRY]
+type: [feature-request] [supply self-healing]: Bounded varied retry of a confirmed moderation refusal
+area: [backend] [testing]
+
+A confirmed Replicate moderation refusal (E005) on a planned generation call
+is now retried at most twice, each time with the next fixed deterministic
+prompt rewording (`services/moderation_retry.py`), on the same engine, model
+and safety settings. Retries draw on a per-page UTC-day budget
+(`CONTENT_LAB_MODERATION_RETRY_DAILY_BUDGET`, default 6) counted from durable
+`generationAttempts` rows; first attempts never consume it. Each retry has its
+own prediction checkpoint, records its estimated cost, and a retried clip
+records the sent prompt hash plus the plan's base hash and variant id, which
+restart recovery accepts only from a succeeded attempt row. Credit (402),
+provider auth (401/403, new `provider_auth` class) and all other classes still
+fail fast with no retry; the job status contract is unchanged. New tests in
+`tests/test_generation_moderation_retry.py` fail on main and pass here. No
+deployment was performed.
+
+_________________________________________________________________________________
+time: [08:10 EDT] [26-09-26]
+agent: [Claude Code] [claude-opus-5-5]
+worktree: [claude/lab-moderation-retry] [/Users/ecfromthedc/dev/seats/LAB-MODRETRY]
+type: [bug-fix] [supply self-healing]: #181 review round 2, narrower retry trigger and pinned spend guards
+area: [backend] [testing]
+
+Review defects on #181 fixed. The retry trigger is now exactly E005
+(`moderation_retry.retry_blocked`): moderation-class text without E005, or with
+an embedded HTTP status (a 429/5xx/402 from the provider's moderation
+dependency, failed-prediction logs mentioning "safety"), stays a terminal
+refusal named `moderation_not_e005_not_retried`. "Error code: 401/403" (the
+auth failure observed inside the moderation check on 2026-09-25) is now
+classed `provider_auth` with errorDetail `HTTP 401`, and fails fast; the
+errorClass/errorDetail charsets are unchanged. Rewordings no longer add people
+to people-free prompts (variant ids bumped to `family-safe.v2` and
+`backlit-shapes.v2`), and the cost table is pinned to the catalog. New tests
+pin the durable reservation before the paid retry, in-flight retries counting
+against the page budget, and the prediction-id + "Replicate failed:" guard;
+each is killed by its mutation. No deployment was performed.
+
+_________________________________________________________________________________
+time: [08:57 EDT] [26-09-26]
+agent: [Claude Code] [claude-opus-5-5]
+worktree: [claude/lab-moderation-retry] [/Users/ecfromthedc/dev/seats/LAB-MODRETRY]
+type: [bug-fix] [supply self-healing]: #181 review round 3, negation-aware person gate and wider status guard
+area: [backend] [testing]
+
+The person-wording gate for moderation-retry rewordings matched negations, so
+the scenic, ugc, boat and coffee catalog families ("no people") would have
+received "fully clothed" / silhouette-adult wording on an E005 retry. A person
+term now counts only when no negation (no, without, zero, not any, free of,
+devoid of, never) precedes it within three words of the same clause;
+"figure(s)" and "body/bodies" are no longer person terms. A test composes
+every combination of every catalog family. The embedded-HTTP-status guard
+that blocks a retry even with (E005) is now pinned and also matches
+`Error code 429`, `{'status': 500}`, `status_code=429`, `HTTP 503` and httpx
+`Server error '503 …'`; the real 09-25 E005 message is pinned as retried. By
+lead decision, the moderation model's own 401/403 keeps class `provider_auth`
+with errorDetail `moderation model HTTP 401`/`403`; our own token keeps
+`HTTP 401`/`403`. No deployment was performed.
+
+_________________________________________________________________________________
+time: [09:32 EDT] [26-09-26]
+agent: [Claude Code] [claude-opus-5-5]
+worktree: [claude/lab-moderation-retry] [/Users/ecfromthedc/dev/seats/LAB-MODRETRY]
+type: [bug-fix] [supply self-healing]: #181 review round 4, any 4xx/5xx number blocks an E005 retry
+area: [backend] [testing]
+
+The E005 retry no longer enumerates HTTP-status formats. Any standalone
+4xx/5xx number outside a URL refuses the retry even when (E005) is present,
+which also catches "429 Too Many Requests", urllib "HTTP Error 503", requests
+"429 Client Error", JSON "code": 500, error_code=503 and "RateLimitError 429".
+The real 09-25 E005 message carries no number and stays retried. A test pins
+the clause split of the person gate ("No cars; adults walk at dusk." depicts
+people). No deployment was performed.
