@@ -312,6 +312,9 @@ def test_auto_create_refuses_repointing_page_alias_without_replace(client, cf_ok
     )
     assert resp.status_code == 409, resp.text
     assert "replace" in resp.json()["detail"]
+    # R-LOW-1: the 409 must not disclose the page's existing alias (the
+    # credential scrub strips JSON keys, not free text in "detail").
+    assert VICTIM["email_alias"] not in resp.text
     assert cf_ok == {}
 
 
@@ -415,3 +418,33 @@ def test_pipeline_mint_alias_unaffected_without_credentials(client, token_set, m
     assert resp.status_code == 200, resp.text
     assert resp.json()["alias"] == "samb-truck-99@rt.example"
     assert created == {"alias_local": "samb-truck-99", "destination": "henry@risingtidesent.com"}
+
+
+def test_email_route_error_details_never_interpolate_roster_values():
+    """A1 source guard (R-LOW-1 class): every HTTPException detail in
+    routers/email_routing.py is a literal, or an f-string built only from the
+    caller's own normalised destination. Roster-derived values (page, alias,
+    rule id, integration id) can never be formatted into error text."""
+    import ast
+    import inspect
+
+    allowed_names = {"destination"}  # the caller's own normalised input
+    tree = ast.parse(inspect.getsource(r))
+    offenders = []
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call) and getattr(node.func, "id", None) == "HTTPException"):
+            continue
+        for kw in node.keywords:
+            if kw.arg != "detail":
+                continue
+            for sub in ast.walk(kw.value):
+                if isinstance(sub, ast.FormattedValue):
+                    names = {n.id for n in ast.walk(sub.value) if isinstance(n, ast.Name)}
+                    if not names <= allowed_names:
+                        offenders.append((node.lineno, sorted(names)))
+                elif isinstance(sub, ast.Call) and kw.value is sub:
+                    # detail=str(e): the CF upstream error (502), never roster data.
+                    if not (getattr(sub.func, "id", None) == "str" and len(sub.args) == 1
+                            and isinstance(sub.args[0], ast.Name) and sub.args[0].id == "e"):
+                        offenders.append((node.lineno, ["<call>"]))
+    assert offenders == [], offenders
