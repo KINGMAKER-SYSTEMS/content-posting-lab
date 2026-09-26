@@ -198,7 +198,7 @@ async def test_persistent_poll_outage_is_bounded_and_cancels():
     ('Replicate start failed: {"detail":"Internal server error","status":503}', "provider_5xx"),
     ("Replicate generation timed out after 600s (prediction abc)", "prediction_timeout"),
     ("Replicate failed: Prediction interrupted; please retry (code: PA)", "prediction_interrupted"),
-    ("Replicate failed: Warning: Moderation check failed: Error code: 401", "moderation"),
+    ("Replicate failed: Warning: Moderation check failed: Error code: 401", "provider_auth"),
     ("ReadError('')", "transport"),
     ("ConnectTimeout('')", "transport"),
     ("something new", "other"),

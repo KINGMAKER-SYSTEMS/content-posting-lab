@@ -223,7 +223,11 @@ async def multi_crop_vertical(src: Path, mode: str) -> list[Path]:
 _PROVIDER_FAILURE_RULES = (
     ("insufficient_credit", re.compile(r'"status":\s*402|insufficient credit', re.I)),
     # Provider HTTP 401/403: an account/token action, never retried (like 402).
-    ("provider_auth", re.compile(r'"status":\s*40[13]\b|unauthenticated|invalid (api )?token', re.I)),
+    # "Error code: 401" is the shape a provider's own moderation dependency
+    # raised in production (2026-09-25, "Moderation check failed: Error code:
+    # 401 ... deactivated"); it must not fall through to the moderation class.
+    ("provider_auth", re.compile(
+        r'"status":\s*40[13]\b|error code:\s*40[13]\b|unauthenticated|invalid (api )?token', re.I)),
     ("rate_limited", re.compile(r'"status":\s*429|throttled', re.I)),
     ("provider_5xx", re.compile(r'"status":\s*5\d\d', re.I)),
     ("prediction_timeout", re.compile(r"timed out after", re.I)),
@@ -246,7 +250,7 @@ def classify_provider_error(message: object) -> str:
 
 
 _PROVIDER_ERROR_CODE = re.compile(r"\((?:code:\s*)?(E\d{3,4}|PA)\)")
-_PROVIDER_HTTP_STATUS = re.compile(r'"status":\s*(\d{3})')
+_PROVIDER_HTTP_STATUS = re.compile(r'"status":\s*(\d{3})|error code:\s*(\d{3})\b', re.I)
 
 
 def provider_error_code(message: object) -> str | None:
@@ -257,7 +261,7 @@ def provider_error_code(message: object) -> str | None:
         return code.group(1)
     status = _PROVIDER_HTTP_STATUS.search(text)
     if status:
-        return f"HTTP {status.group(1)}"
+        return f"HTTP {status.group(1) or status.group(2)}"
     return None
 
 

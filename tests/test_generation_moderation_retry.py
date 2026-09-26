@@ -6,7 +6,9 @@ fail fast with no retry; a per-page UTC-day retry budget bounds spend.
 
 import asyncio
 import copy
+import json
 from pathlib import Path
+import re
 
 import pytest
 
@@ -22,6 +24,8 @@ from tests.test_generation_restart_recovery import install_journal_provider
 
 AUTH = 'Replicate start failed: {"title":"Unauthenticated","detail":"Invalid token.","status":401}'
 MODERATION_AUTH = "Replicate failed: Warning: Moderation check failed: Error code: 401 - account deactivated"
+# No HTTP code, only the "deactivated" wording: still moderation-class, never retried.
+MODERATION_DEACTIVATED = "Replicate failed: Warning: Moderation check failed: moderation account deactivated"
 FLUX_COST = 0.03
 
 
@@ -57,7 +61,7 @@ async def test_e005_then_one_varied_retry_succeeds_and_output_counts(lab, monkey
     assert clip["generationIndex"] == 0
     assert clip["promptHash"] == cp.prompt_sha256(calls[1]["prompt"])
     assert clip["basePromptHash"] == original["promptPlan"][0]["promptHash"]
-    assert clip["promptVariant"] == "clothed-family-safe.v1"
+    assert clip["promptVariant"] == "family-safe.v2"
     assert (Path(stored["artifactRoot"]) / clip["path"]).is_file()
     assert clip["sourceTreatment"]["sourceSha256"] == clip["sha256"]
     rows = stored["generationAttempts"]["0"]
@@ -91,7 +95,7 @@ async def test_e005_three_times_is_terminal_named_moderation_with_no_fourth_call
     assert failure["class"] == "moderation" and failure["providerRequestId"] == "prediction-2"
     rows = stored["generationAttempts"]["0"]
     assert [r["outcome"] for r in rows] == ["refused"] * 3
-    assert [r["promptVariant"] for r in rows] == [None, "clothed-family-safe.v1", "backlit-silhouette-shapes.v1"]
+    assert [r["promptVariant"] for r in rows] == [None, "family-safe.v2", "backlit-shapes.v2"]
     assert all(r["costUsd"] == FLUX_COST for r in rows), "a refused prediction is billed"
     assert stored["moderationRetryCostUsd"] == 2 * FLUX_COST
     status = status_of(client, job_id)
@@ -126,7 +130,8 @@ def test_provider_auth_is_a_named_class():
     assert base.classify_provider_error('Replicate start failed: {"status": 403}') == "provider_auth"
     assert base.classify_provider_error(CREDIT) == "insufficient_credit"
     assert base.classify_provider_error('{"status":429}') == "rate_limited"
-    assert base.classify_provider_error(MODERATION_AUTH) == "moderation"
+    assert base.classify_provider_error(MODERATION_AUTH) == "provider_auth"
+    assert base.classify_provider_error(MODERATION_DEACTIVATED) == "moderation"
 
 
 @pytest.mark.asyncio
@@ -165,7 +170,7 @@ async def test_other_classes_are_never_retried(lab, monkeypatch, failure):
 async def test_auth_failure_inside_moderation_check_is_not_retried(lab, monkeypatch):
     job_id, _, _ = queue_silhouettes(lab, monkeypatch, 2)
     calls = []
-    install_provider(monkeypatch, [MODERATION_AUTH, "done", "done"], calls)
+    install_provider(monkeypatch, [MODERATION_DEACTIVATED, "done", "done"], calls)
     await cp._run_dossier_generation(job_id)
     stored = cp._load_jobs()["jobs"][job_id]
     assert [call["id"] for call in calls] == [f"{job_id}-g00", f"{job_id}-g01"], \
@@ -236,7 +241,7 @@ async def test_variant_prompt_is_deterministic_and_recorded_on_the_job(lab, monk
     ]
     assert all(isinstance(r["at"], str) and r["at"].endswith("+00:00") for r in rows)
     assert stored["clips"][0]["promptHash"] == rows[2]["promptHash"]
-    assert stored["clips"][0]["promptVariant"] == "backlit-silhouette-shapes.v1"
+    assert stored["clips"][0]["promptVariant"] == "backlit-shapes.v2"
 
 
 @pytest.mark.asyncio
@@ -255,7 +260,7 @@ async def test_restart_after_retry_resumes_its_own_prediction_and_verifies_varia
     assert paused["providerCheckpoints"]["0:1"]["predictionId"] == "p2"
     preserved = copy.deepcopy(paused["clips"])
     if interrupt == "p3":
-        assert [clip["promptVariant"] for clip in preserved] == ["clothed-family-safe.v1"]
+        assert [clip["promptVariant"] for clip in preserved] == ["family-safe.v2"]
         assert preserved[0]["promptHash"] != preserved[0]["basePromptHash"]
     monkeypatch.setattr(cp, "_GENERATION_RUNTIME_ID", "replacement-runtime")
     await cp._run_dossier_generation(job_id)
@@ -285,3 +290,261 @@ async def test_tampered_variant_hash_is_rejected_on_restart(lab, monkeypatch):
     await cp._run_dossier_generation(job_id)
     assert cp._get_job_or_404(job_id)["error"] == "generation_checkpoint_provenance_mismatch"
     assert calls == before
+
+
+# ---------------------------------------------------------------------------
+# Review round 2 (#181): the retry trigger is exactly E005, the observed auth
+# failure inside the moderation check is provider_auth, and the three spend
+# guards (durable reservation, in-flight counting, confirmed refusal) are pinned.
+# ---------------------------------------------------------------------------
+
+
+# The one auth shape seen in production (2026-09-25, Hailuo job): an OpenAI-style
+# 401 raised by the provider's own moderation dependency. Dummy text only.
+OBSERVED_MODERATION_AUTH = (
+    "Replicate failed: Warning: Moderation check failed: Error code: 401 - "
+    "{'error': {'message': 'Your OpenAI account has been deactivated', "
+    "'code': 'account_deactivated'}}"
+)
+# The Worker's pinned validator (control-plane-worker contentLabClient.js:1769/1771,
+# identical on Worker main 7774c0334).
+WORKER_CLASS = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,31}$")
+WORKER_DETAIL = re.compile(r"^[A-Za-z0-9 _.:,;/()#=+-]{1,64}$")
+
+
+def install_keyed_provider(monkeypatch, outcomes, calls, before=None):
+    """Mock generate_one keyed by provider job id.
+
+    An outcome is "done" or (error, provider_request_id); ``before`` maps a
+    provider job id to an async hook awaited when that call starts.
+    """
+    install_provider(monkeypatch, [], [])  # treatment + thumbnail doubles
+
+    async def generate(provider_job_id, index, provider, prompt, aspect_ratio, resolution,
+                       duration, image_data_uri, jobs, output_dir, url_prefix, **extra):
+        calls.append({"id": provider_job_id, "prompt": prompt})
+        if before and provider_job_id in before:
+            await before[provider_job_id]()
+        entry = jobs[provider_job_id]["videos"][index]
+        outcome = outcomes[provider_job_id]
+        if outcome == "done":
+            video = output_dir / f"{provider_job_id}.mp4"
+            video.write_bytes(f"approved-video-{provider_job_id}".encode())
+            still = output_dir / f"{provider_job_id}.jpg"
+            still.write_bytes(f"approved-still-{provider_job_id}".encode())
+            entry.update(status="done", file=video.name, provider_image_file=still.name,
+                         provider_request_id=f"prediction-{provider_job_id}")
+        else:
+            error, request_id = outcome
+            entry.update(status="error", error=error)
+            if request_id is not None:
+                entry["provider_request_id"] = request_id
+
+    monkeypatch.setattr(cp, "generate_one", generate)
+
+
+def queue_second_job(lab, key):
+    client, _, _ = lab
+    intent, revision = master_pages(PAGE_ID, handle="tucker.reeves", content_niche="silhouette")
+    response = client.post("/api/control-plane/v1/jobs", json=job_body(
+        quantity=1, lockedRecipeId="silhouette-truck:master", masterPages=intent,
+        masterPagesHash=revision), headers={**HEADERS, "Idempotency-Key": key})
+    assert response.status_code == 200
+    return response.json()["jobId"]
+
+
+# Fix 1: retry ONLY on the exact E005 refusal ---------------------------------
+
+NOT_E005_MODERATION_CLASS = {
+    "429-in-moderation": "Replicate failed: Warning: Moderation check failed: Error code: 429 - "
+                         "You exceeded your current quota (insufficient_quota)",
+    "5xx-in-safety": "Replicate failed: Warning: Safety check failed: Error code: 503 - "
+                     "service unavailable",
+    "402-in-moderation": "Replicate failed: Warning: Moderation check failed: Error code: 402 - "
+                         "payment required",
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("shape", sorted(NOT_E005_MODERATION_CLASS))
+async def test_moderation_class_text_without_e005_is_never_retried(lab, monkeypatch, shape):
+    failure = NOT_E005_MODERATION_CLASS[shape]
+    assert base.classify_provider_error(failure) == "moderation", "the class alone is too wide"
+    job_id, _, _ = queue_silhouettes(lab, monkeypatch, 2)
+    calls = []
+    install_provider(monkeypatch, [failure, "done", "done"], calls)
+    await cp._run_dossier_generation(job_id)
+    stored = cp._load_jobs()["jobs"][job_id]
+    assert [call["id"] for call in calls] == [f"{job_id}-g00", f"{job_id}-g01"], \
+        "no paid retry for a moderation-class failure that is not a confirmed E005 refusal"
+    assert [r["attempt"] for r in stored["generationAttempts"]["0"]] == [0]
+    assert stored["providerFailures"][0]["terminal"] == "moderation_not_e005_not_retried"
+    assert stored["moderationRetryCostUsd"] == 0
+
+
+@pytest.mark.asyncio
+async def test_failed_prediction_whose_logs_mention_safety_is_not_retried(lab, monkeypatch):
+    # An empty prediction ``error`` falls back to its logs (providers/replicate.py
+    # _poll_prediction); logs echoing ``disable_safety_filter`` match "safety".
+    job_id, _, _ = queue_silhouettes(lab, monkeypatch, 2)
+    logs = "Using seed 1234\ndisable_safety_filter=True\nCUDA out of memory"
+    calls = install_journal_provider(monkeypatch, refuse="p1", refusal={"error": None, "logs": logs})
+    await cp._run_dossier_generation(job_id)
+    stored = cp._load_jobs()["jobs"][job_id]
+    [row] = stored["generationAttempts"]["0"]
+    assert (row["class"], row["providerRequestId"]) == ("moderation", "p1")
+    assert row["detail"].startswith("Replicate failed: Using seed")
+    assert [c for c in calls if c[0] == "POST"] == [
+        ("POST", "/v1/models/black-forest-labs/flux-2-pro/predictions")] * 2, \
+        "p1 and call 1's p2 only; the OOM is never re-bought as a moderation retry"
+    assert stored["providerFailures"][0]["terminal"] == "moderation_not_e005_not_retried"
+
+
+@pytest.mark.asyncio
+async def test_exact_e005_is_the_retry_trigger(lab, monkeypatch):
+    job_id, _, _ = queue_silhouettes(lab, monkeypatch, 2)
+    calls = []
+    install_provider(monkeypatch, [MODERATION, "done", "done"], calls)
+    await cp._run_dossier_generation(job_id)
+    assert [call["id"] for call in calls] == [f"{job_id}-g00", f"{job_id}-g00-r1", f"{job_id}-g01"]
+
+
+# Fix 2: the observed auth failure inside the moderation check -----------------
+
+@pytest.mark.asyncio
+async def test_observed_auth_failure_inside_moderation_check_is_provider_auth(lab, monkeypatch):
+    for message in (OBSERVED_MODERATION_AUTH,
+                    "Replicate failed: Moderation check failed: ERROR CODE: 403 - forbidden"):
+        assert base.classify_provider_error(message) == "provider_auth"
+    assert base.provider_error_code(OBSERVED_MODERATION_AUTH) == "HTTP 401"
+    client, _, _ = lab
+    job_id, _, _ = queue_silhouettes(lab, monkeypatch, 2)
+    calls = []
+    install_provider(monkeypatch, [OBSERVED_MODERATION_AUTH, "done", "done"], calls)
+    await cp._run_dossier_generation(job_id)
+    stored = cp._load_jobs()["jobs"][job_id]
+    assert [call["id"] for call in calls] == [f"{job_id}-g00"], "never retried, fails fast"
+    assert stored["status"] == "failed" and stored["error"] == "provider_generation_failed"
+    assert (stored["errorClass"], stored["errorDetail"]) == ("provider_auth", "HTTP 401")
+    assert [r["outcome"] for r in stored["generationAttempts"]["0"]] == ["failed"]
+    status = status_of(client, job_id)
+    assert set(status) == {"schema", "jobId", "status", "progress", "error", "errorClass", "errorDetail"}
+    assert (status["errorClass"], status["errorDetail"]) == ("provider_auth", "HTTP 401")
+    assert WORKER_CLASS.fullmatch(status["errorClass"]) and WORKER_DETAIL.fullmatch(status["errorDetail"])
+
+
+# Fix 3: the three spend guards, each killed by a named mutation --------------
+
+@pytest.mark.asyncio
+async def test_retry_reservation_is_on_disk_before_the_paid_retry_call(lab, monkeypatch):
+    # Mutation (a): drop the atomic_save of the reservation in
+    # _reserve_moderation_retry. A crash during the paid retry would then
+    # restart against a budget that never saw the debit.
+    job_id, _, _ = queue_silhouettes(lab, monkeypatch, 1)
+    seen = []
+
+    async def inspect_disk():
+        seen.append(copy.deepcopy(cp._load_jobs()["jobs"][job_id].get("generationAttempts")))
+
+    calls = []
+    install_keyed_provider(monkeypatch, {
+        f"{job_id}-g00": (MODERATION, "prediction-0"), f"{job_id}-g00-r1": "done",
+    }, calls, before={f"{job_id}-g00-r1": inspect_disk})
+    await cp._run_dossier_generation(job_id)
+    assert [call["id"] for call in calls] == [f"{job_id}-g00", f"{job_id}-g00-r1"]
+    [on_disk] = seen
+    assert [(r["attempt"], r["outcome"]) for r in on_disk["0"]] == [(0, "refused"), (1, "pending")], \
+        "the reservation is durable before any money is spent on the retry"
+
+
+@pytest.mark.asyncio
+async def test_in_flight_retry_of_another_job_counts_against_the_page_budget(lab, monkeypatch):
+    # Mutation (b): retries_used ignores ``pending`` rows. Job A's retry is in
+    # flight (reserved, not yet answered) when job B, same page, is refused.
+    monkeypatch.setenv("CONTENT_LAB_MODERATION_RETRY_DAILY_BUDGET", "1")
+    job_a, _, _ = queue_silhouettes(lab, monkeypatch, 1)
+    job_b = queue_second_job(lab, "in-flight-budget-job")
+
+    async def run_b_while_a_retry_is_in_flight():
+        await cp._run_dossier_generation(job_b)
+
+    calls = []
+    install_keyed_provider(monkeypatch, {
+        f"{job_a}-g00": (MODERATION, "prediction-a0"), f"{job_a}-g00-r1": "done",
+        f"{job_b}-g00": (MODERATION, "prediction-b0"), f"{job_b}-g00-r1": "done",
+    }, calls, before={f"{job_a}-g00-r1": run_b_while_a_retry_is_in_flight})
+    await cp._run_dossier_generation(job_a)
+    assert [call["id"] for call in calls] == [f"{job_a}-g00", f"{job_a}-g00-r1", f"{job_b}-g00"], \
+        "B's retry would be a second paid retry for the page on a budget of 1"
+    b = cp._load_jobs()["jobs"][job_b]
+    assert b["providerFailures"][0]["terminal"] == "moderation_retry_budget_exhausted"
+    assert cp._load_jobs()["jobs"][job_a]["status"] == "completed"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("shape", ["no-prediction-id", "not-replicate-failed"])
+async def test_retry_requires_a_prediction_id_and_a_replicate_failed_signal(lab, monkeypatch, shape):
+    # Mutation (c): confirmed_refusal reduced to ``class == "moderation"``.
+    job_id, _, _ = queue_silhouettes(lab, monkeypatch, 2)
+    first = ((MODERATION, None) if shape == "no-prediction-id" else
+             ("Replicate start failed: The input or output was flagged as sensitive. (E005)",
+              "prediction-0"))
+    calls = []
+    install_keyed_provider(monkeypatch, {
+        f"{job_id}-g00": first, f"{job_id}-g00-r1": "done", f"{job_id}-g01": "done",
+    }, calls)
+    await cp._run_dossier_generation(job_id)
+    stored = cp._load_jobs()["jobs"][job_id]
+    assert [call["id"] for call in calls] == [f"{job_id}-g00"], \
+        "an unconfirmed refusal is never retried; it fails fast like any other fault"
+    assert stored["status"] == "failed" and stored["error"] == "provider_generation_failed"
+    assert [r["outcome"] for r in stored["generationAttempts"]["0"]] == ["failed"]
+
+
+# Recommended: neutral rewordings and a cost table pinned to the catalog -------
+
+PERSON_WORDS = {
+    "people", "person", "persons", "man", "men", "woman", "women", "adult", "adults",
+    "couple", "couples", "lover", "lovers", "figure", "figures", "body", "bodies",
+    "human", "humans", "child", "children", "everyone", "someone", "clothed",
+    "clothing", "silhouette", "silhouettes", "he", "she", "her", "his",
+}
+PEOPLE_FREE_PROMPTS = [
+    "A clean unbadged dark pickup truck parked alone on a desert highway at golden hour.",
+    "A small fishing boat moored in a calm harbor at dawn, soft mist over the water",
+    "A featureless salt flat under a deep purple dusk sky with one lone oak tree.",
+]
+
+
+def words(text):
+    return set(re.findall(r"[a-z]+", text.lower()))
+
+
+@pytest.mark.parametrize("prompt", PEOPLE_FREE_PROMPTS)
+def test_variants_never_introduce_people_into_a_people_free_prompt(prompt):
+    variants = [moderation_retry.variant_prompt(prompt, k)[0]
+                for k in range(1, moderation_retry.RETRIES_PER_CALL + 1)]
+    assert len({prompt, *variants}) == 1 + len(variants), "each variant is still a distinct rewording"
+    for variant in variants:
+        assert variant.startswith(prompt.rstrip(". ")), "the original subject text is kept"
+        added = (words(variant) - words(prompt)) & PERSON_WORDS
+        assert not added, f"variant introduced subjects the prompt did not have: {sorted(added)}"
+
+
+def test_variants_of_a_people_prompt_keep_the_clothed_silhouette_rewording():
+    prompt = ("A quiet cinematic photograph of two adult lovers shown only as pure black "
+              "featureless full-body silhouettes. no visible faces, no clothing detail.")
+    first, second = (moderation_retry.variant_prompt(prompt, k)[0] for k in (1, 2))
+    assert "clothed" in first
+    assert "featureless" not in second and "fully clothed adult" in second
+
+
+def test_attempt_cost_table_equals_the_generation_catalog():
+    catalog = {}
+    for path in sorted((Path(__file__).resolve().parents[1] / "recipes" / "generation").glob("*.json")):
+        for provider in json.loads(path.read_text()).get("providers", {}).values():
+            model, cost = provider.get("replicate_model"), provider.get("cost_per_gen_usd")
+            if model is not None:
+                assert catalog.setdefault(model, cost) == cost, f"{model} priced twice in the catalog"
+    assert catalog, "the catalog was found"
+    assert moderation_retry.ATTEMPT_COST_ESTIMATE_USD == catalog
