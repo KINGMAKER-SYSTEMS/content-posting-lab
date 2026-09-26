@@ -235,7 +235,7 @@ HUB_HOST = "risingtides-campaign-hub-production.up.railway.app"
     (f'async def f(*, url: str = "https://{HUB_HOST}/api"):\n    return url\n', "parameter default"),
     (f'def f(slug):\n    return f"https://{HUB_HOST}/api/campaign/{{slug}}"\n', "string literal"),
     ('HOST = "shipstream.risingtidesviral.com"\n', "module constant"),
-    ('X = "https://imxflhdsfxkfmvsufwvr.supabase.co"\n', "module constant"),
+    ('X = "https://abcdefghijklmnopqrst.supabase.co"\n', "module constant"),
     ('X = "https://control-plane-worker.example.workers.dev"\n', "module constant"),
 ])
 def test_detector_flags_each_default_position(source, kind):
