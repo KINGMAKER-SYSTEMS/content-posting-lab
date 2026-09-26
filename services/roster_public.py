@@ -18,6 +18,9 @@ whenever APP_API_KEY is unset (as in production). So:
 * ``require_roster_auth`` guards routes no unauthenticated UI calls. It accepts
   the Control Plane bearer (CONTROL_PLANE_TOKEN) or the app key (APP_API_KEY)
   and fails closed (503) when neither is configured.
+* ``require_control_plane_auth`` guards the email-routing routes that can
+  add forwarding destinations or delete/recreate a page's forwarding rule.
+  It fails closed (503) unless CONTROL_PLANE_TOKEN itself is configured.
 """
 
 from __future__ import annotations
@@ -226,6 +229,25 @@ def _configured_tokens() -> list[bytes]:
     return tokens
 
 
+def _credential_matches(
+    tokens: list[bytes],
+    authorization: str | None,
+    x_api_key: str | None,
+) -> bool:
+    """Constant-time match of a Bearer or X-API-Key value against configured tokens."""
+    supplied: list[bytes] = []
+    if isinstance(authorization, str) and authorization.startswith("Bearer "):
+        supplied.append(authorization.removeprefix("Bearer ").strip().encode("utf-8"))
+    if isinstance(x_api_key, str) and x_api_key.strip():
+        supplied.append(x_api_key.strip().encode("utf-8"))
+    matched = False
+    for candidate in supplied:
+        for token in tokens:
+            if hmac.compare_digest(candidate, token):
+                matched = True
+    return matched
+
+
 def require_roster_auth(
     authorization: str | None = Header(default=None),
     x_api_key: str | None = Header(default=None),
@@ -234,13 +256,29 @@ def require_roster_auth(
     tokens = _configured_tokens()
     if not tokens:
         raise HTTPException(status_code=503, detail="Roster authentication is not configured")
-    supplied: list[bytes] = []
-    if isinstance(authorization, str) and authorization.startswith("Bearer "):
-        supplied.append(authorization.removeprefix("Bearer ").strip().encode("utf-8"))
-    if isinstance(x_api_key, str) and x_api_key.strip():
-        supplied.append(x_api_key.strip().encode("utf-8"))
-    for candidate in supplied:
-        for token in tokens:
-            if hmac.compare_digest(candidate, token):
-                return None
+    if _credential_matches(tokens, authorization, x_api_key):
+        return None
     raise HTTPException(status_code=401, detail="Invalid or missing roster credential")
+
+
+def require_control_plane_auth(
+    authorization: str | None = Header(default=None),
+    x_api_key: str | None = Header(default=None),
+) -> None:
+    """FastAPI dependency for routes that can re-point account mail (email routing).
+
+    Stricter than ``require_roster_auth``: CONTROL_PLANE_TOKEN must be configured,
+    otherwise the route fails closed (503) even when APP_API_KEY is set. Once
+    CONTROL_PLANE_TOKEN is configured, either it or APP_API_KEY (if set) is
+    accepted, as Bearer or X-API-Key, compared in constant time.
+    """
+    control_plane = (os.getenv("CONTROL_PLANE_TOKEN") or "").strip()
+    if not control_plane:
+        raise HTTPException(
+            status_code=503,
+            detail="Email routing authentication is not configured (CONTROL_PLANE_TOKEN)",
+        )
+    tokens = _configured_tokens()
+    if _credential_matches(tokens, authorization, x_api_key):
+        return None
+    raise HTTPException(status_code=401, detail="Invalid or missing machine credential")
