@@ -219,10 +219,10 @@ def test_intake_echoes_its_own_alias_and_not_the_synced_roster(client, monkeypat
 
 @pytest.fixture
 def cf(monkeypatch, client):
-    # The email mutation routes (and, after #177, the destinations list) require
-    # CONTROL_PLANE_TOKEN since #176; these exposure tests exercise the
-    # authenticated path. Anonymous refusal is pinned in
-    # tests/test_email_routing_lockdown.py.
+    # The email mutation routes (#176) and GET /destinations (#177) require
+    # CONTROL_PLANE_TOKEN; these exposure tests exercise the authenticated
+    # path. Anonymous refusal is pinned in tests/test_email_routing_lockdown.py
+    # and tests/test_email_destinations_and_slack_scrub.py.
     monkeypatch.setenv("CONTROL_PLANE_TOKEN", "exposure-test-token")
     client.headers["Authorization"] = "Bearer exposure-test-token"
     created = {}
