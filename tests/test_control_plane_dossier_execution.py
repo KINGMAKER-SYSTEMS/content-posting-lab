@@ -1179,11 +1179,11 @@ async def test_generation_failure_removes_only_failed_root_and_keeps_completed_s
 
 
 @pytest.mark.asyncio
-async def test_zero_output_provider_failure_records_its_class_without_changing_the_status_contract(lab, monkeypatch):
+async def test_zero_output_provider_failure_records_its_class_and_returns_it_on_status(lab, monkeypatch):
     # 2026-09-24: 43 of 70 failed AI refills were Replicate 402 "insufficient
     # credit", indistinguishable from transient faults behind one label once
-    # the Railway logs rotated. The job store keeps the class; the strictly
-    # validated Control Plane status response keeps its exact shape.
+    # the Railway logs rotated. The job store keeps the class, and the status
+    # response keeps its error code and adds only the sanitised class/code.
     client, _, _ = lab
     job_id = client.post("/api/control-plane/v1/jobs", json=job_body(quantity=2), headers=HEADERS).json()["jobId"]
 
