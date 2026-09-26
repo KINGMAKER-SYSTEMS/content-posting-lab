@@ -1274,3 +1274,86 @@ def test_backend_has_no_intake_password_fallback():
             if name == "DEFAULT_INTAKE_PASSWORD" and (len(node.args) > 1 or node.keywords):
                 offenders.append(f"{path.relative_to(root)}:{node.lineno}")
     assert not offenders, f"DEFAULT_INTAKE_PASSWORD read with a fallback default: {offenders}"
+
+
+# ── intake password: retired values and invisible characters ─────────────────
+# Retired (exposed) intake passwords are refused by SHA-256 digest; the
+# plaintext never appears in the repo. Zero-width characters are removed before
+# the blank and retired checks so a pasted invisible value cannot pass as set
+# and an embedded one cannot slip a retired value past the digest check.
+
+_ZW = "\u200b\u200c\u200d\u2060\ufeff"
+
+
+def _call_intake_endpoint(kind):
+    if kind == "mint":
+        return pipeline.mint_random_alias_endpoint(pipeline.MintAliasRequest(pipeline="Flow Stage"))
+    req = pipeline.IntakeRequest(
+        account_username="newhandle",
+        email_alias="acct-n@risingtidesviral.com",
+        notion_page_id="notion-123" if kind == "intake-patch" else None,
+    )
+    return pipeline.submit_intake(req)
+
+
+_ENDPOINTS = ["mint", "intake-patch", "intake-create"]
+
+
+def test_retired_digests_match_the_shipped_literal_guard():
+    from tests.test_no_shipped_default_password import FORBIDDEN_LITERAL_DIGESTS
+
+    assert pipeline.RETIRED_INTAKE_PASSWORD_SHA256 == frozenset(FORBIDDEN_LITERAL_DIGESTS)
+
+
+@pytest.mark.parametrize("kind", _ENDPOINTS)
+@pytest.mark.parametrize("raw", [
+    "retired-dummy-value",
+    "  retired-dummy-value \n",
+    "\ufeffretired-dummy-value\u200b",
+    "retired-\u200ddummy-\u2060value",
+])
+def test_intake_503_when_intake_password_is_retired(monkeypatch, kind, raw):
+    import hashlib
+
+    digest = hashlib.sha256(b"retired-dummy-value").hexdigest()
+    monkeypatch.setattr(pipeline, "RETIRED_INTAKE_PASSWORD_SHA256", frozenset({digest}))
+    monkeypatch.setenv("DEFAULT_INTAKE_PASSWORD", raw)
+    _forbid_intake_side_effects(monkeypatch)
+    with pytest.raises(HTTPException) as ei:
+        _run(_call_intake_endpoint(kind))
+    assert ei.value.status_code == 503
+    assert ei.value.detail == "intake_password_retired"
+
+
+@pytest.mark.parametrize("kind", _ENDPOINTS)
+@pytest.mark.parametrize("raw", list(_ZW) + [_ZW, f" \t{_ZW}\n ", "\u200b \ufeff"])
+def test_intake_503_when_intake_password_is_only_invisible(monkeypatch, kind, raw):
+    monkeypatch.setenv("DEFAULT_INTAKE_PASSWORD", raw)
+    _forbid_intake_side_effects(monkeypatch)
+    with pytest.raises(HTTPException) as ei:
+        _run(_call_intake_endpoint(kind))
+    assert ei.value.status_code == 503
+    assert ei.value.detail == "intake_password_not_configured"
+
+
+@pytest.mark.parametrize("raw,expected", [
+    ("new-intake-placeholder", "new-intake-placeholder"),
+    ("\ufeff new-intake-placeholder\u200b ", "new-intake-placeholder"),
+])
+def test_valid_new_intake_password_is_written(monkeypatch, raw, expected):
+    monkeypatch.setenv("DEFAULT_INTAKE_PASSWORD", raw)
+    monkeypatch.setattr(pipeline, "notion_configured", lambda: True)
+    seen = {}
+
+    async def _mint(pipeline=None, destination_override=None, desired_local=None):
+        return {"alias": "acct-v@risingtidesviral.com", "destination": "d@x.com", "rule_id": "rv"}
+
+    async def _create(**kwargs):
+        seen.update(kwargs)
+        return {"id": "notion-v"}
+
+    monkeypatch.setattr(pipeline, "_mint_random_alias", _mint)
+    monkeypatch.setattr(pipeline, "create_intake_page", _create)
+    out = _run(pipeline.mint_random_alias_endpoint(pipeline.MintAliasRequest()))
+    assert out.notion_page_id == "notion-v"
+    assert seen["password"] == expected

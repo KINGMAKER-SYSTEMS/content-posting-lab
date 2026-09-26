@@ -6,6 +6,7 @@ Reads roster pages grouped by Notion `Status`, exposes per-stage actions
 changes also write back to Notion.
 """
 
+import hashlib
 import logging
 import os
 from datetime import datetime, timezone
@@ -48,18 +49,35 @@ router = APIRouter()
 
 INTAKE_PASSWORD_ENV = "DEFAULT_INTAKE_PASSWORD"
 INTAKE_PASSWORD_NOT_CONFIGURED = "intake_password_not_configured"
+INTAKE_PASSWORD_RETIRED = "intake_password_retired"
+
+# SHA-256 digests of intake passwords that have been exposed and must never be
+# written again: the default once shipped in the public frontend bundle, and the
+# guessable fallback previously used when the env var was unset. Digests only;
+# tests/test_no_shipped_default_password.py forbids the plaintext in the repo.
+RETIRED_INTAKE_PASSWORD_SHA256 = frozenset({
+    "2c04122561f52246bb9d4baa62cd53f23886d9d2540542e9c8c69a34d1adc2a7",
+    "057ba03d6c44104863dc7361fe4578965d1887360f90a0895882e58a6248fc86",
+})
+
+# Invisible characters that survive copy/paste into env settings.
+_ZERO_WIDTH = dict.fromkeys(map(ord, "\u200b\u200c\u200d\u2060\ufeff"))
 
 
 def _intake_password() -> str:
     """Return the server-owned intake password, or refuse the intake.
 
-    Read at request time from the environment only. There is no fallback: an
-    unset or blank value raises a typed 503 before any alias, Notion row or
-    roster entry is written, so an intake can never record a guessable default.
+    Read at request time from the environment only. Zero-width characters are
+    removed and surrounding whitespace stripped. There is no fallback: a value
+    that is then blank raises a typed 503 (`intake_password_not_configured`),
+    and a retired value raises a typed 503 (`intake_password_retired`), both
+    before any alias, Notion row or roster entry is written.
     """
-    value = (os.getenv(INTAKE_PASSWORD_ENV) or "").strip()
+    value = (os.getenv(INTAKE_PASSWORD_ENV) or "").translate(_ZERO_WIDTH).strip()
     if not value:
         raise HTTPException(status_code=503, detail=INTAKE_PASSWORD_NOT_CONFIGURED)
+    if hashlib.sha256(value.encode("utf-8")).hexdigest() in RETIRED_INTAKE_PASSWORD_SHA256:
+        raise HTTPException(status_code=503, detail=INTAKE_PASSWORD_RETIRED)
     return value
 
 
