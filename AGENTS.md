@@ -207,6 +207,11 @@
   alignment, and offset instead of forcing every page back to that legacy look.
 - Do not publish or queue a TikTok post from Content Lab without explicit user
   authorization.
+- The Pipeline intake password comes only from the server-side
+  `DEFAULT_INTAKE_PASSWORD`, read per request. Unset or blank makes
+  `/api/pipeline/mint-alias` and `/intake` return 503
+  `intake_password_not_configured` before any alias, Notion or roster write.
+  Never add a fallback default or ship an account password in the frontend.
 - The machine roster refresh and roster snapshot share one sanitized canonical
   Master Pages projection. Refresh returns that projection's exact count and
   full SHA-256 content hash plus a server-owned completeness flag; consumers may perform
@@ -381,6 +386,11 @@
   for durable crash/retry/lock/auth/source-grant and applied-video provenance checks.
 - Run `pytest -q tests/test_post_render.py` for prepared rendering, actual MP4
   decode, treatment-once preservation, byte-budget retry and bounded failures.
+
+- Run `pytest -q tests/test_no_shipped_default_password.py` after `npm run build`
+  in `frontend/`; it fails if a retired credential (stored only as a SHA-256
+  digest) appears in backend or other repository sources or the built bundle.
+  Run `pytest -q tests/test_pipeline_api.py` for the intake-password 503 path.
 
 - Run `pytest -q tests/test_caption_render_contract.py` for the typed caption
   contract and `pytest -q tests/test_burn_and_captions_api.py` for Burn API

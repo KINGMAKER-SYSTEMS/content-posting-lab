@@ -618,6 +618,18 @@ function IntakeModal({
   const update = (field: keyof typeof form, value: string) =>
     setForm((prev) => ({ ...prev, [field]: value }));
 
+  // The server refuses intake (typed 503) until DEFAULT_INTAKE_PASSWORD is set.
+  const intakeErrorMessage = (text: string, status: number) => {
+    try {
+      if (JSON.parse(text)?.detail === 'intake_password_not_configured') {
+        return 'Intake is paused: the server has no intake password configured (DEFAULT_INTAKE_PASSWORD). Ask the operator to set it, then retry.';
+      }
+    } catch {
+      // not JSON; fall through to the raw text
+    }
+    return text || `Request failed (${status})`;
+  };
+
   // Step 1: mint email (also creates placeholder Notion row) + open TikTok
   const mintAndGo = async () => {
     if (!form.pipeline_choice) {
@@ -636,7 +648,7 @@ function IntakeModal({
       });
       if (!resp.ok) {
         const text = await resp.text();
-        throw new Error(text || `Request failed (${resp.status})`);
+        throw new Error(intakeErrorMessage(text, resp.status));
       }
       const result = await resp.json();
       const email = result.alias as string;
@@ -699,7 +711,7 @@ function IntakeModal({
       });
       if (!resp.ok) {
         const text = await resp.text();
-        throw new Error(text || `Request failed (${resp.status})`);
+        throw new Error(intakeErrorMessage(text, resp.status));
       }
       const result = await resp.json();
       addNotification('success', `${form.account_username} added to pipeline`);
@@ -731,8 +743,8 @@ function IntakeModal({
             </h2>
             <p className="text-xs text-muted-foreground">
               {step === 1
-                ? <>Step 1 mints a fresh email and logs the intake row in Notion immediately, then opens TikTok. Sign up there w that email + password <span className="font-mono text-foreground">Risingtides123$</span>, pick whatever handle's available, then come back for step 2.</>
-                : <>Use password <span className="font-mono text-foreground">Risingtides123$</span> on TikTok. Once you've got the account, fill in the actual handle below — your row is already in Notion, we're just patching it.</>
+                ? <>Step 1 mints a fresh email and logs the intake row in Notion immediately, then opens TikTok. Sign up there w that email + the team's standard intake password (it's also saved to the new Notion row's Password field), pick whatever handle's available, then come back for step 2.</>
+                : <>Use the team's standard intake password on TikTok (it's saved to this row's Password field in Notion). Once you've got the account, fill in the actual handle below — your row is already in Notion, we're just patching it.</>
               }
             </p>
           </div>
@@ -815,7 +827,7 @@ function IntakeModal({
                   <li>Backend creates the Cloudflare alias <span className="font-mono">{previewEmail}</span> forwarding to the right person</li>
                   <li>Email gets copied to your clipboard</li>
                   <li>TikTok signup opens in a new tab</li>
-                  <li>You paste email + use password <span className="font-mono text-foreground">Risingtides123$</span></li>
+                  <li>You paste email + use the team's standard intake password (saved to the Notion row's Password field)</li>
                   <li>Pick any TikTok handle that's available</li>
                   <li>Come back here → fill out the rest of the form (step 2)</li>
                 </ol>

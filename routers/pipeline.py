@@ -6,6 +6,7 @@ Reads roster pages grouped by Notion `Status`, exposes per-stage actions
 changes also write back to Notion.
 """
 
+import hashlib
 import logging
 import os
 from datetime import datetime, timezone
@@ -46,7 +47,38 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-DEFAULT_INTAKE_PASSWORD = os.getenv("DEFAULT_INTAKE_PASSWORD", "changeme")
+INTAKE_PASSWORD_ENV = "DEFAULT_INTAKE_PASSWORD"
+INTAKE_PASSWORD_NOT_CONFIGURED = "intake_password_not_configured"
+INTAKE_PASSWORD_RETIRED = "intake_password_retired"
+
+# SHA-256 digests of intake passwords that have been exposed and must never be
+# written again: the default once shipped in the public frontend bundle, and the
+# guessable fallback previously used when the env var was unset. Digests only;
+# tests/test_no_shipped_default_password.py forbids the plaintext in the repo.
+RETIRED_INTAKE_PASSWORD_SHA256 = frozenset({
+    "2c04122561f52246bb9d4baa62cd53f23886d9d2540542e9c8c69a34d1adc2a7",
+    "057ba03d6c44104863dc7361fe4578965d1887360f90a0895882e58a6248fc86",
+})
+
+# Invisible characters that survive copy/paste into env settings.
+_ZERO_WIDTH = dict.fromkeys(map(ord, "\u200b\u200c\u200d\u2060\ufeff"))
+
+
+def _intake_password() -> str:
+    """Return the server-owned intake password, or refuse the intake.
+
+    Read at request time from the environment only. Zero-width characters are
+    removed and surrounding whitespace stripped. There is no fallback: a value
+    that is then blank raises a typed 503 (`intake_password_not_configured`),
+    and a retired value raises a typed 503 (`intake_password_retired`), both
+    before any alias, Notion row or roster entry is written.
+    """
+    value = (os.getenv(INTAKE_PASSWORD_ENV) or "").translate(_ZERO_WIDTH).strip()
+    if not value:
+        raise HTTPException(status_code=503, detail=INTAKE_PASSWORD_NOT_CONFIGURED)
+    if hashlib.sha256(value.encode("utf-8")).hexdigest() in RETIRED_INTAKE_PASSWORD_SHA256:
+        raise HTTPException(status_code=503, detail=INTAKE_PASSWORD_RETIRED)
+    return value
 
 
 # Pipeline stages — must match the Notion Status select values exactly.
@@ -256,6 +288,7 @@ async def mint_random_alias_endpoint(req: MintAliasRequest | None = None) -> Min
     User can also specify a custom name (`desired_local`) so emails are
     human-readable in the inbox (e.g. "samb-truck-04@..." instead of random).
     """
+    intake_password = _intake_password()
     pipeline = (req.pipeline if req else None) or None
     desired_local = (req.desired_local if req else None) or None
     info = await _mint_random_alias(pipeline=pipeline, desired_local=desired_local)
@@ -272,7 +305,7 @@ async def mint_random_alias_endpoint(req: MintAliasRequest | None = None) -> Min
                 pipeline_choice=pipeline,
                 email=info["alias"],
                 fwd_address=info["alias"],
-                password=DEFAULT_INTAKE_PASSWORD,
+                password=intake_password,
             )
             notion_page_id = created.get("id")
         except Exception as exc:
@@ -298,6 +331,7 @@ async def submit_intake(req: IntakeRequest):
 
     Either way, status stays "New — Pending Setup" so it lands in lane 1.
     """
+    intake_password = _intake_password()
     if not notion_configured():
         raise HTTPException(
             status_code=503,
@@ -358,7 +392,7 @@ async def submit_intake(req: IntakeRequest):
                 account_type=req.account_type,
                 email=email_alias,
                 fwd_address=email_alias,
-                password=DEFAULT_INTAKE_PASSWORD,
+                password=intake_password,
             )
             created_id = created.get("id", "")
     except httpx.HTTPStatusError as exc:
