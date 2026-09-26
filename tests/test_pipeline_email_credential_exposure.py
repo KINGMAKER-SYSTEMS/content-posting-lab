@@ -339,3 +339,12 @@ def test_slack_handoff_never_carries_the_password(monkeypatch):
     # The handle and login email still reach the recipient.
     assert "acct1" in everything
     assert SENTINELS["email_alias"] in everything
+
+
+def test_rule_mismatch_409_does_not_echo_the_linked_rule_id(client, cf):
+    _seed()
+    r = client.delete("/api/email/rules/rule_WRONG?integration_id=acct1")
+    assert r.status_code == 409
+    assert "does not belong" in r.json()["detail"]
+    assert SENTINELS["email_rule_id"] not in r.text
+    assert roster.get_page("acct1")["email_rule_id"] == SENTINELS["email_rule_id"]

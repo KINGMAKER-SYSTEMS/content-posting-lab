@@ -94,12 +94,10 @@ async def delete_email_rule(rule_id: str, integration_id: str | None = None):
     if integration_id:
         page = get_page(integration_id)
         if page and page.get("email_rule_id") not in (None, "", rule_id):
+            # Generic on purpose: never echo the page's linked rule id.
             raise HTTPException(
                 status_code=409,
-                detail=(
-                    f"rule_id {rule_id} does not belong to page {integration_id} "
-                    f"(linked rule is {page.get('email_rule_id')})"
-                ),
+                detail="rule_id does not belong to this page; nothing was deleted",
             )
 
     with _cf_upstream():
