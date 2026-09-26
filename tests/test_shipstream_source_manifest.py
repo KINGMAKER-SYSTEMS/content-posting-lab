@@ -30,7 +30,7 @@ def _intent():
         handle=HANDLE,
         content_niche="POV — Night Core",
         content_engine="sourced_video",
-        vault_url=f"https://shipstream.risingtidesviral.com/vault/{HANDLE}",
+        vault_url=f"https://shipstream.test/vault/{HANDLE}",
     )
     intent["notionPageId"] = NOTION_PAGE_ID
     intent["automationMode"] = "Operator"

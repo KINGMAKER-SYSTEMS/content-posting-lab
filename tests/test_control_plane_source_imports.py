@@ -43,7 +43,7 @@ def lab(monkeypatch, tmp_path):
         handle="night.walks",
         content_niche="POV — Night Core",
         content_engine="sourced_video",
-        vault_url="https://shipstream.risingtidesviral.com/vault/night.walks",
+        vault_url="https://shipstream.test/vault/night.walks",
     )
     intent["notionPageId"] = "notion-night-walks"
     revision = intent_hash(intent)

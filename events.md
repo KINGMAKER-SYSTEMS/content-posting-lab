@@ -989,3 +989,31 @@ id format. The mint-alias and
 auto-create 409s no longer echo the alias or a page's recorded alias. No
 deploy was performed.
 
+_________________________________________________________________________________
+time: [04:56 EDT] [26-09-26]
+agent: [Claude Code] [claude-opus-5-5]
+worktree: [sec/lab-no-prod-defaults] [/Users/ecfromthedc/dev/wt/lab-no-prod-defaults]
+type: [security]: no Lab code defaults to a production URL
+area: [backend] [security] [testing]
+
+During a review a local probe ran the sound-sync handler un-stubbed; its
+hardcoded Campaign Hub default made one unauthenticated read-only GET to
+production /api/campaigns (404, nothing written). CAMPAIGN_HUB_URL and the new
+SHIPSTREAM_VAULT_ORIGIN are now required: unset or malformed, the Hub and
+ShipStream vault code raise ConfigError before building a request, and
+POST /api/telegram/sounds/sync and /api/slideshow/sounds/prepare answer 503
+"Campaign Hub not configured". A ShipStream vault that is not configured reads
+as "unavailable", the state an unreachable vault already produced. The
+.env.example template no longer carries production origins, and a usage
+docstring no longer names the Supabase project. tests/test_no_production_host_guard.py
+fails on any production hostname in app Python, and on production URLs in
+other tracked files outside a justified docs allowlist. A conftest audit hook
+refuses and fails any test that looks up or connects to a non-loopback host. Its first
+full run found two live leaks in the suite: every TestClient lifespan started
+the ABN factory, which scraped HN, GitHub, Reddit and lobste.rs, and the
+source-execution tests fetched page manifests from the production ShipStream
+vault. Only TestClient lifespans now get an idle factory start, and those
+tests answer manifest reads as an unreachable vault.
+Production needs CAMPAIGN_HUB_URL and SHIPSTREAM_VAULT_ORIGIN set before this
+deploys; neither was set on 2026-09-26. No deploy was performed.
+
