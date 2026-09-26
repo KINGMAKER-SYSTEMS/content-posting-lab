@@ -924,4 +924,9 @@ verified destination inboxes, each pinned by a test. The Slack pipeline
 handoff now says "see Notion" instead of carrying the password. The Pipeline
 workspace, stage cards, Roster and Email tabs label the hidden fields
 "hidden pending operator auth". New HTTP tests fail on main (16 of 21) and pass
-here. No deploy was performed.
+here. A whole-app sweep test calls all 104 non-streaming GET routes
+(anonymously and with every machine credential) against a roster seeded with
+sentinel credentials; on main it catches /api/roster/, /api/roster/project,
+/api/pipeline/stages and /api/pipeline/{id}/workspace, and here it passes.
+Pages, miniapp/poster content and telegram routes build named safe fields.
+No deploy was performed.
