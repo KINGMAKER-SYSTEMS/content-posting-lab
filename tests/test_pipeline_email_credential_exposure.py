@@ -218,7 +218,13 @@ def test_intake_echoes_its_own_alias_and_not_the_synced_roster(client, monkeypat
 
 
 @pytest.fixture
-def cf(monkeypatch):
+def cf(monkeypatch, client):
+    # The email mutation routes (and, after #177, the destinations list) require
+    # CONTROL_PLANE_TOKEN since #176; these exposure tests exercise the
+    # authenticated path. Anonymous refusal is pinned in
+    # tests/test_email_routing_lockdown.py.
+    monkeypatch.setenv("CONTROL_PLANE_TOKEN", "exposure-test-token")
+    client.headers["Authorization"] = "Bearer exposure-test-token"
     created = {}
 
     async def list_rules():
@@ -248,8 +254,11 @@ def cf(monkeypatch):
 
 def test_auto_create_returns_the_new_alias_but_no_page_credentials(client, cf):
     _seed()
+    # The seeded page already records an alias, so since #176 re-pointing it
+    # needs an explicit replace (no silent re-pointing).
     r = client.post("/api/email/auto-create", json={
         "integration_id": "acct1", "account_name": "New Name", "destination": "team@rt.example",
+        "replace": True,
     })
     assert r.status_code == 200
     body = r.json()
