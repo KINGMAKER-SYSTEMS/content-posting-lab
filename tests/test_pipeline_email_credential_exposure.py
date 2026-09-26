@@ -204,7 +204,7 @@ def test_intake_echoes_its_own_alias_and_not_the_synced_roster(client, monkeypat
         "account_username": "newhandle",
         "email_alias": "fresh-02@rt.example",
         "fwd_destination": "team@rt.example",
-        "notion_page_id": "notion-new",
+        "notion_page_id": "0123456789abcdef0123456789abcdef",  # canonical id (#177 N8)
     })
     assert r.status_code == 200
     body = r.json()
