@@ -109,7 +109,9 @@
 - `services/slack.py` pipeline handoffs never carry the login email, password
   or free-text notes; those fields point at Notion.
 - `routers/pipeline.py` /intake refuses (generic 409) an anonymous intake for
-  a handle that already has a roster page, under either `acct:` id form;
+  a handle that already has a roster page (either `acct:` id form) or with a
+  `notion_page_id` of a roster page that is not an unfinished step-1
+  placeholder (placeholder completion must carry its own alias);
   CONTROL_PLANE_TOKEN may override. Alias-collision 409s never echo the alias.
 - `burn_server.py` exposes the same typed caption-render route on the posting
   Mac's canonical port-8002 Burn runtime for Rail consumption.

@@ -146,6 +146,7 @@ def intake_env(monkeypatch):
     monkeypatch.setattr(pipeline, "notion_configured", lambda: True)
     store = {LIVE["integration_id"]: dict(LIVE)}
     monkeypatch.setattr(pipeline, "get_page", lambda iid: store.get(iid))
+    monkeypatch.setattr(pipeline, "list_all_pages", lambda: list(store.values()))
 
     def _set_page(iid, fields):
         store.setdefault(iid, {"integration_id": iid}).update(fields)
@@ -317,3 +318,189 @@ def test_auto_create_repoint_409_does_not_echo_recorded_alias(client, monkeypatc
     assert resp.status_code == 409, resp.text
     detail = resp.json()["detail"]
     assert "victim-page" not in detail and "i-victim" not in detail
+
+
+# ── #20 follow-up (review D1/D2): notion_page_id cannot hijack a live page ───
+#
+# Real roster file + a fake Notion (fetch/update/email writes) so the whole
+# intake -> sync -> /setup chain from the review runs in memory.
+
+import asyncio  # noqa: E402
+
+from fastapi import HTTPException  # noqa: E402
+
+import services.notion_pages as notion_pages  # noqa: E402
+
+
+def _row(npid, username, email, status="In Production"):
+    return {
+        "id": npid,
+        "properties": {
+            "Account Username": {"title": [{"plain_text": username}]},
+            "email": {"email": email},
+            "Account Status": {"select": {"name": status}},
+            "Pipeline": {"select": {"name": "Flow Stage"}},
+        },
+    }
+
+
+@pytest.fixture
+def world(monkeypatch, tmp_path):
+    monkeypatch.setattr(roster_service, "ROSTER_PATH", tmp_path / "page_roster.json")
+    monkeypatch.setenv("CONTROL_PLANE_TOKEN", TOKEN)
+    monkeypatch.setenv("DEFAULT_INTAKE_PASSWORD", "intake-test-value-not-real")
+    notion, writes, calls = {}, [], {"update": 0}
+
+    async def fetch_all():
+        return [p for p in (notion_pages.parse_page(v) for v in notion.values()) if p]
+
+    async def update_intake(npid, *, account_username=None, **k):
+        calls["update"] += 1
+        if account_username:
+            notion[npid]["properties"]["Account Username"] = {
+                "title": [{"plain_text": account_username.strip()}]
+            }
+
+    async def email_fields(npid, email=None, fwd_address=None):
+        writes.append((npid, email))
+        notion[npid]["properties"]["email"] = {"email": email}
+
+    monkeypatch.setattr(notion_pages, "fetch_all_pages", fetch_all)
+    monkeypatch.setattr(pipeline, "notion_configured", lambda: True)
+    monkeypatch.setattr(pipeline, "update_intake_page", update_intake)
+    monkeypatch.setattr(pipeline, "create_intake_page", _boom_async("create_intake_page"))
+    monkeypatch.setattr(pipeline, "update_page_email_fields", email_fields)
+    monkeypatch.setattr(pipeline, "_mint_random_alias", _boom_async("_mint_random_alias"))
+    monkeypatch.setattr(pipeline, "cf_get_config", lambda: {"domain": "alias.example"})
+    return notion, writes, calls
+
+
+def _intake(**fields):
+    return asyncio.run(
+        pipeline.submit_intake(pipeline.IntakeRequest(**fields), authorization=None, x_api_key=None)
+    )
+
+
+def _seed_victim(notion):
+    notion["victim-npid"] = _row("victim-npid", "victim_page", "victim-real@alias.example")
+    asyncio.run(notion_pages.sync_into_roster())
+    roster_service.set_page("acct:victim-page", {
+        "email_alias": "victim-real@alias.example",
+        "email_rule_id": "rule_live",
+        "fwd_destination": "henry@team.example",
+    })
+    return json.dumps(roster_service.get_page("acct:victim-page"), sort_keys=True)
+
+
+@pytest.mark.parametrize("npid", ["victim-npid", "VICTIM-NPID", "victimnpid"])
+def test_anonymous_intake_with_live_pages_notion_id_is_refused(world, npid):
+    """D1: fresh handle + a live page's notion_page_id must not rename that row."""
+    notion, writes, calls = world
+    before = _seed_victim(notion)
+    with pytest.raises(HTTPException) as exc:
+        _intake(
+            account_username="fresh-unused-handle",
+            notion_page_id=npid,
+            email_alias="attacker@evil.example",
+            fwd_destination="attacker@evil.example",
+        )
+    assert exc.value.status_code == 409
+    assert "victim" not in exc.value.detail
+    assert calls["update"] == 0
+    assert notion["victim-npid"]["properties"]["Account Username"]["title"][0]["plain_text"] == "victim_page"
+    assert json.dumps(roster_service.get_page("acct:victim-page"), sort_keys=True) == before
+    assert roster_service.get_page("acct:fresh-unused-handle") is None
+
+
+def test_notion_id_hijack_chain_never_reaches_victim_email(world):
+    """D1 end to end: intake -> sync -> /setup must not write the attacker alias."""
+    notion, writes, calls = world
+    _seed_victim(notion)
+    with pytest.raises(HTTPException):
+        _intake(
+            account_username="fresh-unused-handle",
+            notion_page_id="victim-npid",
+            email_alias="attacker@evil.example",
+            fwd_destination="attacker@evil.example",
+        )
+    asyncio.run(notion_pages.sync_into_roster())
+    assert roster_service.get_page("acct:victim-page")["email_rule_id"] == "rule_live"
+    if roster_service.get_page("acct:fresh-unused-handle"):
+        try:
+            asyncio.run(pipeline.run_setup("acct:fresh-unused-handle"))
+        except Exception:
+            pass
+    assert ("victim-npid", "attacker@evil.example") not in writes
+    assert notion["victim-npid"]["properties"]["email"]["email"] == "victim-real@alias.example"
+
+
+def test_legit_ui_intake_completes_its_own_synced_placeholder(world):
+    """D2: step-1 placeholder synced before step 2 with handle == email name."""
+    notion, writes, calls = world
+    notion["own-npid"] = _row("own-npid", "samb-truck-04", "samb-truck-04@alias.example",
+                              status="New — Pending Setup")
+    asyncio.run(notion_pages.sync_into_roster())
+    assert roster_service.get_page("acct:samb-truck-04")
+    out = _intake(
+        account_username="samb-truck-04",
+        notion_page_id="own-npid",
+        email_alias="samb-truck-04@alias.example",
+        fwd_destination="henry@team.example",
+    )
+    assert out["ok"] is True
+    assert calls["update"] == 1
+    assert roster_service.get_page("acct:samb-truck-04")["email_alias"] == "samb-truck-04@alias.example"
+
+
+def test_placeholder_completion_with_real_handle_is_unchanged(world):
+    notion, writes, calls = world
+    notion["own-npid"] = _row("own-npid", "acct-7gx2k4mz", "acct-7gx2k4mz@alias.example",
+                              status="New — Pending Setup")
+    asyncio.run(notion_pages.sync_into_roster())
+    out = _intake(
+        account_username="real.tiktok_handle",
+        notion_page_id="own-npid",
+        email_alias="acct-7gx2k4mz@alias.example",
+        fwd_destination="henry@team.example",
+    )
+    assert out["ok"] is True
+
+
+def test_placeholder_alias_cannot_be_repointed_anonymously(world):
+    notion, writes, calls = world
+    notion["own-npid"] = _row("own-npid", "acct-7gx2k4mz", "acct-7gx2k4mz@alias.example",
+                              status="New — Pending Setup")
+    asyncio.run(notion_pages.sync_into_roster())
+    with pytest.raises(HTTPException) as exc:
+        _intake(
+            account_username="real.tiktok_handle",
+            notion_page_id="own-npid",
+            email_alias="attacker@evil.example",
+        )
+    assert exc.value.status_code == 409
+    assert calls["update"] == 0
+
+
+def test_unsynced_placeholder_notion_id_is_unchanged(world):
+    notion, writes, calls = world
+    notion["fresh-npid"] = _row("fresh-npid", "acct-aaaa1111", "acct-aaaa1111@alias.example",
+                                status="New — Pending Setup")  # not synced yet
+    out = _intake(
+        account_username="brand.new_handle",
+        notion_page_id="fresh-npid",
+        email_alias="acct-aaaa1111@alias.example",
+    )
+    assert out["ok"] is True
+
+
+def test_control_plane_token_may_reuse_a_live_notion_id(world):
+    notion, writes, calls = world
+    _seed_victim(notion)
+    out = asyncio.run(pipeline.submit_intake(
+        pipeline.IntakeRequest(
+            account_username="victim_page", notion_page_id="victim-npid",
+            email_alias="victim-real@alias.example",
+        ),
+        authorization=f"Bearer {TOKEN}", x_api_key=None,
+    ))
+    assert out["ok"] is True

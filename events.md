@@ -969,11 +969,16 @@ shows an empty destination list; Pipeline mint-alias reads destinations
 server-side and is unaffected. The Slack pipeline handoff no longer posts the
 page login email, password or free-text notes (notes can hold backup codes);
 those fields say "see Notion" and the Notion button remains. An anonymous
-POST /api/pipeline/intake naming a handle that already has a roster page
-(checked under both the intake id and the Notion-sync id) is refused with a
-generic 409 before any mint, Notion or roster write, so it can no longer
-overwrite a live page's alias/destination or drop its rule link;
-CONTROL_PLANE_TOKEN holders may still re-run it. The mint-alias and
+POST /api/pipeline/intake is refused with a generic 409, before any mint,
+Notion or roster write, when its handle names an existing roster page (under
+both the intake id and the Notion-sync id) or its notion_page_id names a roster
+page that is not an unfinished step-1 placeholder; completing a placeholder
+anonymously also requires that placeholder's own alias, and a placeholder
+synced before step 2 (handle == email name) may still be completed. Before
+this, a fresh handle plus a live page's notion_page_id renamed that Notion row,
+the sync pruned the live roster page and its rule link, and /setup wrote the
+caller's alias into the row's Notion email. A live page whose Notion row is not
+in the roster is not recognised. CONTROL_PLANE_TOKEN holders may override. The mint-alias and
 auto-create 409s no longer echo the alias or a page's recorded alias. No
 deploy was performed.
 

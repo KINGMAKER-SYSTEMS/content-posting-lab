@@ -359,6 +359,61 @@ def _existing_page_for_handle(account_username: str) -> dict | None:
     return None
 
 
+_PLACEHOLDER_STATUS = "New — Pending Setup"
+_INTAKE_CONFLICT = "An account with this handle already exists — ask an operator to update it"
+
+
+def _norm_notion_id(value: object) -> str:
+    return str(value or "").strip().lower().replace("-", "")
+
+
+def _is_unfinished_placeholder(page: dict) -> bool:
+    """A step-1 (mint-alias) placeholder that step 2 has not completed yet.
+
+    Still pending, never linked to a CF rule, and still titled with its own
+    alias local part (step 2 renames it to the real handle). A live or
+    renamed page fails at least one of these.
+    """
+    signup = str(page.get("signup_email") or "").strip().lower()
+    local = signup.partition("@")[0] if "@" in signup else ""
+    return (
+        (page.get("status") or "") == _PLACEHOLDER_STATUS
+        and not page.get("email_rule_id")
+        and bool(local)
+        and str(page.get("name") or "").strip().lower() == local
+    )
+
+
+def _refuse_anonymous_intake_tamper(req: "IntakeRequest") -> None:
+    """Refuse (409) an anonymous intake that would touch an existing page's identity.
+
+    1. ``notion_page_id`` naming a roster page that is not an unfinished
+       placeholder: intake would rename that live row, the sync would prune its
+       roster page (dropping its rule link) and /setup would write the caller's
+       alias into its Notion email. Completing a placeholder also requires the
+       caller to send that placeholder's own alias.
+    2. ``account_username`` naming an existing page, unless that page is the
+       same unfinished placeholder this request is completing (step 1's row
+       synced before step 2 with handle == email name).
+    """
+    own: dict | None = None
+    npid = _norm_notion_id(req.notion_page_id)
+    if npid:
+        for page in list_all_pages():
+            if _norm_notion_id(page.get("notion_page_id")) != npid:
+                continue
+            alias = (req.email_alias or "").strip().lower()
+            signup = str(page.get("signup_email") or "").strip().lower()
+            if not _is_unfinished_placeholder(page) or alias != signup:
+                raise HTTPException(status_code=409, detail=_INTAKE_CONFLICT)
+            own = page
+    existing = _existing_page_for_handle(req.account_username)
+    if existing and not (
+        own is not None and existing.get("integration_id") == own.get("integration_id")
+    ):
+        raise HTTPException(status_code=409, detail=_INTAKE_CONFLICT)
+
+
 @router.post("/intake")
 @allow_credential_keys("email_alias", "fwd_destination")  # echo of this request's own alias
 async def submit_intake(
@@ -383,18 +438,11 @@ async def submit_intake(
     if not req.account_username.strip():
         raise HTTPException(status_code=400, detail="account_username is required")
 
-    # An intake for a handle that already has a roster page would overwrite
-    # that live page's email alias/destination and drop its rule link (then
-    # /setup writes it back to Notion). Anonymous callers are refused before
-    # any mint, Notion or roster write; an operator with CONTROL_PLANE_TOKEN
-    # may still re-run intake for an existing handle.
-    if _existing_page_for_handle(req.account_username) and not has_control_plane_credential(
-        authorization, x_api_key
-    ):
-        raise HTTPException(
-            status_code=409,
-            detail="An account with this handle already exists — ask an operator to update it",
-        )
+    # An anonymous intake must not touch an existing page's email identity,
+    # by handle or by notion_page_id. Refused before any mint, Notion or
+    # roster write; an operator with CONTROL_PLANE_TOKEN may override.
+    if not has_control_plane_credential(authorization, x_api_key):
+        _refuse_anonymous_intake_tamper(req)
 
     # Email alias is expected to have been minted in step 1 (POST /mint-alias)
     # before the user did the TikTok signup. If it's missing here, mint one
