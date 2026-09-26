@@ -375,8 +375,13 @@
   and the immutable prompt plan never change and no alternate engine is used.
   Other moderation-class text (a 429/5xx from the provider's moderation
   dependency, failed-prediction logs that mention "safety") is never retried.
+  An HTTP status anywhere in the message (`Error code: 503`, `Error code 429`,
+  `"status": 500`/`{'status': 500}`, `status_code=429`, `HTTP 503`, httpx
+  `Server error '503 …'`) blocks the retry even when `(E005)` is present.
   A rewording never adds a subject the prompt lacks: person wording applies
-  only to prompts that already depict people. The per-attempt cost table is
+  only to prompts that depict people, and a person term preceded in its clause
+  by a negation ("no people", "without any people", "free of people") does not
+  count; "figure(s)" and "body/bodies" are not person terms. The per-attempt cost table is
   pinned equal to the `recipes/generation` catalog by a test.
   Retries draw on a per-page UTC-day budget
   (`CONTENT_LAB_MODERATION_RETRY_DAILY_BUDGET`, default 6, 0 disables),
@@ -391,7 +396,9 @@
   other distinct candidates of the original plan continue; the status contract
   is unchanged. Persist every failure in the private job store and count only
   successful calls as completed. Credit (402), provider auth (401/403,
-  including "Error code: 401" raised inside the moderation check), transport,
+  including "Error code: 401" raised inside the moderation check, whose
+  errorDetail is `moderation model HTTP 401`/`403` so it is not read as our
+  token; our own token keeps `HTTP 401`/`403`), transport,
   ambiguous submission and other failures are never retried and still stop the
   remaining plan.
   Provider failures preserve already treated, claimed outputs as a

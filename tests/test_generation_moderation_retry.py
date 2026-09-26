@@ -416,7 +416,7 @@ async def test_observed_auth_failure_inside_moderation_check_is_provider_auth(la
     for message in (OBSERVED_MODERATION_AUTH,
                     "Replicate failed: Moderation check failed: ERROR CODE: 403 - forbidden"):
         assert base.classify_provider_error(message) == "provider_auth"
-    assert base.provider_error_code(OBSERVED_MODERATION_AUTH) == "HTTP 401"
+    assert base.provider_error_code(OBSERVED_MODERATION_AUTH) == "moderation model HTTP 401"
     client, _, _ = lab
     job_id, _, _ = queue_silhouettes(lab, monkeypatch, 2)
     calls = []
@@ -425,11 +425,11 @@ async def test_observed_auth_failure_inside_moderation_check_is_provider_auth(la
     stored = cp._load_jobs()["jobs"][job_id]
     assert [call["id"] for call in calls] == [f"{job_id}-g00"], "never retried, fails fast"
     assert stored["status"] == "failed" and stored["error"] == "provider_generation_failed"
-    assert (stored["errorClass"], stored["errorDetail"]) == ("provider_auth", "HTTP 401")
+    assert (stored["errorClass"], stored["errorDetail"]) == ("provider_auth", "moderation model HTTP 401")
     assert [r["outcome"] for r in stored["generationAttempts"]["0"]] == ["failed"]
     status = status_of(client, job_id)
     assert set(status) == {"schema", "jobId", "status", "progress", "error", "errorClass", "errorDetail"}
-    assert (status["errorClass"], status["errorDetail"]) == ("provider_auth", "HTTP 401")
+    assert (status["errorClass"], status["errorDetail"]) == ("provider_auth", "moderation model HTTP 401")
     assert WORKER_CLASS.fullmatch(status["errorClass"]) and WORKER_DETAIL.fullmatch(status["errorDetail"])
 
 
@@ -548,3 +548,143 @@ def test_attempt_cost_table_equals_the_generation_catalog():
                 assert catalog.setdefault(model, cost) == cost, f"{model} priced twice in the catalog"
     assert catalog, "the catalog was found"
     assert moderation_retry.ATTEMPT_COST_ESTIMATE_USD == catalog
+
+
+# ---------------------------------------------------------------------------
+# Review round 3 (#181 @ 29a0126): negation-aware person gate over the REAL
+# catalog, the embedded-HTTP-status branch pinned and widened, and a distinct
+# errorDetail for the moderation model's own 401/403.
+# ---------------------------------------------------------------------------
+
+from services.control_plane_generation import GenerationRecipe, compose_prompt_combination, prompt_combination_space
+
+CATALOG_ROOT = Path(__file__).resolve().parents[1] / "recipes" / "generation"
+# The families whose declared subject is people. Every other catalog family is
+# people-free (and most of them say "no people" in their guards or motion).
+PEOPLE_FAMILIES = {
+    ("silhouette_stills.v1.json", "silhouette"),
+    ("prompt_modules.v1.json", "silhouette"),
+}
+PERSON_WORDING = ("clothed", "every person", "Everyone", "adult with no body detail")
+
+
+def catalog_families():
+    return sorted((path.name, name) for path in CATALOG_ROOT.glob("*.json")
+                  for name in json.loads(path.read_text()).get("families", {}))
+
+
+def catalog_prompts(file_name, family_name):
+    family = json.loads((CATALOG_ROOT / file_name).read_text())["families"][family_name]
+    recipe = GenerationRecipe(
+        recipe_id=f"{family_name}:catalog", format_slug=family_name, family_name=family_name,
+        engine="catalog", provider_model="catalog", engine_registry_hash="r",
+        format_contract_version="c", material_source="generated_video", asset_type="video/mp4",
+        executor_version="e", prompt_catalog_hash="h", family=family, provider_config={},
+        recipe_spec={},
+    )
+    return [compose_prompt_combination(recipe, k)[0] for k in range(prompt_combination_space(recipe))]
+
+
+def test_the_people_family_list_covers_the_whole_catalog():
+    families = catalog_families()
+    assert len(families) == 7 and PEOPLE_FAMILIES <= set(families), \
+        "a new catalog family must be classified here as people or people-free"
+
+
+@pytest.mark.parametrize("file_name, family_name", catalog_families())
+def test_every_real_catalog_prompt_gets_person_wording_only_if_its_family_depicts_people(
+        file_name, family_name):
+    depicts_people = (file_name, family_name) in PEOPLE_FAMILIES
+    prompts = catalog_prompts(file_name, family_name)
+    assert prompts
+    for prompt in prompts:
+        for k in range(1, moderation_retry.RETRIES_PER_CALL + 1):
+            variant = moderation_retry.variant_prompt(prompt, k)[0]
+            has_person_wording = any(text in variant[len(prompt) - 2:] for text in PERSON_WORDING)
+            assert has_person_wording is depicts_people, (family_name, k, prompt[-160:], variant[-200:])
+            if not depicts_people:
+                assert variant.startswith(prompt.rstrip(". ")), "no replacement touched a people-free prompt"
+
+
+@pytest.mark.parametrize("prompt", [
+    "A small boat carving a figure-eight across a calm lake at dawn.",
+    "A small boat tracing a wide figure eight on a calm lake at dawn.",
+    "The truck's dark outline figures sharply against the dusk sky.",
+    "A man-made stone jetty on a calm lake at dawn, no people.",
+    "An empty harbor at dawn without any people on the docks.",
+    "A quiet field at dusk, free of people and vehicles.",
+    "A lone pickup under a dusk sky, devoid of people.",
+    "A still lake at dawn with zero people in frame.",
+    "A parked truck in a field, and not any people nearby.",
+])
+def test_negated_or_non_person_mentions_are_not_people(prompt):
+    for k in range(1, moderation_retry.RETRIES_PER_CALL + 1):
+        variant = moderation_retry.variant_prompt(prompt, k)[0]
+        assert not any(text in variant for text in PERSON_WORDING), variant
+
+
+def test_a_person_mentioned_outside_the_negation_still_counts():
+    prompt = "No cars on the road; two adults walk along the shoulder at dusk."
+    assert "clothed" in moderation_retry.variant_prompt(prompt, 1)[0]
+
+
+# The one real E005 shape (2026-09-25 census, all 23 refusals; zcode/flux-silhouette-failures.md:14).
+CENSUS_E005 = ("Replicate failed: The input or output was flagged as sensitive. "
+               "Please try again with different inputs. (E005)")
+
+E005_WITH_HTTP_STATUS = {
+    "error-code-colon": "Replicate failed: Safety check failed: Error code: 503 - unavailable (E005)",
+    "python-repr-status": "Replicate failed: moderation dependency returned {'status': 500} (E005)",
+    "http-token": "Replicate failed: Safety check failed: HTTP 503 Service Unavailable (E005)",
+    "httpx-server-error": ("Replicate failed: Safety check failed: Server error '503 Service Unavailable' "
+                           "for url 'https://moderation.invalid/v1' (E005)"),
+    "error-code-no-colon": "Replicate failed: Moderation check failed: Error code 429 - quota (E005)",
+    "status-code-kwarg": "Replicate failed: Moderation check failed: status_code=429 (E005)",
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("shape", sorted(E005_WITH_HTTP_STATUS))
+async def test_e005_with_an_embedded_http_status_is_never_retried(lab, monkeypatch, shape):
+    failure = E005_WITH_HTTP_STATUS[shape]
+    assert base.classify_provider_error(failure) == "moderation"
+    assert base.provider_error_code(failure) == "E005" or shape == "error-code-colon"
+    job_id, _, _ = queue_silhouettes(lab, monkeypatch, 2)
+    calls = []
+    install_provider(monkeypatch, [failure, "done", "done"], calls)
+    await cp._run_dossier_generation(job_id)
+    stored = cp._load_jobs()["jobs"][job_id]
+    assert [call["id"] for call in calls] == [f"{job_id}-g00", f"{job_id}-g01"], \
+        "a dependency failure carrying (E005) is still not a content refusal"
+    assert stored["providerFailures"][0]["terminal"] == "moderation_not_e005_not_retried"
+
+
+@pytest.mark.asyncio
+async def test_the_real_census_e005_message_is_retried(lab, monkeypatch):
+    assert moderation_retry.retry_blocked(CENSUS_E005) is None
+    job_id, _, _ = queue_silhouettes(lab, monkeypatch, 1)
+    calls = []
+    install_provider(monkeypatch, [CENSUS_E005, "done"], calls)
+    await cp._run_dossier_generation(job_id)
+    assert [call["id"] for call in calls] == [f"{job_id}-g00", f"{job_id}-g00-r1"]
+    assert cp._load_jobs()["jobs"][job_id]["status"] == "completed"
+
+
+# Lead decision (option b): the moderation model's own 401/403 keeps class
+# provider_auth but names that dependency, so the Worker's W8 alert does not
+# point at our Replicate billing. Our own token's 401/403 keeps "HTTP 40x".
+LAB_DETAIL = re.compile(r"[A-Za-z0-9 _.:,;/()#=+-]{1,64}")  # routers/control_plane.py _STATUS_FAILURE_DETAIL
+
+
+@pytest.mark.parametrize("message, detail", [
+    (OBSERVED_MODERATION_AUTH, "moderation model HTTP 401"),
+    ("Replicate failed: Warning: Moderation check failed: Error code: 403 - forbidden",
+     "moderation model HTTP 403"),
+    (AUTH, "HTTP 401"),
+    ('Replicate start failed: {"title":"Forbidden","status":403}', "HTTP 403"),
+])
+def test_auth_detail_names_the_moderation_model_or_our_token(message, detail):
+    assert base.classify_provider_error(message) == "provider_auth"
+    assert base.provider_error_code(message) == detail
+    assert WORKER_CLASS.fullmatch("provider_auth") and WORKER_DETAIL.fullmatch(detail)
+    assert LAB_DETAIL.fullmatch(detail) and detail.strip() == detail

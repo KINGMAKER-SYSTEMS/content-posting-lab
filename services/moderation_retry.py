@@ -35,13 +35,35 @@ NOT_E005_NOT_RETRIED = "moderation_not_e005_not_retried"
 # function of the base prompt and k. A variant never introduces a subject the
 # prompt did not already have: the neutral suffix applies to every prompt, and
 # the person-specific wording (replacements and clause) applies only when the
-# base prompt already depicts people. The observed silhouette E005 trigger was
-# the "featureless" / "no clothing detail" wording of embracing bodies.
+# base prompt depicts people. The observed silhouette E005 trigger was the
+# "featureless" / "no clothing detail" wording of embracing bodies.
+#
+# "Depicts people" is decided from the prompt text itself, because the
+# catalog has no structured subject flag: a family's free-text fixed_subject
+# carries its own negations ("no visible occupants"), and the people-free
+# families state "no people" in guards or motion that the prompt appends. So a
+# person term counts only when no negation precedes it within the same clause.
+# Ambiguous nouns are excluded: "figure(s)" (figure-eight), "body/bodies"
+# (body of water, truck body); a hyphenated compound ("man-made") never counts.
 _PERSON_TERMS = re.compile(
-    r"\b(?:people|persons?|man|men|woman|women|adults?|couples?|lovers?|figures?"
-    r"|bod(?:y|ies)|humans?|child(?:ren)?|girls?|boys?|dancers?|someone|everyone)\b",
+    r"\b(?:people|persons?|man|men|woman|women|adults?|couples?|lovers?"
+    r"|humans?|child(?:ren)?|girls?|boys?|dancers?|someone|everyone)\b(?!-)",
     re.I,
 )
+_NEGATION = re.compile(r"\b(?:no|without|zero|not\s+any|free\s+of|devoid\s+of|never)\b", re.I)
+_CLAUSE_BREAK = re.compile(r"[,.;:!?()]|\b(?:and|but|or|while|with)\b", re.I)
+_NEGATION_WINDOW_WORDS = 3
+
+
+def depicts_people(prompt: str) -> bool:
+    """True when some person term in ``prompt`` is not negated."""
+    for match in _PERSON_TERMS.finditer(prompt):
+        clause = _CLAUSE_BREAK.split(prompt[:match.start()])[-1]
+        window = " ".join(clause.split()[-_NEGATION_WINDOW_WORDS:])
+        if not _NEGATION.search(window):
+            return True
+    return False
+
 
 # (variant id, person-only replacements, neutral suffix, person-only clause)
 PROMPT_VARIANTS: tuple[tuple[str, tuple[tuple[str, str], ...], str, str], ...] = (
@@ -77,9 +99,18 @@ _AUTH_IN_MODERATION = re.compile(r"error code:\s*40[13]\b|deactivated", re.I)
 # "moderation|safety|nsfw|flagged" text, e.g. a 429/5xx from the provider's
 # moderation dependency or a failed prediction's logs echoing a safety
 # setting; retrying those spends money for nothing. A message that carries an
-# embedded HTTP status is a dependency failure even if it also names E005.
+# embedded HTTP status is a dependency failure even if it also names E005:
+# "Error code: 503" / "Error code 429" (OpenAI client), JSON or Python-repr
+# "status": 500, status_code=429, "HTTP 503" / "HTTP/1.1 503", and httpx's
+# "Server error '503 Service Unavailable'".
 _E005 = re.compile(r"\((?:code:\s*)?E005\)")
-_EMBEDDED_HTTP_STATUS = re.compile(r'error code:\s*\d{3}\b|"status":\s*\d{3}\b', re.I)
+_EMBEDDED_HTTP_STATUS = re.compile(
+    r"\berror[ _]code:?\s*\d{3}\b"
+    r"|['\"]?\bstatus(?:[ _]?code)?['\"]?\s*[:=]\s*\d{3}\b"
+    r"|\bHTTP(?:/\d(?:\.\d)?)?\s+\d{3}\b"
+    r"|\b(?:client|server) error '\d{3}\b",
+    re.I,
+)
 
 # Flat per-attempt cost estimates in USD, keyed by Replicate model. A refused
 # prediction is billed like a successful one, so a refused attempt records the
@@ -106,7 +137,7 @@ def variant_prompt(base_prompt: str, attempt: int) -> tuple[str, str | None]:
         return base_prompt, None
     variant_id, replacements, suffix, person_clause = PROMPT_VARIANTS[attempt - 1]
     prompt = base_prompt
-    if _PERSON_TERMS.search(base_prompt):
+    if depicts_people(base_prompt):
         for old, new in replacements:
             prompt = prompt.replace(old, new)
         suffix = f"{suffix} {person_clause}"
