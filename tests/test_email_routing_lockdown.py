@@ -422,21 +422,64 @@ def test_pipeline_mint_alias_unaffected_without_credentials(client, token_set, m
 
 # ── A1 source guard (R-LOW-1 class): error text is an ALLOWLIST ──────────────
 #
-# Every error message the email router can produce must be one of:
+# Purpose: catch ACCIDENTAL disclosure of roster values (another page's alias,
+# rule id, integration id) in error text written in routers/email_routing.py.
+# It is a lint for honest mistakes, not a defence against a hostile author.
+#
+# An error message (HTTPException detail, keyword or positional) is accepted
+# only if it is:
 #   * a plain string literal;
-#   * an f-string whose only interpolated name is ``destination``, and only in
-#     a function where ``destination`` is not a parameter and is assigned
-#     solely from ``_require_allowed_destination(...)`` (the caller's own
-#     normalised input);
+#   * an f-string whose only interpolated name is ``destination``, in a
+#     function where ``destination`` is bound exactly once-per-assignment by
+#     ``destination = _require_allowed_destination(req.<destination|email>)``
+#     (``req`` being that function's own, never re-bound, request-body
+#     parameter) and by no other binding form (parameter, lambda parameter,
+#     comprehension target, except-as, import-as, walrus, tuple unpack, for,
+#     with, match capture, global/nonlocal);
 #   * exactly ``str(e)`` inside ``_cf_upstream``'s ``except Exception as e``
-#     (the Cloudflare client's 502).
-# HTTPException is matched however it is imported, aliased or qualified; the
-# positional message argument and ``**kwargs`` are checked; any *Response
-# class and any dict literal with a "detail" key are flagged. Anything else
-# (concatenation, %, a variable, a helper result, ...) is an offender.
+#     handler, with ``e`` not re-bound anywhere in that handler.
+# The name HTTPException (and any import alias of it) may only appear as the
+# callee of a direct call or as an ``except`` type; any other use (subclass
+# base, assignment, walrus/tuple rebind, container, partial, argument) is
+# flagged, as is the string "HTTPException" (getattr). Any *Response class,
+# including one imported under an alias, is flagged wherever it is used; so
+# is ``**kwargs`` to HTTPException and a dict literal with a "detail" key.
+#
+# Limits (shapes this guard does not see):
+#   * File scope only: routers/email_routing.py. Messages built in other
+#     modules (the auth dependency in services/roster_public.py, the Cloudflare
+#     client whose exception text becomes the 502 ``str(e)``) are not checked;
+#     a roster value raised inside ``with _cf_upstream():`` would surface
+#     through that 502.
+#   * Dynamic dispatch the AST cannot resolve: e.g. ``getattr`` with a computed
+#     name, ``importlib``/``__import__``, ``eval``/``exec``, objects passed in
+#     from other modules.
+#   * Custom exception classes turned into responses by an app-level
+#     ``exception_handler`` (none exists in app.py today).
+#   * Response headers (``HTTPException(..., headers=...)``) and anything
+#     other than the error message text.
 
 import ast as _ast  # noqa: E402
 import inspect as _inspect  # noqa: E402
+
+
+def _bindings(scope, name: str) -> list:
+    """Every node in ``scope`` that binds ``name`` (any binding form)."""
+    found = []
+    for node in _ast.walk(scope):
+        if isinstance(node, _ast.Name) and node.id == name and isinstance(node.ctx, (_ast.Store, _ast.Del)):
+            found.append(node)
+        elif isinstance(node, _ast.arg) and node.arg == name:
+            found.append(node)
+        elif isinstance(node, _ast.ExceptHandler) and node.name == name:
+            found.append(node)
+        elif isinstance(node, _ast.alias) and (node.asname or node.name.split(".")[0]) == name:
+            found.append(node)
+        elif isinstance(node, (_ast.Global, _ast.Nonlocal)) and name in node.names:
+            found.append(node)
+        elif hasattr(_ast, "MatchAs") and isinstance(node, (_ast.MatchAs, _ast.MatchStar)) and node.name == name:
+            found.append(node)
+    return found
 
 
 def _error_text_offenders(source: str) -> list[tuple[int, str]]:
@@ -447,15 +490,17 @@ def _error_text_offenders(source: str) -> list[tuple[int, str]]:
             parents[child] = node
 
     exc_names = {"HTTPException"}
+    response_names: set[str] = set()
     for node in _ast.walk(tree):
-        if isinstance(node, _ast.ImportFrom):
+        if isinstance(node, (_ast.ImportFrom, _ast.Import)):
             for alias in node.names:
-                if alias.name == "HTTPException" and alias.asname:
+                base = alias.name.split(".")[-1]
+                if base == "HTTPException" and alias.asname:
                     exc_names.add(alias.asname)
-        elif isinstance(node, _ast.Assign) and isinstance(node.value, (_ast.Name, _ast.Attribute)):
-            src = getattr(node.value, "id", None) or getattr(node.value, "attr", None)
-            if src in exc_names:
-                exc_names.update(t.id for t in node.targets if isinstance(t, _ast.Name))
+                if base.endswith("Response"):
+                    response_names.add(alias.asname or base)
+
+    offenders: list[tuple[int, str]] = []
 
     def ancestors(node):
         while node in parents:
@@ -465,35 +510,33 @@ def _error_text_offenders(source: str) -> list[tuple[int, str]]:
     def enclosing_function(node):
         return next((a for a in ancestors(node) if isinstance(a, (_ast.FunctionDef, _ast.AsyncFunctionDef))), None)
 
+    def is_request_field(call, fn) -> bool:
+        if len(call.args) != 1 or call.keywords:
+            return False
+        arg = call.args[0]
+        if not (isinstance(arg, _ast.Attribute) and arg.attr in {"destination", "email"}
+                and isinstance(arg.value, _ast.Name)):
+            return False
+        req = arg.value.id
+        params = [a.arg for a in fn.args.posonlyargs + fn.args.args]
+        return bool(params) and params[0] == req and len(_bindings(fn, req)) == 1  # only the parameter
+
     def destination_is_own_input(node) -> bool:
         fn = enclosing_function(node)
         if fn is None:
             return False
-        params = {a.arg for a in fn.args.args + fn.args.kwonlyargs + fn.args.posonlyargs}
-        if "destination" in params:
+        binds = _bindings(fn, "destination")
+        if not binds:
             return False
-        assigns = []
-        for sub in _ast.walk(fn):
-            targets = []
-            if isinstance(sub, _ast.Assign):
-                targets = sub.targets
-            elif isinstance(sub, (_ast.AugAssign, _ast.AnnAssign, _ast.NamedExpr)):
-                targets = [sub.target]
-            elif isinstance(sub, (_ast.For, _ast.AsyncFor, _ast.With, _ast.AsyncWith)):
-                targets = [getattr(sub, "target", None)] + [
-                    i.optional_vars for i in getattr(sub, "items", []) if i.optional_vars
-                ]
-            for t in targets:
-                if t is not None and any(isinstance(n, _ast.Name) and n.id == "destination" for n in _ast.walk(t)):
-                    assigns.append(sub)
-        return bool(assigns) and all(
-            isinstance(a, _ast.Assign)
-            and len(a.targets) == 1
-            and isinstance(a.targets[0], _ast.Name)
-            and isinstance(a.value, _ast.Call)
-            and getattr(a.value.func, "id", None) == "_require_allowed_destination"
-            for a in assigns
-        )
+        for b in binds:
+            stmt = parents.get(b)
+            if not (isinstance(b, _ast.Name) and isinstance(b.ctx, _ast.Store)
+                    and isinstance(stmt, _ast.Assign) and stmt.targets == [b]
+                    and isinstance(stmt.value, _ast.Call)
+                    and getattr(stmt.value.func, "id", None) == "_require_allowed_destination"
+                    and is_request_field(stmt.value, fn)):
+                return False
+        return True
 
     def is_cf_upstream_str_e(node) -> bool:
         if not (isinstance(node, _ast.Call) and getattr(node.func, "id", None) == "str"
@@ -502,9 +545,12 @@ def _error_text_offenders(source: str) -> list[tuple[int, str]]:
             return False
         handler = next((a for a in ancestors(node) if isinstance(a, _ast.ExceptHandler)), None)
         fn = enclosing_function(node)
-        return (handler is not None and handler.name == "e"
+        if not (handler is not None and handler.name == "e"
                 and isinstance(handler.type, _ast.Name) and handler.type.id == "Exception"
-                and fn is not None and fn.name == "_cf_upstream")
+                and fn is not None and fn.name == "_cf_upstream"):
+            return False
+        # ``e`` must be bound only by the handler itself.
+        return all(not _bindings(stmt, "e") for stmt in handler.body)
 
     def allowed(value) -> bool:
         if isinstance(value, _ast.Constant) and isinstance(value.value, str):
@@ -519,11 +565,20 @@ def _error_text_offenders(source: str) -> list[tuple[int, str]]:
             )
         return is_cf_upstream_str_e(value)
 
-    offenders: list[tuple[int, str]] = []
     for node in _ast.walk(tree):
-        name = getattr(node, "id", None) or getattr(node, "attr", None)
-        if isinstance(node, (_ast.Name, _ast.Attribute)) and isinstance(name, str) and name.endswith("Response"):
+        if isinstance(node, _ast.Constant) and node.value == "HTTPException":
+            offenders.append((node.lineno, "HTTPException by string"))
+        name = node.id if isinstance(node, _ast.Name) else node.attr if isinstance(node, _ast.Attribute) else None
+        if isinstance(name, str) and (name.endswith("Response") or name in response_names):
             offenders.append((node.lineno, f"raw response class {name}"))
+        if isinstance(name, str) and name in exc_names:
+            parent = parents.get(node)
+            direct_call = isinstance(parent, _ast.Call) and parent.func is node
+            except_type = isinstance(parent, _ast.ExceptHandler) and parent.type is node or (
+                isinstance(parent, _ast.Tuple) and isinstance(parents.get(parent), _ast.ExceptHandler)
+            )
+            if not (direct_call or except_type):
+                offenders.append((node.lineno, f"indirect use of {name}"))
         if isinstance(node, _ast.Dict):
             for key, value in zip(node.keys, node.values):
                 if isinstance(key, _ast.Constant) and key.value == "detail" and not allowed(value):
@@ -541,7 +596,11 @@ def _error_text_offenders(source: str) -> list[tuple[int, str]]:
 
 
 def test_email_route_error_details_never_interpolate_roster_values():
-    """A1: every error message in routers/email_routing.py is on the allowlist."""
+    """A1: every error message in routers/email_routing.py is on the allowlist.
+
+    Guards against ACCIDENTAL leaks of roster values in this file's error
+    text; see the Limits in the comment block above for what it cannot see.
+    """
     assert _error_text_offenders(_inspect.getsource(r)) == []
 
 
@@ -549,6 +608,7 @@ _GUARD_PRELUDE = """
 from fastapi import HTTPException
 from fastapi.responses import JSONResponse, PlainTextResponse
 import fastapi
+import functools
 
 def _require_allowed_destination(x):
     return x
@@ -580,6 +640,61 @@ _GUARD_MUTATIONS = {
         'def _cf_upstream(page):\n    e = page["email_alias"]\n'
         '    raise HTTPException(status_code=502, detail=str(e))'
     ),
+    # Round 2 (review of e3697c5):
+    "walrus rebind of HTTPException": 'def f(alias):\n    (E := HTTPException)\n    raise E(409, alias)',
+    "tuple rebind of HTTPException": 'E, _X = HTTPException, None\ndef f(alias):\n    raise E(409, alias)',
+    "HTTPException in a container": 'EXC = {"c": HTTPException}\ndef f(alias):\n    raise EXC["c"](409, alias)',
+    "functools.partial keyword": 'def f(alias):\n    raise functools.partial(HTTPException, status_code=409, detail=alias)()',
+    "functools.partial positional": 'def f(alias):\n    raise functools.partial(HTTPException, 409)(alias)',
+    "getattr by string": 'def f(alias):\n    raise getattr(fastapi, "HTTPException")(409, alias)',
+    "subclass": 'class AliasConflict(HTTPException):\n    pass\ndef f(alias):\n    raise AliasConflict(409, alias)',
+    "subclass super().__init__": (
+        'class C(HTTPException):\n    def __init__(self, p):\n'
+        '        super().__init__(409, p["email_alias"])\ndef f(p):\n    raise C(p)'
+    ),
+    "lambda parameter named destination": (
+        'def f(req, alias):\n    destination = _require_allowed_destination(req.destination)\n'
+        '    raise (lambda destination: HTTPException(409, f"{destination}"))(alias)'
+    ),
+    "comprehension target destination": (
+        'def f(req, alias):\n    destination = _require_allowed_destination(req.destination)\n'
+        '    raise next(HTTPException(409, f"{destination}") for destination in [alias])'
+    ),
+    "except-as destination": (
+        'def f(req):\n    destination = _require_allowed_destination(req.destination)\n'
+        '    try:\n        pass\n    except Exception as destination:\n'
+        '        raise HTTPException(409, f"{destination}")'
+    ),
+    "import-as destination": (
+        'def f(req):\n    destination = _require_allowed_destination(req.destination)\n'
+        '    from os import sep as destination\n    raise HTTPException(409, f"{destination}")'
+    ),
+    "tuple unpack destination": (
+        'def f(req, page):\n    destination = _require_allowed_destination(req.destination)\n'
+        '    destination, _ = page["email_alias"], 1\n    raise HTTPException(409, f"{destination}")'
+    ),
+    "_require_allowed_destination of a roster value": (
+        'def f(req, page):\n    destination = _require_allowed_destination(page["email_alias"])\n'
+        '    raise HTTPException(422, f"{destination}")'
+    ),
+    "_require_allowed_destination of a re-bound req": (
+        'def f(req, page):\n    req = page\n    destination = _require_allowed_destination(req.destination)\n'
+        '    raise HTTPException(422, f"{destination}")'
+    ),
+    "e re-bound inside the _cf_upstream handler": (
+        'def _cf_upstream(page):\n    try:\n        yield\n    except Exception as e:\n'
+        '        e = page["email_alias"]\n        raise HTTPException(status_code=502, detail=str(e))'
+    ),
+    "e re-bound by walrus inside the handler": (
+        'def _cf_upstream(page):\n    try:\n        yield\n    except Exception as e:\n'
+        '        (e := page["email_alias"])\n        raise HTTPException(status_code=502, detail=str(e))'
+    ),
+    "aliased JSONResponse import": (
+        'from fastapi.responses import JSONResponse as JR\ndef f(alias):\n    return JR({"x": alias}, status_code=409)'
+    ),
+    "aliased starlette Response import": (
+        'from starlette.responses import Response as R\ndef f(alias):\n    return R(alias, status_code=409)'
+    ),
 }
 
 
@@ -591,9 +706,9 @@ def test_error_text_guard_flags_each_known_leak_shape(mutation):
 def test_error_text_guard_accepts_the_allowed_shapes():
     ok = _GUARD_PRELUDE + (
         'def a():\n    raise HTTPException(status_code=409, detail="Alias already exists")\n'
-        'def b(req):\n    destination = _require_allowed_destination(req)\n'
+        'def b(req):\n    destination = _require_allowed_destination(req.destination)\n'
         '    raise HTTPException(status_code=422, detail=f"Destination {destination} is not verified")\n'
-        'def _cf_upstream():\n    try:\n        yield\n    except Exception as e:\n'
-        '        raise HTTPException(status_code=502, detail=str(e))\n'
+        'def _cf_upstream():\n    try:\n        yield\n    except HTTPException:\n        raise\n'
+        '    except Exception as e:\n        raise HTTPException(status_code=502, detail=str(e))\n'
     )
     assert _error_text_offenders(ok) == []
