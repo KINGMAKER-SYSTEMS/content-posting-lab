@@ -222,6 +222,8 @@ async def multi_crop_vertical(src: Path, mode: str) -> list[Path]:
 # trouble that a retry does fix; one generic label hid that difference.
 _PROVIDER_FAILURE_RULES = (
     ("insufficient_credit", re.compile(r'"status":\s*402|insufficient credit', re.I)),
+    # Provider HTTP 401/403: an account/token action, never retried (like 402).
+    ("provider_auth", re.compile(r'"status":\s*40[13]\b|unauthenticated|invalid (api )?token', re.I)),
     ("rate_limited", re.compile(r'"status":\s*429|throttled', re.I)),
     ("provider_5xx", re.compile(r'"status":\s*5\d\d', re.I)),
     ("prediction_timeout", re.compile(r"timed out after", re.I)),

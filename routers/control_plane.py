@@ -124,6 +124,7 @@ from services.content_engine_registry import load_engine_registry, resolve_mater
 from services.content_format_contracts import load_format_contracts
 from services.ffmpeg import delivery_encode_args, run_color_correct
 from services.master_pages_contract import SCHEMA as MASTER_PAGES_SCHEMA, canonical_intent, exact_intent, intent_hash
+from services import moderation_retry
 from services.source_treatment import (
     derived_source_treatment,
     recovery_treatment_matches,
@@ -1216,14 +1217,48 @@ def _needs_generation_resume(job: dict[str, Any]) -> bool:
             and (job.get("runtimeId") != _GENERATION_RUNTIME_ID or job.get("resumePending") is True))
 
 
-def _save_prediction_checkpoint(job_id: str, call_index: int, record: dict) -> None:
+def _save_prediction_checkpoint(job_id: str, key: int | str, record: dict) -> None:
+    # Attempt 0 of call i keeps the original key "i"; a moderation retry uses
+    # its own "i:k" key, so it never resumes or overwrites the refused prediction.
     with lock_for(_jobs_path()):
         store = _load_jobs()
         job = store["jobs"][job_id]
         if job.get("status") not in GENERATION_ACTIVE_STATUSES:
             raise RuntimeError("generation_checkpoint_job_not_active")
-        job.setdefault("providerCheckpoints", {})[str(call_index)] = record
+        job.setdefault("providerCheckpoints", {})[str(key)] = record
         atomic_save(_jobs_path(), store)
+
+
+def _prediction_checkpoint_key(call_index: int, attempt: int) -> str:
+    return str(call_index) if attempt == 0 else f"{call_index}:{attempt}"
+
+
+def _reserve_moderation_retry(
+    job_id: str, call_index: int, attempts: dict[str, list[dict[str, Any]]],
+    entry: dict[str, Any],
+) -> bool:
+    """Atomically reserve one retry against the page's UTC-day budget.
+
+    The reservation is the durable attempt row itself, written in the same
+    transaction that counts every job's retries for the page, so concurrent
+    jobs and restarts share one budget. First attempts never pass through here.
+    """
+    budget = moderation_retry.daily_budget()
+    with lock_for(_jobs_path()):
+        store = _load_jobs()
+        job = store["jobs"][job_id]
+        if job.get("status") not in GENERATION_ACTIVE_STATUSES:
+            raise RuntimeError("generation_checkpoint_job_not_active")
+        used = moderation_retry.retries_used(store, job.get("pageId"), entry["at"][:10])
+        if used >= budget:
+            return False
+        key = str(call_index)
+        updated = json.loads(json.dumps(attempts))
+        updated.setdefault(key, []).append(dict(entry))
+        job["generationAttempts"] = updated
+        atomic_save(_jobs_path(), store)
+    attempts.setdefault(key, []).append(dict(entry))
+    return True
 
 
 def _verify_preserved_generation(job_root: Path, clips: list) -> None:
@@ -1562,6 +1597,7 @@ async def _run_owned_dossier_generation(job_id: str) -> None:
     manifests: list[dict[str, Any]] = list(job.get("clips", [])) if durable else []
     provider_failures: list[dict[str, Any]] = list(job.get("providerFailures", [])) if durable else []
     completed_calls = list(job.get("completedGenerationCalls", [])) if durable else []
+    attempts: Any = json.loads(json.dumps(job.get("generationAttempts") or {})) if durable else {}
     provider_calls_completed = len(completed_calls)
     prompt_plan = job.get("promptPlan")
     if (
@@ -1589,6 +1625,25 @@ async def _run_owned_dossier_generation(job_id: str) -> None:
         if (any(type(index) is not int or index < 0 or index >= calls for index in completed_calls)
                 or len(completed_calls) != len(set(completed_calls))):
             raise RuntimeError("generation_checkpoint_invalid")
+        if not isinstance(attempts, dict):
+            raise RuntimeError("generation_checkpoint_invalid")
+
+        def prompt_provenance_ok(clip: dict[str, Any], index: int) -> bool:
+            # The plan's prompt, or a variant whose exact hash a durable
+            # succeeded attempt row for this same call recorded.
+            plan_hash = prompt_plan[index]["promptHash"]
+            variant = clip.get("promptVariant")
+            if variant is None:
+                return (clip.get("promptHash") == plan_hash
+                        and clip.get("basePromptHash", plan_hash) == plan_hash)
+            return clip.get("basePromptHash") == plan_hash and any(
+                isinstance(row, dict) and row.get("outcome") == "succeeded"
+                and type(row.get("attempt")) is int and row["attempt"] >= 1
+                and row.get("promptVariant") == variant
+                and row.get("promptHash") == clip.get("promptHash")
+                for row in (attempts.get(str(index)) or [])
+            )
+
         if manifests:
             await asyncio.to_thread(_verify_preserved_generation, job_root, manifests)
         expected_crops = {"dual": 2, "triptych": 3, "both": 5}.get(options.get("crop_mode"), 1)
@@ -1598,7 +1653,7 @@ async def _run_owned_dossier_generation(job_id: str) -> None:
             crop = clip.get("delivery", {}).get("crop", {})
             candidate_index = crop.get("index", 0)
             if (type(index) is not int or not 0 <= index < calls
-                    or clip.get("promptHash") != prompt_plan[index]["promptHash"]
+                    or not prompt_provenance_ok(clip, index)
                     or clip.get("promptCombinationId") != prompt_plan[index]["combinationId"]
                     or type(candidate_index) is not int or not 0 <= candidate_index < expected_crops
                     or (index, candidate_index) in seen_candidates
@@ -1613,7 +1668,7 @@ async def _run_owned_dossier_generation(job_id: str) -> None:
             complete = (len(group) == expected_crops
                         and {clip.get("delivery", {}).get("crop", {}).get("index", 0) for clip in group}
                         == set(range(expected_crops))
-                        and all(clip.get("promptHash") == prompt_plan[index]["promptHash"] for clip in group))
+                        and all(prompt_provenance_ok(clip, index) for clip in group))
             if complete and index not in completed_calls:
                 # The last claim may have been committed immediately before
                 # death, without the subsequent completed-call counter write.
@@ -1635,64 +1690,159 @@ async def _run_owned_dossier_generation(job_id: str) -> None:
                         and str(prior_failure.get("detail", "")).startswith("Replicate failed:")):
                     continue
                 raise RuntimeError("provider_generation_failed")
-            provider_job_id = f"{job_id}-g{call_index:02d}"
-            provider_jobs = {
-                provider_job_id: {
-                    "videos": [{"index": 0, "status": "queued"}],
-                }
-            }
-            if durable:
-                def persist(record, index=call_index):
-                    _save_prediction_checkpoint(job_id, index, record)
-                provider_jobs[provider_job_id]["videos"][0]["_prediction_checkpoint"] = PredictionCheckpoint(
-                    job.get("providerCheckpoints", {}).get(str(call_index)), persist,
-                )
             prompt_entry = prompt_plan[call_index]
-            prompt, slots = compose_prompt_combination(
+            base_prompt, slots = compose_prompt_combination(
                 recipe, prompt_entry["combinationId"],
             )
-            if prompt_sha256(prompt) != prompt_entry["promptHash"]:
+            if prompt_sha256(base_prompt) != prompt_entry["promptHash"]:
                 raise RuntimeError("prompt_plan_authority_mismatch")
             anchor = await load_generation_anchor(
                 recipe, job["idempotencyKey"], call_index,
             )
             image_data_uri = anchor[0] if anchor else None
             anchor_metadata = anchor[1] if anchor else None
-            await generate_one(
-                provider_job_id,
-                0,
-                recipe.engine,
-                prompt,
-                aspect_ratio,
-                resolution,
-                duration,
-                image_data_uri,
-                provider_jobs,
-                render_root,
-                "",
-                model_id=recipe.provider_model,
-                **options,
-            )
-            entry = provider_jobs[provider_job_id]["videos"][0]
-            if entry.get("status") != "done":
+            call_key = str(call_index)
+            rows = attempts.get(call_key, [])
+            if not isinstance(rows, list) or any(
+                not isinstance(row, dict) or row.get("attempt") != number
+                for number, row in enumerate(rows)
+            ):
+                raise RuntimeError("generation_checkpoint_invalid")
+            if rows and rows[-1].get("outcome") == "refused":
+                # The refusal is recorded; decide its retry exactly once more.
+                attempt, reserve = rows[-1]["attempt"] + 1, True
+            elif rows:
+                # Resume the same paid attempt through its own checkpoint.
+                attempt, reserve = rows[-1]["attempt"], False
+            else:
+                attempt, reserve = 0, False
+            attempt_cost = moderation_retry.attempt_cost_usd(recipe.provider_model)
+            terminal = None
+            succeeded = False
+            while True:
+                if reserve:
+                    reserve = False
+                    if attempt > moderation_retry.RETRIES_PER_CALL:
+                        terminal = moderation_retry.RETRIES_EXHAUSTED
+                        break
+                    if not _job_matches_current_master_pages(job):
+                        raise RuntimeError("master_pages_strategy_changed")
+                    retry_prompt, retry_variant = moderation_retry.variant_prompt(base_prompt, attempt)
+                    reserved = await asyncio.to_thread(
+                        _reserve_moderation_retry, job_id, call_index, attempts, {
+                            "attempt": attempt,
+                            "promptHash": prompt_sha256(retry_prompt),
+                            "promptVariant": retry_variant,
+                            "providerRequestId": None,
+                            "class": None,
+                            "errorDetail": None,
+                            "costUsd": None,
+                            "outcome": "pending",
+                            "at": datetime.now(timezone.utc).isoformat(),
+                        },
+                    )
+                    if not reserved:
+                        terminal = moderation_retry.BUDGET_EXHAUSTED
+                        break
+                prompt, prompt_variant = moderation_retry.variant_prompt(base_prompt, attempt)
+                used_prompt_hash = prompt_sha256(prompt)
+                rows = attempts.setdefault(call_key, [])
+                if attempt == len(rows):
+                    rows.append({"attempt": attempt, "promptHash": used_prompt_hash,
+                                 "promptVariant": prompt_variant,
+                                 "at": datetime.now(timezone.utc).isoformat()})
+                row = rows[attempt]
+                if row.get("promptHash") != used_prompt_hash or row.get("promptVariant") != prompt_variant:
+                    raise RuntimeError("prompt_plan_authority_mismatch")
+                provider_job_id = f"{job_id}-g{call_index:02d}" + (f"-r{attempt}" if attempt else "")
+                provider_jobs = {
+                    provider_job_id: {
+                        "videos": [{"index": 0, "status": "queued"}],
+                    }
+                }
+                if durable:
+                    checkpoint_key = _prediction_checkpoint_key(call_index, attempt)
+                    def persist(record, key=checkpoint_key):
+                        _save_prediction_checkpoint(job_id, key, record)
+                    provider_jobs[provider_job_id]["videos"][0]["_prediction_checkpoint"] = PredictionCheckpoint(
+                        job.get("providerCheckpoints", {}).get(checkpoint_key), persist,
+                    )
+                await generate_one(
+                    provider_job_id,
+                    0,
+                    recipe.engine,
+                    prompt,
+                    aspect_ratio,
+                    resolution,
+                    duration,
+                    image_data_uri,
+                    provider_jobs,
+                    render_root,
+                    "",
+                    model_id=recipe.provider_model,
+                    **options,
+                )
+                entry = provider_jobs[provider_job_id]["videos"][0]
+                request_id = entry.get("provider_request_id")
+                if entry.get("status") == "done":
+                    # A successful prediction is billed; record its estimate.
+                    row.update({"providerRequestId": request_id, "class": None,
+                                "errorDetail": None, "costUsd": attempt_cost,
+                                "outcome": "succeeded"})
+                    succeeded = True
+                    if attempt:
+                        # Recovery accepts a variant prompt hash only from a
+                        # durable succeeded row, so persist it before claims.
+                        await asyncio.to_thread(_update_job, job_id,
+                            generationAttempts=attempts,
+                            moderationRetryCostUsd=moderation_retry.retry_cost_total(attempts))
+                    break
+                provider_error = str(entry.get("error") or "")
+                error_class = classify_provider_error(provider_error)
+                refused = moderation_retry.confirmed_refusal(error_class, request_id, provider_error)
+                # A refused Replicate prediction is billed like a successful
+                # one; no prediction id means nothing was created or billed.
+                row.update({"providerRequestId": request_id, "class": error_class,
+                            "errorDetail": provider_error_code(provider_error),
+                            "detail": provider_error[:300],
+                            "costUsd": attempt_cost if request_id else None,
+                            "outcome": "refused" if refused else "failed"})
+                if not refused:
+                    break
+                if not moderation_retry.retryable_refusal(provider_error):
+                    terminal = moderation_retry.AUTH_NOT_RETRIED
+                    break
+                await asyncio.to_thread(_update_job, job_id,
+                    generationAttempts=attempts,
+                    moderationRetryCostUsd=moderation_retry.retry_cost_total(attempts))
+                log.info("job=%s generation=%d attempt=%d moderation refusal; considering varied retry",
+                         job_id, call_index, attempt)
+                attempt += 1
+                reserve = True
+            if not succeeded:
                 # Keep the terminal error code stable and persist why the
                 # provider failed: Railway logs rotate, the job store does not,
                 # and credit exhaustion needs a different response than a
                 # transient provider fault. The status route returns the safe
                 # class/code only for a terminal provider failure (see
-                # _job_status_failure_cause).
-                provider_error = str(entry.get("error") or "")
-                error_class = classify_provider_error(provider_error)
-                error_detail = provider_error_code(provider_error)
+                # _job_status_failure_cause). A refusal that was retried is
+                # not a failure until its retries or budget end.
+                last = attempts[call_key][-1]
+                provider_error = str(last.get("detail") or "")
+                error_class = last.get("class")
+                error_detail = last.get("errorDetail")
                 failure = {
                     "class": error_class,
                     "provider": recipe.engine,
                     "model": recipe.provider_model,
                     "generationIndex": call_index,
-                    "providerRequestId": entry.get("provider_request_id"),
-                    "detail": provider_error[:300],
+                    "providerRequestId": last.get("providerRequestId"),
+                    "detail": provider_error,
                     "at": datetime.now(timezone.utc).isoformat(),
                 }
+                if terminal is not None:
+                    failure["terminal"] = terminal
+                    failure["attempts"] = len(attempts[call_key])
                 provider_failures.append(failure)
                 # errorClass/errorDetail (latest failure) are logged and stored
                 # on the job. GET /v1/jobs/{id} returns them only once the job
@@ -1700,8 +1850,8 @@ async def _run_owned_dossier_generation(job_id: str) -> None:
                 # Worker's tolerant status validator (opus/lab-errorclass),
                 # which must be live before this Lab change is deployed.
                 log.warning(
-                    "job=%s generation=%d provider=%s errorClass=%s errorDetail=%s",
-                    job_id, call_index, recipe.engine, error_class, error_detail,
+                    "job=%s generation=%d provider=%s errorClass=%s errorDetail=%s terminal=%s",
+                    job_id, call_index, recipe.engine, error_class, error_detail, terminal,
                 )
                 await asyncio.to_thread(_update_job,
                     job_id,
@@ -1709,14 +1859,14 @@ async def _run_owned_dossier_generation(job_id: str) -> None:
                     errorDetail=error_detail,
                     providerFailure=failure,
                     providerFailures=provider_failures,
+                    generationAttempts=attempts,
+                    moderationRetryCostUsd=moderation_retry.retry_cost_total(attempts),
                 )
-                if (failure["class"] == "moderation"
-                        and isinstance(failure["providerRequestId"], str)
-                        and failure["providerRequestId"].strip()
-                        and provider_error.startswith("Replicate failed:")):
-                    # A confirmed refused prediction stays refused. Continue
-                    # only to the next distinct candidate already in this
-                    # job's immutable plan; no replacement prompt or retry.
+                if last.get("outcome") == "refused":
+                    # A confirmed refused prediction whose bounded varied
+                    # retries (or the page's daily retry budget) are spent
+                    # stays refused. Continue only to the next distinct
+                    # candidate already in this job's immutable plan.
                     await asyncio.to_thread(_update_job, job_id,
                         progress=int(((call_index + 1) / calls) * 100))
                     continue
@@ -1745,7 +1895,12 @@ async def _run_owned_dossier_generation(job_id: str) -> None:
                 manifest = _generated_manifest(job_root, artifact)
                 manifest["generationIndex"] = call_index
                 manifest["promptCombinationId"] = prompt_entry["combinationId"]
-                manifest["promptHash"] = prompt_entry["promptHash"]
+                # promptHash is the prompt actually sent; the immutable plan's
+                # hash stays alongside it, with the deterministic variant id
+                # (None for the plan's own prompt).
+                manifest["promptHash"] = used_prompt_hash
+                manifest["basePromptHash"] = prompt_entry["promptHash"]
+                manifest["promptVariant"] = prompt_variant
                 manifest["promptSlots"] = slots
                 manifest["clipSpeed"] = clip_speed
                 manifest["clipCrop"] = clip_crop
@@ -1830,6 +1985,8 @@ async def _run_owned_dossier_generation(job_id: str) -> None:
                 progress=int(((call_index + 1) / calls) * 100),
                 providerCallsCompleted=provider_calls_completed,
                 completedGenerationCalls=completed_calls,
+                generationAttempts=attempts,
+                moderationRetryCostUsd=moderation_retry.retry_cost_total(attempts),
             )
         if provider_failures:
             # Retain the same truthful partial/zero-output terminal handling,
