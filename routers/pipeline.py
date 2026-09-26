@@ -34,6 +34,7 @@ from services.email_routing import (
     list_rules as cf_list_rules,
 )
 from services.notion_pages import (
+    canonical_notion_page_id,
     create_intake_page,
     is_configured as notion_configured,
     mint_integration_id,
@@ -363,10 +364,6 @@ _PLACEHOLDER_STATUS = "New — Pending Setup"
 _INTAKE_CONFLICT = "An account with this handle already exists — ask an operator to update it"
 
 
-def _norm_notion_id(value: object) -> str:
-    return str(value or "").strip().lower().replace("-", "")
-
-
 def _is_unfinished_placeholder(page: dict) -> bool:
     """A step-1 (mint-alias) placeholder that step 2 has not completed yet.
 
@@ -384,7 +381,7 @@ def _is_unfinished_placeholder(page: dict) -> bool:
     )
 
 
-def _refuse_anonymous_intake_tamper(req: "IntakeRequest") -> None:
+def _refuse_anonymous_intake_tamper(req: "IntakeRequest", notion_page_id: str) -> None:
     """Refuse (409) an anonymous intake that would touch an existing page's identity.
 
     1. ``notion_page_id`` naming a roster page that is not an unfinished
@@ -397,10 +394,9 @@ def _refuse_anonymous_intake_tamper(req: "IntakeRequest") -> None:
        synced before step 2 with handle == email name).
     """
     own: dict | None = None
-    npid = _norm_notion_id(req.notion_page_id)
-    if npid:
+    if notion_page_id:  # already canonical (see submit_intake)
         for page in list_all_pages():
-            if _norm_notion_id(page.get("notion_page_id")) != npid:
+            if canonical_notion_page_id(page.get("notion_page_id")) != notion_page_id:
                 continue
             alias = (req.email_alias or "").strip().lower()
             signup = str(page.get("signup_email") or "").strip().lower()
@@ -438,18 +434,26 @@ async def submit_intake(
     if not req.account_username.strip():
         raise HTTPException(status_code=400, detail="account_username is required")
 
+    # One canonical Notion page id (32 lowercase hex) or a 400, for every
+    # caller: the same value drives the ownership check below and every
+    # Notion call, so the raw input never reaches a Notion URL.
+    notion_page_id = ""
+    if (req.notion_page_id or "").strip():
+        notion_page_id = canonical_notion_page_id(req.notion_page_id) or ""
+        if not notion_page_id:
+            raise HTTPException(status_code=400, detail="notion_page_id must be a Notion page id")
+
     # An anonymous intake must not touch an existing page's email identity,
     # by handle or by notion_page_id. Refused before any mint, Notion or
     # roster write; an operator with CONTROL_PLANE_TOKEN may override.
     if not has_control_plane_credential(authorization, x_api_key):
-        _refuse_anonymous_intake_tamper(req)
+        _refuse_anonymous_intake_tamper(req, notion_page_id)
 
     # Email alias is expected to have been minted in step 1 (POST /mint-alias)
     # before the user did the TikTok signup. If it's missing here, mint one
     # now as a fallback (covers cases where step 1 was skipped or failed).
     email_alias = (req.email_alias or "").strip()
     fwd_destination = (req.fwd_destination or "").strip()
-    notion_page_id = (req.notion_page_id or "").strip()
     rule_id = ""
 
     if not email_alias:

@@ -977,8 +977,15 @@ anonymously also requires that placeholder's own alias, and a placeholder
 synced before step 2 (handle == email name) may still be completed. Before
 this, a fresh handle plus a live page's notion_page_id renamed that Notion row,
 the sync pruned the live roster page and its rule link, and /setup wrote the
-caller's alias into the row's Notion email. A live page whose Notion row is not
-in the roster is not recognised. CONTROL_PLANE_TOKEN holders may override. The mint-alias and
+caller's alias into the row's Notion email. The notion_page_id is first
+reduced to one canonical Notion page id (32 lowercase hex, dashes optional);
+anything else, such as a '#', '?', '/', '%', inner whitespace or non-ASCII
+digits, is a 400 for every caller before any lookup or write, and that same
+canonical value is used for the roster check and every Notion call. The Notion
+write-back helper also refuses a non-canonical id before any request. A page
+whose Notion row is absent from the roster cannot be matched by the ownership
+check. CONTROL_PLANE_TOKEN holders may override the ownership check, not the
+id format. The mint-alias and
 auto-create 409s no longer echo the alias or a page's recorded alias. No
 deploy was performed.
 

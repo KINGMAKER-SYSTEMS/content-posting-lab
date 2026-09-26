@@ -179,7 +179,7 @@ def intake_env(monkeypatch):
 ATTACK = {
     "email_alias": "attacker@evil.example",
     "fwd_destination": "attacker@evil.example",
-    "notion_page_id": "victim-notion-row",
+    "notion_page_id": "abcdefabcdef4abcabcdefabcdefabcd",  # canonical id, not in the roster
 }
 
 
@@ -332,6 +332,18 @@ from fastapi import HTTPException  # noqa: E402
 import services.notion_pages as notion_pages  # noqa: E402
 
 
+# Notion page ids in canonical form (32 lowercase hex); Notion itself returns
+# the dashed UUID form, which intake also accepts.
+VICTIM_NPID = "5f1c2a3b4d5e46f7a8b9c0d1e2f3a4b5"
+OWN_NPID = "0a1b2c3d4e5f40718293a4b5c6d7e8f9"
+FRESH_NPID = "9e8d7c6b5a4f43e2d1c0b9a8f7e6d5c4"
+DONE_NPID = "11112222333344445555666677778888"
+
+
+def _dashed(npid):
+    return f"{npid[:8]}-{npid[8:12]}-{npid[12:16]}-{npid[16:20]}-{npid[20:]}"
+
+
 def _row(npid, username, email, status="In Production"):
     return {
         "id": npid,
@@ -356,12 +368,14 @@ def world(monkeypatch, tmp_path):
 
     async def update_intake(npid, *, account_username=None, **k):
         calls["update"] += 1
+        npid = notion_pages.canonical_notion_page_id(npid)
         if account_username:
             notion[npid]["properties"]["Account Username"] = {
                 "title": [{"plain_text": account_username.strip()}]
             }
 
     async def email_fields(npid, email=None, fwd_address=None):
+        npid = notion_pages.canonical_notion_page_id(npid)
         writes.append((npid, email))
         notion[npid]["properties"]["email"] = {"email": email}
 
@@ -382,7 +396,7 @@ def _intake(**fields):
 
 
 def _seed_victim(notion):
-    notion["victim-npid"] = _row("victim-npid", "victim_page", "victim-real@alias.example")
+    notion[VICTIM_NPID] = _row(VICTIM_NPID, "victim_page", "victim-real@alias.example")
     asyncio.run(notion_pages.sync_into_roster())
     roster_service.set_page("acct:victim-page", {
         "email_alias": "victim-real@alias.example",
@@ -392,7 +406,7 @@ def _seed_victim(notion):
     return json.dumps(roster_service.get_page("acct:victim-page"), sort_keys=True)
 
 
-@pytest.mark.parametrize("npid", ["victim-npid", "VICTIM-NPID", "victimnpid"])
+@pytest.mark.parametrize("npid", [VICTIM_NPID, VICTIM_NPID.upper(), _dashed(VICTIM_NPID), f"  {_dashed(VICTIM_NPID)} "])
 def test_anonymous_intake_with_live_pages_notion_id_is_refused(world, npid):
     """D1: fresh handle + a live page's notion_page_id must not rename that row."""
     notion, writes, calls = world
@@ -407,7 +421,7 @@ def test_anonymous_intake_with_live_pages_notion_id_is_refused(world, npid):
     assert exc.value.status_code == 409
     assert "victim" not in exc.value.detail
     assert calls["update"] == 0
-    assert notion["victim-npid"]["properties"]["Account Username"]["title"][0]["plain_text"] == "victim_page"
+    assert notion[VICTIM_NPID]["properties"]["Account Username"]["title"][0]["plain_text"] == "victim_page"
     assert json.dumps(roster_service.get_page("acct:victim-page"), sort_keys=True) == before
     assert roster_service.get_page("acct:fresh-unused-handle") is None
 
@@ -419,7 +433,7 @@ def test_notion_id_hijack_chain_never_reaches_victim_email(world):
     with pytest.raises(HTTPException):
         _intake(
             account_username="fresh-unused-handle",
-            notion_page_id="victim-npid",
+            notion_page_id=VICTIM_NPID,
             email_alias="attacker@evil.example",
             fwd_destination="attacker@evil.example",
         )
@@ -430,20 +444,20 @@ def test_notion_id_hijack_chain_never_reaches_victim_email(world):
             asyncio.run(pipeline.run_setup("acct:fresh-unused-handle"))
         except Exception:
             pass
-    assert ("victim-npid", "attacker@evil.example") not in writes
-    assert notion["victim-npid"]["properties"]["email"]["email"] == "victim-real@alias.example"
+    assert (VICTIM_NPID, "attacker@evil.example") not in writes
+    assert notion[VICTIM_NPID]["properties"]["email"]["email"] == "victim-real@alias.example"
 
 
 def test_legit_ui_intake_completes_its_own_synced_placeholder(world):
     """D2: step-1 placeholder synced before step 2 with handle == email name."""
     notion, writes, calls = world
-    notion["own-npid"] = _row("own-npid", "samb-truck-04", "samb-truck-04@alias.example",
+    notion[OWN_NPID] = _row(OWN_NPID, "samb-truck-04", "samb-truck-04@alias.example",
                               status="New — Pending Setup")
     asyncio.run(notion_pages.sync_into_roster())
     assert roster_service.get_page("acct:samb-truck-04")
     out = _intake(
         account_username="samb-truck-04",
-        notion_page_id="own-npid",
+        notion_page_id=OWN_NPID,
         email_alias="samb-truck-04@alias.example",
         fwd_destination="henry@team.example",
     )
@@ -454,12 +468,12 @@ def test_legit_ui_intake_completes_its_own_synced_placeholder(world):
 
 def test_placeholder_completion_with_real_handle_is_unchanged(world):
     notion, writes, calls = world
-    notion["own-npid"] = _row("own-npid", "acct-7gx2k4mz", "acct-7gx2k4mz@alias.example",
+    notion[OWN_NPID] = _row(OWN_NPID, "acct-7gx2k4mz", "acct-7gx2k4mz@alias.example",
                               status="New — Pending Setup")
     asyncio.run(notion_pages.sync_into_roster())
     out = _intake(
         account_username="real.tiktok_handle",
-        notion_page_id="own-npid",
+        notion_page_id=OWN_NPID,
         email_alias="acct-7gx2k4mz@alias.example",
         fwd_destination="henry@team.example",
     )
@@ -468,13 +482,13 @@ def test_placeholder_completion_with_real_handle_is_unchanged(world):
 
 def test_placeholder_alias_cannot_be_repointed_anonymously(world):
     notion, writes, calls = world
-    notion["own-npid"] = _row("own-npid", "acct-7gx2k4mz", "acct-7gx2k4mz@alias.example",
+    notion[OWN_NPID] = _row(OWN_NPID, "acct-7gx2k4mz", "acct-7gx2k4mz@alias.example",
                               status="New — Pending Setup")
     asyncio.run(notion_pages.sync_into_roster())
     with pytest.raises(HTTPException) as exc:
         _intake(
             account_username="real.tiktok_handle",
-            notion_page_id="own-npid",
+            notion_page_id=OWN_NPID,
             email_alias="attacker@evil.example",
         )
     assert exc.value.status_code == 409
@@ -483,11 +497,11 @@ def test_placeholder_alias_cannot_be_repointed_anonymously(world):
 
 def test_unsynced_placeholder_notion_id_is_unchanged(world):
     notion, writes, calls = world
-    notion["fresh-npid"] = _row("fresh-npid", "acct-aaaa1111", "acct-aaaa1111@alias.example",
+    notion[FRESH_NPID] = _row(FRESH_NPID, "acct-aaaa1111", "acct-aaaa1111@alias.example",
                                 status="New — Pending Setup")  # not synced yet
     out = _intake(
         account_username="brand.new_handle",
-        notion_page_id="fresh-npid",
+        notion_page_id=FRESH_NPID,
         email_alias="acct-aaaa1111@alias.example",
     )
     assert out["ok"] is True
@@ -498,7 +512,7 @@ def test_control_plane_token_may_reuse_a_live_notion_id(world):
     _seed_victim(notion)
     out = asyncio.run(pipeline.submit_intake(
         pipeline.IntakeRequest(
-            account_username="victim_page", notion_page_id="victim-npid",
+            account_username="victim_page", notion_page_id=VICTIM_NPID,
             email_alias="victim-real@alias.example",
         ),
         authorization=f"Bearer {TOKEN}", x_api_key=None,
@@ -510,14 +524,14 @@ def test_n1_renamed_pending_page_is_not_a_placeholder(world):
     """N1: a page step 2 already renamed (name != alias local part) is protected
     even while still New — Pending Setup."""
     notion, writes, calls = world
-    notion["done-npid"] = _row("done-npid", "real.handle_01", "acct-bbbb2222@alias.example",
+    notion[DONE_NPID] = _row(DONE_NPID, "real.handle_01", "acct-bbbb2222@alias.example",
                                status="New — Pending Setup")
     asyncio.run(notion_pages.sync_into_roster())
     before = json.dumps(roster_service.list_all_pages(), sort_keys=True)
     with pytest.raises(HTTPException) as exc:
         _intake(
             account_username="fresh-unused-handle",
-            notion_page_id="done-npid",
+            notion_page_id=DONE_NPID,
             email_alias="acct-bbbb2222@alias.example",
         )
     assert exc.value.status_code == 409
@@ -545,3 +559,119 @@ def test_handle_guard_catches_slug_fallback_collision(client, intake_env):
     resp = client.post("/api/pipeline/intake", json={"account_username": "!!!"})
     assert resp.status_code == 409, resp.text
     assert calls == {"mint": 0, "create": 0, "update": 0}
+
+
+# ── D3 (N8–N10): one canonical Notion page id, checked at the HTTP layer ─────
+#
+# The fake Notion here is an httpx MockTransport: it records the exact request
+# path, so nothing is matched by string equality in a helper.
+
+import httpx as _httpx  # noqa: E402
+
+_RealAsyncClient = _httpx.AsyncClient
+
+_FULLWIDTH = str.maketrans("0123456789", "０１２３４５６７８９")
+
+BYPASS_FORMS = [
+    f"{VICTIM_NPID}#x",
+    f"nope/../{VICTIM_NPID}",
+    f"{VICTIM_NPID}?x=1",
+    f"%2e%2e/{VICTIM_NPID}",
+    VICTIM_NPID.translate(_FULLWIDTH),
+    f"{VICTIM_NPID[:16]} {VICTIM_NPID[16:]}",
+]
+
+
+@pytest.fixture
+def http_notion(monkeypatch, tmp_path):
+    monkeypatch.setattr(roster_service, "ROSTER_PATH", tmp_path / "page_roster.json")
+    monkeypatch.setenv("CONTROL_PLANE_TOKEN", TOKEN)
+    monkeypatch.setenv("DEFAULT_INTAKE_PASSWORD", "intake-test-value-not-real")
+    monkeypatch.setattr(notion_pages, "NOTION_API_KEY", "notion-test-key-not-real")
+    monkeypatch.setattr(notion_pages, "NOTION_PAGES_DB", "notion-test-db")
+    requests = []
+
+    def handler(request):
+        requests.append((request.method, request.url.raw_path.decode()))
+        return _httpx.Response(200, json={"object": "page", "id": "x"})
+
+    transport = _httpx.MockTransport(handler)
+
+    def _client(*a, **k):
+        k.pop("transport", None)
+        return _RealAsyncClient(*a, transport=transport, **k)
+
+    monkeypatch.setattr(notion_pages.httpx, "AsyncClient", _client)
+
+    async def _sync():
+        return {"added": 0, "updated": 0}
+
+    monkeypatch.setattr(pipeline, "sync_into_roster", _sync)
+    monkeypatch.setattr(pipeline, "_mint_random_alias", _boom_async("_mint_random_alias"))
+    roster_service.set_page("acct:victim-page", {
+        "name": "victim_page",
+        "source": "notion",
+        "status": "In Production",
+        "notion_page_id": _dashed(VICTIM_NPID),
+        "signup_email": "victim-real@alias.example",
+        "email_alias": "victim-real@alias.example",
+        "email_rule_id": "rule_live",
+        "fwd_destination": "henry@team.example",
+    })
+    return requests
+
+
+def _victim_state():
+    return json.dumps(roster_service.get_page("acct:victim-page"), sort_keys=True)
+
+
+@pytest.mark.parametrize("npid", BYPASS_FORMS)
+def test_n10_non_canonical_notion_id_is_400_with_zero_notion_requests(http_notion, npid):
+    before = _victim_state()
+    with pytest.raises(HTTPException) as exc:
+        _intake(
+            account_username="fresh-unused-handle",
+            notion_page_id=npid,
+            email_alias="attacker@evil.example",
+            fwd_destination="attacker@evil.example",
+        )
+    assert exc.value.status_code == 400
+    assert http_notion == []
+    assert _victim_state() == before
+
+
+@pytest.mark.parametrize("npid", BYPASS_FORMS)
+def test_n10_non_canonical_notion_id_is_400_even_with_the_token(http_notion, npid):
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(pipeline.submit_intake(
+            pipeline.IntakeRequest(account_username="victim_page", notion_page_id=npid,
+                                   email_alias="victim-real@alias.example"),
+            authorization=f"Bearer {TOKEN}", x_api_key=None,
+        ))
+    assert exc.value.status_code == 400
+    assert http_notion == []
+
+
+def test_n8_the_canonical_id_is_what_reaches_the_notion_url(http_notion):
+    """The same canonical value drives the check and the URL: a dashed,
+    upper-case id becomes exactly /v1/pages/<32 lowercase hex>."""
+    out = asyncio.run(pipeline.submit_intake(
+        pipeline.IntakeRequest(account_username="victim_page",
+                               notion_page_id=f" {_dashed(VICTIM_NPID).upper()} ",
+                               email_alias="victim-real@alias.example"),
+        authorization=f"Bearer {TOKEN}", x_api_key=None,
+    ))
+    assert out["ok"] is True
+    assert http_notion == [("PATCH", f"/v1/pages/{VICTIM_NPID}")]
+
+
+@pytest.mark.parametrize("npid", BYPASS_FORMS + ["", "   "])
+def test_n9_patch_page_refuses_non_canonical_ids_before_any_request(http_notion, npid):
+    with pytest.raises(ValueError):
+        asyncio.run(notion_pages.update_page_email_fields(npid, email="attacker@evil.example"))
+    assert http_notion == []
+
+
+def test_n9_patch_page_uses_the_canonical_form_for_roster_ids(http_notion):
+    asyncio.run(notion_pages.update_page_status(_dashed(VICTIM_NPID), "Live"))
+    assert http_notion == [("PATCH", f"/v1/pages/{VICTIM_NPID}")]

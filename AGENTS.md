@@ -112,7 +112,10 @@
   a handle that already has a roster page (either `acct:` id form) or with a
   `notion_page_id` of a roster page that is not an unfinished step-1
   placeholder (placeholder completion must carry its own alias);
-  CONTROL_PLANE_TOKEN may override. Alias-collision 409s never echo the alias.
+  CONTROL_PLANE_TOKEN may override. `notion_page_id` is canonicalised once
+  (`services.notion_pages.canonical_notion_page_id`, 32 lowercase hex; else
+  400) and that value is used for the check and every Notion call;
+  `_patch_page` refuses non-canonical ids before any request. Alias-collision 409s never echo the alias.
 - `burn_server.py` exposes the same typed caption-render route on the posting
   Mac's canonical port-8002 Burn runtime for Rail consumption.
 - `events.md` is the repository's append-only chronological ledger.
