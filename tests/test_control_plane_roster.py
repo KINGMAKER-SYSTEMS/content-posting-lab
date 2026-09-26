@@ -64,7 +64,7 @@ NOTION_ROW = {
     "source": "notion",
     "content_engine": "ai_video",
     "automation_mode": "Automation",
-    "vault_url": "https://shipstream.risingtidesviral.com/vault/truck.tok.daily",
+    "vault_url": "https://shipstream.test/vault/truck.tok.daily",
     "pipeline": "Flow Stage",
     "sounds_reference": "https://example.com/sounds/trucks",
     "archived": False,
@@ -101,7 +101,7 @@ def test_snapshot_carries_the_ontology_and_only_the_ontology(client):
     assert page["source"] == "notion"
     assert page["contentEngine"] == "ai_video"
     assert page["automationMode"] == "Automation"
-    assert page["vaultUrl"] == "https://shipstream.risingtidesviral.com/vault/truck.tok.daily"
+    assert page["vaultUrl"] == "https://shipstream.test/vault/truck.tok.daily"
     assert page["pipeline"] == "Flow Stage"
     assert page["archived"] is False
 
@@ -190,7 +190,7 @@ def test_current_intent_rebinds_one_notion_identity_to_the_operational_rail_page
         content_niche="POV — Night Core",
         content_engine="sourced_video",
         notion_page_id="3281465b-b829-807d-b852-dffeb7a48468",
-        vault_url="https://shipstream.risingtidesviral.com/vault/miles.of.memories77",
+        vault_url="https://shipstream.test/vault/miles.of.memories77",
     )})
     snapshot = client.get(
         "/api/control-plane/v1/roster", headers={"X-RT-Lane": "automation"},

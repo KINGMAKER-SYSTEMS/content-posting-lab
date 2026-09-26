@@ -83,7 +83,7 @@ def publication(
         handle=HANDLE,
         content_niche=NICHE,
         content_engine=ENGINE,
-        vault_url=f"https://shipstream.risingtidesviral.com/vault/{HANDLE}",
+        vault_url=f"https://shipstream.test/vault/{HANDLE}",
     )
     catalog = build_dossier_ingredient_catalog(PAGE_ID, intent, revision)
     production = {
@@ -180,7 +180,7 @@ def lab(monkeypatch, tmp_path):
         handle=HANDLE,
         content_niche=NICHE,
         content_engine=ENGINE,
-        vault_url=f"https://shipstream.risingtidesviral.com/vault/{HANDLE}",
+        vault_url=f"https://shipstream.test/vault/{HANDLE}",
     )
     bind_current_intent(monkeypatch, cp, intent, revision)
     started = []

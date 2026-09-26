@@ -1,9 +1,97 @@
+import ipaddress
+import socket
+import sys
+import threading
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
 import httpx
 import pytest
-from fastapi.testclient import TestClient
+
+
+# ── Offline guard ─────────────────────────────────────────────────────────
+# Tests reach only loopback. A Python audit hook sees every DNS lookup and
+# socket connect made in this process, including through references bound
+# before a test could monkeypatch them, and refuses any non-loopback target.
+# The refusal is an OSError so code under test takes its ordinary network
+# failure path; the recorded attempt then fails the test at teardown even if
+# that code swallowed the error. Subprocesses (yt-dlp, ffmpeg) are outside the
+# hook's reach, so tests keep stubbing those as they already do.
+_NETWORK_EVENTS = frozenset({
+    "socket.getaddrinfo", "socket.gethostbyname", "socket.gethostbyname_ex",
+    "socket.connect", "socket.sendto",
+})
+_network_attempts: list[str] = []
+_network_attempts_lock = threading.Lock()
+
+
+class NetworkBlockedInTests(OSError):
+    pass
+
+
+def _is_local_host(host) -> bool:
+    if host is None:
+        return True
+    if isinstance(host, bytes):
+        host = host.decode("idna", "replace")
+    host = str(host).strip().rstrip(".").lower()
+    if host in {"", "localhost"} or host.endswith(".localhost"):
+        return True
+    try:
+        address = ipaddress.ip_address(host.split("%", 1)[0])
+    except ValueError:
+        return False
+    return address.is_loopback or address.is_unspecified
+
+
+def _network_audit(event, args):
+    if event not in _NETWORK_EVENTS:
+        return
+    if event in {"socket.connect", "socket.sendto"}:
+        address = args[1] if event == "socket.connect" else args[-1]
+        if not isinstance(address, tuple) or not address:
+            return  # AF_UNIX paths and other local socket families
+        host = address[0]
+    else:
+        host = args[0]
+    if _is_local_host(host):
+        return
+    target = f"{event} {host!r}"
+    with _network_attempts_lock:
+        _network_attempts.append(target)
+    raise NetworkBlockedInTests(f"test network guard: refused {target}; stub the call")
+
+
+sys.addaudithook(_network_audit)
+
+
+@pytest.fixture(autouse=True)
+def no_real_network():
+    with _network_attempts_lock:
+        _network_attempts.clear()
+    yield
+    with _network_attempts_lock:
+        attempts = list(_network_attempts)
+        _network_attempts.clear()
+    if attempts:
+        pytest.fail("test attempted real network access: " + "; ".join(attempts))
+
+
+@pytest.fixture
+def network_guard_attempts():
+    """The live attempt record, for the guard's own tests to inspect and clear."""
+    return _network_attempts
+
+
+@pytest.fixture(autouse=True)
+def no_production_service_env(monkeypatch):
+    """No test inherits a Campaign Hub origin from the shell or a local .env,
+    and the ShipStream vault origin is a dummy host that never resolves."""
+    monkeypatch.delenv("CAMPAIGN_HUB_URL", raising=False)
+    monkeypatch.setenv("SHIPSTREAM_VAULT_ORIGIN", "https://shipstream.test")
+
+
+from fastapi.testclient import TestClient  # noqa: E402
 
 import app as app_module
 import project_manager

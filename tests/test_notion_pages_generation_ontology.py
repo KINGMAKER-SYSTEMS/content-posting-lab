@@ -13,7 +13,7 @@ def test_live_generation_and_bucket_ontology_is_parsed():
             "ContentEngine": {"select": {"name": "ai_video"}},
             "Automation vs Operator": {"select": {"name": "Automation"}},
             "Account Status": {"select": {"name": "active"}},
-            "Vault Link": {"url": "https://shipstream.risingtidesviral.com/vault/backroaddriver"},
+            "Vault Link": {"url": "https://shipstream.test/vault/backroaddriver"},
             "Files & media": {"files": [{"name": "OPEN VIDEO BUCKET", "type": "external", "external": {"url": "https://fallback.invalid/vault"}}]},
             "Poster": {"multi_select": [{"name": "Eric"}, {"name": "Sam"}]},
             "fwd address": {"multi_select": [{"name": "forwarding-label"}]},
@@ -27,7 +27,7 @@ def test_live_generation_and_bucket_ontology_is_parsed():
     assert row["automation_mode"] == "Automation"
     assert row["status"] == "active"
     assert row["account_status"] == "active"
-    assert row["vault_url"] == "https://shipstream.risingtidesviral.com/vault/backroaddriver"
+    assert row["vault_url"] == "https://shipstream.test/vault/backroaddriver"
     assert row["poster_name"] == "Eric, Sam"
     assert row["fwd_address"] == "forwarding-label"
     assert row["archived"] is False
@@ -38,8 +38,8 @@ def test_files_media_external_url_is_bucket_fallback():
         "id": "notion-page-2",
         "properties": {
             "Account Username": {"title": [{"plain_text": "page.two"}]},
-            "Files & media": {"files": [{"name": "OPEN VIDEO BUCKET", "type": "external", "external": {"url": "https://shipstream.risingtidesviral.com/vault/page.two"}}]},
+            "Files & media": {"files": [{"name": "OPEN VIDEO BUCKET", "type": "external", "external": {"url": "https://shipstream.test/vault/page.two"}}]},
         },
     })
     assert row is not None
-    assert row["vault_url"] == "https://shipstream.risingtidesviral.com/vault/page.two"
+    assert row["vault_url"] == "https://shipstream.test/vault/page.two"

@@ -48,7 +48,7 @@ def publication(
         handle="chase.miles.4l",
         content_niche="POV - Dirtbike",
         content_engine="sourced_video",
-        vault_url="https://shipstream.risingtidesviral.com/vault/chase.miles.4l",
+        vault_url="https://shipstream.test/vault/chase.miles.4l",
     )
     catalog = build_dossier_ingredient_catalog(PAGE_ID, intent, revision)
     render_treatment = {
@@ -161,7 +161,7 @@ def test_source_recipe_resolves_the_exact_shipstream_page_library(monkeypatch):
         handle="chase.miles.4l",
         content_niche="POV - Dirtbike",
         content_engine="sourced_video",
-        vault_url="https://shipstream.risingtidesviral.com/vault/chase.miles.4l",
+        vault_url="https://shipstream.test/vault/chase.miles.4l",
     )
     manifest = {
         "schema": "shipstream.source-manifest.v1",
@@ -237,7 +237,7 @@ def test_scenic_source_recipe_resolves_the_pages_own_shipstream_library(monkeypa
         handle=handle,
         content_niche="POV — Scenic",
         content_engine="sourced_video",
-        vault_url=f"https://shipstream.risingtidesviral.com/vault/{handle}",
+        vault_url=f"https://shipstream.test/vault/{handle}",
     )
     manifest = {
         "schema": "shipstream.source-manifest.v1",
@@ -411,7 +411,7 @@ def lab(monkeypatch, tmp_path):
         handle="chase.miles.4l",
         content_niche="POV - Dirtbike",
         content_engine="sourced_video",
-        vault_url="https://shipstream.risingtidesviral.com/vault/chase.miles.4l",
+        vault_url="https://shipstream.test/vault/chase.miles.4l",
     )
     bind_current_intent(monkeypatch, cp, intent, revision)
     started = []
