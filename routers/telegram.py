@@ -10,8 +10,10 @@ import os
 import re
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, Query, Header
+from fastapi import APIRouter, Depends, HTTPException, Query, Header
 from pydantic import BaseModel
+
+from services.route_auth import require_access, require_access_or_hub
 
 from services.telegram import (
     add_inventory_item,
@@ -73,6 +75,12 @@ from services.campaign_hub import sync_sound_status as hub_sync_sound_status, is
 import telegram_bot as _tg_bot
 
 logger = logging.getLogger(__name__)
+
+# Route auth (services/route_auth.py): the operator UI (Cloudflare Access), and
+# for the routes the Campaign Hub proxies (Flask sound_assignments.py, Rust
+# content_lab.rs) also the Hub's X-API-Key. Fails closed without APP_API_KEY.
+_OPERATOR = [Depends(require_access)]
+_HUB_OR_OPERATOR = [Depends(require_access_or_hub)]
 
 router = APIRouter()
 
@@ -263,7 +271,7 @@ def _find_page_name(integration_id: str) -> str:
 # ── Config & Status ───────────────────────────────────────────────────────
 
 
-@router.get("/status")
+@router.get("/status", dependencies=_HUB_OR_OPERATOR)
 async def telegram_status():
     """Return overall Telegram integration status."""
     config = load_config()
@@ -308,7 +316,7 @@ async def telegram_status():
     }
 
 
-@router.put("/bot-token")
+@router.put("/bot-token", dependencies=_OPERATOR)
 async def update_bot_token(req: BotTokenRequest):
     """Set bot token, stop old bot if running, start new bot."""
     if _tg_bot.get_bot() is not None:
@@ -326,7 +334,7 @@ async def update_bot_token(req: BotTokenRequest):
     return {"ok": True, "bot_username": config.get("bot_username")}
 
 
-@router.delete("/bot-token")
+@router.delete("/bot-token", dependencies=_OPERATOR)
 async def delete_bot_token():
     """Stop the bot and clear the stored token."""
     if _tg_bot.get_bot() is not None:
@@ -339,7 +347,7 @@ async def delete_bot_token():
 # ── Staging Group ─────────────────────────────────────────────────────────
 
 
-@router.put("/staging-group")
+@router.put("/staging-group", dependencies=_OPERATOR)
 async def update_staging_group(req: StagingGroupRequest):
     """Set the staging group chat_id and validate it."""
     _require_bot()
@@ -354,7 +362,7 @@ async def update_staging_group(req: StagingGroupRequest):
     return {"ok": True, "group": info}
 
 
-@router.get("/staging-group")
+@router.get("/staging-group", dependencies=_OPERATOR)
 async def get_staging_group_info():
     """Return staging group details with topic list and inventory counts."""
     staging = get_staging_group()
@@ -384,7 +392,7 @@ async def get_staging_group_info():
     }
 
 
-@router.post("/staging-group/sync-topics")
+@router.post("/staging-group/sync-topics", dependencies=_OPERATOR)
 async def sync_staging_topics():
     """Create forum topics in the staging group for roster pages that don't have one yet.
 
@@ -589,7 +597,7 @@ async def _run_scan_job(chat_id: int, seen_topic_ids: dict[int, str], topics: di
     }
 
 
-@router.post("/staging-group/scan-inventory")
+@router.post("/staging-group/scan-inventory", dependencies=_OPERATOR)
 async def scan_all_inventory():
     """Start a background scan of ALL staging topics for existing media.
 
@@ -622,7 +630,7 @@ async def scan_all_inventory():
     return {"status": "started", "total_topics": len(seen_topic_ids)}
 
 
-@router.get("/staging-group/scan-inventory")
+@router.get("/staging-group/scan-inventory", dependencies=_OPERATOR)
 async def get_scan_status():
     """Poll the background scan job progress."""
     if _scan_job is None:
@@ -630,7 +638,7 @@ async def get_scan_status():
     return _scan_job
 
 
-@router.post("/staging-group/scan-inventory/{integration_id}")
+@router.post("/staging-group/scan-inventory/{integration_id}", dependencies=_OPERATOR)
 async def scan_single_inventory(integration_id: str):
     """Scan a single staging topic for existing media and backfill inventory."""
     _require_bot()
@@ -661,7 +669,7 @@ async def scan_single_inventory(integration_id: str):
     }
 
 
-@router.post("/staging-group/discover-topics")
+@router.post("/staging-group/discover-topics", dependencies=_OPERATOR)
 async def discover_topics():
     """Discover all forum topics in the staging group by probing message IDs.
 
@@ -684,7 +692,7 @@ async def discover_topics():
     return {"status": "started"}
 
 
-@router.get("/staging-group/discover-topics")
+@router.get("/staging-group/discover-topics", dependencies=_OPERATOR)
 async def get_discover_status():
     """Poll the background topic discovery job."""
     if _discover_job is None:
@@ -692,14 +700,14 @@ async def get_discover_status():
     return _discover_job
 
 
-@router.delete("/staging-group/topics/{integration_id}")
+@router.delete("/staging-group/topics/{integration_id}", dependencies=_OPERATOR)
 async def delete_staging_topic(integration_id: str):
     """Remove a staging topic mapping."""
     remove_staging_topic(integration_id)
     return {"ok": True}
 
 
-@router.put("/staging-group/topics")
+@router.put("/staging-group/topics", dependencies=_OPERATOR)
 async def bulk_restore_staging_topics(body: dict):
     """Bulk restore topic mappings without creating new Telegram topics.
 
@@ -720,13 +728,13 @@ async def bulk_restore_staging_topics(body: dict):
 # ── Posters ───────────────────────────────────────────────────────────────
 
 
-@router.get("/posters")
+@router.get("/posters", dependencies=_HUB_OR_OPERATOR)
 async def get_posters():
     """List all poster groups."""
     return list_posters()
 
 
-@router.post("/posters")
+@router.post("/posters", dependencies=_OPERATOR)
 async def create_poster(req: PosterCreateRequest):
     """Create a new poster group. Validates the group is a forum with bot admin."""
     _require_bot()
@@ -755,7 +763,7 @@ async def create_poster(req: PosterCreateRequest):
     return {"ok": True, "poster_id": poster_id, "name": req.name, "chat_id": req.chat_id}
 
 
-@router.put("/posters/{poster_id}")
+@router.put("/posters/{poster_id}", dependencies=_OPERATOR)
 async def update_poster(poster_id: str, req: PosterUpdateRequest):
     """Update an existing poster group."""
     poster = get_poster(poster_id)
@@ -776,7 +784,7 @@ async def update_poster(poster_id: str, req: PosterUpdateRequest):
     return {"ok": True, "poster_id": poster_id}
 
 
-@router.delete("/posters/{poster_id}")
+@router.delete("/posters/{poster_id}", dependencies=_OPERATOR)
 async def delete_poster(poster_id: str):
     """Delete a poster group."""
     if not get_poster(poster_id):
@@ -801,7 +809,7 @@ def _require_admin_key(x_agent_key: str | None) -> None:
         raise HTTPException(status_code=401, detail="invalid or missing agent key")
 
 
-@router.post("/posters/{poster_id}/users")
+@router.post("/posters/{poster_id}/users", dependencies=_OPERATOR)
 async def bind_poster_user(poster_id: str, req: BindUserRequest,
                            x_agent_key: str | None = Header(default=None)):
     """Link a Telegram user id (and optional @username) to a poster.
@@ -822,7 +830,7 @@ async def bind_poster_user(poster_id: str, req: BindUserRequest,
     }
 
 
-@router.delete("/posters/{poster_id}/users/{user_id}")
+@router.delete("/posters/{poster_id}/users/{user_id}", dependencies=_OPERATOR)
 async def unbind_poster_user(poster_id: str, user_id: int,
                              x_agent_key: str | None = Header(default=None)):
     """Unlink a Telegram user id from a poster. Gated by X-Agent-Key (admin op)."""
@@ -837,7 +845,7 @@ async def unbind_poster_user(poster_id: str, user_id: int,
     }
 
 
-@router.post("/posters/reset-defaults")
+@router.post("/posters/reset-defaults", dependencies=_OPERATOR)
 async def reset_default_posters():
     """Re-seed the default posters (Seffra, Gigi, etc.) without wiping custom ones."""
     from services.telegram import _DEFAULT_POSTERS, _now
@@ -863,7 +871,7 @@ async def reset_default_posters():
     return {"ok": True, "added": added, "total": total}
 
 
-@router.post("/posters/{poster_id}/pages")
+@router.post("/posters/{poster_id}/pages", dependencies=_OPERATOR)
 async def assign_pages(poster_id: str, req: AssignPagesRequest):
     """Assign pages to a poster and auto-create topics in the poster's group.
 
@@ -896,7 +904,7 @@ async def assign_pages(poster_id: str, req: AssignPagesRequest):
     }
 
 
-@router.delete("/posters/{poster_id}/pages/{integration_id}")
+@router.delete("/posters/{poster_id}/pages/{integration_id}", dependencies=_OPERATOR)
 async def unassign_page(poster_id: str, integration_id: str):
     """Remove a page assignment from a poster and delete the topic in their group."""
     poster = get_poster(poster_id)
@@ -919,7 +927,7 @@ async def unassign_page(poster_id: str, integration_id: str):
     return {"ok": True, "topic_deleted": topic_deleted}
 
 
-@router.post("/posters/{poster_id}/sync-topics")
+@router.post("/posters/{poster_id}/sync-topics", dependencies=_OPERATOR)
 async def sync_poster_topics(poster_id: str):
     """Ensure topics exist in a poster's group for all assigned pages.
 
@@ -1003,7 +1011,7 @@ async def sync_poster_topics(poster_id: str):
 _poster_discover_job: dict | None = None
 
 
-@router.post("/posters/{poster_id}/discover-topics")
+@router.post("/posters/{poster_id}/discover-topics", dependencies=_OPERATOR)
 async def discover_poster_topics(poster_id: str):
     """Discover all topics in a poster's Telegram group and remap them.
 
@@ -1031,7 +1039,7 @@ async def discover_poster_topics(poster_id: str):
     return {"status": "started", "poster_id": poster_id}
 
 
-@router.get("/posters/{poster_id}/discover-topics")
+@router.get("/posters/{poster_id}/discover-topics", dependencies=_OPERATOR)
 async def get_poster_discover_status(poster_id: str):
     """Poll poster topic discovery progress."""
     if _poster_discover_job is None:
@@ -1109,7 +1117,7 @@ async def _run_poster_discover(poster_id: str, chat_id: int) -> None:
 # ── Content & Inventory ───────────────────────────────────────────────────
 
 
-@router.post("/send")
+@router.post("/send", dependencies=_OPERATOR)
 async def send_content(req: SendRequest):
     """Send a media file to the staging topic for a page."""
     _require_bot()
@@ -1151,7 +1159,7 @@ async def send_content(req: SendRequest):
     return item
 
 
-@router.post("/send-batch")
+@router.post("/send-batch", dependencies=_OPERATOR)
 async def send_batch(req: SendBatchRequest):
     """Send all burned MP4s from a batch to a staging topic.
 
@@ -1210,7 +1218,7 @@ async def send_batch(req: SendBatchRequest):
 _active_assign_batches: set[str] = set()
 
 
-@router.post("/assign-batch")
+@router.post("/assign-batch", dependencies=_OPERATOR)
 async def assign_batch(req: AssignBatchRequest):
     """Round-robin split burned videos across pages and send to staging topics.
 
@@ -1309,7 +1317,7 @@ async def assign_batch(req: AssignBatchRequest):
         _active_assign_batches.discard(batch_key)
 
 
-@router.post("/forward/{integration_id}")
+@router.post("/forward/{integration_id}", dependencies=_OPERATOR)
 async def forward_all_new(integration_id: str):
     """Forward all new messages in a staging topic to the poster's group.
 
@@ -1362,13 +1370,13 @@ async def forward_all_new(integration_id: str):
     }
 
 
-@router.get("/inventory/{integration_id}")
+@router.get("/inventory/{integration_id}", dependencies=_OPERATOR)
 async def get_page_inventory(integration_id: str):
     """Return inventory items for a specific page."""
     return get_inventory(integration_id)
 
 
-@router.get("/inventory")
+@router.get("/inventory", dependencies=_OPERATOR)
 async def get_inventory_summary():
     """Return inventory summary for all pages, enriched with page names."""
     summaries = get_all_inventory_summary()
@@ -1385,7 +1393,7 @@ async def get_inventory_summary():
     ]
 
 
-@router.delete("/inventory/scan")
+@router.delete("/inventory/scan", dependencies=_OPERATOR)
 async def wipe_scan_inventory():
     """Remove all inventory items that were added by the scan feature (source='scan').
 
@@ -1396,7 +1404,7 @@ async def wipe_scan_inventory():
     return {"ok": True, "removed": removed}
 
 
-@router.get("/log")
+@router.get("/log", dependencies=_OPERATOR)
 async def get_activity_log(limit: int = Query(default=50, ge=1, le=500)):
     """Return recent inventory items across all pages, sorted by added_at desc."""
     pages = list_all_pages()
@@ -1418,26 +1426,26 @@ async def get_activity_log(limit: int = Query(default=50, ge=1, le=500)):
 # ── Sounds ────────────────────────────────────────────────────────────────
 
 
-@router.get("/sounds")
+@router.get("/sounds", dependencies=_HUB_OR_OPERATOR)
 async def get_sounds(active_only: bool = Query(default=True)):
     """List sounds, optionally filtering to active-only."""
     return list_sounds(active_only=active_only)
 
 
-@router.post("/sounds")
+@router.post("/sounds", dependencies=_OPERATOR)
 async def create_sound(req: SoundCreateRequest):
     """Add a new sound to the library."""
     return add_sound(url=req.url, label=req.label)
 
 
-@router.delete("/sounds/all")
+@router.delete("/sounds/all", dependencies=_OPERATOR)
 async def wipe_all_sounds():
     """Remove ALL sounds from the library. Used to reset before a clean re-sync."""
     count = clear_all_sounds()
     return {"ok": True, "removed": count}
 
 
-@router.delete("/sounds/{sound_id}")
+@router.delete("/sounds/{sound_id}", dependencies=_OPERATOR)
 async def delete_sound(sound_id: str):
     """Remove a sound from the library."""
     if not remove_sound(sound_id):
@@ -1445,7 +1453,7 @@ async def delete_sound(sound_id: str):
     return {"ok": True}
 
 
-@router.put("/sounds/{sound_id}")
+@router.put("/sounds/{sound_id}", dependencies=_OPERATOR)
 async def update_sound_endpoint(sound_id: str, req: SoundUpdateRequest):
     """Update a sound's active status, url, or label."""
     if req.active is not None:
@@ -1465,19 +1473,19 @@ async def update_sound_endpoint(sound_id: str, req: SoundUpdateRequest):
     return {"ok": True, "sound_id": sound_id}
 
 
-@router.post("/sounds/sync-notion")
+@router.post("/sounds/sync-notion", dependencies=_OPERATOR)
 async def sync_sounds_from_notion_endpoint():
     """Legacy endpoint — redirects to unified sync."""
     return await sync_sounds_unified()
 
 
-@router.post("/sounds/sync-hub")
+@router.post("/sounds/sync-hub", dependencies=_OPERATOR)
 async def sync_sounds_from_hub_endpoint():
     """Legacy endpoint — redirects to unified sync."""
     return await sync_sounds_unified()
 
 
-@router.post("/sounds/sync")
+@router.post("/sounds/sync", dependencies=_HUB_OR_OPERATOR)
 async def sync_sounds_unified():
     """Unified sound sync: Campaign Hub (active campaigns) + Notion (sound links).
 
@@ -1532,7 +1540,7 @@ async def _ensure_sounds_topic(poster_id: str, poster: dict) -> int | None:
         return None
 
 
-@router.post("/sounds/forward/{poster_id}")
+@router.post("/sounds/forward/{poster_id}", dependencies=_OPERATOR)
 async def forward_sounds_to_poster(poster_id: str):
     """Send all active sound links to a poster's Sounds topic.
 
@@ -1579,7 +1587,7 @@ async def forward_sounds_to_poster(poster_id: str):
     return {"ok": True, "sent": len(sounds), "poster_id": poster_id}
 
 
-@router.post("/sounds/forward-all")
+@router.post("/sounds/forward-all", dependencies=_OPERATOR)
 async def forward_sounds_to_all_posters():
     """Send all active sound links to every poster's Sounds topic.
 
@@ -1649,13 +1657,13 @@ async def forward_sounds_to_all_posters():
 # ── Schedule & Batch ──────────────────────────────────────────────────────
 
 
-@router.get("/schedule")
+@router.get("/schedule", dependencies=_OPERATOR)
 async def get_schedule_config():
     """Return the current forwarding schedule configuration."""
     return get_schedule()
 
 
-@router.put("/schedule")
+@router.put("/schedule", dependencies=_OPERATOR)
 async def update_schedule(req: ScheduleUpdateRequest):
     """Update the forwarding schedule configuration."""
     updates: dict = {}
@@ -1670,7 +1678,7 @@ async def update_schedule(req: ScheduleUpdateRequest):
     return {"ok": True, "schedule": get_schedule()}
 
 
-@router.post("/batch/run")
+@router.post("/batch/run", dependencies=_OPERATOR)
 async def trigger_batch_run():
     """Manually trigger a daily batch forward run."""
     _require_bot()
@@ -1718,7 +1726,7 @@ def _require_sounds_bot():
         )
 
 
-@router.get("/pages/{integration_id}/playlist")
+@router.get("/pages/{integration_id}/playlist", dependencies=_HUB_OR_OPERATOR)
 async def get_page_playlist_endpoint(integration_id: str):
     """Return a page's playlist with sound details.
 
@@ -1733,7 +1741,7 @@ async def get_page_playlist_endpoint(integration_id: str):
     }
 
 
-@router.put("/pages/{integration_id}/playlist")
+@router.put("/pages/{integration_id}/playlist", dependencies=_HUB_OR_OPERATOR)
 async def set_page_playlist_endpoint(integration_id: str, req: PagePlaylistReplaceRequest):
     """Replace a page's playlist wholesale. Order preserved, dedups, drops invalid IDs."""
     saved = set_page_playlist(integration_id, req.sound_ids)
@@ -1744,7 +1752,7 @@ async def set_page_playlist_endpoint(integration_id: str, req: PagePlaylistRepla
     }
 
 
-@router.post("/pages/{integration_id}/playlist/songs")
+@router.post("/pages/{integration_id}/playlist/songs", dependencies=_HUB_OR_OPERATOR)
 async def add_song_endpoint(integration_id: str, req: PagePlaylistAddRequest):
     """Append a sound to a page's playlist (idempotent)."""
     try:
@@ -1758,7 +1766,7 @@ async def add_song_endpoint(integration_id: str, req: PagePlaylistAddRequest):
     }
 
 
-@router.delete("/pages/{integration_id}/playlist/songs/{sound_id}")
+@router.delete("/pages/{integration_id}/playlist/songs/{sound_id}", dependencies=_HUB_OR_OPERATOR)
 async def remove_song_endpoint(integration_id: str, sound_id: str):
     """Remove a sound from a page's playlist."""
     saved = remove_song_from_page(integration_id, sound_id)
@@ -1769,20 +1777,20 @@ async def remove_song_endpoint(integration_id: str, sound_id: str):
     }
 
 
-@router.delete("/pages/{integration_id}/playlist")
+@router.delete("/pages/{integration_id}/playlist", dependencies=_HUB_OR_OPERATOR)
 async def clear_page_playlist_endpoint(integration_id: str):
     """Remove a page's playlist entry entirely."""
     existed = clear_page_playlist(integration_id)
     return {"ok": True, "existed": existed}
 
 
-@router.get("/playlists")
+@router.get("/playlists", dependencies=_HUB_OR_OPERATOR)
 async def list_all_playlists():
     """Return every page playlist — handy for the UI to load all at once."""
     return get_all_page_playlists()
 
 
-@router.get("/posters/{poster_id}/preview")
+@router.get("/posters/{poster_id}/preview", dependencies=_HUB_OR_OPERATOR)
 async def preview_poster_send(poster_id: str):
     """Build the personalized message a poster would receive — no send."""
     try:
@@ -1791,7 +1799,7 @@ async def preview_poster_send(poster_id: str):
         raise HTTPException(status_code=404, detail=str(exc))
 
 
-@router.post("/sound-assignments/send/{poster_id}")
+@router.post("/sound-assignments/send/{poster_id}", dependencies=_HUB_OR_OPERATOR)
 async def send_assignments_to_poster(poster_id: str):
     """Send the personalized daily message to a single poster's Sounds topic.
 
@@ -1831,7 +1839,7 @@ async def send_assignments_to_poster(poster_id: str):
     }
 
 
-@router.post("/sound-assignments/send-all")
+@router.post("/sound-assignments/send-all", dependencies=_HUB_OR_OPERATOR)
 async def send_assignments_to_all_posters():
     """Send personalized daily messages to every poster's Sounds topic.
 

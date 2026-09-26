@@ -116,6 +116,13 @@
   (`services.notion_pages.canonical_notion_page_id`, 32 lowercase hex; else
   400) and that value is used for the check and every Notion call;
   `_patch_page` refuses non-canonical ids before any request. Alias-collision 409s never echo the alias.
+- `services/route_auth.py` owns per-route caller auth that fails closed on its
+  own, independent of APP_API_KEY: Worker (CONTROL_PLANE_TOKEN bearer), Hub
+  (X-API-Key = LAB_HUB_API_KEY) and operators via a verified Cloudflare Access
+  JWT (LAB_ACCESS_TEAM_DOMAIN + LAB_ACCESS_AUD). 503 when unconfigured, 401 on
+  a missing or wrong credential. Every served route is classified in
+  `tests/test_route_auth_guard.py` (reviewed copy: `docs/route-auth-table.md`);
+  an unclassified route fails CI.
 - `burn_server.py` exposes the same typed caption-render route on the posting
   Mac's canonical port-8002 Burn runtime for Rail consumption.
 - `events.md` is the repository's append-only chronological ledger.

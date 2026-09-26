@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -40,6 +40,7 @@ from routers.upload import router as upload_router
 from routers.video import router as video_router
 from routers.agenticnews import router as agenticnews_router
 import services.agenticnews as agenticnews_db
+from services.route_auth import require_access
 
 load_dotenv()
 
@@ -215,6 +216,11 @@ app = FastAPI(
     description="TikTok-style video generation, caption scraping, and caption burning",
     version="0.1.0",
     lifespan=lifespan,
+    # No anonymous schema/Swagger routes: every served route is classified in
+    # tests/test_route_auth_guard.py, and these are not on the keyless list.
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
 )
 
 app.add_middleware(
@@ -286,24 +292,29 @@ app.include_router(
     tags=["control-plane-source-libraries"],
 )
 app.include_router(debug_router, prefix="/api/debug", tags=["debug"])
-app.include_router(video_router, prefix="/api/video", tags=["video"])
-app.include_router(captions_router, prefix="/api/captions", tags=["captions"])
+# Route auth (services/route_auth.py) fails closed on its own, independent of
+# APP_API_KEY. Whole routers that only the operator UI (behind Cloudflare
+# Access) calls are gated here; mixed routers gate per route in their module.
+# tests/test_route_auth_guard.py holds the classification of every route.
+_OPERATOR = [Depends(require_access)]
+app.include_router(video_router, prefix="/api/video", tags=["video"], dependencies=_OPERATOR)
+app.include_router(captions_router, prefix="/api/captions", tags=["captions"], dependencies=_OPERATOR)
 app.include_router(burn_router, prefix="/api/burn", tags=["burn"])
-app.include_router(projects_router, prefix="/api/projects", tags=["projects"])
-app.include_router(recreate_router, prefix="/api/recreate", tags=["recreate"])
-app.include_router(clipper_router, prefix="/api/clipper", tags=["clipper"])
+app.include_router(projects_router, prefix="/api/projects", tags=["projects"], dependencies=_OPERATOR)
+app.include_router(recreate_router, prefix="/api/recreate", tags=["recreate"], dependencies=_OPERATOR)
+app.include_router(clipper_router, prefix="/api/clipper", tags=["clipper"], dependencies=_OPERATOR)
 app.include_router(roster_router, prefix="/api/roster", tags=["roster"])
-app.include_router(pages_router, prefix="/api/pages", tags=["pages"])
-app.include_router(slideshow_router, prefix="/api/slideshow", tags=["slideshow"])
+app.include_router(pages_router, prefix="/api/pages", tags=["pages"], dependencies=_OPERATOR)
+app.include_router(slideshow_router, prefix="/api/slideshow", tags=["slideshow"], dependencies=_OPERATOR)
 app.include_router(telegram_router, prefix="/api/telegram", tags=["telegram"])
 app.include_router(miniapp_router, prefix="/api/miniapp", tags=["miniapp"])
 app.include_router(email_router, prefix="/api/email", tags=["email"])
 app.include_router(pipeline_router, prefix="/api/pipeline", tags=["pipeline"])
-app.include_router(upload_router, prefix="/api/upload", tags=["upload"])
-app.include_router(agenticnews_router, prefix="/api/agenticnews", tags=["agenticnews"])
+app.include_router(upload_router, prefix="/api/upload", tags=["upload"], dependencies=_OPERATOR)
+app.include_router(agenticnews_router, prefix="/api/agenticnews", tags=["agenticnews"], dependencies=_OPERATOR)
 
 
-@app.get("/api/projects", include_in_schema=False)
+@app.get("/api/projects", include_in_schema=False, dependencies=_OPERATOR)
 async def list_projects_no_trailing_slash():
     return await list_all_projects()
 

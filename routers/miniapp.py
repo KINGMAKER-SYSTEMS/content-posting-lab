@@ -19,7 +19,7 @@ let the external content agent read/work the request queue:
 
 import os
 
-from fastapi import APIRouter, Header, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from pydantic import BaseModel
 
 from services import content_requests
@@ -105,9 +105,12 @@ async def my_requests(request: Request, status: str | None = Query(default=None)
 
 
 @router.post("/requests", status_code=201)
-async def create_request(request: Request, body: ContentRequestBody):
-    """File a content request for the calling poster."""
-    poster = _require_poster(request)
+async def create_request(body: ContentRequestBody, poster: dict = Depends(_require_poster)):
+    """File a content request for the calling poster.
+
+    initData is checked as a dependency, so an anonymous caller is refused
+    before the body is validated (401, never 422).
+    """
     if not (body.text or "").strip():
         raise HTTPException(status_code=400, detail="text is required")
 

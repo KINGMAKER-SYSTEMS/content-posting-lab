@@ -44,6 +44,20 @@ def isolated_projects_root(monkeypatch, tmp_path):
 
 
 @pytest.fixture(autouse=True)
+def route_auth_bypass(request, monkeypatch):
+    """API tests written before per-route auth exercise handler behaviour, so they
+    run with services.route_auth.authorize stubbed open (on every app, including
+    the small apps some tests build from single routers). Tests marked
+    ``real_route_auth`` -- the route-auth guard, the Access JWT tests and the
+    whole-app credential sweep -- run the real dependency."""
+    if request.node.get_closest_marker("real_route_auth"):
+        return
+    from services import route_auth
+
+    monkeypatch.setattr(route_auth, "authorize", lambda conn, callers: "test-bypass")
+
+
+@pytest.fixture(autouse=True)
 def reset_in_memory_state():
     video_router.jobs.clear()
     captions_router._ws_clients.clear()
