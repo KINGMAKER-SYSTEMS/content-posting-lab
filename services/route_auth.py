@@ -184,10 +184,25 @@ def _same_origin(conn: HTTPConnection) -> bool:
     return bool(origin) and origin.rstrip("/") in allowed
 
 
+def side_effect_get(endpoint):
+    """Mark a GET endpoint that changes state, so Access callers get the CSRF check."""
+    endpoint.route_auth_side_effect = True
+    return endpoint
+
+
+def before_body(check):
+    """Mark a dependency that reads only headers, so RouteAuthMiddleware runs it
+    before the body is parsed (TOKEN/HMAC routes that are not route_auth rows)."""
+    check.route_auth_before_body = True
+    return check
+
+
 def _needs_origin(conn: HTTPConnection) -> bool:
     if conn.scope.get("type") == "websocket":
         return True
-    return conn.scope.get("method", "GET").upper() in UNSAFE_METHODS
+    if conn.scope.get("method", "GET").upper() in UNSAFE_METHODS:
+        return True
+    return bool(getattr(conn.scope.get("endpoint"), "route_auth_side_effect", False))
 
 
 def _deny(conn: HTTPConnection, status: int, detail: str):
@@ -259,6 +274,19 @@ ALL_DEPENDENCIES = (
 # ── pre-routing enforcement ──────────────────────────────────────────
 
 
+def before_body_checks(route) -> list:
+    """Header-only dependencies marked with ``before_body`` on this route."""
+    dependant = getattr(route, "dependant", None)
+    stack = list(dependant.dependencies) if dependant is not None else []
+    found = []
+    while stack:
+        dep = stack.pop()
+        if getattr(dep.call, "route_auth_before_body", False):
+            found.append(dep.call)
+        stack.extend(dep.dependencies)
+    return found
+
+
 def route_requirement(route) -> tuple[frozenset[str], bool] | None:
     """(callers, worker_token_in_x_api_key) of a route's route_auth dependency, if any."""
     dependant = getattr(route, "dependant", None)
@@ -283,30 +311,37 @@ class RouteAuthMiddleware:
     def __init__(self, app, routes_owner) -> None:
         self.app = app
         self._owner = routes_owner
-        self._cache: dict[int, tuple[frozenset[str], bool] | None] = {}
+        self._cache: dict[int, tuple] = {}
 
     def _requirement(self, scope):
+        """(route_auth requirement, before-body checks, child scope) of the matched route."""
         from starlette.routing import Match
 
         for route in self._owner.routes:
-            match, _ = route.matches(scope)
+            match, child_scope = route.matches(scope)
             if match == Match.FULL:
                 key = id(route)
                 if key not in self._cache:
-                    self._cache[key] = route_requirement(route)
-                return self._cache[key]
-        return None
+                    self._cache[key] = (route_requirement(route), before_body_checks(route))
+                requirement, checks = self._cache[key]
+                return requirement, checks, child_scope
+        return None, [], {}
 
     async def __call__(self, scope, receive, send) -> None:
         if scope["type"] not in ("http", "websocket"):
             await self.app(scope, receive, send)
             return
-        requirement = self._requirement(scope)
-        if requirement is not None:
-            callers, token_in_key = requirement
-            conn = HTTPConnection(scope)
+        requirement, checks, child_scope = self._requirement(scope)
+        if requirement is not None or checks:
+            from starlette.requests import Request
+
+            routed = {**scope, **child_scope}
             try:
-                authorize(conn, tuple(sorted(callers)), worker_token_in_x_api_key=token_in_key)
+                if requirement is not None:
+                    callers, token_in_key = requirement
+                    authorize(HTTPConnection(routed), tuple(sorted(callers)), worker_token_in_x_api_key=token_in_key)
+                for check in checks:
+                    check(Request(routed) if routed["type"] == "http" else HTTPConnection(routed))
             except HTTPException as exc:
                 from fastapi.responses import JSONResponse
 

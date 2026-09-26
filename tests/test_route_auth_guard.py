@@ -59,20 +59,20 @@ TABLE = {
     ('GET', '/api/control-plane/v1/capabilities'): ('READ', 'W', 'page recipe catalog (no PII); the Worker and manual tools send the bearer (Access bypasses /api/control-plane/*)'),
     ('GET', '/api/control-plane/v1/format-contracts'): ('TOKEN', '', 'CONTROL_PLANE_TOKEN bearer (inline)'),
     ('GET', '/api/control-plane/v1/roster'): ('PII-READ', 'W', 'roster/poster/account data'),
-    ('POST', '/api/control-plane/v1/roster/refresh'): ('TOKEN', '', 'CONTROL_PLANE_TOKEN bearer (inline)'),
-    ('POST', '/api/control-plane/v1/source-imports'): ('TOKEN', '', 'CONTROL_PLANE_TOKEN bearer (inline)'),
-    ('POST', '/api/control-plane/v1/jobs'): ('TOKEN', '', 'CONTROL_PLANE_TOKEN bearer (inline)'),
+    ('POST', '/api/control-plane/v1/roster/refresh'): ('WRITE', 'W', 'Notion sync; bearer as a dependency so auth precedes the X-RT-Lane check (was 400 to anonymous)'),
+    ('POST', '/api/control-plane/v1/source-imports'): ('WRITE', 'W', 'control-plane machine write; bearer as a dependency so auth precedes the body (review D8)'),
+    ('POST', '/api/control-plane/v1/jobs'): ('WRITE', 'W', 'control-plane machine write; bearer as a dependency so auth precedes the body (review D8)'),
     ('GET', '/api/control-plane/v1/jobs/{job_id}'): ('TOKEN', '', 'CONTROL_PLANE_TOKEN bearer (inline)'),
     ('GET', '/api/control-plane/v1/jobs/{job_id}/artifacts'): ('TOKEN', '', 'CONTROL_PLANE_TOKEN bearer (inline)'),
     ('GET', '/api/control-plane/v1/jobs/{job_id}/download/{index}'): ('TOKEN', '', 'per-job download token (?token=)'),
     ('GET', '/api/control-plane/v1/jobs/{job_id}/thumbnail/{index}'): ('TOKEN', '', 'per-job download token (?token=)'),
-    ('POST', '/api/control-plane/v1/jobs/{job_id}/visual-admission/{index}'): ('TOKEN', '', 'CONTROL_PLANE_TOKEN bearer (inline)'),
+    ('POST', '/api/control-plane/v1/jobs/{job_id}/visual-admission/{index}'): ('WRITE', 'W', 'control-plane machine write; bearer as a dependency so auth precedes the body (review D8)'),
     ('POST', '/api/control-plane/v1/post-renders'): ('WRITE', 'W', 'control-plane machine write; bearer now also a dependency (the body was validated before the inline check: 422 to anonymous)'),
     ('GET', '/api/control-plane/v1/post-renders/{job_id}'): ('TOKEN', '', 'CONTROL_PLANE_TOKEN bearer (post_renders)'),
     ('POST', '/api/control-plane/v1/post-renders/{job_id}/retry'): ('TOKEN', '', 'CONTROL_PLANE_TOKEN bearer (post_renders)'),
     ('POST', '/api/control-plane/v1/post-renders/{job_id}/provenance'): ('WRITE', 'W', 'control-plane machine write; bearer now also a dependency (was 422 to anonymous)'),
     ('GET', '/api/control-plane/v1/post-renders/{job_id}/artifacts/{kind}'): ('TOKEN', '', 'CONTROL_PLANE_TOKEN bearer (post_renders)'),
-    ('POST', '/api/control-plane/v1/dossier-ingredients'): ('TOKEN', '', 'CONTROL_PLANE_TOKEN bearer (inline)'),
+    ('POST', '/api/control-plane/v1/dossier-ingredients'): ('WRITE', 'W', 'control-plane machine write; bearer as a dependency so auth precedes the body (review D8)'),
     ('POST', '/api/control-plane/v1/recipes'): ('WRITE', 'W', 'control-plane machine write; bearer now also a dependency (was 422 to anonymous)'),
     ('GET', '/api/control-plane/v1/source-libraries/{library_id}'): ('TOKEN', '', 'CONTROL_PLANE_TOKEN bearer'),
     ('PUT', '/api/control-plane/v1/source-libraries/{library_id}/clips/{clip_sha256}'): ('WRITE', 'W', 'control-plane machine write; bearer now also a dependency (was 422 to anonymous)'),
@@ -139,7 +139,7 @@ TABLE = {
     ('GET', '/api/clipper/jobs'): ('READ', 'A', 'operator read, no PII/spend (gated with its router)'),
     ('PATCH', '/api/clipper/jobs/{job_id}/rename'): ('WRITE', 'A', ''),
     ('DELETE', '/api/clipper/jobs/{job_id}'): ('WRITE', 'A', ''),
-    ('GET', '/api/clipper/jobs/{job_id}/download-all'): ('WRITE', 'A', 'uploads missing clips to R2 (routers/clipper.py:1591)'),
+    ('GET', '/api/clipper/jobs/{job_id}/download-all'): ('WRITE', 'A', 'uploads missing clips to R2 (routers/clipper.py:1593); side-effect GET, so Access callers get the CSRF origin check too'),
     ('GET', '/api/clipper/cookies/status'): ('READ', 'A', 'operator read, no PII/spend (gated with its router)'),
     ('POST', '/api/clipper/cookies'): ('WRITE', 'A', ''),
     ('DELETE', '/api/clipper/cookies'): ('WRITE', 'A', ''),
@@ -824,19 +824,104 @@ def test_machine_callers_need_no_origin(configured, sentinel):
 # ── 5c. auth runs before the body is read (review D3) ───────────────
 
 
-def test_anonymous_malformed_bodies_are_401_not_422(configured, sentinel):
+def test_anonymous_malformed_bodies_are_401_not_422(configured, sentinel, monkeypatch):
+    """Every non-PUBLIC body route (must-auth, TOKEN and HMAC rows) refuses an
+    anonymous malformed body before parsing it: never 422 (criteria §10.2, review D8)."""
+    monkeypatch.setenv("MINIAPP_AGENT_KEY", "dummy-agent-key-not-a-secret")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123456:dummy-bot-token-not-a-secret")
+    monkeypatch.delenv("MINIAPP_DEV_AUTH", raising=False)
     client = TestClient(app, raise_server_exceptions=False)
     bad = []
-    for method, path in MUST_KEYS:
+    for method, path in MUST_KEYS + TOKEN_KEYS + HMAC_KEYS:
         if method not in ("POST", "PUT", "PATCH"):
             continue
         for body in ({"content": b"{not json", "headers": {"content-type": "application/json"}},
                      {"content": b"--x\r\nbroken", "headers": {"content-type": "multipart/form-data; boundary=x"}}):
             status = client.request(method, s.fill(path), **body).status_code
-            if status != 401:
+            if status not in (401, 403):
                 bad.append((method, path, status))
     assert not bad, bad[:20]
     assert sentinel == []
+
+
+def test_miniapp_agent_patch_is_503_before_the_body_when_the_key_is_unset(configured, monkeypatch):
+    monkeypatch.delenv("MINIAPP_AGENT_KEY", raising=False)
+    client = TestClient(app, raise_server_exceptions=False)
+    for body in ({"content": b"{not json", "headers": {"content-type": "application/json"}}, {}):
+        assert client.patch("/api/miniapp/agent/requests/x", **body).status_code == 503
+
+
+def test_side_effect_gets_get_the_csrf_check(configured, monkeypatch):
+    """GET /api/clipper/jobs/{id}/download-all backfills clips to R2, so a cross-site
+    GET riding the login cookie is refused like a write (review NIT a)."""
+    side_effect_gets = {
+        (m, r.path) for r in app.routes if isinstance(r, APIRoute)
+        for m in r.methods if m == "GET" and getattr(r.endpoint, "route_auth_side_effect", False)
+    }
+    assert side_effect_gets == {("GET", "/api/clipper/jobs/{job_id}/download-all")}
+    assert all(TABLE[k][0] in ("WRITE", "MONEY") for k in side_effect_gets)
+    import routers.clipper as clipper
+
+    reached = []
+    monkeypatch.setattr(clipper.r2, "is_configured", lambda: reached.append(1) or False)
+    client = TestClient(app, raise_server_exceptions=False)
+    url = s.fill("/api/clipper/jobs/{job_id}/download-all")
+    for headers in ({**JWT(), "Sec-Fetch-Site": "cross-site"}, {**JWT(), "Origin": "https://evil.example"}, JWT()):
+        assert client.get(url, headers=headers).status_code == 403
+    assert reached == []
+    assert client.get(url, headers={**JWT(), "Sec-Fetch-Site": "same-origin"}).status_code not in (401, 403, 503)
+    # an ordinary gated GET is not a write: no origin signal needed
+    assert client.get("/api/clipper/jobs", headers=JWT()).status_code == 200
+
+
+def test_origin_allowlist_is_exact(configured, sentinel):
+    """No suffix, prefix, port, path or case variant of an allowed Origin passes."""
+    client = TestClient(app, raise_server_exceptions=False)
+    for origin in (s.LAB_ORIGIN + ".evil.example", s.LAB_ORIGIN[:-3], s.LAB_ORIGIN + ":8443",
+                   s.LAB_ORIGIN + "/x", s.LAB_ORIGIN.upper(), "https://evil.example?" + s.LAB_ORIGIN,
+                   s.LAB_ORIGIN.replace("https://", "http://"), "evil" + s.LAB_ORIGIN):
+        assert client.post("/api/roster/dedup", headers={**JWT(), "Origin": origin}).status_code == 403, origin
+    assert sentinel == []
+
+
+def test_middleware_itself_covers_http_and_websockets():
+    """The pre-routing middleware (not only the dependency) refuses anonymous requests,
+    websockets included (review N6)."""
+    from services.route_auth import RouteAuthMiddleware
+
+    inner_calls = []
+
+    async def inner(scope, receive, send):
+        inner_calls.append(scope["type"])
+
+    mw = RouteAuthMiddleware(inner, routes_owner=app.router)
+    sent = []
+
+    async def receive():
+        return {"type": "websocket.connect"}
+
+    async def send(message):
+        sent.append(message)
+
+    import os
+
+    os.environ.pop("LAB_ALLOWED_ORIGINS", None)
+    base = {"headers": [], "query_string": b"", "root_path": "", "server": ("t", 80), "client": ("c", 1),
+            "scheme": "http", "http_version": "1.1"}
+    for path in ("/api/captions/ws/j1", "/api/recreate/ws/j1", "/api/clipper/ws/j1"):
+        sent.clear()
+        asyncio.run(mw({**base, "type": "websocket", "path": path, "raw_path": path.encode(),
+                        "scheme": "ws", "subprotocols": []}, receive, send))
+        assert sent and sent[0]["type"] == "websocket.close" and sent[0]["code"] == 1008, (path, sent)
+    sent.clear()
+
+    async def http_receive():
+        return {"type": "http.request", "body": b"{not json", "more_body": False}
+
+    asyncio.run(mw({**base, "type": "http", "method": "POST", "path": "/api/roster/dedup",
+                    "raw_path": b"/api/roster/dedup"}, http_receive, send))
+    assert sent[0]["type"] == "http.response.start" and sent[0]["status"] in (401, 503)
+    assert inner_calls == []
 
 
 def test_anonymous_multipart_upload_is_not_parsed_or_spooled(configured, monkeypatch, tmp_path_factory):

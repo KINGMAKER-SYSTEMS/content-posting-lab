@@ -21,11 +21,13 @@ import hmac
 import os
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
+from starlette.requests import HTTPConnection
 from pydantic import BaseModel
 
 from services import content_requests
 from services.miniapp_auth import AuthError, resolve_poster_from_request
 from services.poster_content import poster_summary, videos_for_poster
+from services.route_auth import before_body
 
 router = APIRouter()
 
@@ -33,6 +35,7 @@ router = APIRouter()
 # ── Auth helper ──────────────────────────────────────────────────────
 
 
+@before_body
 def _require_poster(request: Request) -> dict:
     """Resolve the authenticated poster or raise an HTTP error.
 
@@ -61,6 +64,12 @@ def _require_agent_key(x_agent_key: str | None) -> None:
     supplied = (x_agent_key or "").strip()
     if not supplied or not hmac.compare_digest(supplied.encode("utf-8"), expected.encode("utf-8")):
         raise HTTPException(status_code=401, detail="invalid or missing agent key")
+
+
+@before_body
+def _agent_key_gate(conn: HTTPConnection) -> None:
+    """Header-only agent-key check, run by RouteAuthMiddleware before the body."""
+    _require_agent_key(conn.headers.get("x-agent-key"))
 
 
 # ── Request bodies ───────────────────────────────────────────────────
@@ -138,7 +147,7 @@ async def create_request(body: ContentRequestBody, poster: dict = Depends(_requi
 # ── Agent-facing endpoints ───────────────────────────────────────────
 
 
-@router.get("/agent/requests")
+@router.get("/agent/requests", dependencies=[Depends(_agent_key_gate)])
 async def agent_list_requests(
     status: str | None = Query(default="open"),
     poster_id: str | None = Query(default=None),
@@ -155,7 +164,7 @@ async def agent_list_requests(
     }
 
 
-@router.patch("/agent/requests/{request_id}")
+@router.patch("/agent/requests/{request_id}", dependencies=[Depends(_agent_key_gate)])
 async def agent_update_request(
     request_id: str,
     body: AgentUpdateBody,

@@ -662,7 +662,7 @@ def roster_snapshot(
     return projection
 
 
-@router.post("/v1/roster/refresh")
+@router.post("/v1/roster/refresh", dependencies=[Depends(require_worker)])
 async def refresh_roster_snapshot(
     x_rt_lane: str | None = Header(default=None),
     authorization: str | None = Header(default=None),
@@ -2575,7 +2575,7 @@ def _start_syzygy_slideshow(job_id: str) -> None:
     )
 
 
-@router.post("/v1/source-imports")
+@router.post("/v1/source-imports", dependencies=[Depends(require_worker)])
 async def create_source_import(
     x_rt_page_id: str | None = Header(default=None),
     x_rt_lane: str | None = Header(default=None),
@@ -2768,7 +2768,7 @@ async def create_source_import(
     return {"schema": RESPONSE_SCHEMA, "jobId": job_id, "status": "queued"}
 
 
-@router.post("/v1/jobs")
+@router.post("/v1/jobs", dependencies=[Depends(require_worker)])
 async def create_job(
     request: Request,
     x_rt_page_id: str | None = Header(default=None),
@@ -3521,7 +3521,7 @@ def _finish_visual_sweep(job_id: str, sweep_id: str) -> None:
             _mark_visual_sweep(job_id, sweep_id, False)
 
 
-@router.post("/v1/jobs/{job_id}/visual-admission/{index}")
+@router.post("/v1/jobs/{job_id}/visual-admission/{index}", dependencies=[Depends(require_worker)])
 def job_visual_admission(
     job_id: str, index: int, body: dict[str, Any],
     x_rt_page_id: str | None = Header(default=None),

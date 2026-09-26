@@ -20,7 +20,9 @@ own through `services/route_auth.py`, independent of `APP_API_KEY`:
   signal: **403** (CSRF, see below);
 - `RouteAuthMiddleware` applies the same check before FastAPI reads the body, so an
   unauthenticated request is never parsed (no 422, no multipart spool); the per-route
-  dependency repeats it.
+  dependency repeats it. It also runs the header-only checks of the TOKEN/HMAC routes
+  marked `before_body` (the Mini App agent key and initData), so no non-PUBLIC route
+  answers an anonymous body with 422.
 
 ## Caller classes and what each caller must configure
 
@@ -43,9 +45,12 @@ cross-site form POST or websocket from another page would arrive with a valid JW
 An Access-authenticated write or websocket is therefore admitted only with
 `Sec-Fetch-Site: same-origin` (every current browser sends it on the UI's own
 fetches) or an `Origin` listed in `LAB_ALLOWED_ORIGINS` (Lab env, comma-separated;
-set it to the Lab's Access hostname, e.g. `https://lab.<zone>`). Anything else is 403
-and the handler never runs. GETs are not checked: a cross-site page cannot read the
-response. Bearer and Hub-key callers are not cookie-borne and need no Origin. Set the
+set it to the Lab's Access hostname, e.g. `https://lab.<zone>`; the match is exact and
+case-sensitive, as browsers send it, and never list `null`). Anything else is 403 and
+the handler never runs. Plain GETs are not checked (a cross-site page cannot read the
+response), except GETs that change state, which are marked `@side_effect_get` and
+checked like writes: today only `GET /api/clipper/jobs/{id}/download-all` (it backfills
+clips to R2). Bearer and Hub-key callers are not cookie-borne and need no Origin. Set the
 Access application's cookie to **SameSite=Lax (or Strict) and HttpOnly** as defence in
 depth.
 
@@ -75,16 +80,16 @@ Before step 3 the new routes answer 503 (fail closed), never open.
 | Class | Routes | Credential |
 |---|---|---|
 | MONEY | 5 | A (5) |
-| WRITE (state-changing / destructive) | 136 | A (121, incl. mint-alias and intake), A or H (7), A or W (3: email routing), W (5: control-plane writes that validated the body before their inline bearer check) |
+| WRITE (state-changing / destructive) | 141 | A (121, incl. mint-alias and intake), A or H (7), A or W (3: email routing), W (10: control-plane writes whose inline bearer check came after the body or the lane check; the bearer is now also a dependency) |
 | PII-READ | 25 | A (17), A or H (6), A or W (1: `GET /api/email/destinations`), W (1: `GET /api/control-plane/v1/roster`) |
 | READ (gated with its router, no PII/spend) | 53 | A (51), A or H (1: `GET /api/telegram/sounds`), W (1: `GET /api/control-plane/v1/capabilities`) |
-| TOKEN (unchanged, credential inside the route) | 23 | bearer / per-job token / agent key |
+| TOKEN (unchanged, credential inside the route) | 18 | bearer / per-job token / agent key |
 | HMAC (Telegram initData) | 4 | Mini App |
 | PUBLIC (keyless allowlist) | 17 | none |
 | KNOWN-OPEN | 0 | (mint-alias and intake are operator-only since lead decision 5) |
 | **Total** | **263** | |
 
-By credential set over the 219 must-auth routes: A only 194, A or H 14, A or W 4, W only 7.
+By credential set over the 224 must-auth routes: A only 194, A or H 14, A or W 4, W only 12.
 "A or W" on the four email-routing routes means an Access JWT or CONTROL_PLANE_TOKEN
 as Bearer **or** X-API-Key (the #176 contract is kept).
 
@@ -141,20 +146,20 @@ UI = the Lab frontend calls this path (grep of `frontend/src`, path-level).
 | `GET` | `/api/control-plane/v1/capabilities` | READ | Worker bearer |  | Worker, supply_projection.py, lab-capacity-check.sh | page recipe catalog (no PII); the Worker and manual tools send the bearer (Access bypasses /api/control-plane/*) |
 | `GET` | `/api/control-plane/v1/format-contracts` | TOKEN | - |  | Worker | CONTROL_PLANE_TOKEN bearer (inline) |
 | `GET` | `/api/control-plane/v1/roster` | PII-READ | Worker bearer |  | Worker | roster/poster/account data |
-| `POST` | `/api/control-plane/v1/roster/refresh` | TOKEN | - |  | Worker | CONTROL_PLANE_TOKEN bearer (inline) |
-| `POST` | `/api/control-plane/v1/source-imports` | TOKEN | - |  | Worker | CONTROL_PLANE_TOKEN bearer (inline) |
-| `POST` | `/api/control-plane/v1/jobs` | TOKEN | - |  | Worker | CONTROL_PLANE_TOKEN bearer (inline) |
+| `POST` | `/api/control-plane/v1/roster/refresh` | WRITE | Worker bearer |  | Worker | Notion sync; bearer as a dependency so auth precedes the X-RT-Lane check (was 400 to anonymous) |
+| `POST` | `/api/control-plane/v1/source-imports` | WRITE | Worker bearer |  | Worker | control-plane machine write; bearer as a dependency so auth precedes the body (review D8) |
+| `POST` | `/api/control-plane/v1/jobs` | WRITE | Worker bearer |  | Worker | control-plane machine write; bearer as a dependency so auth precedes the body (review D8) |
 | `GET` | `/api/control-plane/v1/jobs/{job_id}` | TOKEN | - |  | Worker | CONTROL_PLANE_TOKEN bearer (inline) |
 | `GET` | `/api/control-plane/v1/jobs/{job_id}/artifacts` | TOKEN | - |  | Worker | CONTROL_PLANE_TOKEN bearer (inline) |
 | `GET` | `/api/control-plane/v1/jobs/{job_id}/download/{index}` | TOKEN | - |  | ShipStream (?token=) | per-job download token (?token=) |
 | `GET` | `/api/control-plane/v1/jobs/{job_id}/thumbnail/{index}` | TOKEN | - |  | ShipStream (?token=) | per-job download token (?token=) |
-| `POST` | `/api/control-plane/v1/jobs/{job_id}/visual-admission/{index}` | TOKEN | - |  | Worker | CONTROL_PLANE_TOKEN bearer (inline) |
+| `POST` | `/api/control-plane/v1/jobs/{job_id}/visual-admission/{index}` | WRITE | Worker bearer |  | Worker | control-plane machine write; bearer as a dependency so auth precedes the body (review D8) |
 | `POST` | `/api/control-plane/v1/post-renders` | WRITE | Worker bearer |  | Worker | control-plane machine write; bearer now also a dependency (the body was validated before the inline check: 422 to anonymous) |
 | `GET` | `/api/control-plane/v1/post-renders/{job_id}` | TOKEN | - |  | Worker | CONTROL_PLANE_TOKEN bearer (post_renders) |
 | `POST` | `/api/control-plane/v1/post-renders/{job_id}/retry` | TOKEN | - |  | Worker | CONTROL_PLANE_TOKEN bearer (post_renders) |
 | `POST` | `/api/control-plane/v1/post-renders/{job_id}/provenance` | WRITE | Worker bearer |  | Worker | control-plane machine write; bearer now also a dependency (was 422 to anonymous) |
 | `GET` | `/api/control-plane/v1/post-renders/{job_id}/artifacts/{kind}` | TOKEN | - |  | Worker | CONTROL_PLANE_TOKEN bearer (post_renders) |
-| `POST` | `/api/control-plane/v1/dossier-ingredients` | TOKEN | - |  | Worker | CONTROL_PLANE_TOKEN bearer (inline) |
+| `POST` | `/api/control-plane/v1/dossier-ingredients` | WRITE | Worker bearer |  | Worker | control-plane machine write; bearer as a dependency so auth precedes the body (review D8) |
 | `POST` | `/api/control-plane/v1/recipes` | WRITE | Worker bearer |  | Worker | control-plane machine write; bearer now also a dependency (was 422 to anonymous) |
 | `GET` | `/api/control-plane/v1/source-libraries/{library_id}` | TOKEN | - |  |  | CONTROL_PLANE_TOKEN bearer |
 | `PUT` | `/api/control-plane/v1/source-libraries/{library_id}/clips/{clip_sha256}` | WRITE | Worker bearer |  |  | control-plane machine write; bearer now also a dependency (was 422 to anonymous) |
@@ -221,7 +226,7 @@ UI = the Lab frontend calls this path (grep of `frontend/src`, path-level).
 | `GET` | `/api/clipper/jobs` | READ | Access JWT | yes |  | operator read, no PII/spend (gated with its router) |
 | `PATCH` | `/api/clipper/jobs/{job_id}/rename` | WRITE | Access JWT | yes |  |  |
 | `DELETE` | `/api/clipper/jobs/{job_id}` | WRITE | Access JWT | yes |  |  |
-| `GET` | `/api/clipper/jobs/{job_id}/download-all` | WRITE | Access JWT | yes |  | uploads missing clips to R2 (routers/clipper.py:1591) |
+| `GET` | `/api/clipper/jobs/{job_id}/download-all` | WRITE | Access JWT | yes |  | uploads missing clips to R2 (routers/clipper.py:1593); side-effect GET, so Access callers get the CSRF origin check too |
 | `GET` | `/api/clipper/cookies/status` | READ | Access JWT | yes |  | operator read, no PII/spend (gated with its router) |
 | `POST` | `/api/clipper/cookies` | WRITE | Access JWT | yes |  |  |
 | `DELETE` | `/api/clipper/cookies` | WRITE | Access JWT | yes |  |  |

@@ -5,9 +5,10 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from fastapi import APIRouter, Body, Header, HTTPException
+from fastapi import APIRouter, Body, Depends, Header, HTTPException
 
 from routers.control_plane_recipes import LANE, require_control_plane_bearer
+from services.route_auth import require_worker
 from services.dossier_ingredients import build_dossier_ingredient_catalog
 
 
@@ -18,7 +19,7 @@ BODY_FIELDS = {"schema", "masterPages", "masterPagesHash"}
 router = APIRouter()
 
 
-@router.post("/v1/dossier-ingredients")
+@router.post("/v1/dossier-ingredients", dependencies=[Depends(require_worker)])
 def dossier_ingredients(
     body: dict[str, Any] = Body(...),
     authorization: str | None = Header(default=None),
