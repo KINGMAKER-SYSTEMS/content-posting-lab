@@ -1215,16 +1215,17 @@ async def test_zero_output_provider_failure_records_its_class_without_changing_t
         f"/api/control-plane/v1/jobs/{job_id}",
         headers={"Authorization": f"Bearer {TOKEN}", "X-RT-Page-Id": PAGE_ID},
     ).json()
-    assert set(status) == {"schema", "jobId", "status", "progress", "error"}
+    assert set(status) == {"schema", "jobId", "status", "progress", "error", "errorClass", "errorDetail"}
     assert status["error"] == "provider_generation_failed"
+    assert (status["errorClass"], status["errorDetail"]) == ("insufficient_credit", "HTTP 402")
 
 
 @pytest.mark.asyncio
-async def test_moderation_failure_records_error_class_and_code_on_the_job_only(lab, monkeypatch, caplog):
+async def test_moderation_failure_returns_error_class_and_code_on_job_status(lab, monkeypatch, caplog):
     # 2026-09-25: silhouette FLUX calls failed with Replicate E005 "flagged as
     # sensitive" and the Worker saw only provider_generation_failed. The class
-    # and short provider code are kept on the job record and in the Lab log;
-    # the Worker rejects unknown status fields, so that response is unchanged.
+    # and short provider code are kept on the job record, in the Lab log, and
+    # on the terminal status response the Worker's tolerant validator accepts.
     client, _, _ = lab
     job_id = client.post("/api/control-plane/v1/jobs", json=job_body(quantity=2), headers=HEADERS).json()["jobId"]
 
@@ -1255,8 +1256,85 @@ async def test_moderation_failure_records_error_class_and_code_on_the_job_only(l
         f"/api/control-plane/v1/jobs/{job_id}",
         headers={"Authorization": f"Bearer {TOKEN}", "X-RT-Page-Id": PAGE_ID},
     ).json()
-    assert set(status) == {"schema", "jobId", "status", "progress", "error"}
-    assert status["error"] == "provider_generation_failed"
+    assert status == {
+        "schema": status["schema"],
+        "jobId": job_id,
+        "status": "failed",
+        "progress": status["progress"],
+        "error": "provider_generation_failed",
+        "errorClass": "moderation",
+        "errorDetail": "E005",
+    }
+    assert "flagged" not in json.dumps(status)
+
+
+def _status(client, job_id):
+    return client.get(
+        f"/api/control-plane/v1/jobs/{job_id}",
+        headers={"Authorization": f"Bearer {TOKEN}", "X-RT-Page-Id": PAGE_ID},
+    ).json()
+
+
+def test_non_terminal_job_status_omits_the_failure_cause(lab):
+    client, _, _ = lab
+    job_id = client.post("/api/control-plane/v1/jobs", json=job_body(quantity=2), headers=HEADERS).json()["jobId"]
+    for status in ("queued", "running", "completed"):
+        cp._update_job(job_id, status=status, error="provider_generation_failed",
+                       errorClass="moderation", errorDetail="E005")
+        body = _status(client, job_id)
+        assert set(body) == {"schema", "jobId", "status", "progress"}, status
+
+
+def test_failure_cause_is_only_returned_for_a_provider_failure(lab):
+    # A class left by an isolated refusal must not be attached to a later,
+    # unrelated terminal failure.
+    client, _, _ = lab
+    job_id = client.post("/api/control-plane/v1/jobs", json=job_body(quantity=2), headers=HEADERS).json()["jobId"]
+    cp._update_job(job_id, status="failed", error="generation_cancelled",
+                   errorClass="moderation", errorDetail="E005")
+    assert set(_status(client, job_id)) == {"schema", "jobId", "status", "progress", "error"}
+
+
+@pytest.mark.parametrize("field,value", [
+    ("errorDetail", 'E"5'),
+    ("errorDetail", "E<b>"),
+    ("errorDetail", "E&5"),
+    ("errorDetail", "E005\n"),
+    ("errorDetail", "E005\nx"),
+    ("errorDetail", " E005"),
+    ("errorDetail", "E005 "),
+    ("errorDetail", ""),
+    ("errorDetail", "E" * 65),
+    ("errorDetail", "https://api.replicate.com/v1/predictions/x"),
+    ("errorDetail", 5),
+    ("errorClass", 'mod"x'),
+    ("errorClass", "-moderation"),
+    ("errorClass", "moderation " ),
+    ("errorClass", "m" * 33),
+    ("errorClass", None),
+])
+def test_disallowed_failure_cause_is_dropped_not_truncated(lab, field, value):
+    client, _, _ = lab
+    job_id = client.post("/api/control-plane/v1/jobs", json=job_body(quantity=2), headers=HEADERS).json()["jobId"]
+    cause = {"errorClass": "moderation", "errorDetail": "E005", field: value}
+    cp._update_job(job_id, status="failed", error="provider_generation_failed", **cause)
+    body = _status(client, job_id)
+    assert field not in body
+    kept = "errorDetail" if field == "errorClass" else "errorClass"
+    assert body[kept] == cause[kept]
+    assert body["error"] == "provider_generation_failed"
+
+
+def test_failure_cause_boundaries_match_the_worker_validator():
+    assert cp._job_status_failure_cause({
+        "status": "error", "error": "provider_generation_failed",
+        "errorClass": "a" + "b" * 31, "errorDetail": "HTTP 402 (x) #1=a+b-c/d:e,f;g_h.i",
+    }) == {"errorClass": "a" + "b" * 31, "errorDetail": "HTTP 402 (x) #1=a+b-c/d:e,f;g_h.i"}
+    assert cp._job_status_failure_cause({
+        "status": "cancelled", "error": "provider_generation_failed",
+        "errorClass": "rate_limited", "errorDetail": "E" * 64,
+    }) == {"errorClass": "rate_limited", "errorDetail": "E" * 64}
+    assert cp._job_status_failure_cause({"status": "failed", "error": "provider_generation_failed"}) == {}
 
 
 def test_provider_error_code_is_short_and_carries_no_message_text():

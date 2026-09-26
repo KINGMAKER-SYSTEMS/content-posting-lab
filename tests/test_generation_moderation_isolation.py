@@ -117,8 +117,10 @@ async def test_moderation_isolated_to_each_of_ten_original_candidates(lab, monke
                         headers={"Authorization": f"Bearer {TOKEN}", "X-RT-Page-Id": PAGE_ID}).json()
     expected_keys = {"schema", "jobId", "status", "progress"}
     if stored["status"] == "failed":
-        expected_keys.add("error")
+        expected_keys |= {"error", "errorClass", "errorDetail"}
     assert set(status) == expected_keys
+    if stored["status"] == "failed":
+        assert (status["errorClass"], status["errorDetail"]) == ("moderation", "E005")
     assert status["status"] == stored["status"]
     replay = client.post("/api/control-plane/v1/jobs", json=body, headers=HEADERS)
     assert replay.status_code == 200 and replay.json()["jobId"] == job_id
