@@ -19,12 +19,16 @@ import socket
 import threading
 
 import pytest
-from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 
 import services.roster as roster
 import services.telegram as tg
 from services import json_store
+from tests import route_auth_support as ras
+
+# Real per-route auth (not the conftest bypass): the "machine" pass presents
+# every credential the app accepts, including the Hub key and an Access JWT.
+pytestmark = pytest.mark.real_route_auth
 
 PAGE_ID = "sentinel-page"
 TOKEN = "cp-test-token-not-a-secret"
@@ -62,14 +66,13 @@ def _fill(path: str) -> str:
 
 
 def _get_routes(app):
+    """GET paths from the enumeration the route-auth guard classifies."""
     seen = set()
-    for route in app.routes:
-        if isinstance(route, APIRoute) and "GET" in route.methods:
-            path = route.path
-            if path in seen or path in STREAMING:
-                continue
-            seen.add(path)
-            yield path
+    for method, path in ras.route_keys(app):
+        if method != "GET" or path in seen or path in STREAMING:
+            continue
+        seen.add(path)
+        yield path
 
 
 @pytest.fixture
@@ -79,6 +82,10 @@ def sweep_app(monkeypatch, tmp_path):
     monkeypatch.setattr(json_store, "_LOCKS", {})
     monkeypatch.delenv("APP_API_KEY", raising=False)
     monkeypatch.setenv("CONTROL_PLANE_TOKEN", TOKEN)
+    monkeypatch.setenv("LAB_HUB_API_KEY", ras.HUB_KEY)
+    monkeypatch.setenv("LAB_ACCESS_TEAM_DOMAIN", ras.TEAM_DOMAIN)
+    monkeypatch.setenv("LAB_ACCESS_AUD", ras.ACCESS_AUD)
+    ras.install_idp(monkeypatch)
 
     real_connect = socket.socket.connect
 
@@ -132,7 +139,8 @@ def test_no_get_route_serves_a_roster_credential(sweep_app):
     anonymous = {}
     machine = {
         "Authorization": f"Bearer {TOKEN}",
-        "X-API-Key": TOKEN,
+        "X-API-Key": ras.HUB_KEY,
+        "Cf-Access-Jwt-Assertion": ras.mint(),
         "X-RT-Lane": "content-bucket-control-plane",
         "X-RT-Page-Id": PAGE_ID,
     }

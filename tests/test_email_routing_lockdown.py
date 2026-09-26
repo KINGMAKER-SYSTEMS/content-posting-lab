@@ -14,7 +14,8 @@ forwarding to the attacker). These tests pin:
   that same value is both validated and sent to Cloudflare;
 * EMAIL_DESTINATION_DOMAINS, when set, refuses destinations outside it;
 * auto-create never silently re-points an alias a roster page already records;
-* the Pipeline intake mint-alias flow (direct service call) is not gated.
+* the Pipeline mint-alias flow calls the CF service directly; it is gated by
+  operator (Access) auth, not by this token.
 """
 
 import pytest
@@ -23,6 +24,9 @@ from fastapi.testclient import TestClient
 import routers.email_routing as r
 import routers.pipeline as pipeline_router
 from app import app
+
+# The real route-auth dependency (not the conftest bypass): these tests pin who may call.
+pytestmark = pytest.mark.real_route_auth
 
 TOKEN = "lockdown-test-token"
 APP_KEY = "lockdown-app-key"
@@ -312,6 +316,9 @@ def test_auto_create_refuses_repointing_page_alias_without_replace(client, cf_ok
     )
     assert resp.status_code == 409, resp.text
     assert "replace" in resp.json()["detail"]
+    # R-LOW-1: the 409 must not disclose the page's existing alias (the
+    # credential scrub strips JSON keys, not free text in "detail").
+    assert VICTIM["email_alias"] not in resp.text
     assert cf_ok == {}
 
 
@@ -367,7 +374,7 @@ def test_auto_create_replace_true_still_requires_auth(client, cf_forbidden, toke
     assert resp.status_code == 401, resp.text
 
 
-# ── Pipeline intake mint-alias stays ungated ─────────────────────────────────
+# ── Pipeline mint-alias: operator (Access) only, not the email-routing token ──
 
 
 class _FakeResp:
@@ -392,7 +399,12 @@ class _FakeAsyncClient:
         return _FakeResp()
 
 
-def test_pipeline_mint_alias_unaffected_without_credentials(client, token_set, monkeypatch):
+def test_pipeline_mint_alias_needs_an_operator_not_the_email_token(client, token_set, monkeypatch):
+    from tests import route_auth_support as ras
+
+    monkeypatch.setenv("LAB_ACCESS_TEAM_DOMAIN", ras.TEAM_DOMAIN)
+    monkeypatch.setenv("LAB_ACCESS_AUD", ras.ACCESS_AUD)
+    ras.install_idp(monkeypatch)
     monkeypatch.setenv("EMAIL_DESTINATION_DOMAINS", "risingtidesent.com")
     monkeypatch.delenv("EMAIL_HANDOFF_DEFAULT", raising=False)
     monkeypatch.setattr(pipeline_router, "_intake_password", lambda: "intake-test")
@@ -411,7 +423,307 @@ def test_pipeline_mint_alias_unaffected_without_credentials(client, token_set, m
         return {"id": "rule-mint"}
 
     monkeypatch.setattr(pipeline_router, "cf_create_rule", _create)
-    resp = client.post("/api/pipeline/mint-alias", json={"desired_local": "samb-truck-99"})
+    body = {"desired_local": "samb-truck-99"}
+    assert client.post("/api/pipeline/mint-alias", json=body).status_code == 401
+    assert client.post(
+        "/api/pipeline/mint-alias", json=body, headers={"Authorization": f"Bearer {TOKEN}"}
+    ).status_code == 401
+    assert created == {}
+    resp = client.post("/api/pipeline/mint-alias", json=body, headers=ras.valid_headers("access"))
     assert resp.status_code == 200, resp.text
     assert resp.json()["alias"] == "samb-truck-99@rt.example"
     assert created == {"alias_local": "samb-truck-99", "destination": "henry@risingtidesent.com"}
+
+
+# ── A1 source guard (R-LOW-1 class): error text is an ALLOWLIST ──────────────
+#
+# Purpose: catch ACCIDENTAL disclosure of roster values (another page's alias,
+# rule id, integration id) in error text written in routers/email_routing.py.
+# It is a lint for honest mistakes, not a defence against a hostile author.
+#
+# An error message (HTTPException detail, keyword or positional) is accepted
+# only if it is:
+#   * a plain string literal;
+#   * an f-string whose only interpolated name is ``destination``, in a
+#     function where ``destination`` is bound exactly once-per-assignment by
+#     ``destination = _require_allowed_destination(req.<destination|email>)``
+#     (``req`` being that function's own, never re-bound, request-body
+#     parameter) and by no other binding form (parameter, lambda parameter,
+#     comprehension target, except-as, import-as, walrus, tuple unpack, for,
+#     with, match capture, global/nonlocal);
+#   * exactly ``str(e)`` inside ``_cf_upstream``'s ``except Exception as e``
+#     handler, with ``e`` not re-bound anywhere in that handler.
+# The name HTTPException (and any import alias of it) may only appear as the
+# callee of a direct call or as an ``except`` type; any other use (subclass
+# base, assignment, walrus/tuple rebind, container, partial, argument) is
+# flagged, as is the string "HTTPException" (getattr). Any *Response class,
+# including one imported under an alias, is flagged wherever it is used; so
+# is ``**kwargs`` to HTTPException and a dict literal with a "detail" key.
+#
+# Limits (shapes this guard does not see):
+#   * File scope only: routers/email_routing.py. Messages built in other
+#     modules (the auth dependency in services/roster_public.py, the Cloudflare
+#     client whose exception text becomes the 502 ``str(e)``) are not checked;
+#     a roster value raised inside ``with _cf_upstream():`` would surface
+#     through that 502.
+#   * Dynamic dispatch the AST cannot resolve: e.g. ``getattr`` with a computed
+#     name, ``importlib``/``__import__``, ``eval``/``exec``, objects passed in
+#     from other modules.
+#   * Custom exception classes turned into responses by an app-level
+#     ``exception_handler`` (none exists in app.py today).
+#   * Response headers (``HTTPException(..., headers=...)``) and anything
+#     other than the error message text.
+
+import ast as _ast  # noqa: E402
+import inspect as _inspect  # noqa: E402
+
+
+def _bindings(scope, name: str) -> list:
+    """Every node in ``scope`` that binds ``name`` (any binding form)."""
+    found = []
+    for node in _ast.walk(scope):
+        if isinstance(node, _ast.Name) and node.id == name and isinstance(node.ctx, (_ast.Store, _ast.Del)):
+            found.append(node)
+        elif isinstance(node, _ast.arg) and node.arg == name:
+            found.append(node)
+        elif isinstance(node, _ast.ExceptHandler) and node.name == name:
+            found.append(node)
+        elif isinstance(node, _ast.alias) and (node.asname or node.name.split(".")[0]) == name:
+            found.append(node)
+        elif isinstance(node, (_ast.Global, _ast.Nonlocal)) and name in node.names:
+            found.append(node)
+        elif hasattr(_ast, "MatchAs") and isinstance(node, (_ast.MatchAs, _ast.MatchStar)) and node.name == name:
+            found.append(node)
+    return found
+
+
+def _error_text_offenders(source: str) -> list[tuple[int, str]]:
+    tree = _ast.parse(source)
+    parents: dict = {}
+    for node in _ast.walk(tree):
+        for child in _ast.iter_child_nodes(node):
+            parents[child] = node
+
+    exc_names = {"HTTPException"}
+    response_names: set[str] = set()
+    for node in _ast.walk(tree):
+        if isinstance(node, (_ast.ImportFrom, _ast.Import)):
+            for alias in node.names:
+                base = alias.name.split(".")[-1]
+                if base == "HTTPException" and alias.asname:
+                    exc_names.add(alias.asname)
+                if base.endswith("Response"):
+                    response_names.add(alias.asname or base)
+
+    offenders: list[tuple[int, str]] = []
+
+    def ancestors(node):
+        while node in parents:
+            node = parents[node]
+            yield node
+
+    def enclosing_function(node):
+        return next((a for a in ancestors(node) if isinstance(a, (_ast.FunctionDef, _ast.AsyncFunctionDef))), None)
+
+    def is_request_field(call, fn) -> bool:
+        if len(call.args) != 1 or call.keywords:
+            return False
+        arg = call.args[0]
+        if not (isinstance(arg, _ast.Attribute) and arg.attr in {"destination", "email"}
+                and isinstance(arg.value, _ast.Name)):
+            return False
+        req = arg.value.id
+        params = [a.arg for a in fn.args.posonlyargs + fn.args.args]
+        return bool(params) and params[0] == req and len(_bindings(fn, req)) == 1  # only the parameter
+
+    def destination_is_own_input(node) -> bool:
+        fn = enclosing_function(node)
+        if fn is None:
+            return False
+        binds = _bindings(fn, "destination")
+        if not binds:
+            return False
+        for b in binds:
+            stmt = parents.get(b)
+            if not (isinstance(b, _ast.Name) and isinstance(b.ctx, _ast.Store)
+                    and isinstance(stmt, _ast.Assign) and stmt.targets == [b]
+                    and isinstance(stmt.value, _ast.Call)
+                    and getattr(stmt.value.func, "id", None) == "_require_allowed_destination"
+                    and is_request_field(stmt.value, fn)):
+                return False
+        return True
+
+    def is_cf_upstream_str_e(node) -> bool:
+        if not (isinstance(node, _ast.Call) and getattr(node.func, "id", None) == "str"
+                and len(node.args) == 1 and not node.keywords
+                and isinstance(node.args[0], _ast.Name) and node.args[0].id == "e"):
+            return False
+        handler = next((a for a in ancestors(node) if isinstance(a, _ast.ExceptHandler)), None)
+        fn = enclosing_function(node)
+        if not (handler is not None and handler.name == "e"
+                and isinstance(handler.type, _ast.Name) and handler.type.id == "Exception"
+                and fn is not None and fn.name == "_cf_upstream"):
+            return False
+        # ``e`` must be bound only by the handler itself.
+        return all(not _bindings(stmt, "e") for stmt in handler.body)
+
+    def allowed(value) -> bool:
+        if isinstance(value, _ast.Constant) and isinstance(value.value, str):
+            return True
+        if isinstance(value, _ast.JoinedStr):
+            return all(
+                isinstance(part, _ast.Constant)
+                or (isinstance(part, _ast.FormattedValue) and isinstance(part.value, _ast.Name)
+                    and part.value.id == "destination" and part.format_spec is None
+                    and destination_is_own_input(value))
+                for part in value.values
+            )
+        return is_cf_upstream_str_e(value)
+
+    for node in _ast.walk(tree):
+        if isinstance(node, _ast.Constant) and node.value == "HTTPException":
+            offenders.append((node.lineno, "HTTPException by string"))
+        name = node.id if isinstance(node, _ast.Name) else node.attr if isinstance(node, _ast.Attribute) else None
+        if isinstance(name, str) and (name.endswith("Response") or name in response_names):
+            offenders.append((node.lineno, f"raw response class {name}"))
+        if isinstance(name, str) and name in exc_names:
+            parent = parents.get(node)
+            direct_call = isinstance(parent, _ast.Call) and parent.func is node
+            except_type = isinstance(parent, _ast.ExceptHandler) and parent.type is node or (
+                isinstance(parent, _ast.Tuple) and isinstance(parents.get(parent), _ast.ExceptHandler)
+            )
+            if not (direct_call or except_type):
+                offenders.append((node.lineno, f"indirect use of {name}"))
+        if isinstance(node, _ast.Dict):
+            for key, value in zip(node.keys, node.values):
+                if isinstance(key, _ast.Constant) and key.value == "detail" and not allowed(value):
+                    offenders.append((node.lineno, "dict detail"))
+        if not isinstance(node, _ast.Call):
+            continue
+        fname = getattr(node.func, "id", None) or getattr(node.func, "attr", None)
+        if fname not in exc_names:
+            continue
+        if any(kw.arg is None for kw in node.keywords):
+            offenders.append((node.lineno, "**kwargs"))
+        messages = [kw.value for kw in node.keywords if kw.arg == "detail"] + node.args[1:2]
+        offenders += [(node.lineno, "detail") for m in messages if not allowed(m)]
+    return offenders
+
+
+def test_email_route_error_details_never_interpolate_roster_values():
+    """A1: every error message in routers/email_routing.py is on the allowlist.
+
+    Guards against ACCIDENTAL leaks of roster values in this file's error
+    text; see the Limits in the comment block above for what it cannot see.
+    """
+    assert _error_text_offenders(_inspect.getsource(r)) == []
+
+
+_GUARD_PRELUDE = """
+from fastapi import HTTPException
+from fastapi.responses import JSONResponse, PlainTextResponse
+import fastapi
+import functools
+
+def _require_allowed_destination(x):
+    return x
+"""
+
+_GUARD_MUTATIONS = {
+    "f-string of page": 'def f(page):\n    raise HTTPException(status_code=409, detail=f"x {page}")',
+    "concatenation": 'def f(page):\n    raise HTTPException(status_code=409, detail="x " + page["email_alias"])',
+    "percent": 'def f(alias):\n    raise HTTPException(status_code=409, detail="x %s" % alias)',
+    "variable built earlier": 'def f(alias):\n    msg = f"{alias}"\n    raise HTTPException(status_code=409, detail=msg)',
+    "helper call as message": 'def f(page):\n    raise HTTPException(status_code=409, detail=fmt(page))',
+    "helper result in variable": 'def f(page):\n    m = fmt(page)\n    raise HTTPException(status_code=409, detail=m)',
+    "JSONResponse": 'def f(alias):\n    return JSONResponse({"detail": alias}, status_code=409)',
+    "PlainTextResponse": 'def f(alias):\n    return PlainTextResponse(alias, status_code=409)',
+    "positional message": 'def f(alias):\n    raise HTTPException(409, f"{alias}")',
+    "qualified fastapi.HTTPException": 'def f(alias):\n    raise fastapi.HTTPException(status_code=409, detail=alias)',
+    "aliased import": 'from fastapi import HTTPException as HE\ndef f(alias):\n    raise HE(status_code=409, detail=alias)',
+    "rebound name": 'E = HTTPException\ndef f(alias):\n    raise E(status_code=409, detail=alias)',
+    "**kwargs": 'def f(alias):\n    raise HTTPException(**{"status_code": 409, "detail": alias})',
+    "plain dict": 'def f(alias):\n    return {"detail": alias}',
+    "reassigned destination": (
+        'def f(page, req):\n    destination = _require_allowed_destination(req)\n'
+        '    destination = page["email_alias"]\n'
+        '    raise HTTPException(status_code=422, detail=f"{destination}")'
+    ),
+    "destination as parameter": 'def f(destination):\n    raise HTTPException(status_code=422, detail=f"{destination}")',
+    "fake str(e) outside _cf_upstream": 'def f(page):\n    e = page["email_alias"]\n    raise HTTPException(status_code=502, detail=str(e))',
+    "str(e) in _cf_upstream but not the Exception handler": (
+        'def _cf_upstream(page):\n    e = page["email_alias"]\n'
+        '    raise HTTPException(status_code=502, detail=str(e))'
+    ),
+    # Round 2 (review of e3697c5):
+    "walrus rebind of HTTPException": 'def f(alias):\n    (E := HTTPException)\n    raise E(409, alias)',
+    "tuple rebind of HTTPException": 'E, _X = HTTPException, None\ndef f(alias):\n    raise E(409, alias)',
+    "HTTPException in a container": 'EXC = {"c": HTTPException}\ndef f(alias):\n    raise EXC["c"](409, alias)',
+    "functools.partial keyword": 'def f(alias):\n    raise functools.partial(HTTPException, status_code=409, detail=alias)()',
+    "functools.partial positional": 'def f(alias):\n    raise functools.partial(HTTPException, 409)(alias)',
+    "getattr by string": 'def f(alias):\n    raise getattr(fastapi, "HTTPException")(409, alias)',
+    "subclass": 'class AliasConflict(HTTPException):\n    pass\ndef f(alias):\n    raise AliasConflict(409, alias)',
+    "subclass super().__init__": (
+        'class C(HTTPException):\n    def __init__(self, p):\n'
+        '        super().__init__(409, p["email_alias"])\ndef f(p):\n    raise C(p)'
+    ),
+    "lambda parameter named destination": (
+        'def f(req, alias):\n    destination = _require_allowed_destination(req.destination)\n'
+        '    raise (lambda destination: HTTPException(409, f"{destination}"))(alias)'
+    ),
+    "comprehension target destination": (
+        'def f(req, alias):\n    destination = _require_allowed_destination(req.destination)\n'
+        '    raise next(HTTPException(409, f"{destination}") for destination in [alias])'
+    ),
+    "except-as destination": (
+        'def f(req):\n    destination = _require_allowed_destination(req.destination)\n'
+        '    try:\n        pass\n    except Exception as destination:\n'
+        '        raise HTTPException(409, f"{destination}")'
+    ),
+    "import-as destination": (
+        'def f(req):\n    destination = _require_allowed_destination(req.destination)\n'
+        '    from os import sep as destination\n    raise HTTPException(409, f"{destination}")'
+    ),
+    "tuple unpack destination": (
+        'def f(req, page):\n    destination = _require_allowed_destination(req.destination)\n'
+        '    destination, _ = page["email_alias"], 1\n    raise HTTPException(409, f"{destination}")'
+    ),
+    "_require_allowed_destination of a roster value": (
+        'def f(req, page):\n    destination = _require_allowed_destination(page["email_alias"])\n'
+        '    raise HTTPException(422, f"{destination}")'
+    ),
+    "_require_allowed_destination of a re-bound req": (
+        'def f(req, page):\n    req = page\n    destination = _require_allowed_destination(req.destination)\n'
+        '    raise HTTPException(422, f"{destination}")'
+    ),
+    "e re-bound inside the _cf_upstream handler": (
+        'def _cf_upstream(page):\n    try:\n        yield\n    except Exception as e:\n'
+        '        e = page["email_alias"]\n        raise HTTPException(status_code=502, detail=str(e))'
+    ),
+    "e re-bound by walrus inside the handler": (
+        'def _cf_upstream(page):\n    try:\n        yield\n    except Exception as e:\n'
+        '        (e := page["email_alias"])\n        raise HTTPException(status_code=502, detail=str(e))'
+    ),
+    "aliased JSONResponse import": (
+        'from fastapi.responses import JSONResponse as JR\ndef f(alias):\n    return JR({"x": alias}, status_code=409)'
+    ),
+    "aliased starlette Response import": (
+        'from starlette.responses import Response as R\ndef f(alias):\n    return R(alias, status_code=409)'
+    ),
+}
+
+
+@pytest.mark.parametrize("mutation", sorted(_GUARD_MUTATIONS))
+def test_error_text_guard_flags_each_known_leak_shape(mutation):
+    assert _error_text_offenders(_GUARD_PRELUDE + _GUARD_MUTATIONS[mutation]), mutation
+
+
+def test_error_text_guard_accepts_the_allowed_shapes():
+    ok = _GUARD_PRELUDE + (
+        'def a():\n    raise HTTPException(status_code=409, detail="Alias already exists")\n'
+        'def b(req):\n    destination = _require_allowed_destination(req.destination)\n'
+        '    raise HTTPException(status_code=422, detail=f"Destination {destination} is not verified")\n'
+        'def _cf_upstream():\n    try:\n        yield\n    except HTTPException:\n        raise\n'
+        '    except Exception as e:\n        raise HTTPException(status_code=502, detail=str(e))\n'
+    )
+    assert _error_text_offenders(ok) == []

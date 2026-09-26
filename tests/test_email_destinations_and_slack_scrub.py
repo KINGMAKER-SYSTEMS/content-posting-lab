@@ -39,6 +39,7 @@ def cf(monkeypatch):
     return calls
 
 
+@pytest.mark.real_route_auth
 @pytest.mark.parametrize(
     "headers",
     [{}, {"Authorization": "Bearer wrong"}, {"X-API-Key": "browser-bundle-key"}],
@@ -52,6 +53,7 @@ def test_destinations_list_refuses_anonymous_and_leaks_nothing(client, cf, monke
     assert cf["n"] == 0
 
 
+@pytest.mark.real_route_auth
 def test_destinations_list_fails_closed_without_token(client, cf, monkeypatch):
     monkeypatch.delenv("CONTROL_PLANE_TOKEN", raising=False)
     resp = client.get("/api/email/destinations")
@@ -60,6 +62,7 @@ def test_destinations_list_fails_closed_without_token(client, cf, monkeypatch):
     assert cf["n"] == 0
 
 
+@pytest.mark.real_route_auth
 def test_destinations_list_served_with_control_plane_token(client, cf, monkeypatch):
     monkeypatch.setenv("CONTROL_PLANE_TOKEN", TOKEN)
     resp = client.get("/api/email/destinations", headers={"Authorization": f"Bearer {TOKEN}"})

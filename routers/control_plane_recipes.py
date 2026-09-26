@@ -20,11 +20,12 @@ from pathlib import Path
 from threading import Lock
 from typing import Any
 
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
 
 from services.json_store import lock_for
 from services.roster import ROSTER_PATH
 from services.master_pages_contract import exact_intent, intent_hash
+from services.route_auth import require_worker
 from services.dossier_ingredients import (
     build_dossier_ingredient_catalog,
     catalog_selection_version,
@@ -694,7 +695,7 @@ def list_registered_recipes(page_id: str) -> list[dict[str, Any]]:
     return records
 
 
-@router.post("/v1/recipes")
+@router.post("/v1/recipes", dependencies=[Depends(require_worker)])
 def publish_recipe(
     body: dict[str, Any],
     authorization: str | None = Header(default=None),
