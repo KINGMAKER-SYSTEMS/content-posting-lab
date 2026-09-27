@@ -9,8 +9,8 @@
       "executionStatus": "commissioned",
       "executorKind": "prompt_family",
       "executorId": "boat",
-      "executorVersion": "sha256:e7c2a13a818da636bb32ea3027cd3d2be1a88fd8c9c74e87cf67206f3188ceff",
-      "formatContractVersion": "sha256:ebc1e3d2c48261f872916e6767bba0bd8706cc0327112bfcbb3b407085dc364f",
+      "executorVersion": "sha256:8183a0d7c3b5f773a553808a8fdb1b4548ace6f1628e9e196a9f037d4b262a4a",
+      "formatContractVersion": "sha256:8c19522bbc6f69cee3c6d9fe72fa294293ba4f75399c5938648350d24783c2de",
       "maxQuantity": 10
     },
     "coffee-tok": {

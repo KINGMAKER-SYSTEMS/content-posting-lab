@@ -136,7 +136,7 @@ def test_boat_contract_is_commissioned_after_operator_lifted_quarantine():
     # The restored rules are hash-bound to the live boat prompt family.
     from services.control_plane_generation import load_prompt_catalog
 
-    _, catalog_hash = load_prompt_catalog()
+    _, catalog_hash = load_prompt_catalog("boat-lake")
     assert boat.creative_authority == CreativeAuthority(
         "prompt_family", "boat", f"sha256:{catalog_hash}",
     )
@@ -187,7 +187,7 @@ def test_silhouette_stills_do_not_reversion_unrelated_prompt_families():
     assert still["families"]["silhouette"]["method"] == "t2i"
     assert still["families"]["silhouette"]["provider"] == "flux-image"
     profiles, _ = load_engine_registry()
-    for slug in ("boat-lake", "coffee-tok", "truck-scenic"):
+    for slug in ("coffee-tok", "truck-scenic"):
         assert profiles[slug].executor_version == f"sha256:{shared_hash}"
     assert profiles["silhouette-truck"].executor_version == f"sha256:{still_hash}"
 

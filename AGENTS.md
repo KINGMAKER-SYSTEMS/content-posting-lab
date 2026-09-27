@@ -415,6 +415,11 @@
   replacement. Keep the shared prompt catalog and unrelated format/profile
   versions unchanged so switching silhouettes does not invalidate other pages.
 
+- Boat pages use varied MiniMax/Hailuo text-to-video with the existing five-way
+  dual-plus-triptych crop, without a fixed boat-image anchor. The scoped
+  `recipes/generation/boat_minimax.v1.json` changes only boat generation;
+  preserve unrelated prompt/provider versions and use the existing boat inventory.
+
 ## Work Guidance
 
 - The production Docker image uses explicit COPY paths. Include every required

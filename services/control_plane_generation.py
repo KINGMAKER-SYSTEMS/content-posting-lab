@@ -199,6 +199,20 @@ def load_prompt_catalog(format_slug: str | None = None) -> tuple[dict[str, Any],
             catalog[field].update(still[field])
         if format_slug == "silhouette-truck":
             version = hashlib.sha256(still_raw).hexdigest()
+    if _catalog_path() == CATALOG_PATH.resolve():
+        boat_raw = CATALOG_PATH.with_name("boat_minimax.v1.json").read_bytes()
+        boat = json.loads(boat_raw)
+        for field, names in {
+            "formats": {"boat-lake"}, "families": {"boat"}, "providers": {"hailuo"},
+        }.items():
+            if not isinstance(boat.get(field), dict) or set(boat[field]) != names:
+                raise ValueError("boat catalog must be scoped to boat only")
+            # Hailuo is shared with trucks; the overlay cannot alter that provider.
+            if field == "providers" and boat[field] != {"hailuo": catalog[field]["hailuo"]}:
+                raise ValueError("boat catalog must preserve the shared Hailuo provider")
+            catalog[field].update(boat[field])
+        if format_slug == "boat-lake":
+            version = hashlib.sha256(boat_raw).hexdigest()
     return catalog, version
 
 
