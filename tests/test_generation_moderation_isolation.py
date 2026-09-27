@@ -1,4 +1,10 @@
-"""A rejected candidate never retries or cancels distinct planned candidates."""
+"""A rejected candidate never cancels distinct planned candidates.
+
+These tests pin the path where no varied moderation retry is available
+(the per-page daily retry budget is 0): the refusal stays terminal and only
+the job's other planned candidates run. Bounded retries are covered by
+tests/test_generation_moderation_retry.py.
+"""
 
 import asyncio
 import hashlib
@@ -17,6 +23,10 @@ from tests.test_control_plane_dossier_execution import (
 
 MODERATION = "Replicate failed: The input or output was flagged as sensitive. (E005)"
 CREDIT = 'Replicate start failed: {"status":402,"title":"Insufficient credit"}'
+
+
+def no_retry_budget(monkeypatch):
+    monkeypatch.setenv("CONTENT_LAB_MODERATION_RETRY_DAILY_BUDGET", "0")
 
 
 def queue_silhouettes(lab, monkeypatch, quantity):
@@ -81,6 +91,7 @@ def install_provider(monkeypatch, outcomes, calls, after_call=None):
 @pytest.mark.parametrize("rejected", [{0}, {9}, {0, 3, 6, 9}, set(range(10))])
 async def test_moderation_isolated_to_each_of_ten_original_candidates(lab, monkeypatch, rejected):
     client, _, started = lab
+    no_retry_budget(monkeypatch)
     job_id, body, recipe = queue_silhouettes(lab, monkeypatch, 10)
     original = cp._load_jobs()["jobs"][job_id]
     assert original["providerCallsPlanned"] == 10
@@ -92,7 +103,7 @@ async def test_moderation_isolated_to_each_of_ten_original_candidates(lab, monke
     assert [call["id"] for call in calls] == [f"{job_id}-g{i:02d}" for i in range(10)]
     assert [cp.prompt_sha256(call["prompt"]) for call in calls] == [
         item["promptHash"] for item in original["promptPlan"]
-    ], "do not retry, rewrite or replace the refused prompt"
+    ], "without retry budget, do not retry, rewrite or replace the refused prompt"
     assert len({call["prompt"] for call in calls}) == 10
     assert all(call["provider"] == recipe.engine and call["extra"]["model_id"] == recipe.provider_model
                and call["aspect_ratio"] == "9:16" and call["duration"] == 7 for call in calls)
@@ -131,6 +142,7 @@ async def test_moderation_isolated_to_each_of_ten_original_candidates(lab, monke
 @pytest.mark.parametrize("hard_failure", [CREDIT, "ReadTimeout(submission response lost)", "provider timed out", "unknown provider fault"])
 @pytest.mark.parametrize("has_prior_output", [False, True])
 async def test_non_moderation_failure_stops_remaining_plan(lab, monkeypatch, hard_failure, has_prior_output):
+    no_retry_budget(monkeypatch)
     outcomes = (["done"] if has_prior_output else []) + [MODERATION, hard_failure, "done"]
     job_id, _, _ = queue_silhouettes(lab, monkeypatch, len(outcomes))
     calls = []
@@ -162,6 +174,7 @@ async def test_moderation_does_not_continue_after_page_strategy_changes(lab, mon
 
 @pytest.mark.asyncio
 async def test_cancellation_after_moderation_keeps_its_failure_and_cleans_only_own_job(lab, monkeypatch):
+    no_retry_budget(monkeypatch)
     job_id, _, _ = queue_silhouettes(lab, monkeypatch, 3)
     calls = []
     install_provider(monkeypatch, [MODERATION, "cancel", "done"], calls)

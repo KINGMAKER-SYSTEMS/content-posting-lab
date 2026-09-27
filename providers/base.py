@@ -222,6 +222,12 @@ async def multi_crop_vertical(src: Path, mode: str) -> list[Path]:
 # trouble that a retry does fix; one generic label hid that difference.
 _PROVIDER_FAILURE_RULES = (
     ("insufficient_credit", re.compile(r'"status":\s*402|insufficient credit', re.I)),
+    # Provider HTTP 401/403: an account/token action, never retried (like 402).
+    # "Error code: 401" is the shape a provider's own moderation dependency
+    # raised in production (2026-09-25, "Moderation check failed: Error code:
+    # 401 ... deactivated"); it must not fall through to the moderation class.
+    ("provider_auth", re.compile(
+        r'"status":\s*40[13]\b|error code:\s*40[13]\b|unauthenticated|invalid (api )?token', re.I)),
     ("rate_limited", re.compile(r'"status":\s*429|throttled', re.I)),
     ("provider_5xx", re.compile(r'"status":\s*5\d\d', re.I)),
     ("prediction_timeout", re.compile(r"timed out after", re.I)),
@@ -244,18 +250,26 @@ def classify_provider_error(message: object) -> str:
 
 
 _PROVIDER_ERROR_CODE = re.compile(r"\((?:code:\s*)?(E\d{3,4}|PA)\)")
-_PROVIDER_HTTP_STATUS = re.compile(r'"status":\s*(\d{3})')
+# The 401/403 a model's own moderation dependency raises inside a prediction
+# (2026-09-25: "Moderation check failed: Error code: 401 ... deactivated") is
+# not our Replicate token, so its detail names that dependency; our own token's
+# 401/403 stays "HTTP 40x". Both fit the #175 detail charset.
+_MODERATION_MODEL_AUTH = re.compile(r"moderation\b.*?\berror code:\s*(40[13])\b", re.I | re.S)
+_PROVIDER_HTTP_STATUS = re.compile(r'"status":\s*(\d{3})|error code:\s*(\d{3})\b', re.I)
 
 
 def provider_error_code(message: object) -> str | None:
     """Extract a short, non-secret provider code such as ``E005`` or ``HTTP 402``."""
     text = str(message or "")
+    model_auth = _MODERATION_MODEL_AUTH.search(text)
+    if model_auth:
+        return f"moderation model HTTP {model_auth.group(1)}"
     code = _PROVIDER_ERROR_CODE.search(text)
     if code:
         return code.group(1)
     status = _PROVIDER_HTTP_STATUS.search(text)
     if status:
-        return f"HTTP {status.group(1)}"
+        return f"HTTP {status.group(1) or status.group(2)}"
     return None
 
 
