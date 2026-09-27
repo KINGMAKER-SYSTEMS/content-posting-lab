@@ -6,21 +6,36 @@ store (built from the snapshot's index) instead of the full store. Every one
 of those helper functions is otherwise untouched — none of their bodies
 changed — and each already re-checks pageId/sourceKind/status itself, so a
 narrower input can only ever change the result if the slicing itself is
-wrong. This file proves it is not wrong: for >= 200 random synthetic
-page/store states, the full-store scan and the index-narrowed view produce
-byte-identical results at every site capabilities() narrows.
+wrong. `test_index_narrowed_views_match_full_store_scan` proves this for the
+three page-/sourceKind-scoped sites (page-source-import identities,
+slideshow reservations, source-dna reservations) across >= 200 random
+states, at the helper level.
 
-This is a direct, in-repo replacement for a literal base-vs-head HTTP diff:
-capabilities()'s own business logic (recipe resolution, quantity planning,
-schema shape) is unchanged and is instead covered by the existing
-tests/test_control_plane_*.py capability suite continuing to pass unchanged
-on this branch (part of the full seeno run). What's new here is specifically
-"does going through the index change what a helper sees" — and it does not.
+Revision note (Tides review of PR #185, defect 3): this file originally also
+claimed generated/truck-recovery coverage and described itself as "a direct
+in-repo replacement for a literal base-vs-head HTTP diff" — neither was
+accurate. The randomized comparison never passed the store-wide
+`generation_related_jobs_view` capabilities() actually builds for the
+ai_video/generated site (:391-401 in-file), and no test here ever ran
+base's code or called `capabilities()` at all. `resolve_generation_recipe`
+is real, deeply-wired machinery (prompt catalogs, format contracts, engine
+registry files), and `_truck_master_candidates`' candidate loop additionally
+stats and ffprobes real files on disk — so a same-code helper comparison for
+that site is honest coverage only once real files are involved; without
+them, a candidate is excluded by the missing-file check regardless of
+whether the truck-recovery reservation was dropped, which would make a
+"200 random states, no real files" version of this test pass against the
+exact regression it was supposed to catch. `test_dropping_truck_reservations_over_admits_is_caught`
+below is a smaller, deterministic, real-file test built specifically to be
+sensitive to that one question — proved mutation-red against the dropped
+narrowing described in the review, proved green against the shipped
+`{by_page[page_id], by_source_kind["truck_master_recovery"]}` view.
 """
 
 from __future__ import annotations
 
 import random
+import types
 from types import SimpleNamespace
 
 import pytest
@@ -197,3 +212,118 @@ def test_index_partition_is_lossless_and_disjoint_by_construction():
 
     assert sum(len(v) for v in by_page.values()) == len(store["jobs"])
     assert sum(len(v) for v in by_source_kind.values()) == len(store["jobs"])
+
+
+def test_dropping_truck_reservations_over_admits_is_caught(tmp_path, monkeypatch):
+    """Defect 3 fix (Tides review of PR #185): a deterministic, real-file
+    mutation proof for the ai_video/generated site's narrowed view.
+
+    `_truck_master_candidates` excludes a candidate at the FIRST field that
+    fails (`sha256 in seen`, from the truck_master_recovery reservation) OR
+    at the file-existence check, whichever comes first in its filter chain —
+    the reservation check runs BEFORE the file check. So the reservation
+    genuinely changes the outcome (this test), independent of whether real
+    files exist for candidates that were never reserved in the first place;
+    for the excluded-by-reservation path, a real file must exist so the
+    "excluded by missing file" and "excluded by reservation" cases are
+    distinguishable at all. `_is_exact_16x9_video` (ffprobe) and
+    `recovery_treatment_matches` are stubbed: this test is about which JOBS
+    get scanned, not about video-probing or treatment-matching correctness,
+    both already covered elsewhere and untouched by this PR.
+    """
+    monkeypatch.setattr(cp, "_is_exact_16x9_video", lambda path: True)
+    monkeypatch.setattr(cp, "recovery_treatment_matches", lambda *args, **kwargs: True)
+
+    page_id = "truck-page"
+    recipe_id = cp.TRUCK_RECIPE_ID
+    recipe_spec_hash = "sha256:" + ("ef" * 32)
+    sha256 = "a" * 64
+
+    artifact_root = tmp_path / "artifact"
+    artifact_root.mkdir()
+    clip_bytes = 128
+    (artifact_root / "clip.mp4").write_bytes(b"0" * clip_bytes)
+
+    generation_recipe = types.SimpleNamespace(
+        recipe_id=recipe_id,
+        engine="ai_video",
+        engine_registry_hash="h-engine",
+        format_contract_version="h-format",
+        executor_version="h-executor",
+        prompt_catalog_hash="h-catalog",
+        provider_model="h-model",
+        recipe_spec={"renderTreatment": {}},
+    )
+    generated_job = {
+        "jobId": "gen-1",
+        "pageId": page_id,
+        "sourceKind": "generated",
+        "status": "completed",
+        "engine": "ai_video",
+        "recipeId": recipe_id,
+        "engineRegistryHash": "h-engine",
+        "formatContractVersion": "h-format",
+        "executorVersion": "h-executor",
+        "promptCatalogHash": "h-catalog",
+        "providerModel": "h-model",
+        "artifactRoot": str(artifact_root),
+        "createdAt": "2026-01-01T00:00:00+00:00",
+        "clips": [{
+            "path": "clip.mp4",
+            "sha256": sha256,
+            "bytes": clip_bytes,
+            "source": {
+                "pageId": page_id,
+                "recipeId": recipe_id,
+                "contentNiche": "TRUCK",
+                "contentEngine": "ai_video",
+            },
+            "sourceTreatment": {"recipeSpecHash": recipe_spec_hash},
+        }],
+    }
+    # A completed recovery job reserving the exact same master, filed under
+    # a DIFFERENT page — recovery reservations are cross-page by design
+    # (routers/control_plane.py's own _truck_master_candidates comment).
+    recovery_job = {
+        "jobId": "recovery-1",
+        "pageId": "some-other-page",
+        "sourceKind": "truck_master_recovery",
+        "status": "completed",
+        "recoveryMasters": [{"sha256": sha256}],
+    }
+    store = {
+        "jobs": {generated_job["jobId"]: generated_job, recovery_job["jobId"]: recovery_job},
+        "version": 1, "byIdempotency": {}, "served": {},
+    }
+    by_page, by_source_kind = cp._build_jobs_indices(store)
+
+    # The SHIPPED view (routers/control_plane.py :401-406, after the C3 fix):
+    # this page's own jobs, unioned with every truck_master_recovery job.
+    shipped_view = {
+        "jobs": {
+            **by_page.get(page_id, {}),
+            **by_source_kind.get("truck_master_recovery", {}),
+        },
+    }
+    # The REGRESSION the review's mutant B reproduced: truck_master_recovery
+    # dropped from the union, so a completed recovery no longer reserves
+    # anything.
+    mutant_view = {"jobs": {**by_page.get(page_id, {})}}
+
+    shipped_candidates = cp._truck_master_candidates(
+        shipped_view, page_id, 10, content_engine="ai_video", recipe_id=recipe_id,
+        generation_recipe=generation_recipe, current_recipe_spec_hash=recipe_spec_hash,
+    )
+    mutant_candidates = cp._truck_master_candidates(
+        mutant_view, page_id, 10, content_engine="ai_video", recipe_id=recipe_id,
+        generation_recipe=generation_recipe, current_recipe_spec_hash=recipe_spec_hash,
+    )
+
+    # Shipped view: the completed recovery reserves the sha256, so the
+    # identical master is correctly NOT offered again as a fresh candidate.
+    assert shipped_candidates == []
+    # Mutant view: the reservation disappeared, so the exact same master
+    # over-admits as an available candidate — the regression this test is
+    # built to catch.
+    assert len(mutant_candidates) == 1
+    assert mutant_candidates[0]["sha256"] == sha256
