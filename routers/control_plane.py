@@ -47,6 +47,7 @@ import os
 import re
 import shutil
 import subprocess
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import Event, Lock
@@ -236,6 +237,99 @@ def _registered_recipes() -> list[dict[str, Any]]:
     return out
 
 
+# Reader hot-path cache (Tides review of PR #185, round 2, defect 3 — writer
+# starvation under a zero-gap read burst): capabilities() is deterministic
+# in everything it reads — the job snapshot, the resolved Master Pages
+# intent, the engine registry, and the registered bindings — so many
+# reader threads asking for the SAME page between the same two writes were
+# each redoing the identical, non-trivial reservation scan
+# (_generated_unavailable_prompts / _truck_master_candidates / etc.) from
+# scratch. Under a genuinely concurrent, zero-gap burst that meant many
+# CPU-bound Python threads competing for the GIL against the writer's own
+# read-modify-write, which is what starved it (profiled: ~60us of Python
+# work per capabilities() call, dominated by the two reservation scans —
+# cheap once, but multiplied by thousands of redundant calls/second under
+# a tight-loop burst).
+#
+# The cache key folds in every input capabilities() reads: the page, the
+# job-snapshot generation (so a write is ALWAYS a hard, immediate miss —
+# C2's read-after-write bound is unaffected, it never depends on the TTL
+# below), the resolved intent hash, the engine-registry file hash, and the
+# exact content of every registered binding. A short TTL is layered on top
+# as a defensive backstop only, not the mechanism this relies on: a few
+# inputs (e.g. prompt-catalog / format-contract file edits) are read
+# further downstream (resolve_generation_recipe, resolve_material_profile,
+# ...) without their own cheap version hash, so they are not fully
+# enumerable in the key above. Recipe/registry edits are rare, deliberate,
+# operator actions, not something serving a response up to
+# _CAPABILITIES_CACHE_TTL_SECONDS old could plausibly matter for; job-store
+# freshness (the property every existing test actually pins) is never
+# affected by it.
+_capabilities_cache_lock = Lock()
+_capabilities_cache: dict[tuple[Any, ...], tuple[float, list[dict[str, Any]]]] = {}
+_CAPABILITIES_CACHE_TTL_SECONDS = 2.0
+_CAPABILITIES_CACHE_MAX_ENTRIES = 4096
+
+
+def _capabilities_cache_key(
+    page_id: str,
+    generation: int,
+    master_pages_hash: str,
+    registry_hash: str | None,
+    registered_bindings: list[tuple[Any, dict[str, Any]]],
+) -> tuple[Any, ...]:
+    bindings_key = tuple(
+        (
+            publication.get("recipeId"), publication.get("engine"),
+            publication.get("recipeVersion"), publication.get("recipeSpecHash"),
+        )
+        for _, publication in registered_bindings
+    )
+    return (page_id, generation, master_pages_hash, registry_hash, bindings_key)
+
+
+def _capabilities_cache_lookup(key: tuple[Any, ...]) -> list[dict[str, Any]] | None:
+    with _capabilities_cache_lock:
+        hit = _capabilities_cache.get(key)
+    if hit is None:
+        return None
+    stored_at, entries = hit
+    if time.monotonic() - stored_at > _CAPABILITIES_CACHE_TTL_SECONDS:
+        return None
+    return entries
+
+
+def _capabilities_cache_store(key: tuple[Any, ...], entries: list[dict[str, Any]]) -> None:
+    with _capabilities_cache_lock:
+        if len(_capabilities_cache) >= _CAPABILITIES_CACHE_MAX_ENTRIES:
+            # Simple, bounded eviction: a stale-key pileup across many
+            # distinct pages/generations is rare (writes clear their own
+            # generation's keys implicitly by changing the key), so a full
+            # clear is cheap and keeps this O(1)-to-reason-about rather
+            # than needing real LRU bookkeeping on the hot path.
+            _capabilities_cache.clear()
+        _capabilities_cache[key] = (time.monotonic(), entries)
+
+
+def _generation_related_jobs_view(
+    jobs_snapshot: "_JobsSnapshot", page_jobs_view: dict[str, Any], page_id: str,
+) -> dict[str, Any]:
+    """The narrowed view capabilities() hands the ai_video (generated)
+    reservation helpers: this page's own jobs, unioned with every
+    truck_master_recovery job (the only genuinely cross-page reservation
+    those helpers need — see the comment above page_jobs_view in
+    capabilities()). Factored out (Tides review of PR #185, round 2,
+    defect 2) so a test can call the SAME function capabilities() calls,
+    instead of rebuilding an equivalent-looking dict inline — a copy that
+    would keep passing even if this line's real union were broken."""
+    return {
+        "jobs": {
+            **page_jobs_view["jobs"],
+            **jobs_snapshot.by_source_kind.get("truck_master_recovery", {}),
+        },
+    }
+
+
 @router.get("/v1/capabilities")
 def capabilities(
     x_rt_page_id: str | None = Header(default=None),
@@ -275,6 +369,27 @@ def capabilities(
         raise HTTPException(
             status_code=503, detail="job store temporarily unavailable",
         ) from error
+
+    # Fetched before the job-store views below because both feed the cache
+    # key (see _capabilities_cache_key's docstring-equivalent comment
+    # above): a cache hit skips everything from page_jobs_view down through
+    # the whole registered_bindings loop.
+    registered_bindings = list_registered_recipe_bindings(
+        page_id, master_pages, master_pages_hash,
+    )
+    try:
+        profiles, registry_hash = load_engine_registry()
+    except (OSError, ValueError, json.JSONDecodeError):
+        profiles, registry_hash = {}, None
+
+    cache_key = _capabilities_cache_key(
+        page_id, jobs_snapshot.generation, master_pages_hash, registry_hash,
+        registered_bindings,
+    )
+    cached_entries = _capabilities_cache_lookup(cache_key)
+    if cached_entries is not None:
+        return {"schema": RESPONSE_SCHEMA, "capabilities": list(cached_entries)}
+
     # capabilities() for one page only ever needs that page's own jobs, plus
     # (for the two async source-recipe kinds below) the jobs of the specific
     # sourceKinds those checks scope by. Slicing through the snapshot's
@@ -311,18 +426,12 @@ def capabilities(
         for identity in [canonical_source_identity(job.get("sourceUrl"))]
         if identity is not None
     })
-    registered_bindings = list_registered_recipe_bindings(
-        page_id, master_pages, master_pages_hash,
-    )
-    # A page-bound intent is itself enough to expose the commissioned format
-    # route before its first dossier publication. The publication list below
-    # remains authoritative for versions already registered; this bootstrap
-    # entry lets a new page reach the Dossier editor instead of becoming an
-    # empty-capability dead end.
-    try:
-        profiles, _ = load_engine_registry()
-    except (OSError, ValueError, json.JSONDecodeError):
-        profiles = {}
+    # registered_bindings and profiles were already fetched above (they
+    # feed the cache key). A page-bound intent is itself enough to expose
+    # the commissioned format route before its first dossier publication.
+    # The publication list below remains authoritative for versions already
+    # registered; this bootstrap entry lets a new page reach the Dossier
+    # editor instead of becoming an empty-capability dead end.
     intent_niche = master_pages.get("contentNiche")
     intent_engine = master_pages.get("contentEngine")
     bootstrap = next((profile for profile in profiles.values()
@@ -400,12 +509,9 @@ def capabilities(
             ))
         else:
             if generation_related_jobs_view is None:
-                generation_related_jobs_view = {
-                    "jobs": {
-                        **page_jobs_view["jobs"],
-                        **jobs_snapshot.by_source_kind.get("truck_master_recovery", {}),
-                    },
-                }
+                generation_related_jobs_view = _generation_related_jobs_view(
+                    jobs_snapshot, page_jobs_view, page_id,
+                )
             max_quantity = _generated_capability_quantity(
                 generation_related_jobs_view, generation_recipe, page_id, master_pages,
                 publication["recipeSpecHash"],
@@ -432,6 +538,7 @@ def capabilities(
         if len(entries) >= MAX_CAPABILITIES:
             break
 
+    _capabilities_cache_store(cache_key, entries)
     return {"schema": RESPONSE_SCHEMA, "capabilities": entries}
 
 
@@ -826,8 +933,36 @@ def _empty_jobs() -> dict[str, Any]:
     return {"version": 1, "jobs": {}, "byIdempotency": {}, "served": {}}
 
 
+# Writer-intent signal (Tides review of PR #185, round 2, defect 3): a
+# plain int, read/written without a lock. Under the GIL a simple int
+# increment/decrement/comparison cannot tear, and this is advisory only —
+# readers use it to voluntarily yield, never to gate correctness. Covers
+# _load_jobs (the full json.loads of a growing file) and _save_jobs (the
+# full json.dumps + fsync); the short, pure-Python mutation a caller does
+# between those two calls is not covered; and it's set from EVERY writer
+# call site since capabilities() never calls _load_jobs itself (only
+# writers do — enforced by test_capabilities_use_snapshot_not_mutable_
+# transaction_load), so this can safely live inside those two functions
+# rather than needing every one of the 11 write call sites touched.
+_jobs_writer_active_count = 0
+
+
+def _jobs_writer_enter() -> None:
+    global _jobs_writer_active_count
+    _jobs_writer_active_count += 1
+
+
+def _jobs_writer_exit() -> None:
+    global _jobs_writer_active_count
+    _jobs_writer_active_count -= 1
+
+
 def _load_jobs() -> dict[str, Any]:
-    data = atomic_load(_jobs_path(), default=None)
+    _jobs_writer_enter()
+    try:
+        data = atomic_load(_jobs_path(), default=None)
+    finally:
+        _jobs_writer_exit()
     if not isinstance(data, dict) or "jobs" not in data:
         return _empty_jobs()
     return data
@@ -988,16 +1123,20 @@ def _save_jobs(store: dict[str, Any]) -> None:
     function does not change what gets written, only what gets cached after.
     """
     path = _jobs_path()
-    atomic_save(path, store)
+    _jobs_writer_enter()
     try:
-        signature = _jobs_signature(path.stat())
-    except OSError:
-        # Publish is best-effort: the next reader's own stat()+decode will
-        # resync regardless.
-        return
-    generation = _next_jobs_generation()
-    by_page, by_source_kind = _build_jobs_indices(store)
-    _publish_jobs_snapshot(_JobsSnapshot(signature, generation, store, by_page, by_source_kind))
+        atomic_save(path, store)
+        try:
+            signature = _jobs_signature(path.stat())
+        except OSError:
+            # Publish is best-effort: the next reader's own stat()+decode
+            # will resync regardless.
+            return
+        generation = _next_jobs_generation()
+        by_page, by_source_kind = _build_jobs_indices(store)
+        _publish_jobs_snapshot(_JobsSnapshot(signature, generation, store, by_page, by_source_kind))
+    finally:
+        _jobs_writer_exit()
 
 
 def _decode_jobs_snapshot(generation: int) -> "_JobsSnapshot":
@@ -1008,7 +1147,8 @@ def _decode_jobs_snapshot(generation: int) -> "_JobsSnapshot":
     path = _jobs_path()
     try:
         with path.open("r", encoding="utf-8") as handle:
-            before = _jobs_read_consistency_signature(os.fstat(handle.fileno()))
+            before_stat = os.fstat(handle.fileno())
+            before = _jobs_read_consistency_signature(before_stat)
             data = json.load(handle)
             fd_stat = os.fstat(handle.fileno())
             after = _jobs_read_consistency_signature(fd_stat)
@@ -1018,7 +1158,27 @@ def _decode_jobs_snapshot(generation: int) -> "_JobsSnapshot":
         return _JobsSnapshot((0, 0, 0, 0), generation, _empty_jobs(), {}, {})
     except (OSError, ValueError) as error:
         raise _JobsDecodeFailed(str(error)) from error
-    if before != after or not isinstance(data, dict) or "jobs" not in data:
+    # A same-(ino,mtime,size) in-place rewrite (`cp -p`, `touch -r`, a
+    # restore tool that preserves mtime) passes the check above but still
+    # touches this inode's ctime — UNLESS it was replaced out from under us
+    # (os.replace unlinks the old name; nlink drops to 0 on our still-open
+    # fd, and THAT alone moves ctime too, which is fine and already
+    # tolerated: the bytes we read are one complete, valid old version).
+    # Reject only when the inode is STILL linked and ctime moved: that
+    # combination means someone rewrote the content in place while we were
+    # reading it, and letting it through would publish stale bytes keyed to
+    # exactly the signature the file now reports (T1; a Tides review of PR
+    # #185, round 2, caught this — serving stale content persistently after
+    # the file settled).
+    in_place_rewrite = (
+        fd_stat.st_nlink > 0 and fd_stat.st_ctime_ns != before_stat.st_ctime_ns
+    )
+    if (
+        before != after
+        or in_place_rewrite
+        or not isinstance(data, dict)
+        or "jobs" not in data
+    ):
         raise _JobsDecodeFailed("job-history file changed mid-read or is malformed")
     # The full (ctime-including) signature is what gets published/compared
     # as this snapshot's cache key — computed from the same final fstat,
@@ -1041,11 +1201,31 @@ def _read_jobs_snapshot_object() -> "_JobsSnapshot":
     a signature that does not match the file (T3) — it raises instead, and
     the caller (capabilities()) turns that into a 503.
     """
+    if _jobs_writer_active_count > 0:
+        # Writer priority (Tides review of PR #185, round 2, defect 3):
+        # a bare GIL yield, not a real wait — this thread stays runnable,
+        # it just gives a currently-mid-flight writer's own json
+        # encode/decode a fairer shot at the interpreter instead of losing
+        # every reacquisition race to however many reader threads are
+        # spinning through this exact call under a zero-gap burst. Cheap
+        # (no lock, no syscall beyond what sleep(0) already is) and never
+        # affects correctness — a stale read here is impossible either way,
+        # the signature check right below still runs every time.
+        time.sleep(0.002)
     path = _jobs_path()
     try:
         stat_result = path.stat()
     except FileNotFoundError:
-        return _JobsSnapshot((0, 0, 0, 0), 0, _empty_jobs(), {}, {})
+        # Not published to _jobs_snapshot (there is nothing to key it by),
+        # but the generation must still be freshly drawn, not a fixed
+        # sentinel: capabilities()'s own response cache keys on this
+        # generation too, and two distinct callers observing "no file yet"
+        # are two distinct observations, not the same one. A fixed 0 here
+        # made every "file doesn't exist yet" answer, on any page, collide
+        # in that cache — found via cross-test pollution in the full suite
+        # after the capabilities()-level cache was added (Tides review of
+        # PR #185, round 2).
+        return _JobsSnapshot((0, 0, 0, 0), _next_jobs_generation(), _empty_jobs(), {}, {})
     except OSError as error:
         raise _JobsDecodeFailed(str(error)) from error
 
@@ -1080,8 +1260,14 @@ def _read_jobs_snapshot_object() -> "_JobsSnapshot":
             raise pending.error
         return pending.snapshot
 
-    generation = _next_jobs_generation()
     try:
+        # Drawn inside the try (Tides review of PR #185, round 2, INFO
+        # note): _next_jobs_generation() cannot practically raise (a Lock
+        # plus an int increment), but if it ever did, this keeps the same
+        # try/finally guarantee — the ticket is still released — rather
+        # than leaving one line of the leader's critical section outside
+        # the safety net the rest of this block relies on.
+        generation = _next_jobs_generation()
         snapshot = _decode_jobs_snapshot(generation)
         published = _publish_jobs_snapshot(snapshot)
     except _JobsDecodeFailed as error:
@@ -2159,7 +2345,13 @@ async def _run_owned_dossier_generation(job_id: str) -> None:
                     errorClass=error_class,
                     errorDetail=error_detail,
                     providerFailure=failure,
-                    providerFailures=provider_failures,
+                    # list(...): the same aliasing hazard _update_job's
+                    # docstring warns about — this loop keeps appending to
+                    # provider_failures on a later failed call, after an
+                    # earlier call already published this exact list object
+                    # into the cache (Tides review of PR #185, round 2,
+                    # minor finding: SERVED 2 / ON_DISK 1 without this).
+                    providerFailures=list(provider_failures),
                     generationAttempts=attempts,
                     moderationRetryCostUsd=moderation_retry.retry_cost_total(attempts),
                 )
