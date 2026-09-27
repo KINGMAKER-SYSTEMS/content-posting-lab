@@ -159,9 +159,13 @@ def test_slow_external_decode_cannot_clobber_a_newer_write_cas(job_path, monkeyp
     # content the slow decode read.
     assert cp._jobs_snapshot.generation == fresh_generation
     assert cp._jobs_snapshot.data["jobs"]["one"]["status"] == "fresh-write"
-    # The background reader itself still got a self-consistent answer (the
-    # file version it actually decoded), even though it lost the race.
-    assert result["snapshot"]["jobs"]["one"]["status"] == "external-slow"
+    # _publish_jobs_snapshot returns whichever snapshot is live AFTER the
+    # CAS attempt — so even the reader that did the slow decode itself never
+    # gets handed its own now-stale result; it gets the newer one instead.
+    # That is stronger than merely "the cache isn't corrupted": no caller of
+    # _read_jobs_snapshot(), winner or loser of the race, can ever observe a
+    # value staler than what is already known to be current.
+    assert result["snapshot"]["jobs"]["one"]["status"] == "fresh-write"
 
 
 def test_capabilities_use_snapshot_not_mutable_transaction_load(job_path, monkeypatch):
