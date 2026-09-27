@@ -1,3 +1,4 @@
+import hashlib
 import logging
 import os
 import subprocess
@@ -10,6 +11,8 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.datastructures import Headers, QueryParams
+from starlette.staticfiles import NotModifiedResponse
 import uvicorn
 
 import debug_logger
@@ -349,7 +352,48 @@ class SafeStaticFiles(StaticFiles):
         return await super().get_response(path, scope)
 
 
-app.mount("/fonts", SafeStaticFiles(directory="fonts", check_dir=False), name="fonts")
+class FontStaticFiles(SafeStaticFiles):
+    """Fonts, typed and cached by their own bytes.
+
+    python:3.11-slim ships no /etc/mime.types, so StaticFiles guessed
+    application/octet-stream for .ttf and sent no Cache-Control; the Control
+    Plane, which proxies these for every Dossier open, will only cache a body
+    declared as a font. The ETag is the file's SHA-256, the cache is a day,
+    and a request pinning that hash with ?v=<prefix> may keep it a year.
+    """
+
+    MEDIA_TYPES = {".ttf": "font/ttf", ".otf": "font/otf", ".woff": "font/woff", ".woff2": "font/woff2"}
+    _digests: dict = {}
+
+    @classmethod
+    def _digest(cls, full_path, stat_result) -> str:
+        key = (str(full_path), stat_result.st_mtime_ns, stat_result.st_size)
+        digest = cls._digests.get(key)
+        if digest is None:
+            sha = hashlib.sha256()
+            with open(full_path, "rb") as handle:
+                for chunk in iter(lambda: handle.read(1 << 16), b""):
+                    sha.update(chunk)
+            digest = sha.hexdigest()
+            cls._digests[key] = digest
+        return digest
+
+    def file_response(self, full_path, stat_result, scope, status_code: int = 200):
+        digest = self._digest(full_path, stat_result)
+        pinned = QueryParams(scope.get("query_string", b"")).get("v", "")
+        immutable = len(pinned) >= 8 and digest.startswith(pinned.lower())
+        media_type = self.MEDIA_TYPES.get(Path(str(full_path)).suffix.lower())
+        response = FileResponse(full_path, status_code=status_code, stat_result=stat_result, media_type=media_type)
+        response.headers["etag"] = f'"{digest}"'
+        response.headers["cache-control"] = (
+            "public, max-age=31536000, immutable" if immutable else "public, max-age=86400"
+        )
+        if self.is_not_modified(response.headers, Headers(scope=scope)):
+            return NotModifiedResponse(response.headers)
+        return response
+
+
+app.mount("/fonts", FontStaticFiles(directory="fonts", check_dir=False), name="fonts")
 # AgenticBuilderNews: rendered assets + the workspace SPA
 app.mount(
     "/agenticnews-assets",
