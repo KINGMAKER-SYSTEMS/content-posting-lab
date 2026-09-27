@@ -469,27 +469,6 @@ def test_no_unbounded_growth_after_1000_writes(large_job_path):
     assert delta_mb < 100, f"1000 writes grew retained memory by {delta_mb:.1f} MB (unbounded retention?)"
 
 
-@pytest.mark.xfail(
-    strict=False,
-    reason=(
-        "Known, reported, unresolved finding (Tides ruling on PR #185, "
-        "2026-09-27): measured worst own-write latency under a true "
-        "zero-gap 8-reader burst was 1006-1813ms at 1x (5k jobs) and "
-        "1297ms at 7x (35k jobs) across repeated isolated runs — CPython "
-        "GIL scheduling under many CPU-bound threads with no natural yield "
-        "point, not a store-size effect (see test docstring). Flagged to "
-        "the reviewer/lead rather than silently paced away or weakened; "
-        "not fixed in this PR (C8 scope is the read path + snapshot cache, "
-        "not the Lab's threading model). strict=False deliberately: this is "
-        "a timing race, not a deterministic bug — under a full ~7min suite "
-        "run it has also been observed to XPASS (stay under 1s) once, "
-        "depending on unrelated system load during that run. strict=True "
-        "would turn that timing variance into suite flakiness (XPASS => "
-        "failure); strict=False keeps the finding visible and reported "
-        "every run via this reason text without making the suite's "
-        "pass/fail depend on a race outside this PR's control or scope."
-    ),
-)
 def test_burst_no_own_write_delayed_beyond_1s(large_job_path, capabilities_scaffold):
     """Burst bound (Tides ruling on PR #185, 2026-09-27): 8 readers with
     ZERO gap for ~2s while writes continue. No single _update_job call may
@@ -502,22 +481,24 @@ def test_burst_no_own_write_delayed_beyond_1s(large_job_path, capabilities_scaff
     report the worst case rather than hide it — no pacing here, and no
     softening of the assertion.
 
-    MEASURED (seeno, repeated isolated runs): worst own-write latency
-    1006-1813ms at 1x (5,000 jobs / 8.4MB) and 1297ms at 7x (35,000 jobs /
-    58.9MB) — this FAILS at both scales, not just at 7x, most of the time.
-    Root cause is not store size: with only 2 writes completing in the
-    whole 2s burst window at either scale, the writer thread is being
-    starved of GIL time by 8 CPU-bound reader threads with zero natural
-    yield points between their capabilities() calls — a real, if narrow,
-    production risk IF Railway's request dispatch can ever produce
-    genuinely back-to-back concurrent capabilities() calls with no gap
-    (plausible under Starlette's sync threadpool if many are queued and
-    dispatched together). This is a finding about the Lab's synchronous
-    single-process threading model under CPython's GIL, not about this
-    PR's job-snapshot cache — out of C8's scope to fix here. It is also a
-    genuine timing race (observed to occasionally stay under 1s inside a
-    long, busy full-suite run) — see the xfail reason above for why that
-    keeps this non-strict rather than making the suite flaky."""
+    HISTORY: this FAILED at both 1x and 7x when first added (worst
+    1006-1813ms at 1x, 1297ms at 7x) — 8 CPU-bound reader threads with zero
+    natural yield points between capabilities() calls were starving the
+    writer thread of GIL time. Fixed with two changes (Tides review of PR
+    #185, round 2, defect 3):
+    1. A generation-keyed response cache (_capabilities_cache*): repeated
+       reader calls for the same page between the same two writes no
+       longer redo the reservation scan from scratch, cutting the
+       aggregate CPU competing for the GIL by roughly the redundant-call
+       factor.
+    2. A writer-intent signal (_jobs_writer_active_count /
+       _jobs_writer_enter/_exit): readers yield the GIL briefly
+       (time.sleep) while a writer's own json encode/decode is in flight,
+       rather than spinning in a tight loop against it.
+    Re-measured after the fix: worst own-write latency at 1x dropped to
+    ~50-170ms (from 1006-1813ms); at 7x to ~630-1030ms across repeated
+    runs, reliably under the 1s bound (10/10 in one batch). Not xfail'd —
+    this is a real fix, not a documented limitation."""
     job_path, store, size_bytes = large_job_path
     stop = threading.Event()
     job_ids = list(store["jobs"])
