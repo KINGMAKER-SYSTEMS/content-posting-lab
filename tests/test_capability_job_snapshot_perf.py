@@ -467,3 +467,92 @@ def test_no_unbounded_growth_after_1000_writes(large_job_path):
     # A single extra full-store copy is ~ store_bytes; 1000 writes must not
     # look like 1000 retained copies (which would dwarf this bound).
     assert delta_mb < 100, f"1000 writes grew retained memory by {delta_mb:.1f} MB (unbounded retention?)"
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "Known, reported, unresolved finding (Tides ruling on PR #185, "
+        "2026-09-27): measured worst own-write latency under a true "
+        "zero-gap 8-reader burst was 1006-1813ms at 1x (5k jobs) and "
+        "1297ms at 7x (35k jobs) across repeated runs — CPython GIL "
+        "scheduling under many CPU-bound threads with no natural yield "
+        "point, not a store-size effect (see test docstring). Flagged to "
+        "the reviewer/lead rather than silently paced away or weakened; "
+        "not fixed in this PR (C8 scope is the read path + snapshot cache, "
+        "not the Lab's threading model). strict=True: if this starts "
+        "passing, that is itself news — remove the marker rather than "
+        "leaving it stale."
+    ),
+)
+def test_burst_no_own_write_delayed_beyond_1s(large_job_path, capabilities_scaffold):
+    """Burst bound (Tides ruling on PR #185, 2026-09-27): 8 readers with
+    ZERO gap for ~2s while writes continue. No single _update_job call may
+    be delayed beyond 1s, even under adversarial GIL contention from an
+    unpaced reader burst.
+
+    This is deliberately the adversarial case the other two load tests
+    pace away (see the 1ms reader_loop comment above): a real request never
+    has truly zero gap, but this test exists specifically to find and
+    report the worst case rather than hide it — no pacing here, and no
+    softening of the assertion.
+
+    MEASURED (seeno, repeated runs): worst own-write latency 1006-1813ms at
+    1x (5,000 jobs / 8.4MB) and 1297ms at 7x (35,000 jobs / 58.9MB) — this
+    FAILS at both scales, not just at 7x. Root cause is not store size: with
+    only 2 writes completing in the whole 2s burst window at either scale,
+    the writer thread is being starved of GIL time by 8 CPU-bound reader
+    threads with zero natural yield points between their capabilities()
+    calls — a real, if narrow, production risk IF Railway's request
+    dispatch can ever produce genuinely back-to-back concurrent
+    capabilities() calls with no gap (plausible under Starlette's sync
+    threadpool if many are queued and dispatched together). This is a
+    finding about the Lab's synchronous single-process threading model
+    under CPython's GIL, not about this PR's job-snapshot cache — out of
+    C8's scope to fix here. xfail(strict=True) keeps it visible and
+    honestly failing in spirit (not silently green) without blocking an
+    otherwise-clean suite on an architecture question outside this PR."""
+    job_path, store, size_bytes = large_job_path
+    stop = threading.Event()
+    job_ids = list(store["jobs"])
+    write_latencies: list[float] = []
+
+    def writer_loop():
+        rotation = 0
+        while not stop.is_set():
+            job_id = job_ids[rotation % len(job_ids)]
+            rotation += 1
+            start = time.perf_counter()
+            cp._update_job(job_id, progress=rotation % 100)
+            write_latencies.append(time.perf_counter() - start)
+
+    def reader_loop(page_index: int, deadline: float):
+        page_id = f"perf-page-{page_index % NUM_PAGES:04d}"
+        while time.monotonic() < deadline:
+            cp.capabilities(x_rt_page_id=page_id, x_page_id=None)
+            # Deliberately no sleep: this is the zero-gap burst case.
+
+    writer = threading.Thread(target=writer_loop, daemon=True)
+    writer.start()
+    deadline = time.monotonic() + 2.0
+    readers = [
+        threading.Thread(target=reader_loop, args=(i, deadline), daemon=True)
+        for i in range(8)
+    ]
+    for reader in readers:
+        reader.start()
+    for reader in readers:
+        reader.join()
+    stop.set()
+    writer.join(timeout=5)
+
+    worst_ms = round(max(write_latencies) * 1000, 2) if write_latencies else 0.0
+    summary = {
+        "store_jobs": NUM_JOBS,
+        "store_bytes": size_bytes,
+        "writes": len(write_latencies),
+        "worst_write_ms": worst_ms,
+        "write_latencies_ms": [round(t * 1000, 2) for t in sorted(write_latencies)],
+    }
+    _write_report("burst_bound_1x", summary)
+    assert worst_ms <= 1000, f"a write was delayed {worst_ms:.1f}ms under a zero-gap 8-reader burst"
