@@ -282,11 +282,21 @@ def capabilities(
     # of the store instead of a full scan (C3) — none of their own bodies
     # change, since each already re-checks pageId/sourceKind/status itself,
     # so a narrower input can only ever produce the identical result.
-    # page_jobs_view and dossier_source_dna_view are O(1): they wrap an
-    # existing index bucket, never copy it. generation_related_jobs_view is
-    # the one exception — it unions two sourceKind buckets that can each be
-    # store-wide — so it is built lazily, at most once per request, only if
-    # an ai_video (generated) binding is actually reached below.
+    # All three views are O(page) / O(1): they union existing index buckets,
+    # never copy or scan the whole store.
+    #
+    # generation_related_jobs_view used to be `by_source_kind["generated"] |
+    # by_source_kind["truck_master_recovery"]` — store-wide over the
+    # dominant, ever-growing "generated" kind, and the actual C3 violation a
+    # Tides review caught (PR #185): the perf test's bindings=[] patch meant
+    # nothing ever measured it. `_generated_unavailable_prompts` and the
+    # second (candidate) loop of `_truck_master_candidates` both already
+    # require pageId == page_id, so this page's own jobs are exactly the
+    # "generated" jobs either function can ever match — `by_page[page_id]`
+    # is the equivalent, page-scoped replacement. Only
+    # `_truck_master_candidates`'s FIRST loop (the cross-page
+    # truck_master_recovery reservation set) genuinely needs every page's
+    # jobs of that one kind, so that bucket alone stays store-wide.
     page_jobs_view = {"jobs": jobs_snapshot.by_page.get(page_id, {})}
     dossier_source_dna_view = {
         "jobs": jobs_snapshot.by_source_kind.get("dossier_source_dna", {}),
@@ -392,7 +402,7 @@ def capabilities(
             if generation_related_jobs_view is None:
                 generation_related_jobs_view = {
                     "jobs": {
-                        **jobs_snapshot.by_source_kind.get("generated", {}),
+                        **page_jobs_view["jobs"],
                         **jobs_snapshot.by_source_kind.get("truck_master_recovery", {}),
                     },
                 }
@@ -857,7 +867,7 @@ class _JobsSnapshot:
 
     def __init__(
         self,
-        signature: tuple[int, int, int],
+        signature: tuple[int, int, int, int],
         generation: int,
         data: dict[str, Any],
         by_page: dict[str, dict[str, Any]],
@@ -891,14 +901,34 @@ _jobs_generation_counter = 0
 # Entries are removed the instant their decode finishes, so this dict never
 # grows past "distinct file versions currently mid-decode" (C7).
 _jobs_decode_dispatch_lock = Lock()
-_jobs_decode_pending: dict[tuple[int, int, int], _PendingJobsDecode] = {}
+_jobs_decode_pending: dict[tuple[int, int, int, int], _PendingJobsDecode] = {}
 
 
-def _jobs_signature(stat: os.stat_result) -> tuple[int, int, int]:
-    # (inode, mtime, size): distinguishes an atomic-replace from a same-mtime
-    # same-size in-place edit because the inode changes on os.replace, and is
-    # cheap enough to `os.stat()` on every single request — no TTL, no
-    # "every N seconds" staleness window (T1).
+def _jobs_signature(stat: os.stat_result) -> tuple[int, int, int, int]:
+    # (inode, mtime, size, ctime): the CACHE-KEY signature, compared against
+    # a fresh path.stat() on every single request — no TTL, no "every N
+    # seconds" staleness window (T1). ctime is kept (base compared it too)
+    # so an in-place rewrite that preserves both size and mtime (`cp -p`,
+    # `touch -r`, a restore tool) is still caught — ctime moves on any
+    # inode metadata change, including a content rewrite that leaves mtime
+    # alone. Do NOT reuse this for the mid-read consistency check inside
+    # _decode_jobs_snapshot — see _jobs_read_consistency_signature.
+    return (stat.st_ino, stat.st_mtime_ns, stat.st_size, stat.st_ctime_ns)
+
+
+def _jobs_read_consistency_signature(stat: os.stat_result) -> tuple[int, int, int]:
+    # Deliberately excludes ctime. This is fstat'd on the SAME open file
+    # descriptor before and after json.load(), to catch "the bytes I am
+    # reading changed under me mid-read" — not "is my cached snapshot still
+    # current" (that's _jobs_signature, above). An external atomic_save
+    # unlinks whatever was previously at this path as part of its
+    # os.replace; if we already hold that old inode open via this fd, the
+    # unlink alone bumps ITS ctime (nlink dropping to 0 is an inode
+    # metadata change) even though our fd's mtime/size/content are
+    # completely untouched and what we already read remains fully valid.
+    # Including ctime here produced exactly that false positive — a
+    # perfectly good decode raising _JobsDecodeFailed — under any external
+    # replace that lands mid-read.
     return (stat.st_ino, stat.st_mtime_ns, stat.st_size)
 
 
@@ -978,19 +1008,25 @@ def _decode_jobs_snapshot(generation: int) -> "_JobsSnapshot":
     path = _jobs_path()
     try:
         with path.open("r", encoding="utf-8") as handle:
-            before = _jobs_signature(os.fstat(handle.fileno()))
+            before = _jobs_read_consistency_signature(os.fstat(handle.fileno()))
             data = json.load(handle)
-            after = _jobs_signature(os.fstat(handle.fileno()))
+            fd_stat = os.fstat(handle.fileno())
+            after = _jobs_read_consistency_signature(fd_stat)
     except FileNotFoundError:
         # Vanished between our stat() and open(): legitimately empty, not a
         # decode failure.
-        return _JobsSnapshot((0, 0, 0), generation, _empty_jobs(), {}, {})
+        return _JobsSnapshot((0, 0, 0, 0), generation, _empty_jobs(), {}, {})
     except (OSError, ValueError) as error:
         raise _JobsDecodeFailed(str(error)) from error
     if before != after or not isinstance(data, dict) or "jobs" not in data:
         raise _JobsDecodeFailed("job-history file changed mid-read or is malformed")
+    # The full (ctime-including) signature is what gets published/compared
+    # as this snapshot's cache key — computed from the same final fstat,
+    # just with the extra T1 discriminator the read-consistency check must
+    # not use (see _jobs_read_consistency_signature).
+    signature = _jobs_signature(fd_stat)
     by_page, by_source_kind = _build_jobs_indices(data)
-    return _JobsSnapshot(after, generation, data, by_page, by_source_kind)
+    return _JobsSnapshot(signature, generation, data, by_page, by_source_kind)
 
 
 def _read_jobs_snapshot_object() -> "_JobsSnapshot":
@@ -1009,7 +1045,7 @@ def _read_jobs_snapshot_object() -> "_JobsSnapshot":
     try:
         stat_result = path.stat()
     except FileNotFoundError:
-        return _JobsSnapshot((0, 0, 0), 0, _empty_jobs(), {}, {})
+        return _JobsSnapshot((0, 0, 0, 0), 0, _empty_jobs(), {}, {})
     except OSError as error:
         raise _JobsDecodeFailed(str(error)) from error
 
@@ -1030,7 +1066,16 @@ def _read_jobs_snapshot_object() -> "_JobsSnapshot":
             is_leader = False
 
     if not is_leader:
-        pending.event.wait()
+        # Bounded wait: the leader's own try/finally below already
+        # guarantees the event fires for every normal exception. This
+        # timeout is a defensive backstop only, against something outside
+        # ordinary Python exception handling (a forcibly killed thread, a
+        # process-level crash) — fail closed with a 503-mapped error rather
+        # than pin this server thread on `.wait()` forever.
+        if not pending.event.wait(timeout=5):
+            raise _JobsDecodeFailed(
+                f"timed out waiting for an in-flight decode of {signature}",
+            )
         if pending.error is not None:
             raise pending.error
         return pending.snapshot
@@ -1038,18 +1083,33 @@ def _read_jobs_snapshot_object() -> "_JobsSnapshot":
     generation = _next_jobs_generation()
     try:
         snapshot = _decode_jobs_snapshot(generation)
+        published = _publish_jobs_snapshot(snapshot)
     except _JobsDecodeFailed as error:
         pending.error = error
+        raise
+    except BaseException as error:
+        # Any other failure (MemoryError on a huge store, a bug in
+        # _build_jobs_indices, ...) must still release every follower
+        # waiting on this ticket — T3's "never leave a reader blocked
+        # behind a decode" applies to a decode that fails unexpectedly, not
+        # only to a clean _JobsDecodeFailed. Normalize it to the same
+        # fail-closed 503 contract rather than let an exotic exception type
+        # escape uncaught by capabilities().
+        wrapped = _JobsDecodeFailed(f"unexpected decode failure: {error!r}")
+        pending.error = wrapped
+        raise wrapped from error
+    else:
+        pending.snapshot = published
+        return published
+    finally:
+        # Always — success, _JobsDecodeFailed, or anything else — clear the
+        # ticket and wake every follower. A leaked ticket here is exactly
+        # the regression this fixes: every later reader of this signature
+        # would otherwise block on pending.event.wait() forever (base's
+        # `with`-locked design released on any exception; this must too).
         with _jobs_decode_dispatch_lock:
             _jobs_decode_pending.pop(signature, None)
         pending.event.set()
-        raise
-    published = _publish_jobs_snapshot(snapshot)
-    pending.snapshot = published
-    with _jobs_decode_dispatch_lock:
-        _jobs_decode_pending.pop(signature, None)
-    pending.event.set()
-    return published
 
 
 def _read_jobs_snapshot() -> dict[str, Any]:
@@ -1430,6 +1490,15 @@ def _generation_root() -> Path:
 
 
 def _update_job(job_id: str, **fields: Any) -> dict[str, Any] | None:
+    """Merge ``fields`` onto the job and publish straight to the read cache.
+
+    `_save_jobs` publishes this exact call's dict/list values by reference,
+    not a decoded copy (that is the whole point of C1 — no re-decode after
+    our own write). A caller that keeps mutating a list/dict it just passed
+    in `fields` (e.g. appending to it across loop iterations) would silently
+    mutate the published snapshot too. Pass a copy (`list(x)`, `dict(x)`) of
+    anything you intend to keep changing after this call returns.
+    """
     with lock_for(_jobs_path()):
         store = _load_jobs()
         job = store["jobs"].get(job_id)
@@ -2212,11 +2281,18 @@ async def _run_owned_dossier_generation(job_id: str) -> None:
                 manifests.append(manifest)
             provider_calls_completed += 1
             completed_calls.append(call_index)
+            # `_update_job` now publishes the saved dict straight to the
+            # read cache (_save_jobs). A caller-owned list handed to it is
+            # therefore aliased into that cache, not copied — this loop
+            # keeps appending to `completed_calls` on later iterations, so
+            # passing the live reference would let the published snapshot's
+            # job silently grow past what was actually published for it.
+            # `list(...)` freezes what this write actually saw.
             await asyncio.to_thread(_update_job,
                 job_id,
                 progress=int(((call_index + 1) / calls) * 100),
                 providerCallsCompleted=provider_calls_completed,
-                completedGenerationCalls=completed_calls,
+                completedGenerationCalls=list(completed_calls),
                 generationAttempts=attempts,
                 moderationRetryCostUsd=moderation_retry.retry_cost_total(attempts),
             )
@@ -2254,7 +2330,7 @@ async def _run_owned_dossier_generation(job_id: str) -> None:
                 clips=complete_manifests,
                 uncompletedGenerationClips=[clip for clip in manifests if clip not in complete_manifests],
                 providerCallsCompleted=len(completed_calls),
-                completedGenerationCalls=completed_calls,
+                completedGenerationCalls=list(completed_calls),
                 error=str(error),
                 completedAt=datetime.now(timezone.utc).isoformat(),
             )
@@ -2283,7 +2359,7 @@ async def _run_owned_dossier_generation(job_id: str) -> None:
         progress=100,
         clips=manifests,
         providerCallsCompleted=len(completed_calls),
-        completedGenerationCalls=completed_calls,
+        completedGenerationCalls=list(completed_calls),
         completedAt=datetime.now(timezone.utc).isoformat(),
     )
 
