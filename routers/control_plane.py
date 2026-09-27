@@ -77,6 +77,7 @@ from routers.control_plane_recipes import (
     require_control_plane_bearer,
 )
 from services.control_plane_generation import (
+    CATALOG_PATH,
     MAX_CAPABILITY_QUANTITY,
     compose_prompt_combination,
     dossier_clip_crop,
@@ -122,7 +123,7 @@ from services.control_plane_source_imports import (
     validate_source_url,
 )
 from services.content_engine_registry import load_engine_registry, resolve_material_profile
-from services.content_format_contracts import load_format_contracts
+from services.content_format_contracts import CONTRACTS_PATH, load_format_contracts
 from services.ffmpeg import delivery_encode_args, run_color_correct
 from services.master_pages_contract import SCHEMA as MASTER_PAGES_SCHEMA, canonical_intent, exact_intent, intent_hash
 from services import moderation_retry
@@ -251,24 +252,87 @@ def _registered_recipes() -> list[dict[str, Any]]:
 # cheap once, but multiplied by thousands of redundant calls/second under
 # a tight-loop burst).
 #
-# The cache key folds in every input capabilities() reads: the page, the
-# job-snapshot generation (so a write is ALWAYS a hard, immediate miss —
-# C2's read-after-write bound is unaffected, it never depends on the TTL
-# below), the resolved intent hash, the engine-registry file hash, and the
-# exact content of every registered binding. A short TTL is layered on top
-# as a defensive backstop only, not the mechanism this relies on: a few
-# inputs (e.g. prompt-catalog / format-contract file edits) are read
-# further downstream (resolve_generation_recipe, resolve_material_profile,
-# ...) without their own cheap version hash, so they are not fully
-# enumerable in the key above. Recipe/registry edits are rare, deliberate,
-# operator actions, not something serving a response up to
-# _CAPABILITIES_CACHE_TTL_SECONDS old could plausibly matter for; job-store
-# freshness (the property every existing test actually pins) is never
-# affected by it.
+# The cache key folds in every input capabilities() reads that has a cheap
+# version signal: the page, the job-snapshot generation (so a write is
+# ALWAYS a hard, immediate miss — C2's read-after-write bound is unaffected,
+# it never depends on the TTL below), the resolved intent hash, the
+# engine-registry file hash, a collision-safe stat signature for the
+# format-contracts file (MaterialProfile fields are parsed FROM the matching
+# contract, not just the registry — services/content_engine_registry.py's
+# load_engine_registry passes contracts[format_slug] into _parse_profile —
+# so registry_hash alone does not capture a contract-only edit), the exact
+# content of every registered binding (recipeSpecHash is registration-time
+# bound to recipeSpecCanonical, rejected at POST /v1/recipes if they do not
+# match — routers/control_plane_recipes.py :435-436 — so it stands in for
+# the full spec bytes, the only other publication field the resolvers read
+# besides recipeId/engine), the SET of engines among those bindings (belt
+# and suspenders alongside the per-binding tuples — see
+# _capabilities_binding_engines), and a collision-safe stat signature for
+# every prompt-catalog file resolve_generation_recipe can read, when any
+# registered binding is ai_video (its content is not implied by anything
+# else in the key).
+#
+# Signature format, everywhere in this cache (Tides review of PR #185,
+# round 3): (path, st_ino, st_mtime_ns, st_size, st_ctime_ns) — the SAME
+# four fields T1 uses for the job-store signature, not just mtime_ns+size.
+# mtime_ns+size alone collides on a same-second, same-length in-place
+# rewrite; ino distinguishes a replace (new inode) and ctime catches an
+# in-place rewrite that lands within the same mtime tick. A plain content
+# hash (as an earlier version of this used for both contracts and the
+# catalog) is collision-proof too but pays a full read+parse(+hash) on
+# every request; a first version that did this for the prompt catalog alone
+# measured a real p95 regression (~20ms to ~206ms under the C5 load test —
+# it reads and re-parses up to three files). A stat is one syscall.
+#
+# Audited and NOT cacheable at all: a registered slideshow binding
+# (sourced_slideshow / lyrics_slideshows) resolves through
+# load_syzygy_library, a LIVE networked fetch with no cheap pre-fetch
+# version signal at all — not even a stat, since there is no local file.
+# capabilities() never caches (reads or stores) a response for a page with
+# any slideshow binding registered; it always computes fresh for those,
+# same as base did for every page. The binding-engine set is ALSO in the
+# key (not just this bypass) so that a page whose bindings change from
+# ai_video to slideshow between two calls at the SAME job generation can
+# never be served the earlier, now-stale ai_video response: the bypass
+# alone would already prevent it (cacheable is re-evaluated fresh every
+# call from the CURRENT registered_bindings), but the key changing too
+# means this holds even if the bypass logic is ever refactored to be less
+# strict for some other binding kind later.
+#
+# Audited and found NOT a factor: no time/wall-clock read (datetime.now(),
+# a lease or expiry window) feeds any reservation or planning function
+# capabilities() calls (_generated_unavailable_prompts,
+# _truck_master_candidates, _slideshow_unavailable_signatures,
+# _source_dna_unavailable_slots, plan_prompt_combinations, plan_source_cuts,
+# plan_slideshows, resolve_generation_recipe, _dossier_source_recipe,
+# resolve_slideshow_recipe, resolve_material_profile) — the one wall-clock
+# read in this file that gates on elapsed time
+# (_source_import_active_deadline_expired) is reachable only from
+# GET /v1/jobs/{id}, never from capabilities(). No request header or param
+# beyond X-RT-Page-Id/X-Page-Id (folded into page_id) is read either.
+#
+# The remaining short TTL is a defensive backstop only, not the mechanism
+# this relies on for the inputs actually in the key above — those make a
+# write, an intent change, a registry edit, a contract edit, or a catalog
+# edit for a bound format ALL hard, immediate misses.
 _capabilities_cache_lock = Lock()
 _capabilities_cache: dict[tuple[Any, ...], tuple[float, list[dict[str, Any]]]] = {}
 _CAPABILITIES_CACHE_TTL_SECONDS = 2.0
 _CAPABILITIES_CACHE_MAX_ENTRIES = 4096
+
+_SLIDESHOW_ENGINES = frozenset({"sourced_slideshow", "lyrics_slideshows"})
+
+
+def _file_stat_signature(path: Path) -> tuple[str, int, int, int, int]:
+    """Collision-safe (ino, mtime_ns, size, ctime_ns) freshness signature
+    for one file, keyed by its path — the same four fields T1 uses for the
+    job-store signature. -1s if the file does not exist (still a valid,
+    stable signature: present -> absent is itself a real change)."""
+    try:
+        stat = path.stat()
+    except OSError:
+        return (str(path), -1, -1, -1, -1)
+    return (str(path), stat.st_ino, stat.st_mtime_ns, stat.st_size, stat.st_ctime_ns)
 
 
 def _capabilities_cache_key(
@@ -276,7 +340,10 @@ def _capabilities_cache_key(
     generation: int,
     master_pages_hash: str,
     registry_hash: str | None,
+    contracts_signature: tuple[str, int, int, int, int],
     registered_bindings: list[tuple[Any, dict[str, Any]]],
+    binding_engines: tuple[str, ...],
+    catalog_signature: tuple[tuple[str, int, int, int, int], ...],
 ) -> tuple[Any, ...]:
     bindings_key = tuple(
         (
@@ -285,7 +352,71 @@ def _capabilities_cache_key(
         )
         for _, publication in registered_bindings
     )
-    return (page_id, generation, master_pages_hash, registry_hash, bindings_key)
+    return (
+        page_id, generation, master_pages_hash, registry_hash,
+        contracts_signature, bindings_key, binding_engines, catalog_signature,
+    )
+
+
+def _capabilities_binding_engines(
+    registered_bindings: list[tuple[Any, dict[str, Any]]],
+) -> tuple[str, ...]:
+    return tuple(sorted({
+        str(publication.get("engine"))
+        for _, publication in registered_bindings
+    }))
+
+
+def _capabilities_binding_has_slideshow(
+    registered_bindings: list[tuple[Any, dict[str, Any]]],
+) -> bool:
+    return any(
+        publication.get("engine") in _SLIDESHOW_ENGINES
+        for _, publication in registered_bindings
+    )
+
+
+def _contracts_freshness_signature() -> tuple[str, int, int, int, int]:
+    """Collision-safe stat signature for the ONE file load_format_contracts
+    reads (services/content_format_contracts.py's CONTRACTS_PATH, or its
+    CONTENT_LAB_FORMAT_CONTRACTS env override)."""
+    configured = os.environ.get("CONTENT_LAB_FORMAT_CONTRACTS", "").strip()
+    path = Path(configured).resolve() if configured else CONTRACTS_PATH
+    return _file_stat_signature(path)
+
+
+def _prompt_catalog_freshness_signature() -> tuple[tuple[str, int, int, int, int], ...]:
+    """Collision-safe stat signature for EVERY file load_prompt_catalog can
+    read for ANY format_slug: the base catalog, plus (when using the
+    default, non-overridden catalog path) the silhouette and boat overlays
+    it unconditionally reads and merges in regardless of which format_slug
+    was asked for (services/control_plane_generation.py's
+    load_prompt_catalog). Not per-format-slug precise — it always includes
+    all three files, not just the one(s) a given format_slug's resolution
+    would actually touch — which can only over-invalidate, never under-.
+    """
+    configured = os.environ.get("CONTENT_LAB_PROMPT_CATALOG", "").strip()
+    base = Path(configured).resolve() if configured else CATALOG_PATH
+    paths = [base]
+    if not configured:
+        paths.append(base.with_name("silhouette_stills.v1.json"))
+        paths.append(base.with_name("boat_minimax.v1.json"))
+    return tuple(_file_stat_signature(path) for path in paths)
+
+
+def _capabilities_catalog_signature(
+    registered_bindings: list[tuple[Any, dict[str, Any]]],
+) -> tuple[tuple[str, int, int, int, int], ...]:
+    """The prompt-catalog freshness signature, included in the cache key
+    only when at least one registered binding is ai_video (the only engine
+    that reads the prompt catalog) — no ai_video binding, no cost, same as
+    the slideshow-only-when-present gate above."""
+    if any(
+        publication.get("engine") == "ai_video"
+        for _, publication in registered_bindings
+    ):
+        return _prompt_catalog_freshness_signature()
+    return ()
 
 
 def _capabilities_cache_lookup(key: tuple[Any, ...]) -> list[dict[str, Any]] | None:
@@ -370,10 +501,10 @@ def capabilities(
             status_code=503, detail="job store temporarily unavailable",
         ) from error
 
-    # Fetched before the job-store views below because both feed the cache
-    # key (see _capabilities_cache_key's docstring-equivalent comment
-    # above): a cache hit skips everything from page_jobs_view down through
-    # the whole registered_bindings loop.
+    # Fetched before the job-store views below because they all feed the
+    # cache key (see the comment above _capabilities_cache_lock): a cache
+    # hit skips everything from page_jobs_view down through the whole
+    # registered_bindings loop.
     registered_bindings = list_registered_recipe_bindings(
         page_id, master_pages, master_pages_hash,
     )
@@ -382,13 +513,24 @@ def capabilities(
     except (OSError, ValueError, json.JSONDecodeError):
         profiles, registry_hash = {}, None
 
-    cache_key = _capabilities_cache_key(
-        page_id, jobs_snapshot.generation, master_pages_hash, registry_hash,
-        registered_bindings,
-    )
-    cached_entries = _capabilities_cache_lookup(cache_key)
-    if cached_entries is not None:
-        return {"schema": RESPONSE_SCHEMA, "capabilities": list(cached_entries)}
+    # A registered slideshow binding resolves through a LIVE networked
+    # fetch with no cheap pre-fetch version signal at all (see the comment
+    # above _capabilities_cache_lock) — never cached, never read from
+    # cache. Checked before paying for the contracts/catalog stats below.
+    cacheable = not _capabilities_binding_has_slideshow(registered_bindings)
+    cache_key = None
+    if cacheable:
+        contracts_signature = _contracts_freshness_signature()
+        catalog_signature = _capabilities_catalog_signature(registered_bindings)
+        binding_engines = _capabilities_binding_engines(registered_bindings)
+        cache_key = _capabilities_cache_key(
+            page_id, jobs_snapshot.generation, master_pages_hash, registry_hash,
+            contracts_signature, registered_bindings, binding_engines,
+            catalog_signature,
+        )
+        cached_entries = _capabilities_cache_lookup(cache_key)
+        if cached_entries is not None:
+            return {"schema": RESPONSE_SCHEMA, "capabilities": list(cached_entries)}
 
     # capabilities() for one page only ever needs that page's own jobs, plus
     # (for the two async source-recipe kinds below) the jobs of the specific
@@ -538,7 +680,8 @@ def capabilities(
         if len(entries) >= MAX_CAPABILITIES:
             break
 
-    _capabilities_cache_store(cache_key, entries)
+    if cacheable:
+        _capabilities_cache_store(cache_key, entries)
     return {"schema": RESPONSE_SCHEMA, "capabilities": entries}
 
 
