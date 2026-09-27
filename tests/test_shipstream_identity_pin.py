@@ -24,6 +24,11 @@ and what this test does pin — is the per-selection ``selectionCatalogVersion``
 every other origin-derived identity. The whole-catalog value is still
 asserted to be a well-formed sha256 digest so a formula change that corrupts
 it would still be caught.
+
+``shipstream_origin()`` also lowercases the configured host before it enters
+any identity. A separate test pins that a mixed-case SHIPSTREAM_VAULT_ORIGIN
+pointed at the same host as ORIGIN still derives byte-identical identities to
+the lowercase pin — this normalisation had no coverage before.
 """
 
 from __future__ import annotations
@@ -40,6 +45,7 @@ from tests.master_pages_fixtures import master_pages
 
 
 ORIGIN = "https://vault.identity.test"
+MIXED_CASE_ORIGIN = "https://Vault.Identity.TEST"
 PAGE_ID = "acct:operator:love-night"
 HANDLE = "lovenightwalks"
 NOTION_PAGE_ID = "3c61465b-b829-8095-86ec-f979f90ee48a"
@@ -211,3 +217,22 @@ def test_origin_enters_urls_only_through_the_pre_pr_formula(monkeypatch):
         f"{ORIGIN}/assets/{quote(f'vault/{HANDLE}/pool/{n:064x}.mp4', safe='')}"
         for n in (1, 2)
     ]
+
+
+def test_mixed_case_origin_normalises_to_the_pinned_identities(monkeypatch):
+    """shipstream_origin() lowercases the configured host before it enters any
+    identity. A mixed-case SHIPSTREAM_VAULT_ORIGIN pointed at the same host as
+    ORIGIN must therefore derive byte-identical identities to the lowercase
+    pin — libraryId, librarySha256, sourceUrls, manifestUrl and the
+    per-selection selectionCatalogVersion. This was a pre-existing gap: the
+    pin above never exercised case normalisation, so a regression there would
+    have gone unnoticed under both the old and new pin.
+    """
+    monkeypatch.setenv("SHIPSTREAM_VAULT_ORIGIN", MIXED_CASE_ORIGIN)
+    identities = compute_identities()
+    assert identities["manifestUrl"] == PINNED["manifestUrl"]
+    for name in ("historical", "master"):
+        assert identities[name]["libraryId"] == PINNED[name]["libraryId"]
+        assert identities[name]["librarySha256"] == PINNED[name]["librarySha256"]
+        assert identities[name]["sourceUrls"] == PINNED[name]["sourceUrls"]
+        assert identities[name]["selectionCatalogVersion"] == PINNED[name]["selectionCatalogVersion"]

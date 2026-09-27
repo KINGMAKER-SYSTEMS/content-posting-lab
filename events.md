@@ -1049,3 +1049,20 @@ Mutation-proofed: still goes red on a change to the sourceUrl formula or
 library-id derivation in services/shipstream_source_manifest.py; stays green
 when an unrelated format's contract entry changes. Test-only change, no
 production code touched, no deploy.
+
+_________________________________________________________________________________
+time: [05:24 EDT] [26-09-27]
+agent: [Claude Code] [claude-sonnet-5]
+worktree: [test/shipstream-pin-scope] [/Users/ecfromthedc/dev/wt/lab-shipstream-pin-scope]
+type: [test]: pin ShipStream vault-origin case normalisation
+area: [testing]
+
+Follow-up to the catalogVersion-scope fix above, same PR (#186), flagged by
+review: shipstream_origin() in services/shipstream_source_manifest.py
+lowercases the configured host before it enters any identity, but nothing
+pinned that. A new test sets SHIPSTREAM_VAULT_ORIGIN to a mixed-case variant
+of the synthetic ORIGIN and asserts libraryId, librarySha256, sourceUrls,
+manifestUrl and selectionCatalogVersion come out byte-identical to the
+lowercase pin. Mutation-proofed: removing the `.lower()` call turns the new
+test red (the mixed-case host leaks into the identities); restoring it goes
+green. Test-only change, no production code touched, no deploy.
