@@ -99,6 +99,51 @@ def test_corrupt_file_fails_closed_never_poisons_cache_never_serves_stale(job_pa
     assert set(cp._read_jobs_snapshot()["jobs"]) == {"two"}
 
 
+def test_non_decode_exception_never_strands_pending_ticket(job_path, monkeypatch):
+    """Regression (Tides review of PR #185): the single-flight leader used to
+    catch only `_JobsDecodeFailed`. Any other exception out of
+    `_decode_jobs_snapshot`/`_publish_jobs_snapshot` (a `MemoryError` on a
+    huge store, a bug, ...) skipped both the `_jobs_decode_pending.pop` and
+    `pending.event.set()`, so every later reader of that signature blocked
+    forever on `event.wait()` with no timeout — pinning threadpool threads
+    until restart. Base released its lock via `with` on any exception; this
+    must too. Every caller (leader included) must come back with
+    `_JobsDecodeFailed` (503-mapped), never hang, regardless of interleaving."""
+    atomic_save(job_path, {"jobs": {"one": {"status": "queued"}}, "version": 1})
+    cp._jobs_snapshot = None
+    cp._jobs_decode_pending.clear()
+
+    def boom(generation):
+        raise MemoryError("simulated: store too large to decode")
+
+    monkeypatch.setattr(cp, "_decode_jobs_snapshot", boom)
+
+    outcomes: dict[int, BaseException | None] = {}
+
+    def call(index: int) -> None:
+        try:
+            cp._read_jobs_snapshot()
+        except BaseException as error:  # capturing for assertion, not swallowing
+            outcomes[index] = error
+        else:
+            outcomes[index] = None
+
+    threads = [Thread(target=call, args=(i,), daemon=True) for i in range(5)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+
+    assert all(not thread.is_alive() for thread in threads), (
+        "a reader hung — the pending decode ticket was leaked"
+    )
+    assert len(outcomes) == 5
+    assert all(isinstance(error, cp._JobsDecodeFailed) for error in outcomes.values()), outcomes
+    # The ticket must be cleared, not stuck, so the next signature change
+    # gets a fresh leader instead of joining a permanently-broken wait.
+    assert cp._jobs_decode_pending == {}
+
+
 def test_capabilities_returns_503_on_decode_failure(job_path, monkeypatch):
     monkeypatch.setattr(cp, "_current_intent_for_capabilities", lambda _: ({}, "hash"))
     job_path.write_text("{")
@@ -111,7 +156,19 @@ def test_slow_external_decode_cannot_clobber_a_newer_write_cas(job_path, monkeyp
     """T2: compare-and-swap on generation. A decode that started against an
     OLDER file version must never overwrite a NEWER snapshot published (here,
     by an in-process write) while that decode was still working — no matter
-    how long the decode takes to finish."""
+    how long the decode finishes.
+
+    Staging note (fixed after a Tides review of PR #185 caught this): the
+    stall MUST happen AFTER `json.load` has actually read the stale bytes
+    off disk, not before `_decode_jobs_snapshot` even opens the file. A
+    stall staged too early means the "slow" decode's `json.load` call runs
+    only once the file has already been overwritten by the fresh write, so
+    it silently reads the FRESH bytes and never holds anything stale at
+    all — every assertion about discarding a stale result then passes
+    vacuously, whatever the CAS logic does. Proof: with the stall staged
+    before the read (the original, buggy staging), a mutant that makes the
+    leader return its own decoded snapshot instead of the CAS-published one
+    (i.e. skips the compare-and-swap entirely) still passes this test."""
     cp._read_jobs_snapshot()
     baseline_generation = cp._jobs_snapshot.generation
 
@@ -119,23 +176,33 @@ def test_slow_external_decode_cannot_clobber_a_newer_write_cas(job_path, monkeyp
     # version whose decode is about to be slowed down.
     atomic_save(job_path, {"jobs": {"one": {"status": "external-slow"}}})
 
-    real_decode = cp._decode_jobs_snapshot
+    real_json_load = cp.json.load
     entered = Event()
     release = Event()
 
-    def slow_decode(generation):
+    def slow_json_load(handle):
+        # Read the stale "external-slow" bytes for real, THEN stall — so
+        # the decode genuinely holds stale data when it is released, not
+        # whatever happens to be on disk by the time it wakes up.
+        data = real_json_load(handle)
         entered.set()
         release.wait(timeout=5)
-        return real_decode(generation)
+        return data
 
-    monkeypatch.setattr(cp, "_decode_jobs_snapshot", slow_decode)
+    # Patch the `json` name as seen from inside control_plane.py, not the
+    # shared `json` module globally — `_decode_jobs_snapshot` calls
+    # `json.load` via that module-local binding.
+    stalling_json = type(cp.json)("stalling_json_stub")
+    stalling_json.__dict__.update(cp.json.__dict__)
+    stalling_json.load = slow_json_load
+    monkeypatch.setattr(cp, "json", stalling_json)
 
     result: dict = {}
 
     def read_in_background():
         result["snapshot"] = cp._read_jobs_snapshot()
 
-    reader = Thread(target=read_in_background)
+    reader = Thread(target=read_in_background, daemon=True)
     reader.start()
     try:
         assert entered.wait(timeout=5), "background decode never started"
