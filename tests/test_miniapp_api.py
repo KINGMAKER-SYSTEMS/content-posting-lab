@@ -23,6 +23,10 @@ from services.miniapp_auth import (
 FAKE_TOKEN = "123456:FAKE-bot-token-for-tests"
 
 
+AGENT_KEY = "dummy-agent-key-not-a-secret"
+AGENT = {"X-Agent-Key": AGENT_KEY}
+
+
 @pytest.fixture(autouse=True)
 def isolate_service_files(monkeypatch, tmp_path):
     """Point the telegram/roster/requests data files at a tmp dir."""
@@ -32,7 +36,9 @@ def isolate_service_files(monkeypatch, tmp_path):
         content_requests, "REQUESTS_PATH", tmp_path / "content_requests.json"
     )
     monkeypatch.setenv("MINIAPP_DEV_AUTH", "1")
-    monkeypatch.delenv("MINIAPP_AGENT_KEY", raising=False)
+    # The agent routes fail closed without MINIAPP_AGENT_KEY (503), so the suite
+    # configures a dummy one and the agent calls below send it.
+    monkeypatch.setenv("MINIAPP_AGENT_KEY", AGENT_KEY)
     monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
     yield
 
@@ -158,12 +164,13 @@ def test_content_request_lifecycle(sync_client):
     assert any(r["id"] == rid for r in listed.json()["requests"])
 
     # Agent picks it up and fulfills it.
-    agent_list = sync_client.get("/api/miniapp/agent/requests?status=open")
+    agent_list = sync_client.get("/api/miniapp/agent/requests?status=open", headers=AGENT)
     assert agent_list.status_code == 200
     assert any(r["id"] == rid for r in agent_list.json()["requests"])
 
     patched = sync_client.patch(
         f"/api/miniapp/agent/requests/{rid}",
+        headers=AGENT,
         json={"status": "fulfilled", "agent_note": "rendered + sent"},
     )
     assert patched.status_code == 200
@@ -399,6 +406,7 @@ def test_agent_patch_key_enforced(sync_client, monkeypatch):
 def test_agent_patch_unknown_request_404(sync_client):
     resp = sync_client.patch(
         "/api/miniapp/agent/requests/does-not-exist",
+        headers=AGENT,
         json={"status": "fulfilled"},
     )
     assert resp.status_code == 404
@@ -413,7 +421,7 @@ def test_agent_patch_invalid_status_400(sync_client):
     )
     rid = created.json()["id"]
     resp = sync_client.patch(
-        f"/api/miniapp/agent/requests/{rid}", json={"status": "bogus-status"}
+        f"/api/miniapp/agent/requests/{rid}", headers=AGENT, json={"status": "bogus-status"}
     )
     assert resp.status_code == 400
 
@@ -430,7 +438,7 @@ def test_requests_status_filter(sync_client):
     sync_client.post("/api/miniapp/requests", headers=hdr, json={"text": "second"})
     # Move one request to in_progress.
     sync_client.patch(
-        f"/api/miniapp/agent/requests/{a['id']}", json={"status": "in_progress"}
+        f"/api/miniapp/agent/requests/{a['id']}", headers=AGENT, json={"status": "in_progress"}
     )
 
     open_only = sync_client.get(
@@ -475,19 +483,19 @@ def test_agent_list_status_empty_returns_all(sync_client):
         "/api/miniapp/requests", headers=hdr, json={"text": "one"}
     ).json()
     sync_client.patch(
-        f"/api/miniapp/agent/requests/{a['id']}", json={"status": "fulfilled"}
+        f"/api/miniapp/agent/requests/{a['id']}", headers=AGENT, json={"status": "fulfilled"}
     )
     sync_client.post("/api/miniapp/requests", headers=hdr, json={"text": "two"})
 
     all_reqs = sync_client.get(
-        "/api/miniapp/agent/requests?status="
+        "/api/miniapp/agent/requests?status=", headers=AGENT
     ).json()["requests"]
     statuses = {r["status"] for r in all_reqs}
     assert {"fulfilled", "open"} <= statuses
 
     # Default (no status param) lists only open.
     open_default = sync_client.get(
-        "/api/miniapp/agent/requests"
+        "/api/miniapp/agent/requests", headers=AGENT
     ).json()["requests"]
     assert all(r["status"] == "open" for r in open_default)
 
@@ -506,7 +514,7 @@ def test_agent_list_poster_filter(sync_client):
         json={"text": "theirs"},
     )
     only_test = sync_client.get(
-        "/api/miniapp/agent/requests?status=&poster_id=test-poster"
+        "/api/miniapp/agent/requests?status=&poster_id=test-poster", headers=AGENT
     ).json()["requests"]
     assert {r["poster_id"] for r in only_test} == {"test-poster"}
 
@@ -612,3 +620,13 @@ def test_resolve_concurrent_dev_bypass_consistent():
     with concurrent.futures.ThreadPoolExecutor(max_workers=8) as ex:
         results = list(ex.map(lambda _: call(), range(40)))
     assert set(results) == {"Race"}
+
+
+def test_agent_routes_fail_closed_when_key_unset(sync_client, monkeypatch):
+    """ds_labsec F4 / lead decision 6: no MINIAPP_AGENT_KEY means 503, never open."""
+    monkeypatch.delenv("MINIAPP_AGENT_KEY", raising=False)
+    for headers in ({}, {"X-Agent-Key": "anything"}):
+        assert sync_client.get("/api/miniapp/agent/requests", headers=headers).status_code == 503
+        assert sync_client.patch(
+            "/api/miniapp/agent/requests/any", headers=headers, json={"status": "fulfilled"}
+        ).status_code == 503

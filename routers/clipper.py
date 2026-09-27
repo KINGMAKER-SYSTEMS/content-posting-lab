@@ -20,6 +20,7 @@ from project_manager import PROJECTS_DIR, sanitize_project_name
 import services.r2 as r2
 from services.fsutil import safe_rmtree, safe_unlink
 from services.json_store import atomic_load, atomic_save
+from services.route_auth import side_effect_get
 
 log = logging.getLogger("clipper")
 
@@ -1551,6 +1552,7 @@ async def delete_clipper_job(job_id: str, project: str = Query(default="quick-te
 
 
 @router.get("/jobs/{job_id}/download-all")
+@side_effect_get  # backfills missing clips to R2: CSRF-checked like a write
 async def download_all_clips(job_id: str, project: str = Query(default="quick-test")):
     """Return presigned R2 URLs for every clip so the browser can download
     directly from R2 (bypasses the Railway edge proxy and its 5-minute ceiling).

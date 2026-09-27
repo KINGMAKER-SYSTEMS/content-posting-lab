@@ -98,17 +98,19 @@
   or APP_API_KEY) required on roster routes no unauthenticated UI calls.
 - `routers/email_routing.py` routes that can change where a page's mail goes
   (POST /destinations, DELETE /rules/{id}, POST /auto-create) require
-  `require_control_plane_auth` (CONTROL_PLANE_TOKEN only, never the
-  browser-bundled APP_API_KEY; fails closed when unset), normalise the
+  `route_auth.require_access_or_control_plane_token` (CONTROL_PLANE_TOKEN as
+  Bearer or X-API-Key, or a verified Cloudflare Access JWT for the operator
+  UI; never the browser-bundled APP_API_KEY; fails closed when unset), normalise the
   destination once and send that value to Cloudflare, honour the optional EMAIL_DESTINATION_DOMAINS allowlist, and
   auto-create never re-points an alias a roster page records without
-  `replace: true`. Pipeline mint-alias calls the CF service directly and is
-  not gated by these routes.
+  `replace: true`. Pipeline mint-alias calls the CF service directly; it is
+  operator-only (Access), not gated by these routes.
   GET /destinations (the team's real inbox addresses) requires the same
   credential; only GET /status stays anonymous.
 - `services/slack.py` pipeline handoffs never carry the login email, password
   or free-text notes; those fields point at Notion.
-- `routers/pipeline.py` /intake refuses (generic 409) an anonymous intake for
+- `routers/pipeline.py` /mint-alias and /intake are operator-only (Access JWT).
+  /intake refuses (generic 409) an intake without CONTROL_PLANE_TOKEN for
   a handle that already has a roster page (either `acct:` id form) or with a
   `notion_page_id` of a roster page that is not an unfinished step-1
   placeholder (placeholder completion must carry its own alias);
@@ -116,6 +118,19 @@
   (`services.notion_pages.canonical_notion_page_id`, 32 lowercase hex; else
   400) and that value is used for the check and every Notion call;
   `_patch_page` refuses non-canonical ids before any request. Alias-collision 409s never echo the alias.
+- `services/route_auth.py` owns per-route caller auth that fails closed on its
+  own, independent of APP_API_KEY: Worker (CONTROL_PLANE_TOKEN bearer), Hub
+  (X-API-Key = LAB_HUB_API_KEY) and operators via a verified Cloudflare Access
+  JWT (LAB_ACCESS_TEAM_DOMAIN + LAB_ACCESS_AUD). 503 when unconfigured, 401 on
+  a missing or wrong credential. Every served route is classified in
+  `tests/test_route_auth_guard.py` (reviewed copy: `docs/route-auth-table.md`);
+  an unclassified route fails CI. An Access-authenticated write or websocket
+  also needs `Sec-Fetch-Site: same-origin` or an Origin in LAB_ALLOWED_ORIGINS
+  (403 otherwise: CSRF via the login cookie); a GET that changes state is
+  marked `@side_effect_get` and checked the same way. `RouteAuthMiddleware`
+  enforces the route's dependency, and header-only checks marked
+  `before_body` (Mini App agent key, initData), before the body is read. `/api/miniapp/agent/*`
+  fails closed (503) without MINIAPP_AGENT_KEY.
 - `burn_server.py` exposes the same typed caption-render route on the posting
   Mac's canonical port-8002 Burn runtime for Rail consumption.
 - `events.md` is the repository's append-only chronological ledger.

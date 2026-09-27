@@ -17,14 +17,17 @@ let the external content agent read/work the request queue:
   PATCH /api/miniapp/agent/requests/{request_id}
 """
 
+import hmac
 import os
 
-from fastapi import APIRouter, Header, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
+from starlette.requests import HTTPConnection
 from pydantic import BaseModel
 
 from services import content_requests
 from services.miniapp_auth import AuthError, resolve_poster_from_request
 from services.poster_content import poster_summary, videos_for_poster
+from services.route_auth import before_body
 
 router = APIRouter()
 
@@ -32,6 +35,7 @@ router = APIRouter()
 # ── Auth helper ──────────────────────────────────────────────────────
 
 
+@before_body
 def _require_poster(request: Request) -> dict:
     """Resolve the authenticated poster or raise an HTTP error.
 
@@ -53,12 +57,19 @@ def _require_poster(request: Request) -> dict:
 
 
 def _require_agent_key(x_agent_key: str | None) -> None:
-    """Gate agent endpoints behind MINIAPP_AGENT_KEY when it is configured."""
+    """Gate agent endpoints behind MINIAPP_AGENT_KEY; fail closed (503) when unset."""
     expected = os.getenv("MINIAPP_AGENT_KEY", "").strip()
     if not expected:
-        return  # not configured → open, consistent with the rest of the app
-    if not x_agent_key or x_agent_key.strip() != expected:
+        raise HTTPException(status_code=503, detail="agent endpoints disabled (set MINIAPP_AGENT_KEY)")
+    supplied = (x_agent_key or "").strip()
+    if not supplied or not hmac.compare_digest(supplied.encode("utf-8"), expected.encode("utf-8")):
         raise HTTPException(status_code=401, detail="invalid or missing agent key")
+
+
+@before_body
+def _agent_key_gate(conn: HTTPConnection) -> None:
+    """Header-only agent-key check, run by RouteAuthMiddleware before the body."""
+    _require_agent_key(conn.headers.get("x-agent-key"))
 
 
 # ── Request bodies ───────────────────────────────────────────────────
@@ -105,9 +116,12 @@ async def my_requests(request: Request, status: str | None = Query(default=None)
 
 
 @router.post("/requests", status_code=201)
-async def create_request(request: Request, body: ContentRequestBody):
-    """File a content request for the calling poster."""
-    poster = _require_poster(request)
+async def create_request(body: ContentRequestBody, poster: dict = Depends(_require_poster)):
+    """File a content request for the calling poster.
+
+    initData is checked as a dependency, so an anonymous caller is refused
+    before the body is validated (401, never 422).
+    """
     if not (body.text or "").strip():
         raise HTTPException(status_code=400, detail="text is required")
 
@@ -133,7 +147,7 @@ async def create_request(request: Request, body: ContentRequestBody):
 # ── Agent-facing endpoints ───────────────────────────────────────────
 
 
-@router.get("/agent/requests")
+@router.get("/agent/requests", dependencies=[Depends(_agent_key_gate)])
 async def agent_list_requests(
     status: str | None = Query(default="open"),
     poster_id: str | None = Query(default=None),
@@ -150,7 +164,7 @@ async def agent_list_requests(
     }
 
 
-@router.patch("/agent/requests/{request_id}")
+@router.patch("/agent/requests/{request_id}", dependencies=[Depends(_agent_key_gate)])
 async def agent_update_request(
     request_id: str,
     body: AgentUpdateBody,

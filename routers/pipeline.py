@@ -21,7 +21,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 import httpx
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel
 
 from services import r2
@@ -46,6 +46,7 @@ from services.notion_pages import (
 )
 from services.poster_router import resolve_poster_for_page
 from services.roster_public import has_control_plane_credential
+from services.route_auth import require_access
 from services.roster import get_page, list_all_pages, set_page
 from services.roster_public import (
     CredentialGuardRoute,
@@ -293,7 +294,7 @@ class MintAliasResponse(BaseModel):
     notion_page_id: str | None = None
 
 
-@router.post("/mint-alias")
+@router.post("/mint-alias", dependencies=[Depends(require_access)])
 @allow_credential_keys("alias")  # the alias this request just minted, for the TikTok signup
 async def mint_random_alias_endpoint(req: MintAliasRequest | None = None) -> MintAliasResponse:
     """Step 1 of intake: mint a CF email alias AND create a placeholder Notion row.
@@ -410,7 +411,7 @@ def _refuse_anonymous_intake_tamper(req: "IntakeRequest", notion_page_id: str) -
         raise HTTPException(status_code=409, detail=_INTAKE_CONFLICT)
 
 
-@router.post("/intake")
+@router.post("/intake", dependencies=[Depends(require_access)])
 @allow_credential_keys("email_alias", "fwd_destination")  # echo of this request's own alias
 async def submit_intake(
     req: IntakeRequest,
@@ -549,7 +550,7 @@ async def submit_intake(
     }
 
 
-@router.get("/stages")
+@router.get("/stages", dependencies=[Depends(require_access)])
 async def get_stages():
     """Return all pages grouped by Notion `status`. Order matches PIPELINE_STAGES."""
     pages = list_all_pages()
@@ -586,7 +587,7 @@ class SetupRequest(BaseModel):
     poster_id: str | None = None
 
 
-@router.post("/{integration_id}/setup")
+@router.post("/{integration_id}/setup", dependencies=[Depends(require_access)])
 async def run_setup(integration_id: str, req: SetupRequest | None = None):
     """Setup chain for a `New — Pending Setup` page.
 
@@ -867,7 +868,7 @@ class TransitionRequest(BaseModel):
     status: str
 
 
-@router.post("/{integration_id}/transition")
+@router.post("/{integration_id}/transition", dependencies=[Depends(require_access)])
 async def transition_status(integration_id: str, req: TransitionRequest):
     """Manually flip a page's status. Writes to roster and Notion."""
     if req.status not in PIPELINE_STAGES:
@@ -895,7 +896,7 @@ async def transition_status(integration_id: str, req: TransitionRequest):
 # ── King Maker workspace ─────────────────────────────────────────────────────
 
 
-@router.get("/{integration_id}/workspace")
+@router.get("/{integration_id}/workspace", dependencies=[Depends(require_access)])
 async def get_workspace(integration_id: str):
     """Full workspace state for a King Maker page.
 
@@ -966,7 +967,7 @@ class PresignUploadRequest(BaseModel):
     content_type: str = "video/mp4"
 
 
-@router.post("/{integration_id}/upload-presign")
+@router.post("/{integration_id}/upload-presign", dependencies=[Depends(require_access)])
 async def presign_upload(integration_id: str, req: PresignUploadRequest):
     """Generate a presigned PUT URL so the browser can upload a video
     directly to R2 (bypassing the Railway edge proxy and its size limit).
@@ -997,7 +998,7 @@ class ForwardToTopicRequest(BaseModel):
     caption: str | None = None
 
 
-@router.post("/{integration_id}/forward-to-topic")
+@router.post("/{integration_id}/forward-to-topic", dependencies=[Depends(require_access)])
 async def forward_r2_to_topic(integration_id: str, req: ForwardToTopicRequest):
     """Forward an R2 object to the page's Telegram topic.
 

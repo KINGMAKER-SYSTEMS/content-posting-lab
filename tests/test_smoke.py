@@ -14,8 +14,9 @@ async def test_app_startup(sync_client):
 
 
 @pytest.mark.asyncio
-async def test_api_docs(sync_client):
-    """Test that OpenAPI docs are available."""
-    response = sync_client.get("/docs")
-    assert response.status_code == 200
-    assert "swagger" in response.text.lower()
+async def test_api_docs_not_served(sync_client):
+    """The Swagger/OpenAPI routes are off: they are not on the keyless allowlist."""
+    for path in ("/docs", "/redoc", "/openapi.json"):
+        response = sync_client.get(path)
+        assert "swagger" not in response.text.lower(), path
+        assert '"openapi"' not in response.text, path

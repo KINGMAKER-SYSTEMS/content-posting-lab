@@ -6,11 +6,12 @@ import logging
 import threading
 from pathlib import Path
 
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
 from fastapi.responses import FileResponse
 
 from routers.control_plane_recipes import require_control_plane_bearer
 from services.post_render_jobs import PostRenderJobs, RenderJobError, RenderJobSubmission
+from services.route_auth import require_worker
 
 router = APIRouter()
 _service = None
@@ -55,7 +56,7 @@ def _http_error(error: RenderJobError):
     raise HTTPException(status, error.code) from error
 
 
-@router.post("/v1/post-renders", status_code=202)
+@router.post("/v1/post-renders", status_code=202, dependencies=[Depends(require_worker)])
 def submit(body: RenderJobSubmission, authorization: str | None = Header(default=None),
            idempotency_key: str = Header(default=""), x_rt_page_id: str | None = Header(default=None)):
     _authorize(authorization, x_rt_page_id, expected=body.request.page_id)
@@ -85,7 +86,7 @@ def retry(job_id: str, authorization: str | None = Header(default=None), x_rt_pa
         _http_error(error)
 
 
-@router.post("/v1/post-renders/{job_id}/provenance", status_code=202)
+@router.post("/v1/post-renders/{job_id}/provenance", status_code=202, dependencies=[Depends(require_worker)])
 def provenance(job_id: str, body: RenderJobSubmission, authorization: str | None = Header(default=None),
                x_rt_page_id: str | None = Header(default=None)):
     _authorize(authorization, x_rt_page_id, expected=body.request.page_id)
