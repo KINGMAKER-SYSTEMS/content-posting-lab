@@ -358,19 +358,6 @@ app.mount(
 )
 
 
-@app.get("/workspace", include_in_schema=False)
-async def serve_workspace():
-    wp = Path(__file__).resolve().parent / "yt-pipeline" / "workspace.html"
-    if wp.exists():
-        return FileResponse(wp, media_type="text/html")
-    return FileResponse(Path(__file__).resolve().parent / "yt-pipeline" / "dashboard.html", media_type="text/html")
-
-
-@app.get("/factory", include_in_schema=False)
-async def serve_factory():
-    return FileResponse(Path(__file__).resolve().parent / "yt-pipeline" / "factory.html", media_type="text/html")
-
-
 # ABN Editor Bay — STANDALONE review cockpit for YouTube episodes (no content-lab SPA; single HTML
 # file like /factory). /abn-editor lists nothing; /abn-editor/<ep_id> opens the bay for that episode.
 @app.get("/abn-editor", include_in_schema=False)
