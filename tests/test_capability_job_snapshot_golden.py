@@ -296,18 +296,22 @@ def test_dropping_truck_reservations_over_admits_is_caught(tmp_path, monkeypatch
         "version": 1, "byIdempotency": {}, "served": {},
     }
     by_page, by_source_kind = cp._build_jobs_indices(store)
+    jobs_snapshot = cp._JobsSnapshot((0, 0, 0, 0), 1, store, by_page, by_source_kind)
+    page_jobs_view = {"jobs": by_page.get(page_id, {})}
 
-    # The SHIPPED view (routers/control_plane.py :401-406, after the C3 fix):
-    # this page's own jobs, unioned with every truck_master_recovery job.
-    shipped_view = {
-        "jobs": {
-            **by_page.get(page_id, {}),
-            **by_source_kind.get("truck_master_recovery", {}),
-        },
-    }
+    # The SHIPPED view: calls capabilities()'s own production function
+    # (_generation_related_jobs_view), not a copy that looks equivalent —
+    # a Tides review of PR #185 (round 2, defect 2) caught that a mutant
+    # dropping truck_master_recovery from the REAL union at
+    # routers/control_plane.py survived every test here because none of
+    # them called the real function, only a hand-built dict that happened
+    # to match it at the time. Calling the real function means editing
+    # that line breaks this test directly.
+    shipped_view = cp._generation_related_jobs_view(jobs_snapshot, page_jobs_view, page_id)
     # The REGRESSION the review's mutant B reproduced: truck_master_recovery
     # dropped from the union, so a completed recovery no longer reserves
-    # anything.
+    # anything. This one IS a hand-built dict, deliberately — it exists to
+    # simulate the mutant, not to stand in for the shipped code.
     mutant_view = {"jobs": {**by_page.get(page_id, {})}}
 
     shipped_candidates = cp._truck_master_candidates(
