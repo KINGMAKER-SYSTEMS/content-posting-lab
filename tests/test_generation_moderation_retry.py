@@ -565,6 +565,20 @@ PEOPLE_FAMILIES = {
     ("silhouette_stills.v1.json", "silhouette"),
     ("prompt_modules.v1.json", "silhouette"),
 }
+# Classified from each family's composed prompt text, not its name.
+# boat_minimax.v1.json "boat" (#183): the template is "{scene}" alone, and all
+# six scenes are camera-POV speedboat shots of a harbor skyline ("POV TikTok-style
+# video from onboard a fast speedboat at dusk ... reveal of the ... skyline")
+# with no person in frame and no person term; fixed_subject/quality_guards
+# never reach the prompt.
+PEOPLE_FREE_FAMILIES = {
+    ("prompt_modules.v1.json", "truck"),
+    ("prompt_modules.v1.json", "scenic"),
+    ("prompt_modules.v1.json", "ugc"),
+    ("prompt_modules.v1.json", "boat"),
+    ("prompt_modules.v1.json", "coffee"),
+    ("boat_minimax.v1.json", "boat"),
+}
 PERSON_WORDING = ("clothed", "every person", "Everyone", "adult with no body detail")
 
 
@@ -587,7 +601,8 @@ def catalog_prompts(file_name, family_name):
 
 def test_the_people_family_list_covers_the_whole_catalog():
     families = catalog_families()
-    assert len(families) == 7 and PEOPLE_FAMILIES <= set(families), \
+    assert not PEOPLE_FAMILIES & PEOPLE_FREE_FAMILIES
+    assert set(families) == PEOPLE_FAMILIES | PEOPLE_FREE_FAMILIES and len(families) == 8, \
         "a new catalog family must be classified here as people or people-free"
 
 
