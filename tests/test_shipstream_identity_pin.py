@@ -3,21 +3,39 @@ pre-PR hardcoded origin did.
 
 Before #180 the ShipStream origin was a module constant. It is now read from
 SHIPSTREAM_VAULT_ORIGIN. The origin feeds provenance ``sourceUrl`` values,
-so it also feeds source-library ids and hashes, approved-cut ids, the Dossier
-``catalogVersion`` and the manifest URL. If production is configured with the
-old origin, every one of those must come out byte-identical.
+so it also feeds source-library ids and hashes, approved-cut ids, and the
+manifest URL. If production is configured with the old origin, every one of
+those must come out byte-identical.
 
 PINNED was computed by running the pre-PR code (commit 8137cb8) with its
 origin constant and host pin pointed at the synthetic ORIGIN below, so the
 real production origin never appears here. Its formula is
 ``f"{origin}/assets/{quote(storage_key, safe='')}"``. Any change to how the
 origin enters an identity turns this test red.
+
+The whole-catalog ``catalogVersion`` (``catalog["catalogVersion"]`` from
+``build_dossier_ingredient_catalog``) is deliberately NOT pinned here: it
+digests every format's contract entry, so it legitimately changes whenever
+ANY format contract changes, even one unrelated to ShipStream sourcing or to
+this fixture's format. Pinning its value would make this identity test red
+on unrelated format work. What production actually binds off a selection —
+and what this test does pin — is the per-selection ``selectionCatalogVersion``
+(the value published policies store as ``production.catalog_version``), plus
+every other origin-derived identity. The whole-catalog value is still
+asserted to be a well-formed sha256 digest so a formula change that corrupts
+it would still be caught.
+
+``shipstream_origin()`` also lowercases the configured host before it enters
+any identity. A separate test pins that a mixed-case SHIPSTREAM_VAULT_ORIGIN
+pointed at the same host as ORIGIN still derives byte-identical identities to
+the lowercase pin — this normalisation had no coverage before.
 """
 
 from __future__ import annotations
 
 import copy
 import json
+import re
 from urllib.parse import quote
 
 import services.dossier_ingredients as ingredients
@@ -27,6 +45,7 @@ from tests.master_pages_fixtures import master_pages
 
 
 ORIGIN = "https://vault.identity.test"
+MIXED_CASE_ORIGIN = "https://Vault.Identity.TEST"
 PAGE_ID = "acct:operator:love-night"
 HANDLE = "lovenightwalks"
 NOTION_PAGE_ID = "3c61465b-b829-8095-86ec-f979f90ee48a"
@@ -149,11 +168,12 @@ def compute_identities() -> dict:
     return out
 
 
-# Computed by the pre-PR code (8137cb8); see the module docstring.
+# Computed by the pre-PR code (8137cb8); see the module docstring. The
+# whole-catalog `catalogVersion` is intentionally absent from this pin — see
+# the module docstring — and is checked separately for shape only.
 PINNED = {'fetchedUrls': ['https://vault.identity.test/assets/vault%2Flovenightwalks%2Fsource-manifest.json'],
  'historical': {'approvedCuts': ['shipstream-lovenightwalks-424b1424c96c3bd3-cuts',
                                  '68bb7a0aefb39340e8ecfa6eae7c7ca063599b96598a3e8300b64067b38e5c9e'],
-                'catalogVersion': 'sha256:a39e39d6255e4a6c2acbd1cc16fb4745f465957bb48b3c036cc8d44abed7bdcb',
                 'libraryId': 'shipstream-lovenightwalks-424b1424c96c3bd3',
                 'librarySha256': '6de6e331fc409c4af05de284f9fdebe79a42c33be2e087879de4037a4d43c121',
                 'selectedCatalogVersion': 'sha256:166cc1648410c5f4b2cf20103dc55e52bd8013fea7d944a76dd6bb932933ca48',
@@ -163,17 +183,25 @@ PINNED = {'fetchedUrls': ['https://vault.identity.test/assets/vault%2Flovenightw
  'manifestUrl': 'https://vault.identity.test/assets/vault%2Flovenightwalks%2Fsource-manifest.json',
  'master': {'approvedCuts': ['shipstream-lovenightwalks-9fb1c5a785851769-cuts',
                              '1db4533ce3f2b6794a894e203e8f5d2e3168df568ba54a6d0f87c15280ec8eb0'],
-            'catalogVersion': 'sha256:a1218cfec0082b1531567dabc0e731847b540b9bb1434dfbe256e419eed27558',
             'libraryId': 'shipstream-lovenightwalks-9fb1c5a785851769',
             'librarySha256': '9cb2290055bb563668154448122a3d22ab82b607dd9b9880682f5ec1dcb6a44a',
             'selectedCatalogVersion': 'sha256:b38d8d9c3da191376aae26102b8246640033776ae2433e9cb5088b2487c9310a',
             'selectionCatalogVersion': 'sha256:b38d8d9c3da191376aae26102b8246640033776ae2433e9cb5088b2487c9310a',
             'sourceUrls': ['https://vault.identity.test/assets/vault%2Flovenightwalks%2Fmasters%2Faaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.mp4']}}
 
+_SHA256_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
+
 
 def test_configured_origin_derives_the_pre_pr_identities(monkeypatch):
     monkeypatch.setenv("SHIPSTREAM_VAULT_ORIGIN", ORIGIN)
-    assert compute_identities() == PINNED
+    identities = compute_identities()
+    # The whole-catalog digest covers every format, not just this fixture's;
+    # pin only that it stayed a well-formed sha256, not its value (see the
+    # module docstring). Everything else below IS pinned byte-for-byte.
+    for name in ("historical", "master"):
+        catalog_version = identities[name].pop("catalogVersion")
+        assert _SHA256_DIGEST.match(catalog_version), catalog_version
+    assert identities == PINNED
 
 
 def test_origin_enters_urls_only_through_the_pre_pr_formula(monkeypatch):
@@ -189,3 +217,22 @@ def test_origin_enters_urls_only_through_the_pre_pr_formula(monkeypatch):
         f"{ORIGIN}/assets/{quote(f'vault/{HANDLE}/pool/{n:064x}.mp4', safe='')}"
         for n in (1, 2)
     ]
+
+
+def test_mixed_case_origin_normalises_to_the_pinned_identities(monkeypatch):
+    """shipstream_origin() lowercases the configured host before it enters any
+    identity. A mixed-case SHIPSTREAM_VAULT_ORIGIN pointed at the same host as
+    ORIGIN must therefore derive byte-identical identities to the lowercase
+    pin — libraryId, librarySha256, sourceUrls, manifestUrl and the
+    per-selection selectionCatalogVersion. This was a pre-existing gap: the
+    pin above never exercised case normalisation, so a regression there would
+    have gone unnoticed under both the old and new pin.
+    """
+    monkeypatch.setenv("SHIPSTREAM_VAULT_ORIGIN", MIXED_CASE_ORIGIN)
+    identities = compute_identities()
+    assert identities["manifestUrl"] == PINNED["manifestUrl"]
+    for name in ("historical", "master"):
+        assert identities[name]["libraryId"] == PINNED[name]["libraryId"]
+        assert identities[name]["librarySha256"] == PINNED[name]["librarySha256"]
+        assert identities[name]["sourceUrls"] == PINNED[name]["sourceUrls"]
+        assert identities[name]["selectionCatalogVersion"] == PINNED[name]["selectionCatalogVersion"]

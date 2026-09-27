@@ -1025,3 +1025,44 @@ worktree: [codex/restore-boat-minimax-five-crops]
 type: [bug report]
 area: [backend]
 Restored boat-lake to the operator-requested MiniMax/Hailuo five-way crop using six existing boat-bucket prompts verbatim. Removed the fixed Wan boat-anchor requirement through a boat-only catalog overlay; unrelated catalog/provider versions remain unchanged. Both active boat pages must adopt the advertised selection and existing usable Minimax inventory.
+
+_________________________________________________________________________________
+time: [05:14 EDT] [26-09-27]
+agent: [Claude Code] [claude-sonnet-5]
+worktree: [test/shipstream-pin-scope] [/Users/ecfromthedc/dev/wt/lab-shipstream-pin-scope]
+type: [test]: narrow the ShipStream identity pin off the whole-catalog digest
+area: [testing]
+
+tests/test_shipstream_identity_pin.py::test_configured_origin_derives_the_pre_pr_identities
+has been red on main since PR #183 (boat Minimax format-contract change,
+merged at 8ad9ab3): the only values that moved were `.historical.catalogVersion`
+and `.master.catalogVersion`, the digest of the ENTIRE Dossier ingredient
+catalog (`catalog["catalogVersion"]`), which legitimately changes whenever
+ANY format contract changes. The pin's actual job — guarding the ShipStream
+identity FORMULA per #180 — is unaffected: libraryId, librarySha256,
+approved-cut ids/hashes, sourceUrls, manifestUrl, and the per-selection
+`selectionCatalogVersion` (what published policies store as
+production.catalog_version) were all unchanged. The test no longer pins the
+whole-catalog `catalogVersion` value; it still asserts that value is a
+well-formed sha256 digest, and keeps pinning everything else byte-for-byte.
+Mutation-proofed: still goes red on a change to the sourceUrl formula or
+library-id derivation in services/shipstream_source_manifest.py; stays green
+when an unrelated format's contract entry changes. Test-only change, no
+production code touched, no deploy.
+
+_________________________________________________________________________________
+time: [05:24 EDT] [26-09-27]
+agent: [Claude Code] [claude-sonnet-5]
+worktree: [test/shipstream-pin-scope] [/Users/ecfromthedc/dev/wt/lab-shipstream-pin-scope]
+type: [test]: pin ShipStream vault-origin case normalisation
+area: [testing]
+
+Follow-up to the catalogVersion-scope fix above, same PR (#186), flagged by
+review: shipstream_origin() in services/shipstream_source_manifest.py
+lowercases the configured host before it enters any identity, but nothing
+pinned that. A new test sets SHIPSTREAM_VAULT_ORIGIN to a mixed-case variant
+of the synthetic ORIGIN and asserts libraryId, librarySha256, sourceUrls,
+manifestUrl and selectionCatalogVersion come out byte-identical to the
+lowercase pin. Mutation-proofed: removing the `.lower()` call turns the new
+test red (the mixed-case host leaks into the identities); restoring it goes
+green. Test-only change, no production code touched, no deploy.
