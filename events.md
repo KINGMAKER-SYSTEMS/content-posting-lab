@@ -1017,3 +1017,11 @@ tests answer manifest reads as an unreachable vault.
 Production needs CAMPAIGN_HUB_URL and SHIPSTREAM_VAULT_ORIGIN set before this
 deploys; neither was set on 2026-09-26. No deploy was performed.
 
+
+_________________________________________________________________________________
+time: [10:00pm] [09-26-26]
+agent: [Codex desktop]
+worktree: [codex/restore-boat-minimax-five-crops]
+type: [bug report]
+area: [backend]
+Restored boat-lake to the operator-requested MiniMax/Hailuo five-way crop using six existing boat-bucket prompts verbatim. Removed the fixed Wan boat-anchor requirement through a boat-only catalog overlay; unrelated catalog/provider versions remain unchanged. Both active boat pages must adopt the advertised selection and existing usable Minimax inventory.

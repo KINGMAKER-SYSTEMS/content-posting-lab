@@ -289,6 +289,16 @@ def test_recommissioned_boat_and_silhouette_are_advertised_after_operator_lift()
         "boat-lake", "boat-lake:master", "ai_video",
     ))
     assert boat is not None
+    assert boat.engine == "hailuo"
+    assert boat.provider_model == "minimax/hailuo-2.3"
+    assert boat.family["method"] == "t2v"
+    assert boat.family.get("base_anchor") is None
+    assert boat.family["extra"]["crop_mode"] == "both"
+    assert boat.clips_per_generation == 5
+    assert boat.planned_provider_calls(10) == 2
+    prompts = {compose_prompt(boat, "boat-variety", i)[0] for i in range(6)}
+    assert len(prompts) > 1
+    assert all("identical to the reference" not in prompt for prompt in prompts)
     silhouette = resolve_generation_recipe(_format_publication(
         "silhouette-truck", "silhouette-truck:master", "ai_video",
     ))
