@@ -205,9 +205,17 @@ def _wire(module, monkeypatch, *, job_path, master_pages, bindings_present):
     # on both sides rather than wiring its own deep material-profile chain.
     monkeypatch.setattr(module, "resolve_slideshow_recipe", lambda publication: None)
 
+    # Sensitive to reservations (Tides review of PR #185, round 2, defect
+    # 1): a stub that always returns [] makes fresh_capacity 0 regardless
+    # of what _generated_unavailable_prompts computed, which made a mutant
+    # dropping every generated reservation pass all 200 states. Its length
+    # must depend on `hashes`/`slots`, the same way plan_source_cuts'
+    # stub below already does.
     monkeypatch.setattr(
         module, "plan_prompt_combinations",
-        lambda recipe, run_id, count, hashes, slots=None: [],
+        lambda recipe, run_id, count, hashes, slots=None: list(
+            range(max(0, count - len(hashes) - len(slots or ())))
+        ),
     )
     monkeypatch.setattr(
         module, "plan_source_cuts",
