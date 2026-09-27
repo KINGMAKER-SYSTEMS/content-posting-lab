@@ -1527,7 +1527,7 @@ def run_compaction_once(
             return {"archived": 0, "jobs_before": before, "jobs_after": before,
                     "tmp_swept": _sweep_stale_compaction_tmps(path)}
         compaction.append_archive_records(path, archived, now)
-        atomic_save(path, new_store)
+        _save_jobs(new_store)  # #185 C1: publish the compacted snapshot too
         return {
             "archived": len(archived),
             "jobs_before": before,
