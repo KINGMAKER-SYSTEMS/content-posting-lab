@@ -62,6 +62,68 @@ def test_replacement_detected_even_with_same_size_and_mtime(job_path):
     assert cp._read_jobs_snapshot()["jobs"]["one"]["status"] == "failed"
 
 
+def test_mid_read_in_place_rewrite_same_ino_mtime_size_is_detected(job_path, monkeypatch):
+    """T1/stale-serve (Tides review of PR #185, round 2, defect 4): an
+    in-place rewrite (`cp -p`, `touch -r`, a restore tool) that preserves
+    inode, mtime AND size — landing WHILE a decode is mid-read — must never
+    be published as if it were the pre-rewrite content, keyed to exactly
+    what the file now reports. ctime cannot be forced back by the rewrite
+    (it always reflects the last metadata change), which is the
+    discriminator _jobs_read_consistency_signature must use here.
+
+    Without the fix, this decode passes its (ino, mtime, size) check,
+    publishes the STALE pre-rewrite bytes under the NEW (ctime-bearing)
+    signature, and every later request is a cache hit on that stale data —
+    forever, until the next write. With the fix, the rewrite is detected
+    (fail closed, T3), and the next attempt decodes the real, current
+    content."""
+    cp._read_jobs_snapshot()  # publish "queued"
+
+    # A signature change through the normal (external-replace) path so the
+    # NEXT read is a genuine decode, starting the mid-read race clean.
+    atomic_save(job_path, {"jobs": {"one": {"status": "queued"}}, "version": 1})
+    cp._jobs_snapshot = None
+    cp._jobs_decode_pending.clear()
+
+    real_json_load = cp.json.load
+    rewrite_happened = {}
+
+    def load_then_rewrite_in_place(handle):
+        data = real_json_load(handle)
+        if rewrite_happened:
+            # One-shot: only the FIRST decode races with a rewrite. Later
+            # calls (recovery, after the file has genuinely settled) must
+            # decode normally, or this mock would rewrite forever and no
+            # read could ever succeed.
+            return data
+        before_stat = job_path.stat()
+        rewritten = job_path.read_bytes().replace(b"queued", b"failed")
+        assert len(rewritten) == len(job_path.read_bytes())  # same size
+        job_path.write_bytes(rewritten)
+        os.utime(job_path, ns=(before_stat.st_atime_ns, before_stat.st_mtime_ns))
+        after_stat = job_path.stat()
+        assert after_stat.st_ino == before_stat.st_ino
+        assert after_stat.st_mtime_ns == before_stat.st_mtime_ns
+        assert after_stat.st_size == before_stat.st_size
+        assert after_stat.st_ctime_ns != before_stat.st_ctime_ns
+        rewrite_happened["done"] = True
+        return data
+
+    stalling_json = type(cp.json)("stalling_json_stub_2")
+    stalling_json.__dict__.update(cp.json.__dict__)
+    stalling_json.load = load_then_rewrite_in_place
+    monkeypatch.setattr(cp, "json", stalling_json)
+
+    with pytest.raises(cp._JobsDecodeFailed):
+        cp._read_jobs_snapshot()
+    assert rewrite_happened.get("done") is True
+
+    # Never silently caches the pre-rewrite content, and never keeps
+    # answering "queued" once the file has settled.
+    atomic_save(job_path, {"jobs": {"one": {"status": "settled"}}})
+    assert cp._read_jobs_snapshot()["jobs"]["one"]["status"] == "settled"
+
+
 def test_missing_and_in_place_changes_never_serve_old_jobs(job_path):
     cp._read_jobs_snapshot()
     atomic_save(job_path, {"jobs": {"two": {"status": "running"}}})
