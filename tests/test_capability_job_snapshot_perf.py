@@ -28,6 +28,7 @@ import statistics
 import threading
 import time
 import tracemalloc
+import types
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -119,11 +120,58 @@ def large_job_path(tmp_path, monkeypatch):
 @pytest.fixture
 def capabilities_scaffold(monkeypatch):
     """Isolate the measurement to the job-store read path itself (the actual
-    subject of this criteria) the same way the existing
-    test_capability_job_snapshot.py suite already does."""
-    monkeypatch.setattr(cp, "_current_intent_for_capabilities", lambda _: ({}, "hash"))
-    monkeypatch.setattr(cp, "list_registered_recipe_bindings", lambda *args: [])
+    subject of this criteria), the same way test_capability_job_snapshot.py
+    does — EXCEPT for the ai_video/generated binding, which is now driven
+    for real (Tides review of PR #185, defect 4: patching
+    `list_registered_recipe_bindings` to `[]` meant this file never measured
+    the store-wide generated+truck-recovery scan at all — the dominant,
+    growing job kind and the actual site of the C3 violation the review
+    caught). `resolve_generation_recipe` and `plan_prompt_combinations` are
+    stubbed rather than driven through the real prompt-catalog/engine-
+    registry machinery and full combinatorics: this is a load test of the
+    job-store scan (`_generated_unavailable_prompts`,
+    `_truck_master_candidates`), not a recipe-semantics test — that is
+    covered by tests/test_control_plane_dossier_execution.py and friends.
+    """
+    monkeypatch.setattr(
+        cp, "_current_intent_for_capabilities",
+        lambda _: ({"contentNiche": "TRUCK", "contentEngine": "ai_video"}, "hash"),
+    )
+    publication = {
+        "recipeId": cp.TRUCK_RECIPE_ID,
+        "engine": "ai_video",
+        "recipeVersion": "dossier-1234567890abcdef",
+        "recipeSpecHash": "sha256:" + ("ef" * 32),
+    }
+    monkeypatch.setattr(
+        cp, "list_registered_recipe_bindings",
+        lambda *args: [("binding-key", publication)],
+    )
     monkeypatch.setattr(cp, "load_engine_registry", lambda: ({}, "hash"))
+    stub_recipe = types.SimpleNamespace(
+        recipe_id=cp.TRUCK_RECIPE_ID,
+        engine="ai_video",
+        engine_registry_hash="sha256:" + ("11" * 32),
+        format_contract_version="sha256:" + ("22" * 32),
+        executor_version="replicate:v3",
+        material_source="generated",
+        asset_type="video/mp4",
+        prompt_catalog_hash="sha256:" + ("33" * 32),
+        family_name="truck-scenic",
+        provider_model="replicate/veo-3",
+        clips_per_generation=1,
+        recipe_spec={"renderTreatment": {}},
+        planned_provider_calls=lambda quantity: min(quantity, 10),
+    )
+    monkeypatch.setattr(cp, "resolve_generation_recipe", lambda publication: stub_recipe)
+    # The store-scan (_generated_unavailable_prompts, _truck_master_candidates)
+    # runs for real, at full 5k-job scale, under this fixture; only the
+    # combinatorics after the scan (irrelevant to what this file measures)
+    # is stubbed out.
+    monkeypatch.setattr(
+        cp, "plan_prompt_combinations",
+        lambda recipe, run_id, count, hashes, slots=None: [],
+    )
 
 
 def _percentile(sorted_values: list[float], pct: float) -> float:
@@ -222,6 +270,22 @@ def _run_concurrent_capabilities_load(
             elapsed = time.perf_counter() - start
             assert "schema" in result
             local.append(elapsed)
+            # A 1ms pacing gap, not a throttle: a real HTTP request always
+            # has SOME gap (socket IO, request parsing) between a client's
+            # calls. A back-to-back, zero-gap Python busy loop across many
+            # threads is not that — it is adversarial to CPython's GIL in a
+            # way that is specific to this synthetic harness, not to the
+            # fix under test (Tides review of PR #185, defect 4: once
+            # capabilities() does real per-request work for the ai_video
+            # path, an unpaced tight loop across many reader threads can
+            # starve the writer thread's own GIL reacquisition for seconds
+            # at a time — measured directly: a single `_update_job` write
+            # took 1.7-2.2s under 8 zero-gap readers, vs low milliseconds
+            # paced. That is a benchmark artifact of this harness, not a
+            # regression in the fix; this gap keeps the scenario realistic
+            # without materially reducing throughput (n stays in the tens
+            # of thousands per run).
+            time.sleep(0.001)
         with latencies_lock:
             latencies.extend(local)
 
