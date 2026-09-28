@@ -47,9 +47,10 @@ import os
 import re
 import shutil
 import subprocess
+import time
 from datetime import datetime, timezone
 from pathlib import Path
-from threading import Lock
+from threading import Event, Lock
 from typing import Any
 from urllib.parse import quote, urlparse
 
@@ -76,6 +77,7 @@ from routers.control_plane_recipes import (
     require_control_plane_bearer,
 )
 from services.control_plane_generation import (
+    CATALOG_PATH,
     MAX_CAPABILITY_QUANTITY,
     compose_prompt_combination,
     dossier_clip_crop,
@@ -121,7 +123,7 @@ from services.control_plane_source_imports import (
     validate_source_url,
 )
 from services.content_engine_registry import load_engine_registry, resolve_material_profile
-from services.content_format_contracts import load_format_contracts
+from services.content_format_contracts import CONTRACTS_PATH, load_format_contracts
 from services.ffmpeg import delivery_encode_args, run_color_correct
 from services.master_pages_contract import SCHEMA as MASTER_PAGES_SCHEMA, canonical_intent, exact_intent, intent_hash
 from services import moderation_retry
@@ -236,6 +238,229 @@ def _registered_recipes() -> list[dict[str, Any]]:
     return out
 
 
+# Reader hot-path cache (Tides review of PR #185, round 2, defect 3 — writer
+# starvation under a zero-gap read burst): capabilities() is deterministic
+# in everything it reads — the job snapshot, the resolved Master Pages
+# intent, the engine registry, and the registered bindings — so many
+# reader threads asking for the SAME page between the same two writes were
+# each redoing the identical, non-trivial reservation scan
+# (_generated_unavailable_prompts / _truck_master_candidates / etc.) from
+# scratch. Under a genuinely concurrent, zero-gap burst that meant many
+# CPU-bound Python threads competing for the GIL against the writer's own
+# read-modify-write, which is what starved it (profiled: ~60us of Python
+# work per capabilities() call, dominated by the two reservation scans —
+# cheap once, but multiplied by thousands of redundant calls/second under
+# a tight-loop burst).
+#
+# The cache key folds in every input capabilities() reads that has a cheap
+# version signal: the page, the job-snapshot generation (so a write is
+# ALWAYS a hard, immediate miss — C2's read-after-write bound is unaffected,
+# it never depends on the TTL below), the resolved intent hash, the
+# engine-registry file hash, a collision-safe stat signature for the
+# format-contracts file (MaterialProfile fields are parsed FROM the matching
+# contract, not just the registry — services/content_engine_registry.py's
+# load_engine_registry passes contracts[format_slug] into _parse_profile —
+# so registry_hash alone does not capture a contract-only edit), the exact
+# content of every registered binding (recipeSpecHash is registration-time
+# bound to recipeSpecCanonical, rejected at POST /v1/recipes if they do not
+# match — routers/control_plane_recipes.py :435-436 — so it stands in for
+# the full spec bytes, the only other publication field the resolvers read
+# besides recipeId/engine), the SET of engines among those bindings (belt
+# and suspenders alongside the per-binding tuples — see
+# _capabilities_binding_engines), and a collision-safe stat signature for
+# every prompt-catalog file resolve_generation_recipe can read, when any
+# registered binding is ai_video (its content is not implied by anything
+# else in the key).
+#
+# Signature format, everywhere in this cache (Tides review of PR #185,
+# round 3): (path, st_ino, st_mtime_ns, st_size, st_ctime_ns) — the SAME
+# four fields T1 uses for the job-store signature, not just mtime_ns+size.
+# mtime_ns+size alone collides on a same-second, same-length in-place
+# rewrite; ino distinguishes a replace (new inode) and ctime catches an
+# in-place rewrite that lands within the same mtime tick. A plain content
+# hash (as an earlier version of this used for both contracts and the
+# catalog) is collision-proof too but pays a full read+parse(+hash) on
+# every request; a first version that did this for the prompt catalog alone
+# measured a real p95 regression (~20ms to ~206ms under the C5 load test —
+# it reads and re-parses up to three files). A stat is one syscall.
+#
+# Audited and NOT cacheable at all: a registered slideshow binding
+# (sourced_slideshow / lyrics_slideshows) resolves through
+# load_syzygy_library, a LIVE networked fetch with no cheap pre-fetch
+# version signal at all — not even a stat, since there is no local file.
+# capabilities() never caches (reads or stores) a response for a page with
+# any slideshow binding registered; it always computes fresh for those,
+# same as base did for every page. The binding-engine set is ALSO in the
+# key (not just this bypass) so that a page whose bindings change from
+# ai_video to slideshow between two calls at the SAME job generation can
+# never be served the earlier, now-stale ai_video response: the bypass
+# alone would already prevent it (cacheable is re-evaluated fresh every
+# call from the CURRENT registered_bindings), but the key changing too
+# means this holds even if the bypass logic is ever refactored to be less
+# strict for some other binding kind later.
+#
+# Audited and found NOT a factor: no time/wall-clock read (datetime.now(),
+# a lease or expiry window) feeds any reservation or planning function
+# capabilities() calls (_generated_unavailable_prompts,
+# _truck_master_candidates, _slideshow_unavailable_signatures,
+# _source_dna_unavailable_slots, plan_prompt_combinations, plan_source_cuts,
+# plan_slideshows, resolve_generation_recipe, _dossier_source_recipe,
+# resolve_slideshow_recipe, resolve_material_profile) — the one wall-clock
+# read in this file that gates on elapsed time
+# (_source_import_active_deadline_expired) is reachable only from
+# GET /v1/jobs/{id}, never from capabilities(). No request header or param
+# beyond X-RT-Page-Id/X-Page-Id (folded into page_id) is read either.
+#
+# The remaining short TTL is a defensive backstop only, not the mechanism
+# this relies on for the inputs actually in the key above — those make a
+# write, an intent change, a registry edit, a contract edit, or a catalog
+# edit for a bound format ALL hard, immediate misses.
+_capabilities_cache_lock = Lock()
+_capabilities_cache: dict[tuple[Any, ...], tuple[float, list[dict[str, Any]]]] = {}
+_CAPABILITIES_CACHE_TTL_SECONDS = 2.0
+_CAPABILITIES_CACHE_MAX_ENTRIES = 4096
+
+_SLIDESHOW_ENGINES = frozenset({"sourced_slideshow", "lyrics_slideshows"})
+
+
+def _file_stat_signature(path: Path) -> tuple[str, int, int, int, int]:
+    """Collision-safe (ino, mtime_ns, size, ctime_ns) freshness signature
+    for one file, keyed by its path — the same four fields T1 uses for the
+    job-store signature. -1s if the file does not exist (still a valid,
+    stable signature: present -> absent is itself a real change)."""
+    try:
+        stat = path.stat()
+    except OSError:
+        return (str(path), -1, -1, -1, -1)
+    return (str(path), stat.st_ino, stat.st_mtime_ns, stat.st_size, stat.st_ctime_ns)
+
+
+def _capabilities_cache_key(
+    page_id: str,
+    generation: int,
+    master_pages_hash: str,
+    registry_hash: str | None,
+    contracts_signature: tuple[str, int, int, int, int],
+    registered_bindings: list[tuple[Any, dict[str, Any]]],
+    binding_engines: tuple[str, ...],
+    catalog_signature: tuple[tuple[str, int, int, int, int], ...],
+) -> tuple[Any, ...]:
+    bindings_key = tuple(
+        (
+            publication.get("recipeId"), publication.get("engine"),
+            publication.get("recipeVersion"), publication.get("recipeSpecHash"),
+        )
+        for _, publication in registered_bindings
+    )
+    return (
+        page_id, generation, master_pages_hash, registry_hash,
+        contracts_signature, bindings_key, binding_engines, catalog_signature,
+    )
+
+
+def _capabilities_binding_engines(
+    registered_bindings: list[tuple[Any, dict[str, Any]]],
+) -> tuple[str, ...]:
+    return tuple(sorted({
+        str(publication.get("engine"))
+        for _, publication in registered_bindings
+    }))
+
+
+def _capabilities_binding_has_slideshow(
+    registered_bindings: list[tuple[Any, dict[str, Any]]],
+) -> bool:
+    return any(
+        publication.get("engine") in _SLIDESHOW_ENGINES
+        for _, publication in registered_bindings
+    )
+
+
+def _contracts_freshness_signature() -> tuple[str, int, int, int, int]:
+    """Collision-safe stat signature for the ONE file load_format_contracts
+    reads (services/content_format_contracts.py's CONTRACTS_PATH, or its
+    CONTENT_LAB_FORMAT_CONTRACTS env override)."""
+    configured = os.environ.get("CONTENT_LAB_FORMAT_CONTRACTS", "").strip()
+    path = Path(configured).resolve() if configured else CONTRACTS_PATH
+    return _file_stat_signature(path)
+
+
+def _prompt_catalog_freshness_signature() -> tuple[tuple[str, int, int, int, int], ...]:
+    """Collision-safe stat signature for EVERY file load_prompt_catalog can
+    read for ANY format_slug: the base catalog, plus (when using the
+    default, non-overridden catalog path) the silhouette and boat overlays
+    it unconditionally reads and merges in regardless of which format_slug
+    was asked for (services/control_plane_generation.py's
+    load_prompt_catalog). Not per-format-slug precise — it always includes
+    all three files, not just the one(s) a given format_slug's resolution
+    would actually touch — which can only over-invalidate, never under-.
+    """
+    configured = os.environ.get("CONTENT_LAB_PROMPT_CATALOG", "").strip()
+    base = Path(configured).resolve() if configured else CATALOG_PATH
+    paths = [base]
+    if not configured:
+        paths.append(base.with_name("silhouette_stills.v1.json"))
+        paths.append(base.with_name("boat_minimax.v1.json"))
+    return tuple(_file_stat_signature(path) for path in paths)
+
+
+def _capabilities_catalog_signature(
+    registered_bindings: list[tuple[Any, dict[str, Any]]],
+) -> tuple[tuple[str, int, int, int, int], ...]:
+    """The prompt-catalog freshness signature, included in the cache key
+    only when at least one registered binding is ai_video (the only engine
+    that reads the prompt catalog) — no ai_video binding, no cost, same as
+    the slideshow-only-when-present gate above."""
+    if any(
+        publication.get("engine") == "ai_video"
+        for _, publication in registered_bindings
+    ):
+        return _prompt_catalog_freshness_signature()
+    return ()
+
+
+def _capabilities_cache_lookup(key: tuple[Any, ...]) -> list[dict[str, Any]] | None:
+    with _capabilities_cache_lock:
+        hit = _capabilities_cache.get(key)
+    if hit is None:
+        return None
+    stored_at, entries = hit
+    if time.monotonic() - stored_at > _CAPABILITIES_CACHE_TTL_SECONDS:
+        return None
+    return entries
+
+
+def _capabilities_cache_store(key: tuple[Any, ...], entries: list[dict[str, Any]]) -> None:
+    with _capabilities_cache_lock:
+        if len(_capabilities_cache) >= _CAPABILITIES_CACHE_MAX_ENTRIES:
+            # Simple, bounded eviction: a stale-key pileup across many
+            # distinct pages/generations is rare (writes clear their own
+            # generation's keys implicitly by changing the key), so a full
+            # clear is cheap and keeps this O(1)-to-reason-about rather
+            # than needing real LRU bookkeeping on the hot path.
+            _capabilities_cache.clear()
+        _capabilities_cache[key] = (time.monotonic(), entries)
+
+
+def _generation_related_jobs_view(
+    jobs_snapshot: "_JobsSnapshot", page_jobs_view: dict[str, Any], page_id: str,
+) -> dict[str, Any]:
+    """The narrowed view capabilities() hands the ai_video (generated)
+    reservation helpers: this page's own jobs, unioned with every
+    truck_master_recovery job (the only genuinely cross-page reservation
+    those helpers need — see the comment above page_jobs_view in
+    capabilities()). Factored out (Tides review of PR #185, round 2,
+    defect 2) so a test can call the SAME function capabilities() calls,
+    instead of rebuilding an equivalent-looking dict inline — a copy that
+    would keep passing even if this line's real union were broken."""
+    return {
+        "jobs": {
+            **page_jobs_view["jobs"],
+            **jobs_snapshot.by_source_kind.get("truck_master_recovery", {}),
+        },
+    }
+
+
 @router.get("/v1/capabilities")
 def capabilities(
     x_rt_page_id: str | None = Header(default=None),
@@ -265,29 +490,90 @@ def capabilities(
     master_pages, master_pages_hash = current
 
     entries = []
-    job_store = _read_jobs_snapshot()
+    try:
+        jobs_snapshot = _read_jobs_snapshot_object()
+    except _JobsDecodeFailed as error:
+        # Fail closed: never answer from a snapshot whose signature no
+        # longer matches the file (T3). The Worker already treats a 503 the
+        # same as its own client timeout, so this degrades exactly like
+        # today's behaviour instead of ever over-admitting maxQuantity.
+        raise HTTPException(
+            status_code=503, detail="job store temporarily unavailable",
+        ) from error
+
+    # Fetched before the job-store views below because they all feed the
+    # cache key (see the comment above _capabilities_cache_lock): a cache
+    # hit skips everything from page_jobs_view down through the whole
+    # registered_bindings loop.
+    registered_bindings = list_registered_recipe_bindings(
+        page_id, master_pages, master_pages_hash,
+    )
+    try:
+        profiles, registry_hash = load_engine_registry()
+    except (OSError, ValueError, json.JSONDecodeError):
+        profiles, registry_hash = {}, None
+
+    # A registered slideshow binding resolves through a LIVE networked
+    # fetch with no cheap pre-fetch version signal at all (see the comment
+    # above _capabilities_cache_lock) — never cached, never read from
+    # cache. Checked before paying for the contracts/catalog stats below.
+    cacheable = not _capabilities_binding_has_slideshow(registered_bindings)
+    cache_key = None
+    if cacheable:
+        contracts_signature = _contracts_freshness_signature()
+        catalog_signature = _capabilities_catalog_signature(registered_bindings)
+        binding_engines = _capabilities_binding_engines(registered_bindings)
+        cache_key = _capabilities_cache_key(
+            page_id, jobs_snapshot.generation, master_pages_hash, registry_hash,
+            contracts_signature, registered_bindings, binding_engines,
+            catalog_signature,
+        )
+        cached_entries = _capabilities_cache_lookup(cache_key)
+        if cached_entries is not None:
+            return {"schema": RESPONSE_SCHEMA, "capabilities": list(cached_entries)}
+
+    # capabilities() for one page only ever needs that page's own jobs, plus
+    # (for the two async source-recipe kinds below) the jobs of the specific
+    # sourceKinds those checks scope by. Slicing through the snapshot's
+    # indices here means every helper below touches only its relevant slice
+    # of the store instead of a full scan (C3) — none of their own bodies
+    # change, since each already re-checks pageId/sourceKind/status itself,
+    # so a narrower input can only ever produce the identical result.
+    # All three views are O(page) / O(1): they union existing index buckets,
+    # never copy or scan the whole store.
+    #
+    # generation_related_jobs_view used to be `by_source_kind["generated"] |
+    # by_source_kind["truck_master_recovery"]` — store-wide over the
+    # dominant, ever-growing "generated" kind, and the actual C3 violation a
+    # Tides review caught (PR #185): the perf test's bindings=[] patch meant
+    # nothing ever measured it. `_generated_unavailable_prompts` and the
+    # second (candidate) loop of `_truck_master_candidates` both already
+    # require pageId == page_id, so this page's own jobs are exactly the
+    # "generated" jobs either function can ever match — `by_page[page_id]`
+    # is the equivalent, page-scoped replacement. Only
+    # `_truck_master_candidates`'s FIRST loop (the cross-page
+    # truck_master_recovery reservation set) genuinely needs every page's
+    # jobs of that one kind, so that bucket alone stays store-wide.
+    page_jobs_view = {"jobs": jobs_snapshot.by_page.get(page_id, {})}
+    dossier_source_dna_view = {
+        "jobs": jobs_snapshot.by_source_kind.get("dossier_source_dna", {}),
+    }
+    generation_related_jobs_view: dict[str, Any] | None = None
     completed_import_identities = sorted({
         identity
-        for job in job_store.get("jobs", {}).values()
+        for job in page_jobs_view["jobs"].values()
         if isinstance(job, dict)
-        and job.get("pageId") == page_id
         and job.get("sourceKind") == "page_source_import"
         and job.get("status") == "completed"
         for identity in [canonical_source_identity(job.get("sourceUrl"))]
         if identity is not None
     })
-    registered_bindings = list_registered_recipe_bindings(
-        page_id, master_pages, master_pages_hash,
-    )
-    # A page-bound intent is itself enough to expose the commissioned format
-    # route before its first dossier publication. The publication list below
-    # remains authoritative for versions already registered; this bootstrap
-    # entry lets a new page reach the Dossier editor instead of becoming an
-    # empty-capability dead end.
-    try:
-        profiles, _ = load_engine_registry()
-    except (OSError, ValueError, json.JSONDecodeError):
-        profiles = {}
+    # registered_bindings and profiles were already fetched above (they
+    # feed the cache key). A page-bound intent is itself enough to expose
+    # the commissioned format route before its first dossier publication.
+    # The publication list below remains authoritative for versions already
+    # registered; this bootstrap entry lets a new page reach the Dossier
+    # editor instead of becoming an empty-capability dead end.
     intent_niche = master_pages.get("contentNiche")
     intent_engine = master_pages.get("contentEngine")
     bootstrap = next((profile for profile in profiles.values()
@@ -349,7 +635,7 @@ def capabilities(
             if slideshow_recipe_profile is None:
                 continue
             unavailable = _slideshow_unavailable_signatures(
-                job_store, slideshow_recipe, page_id,
+                page_jobs_view, slideshow_recipe, page_id,
             )
             max_quantity = len(plan_slideshows(
                 slideshow_recipe, library, slideshow_recipe.max_quantity,
@@ -358,14 +644,18 @@ def capabilities(
             ))
         elif source_recipe is not None:
             unavailable_slots = _source_dna_unavailable_slots(
-                job_store, source_recipe, publication["recipeVersion"],
+                dossier_source_dna_view, source_recipe, publication["recipeVersion"],
             )
             max_quantity = len(plan_source_cuts(
                 source_recipe, source_recipe.max_quantity, unavailable_slots,
             ))
         else:
+            if generation_related_jobs_view is None:
+                generation_related_jobs_view = _generation_related_jobs_view(
+                    jobs_snapshot, page_jobs_view, page_id,
+                )
             max_quantity = _generated_capability_quantity(
-                job_store, generation_recipe, page_id, master_pages,
+                generation_related_jobs_view, generation_recipe, page_id, master_pages,
                 publication["recipeSpecHash"],
             )
         source_identities = None
@@ -390,6 +680,8 @@ def capabilities(
         if len(entries) >= MAX_CAPABILITIES:
             break
 
+    if cacheable:
+        _capabilities_cache_store(cache_key, entries)
     return {"schema": RESPONSE_SCHEMA, "capabilities": entries}
 
 
@@ -784,47 +1076,376 @@ def _empty_jobs() -> dict[str, Any]:
     return {"version": 1, "jobs": {}, "byIdempotency": {}, "served": {}}
 
 
+# Writer-intent signal (Tides review of PR #185, round 2, defect 3): a
+# plain int, read/written without a lock. Under the GIL a simple int
+# increment/decrement/comparison cannot tear, and this is advisory only —
+# readers use it to voluntarily yield, never to gate correctness. Covers
+# _load_jobs (the full json.loads of a growing file) and _save_jobs (the
+# full json.dumps + fsync); the short, pure-Python mutation a caller does
+# between those two calls is not covered; and it's set from EVERY writer
+# call site since capabilities() never calls _load_jobs itself (only
+# writers do — enforced by test_capabilities_use_snapshot_not_mutable_
+# transaction_load), so this can safely live inside those two functions
+# rather than needing every one of the 11 write call sites touched.
+_jobs_writer_active_count = 0
+
+
+def _jobs_writer_enter() -> None:
+    global _jobs_writer_active_count
+    _jobs_writer_active_count += 1
+
+
+def _jobs_writer_exit() -> None:
+    global _jobs_writer_active_count
+    _jobs_writer_active_count -= 1
+
+
 def _load_jobs() -> dict[str, Any]:
-    data = atomic_load(_jobs_path(), default=None)
+    _jobs_writer_enter()
+    try:
+        data = atomic_load(_jobs_path(), default=None)
+    finally:
+        _jobs_writer_exit()
     if not isinstance(data, dict) or "jobs" not in data:
         return _empty_jobs()
     return data
 
 
+class _JobsDecodeFailed(Exception):
+    """The job-history file changed but could not be safely decoded.
+
+    Raised instead of ever answering from a snapshot whose signature no
+    longer matches the file on disk (fail closed: under-admitting an empty
+    read is safe, silently serving stale/mismatched data is not).
+    """
+
+
+class _PendingJobsDecode:
+    """Single-flight ticket: every concurrent reader of the same file
+    signature shares the one thread actually doing the decode."""
+
+    __slots__ = ("event", "snapshot", "error")
+
+    def __init__(self) -> None:
+        self.event = Event()
+        self.snapshot: "_JobsSnapshot | None" = None
+        self.error: BaseException | None = None
+
+
+class _JobsSnapshot:
+    """One immutable, fully-decoded view of the job-history file.
+
+    ``by_page`` and ``by_source_kind`` are jobId->job sub-dicts pointing at
+    the SAME job objects held in ``data["jobs"]`` (no copies) so a caller
+    that needs "every job for this page" or "every job of this sourceKind"
+    touches only that slice instead of the whole store.
+    """
+
+    __slots__ = ("signature", "generation", "data", "by_page", "by_source_kind")
+
+    def __init__(
+        self,
+        signature: tuple[int, int, int, int],
+        generation: int,
+        data: dict[str, Any],
+        by_page: dict[str, dict[str, Any]],
+        by_source_kind: dict[str, dict[str, Any]],
+    ) -> None:
+        self.signature = signature
+        self.generation = generation
+        self.data = data
+        self.by_page = by_page
+        self.by_source_kind = by_source_kind
+
+
+# _jobs_snapshot_lock guards ONLY the swap of the _jobs_snapshot reference
+# (an in-memory pointer assignment) — never a decode and never disk IO. A
+# reader can therefore never block behind another thread's file read for
+# longer than that swap (C4).
 _jobs_snapshot_lock = Lock()
-_jobs_snapshot: tuple[Path, tuple[int, ...], dict[str, Any]] | None = None
+_jobs_snapshot: "_JobsSnapshot | None" = None
+
+# Monotonic, process-local, drawn once per *observed* file version — at
+# write-publish time, or the moment a reader first notices a new on-disk
+# signature (never at decode completion). That ordering is what makes the
+# CAS publish below correct: a decode that started against an older file
+# version can never stomp a newer snapshot, no matter how long it takes to
+# finish, because the newer snapshot already drew a larger generation number
+# before that slow decode's result comes back (T2).
+_jobs_generation_lock = Lock()
+_jobs_generation_counter = 0
+
+# Coalesces concurrent decodes of the same file signature into one (C4).
+# Entries are removed the instant their decode finishes, so this dict never
+# grows past "distinct file versions currently mid-decode" (C7).
+_jobs_decode_dispatch_lock = Lock()
+_jobs_decode_pending: dict[tuple[int, int, int, int], _PendingJobsDecode] = {}
 
 
-def _jobs_signature(stat: os.stat_result) -> tuple[int, ...]:
-    return (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+def _jobs_signature(stat: os.stat_result) -> tuple[int, int, int, int]:
+    # (inode, mtime, size, ctime): the CACHE-KEY signature, compared against
+    # a fresh path.stat() on every single request — no TTL, no "every N
+    # seconds" staleness window (T1). ctime is kept (base compared it too)
+    # so an in-place rewrite that preserves both size and mtime (`cp -p`,
+    # `touch -r`, a restore tool) is still caught — ctime moves on any
+    # inode metadata change, including a content rewrite that leaves mtime
+    # alone. Do NOT reuse this for the mid-read consistency check inside
+    # _decode_jobs_snapshot — see _jobs_read_consistency_signature.
+    return (stat.st_ino, stat.st_mtime_ns, stat.st_size, stat.st_ctime_ns)
+
+
+def _jobs_read_consistency_signature(stat: os.stat_result) -> tuple[int, int, int]:
+    # Deliberately excludes ctime. This is fstat'd on the SAME open file
+    # descriptor before and after json.load(), to catch "the bytes I am
+    # reading changed under me mid-read" — not "is my cached snapshot still
+    # current" (that's _jobs_signature, above). An external atomic_save
+    # unlinks whatever was previously at this path as part of its
+    # os.replace; if we already hold that old inode open via this fd, the
+    # unlink alone bumps ITS ctime (nlink dropping to 0 is an inode
+    # metadata change) even though our fd's mtime/size/content are
+    # completely untouched and what we already read remains fully valid.
+    # Including ctime here produced exactly that false positive — a
+    # perfectly good decode raising _JobsDecodeFailed — under any external
+    # replace that lands mid-read.
+    return (stat.st_ino, stat.st_mtime_ns, stat.st_size)
+
+
+def _next_jobs_generation() -> int:
+    global _jobs_generation_counter
+    with _jobs_generation_lock:
+        _jobs_generation_counter += 1
+        return _jobs_generation_counter
+
+
+def _build_jobs_indices(
+    data: dict[str, Any],
+) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
+    """Per-page and per-sourceKind jobId->job indices, built in one pass.
+
+    Built once per snapshot (on decode, or on a write's direct publish) —
+    never per capabilities request (C3).
+    """
+    by_page: dict[str, dict[str, Any]] = {}
+    by_source_kind: dict[str, dict[str, Any]] = {}
+    for job_id, job in data.get("jobs", {}).items():
+        if not isinstance(job, dict):
+            continue
+        page_id = job.get("pageId")
+        if isinstance(page_id, str) and page_id:
+            by_page.setdefault(page_id, {})[job_id] = job
+        source_kind = job.get("sourceKind")
+        if isinstance(source_kind, str) and source_kind:
+            by_source_kind.setdefault(source_kind, {})[job_id] = job
+    return by_page, by_source_kind
+
+
+def _publish_jobs_snapshot(snapshot: "_JobsSnapshot") -> "_JobsSnapshot":
+    """Install ``snapshot`` only if it is not older than the one live now
+    (compare-and-swap on ``generation``, T2). Returns whichever snapshot is
+    live after the attempt, so a stale caller still gets a consistent read.
+    """
+    global _jobs_snapshot
+    with _jobs_snapshot_lock:
+        current = _jobs_snapshot
+        if current is None or snapshot.generation > current.generation:
+            _jobs_snapshot = snapshot
+            return snapshot
+        return current
+
+
+def _save_jobs(store: dict[str, Any]) -> None:
+    """Persist ``store`` and publish it straight to the read cache (C1).
+
+    Every writer already holds ``lock_for(_jobs_path())`` and already owns
+    the exact dict that is about to become durable truth — decoding it back
+    off disk just to answer the next capabilities read would be pure waste.
+    Build the snapshot + index directly from this in-memory dict instead.
+    `_load_jobs` (a fresh decode) remains what every writer calls to start
+    its own read-modify-write transaction; only the published READ cache is
+    short-circuited here. Mutations stay the source of truth (C6) — this
+    function does not change what gets written, only what gets cached after.
+    """
+    path = _jobs_path()
+    _jobs_writer_enter()
+    try:
+        atomic_save(path, store)
+        try:
+            signature = _jobs_signature(path.stat())
+        except OSError:
+            # Publish is best-effort: the next reader's own stat()+decode
+            # will resync regardless.
+            return
+        generation = _next_jobs_generation()
+        by_page, by_source_kind = _build_jobs_indices(store)
+        _publish_jobs_snapshot(_JobsSnapshot(signature, generation, store, by_page, by_source_kind))
+    finally:
+        _jobs_writer_exit()
+
+
+def _decode_jobs_snapshot(generation: int) -> "_JobsSnapshot":
+    """Decode the file off the fast path. Never called under
+    ``_jobs_snapshot_lock`` (C4) — only the final CAS publish takes that
+    lock, and only for the reference swap itself.
+    """
+    path = _jobs_path()
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            before_stat = os.fstat(handle.fileno())
+            before = _jobs_read_consistency_signature(before_stat)
+            data = json.load(handle)
+            fd_stat = os.fstat(handle.fileno())
+            after = _jobs_read_consistency_signature(fd_stat)
+    except FileNotFoundError:
+        # Vanished between our stat() and open(): legitimately empty, not a
+        # decode failure.
+        return _JobsSnapshot((0, 0, 0, 0), generation, _empty_jobs(), {}, {})
+    except (OSError, ValueError) as error:
+        raise _JobsDecodeFailed(str(error)) from error
+    # A same-(ino,mtime,size) in-place rewrite (`cp -p`, `touch -r`, a
+    # restore tool that preserves mtime) passes the check above but still
+    # touches this inode's ctime — UNLESS it was replaced out from under us
+    # (os.replace unlinks the old name; nlink drops to 0 on our still-open
+    # fd, and THAT alone moves ctime too, which is fine and already
+    # tolerated: the bytes we read are one complete, valid old version).
+    # Reject only when the inode is STILL linked and ctime moved: that
+    # combination means someone rewrote the content in place while we were
+    # reading it, and letting it through would publish stale bytes keyed to
+    # exactly the signature the file now reports (T1; a Tides review of PR
+    # #185, round 2, caught this — serving stale content persistently after
+    # the file settled).
+    in_place_rewrite = (
+        fd_stat.st_nlink > 0 and fd_stat.st_ctime_ns != before_stat.st_ctime_ns
+    )
+    if (
+        before != after
+        or in_place_rewrite
+        or not isinstance(data, dict)
+        or "jobs" not in data
+    ):
+        raise _JobsDecodeFailed("job-history file changed mid-read or is malformed")
+    # The full (ctime-including) signature is what gets published/compared
+    # as this snapshot's cache key — computed from the same final fstat,
+    # just with the extra T1 discriminator the read-consistency check must
+    # not use (see _jobs_read_consistency_signature).
+    signature = _jobs_signature(fd_stat)
+    by_page, by_source_kind = _build_jobs_indices(data)
+    return _JobsSnapshot(signature, generation, data, by_page, by_source_kind)
+
+
+def _read_jobs_snapshot_object() -> "_JobsSnapshot":
+    """Read-only capability input; mutations always use fresh _load_jobs().
+
+    Every call does a cheap ``stat()`` — no TTL. If the signature matches
+    what is already published, return it with no lock and no decode. If not,
+    a single reader decodes (outside any lock) while the rest wait on that
+    one in-flight decode (C4); the result is published only if it is not
+    older than whatever is live by the time it finishes (C2/T2). A decode
+    failure never poisons the cache and never resolves to an answer keyed by
+    a signature that does not match the file (T3) — it raises instead, and
+    the caller (capabilities()) turns that into a 503.
+    """
+    if _jobs_writer_active_count > 0:
+        # Writer priority (Tides review of PR #185, round 2, defect 3):
+        # a bare GIL yield, not a real wait — this thread stays runnable,
+        # it just gives a currently-mid-flight writer's own json
+        # encode/decode a fairer shot at the interpreter instead of losing
+        # every reacquisition race to however many reader threads are
+        # spinning through this exact call under a zero-gap burst. Cheap
+        # (no lock, no syscall beyond what sleep(0) already is) and never
+        # affects correctness — a stale read here is impossible either way,
+        # the signature check right below still runs every time.
+        time.sleep(0.002)
+    path = _jobs_path()
+    try:
+        stat_result = path.stat()
+    except FileNotFoundError:
+        # Not published to _jobs_snapshot (there is nothing to key it by),
+        # but the generation must still be freshly drawn, not a fixed
+        # sentinel: capabilities()'s own response cache keys on this
+        # generation too, and two distinct callers observing "no file yet"
+        # are two distinct observations, not the same one. A fixed 0 here
+        # made every "file doesn't exist yet" answer, on any page, collide
+        # in that cache — found via cross-test pollution in the full suite
+        # after the capabilities()-level cache was added (Tides review of
+        # PR #185, round 2).
+        return _JobsSnapshot((0, 0, 0, 0), _next_jobs_generation(), _empty_jobs(), {}, {})
+    except OSError as error:
+        raise _JobsDecodeFailed(str(error)) from error
+
+    signature = _jobs_signature(stat_result)
+    current = _jobs_snapshot
+    if current is not None and current.signature == signature:
+        return current
+
+    with _jobs_decode_dispatch_lock:
+        current = _jobs_snapshot
+        if current is not None and current.signature == signature:
+            return current
+        pending = _jobs_decode_pending.get(signature)
+        if pending is None:
+            pending = _jobs_decode_pending[signature] = _PendingJobsDecode()
+            is_leader = True
+        else:
+            is_leader = False
+
+    if not is_leader:
+        # Bounded wait: the leader's own try/finally below already
+        # guarantees the event fires for every normal exception. This
+        # timeout is a defensive backstop only, against something outside
+        # ordinary Python exception handling (a forcibly killed thread, a
+        # process-level crash) — fail closed with a 503-mapped error rather
+        # than pin this server thread on `.wait()` forever.
+        if not pending.event.wait(timeout=5):
+            raise _JobsDecodeFailed(
+                f"timed out waiting for an in-flight decode of {signature}",
+            )
+        if pending.error is not None:
+            raise pending.error
+        return pending.snapshot
+
+    try:
+        # Drawn inside the try (Tides review of PR #185, round 2, INFO
+        # note): _next_jobs_generation() cannot practically raise (a Lock
+        # plus an int increment), but if it ever did, this keeps the same
+        # try/finally guarantee — the ticket is still released — rather
+        # than leaving one line of the leader's critical section outside
+        # the safety net the rest of this block relies on.
+        generation = _next_jobs_generation()
+        snapshot = _decode_jobs_snapshot(generation)
+        published = _publish_jobs_snapshot(snapshot)
+    except _JobsDecodeFailed as error:
+        pending.error = error
+        raise
+    except BaseException as error:
+        # Any other failure (MemoryError on a huge store, a bug in
+        # _build_jobs_indices, ...) must still release every follower
+        # waiting on this ticket — T3's "never leave a reader blocked
+        # behind a decode" applies to a decode that fails unexpectedly, not
+        # only to a clean _JobsDecodeFailed. Normalize it to the same
+        # fail-closed 503 contract rather than let an exotic exception type
+        # escape uncaught by capabilities().
+        wrapped = _JobsDecodeFailed(f"unexpected decode failure: {error!r}")
+        pending.error = wrapped
+        raise wrapped from error
+    else:
+        pending.snapshot = published
+        return published
+    finally:
+        # Always — success, _JobsDecodeFailed, or anything else — clear the
+        # ticket and wake every follower. A leaked ticket here is exactly
+        # the regression this fixes: every later reader of this signature
+        # would otherwise block on pending.event.wait() forever (base's
+        # `with`-locked design released on any exception; this must too).
+        with _jobs_decode_dispatch_lock:
+            _jobs_decode_pending.pop(signature, None)
+        pending.event.set()
 
 
 def _read_jobs_snapshot() -> dict[str, Any]:
-    """Read-only capability input; mutations always use fresh _load_jobs().
-
-    Concurrent page polls must not each decode the entire growing job history.
-    Check the current file on every call and coalesce decoding of unchanged
-    bytes. Atomic replacement makes completed writes visible immediately.
-    """
-    global _jobs_snapshot
-    path = _jobs_path()
-    with _jobs_snapshot_lock:
-        try:
-            signature = _jobs_signature(path.stat())
-            if _jobs_snapshot is not None and _jobs_snapshot[:2] == (path, signature):
-                return _jobs_snapshot[2]
-            with path.open("r", encoding="utf-8") as handle:
-                before = _jobs_signature(os.fstat(handle.fileno()))
-                data = json.load(handle)
-                after = _jobs_signature(os.fstat(handle.fileno()))
-            if before != after or not isinstance(data, dict) or "jobs" not in data:
-                _jobs_snapshot = None
-                return _empty_jobs()
-            _jobs_snapshot = (path, after, data)
-            return data
-        except (OSError, ValueError):
-            _jobs_snapshot = None
-            return _empty_jobs()
+    """Back-compat accessor: the decoded store only, no index. Prefer
+    ``_read_jobs_snapshot_object()`` when the per-page/per-sourceKind index
+    is needed too (capabilities() does)."""
+    return _read_jobs_snapshot_object().data
 
 
 def _reject_prompt_fields(value: Any, path: str = "job") -> None:
@@ -1198,13 +1819,22 @@ def _generation_root() -> Path:
 
 
 def _update_job(job_id: str, **fields: Any) -> dict[str, Any] | None:
+    """Merge ``fields`` onto the job and publish straight to the read cache.
+
+    `_save_jobs` publishes this exact call's dict/list values by reference,
+    not a decoded copy (that is the whole point of C1 — no re-decode after
+    our own write). A caller that keeps mutating a list/dict it just passed
+    in `fields` (e.g. appending to it across loop iterations) would silently
+    mutate the published snapshot too. Pass a copy (`list(x)`, `dict(x)`) of
+    anything you intend to keep changing after this call returns.
+    """
     with lock_for(_jobs_path()):
         store = _load_jobs()
         job = store["jobs"].get(job_id)
         if job is None:
             return None
         job.update(fields)
-        atomic_save(_jobs_path(), store)
+        _save_jobs(store)
         return dict(job)
 
 
@@ -1226,7 +1856,7 @@ def _save_prediction_checkpoint(job_id: str, key: int | str, record: dict) -> No
         if job.get("status") not in GENERATION_ACTIVE_STATUSES:
             raise RuntimeError("generation_checkpoint_job_not_active")
         job.setdefault("providerCheckpoints", {})[str(key)] = record
-        atomic_save(_jobs_path(), store)
+        _save_jobs(store)
 
 
 def _prediction_checkpoint_key(call_index: int, attempt: int) -> str:
@@ -1323,7 +1953,7 @@ def _claim_unique_generated_clip(
                 ):
                     raise RuntimeError("duplicate_generated_prompt")
         job.setdefault("clips", []).append(manifest)
-        atomic_save(_jobs_path(), store)
+        _save_jobs(store)
 
 
 def _claim_unique_slideshow_clip(
@@ -1364,7 +1994,7 @@ def _claim_unique_slideshow_clip(
                 ):
                     raise RuntimeError("duplicate_slideshow_plan")
         job.setdefault("clips", []).append(manifest)
-        atomic_save(_jobs_path(), store)
+        _save_jobs(store)
 
 
 def _job_matches_current_master_pages(job: dict[str, Any]) -> bool:
@@ -1858,7 +2488,13 @@ async def _run_owned_dossier_generation(job_id: str) -> None:
                     errorClass=error_class,
                     errorDetail=error_detail,
                     providerFailure=failure,
-                    providerFailures=provider_failures,
+                    # list(...): the same aliasing hazard _update_job's
+                    # docstring warns about — this loop keeps appending to
+                    # provider_failures on a later failed call, after an
+                    # earlier call already published this exact list object
+                    # into the cache (Tides review of PR #185, round 2,
+                    # minor finding: SERVED 2 / ON_DISK 1 without this).
+                    providerFailures=list(provider_failures),
                     generationAttempts=attempts,
                     moderationRetryCostUsd=moderation_retry.retry_cost_total(attempts),
                 )
@@ -1980,11 +2616,18 @@ async def _run_owned_dossier_generation(job_id: str) -> None:
                 manifests.append(manifest)
             provider_calls_completed += 1
             completed_calls.append(call_index)
+            # `_update_job` now publishes the saved dict straight to the
+            # read cache (_save_jobs). A caller-owned list handed to it is
+            # therefore aliased into that cache, not copied — this loop
+            # keeps appending to `completed_calls` on later iterations, so
+            # passing the live reference would let the published snapshot's
+            # job silently grow past what was actually published for it.
+            # `list(...)` freezes what this write actually saw.
             await asyncio.to_thread(_update_job,
                 job_id,
                 progress=int(((call_index + 1) / calls) * 100),
                 providerCallsCompleted=provider_calls_completed,
-                completedGenerationCalls=completed_calls,
+                completedGenerationCalls=list(completed_calls),
                 generationAttempts=attempts,
                 moderationRetryCostUsd=moderation_retry.retry_cost_total(attempts),
             )
@@ -2022,7 +2665,7 @@ async def _run_owned_dossier_generation(job_id: str) -> None:
                 clips=complete_manifests,
                 uncompletedGenerationClips=[clip for clip in manifests if clip not in complete_manifests],
                 providerCallsCompleted=len(completed_calls),
-                completedGenerationCalls=completed_calls,
+                completedGenerationCalls=list(completed_calls),
                 error=str(error),
                 completedAt=datetime.now(timezone.utc).isoformat(),
             )
@@ -2051,7 +2694,7 @@ async def _run_owned_dossier_generation(job_id: str) -> None:
         progress=100,
         clips=manifests,
         providerCallsCompleted=len(completed_calls),
-        completedGenerationCalls=completed_calls,
+        completedGenerationCalls=list(completed_calls),
         completedAt=datetime.now(timezone.utc).isoformat(),
     )
 
@@ -2866,7 +3509,7 @@ async def create_source_import(
                 })
                 existing.pop("error", None)
                 existing.pop("completedAt", None)
-                atomic_save(_jobs_path(), store)
+                _save_jobs(store)
                 restart_existing = True
             else:
                 return {
@@ -2917,7 +3560,7 @@ async def create_source_import(
             }
             store["jobs"][job_id] = job
             store["byIdempotency"][idempotency_key] = job_id
-            atomic_save(_jobs_path(), store)
+            _save_jobs(store)
 
     _start_page_source_import(job_id)
     return {"schema": RESPONSE_SCHEMA, "jobId": job_id, "status": "queued"}
@@ -3097,7 +3740,7 @@ async def create_job(
                     "error": "generation_runtime_restarted",
                     "completedAt": datetime.now(timezone.utc).isoformat(),
                 })
-                atomic_save(_jobs_path(), store)
+                _save_jobs(store)
             return {"schema": RESPONSE_SCHEMA, "jobId": existing["jobId"], "status": existing["status"]}
 
         job_id = JOB_ID_PREFIX + _secrets.token_hex(8)
@@ -3306,7 +3949,7 @@ async def create_job(
             start_slideshow = True
         store["jobs"][job_id] = job
         store["byIdempotency"][idempotency_key] = job_id
-        atomic_save(_jobs_path(), store)
+        _save_jobs(store)
 
     if start_generation:
         _start_dossier_generation(job_id)
@@ -3610,7 +4253,7 @@ def _mark_visual_sweep(job_id: str, sweep_id: str, running: bool) -> bool:
         if job is None or job.get("visualAdmissionSweep", {}).get("id") != sweep_id:
             return False
         job["visualAdmissionSweep"] = {"id": sweep_id, "runtime": _VISUAL_RUNTIME, "running": running, "updatedAt": datetime.now(timezone.utc).isoformat()}
-        atomic_save(_jobs_path(), store)
+        _save_jobs(store)
         return True
 
 
@@ -3660,7 +4303,7 @@ def _finish_visual_sweep(job_id: str, sweep_id: str) -> None:
             if current is None:
                 return
             current.setdefault("visualAdmission", {})[str(index)] = decision
-            atomic_save(_jobs_path(), store)
+            _save_jobs(store)
         if decision["reason"] != "scan_pending" and any(
             not final_for(current, candidate_index, candidate)
             for candidate_index, candidate in enumerate(current.get("clips", [])[:100])
@@ -3728,7 +4371,7 @@ def job_visual_admission(
         if not active:
             sweep_id = _secrets.token_hex(16)
             current["visualAdmissionSweep"] = {"id": sweep_id, "runtime": _VISUAL_RUNTIME, "running": True, "updatedAt": now.isoformat()}
-            atomic_save(_jobs_path(), store)
+            _save_jobs(store)
             queued_sweep = (job_id, sweep_id)
     if queued_sweep is not None:
         _submit_visual_sweep(*queued_sweep)
