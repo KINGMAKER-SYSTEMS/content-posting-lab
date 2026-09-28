@@ -31,6 +31,7 @@ PAGE_ID = "tt-chase-miles-4l"
 LIBRARY_ID = "pov-dirt-bike-chase-miles-4l-v1"
 MASTER_SHA = "c434bf9678fbaa20b9b081c68260cca75eb3dd109ddc1cb82df556ec59ae5bd5"
 SOURCE_IDENTITY = "https://www.youtube.com/watch?v=vt5im2TRAKw"
+_start_source_runner = cp._start_dossier_source
 
 
 @pytest.fixture(autouse=True)
@@ -641,6 +642,57 @@ async def test_queued_source_job_fails_before_media_work_when_strategy_changes(
     stored = cp._load_jobs()["jobs"][queued.json()["jobId"]]
     assert stored["status"] == "failed"
     assert stored["error"] == "master_pages_strategy_changed"
+
+
+@pytest.mark.asyncio
+async def test_source_setup_exception_terminalizes_not_ghosts(lab, monkeypatch):
+    client, _, _ = lab
+    queued = client.post(
+        "/api/control-plane/v1/jobs",
+        json=job_body(1),
+        headers=headers("source-job-setup-failure"),
+    )
+    assert queued.status_code == 200
+    job_id = queued.json()["jobId"]
+
+    def boom(recipe):
+        raise OSError("recipe read failed")
+
+    monkeypatch.setattr(cp, "dossier_filters_to_color_correction", boom)
+    # Drive the REAL entrypoint (captured at import time, before `lab`
+    # monkeypatched _start_dossier_source to `started.append`).
+    _start_source_runner(job_id)
+    task = cp._source_tasks[job_id]
+    await asyncio.wait_for(task, timeout=5)
+    stored = cp._get_job_or_404(job_id)
+    assert stored["status"] == "failed"
+    assert "recipe read failed" in stored["error"]
+    assert stored.get("completedAt")
+
+
+@pytest.mark.asyncio
+async def test_cached_source_master_hash_runs_off_the_event_loop(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    import threading
+
+    monkeypatch.setattr(cp, "_generation_root", lambda: tmp_path)
+    master = SimpleNamespace(sha256="c" * 64, bytes=4)
+    cache_root = tmp_path / "_source_dna"
+    cache_root.mkdir(parents=True, exist_ok=True)
+    target = cache_root / f"{master.sha256}.mp4"
+    target.write_bytes(b"data")
+
+    loop_thread = threading.get_ident()
+    saw = {}
+
+    def recording_sha256(path):
+        saw["thread"] = threading.get_ident()
+        return master.sha256
+
+    monkeypatch.setattr(cp, "_sha256", recording_sha256)
+    result = await cp._cached_source_master("acct:page", master, "job-1")
+    assert result == target
+    assert saw["thread"] != loop_thread, "cache-hit hash must not run on the event loop"
 
 
 

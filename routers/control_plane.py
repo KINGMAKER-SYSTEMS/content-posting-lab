@@ -536,8 +536,16 @@ def capabilities(
     )
     try:
         profiles, registry_hash = load_engine_registry()
-    except (OSError, ValueError, json.JSONDecodeError):
-        profiles, registry_hash = {}, None
+    except (OSError, ValueError, json.JSONDecodeError) as error:
+        # Fail closed: a malformed/drifted registry must surface as a service
+        # failure, not an HTTP 200 with an empty (and cacheable) capability
+        # list that silently stops all replenishment. The loader already
+        # rejects empty/drifted registries (content_engine_registry.py), so
+        # reaching here means the commissioned bindings cannot be resolved.
+        log.error("content engine registry unavailable: %s", error)
+        raise HTTPException(
+            status_code=503, detail="engine_registry_unavailable",
+        ) from error
 
     # A registered slideshow binding resolves through a LIVE networked
     # fetch with no cheap pre-fetch version signal at all (see the comment
@@ -2373,7 +2381,7 @@ async def _cached_source_master(page_id: str, master: Any, job_id: str) -> Path:
         if (
             target.is_file()
             and target.stat().st_size == master.bytes
-            and _sha256(target) == master.sha256
+            and await asyncio.to_thread(_sha256, target) == master.sha256
         ):
             _evict_source_dna_cache(cache_root, pinned)
             return target
@@ -3613,11 +3621,39 @@ _source_import_tasks: dict[str, asyncio.Task] = {}
 _syzygy_slideshow_tasks: dict[str, asyncio.Task] = {}
 
 
+async def _guarded_job_runner(runner, job_id: str, setup_error: str) -> None:
+    """Terminalize a runner whose setup raised before its own try block.
+
+    The generation/source runners validate and persist their terminal states
+    inside their own try/except once past setup, but their setup (recipe
+    resolution, mkdir, option parsing, manifest decode) runs before that try.
+    An exception there would otherwise escape the task, its done-callback
+    would drop the only live task reference, and the durable row would stay
+    queued/running with the current runtime id — which same-runtime expiry
+    (job_status) cannot reclaim. Consume it here so the job always reaches a
+    terminal state instead of becoming a permanent ghost.
+    """
+    try:
+        await runner(job_id)
+    except asyncio.CancelledError:
+        raise
+    except Exception as error:
+        log.exception("%s runner failed outside its guarded body", setup_error)
+        await asyncio.to_thread(_update_job,
+            job_id,
+            status="failed",
+            error=f"{setup_error}:{str(error)[:300]}",
+            completedAt=datetime.now(timezone.utc).isoformat(),
+        )
+
+
 def _start_dossier_generation(job_id: str) -> None:
     current = _generation_tasks.get(job_id)
     if current is not None and not current.done():
         return
-    task = asyncio.create_task(_run_dossier_generation(job_id))
+    task = asyncio.create_task(
+        _guarded_job_runner(_run_dossier_generation, job_id, "generation_setup_failed"),
+    )
     _generation_tasks[job_id] = task
     task.add_done_callback(lambda completed: _generation_tasks.pop(job_id, None)
                            if _generation_tasks.get(job_id) is completed else None)
@@ -3633,7 +3669,9 @@ async def shutdown_dossier_generation() -> None:
 
 
 def _start_dossier_source(job_id: str) -> None:
-    task = asyncio.create_task(_run_dossier_source(job_id))
+    task = asyncio.create_task(
+        _guarded_job_runner(_run_dossier_source, job_id, "source_setup_failed"),
+    )
     _source_tasks[job_id] = task
     task.add_done_callback(lambda _: _source_tasks.pop(job_id, None))
 
@@ -4546,20 +4584,205 @@ _VISUAL_SWEEP_EXECUTOR = ThreadPoolExecutor(
     max_workers=1,
     thread_name_prefix="content-lab-visual-admission",
 )
+_VISUAL_SWEEP_BACKOFF_SECONDS = 30.0
+_VISUAL_SWEEP_MAX_BACKOFF_SECONDS = 30.0 * 60
+# The first failed scan may be followed by this many fresh sweep attempts for
+# the same exact output. Only closed, deterministic failures tied to those
+# exact bytes consume this terminal budget. Provider and unknown exceptions
+# remain retryable because terminalizing paid supply during an outage is worse
+# than retaining it behind bounded backoff.
+_VISUAL_SWEEP_MAX_RETRIES = 5
+_VISUAL_SWEEP_PERSISTENT_ALERT = "visual_admission_persistent_failure"
+_VISUAL_OUTPUT_FAILURE_REASONS = frozenset({
+    "artifact_identity_mismatch",
+    "artifact_schema_invalid",
+    "frame_budget_exceeded",
+    "frame_count_mismatch",
+    "incomplete_decode",
+    "incomplete_or_changed_artifact",
+    "ocr_response_invalid",
+    "vision_input_budget_exceeded",
+})
+
+
+def _visual_sweep_item_key(index: int, clip: dict[str, Any]) -> str:
+    return f"{index}:{clip.get('sha256')}:{clip.get('bytes')}"
+
+
+def _visual_sweep_failure_is_output_specific(error: Exception) -> bool:
+    """Return true only for a closed set of deterministic byte-bound faults.
+
+    Provider, transport, timeout, rate-limit, HTTP 5xx and unknown exceptions
+    deliberately default to transient. New exception shapes cannot silently
+    acquire authority to discard paid output.
+    """
+    return str(error) in _VISUAL_OUTPUT_FAILURE_REASONS
+
+
+def _visual_sweep_backoff_seconds(failure_count: int) -> float:
+    exponent = min(max(failure_count - 1, 0), 6)
+    return min(
+        _VISUAL_SWEEP_MAX_BACKOFF_SECONDS,
+        _VISUAL_SWEEP_BACKOFF_SECONDS * (2 ** exponent),
+    )
+
+
+def _observe_visual_sweep_failure(completed, job_id: str, sweep_id: str) -> None:
+    """Consume a finished sweep's result so no exception sits unobserved."""
+    try:
+        completed.result()
+    except Exception as error:
+        log.exception("visual admission sweep failed job=%s sweep=%s", job_id, sweep_id)
+        _record_visual_sweep_failure(job_id, sweep_id, error)
+
+
+def _record_visual_sweep_failure(job_id: str, sweep_id: str, error: Exception) -> None:
+    """Durably mark a failed sweep so the next poll backs off instead of
+    immediately and silently resubmitting the same failing operation."""
+    with lock_for(_jobs_path()):
+        store = _load_jobs()
+        job = store["jobs"].get(job_id)
+        if job is None or job.get("visualAdmissionSweep", {}).get("id") != sweep_id:
+            return
+        sweep = dict(job.get("visualAdmissionSweep") or {})
+        item_key = sweep.get("itemKey")
+        index = sweep.get("outputIndex")
+        if not isinstance(item_key, str) or not isinstance(index, int):
+            return
+        clips = job.get("clips", [])
+        if not 0 <= index < min(100, len(clips)):
+            return
+        clip = clips[index]
+        if item_key != _visual_sweep_item_key(index, clip):
+            return
+        prior_decision = job.get("visualAdmission", {}).get(str(index), {})
+        if (
+            prior_decision.get("reason") == "scan_failure_retry_exhausted"
+            and prior_decision.get("sha256") == clip.get("sha256")
+            and prior_decision.get("bytes") == clip.get("bytes")
+        ):
+            return
+        failures = dict(job.get("visualAdmissionFailures") or {})
+        previous = failures.get(item_key)
+        count = int(previous.get("count") or 0) + 1 if isinstance(previous, dict) else 1
+        output_specific = _visual_sweep_failure_is_output_specific(error)
+        terminal_count = (
+            int(previous.get("terminalFailureCount") or 0)
+            if isinstance(previous, dict)
+            else 0
+        ) + int(output_specific)
+        failed_at = datetime.now(timezone.utc).isoformat()
+        failures[item_key] = {
+            "count": count,
+            "terminalFailureCount": terminal_count,
+            "failureClass": "output_specific" if output_specific else "transient",
+            "firstFailedAt": (
+                previous.get("firstFailedAt")
+                if isinstance(previous, dict) and previous.get("firstFailedAt")
+                else failed_at
+            ),
+            "lastFailedAt": failed_at,
+            "lastError": str(error)[:300],
+        }
+        job["visualAdmissionFailures"] = failures
+        sweep.update({
+            "id": sweep_id,
+            "runtime": _VISUAL_RUNTIME,
+            "running": False,
+            "scanFailures": count,
+            "terminalScanFailures": terminal_count,
+            "scanError": str(error)[:300],
+            "scanFailureClass": "output_specific" if output_specific else "transient",
+            "scanFailedAt": failed_at,
+            "scanBackoffSeconds": _visual_sweep_backoff_seconds(count),
+        })
+        if count > _VISUAL_SWEEP_MAX_RETRIES:
+            log.error(
+                "%s job=%s output=%s failures=%s class=%s",
+                _VISUAL_SWEEP_PERSISTENT_ALERT,
+                job_id,
+                index,
+                count,
+                sweep["scanFailureClass"],
+            )
+        if terminal_count > _VISUAL_SWEEP_MAX_RETRIES:
+            from services.visual_admission import pending_decision
+
+            decision = pending_decision(
+                page_id=job["pageId"],
+                job_id=job_id,
+                index=index,
+                sha256=clip["sha256"],
+                byte_count=clip["bytes"],
+            )
+            decision["reason"] = "scan_failure_retry_exhausted"
+            decision["model"]["reason"] = "scanner_exception_retry_exhausted"
+            job.setdefault("visualAdmission", {})[str(index)] = decision
+            sweep["terminalReason"] = "scan_failure_retry_exhausted"
+            log.error(
+                "visual admission scan terminal job=%s output=%s failures=%s total_failures=%s",
+                job_id,
+                index,
+                terminal_count,
+                count,
+            )
+        job["visualAdmissionSweep"] = sweep
+        _save_jobs(store)
+
+
+def _visual_sweep_backed_off(sweep: dict, now: datetime) -> bool:
+    try:
+        failed_at = datetime.fromisoformat(sweep["scanFailedAt"])
+    except (KeyError, TypeError, ValueError):
+        return False
+    failure_count = sweep.get("scanFailures")
+    backoff = sweep.get("scanBackoffSeconds")
+    if not isinstance(backoff, (int, float)) or backoff < 0:
+        backoff = _visual_sweep_backoff_seconds(
+            failure_count if isinstance(failure_count, int) else 1,
+        )
+    return (now - failed_at).total_seconds() < backoff
 
 
 def _submit_visual_sweep(job_id: str, sweep_id: str):
-    """Queue sweeps behind the one process-wide scanner instead of racing it."""
-    return _VISUAL_SWEEP_EXECUTOR.submit(_finish_visual_sweep, job_id, sweep_id)
+    """Queue sweeps behind the one process-wide scanner instead of racing it.
+
+    The returned Future is observed by a done-callback that consumes its
+    result, so a parser/manifest/storage exception can never disappear into an
+    unobserved Future and silently resubmit the same failing operation forever.
+    """
+    future = _VISUAL_SWEEP_EXECUTOR.submit(_finish_visual_sweep, job_id, sweep_id)
+    future.add_done_callback(
+        lambda completed: _observe_visual_sweep_failure(completed, job_id, sweep_id),
+    )
+    return future
 
 
-def _mark_visual_sweep(job_id: str, sweep_id: str, running: bool) -> bool:
+def _mark_visual_sweep(
+    job_id: str,
+    sweep_id: str,
+    running: bool,
+    *,
+    item_key: str | None = None,
+    output_index: int | None = None,
+) -> bool:
     with lock_for(_jobs_path()):
         store = _load_jobs()
         job = store["jobs"].get(job_id)
         if job is None or job.get("visualAdmissionSweep", {}).get("id") != sweep_id:
             return False
-        job["visualAdmissionSweep"] = {"id": sweep_id, "runtime": _VISUAL_RUNTIME, "running": running, "updatedAt": datetime.now(timezone.utc).isoformat()}
+        sweep = dict(job.get("visualAdmissionSweep") or {})
+        sweep.update({
+            "id": sweep_id,
+            "runtime": _VISUAL_RUNTIME,
+            "running": running,
+            "updatedAt": datetime.now(timezone.utc).isoformat(),
+        })
+        if item_key is not None:
+            sweep["itemKey"] = item_key
+        if output_index is not None:
+            sweep["outputIndex"] = output_index
+        job["visualAdmissionSweep"] = sweep
         _save_jobs(store)
         return True
 
@@ -4594,8 +4817,15 @@ def _finish_visual_sweep(job_id: str, sweep_id: str) -> None:
         if selected is None:
             return
         index, clip = selected
+        item_key = _visual_sweep_item_key(index, clip)
         path = (root / clip["path"]).resolve()
-        if not _mark_visual_sweep(job_id, sweep_id, True):
+        if not _mark_visual_sweep(
+            job_id,
+            sweep_id,
+            True,
+            item_key=item_key,
+            output_index=index,
+        ):
             return
         if root not in path.parents or not path.is_file():
             decision = pending_decision(page_id=job["pageId"], job_id=job_id, index=index,
@@ -4610,6 +4840,14 @@ def _finish_visual_sweep(job_id: str, sweep_id: str) -> None:
             if current is None:
                 return
             current.setdefault("visualAdmission", {})[str(index)] = decision
+            failures = current.get("visualAdmissionFailures")
+            if isinstance(failures, dict) and item_key in failures:
+                failures = dict(failures)
+                failures.pop(item_key, None)
+                if failures:
+                    current["visualAdmissionFailures"] = failures
+                else:
+                    current.pop("visualAdmissionFailures", None)
             _save_jobs(store)
         if decision["reason"] != "scan_pending" and any(
             not final_for(current, candidate_index, candidate)
@@ -4676,6 +4914,8 @@ def job_visual_admission(
         sweep = current.get("visualAdmissionSweep", {})
         active = sweep.get("runtime") == _VISUAL_RUNTIME and sweep.get("running") is True
         if not active:
+            if _visual_sweep_backed_off(sweep, now):
+                return decision
             sweep_id = _secrets.token_hex(16)
             current["visualAdmissionSweep"] = {"id": sweep_id, "runtime": _VISUAL_RUNTIME, "running": True, "updatedAt": now.isoformat()}
             _save_jobs(store)
