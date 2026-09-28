@@ -2324,7 +2324,12 @@ def _source_dna_active_master_hashes() -> set[str]:
     return hashes
 
 
-def _evict_source_dna_cache(cache_root: Path, pinned: set[str]) -> None:
+def _evict_source_dna_cache(
+    cache_root: Path,
+    pinned: set[str],
+    *,
+    reserve_bytes: int = 0,
+) -> None:
     """Atomically evict oldest unreferenced masters until the cache fits budget.
 
     Reference-aware: files whose name (a SHA256) is pinned are never removed.
@@ -2333,21 +2338,29 @@ def _evict_source_dna_cache(cache_root: Path, pinned: set[str]) -> None:
     or unreadable entry must not stop the rest of the sweep.
     """
     budget = _source_dna_cache_budget()
-    entries = sorted(
-        (path for path in cache_root.glob("*.mp4") if path.is_file()),
-        key=lambda path: path.stat().st_mtime_ns,
-    )
-    total = sum(path.stat().st_size for path in entries)
-    for path in entries:
-        if total <= budget:
+    entries: list[tuple[int, int, Path]] = []
+    for path in cache_root.glob("*.mp4"):
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        if path.is_file():
+            entries.append((stat.st_mtime_ns, stat.st_size, path))
+    entries.sort()
+    total = sum(size for _mtime, size, _path in entries)
+    for _mtime, size, path in entries:
+        if total + reserve_bytes <= budget:
             break
         if path.name[:-4] in pinned:
             continue
         try:
-            total -= path.stat().st_size
             path.unlink()
+        except FileNotFoundError:
+            total -= size
         except OSError:
             continue
+        else:
+            total -= size
 
 
 async def _cached_source_master(page_id: str, master: Any, job_id: str) -> Path:
@@ -2356,12 +2369,15 @@ async def _cached_source_master(page_id: str, master: Any, job_id: str) -> Path:
     target = cache_root / f"{master.sha256}.mp4"
     lock = _source_cache_locks.setdefault(master.sha256, asyncio.Lock())
     async with lock:
+        pinned = _source_dna_active_master_hashes() | source_dna_master_hashes() | {master.sha256}
         if (
             target.is_file()
             and target.stat().st_size == master.bytes
             and _sha256(target) == master.sha256
         ):
+            _evict_source_dna_cache(cache_root, pinned)
             return target
+        _evict_source_dna_cache(cache_root, pinned, reserve_bytes=master.bytes)
         partial = cache_root / f".{master.sha256}.{job_id}.part"
         partial.unlink(missing_ok=True)
         url = (
@@ -2391,10 +2407,7 @@ async def _cached_source_master(page_id: str, master: Any, job_id: str) -> Path:
             if byte_count != master.bytes or digest.hexdigest() != master.sha256:
                 raise RuntimeError("source_dna_master_hash_mismatch")
             os.replace(partial, target)
-            _evict_source_dna_cache(
-                cache_root,
-                _source_dna_active_master_hashes() | source_dna_master_hashes(),
-            )
+            _evict_source_dna_cache(cache_root, pinned)
             return target
         finally:
             partial.unlink(missing_ok=True)
