@@ -1063,7 +1063,7 @@ SOURCE_IMPORT_ACTIVE_DEADLINE_SECONDS = 6 * 60 * 60
 IDEMPOTENCY_KEY_RE = re.compile(r"^[A-Za-z0-9_.:-]{8,200}$")
 JOB_TOKEN_BYTES = 24
 GENERATION_ACTIVE_STATUSES = {"queued", "running"}
-SOURCE_DNA_UNAVAILABLE_STATUSES = {*GENERATION_ACTIVE_STATUSES, "completed"}
+SOURCE_DNA_UNAVAILABLE_STATUSES = compaction.SOURCE_DNA_UNAVAILABLE_STATUSES
 ASYNC_SOURCE_KINDS = {
     "generated", "dossier_source_dna", "truck_master_recovery",
     "page_source_import", "syzygy_slideshow",
@@ -1098,6 +1098,20 @@ def _jobs_path() -> Path:
 
 def _empty_jobs() -> dict[str, Any]:
     return {"version": 1, "jobs": {}, "byIdempotency": {}, "served": {}}
+
+
+def _idempotency_job_id(store: dict[str, Any], key: str) -> Any:
+    """Return a live job id, or refuse a key whose job was archived."""
+    existing_id = store["byIdempotency"].get(key)
+    if existing_id is not None and existing_id not in store["jobs"]:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "idempotency_key_archived",
+                "jobId": existing_id,
+            },
+        )
+    return existing_id
 
 
 # Writer-intent signal (Tides review of PR #185, round 2, defect 3): a
@@ -1516,13 +1530,32 @@ def run_compaction_once(
     batch_size: int = compaction.DEFAULT_BATCH_SIZE,
 ) -> dict[str, Any]:
     """Compact one bounded batch under the writer lock. Returns a summary."""
+    expected_path = _jobs_path()
+    assert path == expected_path, "compaction path must be the canonical jobs store"
     now = now or datetime.now(timezone.utc)
     with lock_for(path):
         store = _load_jobs()
         before = len(store.get("jobs", {}))
-        new_store, archived = compaction.compact_job_store(
-            store, now, retention_days=retention_days, batch_size=batch_size,
-        )
+        try:
+            if compaction.ARCHIVE_INDEX_KEY not in store:
+                archives = [
+                    candidate
+                    for candidate in path.parent.glob(f"{path.name}.archive-*.jsonl")
+                    if candidate.is_file()
+                ]
+                if archives:
+                    raise compaction.ArchiveIndexUnreadable(
+                        f"missing_with_archives count={len(archives)}",
+                    )
+            new_store, archived = compaction.compact_job_store(
+                store, now, retention_days=retention_days, batch_size=batch_size,
+            )
+        except compaction.ArchiveIndexUnreadable as error:
+            log.error(
+                "ALERT-LABJOBSTORE index_unreadable reason=%s",
+                error.reason,
+            )
+            raise
         if not archived:
             return {"archived": 0, "jobs_before": before, "jobs_after": before,
                     "tmp_swept": _sweep_stale_compaction_tmps(path)}
@@ -3645,7 +3678,7 @@ async def create_source_import(
     restart_existing = False
     with lock_for(_jobs_path()):
         store = _load_jobs()
-        existing_id = store["byIdempotency"].get(idempotency_key)
+        existing_id = _idempotency_job_id(store, idempotency_key)
         if existing_id and existing_id in store["jobs"]:
             existing = store["jobs"][existing_id]
             if (
@@ -3906,7 +3939,7 @@ async def create_job(
     start_slideshow = False
     with lock_for(_jobs_path()):
         store = _load_jobs()
-        existing_id = store["byIdempotency"].get(idempotency_key)
+        existing_id = _idempotency_job_id(store, idempotency_key)
         if existing_id and existing_id in store["jobs"]:
             existing = store["jobs"][existing_id]
             # Legacy rows predate request fingerprints; preserve their replay

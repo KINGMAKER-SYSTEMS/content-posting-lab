@@ -9,7 +9,9 @@ is concurrent-safe with writes, no live job is dropped, and the no-repeat
 index is mutation-proven.
 """
 
+import asyncio
 import json
+import logging
 import os
 import threading
 import time
@@ -18,6 +20,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from fastapi import HTTPException
 
 from routers import control_plane as cp
 from services import job_store_compaction as c
@@ -80,7 +83,7 @@ def test_compact_archives_only_terminal_old_jobs():
     assert archived_ids == {"old-completed", "old-failed", "old-cancelled"}
     assert set(new_store["jobs"]) == {"recent-completed", "active"}
     assert "old-completed" not in new_store["byIdempotency"]
-    assert "k-old" not in new_store["byIdempotency"]
+    assert new_store["byIdempotency"]["k-old"] == "old-completed"
     assert new_store["byIdempotency"]["k-recent"] == "recent-completed"
     assert new_store["byIdempotency"]["k-active"] == "active"
 
@@ -253,6 +256,30 @@ def test_generated_dedupe_unchanged_after_compaction(job_path):
         cp._claim_unique_generated_clip("active", manifest)
 
 
+def test_failed_clip_reader_changes_after_compaction(job_path):
+    store = _empty()
+    store["jobs"]["old-failed"] = {
+        "jobId": "old-failed", "pageId": "acct:p", "sourceKind": "generated",
+        "status": "failed", "createdAt": _old(), "completedAt": _old(),
+        "clips": [{"sha256": SHA}],
+    }
+    store["jobs"]["active"] = {
+        "jobId": "active", "pageId": "acct:p", "sourceKind": "generated",
+        "status": "queued", "createdAt": _recent(), "clips": [],
+    }
+    manifest = {"sha256": SHA, "promptHash": SHA2, "generationIndex": 0}
+
+    # A failed job releases its bytes while it remains in the live store.
+    _write(job_path, store)
+    cp._claim_unique_generated_clip("active", dict(manifest))
+
+    # Archiving that failed job must not widen the live reader's predicate.
+    new_store, archived = c.compact_job_store(store, _now())
+    assert [job["jobId"] for job in archived] == ["old-failed"]
+    _write(job_path, new_store)
+    cp._claim_unique_generated_clip("active", dict(manifest))
+
+
 def test_no_repeat_index_mutation_red(job_path):
     # The index is what prevents replaying an archived clip. Drop it and the
     # exact same bytes are admitted again (the mutation red).
@@ -329,6 +356,107 @@ def test_provider_health_carried_forward_matches_from_scratch():
 
 
 # ── K4: atomic / concurrent-safe / crash-safe ─────────────────────────────
+
+def _old_completed(job_id):
+    return {
+        "jobId": job_id,
+        "status": "completed",
+        "createdAt": _old(),
+        "completedAt": _old(),
+        "pageId": "acct:p",
+    }
+
+
+def test_version_mismatch_silently_erases_prior_archive_facts(
+    job_path, caplog,
+):
+    store = _empty()
+    store["archiveIndex"] = {
+        **c.empty_index(),
+        "version": 999,
+        "usedClipSha256": {"acct:prior": [SHA]},
+    }
+    store["jobs"]["new-old"] = _old_completed("new-old")
+    _write(job_path, store)
+    before = job_path.read_bytes()
+
+    with caplog.at_level(logging.ERROR, logger="control_plane"):
+        with pytest.raises(RuntimeError, match="index_unreadable"):
+            cp.run_compaction_once(job_path, _now())
+
+    assert job_path.read_bytes() == before
+    assert not c.archive_path_for(job_path, _now()).exists()
+    assert "ALERT-LABJOBSTORE index_unreadable" in caplog.text
+    assert "version=999" in caplog.text
+
+
+def test_non_dict_archive_index_refuses_compaction(job_path, caplog):
+    store = _empty()
+    store["archiveIndex"] = ["corrupt"]
+    store["jobs"]["new-old"] = _old_completed("new-old")
+    _write(job_path, store)
+    before = job_path.read_bytes()
+
+    with caplog.at_level(logging.ERROR, logger="control_plane"):
+        with pytest.raises(RuntimeError, match="index_unreadable"):
+            cp.run_compaction_once(job_path, _now())
+
+    assert job_path.read_bytes() == before
+    assert not c.archive_path_for(job_path, _now()).exists()
+    assert "ALERT-LABJOBSTORE index_unreadable" in caplog.text
+    assert "not_a_dict" in caplog.text
+
+
+def test_absent_archive_index_with_archive_files_refuses(job_path, caplog):
+    store = _empty()
+    store["jobs"]["new-old"] = _old_completed("new-old")
+    _write(job_path, store)
+    archive = c.archive_path_for(job_path, _now())
+    archive.write_text(json.dumps(_old_completed("prior-old")) + "\n", encoding="utf-8")
+    store_before = job_path.read_bytes()
+    archive_before = archive.read_bytes()
+
+    with caplog.at_level(logging.ERROR, logger="control_plane"):
+        with pytest.raises(RuntimeError, match="index_unreadable"):
+            cp.run_compaction_once(job_path, _now())
+
+    assert job_path.read_bytes() == store_before
+    assert archive.read_bytes() == archive_before
+    assert "ALERT-LABJOBSTORE index_unreadable" in caplog.text
+    assert "missing_with_archives" in caplog.text
+
+
+def test_absent_archive_index_without_archive_files_proceeds(job_path):
+    store = _empty()
+    store["jobs"]["first-old"] = _old_completed("first-old")
+    _write(job_path, store)
+
+    result = cp.run_compaction_once(job_path, _now())
+
+    assert result["archived"] == 1
+    assert cp._load_jobs()["archiveIndex"] == c.empty_index()
+    assert c.archive_path_for(job_path, _now()).exists()
+
+
+def test_partial_archive_tail_then_retry_loses_full_archive_record(job_path):
+    store = _empty()
+    store["archiveIndex"] = c.empty_index()
+    record = {**_old_completed("retry-old"), "auditPayload": "must-survive"}
+    store["jobs"][record["jobId"]] = record
+    _write(job_path, store)
+    archive = c.archive_path_for(job_path, _now())
+    archive.write_bytes(
+        (json.dumps(_old_completed("prior-old")) + "\n").encode()
+        + b'{"jobId":"retry-old","auditPayload":"torn'
+    )
+
+    cp.run_compaction_once(job_path, _now())
+
+    parsed = [json.loads(line) for line in archive.read_text().splitlines() if line]
+    by_id = {row["jobId"]: row for row in parsed}
+    assert set(by_id) == {"prior-old", "retry-old"}
+    assert by_id["retry-old"]["auditPayload"] == "must-survive"
+
 
 def test_crash_mid_compaction_archive_idempotent_and_store_valid(job_path):
     store = _empty()
@@ -437,6 +565,174 @@ def test_no_live_path_needed_job_is_dropped(job_path):
     # status/artifacts reads it) both survive.
     assert set(final["jobs"]) == {"active", "recent-completed"}
     assert final["byIdempotency"]["k-active"] == "active"
+
+
+def _archive_job_with_key(job_path, job, key):
+    store = _empty()
+    store["jobs"][job["jobId"]] = job
+    store["byIdempotency"][key] = job["jobId"]
+    compacted, archived = c.compact_job_store(store, _now())
+    assert [row["jobId"] for row in archived] == [job["jobId"]]
+    _write(job_path, compacted)
+
+
+def test_archived_idempotency_key_rejected_by_create_job(
+    job_path, tmp_path, monkeypatch,
+):
+    key = "archived-job-key"
+    archived_id = "archived-generated"
+    _archive_job_with_key(job_path, {
+        **_old_completed(archived_id),
+        "sourceKind": "generated",
+        "idempotencyKey": key,
+    }, key)
+
+    master_pages = {"pageId": "acct:p", "contentEngine": "test_engine"}
+    body = {
+        "pageId": "acct:p",
+        "lane": cp.CONTROL_PLANE_LANE,
+        "engine": "test_engine",
+        "lockedRecipeId": "test:master",
+        "recipeVersion": "v1",
+        "quantity": 1,
+        "constraints": {},
+        "sourceIsolation": None,
+        "policyHash": "sha256:" + "1" * 64,
+        "masterPages": master_pages,
+        "masterPagesHash": "sha256:" + "2" * 64,
+    }
+    recipe = SimpleNamespace(
+        engine="test_engine",
+        recipe_id="test:master",
+        engine_registry_hash="e" * 64,
+        format_contract_version="sha256:" + "f" * 64,
+        material_source="generated",
+        asset_type="video/mp4",
+        executor_version="v1",
+        prompt_catalog_hash="p" * 64,
+        family_name="test",
+        provider_model="test-model",
+        planned_provider_calls=lambda quantity: quantity,
+    )
+    publication = {
+        "engine": "ai_video",
+        "dossierRevision": 1,
+        "recipeSpecHash": "sha256:" + "3" * 64,
+    }
+    monkeypatch.setattr(cp, "require_control_plane_bearer", lambda _auth: None)
+    monkeypatch.setattr(cp, "exact_intent", lambda intent, _hash, **_kwargs: intent)
+    monkeypatch.setattr(
+        cp, "_current_master_pages_intent",
+        lambda _page, intent: (intent, body["masterPagesHash"]),
+    )
+    monkeypatch.setattr(
+        cp, "load_registered_recipe_binding",
+        lambda *_args: ("acct:p", publication),
+    )
+    monkeypatch.setattr(cp, "publication_matches_master_pages", lambda *_args: True)
+    monkeypatch.setattr(cp, "resolve_generation_recipe", lambda _publication: recipe)
+    monkeypatch.setattr(cp, "_truck_master_candidates", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(
+        cp, "plan_prompt_combinations",
+        lambda *_args, **_kwargs: [{"promptHash": SHA}],
+    )
+    monkeypatch.setattr(cp, "_generation_root", lambda: tmp_path / "generation")
+    monkeypatch.setattr(cp, "_start_dossier_generation", lambda _job_id: None)
+    monkeypatch.setitem(cp.PROVIDERS, "test_engine", {"key_id": "test"})
+
+    with pytest.raises(HTTPException) as raised:
+        asyncio.run(cp.create_job(
+            None,
+            x_rt_page_id="acct:p",
+            x_rt_lane=cp.CONTROL_PLANE_LANE,
+            idempotency_key=key,
+            authorization="Bearer test",
+            body=body,
+        ))
+
+    assert raised.value.status_code == 409
+    assert raised.value.detail == {
+        "code": "idempotency_key_archived",
+        "jobId": archived_id,
+    }
+    final = cp._load_jobs()
+    assert final["jobs"] == {}
+    assert final["byIdempotency"][key] == archived_id
+
+
+def test_archived_idempotency_key_rejected_by_source_import(
+    job_path, tmp_path, monkeypatch,
+):
+    key = "archived-import-key"
+    archived_id = "archived-import"
+    _archive_job_with_key(job_path, {
+        **_old_completed(archived_id),
+        "sourceKind": "page_source_import",
+        "idempotencyKey": key,
+    }, key)
+
+    master_pages = {
+        "pageId": "acct:p",
+        "contentEngine": "sourced_video",
+        "contentNiche": "niche",
+    }
+    body = {
+        "schema": cp.SOURCE_IMPORT_SCHEMA,
+        "pageId": "acct:p",
+        "format": "test-format",
+        "sourceUrl": "https://example.com/source.mp4",
+        "masterPages": master_pages,
+        "masterPagesHash": "sha256:" + "2" * 64,
+    }
+    contract = SimpleNamespace(
+        definition_status="complete",
+        content_niche="niche",
+        content_engine="sourced_video",
+        material_source="source_library",
+        asset_type="video/mp4",
+        contract_hash="f" * 64,
+    )
+    profile = SimpleNamespace(
+        execution_status="commissioned",
+        content_niche="niche",
+        content_engine="sourced_video",
+        material_source="source_library",
+        asset_type="video/mp4",
+        format_contract_version="sha256:" + "f" * 64,
+    )
+
+    async def validated_source_url(value):
+        return value
+
+    monkeypatch.setattr(cp, "require_control_plane_bearer", lambda _auth: None)
+    monkeypatch.setattr(cp, "_validated_source_url", validated_source_url)
+    monkeypatch.setattr(cp, "exact_intent", lambda intent, _hash, **_kwargs: intent)
+    monkeypatch.setattr(
+        cp, "_current_master_pages_intent",
+        lambda _page, intent: (intent, body["masterPagesHash"]),
+    )
+    monkeypatch.setattr(cp, "load_format_contracts", lambda: ({"test-format": contract}, "h"))
+    monkeypatch.setattr(cp, "load_engine_registry", lambda: ({"test-format": profile}, "h"))
+    monkeypatch.setattr(cp, "_generation_root", lambda: tmp_path / "generation")
+    monkeypatch.setattr(cp, "_start_page_source_import", lambda _job_id: None)
+
+    with pytest.raises(HTTPException) as raised:
+        asyncio.run(cp.create_source_import(
+            x_rt_page_id="acct:p",
+            x_rt_lane=cp.CONTROL_PLANE_LANE,
+            idempotency_key=key,
+            authorization="Bearer test",
+            body=body,
+        ))
+
+    assert raised.value.status_code == 409
+    assert raised.value.detail == {
+        "code": "idempotency_key_archived",
+        "jobId": archived_id,
+    }
+    final = cp._load_jobs()
+    assert final["jobs"] == {}
+    assert final["byIdempotency"][key] == archived_id
 
 
 # ── K6: performance at 20x growth with compaction on ──────────────────────

@@ -13,8 +13,9 @@ Design (see zcode/lab-jobstore-compaction-criteria.md, K1-K8):
   soon after terminal (no long poll), and the §42 provider self-report needs
   >=8 days of attempt rows; 30 covers both with room.
 * Archived jobs are appended, one JSON object per line, to an append-only
-  ``control_plane_jobs.archive-<YYYYMM>.jsonl`` on the same volume. Never
-  deleted, never rewritten.
+  ``control_plane_jobs.archive-<YYYYMM>.jsonl`` on the same volume. Complete
+  records are never deleted or rewritten; a torn final frame is truncated
+  before retrying its full record.
 * Every permanent fact a live reader still needs from an archived job is
   folded into a compact durable index stored in the store itself under
   ``archiveIndex`` (version 1). The readers merge that index, so "full store"
@@ -37,12 +38,16 @@ compacted file correctly. No other snapshot state is touched.
 from __future__ import annotations
 
 import json
+import logging
 import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
 TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled"})
+# Shared with every live no-repeat reader. Because archived jobs are terminal,
+# membership in this set is effectively completed-only during index folding.
+SOURCE_DNA_UNAVAILABLE_STATUSES = frozenset({"queued", "running", "completed"})
 ARCHIVE_INDEX_KEY = "archiveIndex"
 ARCHIVE_INDEX_VERSION = 1
 DEFAULT_RETENTION_DAYS = 30
@@ -59,6 +64,15 @@ PROVIDER_ATTEMPT_RETENTION_DAYS = 8
 TRUCK_RECIPE_ID = "truck-scenic:master"
 
 _SHA256_RE = __import__("re").compile(r"[0-9a-f]{64}")
+log = logging.getLogger("job_store_compaction")
+
+
+class ArchiveIndexUnreadable(RuntimeError):
+    """Compaction cannot safely preserve the existing archive authority."""
+
+    def __init__(self, reason: str):
+        self.reason = reason
+        super().__init__(f"index_unreadable {reason}")
 
 
 def _parse_iso(value: Any) -> datetime | None:
@@ -179,9 +193,11 @@ def extract_index_entries(job: dict[str, Any]) -> dict[str, Any]:
             if isinstance(sha256, str) and _SHA256_RE.fullmatch(sha256):
                 entries["truckRecoveryMasters"].append(sha256)
 
-    # Every completed job's delivered bytes are a permanent no-repeat fact.
-    for digest in _clip_sha256s(job):
-        entries["usedClipSha256"].append((page_id, digest))
+    # Use the live readers' exact status predicate. Archived jobs are terminal,
+    # so only completed jobs can contribute permanent delivered-byte facts.
+    if job.get("status") in SOURCE_DNA_UNAVAILABLE_STATUSES:
+        for digest in _clip_sha256s(job):
+            entries["usedClipSha256"].append((page_id, digest))
 
     # Completed generated truck renders remain live re-crop candidates; keep the
     # full clip manifest the reader needs. Non-truck renders keep only dedupe.
@@ -416,10 +432,20 @@ def compact_job_store(
 
     jobs = dict(store.get("jobs", {}))
     by_idem = dict(store.get("byIdempotency", {}))
-    index = store.get(ARCHIVE_INDEX_KEY)
-    index = json.loads(json.dumps(index)) if isinstance(index, dict) else empty_index()
-    if index.get("version") != ARCHIVE_INDEX_VERSION:
+    if ARCHIVE_INDEX_KEY not in store:
         index = empty_index()
+    else:
+        current_index = store[ARCHIVE_INDEX_KEY]
+        if not isinstance(current_index, dict):
+            raise ArchiveIndexUnreadable(
+                f"not_a_dict type={type(current_index).__name__}",
+            )
+        if current_index.get("version") != ARCHIVE_INDEX_VERSION:
+            # A future version is a migration, never an empty-index reset.
+            raise ArchiveIndexUnreadable(
+                f"version={current_index.get('version')!r}",
+            )
+        index = json.loads(json.dumps(current_index))
 
     archived: list[dict[str, Any]] = []
     for job_id in archived_ids:
@@ -427,9 +453,6 @@ def compact_job_store(
         archived.append(job)
         fold_into_index(index, job)
         del jobs[job_id]
-        for key, mapped in list(by_idem.items()):
-            if mapped == job_id:
-                del by_idem[key]
 
     # Normalize lists for deterministic on-disk shape.
     for page in index["sourceIdentities"]:
@@ -455,7 +478,7 @@ def archive_lines_for(records: list[dict[str, Any]]) -> str:
 
 
 def existing_archive_job_ids(path: Path) -> set[str]:
-    """Job ids already present in an archive file (tolerant of a partial tail)."""
+    """Job ids in the complete-line archive view prepared by the appender."""
     if not path.exists():
         return set()
     ids: set[str] = set()
@@ -476,6 +499,47 @@ def existing_archive_job_ids(path: Path) -> set[str]:
     return ids
 
 
+def _repair_partial_archive_tail(path: Path) -> int:
+    """Truncate an incomplete final JSONL frame and return removed bytes."""
+    if not path.exists():
+        return 0
+    with open(path, "r+b") as handle:
+        handle.seek(0, os.SEEK_END)
+        end = handle.tell()
+        if end == 0:
+            return 0
+        handle.seek(end - 1)
+        if handle.read(1) == b"\n":
+            return 0
+
+        cursor = end
+        last_newline = -1
+        while cursor:
+            block_size = min(64 * 1024, cursor)
+            cursor -= block_size
+            handle.seek(cursor)
+            block = handle.read(block_size)
+            offset = block.rfind(b"\n")
+            if offset >= 0:
+                last_newline = cursor + offset
+                break
+        repaired_size = last_newline + 1
+        removed = end - repaired_size
+        handle.truncate(repaired_size)
+        handle.flush()
+        os.fsync(handle.fileno())
+    log.warning("repaired partial archive tail bytes=%d path=%s", removed, path)
+    return removed
+
+
+def _fsync_directory(path: Path) -> None:
+    directory_fd = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
+
+
 def append_archive_records(
     store_path: Path,
     records: list[dict[str, Any]],
@@ -489,14 +553,18 @@ def append_archive_records(
     if not records:
         return 0
     archive = archive_path_for(store_path, when)
+    archive.parent.mkdir(parents=True, exist_ok=True)
+    created = not archive.exists()
+    _repair_partial_archive_tail(archive)
     known = existing_archive_job_ids(archive)
     to_write = [record for record in records if record.get("jobId") not in known]
     if not to_write:
         return 0
-    archive.parent.mkdir(parents=True, exist_ok=True)
     payload = archive_lines_for(to_write)
     with open(archive, "a", encoding="utf-8") as handle:
         handle.write(payload)
         handle.flush()
         os.fsync(handle.fileno())
+    if created:
+        _fsync_directory(archive.parent)
     return len(to_write)
