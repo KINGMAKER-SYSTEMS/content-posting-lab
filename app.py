@@ -234,7 +234,7 @@ _APP_API_KEY = os.getenv("APP_API_KEY")
 # /api/miniapp/* verifies Telegram initData (HMAC over the bot token).
 # /api/telegram/* is NOT exempt: the bot long-polls (no webhook route), and the
 # router can replace the bot token, repoint the staging group and send files.
-_AUTH_SKIP = ("/api/health", "/api/ready", "/api/miniapp/")
+_AUTH_SKIP = ("/api/health", "/api/miniapp/")
 
 
 @app.middleware("http")
@@ -348,7 +348,7 @@ async def ready_check():
     """Readiness is separate from liveness: /api/health always answers 200 when
     the process is up, but /api/ready fails non-2xx when a configured worker
     lane did not start or has no live worker."""
-    ready, detail = post_render_readiness()
+    ready, detail = await post_render_readiness()
     if not ready:
         return JSONResponse(status_code=503, content={"status": "unavailable", **detail})
     return {"status": "ok", **detail}
