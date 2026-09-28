@@ -830,3 +830,101 @@ def test_visual_sweep_backs_off_after_recorded_failure(monkeypatch, tmp_path):
     assert result.status_code == 200
     assert result.json()['reason'] == 'scan_pending'
     assert submitted == []
+
+
+def _visual_sweep_fixture(monkeypatch, tmp_path):
+    from routers import control_plane as cp
+
+    path = tmp_path / 'clip.mp4'
+    path.write_bytes(b'fixture')
+    clip = {
+        'path': path.name,
+        'sha256': hashlib.sha256(path.read_bytes()).hexdigest(),
+        'bytes': path.stat().st_size,
+    }
+    job_id = 'cpl-fedcba9876543210'
+    monkeypatch.setattr(cp, '_jobs_path', lambda: tmp_path / 'jobs.json')
+    cp.atomic_save(cp._jobs_path(), {'jobs': {job_id: {
+        'pageId': 'acct:test', 'artifactRoot': str(tmp_path),
+        'clips': [clip],
+    }}})
+    return cp, job_id, clip
+
+
+def _run_failed_visual_sweep(cp, job_id, sweep_id):
+    with cp.lock_for(cp._jobs_path()):
+        store = cp._load_jobs()
+        store['jobs'][job_id]['visualAdmissionSweep'] = {
+            'id': sweep_id,
+            'runtime': cp._VISUAL_RUNTIME,
+            'running': True,
+        }
+        cp._save_jobs(store)
+    with pytest.raises(RuntimeError, match='vision provider down') as caught:
+        cp._finish_visual_sweep(job_id, sweep_id)
+    cp._record_visual_sweep_failure(job_id, sweep_id, caught.value)
+
+
+def test_visual_sweep_retry_limit_persists_across_sweeps_and_terminalizes_item(
+    monkeypatch, tmp_path, caplog,
+):
+    import logging
+
+    cp, job_id, clip = _visual_sweep_fixture(monkeypatch, tmp_path)
+    monkeypatch.setattr(cp, '_VISUAL_SWEEP_MAX_RETRIES', 2, raising=False)
+    monkeypatch.setattr(
+        gate,
+        'scan_artifact',
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError('vision provider down')),
+    )
+
+    with caplog.at_level(logging.ERROR):
+        for attempt in range(1, 3):
+            _run_failed_visual_sweep(cp, job_id, f'sweep-{attempt}')
+            job = cp._load_jobs()['jobs'][job_id]
+            assert job.get('visualAdmission', {}).get('0') is None
+        _run_failed_visual_sweep(cp, job_id, 'sweep-3')
+
+    job = cp._load_jobs()['jobs'][job_id]
+    item_key = f"0:{clip['sha256']}:{clip['bytes']}"
+    assert job['visualAdmissionFailures'][item_key]['count'] == 3
+    decision = job['visualAdmission']['0']
+    assert decision['verdict'] == 'unavailable'
+    assert decision['reason'] == 'scan_failure_retry_exhausted'
+    assert decision['sha256'] == clip['sha256']
+    assert caplog.text.count('visual admission scan terminal') == 1
+
+
+def test_successful_visual_sweep_resets_persisted_item_failures(monkeypatch, tmp_path):
+    cp, job_id, clip = _visual_sweep_fixture(monkeypatch, tmp_path)
+    monkeypatch.setattr(cp, '_VISUAL_SWEEP_MAX_RETRIES', 2, raising=False)
+    monkeypatch.setattr(
+        gate,
+        'scan_artifact',
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError('vision provider down')),
+    )
+    _run_failed_visual_sweep(cp, job_id, 'sweep-failed')
+
+    item_key = f"0:{clip['sha256']}:{clip['bytes']}"
+    failed = cp._load_jobs()['jobs'][job_id]
+    assert failed['visualAdmissionFailures'][item_key]['count'] == 1
+
+    decision = gate.pending_decision(
+        page_id='acct:test', job_id=job_id, index=0,
+        sha256=clip['sha256'], byte_count=clip['bytes'],
+    )
+    decision.update(verdict='clean', reason='full_frame_ocr_and_vision_clean')
+    monkeypatch.setattr(gate, 'scan_artifact', lambda *args, **kwargs: decision)
+    with cp.lock_for(cp._jobs_path()):
+        store = cp._load_jobs()
+        store['jobs'][job_id]['visualAdmissionSweep'] = {
+            'id': 'sweep-success',
+            'runtime': cp._VISUAL_RUNTIME,
+            'running': True,
+        }
+        cp._save_jobs(store)
+    cp._finish_visual_sweep(job_id, 'sweep-success')
+
+    succeeded = cp._load_jobs()['jobs'][job_id]
+    assert item_key not in succeeded.get('visualAdmissionFailures', {})
+    assert succeeded['visualAdmission']['0']['verdict'] == 'clean'

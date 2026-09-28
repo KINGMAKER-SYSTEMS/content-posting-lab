@@ -4499,6 +4499,15 @@ _VISUAL_SWEEP_EXECUTOR = ThreadPoolExecutor(
     thread_name_prefix="content-lab-visual-admission",
 )
 _VISUAL_SWEEP_BACKOFF_SECONDS = 30.0
+# The first failed scan may be followed by this many fresh sweep attempts for
+# the same exact output. The next failure becomes a stable terminal decision,
+# preventing polling from feeding one deterministic exception to the scanner
+# forever while still leaving a generous transient-recovery window.
+_VISUAL_SWEEP_MAX_RETRIES = 5
+
+
+def _visual_sweep_item_key(index: int, clip: dict[str, Any]) -> str:
+    return f"{index}:{clip.get('sha256')}:{clip.get('bytes')}"
 
 
 def _observe_visual_sweep_failure(completed, job_id: str, sweep_id: str) -> None:
@@ -4519,14 +4528,60 @@ def _record_visual_sweep_failure(job_id: str, sweep_id: str, error: Exception) -
         if job is None or job.get("visualAdmissionSweep", {}).get("id") != sweep_id:
             return
         sweep = dict(job.get("visualAdmissionSweep") or {})
+        item_key = sweep.get("itemKey")
+        index = sweep.get("outputIndex")
+        if not isinstance(item_key, str) or not isinstance(index, int):
+            return
+        clips = job.get("clips", [])
+        if not 0 <= index < min(100, len(clips)):
+            return
+        clip = clips[index]
+        if item_key != _visual_sweep_item_key(index, clip):
+            return
+        prior_decision = job.get("visualAdmission", {}).get(str(index), {})
+        if (
+            prior_decision.get("reason") == "scan_failure_retry_exhausted"
+            and prior_decision.get("sha256") == clip.get("sha256")
+            and prior_decision.get("bytes") == clip.get("bytes")
+        ):
+            return
+        failures = dict(job.get("visualAdmissionFailures") or {})
+        previous = failures.get(item_key)
+        count = int(previous.get("count") or 0) + 1 if isinstance(previous, dict) else 1
+        failures[item_key] = {
+            "count": count,
+            "lastFailedAt": datetime.now(timezone.utc).isoformat(),
+            "lastError": str(error)[:300],
+        }
+        job["visualAdmissionFailures"] = failures
         sweep.update({
             "id": sweep_id,
             "runtime": _VISUAL_RUNTIME,
             "running": False,
-            "scanFailures": int(sweep.get("scanFailures") or 0) + 1,
+            "scanFailures": count,
             "scanError": str(error)[:300],
             "scanFailedAt": datetime.now(timezone.utc).isoformat(),
         })
+        if count > _VISUAL_SWEEP_MAX_RETRIES:
+            from services.visual_admission import pending_decision
+
+            decision = pending_decision(
+                page_id=job["pageId"],
+                job_id=job_id,
+                index=index,
+                sha256=clip["sha256"],
+                byte_count=clip["bytes"],
+            )
+            decision["reason"] = "scan_failure_retry_exhausted"
+            decision["model"]["reason"] = "scanner_exception_retry_exhausted"
+            job.setdefault("visualAdmission", {})[str(index)] = decision
+            sweep["terminalReason"] = "scan_failure_retry_exhausted"
+            log.error(
+                "visual admission scan terminal job=%s output=%s failures=%s",
+                job_id,
+                index,
+                count,
+            )
         job["visualAdmissionSweep"] = sweep
         _save_jobs(store)
 
@@ -4553,13 +4608,31 @@ def _submit_visual_sweep(job_id: str, sweep_id: str):
     return future
 
 
-def _mark_visual_sweep(job_id: str, sweep_id: str, running: bool) -> bool:
+def _mark_visual_sweep(
+    job_id: str,
+    sweep_id: str,
+    running: bool,
+    *,
+    item_key: str | None = None,
+    output_index: int | None = None,
+) -> bool:
     with lock_for(_jobs_path()):
         store = _load_jobs()
         job = store["jobs"].get(job_id)
         if job is None or job.get("visualAdmissionSweep", {}).get("id") != sweep_id:
             return False
-        job["visualAdmissionSweep"] = {"id": sweep_id, "runtime": _VISUAL_RUNTIME, "running": running, "updatedAt": datetime.now(timezone.utc).isoformat()}
+        sweep = dict(job.get("visualAdmissionSweep") or {})
+        sweep.update({
+            "id": sweep_id,
+            "runtime": _VISUAL_RUNTIME,
+            "running": running,
+            "updatedAt": datetime.now(timezone.utc).isoformat(),
+        })
+        if item_key is not None:
+            sweep["itemKey"] = item_key
+        if output_index is not None:
+            sweep["outputIndex"] = output_index
+        job["visualAdmissionSweep"] = sweep
         _save_jobs(store)
         return True
 
@@ -4594,8 +4667,15 @@ def _finish_visual_sweep(job_id: str, sweep_id: str) -> None:
         if selected is None:
             return
         index, clip = selected
+        item_key = _visual_sweep_item_key(index, clip)
         path = (root / clip["path"]).resolve()
-        if not _mark_visual_sweep(job_id, sweep_id, True):
+        if not _mark_visual_sweep(
+            job_id,
+            sweep_id,
+            True,
+            item_key=item_key,
+            output_index=index,
+        ):
             return
         if root not in path.parents or not path.is_file():
             decision = pending_decision(page_id=job["pageId"], job_id=job_id, index=index,
@@ -4610,6 +4690,14 @@ def _finish_visual_sweep(job_id: str, sweep_id: str) -> None:
             if current is None:
                 return
             current.setdefault("visualAdmission", {})[str(index)] = decision
+            failures = current.get("visualAdmissionFailures")
+            if isinstance(failures, dict) and item_key in failures:
+                failures = dict(failures)
+                failures.pop(item_key, None)
+                if failures:
+                    current["visualAdmissionFailures"] = failures
+                else:
+                    current.pop("visualAdmissionFailures", None)
             _save_jobs(store)
         if decision["reason"] != "scan_pending" and any(
             not final_for(current, candidate_index, candidate)
