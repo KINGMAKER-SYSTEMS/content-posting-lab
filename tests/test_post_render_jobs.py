@@ -597,3 +597,63 @@ def test_new_provenance_unblocks_same_slot_and_old_enqueue_replay_preserves_it(t
     assert worker.status(first["id"])["state"] == "succeeded"
     with pytest.raises(jobs.RenderJobError):
         worker.provide_provenance(first["id"], submission(program_id="playlist:other"))
+
+
+def test_worker_startup_failure_latches_reason_and_fails_readiness(tmp_path, monkeypatch):
+    monkeypatch.setenv("CONTENT_LAB_POST_RENDER_ROOT", str(tmp_path / "render"))
+    monkeypatch.setattr(routes, "_startup_failure", None)
+    monkeypatch.setattr(routes, "_started_service", None)
+
+    def boom():
+        raise OSError("sqlite unwritable")
+
+    monkeypatch.setattr(routes, "service", boom)
+    assert routes.start_workers() is None
+    ready, detail = routes.readiness()
+    assert ready is False
+    assert detail["post_render"]["state"] == "startup_failed"
+    assert "sqlite unwritable" in detail["post_render"]["reason"]
+
+
+def test_readiness_healthy_when_workers_start(tmp_path, monkeypatch):
+    monkeypatch.setenv("CONTENT_LAB_POST_RENDER_ROOT", str(tmp_path / "render"))
+    monkeypatch.setattr(routes, "_service", None)
+    monkeypatch.setattr(routes, "_startup_failure", None)
+    monkeypatch.setattr(routes, "_started_service", None)
+    started = routes.start_workers()
+    assert started is not None
+    try:
+        ready, detail = routes.readiness()
+        assert ready is True
+        assert detail["post_render"]["state"] == "healthy"
+        assert detail["post_render"]["workers"] >= 1
+    finally:
+        started.stop()
+
+
+def test_readiness_disabled_when_lane_unconfigured(monkeypatch):
+    monkeypatch.delenv("CONTENT_LAB_POST_RENDER_ROOT", raising=False)
+    monkeypatch.setattr(routes, "_startup_failure", None)
+    monkeypatch.setattr(routes, "_started_service", None)
+    ready, detail = routes.readiness()
+    assert ready is True
+    assert detail["post_render"]["state"] == "disabled"
+
+
+def test_ready_endpoint_503_when_worker_lane_fails_during_lifespan(tmp_path, monkeypatch):
+    from app import app as app_module
+
+    monkeypatch.setenv("CONTENT_LAB_POST_RENDER_ROOT", str(tmp_path / "render"))
+    monkeypatch.setattr(routes, "_service", None)
+    monkeypatch.setattr(routes, "_startup_failure", None)
+    monkeypatch.setattr(routes, "_started_service", None)
+
+    def boom():
+        raise OSError("sqlite unwritable")
+
+    monkeypatch.setattr(routes, "service", boom)
+    with TestClient(app_module) as client:
+        assert client.get("/api/health").status_code == 200
+        response = client.get("/api/ready")
+        assert response.status_code == 503
+        assert response.json()["post_render"]["state"] == "startup_failed"

@@ -15,6 +15,8 @@ from services.post_render_jobs import PostRenderJobs, RenderJobError, RenderJobS
 router = APIRouter()
 _service = None
 _service_lock = threading.Lock()
+_startup_failure: str | None = None
+_started_service: PostRenderJobs | None = None
 
 
 def service() -> PostRenderJobs:
@@ -29,15 +31,48 @@ def service() -> PostRenderJobs:
 
 
 def start_workers() -> PostRenderJobs | None:
+    global _startup_failure, _started_service
     if not os.getenv("CONTENT_LAB_POST_RENDER_ROOT"):
         return None
     try:
         jobs = service()
         jobs.start()
+        _started_service = jobs
+        _startup_failure = None
         return jobs
-    except Exception:
+    except Exception as error:
+        _startup_failure = str(error) or error.__class__.__name__
         logging.getLogger("content_lab.post_render_jobs").exception("post render worker startup failed")
         return None
+
+
+def readiness() -> tuple[bool, dict]:
+    """Readiness for the configured post-render lane.
+
+    Returns ``(ready, detail)``. An unconfigured lane is simply disabled (ready
+    and inert); a configured lane that failed to start, or whose workers have
+    all died, is NOT ready and reports a latched reason plus queue age.
+    """
+    if not os.getenv("CONTENT_LAB_POST_RENDER_ROOT"):
+        return True, {"post_render": {"state": "disabled"}}
+    if _startup_failure is not None:
+        return False, {"post_render": {"state": "startup_failed", "reason": _startup_failure}}
+    jobs = _started_service
+    if jobs is None:
+        return False, {"post_render": {"state": "not_started"}}
+    alive = jobs.workers_alive()
+    detail = {
+        "post_render": {
+            "state": "healthy",
+            "workers": alive,
+            "worker_count": jobs.worker_count,
+            "queue_age_ms": jobs.queue_age_ms(),
+        },
+    }
+    if jobs.worker_count and alive == 0:
+        detail["post_render"]["state"] = "workers_died"
+        return False, detail
+    return True, detail
 
 
 def _authorize(authorization: str | None, page_id: str | None, *, expected: str | None = None):
