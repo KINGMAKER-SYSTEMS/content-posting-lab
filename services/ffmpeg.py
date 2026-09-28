@@ -8,6 +8,8 @@ battle-tested color-matrix math without cross-router imports.
 import asyncio
 import logging
 import math
+import os
+import signal
 
 log = logging.getLogger("ffmpeg")
 
@@ -385,6 +387,42 @@ def build_cc_filter(
     return ",".join(filters)
 
 
+# A hung encode must not own the only treatment-lane permit forever. ffmpeg
+# normally transcodes far faster than real time, so a duration-derived ceiling
+# with a fixed floor is generous for healthy media but still bounds a stall
+# caused by corrupt media, blocked storage, or an ffmpeg defect. The floor also
+# covers short clips whose fixed startup/teardown cost dominates.
+_ENCODE_TIMEOUT_FLOOR_SECONDS = 300.0
+_ENCODE_SECONDS_PER_SOURCE_SECOND = 30.0
+
+
+def _encode_timeout_seconds(duration_ms: int | None, speed: float) -> float:
+    if duration_ms is None:
+        return _ENCODE_TIMEOUT_FLOOR_SECONDS
+    source_seconds = duration_ms / 1000.0
+    return max(
+        _ENCODE_TIMEOUT_FLOOR_SECONDS,
+        source_seconds / speed * _ENCODE_SECONDS_PER_SOURCE_SECOND + 60.0,
+    )
+
+
+async def _terminate_encode_process(proc) -> None:
+    """Kill the encode's process group and reap it. Best-effort; never raise."""
+    if proc.returncode is not None:
+        return
+    try:
+        # start_new_session=True made the child a session/group leader, so its
+        # pid is the process-group id. Killing the group reaps ffmpeg's own
+        # children too.
+        os.killpg(proc.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, OSError):
+        pass
+    try:
+        await proc.wait()
+    except (ProcessLookupError, OSError):
+        pass
+
+
 async def run_color_correct(
     input_path: str,
     output_path: str,
@@ -441,13 +479,34 @@ async def run_color_correct(
         *output_window,
         output_path,
     ]
+    timeout = _encode_timeout_seconds(window[1] if window else None, speed)
     async with _COLOR_CORRECT_GATE:
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.PIPE,
+            start_new_session=True,
         )
-        _, stderr = await proc.communicate()
+        try:
+            _, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        except asyncio.TimeoutError as error:
+            await _terminate_encode_process(proc)
+            try:
+                os.unlink(output_path)
+            except OSError:
+                pass
+            raise RuntimeError("ffmpeg_encode_timeout") from error
+        except asyncio.CancelledError:
+            await _terminate_encode_process(proc)
+            try:
+                os.unlink(output_path)
+            except OSError:
+                pass
+            raise
     if proc.returncode != 0:
+        try:
+            os.unlink(output_path)
+        except OSError:
+            pass
         tail = stderr.decode("utf-8", errors="replace")[-500:]
         raise RuntimeError(f"ffmpeg color-correct failed: {tail}")
