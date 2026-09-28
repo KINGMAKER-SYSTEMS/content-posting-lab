@@ -185,6 +185,46 @@ async def test_hung_ffmpeg_is_killed_reaped_and_partial_output_removed(monkeypat
 
 
 @pytest.mark.asyncio
+async def test_ffmpeg_wait_that_never_finishes_cannot_stall_timeout_cleanup(monkeypatch, tmp_path):
+    class NeverReapedProc(FakeProc):
+        def __init__(self):
+            super().__init__(returncode=None)
+            self.wait_started = asyncio.Event()
+
+        async def wait(self):
+            self.wait_started.set()
+            await asyncio.Event().wait()
+
+    proc = NeverReapedProc()
+    kill_calls = []
+
+    async def fake_exec(*args, **kwargs):
+        return proc
+
+    def kill_group(pgid, sig):
+        kill_calls.append((pgid, sig))
+
+    _stub_probe(monkeypatch, None)
+    _short_timeout_constants(monkeypatch)
+    monkeypatch.setattr(ffmpeg, "_ENCODE_REAP_TIMEOUT_SECONDS", 0.02, raising=False)
+    monkeypatch.setattr(ffmpeg.asyncio, "create_subprocess_exec", fake_exec)
+    monkeypatch.setattr(ffmpeg.os, "killpg", kill_group)
+
+    out = tmp_path / "never-reaped.mp4"
+    out.write_bytes(b"partial")
+    with pytest.raises(RuntimeError, match="ffmpeg_encode_timeout"):
+        await asyncio.wait_for(
+            ffmpeg.run_color_correct(str(tmp_path / "in.mp4"), str(out), None),
+            timeout=0.5,
+        )
+
+    assert proc.wait_started.is_set()
+    assert kill_calls == [(proc.pid, signal.SIGKILL)]
+    assert not out.exists()
+    assert ffmpeg._COLOR_CORRECT_GATE.locked() is False
+
+
+@pytest.mark.asyncio
 async def test_ffmpeg_stderr_is_drained_into_a_bounded_tail(monkeypatch, tmp_path):
     marker = b"tail-marker"
     proc = FakeProc(returncode=1, stderr_chunks=[b"A" * 65_536] * 4 + [marker])

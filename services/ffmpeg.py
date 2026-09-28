@@ -399,6 +399,7 @@ _ENCODE_TIMEOUT_GRACE_SECONDS = 120.0
 _ENCODE_TIMEOUT_CEILING_SECONDS = 3 * 60 * 60.0
 _ENCODE_STDERR_TAIL_BYTES = 64 * 1024
 _ENCODE_STDERR_READ_BYTES = 8 * 1024
+_ENCODE_REAP_TIMEOUT_SECONDS = 1.0
 _INPUT_PROBE_TIMEOUT_SECONDS = 30.0
 
 
@@ -457,7 +458,7 @@ async def _wait_for_encode(proc) -> bytes:
 
 
 async def _terminate_encode_process(proc) -> None:
-    """Kill the encode's process group and reap it. Best-effort; never raise."""
+    """Kill the encode's process group and reap it for a bounded time."""
     if proc.returncode is None:
         try:
             # start_new_session=True made the child a session/group leader, so
@@ -465,10 +466,33 @@ async def _terminate_encode_process(proc) -> None:
             os.killpg(proc.pid, signal.SIGKILL)
         except (ProcessLookupError, PermissionError, OSError):
             pass
+    # A killed process should normally be reaped immediately. Keep cleanup
+    # bounded too: Process.wait() may still be waiting for subprocess transport
+    # shutdown (and test doubles or unusual loop implementations may never
+    # complete it). The process group has already received SIGKILL, so leaving
+    # this waiter behind is safer than holding the request and global encode
+    # gate forever.
+    wait_task = asyncio.create_task(proc.wait())
+    done, _ = await asyncio.wait(
+        {wait_task}, timeout=_ENCODE_REAP_TIMEOUT_SECONDS,
+    )
+    if wait_task not in done:
+        wait_task.cancel()
+        wait_task.add_done_callback(_consume_encode_wait_result)
+        return
     try:
-        await proc.wait()
-    except (ProcessLookupError, OSError):
+        wait_task.result()
+    except Exception:
         pass
+
+
+def _consume_encode_wait_result(task: asyncio.Task) -> None:
+    """Retrieve a detached bounded-cleanup task's eventual exception."""
+    if not task.cancelled():
+        try:
+            task.exception()
+        except asyncio.CancelledError:
+            pass
 
 
 async def run_color_correct(
@@ -561,6 +585,13 @@ async def run_color_correct(
                 pass
             raise RuntimeError("ffmpeg_encode_timeout") from error
         except asyncio.CancelledError:
+            await _terminate_encode_process(proc)
+            try:
+                os.unlink(output_path)
+            except OSError:
+                pass
+            raise
+        except Exception:
             await _terminate_encode_process(proc)
             try:
                 os.unlink(output_path)
