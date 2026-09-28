@@ -38,15 +38,18 @@ def test_source_dna_cache_preserves_pinned_files_even_when_over_budget(tmp_path,
     cache = tmp_path / "_source_dna"
     cache.mkdir()
     monkeypatch.setenv("CONTENT_LAB_SOURCE_DNA_CACHE_BYTES", "100")
-    old = cache / f"{'a' * 64}.mp4"
-    pinned = cache / f"{'b' * 64}.mp4"
-    _write(old, 100, mtime_ns=1000)
-    _write(pinned, 100, mtime_ns=2000)
+    pinned = cache / f"{'a' * 64}.mp4"
+    mid = cache / f"{'b' * 64}.mp4"
+    new = cache / f"{'c' * 64}.mp4"
+    _write(pinned, 150, mtime_ns=1000)
+    _write(mid, 100, mtime_ns=2000)
+    _write(new, 100, mtime_ns=3000)
 
     cp._evict_source_dna_cache(cache, pinned={pinned.name[:-4]})
 
-    assert not old.exists()
     assert pinned.exists()
+    assert not mid.exists()
+    assert not new.exists()
 
 
 def test_cache_failed_unlink_does_not_reduce_accounted_bytes(tmp_path, monkeypatch):
