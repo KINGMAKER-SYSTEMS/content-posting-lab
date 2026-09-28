@@ -35,6 +35,9 @@ RENDERER_VERSION = "1"
 MAX_FINAL_BYTES = 22 * 1024 * 1024
 MAX_SOURCE_BYTES = 512 * 1024 * 1024
 MAX_QA_BYTES = 2 * 1024 * 1024
+# A 1080x1920 RGBA canvas is about 7.9 MiB before PNG encoding. Keep a
+# conservative explicit bound so the job scheduler can reserve peak disk.
+MAX_OVERLAY_BYTES = 16 * 1024 * 1024
 MAX_DURATION_MS = 600_000
 Hash = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
 Identity = Annotated[str, Field(min_length=1, max_length=512)]
@@ -352,7 +355,9 @@ def render_post(source_path: Path, output_directory: Path, request: PostRenderRe
         caption_request = _caption_request(request)
         overlay = render_caption_overlay(caption_request, font_dir=font_dir or Path(__file__).parents[1] / "fonts")
         overlay_bytes = base64.b64decode(overlay.overlay.base64, validate=True)
-        if sha256(overlay_bytes) != overlay.overlay.sha256.removeprefix("sha256:") or overlay.caption_sha256 != "sha256:" + request.caption_sha256:
+        if (not 0 < len(overlay_bytes) <= MAX_OVERLAY_BYTES
+                or sha256(overlay_bytes) != overlay.overlay.sha256.removeprefix("sha256:")
+                or overlay.caption_sha256 != "sha256:" + request.caption_sha256):
             raise PostRenderError("caption_evidence_mismatch", "typed caption renderer evidence does not match requested bytes")
         if overlay_geometry_reasons(overlay.overlay.base64, caption_request.style.model_dump(exclude_none=True)):
             raise PostRenderError("caption_geometry_invalid", "typed caption overlay failed the existing geometry check")

@@ -23,7 +23,7 @@ import httpx
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from services.post_render import (
-    Hash, Identity, MAX_SOURCE_BYTES, MAX_FINAL_BYTES, MAX_QA_BYTES,
+    Hash, Identity, MAX_SOURCE_BYTES, MAX_FINAL_BYTES, MAX_OVERLAY_BYTES, MAX_QA_BYTES,
     PostRenderError, PostRenderRequest, RenderedPost, render_post, sha256, source_visual_matches,
 )
 
@@ -42,6 +42,21 @@ MAX_WORKER_COUNT = 4
 # floor stops the worker from claiming new renders when the volume is tight.
 DEFAULT_RETIRE_AFTER_MS = 24 * 60 * 60 * 1000
 DEFAULT_MIN_FREE_BYTES = 1 * 1024 * 1024 * 1024
+# One attempt holds the fetched source and render_post's verified copy at once.
+# At peak it also holds the bounded overlay, a JSON copy with base64 expansion,
+# one final, one QA frame, and bounded request/receipt/decode metadata. Encoding
+# retries unlink the first final before writing the second, so only one final is
+# counted. This is a disk reservation, not an estimate of typical output size.
+MAX_RENDER_METADATA_BYTES = 1 * 1024 * 1024
+MAX_CAPTION_RENDER_JSON_BYTES = 4 * ((MAX_OVERLAY_BYTES + 2) // 3) + MAX_RENDER_METADATA_BYTES
+PEAK_RENDER_WORKSPACE_BYTES = (
+    2 * MAX_SOURCE_BYTES
+    + MAX_OVERLAY_BYTES
+    + MAX_CAPTION_RENDER_JSON_BYTES
+    + MAX_FINAL_BYTES + 1
+    + MAX_QA_BYTES + 1
+    + MAX_RENDER_METADATA_BYTES
+)
 # Failed/interrupted attempt bytes are diagnostic only; bound them separately
 # from the permanent request/output authority in jobs and idempotency.
 FAILED_MEDIA_RETENTION_MS = 24 * 60 * 60 * 1000
@@ -733,11 +748,26 @@ class PostRenderJobs:
         except sqlite3.Error:
             log.exception("post render SQLite WAL checkpoint failed")
 
-    def _free_bytes(self) -> int:
+    def _free_bytes(self) -> int | None:
         try:
             return shutil.disk_usage(self.root).free
         except OSError:
-            return _min_free_bytes()
+            log.exception("post render capacity check failed reason=post_render_free_space_unavailable")
+            return None
+
+    def _has_workspace_capacity(self, *, job_id: str | None = None) -> bool:
+        free = self._free_bytes()
+        if free is None:
+            return False
+        required = _min_free_bytes() + PEAK_RENDER_WORKSPACE_BYTES * self.worker_count
+        if free < required:
+            log.warning(
+                "post render claim deferred reason=post_render_workspace_capacity_insufficient "
+                "job=%s free_bytes=%d required_bytes=%d workers=%d",
+                job_id, free, required, self.worker_count,
+            )
+            return False
+        return True
 
     def _finish(self, row, authority: dict):
         output = self._output(row)
@@ -779,8 +809,7 @@ class PostRenderJobs:
         if permit is None:
             return False
         with permit:
-            if self._free_bytes() < _min_free_bytes():
-                log.warning("post render volume free space below floor; deferring claims")
+            if not self._has_workspace_capacity():
                 return False
             with self._db() as db:
                 # Running rows (restart recovery) stay at least as prioritized as before by
@@ -816,8 +845,7 @@ class PostRenderJobs:
         return False
 
     def _execute(self, old):
-        if self._free_bytes() < _min_free_bytes():
-            log.warning("post render volume free space below floor; deferring job=%s", old["id"])
+        if not self._has_workspace_capacity(job_id=old["id"]):
             return
         now, attempt_id = self.clock_ms(), uuid.uuid4().hex
         with self._db() as db:

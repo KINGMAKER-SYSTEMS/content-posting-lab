@@ -831,3 +831,39 @@ def test_volume_watermark_defers_new_renders(monkeypatch, tmp_path):
     queued = worker.enqueue(submission(slot_id="slot:deferred"), "deferred-render")
     worker.run_one()  # watermark blocks the claim
     assert worker.status(queued["id"])["state"] == "queued"
+
+
+def test_watermark_reserves_derived_peak_for_all_workers(monkeypatch, tmp_path, caplog):
+    monkeypatch.setenv("CONTENT_LAB_POST_RENDER_MIN_FREE_BYTES", "10")
+    worker = service(tmp_path)
+    queued = worker.enqueue(submission(slot_id="slot:peak-reserve"), "peak-reserve")
+    expected_peak = (
+        2 * jobs.MAX_SOURCE_BYTES
+        + jobs.MAX_OVERLAY_BYTES
+        + 4 * ((jobs.MAX_OVERLAY_BYTES + 2) // 3)
+        + jobs.MAX_RENDER_METADATA_BYTES
+        + jobs.MAX_FINAL_BYTES + 1
+        + jobs.MAX_QA_BYTES + 1
+        + jobs.MAX_RENDER_METADATA_BYTES
+    )
+    assert jobs.PEAK_RENDER_WORKSPACE_BYTES == expected_peak
+    required = 10 + expected_peak * worker.worker_count
+    monkeypatch.setattr(worker, "_free_bytes", lambda: required - 1)
+
+    assert worker.run_one() is False
+    assert worker.status(queued["id"])["state"] == "queued"
+    assert "post_render_workspace_capacity_insufficient" in caplog.text
+
+
+def test_disk_usage_failure_defers_post_render_claim(monkeypatch, tmp_path, caplog):
+    worker = service(tmp_path)
+    queued = worker.enqueue(submission(slot_id="slot:disk-unknown"), "disk-unknown")
+
+    def unavailable(_path):
+        raise OSError("disk usage unavailable")
+
+    monkeypatch.setattr(jobs.shutil, "disk_usage", unavailable)
+
+    assert worker.run_one() is False
+    assert worker.status(queued["id"])["state"] == "queued"
+    assert "post_render_free_space_unavailable" in caplog.text
