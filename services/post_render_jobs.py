@@ -883,6 +883,18 @@ class PostRenderJobs:
             except OSError:
                 log.exception("post render source cleanup failed job=%s attempt=%s", row["id"], attempt_id)
 
+    def workers_alive(self) -> int:
+        return sum(1 for thread in self._threads if thread.is_alive())
+
+    def queue_age_ms(self) -> int:
+        with self._db() as db:
+            row = db.execute(
+                "SELECT MIN(created_at_ms) FROM jobs WHERE state IN ('queued','running')",
+            ).fetchone()
+        if row is None or row[0] is None:
+            return 0
+        return max(0, self.clock_ms() - row[0])
+
     def start(self):
         if any(thread.is_alive() for thread in self._threads):
             return

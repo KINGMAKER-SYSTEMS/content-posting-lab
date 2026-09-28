@@ -25,6 +25,16 @@ from services.ffmpeg import (
 
 # --- helpers ---------------------------------------------------------------
 
+class FakeStderr:
+    """Small StreamReader-like stderr pipe that reaches EOF after its chunks."""
+
+    def __init__(self, chunks=()):
+        self._chunks = iter(chunks)
+
+    async def read(self, _size=-1):
+        return next(self._chunks, b"")
+
+
 def _coeffs(vf: str) -> dict[str, float]:
     """Parse the colorchannelmixer coefficients out of a -vf filter string."""
     m = re.search(r"colorchannelmixer=([^,]+)", vf)
@@ -143,9 +153,10 @@ async def test_speed_render_keeps_optional_audio_in_lockstep(monkeypatch):
 
     class Process:
         returncode = 0
+        stderr = FakeStderr()
 
-        async def communicate(self):
-            return b"", b""
+        async def wait(self):
+            return self.returncode
 
     async def fake_exec(*args, **kwargs):
         captured.extend(args)
@@ -168,9 +179,10 @@ async def test_source_window_is_an_input_bound_before_speed_treatment(monkeypatc
 
     class Process:
         returncode = 0
+        stderr = FakeStderr()
 
-        async def communicate(self):
-            return b"", b""
+        async def wait(self):
+            return self.returncode
 
     async def fake_exec(*args, **kwargs):
         captured.extend(args)
@@ -197,15 +209,16 @@ async def test_color_correct_serializes_ffmpeg_processes(monkeypatch):
 
     class Process:
         returncode = 0
+        stderr = FakeStderr()
 
-        async def communicate(self):
+        async def wait(self):
             nonlocal active, peak
             active += 1
             peak = max(peak, active)
             first_started.set()
             await release_first.wait()
             active -= 1
-            return b"", b""
+            return self.returncode
 
     async def fake_exec(*args, **kwargs):
         return Process()

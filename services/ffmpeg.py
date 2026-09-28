@@ -8,6 +8,9 @@ battle-tested color-matrix math without cross-router imports.
 import asyncio
 import logging
 import math
+import os
+import signal
+import subprocess
 
 log = logging.getLogger("ffmpeg")
 
@@ -385,6 +388,113 @@ def build_cc_filter(
     return ",".join(filters)
 
 
+# A hung encode must not own the only treatment-lane permit forever. Four times
+# the input duration plus two minutes tolerates slow shared hosts, while the
+# ten-minute floor covers startup-heavy short media and the three-hour ceiling
+# prevents a corrupt duration or unknown input from turning into a multi-day
+# lock. Unknown duration deliberately receives the ceiling, never a short guess.
+_ENCODE_TIMEOUT_FLOOR_SECONDS = 600.0
+_ENCODE_TIMEOUT_MULTIPLIER = 4.0
+_ENCODE_TIMEOUT_GRACE_SECONDS = 120.0
+_ENCODE_TIMEOUT_CEILING_SECONDS = 3 * 60 * 60.0
+_ENCODE_STDERR_TAIL_BYTES = 64 * 1024
+_ENCODE_STDERR_READ_BYTES = 8 * 1024
+_ENCODE_REAP_TIMEOUT_SECONDS = 1.0
+_INPUT_PROBE_TIMEOUT_SECONDS = 30.0
+
+
+def _encode_timeout_seconds(input_duration_seconds: float | None) -> float:
+    if input_duration_seconds is None:
+        return _ENCODE_TIMEOUT_CEILING_SECONDS
+    return min(
+        _ENCODE_TIMEOUT_CEILING_SECONDS,
+        max(
+            _ENCODE_TIMEOUT_FLOOR_SECONDS,
+            input_duration_seconds * _ENCODE_TIMEOUT_MULTIPLIER
+            + _ENCODE_TIMEOUT_GRACE_SECONDS,
+        ),
+    )
+
+
+def _probe_input_duration_seconds(input_path: str) -> float | None:
+    """Return a local input's duration, or None when ffprobe cannot prove it."""
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe", "-v", "error", "-protocol_whitelist", "file,pipe",
+                "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                input_path,
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=_INPUT_PROBE_TIMEOUT_SECONDS,
+            check=False,
+        )
+        duration = float(result.stdout.strip())
+    except (FileNotFoundError, subprocess.TimeoutExpired, TypeError, ValueError, OSError):
+        return None
+    if result.returncode != 0 or not math.isfinite(duration) or duration <= 0:
+        return None
+    return duration
+
+
+async def _bounded_encode_stderr(proc) -> bytes:
+    """Drain stderr continuously while retaining only its diagnostic tail."""
+    tail = bytearray()
+    while True:
+        chunk = await proc.stderr.read(_ENCODE_STDERR_READ_BYTES)
+        if not chunk:
+            return bytes(tail)
+        tail.extend(chunk)
+        if len(tail) > _ENCODE_STDERR_TAIL_BYTES:
+            del tail[:-_ENCODE_STDERR_TAIL_BYTES]
+
+
+async def _wait_for_encode(proc) -> bytes:
+    _, stderr = await asyncio.gather(proc.wait(), _bounded_encode_stderr(proc))
+    return stderr
+
+
+async def _terminate_encode_process(proc) -> None:
+    """Kill the encode's process group and reap it for a bounded time."""
+    if proc.returncode is None:
+        try:
+            # start_new_session=True made the child a session/group leader, so
+            # its pid is the process-group id. Never signal the caller's group.
+            os.killpg(proc.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+    # A killed process should normally be reaped immediately. Keep cleanup
+    # bounded too: Process.wait() may still be waiting for subprocess transport
+    # shutdown (and test doubles or unusual loop implementations may never
+    # complete it). The process group has already received SIGKILL, so leaving
+    # this waiter behind is safer than holding the request and global encode
+    # gate forever.
+    wait_task = asyncio.create_task(proc.wait())
+    done, _ = await asyncio.wait(
+        {wait_task}, timeout=_ENCODE_REAP_TIMEOUT_SECONDS,
+    )
+    if wait_task not in done:
+        wait_task.cancel()
+        wait_task.add_done_callback(_consume_encode_wait_result)
+        return
+    try:
+        wait_task.result()
+    except Exception:
+        pass
+
+
+def _consume_encode_wait_result(task: asyncio.Task) -> None:
+    """Retrieve a detached bounded-cleanup task's eventual exception."""
+    if not task.cancelled():
+        try:
+            task.exception()
+        except asyncio.CancelledError:
+            pass
+
+
 async def run_color_correct(
     input_path: str,
     output_path: str,
@@ -396,6 +506,7 @@ async def run_color_correct(
     clip_crop_size: tuple[int, int] = (1_080, 1_920),
     clip_start_ms: int | None = None,
     clip_duration_ms: int | None = None,
+    source_duration_ms: int | None = None,
 ) -> None:
     """Run ffmpeg to produce a color-corrected copy of a video.
 
@@ -403,6 +514,12 @@ async def run_color_correct(
     """
     speed = _validated_playback_speed(playback_speed)
     window = _validated_clip_window(clip_start_ms, clip_duration_ms)
+    if source_duration_ms is not None and (
+        isinstance(source_duration_ms, bool)
+        or not isinstance(source_duration_ms, int)
+        or not 1 <= source_duration_ms <= 86_400_000
+    ):
+        raise ValueError("source_duration_ms must be a positive bounded integer")
     vf = build_cc_filter(
         cc,
         scale=scale,
@@ -441,13 +558,50 @@ async def run_color_correct(
         *output_window,
         output_path,
     ]
+    if window is not None:
+        input_duration_seconds = window[1] / 1000.0
+    elif source_duration_ms is not None:
+        input_duration_seconds = source_duration_ms / 1000.0
+    else:
+        input_duration_seconds = await asyncio.to_thread(
+            _probe_input_duration_seconds,
+            input_path,
+        )
+    timeout = _encode_timeout_seconds(input_duration_seconds)
     async with _COLOR_CORRECT_GATE:
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.PIPE,
+            start_new_session=True,
         )
-        _, stderr = await proc.communicate()
+        try:
+            stderr = await asyncio.wait_for(_wait_for_encode(proc), timeout=timeout)
+        except asyncio.TimeoutError as error:
+            await _terminate_encode_process(proc)
+            try:
+                os.unlink(output_path)
+            except OSError:
+                pass
+            raise RuntimeError("ffmpeg_encode_timeout") from error
+        except asyncio.CancelledError:
+            await _terminate_encode_process(proc)
+            try:
+                os.unlink(output_path)
+            except OSError:
+                pass
+            raise
+        except Exception:
+            await _terminate_encode_process(proc)
+            try:
+                os.unlink(output_path)
+            except OSError:
+                pass
+            raise
     if proc.returncode != 0:
+        try:
+            os.unlink(output_path)
+        except OSError:
+            pass
         tail = stderr.decode("utf-8", errors="replace")[-500:]
         raise RuntimeError(f"ffmpeg color-correct failed: {tail}")
