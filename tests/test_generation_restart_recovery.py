@@ -301,6 +301,26 @@ def test_status_restarts_only_exact_page_and_checkpointed_active_job(lab, monkey
 
 
 @pytest.mark.asyncio
+async def test_generation_setup_exception_terminalizes_not_ghosts(lab, monkeypatch):
+    job_id, _, _ = queue_silhouettes(lab, monkeypatch, 1)
+
+    def boom(recipe):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(cp, "generation_options", boom)
+    # Drive the REAL entrypoint (captured at import time, before `lab`
+    # monkeypatched _start_dossier_generation to `started.append`), so this
+    # proves the wiring, not just the guard helper in isolation.
+    _start_runner(job_id)
+    task = cp._generation_tasks[job_id]
+    await asyncio.wait_for(task, timeout=5)
+    saved = cp._get_job_or_404(job_id)
+    assert saved["status"] == "failed"
+    assert "disk full" in saved["error"]
+    assert saved.get("completedAt")
+
+
+@pytest.mark.asyncio
 async def test_restart_keeps_refusal_terminal_and_continues_original_next_candidate(lab, monkeypatch):
     monkeypatch.setenv("CONTENT_LAB_MODERATION_RETRY_DAILY_BUDGET", "0")  # no varied retry available
     job_id, _, _ = queue_silhouettes(lab, monkeypatch, 2)

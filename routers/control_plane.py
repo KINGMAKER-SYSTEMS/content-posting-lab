@@ -3535,11 +3535,39 @@ _source_import_tasks: dict[str, asyncio.Task] = {}
 _syzygy_slideshow_tasks: dict[str, asyncio.Task] = {}
 
 
+async def _guarded_job_runner(runner, job_id: str, setup_error: str) -> None:
+    """Terminalize a runner whose setup raised before its own try block.
+
+    The generation/source runners validate and persist their terminal states
+    inside their own try/except once past setup, but their setup (recipe
+    resolution, mkdir, option parsing, manifest decode) runs before that try.
+    An exception there would otherwise escape the task, its done-callback
+    would drop the only live task reference, and the durable row would stay
+    queued/running with the current runtime id — which same-runtime expiry
+    (job_status) cannot reclaim. Consume it here so the job always reaches a
+    terminal state instead of becoming a permanent ghost.
+    """
+    try:
+        await runner(job_id)
+    except asyncio.CancelledError:
+        raise
+    except Exception as error:
+        log.exception("%s runner failed outside its guarded body", setup_error)
+        await asyncio.to_thread(_update_job,
+            job_id,
+            status="failed",
+            error=f"{setup_error}:{str(error)[:300]}",
+            completedAt=datetime.now(timezone.utc).isoformat(),
+        )
+
+
 def _start_dossier_generation(job_id: str) -> None:
     current = _generation_tasks.get(job_id)
     if current is not None and not current.done():
         return
-    task = asyncio.create_task(_run_dossier_generation(job_id))
+    task = asyncio.create_task(
+        _guarded_job_runner(_run_dossier_generation, job_id, "generation_setup_failed"),
+    )
     _generation_tasks[job_id] = task
     task.add_done_callback(lambda completed: _generation_tasks.pop(job_id, None)
                            if _generation_tasks.get(job_id) is completed else None)
@@ -3555,7 +3583,9 @@ async def shutdown_dossier_generation() -> None:
 
 
 def _start_dossier_source(job_id: str) -> None:
-    task = asyncio.create_task(_run_dossier_source(job_id))
+    task = asyncio.create_task(
+        _guarded_job_runner(_run_dossier_source, job_id, "source_setup_failed"),
+    )
     _source_tasks[job_id] = task
     task.add_done_callback(lambda _: _source_tasks.pop(job_id, None))
 
