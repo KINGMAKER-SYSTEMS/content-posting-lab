@@ -4498,11 +4498,59 @@ _VISUAL_SWEEP_EXECUTOR = ThreadPoolExecutor(
     max_workers=1,
     thread_name_prefix="content-lab-visual-admission",
 )
+_VISUAL_SWEEP_BACKOFF_SECONDS = 30.0
+
+
+def _observe_visual_sweep_failure(completed, job_id: str, sweep_id: str) -> None:
+    """Consume a finished sweep's result so no exception sits unobserved."""
+    try:
+        completed.result()
+    except Exception as error:
+        log.exception("visual admission sweep failed job=%s sweep=%s", job_id, sweep_id)
+        _record_visual_sweep_failure(job_id, sweep_id, error)
+
+
+def _record_visual_sweep_failure(job_id: str, sweep_id: str, error: Exception) -> None:
+    """Durably mark a failed sweep so the next poll backs off instead of
+    immediately and silently resubmitting the same failing operation."""
+    with lock_for(_jobs_path()):
+        store = _load_jobs()
+        job = store["jobs"].get(job_id)
+        if job is None or job.get("visualAdmissionSweep", {}).get("id") != sweep_id:
+            return
+        sweep = dict(job.get("visualAdmissionSweep") or {})
+        sweep.update({
+            "id": sweep_id,
+            "runtime": _VISUAL_RUNTIME,
+            "running": False,
+            "scanFailures": int(sweep.get("scanFailures") or 0) + 1,
+            "scanError": str(error)[:300],
+            "scanFailedAt": datetime.now(timezone.utc).isoformat(),
+        })
+        job["visualAdmissionSweep"] = sweep
+        _save_jobs(store)
+
+
+def _visual_sweep_backed_off(sweep: dict, now: datetime) -> bool:
+    try:
+        failed_at = datetime.fromisoformat(sweep["scanFailedAt"])
+    except (KeyError, TypeError, ValueError):
+        return False
+    return (now - failed_at).total_seconds() < _VISUAL_SWEEP_BACKOFF_SECONDS
 
 
 def _submit_visual_sweep(job_id: str, sweep_id: str):
-    """Queue sweeps behind the one process-wide scanner instead of racing it."""
-    return _VISUAL_SWEEP_EXECUTOR.submit(_finish_visual_sweep, job_id, sweep_id)
+    """Queue sweeps behind the one process-wide scanner instead of racing it.
+
+    The returned Future is observed by a done-callback that consumes its
+    result, so a parser/manifest/storage exception can never disappear into an
+    unobserved Future and silently resubmit the same failing operation forever.
+    """
+    future = _VISUAL_SWEEP_EXECUTOR.submit(_finish_visual_sweep, job_id, sweep_id)
+    future.add_done_callback(
+        lambda completed: _observe_visual_sweep_failure(completed, job_id, sweep_id),
+    )
+    return future
 
 
 def _mark_visual_sweep(job_id: str, sweep_id: str, running: bool) -> bool:
@@ -4628,6 +4676,8 @@ def job_visual_admission(
         sweep = current.get("visualAdmissionSweep", {})
         active = sweep.get("runtime") == _VISUAL_RUNTIME and sweep.get("running") is True
         if not active:
+            if _visual_sweep_backed_off(sweep, now):
+                return decision
             sweep_id = _secrets.token_hex(16)
             current["visualAdmissionSweep"] = {"id": sweep_id, "runtime": _VISUAL_RUNTIME, "running": True, "updatedAt": now.isoformat()}
             _save_jobs(store)

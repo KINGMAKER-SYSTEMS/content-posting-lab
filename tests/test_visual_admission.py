@@ -751,3 +751,82 @@ def test_final_unavailable_decision_is_served_and_never_rescanned(monkeypatch, t
 ])
 def test_final_decision_classification(decision, final):
     assert gate.is_final_decision(decision) is final
+
+
+def test_visual_sweep_failure_is_recorded_and_logged_not_silent(monkeypatch, tmp_path, caplog):
+    import logging
+    import threading
+    from routers import control_plane as cp
+
+    path = tmp_path / 'clip.mp4'
+    path.write_bytes(b'fixture')
+    clip = {
+        'path': path.name,
+        'sha256': hashlib.sha256(path.read_bytes()).hexdigest(),
+        'bytes': path.stat().st_size,
+    }
+    job_id = 'cpl-abcdef0123456789'
+    sweep_id = 'sweep-fail'
+    monkeypatch.setattr(cp, '_jobs_path', lambda: tmp_path / 'jobs.json')
+    cp.atomic_save(cp._jobs_path(), {'jobs': {job_id: {
+        'pageId': 'acct:test', 'artifactRoot': str(tmp_path),
+        'clips': [clip],
+        'visualAdmissionSweep': {'id': sweep_id, 'runtime': cp._VISUAL_RUNTIME, 'running': True},
+    }}})
+
+    def boom(*args, **kwargs):
+        raise RuntimeError('vision provider down')
+
+    monkeypatch.setattr(gate, 'scan_artifact', boom)
+
+    with caplog.at_level(logging.ERROR):
+        done = threading.Event()
+        future = cp._submit_visual_sweep(job_id, sweep_id)
+        future.add_done_callback(lambda _completed: done.set())
+        assert done.wait(timeout=5)
+
+    sweep = cp._load_jobs()['jobs'][job_id]['visualAdmissionSweep']
+    assert sweep['running'] is False
+    assert sweep['scanFailures'] == 1
+    assert 'vision provider down' in sweep['scanError']
+    assert 'visual admission sweep failed' in caplog.text
+
+
+def test_visual_sweep_backs_off_after_recorded_failure(monkeypatch, tmp_path):
+    import datetime
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from routers import control_plane as cp
+
+    path = tmp_path / 'clip.mp4'
+    path.write_bytes(b'fixture')
+    clip = {
+        'path': path.name,
+        'sha256': hashlib.sha256(path.read_bytes()).hexdigest(),
+        'bytes': path.stat().st_size,
+    }
+    job_id = 'cpl-abcdef0123456789'
+    monkeypatch.setattr(cp, '_jobs_path', lambda: tmp_path / 'jobs.json')
+    now = datetime.datetime.now(datetime.timezone.utc)
+    cp.atomic_save(cp._jobs_path(), {'jobs': {job_id: {
+        'pageId': 'acct:test', 'artifactRoot': str(tmp_path),
+        'clips': [clip],
+        'visualAdmissionSweep': {
+            'id': 'sweep-fail', 'runtime': cp._VISUAL_RUNTIME, 'running': False,
+            'scanFailures': 1, 'scanError': 'vision provider down',
+            'scanFailedAt': now.isoformat(),
+        },
+    }}})
+
+    submitted = []
+    monkeypatch.setattr(cp, '_submit_visual_sweep', lambda *args: submitted.append(args))
+    monkeypatch.setenv('CONTROL_PLANE_TOKEN', 'test-secret')
+    app = FastAPI(); app.include_router(cp.router, prefix='/api/control-plane')
+    client = TestClient(app)
+    url = f'/api/control-plane/v1/jobs/{job_id}/visual-admission/0'
+    body = {'sha256': clip['sha256'], 'bytes': clip['bytes']}
+    headers = {'Authorization': 'Bearer test-secret', 'X-RT-Page-Id': 'acct:test'}
+    result = client.post(url, json=body, headers=headers)
+    assert result.status_code == 200
+    assert result.json()['reason'] == 'scan_pending'
+    assert submitted == []
