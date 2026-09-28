@@ -4,6 +4,7 @@ import asyncio
 import logging
 import os
 import re
+import time
 from pathlib import Path
 
 import httpx
@@ -16,6 +17,90 @@ load_dotenv()
 OUTPUT_DIR = Path("output")
 OUTPUT_DIR.mkdir(exist_ok=True)
 
+# Provider artifacts are bounded in bytes and total wall time so a hostile or
+# broken provider/CDN cannot occupy a job forever or fill the shared volume.
+# Two generous defaults; operators may lower either to match their volume.
+_DEFAULT_PROVIDER_DOWNLOAD_BYTES = 2 * 1024 * 1024 * 1024
+_DEFAULT_PROVIDER_DOWNLOAD_SECONDS = 30 * 60
+# Media-like content types a provider artifact is expected to carry. Absent or
+# octet-stream stays allowed (many providers omit or genericize MIME); HTML,
+# JSON and plain text indicate an error page, not an artifact.
+_PROVIDER_ARTIFACT_REJECT_CONTENT_TYPES = {
+    "text/html", "application/json", "text/plain", "application/xml", "text/xml",
+}
+
+
+def _provider_download_limit() -> int:
+    raw = os.getenv("CONTENT_LAB_PROVIDER_DOWNLOAD_BYTES", "").strip()
+    if raw:
+        try:
+            value = int(raw)
+        except ValueError:
+            value = 0
+        if value > 0:
+            return value
+    return _DEFAULT_PROVIDER_DOWNLOAD_BYTES
+
+
+def _provider_download_deadline() -> float:
+    raw = os.getenv("CONTENT_LAB_PROVIDER_DOWNLOAD_SECONDS", "").strip()
+    if raw:
+        try:
+            value = float(raw)
+        except ValueError:
+            value = 0.0
+        if value > 0:
+            return value
+    return _DEFAULT_PROVIDER_DOWNLOAD_SECONDS
+
+
+def _reject_provider_artifact_mime(content_type: str) -> None:
+    """Fail a provider response whose declared type cannot be a media artifact."""
+    base = content_type.split(";", 1)[0].strip().lower()
+    if base in _PROVIDER_ARTIFACT_REJECT_CONTENT_TYPES:
+        raise RuntimeError("provider_artifact_not_media")
+
+
+async def download_media(client: httpx.AsyncClient, url: str, dest: Path):
+    """Download one provider artifact to a local file, bounded in bytes and time.
+
+    Declared and observed byte ceilings, a monotonic whole-download deadline, a
+    ``*.part`` write with fsync/rename, and unconditional partial cleanup mean a
+    drip-fed or oversized response cannot outlive the job or leak partial bytes.
+    """
+    limit = _provider_download_limit()
+    deadline = time.monotonic() + _provider_download_deadline()
+    partial = dest.with_name(dest.name + ".part")
+    partial.unlink(missing_ok=True)
+    try:
+        async with client.stream("GET", url, timeout=120) as resp:
+            resp.raise_for_status()
+            _reject_provider_artifact_mime(resp.headers.get("content-type", ""))
+            declared = resp.headers.get("content-length")
+            if declared is not None:
+                try:
+                    declared_bytes = int(declared)
+                except ValueError:
+                    raise RuntimeError("provider_artifact_content_length_invalid")
+                if declared_bytes < 0 or declared_bytes > limit:
+                    raise RuntimeError("provider_artifact_too_large")
+            total = 0
+            with partial.open("xb") as f:
+                async for chunk in resp.aiter_bytes(8192):
+                    if time.monotonic() > deadline:
+                        raise RuntimeError("provider_artifact_download_timeout")
+                    total += len(chunk)
+                    if total > limit:
+                        raise RuntimeError("provider_artifact_too_large")
+                    f.write(chunk)
+                f.flush()
+                os.fsync(f.fileno())
+        if declared is not None and total != declared_bytes:
+            raise RuntimeError("provider_artifact_size_mismatch")
+        os.replace(partial, dest)
+    finally:
+        partial.unlink(missing_ok=True)
+
 # ---------------------------------------------------------------------------
 # API keys (all optional -- only configured providers appear in /api/providers)
 # ---------------------------------------------------------------------------
@@ -27,15 +112,6 @@ API_KEYS = {
 
 # Providers that always output 16:9 regardless of aspect_ratio setting
 FORCE_LANDSCAPE = {"hailuo", "pruna-pvideo"}
-
-
-async def download_media(client: httpx.AsyncClient, url: str, dest: Path):
-    """Download one provider artifact to a local file."""
-    async with client.stream("GET", url, timeout=120) as resp:
-        resp.raise_for_status()
-        with open(dest, "wb") as f:
-            async for chunk in resp.aiter_bytes(8192):
-                f.write(chunk)
 
 
 async def still_to_video(image: Path, dest: Path, duration: int) -> None:

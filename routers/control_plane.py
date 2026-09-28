@@ -133,6 +133,7 @@ from services.source_treatment import (
     recovery_treatment_matches,
     source_treatment_receipt,
 )
+from services.source_dna_registry import source_dna_master_hashes
 
 router = APIRouter()
 log = logging.getLogger("control_plane")
@@ -1073,6 +1074,11 @@ TRUCK_CROP_MODE = "both"
 TRUCK_CROP_COUNT = 5
 _GENERATION_RUNTIME_ID = _secrets.token_hex(16)
 _source_cache_locks: dict[str, asyncio.Lock] = {}
+# Persistent source-master cache (_generation_root()/_source_dna) byte ceiling.
+# Every previously-unseen master is os.replace()d in forever; without a budget
+# the Railway volume fills monotonically. Two 20 GB masters plus headroom is a
+# safe default; operators may lower it to match a smaller volume.
+_DEFAULT_SOURCE_DNA_CACHE_BYTES = 50 * 1024 * 1024 * 1024
 
 # Defense-in-depth mirror of the plane's assertNoFreeFormPrompt: no field
 # anywhere in the job body may look like prompt text. Recipe authoring
@@ -2281,18 +2287,97 @@ def _source_artifact_origin() -> str:
     return value
 
 
+def _source_dna_cache_budget() -> int:
+    """Byte ceiling for ``_source_dna/``. Env override, clamped to positive."""
+    raw = os.environ.get("CONTENT_LAB_SOURCE_DNA_CACHE_BYTES", "").strip()
+    if raw:
+        try:
+            budget = int(raw)
+        except ValueError:
+            budget = _DEFAULT_SOURCE_DNA_CACHE_BYTES
+        if budget > 0:
+            return budget
+    return _DEFAULT_SOURCE_DNA_CACHE_BYTES
+
+
+def _source_dna_active_master_hashes() -> set[str]:
+    """Masters still referenced by queued/running source jobs (may yet be cut).
+
+    A master with no active job and no local manifest is obsolete: it can only
+    be re-created by re-downloading, so it is the eviction candidate set.
+    """
+    hashes: set[str] = set()
+    try:
+        store = _load_jobs()
+    except Exception:
+        return hashes
+    for job in store.get("jobs", {}).values():
+        if not isinstance(job, dict):
+            continue
+        if job.get("sourceKind") != "dossier_source_dna":
+            continue
+        if job.get("status") not in GENERATION_ACTIVE_STATUSES:
+            continue
+        for cut in job.get("sourceCuts") or []:
+            if isinstance(cut, dict) and isinstance(cut.get("masterSha256"), str):
+                hashes.add(cut["masterSha256"])
+    return hashes
+
+
+def _evict_source_dna_cache(
+    cache_root: Path,
+    pinned: set[str],
+    *,
+    reserve_bytes: int = 0,
+) -> None:
+    """Atomically evict oldest unreferenced masters until the cache fits budget.
+
+    Reference-aware: files whose name (a SHA256) is pinned are never removed.
+    Deletion is oldest-first by mtime so a just-installed master (which is also
+    pinned by its active job) is doubly safe. Best-effort per file: one locked
+    or unreadable entry must not stop the rest of the sweep.
+    """
+    budget = _source_dna_cache_budget()
+    entries: list[tuple[int, int, Path]] = []
+    for path in cache_root.glob("*.mp4"):
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        if path.is_file():
+            entries.append((stat.st_mtime_ns, stat.st_size, path))
+    entries.sort()
+    total = sum(size for _mtime, size, _path in entries)
+    for _mtime, size, path in entries:
+        if total + reserve_bytes <= budget:
+            break
+        if path.name[:-4] in pinned:
+            continue
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            total -= size
+        except OSError:
+            continue
+        else:
+            total -= size
+
+
 async def _cached_source_master(page_id: str, master: Any, job_id: str) -> Path:
     cache_root = (_generation_root() / "_source_dna").resolve()
     cache_root.mkdir(parents=True, exist_ok=True, mode=0o700)
     target = cache_root / f"{master.sha256}.mp4"
     lock = _source_cache_locks.setdefault(master.sha256, asyncio.Lock())
     async with lock:
+        pinned = _source_dna_active_master_hashes() | source_dna_master_hashes() | {master.sha256}
         if (
             target.is_file()
             and target.stat().st_size == master.bytes
             and _sha256(target) == master.sha256
         ):
+            _evict_source_dna_cache(cache_root, pinned)
             return target
+        _evict_source_dna_cache(cache_root, pinned, reserve_bytes=master.bytes)
         partial = cache_root / f".{master.sha256}.{job_id}.part"
         partial.unlink(missing_ok=True)
         url = (
@@ -2322,6 +2407,7 @@ async def _cached_source_master(page_id: str, master: Any, job_id: str) -> Path:
             if byte_count != master.bytes or digest.hexdigest() != master.sha256:
                 raise RuntimeError("source_dna_master_hash_mismatch")
             os.replace(partial, target)
+            _evict_source_dna_cache(cache_root, pinned)
             return target
         finally:
             partial.unlink(missing_ok=True)

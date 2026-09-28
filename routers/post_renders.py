@@ -96,6 +96,26 @@ def provenance(job_id: str, body: RenderJobSubmission, authorization: str | None
         _http_error(error)
 
 
+@router.post("/v1/post-renders/{job_id}/acknowledge", status_code=202)
+def acknowledge(job_id: str, authorization: str | None = Header(default=None), x_rt_page_id: str | None = Header(default=None)):
+    _authorize(authorization, x_rt_page_id)
+    try:
+        service().require_page(job_id, x_rt_page_id)
+        return service().acknowledge(job_id)
+    except RenderJobError as error:
+        _http_error(error)
+
+
+@router.post("/v1/post-renders/{job_id}/retire", status_code=202)
+def retire(job_id: str, authorization: str | None = Header(default=None), x_rt_page_id: str | None = Header(default=None)):
+    _authorize(authorization, x_rt_page_id)
+    try:
+        service().require_page(job_id, x_rt_page_id)
+        return service().retire(job_id)
+    except RenderJobError as error:
+        _http_error(error)
+
+
 @router.get("/v1/post-renders/{job_id}/artifacts/{kind}")
 def artifact(job_id: str, kind: str, authorization: str | None = Header(default=None), x_rt_page_id: str | None = Header(default=None)):
     _authorize(authorization, x_rt_page_id)

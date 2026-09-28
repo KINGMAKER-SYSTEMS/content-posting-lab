@@ -41,9 +41,8 @@ def submission(*, slot_id="slot:fixture-a", source=b"source", program_id="playli
         "provenance_id": "generation:explicit-fixture"}})
 
 
-def fake_render(source, output, request, *, clock_ms):
+def _write_fake_render(output, request, *, clock_ms, final, qa=b"qa frame"):
     output.mkdir()
-    final, qa = b"final:" + request.caption.encode(), b"qa frame"
     (output / "final.mp4").write_bytes(final)
     (output / "qa.jpg").write_bytes(qa)
     receipt = {key: getattr(request, key) for key in ("slot_id", "slot_payload_sha256", "page_id", "program_id",
@@ -54,6 +53,15 @@ def fake_render(source, output, request, *, clock_ms):
     (output / "receipt.json").write_text(json.dumps(receipt, separators=(",", ":")))
     (output / "decode.json").write_text(json.dumps({"final_sha256": sha256(final), "qa_frame_sha256": sha256(qa),
         "decoded_video_frames": 30, "final_probe": {"duration_ms": 1000}}))
+
+
+def fake_render(source, output, request, *, clock_ms):
+    _write_fake_render(
+        output,
+        request,
+        clock_ms=clock_ms,
+        final=b"final:" + request.slot_id.encode() + b":" + request.caption.encode(),
+    )
 
 
 def service(tmp_path, *, renderer=fake_render, fetcher=None, clock=None):
@@ -597,3 +605,265 @@ def test_new_provenance_unblocks_same_slot_and_old_enqueue_replay_preserves_it(t
     assert worker.status(first["id"])["state"] == "succeeded"
     with pytest.raises(jobs.RenderJobError):
         worker.provide_provenance(first["id"], submission(program_id="playlist:other"))
+
+
+def _run_succeeded(tmp_path, *, clock=None, idempotency="retire-request"):
+    worker = service(tmp_path, clock=clock)
+    job = worker.enqueue(submission(), idempotency)
+    assert worker.run_one()
+    assert worker.status(job["id"])["state"] == "succeeded"
+    return worker, job
+
+
+def test_acknowledge_gates_on_succeeded_and_is_idempotent(tmp_path):
+    worker, job = _run_succeeded(tmp_path)
+    with pytest.raises(jobs.RenderJobError, match="job_not_found"):
+        worker.acknowledge(job["id"] + "-nope")
+    # A queued (not-yet-rendered) job cannot be acknowledged.
+    queued = worker.enqueue(submission(slot_id="slot:queued-ack"), "queued-ack")
+    with pytest.raises(jobs.RenderJobError, match="acknowledge_not_ready"):
+        worker.acknowledge(queued["id"])
+
+    first = worker.acknowledge(job["id"])
+    assert first["acknowledged_at_ms"] is not None
+    replay = worker.acknowledge(job["id"])
+    assert replay["acknowledged_at_ms"] == first["acknowledged_at_ms"]
+
+
+def test_retire_removes_media_but_keeps_hash_and_idempotency_authority(tmp_path):
+    worker, job = _run_succeeded(tmp_path, idempotency="retire-tombstone")
+    worker.acknowledge(job["id"])
+    attempt_dir = worker._output(worker._row(job["id"])).parent.parent
+    assert attempt_dir.exists()
+
+    receipt_sha = worker.status(job["id"])["receipt_sha256"]
+    worker.retire(job["id"])
+
+    assert not attempt_dir.exists()
+    status = worker.status(job["id"])
+    assert status["state"] == "succeeded"
+    assert status["receipt_sha256"] == receipt_sha
+    assert status["retired_at_ms"] is not None
+    # The durable tombstone keeps the row and idempotency authoritative.
+    replay = service(tmp_path).enqueue(submission(), "retire-tombstone")
+    assert replay["id"] == job["id"]
+    assert replay["state"] == "succeeded"
+    # Artifacts are no longer served once retired.
+    with pytest.raises(jobs.RenderJobError, match="artifact_not_ready"):
+        worker.artifact(job["id"], "final")
+
+
+def test_retirement_tombstone_keeps_output_hash_authority(tmp_path):
+    worker, job = _run_succeeded(tmp_path, idempotency="retire-output-hashes")
+    receipt = json.loads(worker.artifact(job["id"], "receipt").read_text())
+    worker.acknowledge(job["id"])
+
+    worker.retire(job["id"])
+
+    status = service(tmp_path).status(job["id"])
+    assert status["final_sha256"] == receipt["final_sha256"]
+    assert status["qa_frame_sha256"] == receipt["qa_frame_sha256"]
+    verified = worker._verify_output(worker._row(job["id"]))
+    assert verified["final_sha256"] == receipt["final_sha256"]
+    assert verified["qa_frame_sha256"] == receipt["qa_frame_sha256"]
+
+
+def test_retired_output_hash_authority_refuses_duplicate_output(tmp_path):
+    def fixed_output(_source, output, request, *, clock_ms):
+        _write_fake_render(output, request, clock_ms=clock_ms, final=b"same final output")
+
+    worker = service(tmp_path, renderer=fixed_output)
+    first = worker.enqueue(submission(), "first-output")
+    assert worker.run_one()
+    first_hash = json.loads(worker.artifact(first["id"], "receipt").read_text())["final_sha256"]
+    worker.acknowledge(first["id"])
+    worker.retire(first["id"])
+
+    duplicate = worker.enqueue(submission(slot_id="slot:duplicate-output"), "duplicate-output")
+    assert worker.run_one()
+    duplicate_status = worker.status(duplicate["id"])
+    assert duplicate_status["state"] == "failed"
+    assert duplicate_status["error_code"] == "duplicate_output"
+    assert worker.status(first["id"])["final_sha256"] == first_hash
+
+
+def test_retirement_does_not_tombstone_failed_deletion(tmp_path, monkeypatch, caplog):
+    worker, job = _run_succeeded(tmp_path, idempotency="failed-retirement")
+    worker.acknowledge(job["id"])
+    attempt_dir = worker._output(worker._row(job["id"])).parent.parent
+    monkeypatch.setattr(jobs.shutil, "rmtree", lambda _path, **_kwargs: None)
+
+    with pytest.raises(jobs.RenderJobError, match="retirement_failed"):
+        worker.retire(job["id"])
+
+    assert attempt_dir.exists()
+    assert worker.status(job["id"])["retired_at_ms"] is None
+    assert "post render retirement deletion failed" in caplog.text
+
+
+def test_retirement_retries_after_partial_deletion_from_durable_authority(tmp_path, monkeypatch):
+    worker, job = _run_succeeded(tmp_path, idempotency="partial-retirement")
+    worker.acknowledge(job["id"])
+    row = worker._row(job["id"])
+    attempt_dir = worker._output(row).parent.parent
+    receipt = worker._output(row) / "receipt.json"
+    real_rmtree = jobs.shutil.rmtree
+    calls = []
+
+    def partial_failure(path, **kwargs):
+        calls.append(path)
+        if len(calls) == 1:
+            receipt.unlink()
+            if kwargs.get("ignore_errors"):
+                return None
+            raise OSError("simulated partial directory removal")
+        return real_rmtree(path)
+
+    monkeypatch.setattr(jobs.shutil, "rmtree", partial_failure)
+    with pytest.raises(jobs.RenderJobError, match="retirement_failed"):
+        worker.retire(job["id"])
+    assert attempt_dir.exists()
+    assert worker.status(job["id"])["retired_at_ms"] is None
+
+    retired = worker.retire(job["id"])
+
+    assert retired["retired_at_ms"] is not None
+    assert not attempt_dir.exists()
+
+
+def test_unacknowledged_media_is_never_retired_even_after_aging(tmp_path):
+    now = [NOW]
+    worker = service(tmp_path, clock=lambda: now[0])
+    job = worker.enqueue(submission(slot_id="slot:no-ack"), "no-ack-request")
+    assert worker.run_one()
+    with pytest.raises(jobs.RenderJobError, match="retire_not_ready"):
+        worker.retire(job["id"])
+    # Age far past the safety window; GC must still leave it downloadable.
+    now[0] += jobs._retire_after_ms() + 1
+    worker._gc()
+    assert worker.status(job["id"])["retired_at_ms"] is None
+    assert worker.artifact(job["id"], "final").exists()
+
+
+def test_gc_retires_only_aged_acknowledged_jobs(tmp_path):
+    now = [NOW]
+    worker = service(tmp_path, clock=lambda: now[0])
+    aged = worker.enqueue(submission(slot_id="slot:aged"), "aged-ack")
+    fresh = worker.enqueue(submission(slot_id="slot:fresh"), "fresh-ack")
+    assert worker.run_one()
+    assert worker.run_one()
+    worker.acknowledge(aged["id"])
+    now[0] += jobs._retire_after_ms() + 1
+    worker.acknowledge(fresh["id"])
+
+    worker._gc()
+
+    assert worker.status(aged["id"])["retired_at_ms"] is not None
+    assert worker.status(fresh["id"])["retired_at_ms"] is None
+    assert worker.artifact(fresh["id"], "final").exists()
+    with pytest.raises(jobs.RenderJobError, match="artifact_not_ready"):
+        worker.artifact(aged["id"], "final")
+
+
+def test_gc_bounds_terminal_failed_attempt_media(tmp_path):
+    now = [NOW]
+
+    def failed_after_output(source, output, request, **kwargs):
+        fake_render(source, output, request, **kwargs)
+        raise ValueError("verification failed after output")
+
+    worker = service(tmp_path, renderer=failed_after_output, clock=lambda: now[0])
+    job = worker.enqueue(submission(slot_id="slot:failed-media"), "failed-media")
+    assert worker.run_one()
+    row = worker._row(job["id"])
+    attempt_dir = worker._output(row).parent
+    assert row["state"] == "failed" and attempt_dir.exists()
+
+    now[0] += 366 * 24 * 60 * 60 * 1000
+    worker._gc()
+
+    assert not attempt_dir.exists()
+    replay = worker.enqueue(submission(slot_id="slot:failed-media"), "failed-media")
+    assert replay["id"] == job["id"]
+    assert replay["state"] == "failed"
+
+
+def test_gc_prunes_only_non_authoritative_sqlite_history(tmp_path, monkeypatch):
+    now = [NOW]
+
+    def failed_after_output(source, output, request, **kwargs):
+        fake_render(source, output, request, **kwargs)
+        raise ValueError("verification failed after output")
+
+    worker = service(tmp_path, renderer=failed_after_output, clock=lambda: now[0])
+    checkpoints = []
+    monkeypatch.setattr(worker, "_checkpoint_wal", lambda: checkpoints.append(True), raising=False)
+    job = worker.enqueue(submission(slot_id="slot:history-retention"), "history-retention")
+    assert worker.run_one()
+    with worker._db() as db:
+        db.execute(
+            "INSERT INTO provenance_updates(job_id,old_submission_json,new_request_hash,updated_at_ms) "
+            "VALUES(?,?,?,?)",
+            (job["id"], "{}", "old-request-hash", NOW),
+        )
+
+    now[0] += 366 * 24 * 60 * 60 * 1000
+    worker._gc()
+
+    with worker._db() as db:
+        assert db.execute("SELECT COUNT(*) FROM attempts").fetchone()[0] == 0
+        assert db.execute("SELECT COUNT(*) FROM provenance_updates").fetchone()[0] == 0
+        authority = db.execute(
+            "SELECT request_hash,submission_json FROM jobs WHERE id=?", (job["id"],)
+        ).fetchone()
+        idempotency = db.execute(
+            "SELECT request_hash FROM idempotency WHERE key='history-retention'"
+        ).fetchone()
+    assert authority["request_hash"] == idempotency["request_hash"]
+    assert jobs.RenderJobSubmission.model_validate_json(authority["submission_json"])
+    assert checkpoints == [True]
+
+
+def test_volume_watermark_defers_new_renders(monkeypatch, tmp_path):
+    worker, job = _run_succeeded(tmp_path)
+    monkeypatch.setattr(worker, "_free_bytes", lambda: 1)
+    monkeypatch.setenv("CONTENT_LAB_POST_RENDER_MIN_FREE_BYTES", "10")
+    queued = worker.enqueue(submission(slot_id="slot:deferred"), "deferred-render")
+    worker.run_one()  # watermark blocks the claim
+    assert worker.status(queued["id"])["state"] == "queued"
+
+
+def test_watermark_reserves_derived_peak_for_all_workers(monkeypatch, tmp_path, caplog):
+    monkeypatch.setenv("CONTENT_LAB_POST_RENDER_MIN_FREE_BYTES", "10")
+    worker = service(tmp_path)
+    queued = worker.enqueue(submission(slot_id="slot:peak-reserve"), "peak-reserve")
+    expected_peak = (
+        2 * jobs.MAX_SOURCE_BYTES
+        + jobs.MAX_OVERLAY_BYTES
+        + 4 * ((jobs.MAX_OVERLAY_BYTES + 2) // 3)
+        + jobs.MAX_RENDER_METADATA_BYTES
+        + jobs.MAX_FINAL_BYTES + 1
+        + jobs.MAX_QA_BYTES + 1
+        + jobs.MAX_RENDER_METADATA_BYTES
+    )
+    assert jobs.PEAK_RENDER_WORKSPACE_BYTES == expected_peak
+    required = 10 + expected_peak * worker.worker_count
+    monkeypatch.setattr(worker, "_free_bytes", lambda: required - 1)
+
+    assert worker.run_one() is False
+    assert worker.status(queued["id"])["state"] == "queued"
+    assert "post_render_workspace_capacity_insufficient" in caplog.text
+
+
+def test_disk_usage_failure_defers_post_render_claim(monkeypatch, tmp_path, caplog):
+    worker = service(tmp_path)
+    queued = worker.enqueue(submission(slot_id="slot:disk-unknown"), "disk-unknown")
+
+    def unavailable(_path):
+        raise OSError("disk usage unavailable")
+
+    monkeypatch.setattr(jobs.shutil, "disk_usage", unavailable)
+
+    assert worker.run_one() is False
+    assert worker.status(queued["id"])["state"] == "queued"
+    assert "post_render_free_space_unavailable" in caplog.text
