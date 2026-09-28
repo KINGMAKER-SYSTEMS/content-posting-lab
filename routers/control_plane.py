@@ -58,7 +58,7 @@ from urllib.parse import quote, urlparse
 import httpx
 import anyio
 
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
 
 from project_manager import PROJECTS_DIR
 from providers import PROVIDERS
@@ -128,6 +128,7 @@ from services.content_format_contracts import CONTRACTS_PATH, load_format_contra
 from services.ffmpeg import delivery_encode_args, run_color_correct
 from services.master_pages_contract import SCHEMA as MASTER_PAGES_SCHEMA, canonical_intent, exact_intent, intent_hash
 from services import moderation_retry
+from services.roster_public import require_roster_auth
 from services.source_treatment import (
     derived_source_treatment,
     recovery_treatment_matches,
@@ -945,7 +946,7 @@ def _current_intent_for_capabilities(
     return next(iter(candidates.values())) if len(candidates) == 1 else None
 
 
-@router.get("/v1/roster")
+@router.get("/v1/roster", dependencies=[Depends(require_roster_auth)])
 def roster_snapshot(
     x_rt_lane: str | None = Header(default=None),
 ) -> dict[str, Any]:
