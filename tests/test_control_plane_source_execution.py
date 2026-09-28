@@ -670,6 +670,31 @@ async def test_source_setup_exception_terminalizes_not_ghosts(lab, monkeypatch):
     assert stored.get("completedAt")
 
 
+@pytest.mark.asyncio
+async def test_cached_source_master_hash_runs_off_the_event_loop(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    import threading
+
+    monkeypatch.setattr(cp, "_generation_root", lambda: tmp_path)
+    master = SimpleNamespace(sha256="c" * 64, bytes=4)
+    cache_root = tmp_path / "_source_dna"
+    cache_root.mkdir(parents=True, exist_ok=True)
+    target = cache_root / f"{master.sha256}.mp4"
+    target.write_bytes(b"data")
+
+    loop_thread = threading.get_ident()
+    saw = {}
+
+    def recording_sha256(path):
+        saw["thread"] = threading.get_ident()
+        return master.sha256
+
+    monkeypatch.setattr(cp, "_sha256", recording_sha256)
+    result = await cp._cached_source_master("acct:page", master, "job-1")
+    assert result == target
+    assert saw["thread"] != loop_thread, "cache-hit hash must not run on the event loop"
+
+
 
 
 def test_capabilities_include_only_completed_page_source_import_identities(lab):

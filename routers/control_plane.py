@@ -2298,7 +2298,7 @@ async def _cached_source_master(page_id: str, master: Any, job_id: str) -> Path:
         if (
             target.is_file()
             and target.stat().st_size == master.bytes
-            and _sha256(target) == master.sha256
+            and await asyncio.to_thread(_sha256, target) == master.sha256
         ):
             return target
         partial = cache_root / f".{master.sha256}.{job_id}.part"
