@@ -597,3 +597,92 @@ def test_new_provenance_unblocks_same_slot_and_old_enqueue_replay_preserves_it(t
     assert worker.status(first["id"])["state"] == "succeeded"
     with pytest.raises(jobs.RenderJobError):
         worker.provide_provenance(first["id"], submission(program_id="playlist:other"))
+
+
+def _run_succeeded(tmp_path, *, clock=None, idempotency="retire-request"):
+    worker = service(tmp_path, clock=clock)
+    job = worker.enqueue(submission(), idempotency)
+    assert worker.run_one()
+    assert worker.status(job["id"])["state"] == "succeeded"
+    return worker, job
+
+
+def test_acknowledge_gates_on_succeeded_and_is_idempotent(tmp_path):
+    worker, job = _run_succeeded(tmp_path)
+    with pytest.raises(jobs.RenderJobError, match="job_not_found"):
+        worker.acknowledge(job["id"] + "-nope")
+    # A queued (not-yet-rendered) job cannot be acknowledged.
+    queued = worker.enqueue(submission(slot_id="slot:queued-ack"), "queued-ack")
+    with pytest.raises(jobs.RenderJobError, match="acknowledge_not_ready"):
+        worker.acknowledge(queued["id"])
+
+    first = worker.acknowledge(job["id"])
+    assert first["acknowledged_at_ms"] is not None
+    replay = worker.acknowledge(job["id"])
+    assert replay["acknowledged_at_ms"] == first["acknowledged_at_ms"]
+
+
+def test_retire_removes_media_but_keeps_hash_and_idempotency_authority(tmp_path):
+    worker, job = _run_succeeded(tmp_path, idempotency="retire-tombstone")
+    worker.acknowledge(job["id"])
+    attempt_dir = worker._output(worker._row(job["id"])).parent.parent
+    assert attempt_dir.exists()
+
+    receipt_sha = worker.status(job["id"])["receipt_sha256"]
+    worker.retire(job["id"])
+
+    assert not attempt_dir.exists()
+    status = worker.status(job["id"])
+    assert status["state"] == "succeeded"
+    assert status["receipt_sha256"] == receipt_sha
+    assert status["retired_at_ms"] is not None
+    # The durable tombstone keeps the row and idempotency authoritative.
+    replay = service(tmp_path).enqueue(submission(), "retire-tombstone")
+    assert replay["id"] == job["id"]
+    assert replay["state"] == "succeeded"
+    # Artifacts are no longer served once retired.
+    with pytest.raises(jobs.RenderJobError, match="artifact_not_ready"):
+        worker.artifact(job["id"], "final")
+
+
+def test_unacknowledged_media_is_never_retired_even_after_aging(tmp_path):
+    now = [NOW]
+    worker = service(tmp_path, clock=lambda: now[0])
+    job = worker.enqueue(submission(slot_id="slot:no-ack"), "no-ack-request")
+    assert worker.run_one()
+    with pytest.raises(jobs.RenderJobError, match="retire_not_ready"):
+        worker.retire(job["id"])
+    # Age far past the safety window; GC must still leave it downloadable.
+    now[0] += jobs._retire_after_ms() + 1
+    worker._gc()
+    assert worker.status(job["id"])["retired_at_ms"] is None
+    assert worker.artifact(job["id"], "final").exists()
+
+
+def test_gc_retires_only_aged_acknowledged_jobs(tmp_path):
+    now = [NOW]
+    worker = service(tmp_path, clock=lambda: now[0])
+    aged = worker.enqueue(submission(slot_id="slot:aged"), "aged-ack")
+    fresh = worker.enqueue(submission(slot_id="slot:fresh"), "fresh-ack")
+    assert worker.run_one()
+    assert worker.run_one()
+    worker.acknowledge(aged["id"])
+    now[0] += jobs._retire_after_ms() + 1
+    worker.acknowledge(fresh["id"])
+
+    worker._gc()
+
+    assert worker.status(aged["id"])["retired_at_ms"] is not None
+    assert worker.status(fresh["id"])["retired_at_ms"] is None
+    assert worker.artifact(fresh["id"], "final").exists()
+    with pytest.raises(jobs.RenderJobError, match="artifact_not_ready"):
+        worker.artifact(aged["id"], "final")
+
+
+def test_volume_watermark_defers_new_renders(monkeypatch, tmp_path):
+    worker, job = _run_succeeded(tmp_path)
+    monkeypatch.setattr(worker, "_free_bytes", lambda: 1)
+    monkeypatch.setenv("CONTENT_LAB_POST_RENDER_MIN_FREE_BYTES", "10")
+    queued = worker.enqueue(submission(slot_id="slot:deferred"), "deferred-render")
+    worker.run_one()  # watermark blocks the claim
+    assert worker.status(queued["id"])["state"] == "queued"

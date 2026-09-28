@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import sqlite3
 import threading
 import time
@@ -34,6 +35,36 @@ RETRY_CODES = {"source_unavailable", "source_timeout", "process_timeout", "proce
 DEFAULT_WORKER_COUNT = 2
 MIN_WORKER_COUNT = 1
 MAX_WORKER_COUNT = 4
+# Retirement (lab #9): an acknowledged, succeeded render may have its media
+# removed after this safety window; its jobs/idempotency rows stay as compact
+# tombstones so hashes and idempotency remain authoritative. The free-space
+# floor stops the worker from claiming new renders when the volume is tight.
+DEFAULT_RETIRE_AFTER_MS = 24 * 60 * 60 * 1000
+DEFAULT_MIN_FREE_BYTES = 1 * 1024 * 1024 * 1024
+
+
+def _retire_after_ms() -> int:
+    raw = os.getenv("CONTENT_LAB_POST_RENDER_RETIRE_AFTER_MS", "").strip()
+    if raw:
+        try:
+            value = int(raw)
+        except ValueError:
+            value = 0
+        if value > 0:
+            return value
+    return DEFAULT_RETIRE_AFTER_MS
+
+
+def _min_free_bytes() -> int:
+    raw = os.getenv("CONTENT_LAB_POST_RENDER_MIN_FREE_BYTES", "").strip()
+    if raw:
+        try:
+            value = int(raw)
+        except ValueError:
+            value = 0
+        if value > 0:
+            return value
+    return DEFAULT_MIN_FREE_BYTES
 
 
 def _worker_count() -> int:
@@ -256,6 +287,8 @@ class PostRenderJobs:
                     available_at_ms INTEGER NOT NULL, created_at_ms INTEGER NOT NULL,
                     updated_at_ms INTEGER NOT NULL, error_code TEXT, receipt_sha256 TEXT,
                     planned_at_ms INTEGER,
+                    acknowledged_at_ms INTEGER,
+                    retired_at_ms INTEGER,
                     UNIQUE(slot_id,slot_hash));
                 CREATE TABLE IF NOT EXISTS idempotency (
                     key TEXT PRIMARY KEY, job_id TEXT NOT NULL REFERENCES jobs(id), request_hash TEXT NOT NULL);
@@ -266,10 +299,12 @@ class PostRenderJobs:
                     id TEXT PRIMARY KEY, job_id TEXT NOT NULL REFERENCES jobs(id),
                     state TEXT NOT NULL, started_at_ms INTEGER NOT NULL, ended_at_ms INTEGER, error_code TEXT);
             """)
-            # Idempotent migration for databases created before planned_at_ms existed.
+            # Idempotent migration for databases created before planned_at_ms
+            # (or the retirement columns) existed.
             columns = {row["name"] for row in db.execute("PRAGMA table_info(jobs)").fetchall()}
-            if "planned_at_ms" not in columns:
-                db.execute("ALTER TABLE jobs ADD COLUMN planned_at_ms INTEGER")
+            for name in ("planned_at_ms", "acknowledged_at_ms", "retired_at_ms"):
+                if name not in columns:
+                    db.execute(f"ALTER TABLE jobs ADD COLUMN {name} INTEGER")
             # One-time backfill, safe to run on every init: only NULL rows in states that
             # still matter for claim order are touched, so already-backfilled or terminal
             # rows are never revisited. Without this, jobs already queued/running at
@@ -354,7 +389,7 @@ class PostRenderJobs:
 
     def status(self, job_id: str) -> dict:
         row = self._row(job_id)
-        result = {key: row[key] for key in ("id", "slot_id", "slot_hash", "state", "attempts", "created_at_ms", "updated_at_ms", "error_code")}
+        result = {key: row[key] for key in ("id", "slot_id", "slot_hash", "state", "attempts", "created_at_ms", "updated_at_ms", "error_code", "acknowledged_at_ms", "retired_at_ms")}
         result["schema"] = "content-lab.post-render-status.v1"
         if row["state"] == "regeneration_needed":
             result["next_action"] = "regenerate_source_with_treatment_provenance"
@@ -450,10 +485,79 @@ class PostRenderJobs:
         if kind not in names:
             raise RenderJobError("artifact_not_found")
         row = self._row(job_id)
-        if row["state"] != "succeeded":
+        if row["state"] != "succeeded" or row["retired_at_ms"] is not None:
             raise RenderJobError("artifact_not_ready")
         self._verify_output(row)
         return self._output(row) / names[kind]
+
+    def acknowledge(self, job_id: str) -> dict:
+        """Record downstream admission. Only a succeeded job may be acknowledged.
+
+        Idempotent: a replay after acknowledgment (including after retirement)
+        returns the current status without re-verifying deleted media.
+        """
+        row = self._row(job_id)
+        if row["state"] != "succeeded":
+            raise RenderJobError("acknowledge_not_ready")
+        if row["acknowledged_at_ms"]:
+            return self.status(job_id)
+        self._verify_output(row)
+        now = self.clock_ms()
+        with self._db() as db:
+            changed = db.execute(
+                "UPDATE jobs SET acknowledged_at_ms=? WHERE id=? AND acknowledged_at_ms IS NULL",
+                (now, job_id),
+            ).rowcount
+        return self.status(job_id)
+
+    def retire(self, job_id: str) -> dict:
+        """Remove media for an acknowledged, succeeded job, keeping its tombstone.
+
+        Receipt/hash/idempotency rows are retained; only the attempt directory
+        is deleted. Unacknowledged or non-succeeded jobs are never touched.
+        """
+        row = self._row(job_id)
+        if row["state"] != "succeeded" or not row["acknowledged_at_ms"]:
+            raise RenderJobError("retire_not_ready")
+        if row["retired_at_ms"]:
+            return self.status(job_id)
+        self._verify_output(row)
+        attempt_dir = self._output(row).parent.parent
+        shutil.rmtree(attempt_dir, ignore_errors=True)
+        now = self.clock_ms()
+        with self._db() as db:
+            db.execute(
+                "UPDATE jobs SET retired_at_ms=? WHERE id=? AND retired_at_ms IS NULL",
+                (now, job_id),
+            )
+            db.execute("UPDATE attempts SET state='retired' WHERE job_id=?", (job_id,))
+        return self.status(job_id)
+
+    def _gc(self) -> None:
+        """Retire acknowledged, succeeded media after the safety window.
+
+        Best-effort, called from the worker loop. Rows become tombstones
+        (receipt/hash/idempotency retained); the attempt directory is removed.
+        """
+        cutoff = self.clock_ms() - _retire_after_ms()
+        with self._db() as db:
+            rows = db.execute(
+                "SELECT * FROM jobs WHERE state='succeeded' AND acknowledged_at_ms IS NOT NULL "
+                "AND retired_at_ms IS NULL AND acknowledged_at_ms<=?",
+                (cutoff,),
+            ).fetchall()
+        for row in rows:
+            attempt_dir = self._output(row).parent.parent
+            shutil.rmtree(attempt_dir, ignore_errors=True)
+            with self._db() as db:
+                db.execute("UPDATE jobs SET retired_at_ms=? WHERE id=?", (self.clock_ms(), row["id"]))
+                db.execute("UPDATE attempts SET state='retired' WHERE job_id=?", (row["id"],))
+
+    def _free_bytes(self) -> int:
+        try:
+            return shutil.disk_usage(self.root).free
+        except OSError:
+            return _min_free_bytes()
 
     def _finish(self, row, receipt_sha: str):
         output = self._output(row)
@@ -476,10 +580,14 @@ class PostRenderJobs:
             db.execute("UPDATE attempts SET state='succeeded',ended_at_ms=? WHERE id=?", (now, row["attempt_id"]))
 
     def run_one(self) -> bool:
+        self._gc()
         permit = next((lock for index in range(self.worker_count) if (lock := _locked(self.root / "locks" / f"worker-{index}.lock")) is not None), None)
         if permit is None:
             return False
         with permit:
+            if self._free_bytes() < _min_free_bytes():
+                log.warning("post render volume free space below floor; deferring claims")
+                return False
             with self._db() as db:
                 # Running rows (restart recovery) stay at least as prioritized as before by
                 # always sorting ahead of queued rows. Among the rest, earliest planned
@@ -514,6 +622,9 @@ class PostRenderJobs:
         return False
 
     def _execute(self, old):
+        if self._free_bytes() < _min_free_bytes():
+            log.warning("post render volume free space below floor; deferring job=%s", old["id"])
+            return
         now, attempt_id = self.clock_ms(), uuid.uuid4().hex
         with self._db() as db:
             if old["attempts"] >= MAX_ATTEMPTS:
