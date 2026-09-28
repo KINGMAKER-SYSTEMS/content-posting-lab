@@ -41,9 +41,8 @@ def submission(*, slot_id="slot:fixture-a", source=b"source", program_id="playli
         "provenance_id": "generation:explicit-fixture"}})
 
 
-def fake_render(source, output, request, *, clock_ms):
+def _write_fake_render(output, request, *, clock_ms, final, qa=b"qa frame"):
     output.mkdir()
-    final, qa = b"final:" + request.caption.encode(), b"qa frame"
     (output / "final.mp4").write_bytes(final)
     (output / "qa.jpg").write_bytes(qa)
     receipt = {key: getattr(request, key) for key in ("slot_id", "slot_payload_sha256", "page_id", "program_id",
@@ -54,6 +53,15 @@ def fake_render(source, output, request, *, clock_ms):
     (output / "receipt.json").write_text(json.dumps(receipt, separators=(",", ":")))
     (output / "decode.json").write_text(json.dumps({"final_sha256": sha256(final), "qa_frame_sha256": sha256(qa),
         "decoded_video_frames": 30, "final_probe": {"duration_ms": 1000}}))
+
+
+def fake_render(source, output, request, *, clock_ms):
+    _write_fake_render(
+        output,
+        request,
+        clock_ms=clock_ms,
+        final=b"final:" + request.slot_id.encode() + b":" + request.caption.encode(),
+    )
 
 
 def service(tmp_path, *, renderer=fake_render, fetcher=None, clock=None):
@@ -643,6 +651,84 @@ def test_retire_removes_media_but_keeps_hash_and_idempotency_authority(tmp_path)
     # Artifacts are no longer served once retired.
     with pytest.raises(jobs.RenderJobError, match="artifact_not_ready"):
         worker.artifact(job["id"], "final")
+
+
+def test_retirement_tombstone_keeps_output_hash_authority(tmp_path):
+    worker, job = _run_succeeded(tmp_path, idempotency="retire-output-hashes")
+    receipt = json.loads(worker.artifact(job["id"], "receipt").read_text())
+    worker.acknowledge(job["id"])
+
+    worker.retire(job["id"])
+
+    status = service(tmp_path).status(job["id"])
+    assert status["final_sha256"] == receipt["final_sha256"]
+    assert status["qa_frame_sha256"] == receipt["qa_frame_sha256"]
+    verified = worker._verify_output(worker._row(job["id"]))
+    assert verified["final_sha256"] == receipt["final_sha256"]
+    assert verified["qa_frame_sha256"] == receipt["qa_frame_sha256"]
+
+
+def test_retired_output_hash_authority_refuses_duplicate_output(tmp_path):
+    def fixed_output(_source, output, request, *, clock_ms):
+        _write_fake_render(output, request, clock_ms=clock_ms, final=b"same final output")
+
+    worker = service(tmp_path, renderer=fixed_output)
+    first = worker.enqueue(submission(), "first-output")
+    assert worker.run_one()
+    first_hash = json.loads(worker.artifact(first["id"], "receipt").read_text())["final_sha256"]
+    worker.acknowledge(first["id"])
+    worker.retire(first["id"])
+
+    duplicate = worker.enqueue(submission(slot_id="slot:duplicate-output"), "duplicate-output")
+    assert worker.run_one()
+    duplicate_status = worker.status(duplicate["id"])
+    assert duplicate_status["state"] == "failed"
+    assert duplicate_status["error_code"] == "duplicate_output"
+    assert worker.status(first["id"])["final_sha256"] == first_hash
+
+
+def test_retirement_does_not_tombstone_failed_deletion(tmp_path, monkeypatch, caplog):
+    worker, job = _run_succeeded(tmp_path, idempotency="failed-retirement")
+    worker.acknowledge(job["id"])
+    attempt_dir = worker._output(worker._row(job["id"])).parent.parent
+    monkeypatch.setattr(jobs.shutil, "rmtree", lambda _path, **_kwargs: None)
+
+    with pytest.raises(jobs.RenderJobError, match="retirement_failed"):
+        worker.retire(job["id"])
+
+    assert attempt_dir.exists()
+    assert worker.status(job["id"])["retired_at_ms"] is None
+    assert "post render retirement deletion failed" in caplog.text
+
+
+def test_retirement_retries_after_partial_deletion_from_durable_authority(tmp_path, monkeypatch):
+    worker, job = _run_succeeded(tmp_path, idempotency="partial-retirement")
+    worker.acknowledge(job["id"])
+    row = worker._row(job["id"])
+    attempt_dir = worker._output(row).parent.parent
+    receipt = worker._output(row) / "receipt.json"
+    real_rmtree = jobs.shutil.rmtree
+    calls = []
+
+    def partial_failure(path, **kwargs):
+        calls.append(path)
+        if len(calls) == 1:
+            receipt.unlink()
+            if kwargs.get("ignore_errors"):
+                return None
+            raise OSError("simulated partial directory removal")
+        return real_rmtree(path)
+
+    monkeypatch.setattr(jobs.shutil, "rmtree", partial_failure)
+    with pytest.raises(jobs.RenderJobError, match="retirement_failed"):
+        worker.retire(job["id"])
+    assert attempt_dir.exists()
+    assert worker.status(job["id"])["retired_at_ms"] is None
+
+    retired = worker.retire(job["id"])
+
+    assert retired["retired_at_ms"] is not None
+    assert not attempt_dir.exists()
 
 
 def test_unacknowledged_media_is_never_retired_even_after_aging(tmp_path):

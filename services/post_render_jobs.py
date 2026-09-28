@@ -30,6 +30,7 @@ from services.post_render import (
 log = logging.getLogger("content_lab.post_render_jobs")
 
 JOB_SCHEMA = "content-lab.post-render-job.v1"
+OUTPUT_AUTHORITY_SCHEMA = "content-lab.post-render-output-authority.v1"
 MAX_ATTEMPTS = 3
 RETRY_CODES = {"source_unavailable", "source_timeout", "process_timeout", "process_unavailable"}
 DEFAULT_WORKER_COUNT = 2
@@ -289,6 +290,10 @@ class PostRenderJobs:
                     planned_at_ms INTEGER,
                     acknowledged_at_ms INTEGER,
                     retired_at_ms INTEGER,
+                    final_sha256 TEXT,
+                    qa_frame_sha256 TEXT,
+                    final_byte_length INTEGER,
+                    output_authority_json TEXT,
                     UNIQUE(slot_id,slot_hash));
                 CREATE TABLE IF NOT EXISTS idempotency (
                     key TEXT PRIMARY KEY, job_id TEXT NOT NULL REFERENCES jobs(id), request_hash TEXT NOT NULL);
@@ -302,9 +307,21 @@ class PostRenderJobs:
             # Idempotent migration for databases created before planned_at_ms
             # (or the retirement columns) existed.
             columns = {row["name"] for row in db.execute("PRAGMA table_info(jobs)").fetchall()}
-            for name in ("planned_at_ms", "acknowledged_at_ms", "retired_at_ms"):
+            integer_columns = (
+                "planned_at_ms", "acknowledged_at_ms", "retired_at_ms",
+                "final_byte_length",
+            )
+            text_columns = ("final_sha256", "qa_frame_sha256", "output_authority_json")
+            for name in integer_columns:
                 if name not in columns:
                     db.execute(f"ALTER TABLE jobs ADD COLUMN {name} INTEGER")
+            for name in text_columns:
+                if name not in columns:
+                    db.execute(f"ALTER TABLE jobs ADD COLUMN {name} TEXT")
+            db.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS jobs_final_sha256_authority "
+                "ON jobs(final_sha256) WHERE final_sha256 IS NOT NULL"
+            )
             # One-time backfill, safe to run on every init: only NULL rows in states that
             # still matter for claim order are touched, so already-backfilled or terminal
             # rows are never revisited. Without this, jobs already queued/running at
@@ -396,6 +413,9 @@ class PostRenderJobs:
         result["retryable"] = row["state"] == "failed" and row["attempts"] < MAX_ATTEMPTS
         if row["state"] == "succeeded":
             result["receipt_sha256"] = row["receipt_sha256"]
+            if row["final_sha256"] is not None:
+                result["final_sha256"] = row["final_sha256"]
+                result["qa_frame_sha256"] = row["qa_frame_sha256"]
             result["artifacts"] = {kind: f"/api/control-plane/v1/post-renders/{job_id}/artifacts/{kind}" for kind in ("final", "qa", "receipt")}
         return result
 
@@ -441,11 +461,62 @@ class PostRenderJobs:
     def _output(self, row) -> Path:
         return self.root / "attempts" / row["id"] / row["attempt_id"] / "render"
 
-    def _verify_output(self, row) -> str:
-        """Recover only a completed hash-bound renderer result; partial directories never serve."""
-        from services.post_render import _file_hash
+    def _validate_output_authority(self, row, authority: dict) -> dict:
+        """Validate durable output facts against the immutable request and job row."""
+        if authority.get("schema") != OUTPUT_AUTHORITY_SCHEMA:
+            raise RenderJobError("output_authority_invalid")
+        receipt = authority.get("receipt")
+        evidence = authority.get("decode")
+        if not isinstance(receipt, dict) or not isinstance(evidence, dict):
+            raise RenderJobError("output_authority_invalid")
         request = RenderJobSubmission.model_validate_json(row["submission_json"]).request
+        for field in ("slot_id", "slot_payload_sha256", "page_id", "program_id", "device_serial", "account",
+                      "source_sha256", "caption_sha256", "treatment_sha256", "renderer_id", "renderer_version"):
+            if receipt.get(field) != getattr(request, field):
+                raise RenderJobError("receipt_binding_mismatch")
+        final_sha = authority.get("final_sha256")
+        qa_sha = authority.get("qa_frame_sha256")
+        final_length = authority.get("final_byte_length")
+        if (not isinstance(final_sha, str) or not re.fullmatch(r"[0-9a-f]{64}", final_sha)
+                or not isinstance(qa_sha, str) or not re.fullmatch(r"[0-9a-f]{64}", qa_sha)
+                or not isinstance(final_length, int) or isinstance(final_length, bool) or final_length <= 0
+                or receipt.get("final_sha256") != final_sha
+                or receipt.get("final_byte_length") != final_length
+                or receipt.get("qa_frame_sha256") != qa_sha or final_sha == request.source_sha256
+                or receipt.get("final_object_key") != f"posting/final/{final_sha}.mp4"
+                or receipt.get("mime_type") != "video/mp4" or receipt.get("width") != 1080 or receipt.get("height") != 1920
+                or not request.created_at_ms <= receipt.get("completed_at_ms", -1) <= self.clock_ms()):
+            raise RenderJobError("artifact_binding_mismatch")
+        if (evidence.get("final_sha256") != final_sha or evidence.get("qa_frame_sha256") != qa_sha
+                or evidence.get("decoded_video_frames", 0) <= 0
+                or evidence.get("final_probe", {}).get("duration_ms") != receipt.get("duration_ms")
+                or receipt.get("duration_ms", 0) <= 0):
+            raise RenderJobError("decode_evidence_missing")
+        receipt_sha = authority.get("receipt_sha256")
+        if (not isinstance(receipt_sha, str) or not re.fullmatch(r"[0-9a-f]{64}", receipt_sha)
+                or row["receipt_sha256"] and row["receipt_sha256"] != receipt_sha
+                or row["final_sha256"] and row["final_sha256"] != final_sha
+                or row["qa_frame_sha256"] and row["qa_frame_sha256"] != qa_sha
+                or row["final_byte_length"] and row["final_byte_length"] != final_length):
+            raise RenderJobError("output_authority_changed")
+        return authority
+
+    def _verify_output(self, row) -> dict:
+        """Return verified output facts from media, or its durable tombstone once removed."""
+        from services.post_render import _file_hash
         output = self._output(row)
+        required = tuple(output / name for name in ("receipt.json", "final.mp4", "qa.jpg", "decode.json"))
+        if not output.is_dir() or not all(path.is_file() for path in required):
+            encoded = row["output_authority_json"]
+            if not encoded:
+                raise RenderJobError("output_authority_missing")
+            try:
+                authority = json.loads(encoded)
+            except (TypeError, ValueError) as error:
+                raise RenderJobError("output_authority_invalid") from error
+            if not isinstance(authority, dict):
+                raise RenderJobError("output_authority_invalid")
+            return self._validate_output_authority(row, authority)
         with (output / "receipt.json").open("rb") as file:
             receipt_bytes = file.read(64 * 1024 + 1)
         if len(receipt_bytes) > 64 * 1024:
@@ -453,32 +524,52 @@ class PostRenderJobs:
         receipt = json.loads(receipt_bytes)
         if receipt.get("schema") != "posting-prepared-artifact/v1":
             raise RenderJobError("receipt_invalid")
-        for field in ("slot_id", "slot_payload_sha256", "page_id", "program_id", "device_serial", "account",
-                      "source_sha256", "caption_sha256", "treatment_sha256", "renderer_id", "renderer_version"):
-            if receipt.get(field) != getattr(request, field):
-                raise RenderJobError("receipt_binding_mismatch")
         final_sha, final_length = _file_hash(output / "final.mp4", MAX_FINAL_BYTES)
         qa_sha, _ = _file_hash(output / "qa.jpg", MAX_QA_BYTES)
-        if (receipt.get("final_sha256") != final_sha or receipt.get("final_byte_length") != final_length
-                or receipt.get("qa_frame_sha256") != qa_sha or final_sha == request.source_sha256
-                or receipt.get("final_object_key") != f"posting/final/{final_sha}.mp4"
-                or receipt.get("mime_type") != "video/mp4" or receipt.get("width") != 1080 or receipt.get("height") != 1920
-                or not request.created_at_ms <= receipt.get("completed_at_ms", -1) <= self.clock_ms()):
-            raise RenderJobError("artifact_binding_mismatch")
         with (output / "decode.json").open("rb") as file:
             evidence_bytes = file.read(64 * 1024 + 1)
         if len(evidence_bytes) > 64 * 1024:
             raise RenderJobError("decode_evidence_invalid")
         evidence = json.loads(evidence_bytes)
-        if (evidence.get("final_sha256") != final_sha or evidence.get("qa_frame_sha256") != qa_sha
-                or evidence.get("decoded_video_frames", 0) <= 0
-                or evidence.get("final_probe", {}).get("duration_ms") != receipt.get("duration_ms")
-                or receipt.get("duration_ms", 0) <= 0):
-            raise RenderJobError("decode_evidence_missing")
         receipt_sha = sha256(receipt_bytes)
-        if row["receipt_sha256"] and row["receipt_sha256"] != receipt_sha:
-            raise RenderJobError("receipt_changed")
-        return receipt_sha
+        authority = {
+            "schema": OUTPUT_AUTHORITY_SCHEMA,
+            "receipt_sha256": receipt_sha,
+            "final_sha256": final_sha,
+            "qa_frame_sha256": qa_sha,
+            "final_byte_length": final_length,
+            "receipt": receipt,
+            "decode": evidence,
+        }
+        return self._validate_output_authority(row, authority)
+
+    @staticmethod
+    def _authority_values(authority: dict) -> tuple[str, str, str, int, str]:
+        return (
+            authority["receipt_sha256"],
+            authority["final_sha256"],
+            authority["qa_frame_sha256"],
+            authority["final_byte_length"],
+            json.dumps(authority, sort_keys=True, separators=(",", ":")),
+        )
+
+    def _persist_output_authority(self, row, authority: dict) -> None:
+        values = self._authority_values(authority)
+        try:
+            with self._db() as db:
+                duplicate = db.execute(
+                    "SELECT id FROM jobs WHERE final_sha256=? AND id<>?",
+                    (authority["final_sha256"], row["id"]),
+                ).fetchone()
+                if duplicate:
+                    raise RenderJobError("duplicate_output")
+                db.execute(
+                    "UPDATE jobs SET receipt_sha256=?,final_sha256=?,qa_frame_sha256=?,"
+                    "final_byte_length=?,output_authority_json=? WHERE id=?",
+                    (*values, row["id"]),
+                )
+        except sqlite3.IntegrityError as error:
+            raise RenderJobError("duplicate_output") from error
 
     def artifact(self, job_id: str, kind: str) -> Path:
         names = {"final": "final.mp4", "qa": "qa.jpg", "receipt": "receipt.json"}
@@ -486,6 +577,9 @@ class PostRenderJobs:
             raise RenderJobError("artifact_not_found")
         row = self._row(job_id)
         if row["state"] != "succeeded" or row["retired_at_ms"] is not None:
+            raise RenderJobError("artifact_not_ready")
+        output = self._output(row)
+        if not all((output / name).is_file() for name in ("receipt.json", "final.mp4", "qa.jpg", "decode.json")):
             raise RenderJobError("artifact_not_ready")
         self._verify_output(row)
         return self._output(row) / names[kind]
@@ -501,7 +595,8 @@ class PostRenderJobs:
             raise RenderJobError("acknowledge_not_ready")
         if row["acknowledged_at_ms"]:
             return self.status(job_id)
-        self._verify_output(row)
+        authority = self._verify_output(row)
+        self._persist_output_authority(row, authority)
         now = self.clock_ms()
         with self._db() as db:
             changed = db.execute(
@@ -521,17 +616,32 @@ class PostRenderJobs:
             raise RenderJobError("retire_not_ready")
         if row["retired_at_ms"]:
             return self.status(job_id)
-        self._verify_output(row)
+        if not self._retire_row(row):
+            raise RenderJobError("retirement_failed")
+        return self.status(job_id)
+
+    def _retire_row(self, row) -> bool:
+        """Persist output authority, then remove media and finally mark retired."""
+        authority = self._verify_output(row)
+        self._persist_output_authority(row, authority)
         attempt_dir = self._output(row).parent.parent
-        shutil.rmtree(attempt_dir, ignore_errors=True)
-        now = self.clock_ms()
+        try:
+            shutil.rmtree(attempt_dir)
+        except FileNotFoundError:
+            pass
+        except OSError:
+            log.exception("post render retirement deletion failed job=%s", row["id"])
+            return False
+        if attempt_dir.exists():
+            log.error("post render retirement deletion failed job=%s directory remains", row["id"])
+            return False
         with self._db() as db:
             db.execute(
                 "UPDATE jobs SET retired_at_ms=? WHERE id=? AND retired_at_ms IS NULL",
-                (now, job_id),
+                (self.clock_ms(), row["id"]),
             )
-            db.execute("UPDATE attempts SET state='retired' WHERE job_id=?", (job_id,))
-        return self.status(job_id)
+            db.execute("UPDATE attempts SET state='retired' WHERE job_id=?", (row["id"],))
+        return True
 
     def _gc(self) -> None:
         """Retire acknowledged, succeeded media after the safety window.
@@ -547,11 +657,10 @@ class PostRenderJobs:
                 (cutoff,),
             ).fetchall()
         for row in rows:
-            attempt_dir = self._output(row).parent.parent
-            shutil.rmtree(attempt_dir, ignore_errors=True)
-            with self._db() as db:
-                db.execute("UPDATE jobs SET retired_at_ms=? WHERE id=?", (self.clock_ms(), row["id"]))
-                db.execute("UPDATE attempts SET state='retired' WHERE job_id=?", (row["id"],))
+            try:
+                self._retire_row(row)
+            except (OSError, ValueError, TypeError):
+                log.exception("post render retirement failed job=%s", row["id"])
 
     def _free_bytes(self) -> int:
         try:
@@ -559,7 +668,7 @@ class PostRenderJobs:
         except OSError:
             return _min_free_bytes()
 
-    def _finish(self, row, receipt_sha: str):
+    def _finish(self, row, authority: dict):
         output = self._output(row)
         for path in output.iterdir():
             if path.is_file():
@@ -572,12 +681,26 @@ class PostRenderJobs:
             finally:
                 os.close(descriptor)
         now = self.clock_ms()
-        with self._db() as db:
-            changed = db.execute("UPDATE jobs SET state='succeeded',receipt_sha256=?,updated_at_ms=?,error_code=NULL WHERE id=? AND attempt_id=? AND state='running'",
-                                 (receipt_sha, now, row["id"], row["attempt_id"])).rowcount
-            if changed != 1:
-                raise RenderJobError("attempt_fenced")
-            db.execute("UPDATE attempts SET state='succeeded',ended_at_ms=? WHERE id=?", (now, row["attempt_id"]))
+        values = self._authority_values(authority)
+        try:
+            with self._db() as db:
+                duplicate = db.execute(
+                    "SELECT id FROM jobs WHERE final_sha256=? AND id<>?",
+                    (authority["final_sha256"], row["id"]),
+                ).fetchone()
+                if duplicate:
+                    raise RenderJobError("duplicate_output")
+                changed = db.execute(
+                    "UPDATE jobs SET state='succeeded',receipt_sha256=?,final_sha256=?,"
+                    "qa_frame_sha256=?,final_byte_length=?,output_authority_json=?,updated_at_ms=?,"
+                    "error_code=NULL WHERE id=? AND attempt_id=? AND state='running'",
+                    (*values, now, row["id"], row["attempt_id"]),
+                ).rowcount
+                if changed != 1:
+                    raise RenderJobError("attempt_fenced")
+                db.execute("UPDATE attempts SET state='succeeded',ended_at_ms=? WHERE id=?", (now, row["attempt_id"]))
+        except sqlite3.IntegrityError as error:
+            raise RenderJobError("duplicate_output") from error
 
     def run_one(self) -> bool:
         self._gc()
@@ -642,8 +765,8 @@ class PostRenderJobs:
             submission = RenderJobSubmission.model_validate_json(row["submission_json"])
             self.fetcher(submission.request, source)
             self.renderer(source, self._output(row), submission.request, clock_ms=self.clock_ms)
-            receipt_sha = self._verify_output(row)
-            self._finish(row, receipt_sha)
+            authority = self._verify_output(row)
+            self._finish(row, authority)
         except Exception as error:
             code = getattr(error, "code", "render_failed")
             log.warning("post render attempt failed job=%s attempt=%s reason=%s", row["id"], attempt_id, code)
