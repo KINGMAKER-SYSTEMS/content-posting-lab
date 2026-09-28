@@ -42,6 +42,13 @@ MAX_WORKER_COUNT = 4
 # floor stops the worker from claiming new renders when the volume is tight.
 DEFAULT_RETIRE_AFTER_MS = 24 * 60 * 60 * 1000
 DEFAULT_MIN_FREE_BYTES = 1 * 1024 * 1024 * 1024
+# Failed/interrupted attempt bytes are diagnostic only; bound them separately
+# from the permanent request/output authority in jobs and idempotency.
+FAILED_MEDIA_RETENTION_MS = 24 * 60 * 60 * 1000
+# attempts and provenance_updates are auxiliary audit history. The jobs row
+# (including request, receipt/final/QA hashes and counters) and every
+# idempotency row are no-repeat authority and are never deleted by this GC.
+AUXILIARY_HISTORY_RETENTION_MS = 30 * 24 * 60 * 60 * 1000
 
 
 def _retire_after_ms() -> int:
@@ -661,6 +668,70 @@ class PostRenderJobs:
                 self._retire_row(row)
             except (OSError, ValueError, TypeError):
                 log.exception("post render retirement failed job=%s", row["id"])
+        self._gc_failed_attempt_media()
+        if self._gc_auxiliary_history():
+            self._checkpoint_wal()
+
+    def _gc_failed_attempt_media(self) -> None:
+        cutoff = self.clock_ms() - FAILED_MEDIA_RETENTION_MS
+        with self._db() as db:
+            rows = db.execute(
+                "SELECT id,job_id FROM attempts WHERE state IN ('failed','interrupted') "
+                "AND ended_at_ms IS NOT NULL AND ended_at_ms<=?",
+                (cutoff,),
+            ).fetchall()
+        for row in rows:
+            attempt_dir = self.root / "attempts" / row["job_id"] / row["id"]
+            try:
+                shutil.rmtree(attempt_dir)
+            except FileNotFoundError:
+                pass
+            except OSError:
+                log.exception(
+                    "post render failed-attempt cleanup failed job=%s attempt=%s",
+                    row["job_id"], row["id"],
+                )
+                continue
+            if attempt_dir.exists():
+                log.error(
+                    "post render failed-attempt cleanup failed job=%s attempt=%s directory remains",
+                    row["job_id"], row["id"],
+                )
+                continue
+            try:
+                attempt_dir.parent.rmdir()
+            except OSError:
+                pass
+
+    def _gc_auxiliary_history(self) -> bool:
+        cutoff = self.clock_ms() - AUXILIARY_HISTORY_RETENTION_MS
+        with self._db() as db:
+            rows = db.execute(
+                "SELECT id,job_id FROM attempts WHERE state IN ('failed','interrupted','retired') "
+                "AND ended_at_ms IS NOT NULL AND ended_at_ms<=?",
+                (cutoff,),
+            ).fetchall()
+            removable = [
+                row["id"] for row in rows
+                if not (self.root / "attempts" / row["job_id"] / row["id"]).exists()
+            ]
+            removed = 0
+            for attempt_id in removable:
+                removed += db.execute("DELETE FROM attempts WHERE id=?", (attempt_id,)).rowcount
+            removed += db.execute(
+                "DELETE FROM provenance_updates WHERE updated_at_ms<=?", (cutoff,)
+            ).rowcount
+        return bool(removed)
+
+    def _checkpoint_wal(self) -> None:
+        try:
+            db = sqlite3.connect(self.root / "jobs.sqlite", timeout=5, isolation_level=None)
+            try:
+                db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            finally:
+                db.close()
+        except sqlite3.Error:
+            log.exception("post render SQLite WAL checkpoint failed")
 
     def _free_bytes(self) -> int:
         try:

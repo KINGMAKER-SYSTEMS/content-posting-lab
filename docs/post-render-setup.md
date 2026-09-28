@@ -12,6 +12,7 @@ Configure these values only as part of an authorized service release:
 | `CONTENT_LAB_POST_RENDER_ROOT` | Absolute private directory on persistent storage; for the existing Railway `/app/projects` volume, use a dedicated directory such as `/app/projects/_post_render`. Blank leaves the preparation workers stopped. |
 | `CONTENT_LAB_POST_RENDER_SOURCE_ORIGIN` | `https://content-buckets.risingtidesviral.com`, the machine ingress for `/api/control-plane/v1/service/posting/v1/artifacts/.../source`. Required; no browser-origin fallback. |
 | `CONTENT_LAB_POST_RENDER_WORKERS` | Concurrent render workers (threads and lock permits). Optional; default `2`, clamped to `1..4`. An unset, blank, non-integer, or out-of-range value falls back to `2` with a logged warning. Each worker can run a concurrent `ffmpeg` process, so raise this only after confirming the target Railway instance has the CPU headroom for that many concurrent encodes. |
+| `CONTENT_LAB_POST_RENDER_RETIRE_AFTER_MS` | Safety window before acknowledged successful media is retired. Optional; default 24 hours. The verified receipt/final/QA hash authority remains in SQLite. |
 | `CONTROL_PLANE_SERVICE_ID` | Existing Worker service identity, currently `gutenberg-shipstream`; it must retain the relevant scheduler lane and page grants. |
 | `CONTROL_PLANE_SERVICE_SECRET` | The same machine credential held by the Worker. Provision it through the service secret store; never put its value in source, examples or logs. |
 | `CONTROL_PLANE_TOKEN` | Existing inbound Lab bearer, matching Worker's `CONTENT_LAB_TOKEN`. Every render endpoint also requires the exact `X-RT-Page-Id`. |
@@ -29,6 +30,12 @@ root in the image's temporary filesystem or share it through storage lacking
 those semantics. The service creates private subdirectories and starts two
 bounded workers. Restart preserves the same remote job and recovers completed
 outputs before rendering again.
+
+Retention never deletes no-repeat authority: every `jobs` row (request/slot
+binding, counters, and receipt/final/QA hashes) and every `idempotency` row is
+permanent. Failed or interrupted attempt media is diagnostic and is removed
+after 24 hours. Non-authoritative `attempts` and `provenance_updates` history is
+removed after 30 days, after which the service checkpoints the SQLite WAL.
 
 The production Railway target is project `f512351a-26a8-4c33-98ef-eddd2f48c11e`,
 environment `99ff0f13-254f-4bf2-960a-134f4f2e0e0f`, service

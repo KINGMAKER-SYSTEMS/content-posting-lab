@@ -765,6 +765,65 @@ def test_gc_retires_only_aged_acknowledged_jobs(tmp_path):
         worker.artifact(aged["id"], "final")
 
 
+def test_gc_bounds_terminal_failed_attempt_media(tmp_path):
+    now = [NOW]
+
+    def failed_after_output(source, output, request, **kwargs):
+        fake_render(source, output, request, **kwargs)
+        raise ValueError("verification failed after output")
+
+    worker = service(tmp_path, renderer=failed_after_output, clock=lambda: now[0])
+    job = worker.enqueue(submission(slot_id="slot:failed-media"), "failed-media")
+    assert worker.run_one()
+    row = worker._row(job["id"])
+    attempt_dir = worker._output(row).parent
+    assert row["state"] == "failed" and attempt_dir.exists()
+
+    now[0] += 366 * 24 * 60 * 60 * 1000
+    worker._gc()
+
+    assert not attempt_dir.exists()
+    replay = worker.enqueue(submission(slot_id="slot:failed-media"), "failed-media")
+    assert replay["id"] == job["id"]
+    assert replay["state"] == "failed"
+
+
+def test_gc_prunes_only_non_authoritative_sqlite_history(tmp_path, monkeypatch):
+    now = [NOW]
+
+    def failed_after_output(source, output, request, **kwargs):
+        fake_render(source, output, request, **kwargs)
+        raise ValueError("verification failed after output")
+
+    worker = service(tmp_path, renderer=failed_after_output, clock=lambda: now[0])
+    checkpoints = []
+    monkeypatch.setattr(worker, "_checkpoint_wal", lambda: checkpoints.append(True), raising=False)
+    job = worker.enqueue(submission(slot_id="slot:history-retention"), "history-retention")
+    assert worker.run_one()
+    with worker._db() as db:
+        db.execute(
+            "INSERT INTO provenance_updates(job_id,old_submission_json,new_request_hash,updated_at_ms) "
+            "VALUES(?,?,?,?)",
+            (job["id"], "{}", "old-request-hash", NOW),
+        )
+
+    now[0] += 366 * 24 * 60 * 60 * 1000
+    worker._gc()
+
+    with worker._db() as db:
+        assert db.execute("SELECT COUNT(*) FROM attempts").fetchone()[0] == 0
+        assert db.execute("SELECT COUNT(*) FROM provenance_updates").fetchone()[0] == 0
+        authority = db.execute(
+            "SELECT request_hash,submission_json FROM jobs WHERE id=?", (job["id"],)
+        ).fetchone()
+        idempotency = db.execute(
+            "SELECT request_hash FROM idempotency WHERE key='history-retention'"
+        ).fetchone()
+    assert authority["request_hash"] == idempotency["request_hash"]
+    assert jobs.RenderJobSubmission.model_validate_json(authority["submission_json"])
+    assert checkpoints == [True]
+
+
 def test_volume_watermark_defers_new_renders(monkeypatch, tmp_path):
     worker, job = _run_succeeded(tmp_path)
     monkeypatch.setattr(worker, "_free_bytes", lambda: 1)
