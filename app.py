@@ -192,8 +192,11 @@ async def lifespan(app: FastAPI):
         log.error("sounds bot: failed (%s)", e)
 
     post_render_jobs = start_post_render_workers()
+    from routers.control_plane import start_compaction_scheduler
+    start_compaction_scheduler()
     yield
-    from routers.control_plane import shutdown_dossier_generation
+    from routers.control_plane import shutdown_dossier_generation, stop_compaction_scheduler
+    stop_compaction_scheduler()
     await shutdown_dossier_generation()
     if post_render_jobs is not None:
         post_render_jobs.stop()

@@ -47,6 +47,7 @@ import os
 import re
 import shutil
 import subprocess
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -458,7 +459,31 @@ def _generation_related_jobs_view(
             **page_jobs_view["jobs"],
             **jobs_snapshot.by_source_kind.get("truck_master_recovery", {}),
         },
+        compaction.ARCHIVE_INDEX_KEY: _snapshot_archive_index(jobs_snapshot),
     }
+
+
+def _snapshot_archive_index(jobs_snapshot: "_JobsSnapshot") -> dict[str, Any]:
+    """The compacted store's archiveIndex (empty before any compaction).
+    Every view capabilities() hands a reservation helper must carry it:
+    those helpers read the archived no-repeat facts from the dict they are
+    given, so a view without it would silently forget every archived job."""
+    return jobs_snapshot.data.get(compaction.ARCHIVE_INDEX_KEY, {}) or {}
+
+
+def _capabilities_job_views(
+    jobs_snapshot: "_JobsSnapshot", page_id: str,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """(page_jobs_view, dossier_source_dna_view) exactly as capabilities()
+    builds them, each carrying the archiveIndex (see
+    _snapshot_archive_index); factored out so a test calls the same code."""
+    archive_index = _snapshot_archive_index(jobs_snapshot)
+    return (
+        {"jobs": jobs_snapshot.by_page.get(page_id, {}),
+         compaction.ARCHIVE_INDEX_KEY: archive_index},
+        {"jobs": jobs_snapshot.by_source_kind.get("dossier_source_dna", {}),
+         compaction.ARCHIVE_INDEX_KEY: archive_index},
+    )
 
 
 @router.get("/v1/capabilities")
@@ -554,10 +579,8 @@ def capabilities(
     # `_truck_master_candidates`'s FIRST loop (the cross-page
     # truck_master_recovery reservation set) genuinely needs every page's
     # jobs of that one kind, so that bucket alone stays store-wide.
-    page_jobs_view = {"jobs": jobs_snapshot.by_page.get(page_id, {})}
-    dossier_source_dna_view = {
-        "jobs": jobs_snapshot.by_source_kind.get("dossier_source_dna", {}),
-    }
+    page_jobs_view, dossier_source_dna_view = _capabilities_job_views(jobs_snapshot, page_id)
+    archive_index = page_jobs_view[compaction.ARCHIVE_INDEX_KEY]
     generation_related_jobs_view: dict[str, Any] | None = None
     completed_import_identities = sorted({
         identity
@@ -567,7 +590,7 @@ def capabilities(
         and job.get("status") == "completed"
         for identity in [canonical_source_identity(job.get("sourceUrl"))]
         if identity is not None
-    })
+    } | set((archive_index.get("sourceIdentities") or {}).get(page_id) or []))
     # registered_bindings and profiles were already fetched above (they
     # feed the cache key). A page-bound intent is itself enough to expose
     # the commissioned format route before its first dossier publication.
@@ -1025,6 +1048,7 @@ from fastapi.responses import FileResponse
 
 from services.json_store import atomic_load, atomic_save
 from services.generation_recovery import PredictionCheckpoint, runner_lock, store_lock as lock_for
+from services import job_store_compaction as compaction
 
 JOBS_STORE_NAME = "control_plane_jobs.json"
 JOB_ID_PREFIX = "cpl-"
@@ -1039,7 +1063,7 @@ SOURCE_IMPORT_ACTIVE_DEADLINE_SECONDS = 6 * 60 * 60
 IDEMPOTENCY_KEY_RE = re.compile(r"^[A-Za-z0-9_.:-]{8,200}$")
 JOB_TOKEN_BYTES = 24
 GENERATION_ACTIVE_STATUSES = {"queued", "running"}
-SOURCE_DNA_UNAVAILABLE_STATUSES = {*GENERATION_ACTIVE_STATUSES, "completed"}
+SOURCE_DNA_UNAVAILABLE_STATUSES = compaction.SOURCE_DNA_UNAVAILABLE_STATUSES
 ASYNC_SOURCE_KINDS = {
     "generated", "dossier_source_dna", "truck_master_recovery",
     "page_source_import", "syzygy_slideshow",
@@ -1074,6 +1098,20 @@ def _jobs_path() -> Path:
 
 def _empty_jobs() -> dict[str, Any]:
     return {"version": 1, "jobs": {}, "byIdempotency": {}, "served": {}}
+
+
+def _idempotency_job_id(store: dict[str, Any], key: str) -> Any:
+    """Return a live job id, or refuse a key whose job was archived."""
+    existing_id = store["byIdempotency"].get(key)
+    if existing_id is not None and existing_id not in store["jobs"]:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "idempotency_key_archived",
+                "jobId": existing_id,
+            },
+        )
+    return existing_id
 
 
 # Writer-intent signal (Tides review of PR #185, round 2, defect 3): a
@@ -1448,6 +1486,137 @@ def _read_jobs_snapshot() -> dict[str, Any]:
     return _read_jobs_snapshot_object().data
 
 
+# ── job-store compaction (bounds the growing file, inside the writer lock) ──
+# See services/job_store_compaction.py for the pure transform + index rules.
+# This side is the IO/scheduling glue: it runs under lock_for(_jobs_path()),
+# appends the archive idempotently, then atomic-replaces the compacted store.
+# A crash between the archive append and the store commit is safe: the retry
+# skips already-archived ids (idempotent archive) and still commits the
+# compacted store. A crash during atomic_save leaves old or new store valid.
+
+_COMPACTION_THREAD: threading.Thread | None = None
+_COMPACTION_STOP = threading.Event()
+_COMPACTION_INTERVAL_SECONDS = 6 * 60 * 60  # re-check at least every 6 h
+_COMPACTION_TMP_RE = re.compile(r"\.(\d+)\.\d+\.tmp$")
+
+
+def _sweep_stale_compaction_tmps(path: Path) -> int:
+    """Reap *.tmp sidecars older than 1 h that aren't the live writer's own."""
+    now = time.time()
+    try:
+        siblings = list(path.parent.glob(f"{path.name}.*.tmp"))
+    except OSError:
+        return 0
+    removed = 0
+    for tmp in siblings:
+        m = _COMPACTION_TMP_RE.search(tmp.name)
+        if not m or int(m.group(1)) == os.getpid():
+            continue
+        try:
+            if now - tmp.stat().st_mtime < 3600:
+                continue
+            tmp.unlink()
+            removed += 1
+        except OSError:
+            pass
+    return removed
+
+
+def run_compaction_once(
+    path: Path,
+    now: datetime | None = None,
+    *,
+    retention_days: int = compaction.DEFAULT_RETENTION_DAYS,
+    batch_size: int = compaction.DEFAULT_BATCH_SIZE,
+) -> dict[str, Any]:
+    """Compact one bounded batch under the writer lock. Returns a summary."""
+    expected_path = _jobs_path()
+    assert path == expected_path, "compaction path must be the canonical jobs store"
+    now = now or datetime.now(timezone.utc)
+    with lock_for(path):
+        store = _load_jobs()
+        before = len(store.get("jobs", {}))
+        try:
+            if compaction.ARCHIVE_INDEX_KEY not in store:
+                archives = [
+                    candidate
+                    for candidate in path.parent.glob(f"{path.name}.archive-*.jsonl")
+                    if candidate.is_file()
+                ]
+                if archives:
+                    raise compaction.ArchiveIndexUnreadable(
+                        f"missing_with_archives count={len(archives)}",
+                    )
+            new_store, archived = compaction.compact_job_store(
+                store, now, retention_days=retention_days, batch_size=batch_size,
+            )
+        except compaction.ArchiveIndexUnreadable as error:
+            log.error(
+                "ALERT-LABJOBSTORE index_unreadable reason=%s",
+                error.reason,
+            )
+            raise
+        if not archived:
+            return {"archived": 0, "jobs_before": before, "jobs_after": before,
+                    "tmp_swept": _sweep_stale_compaction_tmps(path)}
+        compaction.append_archive_records(path, archived, now)
+        _save_jobs(new_store)  # #185 C1: publish the compacted snapshot too
+        return {
+            "archived": len(archived),
+            "jobs_before": before,
+            "jobs_after": len(new_store.get("jobs", {})),
+            "tmp_swept": _sweep_stale_compaction_tmps(path),
+        }
+
+
+def maybe_compact_jobs(now: datetime | None = None, *, force: bool = False) -> dict[str, Any]:
+    """Run compaction when the file exceeds the size bound (or when forced)."""
+    now = now or datetime.now(timezone.utc)
+    path = _jobs_path()
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return {"archived": 0, "jobs_before": 0, "jobs_after": 0, "tmp_swept": 0}
+    if not force and size < compaction.DEFAULT_SIZE_THRESHOLD_BYTES:
+        # Keep the tmp sidecars tidy even when the store is small.
+        return {"archived": 0, "jobs_before": 0, "jobs_after": 0,
+                "tmp_swept": _sweep_stale_compaction_tmps(path)}
+    return run_compaction_once(path, now)
+
+
+def _compaction_loop() -> None:
+    # First pass is forced so an interrupted prior compaction self-heals even
+    # when the file is already under the threshold; later passes only fire on
+    # size, so a healthy small store does no extra decode work.
+    first = True
+    while True:
+        try:
+            if first:
+                maybe_compact_jobs(force=True)
+                first = False
+            else:
+                maybe_compact_jobs()
+        except Exception:  # compaction must never take the process down
+            log.exception("job-store compaction pass failed")
+        if _COMPACTION_STOP.wait(_COMPACTION_INTERVAL_SECONDS):
+            break
+
+
+def start_compaction_scheduler() -> None:
+    global _COMPACTION_THREAD
+    if _COMPACTION_THREAD is not None and _COMPACTION_THREAD.is_alive():
+        return
+    _COMPACTION_STOP.clear()
+    _COMPACTION_THREAD = threading.Thread(
+        target=_compaction_loop, name="content-lab-job-compaction", daemon=True,
+    )
+    _COMPACTION_THREAD.start()
+
+
+def stop_compaction_scheduler() -> None:
+    _COMPACTION_STOP.set()
+
+
 def _reject_prompt_fields(value: Any, path: str = "job") -> None:
     if isinstance(value, dict):
         for key, item in value.items():
@@ -1522,6 +1691,27 @@ def _source_dna_unavailable_slots(
                 and type(start_ms) is int and type(duration_ms) is int
             ):
                 slots.add(f"{master_sha}:{start_ms}:{duration_ms}")
+    # Archived completed source cuts keep their permanent reservations. The
+    # exact time frame is reserved forever; the library slot id stays reserved
+    # only across the same recipe revision (mirroring the live rule).
+    for cut in (store.get(compaction.ARCHIVE_INDEX_KEY, {}) or {}).get("sourceDnaCuts", []):
+        if not isinstance(cut, dict):
+            continue
+        same_library_slot = (
+            cut.get("sourceLibraryId") == source_recipe.source_library_id
+            and cut.get("sourceLibraryHash") == source_recipe.source_library_hash
+            and cut.get("recipeVersion") == recipe_version
+        )
+        slot_id = cut.get("slotId")
+        if same_library_slot and isinstance(slot_id, str) and slot_id:
+            slots.add(slot_id)
+        master_sha = cut.get("masterSha256")
+        start_ms, duration_ms = cut.get("startMs"), cut.get("durationMs")
+        if (
+            master_sha in master_shas
+            and type(start_ms) is int and type(duration_ms) is int
+        ):
+            slots.add(f"{master_sha}:{start_ms}:{duration_ms}")
     return slots
 
 
@@ -1541,6 +1731,14 @@ def _slideshow_unavailable_signatures(
             continue
         for plan in job.get("slideshowPlan", []):
             signature = plan.get("signature") if isinstance(plan, dict) else None
+            if isinstance(signature, str) and re.fullmatch(r"[0-9a-f]{64}", signature):
+                signatures.add(signature)
+    # Archived slideshow plans keep their permanent reservations.
+    for entry in (store.get(compaction.ARCHIVE_INDEX_KEY, {}) or {}).get("slideshow", []):
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("pageId") == page_id and entry.get("sourceLibraryId") == recipe.library_id:
+            signature = entry.get("signature")
             if isinstance(signature, str) and re.fullmatch(r"[0-9a-f]{64}", signature):
                 signatures.add(signature)
     return signatures
@@ -1654,6 +1852,7 @@ def _truck_master_candidates(
     """
     reserved: set[str] = set()
     jobs = store.get("jobs", {})
+    archive_index = store.get(compaction.ARCHIVE_INDEX_KEY, {}) or {}
     for job in jobs.values():
         if (
             not isinstance(job, dict)
@@ -1665,11 +1864,18 @@ def _truck_master_candidates(
             sha256 = master.get("sha256") if isinstance(master, dict) else None
             if isinstance(sha256, str) and re.fullmatch(r"[0-9a-f]{64}", sha256):
                 reserved.add(sha256)
+    # Archived completed recoveries reserve their masters permanently.
+    for sha256 in archive_index.get("truckRecoveryMasters", []):
+        if isinstance(sha256, str) and re.fullmatch(r"[0-9a-f]{64}", sha256):
+            reserved.add(sha256)
 
     candidates: list[dict[str, Any]] = []
     seen = set(reserved)
+    # Archived completed generated truck renders remain live re-crop candidates
+    # (full manifests preserved in the index); include them in the ordered scan.
     ordered_jobs = sorted(
-        (job for job in jobs.values() if isinstance(job, dict)),
+        [job for job in jobs.values() if isinstance(job, dict)]
+        + [job for job in archive_index.get("truckCandidateJobs", []) if isinstance(job, dict)],
         key=lambda job: (str(job.get("createdAt") or ""), str(job.get("jobId") or "")),
     )
     for job in ordered_jobs:
@@ -1928,6 +2134,11 @@ def _claim_unique_generated_clip(
         if not isinstance(job, dict) or job.get("status") not in GENERATION_ACTIVE_STATUSES:
             raise RuntimeError("generated_job_not_active")
         page_id = job.get("pageId")
+        archive_index = store.get(compaction.ARCHIVE_INDEX_KEY, {}) or {}
+        if digest in (archive_index.get("usedClipSha256") or {}).get(page_id, []):
+            # Delivered bytes never expire: an archived completed job still
+            # reserves its exact sha256 against replay as a new delivery.
+            raise RuntimeError("duplicate_generated_artifact")
         for other in store.get("jobs", {}).values():
             if (
                 not isinstance(other, dict)
@@ -1974,6 +2185,16 @@ def _claim_unique_slideshow_clip(
         if not isinstance(job, dict) or job.get("status") not in GENERATION_ACTIVE_STATUSES:
             raise RuntimeError("slideshow_job_not_active")
         page_id = job.get("pageId")
+        archive_index = store.get(compaction.ARCHIVE_INDEX_KEY, {}) or {}
+        if digest in (archive_index.get("usedClipSha256") or {}).get(page_id, []):
+            raise RuntimeError("duplicate_slideshow_artifact")
+        for entry in archive_index.get("slideshow", []):
+            if (
+                isinstance(entry, dict)
+                and entry.get("pageId") == page_id
+                and entry.get("signature") == plan_signature
+            ):
+                raise RuntimeError("duplicate_slideshow_plan")
         for other in store.get("jobs", {}).values():
             if (
                 not isinstance(other, dict)
@@ -3457,7 +3678,7 @@ async def create_source_import(
     restart_existing = False
     with lock_for(_jobs_path()):
         store = _load_jobs()
-        existing_id = store["byIdempotency"].get(idempotency_key)
+        existing_id = _idempotency_job_id(store, idempotency_key)
         if existing_id and existing_id in store["jobs"]:
             existing = store["jobs"][existing_id]
             if (
@@ -3718,7 +3939,7 @@ async def create_job(
     start_slideshow = False
     with lock_for(_jobs_path()):
         store = _load_jobs()
-        existing_id = store["byIdempotency"].get(idempotency_key)
+        existing_id = _idempotency_job_id(store, idempotency_key)
         if existing_id and existing_id in store["jobs"]:
             existing = store["jobs"][existing_id]
             # Legacy rows predate request fingerprints; preserve their replay
