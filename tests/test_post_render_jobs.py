@@ -600,60 +600,208 @@ def test_new_provenance_unblocks_same_slot_and_old_enqueue_replay_preserves_it(t
 
 
 def test_worker_startup_failure_latches_reason_and_fails_readiness(tmp_path, monkeypatch):
+    import app as app_module
+
     monkeypatch.setenv("CONTENT_LAB_POST_RENDER_ROOT", str(tmp_path / "render"))
-    monkeypatch.setattr(routes, "_startup_failure", None)
-    monkeypatch.setattr(routes, "_started_service", None)
+    monkeypatch.setattr(routes, "_startup_failure", None, raising=False)
+    monkeypatch.setattr(routes, "_started_service", None, raising=False)
+    monkeypatch.setattr(app_module, "_APP_API_KEY", None)
 
     def boom():
         raise OSError("sqlite unwritable")
 
     monkeypatch.setattr(routes, "service", boom)
-    assert routes.start_workers() is None
-    ready, detail = routes.readiness()
-    assert ready is False
-    assert detail["post_render"]["state"] == "startup_failed"
-    assert "sqlite unwritable" in detail["post_render"]["reason"]
+    with TestClient(app_module.app) as client:
+        response = client.get("/api/ready")
+    assert response.status_code == 503
+    assert response.json()["post_render"]["state"] == "startup_failed"
+    assert "sqlite unwritable" in response.json()["post_render"]["reason"]
 
 
 def test_readiness_healthy_when_workers_start(tmp_path, monkeypatch):
+    import app as app_module
+
     monkeypatch.setenv("CONTENT_LAB_POST_RENDER_ROOT", str(tmp_path / "render"))
     monkeypatch.setattr(routes, "_service", None)
-    monkeypatch.setattr(routes, "_startup_failure", None)
-    monkeypatch.setattr(routes, "_started_service", None)
-    started = routes.start_workers()
-    assert started is not None
-    try:
-        ready, detail = routes.readiness()
-        assert ready is True
-        assert detail["post_render"]["state"] == "healthy"
-        assert detail["post_render"]["workers"] >= 1
-    finally:
-        started.stop()
+    monkeypatch.setattr(routes, "_startup_failure", None, raising=False)
+    monkeypatch.setattr(routes, "_started_service", None, raising=False)
+    monkeypatch.setattr(app_module, "_APP_API_KEY", None)
+    with TestClient(app_module.app) as client:
+        response = client.get("/api/ready")
+    assert response.status_code == 200
+    assert response.json()["post_render"]["state"] == "healthy"
+    assert response.json()["post_render"]["workers"] >= 1
 
 
 def test_readiness_disabled_when_lane_unconfigured(monkeypatch):
+    import app as app_module
+
     monkeypatch.delenv("CONTENT_LAB_POST_RENDER_ROOT", raising=False)
-    monkeypatch.setattr(routes, "_startup_failure", None)
-    monkeypatch.setattr(routes, "_started_service", None)
-    ready, detail = routes.readiness()
-    assert ready is True
-    assert detail["post_render"]["state"] == "disabled"
+    monkeypatch.setattr(routes, "_startup_failure", None, raising=False)
+    monkeypatch.setattr(routes, "_started_service", None, raising=False)
+    monkeypatch.setattr(app_module, "_APP_API_KEY", None)
+    with TestClient(app_module.app) as client:
+        response = client.get("/api/ready")
+    assert response.status_code == 200
+    assert response.json()["post_render"]["state"] == "disabled"
 
 
 def test_ready_endpoint_503_when_worker_lane_fails_during_lifespan(tmp_path, monkeypatch):
-    from app import app as app_module
+    import app as app_module
 
     monkeypatch.setenv("CONTENT_LAB_POST_RENDER_ROOT", str(tmp_path / "render"))
     monkeypatch.setattr(routes, "_service", None)
-    monkeypatch.setattr(routes, "_startup_failure", None)
-    monkeypatch.setattr(routes, "_started_service", None)
+    monkeypatch.setattr(routes, "_startup_failure", None, raising=False)
+    monkeypatch.setattr(routes, "_started_service", None, raising=False)
+    monkeypatch.setattr(app_module, "_APP_API_KEY", None)
 
     def boom():
         raise OSError("sqlite unwritable")
 
     monkeypatch.setattr(routes, "service", boom)
-    with TestClient(app_module) as client:
+    with TestClient(app_module.app) as client:
         assert client.get("/api/health").status_code == 200
         response = client.get("/api/ready")
         assert response.status_code == 503
         assert response.json()["post_render"]["state"] == "startup_failed"
+
+
+def test_dead_worker_thread_fails_readiness_with_reason_and_health_is_unchanged(
+    tmp_path, monkeypatch,
+):
+    import app as app_module
+
+    class DiedAfterStart:
+        worker_count = 1
+
+        def __init__(self):
+            self.thread = None
+
+        def start(self):
+            self.thread = threading.Thread(target=lambda: None)
+            self.thread.start()
+            self.thread.join()
+
+        def stop(self):
+            pass
+
+        def workers_alive(self):
+            return int(self.thread is not None and self.thread.is_alive())
+
+        def queue_age_ms(self):
+            return 123
+
+    dead = DiedAfterStart()
+    monkeypatch.setenv("CONTENT_LAB_POST_RENDER_ROOT", str(tmp_path / "render"))
+    monkeypatch.setattr(routes, "_startup_failure", None, raising=False)
+    monkeypatch.setattr(routes, "_started_service", None, raising=False)
+    monkeypatch.setattr(routes, "service", lambda: dead)
+    monkeypatch.setattr(app_module, "_APP_API_KEY", None)
+
+    with TestClient(app_module.app) as client:
+        health = client.get("/api/health")
+        ready = client.get("/api/ready")
+
+    assert health.status_code == 200
+    assert "post_render" not in health.json()
+    assert ready.status_code == 503
+    assert ready.json()["post_render"] == {
+        "state": "workers_died",
+        "reason": "no_post_render_workers_alive",
+        "workers": 0,
+        "worker_count": 1,
+        "queue_age_ms": 123,
+    }
+
+
+def test_ready_queue_age_query_runs_off_event_loop(monkeypatch, tmp_path):
+    import app as app_module
+
+    calls = {}
+
+    class LiveService:
+        worker_count = 1
+
+        def start(self):
+            pass
+
+        def stop(self):
+            pass
+
+        def workers_alive(self):
+            calls["readiness_thread"] = threading.get_ident()
+            return 1
+
+        def queue_age_ms(self):
+            calls["query_thread"] = threading.get_ident()
+            return 0
+
+    monkeypatch.setenv("CONTENT_LAB_POST_RENDER_ROOT", str(tmp_path / "render"))
+    monkeypatch.setattr(routes, "_startup_failure", None, raising=False)
+    monkeypatch.setattr(routes, "_started_service", None, raising=False)
+    monkeypatch.setattr(routes, "service", lambda: LiveService())
+    monkeypatch.setattr(app_module, "_APP_API_KEY", None)
+
+    with TestClient(app_module.app) as client:
+        response = client.get("/api/ready")
+
+    assert response.status_code == 200
+    assert calls["query_thread"] != calls["readiness_thread"]
+
+
+def test_ready_queue_age_query_timeout_fails_closed(monkeypatch, tmp_path):
+    import app as app_module
+
+    release = threading.Event()
+
+    class BlockedQueueService:
+        worker_count = 1
+
+        def start(self):
+            pass
+
+        def stop(self):
+            release.set()
+
+        def workers_alive(self):
+            return 1
+
+        def queue_age_ms(self):
+            assert release.wait(1)
+            return 0
+
+    monkeypatch.setenv("CONTENT_LAB_POST_RENDER_ROOT", str(tmp_path / "render"))
+    monkeypatch.setattr(routes, "_startup_failure", None, raising=False)
+    monkeypatch.setattr(routes, "_started_service", None, raising=False)
+    monkeypatch.setattr(routes, "service", lambda: BlockedQueueService())
+    monkeypatch.setattr(routes, "_READINESS_QUEUE_TIMEOUT_SECONDS", 0.01, raising=False)
+    monkeypatch.setattr(app_module, "_APP_API_KEY", None)
+
+    with TestClient(app_module.app) as client:
+        timer = threading.Timer(0.2, release.set)
+        timer.start()
+        try:
+            response = client.get("/api/ready")
+        finally:
+            release.set()
+            timer.cancel()
+
+    assert response.status_code == 503
+    assert response.json()["post_render"]["state"] == "queue_check_failed"
+    assert response.json()["post_render"]["reason"] == "queue_age_timeout"
+
+
+def test_ready_requires_api_key_while_health_remains_exempt(monkeypatch):
+    import app as app_module
+
+    monkeypatch.delenv("CONTENT_LAB_POST_RENDER_ROOT", raising=False)
+    monkeypatch.setattr(app_module, "_APP_API_KEY", "readiness-secret")
+    with TestClient(app_module.app) as client:
+        assert client.get("/api/health").status_code == 200
+        assert client.get("/api/ready").status_code == 401
+        authenticated = client.get(
+            "/api/ready",
+            headers={"X-API-Key": "readiness-secret"},
+        )
+    assert authenticated.status_code == 200
+    assert authenticated.json()["post_render"]["state"] == "disabled"

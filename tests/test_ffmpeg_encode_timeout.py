@@ -51,14 +51,13 @@ class HungProc(FakeProc):
 
 
 def _stub_probe(monkeypatch, duration_seconds):
-    # raising=False keeps these tests executable against b8033bd, where the
-    # public run_color_correct function exists but input probing does not.
-    monkeypatch.setattr(
-        ffmpeg,
-        "_probe_input_duration_seconds",
-        lambda _path: duration_seconds,
-        raising=False,
-    )
+    # Intercept the standard async offload boundary, not a newly added private
+    # probe symbol. b8033bd can therefore execute these public-function tests;
+    # it fails their timeout behavior rather than their imports/setup.
+    async def fake_to_thread(_function, *_args, **_kwargs):
+        return duration_seconds
+
+    monkeypatch.setattr(ffmpeg.asyncio, "to_thread", fake_to_thread)
 
 
 def _short_timeout_constants(monkeypatch):

@@ -719,6 +719,11 @@ def test_final_unavailable_decision_is_served_and_never_rescanned(monkeypatch, t
     monkeypatch.setattr(cp, '_jobs_path', lambda: tmp_path/'jobs.json')
     cp.atomic_save(cp._jobs_path(), {'jobs': {job_id: job}})
     monkeypatch.setenv('CONTROL_PLANE_TOKEN', 'test-secret')
+    monkeypatch.setattr(
+        cp,
+        '_submit_visual_sweep',
+        lambda queued_job_id, sweep_id: cp._finish_visual_sweep(queued_job_id, sweep_id),
+    )
     app = FastAPI(); app.include_router(cp.router, prefix='/api/control-plane')
     client = TestClient(app)
     url = f'/api/control-plane/v1/jobs/{job_id}/visual-admission/0'
