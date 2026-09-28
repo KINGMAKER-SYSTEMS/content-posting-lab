@@ -535,8 +535,16 @@ def capabilities(
     )
     try:
         profiles, registry_hash = load_engine_registry()
-    except (OSError, ValueError, json.JSONDecodeError):
-        profiles, registry_hash = {}, None
+    except (OSError, ValueError, json.JSONDecodeError) as error:
+        # Fail closed: a malformed/drifted registry must surface as a service
+        # failure, not an HTTP 200 with an empty (and cacheable) capability
+        # list that silently stops all replenishment. The loader already
+        # rejects empty/drifted registries (content_engine_registry.py), so
+        # reaching here means the commissioned bindings cannot be resolved.
+        log.error("content engine registry unavailable: %s", error)
+        raise HTTPException(
+            status_code=503, detail="engine_registry_unavailable",
+        ) from error
 
     # A registered slideshow binding resolves through a LIVE networked
     # fetch with no cheap pre-fetch version signal at all (see the comment

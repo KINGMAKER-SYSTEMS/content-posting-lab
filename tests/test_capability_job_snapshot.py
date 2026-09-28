@@ -214,6 +214,24 @@ def test_capabilities_returns_503_on_decode_failure(job_path, monkeypatch):
     assert excinfo.value.status_code == 503
 
 
+def test_capabilities_returns_503_on_registry_failure_and_never_caches(job_path, monkeypatch):
+    """A registry that fails to load must not become HTTP 200 with no
+    capabilities, and must never cache that failure-derived emptiness."""
+    monkeypatch.setattr(cp, "_current_intent_for_capabilities", lambda _: ({}, "hash"))
+    monkeypatch.setattr(cp, "list_registered_recipe_bindings", lambda *args: [])
+
+    def boom():
+        raise ValueError("content engine registry is invalid")
+
+    monkeypatch.setattr(cp, "load_engine_registry", boom)
+    cp._capabilities_cache.clear()
+    with pytest.raises(HTTPException) as excinfo:
+        cp.capabilities(x_rt_page_id="acct:page", x_page_id=None)
+    assert excinfo.value.status_code == 503
+    assert excinfo.value.detail == "engine_registry_unavailable"
+    assert cp._capabilities_cache == {}
+
+
 def test_slow_external_decode_cannot_clobber_a_newer_write_cas(job_path, monkeypatch):
     """T2: compare-and-swap on generation. A decode that started against an
     OLDER file version must never overwrite a NEWER snapshot published (here,
