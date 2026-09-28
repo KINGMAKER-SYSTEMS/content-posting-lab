@@ -856,7 +856,7 @@ def _visual_sweep_fixture(monkeypatch, tmp_path):
     return cp, job_id, clip
 
 
-def _run_failed_visual_sweep(cp, job_id, sweep_id):
+def _run_failed_visual_sweep(cp, job_id, sweep_id, expected='vision provider down'):
     with cp.lock_for(cp._jobs_path()):
         store = cp._load_jobs()
         store['jobs'][job_id]['visualAdmissionSweep'] = {
@@ -865,12 +865,12 @@ def _run_failed_visual_sweep(cp, job_id, sweep_id):
             'running': True,
         }
         cp._save_jobs(store)
-    with pytest.raises(RuntimeError, match='vision provider down') as caught:
+    with pytest.raises(RuntimeError, match=expected) as caught:
         cp._finish_visual_sweep(job_id, sweep_id)
     cp._record_visual_sweep_failure(job_id, sweep_id, caught.value)
 
 
-def test_visual_sweep_retry_limit_persists_across_sweeps_and_terminalizes_item(
+def test_output_specific_visual_sweep_retry_limit_persists_and_terminalizes_item(
     monkeypatch, tmp_path, caplog,
 ):
     import logging
@@ -880,15 +880,15 @@ def test_visual_sweep_retry_limit_persists_across_sweeps_and_terminalizes_item(
     monkeypatch.setattr(
         gate,
         'scan_artifact',
-        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError('vision provider down')),
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError('incomplete_decode')),
     )
 
     with caplog.at_level(logging.ERROR):
         for attempt in range(1, 3):
-            _run_failed_visual_sweep(cp, job_id, f'sweep-{attempt}')
+            _run_failed_visual_sweep(cp, job_id, f'sweep-{attempt}', 'incomplete_decode')
             job = cp._load_jobs()['jobs'][job_id]
             assert job.get('visualAdmission', {}).get('0') is None
-        _run_failed_visual_sweep(cp, job_id, 'sweep-3')
+        _run_failed_visual_sweep(cp, job_id, 'sweep-3', 'incomplete_decode')
 
     job = cp._load_jobs()['jobs'][job_id]
     item_key = f"0:{clip['sha256']}:{clip['bytes']}"

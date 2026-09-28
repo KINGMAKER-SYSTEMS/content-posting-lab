@@ -4499,15 +4499,46 @@ _VISUAL_SWEEP_EXECUTOR = ThreadPoolExecutor(
     thread_name_prefix="content-lab-visual-admission",
 )
 _VISUAL_SWEEP_BACKOFF_SECONDS = 30.0
+_VISUAL_SWEEP_MAX_BACKOFF_SECONDS = 30.0 * 60
 # The first failed scan may be followed by this many fresh sweep attempts for
-# the same exact output. The next failure becomes a stable terminal decision,
-# preventing polling from feeding one deterministic exception to the scanner
-# forever while still leaving a generous transient-recovery window.
+# the same exact output. Only closed, deterministic failures tied to those
+# exact bytes consume this terminal budget. Provider and unknown exceptions
+# remain retryable because terminalizing paid supply during an outage is worse
+# than retaining it behind bounded backoff.
 _VISUAL_SWEEP_MAX_RETRIES = 5
+_VISUAL_SWEEP_PERSISTENT_ALERT = "visual_admission_persistent_failure"
+_VISUAL_OUTPUT_FAILURE_REASONS = frozenset({
+    "artifact_identity_mismatch",
+    "artifact_schema_invalid",
+    "frame_budget_exceeded",
+    "frame_count_mismatch",
+    "incomplete_decode",
+    "incomplete_or_changed_artifact",
+    "ocr_response_invalid",
+    "vision_input_budget_exceeded",
+})
 
 
 def _visual_sweep_item_key(index: int, clip: dict[str, Any]) -> str:
     return f"{index}:{clip.get('sha256')}:{clip.get('bytes')}"
+
+
+def _visual_sweep_failure_is_output_specific(error: Exception) -> bool:
+    """Return true only for a closed set of deterministic byte-bound faults.
+
+    Provider, transport, timeout, rate-limit, HTTP 5xx and unknown exceptions
+    deliberately default to transient. New exception shapes cannot silently
+    acquire authority to discard paid output.
+    """
+    return str(error) in _VISUAL_OUTPUT_FAILURE_REASONS
+
+
+def _visual_sweep_backoff_seconds(failure_count: int) -> float:
+    exponent = min(max(failure_count - 1, 0), 6)
+    return min(
+        _VISUAL_SWEEP_MAX_BACKOFF_SECONDS,
+        _VISUAL_SWEEP_BACKOFF_SECONDS * (2 ** exponent),
+    )
 
 
 def _observe_visual_sweep_failure(completed, job_id: str, sweep_id: str) -> None:
@@ -4548,9 +4579,23 @@ def _record_visual_sweep_failure(job_id: str, sweep_id: str, error: Exception) -
         failures = dict(job.get("visualAdmissionFailures") or {})
         previous = failures.get(item_key)
         count = int(previous.get("count") or 0) + 1 if isinstance(previous, dict) else 1
+        output_specific = _visual_sweep_failure_is_output_specific(error)
+        terminal_count = (
+            int(previous.get("terminalFailureCount") or 0)
+            if isinstance(previous, dict)
+            else 0
+        ) + int(output_specific)
+        failed_at = datetime.now(timezone.utc).isoformat()
         failures[item_key] = {
             "count": count,
-            "lastFailedAt": datetime.now(timezone.utc).isoformat(),
+            "terminalFailureCount": terminal_count,
+            "failureClass": "output_specific" if output_specific else "transient",
+            "firstFailedAt": (
+                previous.get("firstFailedAt")
+                if isinstance(previous, dict) and previous.get("firstFailedAt")
+                else failed_at
+            ),
+            "lastFailedAt": failed_at,
             "lastError": str(error)[:300],
         }
         job["visualAdmissionFailures"] = failures
@@ -4559,10 +4604,22 @@ def _record_visual_sweep_failure(job_id: str, sweep_id: str, error: Exception) -
             "runtime": _VISUAL_RUNTIME,
             "running": False,
             "scanFailures": count,
+            "terminalScanFailures": terminal_count,
             "scanError": str(error)[:300],
-            "scanFailedAt": datetime.now(timezone.utc).isoformat(),
+            "scanFailureClass": "output_specific" if output_specific else "transient",
+            "scanFailedAt": failed_at,
+            "scanBackoffSeconds": _visual_sweep_backoff_seconds(count),
         })
         if count > _VISUAL_SWEEP_MAX_RETRIES:
+            log.error(
+                "%s job=%s output=%s failures=%s class=%s",
+                _VISUAL_SWEEP_PERSISTENT_ALERT,
+                job_id,
+                index,
+                count,
+                sweep["scanFailureClass"],
+            )
+        if terminal_count > _VISUAL_SWEEP_MAX_RETRIES:
             from services.visual_admission import pending_decision
 
             decision = pending_decision(
@@ -4577,9 +4634,10 @@ def _record_visual_sweep_failure(job_id: str, sweep_id: str, error: Exception) -
             job.setdefault("visualAdmission", {})[str(index)] = decision
             sweep["terminalReason"] = "scan_failure_retry_exhausted"
             log.error(
-                "visual admission scan terminal job=%s output=%s failures=%s",
+                "visual admission scan terminal job=%s output=%s failures=%s total_failures=%s",
                 job_id,
                 index,
+                terminal_count,
                 count,
             )
         job["visualAdmissionSweep"] = sweep
@@ -4591,7 +4649,13 @@ def _visual_sweep_backed_off(sweep: dict, now: datetime) -> bool:
         failed_at = datetime.fromisoformat(sweep["scanFailedAt"])
     except (KeyError, TypeError, ValueError):
         return False
-    return (now - failed_at).total_seconds() < _VISUAL_SWEEP_BACKOFF_SECONDS
+    failure_count = sweep.get("scanFailures")
+    backoff = sweep.get("scanBackoffSeconds")
+    if not isinstance(backoff, (int, float)) or backoff < 0:
+        backoff = _visual_sweep_backoff_seconds(
+            failure_count if isinstance(failure_count, int) else 1,
+        )
+    return (now - failed_at).total_seconds() < backoff
 
 
 def _submit_visual_sweep(job_id: str, sweep_id: str):
