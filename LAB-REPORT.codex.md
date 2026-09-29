@@ -26,3 +26,23 @@ VERDICT: READY e88f22717b0902b9cdd5cde73512af1bbf32507f
 - Verification: pytest was not run, as requested. `python3 -m py_compile` and `git diff --check` passed. The environment returned `nice: setpriority: Operation not permitted`; commands still ran, but niceness could not be changed.
 
 VERDICT: READY a103586e151779c6c80ae1ea1f084e85709db126
+
+## lab-pr-149d
+
+- Reworked `test_clipper_uses_safe_rmtree` to allow the legitimate
+  `safe_rmtree(job_dir)` in `delete_clipper_job` without pinning a total call
+  count. It requires no bare `shutil.rmtree`, requires the staging helper to
+  call `safe_rmtree`, restricts outside calls to `delete_clipper_job`, and
+  checks that function's source and call argument contain no staging marker.
+  It also traces AST-local names assigned from `_staging_` expressions and
+  rejects passing those names (or direct staging expressions) to
+  `safe_rmtree` outside the helper.
+- Reasoned head check: the helper call is found; the sole outside call is
+  `delete_clipper_job(job_dir)` and its function segment has no `_staging_`;
+  staging directory assignments elsewhere do not feed any `safe_rmtree`
+  argument. A bypass mutant that adds `safe_rmtree(staging_dir)` in, for
+  example, `download_url` fails the outside-function allowlist; a mutant that
+  calls it in `delete_clipper_job` fails the function-source staging-marker
+  check. Pytest was not run per instruction.
+
+VERDICT: READY PENDING_COMMIT

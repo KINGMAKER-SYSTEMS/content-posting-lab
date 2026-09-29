@@ -209,22 +209,59 @@ def test_abn_factory_uses_safe_rmtree_in_real_demo():
 
 
 def test_clipper_uses_safe_rmtree():
-    """Staging cleanup stays guarded, without pinning its number of call sites."""
+    """Staging cleanup stays guarded, without pinning the helper's call-site count."""
     import routers.clipper as clipper
 
     src = Path(clipper.__file__).read_text()
     assert "shutil.rmtree" not in src
     tree = ast.parse(src)
-    helper = next(node for node in tree.body
-                  if isinstance(node, ast.FunctionDef) and node.name == "_delete_staging_dir")
-    assert any(isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
-               and node.func.id == "safe_rmtree" for node in ast.walk(helper))
-    safe_calls = [node for node in ast.walk(tree)
-                  if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
-                  and node.func.id == "safe_rmtree"]
-    assert safe_calls == [next(node for node in ast.walk(helper)
-                               if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
-                               and node.func.id == "safe_rmtree")]
+    functions = {node.name: node for node in tree.body
+                 if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))}
+    helper = functions["_delete_staging_dir"]
+
+    def safe_rmtree_calls(function):
+        return [node for node in ast.walk(function)
+                if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                and node.func.id == "safe_rmtree"]
+
+    assert safe_rmtree_calls(helper)
+
+    outside_calls = [(name, function, call)
+                     for name, function in functions.items() if name != "_delete_staging_dir"
+                     for call in safe_rmtree_calls(function)]
+    allowed_outside = {"delete_clipper_job"}
+    assert {name for name, _, _ in outside_calls} <= allowed_outside
+    assert {name for name, _, _ in outside_calls} == allowed_outside
+
+    for name, function, call in outside_calls:
+        # Keep the allowed job deletion visibly separate from staging cleanup.
+        segment = ast.get_source_segment(src, function)
+        assert segment is not None and "_staging_" not in segment, name
+        assert call.args
+        assert not any(isinstance(node, ast.Constant) and
+                       isinstance(node.value, str) and "_staging_" in node.value
+                       for node in ast.walk(call.args[0]))
+
+    # No local staging path expression may flow into a safe_rmtree argument,
+    # even when that path is first assigned to a variable.
+    for name, function in functions.items():
+        if name == "_delete_staging_dir":
+            continue
+        staging_names = set()
+        for node in ast.walk(function):
+            if isinstance(node, (ast.Assign, ast.AnnAssign, ast.NamedExpr)):
+                value = node.value
+                if any(isinstance(child, ast.Constant) and isinstance(child.value, str)
+                       and "_staging_" in child.value for child in ast.walk(value)):
+                    targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                    staging_names.update(target.id for target in targets
+                                         if isinstance(target, ast.Name))
+        for call in safe_rmtree_calls(function):
+            for argument in call.args:
+                assert not any(isinstance(child, ast.Constant) and isinstance(child.value, str)
+                               and "_staging_" in child.value for child in ast.walk(argument))
+                assert not (staging_names & {child.id for child in ast.walk(argument)
+                                             if isinstance(child, ast.Name)})
 
 
 def test_clipper_uses_safe_unlink():
