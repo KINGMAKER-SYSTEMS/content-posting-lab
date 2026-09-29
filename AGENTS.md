@@ -291,7 +291,10 @@
   is `fill` (the clip crop evaluated against the band) or `fit` (the whole zoomed source window
   contained in the band; the default for a framed page); the pad comes after the grade, so the
   letterbox is idempotent on such clips. Geometry lives in `services/page_frame.py`, pinned by
-  the shared Team 2 fixture table; unframed cuts stay byte-identical.
+  the shared Team 2 fixture table; unframed cuts stay byte-identical. A framed cut runs on
+  square display pixels (an anamorphic master is stretched first) and never refuses a source:
+  when ffprobe cannot prove a fit cut's display size, or the source is under 2 px, that clip is
+  cut fill and the fallback is logged.
   The frame is not source treatment: existing sources stay reusable when a page changes frame
   (they post through the centre band); new cuts carry the page's frame and fit.
 - Prepared artifacts require source-byte verification and upright square-pixel
