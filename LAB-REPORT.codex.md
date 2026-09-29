@@ -6,3 +6,14 @@
 - Test counts: 0 executed / 0 passed / 0 failed. Consequently the changed-module tests (`routers/clipper.py`, `services/fsutil.py`), clipper/R2/download suites (`test_clipper_*.py`, `test_ytdlp_download_diagnostics.py`, `test_provider_download_bounds.py`), and full suite were not run. The known 7-failure main baseline from 2026-09-28 could not be reproduced or compared against this branch, so no claim is made that the failure set is unchanged. Full-suite runtime/offline status is unknown; without a local test runner it was not attempted.
 
 VERDICT: NOT READY c51ba58bbe6cfcfab3b7f752ec719d59d6b1d90c tests unavailable; baseline comparison and regression fail proof not run
+
+## lab-pr-149b
+
+- Confirmed batch IDs are minted as `uuid.uuid4().hex[:12]` in `/r2/upload-init`, `/upload-batch`, and `/download-url`; `/stage-streamed` uses the same mint when its optional query ID is absent.
+- Added full-match `[0-9a-f]{12}` validation before filesystem work for caller-supplied IDs in `/r2/upload-complete`, `/stage-streamed`, `/trim-batch`, and `/process-batch`. `/process-batch` continues to allow an omitted/empty ID because that is not caller-supplied; any nonempty supplied value must validate.
+- Added `_delete_staging_dir(clipper_dir, batch_id)`: it rejects invalid IDs, symlink staging entries, and resolved paths that are not the exact direct `_staging_<id>` child of the resolved clipper directory. It logs refusals and only then calls `safe_rmtree`.
+- Routed every staging removal through the guarded helper: `r2_upload_complete` exception and all-failed paths; `upload_batch` exception and all-failed paths; `download_url` download-failure path; `trim_batch`; and `_run_batch_job` `finally`. The sole other `safe_rmtree` in `routers/clipper.py` remains `delete_clipper_job(job_dir)`, a server-derived non-staging path, and was left unchanged.
+- Added regression coverage for traversal rejection in R2 completion and batch-job requests with an outside sentinel, symlink-target preservation, valid-ID cleanup scoped to its own staging directory, and updated the staging cleanup census to recognize the guarded helper. Existing successful-download staging retention coverage remains.
+- Static verification: `python3 -m py_compile` on the changed Python modules and `git diff --check` completed without reported errors. Pytest was intentionally not run per instruction. `nice -n 19` was requested for the command, but this environment returned `nice: setpriority: Operation not permitted`; it did not stop the static check.
+
+VERDICT: READY e88f22717b0902b9cdd5cde73512af1bbf32507f
