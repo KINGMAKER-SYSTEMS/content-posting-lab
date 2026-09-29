@@ -107,10 +107,19 @@ def test_traversal_batch_id_is_rejected_before_staging_cleanup(monkeypatch, tmp_
     sentinel.mkdir()
     (sentinel / "keep.txt").write_text("survive")
     monkeypatch.setattr(clipper, "_get_clipper_dir", lambda project: clipper_dir)
+    calls = {"r2": 0, "mkdir": 0}
+    import services.r2 as r2
+    monkeypatch.setattr(r2, "is_configured", lambda: True)
+    monkeypatch.setattr(r2, "download_to_path", lambda *args, **kwargs: calls.__setitem__("r2", calls["r2"] + 1))
+    original_mkdir = Path.mkdir
+
+    def tracked_mkdir(path, *args, **kwargs):
+        calls["mkdir"] += 1
+        return original_mkdir(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", tracked_mkdir)
 
     if handler == "r2":
-        import services.r2 as r2
-        monkeypatch.setattr(r2, "is_configured", lambda: True)
         operation = clipper.r2_upload_complete({
             "project": "quick-test", "batch_id": "x/../..",
             "items": [{"index": 0, "filename": "bad.mp4", "key": "key"}],
@@ -124,26 +133,65 @@ def test_traversal_batch_id_is_rejected_before_staging_cleanup(monkeypatch, tmp_
     with pytest.raises(HTTPException) as caught:
         asyncio.run(operation)
     assert caught.value.status_code == 400
+    if handler == "r2":
+        assert caught.value.detail == "batch_id must be 12 lowercase hexadecimal characters"
+        assert calls == {"r2": 0, "mkdir": 0}, "invalid batch id reached storage or filesystem work"
     assert (sentinel / "keep.txt").read_text() == "survive"
 
 
-def test_staging_cleanup_refuses_symlink_and_valid_id_is_scoped(tmp_path):
+@pytest.mark.parametrize("batch_id", ["x/../..", "../sentinel", ".."])
+def test_staging_cleanup_rejects_traversal_ids_and_preserves_outside_sentinel(
+    monkeypatch, tmp_path, batch_id
+):
+    clipper_dir = tmp_path / "page" / "clips"
+    clipper_dir.mkdir(parents=True)
+    sentinel = tmp_path / "sentinel"
+    sentinel.mkdir()
+    payload = sentinel / "keep.txt"
+    payload.write_text("survive")
+    rmtree_calls = []
+    monkeypatch.setattr(clipper, "safe_rmtree", lambda path: rmtree_calls.append(path) or True)
+    assert clipper._delete_staging_dir(clipper_dir, batch_id) is False
+    assert rmtree_calls == [], "invalid ID reached recursive deletion"
+    assert payload.read_text() == "survive"
+
+
+def test_staging_cleanup_refuses_symlink_without_touching_link_or_target(monkeypatch, tmp_path):
     clipper_dir = tmp_path / "page" / "clips"
     clipper_dir.mkdir(parents=True)
     target = tmp_path / "outside"
     target.mkdir()
     payload = target / "keep.txt"
     payload.write_text("survive")
-    (clipper_dir / "_staging_012345abcdef").symlink_to(target, target_is_directory=True)
+    link = clipper_dir / "_staging_012345abcdef"
+    link.symlink_to(target, target_is_directory=True)
+    rmtree_calls = []
+    monkeypatch.setattr(clipper, "safe_rmtree", lambda path: rmtree_calls.append(path) or False)
     assert clipper._delete_staging_dir(clipper_dir, "012345abcdef") is False
+    assert rmtree_calls == [], "symlink reached recursive deletion"
+    assert link.is_symlink() and link.resolve() == target
     assert payload.read_text() == "survive"
 
+
+def test_staging_cleanup_removes_only_valid_real_staging_dir(monkeypatch, tmp_path):
+    clipper_dir = tmp_path / "page" / "clips"
+    clipper_dir.mkdir(parents=True)
     own = clipper_dir / "_staging_fedcba654321"
     own.mkdir()
     (own / "partial.part").write_bytes(b"partial")
     sibling = clipper_dir / "_staging_000000000000"
     sibling.mkdir()
     (sibling / "keep.part").write_bytes(b"sibling")
+    rmtree_calls = []
+    real_safe_rmtree = clipper.safe_rmtree
+
+    def check_resolved_target(path):
+        rmtree_calls.append(Path(path))
+        assert Path(path) == own.resolve(), "guard must pass its verified resolved child"
+        return real_safe_rmtree(path)
+
+    monkeypatch.setattr(clipper, "safe_rmtree", check_resolved_target)
     assert clipper._delete_staging_dir(clipper_dir, "fedcba654321") is True
+    assert rmtree_calls == [own.resolve()]
     assert not own.exists()
     assert (sibling / "keep.part").read_bytes() == b"sibling"

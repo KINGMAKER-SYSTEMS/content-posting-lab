@@ -1,5 +1,6 @@
 """Tests for services.fsutil.safe_unlink — the shared temp-cleanup helper."""
 
+import ast
 import os
 from pathlib import Path
 
@@ -208,19 +209,22 @@ def test_abn_factory_uses_safe_rmtree_in_real_demo():
 
 
 def test_clipper_uses_safe_rmtree():
-    """Regression: every staging/job cleanup in routers.clipper must go through
-    safe_rmtree, not bare shutil.rmtree (including the one site that wrapped it
-    in a redundant try/except Exception: pass)."""
+    """Staging cleanup stays guarded, without pinning its number of call sites."""
     import routers.clipper as clipper
 
     src = Path(clipper.__file__).read_text()
     assert "shutil.rmtree" not in src
-    # The guarantee is "no bare shutil.rmtree", which the line above pins. The
-    # exact count used to be `== 4`, which pinned a NUMBER rather than the
-    # property -- so it failed the moment cleanups were ADDED to close four real
-    # staging leaks, making the test an argument against fixing them. A floor
-    # keeps the "the helper is actually used" half without punishing that.
-    assert src.count("safe_rmtree(") >= 4
+    tree = ast.parse(src)
+    helper = next(node for node in tree.body
+                  if isinstance(node, ast.FunctionDef) and node.name == "_delete_staging_dir")
+    assert any(isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+               and node.func.id == "safe_rmtree" for node in ast.walk(helper))
+    safe_calls = [node for node in ast.walk(tree)
+                  if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                  and node.func.id == "safe_rmtree"]
+    assert safe_calls == [next(node for node in ast.walk(helper)
+                               if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                               and node.func.id == "safe_rmtree")]
 
 
 def test_clipper_uses_safe_unlink():

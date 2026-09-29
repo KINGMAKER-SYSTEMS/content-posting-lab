@@ -7,6 +7,15 @@
 
 VERDICT: NOT READY c51ba58bbe6cfcfab3b7f752ec719d59d6b1d90c tests unavailable; baseline comparison and regression fail proof not run
 
+## lab-pr-149c
+
+- Reworked `test_clipper_uses_safe_rmtree` to assert the safety property instead of a brittle call-site count: no bare `shutil.rmtree`, exactly one `safe_rmtree` call inside `_delete_staging_dir`, the guard used by staging deletion.
+- Added direct cleanup-helper cases for traversal IDs, an outside-target symlink (including asserting the symlink itself remains), and a valid real staging directory with a sibling that must survive.
+- Strengthened the R2 traversal rejection case to require the exact batch ID validation detail and verify that neither R2 download nor any `Path.mkdir` operation occurred before rejection.
+- Verification: pytest was not run, as requested. Static compilation and `git diff --check` are recorded after completion below.
+
+VERDICT: READY 56356d6902ddac2bd70267c0c349c90666fdba7c
+
 ## lab-pr-149b
 
 - Confirmed batch IDs are minted as `uuid.uuid4().hex[:12]` in `/r2/upload-init`, `/upload-batch`, and `/download-url`; `/stage-streamed` uses the same mint when its optional query ID is absent.
