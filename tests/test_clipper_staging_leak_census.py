@@ -50,7 +50,7 @@ def _cleans_on_failure(node: ast.AST) -> bool:
             body = region.body if isinstance(region, ast.ExceptHandler) else child.finalbody
             for call in ast.walk(ast.Module(body=body, type_ignores=[])):
                 if (isinstance(call, ast.Call) and isinstance(call.func, ast.Name)
-                        and call.func.id == "safe_rmtree"):
+                        and call.func.id in {"safe_rmtree", "_delete_staging_dir"}):
                     return True
     return False
 
@@ -79,7 +79,7 @@ def test_every_staging_handler_clears_on_failure():
         if not _cleans_on_failure(node):
             offenders.append(
                 f"{node.name} (line {node.lineno}): creates a staging dir but no "
-                f"safe_rmtree(staging_dir) is reachable from a failure"
+                f"guarded staging cleanup is reachable from a failure"
             )
 
     assert checked, "the census found no staging-dir handlers at all — the detector is broken"

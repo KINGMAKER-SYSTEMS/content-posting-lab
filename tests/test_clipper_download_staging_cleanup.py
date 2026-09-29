@@ -97,3 +97,53 @@ def test_successful_download_keeps_its_staging(monkeypatch, tmp_path):
 
     assert len(_staging_dirs(clipper_dir)) == 1, "a successful download lost its staged file"
     assert Path(result["files"][0]["path"]).exists()
+
+
+@pytest.mark.parametrize("handler", ["r2", "batch_job"])
+def test_traversal_batch_id_is_rejected_before_staging_cleanup(monkeypatch, tmp_path, handler):
+    clipper_dir = tmp_path / "quick-test" / "clips"
+    clipper_dir.mkdir(parents=True)
+    sentinel = clipper_dir.parent / "sentinel"
+    sentinel.mkdir()
+    (sentinel / "keep.txt").write_text("survive")
+    monkeypatch.setattr(clipper, "_get_clipper_dir", lambda project: clipper_dir)
+
+    if handler == "r2":
+        import services.r2 as r2
+        monkeypatch.setattr(r2, "is_configured", lambda: True)
+        operation = clipper.r2_upload_complete({
+            "project": "quick-test", "batch_id": "x/../..",
+            "items": [{"index": 0, "filename": "bad.mp4", "key": "key"}],
+        })
+    else:
+        operation = clipper.process_batch({
+            "project": "quick-test", "batch_id": "x/../..",
+            "sources": [{"path": str(tmp_path / "missing"), "trim_start": 0, "trim_end": 0}],
+        })
+
+    with pytest.raises(HTTPException) as caught:
+        asyncio.run(operation)
+    assert caught.value.status_code == 400
+    assert (sentinel / "keep.txt").read_text() == "survive"
+
+
+def test_staging_cleanup_refuses_symlink_and_valid_id_is_scoped(tmp_path):
+    clipper_dir = tmp_path / "page" / "clips"
+    clipper_dir.mkdir(parents=True)
+    target = tmp_path / "outside"
+    target.mkdir()
+    payload = target / "keep.txt"
+    payload.write_text("survive")
+    (clipper_dir / "_staging_012345abcdef").symlink_to(target, target_is_directory=True)
+    assert clipper._delete_staging_dir(clipper_dir, "012345abcdef") is False
+    assert payload.read_text() == "survive"
+
+    own = clipper_dir / "_staging_fedcba654321"
+    own.mkdir()
+    (own / "partial.part").write_bytes(b"partial")
+    sibling = clipper_dir / "_staging_000000000000"
+    sibling.mkdir()
+    (sibling / "keep.part").write_bytes(b"sibling")
+    assert clipper._delete_staging_dir(clipper_dir, "fedcba654321") is True
+    assert not own.exists()
+    assert (sibling / "keep.part").read_bytes() == b"sibling"

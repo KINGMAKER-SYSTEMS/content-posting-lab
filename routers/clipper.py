@@ -5,6 +5,7 @@ import json
 import logging
 import math
 import os
+import re
 import time
 import uuid
 from datetime import datetime
@@ -35,6 +36,39 @@ def _make_clip_job_id(project: str = "clip") -> str:
     ts = datetime.now().strftime("%m%d%H%M")
     short = uuid.uuid4().hex[:4]
     return f"clip-{prefix}-{ts}-{short}"
+
+
+_BATCH_ID_RE = re.compile(r"[0-9a-f]{12}")
+
+
+def _validate_batch_id(batch_id: object) -> str:
+    """Reject caller supplied IDs before they participate in filesystem paths."""
+    if not isinstance(batch_id, str) or _BATCH_ID_RE.fullmatch(batch_id) is None:
+        raise HTTPException(400, "batch_id must be 12 lowercase hexadecimal characters")
+    return batch_id
+
+
+def _delete_staging_dir(clipper_dir: Path, batch_id: str) -> bool:
+    """Remove only this ID's direct, non-symlink staging child."""
+    if not isinstance(batch_id, str) or _BATCH_ID_RE.fullmatch(batch_id) is None:
+        log.warning("refusing staging cleanup for invalid batch_id %r", batch_id)
+        return False
+    parent = Path(clipper_dir)
+    candidate = parent / f"_staging_{batch_id}"
+    try:
+        if candidate.is_symlink():
+            log.warning("refusing staging cleanup for symlink %s", candidate)
+            return False
+        resolved_parent = parent.resolve()
+        resolved_candidate = candidate.resolve()
+        if (resolved_candidate.parent != resolved_parent
+                or resolved_candidate.name != f"_staging_{batch_id}"):
+            log.warning("refusing staging cleanup outside clipper directory: %s", candidate)
+            return False
+    except OSError as exc:
+        log.warning("refusing staging cleanup for %s: %s", candidate, exc)
+        return False
+    return safe_rmtree(resolved_candidate)
 
 
 def _plan_segments(
@@ -546,10 +580,8 @@ async def r2_upload_complete(body: dict):
         raise HTTPException(503, "R2 storage is not configured on this deployment")
 
     project = body.get("project", "quick-test")
-    batch_id = body.get("batch_id")
+    batch_id = _validate_batch_id(body.get("batch_id"))
     items = body.get("items") or []
-    if not batch_id:
-        raise HTTPException(400, "batch_id is required")
     if not items:
         raise HTTPException(400, "items[] is required")
 
@@ -663,13 +695,13 @@ async def r2_upload_complete(body: dict):
             })
 
     except Exception:
-        safe_rmtree(staging_dir)
+        _delete_staging_dir(clipper_dir, batch_id)
         raise
 
     if not files_out and errors:
         # `upload_batch` clears staging in exactly this situation; this branch
         # did not, leaving an empty directory per all-failed request.
-        safe_rmtree(staging_dir)
+        _delete_staging_dir(clipper_dir, batch_id)
         raise HTTPException(400, f"All {len(errors)} files failed: {errors}")
 
     log.info("r2 upload-complete: project=%s batch=%s ok=%d err=%d",
@@ -734,6 +766,7 @@ async def stage_streamed(request: Request):
     """
     project = request.query_params.get("project", "quick-test")
     batch_id = request.query_params.get("batch_id") or uuid.uuid4().hex[:12]
+    batch_id = _validate_batch_id(batch_id)
     filename = request.query_params.get("filename", "video.mp4")
     try:
         index = int(request.query_params.get("index", "0"))
@@ -983,11 +1016,11 @@ async def upload_batch(
 
         # If every file failed, remove the empty staging dir and 4xx out so the UI shows toast
     except Exception:
-        safe_rmtree(staging_dir)
+        _delete_staging_dir(clipper_dir, batch_id)
         raise
 
     if not results and errors:
-        safe_rmtree(staging_dir)
+        _delete_staging_dir(clipper_dir, batch_id)
         detail = "; ".join(f"{e['name']}: {e['reason']}" for e in errors)
         raise HTTPException(status_code=400, detail=f"All uploads failed — {detail}")
 
@@ -1038,7 +1071,7 @@ async def download_url(body: dict):
         #
         # Every handler in this module that makes a staging dir must clear it
         # on EVERY exit; several did not, and are fixed in the same change.
-        safe_rmtree(staging_dir)
+        _delete_staging_dir(clipper_dir, batch_id)
         raise HTTPException(500, f"Download failed: {e}")
 
     try:
@@ -1077,7 +1110,7 @@ async def trim_batch(body: dict):
     }
     """
     project = body.get("project", "quick-test")
-    batch_id = body.get("batch_id", "")
+    batch_id = _validate_batch_id(body.get("batch_id", ""))
     trims = body.get("trims", [])
 
     if not trims:
@@ -1128,7 +1161,7 @@ async def trim_batch(body: dict):
     # Clean up staging dir
     staging_dir = clipper_dir / f"_staging_{batch_id}"
     if staging_dir.exists():
-        safe_rmtree(staging_dir)
+        _delete_staging_dir(clipper_dir, batch_id)
         log.info("cleaned up staging dir: %s", staging_dir)
 
     return {
@@ -1205,7 +1238,8 @@ async def process_batch(body: dict):
     Poll GET /process-batch/{job_id} for progress — no SSE, no timeouts.
     """
     project = body.get("project", "quick-test")
-    batch_id = body.get("batch_id", "")
+    raw_batch_id = body.get("batch_id", "")
+    batch_id = _validate_batch_id(raw_batch_id) if raw_batch_id else ""
     clip_length = float(body.get("clip_length", 7))
     sources = body.get("sources", [])
 
@@ -1396,7 +1430,7 @@ async def _run_batch_job(
         # exits.
         staging_dir = clipper_dir / f"_staging_{batch_id}"
         if staging_dir.exists():
-            safe_rmtree(staging_dir)
+            _delete_staging_dir(clipper_dir, batch_id)
 
 
 # ── Pipeline for local files ─────────────────────────────────────────
