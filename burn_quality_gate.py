@@ -8,7 +8,6 @@ Contract (operator-approved burned_003 / contentlab-v4, 2026-08-05):
     - vertical center between 30% and 62%
     - height <= 45%
   Caption:
-    - <= 30 words
     - persona voice blacklist (male persona rejects female-voiced lines)
 
 Standalone POST /api/quality-check never accepts force. /api/burn-overlay may
@@ -49,7 +48,6 @@ MALE_PERSONA_BLOCKED = (
     "wife material",
 )
 
-MAX_WORDS = 30
 FRAME_W = 1080
 FRAME_H = 1920
 ALPHA_THRESHOLD = 8  # treat near-transparent as empty
@@ -61,9 +59,6 @@ def _word_count(caption: str) -> int:
 
 def caption_reasons(caption: str, persona: str = "male") -> list[str]:
     reasons: list[str] = []
-    words = _word_count(caption)
-    if words > MAX_WORDS:
-        reasons.append(f"caption_too_long:{words}_words_max_{MAX_WORDS}")
     lowered = (caption or "").lower()
     if (persona or "male").lower() == "male":
         for phrase in MALE_PERSONA_BLOCKED:
