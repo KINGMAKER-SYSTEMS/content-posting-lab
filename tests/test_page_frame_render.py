@@ -30,6 +30,7 @@ import re
 import shutil
 import subprocess
 from dataclasses import dataclass
+from fractions import Fraction
 from pathlib import Path
 
 import numpy as np
@@ -56,7 +57,10 @@ pytestmark = pytest.mark.skipif(
 TABLE = json.loads((Path(__file__).parent / "fixtures" / "page-frame-geometry-fixtures.v1.json").read_text())
 NOW = 1_800_000_000_000
 SOURCE_MS = 600
-SOURCES = {"9:16": (1080, 1920), "16:9": (1920, 1080), "1:1": (1080, 1080), "9:16-provider": (704, 1280)}
+SOURCES = {"9:16": (1080, 1920), "16:9": (1920, 1080), "1:1": (1080, 1080), "9:16-provider": (704, 1280),
+           "720x480-sar32:27": (720, 480)}
+# Storage sample aspect ratio; every other source has square pixels.
+SOURCE_SAR = {"720x480-sar32:27": Fraction(32, 27)}
 BORDER = 8
 MARKER = 32
 FRACTIONS = (0.125, 0.375, 0.625, 0.875)
@@ -126,7 +130,24 @@ CASES = [
     # generation executor on a native provider frame (standard encode, no window)
     Case("provider704x1280-frame16x9-fit-generation", "9:16-provider", "16:9", "fit", executor="generation"),
     Case("provider704x1280-frame1x1-fill-generation", "9:16-provider", "1:1", "fill", executor="generation"),
+    # anamorphic master (720x480 at SAR 32:27, 852x480 in square display pixels): the framed cut is
+    # laid out on what a viewer sees; the table has square sources only, so the expectation is the
+    # same model at the display size
+    Case("anamorphic720x480-frame16x9-fill", "720x480-sar32:27", "16:9", "fill"),
+    Case("anamorphic720x480-frame1x1-fit", "720x480-sar32:27", "1:1", "fit"),
 ]
+
+
+def _sar(source: str) -> Fraction:
+    return SOURCE_SAR.get(source, Fraction(1))
+
+
+def _layout_size(case: Case) -> tuple[int, int]:
+    """The frame the geometry works on: storage pixels for 9:16, square display pixels when framed."""
+    width, height = SOURCES[case.source]
+    if case.frame == page_frame.VERTICAL_FRAME:
+        return width, height
+    return page_frame.display_size(width, height, _sar(case.source))
 
 
 def _grade_cc() -> dict:
@@ -136,7 +157,7 @@ def _grade_cc() -> dict:
     return dossier_filters_to_color_correction(_Recipe())
 
 
-def _source_graph(width: int, height: int, seconds: float) -> str:
+def _source_graph(width: int, height: int, seconds: float, sar: Fraction = Fraction(1)) -> str:
     boxes = [f"drawbox=x=0:y=0:w={width}:h={height}:color=0x505050:t={BORDER}"]
     corner = 48
     for x, y, color in ((BORDER, BORDER, "0xFF6060"), (width - BORDER - corner, BORDER, "0x60C860"),
@@ -148,7 +169,8 @@ def _source_graph(width: int, height: int, seconds: float) -> str:
             cx, cy = round(fx * width), round(fy * height)
             boxes.append(f"drawbox=x={cx - MARKER // 2}:y={cy - MARKER // 2}:w={MARKER}:h={MARKER}"
                          ":color=white:t=fill")
-    return f"color=c=0xA0A0A0:s={width}x{height}:r=30:d={seconds},format=yuv420p," + ",".join(boxes)
+    graph = f"color=c=0xA0A0A0:s={width}x{height}:r=30:d={seconds},format=yuv420p," + ",".join(boxes)
+    return graph + (f",setsar={sar.numerator}/{sar.denominator}" if sar != 1 else "")
 
 
 @pytest.fixture(scope="module")
@@ -161,7 +183,7 @@ def sources(tmp_path_factory):
             width, height = SOURCES[name]
             path = root / f"{name.replace(':', 'x')}.mp4"
             subprocess.run(["nice", "-n", "10", "ffmpeg", "-nostdin", "-v", "error", "-y", "-f", "lavfi",
-                            "-i", _source_graph(width, height, SOURCE_MS / 1000), "-an", "-c:v", "libx264",
+                            "-i", _source_graph(width, height, SOURCE_MS / 1000, _sar(name)), "-an", "-c:v", "libx264",
                             "-preset", "ultrafast", "-crf", "8", "-pix_fmt", "yuv420p", "-threads", "2",
                             str(path)], check=True, timeout=120, capture_output=True)
             made[name] = path
@@ -170,12 +192,23 @@ def sources(tmp_path_factory):
     return get
 
 
-def _table_row(case: Case) -> dict:
+def _expected_geometry(case: Case) -> tuple[dict, str]:
+    """The model's geometry for the case and where the expectation comes from.
+
+    Square sources are rows of the shared table (and must equal it); the
+    anamorphic source has no row, so its expectation is the same model at the
+    source's square-pixel display size.
+    """
+    width, height = _layout_size(case)
+    geometry = page_frame.geometry(width, height, case.frame, case.resolved_fit,
+                                   case.zoom, case.focus_x, case.focus_y)
     for row in TABLE["cases"]:
         if (row["source"]["name"] == case.source and row["frame"] == case.frame
                 and row["frameFit"] == case.resolved_fit and row["clipCrop"] == case.crop):
-            return row
-    raise AssertionError(f"{case.name} is not a row of the shared table")
+            assert geometry["picture"] == row["picture"] and geometry["band"] == row["band"]
+            return geometry, "table"
+    assert case.source in SOURCE_SAR, f"{case.name} is not a row of the shared table"
+    return geometry, "model at display size"
 
 
 def _cut_kwargs(case: Case, source: Path) -> dict:
@@ -268,28 +301,37 @@ def test_trace_parser_accepts_a_repeated_line_only_when_it_is_identical():
         _trace_values(changed, "scale", _SCALE)
 
 
-def ffmpeg_geometry(width: int, height: int, vf: str) -> dict:
-    """ffmpeg's own integers for a cut chain: scale output size, crop offset, pad offset."""
+def ffmpeg_geometry(width: int, height: int, vf: str, sar: Fraction = Fraction(1)) -> dict:
+    """ffmpeg's own integers for a cut chain: square-pixel frame, scale size, crop and pad offsets."""
+    source = f"color=c=gray:s={width}x{height}:r=30:d=0.04,format=yuv420p"
+    if sar != 1:
+        source += f",setsar={sar.numerator}/{sar.denominator}"
     result = subprocess.run(
         ["nice", "-n", "10", "ffmpeg", "-nostdin", "-v", "trace", "-threads", "2", "-filter_threads", "2",
-         "-f", "lavfi", "-i", f"color=c=gray:s={width}x{height}:r=30:d=0.04,format=yuv420p",
-         "-vf", vf, "-frames:v", "1", "-f", "null", "-"],
+         "-f", "lavfi", "-i", source, "-vf", vf, "-frames:v", "1", "-f", "null", "-"],
         capture_output=True, text=True, timeout=120)
     assert result.returncode == 0, result.stderr[-2000:]
     scales = _trace_values(result.stderr, "scale", _SCALE)
     crops = _trace_values(result.stderr, "crop", _CROP)
     pads = _trace_values(result.stderr, "pad", _PAD)
-    assert len(scales) == 1 and len(crops) == 1 and len(pads) <= 1, (scales, crops, pads)
+    assert len(scales) in (1, 2) and len(crops) == 1 and len(pads) <= 1, (scales, crops, pads)
+    display = None
+    if len(scales) == 2:
+        # A framed chain opens with the square-pixel scale (page_frame.DISPLAY_PIXELS_FILTER).
+        (display_at, (_, display_w, display_h, _)), scales = scales[0], scales[1:]
+        assert display_at == 0, (display_at, scales)
+        display = [int(display_w), int(display_h)]
     (scale_at, (scale_in, scale_w, scale_h, scale_out)), (crop_at, (crop_x, crop_y)) = scales[0], crops[0]
-    return {"scale": [int(scale_w), int(scale_h)],
+    return {"display": display, "scale": [int(scale_w), int(scale_h)],
             # The pixel format the crop worked in (fill scales first; fit crops first).
             "format": scale_out if scale_at < crop_at else scale_in,
             "crop": [int(crop_x), int(crop_y)],
             "pad": [int(pads[0][1][2]), int(pads[0][1][3])] if pads else None}
 
 
-def _window_delta(case: Case, geometry: dict, actual: dict) -> int:
-    """ffmpeg's integers vs the table model; fit and the pad must be exact."""
+def _window_delta(case: Case, geometry: dict, actual: dict, display: tuple[int, int] | None) -> int:
+    """ffmpeg's integers vs the model; the square-pixel frame, fit and the pad must be exact."""
+    assert actual["display"] == (list(display) if display else None), (actual["display"], display)
     picture = geometry["picture"]
     if case.resolved_fit == "fit":
         window = geometry["window"]
@@ -304,15 +346,18 @@ def _window_delta(case: Case, geometry: dict, actual: dict) -> int:
 
 
 def _mapping(case: Case, geometry: dict, crop_x: float, crop_y: float):
-    """Source continuous coordinates -> canvas continuous coordinates."""
-    width, height = SOURCES[case.source]
+    """Source storage coordinates -> canvas coordinates, and canvas px per storage px (x, y)."""
+    width, _ = SOURCES[case.source]
+    layout_w, layout_h = _layout_size(case)
+    stretch = layout_w / width  # the square-pixel scale; 1 for a square, even-width source
     picture = geometry["picture"]
     if case.resolved_fit == "fit":
         window = geometry["window"]
         sx, sy = picture["w"] / window["w"], picture["h"] / window["h"]
-        return lambda x, y: (picture["x"] + (x - crop_x) * sx, picture["y"] + (y - crop_y) * sy), sx
-    sx, sy = geometry["scaled"]["w"] / width, geometry["scaled"]["h"] / height
-    return lambda x, y: (x * sx - crop_x, picture["y"] + y * sy - crop_y), sx
+        return (lambda x, y: (picture["x"] + (x * stretch - crop_x) * sx, picture["y"] + (y - crop_y) * sy),
+                (sx * stretch, sy))
+    sx, sy = geometry["scaled"]["w"] / layout_w, geometry["scaled"]["h"] / layout_h
+    return lambda x, y: (x * stretch * sx - crop_x, picture["y"] + y * sy - crop_y), (sx * stretch, sy)
 
 
 def _luma(path: Path) -> np.ndarray:
@@ -357,12 +402,14 @@ def _border_sides(case: Case, geometry: dict, luma: np.ndarray, mask: np.ndarray
     side; a side is expected when at least 2 canvas px of it remain and not
     expected when none does. A thinner sliver is not judged either way.
     """
-    width, height = SOURCES[case.source]
+    width, _ = SOURCES[case.source]
+    layout_w, layout_h = _layout_size(case)
+    border_x = BORDER * layout_w / width  # the border's width after the square-pixel scale
     window, picture = geometry["window"], geometry["picture"]
     scale_x, scale_y = picture["w"] / window["w"], picture["h"] / window["h"]
-    remaining = {"L": (BORDER - window["x"]) * scale_x, "T": (BORDER - window["y"]) * scale_y,
-                 "R": (BORDER - (width - window["x"] - window["w"])) * scale_x,
-                 "B": (BORDER - (height - window["y"] - window["h"])) * scale_y}
+    remaining = {"L": (border_x - window["x"]) * scale_x, "T": (BORDER - window["y"]) * scale_y,
+                 "R": (border_x - (layout_w - window["x"] - window["w"])) * scale_x,
+                 "B": (BORDER - (layout_h - window["y"] - window["h"])) * scale_y}
     judged = [side for side in "LTRB" if remaining[side] >= 2 or remaining[side] <= 0]
     expected = "".join(side for side in judged if remaining[side] >= 2)
     x0, y0 = measured["x"], measured["y"]
@@ -381,19 +428,19 @@ def _border_sides(case: Case, geometry: dict, luma: np.ndarray, mask: np.ndarray
     return expected, found
 
 
-def _markers(case: Case, luma: np.ndarray, mask: np.ndarray, picture: dict, to_canvas, scale: float,
-             table_to_canvas) -> dict:
+def _markers(case: Case, luma: np.ndarray, mask: np.ndarray, picture: dict, to_canvas,
+             scale: tuple[float, float], table_to_canvas) -> dict:
     """Centroids of the white squares vs where ffmpeg's integers (and the table) put them."""
     width, height = SOURCES[case.source]
-    half = MARKER / 2 * scale
-    radius = int(2 * half + 6)
+    half_x, half_y = MARKER / 2 * scale[0], MARKER / 2 * scale[1]
+    radius = int(2 * max(half_x, half_y) + 6)
     residuals, table_deltas, missing = [], [], 0
     for fx in FRACTIONS:
         for fy in FRACTIONS:
             sx, sy = round(fx * width), round(fy * height)
             ex, ey = to_canvas(sx, sy)
-            if not (picture["x"] + half + 3 <= ex <= picture["x"] + picture["w"] - half - 3
-                    and picture["y"] + half + 3 <= ey <= picture["y"] + picture["h"] - half - 3):
+            if not (picture["x"] + half_x + 3 <= ex <= picture["x"] + picture["w"] - half_x - 3
+                    and picture["y"] + half_y + 3 <= ey <= picture["y"] + picture["h"] - half_y - 3):
                 continue
             x0, x1 = int(ex) - radius, int(ex) + radius + 1
             y0, y1 = int(ey) - radius, int(ey) + radius + 1
@@ -417,15 +464,13 @@ def _markers(case: Case, luma: np.ndarray, mask: np.ndarray, picture: dict, to_c
 @pytest.mark.parametrize("case", CASES, ids=lambda case: case.name)
 def test_framed_render_matches_the_shared_table(case, sources, tmp_path):
     width, height = SOURCES[case.source]
+    framed = case.frame != page_frame.VERTICAL_FRAME
     source = sources(case.source)
-    row = _table_row(case)
-    geometry = page_frame.geometry(width, height, case.frame, case.resolved_fit,
-                                   case.zoom, case.focus_x, case.focus_y)
-    assert geometry["picture"] == row["picture"] and geometry["band"] == row["band"]
+    geometry, expected_from = _expected_geometry(case)
 
     frame_kwargs = _cut_kwargs(case, source)
     if case.resolved_fit == "fit":
-        assert frame_kwargs["source_size"] == (width, height)
+        assert frame_kwargs["source_size"] == _layout_size(case)
     cut = tmp_path / "cut.mp4"
     _cut(case, source, cut, frame_kwargs)
     result = render.render_post(cut, tmp_path / "post", _post_request(case, render.sha256(cut.read_bytes())),
@@ -434,12 +479,12 @@ def test_framed_render_matches_the_shared_table(case, sources, tmp_path):
 
     vf = build_cc_filter(_grade_cc() if case.grade else None, playback_speed=case.speed,
                          clip_crop=case.crop, **frame_kwargs)
-    actual = ffmpeg_geometry(width, height, vf)
-    window_delta = _window_delta(case, geometry, actual)
+    actual = ffmpeg_geometry(width, height, vf, _sar(case.source))
+    window_delta = _window_delta(case, geometry, actual, _layout_size(case) if framed else None)
 
     luma = _luma(result.qa_frame_path)
     mask = _caption_mask(result.final_path.parent / "overlay.png")
-    expected = row["picture"]
+    expected = geometry["picture"]
     measured = _picture_rect(luma, mask)
     picture_delta = _rect_delta(measured, expected)
     bars = _bars(luma, mask, expected)
@@ -461,8 +506,12 @@ def test_framed_render_matches_the_shared_table(case, sources, tmp_path):
         qa_dir.mkdir(parents=True, exist_ok=True)
         qa_path = qa_dir / f"{case.name}.jpg"
         shutil.copyfile(result.qa_frame_path, qa_path)
+    sar = _sar(case.source)
+    description = f"{case.source} {width}x{height}"
+    if sar != 1:
+        description += " SAR {}:{}, {}x{} display".format(sar.numerator, sar.denominator, *_layout_size(case))
     RESULTS.append({
-        "case": case.name, "source": f"{case.source} {width}x{height}", "frame": case.frame,
+        "case": case.name, "source": description, "expectedFrom": expected_from, "frame": case.frame,
         "fit": case.resolved_fit + ("" if case.fit or case.frame == "9:16" else " (absent)"),
         "crop": f"z{case.zoom:g} fx{case.focus_x:g} fy{case.focus_y:g}",
         "treatment": ", ".join(item for item in (
@@ -513,7 +562,10 @@ def _matrix_markdown(results: list[dict]) -> str:
         "",
         "Each row: synthetic master -> real band-aware cut (services.ffmpeg.run_color_correct, as the "
         "executor calls it) -> services.post_render.render_post -> render_post's own QA frame, measured. "
-        "Expected rectangles come from tests/fixtures/page-frame-geometry-fixtures.v1.json. "
+        "Expected rectangles come from tests/fixtures/page-frame-geometry-fixtures.v1.json; the table has "
+        "square sources only, so the anamorphic rows (marked *) expect the same model at the source's "
+        "square-pixel display size. Every framed cut starts with scale=trunc(iw*sar/2)*2:ih,setsar=1, whose "
+        "output ffmpeg's trace must show at exactly that display size. "
         f"Tolerance {TOLERANCE_PX} px, never widened. ffmpeg: "
         + subprocess.run(["ffmpeg", "-version"], capture_output=True, text=True).stdout.splitlines()[0] + ".",
         "",
@@ -540,7 +592,8 @@ def _matrix_markdown(results: list[dict]) -> str:
         markers = row["markers"]
         lines.append(
             f"| {row['case']} | {row['source']} | {row['frame']} | {row['fit']} | {row['crop']} "
-            f"| {row['treatment']} | {fmt(row['expected'])} | {fmt(row['measured'])} | {row['pictureDelta']} "
+            f"| {row['treatment']} | {fmt(row['expected'])}{'' if row['expectedFrom'] == 'table' else ' *'} "
+            f"| {fmt(row['measured'])} | {row['pictureDelta']} "
             f"| {row['windowDelta']} | {markers['count']} / {markers['residual']} ({markers['tableDelta']}) "
             f"| {row['border']['expected'] or '-'}/{row['border']['found'] or '-'} "
             f"| {row['bars']['max']}/{row['bars']['mean']} | {row['maxDelta']} | {row['verdict']} "
@@ -589,7 +642,7 @@ def _table_trace_summary() -> list[str]:
             vf = build_cc_filter(cc, clip_crop=crop, page_frame=row["frame"], frame_fit=row["frameFit"],
                                  source_size=(width, height))
             actual = ffmpeg_geometry(width, height, vf)
-            delta = _window_delta(case, geometry, actual)
+            delta = _window_delta(case, geometry, actual, (width, height))
             formats[label].add(actual["format"])
             worst[label] = max(worst[label], delta)
             counts[(label, row["frameFit"], delta)] = counts.get((label, row["frameFit"], delta), 0) + 1

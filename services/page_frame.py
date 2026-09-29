@@ -12,6 +12,7 @@ through the centre band of their 9:16 picture).
 from __future__ import annotations
 
 import math
+from fractions import Fraction
 from typing import Any
 
 VERTICAL_FRAME = "9:16"
@@ -21,6 +22,11 @@ ACCEPTED_FRAMES = (VERTICAL_FRAME, *FRAME_BAND_HEIGHTS)
 FRAME_FITS = ("fill", "fit")
 CANVAS_WIDTH = 1080
 CANVAS_HEIGHT = 1920
+# The first filter of every framed cut: the frame is stretched to square display
+# pixels at an even width, so the band geometry works on what a viewer (and the
+# Dossier preview) sees. ffmpeg's sar is 1 when unknown; a square, even-width
+# frame passes through untouched. The 9:16 cut never uses it.
+DISPLAY_PIXELS_FILTER = "scale=trunc(iw*sar/2)*2:ih,setsar=1"
 
 
 def frame_band_height(treatment: dict[str, Any]) -> int | None:
@@ -86,6 +92,17 @@ def letterbox_filter(band_height: int) -> str:
 
 def default_frame_fit(frame: str) -> str:
     return "fill" if frame == VERTICAL_FRAME else "fit"
+
+
+def display_size(width: int, height: int, sample_aspect_ratio: Fraction = Fraction(1)) -> tuple[int, int]:
+    """The frame DISPLAY_PIXELS_FILTER makes of a width x height frame with that SAR.
+
+    Mirrors ffmpeg's expression arithmetic: (double) num/den, trunc(iw*sar/2)*2,
+    an unknown (zero) SAR counts as square, and a width that truncates to 0
+    keeps the input width, as ffmpeg's scale does for a zero size.
+    """
+    sar = sample_aspect_ratio.numerator / sample_aspect_ratio.denominator if sample_aspect_ratio else 1.0
+    return (math.trunc(width * sar / 2) * 2 or width), height
 
 
 def _even_nearest(value: float) -> int:

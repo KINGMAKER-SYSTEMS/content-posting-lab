@@ -125,7 +125,12 @@ from services.control_plane_source_imports import (
 )
 from services.content_engine_registry import load_engine_registry, resolve_material_profile
 from services.content_format_contracts import CONTRACTS_PATH, load_format_contracts
-from services.ffmpeg import delivery_encode_args, probe_display_size, run_color_correct
+from services.ffmpeg import (
+    FrameGeometryUnavailable,
+    delivery_encode_args,
+    probe_display_size,
+    run_color_correct,
+)
 from services.master_pages_contract import SCHEMA as MASTER_PAGES_SCHEMA, canonical_intent, exact_intent, intent_hash
 from services.page_frame import VERTICAL_FRAME, resolved_frame
 from services import moderation_retry
@@ -3027,17 +3032,22 @@ async def _page_frame_cut_kwargs(render_treatment: dict[str, Any], source: Path)
     """Band-aware cut arguments for a framed page; none at all for a 9:16 page.
 
     The frame and frameFit come from the locked recipe's render treatment.
-    fit contains the source window, so it needs the upright size the cut's
-    filters will see; fill uses ffmpeg's own scale arithmetic and needs no probe.
-    A 9:16 page passes nothing, so its cut call is exactly today's.
+    fit contains the source window, so it needs the display size the cut's
+    filters will see; fill uses ffmpeg's own scale arithmetic and needs no
+    probe. When ffprobe cannot prove that size the clip is cut fill (logged),
+    never a failed job. A 9:16 page passes nothing, so its cut call is exactly
+    today's.
     """
     frame, fit = resolved_frame(render_treatment)
     if frame == VERTICAL_FRAME:
         return {}
-    kwargs: dict[str, Any] = {"page_frame": frame, "frame_fit": fit}
     if fit == "fit":
-        kwargs["source_size"] = await probe_display_size(source)
-    return kwargs
+        try:
+            return {"page_frame": frame, "frame_fit": fit, "source_size": await probe_display_size(source)}
+        except FrameGeometryUnavailable as error:
+            log.warning("page frame %s: cutting %s fill, its display size is unavailable (%s)",
+                        frame, Path(source).name, error.reason)
+    return {"page_frame": frame, "frame_fit": "fill"}
 
 
 async def _video_geometry(path: Path) -> tuple[int, int]:

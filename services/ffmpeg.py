@@ -12,16 +12,19 @@ import math
 import os
 import signal
 import subprocess
+from fractions import Fraction
 
 from services.page_frame import (
     ACCEPTED_FRAMES,
     CANVAS_HEIGHT,
     CANVAS_WIDTH,
+    DISPLAY_PIXELS_FILTER,
     FRAME_BAND_HEIGHTS,
     FRAME_FITS,
     VERTICAL_FRAME,
     band_height,
     default_frame_fit,
+    display_size,
     fill_pad_filter,
     fit_cut_filters,
 )
@@ -206,14 +209,16 @@ def _framed_cut_filters(
     page_frame: str | None,
     frame_fit: str | None,
     source_size: tuple[int, int] | None,
-) -> tuple[str, str] | None:
-    """Band-aware picture filter and final canvas pad, or None for a 9:16 page.
+) -> tuple[str, str, str] | None:
+    """(square-pixel prefix, band-aware picture filter, canvas pad), or None for 9:16.
 
     A framed page's clip is cut into its band on the 1080x1920 canvas (see
-    services.page_frame.geometry). fill evaluates the same clip crop against
-    the band; fit contains the zoomed source window, which needs the upright
-    square-pixel source size the filter chain sees. A missing crop is the
-    neutral centred crop, as on the sourced executor.
+    services.page_frame.geometry) on square display pixels: the chain starts
+    with page_frame.DISPLAY_PIXELS_FILTER, so an anamorphic master is laid out
+    as a viewer (and the Dossier preview) sees it. fill evaluates the same clip
+    crop against the band; fit contains the zoomed source window, which needs
+    the display size probe_display_size reports. A missing crop is the neutral
+    centred crop, as on the sourced executor.
     """
     if page_frame is None or page_frame == VERTICAL_FRAME:
         if frame_fit is not None:
@@ -230,16 +235,19 @@ def _framed_cut_filters(
         raise ValueError("clip_crop_size of a framed cut must be the 1080x1920 canvas")
     crop = _validated_clip_crop(clip_crop) or {"zoom": 1.0, "focusX": 0.5, "focusY": 0.5}
     if fit == "fill":
-        return (_clip_crop_filter(crop, (CANVAS_WIDTH, band_height(page_frame))),
+        return (DISPLAY_PIXELS_FILTER,
+                _clip_crop_filter(crop, (CANVAS_WIDTH, band_height(page_frame))),
                 fill_pad_filter(page_frame))
     if (
         not isinstance(source_size, tuple)
         or len(source_size) != 2
         or any(isinstance(item, bool) or not isinstance(item, int) or item <= 0 for item in source_size)
     ):
-        raise ValueError("source_size of a framed fit cut must be the positive probed width and height")
-    return fit_cut_filters(source_size[0], source_size[1], page_frame,
-                           crop["zoom"], crop["focusX"], crop["focusY"])
+        raise ValueError("source_size of a framed fit cut must be the positive probed display size")
+    picture_filter, pad_filter = fit_cut_filters(
+        source_size[0], source_size[1], page_frame, crop["zoom"], crop["focusX"], crop["focusY"],
+    )
+    return DISPLAY_PIXELS_FILTER, picture_filter, pad_filter
 
 
 def build_cc_filter(
@@ -270,9 +278,10 @@ def build_cc_filter(
             normalized crop is present. Sourced executors pass their typed,
             hash-bound delivery size here.
         page_frame / frame_fit / source_size: A non-9:16 page frame cuts the
-            clip into its band (services.page_frame.geometry): fill evaluates
-            the crop against the band, fit (the default for such a frame)
-            contains the source window and needs the probed upright source
+            clip into its band (services.page_frame.geometry) on square
+            display pixels (the chain starts with DISPLAY_PIXELS_FILTER): fill
+            evaluates the crop against the band, fit (the default for such a
+            frame) contains the source window and needs the probed display
             size. The grade and speed stay exactly where they are without a
             frame and a pad to the black 1080x1920 canvas comes last, so the
             grade never touches the bars. Absent or "9:16" is today's cut,
@@ -289,10 +298,10 @@ def build_cc_filter(
         clip_crop, clip_crop_size, scale, page_frame, frame_fit, source_size,
     )
     if framed is None:
+        square_filter = pad_filter = None
         crop_filter = _clip_crop_filter(clip_crop, clip_crop_size)
-        pad_filter = None
     else:
-        crop_filter, pad_filter = framed
+        square_filter, crop_filter, pad_filter = framed
     scale_filter = (
         f"scale={scale}:flags=lanczos,setsar=1" if scale else None
     )
@@ -300,7 +309,8 @@ def build_cc_filter(
     # Fast path: no CC → just the scale (or null if no scale either).
     if is_default_cc(cc):
         return ",".join(
-            item for item in (crop_filter, speed_filter, scale_filter, pad_filter) if item
+            item for item in (square_filter, crop_filter, speed_filter, scale_filter, pad_filter)
+            if item
         ) or "null"
 
     b_raw = float(cc.get("brightness", 0))
@@ -343,7 +353,8 @@ def build_cc_filter(
     )
     if is_default:
         return ",".join(
-            item for item in (crop_filter, speed_filter, scale_filter, pad_filter) if item
+            item for item in (square_filter, crop_filter, speed_filter, scale_filter, pad_filter)
+            if item
         ) or "null"
 
     mat = [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
@@ -441,7 +452,7 @@ def build_cc_filter(
         f"br={mat[2][0]:.6f}:bg={mat[2][1]:.6f}:bb={mat[2][2]:.6f}:ba={off[2]:.6f}"
     )
 
-    filters = ["format=rgb24", ccm]
+    filters = [item for item in (square_filter, "format=rgb24", ccm) if item]
     if sharpness >= 0.001:
         filters.append(f"unsharp=5:5:{sharpness:.2f}:5:5:{sharpness:.2f}")
     if grain_raw >= 0.001:
@@ -573,17 +584,39 @@ def _consume_encode_wait_result(task: asyncio.Task) -> None:
 
 
 _FRAME_PROBE_OUTPUT_LIMIT_BYTES = 64 * 1024
-_SQUARE_SAMPLE_ASPECT_RATIOS = frozenset({"", "N/A", "0:1", "1:1"})
+
+
+class FrameGeometryUnavailable(RuntimeError):
+    """ffprobe could not prove a framed fit cut's source size; that cut falls back to fill."""
+
+    def __init__(self, reason: str):
+        super().__init__(f"frame_source_geometry_unavailable:{reason}")
+        self.reason = reason
+
+
+def _sample_aspect_ratio(value) -> Fraction:
+    """ffprobe's num:den; an unknown ratio (absent, N/A, 0:x) is square, as in ffmpeg."""
+    if value in (None, "", "N/A"):
+        return Fraction(1)
+    try:
+        numerator, denominator = (int(part) for part in str(value).split(":"))
+    except ValueError as error:
+        raise FrameGeometryUnavailable("sample_aspect_ratio_invalid") from error
+    if numerator < 0 or denominator <= 0:
+        raise FrameGeometryUnavailable("sample_aspect_ratio_invalid")
+    return Fraction(numerator, denominator) if numerator else Fraction(1)
 
 
 async def probe_display_size(input_path) -> tuple[int, int]:
-    """Upright width and height of the first video stream, as the cut's filters see it.
+    """Display width and height the framed cut's filters work on.
 
-    run_color_correct lets ffmpeg autorotate, so a quarter-turn display
-    rotation swaps the coded width and height (a half turn or any other angle
-    keeps the coded size). A framed fit cut computes its window on square
-    pixels, so a declared non-square sample aspect ratio is refused rather than
-    distorted. Bounded like the other probes: its own process group, a
+    run_color_correct lets ffmpeg autorotate: a quarter-turn display rotation
+    swaps the coded width and height and inverts the sample aspect ratio (a
+    half turn or any other angle keeps both). Every framed cut then starts
+    with page_frame.DISPLAY_PIXELS_FILTER, so this returns
+    page_frame.display_size of the upright frame. Anything ffprobe cannot
+    prove raises FrameGeometryUnavailable; the caller then cuts fill, which
+    needs no size. Bounded like the other probes: its own process group, a
     deadline and a byte cap on the reply.
     """
     try:
@@ -599,41 +632,39 @@ async def probe_display_size(input_path) -> tuple[int, int]:
             start_new_session=True,
         )
     except OSError as error:
-        raise RuntimeError("frame_source_geometry_unavailable") from error
+        raise FrameGeometryUnavailable("ffprobe_unavailable") from error
 
     async def bounded_reply() -> bytes:
         reply = bytearray()
         while chunk := await process.stdout.read(_ENCODE_STDERR_READ_BYTES):
             reply.extend(chunk)
             if len(reply) > _FRAME_PROBE_OUTPUT_LIMIT_BYTES:
-                raise RuntimeError("frame_source_geometry_unavailable")
+                raise FrameGeometryUnavailable("reply_too_large")
         await process.wait()
         return bytes(reply)
 
     try:
         raw = await asyncio.wait_for(bounded_reply(), timeout=_INPUT_PROBE_TIMEOUT_SECONDS)
     except asyncio.TimeoutError as error:
-        raise RuntimeError("frame_source_geometry_unavailable") from error
+        raise FrameGeometryUnavailable("timeout") from error
     finally:
         await _terminate_encode_process(process)
     if process.returncode != 0:
-        raise RuntimeError("frame_source_geometry_unavailable")
+        raise FrameGeometryUnavailable("ffprobe_failed")
     try:
         stream = json.loads(raw)["streams"][0]
         width, height = stream["width"], stream["height"]
         rotations = [float(row.get("rotation", 0)) for row in stream.get("side_data_list", [])]
         rotations.append(float(stream.get("tags", {}).get("rotate", 0)))
-        sample_aspect_ratio = stream.get("sample_aspect_ratio", "")
     except (KeyError, IndexError, TypeError, ValueError, AttributeError) as error:
-        raise RuntimeError("frame_source_geometry_unavailable") from error
+        raise FrameGeometryUnavailable("reply_invalid") from error
     if any(isinstance(value, bool) or not isinstance(value, int) or value <= 0 for value in (width, height)):
-        raise RuntimeError("frame_source_geometry_unavailable")
-    if sample_aspect_ratio not in _SQUARE_SAMPLE_ASPECT_RATIOS:
-        raise RuntimeError("frame_source_not_square_pixels")
+        raise FrameGeometryUnavailable("size_invalid")
+    sample_aspect_ratio = _sample_aspect_ratio(stream.get("sample_aspect_ratio"))
     rotation = next((value for value in rotations if value != 0), 0.0) % 360
     if abs(rotation - 90) < 1 or abs(rotation - 270) < 1:
-        return height, width
-    return width, height
+        width, height, sample_aspect_ratio = height, width, 1 / sample_aspect_ratio
+    return display_size(width, height, sample_aspect_ratio)
 
 
 async def run_color_correct(

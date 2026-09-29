@@ -1434,3 +1434,63 @@ async def test_generation_cuts_a_framed_page_even_without_grade_speed_or_crop(la
     assert receipt["visualTreatment"]["clipCrop"] == {"zoom": 1.0, "focusX": 0.5, "focusY": 0.5}
     assert receipt["sourceRecipeTreatment"]["frame"] == frame
     assert receipt["sourceRecipeTreatment"].get("frameFit") == fit
+
+
+@pytest.mark.asyncio
+async def test_generation_cuts_fill_when_a_candidate_size_is_unprovable(lab, monkeypatch, caplog):
+    """The paid candidate is kept: fit falls back to fill instead of failing the job."""
+    client, _, _ = lab
+    version = "dossier-framedgen0000002"
+    publication = _framed_generation_publication("16:9", "fit", version)
+    assert client.post("/api/control-plane/v1/recipes", json=publication,
+                       headers={**HEADERS, "Idempotency-Key": "framed-generation-fallback-register"}).status_code == 200
+    response = client.post("/api/control-plane/v1/jobs", json=job_body(quantity=2, recipeVersion=version),
+                           headers={**HEADERS, "Idempotency-Key": "framed-generation-fallback-job"})
+    assert response.status_code == 200, response.text
+    job_id = response.json()["jobId"]
+    corrections = []
+
+    async def fake_generate_one(
+        provider_job_id, index, provider, prompt, aspect_ratio, resolution,
+        duration, image_data_uri, jobs, output_dir, url_prefix, **extra,
+    ):
+        folder = output_dir / provider / provider_job_id
+        folder.mkdir(parents=True, exist_ok=True)
+        path = folder / "candidate.mp4"
+        path.write_bytes(f"new-media:{provider_job_id}".encode())
+        crops = []
+        for crop_index in range(5):
+            crop = folder / f"crop-{crop_index}.mp4"
+            crop.write_bytes(path.read_bytes() + f":crop-{crop_index}".encode())
+            crops.append({"file": str(crop.relative_to(output_dir)), "cropMode": "both",
+                          "cropIndex": crop_index, "cropCount": 5, "width": 606, "height": 1080})
+        jobs[provider_job_id]["videos"][index].update({
+            "status": "done", "file": str(path.relative_to(output_dir)),
+            "provider_master_file": str(path.relative_to(output_dir)), "crops": crops,
+        })
+
+    async def fake_color_correct(source, destination, color_correction, **kwargs):
+        corrections.append(kwargs)
+        shutil.copyfile(source, destination)
+
+    async def fake_probe(_path):
+        raise cp.FrameGeometryUnavailable("timeout")
+
+    async def fake_thumbnail(job_root, video, index):
+        target = job_root / "thumbnails" / f"{index:04d}.jpg"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"jpeg-thumbnail")
+        return cp._generated_manifest(job_root, target)
+
+    monkeypatch.setattr(cp, "generate_one", fake_generate_one)
+    monkeypatch.setattr(cp, "run_color_correct", fake_color_correct)
+    monkeypatch.setattr(cp, "probe_display_size", fake_probe)
+    monkeypatch.setattr(cp, "_thumbnail_manifest", fake_thumbnail)
+    with caplog.at_level("WARNING", logger="control_plane"):
+        await cp._run_dossier_generation(job_id)
+    stored = cp._load_jobs()["jobs"][job_id]
+    assert stored["status"] == "completed", stored.get("error")
+    assert len(stored["clips"]) == 5
+    assert corrections == [{"scale": None, "playback_speed": 1.0, "clip_crop": None,
+                            "page_frame": "16:9", "frame_fit": "fill"}] * 5
+    assert caplog.text.count("its display size is unavailable (timeout)") == 5

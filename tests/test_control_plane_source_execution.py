@@ -1487,3 +1487,42 @@ async def test_runner_passes_no_frame_arguments_for_a_vertical_page(lab, monkeyp
     assert job["status"] == "completed", job.get("error")
     assert set(calls[0]) == {"scale", "encode_args", "playback_speed", "clip_crop", "clip_crop_size",
                              "clip_start_ms", "clip_duration_ms"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reason", ["timeout", "reply_too_large", "reply_invalid", "size_invalid", "ffprobe_failed"])
+async def test_runner_cuts_fill_when_the_master_display_size_is_unprovable(lab, monkeypatch, caplog, reason):
+    """No new refusal: fit falls back to fill, which needs no size, and the job completes."""
+    client, tmp_path, _ = lab
+    source = tmp_path / "master.mp4"
+    source.write_bytes(b"master")
+    payload = _framed_publication("16:9", "fit", "dossier-framedfallback0")
+    assert client.post(
+        "/api/control-plane/v1/recipes", json=payload, headers=headers("source-register-fallback"),
+    ).status_code == 200
+    response = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(1, payload), headers=headers("source-job-fallback"),
+    )
+    job_id = response.json()["jobId"]
+    calls = []
+
+    async def cached_source(*_):
+        return source
+
+    async def render(src, dst, correction, **kwargs):
+        calls.append(kwargs)
+        Path(dst).write_bytes(b"derived")
+
+    async def probe(_path):
+        raise cp.FrameGeometryUnavailable(reason)
+
+    monkeypatch.setattr(cp, "_cached_source_master", cached_source)
+    monkeypatch.setattr(cp, "run_color_correct", render)
+    monkeypatch.setattr(cp, "probe_display_size", probe)
+    with caplog.at_level("WARNING", logger="control_plane"):
+        await cp._run_dossier_source(job_id)
+    job = cp._load_jobs()["jobs"][job_id]
+    assert job["status"] == "completed", job.get("error")
+    assert calls[0]["page_frame"] == "16:9" and calls[0]["frame_fit"] == "fill"
+    assert "source_size" not in calls[0]
+    assert f"cutting master.mp4 fill, its display size is unavailable ({reason})" in caplog.text

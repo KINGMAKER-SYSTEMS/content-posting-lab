@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from fractions import Fraction
 from pathlib import Path
 
 import pytest
@@ -113,3 +114,19 @@ def test_fit_cut_filters_render_the_table_rectangles_exactly():
     geometry = page_frame.geometry(1920, 1080, "1:1", "fit", 1.5, 0.2, 0.7)
     assert geometry["window"] == {"x": 128, "y": 250, "w": 1280, "h": 720}
     assert geometry["picture"] == {"x": 0, "y": 656, "w": 1080, "h": 608}
+
+
+@pytest.mark.parametrize("width,height,sar,expected", [
+    (1920, 1080, Fraction(1), (1920, 1080)),
+    (1919, 1079, Fraction(1), (1918, 1079)),       # even display width, height untouched
+    (720, 480, Fraction(32, 27), (852, 480)),       # DVD NTSC widescreen
+    (720, 480, Fraction(8, 9), (640, 480)),         # DVD NTSC 4:3
+    (1080, 608, Fraction(1216, 1215), (1080, 608)),  # plain -vf scale=1080:608 of 1920x1080
+    (1080, 1920, Fraction(256, 81), (3412, 1920)),  # 16:9 picture stored squeezed into 9:16
+    (480, 720, Fraction(27, 32), (404, 720)),       # the DVD frame after a quarter turn
+    (1920, 1080, Fraction(0), (1920, 1080)),        # unknown SAR is square, as in ffmpeg
+    (1, 1080, Fraction(1), (1, 1080)),              # a width that truncates to 0 keeps the input width
+])
+def test_display_size_mirrors_the_square_pixel_filter(width, height, sar, expected):
+    assert page_frame.DISPLAY_PIXELS_FILTER == "scale=trunc(iw*sar/2)*2:ih,setsar=1"
+    assert page_frame.display_size(width, height, sar) == expected
