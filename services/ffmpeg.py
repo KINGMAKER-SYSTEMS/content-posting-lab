@@ -25,6 +25,7 @@ from services.page_frame import (
     band_height,
     default_frame_fit,
     display_size,
+    effective_frame_fit,
     fill_pad_filter,
     fit_cut_filters,
 )
@@ -218,7 +219,8 @@ def _framed_cut_filters(
     as a viewer (and the Dossier preview) sees it. fill evaluates the same clip
     crop against the band; fit contains the zoomed source window, which needs
     the display size probe_display_size reports. A missing crop is the neutral
-    centred crop, as on the sourced executor.
+    centred crop, as on the sourced executor; a source under 2 px either way
+    is cut fill.
     """
     if page_frame is None or page_frame == VERTICAL_FRAME:
         if frame_fit is not None:
@@ -234,16 +236,18 @@ def _framed_cut_filters(
     if _validated_clip_crop_size(clip_crop_size) != (CANVAS_WIDTH, CANVAS_HEIGHT):
         raise ValueError("clip_crop_size of a framed cut must be the 1080x1920 canvas")
     crop = _validated_clip_crop(clip_crop) or {"zoom": 1.0, "focusX": 0.5, "focusY": 0.5}
+    if fit == "fit":
+        if (
+            not isinstance(source_size, tuple)
+            or len(source_size) != 2
+            or any(isinstance(item, bool) or not isinstance(item, int) or item <= 0 for item in source_size)
+        ):
+            raise ValueError("source_size of a framed fit cut must be the positive probed display size")
+        fit = effective_frame_fit(source_size[0], source_size[1], page_frame, fit)
     if fit == "fill":
         return (DISPLAY_PIXELS_FILTER,
                 _clip_crop_filter(crop, (CANVAS_WIDTH, band_height(page_frame))),
                 fill_pad_filter(page_frame))
-    if (
-        not isinstance(source_size, tuple)
-        or len(source_size) != 2
-        or any(isinstance(item, bool) or not isinstance(item, int) or item <= 0 for item in source_size)
-    ):
-        raise ValueError("source_size of a framed fit cut must be the positive probed display size")
     picture_filter, pad_filter = fit_cut_filters(
         source_size[0], source_size[1], page_frame, crop["zoom"], crop["focusX"], crop["focusY"],
     )

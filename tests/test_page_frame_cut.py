@@ -75,6 +75,12 @@ def test_every_framed_cut_starts_on_square_display_pixels_and_no_vertical_cut_do
         assert "iw*sar" not in build_cc_filter(grade, clip_crop=CROP, page_frame=frame)
 
 
+@pytest.mark.parametrize("source_size", [(1, 1080), (1080, 1), (1, 1)])
+def test_fit_on_a_source_under_two_pixels_is_cut_fill(source_size):
+    assert build_cc_filter(None, clip_crop=CROP, page_frame="16:9", frame_fit="fit",
+                           source_size=source_size) == build_cc_filter(
+        None, clip_crop=CROP, page_frame="16:9", frame_fit="fill")
+
 
 @pytest.mark.parametrize("fit,source_size", [("fill", None), ("fit", (1920, 1080))])
 def test_speed_and_grade_stay_where_they_are_and_the_pad_is_the_last_filter(fit, source_size):

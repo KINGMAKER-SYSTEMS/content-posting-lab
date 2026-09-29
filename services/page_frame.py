@@ -22,6 +22,9 @@ ACCEPTED_FRAMES = (VERTICAL_FRAME, *FRAME_BAND_HEIGHTS)
 FRAME_FITS = ("fill", "fit")
 CANVAS_WIDTH = 1080
 CANVAS_HEIGHT = 1920
+# fit needs a source window of at least this many pixels each way; a smaller
+# source is cut fill, which divides by nothing (F7).
+MIN_FIT_SOURCE_PX = 2
 # The first filter of every framed cut: the frame is stretched to square display
 # pixels at an even width, so the band geometry works on what a viewer (and the
 # Dossier preview) sees. ffmpeg's sar is 1 when unknown; a square, even-width
@@ -94,6 +97,14 @@ def default_frame_fit(frame: str) -> str:
     return "fill" if frame == VERTICAL_FRAME else "fit"
 
 
+def effective_frame_fit(src_w: int, src_h: int, frame: str, fit: str | None) -> str:
+    """The fit a cut can honour: fit on a source under 2 px either way is fill."""
+    fit = fit or default_frame_fit(frame)
+    if fit == "fit" and (src_w < MIN_FIT_SOURCE_PX or src_h < MIN_FIT_SOURCE_PX):
+        return "fill"
+    return fit
+
+
 def display_size(width: int, height: int, sample_aspect_ratio: Fraction = Fraction(1)) -> tuple[int, int]:
     """The frame DISPLAY_PIXELS_FILTER makes of a width x height frame with that SAR.
 
@@ -140,6 +151,7 @@ def geometry(src_w: int, src_h: int, frame: str = VERTICAL_FRAME, fit: str | Non
     if (any(isinstance(value, bool) or not isinstance(value, int) or value <= 0 for value in (src_w, src_h))
             or not 1.0 <= zoom <= 3.0 or not 0.0 <= focus_x <= 1.0 or not 0.0 <= focus_y <= 1.0):
         raise ValueError("source size and clip crop must be positive and in range")
+    fit = effective_frame_fit(src_w, src_h, frame, fit)
     band = band_height(frame)
     top = band_top(frame)
     if fit == "fill":
@@ -184,8 +196,11 @@ def fit_cut_filters(src_w: int, src_h: int, frame: str, zoom: float, focus_x: fl
     """(picture filter, canvas pad) for a framed fit cut of a square-pixel source.
 
     The picture filter crops the exact source window and scales it to the
-    picture rectangle; the pad puts that rectangle on the canvas.
+    picture rectangle; the pad puts that rectangle on the canvas. Callers cut a
+    source under 2 px either way fill (effective_frame_fit).
     """
+    if effective_frame_fit(src_w, src_h, frame, "fit") != "fit":
+        raise ValueError(f"fit needs a source of at least {MIN_FIT_SOURCE_PX} px each way")
     result = geometry(src_w, src_h, frame, "fit", zoom, focus_x, focus_y)
     window, picture = result["window"], result["picture"]
     return (f"crop={window['w']}:{window['h']}:{window['x']}:{window['y']}:exact=1,"

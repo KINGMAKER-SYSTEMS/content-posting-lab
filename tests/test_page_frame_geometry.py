@@ -116,6 +116,24 @@ def test_fit_cut_filters_render_the_table_rectangles_exactly():
     assert geometry["picture"] == {"x": 0, "y": 656, "w": 1080, "h": 608}
 
 
+@pytest.mark.parametrize("width,height", [(1, 1), (1, 1080), (1080, 1), (1, 2), (2, 1)])
+@pytest.mark.parametrize("frame", ["16:9", "1:1", "3:4", "4:3"])
+def test_fit_on_a_source_under_two_pixels_falls_back_to_fill(width, height, frame):
+    """No division by zero and no zero-size crop: such a source is cut fill (F7)."""
+    assert page_frame.effective_frame_fit(width, height, frame, "fit") == "fill"
+    assert page_frame.effective_frame_fit(width, height, frame, None) == "fill"
+    result = page_frame.geometry(width, height, frame, "fit")
+    assert result == page_frame.geometry(width, height, frame, "fill")
+    assert result["window"]["w"] > 0 and result["window"]["h"] > 0
+    with pytest.raises(ValueError, match="2 px"):
+        page_frame.fit_cut_filters(width, height, frame, 1.0, 0.5, 0.5)
+
+
+def test_two_pixel_sources_still_fit():
+    assert page_frame.effective_frame_fit(2, 2, "16:9", "fit") == "fit"
+    assert page_frame.geometry(2, 2, "16:9", "fit")["window"] == {"x": 0, "y": 0, "w": 2, "h": 2}
+
+
 @pytest.mark.parametrize("width,height,sar,expected", [
     (1920, 1080, Fraction(1), (1920, 1080)),
     (1919, 1079, Fraction(1), (1918, 1079)),       # even display width, height untouched
