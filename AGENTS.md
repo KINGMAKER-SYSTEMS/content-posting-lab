@@ -122,6 +122,8 @@
 
 ## Local Contracts
 
+- Caption word count is diagnostic only; never reject or rewrite a caption for exceeding a word-count threshold.
+
 - The `/api/` key middleware (`app.py` `_AUTH_SKIP`) exempts only `/api/health`
   and `/api/miniapp/*`, which verifies Telegram `initData` itself.
   `/api/telegram/*` needs the key like every other `/api/` route: the bot
