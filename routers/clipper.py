@@ -39,6 +39,25 @@ def _make_clip_job_id(project: str = "clip") -> str:
 
 
 _BATCH_ID_RE = re.compile(r"[0-9a-f]{12}")
+_CLIP_JOB_ID_RE = re.compile(r"clip-[a-z0-9_-]{1,20}-[0-9]{8}-[0-9a-f]{4}")
+
+
+def _clip_job_path(clipper_dir: Path, job_id: str) -> Path:
+    """Validate a minted job ID and resolve only its direct, non-symlink child."""
+    if not isinstance(job_id, str) or _CLIP_JOB_ID_RE.fullmatch(job_id) is None:
+        raise HTTPException(400, "Invalid clipper job ID")
+    parent = Path(clipper_dir)
+    candidate = parent / job_id
+    try:
+        if candidate.is_symlink():
+            raise HTTPException(400, "Invalid clipper job path")
+        resolved_parent = parent.resolve()
+        resolved_candidate = candidate.resolve()
+        if resolved_candidate.parent != resolved_parent or resolved_candidate.name != job_id:
+            raise HTTPException(400, "Invalid clipper job path")
+    except OSError:
+        raise HTTPException(400, "Invalid clipper job path")
+    return resolved_candidate
 
 
 def _validate_batch_id(batch_id: object) -> str:
@@ -1615,7 +1634,7 @@ async def rename_clipper_job(job_id: str, body: dict, project: str = Query(defau
     if not new_label:
         return JSONResponse({"error": "Label is required"}, status_code=400)
     clipper_dir = _get_clipper_dir(project)
-    job_dir = clipper_dir / job_id
+    job_dir = _clip_job_path(clipper_dir, job_id)
     if not job_dir.exists():
         raise HTTPException(404, "Job not found")
     meta_path = job_dir / "job_meta.json"
@@ -1633,7 +1652,7 @@ async def rename_clipper_job(job_id: str, body: dict, project: str = Query(defau
 @router.delete("/jobs/{job_id}")
 async def delete_clipper_job(job_id: str, project: str = Query(default="quick-test")):
     clipper_dir = _get_clipper_dir(project)
-    job_dir = clipper_dir / job_id
+    job_dir = _clip_job_path(clipper_dir, job_id)
 
     if not job_dir.exists() or not job_dir.is_dir():
         raise HTTPException(404, "Job not found")
@@ -1652,7 +1671,7 @@ async def download_all_clips(job_id: str, project: str = Query(default="quick-te
     mirrored — keeps the endpoint working in local dev / pre-R2 jobs.
     """
     clipper_dir = _get_clipper_dir(project)
-    job_dir = clipper_dir / job_id
+    job_dir = _clip_job_path(clipper_dir, job_id)
 
     if not job_dir.exists():
         raise HTTPException(404, "Job not found")
