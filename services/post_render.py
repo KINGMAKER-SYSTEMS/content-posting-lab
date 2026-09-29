@@ -178,6 +178,11 @@ def _frame_band_height(request: PostRenderRequest) -> int | None:
 def _caption_request(request: PostRenderRequest) -> CaptionRenderRequest:
     treatment = _slot_treatment(request)
     style = CaptionStyle.model_validate(treatment["captionStyle"])
+    if frame_band_height(treatment) is not None:
+        # A framed page's caption sits in the very middle of the picture
+        # (owner decision, 2026-09-28): a top or bottom placement would land
+        # on the black bars. Font, size, colour and line breaks are unchanged.
+        style = style.model_copy(update={"position": "middle", "offset_pct": 0})
     return CaptionRenderRequest.model_validate({
         "schema": "content-lab.caption-render-request.v1",
         "caption": request.caption,

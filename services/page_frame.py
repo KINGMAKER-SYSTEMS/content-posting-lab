@@ -35,8 +35,9 @@ def frame_band_height(treatment: dict[str, Any]) -> int | None:
 def letterbox_filter(band_height: int) -> str:
     """Keep the centred band of an exact 1080x1920 frame and pad it with black.
 
-    4:3's top offset is odd (555); on 4:2:0 video ffmpeg's crop and pad both
-    align it to the chroma grid, so that band occupies rows 554-1363.
+    4:3's top offset is odd (555); on 4:2:0 video ffmpeg aligns it to the
+    chroma grid, so the 810-row band starts at row 554 on an exact 1080x1920
+    source and at 555 on one scaled to it first. The picture is the same.
     """
     top = (CANVAS_HEIGHT - band_height) // 2
     return (f"crop={CANVAS_WIDTH}:{band_height}:0:{top},"

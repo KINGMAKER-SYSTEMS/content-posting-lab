@@ -1126,4 +1126,8 @@ generation decoder accept an optional valid `frame`; recipe bytes round-trip
 unchanged. With no frame the ffmpeg graph and final bytes are identical to
 before. Real-ffmpeg tests on the committed 1080x1920 portrait fixture prove
 black bars and the untouched centred band for every frame. 4:3's odd top (555)
-is aligned by ffmpeg to row 554 on 4:2:0 video. No deployment was performed.
+is aligned by ffmpeg to row 554 on an exact 1080x1920 source (555 on a scaled
+one). On a framed page the caption is drawn in the very middle (position middle,
+offset 0) whatever the slot's caption style places it, so it never lands on a
+bar; font, size, colour and line breaks are unchanged (owner decision
+2026-09-28). No deployment was performed.

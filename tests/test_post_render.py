@@ -367,3 +367,40 @@ def test_page_frame_is_not_source_treatment_and_keeps_existing_source_reusable(f
     assert render.source_visual_matches(framed)
     assert framed.treatment_sha256 != request().treatment_sha256
     assert framed.source_visual_treatment_json == request().source_visual_treatment_json
+
+
+def _request_with_caption_style(frame, **style):
+    treatment = {**TREATMENT, "captionStyle": {**STYLE, **style}}
+    if frame is not _NO_FRAME:
+        treatment["frame"] = frame
+    encoded = json.dumps(treatment, sort_keys=True, separators=(",", ":"))
+    return request(render_treatment_json=encoded, treatment_sha256=render.sha256(encoded.encode()))
+
+
+@pytest.mark.parametrize("frame", list(FRAME_BANDS))
+@pytest.mark.parametrize("position,offset", [("top", 0), ("bottom", 0), ("bottom", -12), ("middle", 20)])
+def test_framed_page_draws_its_caption_in_the_very_middle(frame, position, offset):
+    style = render._caption_request(_request_with_caption_style(frame, position=position, offset_pct=offset)).style
+    assert (style.position, style.offset_pct) == ("middle", 0)
+    # Only the placement moves: everything else the page chose is kept.
+    kept = render._caption_request(_request_with_caption_style(_NO_FRAME, position=position, offset_pct=offset)).style
+    assert style.model_dump(exclude={"position", "offset_pct"}) == kept.model_dump(exclude={"position", "offset_pct"})
+
+
+@pytest.mark.parametrize("frame", [_NO_FRAME, "9:16"])
+def test_full_screen_page_keeps_its_caption_placement(frame):
+    style = render._caption_request(_request_with_caption_style(frame, position="bottom", offset_pct=-12)).style
+    assert (style.position, style.offset_pct) == ("bottom", -12)
+
+
+def test_framed_bottom_caption_is_burned_over_the_picture_not_the_bar(real_portrait, tmp_path):
+    sha = render.sha256(real_portrait.read_bytes())
+    result = render.render_post(real_portrait, tmp_path / "render",
+                                _request_with_caption_style("16:9", position="bottom").model_copy(
+                                    update={"source_sha256": sha}), clock_ms=lambda: NOW)
+    with Image.open(result.qa_frame_path) as qa:
+        qa.load()
+        # 16:9 keeps rows 656-1263. A bottom caption would be centred near
+        # row 1632, on the lower bar; it must not be there.
+        lower_bar = _luma_rows(qa, 1264 + 4, 1920)
+        assert lower_bar.mean[0] < 16 and lower_bar.extrema[0][1] < 40
