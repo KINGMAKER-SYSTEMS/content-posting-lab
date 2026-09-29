@@ -421,3 +421,26 @@ def test_page_frame_letterboxes_a_scaled_provider_source_the_same_way(real_portr
         above, below = _luma_rows(qa, 0, 554 - 4), _luma_rows(qa, 1364 + 4, 1920)
         assert above.mean[0] < 16 and below.mean[0] < 16
         assert _luma_rows(qa, 554 + 4, 1364 - 4).mean[0] > 60
+
+
+
+def test_page_frame_band_edges_land_on_the_even_rows_for_a_scaled_source(tmp_path):
+    # A white 606x1080 provider-shaped source makes the band's edge rows exact:
+    # 4:3 keeps rows 554-1363 whether or not the source was scaled first.
+    if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
+        pytest.skip("ffmpeg/ffprobe are required for actual render proof")
+    source = tmp_path / "white-606x1080.mp4"
+    subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-f", "lavfi", "-i", "color=c=white:s=606x1080:d=2:r=30",
+                    "-c:v", "libx264", "-pix_fmt", "yuv420p", "-an", str(source)],
+                   check=True, timeout=120, capture_output=True)
+    result = render.render_post(source, tmp_path / "render",
+                                request(render.sha256(source.read_bytes()), frame="4:3"), clock_ms=lambda: NOW)
+    frame_png = tmp_path / "final.png"
+    subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-i", str(result.final_path), "-frames:v", "1",
+                    "-update", "1", str(frame_png)], check=True, timeout=30, capture_output=True)
+    with Image.open(frame_png) as decoded:
+        luma = decoded.convert("L")
+        # Sample the left edge, clear of the centred caption.
+        row = lambda y: ImageStat.Stat(luma.crop((20, y, 120, y + 1))).mean[0]
+        assert row(553) < 40 and row(1364) < 40
+        assert row(554) > 200 and row(1363) > 200
