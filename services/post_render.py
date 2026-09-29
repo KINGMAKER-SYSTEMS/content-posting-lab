@@ -26,6 +26,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from burn_quality_gate import overlay_geometry_reasons
 from services.caption_render import CaptionRenderRequest, CaptionStyle, render_caption_overlay
 from services.ffmpeg import delivery_encode_args
+from services.page_frame import frame_band_height, letterbox_filter
 from services.source_treatment import normalized_visual_treatment
 
 REQUEST_SCHEMA = "content-lab.post-render-request.v1"
@@ -155,14 +156,33 @@ def _reject_nonfinite(_value: str):
     raise ValueError("nonfinite treatment JSON")
 
 
-def _caption_request(request: PostRenderRequest) -> CaptionRenderRequest:
+SLOT_TREATMENT_FIELDS = frozenset({"stylePreset", "filters", "captionStyle", "clipSpeed", "clipCrop"})
+# The page frame is delivery-only. Absent means full-bleed 9:16.
+SLOT_TREATMENT_OPTIONAL_FIELDS = frozenset({"frame"})
+
+
+def _slot_treatment(request: PostRenderRequest) -> dict:
     treatment = json.loads(request.render_treatment_json, object_pairs_hook=_unique_object,
                            parse_constant=_reject_nonfinite)
-    if not isinstance(treatment, dict) or set(treatment) != {
-        "stylePreset", "filters", "captionStyle", "clipSpeed", "clipCrop"
-    }:
+    if (not isinstance(treatment, dict) or not SLOT_TREATMENT_FIELDS <= set(treatment)
+            or set(treatment) - SLOT_TREATMENT_FIELDS - SLOT_TREATMENT_OPTIONAL_FIELDS):
         raise ValueError("exact complete slot render treatment is required")
+    frame_band_height(treatment)
+    return treatment
+
+
+def _frame_band_height(request: PostRenderRequest) -> int | None:
+    return frame_band_height(_slot_treatment(request))
+
+
+def _caption_request(request: PostRenderRequest) -> CaptionRenderRequest:
+    treatment = _slot_treatment(request)
     style = CaptionStyle.model_validate(treatment["captionStyle"])
+    if frame_band_height(treatment) is not None:
+        # A framed page's caption sits in the very middle of the picture
+        # (owner decision, 2026-09-28): a top or bottom placement would land
+        # on the black bars. Font, size, colour and line breaks are unchanged.
+        style = style.model_copy(update={"position": "middle", "offset_pct": 0})
     return CaptionRenderRequest.model_validate({
         "schema": "content-lab.caption-render-request.v1",
         "caption": request.caption,
@@ -267,24 +287,33 @@ def _file_hash(path: Path, limit: int) -> tuple[str, int]:
     return digest.hexdigest(), total
 
 
-def _encode_final(source: Path, overlay: Path, final: Path, source_probe: MediaProbe,
-                  tools: RenderTools) -> MediaProbe:
-    graph = "[0:v:0][1:v:0]overlay=0:0:format=auto[v]"
+def _video_graph(source_probe: MediaProbe, frame_height: int | None = None) -> str:
+    chain = []
     if (source_probe.width, source_probe.height) != (1080, 1920):
         if abs(source_probe.width * 16 - source_probe.height * 9) <= 32:
             # Chroma alignment can make an exact provider crop a few pixels
             # narrow. Preserve its complete selected frame at delivery size.
-            scale = "scale=1080:1920:flags=lanczos,setsar=1"
+            chain.append("scale=1080:1920:flags=lanczos,setsar=1")
         else:
             # Native vertical generators can return a near-9:16 coded frame
             # such as 704x1280. Remove the small excess edge before scaling so
             # delivery is true 9:16 without stretching the image.
-            scale = ("scale=1080:1920:force_original_aspect_ratio=increase:flags=lanczos,"
-                     "crop=1080:1920,setsar=1")
-        graph = (f"[0:v:0]{scale}[delivery];"
-                 "[delivery][1:v:0]overlay=0:0:format=auto[v]")
+            chain.append("scale=1080:1920:force_original_aspect_ratio=increase:flags=lanczos,"
+                         "crop=1080:1920,setsar=1")
     elif source_probe.sample_aspect_ratio != "1:1":
-        graph = "[0:v:0]setsar=1[delivery];[delivery][1:v:0]overlay=0:0:format=auto[v]"
+        chain.append("setsar=1")
+    if frame_height is not None:
+        # The delivery frame is exactly 1080x1920 here. A page frame keeps its
+        # centred band and letterboxes it in plain black on the same canvas.
+        chain.append(letterbox_filter(frame_height))
+    if not chain:
+        return "[0:v:0][1:v:0]overlay=0:0:format=auto[v]"
+    return f"[0:v:0]{','.join(chain)}[delivery];[delivery][1:v:0]overlay=0:0:format=auto[v]"
+
+
+def _encode_final(source: Path, overlay: Path, final: Path, source_probe: MediaProbe,
+                  tools: RenderTools, frame_height: int | None = None) -> MediaProbe:
+    graph = _video_graph(source_probe, frame_height)
     base = [tools.ffmpeg, "-nostdin", "-v", "error", "-xerror", "-protocol_whitelist", "file,pipe",
             "-noautorotate", "-f", "mov", "-i", str(source),
             "-protocol_whitelist", "file,pipe", "-i", str(overlay), "-filter_complex", graph,
@@ -329,7 +358,9 @@ def render_post(source_path: Path, output_directory: Path, request: PostRenderRe
     The source must already be upright vertical video with the exact requested
     visual treatment. Delivery encoding fits its full frame to 1080x1920.
     Unknown or different treatment provenance requires regeneration.
-    No grade, speed, or crop filter is applied by this function.
+    This function adds only the typed caption, the page frame's letterbox
+    (a centred band on plain black, still 1080x1920) and delivery encoding;
+    it never repeats the source's grade, speed or focal crop.
     """
     request = PostRenderRequest.model_validate(request.model_dump(by_alias=True))
     if not source_visual_matches(request):
@@ -364,7 +395,8 @@ def render_post(source_path: Path, output_directory: Path, request: PostRenderRe
         overlay_path = output_directory / "overlay.png"
         overlay_path.write_bytes(overlay_bytes)
         final_path = output_directory / "final.mp4"
-        final_probe = _encode_final(source, overlay_path, final_path, source_probe, tools)
+        final_probe = _encode_final(source, overlay_path, final_path, source_probe, tools,
+                                    _frame_band_height(request))
         if (final_probe.width, final_probe.height, final_probe.video_codec, final_probe.pixel_format,
             final_probe.sample_aspect_ratio, final_probe.rotation) != (1080, 1920, "h264", "yuv420p", "1:1", 0):
             raise PostRenderError("final_probe_mismatch", "encoded final media facts do not match delivery contract")

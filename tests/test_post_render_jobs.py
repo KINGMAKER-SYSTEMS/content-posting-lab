@@ -23,8 +23,8 @@ def _iso_ms(ms: int) -> str:
 
 
 def submission(*, slot_id="slot:fixture-a", source=b"source", program_id="playlist:fixture",
-               planned_at=None, planned_at_ms=None):
-    request = render_request(sha256(source), slot_id=slot_id, program_id=program_id)
+               planned_at=None, planned_at_ms=None, **treatment):
+    request = render_request(sha256(source), slot_id=slot_id, program_id=program_id, **treatment)
     slot = {"schema_version": 4, "slot_id": request.slot_id, "page_id": request.page_id,
             "handle": request.account, "asset": {"sha256": request.source_sha256},
             "device_hint": {"device_serial": request.device_serial},
@@ -1075,3 +1075,24 @@ def test_ready_requires_api_key_while_health_remains_exempt(monkeypatch):
         )
     assert authenticated.status_code == 200
     assert authenticated.json()["post_render"]["state"] == "disabled"
+
+
+def test_page_frame_is_bound_by_the_slot_and_request_hash_but_needs_no_new_source(tmp_path):
+    jobs_service = service(tmp_path)
+    plain, framed = submission(), submission(frame="16:9")
+    assert json.loads(framed.slot_payload_json)["render_treatment"]["frame"] == "16:9"
+    assert framed.request.source_visual_treatment_sha256 == plain.request.source_visual_treatment_sha256
+    status = jobs_service.enqueue(framed, "framed-slot-key")
+    assert status["state"] == "queued"
+    # Same slot with a different frame is a different immutable request.
+    with pytest.raises(jobs.RenderJobError) as error:
+        jobs_service.enqueue(plain, "framed-slot-key")
+    assert error.value.code == "idempotency_conflict"
+    # The slot payload must carry the same frame the render request carries.
+    slot = json.loads(plain.slot_payload_json)
+    raw = json.dumps(slot, separators=(",", ":"))
+    mismatched = PostRenderRequest.model_validate({**framed.request.model_dump(by_alias=True),
+                                                   "slot_payload_sha256": sha256(raw.encode())})
+    with pytest.raises(ValidationError, match="slot treatment does not match"):
+        jobs.RenderJobSubmission.model_validate({"schema": jobs.JOB_SCHEMA, "request": mismatched,
+            "slot_payload_json": raw, "source_provenance": framed.source_provenance.model_dump(by_alias=True)})

@@ -1104,3 +1104,31 @@ which also catches "429 Too Many Requests", urllib "HTTP Error 503", requests
 The real 09-25 E005 message carries no number and stays retried. A test pins
 the clause split of the person gate ("No cars; adults walk at dusk." depicts
 people). No deployment was performed.
+
+_________________________________________________________________________________
+time: [19:52 EDT] [26-09-28]
+agent: [Claude Code] [claude-opus-5-5]
+worktree: [dossier/page-frame] [/Users/ecfromthedc/dev/wt/lab-page-frame]
+type: [feature] [per-page frame]: page picture frame applied at prepared-post render
+area: [backend] [testing]
+
+A page may pick a picture frame: 9:16 (default, full-bleed), 16:9, 1:1, 3:4 or
+4:3. The Control Plane sends `frame` in the slot/render treatment only when it
+is not vertical; "9:16" is accepted as absent and anything else fails closed.
+Prepared-post rendering keeps the delivered 1080x1920 H.264 canvas and, after
+the existing near-9:16 normalization, applies
+`crop=1080:H:0:(1920-H)/2,pad=1080:1920:0:(1920-H)/2:black` (H 608/1080/1440/810)
+before the unchanged caption overlay. Frame is not source treatment: the
+normalized visual treatment, applied-video evidence and render capability
+schema are unchanged, so existing inventory stays reusable and a frame change
+reaches the next prepared post. Recipe registration (v2/v3/v4) and the
+generation decoder accept an optional valid `frame`; recipe bytes round-trip
+unchanged. With no frame the ffmpeg graph and final bytes are identical to
+before. Real-ffmpeg tests on the committed 1080x1920 portrait fixture prove
+black bars and the untouched centred band for every frame. The band's top row
+is rounded down to an even row so every source lands on the chroma grid the
+same way (4:3 is rows 554-1363). On a framed page the caption is drawn in the very middle (position middle,
+offset 0) whatever the slot's caption style places it, so a caption that fits
+the band stays off the bars (a very tall one can still reach onto them); font,
+size, colour and line breaks are unchanged (owner decision 2026-09-28). No
+deployment was performed.

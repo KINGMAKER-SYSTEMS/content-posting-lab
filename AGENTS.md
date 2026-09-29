@@ -282,8 +282,11 @@
   request. The source must already have the requested video grade, speed and
   crop, proven by source-bound applied-video evidence. Caption style belongs to
   final rendering and may change without regenerating an otherwise matching
-  source. Unknown or different video provenance requires regeneration. This renderer adds the typed caption and
-  delivery encoding only; it never repeats grade, crop or speed.
+  source. Unknown or different video provenance requires regeneration. This renderer adds the typed caption,
+  the page frame's letterbox and delivery encoding only; it never repeats grade, crop or speed.
+  An optional slot-treatment `frame` (16:9, 1:1, 3:4, 4:3; absent or 9:16 is full-bleed) keeps
+  the centred band of the 1080x1920 picture on plain black and draws the caption in the middle.
+  The frame is not source treatment: existing sources stay reusable when a page changes frame.
 - Prepared artifacts require source-byte verification and upright square-pixel
   near-9:16 input at least 1080 pixels high. Exact and chroma-aligned frames
   scale directly; native provider frames within three percent of 9:16 are
