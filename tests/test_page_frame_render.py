@@ -658,9 +658,10 @@ def _table_trace_summary() -> list[str]:
                 str(counts.get((label, fit, delta), 0)) for delta in (0, 1, 2)) + " |")
     lines += ["", f"Worst delta: {worst}. Never more than 2 px, so the model is unchanged. Cause: the model takes "
               "floor(v) & ~1 for the fill crop offset v = (scaled - band) * focus; ffmpeg's crop rounds v to the "
-              "nearest integer (lrint) and aligns it down to an even pixel only for a 4:2:0 format; the graded "
-              "chain starts with format=rgb24, so its crop runs in rgb24 (ffmpeg 8.1) or yuv444p (Debian's 5.1 "
-              "inserts a converter), neither of which is aligned."]
+              "nearest integer (lrint) and aligns it down to an even pixel only for a 4:2:0 format. The graded "
+              "chain starts with format=rgb24 and its grain (noise) filter needs a planar format, so ffmpeg "
+              f"inserts a converter and the crop runs in {'/'.join(sorted(formats['graded']))} (traced above), "
+              "a full-chroma format with no alignment."]
     return lines
 
 
