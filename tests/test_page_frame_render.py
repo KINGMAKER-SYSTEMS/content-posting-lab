@@ -222,9 +222,50 @@ def _post_request(case: Case, source_sha: str) -> render.PostRenderRequest:
     })
 
 
-_SCALE = re.compile(r"\[Parsed_scale_\d+ @ [^\]]+\] w:\d+ h:\d+ fmt:\w+.* -> w:(\d+) h:(\d+) fmt:(\w+)")
-_CROP = re.compile(r"\[Parsed_crop_\d+ @ [^\]]+\] n:0 .*x:(\d+) y:(\d+) x\+w:\d+ y\+h:\d+")
-_PAD = re.compile(r"\[Parsed_pad_\d+ @ [^\]]+\] w:\d+ h:\d+ -> w:(\d+) h:(\d+) x:(\d+) y:(\d+)")
+# A filter's trace line: "[Parsed_scale_4 @ 0x...] <payload>".
+_TRACE_LINE = re.compile(r"\[(Parsed_(?:scale|crop|pad)_\d+) @ [^\]]+\] (.*)")
+_SCALE = re.compile(r"w:\d+ h:\d+ fmt:(\w+)\b.* -> w:(\d+) h:(\d+) fmt:(\w+)")
+_CROP = re.compile(r"n:0 .*\bx:(\d+) y:(\d+) x\+w:\d+ y\+h:\d+")
+_PAD = re.compile(r"w:\d+ h:\d+ -> w:(\d+) h:(\d+) x:(\d+) y:(\d+)")
+
+
+def _trace_values(stderr: str, kind: str, pattern: re.Pattern) -> list[tuple[int, tuple]]:
+    """(chain index, parsed values) of every `kind` filter instance, in chain order.
+
+    ffmpeg 5.1 (the production image) logs the configuration of the same filter
+    instance twice on a graded chain, when the first frame reconfigures it; 8.1
+    logs it once. A repeated line is accepted only when every repeat carries
+    identical values; anything else fails.
+    """
+    seen: dict[str, set] = {}
+    for instance, payload in _TRACE_LINE.findall(stderr):
+        if instance.startswith(f"Parsed_{kind}_") and (match := pattern.match(payload)):
+            seen.setdefault(instance, set()).add(match.groups())
+    for instance, values in seen.items():
+        assert len(values) == 1, f"{instance} logged different values: {sorted(values)}"
+    return sorted((int(instance.rsplit("_", 1)[1]), next(iter(values))) for instance, values in seen.items())
+
+
+def test_trace_parser_accepts_a_repeated_line_only_when_it_is_identical():
+    # Verbatim Debian ffmpeg 5.1 lines (production image): a graded chain's
+    # parsed scale logs its configuration twice with the same values.
+    trace = (
+        "[auto_scale_1 @ 0x555555603300] w:1080 h:1920 fmt:rgb24 sar:1/1 -> w:1080 h:1920 fmt:yuv444p sar:1/1 flags:0x0\n"
+        "[Parsed_scale_4 @ 0x5555555f5280] w:1080 h:1920 fmt:yuv444p sar:1/1 -> w:1080 h:1920 fmt:yuv444p sar:1/1 "
+        "flags:0x200\n"
+        "[Parsed_crop_5 @ 0x5555555fc5c0] w:1080 h:1920 sar:1/1 -> w:1080 h:1080 sar:1/1\n"
+        "[Parsed_pad_7 @ 0x5555555fdd40] w:1080 h:1080 -> w:1080 h:1920 x:0 y:420 color:0x000000FF\n"
+        "[Parsed_scale_4 @ 0x5555555f5280] w:1080 h:1920 fmt:yuv444p sar:1/1 -> w:1080 h:1920 fmt:yuv444p sar:1/1 "
+        "flags:0x200\n"
+        "[Parsed_crop_5 @ 0x5555555fc5c0] n:0 t:0.000000 pos:nan x:0 y:420 x+w:1080 y+h:1500\n"
+    )
+    assert _trace_values(trace, "scale", _SCALE) == [(4, ("yuv444p", "1080", "1920", "yuv444p"))]
+    assert _trace_values(trace, "crop", _CROP) == [(5, ("0", "420"))]
+    assert _trace_values(trace, "pad", _PAD) == [(7, ("1080", "1920", "0", "420"))]
+    changed = trace + ("[Parsed_scale_4 @ 0x5555555f5280] w:1080 h:1920 fmt:yuv444p sar:1/1 -> w:1080 h:1918 "
+                       "fmt:yuv444p sar:1/1 flags:0x200\n")
+    with pytest.raises(AssertionError, match="Parsed_scale_4 logged different values"):
+        _trace_values(changed, "scale", _SCALE)
 
 
 def ffmpeg_geometry(width: int, height: int, vf: str) -> dict:
@@ -235,13 +276,16 @@ def ffmpeg_geometry(width: int, height: int, vf: str) -> dict:
          "-vf", vf, "-frames:v", "1", "-f", "null", "-"],
         capture_output=True, text=True, timeout=120)
     assert result.returncode == 0, result.stderr[-2000:]
-    scales = _SCALE.findall(result.stderr)
-    crops = _CROP.findall(result.stderr)
-    pads = _PAD.findall(result.stderr)
+    scales = _trace_values(result.stderr, "scale", _SCALE)
+    crops = _trace_values(result.stderr, "crop", _CROP)
+    pads = _trace_values(result.stderr, "pad", _PAD)
     assert len(scales) == 1 and len(crops) == 1 and len(pads) <= 1, (scales, crops, pads)
-    return {"scale": [int(scales[0][0]), int(scales[0][1])], "format": scales[0][2],
-            "crop": [int(crops[0][0]), int(crops[0][1])],
-            "pad": [int(pads[0][2]), int(pads[0][3])] if pads else None}
+    (scale_at, (scale_in, scale_w, scale_h, scale_out)), (crop_at, (crop_x, crop_y)) = scales[0], crops[0]
+    return {"scale": [int(scale_w), int(scale_h)],
+            # The pixel format the crop worked in (fill scales first; fit crops first).
+            "format": scale_out if scale_at < crop_at else scale_in,
+            "crop": [int(crop_x), int(crop_y)],
+            "pad": [int(pads[0][1][2]), int(pads[0][1][3])] if pads else None}
 
 
 def _window_delta(case: Case, geometry: dict, actual: dict) -> int:
@@ -530,7 +574,7 @@ def _matrix_markdown(results: list[dict]) -> str:
 
 def _table_trace_summary() -> list[str]:
     """ffmpeg's integers vs the model for every framed row of the table, plain and graded cut."""
-    worst, counts = {"plain (yuv420p)": 0, "graded (rgb24)": 0}, {}
+    worst, counts, formats = {"plain": 0, "graded": 0}, {}, {"plain": set(), "graded": set()}
     grade = _grade_cc()
     for row in TABLE["cases"]:
         if row["frame"] == page_frame.VERTICAL_FRAME:
@@ -541,25 +585,29 @@ def _table_trace_summary() -> list[str]:
                     crop["zoom"], crop["focusX"], crop["focusY"])
         geometry = page_frame.geometry(width, height, row["frame"], row["frameFit"],
                                        crop["zoom"], crop["focusX"], crop["focusY"])
-        for label, cc in (("plain (yuv420p)", None), ("graded (rgb24)", grade)):
+        for label, cc in (("plain", None), ("graded", grade)):
             vf = build_cc_filter(cc, clip_crop=crop, page_frame=row["frame"], frame_fit=row["frameFit"],
                                  source_size=(width, height))
-            delta = _window_delta(case, geometry, ffmpeg_geometry(width, height, vf))
+            actual = ffmpeg_geometry(width, height, vf)
+            delta = _window_delta(case, geometry, actual)
+            formats[label].add(actual["format"])
             worst[label] = max(worst[label], delta)
             counts[(label, row["frameFit"], delta)] = counts.get((label, row["frameFit"], delta), 0) + 1
     lines = ["", "## ffmpeg vs the model over the whole 360-case table", "",
              "For each of the 320 framed rows, ffmpeg traced the exact cut chain (plain and graded) and its "
              "scale size, crop offset and pad offset were compared with the model. Scale sizes, pad offsets and "
-             "every fit crop are exact. Distribution of the fill crop offset delta (px):", "",
+             "every fit crop are exact. Distribution of the fill crop offset delta (px); the cut path names the "
+             "pixel format(s) ffmpeg cropped in:", "",
              "| cut path | fit | delta 0 | delta 1 | delta 2 |", "|---|---|---|---|---|"]
     for label in worst:
         for fit in ("fill", "fit"):
-            lines.append(f"| {label} | {fit} | " + " | ".join(
+            lines.append(f"| {label} (crop in {'/'.join(sorted(formats[label]))}) | {fit} | " + " | ".join(
                 str(counts.get((label, fit, delta), 0)) for delta in (0, 1, 2)) + " |")
     lines += ["", f"Worst delta: {worst}. Never more than 2 px, so the model is unchanged. Cause: the model takes "
               "floor(v) & ~1 for the fill crop offset v = (scaled - band) * focus; ffmpeg's crop rounds v to the "
-              "nearest integer (lrint) and aligns it down to an even pixel only for yuv420p, and the graded cut "
-              "crops in rgb24 (format=rgb24 comes first), where there is no alignment."]
+              "nearest integer (lrint) and aligns it down to an even pixel only for a 4:2:0 format; the graded "
+              "chain starts with format=rgb24, so its crop runs in rgb24 (ffmpeg 8.1) or yuv444p (Debian's 5.1 "
+              "inserts a converter), neither of which is aligned."]
     return lines
 
 
