@@ -27,9 +27,15 @@ def _staging_dirs(clipper_dir: Path) -> list[Path]:
     return sorted(p for p in clipper_dir.glob("_staging_*") if p.is_dir())
 
 
-def test_failed_download_removes_its_staging(monkeypatch, tmp_path):
+def test_failed_download_only_removes_its_staging(monkeypatch, tmp_path):
     clipper_dir = tmp_path / "quick-test" / "clips"
     monkeypatch.setattr(clipper, "_get_clipper_dir", lambda project: clipper_dir)
+    # A concurrent request/job owns a different staging directory. Cleanup must
+    # be scoped to the failed download's UUID, never the shared clips parent.
+    sibling_staging = clipper_dir / "_staging_other-job"
+    sibling_staging.mkdir(parents=True)
+    sibling_payload = sibling_staging / "still-uploading.part"
+    sibling_payload.write_bytes(b"other job bytes")
 
     async def _fake_download(video_url, dest):
         # What yt-dlp actually leaves when a merge dies part-way: the separate
@@ -49,13 +55,14 @@ def test_failed_download_removes_its_staging(monkeypatch, tmp_path):
     assert caught.value.status_code == 500
     assert "Download failed" in str(caught.value.detail)
     leftover = _staging_dirs(clipper_dir)
-    assert leftover == [], (
+    assert len(leftover) == 1 and leftover[0] == sibling_staging, (
         f"a failed download left {len(leftover)} staging director(y/ies) on disk: "
         + ", ".join(
             f"{d.name} holding {sum(f.stat().st_size for f in d.rglob('*') if f.is_file())} bytes"
             for d in leftover
         )
     )
+    assert sibling_payload.read_bytes() == b"other job bytes"
 
 
 def test_successful_download_keeps_its_staging(monkeypatch, tmp_path):
