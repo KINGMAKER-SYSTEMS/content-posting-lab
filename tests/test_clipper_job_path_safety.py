@@ -1,6 +1,6 @@
 """DELETE /jobs/{job_id} must only remove a real, minted job directory."""
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 from routers import clipper
@@ -59,3 +59,38 @@ def test_real_minted_job_directory_is_deleted(monkeypatch, tmp_path):
     assert response.status_code == 200, response.text
     assert response.json() == {"deleted": True, "job_id": job_id}
     assert not job_dir.exists()
+
+
+def test_legacy_uuid_job_directory_is_deleted(monkeypatch, tmp_path):
+    clipper_dir = tmp_path / "project" / "clips"
+    job_id = "0123456789ab"
+    job_dir = clipper_dir / job_id
+    job_dir.mkdir(parents=True)
+    client = _client(monkeypatch, clipper_dir)
+
+    response = client.delete(f"/api/clipper/jobs/{job_id}")
+    assert response.status_code == 200, response.text
+    assert not job_dir.exists()
+
+
+def test_path_components_are_rejected(monkeypatch, tmp_path):
+    clipper_dir = tmp_path / "project" / "clips"
+    clipper_dir.mkdir(parents=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "keep.txt").write_text("keep")
+    removed = []
+    monkeypatch.setattr(clipper, "safe_rmtree", lambda path: removed.append(path) or True)
+    client = _client(monkeypatch, clipper_dir)
+
+    for job_id in ("..", "../outside", "..\\outside"):
+        # Encoded slashes can reach the route as path components depending on
+        # the ASGI client, so exercise the shared guard directly as well.
+        try:
+            clipper._clip_job_path(clipper_dir, job_id)
+        except HTTPException as exc:
+            assert exc.status_code == 400
+        else:
+            raise AssertionError(f"accepted unsafe job ID {job_id!r}")
+    assert (outside / "keep.txt").read_text() == "keep"
+    assert removed == []

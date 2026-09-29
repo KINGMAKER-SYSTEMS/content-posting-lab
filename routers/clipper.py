@@ -39,12 +39,19 @@ def _make_clip_job_id(project: str = "clip") -> str:
 
 
 _BATCH_ID_RE = re.compile(r"[0-9a-f]{12}")
-_CLIP_JOB_ID_RE = re.compile(r"clip-[a-z0-9_-]{1,20}-[0-9]{8}-[0-9a-f]{4}")
-
-
 def _clip_job_path(clipper_dir: Path, job_id: str) -> Path:
-    """Validate a minted job ID and resolve only its direct, non-symlink child."""
-    if not isinstance(job_id, str) or _CLIP_JOB_ID_RE.fullmatch(job_id) is None:
+    """Resolve a legacy or current job ID as a direct, non-symlink child."""
+    # Historical clip directories include 12-character UUID hex IDs, full
+    # UUID hex IDs from uploads, and caller-provided upload IDs. Keep those
+    # jobs manageable; confinement is enforced by path structure below.
+    if (
+        not isinstance(job_id, str)
+        or not job_id
+        or job_id in {".", ".."}
+        or ".." in job_id
+        or "/" in job_id
+        or "\\" in job_id
+    ):
         raise HTTPException(400, "Invalid clipper job ID")
     parent = Path(clipper_dir)
     candidate = parent / job_id
