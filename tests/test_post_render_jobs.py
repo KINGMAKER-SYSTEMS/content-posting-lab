@@ -1096,3 +1096,15 @@ def test_page_frame_is_bound_by_the_slot_and_request_hash_but_needs_no_new_sourc
     with pytest.raises(ValidationError, match="slot treatment does not match"):
         jobs.RenderJobSubmission.model_validate({"schema": jobs.JOB_SCHEMA, "request": mismatched,
             "slot_payload_json": raw, "source_provenance": framed.source_provenance.model_dump(by_alias=True)})
+
+
+def test_frame_fit_is_bound_by_the_slot_and_request_hash_but_needs_no_new_source(tmp_path):
+    jobs_service = service(tmp_path)
+    fill, fit = submission(frame="16:9", frame_fit="fill"), submission(frame="16:9", frame_fit="fit")
+    assert json.loads(fit.slot_payload_json)["render_treatment"]["frameFit"] == "fit"
+    assert fit.request.source_visual_treatment_sha256 == fill.request.source_visual_treatment_sha256
+    assert jobs_service.enqueue(fit, "fit-slot-key")["state"] == "queued"
+    # Same slot with a different fit is a different immutable request.
+    with pytest.raises(jobs.RenderJobError) as error:
+        jobs_service.enqueue(fill, "fit-slot-key")
+    assert error.value.code == "idempotency_conflict"
