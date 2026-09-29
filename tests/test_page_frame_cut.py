@@ -149,10 +149,17 @@ def _tiny_clip(path: Path, size: str, *extra: str) -> Path:
 
 
 def _rotated(source: Path, path: Path, degrees: int) -> Path:
-    subprocess.run(["nice", "-n", "10", "ffmpeg", "-nostdin", "-v", "error", "-y",
-                    "-display_rotation", str(degrees), "-i", str(source), "-c", "copy", str(path)],
-                   check=True, timeout=60, capture_output=True)
-    return path
+    """Stream-copy with a display rotation (ffmpeg 7+ option, else the legacy mov tag)."""
+    for args in (["-display_rotation", str(degrees), "-i", str(source)],
+                 ["-i", str(source), "-metadata:s:v:0", f"rotate={degrees % 360}"]):
+        written = subprocess.run(["nice", "-n", "10", "ffmpeg", "-nostdin", "-v", "error", "-y", *args,
+                                  "-c", "copy", str(path)], timeout=60, capture_output=True)
+        probe = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+                                "stream_side_data=rotation:stream_tags=rotate", "-of", "json", str(path)],
+                               timeout=60, capture_output=True, text=True)
+        if written.returncode == 0 and probe.returncode == 0 and "rotat" in probe.stdout:
+            return path
+    pytest.skip("this ffmpeg cannot write a display rotation")
 
 
 def test_probe_returns_the_display_size_the_filter_chain_sees(tmp_path):
