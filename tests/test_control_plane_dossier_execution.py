@@ -236,6 +236,33 @@ def test_job_idempotency_replays_a_legacy_row_without_a_request_hash(lab):
     }.isdisjoint({item["promptHash"] for item in second_job["promptPlan"]})
 
 
+@pytest.mark.parametrize("remaining", [0, 1, 2, 10000])
+def test_generated_capability_bounds_planning_without_changing_capacity(lab, monkeypatch, remaining):
+    publication = recipes.load_registered_recipe(
+        PAGE_ID, "truck-scenic:master", "ai_video", "dossier-1234567890abcdef",
+    )
+    recipe = cp.resolve_generation_recipe(publication)
+    assert recipe is not None
+    planner = cp.plan_prompt_combinations
+    all_prompts = planner(recipe, "test-capacity", cp.prompt_combination_space(recipe), set())
+    available = min(remaining, len(all_prompts))
+    blocked = {row["promptHash"] for row in all_prompts[:len(all_prompts) - available]}
+    monkeypatch.setattr(cp, "_generated_unavailable_prompts", lambda *args: (blocked, set()))
+    requested = []
+
+    def observed_planner(recipe, run_id, count, hashes, slots):
+        requested.append(count)
+        return planner(recipe, run_id, count, hashes, slots)
+
+    monkeypatch.setattr(cp, "plan_prompt_combinations", observed_planner)
+    # Isolate fresh-generation capacity from the separately tested truck recuts.
+    quantity = cp._generated_capability_quantity(
+        {"jobs": {}}, recipe, PAGE_ID, {"contentNiche": "COFFEE"}, publication["recipeSpecHash"],
+    )
+    assert quantity == min(cp.MAX_CAPABILITY_QUANTITY, available * recipe.clips_per_generation)
+    assert requested == [recipe.planned_provider_calls(cp.MAX_CAPABILITY_QUANTITY)]
+
+
 @pytest.mark.parametrize("status", ["queued", "running"])
 def test_capability_reaches_zero_when_every_active_prompt_is_reserved(lab, status):
     client, _, started = lab
@@ -752,10 +779,11 @@ async def _async_value(value):
 
 
 @pytest.mark.asyncio
-async def test_generation_runner_lands_treated_artifacts_under_the_isolated_job_root(lab, monkeypatch):
+@pytest.mark.parametrize("later_provider_failure", [False, True])
+async def test_generation_runner_lands_treated_artifacts_under_the_isolated_job_root(lab, monkeypatch, later_provider_failure):
     client, tmp_path, _ = lab
     response = client.post(
-        "/api/control-plane/v1/jobs", json=job_body(), headers=HEADERS,
+        "/api/control-plane/v1/jobs", json=job_body(quantity=6 if later_provider_failure else 2), headers=HEADERS,
     )
     job_id = response.json()["jobId"]
     corrections = []
@@ -764,6 +792,9 @@ async def test_generation_runner_lands_treated_artifacts_under_the_isolated_job_
         provider_job_id, index, provider, prompt, aspect_ratio, resolution,
         duration, image_data_uri, jobs, output_dir, url_prefix, **extra,
     ):
+        if later_provider_failure and provider_job_id.endswith("-g01"):
+            jobs[provider_job_id]["videos"][index].update({"status": "error", "error": "provider timed out"})
+            return
         folder = output_dir / provider / provider_job_id
         folder.mkdir(parents=True, exist_ok=True)
         path = folder / "candidate.mp4"
@@ -801,6 +832,16 @@ async def test_generation_runner_lands_treated_artifacts_under_the_isolated_job_
     assert stored["status"] == "completed"
     assert stored["progress"] == 100
     assert len(stored["clips"]) == 5
+    assert stored["providerCallsCompleted"] == 1
+    if later_provider_failure:
+        assert stored["error"] == "provider_generation_failed"
+        assert stored["quantityRequested"] == 6
+        assert stored["providerCallsPlanned"] == 2
+        replay = client.post("/api/control-plane/v1/jobs", json=job_body(quantity=6), headers=HEADERS)
+        assert replay.status_code == 200 and replay.json()["jobId"] == job_id
+        assert lab[2] == [job_id], "idempotent replay must not start paid generation again"
+    for clip in stored["clips"]:
+        assert (Path(stored["artifactRoot"]) / clip["path"]).is_file()
     assert len(corrections) == 5
     assert all(speed == pytest.approx(0.75) for _, speed, _ in corrections)
     assert all(crop == {"zoom": 1.5, "focusX": 0.2, "focusY": 0.8} for _, _, crop in corrections)
@@ -1023,6 +1064,7 @@ def test_inflight_generation_from_a_previous_runtime_fails_closed(lab):
 
     store = cp._load_jobs()
     store["jobs"][job_id]["runtimeId"] = "previous-process"
+    store["jobs"][job_id].pop("generationCheckpointVersion", None)  # Legacy, no durable request identity.
     cp.atomic_save(cp._jobs_path(), store)
 
     status = client.get(
@@ -1134,3 +1176,173 @@ async def test_generation_failure_removes_only_failed_root_and_keeps_completed_s
     assert saved["status"] == "failed" and saved["error"] == "provider-boom"
     assert not failed_root.exists()
     assert sibling_root.exists() and (sibling_root / "clip.mp4").read_bytes() == b"completed-sibling"
+
+
+@pytest.mark.asyncio
+async def test_zero_output_provider_failure_records_its_class_and_returns_it_on_status(lab, monkeypatch):
+    # 2026-09-24: 43 of 70 failed AI refills were Replicate 402 "insufficient
+    # credit", indistinguishable from transient faults behind one label once
+    # the Railway logs rotated. The job store keeps the class, and the status
+    # response keeps its error code and adds only the sanitised class/code.
+    client, _, _ = lab
+    job_id = client.post("/api/control-plane/v1/jobs", json=job_body(quantity=2), headers=HEADERS).json()["jobId"]
+
+    async def refused(provider_job_id, index, provider, prompt, aspect_ratio, resolution,
+                      duration, image_data_uri, jobs, output_dir, url_prefix, **extra):
+        jobs[provider_job_id]["videos"][index].update({
+            "status": "error",
+            "provider_request_id": None,
+            "error": 'Replicate start failed: {"title":"Insufficient credit","detail":"x","status":402}',
+        })
+
+    monkeypatch.setattr(cp, "generate_one", refused)
+    await cp._run_dossier_generation(job_id)
+
+    stored = cp._load_jobs()["jobs"][job_id]
+    assert stored["status"] == "failed"
+    assert stored["error"] == "provider_generation_failed"
+    failure = stored["providerFailure"]
+    assert failure["class"] == "insufficient_credit"
+    recipe = cp.resolve_generation_recipe(recipes.load_registered_recipe(
+        PAGE_ID, "truck-scenic:master", "ai_video", "dossier-1234567890abcdef",
+    ))
+    assert failure["provider"] == recipe.engine
+    assert failure["model"] == current_generation_authority()["providerModel"]
+    assert failure["generationIndex"] == 0
+    assert "Insufficient credit" in failure["detail"]
+
+    status = client.get(
+        f"/api/control-plane/v1/jobs/{job_id}",
+        headers={"Authorization": f"Bearer {TOKEN}", "X-RT-Page-Id": PAGE_ID},
+    ).json()
+    assert set(status) == {"schema", "jobId", "status", "progress", "error", "errorClass", "errorDetail"}
+    assert status["error"] == "provider_generation_failed"
+    assert (status["errorClass"], status["errorDetail"]) == ("insufficient_credit", "HTTP 402")
+
+
+@pytest.mark.asyncio
+async def test_moderation_failure_returns_error_class_and_code_on_job_status(lab, monkeypatch, caplog):
+    # 2026-09-25: silhouette FLUX calls failed with Replicate E005 "flagged as
+    # sensitive" and the Worker saw only provider_generation_failed. The class
+    # and short provider code are kept on the job record, in the Lab log, and
+    # on the terminal status response the Worker's tolerant validator accepts.
+    client, _, _ = lab
+    job_id = client.post("/api/control-plane/v1/jobs", json=job_body(quantity=2), headers=HEADERS).json()["jobId"]
+
+    async def flagged(provider_job_id, index, provider, prompt, aspect_ratio, resolution,
+                      duration, image_data_uri, jobs, output_dir, url_prefix, **extra):
+        jobs[provider_job_id]["videos"][index].update({
+            "status": "error",
+            "provider_request_id": "pred-1",
+            "error": (
+                "Replicate failed: The input or output was flagged as sensitive. "
+                "Please try again with different inputs. (E005)"
+            ),
+        })
+
+    monkeypatch.setattr(cp, "generate_one", flagged)
+    with caplog.at_level("WARNING", logger="control_plane"):
+        await cp._run_dossier_generation(job_id)
+
+    stored = cp._load_jobs()["jobs"][job_id]
+    assert stored["status"] == "failed"
+    assert stored["error"] == "provider_generation_failed"
+    assert stored["errorClass"] == "moderation"
+    assert stored["errorDetail"] == "E005"
+    assert stored["providerFailure"]["class"] == "moderation"
+    assert "errorClass=moderation errorDetail=E005" in caplog.text
+
+    status = client.get(
+        f"/api/control-plane/v1/jobs/{job_id}",
+        headers={"Authorization": f"Bearer {TOKEN}", "X-RT-Page-Id": PAGE_ID},
+    ).json()
+    assert status == {
+        "schema": status["schema"],
+        "jobId": job_id,
+        "status": "failed",
+        "progress": status["progress"],
+        "error": "provider_generation_failed",
+        "errorClass": "moderation",
+        "errorDetail": "E005",
+    }
+    assert "flagged" not in json.dumps(status)
+
+
+def _status(client, job_id):
+    return client.get(
+        f"/api/control-plane/v1/jobs/{job_id}",
+        headers={"Authorization": f"Bearer {TOKEN}", "X-RT-Page-Id": PAGE_ID},
+    ).json()
+
+
+def test_non_terminal_job_status_omits_the_failure_cause(lab):
+    client, _, _ = lab
+    job_id = client.post("/api/control-plane/v1/jobs", json=job_body(quantity=2), headers=HEADERS).json()["jobId"]
+    for status in ("queued", "running", "completed"):
+        cp._update_job(job_id, status=status, error="provider_generation_failed",
+                       errorClass="moderation", errorDetail="E005")
+        body = _status(client, job_id)
+        assert set(body) == {"schema", "jobId", "status", "progress"}, status
+
+
+def test_failure_cause_is_only_returned_for_a_provider_failure(lab):
+    # A class left by an isolated refusal must not be attached to a later,
+    # unrelated terminal failure.
+    client, _, _ = lab
+    job_id = client.post("/api/control-plane/v1/jobs", json=job_body(quantity=2), headers=HEADERS).json()["jobId"]
+    cp._update_job(job_id, status="failed", error="generation_cancelled",
+                   errorClass="moderation", errorDetail="E005")
+    assert set(_status(client, job_id)) == {"schema", "jobId", "status", "progress", "error"}
+
+
+@pytest.mark.parametrize("field,value", [
+    ("errorDetail", 'E"5'),
+    ("errorDetail", "E<b>"),
+    ("errorDetail", "E&5"),
+    ("errorDetail", "E005\n"),
+    ("errorDetail", "E005\nx"),
+    ("errorDetail", " E005"),
+    ("errorDetail", "E005 "),
+    ("errorDetail", ""),
+    ("errorDetail", "E" * 65),
+    ("errorDetail", "https://api.replicate.com/v1/predictions/x"),
+    ("errorDetail", 5),
+    ("errorClass", 'mod"x'),
+    ("errorClass", "-moderation"),
+    ("errorClass", "moderation " ),
+    ("errorClass", "m" * 33),
+    ("errorClass", None),
+])
+def test_disallowed_failure_cause_is_dropped_not_truncated(lab, field, value):
+    client, _, _ = lab
+    job_id = client.post("/api/control-plane/v1/jobs", json=job_body(quantity=2), headers=HEADERS).json()["jobId"]
+    cause = {"errorClass": "moderation", "errorDetail": "E005", field: value}
+    cp._update_job(job_id, status="failed", error="provider_generation_failed", **cause)
+    body = _status(client, job_id)
+    assert field not in body
+    kept = "errorDetail" if field == "errorClass" else "errorClass"
+    assert body[kept] == cause[kept]
+    assert body["error"] == "provider_generation_failed"
+
+
+def test_failure_cause_boundaries_match_the_worker_validator():
+    assert cp._job_status_failure_cause({
+        "status": "error", "error": "provider_generation_failed",
+        "errorClass": "a" + "b" * 31, "errorDetail": "HTTP 402 (x) #1=a+b-c/d:e,f;g_h.i",
+    }) == {"errorClass": "a" + "b" * 31, "errorDetail": "HTTP 402 (x) #1=a+b-c/d:e,f;g_h.i"}
+    assert cp._job_status_failure_cause({
+        "status": "cancelled", "error": "provider_generation_failed",
+        "errorClass": "rate_limited", "errorDetail": "E" * 64,
+    }) == {"errorClass": "rate_limited", "errorDetail": "E" * 64}
+    assert cp._job_status_failure_cause({"status": "failed", "error": "provider_generation_failed"}) == {}
+
+
+def test_provider_error_code_is_short_and_carries_no_message_text():
+    from providers.base import provider_error_code
+
+    assert provider_error_code("Replicate failed: flagged as sensitive (E005)") == "E005"
+    assert provider_error_code(
+        'Replicate start failed: {"title":"Insufficient credit","status":402}'
+    ) == "HTTP 402"
+    assert provider_error_code("Replicate failed: interrupted (code: PA)") == "PA"
+    assert provider_error_code("ReadTimeout('')") is None

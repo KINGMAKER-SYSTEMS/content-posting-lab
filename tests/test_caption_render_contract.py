@@ -261,3 +261,18 @@ def test_port_8002_burn_server_exposes_the_same_typed_contract(
         json={**payload, "style": {**payload["style"], "weight": 700}},
     )
     assert invalid.status_code == 422
+
+
+def test_long_caption_renders_without_word_count_rejection(font_dir):
+    lines = [f"these are the original words number {i}" for i in range(8)]
+    caption = " ".join(lines)
+    raw = request(size_pt=18).model_dump(mode="json", by_alias=True)
+    raw["caption"] = caption
+    raw["style"]["line_breaks"] = lines
+    payload = CaptionRenderRequest.model_validate(raw)
+    result = render_caption_overlay(payload, font_dir=font_dir).model_dump(mode="json", by_alias=True)
+    assert result["plan"]["rendered_text"] == "\n".join(lines)
+    from burn_quality_gate import run_quality_check
+    check = run_quality_check(caption, overlay_png=result["overlay"]["base64"],
+                              caption_style=raw["style"])
+    assert check["ok"] is True, check["reasons"]

@@ -1,0 +1,47 @@
+{
+  "formats": {
+    "boat-lake": {
+      "family": "boat"
+    }
+  },
+  "families": {
+    "boat": {
+      "method": "t2v",
+      "provider": "hailuo",
+      "fixed_subject": "Varied onboard boat scenes from the existing Minimax bucket",
+      "quality_guards": "Use the original boat prompt wording and the existing five-way crop; no fixed image anchor.",
+      "template": "{scene}",
+      "motion_prompt": null,
+      "base_anchor": null,
+      "extra": {
+        "crop_mode": "both",
+        "optimize_prompt": false
+      },
+      "clips_per_gen": 5,
+      "keepers_per_gen": 1.0,
+      "slots": {
+        "scene": [
+          "POV Tik Tok style video from onboard a speedboat at night in the harbor of Shanghai, the moody dark waters reflect the towers skyline's bright fluorescent lights that adorn the scaffolding, cinematic raw vibes, camera pans from a view of the dark choppy water to a handheld semi shaky reveal of the city skyline lit up at night",
+          "POV Tik Tok style video from onboard a speedboat at night in the harbor of Shanghai, the moody dark waters reflect the towers skyline's bright fluorescent lights that adorn the scaffolding, cinematic raw vibes, camera pans from a view of the dark choppy water to a handheld semi shaky reveal of the city skyline lit up at night Every visible boat surface is plain and unmarked. Absolutely no brand names, fake or misspelled brands, logos, badges, decals, registration numbers, model names, pseudo-text, lettering, labels, readable instruments, captions, subtitles, watermarks, channel marks, or readable signs anywhere in frame.",
+          "POV TikTok-style video from onboard a fast speedboat at dusk in Singapore Marina Bay. Fast hook opening: camera starts low and tight on dark choppy water rushing past the boat, neon and sunset reflections streaking across the waves, water spray hitting the lens, intense speed and handheld shake. After 1 second, the camera does a quick cinematic whip-tilt / pan up from the water into a dramatic reveal of the Singapore skyline, glowing high-rise tower lights and pastel dusk sky reflecting on the moody harbor water. Raw nightlife energy, semi-shaky handheld phone footage, fast zoom feeling, cinematic but realistic, no text, no logos. Every visible boat surface is plain and unmarked. Absolutely no brand names, fake or misspelled brands, logos, badges, decals, registration numbers, model names, pseudo-text, lettering, labels, readable instruments, captions, subtitles, watermarks, channel marks, or readable signs anywhere in frame.",
+          "POV TikTok-style video from onboard a fast speedboat at dusk in New York Harbor. Fast hook opening: camera starts low and tight on dark choppy water rushing past the boat, neon and sunset reflections streaking across the waves, water spray hitting the lens, intense speed and handheld shake. After 1 second, the camera does a quick cinematic whip-tilt / pan up from the water into a dramatic reveal of the Manhattan skyline, glowing high-rise tower lights and pastel dusk sky reflecting on the moody harbor water. Raw nightlife energy, semi-shaky handheld phone footage, fast zoom feeling, cinematic but realistic, no text, no logos. Every visible boat surface is plain and unmarked. Absolutely no brand names, fake or misspelled brands, logos, badges, decals, registration numbers, model names, pseudo-text, lettering, labels, readable instruments, captions, subtitles, watermarks, channel marks, or readable signs anywhere in frame.",
+          "POV TikTok-style video from onboard a fast speedboat at dusk in Dubai Marina. Fast hook opening: camera starts low and tight on dark choppy water rushing past the boat, neon and sunset reflections streaking across the waves, water spray hitting the lens, intense speed and handheld shake. After 1 second, the camera does a quick cinematic whip-tilt / pan up from the water into a dramatic reveal of the Dubai skyline, glowing high-rise tower lights and pastel dusk sky reflecting on the moody harbor water. Raw nightlife energy, semi-shaky handheld phone footage, fast zoom feeling, cinematic but realistic, no text, no logos. Every visible boat surface is plain and unmarked. Absolutely no brand names, fake or misspelled brands, logos, badges, decals, registration numbers, model names, pseudo-text, lettering, labels, readable instruments, captions, subtitles, watermarks, channel marks, or readable signs anywhere in frame.",
+          "POV TikTok-style video from onboard a fast speedboat at dusk in Hong Kong Victoria Harbour. Fast hook opening: camera starts low and tight on dark choppy water rushing past the boat, neon and sunset reflections streaking across the waves, water spray hitting the lens, intense speed and handheld shake. After 1 second, the camera does a quick cinematic whip-tilt / pan up from the water into a dramatic reveal of the Hong Kong skyline, glowing high-rise tower lights and pastel dusk sky reflecting on the moody harbor water. Raw nightlife energy, semi-shaky handheld phone footage, fast zoom feeling, cinematic but realistic, no text, no logos. Every visible boat surface is plain and unmarked. Absolutely no brand names, fake or misspelled brands, logos, badges, decals, registration numbers, model names, pseudo-text, lettering, labels, readable instruments, captions, subtitles, watermarks, channel marks, or readable signs anywhere in frame."
+        ]
+      },
+      "note": "Operator-selected existing Minimax boat bucket prompts, preserved verbatim. Five-way dual-plus-triptych crop, no Wan anchor."
+    }
+  },
+  "providers": {
+    "hailuo": {
+      "replicate_model": "minimax/hailuo-2.3",
+      "base_input": {
+        "prompt_optimizer": false,
+        "duration": 6,
+        "resolution": "1080p"
+      },
+      "cost_per_gen_usd": 0.28,
+      "note": "Smaths 2026-08-16: rail generation must match the Content Lab, which moved to Replicate minimax/hailuo-2.3 (providers/__init__.py, ~$0.28/video). Was minimax/video-01 (original Hailuo, $0.50) since 2026-07-11 — every rail production_run truck batch through 08-14 was old-model. Optimizer OFF per LAWS (gloss villain); 1080p/6s so the 16:9 master gives the five-crop bible ~608px-wide crops instead of video-01's 720p. cost_per_gen_usd = lab-observed."
+    }
+  }
+}

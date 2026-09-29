@@ -182,3 +182,23 @@ def source_dna_catalog_hash() -> str:
             continue
         rows.append(f"{library.library_id}:{library.sha256}")
     return hashlib.sha256("\n".join(rows).encode()).hexdigest()
+
+
+def source_dna_master_hashes() -> set[str]:
+    """Every master SHA named by a locally-registered source DNA manifest.
+
+    The ``_source_dna`` byte cache pins these files so a currently-registered
+    master never has to be re-downloaded. A master that drops out of every
+    local manifest (replaced by a later revision) is evictable once no active
+    job references it. ShipStream manifests are fetched over the network and
+    are deliberately not walked here: their masters are still pinned by any
+    active job's ``sourceCuts``, and a network read must never gate eviction.
+    """
+    hashes: set[str] = set()
+    for path in sorted(MANIFEST_DIR.glob("*.json")):
+        try:
+            library = parse_source_dna_manifest(path.read_bytes(), path.stem)
+        except (OSError, SourceDnaError):
+            continue
+        hashes.update(master.sha256 for master in library.masters)
+    return hashes

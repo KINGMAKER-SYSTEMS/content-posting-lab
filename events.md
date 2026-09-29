@@ -14,6 +14,26 @@ fonts, unknown fields, incomplete styles, or clipped output. Verification:
 40 passed. No deployment, video mutation, phone action, scheduling, or post.
 _________________________________________________________________________________
 
+time: [17:00 EDT] [24-09-26]
+agent: [Codex desktop] [gpt-6-astra]
+worktree: [fix/source-master-loop-20260924] [/Users/ecfromthedc/dev/wt/source-master-loop]
+type: [bug report] [durability]: Preserve full creator masters and safe retries
+area: [backend] [testing]
+
+Adversarial review of the long-master intake found that source-import mode still
+preferred a Google Drive streaming derivative over its original `source` format,
+the post-download capacity gate counted bytes already present on disk, and an
+expired live runner could continue deleting or writing inside a retry's reused
+artifact root. Source imports now prefer the original source format with bounded
+fallbacks, reserve only the additional normalized output after download, and
+cancel plus join an owned expired runner before allowing an idempotent retry.
+The task registry also removes only the exact completed task so an old callback
+cannot evict a replacement. The expanded source-import, yt-dlp, execution, and
+production-image suites pass 82 tests; a live extractor probe selects the 28:22
+Google Drive master as format `source` rather than the 137+140 derivative.
+
+_________________________________________________________________________________
+
 _________________________________________________________________________________
 
 time: [17:51] [09-01-26]
@@ -663,3 +683,452 @@ engine, and bounds that one relevant read to two seconds. Verification: 15
 Dossier ingredient tests and 88 recipe, generation, source, and slideshow
 execution tests passed. No production deployment or service mutation occurred.
 _________________________________________________________________________________
+
+_________________________________________________________________________________
+time: [05:09 EDT] [24-09-26]
+agent: [Codex desktop] [gpt-6-astra]
+worktree: [codex/page-scoped-recipe-reads] [/tmp/rt-lab-registry.WCseqY]
+type: [bug report] [refactor]: Shared Content Lab capability-read congestion
+area: [backend] [testing]
+
+Railway live stack sampling found all 40 AnyIO request workers inside capability reads, predominantly reopening all 402 immutable recipe publications. The last 300 upstream requests to capabilities, Dossier ingredients and format contracts timed out at about three seconds; a container-local authenticated registry read also timed out while health answered. The volume has 143 GiB free, so this is not disk exhaustion. Recipe listing now coalesces cold reads and reuses each unchanged file only after checking its device/inode/size/mtime/ctime; additions, removals, corruption and edits remain immediately visible, and selected records are copied before returning to callers. Exact page/Notion identity and ambiguous-alias checks are unchanged. All 166 targeted recipe, Dossier, generation, source, format and production-image-import tests passed. A separate read-only process on the production volume returned identical results for 16 concurrent page registry probes, improving 2.787s to 0.405s. No production source, settings, content, or posting authority was changed during this test. Root AGENTS records cache freshness/copy ownership; no child boundary changed. Separately, Replicate rejected Dallas and Rhett refills for insufficient credit; no purchase or provider substitution was made. Release and authenticated post-deploy proof follow separately.
+
+
+_________________________________________________________________________________
+time: [05:20 EDT] [24-09-26]
+agent: [Codex desktop] [gpt-6-astra]
+worktree: [codex/coalesce-capability-job-reads] [/tmp/rt-lab-registry.WCseqY]
+type: [bug report] [refactor]: Capability job-history decode herd
+area: [backend] [testing]
+
+PR #150 merged as 11ddc57; branch deleted; Railway deployment 336ad350-c7cf-4a0e-9c3a-3f8600f043a5 and Docker app-import succeeded. Authenticated format registry and Healing/Chase catalogs initially returned 200 in 79/262/189ms; both live Dossiers reopened. Sustained verification caught renewed timeouts on the next capability burst, so that release is not full outage resolution. Live stack sampling found concurrent capability calls still decoding the entire 28 MB jobs store while recipe readers waited. Capability planning now shares a file-identity-checked read-only history snapshot; transaction writers still use fresh mutable loads and existing locks. All 171 focused tests pass, including immediate progress updates, same-size replacement with retained mtime, corrupt/missing history, and 120 concurrent reads decoding once. A separate read-only production-volume benchmark produced identical complete capability responses, improving 16 calls from 8.999s to 1.893s. Root AGENTS records read-only ownership; no child boundaries changed. No paid work, provider substitution, account changes or phone action performed. Follow-up live burst verification remains required.
+
+
+_________________________________________________________________________________
+time: [09:52am] [24-09-26]
+agent: [Codex desktop] [gpt-6-astra]
+worktree: [codex/silhouette-static-still-20260924] [/Users/smathdaddy-macbook/content-posting-lab-silhouette-still]
+type: [feature-request] [refactor]: Replace silhouette I2V with a static generated photo
+area: [backend] [research] [testing]
+
+Replicate model research selected official Black Forest Labs FLUX.2 Pro for the
+silhouette format's portrait-native photorealistic stills. The prompt family now
+produces exactly two adult lovers embracing beside one complete pickup in a field,
+keeps the upper 45 percent as clean caption sky, and rejects anatomy, vehicle,
+count, text, and geometry failures. Content Lab retains the exact generated JPG
+and byte hash, then holds it without pan, zoom, interpolation, or subject motion
+in a seven-second 1080x1920 MP4 so downstream captions, sounds, QA, and posting
+remain unchanged. The WAN I2V provider, motion prompt, and anchor pool are removed
+from this format. The focused provider, contract, Dossier, and ffmpeg suites pass
+86 tests. A broader run reached 1,535 passes and 23 skips before the machine filled
+its temporary disk; its two genuine failures are pre-existing Agentic Broadcast
+Network card-background promotion tests, unrelated to the files changed here.
+No production deployment or paid Replicate generation was performed; no local
+Replicate credential is configured.
+_________________________________________________________________________________
+_________________________________________________________________________________
+time: [17:26 EDT] [24-09-26]
+agent: [Codex desktop] [gpt-6-astra]
+worktree: [feat/source-start-floor-20260924] [/Users/ecfromthedc/dev/wt/source-master-loop]
+type: [feature]: Durable per-page earliest source timestamp
+area: [backend] [source recut planning]
+
+Sourced-video recipes may now carry an optional `sourceStartMs` scalar in the
+existing production-controls map. The recut planner combines that page choice
+with the established raw-library/page-master minimum, so every refill skips the
+same unusable lead-in while absent controls preserve current behavior. The
+control is bounded to the supported two-hour master duration and invalid values
+make the recipe unexecutable. This deliberately leaves the shared executor
+catalog bytes unchanged, avoiding a fleet-wide catalog-version invalidation.
+The focused source-execution suite passes: 46 tests.
+
+_________________________________________________________________________________
+time: [08:12 EDT] [25-09-26]
+agent: [Claude Code] [claude-opus-5-5]
+worktree: [fix/ai-gen-transient-retry] [/Users/ecfromthedc/dev/wt/lab-gen-retry]
+type: [bug report]: AI refill `provider_generation_failed` classified; transient Replicate faults retried
+area: [backend] [providers] [testing]
+
+All 70 `provider_generation_failed` AI refills since 2026-09-20 in Control Plane
+D1 were joined to Railway provider logs (69 classified, 1 log expired). 52 were
+Replicate account credit: 43 HTTP 402 insufficient credit plus 9 HTTP 429
+throttles that Replicate applies while credit is under $5. The throttles are now
+retried, but credit exhaustion itself needs an operator top-up/auto-reload. The other 17 were transient:
+6 submission 5xx, 6 600-second prediction timeouts, 3 transport faults (two on
+the poll of an already-created prediction), 1 "interrupted (code: PA)", and 1
+provider-side moderation 401. There was no retry anywhere in the generation
+path. Replicate generation now retries only faults that cannot create a second
+paid prediction, cancels timed-out predictions, and persists a closed
+`providerFailure` class in the job store without changing the status response
+the Control Plane validates strictly. New tests fail on main and pass here. No
+paid generation, purchase, provider substitution or deploy was performed.
+
+_________________________________________________________________________________
+time: [15:52 EDT] [26-09-25]
+agent: [Claude Code] [claude-opus-5-5]
+worktree: [fix/recipe-reregister-identical-bytes] [/Users/ecfromthedc/dev/wt/lab-recipe-reregister]
+type: [bug report]: identical-bytes recipe re-registration no longer 409s
+area: [backend] [control-plane] [testing]
+
+A content-neutral Dossier relock of page rhett re-sent the exact recipe bytes
+already registered for its tuple under a new dossier revision and idempotency
+key. `register_recipe` compared the whole stored record, so those two fields
+alone produced `409 recipe tuple is already registered with different bytes`
+on every retry, and the Worker could only recover by forcing a new recipe
+version. Byte-identical re-registration now succeeds, advances the stored
+revision/key atomically and keeps the superseded pairs; replays of any known
+pair are answered without a rewrite; different bytes still 409. Validation,
+including exact pinned-legacy catalog binding, runs before the store as
+before. The recipe test file goes from 3 failed / 18 passed on main to 21
+passed; the six recipe, generation and execution test files pass: 151 tests.
+No deploy was performed.
+
+_________________________________________________________________________________
+time: [18:46 EDT] [26-09-25]
+agent: [Claude Code] [claude-opus-5-5]
+worktree: [fix/frontend-no-default-password] [/Users/ecfromthedc/dev/wt/lab-fe-default-pw]
+type: [security]: default account password removed from the bundle; intake fails closed
+area: [frontend] [backend] [security] [testing]
+
+The Pipeline intake modal printed the shared default TikTok account password
+as literal text in three places, so Vite compiled it into the public JS bundle
+(3 occurrences in the live production bundle). It has been in the frontend
+since the Pipeline tab landed (#38, 2026-04-29). The backend copy moved to the
+`DEFAULT_INTAKE_PASSWORD` env var on 2026-06-19 but kept a guessable hard-coded
+fallback, and that variable is unset in production, so intakes since then
+wrote the fallback to Notion while the UI still named the old literal. The
+modal now refers to "the team's standard intake password"; `/mint-alias` and
+`/intake` read the env var per request and return 503
+`intake_password_not_configured` before minting an alias or writing Notion or
+roster state when it is unset or blank. The fallback literal is gone and
+`.env.example` documents the variable. `tests/test_no_shipped_default_password.py`
+stores only SHA-256 digests of both retired values and fails if either appears
+in backend sources, other repository text or a built `frontend/dist`. Both
+values remain in git history (including the messages of 0649233 and 4e03918)
+and previously served bundles; the old literal must be rotated by the
+operator, and history was not rewritten. Until the operator sets
+`DEFAULT_INTAKE_PASSWORD`, intake is refused. No deploy was performed.
+
+_________________________________________________________________________________
+time: [15:25 EDT] [25-09-26]
+agent: [Claude Code] [claude-opus-5-5]
+worktree: [fix/replenish-unique-cuts] [/Users/ecfromthedc/dev/wt/lab-unique-cuts]
+type: [bug report]: sourced replenish re-cut the same time frames after every recipe revision
+area: [backend] [testing]
+
+Sourced-video cut planning walked one fixed 9-second grid (+3 s/+6 s phases,
+then a 6-second grid) from the page floor, with each slot's length a pure hash
+of library and master. Completed cuts reserved their positions only for the
+exact recipe version that made them, so every dossier republish re-cut the same
+time frames from the first slot; and a grid id (`sha:start`) and a 6-second id
+(`sha:start:6000`) could name the same time frame, so one version could cut it
+twice. Control Plane D1 (read-only, 2026-09-25) holds page masters whose
+identical original windows were cut 3-5 times, e.g. ourbriefhourstogether
+0-6 s four times across three recipe versions (twice within one) and 18-26 s
+four times across four. The planner now enumerates every whole-second start at every allowed
+length, excludes every time frame already cut from the same master under any
+recipe or library version, prefers the least-overlapping fresh footage, and
+orders ties by a per-job seed recorded as `cutPlanSeed`. Exhaustion answers 409
+`master_windows_exhausted`. Output-SHA duplicate checks in Control Plane are
+unchanged. Separately, the `duplicates` counts on Worker source_replenish rows
+are mostly the Worker's own multi-pass continuation re-counting clips the same
+Lab job admitted in an earlier pass (admitted + duplicates equals that job's
+asset count on every row checked); that accounting is Worker-side and not
+
+_________________________________________________________________________________
+time: [18:00 EDT] [26-09-25]
+agent: [Claude Code] [claude-opus-5-5]
+worktree: [fix/roster-routes-auth] [/Users/ecfromthedc/dev/wt/lab-roster-auth]
+type: [security]: /api/roster no longer serialises account credentials
+area: [backend] [security] [testing]
+
+Production does not set APP_API_KEY, so the /api key middleware is off and
+every /api/roster route answers the public internet. GET /api/roster/, GET
+/api/roster/project/{name}, PUT /api/roster/{id} and POST
+/api/roster/sync-notion and /sync returned full roster rows, including the
+Notion signup email and password, forwarding address and Cloudflare email
+alias/rule/destination. Every roster row now leaves through an allowlist
+(`services/roster_public.py`) and every roster router JSON body through a
+credential-key scrub; the credentials stay in the roster cache for the
+server-side code that uses them. DELETE /api/roster/{id}, which no UI calls,
+now requires CONTROL_PLANE_TOKEN or APP_API_KEY and fails closed when neither
+is configured. The operator UI sends no credential, so the routes it calls
+stay unauthenticated; their responses are credential-free. The UI's email
+alias, signup and forward columns now read "hidden pending operator auth"
+(the Create/Mint alias buttons are hidden with them, since the alias state is
+unknown), and alias removal reports that it is disabled pending operator auth
+instead of silently doing nothing. POST /dedup and PUT /{id} remain anonymous
+pending operator auth. The key scrub normalises spellings and also removes
+notes, pwd/pw/pass, passcode, recovery/backup codes, email and login keys. New HTTP tests fail on main (12 of 16) and pass here.
+/api/pipeline and /api/email still serialise full roster rows and are not
+changed here. No deploy was performed.
+
+_________________________________________________________________________________
+time: [19:45 EDT] [26-09-25]
+agent: [Claude Code] [claude-opus-5-5]
+worktree: [fix/telegram-auth] [/Users/ecfromthedc/dev/seats/LAB-TELEGRAM-AUTH]
+type: [security]: /api/telegram behind the API key; /send confined to media
+area: [backend] [frontend] [security] [testing]
+
+`app.py` exempted every `/api/telegram/` route from the API-key middleware and
+the Telegram router has no auth of its own, so with APP_API_KEY set anyone
+could still replace or delete the bot token, repoint the staging group and
+`POST /api/telegram/send` any file under the repo root to that chat. The
+Railway volume is mounted at /app/projects, so that included the roster
+(passwords), cookies.txt, control_plane_jobs.json and telegram_config.json.
+The bot long-polls; no webhook route exists, so the prefix is no longer
+exempt (only /api/health and the initData-verified /api/miniapp/ remain).
+`/send` now accepts only a media file whose real path is inside a project
+media dir or the legacy output dirs; `/send-batch` and `/assign-batch` refuse
+a traversing batch id and skip files that resolve outside the batch. The
+video router's `project` parameter is one safe directory name, and its
+string-prefix containment checks (which let `videos-evil/` pass as inside
+`videos/`) are real-path checks. The Distribution and Slideshow Telegram calls
+now send the key through `withApiKey`. Earlier reviews report APP_API_KEY
+unset in production; while it is, the middleware stays inert there, and the
+`/send` confinement is what applies. Campaign Hub's sound-assignment proxies call
+/api/telegram without a key and will need one if APP_API_KEY is set. New tests
+fail on main (150 of 163) and pass here. No deploy was performed.
+Follow-up in the same branch: `/api/burn/overlay` checked its source with a
+string prefix, so project `p` (a prefix of `projects/page_roster.json`) or `c`
+(`cookies.txt`) queued a copy of that file into
+`projects/<p>/burned/<batch>/burned_000.mp4`, which /send and the /projects
+mount then serve. It now uses the shared real-path `services.fsutil.is_within`
+and takes `batchId` as one directory name. A sweep of routers/ and services/
+found no other string-prefix filesystem containment. New burn tests fail on
+main (10 of 13) and pass here.
+Second follow-up: `/api/burn/overlay`, `/send-batch`, `/assign-batch` and the
+video router still accepted service-state volume dirs as a project name
+(`_post_render` holds jobs.sqlite and private renders; also
+control_plane_generated/recipes), and `/send` and the recent-videos listing
+did not skip `_post_render`. `sanitize_project_name` now refuses
+`project_manager.is_reserved_volume_dir` names (that set plus any leading
+underscore), listings skip them and `/send` uses the same predicate. New
+tests: 37 of 45 fail before, 45 pass.
+
+_________________________________________________________________________________
+time: [19:50 EDT] [26-09-25]
+agent: [Claude Code] [claude-opus-5-5]
+worktree: [fix/pipeline-email-credential-scrub] [/Users/ecfromthedc/dev/wt/lab-pipeline-scrub]
+type: [security]: /api/pipeline and /api/email no longer serialise account credentials
+area: [backend] [frontend] [security] [testing]
+
+The same unauthenticated exposure as /api/roster existed one router over:
+GET /api/pipeline/stages returned every page's full roster row (signup email,
+password, forwarding address, email alias/rule/destination, notes), and
+/workspace, /setup, /transition and POST /api/email/auto-create returned the
+full row for one page. Both routers now use the roster credential guard route
+and the public row allowlist. The only credential-shaped keys still served are
+the alias a mint/intake/auto-create request itself just created and the team's
+verified destination inboxes, each pinned by a test. The Slack pipeline
+handoff now says "see Notion" instead of carrying the password. The Pipeline
+workspace, stage cards, Roster and Email tabs label the hidden fields
+"hidden pending operator auth". New HTTP tests fail on main (16 of 21) and pass
+here. A whole-app sweep test calls all 104 non-streaming GET routes
+(anonymously and with every machine credential) against a roster seeded with
+sentinel credentials; on main it catches /api/roster/, /api/roster/project,
+/api/pipeline/stages and /api/pipeline/{id}/workspace, and here it passes.
+Pages, miniapp/poster content and telegram routes build named safe fields.
+time: [22:10 EDT] [26-09-25]
+agent: [Claude Code] [claude-opus-5-5]
+worktree: [fix/email-routing-lockdown] [/Users/ecfromthedc/dev/wt/lab-email-lockdown]
+type: [security]: email routing routes no longer re-point page mail anonymously
+area: [backend] [security] [testing]
+
+POST /api/email/destinations, DELETE /api/email/rules/{id} and POST
+/api/email/auto-create were unauthenticated in production and chained into a
+forwarding takeover: add and self-verify a destination, delete a page's rule
+(its id had leaked via /api/roster and /api/pipeline), recreate the same
+account_name-derived alias forwarding to that destination, then receive the
+page's TikTok reset mail. All three now require CONTROL_PLANE_TOKEN (Bearer or
+X-API-Key, constant time) and only it: APP_API_KEY ships in the public
+frontend bundle, so it is refused here. They fail closed (503) when
+CONTROL_PLANE_TOKEN is unset. Destinations are normalised once (ASCII, exactly
+one '@', lowercased) and that same value is validated and sent to Cloudflare. An optional
+EMAIL_DESTINATION_DOMAINS allowlist refuses outside domains on add-destination
+and auto-create. Auto-create refuses (409) to re-point an alias that any roster
+page records with a different alias/destination unless replace=true; recreating
+the identical alias -> destination pair still works. The Distribution tab's
+add-destination, create-alias and remove-alias buttons send no credential and
+now fail until operator auth exists; GET status/destinations stay open.
+Pipeline mint-alias/intake call the CF service directly and are unchanged.
+No deploy was performed.
+
+_________________________________________________________________________________
+time: [23:20 EDT] [26-09-25]
+agent: [Claude Code] [claude-opus-5-5]
+worktree: [fix/email-destinations-and-slack-scrub] [/Users/ecfromthedc/dev/wt/lab-email-dest-slack]
+type: [security]: team inbox list and Slack handoff stop carrying addresses
+area: [backend] [security] [testing]
+
+Follow-up to #176, stacked on it for require_control_plane_auth. GET
+/api/email/destinations served every Cloudflare forwarding destination (the
+team's real inboxes) to anonymous callers; it now requires CONTROL_PLANE_TOKEN
+and fails closed. The Distribution Email tab reads it without a credential and
+shows an empty destination list; Pipeline mint-alias reads destinations
+server-side and is unaffected. The Slack pipeline handoff no longer posts the
+page login email, password or free-text notes (notes can hold backup codes);
+those fields say "see Notion" and the Notion button remains. An anonymous
+POST /api/pipeline/intake is refused with a generic 409, before any mint,
+Notion or roster write, when its handle names an existing roster page (under
+both the intake id and the Notion-sync id) or its notion_page_id names a roster
+page that is not an unfinished step-1 placeholder; completing a placeholder
+anonymously also requires that placeholder's own alias, and a placeholder
+synced before step 2 (handle == email name) may still be completed. Before
+this, a fresh handle plus a live page's notion_page_id renamed that Notion row,
+the sync pruned the live roster page and its rule link, and /setup wrote the
+caller's alias into the row's Notion email. The notion_page_id is first
+reduced to one canonical Notion page id (32 lowercase hex, dashes optional);
+anything else, such as a '#', '?', '/', '%', inner whitespace or non-ASCII
+digits, is a 400 for every caller before any lookup or write, and that same
+canonical value is used for the roster check and every Notion call. The Notion
+write-back helper also refuses a non-canonical id before any request. A page
+whose Notion row is absent from the roster cannot be matched by the ownership
+check. CONTROL_PLANE_TOKEN holders may override the ownership check, not the
+id format. The mint-alias and
+auto-create 409s no longer echo the alias or a page's recorded alias. No
+deploy was performed.
+
+_________________________________________________________________________________
+time: [04:56 EDT] [26-09-26]
+agent: [Claude Code] [claude-opus-5-5]
+worktree: [sec/lab-no-prod-defaults] [/Users/ecfromthedc/dev/wt/lab-no-prod-defaults]
+type: [security]: no Lab code defaults to a production URL
+area: [backend] [security] [testing]
+
+During a review a local probe ran the sound-sync handler un-stubbed; its
+hardcoded Campaign Hub default made one unauthenticated read-only GET to
+production /api/campaigns (404, nothing written). CAMPAIGN_HUB_URL and the new
+SHIPSTREAM_VAULT_ORIGIN are now required: unset or malformed, the Hub and
+ShipStream vault code raise ConfigError before building a request, and
+POST /api/telegram/sounds/sync and /api/slideshow/sounds/prepare answer 503
+"Campaign Hub not configured". A ShipStream vault that is not configured reads
+as "unavailable", the state an unreachable vault already produced. The
+.env.example template no longer carries production origins, and a usage
+docstring no longer names the Supabase project. tests/test_no_production_host_guard.py
+fails on any production hostname in app Python, and on production URLs in
+other tracked files outside a justified docs allowlist. A conftest audit hook
+refuses and fails any test that looks up or connects to a non-loopback host. Its first
+full run found two live leaks in the suite: every TestClient lifespan started
+the ABN factory, which scraped HN, GitHub, Reddit and lobste.rs, and the
+source-execution tests fetched page manifests from the production ShipStream
+vault. Only TestClient lifespans now get an idle factory start, and those
+tests answer manifest reads as an unreachable vault.
+Production needs CAMPAIGN_HUB_URL and SHIPSTREAM_VAULT_ORIGIN set before this
+deploys; neither was set on 2026-09-26. No deploy was performed.
+
+
+_________________________________________________________________________________
+time: [10:00pm] [09-26-26]
+agent: [Codex desktop]
+worktree: [codex/restore-boat-minimax-five-crops]
+type: [bug report]
+area: [backend]
+Restored boat-lake to the operator-requested MiniMax/Hailuo five-way crop using six existing boat-bucket prompts verbatim. Removed the fixed Wan boat-anchor requirement through a boat-only catalog overlay; unrelated catalog/provider versions remain unchanged. Both active boat pages must adopt the advertised selection and existing usable Minimax inventory.
+
+_________________________________________________________________________________
+_________________________________________________________________________________
+time: [04:59 EDT] [26-09-26]
+agent: [Claude Code] [claude-opus-5-5]
+worktree: [claude/lab-moderation-retry] [/Users/ecfromthedc/dev/seats/LAB-MODRETRY]
+type: [feature-request] [supply self-healing]: Bounded varied retry of a confirmed moderation refusal
+area: [backend] [testing]
+
+A confirmed Replicate moderation refusal (E005) on a planned generation call
+is now retried at most twice, each time with the next fixed deterministic
+prompt rewording (`services/moderation_retry.py`), on the same engine, model
+and safety settings. Retries draw on a per-page UTC-day budget
+(`CONTENT_LAB_MODERATION_RETRY_DAILY_BUDGET`, default 6) counted from durable
+`generationAttempts` rows; first attempts never consume it. Each retry has its
+own prediction checkpoint, records its estimated cost, and a retried clip
+records the sent prompt hash plus the plan's base hash and variant id, which
+restart recovery accepts only from a succeeded attempt row. Credit (402),
+provider auth (401/403, new `provider_auth` class) and all other classes still
+fail fast with no retry; the job status contract is unchanged. New tests in
+`tests/test_generation_moderation_retry.py` fail on main and pass here. No
+deployment was performed.
+
+_________________________________________________________________________________
+time: [08:10 EDT] [26-09-26]
+agent: [Claude Code] [claude-opus-5-5]
+worktree: [claude/lab-moderation-retry] [/Users/ecfromthedc/dev/seats/LAB-MODRETRY]
+type: [bug-fix] [supply self-healing]: #181 review round 2, narrower retry trigger and pinned spend guards
+area: [backend] [testing]
+
+Review defects on #181 fixed. The retry trigger is now exactly E005
+(`moderation_retry.retry_blocked`): moderation-class text without E005, or with
+an embedded HTTP status (a 429/5xx/402 from the provider's moderation
+dependency, failed-prediction logs mentioning "safety"), stays a terminal
+refusal named `moderation_not_e005_not_retried`. "Error code: 401/403" (the
+auth failure observed inside the moderation check on 2026-09-25) is now
+classed `provider_auth` with errorDetail `HTTP 401`, and fails fast; the
+errorClass/errorDetail charsets are unchanged. Rewordings no longer add people
+to people-free prompts (variant ids bumped to `family-safe.v2` and
+`backlit-shapes.v2`), and the cost table is pinned to the catalog. New tests
+pin the durable reservation before the paid retry, in-flight retries counting
+against the page budget, and the prediction-id + "Replicate failed:" guard;
+each is killed by its mutation. No deployment was performed.
+
+_________________________________________________________________________________
+time: [08:57 EDT] [26-09-26]
+agent: [Claude Code] [claude-opus-5-5]
+worktree: [claude/lab-moderation-retry] [/Users/ecfromthedc/dev/seats/LAB-MODRETRY]
+type: [bug-fix] [supply self-healing]: #181 review round 3, negation-aware person gate and wider status guard
+area: [backend] [testing]
+
+The person-wording gate for moderation-retry rewordings matched negations, so
+the scenic, ugc, boat and coffee catalog families ("no people") would have
+received "fully clothed" / silhouette-adult wording on an E005 retry. A person
+term now counts only when no negation (no, without, zero, not any, free of,
+devoid of, never) precedes it within three words of the same clause;
+"figure(s)" and "body/bodies" are no longer person terms. A test composes
+every combination of every catalog family. The embedded-HTTP-status guard
+that blocks a retry even with (E005) is now pinned and also matches
+`Error code 429`, `{'status': 500}`, `status_code=429`, `HTTP 503` and httpx
+`Server error '503 …'`; the real 09-25 E005 message is pinned as retried. By
+lead decision, the moderation model's own 401/403 keeps class `provider_auth`
+with errorDetail `moderation model HTTP 401`/`403`; our own token keeps
+`HTTP 401`/`403`. No deployment was performed.
+
+_________________________________________________________________________________
+time: [09:32 EDT] [26-09-26]
+agent: [Claude Code] [claude-opus-5-5]
+worktree: [claude/lab-moderation-retry] [/Users/ecfromthedc/dev/seats/LAB-MODRETRY]
+type: [bug-fix] [supply self-healing]: #181 review round 4, any 4xx/5xx number blocks an E005 retry
+area: [backend] [testing]
+
+The E005 retry no longer enumerates HTTP-status formats. Any standalone
+4xx/5xx number outside a URL refuses the retry even when (E005) is present,
+which also catches "429 Too Many Requests", urllib "HTTP Error 503", requests
+"429 Client Error", JSON "code": 500, error_code=503 and "RateLimitError 429".
+The real 09-25 E005 message carries no number and stays retried. A test pins
+the clause split of the person gate ("No cars; adults walk at dusk." depicts
+people). No deployment was performed.
+
+_________________________________________________________________________________
+time: [19:52 EDT] [26-09-28]
+agent: [Claude Code] [claude-opus-5-5]
+worktree: [dossier/page-frame] [/Users/ecfromthedc/dev/wt/lab-page-frame]
+type: [feature] [per-page frame]: page picture frame applied at prepared-post render
+area: [backend] [testing]
+
+A page may pick a picture frame: 9:16 (default, full-bleed), 16:9, 1:1, 3:4 or
+4:3. The Control Plane sends `frame` in the slot/render treatment only when it
+is not vertical; "9:16" is accepted as absent and anything else fails closed.
+Prepared-post rendering keeps the delivered 1080x1920 H.264 canvas and, after
+the existing near-9:16 normalization, applies
+`crop=1080:H:0:(1920-H)/2,pad=1080:1920:0:(1920-H)/2:black` (H 608/1080/1440/810)
+before the unchanged caption overlay. Frame is not source treatment: the
+normalized visual treatment, applied-video evidence and render capability
+schema are unchanged, so existing inventory stays reusable and a frame change
+reaches the next prepared post. Recipe registration (v2/v3/v4) and the
+generation decoder accept an optional valid `frame`; recipe bytes round-trip
+unchanged. With no frame the ffmpeg graph and final bytes are identical to
+before. Real-ffmpeg tests on the committed 1080x1920 portrait fixture prove
+black bars and the untouched centred band for every frame. The band's top row
+is rounded down to an even row so every source lands on the chroma grid the
+same way (4:3 is rows 554-1363). On a framed page the caption is drawn in the very middle (position middle,
+offset 0) whatever the slot's caption style places it, so a caption that fits
+the band stays off the bars (a very tall one can still reach onto them); font,
+size, colour and line breaks are unchanged (owner decision 2026-09-28). No
+deployment was performed.

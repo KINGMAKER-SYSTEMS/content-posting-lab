@@ -401,8 +401,8 @@ def test_reference_and_source_slots_come_from_real_catalogs(monkeypatch):
         headers=_headers(),
     ).json()
     boat_reference = _ingredient(_format(body, "boat-lake"), "reference-media")
-    assert boat_reference["status"] == "bound"
-    assert boat_reference["binding"]["sha256"] == "6fcf8daf2cc422457af7de83032b90f018f66ceec801eba9e22f7d80f7f6a583"
+    assert boat_reference["required"] is False
+    assert boat_reference["binding"] is None
 
     dirtbike = _format(body, "pov-dirt-bike")
     master_source = _ingredient(dirtbike, "master-source-video")
@@ -465,7 +465,7 @@ def test_shipstream_page_source_is_bound_only_to_its_matching_format(monkeypatch
         handle="lovenightwalks",
         content_niche="POV — Night Core",
         content_engine="sourced_video",
-        vault_url="https://shipstream.risingtidesviral.com/vault/lovenightwalks",
+        vault_url="https://shipstream.test/vault/lovenightwalks",
     )
     intent["notionPageId"] = "3c61465b-b829-8095-86ec-f979f90ee48a"
     intent["automationMode"] = "Operator"
@@ -618,7 +618,7 @@ def test_shipstream_manifest_format_cannot_override_master_pages_niche(monkeypat
         handle="lovenightwalks",
         content_niche="POV — Night Core",
         content_engine="sourced_video",
-        vault_url="https://shipstream.risingtidesviral.com/vault/lovenightwalks",
+        vault_url="https://shipstream.test/vault/lovenightwalks",
     )
     intent["notionPageId"] = "3c61465b-b829-8095-86ec-f979f90ee48a"
     intent["automationMode"] = "Operator"

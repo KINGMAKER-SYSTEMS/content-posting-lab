@@ -6,6 +6,7 @@ import {
   XIcon,
 } from '@phosphor-icons/react';
 import { Badge } from '@/components/ui/badge';
+import { ROSTER_HIDDEN_LABEL, rosterEmailHidden } from '@/lib/rosterRedaction';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import type {
@@ -277,6 +278,8 @@ export function RosterTab({
                                 <XIcon size={10} weight="bold" />
                               </button>
                             </div>
+                          ) : rosterEmailHidden(page) ? (
+                            <span className="text-[10px] text-muted-foreground/60 italic" title="Credential fields are no longer served to the unauthenticated UI">{ROSTER_HIDDEN_LABEL}</span>
                           ) : emailStatus?.configured ? (
                             <Button
                               size="xs"

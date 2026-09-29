@@ -36,7 +36,7 @@ from services.caption_render import (
     render_caption_overlay,
 )
 from services.ffmpeg import TIKTOK_ENCODE_ARGS, build_cc_filter
-from services.fsutil import safe_unlink
+from services.fsutil import is_within, safe_unlink
 from services.json_store import atomic_load, atomic_save
 
 log = logging.getLogger("burn")
@@ -625,11 +625,17 @@ async def burn_overlay(request: Request):
 
     log.info("overlay #%d project=%s batch=%s video=%s overlay=%s cc=%s", idx, project, batch_id, video_rel, 'yes' if overlay_b64 else 'no', 'yes' if color_correction else 'no')
 
+    # batch_id names one directory under the burn dir; the output is written there.
+    if (
+        not isinstance(batch_id, str)
+        or not batch_id
+        or batch_id.startswith(".")
+        or any(ch in batch_id for ch in ("/", "\\", "\x00"))
+    ):
+        return JSONResponse({"index": idx, "ok": False, "error": "Invalid batch id"}, status_code=400)
+
     try:
         burn_dir = get_project_burn_dir(project)
-        burn_dir.mkdir(parents=True, exist_ok=True)
-        batch_dir = burn_dir / batch_id
-        batch_dir.mkdir(exist_ok=True)
 
         if video_rel.startswith("clips/"):
             project_dir = PROJECTS_DIR / sanitize_project_name(project)
@@ -638,8 +644,10 @@ async def burn_overlay(request: Request):
             video_dir = get_project_video_dir(project)
             video_abs = str(video_dir / video_rel)
 
-        project_root = (PROJECTS_DIR / sanitize_project_name(project)).resolve()
-        if not str(Path(video_abs).resolve()).startswith(str(project_root)):
+        # Real-path containment, not a string prefix: project `p` is a string
+        # prefix of `projects/page_roster.json`, `c` of `projects/cookies.txt`.
+        project_root = PROJECTS_DIR / sanitize_project_name(project)
+        if not is_within(video_abs, project_root):
             log.error("burn #%d: path traversal blocked: %s", idx, video_rel)
             return JSONResponse({"index": idx, "ok": False, "error": "Invalid path"}, status_code=400)
 
@@ -647,6 +655,9 @@ async def burn_overlay(request: Request):
             log.error("burn #%d: video not found: %s", idx, video_abs)
             return JSONResponse({"index": idx, "ok": False, "error": f"Video not found: {video_rel}"}, status_code=404)
 
+        burn_dir.mkdir(parents=True, exist_ok=True)
+        batch_dir = burn_dir / batch_id
+        batch_dir.mkdir(exist_ok=True)
         mp4_path = str(batch_dir / f"burned_{idx:03d}.mp4")
 
         # Track as queued and fire background task

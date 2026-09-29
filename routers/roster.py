@@ -2,13 +2,20 @@
 Page roster router.
 Manages assignment of Postiz integrations (pages) to projects,
 and linking of Google Drive folders to pages.
+
+Credential boundary: the roster cache holds account credentials (signup
+email, password, forwarding address, email alias/rule). None of them is ever
+serialised by this router -- every row goes through
+services.roster_public.public_page and every JSON body through
+scrub_credentials (see _CredentialGuardRoute). Routes that no unauthenticated
+UI calls require the machine credential (require_roster_auth).
 """
 
 import os
 import re
 
 import httpx
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from services.roster import (
@@ -20,6 +27,12 @@ from services.roster import (
     remove_page,
     save_roster,
     set_page,
+)
+from services.roster_public import (
+    CredentialGuardRoute,
+    public_page,
+    public_pages,
+    require_roster_auth,
 )
 
 # Regex to strip emoji and other non-alphanumeric/space characters for dedup matching
@@ -37,7 +50,12 @@ def _normalize_name(name: str) -> str:
     name = _EMOJI_RE.sub("", name)
     return re.sub(r"\s+", " ", name).lower().strip()
 
-router = APIRouter()
+
+# Kept under its original name for the tests that pin it.
+_CredentialGuardRoute = CredentialGuardRoute
+
+
+router = APIRouter(route_class=_CredentialGuardRoute)
 
 
 # ── Roster CRUD ────────────────────────────────────────────────────────────
@@ -51,7 +69,7 @@ class UpdatePageRequest(BaseModel):
 @router.get("/")
 async def list_roster():
     """List all pages in the roster."""
-    return {"pages": list_all_pages()}
+    return {"pages": public_pages(list_all_pages())}
 
 
 @router.get("/project/{project_name}")
@@ -68,7 +86,7 @@ async def get_project_pages(project_name: str):
         iid = page.get("integration_id", "")
         topic_info = topics.get(iid)
         enriched.append({
-            **page,
+            **public_page(page),
             "has_staging_topic": bool(topic_info and topic_info.get("topic_id")),
             "staging_topic_name": topic_info.get("topic_name") if topic_info else None,
         })
@@ -92,12 +110,12 @@ async def update_page(integration_id: str, req: UpdatePageRequest):
             )
         data["drive_folder_id"] = folder_id
     entry = set_page(integration_id, data)
-    return {"page": entry}
+    return {"page": public_page(entry)}
 
 
-@router.delete("/{integration_id}")
+@router.delete("/{integration_id}", dependencies=[Depends(require_roster_auth)])
 async def delete_page(integration_id: str):
-    """Remove a page from the roster."""
+    """Remove a page from the roster. Machine credential required: no UI calls this."""
     removed = remove_page(integration_id)
     if not removed:
         raise HTTPException(status_code=404, detail="Page not found in roster")
@@ -303,6 +321,7 @@ async def sync_from_notion():
     Notion is the source of truth for: username, signup email, password,
     forwarding address, poster name, group, account type, TikTok URL.
     Roster JSON keeps app-only fields (project, drive folder, CF email alias).
+    The response carries only public_page rows -- never those credentials.
     """
     from services.notion_pages import is_configured, sync_into_roster
 
@@ -313,7 +332,7 @@ async def sync_from_notion():
         )
 
     try:
-        return await sync_into_roster()
+        result = await sync_into_roster()
     except httpx.HTTPStatusError as exc:
         raise HTTPException(
             status_code=exc.response.status_code,
@@ -321,6 +340,14 @@ async def sync_from_notion():
         )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Notion sync failed: {exc}")
+    # Explicit keys only: the service result carries the full internal roster.
+    return {
+        "added": result.get("added", 0),
+        "updated": result.get("updated", 0),
+        "total_in_notion": result.get("total_in_notion", 0),
+        "errors": list(result.get("errors") or []),
+        "pages": public_pages(result.get("pages")),
+    }
 
 
 @router.post("/sync")
@@ -345,7 +372,7 @@ async def sync_integrations():
             "added": result.get("added", 0),
             "removed": 0,  # Notion-driven — we don't auto-remove anything
             "updated": result.get("updated", 0),
-            "pages": result.get("pages", []),
+            "pages": public_pages(result.get("pages")),
         }
     except httpx.HTTPStatusError as exc:
         raise HTTPException(

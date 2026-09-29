@@ -304,6 +304,41 @@ def _classify(err: str) -> str:
     return "other"
 
 
+_YOUTUBE_HOSTS = frozenset({
+    "youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be",
+})
+
+
+def _is_youtube_url(url: str) -> bool:
+    from urllib.parse import urlsplit
+
+    try:
+        host = (urlsplit(url).hostname or "").lower()
+    except ValueError:
+        return False
+    return host in _YOUTUBE_HOSTS
+
+
+async def _communicate_or_kill(proc, source_import_mode: bool):
+    try:
+        return await proc.communicate()
+    except asyncio.CancelledError:
+        # Callers may enforce a bounded import timeout. Do not leave yt-dlp
+        # running after the awaiting task has been cancelled.
+        if proc.returncode is None:
+            if source_import_mode and getattr(proc, "pid", None):
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                except OSError:
+                    proc.kill()
+            else:
+                proc.kill()
+            await proc.communicate()
+        raise
+
+
 async def download_video(
     video_url: str,
     dest: Path,
@@ -327,12 +362,18 @@ async def download_video(
 
     if not isinstance(source_import_mode, bool):
         raise ValueError("source_import_mode must be a boolean")
+    format_selector = (
+        "source/bestvideo[ext=mp4]+bestaudio[ext=m4a]/"
+        "bestvideo+bestaudio/best[ext=mp4]/best"
+        if source_import_mode
+        else "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best[ext=mp4]/best"
+    )
     base_cmd = [
         "yt-dlp",
         "--no-warnings",
         "--no-playlist",
         "-f",
-        "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best[ext=mp4]/best",
+        format_selector,
         "--merge-output-format",
         "mp4",
         "-o",
@@ -347,9 +388,9 @@ async def download_video(
             raise ValueError("max_filesize must be a positive integer")
         base_cmd += ["--max-filesize", str(max_filesize)]
 
-    # Page source imports accept only validated public, permanent URLs. Keep
-    # that lane independent from the shared TikTok/browser cookie stores: a
-    # stale or oversized cookie jar must not delay a public MP4 import.
+    # Page source imports accept only validated public, permanent URLs. They
+    # never use browser cookies, and a stale or oversized cookie jar must not
+    # delay a public MP4 import: the public attempt always runs first.
     strategies: list[tuple[str, list[str]]] = []
     cookies_source: str | None = None
     if not source_import_mode:
@@ -367,11 +408,31 @@ async def download_video(
                     (f"cookies-from-{browser}", ["--cookies-from-browser", browser])
                 )
     strategies.append(("no-auth", []))
+    # YouTube refuses anonymous downloads from datacenter IPs ("Sign in to
+    # confirm you're not a bot"), so every YouTube page import failed on
+    # Railway (15/15 through 2026-09-25). The public attempt still runs first;
+    # only its auth refusal falls back to the operator-managed cookies.txt, and
+    # only for YouTube, so other hosts never receive the jar.
+    # yt-dlp rewrites its --cookies file in place (non-atomically) when it
+    # exits, and page imports run concurrently, so this lane only ever reads a
+    # private copy: the shared jar the Clipper also uses is never written here.
+    private_jar: Path | None = None
+    if source_import_mode and _is_youtube_url(video_url):
+        env_cookies = get_cookies_path()
+        if env_cookies is not None and env_cookies.exists():
+            strategies.append(("cookies-from-env", ["--cookies", "<private-jar>"]))
+            cookies_source = str(env_cookies)
 
     # (label, cleaned_error, kind) for every strategy that failed.
     failures: list[tuple[str, str, str]] = []
 
     for label, extra in strategies:
+        if "<private-jar>" in extra:
+            fd, name = tempfile.mkstemp(prefix=".ytdlp-cookies-", suffix=".txt", dir=dest.parent)
+            os.close(fd)
+            private_jar = Path(name)
+            shutil.copyfile(get_cookies_path(), private_jar)
+            extra = [str(private_jar) if arg == "<private-jar>" else arg for arg in extra]
         cmd = base_cmd + extra + [video_url]
         process_options = {
             "stdout": asyncio.subprocess.PIPE,
@@ -381,24 +442,13 @@ async def download_video(
             # yt-dlp may spawn ffmpeg. A bounded source-import timeout must own
             # and stop the complete subprocess tree, not only the yt-dlp parent.
             process_options["start_new_session"] = True
-        proc = await asyncio.create_subprocess_exec(*cmd, **process_options)
         try:
-            _, stderr = await proc.communicate()
-        except asyncio.CancelledError:
-            # Callers may enforce a bounded import timeout. Do not leave yt-dlp
-            # running after the awaiting task has been cancelled.
-            if proc.returncode is None:
-                if source_import_mode and getattr(proc, "pid", None):
-                    try:
-                        os.killpg(proc.pid, signal.SIGKILL)
-                    except ProcessLookupError:
-                        pass
-                    except OSError:
-                        proc.kill()
-                else:
-                    proc.kill()
-                await proc.communicate()
-            raise
+            proc = await asyncio.create_subprocess_exec(*cmd, **process_options)
+            _, stderr = await _communicate_or_kill(proc, source_import_mode)
+        finally:
+            if private_jar is not None:
+                private_jar.unlink(missing_ok=True)
+                private_jar = None
 
         if proc.returncode == 0:
             if dest.exists():
