@@ -269,7 +269,8 @@ def _luma_rows(image, top, bottom):
 @pytest.mark.parametrize("frame", list(FRAME_BANDS))
 def test_page_frame_letterboxes_the_centred_band_in_plain_black(real_portrait, tmp_path, frame):
     height = FRAME_BANDS[frame]
-    top, bottom = (1920 - height) // 2, (1920 - height) // 2 + height
+    top = ((1920 - height) // 2) & ~1
+    bottom = top + height
     result = render.render_post(real_portrait, tmp_path / "render",
                                 request(render.sha256(real_portrait.read_bytes()), frame=frame), clock_ms=lambda: NOW)
     receipt = json.loads(result.receipt_json)
@@ -341,7 +342,7 @@ def test_no_page_frame_keeps_the_existing_delivery_graph(monkeypatch, tmp_path, 
     ("16:9", "crop=1080:608:0:656,pad=1080:1920:0:656:black"),
     ("1:1", "crop=1080:1080:0:420,pad=1080:1920:0:420:black"),
     ("3:4", "crop=1080:1440:0:240,pad=1080:1920:0:240:black"),
-    ("4:3", "crop=1080:810:0:555,pad=1080:1920:0:555:black"),
+    ("4:3", "crop=1080:810:0:554,pad=1080:1920:0:554:black"),
 ])
 def test_page_frame_letterbox_follows_delivery_normalization(frame, chain):
     band = render._frame_band_height(request(frame=frame))
@@ -404,3 +405,19 @@ def test_framed_bottom_caption_is_burned_over_the_picture_not_the_bar(real_portr
         # row 1632, on the lower bar; it must not be there.
         lower_bar = _luma_rows(qa, 1264 + 4, 1920)
         assert lower_bar.mean[0] < 16 and lower_bar.extrema[0][1] < 40
+
+
+def test_page_frame_letterboxes_a_scaled_provider_source_the_same_way(real_portrait, tmp_path):
+    # A 704x1280 provider frame goes through scale+crop before the letterbox.
+    scaled = tmp_path / "provider-704x1280.mp4"
+    subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-i", str(real_portrait), "-vf", "scale=704:1280",
+                    "-c:v", "libx264", "-pix_fmt", "yuv420p", "-an", str(scaled)],
+                   check=True, timeout=120, capture_output=True)
+    result = render.render_post(scaled, tmp_path / "render",
+                                request(render.sha256(scaled.read_bytes()), frame="4:3"), clock_ms=lambda: NOW)
+    assert (result.final_probe.width, result.final_probe.height) == (1080, 1920)
+    with Image.open(result.qa_frame_path) as qa:
+        qa.load()
+        above, below = _luma_rows(qa, 0, 554 - 4), _luma_rows(qa, 1364 + 4, 1920)
+        assert above.mean[0] < 16 and below.mean[0] < 16
+        assert _luma_rows(qa, 554 + 4, 1364 - 4).mean[0] > 60

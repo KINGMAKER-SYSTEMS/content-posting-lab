@@ -1125,9 +1125,9 @@ reaches the next prepared post. Recipe registration (v2/v3/v4) and the
 generation decoder accept an optional valid `frame`; recipe bytes round-trip
 unchanged. With no frame the ffmpeg graph and final bytes are identical to
 before. Real-ffmpeg tests on the committed 1080x1920 portrait fixture prove
-black bars and the untouched centred band for every frame. 4:3's odd top (555)
-is aligned by ffmpeg to row 554 (rows 554-1363) for exact and scaled sources
-alike. On a framed page the caption is drawn in the very middle (position middle,
+black bars and the untouched centred band for every frame. The band's top row
+is rounded down to an even row so every source lands on the chroma grid the
+same way (4:3 is rows 554-1363). On a framed page the caption is drawn in the very middle (position middle,
 offset 0) whatever the slot's caption style places it, so a caption that fits
 the band stays off the bars (a very tall one can still reach onto them); font,
 size, colour and line breaks are unchanged (owner decision 2026-09-28). No
