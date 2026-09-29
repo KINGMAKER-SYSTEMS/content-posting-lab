@@ -6,11 +6,25 @@ battle-tested color-matrix math without cross-router imports.
 """
 
 import asyncio
+import json
 import logging
 import math
 import os
 import signal
 import subprocess
+
+from services.page_frame import (
+    ACCEPTED_FRAMES,
+    CANVAS_HEIGHT,
+    CANVAS_WIDTH,
+    FRAME_BAND_HEIGHTS,
+    FRAME_FITS,
+    VERTICAL_FRAME,
+    band_height,
+    default_frame_fit,
+    fill_pad_filter,
+    fit_cut_filters,
+)
 
 log = logging.getLogger("ffmpeg")
 
@@ -185,12 +199,58 @@ def _clip_crop_filter(
     )
 
 
+def _framed_cut_filters(
+    clip_crop: dict | None,
+    clip_crop_size: tuple[int, int],
+    scale: str | None,
+    page_frame: str | None,
+    frame_fit: str | None,
+    source_size: tuple[int, int] | None,
+) -> tuple[str, str] | None:
+    """Band-aware picture filter and final canvas pad, or None for a 9:16 page.
+
+    A framed page's clip is cut into its band on the 1080x1920 canvas (see
+    services.page_frame.geometry). fill evaluates the same clip crop against
+    the band; fit contains the zoomed source window, which needs the upright
+    square-pixel source size the filter chain sees. A missing crop is the
+    neutral centred crop, as on the sourced executor.
+    """
+    if page_frame is None or page_frame == VERTICAL_FRAME:
+        if frame_fit is not None:
+            raise ValueError("frameFit requires a " + ", ".join(FRAME_BAND_HEIGHTS) + " frame")
+        return None
+    if not isinstance(page_frame, str) or page_frame not in ACCEPTED_FRAMES:
+        raise ValueError("frame must be one of " + ", ".join(ACCEPTED_FRAMES))
+    fit = default_frame_fit(page_frame) if frame_fit is None else frame_fit
+    if not isinstance(fit, str) or fit not in FRAME_FITS:
+        raise ValueError("frameFit must be one of " + ", ".join(FRAME_FITS))
+    if scale:
+        raise ValueError("a framed cut ends on the 1080x1920 canvas; it takes no trailing scale")
+    if _validated_clip_crop_size(clip_crop_size) != (CANVAS_WIDTH, CANVAS_HEIGHT):
+        raise ValueError("clip_crop_size of a framed cut must be the 1080x1920 canvas")
+    crop = _validated_clip_crop(clip_crop) or {"zoom": 1.0, "focusX": 0.5, "focusY": 0.5}
+    if fit == "fill":
+        return (_clip_crop_filter(crop, (CANVAS_WIDTH, band_height(page_frame))),
+                fill_pad_filter(page_frame))
+    if (
+        not isinstance(source_size, tuple)
+        or len(source_size) != 2
+        or any(isinstance(item, bool) or not isinstance(item, int) or item <= 0 for item in source_size)
+    ):
+        raise ValueError("source_size of a framed fit cut must be the positive probed width and height")
+    return fit_cut_filters(source_size[0], source_size[1], page_frame,
+                           crop["zoom"], crop["focusX"], crop["focusY"])
+
+
 def build_cc_filter(
     cc: dict | None,
     scale: str | None = None,
     playback_speed: float = 1.0,
     clip_crop: dict | None = None,
     clip_crop_size: tuple[int, int] = (1_080, 1_920),
+    page_frame: str | None = None,
+    frame_fit: str | None = None,
+    source_size: tuple[int, int] | None = None,
 ) -> str:
     """Build an ffmpeg `-vf` filter string for color correction.
 
@@ -209,6 +269,14 @@ def build_cc_filter(
         clip_crop_size: Exact even-pixel output width and height used when a
             normalized crop is present. Sourced executors pass their typed,
             hash-bound delivery size here.
+        page_frame / frame_fit / source_size: A non-9:16 page frame cuts the
+            clip into its band (services.page_frame.geometry): fill evaluates
+            the crop against the band, fit (the default for such a frame)
+            contains the source window and needs the probed upright source
+            size. The grade and speed stay exactly where they are without a
+            frame and a pad to the black 1080x1920 canvas comes last, so the
+            grade never touches the bars. Absent or "9:16" is today's cut,
+            byte for byte.
 
     Returns:
         A comma-joined filter string ready for ffmpeg's `-vf` argument. When
@@ -217,7 +285,14 @@ def build_cc_filter(
     """
     speed = _validated_playback_speed(playback_speed)
     speed_filter = None if speed == 1.0 else f"setpts=PTS/{speed:.6f}"
-    crop_filter = _clip_crop_filter(clip_crop, clip_crop_size)
+    framed = _framed_cut_filters(
+        clip_crop, clip_crop_size, scale, page_frame, frame_fit, source_size,
+    )
+    if framed is None:
+        crop_filter = _clip_crop_filter(clip_crop, clip_crop_size)
+        pad_filter = None
+    else:
+        crop_filter, pad_filter = framed
     scale_filter = (
         f"scale={scale}:flags=lanczos,setsar=1" if scale else None
     )
@@ -225,7 +300,7 @@ def build_cc_filter(
     # Fast path: no CC → just the scale (or null if no scale either).
     if is_default_cc(cc):
         return ",".join(
-            item for item in (crop_filter, speed_filter, scale_filter) if item
+            item for item in (crop_filter, speed_filter, scale_filter, pad_filter) if item
         ) or "null"
 
     b_raw = float(cc.get("brightness", 0))
@@ -268,7 +343,7 @@ def build_cc_filter(
     )
     if is_default:
         return ",".join(
-            item for item in (crop_filter, speed_filter, scale_filter) if item
+            item for item in (crop_filter, speed_filter, scale_filter, pad_filter) if item
         ) or "null"
 
     mat = [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
@@ -384,6 +459,8 @@ def build_cc_filter(
         filters.append(speed_filter)
     if scale_filter:
         filters.append(scale_filter)
+    if pad_filter:
+        filters.append(pad_filter)
 
     return ",".join(filters)
 
@@ -495,6 +572,70 @@ def _consume_encode_wait_result(task: asyncio.Task) -> None:
             pass
 
 
+_FRAME_PROBE_OUTPUT_LIMIT_BYTES = 64 * 1024
+_SQUARE_SAMPLE_ASPECT_RATIOS = frozenset({"", "N/A", "0:1", "1:1"})
+
+
+async def probe_display_size(input_path) -> tuple[int, int]:
+    """Upright width and height of the first video stream, as the cut's filters see it.
+
+    run_color_correct lets ffmpeg autorotate, so a quarter-turn display
+    rotation swaps the coded width and height (a half turn or any other angle
+    keeps the coded size). A framed fit cut computes its window on square
+    pixels, so a declared non-square sample aspect ratio is refused rather than
+    distorted. Bounded like the other probes: its own process group, a
+    deadline and a byte cap on the reply.
+    """
+    try:
+        process = await asyncio.create_subprocess_exec(
+            "ffprobe", "-v", "error", "-protocol_whitelist", "file,pipe",
+            "-select_streams", "v:0",
+            "-show_entries",
+            "stream=width,height,sample_aspect_ratio:stream_tags=rotate:stream_side_data=rotation",
+            "-of", "json", str(input_path),
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except OSError as error:
+        raise RuntimeError("frame_source_geometry_unavailable") from error
+
+    async def bounded_reply() -> bytes:
+        reply = bytearray()
+        while chunk := await process.stdout.read(_ENCODE_STDERR_READ_BYTES):
+            reply.extend(chunk)
+            if len(reply) > _FRAME_PROBE_OUTPUT_LIMIT_BYTES:
+                raise RuntimeError("frame_source_geometry_unavailable")
+        await process.wait()
+        return bytes(reply)
+
+    try:
+        raw = await asyncio.wait_for(bounded_reply(), timeout=_INPUT_PROBE_TIMEOUT_SECONDS)
+    except asyncio.TimeoutError as error:
+        raise RuntimeError("frame_source_geometry_unavailable") from error
+    finally:
+        await _terminate_encode_process(process)
+    if process.returncode != 0:
+        raise RuntimeError("frame_source_geometry_unavailable")
+    try:
+        stream = json.loads(raw)["streams"][0]
+        width, height = stream["width"], stream["height"]
+        rotations = [float(row.get("rotation", 0)) for row in stream.get("side_data_list", [])]
+        rotations.append(float(stream.get("tags", {}).get("rotate", 0)))
+        sample_aspect_ratio = stream.get("sample_aspect_ratio", "")
+    except (KeyError, IndexError, TypeError, ValueError, AttributeError) as error:
+        raise RuntimeError("frame_source_geometry_unavailable") from error
+    if any(isinstance(value, bool) or not isinstance(value, int) or value <= 0 for value in (width, height)):
+        raise RuntimeError("frame_source_geometry_unavailable")
+    if sample_aspect_ratio not in _SQUARE_SAMPLE_ASPECT_RATIOS:
+        raise RuntimeError("frame_source_not_square_pixels")
+    rotation = next((value for value in rotations if value != 0), 0.0) % 360
+    if abs(rotation - 90) < 1 or abs(rotation - 270) < 1:
+        return height, width
+    return width, height
+
+
 async def run_color_correct(
     input_path: str,
     output_path: str,
@@ -507,9 +648,14 @@ async def run_color_correct(
     clip_start_ms: int | None = None,
     clip_duration_ms: int | None = None,
     source_duration_ms: int | None = None,
+    page_frame: str | None = None,
+    frame_fit: str | None = None,
+    source_size: tuple[int, int] | None = None,
 ) -> None:
     """Run ffmpeg to produce a color-corrected copy of a video.
 
+    A non-9:16 ``page_frame`` cuts the picture into its band on the black
+    1080x1920 canvas (see ``build_cc_filter``); only the -vf argument changes.
     Raises RuntimeError with the last ~500 chars of stderr on ffmpeg failure.
     """
     speed = _validated_playback_speed(playback_speed)
@@ -526,6 +672,9 @@ async def run_color_correct(
         playback_speed=speed,
         clip_crop=clip_crop,
         clip_crop_size=clip_crop_size,
+        page_frame=page_frame,
+        frame_fit=frame_fit,
+        source_size=source_size,
     )
     enc = list(encode_args if encode_args is not None else STANDARD_ENCODE_ARGS)
     output_window: list[str] = []
