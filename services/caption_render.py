@@ -71,6 +71,16 @@ class CaptionStyle(BaseModel):
     outline_width_px: int | None = Field(default=None, ge=0, le=20, strict=True)
     line_breaks: list[str] | None = None
 
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_explicit_upright(cls, value):
+        # Schedule may explicitly save the existing upright orientation. It
+        # renders identically to the older contract's absent transform field.
+        # Do not accept true or coerce other values until inversion is supported.
+        if isinstance(value, dict) and value.get("inverted") is False:
+            return {key: item for key, item in value.items() if key != "inverted"}
+        return value
+
     @field_validator("font")
     @classmethod
     def validate_font_name(cls, value: str) -> str:
