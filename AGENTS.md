@@ -174,6 +174,9 @@
 - Caption rendering accepts the shared `CaptionStyle` wire fields only. A saved
   caption layout may supply exact line breaks and final-frame outline width;
   otherwise the established outline remains 3 px at 1080x1920.
+  Explicit `inverted: false` is the existing upright render, byte-identical to
+  an absent transform. This compatibility does not enable inversion or rewrite
+  the immutable slot/treatment JSON and hashes.
 - Dossier recipe v4 is the executable v3 production selection plus the exact
   Control Plane `captionDiscipline` wire object. Content Lab validates and
   preserves that immutable selection; it does not choose a corpus, sentiment,
