@@ -75,8 +75,8 @@ def test_explicit_upright_is_byte_identical_without_mutating_input(font_dir):
     assert render_caption_overlay(upright, font_dir=font_dir) == render_caption_overlay(plain, font_dir=font_dir)
 
 
-@pytest.mark.parametrize("value", [True, 0, 1, "false", "true", None])
-def test_upright_compatibility_does_not_silently_accept_other_transforms(value):
+@pytest.mark.parametrize("value", [0, 1, "false", "true", None])
+def test_inverted_accepts_only_a_real_boolean(value):
     with pytest.raises(ValidationError):
         request(inverted=value)
 

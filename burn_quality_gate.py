@@ -130,6 +130,10 @@ def overlay_geometry_reasons(
             reasons.append(f"vertical_center:{v_center:.3f}_not_in_0.30-0.62")
     else:
         align = caption_style["align"]
+        if caption_style.get("inverted") is True:
+            # A caption turned half a turn puts a left-aligned block against
+            # the right margin and a right-aligned one against the left.
+            align = {"left": "right", "right": "left"}.get(align, align)
         if align == "left":
             edge_off = abs((min_x / w) - 0.10)
         elif align == "right":
