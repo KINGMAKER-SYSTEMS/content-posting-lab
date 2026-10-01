@@ -1132,3 +1132,31 @@ offset 0) whatever the slot's caption style places it, so a caption that fits
 the band stays off the bars (a very tall one can still reach onto them); font,
 size, colour and line breaks are unchanged (owner decision 2026-09-28). No
 deployment was performed.
+
+_________________________________________________________________________________
+time: [19:00 EDT] [26-09-29]
+agent: [claude] [opus 5.5]
+worktree: [frames/lab-fit-fill-20260929] [/Users/risingtidesdev/dev/.worktrees/frames-lab-fit]
+type: [feature-request] [page frame fit and fill]: the page frame shapes the cut, not only the letterbox
+area: [backend] [testing]
+
+#193 letterboxed the centred band of a clip already cut 9:16, so a wide master on
+a 16:9 page posted about a third of its width (roughly 3x zoom; 1:1 about 1.8x).
+A framed page (16:9, 1:1, 3:4, 4:3) now has its clips cut into the band at cut
+time by the sourced and AI-video executors through one helper in
+services/ffmpeg.py: `frameFit` "fill" covers the band with the page's clipCrop
+evaluated against the band, "fit" shows the whole crop window at the source's
+own shape inside the band; absent means fit beside a non-9:16 frame. Framed cuts
+run on square display pixels and never refuse a source: an unprovable size is
+cut fill with a log line. The clip stays a 1080x1920 H.264 canvas with black
+outside the picture, so receipts (visualTreatment unchanged; sourceRecipeTreatment
+carries frame and frameFit), post_render (its letterbox is idempotent on such a
+clip), the gate and the Worker contracts are unchanged. 9:16 pages are
+byte-identical: goldens frozen from 7a97021, and an end-to-end QA run matched
+36/36 cut, final and QA-frame bytes. Real renders sit on the shared 360-case
+geometry table within 2 px under ffmpeg 8.1.1 and the production image's 5.1.
+Full suite on 626e809: 4370 passed, 19 skipped, 4 failed, the same 4 that fail
+on untouched origin/main 7a97021 (two test_abn_factory card-background tests,
+test_offline_guard needing pygments, test_shipstream_identity_pin). Needs john's
+OK; merging deploys to Railway, so merge only in a posting-block gap after
+pinging the fleet lead. No deployment was performed.

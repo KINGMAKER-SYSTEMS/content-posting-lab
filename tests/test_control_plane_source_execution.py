@@ -1378,3 +1378,151 @@ def test_source_duration_respects_delivery_range_after_saved_speed(speed):
     for cut in cuts:
         assert 6_000 <= cut.duration_ms / speed <= 11_000
         assert source_cut_is_planned(recipe, cut.master, cut.start_ms, cut.duration_ms, cut.slot_id)
+
+
+def _framed_publication(frame, fit, recipe_version):
+    payload = publication(
+        clip_crop={"zoom": 1.5, "focusX": 0.2, "focusY": 0.7}, recipe_version=recipe_version,
+    )
+    spec = json.loads(payload["recipeSpecCanonical"])
+    spec["renderTreatment"]["frame"] = frame
+    if fit is not None:
+        spec["renderTreatment"]["frameFit"] = fit
+    canonical = json.dumps(spec, sort_keys=True, separators=(",", ":"))
+    payload["recipeSpecCanonical"] = canonical
+    payload["recipeSpecHash"] = "sha256:" + hashlib.sha256(canonical.encode()).hexdigest()
+    return payload
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("frame,fit,resolved", [
+    ("16:9", "fit", "fit"), ("1:1", "fill", "fill"), ("4:3", None, "fit"), ("3:4", "fill", "fill"),
+])
+async def test_runner_cuts_a_framed_page_into_its_band(lab, monkeypatch, frame, fit, resolved):
+    client, tmp_path, _ = lab
+    source = tmp_path / "master.mp4"
+    source.write_bytes(b"master")
+    payload = _framed_publication(frame, fit, "dossier-framed00000000")
+    assert client.post(
+        "/api/control-plane/v1/recipes", json=payload, headers=headers("source-register-framed"),
+    ).status_code == 200
+    response = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(1, payload), headers=headers("source-job-framed"),
+    )
+    job_id = response.json()["jobId"]
+    _pin_cuts_to_first_frame(job_id)
+    calls, probes = [], []
+
+    async def cached_source(*_):
+        return source
+
+    async def render(src, dst, correction, **kwargs):
+        calls.append(kwargs)
+        Path(dst).write_bytes(b"derived")
+
+    async def probe(path):
+        probes.append(path)
+        return (1920, 1080)
+
+    monkeypatch.setattr(cp, "_cached_source_master", cached_source)
+    monkeypatch.setattr(cp, "run_color_correct", render)
+    monkeypatch.setattr(cp, "probe_display_size", probe)
+    await cp._run_dossier_source(job_id)
+    job = cp._load_jobs()["jobs"][job_id]
+    assert job["status"] == "completed", job.get("error")
+    expected = {
+        "scale": None,
+        "encode_args": cp.delivery_encode_args("tiktok_delivery_v1"),
+        "playback_speed": 1.0,
+        "clip_crop": {"zoom": 1.5, "focusX": 0.2, "focusY": 0.7},
+        "clip_crop_size": (1080, 1920),
+        "clip_start_ms": 0,
+        "clip_duration_ms": job["sourceCuts"][0]["durationMs"],
+        "page_frame": frame,
+        "frame_fit": resolved,
+    }
+    if resolved == "fit":
+        # fit contains the source window, so the master's upright size is probed.
+        expected["source_size"] = (1920, 1080)
+    assert calls == [expected]
+    assert probes == ([source] if resolved == "fit" else [])
+    # Receipts are unchanged: visualTreatment is exactly grade, speed and crop;
+    # the recipe context records the frame (and a saved fit) the cut used.
+    receipt = job["clips"][0]["sourceTreatment"]
+    assert set(receipt["visualTreatment"]) == {"filters", "clipSpeed", "clipCrop"}
+    assert receipt["sourceRecipeTreatment"]["frame"] == frame
+    assert receipt["sourceRecipeTreatment"].get("frameFit") == fit
+    assert "frame" not in job["clips"][0] and "frameFit" not in job["clips"][0]
+
+
+@pytest.mark.asyncio
+async def test_runner_passes_no_frame_arguments_for_a_vertical_page(lab, monkeypatch):
+    client, tmp_path, _ = lab
+    source = tmp_path / "master.mp4"
+    source.write_bytes(b"master")
+    payload = _framed_publication("9:16", None, "dossier-vertical0000000")
+    assert client.post(
+        "/api/control-plane/v1/recipes", json=payload, headers=headers("source-register-vertical"),
+    ).status_code == 200
+    response = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(1, payload), headers=headers("source-job-vertical"),
+    )
+    calls = []
+
+    async def cached_source(*_):
+        return source
+
+    async def render(src, dst, correction, **kwargs):
+        calls.append(kwargs)
+        Path(dst).write_bytes(b"derived")
+
+    async def probe(_path):
+        raise AssertionError("a 9:16 page never probes its master")
+
+    monkeypatch.setattr(cp, "_cached_source_master", cached_source)
+    monkeypatch.setattr(cp, "run_color_correct", render)
+    monkeypatch.setattr(cp, "probe_display_size", probe)
+    await cp._run_dossier_source(response.json()["jobId"])
+    job = cp._load_jobs()["jobs"][response.json()["jobId"]]
+    assert job["status"] == "completed", job.get("error")
+    assert set(calls[0]) == {"scale", "encode_args", "playback_speed", "clip_crop", "clip_crop_size",
+                             "clip_start_ms", "clip_duration_ms"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reason", ["timeout", "reply_too_large", "reply_invalid", "size_invalid", "ffprobe_failed"])
+async def test_runner_cuts_fill_when_the_master_display_size_is_unprovable(lab, monkeypatch, caplog, reason):
+    """No new refusal: fit falls back to fill, which needs no size, and the job completes."""
+    client, tmp_path, _ = lab
+    source = tmp_path / "master.mp4"
+    source.write_bytes(b"master")
+    payload = _framed_publication("16:9", "fit", "dossier-framedfallback0")
+    assert client.post(
+        "/api/control-plane/v1/recipes", json=payload, headers=headers("source-register-fallback"),
+    ).status_code == 200
+    response = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(1, payload), headers=headers("source-job-fallback"),
+    )
+    job_id = response.json()["jobId"]
+    calls = []
+
+    async def cached_source(*_):
+        return source
+
+    async def render(src, dst, correction, **kwargs):
+        calls.append(kwargs)
+        Path(dst).write_bytes(b"derived")
+
+    async def probe(_path):
+        raise cp.FrameGeometryUnavailable(reason)
+
+    monkeypatch.setattr(cp, "_cached_source_master", cached_source)
+    monkeypatch.setattr(cp, "run_color_correct", render)
+    monkeypatch.setattr(cp, "probe_display_size", probe)
+    with caplog.at_level("WARNING", logger="control_plane"):
+        await cp._run_dossier_source(job_id)
+    job = cp._load_jobs()["jobs"][job_id]
+    assert job["status"] == "completed", job.get("error")
+    assert calls[0]["page_frame"] == "16:9" and calls[0]["frame_fit"] == "fill"
+    assert "source_size" not in calls[0]
+    assert f"cutting master.mp4 fill, its display size is unavailable ({reason})" in caplog.text

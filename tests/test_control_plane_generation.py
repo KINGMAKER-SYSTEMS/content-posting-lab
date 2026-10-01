@@ -519,3 +519,30 @@ def test_unknown_page_frame_is_not_executable(frame):
     spec["renderTreatment"]["frame"] = frame
     payload["recipeSpecCanonical"] = json.dumps(spec, sort_keys=True, separators=(",", ":"))
     assert resolve_generation_recipe(payload) is None
+
+
+@pytest.mark.parametrize("frame", ["16:9", "1:1", "3:4", "4:3"])
+@pytest.mark.parametrize("fit", ["fill", "fit"])
+def test_frame_fit_resolves_without_changing_source_treatment(frame, fit):
+    payload = publication()
+    spec = json.loads(payload["recipeSpecCanonical"])
+    spec["renderTreatment"].update(frame=frame, frameFit=fit)
+    payload["recipeSpecCanonical"] = json.dumps(spec, sort_keys=True, separators=(",", ":"))
+    framed = resolve_generation_recipe(payload)
+    plain = resolve_generation_recipe(publication())
+    assert framed is not None and plain is not None
+    assert framed.recipe_spec["renderTreatment"]["frameFit"] == fit
+    assert dossier_clip_speed(framed) == dossier_clip_speed(plain)
+    assert dossier_clip_crop(framed) == dossier_clip_crop(plain)
+
+
+@pytest.mark.parametrize("render", [
+    {"frameFit": "fit"}, {"frame": "9:16", "frameFit": "fill"},
+    {"frame": "16:9", "frameFit": "stretch"}, {"frame": "16:9", "frameFit": None},
+])
+def test_frame_fit_without_a_frame_or_unknown_is_not_executable(render):
+    payload = publication()
+    spec = json.loads(payload["recipeSpecCanonical"])
+    spec["renderTreatment"].update(render)
+    payload["recipeSpecCanonical"] = json.dumps(spec, sort_keys=True, separators=(",", ":"))
+    assert resolve_generation_recipe(payload) is None

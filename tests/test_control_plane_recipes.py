@@ -610,3 +610,53 @@ def test_recipe_without_frame_is_unchanged(lab):
         PAGE_ID, body["recipeId"], body["engine"], body["recipeVersion"],
     )
     assert stored["recipeSpecCanonical"] == body["recipeSpecCanonical"]
+
+
+@pytest.mark.parametrize("frame", ["16:9", "1:1", "3:4", "4:3"])
+@pytest.mark.parametrize("fit", ["fill", "fit"])
+def test_frame_fit_registers_with_a_non_vertical_frame_and_round_trips(lab, frame, fit):
+    body = _with_spec(
+        _v4_payload(dossierRevision=f"rev-fit-{frame}-{fit}", recipeVersion="dossier-framefit0000001"),
+        lambda spec: spec["renderTreatment"].update(frame=frame, frameFit=fit),
+    )
+    response = lab.post(
+        "/api/control-plane/v1/recipes", json=body,
+        headers=_publication_headers(**{"Idempotency-Key": f"dossier:fit-{frame}-{fit}"}),
+    )
+    assert response.status_code == 200, response.text
+    stored = recipes.load_registered_recipe(
+        PAGE_ID, body["recipeId"], body["engine"], body["recipeVersion"],
+    )
+    assert stored["recipeSpecCanonical"] == body["recipeSpecCanonical"]
+    assert json.loads(stored["recipeSpecCanonical"])["renderTreatment"]["frameFit"] == fit
+    # A fit change is new recipe bytes under the same tuple, like a frame change.
+    other = _with_spec(body, lambda spec: spec["renderTreatment"].update(
+        frameFit="fit" if fit == "fill" else "fill"))
+    assert lab.post(
+        "/api/control-plane/v1/recipes", json=other,
+        headers=_publication_headers(**{"Idempotency-Key": f"dossier:fit-{frame}-{fit}-changed"}),
+    ).status_code == 409
+
+
+@pytest.mark.parametrize("render", [
+    {"frameFit": "fit"},
+    {"frameFit": "fill"},
+    {"frame": "9:16", "frameFit": "fill"},
+    {"frame": "9:16", "frameFit": "fit"},
+    {"frame": "16:9", "frameFit": "stretch"},
+    {"frame": "16:9", "frameFit": None},
+    {"frame": "1:1", "frameFit": "FIT"},
+    {"frame": "1:1", "frameFit": ["fit"]},
+])
+def test_frame_fit_without_a_frame_or_with_an_unknown_value_fails_closed(lab, render):
+    body = _with_spec(
+        _payload(dossierRevision="rev-bad-frame-fit"),
+        lambda spec: spec["renderTreatment"].update(render),
+    )
+    response = lab.post(
+        "/api/control-plane/v1/recipes", json=body,
+        headers=_publication_headers(**{"Idempotency-Key": "dossier:bad-frame-fit"}),
+    )
+    assert response.status_code == 400
+    assert "frameFit" in response.text
+    assert not _record_file(body).exists()
