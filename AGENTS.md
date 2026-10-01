@@ -40,8 +40,13 @@
   and requeues remaining finalizable artifacts at the tail, preventing a large
   batch from blocking a one-output page. A restart safely makes the prior
   runtime's queued sweep eligible for resubmission.
-- Source cut duration accounts for the saved playback speed so both normal and
-  fixed recuts deliver 6-11 seconds; preserve the saved speed and video treatment.
+- Source cut lengths run 5-9 seconds in 0.5-second steps (to 10 seconds only
+  with `CONTENT_LAB_SOURCE_CUTS_UP_TO_10S`, which stays off until the Worker's
+  5-9 second admission bound is raised and deployed). A length is used only
+  when the delivered clip at the saved playback speed also stays inside that
+  range; a speed no length satisfies (about below 0.56x or above 1.8x) keeps
+  the earlier 6-11 second delivered vocabulary. Jobs queued under the earlier
+  lengths still verify. Preserve the saved speed and video treatment.
   Normalize cut timestamps and extend a fractional missing tail frame to the
   planned output duration; source-window provenance remains unchanged.
 - Source cut planning honors the immutable original 60-second minimum for raw
@@ -205,13 +210,23 @@
   length is a distinct clip. Queued, running and completed jobs reserve their
   exact time frames across recipe revisions and library versions of the same
   master bytes, so a new recipe cuts new time frames instead of re-cutting
-  delivered ones; failed jobs release theirs. Plans prefer footage that
-  overlaps earlier cuts least, break ties by a per-job seed recorded as
-  `cutPlanSeed`, and never hold two overlapping cuts of one master.
-  Exhausted libraries remain visible with `maxQuantity: 0` so Control Plane can
-  distinguish source exhaustion from an unregistered recipe; job creation then
-  answers 409 `master_windows_exhausted`. Job creation remains exact and
-  all-or-nothing; it never silently returns fewer clips than requested.
+  delivered ones; failed jobs release theirs. Each reserved time frame keeps
+  when it was cut (job completedAt, else createdAt; archived as `usedAt`) and
+  by which page. Re-cut variety (operator rule 2026-09-30): every plan goes
+  through `plan_source_cuts`, which prefers never-cut footage, then a start far
+  from the master's last few starts, then a length unlike its last few
+  lengths, then the least recently cut footage, then a per-job seed recorded
+  as `cutPlanSeed`; one plan never holds two overlapping cuts of one master.
+  The first cut on a master uses the page's Cut length. Supply never stops for
+  used-up footage: once every window has been cut, the least recently cut one
+  is reused (the no-repeat rule bars only the exact posted asset), and when
+  other pages' reservations leave nothing, this page's own oldest window is
+  reused. Capability `maxQuantity` is 0 and job creation answers 409 only for
+  genuinely impossible libraries: `source_master_too_short` or
+  `source_windows_reserved_by_other_pages`. `tests/test_source_cut_path_census.py`
+  fails any new path that builds source cuts without the planner. Job creation
+  remains exact and all-or-nothing; it never silently returns fewer clips than
+  requested.
   Legacy async jobs without recoverable checkpoints fail closed after runtime
   replacement; generated jobs with durable provider identity retain their
   original prompt reservations while the same job resumes. Source-window

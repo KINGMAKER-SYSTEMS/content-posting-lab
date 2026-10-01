@@ -1132,3 +1132,28 @@ offset 0) whatever the slot's caption style places it, so a caption that fits
 the band stays off the bars (a very tall one can still reach onto them); font,
 size, colour and line breaks are unchanged (owner decision 2026-09-28). No
 deployment was performed.
+
+_________________________________________________________________________________
+time: [21:40 EDT] [26-09-30]
+agent: [Claude Code] [claude-opus-5-5]
+worktree: [closeout/varied-recut] [/Users/ecfromthedc/dev/seats/CLOSE-LABRECUT]
+type: [feature] [re-cut variety]: every re-cut uses a new section at a new length; supply never stops
+area: [backend] [testing]
+
+Operator rule 2026-09-30: when the Lab re-cuts a master it uses a different
+part of the footage and a different length than the cuts before it, lengths
+anywhere from 5 to 10 s, for every sourced page. `plan_source_cuts` now scores
+every candidate (whole-second start x 0.5 s length): never-cut footage first,
+then a start far from the master's last three starts, then a length unlike the
+last three lengths, then least recently cut footage, then the seeded tiebreak.
+The first cut on a master uses the page's Cut length. Lengths are 5-9 s
+(9.5/10 s only with `CONTENT_LAB_SOURCE_CUTS_UP_TO_10S`, off until the Worker's
+5-9 s admission bound is raised and deployed) and the delivered clip at the
+saved speed stays inside the same range. The job ledger now carries when and by
+which page each window was cut (archive entries keep `usedAt`/`cutIndex`/
+`pageId`; older entries count as oldest). Used-up footage no longer zeroes
+capability or answers 409 `master_windows_exhausted`: the least recently cut
+window is reused, and this page's own oldest window when other pages'
+reservations leave nothing. Only `source_master_too_short` and
+`source_windows_reserved_by_other_pages` remain. A census test fails any code
+path that builds source cuts without the planner. No deployment was performed.

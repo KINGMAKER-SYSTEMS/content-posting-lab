@@ -514,9 +514,11 @@ def test_source_planner_rotates_five_to_nine_second_disjoint_windows():
     assert resolved is not None
     cuts = plan_source_cuts(resolved, 20, set())
     assert len(cuts) == 20
-    assert {cut.duration_ms for cut in cuts} == {
-        6_000, 7_000, 8_000, 9_000,
-    }
+    lengths = [cut.duration_ms for cut in cuts]
+    assert set(lengths) <= set(range(5_000, 9_001, 500))
+    assert len(set(lengths)) >= 6, lengths
+    assert lengths[0] == 7_000, "the first cut uses the page's Cut length"
+    assert all(a != b for a, b in zip(lengths, lengths[1:])), lengths
     ordered = sorted(cuts, key=lambda cut: cut.start_ms)
     for previous, current in zip(ordered, ordered[1:]):
         assert previous.start_ms + previous.duration_ms <= current.start_ms
@@ -845,11 +847,12 @@ def test_active_source_job_reserves_windows_across_recipe_revisions(lab):
     assert not _overlapping(first_job["sourceCuts"], following_job["sourceCuts"])
 
 
-def test_capability_advertises_only_currently_reservable_source_windows(lab, monkeypatch):
-    # Capacity is exactly the time frames a job could still reserve: every
-    # whole-second start times every allowed length, each cut once. Capacity
-    # reaches 0 only when every time frame of the master is spent. A 40 s
-    # master keeps the drain short; the planner is the same at any length.
+def test_capability_never_drains_to_zero_and_every_window_is_cut_before_reuse(lab, monkeypatch):
+    # Operator rule 2026-09-30: supply never stops. Every whole-second start
+    # times every allowed length is cut once (no window twice while another
+    # is unused); after that capacity stays positive and jobs reuse the
+    # least recently cut windows instead of answering 409. A 40 s master
+    # keeps the drain short; the planner is the same at any length.
     from dataclasses import replace
     client, _, _ = lab
     resolve = cp._dossier_source_recipe
@@ -870,12 +873,17 @@ def test_capability_advertises_only_currently_reservable_source_windows(lab, mon
         assert response.status_code == 200
         return response.json()["capabilities"]
 
+    expected = set()
+    for length in range(5_000, 9_001, 500):
+        expected |= {(start, length) for start in range(0, 40_000 - length + 1, 1_000)}
+        expected.add((40_000 - length, length))
     frames: list[tuple[int, int]] = []
-    slots: list[str] = []
     round_number = 0
-    while (quantity := capability()[0]["maxQuantity"]) > 0:
+    while set(frames) != expected:
         round_number += 1
-        assert round_number < 200, "capacity never drained"
+        assert round_number < 400, "the windows were never all cut"
+        quantity = capability()[0]["maxQuantity"]
+        assert quantity > 0
         created = client.post(
             "/api/control-plane/v1/jobs", json=job_body(quantity),
             headers=headers(f"source-capacity-{round_number}"),
@@ -883,32 +891,35 @@ def test_capability_advertises_only_currently_reservable_source_windows(lab, mon
         assert created.status_code == 200, created.text
         job = cp._load_jobs()["jobs"][created.json()["jobId"]]
         assert len(job["sourceCuts"]) == quantity
-        frames.extend((cut["startMs"], cut["durationMs"]) for cut in job["sourceCuts"])
-        slots.extend(cut["slotId"] for cut in job["sourceCuts"])
+        planned = [(cut["startMs"], cut["durationMs"]) for cut in job["sourceCuts"]]
+        unused = expected - set(frames) - set(planned)
+        for index, frame in enumerate(planned):
+            if frame in frames:
+                # A reuse only when every unused window overlaps a cut
+                # already in this job (one job never overlaps itself).
+                assert all(
+                    any(start < s + d and s < start + length for s, d in planned[:index])
+                    for start, length in unused
+                ), "a window was reused while an unused one fit"
+        frames.extend(planned)
         cp._update_job(created.json()["jobId"], status="completed")
 
-    assert len(slots) == len(set(slots)), "a time frame was cut twice"
-    # Every whole-second start of every allowed length (6/7/8 s) is reached.
-    expected = {
-        (start, length)
-        for length in (6_000, 7_000, 8_000)
-        for start in range(0, 40_000 - length + 1, 1_000)
-    }
-    assert set(frames) == expected
     assert capability() == [{
         "recipeId": "pov-dirt-bike:master",
         "engine": "sourced_video",
         "sourceIdentities": ["https://www.youtube.com/watch?v=vt5im2TRAKw"],
         "recipeVersion": "dossier-feedfacefeedface",
-        "maxQuantity": 0,
+        "maxQuantity": capability()[0]["maxQuantity"],
         "sourceIdentities": [SOURCE_IDENTITY],
     }]
-    exhausted = client.post(
+    assert capability()[0]["maxQuantity"] > 0
+    again = client.post(
         "/api/control-plane/v1/jobs", json=job_body(1),
-        headers=headers("source-capacity-exhausted"),
+        headers=headers("source-capacity-after-saturation"),
     )
-    assert exhausted.status_code == 409
-    assert exhausted.json()["detail"] == "master_windows_exhausted"
+    assert again.status_code == 200, again.text
+    reused = cp._load_jobs()["jobs"][again.json()["jobId"]]["sourceCuts"][0]
+    assert (reused["startMs"], reused["durationMs"]) in expected
 
 
 @pytest.mark.asyncio
@@ -956,7 +967,7 @@ async def test_runner_cuts_real_window_changes_speed_and_records_original_lineag
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("duration_ms,ok", [(6_000, True), (6_500, False), (9_000, False)])
+@pytest.mark.parametrize("duration_ms,ok", [(6_000, True), (6_250, False), (9_500, False)])
 async def test_runner_renders_a_six_second_recut_and_refuses_a_forged_one(
     lab, monkeypatch, duration_ms, ok,
 ):
@@ -1191,9 +1202,16 @@ def test_used_page_master_is_recut_at_shifted_points_not_declared_exhausted():
             assert not (left.start_ms < right.start_ms + right.duration_ms
                         and right.start_ms < left.start_ms + left.duration_ms), (left, right)
     _, total = _drain(recipe)
-    assert len(total) == sum(90_000 - length + 1_000 for length in (6_000, 7_000, 8_000, 9_000)) // 1_000
-    assert plan_source_cuts(recipe, 100, total) == []
-    # Another page's window still blocks a re-cut, exactly like a first cut.
+    # Whole-second starts, plus one ending on the last frame for half-second lengths.
+    assert len(total) == sum(
+        (90_000 - length) // 1_000 + 1 + (length % 1_000 != 0)
+        for length in range(5_000, 9_001, 500)
+    )
+    # Every window cut: the planner reuses old ones instead of stopping.
+    reused = plan_source_cuts(recipe, 100, total)
+    assert reused and all(cut.slot_id in total for cut in reused)
+    # Another page's window still blocks a re-cut, exactly like a first cut,
+    # unless the reused window is this page's own.
     everything = source_window_exclusions([{
         "sourceIdentity": page_master.provenance["sourceUrl"], "startMs": 0, "endMs": 90_000,
     }])
@@ -1212,12 +1230,21 @@ def _page_master_recipe(duration_ms):
 
 
 def _drain(recipe, served=frozenset(), exclusions=None):
+    """Plan until a plan's first pick is a reuse, keeping only fresh cuts.
+
+    The planner never stops (it reuses the oldest window), so "drained"
+    means every never-cut window has been planned once.
+    """
     served = set(served)
     batches = []
-    while batch := plan_source_cuts(recipe, 100, served, exclusions):
-        batches.append(batch)
-        served |= {cut.slot_id for cut in batch}
-    return batches, served
+    for _ in range(5_000):
+        batch = plan_source_cuts(recipe, 100, served, exclusions)
+        fresh = [cut for cut in batch if cut.slot_id not in served]
+        if not fresh:
+            return batches, served
+        batches.append(fresh)
+        served |= {cut.slot_id for cut in fresh}
+    raise AssertionError("fresh windows never ran out")
 
 
 def test_short_page_master_is_recut_into_six_second_clips():
@@ -1225,27 +1252,31 @@ def test_short_page_master_is_recut_into_six_second_clips():
     # master, so the grid gave it exactly one cut and it read
     # capability_capacity_exhausted. Operator: "do 6-second clips of the same
     # footage". Every fitting time frame, including 0-6 s and 1.5-7.5 s, is
-    # cut once, one per job (they overlap), and only then is it exhausted.
+    # cut once, one per job (they overlap); after that the oldest is reused.
     recipe, master = _page_master_recipe(7_500)
     batches, served = _drain(recipe)
     cuts = [cut for batch in batches for cut in batch]
     assert sorted((cut.start_ms, cut.duration_ms) for cut in cuts) == [
-        (0, 6_000), (0, 7_000), (500, 7_000), (1_000, 6_000), (1_500, 6_000),
+        (0, 5_000), (0, 5_500), (0, 6_000), (0, 6_500), (0, 7_000), (0, 7_500),
+        (500, 7_000), (1_000, 5_000), (1_000, 5_500), (1_000, 6_000),
+        (1_000, 6_500), (1_500, 6_000), (2_000, 5_000), (2_000, 5_500),
+        (2_500, 5_000),
     ]
     assert all(len(batch) == 1 for batch in batches)
     assert f"{master.sha256}:0:6000" in served and f"{master.sha256}:1500:6000" in served
-    assert plan_source_cuts(recipe, 100, served) == []
+    reused = plan_source_cuts(recipe, 100, served)
+    assert len(reused) == 1 and reused[0].slot_id in served
 
 
 def test_long_footage_yields_every_length_including_the_six_second_grid():
     recipe, master = _page_master_recipe(90_000)
     batches, served = _drain(recipe)
     cuts = [cut for batch in batches for cut in batch]
-    assert {cut.duration_ms for cut in cuts} == {6_000, 7_000, 8_000, 9_000}
+    assert {cut.duration_ms for cut in cuts} == set(range(5_000, 9_001, 500))
     six = {cut.start_ms for cut in cuts if cut.duration_ms == 6_000}
     assert set(range(0, 84_001, 6_000)) <= six, "the old 6-second pass is a subset"
     assert len(cuts) == len({cut.slot_id for cut in cuts})
-    assert plan_source_cuts(recipe, 100, served) == []
+    assert all(cut.slot_id in served for cut in plan_source_cuts(recipe, 100, served))
 
 
 def test_executor_accepts_exactly_the_cuts_the_planner_emits():
@@ -1256,7 +1287,7 @@ def test_executor_accepts_exactly_the_cuts_the_planner_emits():
         assert source_cut_is_planned(recipe, master, cut.start_ms, cut.duration_ms, cut.slot_id), cut
     sha = master.sha256
     assert source_cut_is_planned(recipe, master, 1_500, 6_000, f"{sha}:1500:6000"), "ends on the last frame"
-    assert not source_cut_is_planned(recipe, master, 0, 5_000, f"{sha}:0:5000"), "length outside the page range"
+    assert not source_cut_is_planned(recipe, master, 0, 4_500, f"{sha}:0:4500"), "length outside the allowed range"
     assert not source_cut_is_planned(recipe, master, 250, 6_000, f"{sha}:250:6000"), "off the whole-second grid"
     assert not source_cut_is_planned(recipe, master, 2_000, 6_000, f"{sha}:2000:6000"), "past the last frame"
     assert not source_cut_is_planned(recipe, master, 0, 5_000, f"{sha}:0"), "grid id with a non-planned length"
@@ -1376,5 +1407,12 @@ def test_source_duration_respects_delivery_range_after_saved_speed(speed):
     cuts = plan_source_cuts(recipe, 20, set())
     assert cuts
     for cut in cuts:
-        assert 6_000 <= cut.duration_ms / speed <= 11_000
+        # Operator 2026-09-30: 5-10 s cuts are fine; the Worker admits 5-9 s
+        # delivered clips. Speeds no 5-9 s window can deliver within 5-9 s
+        # (0.5x, 2x) keep the earlier 6-11 s vocabulary unchanged.
+        if 5_000 * speed <= 9_000 and 5_000 <= 9_000 * speed:
+            assert 5_000 <= cut.duration_ms <= 9_000
+            assert 5_000 <= cut.duration_ms / speed <= 9_000
+        else:
+            assert 6_000 <= cut.duration_ms / speed <= 11_000
         assert source_cut_is_planned(recipe, cut.master, cut.start_ms, cut.duration_ms, cut.slot_id)

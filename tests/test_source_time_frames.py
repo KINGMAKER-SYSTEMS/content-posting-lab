@@ -10,7 +10,7 @@ from dataclasses import replace
 
 import routers.control_plane as cp
 from services.control_plane_sources import (
-    MASTER_WINDOWS_EXHAUSTED,
+    SOURCE_MASTER_TOO_SHORT,
     plan_source_cuts,
     resolve_source_recipe,
     source_cut_durations,
@@ -76,9 +76,9 @@ def test_lengths_vary_within_the_format_bounds():
     recipe, master = _long_page_master_recipe()
     runs, _ = _runs(recipe, 5)
     lengths = {cut.duration_ms for run in runs for cut in run}
-    assert lengths <= set(source_cut_durations(recipe)) == {6_000, 7_000, 8_000, 9_000}
-    assert len(lengths) >= 3, lengths
-    # The executor's cutDurationMs contract bounds the source window to 5-9 s.
+    assert lengths <= set(source_cut_durations(recipe)) == set(range(5_000, 9_001, 500))
+    assert len(lengths) >= 6, lengths
+    # The Worker admits 5-9 s source windows (10 s only behind the Lab flag).
     assert all(5_000 <= length <= 9_000 for length in lengths)
     for run in runs:
         for cut in run:
@@ -93,19 +93,30 @@ def test_the_page_floor_and_master_bounds_are_honored():
         assert cut.start_ms + cut.duration_ms <= master.duration_ms
 
 
+def _drain_fresh(recipe, served, exclusions=None, limit=2_000):
+    """Plan until a plan's first pick is a reuse: every fresh window is cut."""
+    served = set(served)
+    runs = []
+    for _ in range(limit):
+        batch = plan_source_cuts(recipe, 10, served, exclusions, seed=f"drain-{len(runs)}")
+        fresh = [cut for cut in batch if cut.slot_id not in served]
+        if not fresh:
+            return runs, served
+        runs.append(fresh)
+        served |= {cut.slot_id for cut in fresh}
+    raise AssertionError("fresh windows never ran out")
+
+
 def test_already_cut_windows_are_never_re_emitted():
     recipe, master = _long_page_master_recipe(duration_ms=240_000, floor_ms=200_000)
     sha = master.sha256
     # Time frames of earlier jobs: current ids and a legacy 9-second-grid id
     # (its length is recovered from the legacy rotation it was cut at).
     served = {f"{sha}:200000:7000", f"{sha}:205000:6000", f"{sha}:216000"}
-    runs = []
-    while batch := plan_source_cuts(recipe, 10, served, seed=f"drain-{len(runs)}"):
-        runs.append(batch)
-        emitted = {cut.slot_id for cut in batch}
-        assert not emitted & served
-        served |= emitted
-    frames = [(int(s.split(":")[1]), int(s.split(":")[2])) for s in served if s.count(":") == 2]
+    runs, drained = _drain_fresh(recipe, served)
+    emitted = [cut.slot_id for batch in runs for cut in batch]
+    assert len(emitted) == len(set(emitted)) and not set(emitted) & served
+    frames = [(int(s.split(":")[1]), int(s.split(":")[2])) for s in drained if s.count(":") == 2]
     assert (200_000, 7_000) in frames and (205_000, 6_000) in frames
     assert not any(start == 216_000 and length == _legacy_length(recipe, master, 216_000)
                    for batch in runs for start, length in [(c.start_ms, c.duration_ms) for c in batch])
@@ -182,34 +193,64 @@ def test_new_recipe_revision_does_not_recut_seven_of_ten_windows(lab):
     assert repeated == [], f"{len(repeated)} of 10 time frames re-cut"
 
 
-def test_a_tiny_master_reports_master_windows_exhausted(lab, monkeypatch):
+def test_a_tiny_master_keeps_supplying_by_reusing_the_oldest_window(lab, monkeypatch):
+    # Operator rule 2026-09-30: supply never stops. A 6 s master holds five
+    # time frames (5 s at 0/1 s, 5.5 s at 0/0.5 s, 6 s at 0). Once each is
+    # cut, the next job reuses the least recently cut one; capability never
+    # reads 0 and job creation never answers 409 for used-up footage.
     client, _, _ = lab
     resolve = cp._dossier_source_recipe
 
     def tiny(payload):
         recipe = resolve(payload)
-        # 6 s of footage holds exactly one 6-8 s time frame: 0-6 s.
         return replace(recipe, masters=tuple(
             replace(master, duration_ms=6_000) for master in recipe.masters
         ))
 
     monkeypatch.setattr(cp, "_dossier_source_recipe", tiny)
-    only = client.post(
-        "/api/control-plane/v1/jobs", json=job_body(1),
-        headers=headers("tiny-master-only"),
-    )
-    assert only.status_code == 200, only.text
-    cp._update_job(only.json()["jobId"], status="completed")
+    frames = []
+    for run in range(8):
+        capability = client.get(
+            "/api/control-plane/v1/capabilities", headers={"X-RT-Page-Id": PAGE_ID},
+        ).json()["capabilities"]
+        assert capability[0]["maxQuantity"] == 1, (run, capability)
+        created = client.post(
+            "/api/control-plane/v1/jobs", json=job_body(1),
+            headers=headers(f"tiny-master-{run}"),
+        )
+        assert created.status_code == 200, (run, created.text)
+        cut = cp._load_jobs()["jobs"][created.json()["jobId"]]["sourceCuts"][0]
+        frames.append((cut["startMs"], cut["durationMs"]))
+        cp._update_job(
+            created.json()["jobId"], status="completed",
+            completedAt=f"2026-09-30T12:00:{run:02d}+00:00",
+        )
+    assert sorted(set(frames[:5])) == [(0, 5_000), (0, 5_500), (0, 6_000), (500, 5_500), (1_000, 5_000)]
+    # Then the oldest cut comes back first, in the order they were cut.
+    assert frames[5:] == frames[:3]
+
+
+def test_a_master_shorter_than_any_cut_names_its_reason(lab, monkeypatch):
+    client, _, _ = lab
+    resolve = cp._dossier_source_recipe
+
+    def too_short(payload):
+        recipe = resolve(payload)
+        return replace(recipe, masters=tuple(
+            replace(master, duration_ms=4_900) for master in recipe.masters
+        ))
+
+    monkeypatch.setattr(cp, "_dossier_source_recipe", too_short)
     capability = client.get(
         "/api/control-plane/v1/capabilities", headers={"X-RT-Page-Id": PAGE_ID},
     ).json()["capabilities"]
     assert capability[0]["maxQuantity"] == 0
-    exhausted = client.post(
+    refused = client.post(
         "/api/control-plane/v1/jobs", json=job_body(1),
-        headers=headers("tiny-master-exhausted"),
+        headers=headers("too-short-master"),
     )
-    assert exhausted.status_code == 409
-    assert exhausted.json()["detail"] == MASTER_WINDOWS_EXHAUSTED == "master_windows_exhausted"
+    assert refused.status_code == 409
+    assert refused.json()["detail"] == SOURCE_MASTER_TOO_SHORT == "source_master_too_short"
 
 
 def test_a_24_hour_master_plans_and_answers_capacity_within_100_ms():
@@ -272,9 +313,11 @@ def test_reserved_windows_are_skipped_on_long_and_short_masters_alike():
         }])
         cuts = []
         served: set[str] = set()
-        while batch := plan_source_cuts(recipe, 10, served, excluded, seed=f"x{len(cuts)}"):
+        # Through saturation and into reuse: reused windows respect it too.
+        for run in range(60):
+            batch = plan_source_cuts(recipe, 10, served, excluded, seed=f"x{run}")
+            assert batch
             cuts.extend(batch)
             served |= {cut.slot_id for cut in batch}
-        assert cuts
         for cut in cuts:
             assert cut.start_ms + cut.duration_ms <= 10_000 or cut.start_ms >= duration_ms - 30_000
