@@ -1686,6 +1686,47 @@ def stop_compaction_scheduler() -> None:
     _COMPACTION_STOP.set()
 
 
+def _dead_retention_threads() -> list[str]:
+    """Names of the compaction / media-retention threads that are not alive right now."""
+    dead: list[str] = []
+    if _COMPACTION_THREAD is None or not _COMPACTION_THREAD.is_alive():
+        dead.append("compaction")
+    if _MEDIA_RETENTION_THREAD is None or not _MEDIA_RETENTION_THREAD.is_alive():
+        dead.append("media_retention")
+    return dead
+
+
+@router.post("/v1/media-retention/remedy")
+async def run_media_retention_remedy(
+    x_rt_lane: str | None = Header(default=None),
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """Revive a dead retention thread and run one forced floor pass (watcher remedy).
+
+    This is the Lab side of the closed loop the control-plane ``lab-volume-watch``
+    job drives when the volume is at or above 80% and not dropping: the watcher
+    pages only after this automatic step (and its Railway-restart fallback) have
+    both failed. It revives any dead compaction / media-retention thread and then
+    runs exactly one bounded pass of the same sweep the scheduler already runs at
+    floor pressure, so it never deletes anything the sweep would not delete on its
+    own. It is idempotent: a repeat call re-plans from the same job snapshot and
+    finds nothing new. Fail closed behind the machine bearer.
+    """
+    require_control_plane_bearer(authorization)
+    if x_rt_lane != CONTROL_PLANE_LANE:
+        raise HTTPException(status_code=400, detail="X-RT-Lane must be content-bucket-control-plane")
+    revived = _dead_retention_threads()
+    start_compaction_scheduler()
+    summary = await anyio.to_thread.run_sync(
+        lambda: run_generated_media_retention_once(pressure="floor"),
+    )
+    return {
+        "schema": "content-lab.media-retention-remedy.v1",
+        "revivedThreads": revived,
+        "summary": summary,
+    }
+
+
 def _reject_prompt_fields(value: Any, path: str = "job") -> None:
     if isinstance(value, dict):
         for key, item in value.items():
