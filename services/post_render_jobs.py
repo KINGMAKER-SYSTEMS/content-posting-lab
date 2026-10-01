@@ -64,6 +64,41 @@ FAILED_MEDIA_RETENTION_MS = 24 * 60 * 60 * 1000
 # (including request, receipt/final/QA hashes and counters) and every
 # idempotency row are no-repeat authority and are never deleted by this GC.
 AUXILIARY_HISTORY_RETENTION_MS = 30 * 24 * 60 * 60 * 1000
+# Delivered-media age-out. The Worker does not call /acknowledge, so without
+# this sweep every succeeded render's media stayed on the volume forever. A
+# succeeded, unretired job is retired once (a) its window has passed since it
+# succeeded and since its planned slot time (so the slot's 1 h admission-retry
+# window is over) and (b) the Control Plane confirms that exact final is
+# admitted: its /prepared-video door answers 206 only for a `ready` post
+# artifact with that final_object_key whose R2 object exists. An unconfirmed
+# job is never deleted; it is re-checked later.
+#
+# The sweep acts on volume pressure by itself instead of waiting for a person:
+#   normal  free >= 25% of the volume        delivered window 72 h, every 5 min
+#   tight   free <  25% of the volume        delivered window 24 h, every minute
+#   floor   free below the render claim floor: emergency pass, safest first --
+#           failed/interrupted attempt media of any age, then confirmed
+#           delivered media whose slot is 2 h past -- before a claim is refused.
+TIGHT_FREE_FRACTION = 0.25
+DELIVERED_RETIRE_AFTER_MS = {"normal": 72 * 60 * 60 * 1000, "tight": 24 * 60 * 60 * 1000,
+                             "floor": 2 * 60 * 60 * 1000}
+AGE_OUT_INTERVAL_MS = {"normal": 5 * 60 * 1000, "tight": 60 * 1000, "floor": 60 * 1000}
+AGE_OUT_RECHECK_MS = {"normal": 6 * 60 * 60 * 1000, "tight": 60 * 60 * 1000, "floor": 15 * 60 * 1000}
+AGE_OUT_BATCH = 120
+AGE_OUT_TIME_BUDGET_MS = 60 * 1000
+
+
+def render_claim_floor_bytes(worker_count: int | None = None) -> int:
+    """Free bytes below which no new render is claimed."""
+    return _min_free_bytes() + PEAK_RENDER_WORKSPACE_BYTES * (worker_count or _worker_count())
+
+
+def volume_pressure(free: int, total: int, floor: int) -> str:
+    if free < floor:
+        return "floor"
+    if free < total * TIGHT_FREE_FRACTION:
+        return "tight"
+    return "normal"
 
 
 def _retire_after_ms() -> int:
@@ -144,6 +179,17 @@ def _planned_at_ms(slot_payload_json: str) -> int | None:
     return value
 
 
+def _tree_bytes(path: Path) -> int:
+    total = 0
+    for directory, _subdirs, names in os.walk(path):
+        for name in names:
+            try:
+                total += os.lstat(os.path.join(directory, name)).st_size
+            except OSError:
+                pass
+    return total
+
+
 class RenderJobError(ValueError):
     def __init__(self, code: str):
         super().__init__(code)
@@ -212,6 +258,39 @@ class SourceSettings:
         # their separate CONTENT_LAB_CONTROL_PLANE_ORIGIN browser ingress.
         return cls(os.getenv("CONTENT_LAB_POST_RENDER_SOURCE_ORIGIN", "").rstrip("/"),
                    os.getenv("CONTROL_PLANE_SERVICE_ID", ""), os.getenv("CONTROL_PLANE_SERVICE_SECRET", ""))
+
+
+def confirm_admitted_final(final_sha256: str, final_byte_length: int, *,
+                           transport: httpx.BaseTransport | None = None) -> bool | None:
+    """Ask the Control Plane whether this exact final is admitted to R2.
+
+    True only for a 206 whose Content-Range total equals the final's length.
+    False for a definite 404 (no ready post artifact holds this final).
+    None when unconfigured or the answer is anything else, so callers keep media.
+    """
+    origin = os.getenv("CONTENT_LAB_CONTROL_PLANE_ORIGIN", "").strip().rstrip("/")
+    client_id = os.getenv("CONTROL_PLANE_SERVICE_ID", "")
+    client_secret = os.getenv("CONTROL_PLANE_SERVICE_SECRET", "")
+    url = urlsplit(origin)
+    if (url.scheme != "https" or not url.hostname or url.username or url.password
+            or url.path not in {"", "/"} or url.query or url.fragment or not client_id or not client_secret):
+        return None
+    if not re.fullmatch(r"[0-9a-f]{64}", final_sha256 or "") or not isinstance(final_byte_length, int):
+        return None
+    headers = {"CF-Access-Client-Id": client_id, "CF-Access-Client-Secret": client_secret,
+               "Range": "bytes=0-0", "Accept-Encoding": "identity"}
+    try:
+        with httpx.Client(transport=transport, trust_env=False, follow_redirects=False,
+                          timeout=httpx.Timeout(10, connect=5), headers=headers) as client:
+            response = client.get(f"{origin}/prepared-video/{final_sha256}.mp4")
+    except httpx.HTTPError:
+        return None
+    if response.status_code == 404:
+        return False
+    if response.status_code != 206:
+        return None
+    total = response.headers.get("content-range", "").rpartition("/")[2]
+    return total.isdigit() and int(total) == final_byte_length
 
 
 def fetch_source(request: PostRenderRequest, destination: Path, settings: SourceSettings,
@@ -289,10 +368,16 @@ class ProcessLock:
 class PostRenderJobs:
     """SQLite owns job truth; OS locks fence live writers and clear when a process dies."""
     def __init__(self, root: Path, *, fetcher: Callable | None = None, renderer: Callable = render_post,
-                 clock_ms: Callable[[], int] = lambda: time.time_ns() // 1_000_000):
+                 clock_ms: Callable[[], int] = lambda: time.time_ns() // 1_000_000,
+                 confirm_final: Callable[[str, int], bool | None] = confirm_admitted_final):
         if not root.is_absolute():
             raise RenderJobError("job_root_must_be_absolute")
         self.root, self.renderer, self.clock_ms = root, renderer, clock_ms
+        self.confirm_final = confirm_final
+        self._age_out_lock = threading.Lock()
+        self._next_age_out_ms = 0
+        self._last_age_out_ms = -AGE_OUT_INTERVAL_MS["floor"]
+        self._age_out_thread: threading.Thread | None = None
         self.worker_count = _worker_count()
         self.fetcher = fetcher or (lambda request, path: fetch_source(request, path, SourceSettings.from_environment()))
         for directory in (root, root / "locks", root / "attempts"):
@@ -316,6 +401,7 @@ class PostRenderJobs:
                     qa_frame_sha256 TEXT,
                     final_byte_length INTEGER,
                     output_authority_json TEXT,
+                    age_out_checked_at_ms INTEGER,
                     UNIQUE(slot_id,slot_hash));
                 CREATE TABLE IF NOT EXISTS idempotency (
                     key TEXT PRIMARY KEY, job_id TEXT NOT NULL REFERENCES jobs(id), request_hash TEXT NOT NULL);
@@ -331,7 +417,7 @@ class PostRenderJobs:
             columns = {row["name"] for row in db.execute("PRAGMA table_info(jobs)").fetchall()}
             integer_columns = (
                 "planned_at_ms", "acknowledged_at_ms", "retired_at_ms",
-                "final_byte_length",
+                "final_byte_length", "age_out_checked_at_ms",
             )
             text_columns = ("final_sha256", "qa_frame_sha256", "output_authority_json")
             for name in integer_columns:
@@ -642,10 +728,30 @@ class PostRenderJobs:
             raise RenderJobError("retirement_failed")
         return self.status(job_id)
 
-    def _retire_row(self, row) -> bool:
+    def _persist_shared_output_authority(self, row, authority: dict) -> None:
+        """Tombstone a job whose final bytes another job already owns.
+
+        jobs.final_sha256 is UNIQUE, so the owning job keeps that column; this
+        row keeps the full output authority JSON (which names the same final
+        hash), the receipt and QA hashes, and the byte length.
+        """
+        receipt_sha, _final_sha, qa_sha, length, encoded = self._authority_values(authority)
+        with self._db() as db:
+            db.execute(
+                "UPDATE jobs SET receipt_sha256=?,qa_frame_sha256=?,final_byte_length=?,"
+                "output_authority_json=? WHERE id=?",
+                (receipt_sha, qa_sha, length, encoded, row["id"]),
+            )
+
+    def _retire_row(self, row, *, authority: dict | None = None, allow_shared_final: bool = False) -> bool:
         """Persist output authority, then remove media and finally mark retired."""
-        authority = self._verify_output(row)
-        self._persist_output_authority(row, authority)
+        authority = authority or self._verify_output(row)
+        try:
+            self._persist_output_authority(row, authority)
+        except RenderJobError as error:
+            if error.code != "duplicate_output" or not allow_shared_final:
+                raise
+            self._persist_shared_output_authority(row, authority)
         attempt_dir = self._output(row).parent.parent
         try:
             shutil.rmtree(attempt_dir)
@@ -687,8 +793,86 @@ class PostRenderJobs:
         if self._gc_auxiliary_history():
             self._checkpoint_wal()
 
-    def _gc_failed_attempt_media(self) -> None:
-        cutoff = self.clock_ms() - FAILED_MEDIA_RETENTION_MS
+    def _maybe_age_out(self, *, force: bool = False) -> dict | None:
+        """One age-out pass when due (or forced); tightens itself under volume pressure."""
+        now = self.clock_ms()
+        due = self._next_age_out_ms
+        if force:  # a refused claim may pull the next pass forward, at most once per floor interval
+            due = min(due, self._last_age_out_ms + AGE_OUT_INTERVAL_MS["floor"])
+        if now < due or not self._age_out_lock.acquire(blocking=False):
+            return None
+        try:
+            self._last_age_out_ms = now
+            pressure = self._volume_pressure()
+            summary = {"pressure": pressure, "failed_media_dirs": 0}
+            if pressure == "floor":
+                # Safest class first: failed attempt bytes are diagnostic only.
+                summary["failed_media_dirs"] = self._gc_failed_attempt_media(retention_ms=0)
+            summary.update(self._age_out_delivered(pressure))
+            if pressure != "normal":
+                log.warning("post render age-out acted on volume pressure=%s retired=%d bytes_freed=%d "
+                            "failed_media_dirs=%d", pressure, summary["retired"], summary["bytes_freed"],
+                            summary["failed_media_dirs"])
+            self._next_age_out_ms = self.clock_ms() + AGE_OUT_INTERVAL_MS[pressure]
+            return summary
+        finally:
+            self._age_out_lock.release()
+
+    def _volume_pressure(self) -> str:
+        """Log used/free on every pass and classify the volume. Unknown usage changes nothing."""
+        try:
+            usage = shutil.disk_usage(self.root)
+        except OSError:
+            log.error("post render volume usage unavailable root=%s; age-out keeps normal windows", self.root)
+            return "normal"
+        floor = render_claim_floor_bytes(self.worker_count)
+        pressure = volume_pressure(usage.free, usage.total, floor)
+        log.info("post render volume used_bytes=%d free_bytes=%d total_bytes=%d floor_bytes=%d pressure=%s",
+                 usage.used, usage.free, usage.total, floor, pressure)
+        return pressure
+
+    def _age_out_delivered(self, pressure: str = "normal") -> dict:
+        """Retire succeeded media the Control Plane confirms is admitted to R2 (bounded per run)."""
+        started = self.clock_ms()
+        cutoff = started - DELIVERED_RETIRE_AFTER_MS[pressure]
+        with self._db() as db:
+            rows = db.execute(
+                "SELECT * FROM jobs WHERE state='succeeded' AND retired_at_ms IS NULL AND updated_at_ms<=? "
+                "AND (planned_at_ms IS NULL OR planned_at_ms<=?) "
+                "AND (age_out_checked_at_ms IS NULL OR age_out_checked_at_ms<=?) "
+                "ORDER BY COALESCE(age_out_checked_at_ms,0), updated_at_ms LIMIT ?",
+                (cutoff, cutoff, started - AGE_OUT_RECHECK_MS[pressure], AGE_OUT_BATCH),
+            ).fetchall()
+        summary = {"retired": 0, "unconfirmed": 0, "failed": 0, "bytes_freed": 0}
+        for row in rows:
+            if self.clock_ms() - started > AGE_OUT_TIME_BUDGET_MS:
+                break
+            try:
+                authority = self._verify_output(row)
+                confirmed = self.confirm_final(authority["final_sha256"], authority["final_byte_length"])
+                if confirmed is not True:
+                    summary["unconfirmed"] += 1
+                    with self._db() as db:
+                        db.execute("UPDATE jobs SET age_out_checked_at_ms=? WHERE id=?", (self.clock_ms(), row["id"]))
+                    continue
+                size = _tree_bytes(self.root / "attempts" / row["id"])
+                if self._retire_row(row, authority=authority, allow_shared_final=True):
+                    summary["retired"] += 1
+                    summary["bytes_freed"] += size
+                else:
+                    summary["failed"] += 1
+            except (OSError, ValueError, TypeError):
+                summary["failed"] += 1
+                log.exception("post render age-out failed job=%s", row["id"])
+        if rows:
+            log.info("post render age-out pressure=%s retired=%d unconfirmed=%d failed=%d bytes_freed=%d "
+                     "candidates=%d", pressure, summary["retired"], summary["unconfirmed"], summary["failed"],
+                     summary["bytes_freed"], len(rows))
+        return summary
+
+    def _gc_failed_attempt_media(self, *, retention_ms: int = FAILED_MEDIA_RETENTION_MS) -> int:
+        cutoff = self.clock_ms() - retention_ms
+        removed = 0
         with self._db() as db:
             rows = db.execute(
                 "SELECT id,job_id FROM attempts WHERE state IN ('failed','interrupted') "
@@ -697,6 +881,8 @@ class PostRenderJobs:
             ).fetchall()
         for row in rows:
             attempt_dir = self.root / "attempts" / row["job_id"] / row["id"]
+            if not attempt_dir.exists():
+                continue
             try:
                 shutil.rmtree(attempt_dir)
             except FileNotFoundError:
@@ -713,10 +899,12 @@ class PostRenderJobs:
                     row["job_id"], row["id"],
                 )
                 continue
+            removed += 1
             try:
                 attempt_dir.parent.rmdir()
             except OSError:
                 pass
+        return removed
 
     def _gc_auxiliary_history(self) -> bool:
         cutoff = self.clock_ms() - AUXILIARY_HISTORY_RETENTION_MS
@@ -759,8 +947,14 @@ class PostRenderJobs:
         free = self._free_bytes()
         if free is None:
             return False
-        required = _min_free_bytes() + PEAK_RENDER_WORKSPACE_BYTES * self.worker_count
+        required = render_claim_floor_bytes(self.worker_count)
         if free < required:
+            # Act before refusing: one bounded emergency pass, then look again.
+            if self._maybe_age_out(force=True) is not None:
+                free = self._free_bytes()
+                if free is not None and free >= required:
+                    return True
+                free = free if free is not None else 0
             log.warning(
                 "post render claim deferred reason=post_render_workspace_capacity_insufficient "
                 "job=%s free_bytes=%d required_bytes=%d workers=%d",
@@ -912,7 +1106,19 @@ class PostRenderJobs:
         for thread in self._threads:
             thread.start()
 
+        # Age-out has its own thread so a sweep never delays a render claim.
+        def age_out():
+            while not self._stop.is_set():
+                try:
+                    self._maybe_age_out()
+                except Exception:
+                    log.exception("post render age-out iteration failed")
+                self._stop.wait(30)
+        self._age_out_thread = threading.Thread(target=age_out, name="post-render-age-out", daemon=True)
+        self._age_out_thread.start()
+
     def stop(self):
         self._stop.set()
-        for thread in self._threads:
-            thread.join(timeout=2)
+        for thread in [*self._threads, self._age_out_thread]:
+            if thread is not None:
+                thread.join(timeout=2)
