@@ -10,6 +10,7 @@ router's TikTok-optimized encodes.
 import asyncio
 import math
 import re
+from pathlib import Path
 
 import pytest
 
@@ -427,3 +428,124 @@ async def test_tail_cut_keeps_delivery_duration_at_fractional_frame(tmp_path, sp
     ], text=True).strip())
     assert 6 <= actual <= 11
     assert actual == pytest.approx(raw_ms / 1000 / speed, abs=1 / 30)
+
+
+# --- Looks stronger than one colorchannelmixer allows ------------------------
+# ffmpeg refuses any colorchannelmixer coefficient outside [-2, 2]. The live
+# lovenightdrives look (2026-10-01 16:03Z, brightness 0.7 / contrast 1.95 /
+# saturation 1.65) composes to red-from-red 2.0636, and every refill job for
+# that page failed with "Error initializing filter 'colorchannelmixer'".
+
+LOVENIGHTDRIVES = {"brightness": 0.7, "contrast": 1.95, "saturation": 1.65}
+REAL_MASTER = Path(__file__).parents[1] / "artifacts/visual-admission-evidence/portrait-7s.mp4"
+
+
+def _dossier_cc(look: dict) -> dict:
+    # services.control_plane_generation.dossier_filters_to_color_correction
+    cc = {key: (float(look[key]) - 1.0) * 100.0 for key in ("brightness", "contrast", "saturation") if key in look}
+    if "warmth" in look:
+        cc["temperature"] = float(look["warmth"]) * 100.0
+    if "fade" in look:
+        cc["fade"] = float(look["fade"]) * 100.0
+    return cc
+
+
+def _all_mixers(vf: str) -> list[list[list[float]]]:
+    mats = []
+    for body in re.findall(r"colorchannelmixer=([^,]+)", vf):
+        c = dict((key, float(value)) for key, value in (part.split("=") for part in body.split(":")))
+        assert all(abs(value) <= 2.0 for value in c.values()), body
+        mats.append([[c["rr"], c["rg"], c["rb"]], [c["gr"], c["gg"], c["gb"]], [c["br"], c["bg"], c["bb"]]])
+    return mats
+
+
+def _composed(mats):
+    product = mats[0]
+    for mat in mats[1:]:
+        product = [[sum(mat[i][k] * product[k][j] for k in range(3)) for j in range(3)] for i in range(3)]
+    return product
+
+
+def _expected_matrix(look: dict) -> list[list[float]]:
+    # brightness and contrast are plain multiplies here, then saturation.
+    scale = look["brightness"] * look["contrast"]
+    s = look["saturation"]
+    w = (0.2126, 0.7152, 0.0722)
+    return [[scale * ((1 - s) * w[j] + (s if i == j else 0)) for j in range(3)] for i in range(3)]
+
+
+def test_an_in_range_live_look_keeps_its_exact_filter_string():
+    # The commonest live look on 2026-09-26 (17 pages), pinned to the string
+    # the single-mixer code emitted before this change.
+    vf = build_cc_filter(_dossier_cc({"brightness": 0.6, "contrast": 1.25, "saturation": 1.1}))
+    assert vf == (
+        "format=rgb24,colorchannelmixer=rr=0.809055:rg=-0.053640:rb=-0.005415:ra=-0.125000:"
+        "gr=-0.015945:gg=0.771360:gb=-0.005415:ga=-0.125000:"
+        "br=-0.015945:bg=-0.053640:bb=0.819585:ba=-0.125000")
+
+
+def test_a_look_past_the_mixer_range_is_split_into_in_range_stages_with_the_same_product():
+    vf = build_cc_filter(_dossier_cc(LOVENIGHTDRIVES))
+    mats = _all_mixers(vf)
+    assert len(mats) >= 2 and vf.startswith("format=rgb24,format=rgb48le,colorchannelmixer=")
+    product, expected = _composed(mats), _expected_matrix(LOVENIGHTDRIVES)
+    assert expected[0][0] == pytest.approx(2.063621, abs=1e-6)
+    for i in range(3):
+        for j in range(3):
+            assert product[i][j] == pytest.approx(expected[i][j], abs=1e-5)
+    assert ",format=rgb24" in vf.split("colorchannelmixer")[-1]
+
+
+@pytest.mark.parametrize("brightness", [0.0, 1.0, 3.0])
+@pytest.mark.parametrize("contrast", [0.0, 1.0, 3.0])
+@pytest.mark.parametrize("saturation", [0.0, 1.0, 3.0])
+@pytest.mark.parametrize("warmth,fade", [(0.0, 0.0), (1.0, 0.0), (-1.0, 0.0), (0.0, 1.0), (1.0, 1.0)])
+def test_every_dossier_slider_extreme_stays_inside_the_mixer_range(brightness, contrast, saturation, warmth, fade):
+    look = {"brightness": brightness, "contrast": contrast, "saturation": saturation, "warmth": warmth, "fade": fade}
+    vf = build_cc_filter(_dossier_cc(look))
+    mats = _all_mixers(vf)  # asserts every coefficient is inside [-2, 2]
+    if len(mats) > 1:
+        assert all(mat[i][j] == (mat[0][0] if i == j else 0) for mat in mats[1:] for i in range(3) for j in range(3))
+        assert 1 <= mats[1][0][0] <= 2
+
+
+def _rgb_frame(vf: str | None) -> bytes:
+    import subprocess
+    chain = "scale=108:192:flags=neighbor" + (f",{vf}" if vf else "")
+    return subprocess.run(
+        ["ffmpeg", "-v", "error", "-ss", "2", "-i", str(REAL_MASTER), "-vf", chain, "-frames:v", "1",
+         "-f", "rawvideo", "-pix_fmt", "rgb24", "-"], check=True, capture_output=True).stdout
+
+
+def test_a_split_look_renders_on_a_real_master_like_one_unlimited_mixer():
+    import shutil
+    if not shutil.which("ffmpeg"):
+        pytest.skip("ffmpeg required")
+    source = _rgb_frame(None)
+    got = _rgb_frame(build_cc_filter(_dossier_cc(LOVENIGHTDRIVES)))
+    m = _expected_matrix(LOVENIGHTDRIVES)
+    worst = 0
+    for i in range(0, len(source), 3):
+        r, g, b = source[i:i + 3]
+        for ch in range(3):
+            value = m[ch][0] * r + m[ch][1] * g + m[ch][2] * b
+            want = 0 if value < 0 else 255 if value > 255 else int(value + 0.5)
+            worst = max(worst, abs(got[i + ch] - want))
+    assert worst <= 2
+    assert sum(source) != sum(got)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("look", [
+    LOVENIGHTDRIVES,
+    {"brightness": 3.0, "contrast": 3.0, "saturation": 3.0, "warmth": 1.0, "fade": 1.0},
+    {"brightness": 3.0, "contrast": 3.0, "saturation": 0.0, "warmth": -1.0},
+])
+async def test_strong_looks_render_through_the_job_path(tmp_path, look):
+    import shutil
+    if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
+        pytest.skip("ffmpeg and ffprobe required")
+    output = tmp_path / "graded.mp4"
+    await run_color_correct(str(REAL_MASTER), str(output), {**_dossier_cc(look), "grain": 50.0, "vignette": 50.0},
+                            scale="1080:1920", clip_start_ms=1000, clip_duration_ms=1000)
+    assert output.stat().st_size > 1000
