@@ -185,13 +185,16 @@ def _clip_crop_filter(
     )
 
 
-# ffmpeg's colorchannelmixer refuses any coefficient outside [-2, 2]
-# ("Error initializing filter"), so one mixer cannot carry a strong look such
-# as brightness 0.7 x contrast 1.95 x saturation 1.65 (red-from-red 2.06).
+# colorchannelmixer accepts a coefficient only inside [-2, 2]. More
+# importantly, its *a coefficients are alpha-channel multipliers, not constants:
+# ra/ga/ba are real RGB offsets only while the input has an opaque alpha plane.
 _MIXER_LIMIT = 2.0
 
 
 def _colorchannelmixer(mat: list, off: list) -> str:
+    values = (*mat[0], *mat[1], *mat[2], *off)
+    if any(not math.isfinite(value) or abs(value) > _MIXER_LIMIT for value in values):
+        raise ValueError("colorchannelmixer coefficient outside [-2, 2]")
     return (
         f"colorchannelmixer="
         f"rr={mat[0][0]:.6f}:rg={mat[0][1]:.6f}:rb={mat[0][2]:.6f}:ra={off[0]:.6f}:"
@@ -200,37 +203,54 @@ def _colorchannelmixer(mat: list, off: list) -> str:
     )
 
 
-def _mixer_filters(mat: list, off: list) -> list[str]:
-    """The colour matrix as ffmpeg filters that never exceed the mixer's range.
+def _factor_steps(value: float, matrix_for_factor) -> list[float]:
+    """Split one composable CSS factor until every mixer stage is legal."""
+    if abs(value) <= 2:
+        candidates = [value]
+    else:
+        count = math.ceil(math.log(abs(value), 2))
+        root = abs(value) ** (1 / count)
+        candidates = [math.copysign(root, value), *([root] * (count - 1))]
+    while any(
+        max(abs(coefficient) for row in matrix_for_factor(factor) for coefficient in row)
+        > _MIXER_LIMIT
+        for factor in candidates
+    ):
+        count = len(candidates) + 1
+        root = abs(value) ** (1 / count)
+        candidates = [math.copysign(root, value), *([root] * (count - 1))]
+    return candidates
 
-    A matrix inside [-2, 2] is one mixer, exactly as before, so every look
-    that rendered keeps its filter string byte for byte. A stronger matrix is
-    divided by a factor k so it fits, and then multiplied back by k in equal
-    steps of at most 2. Each step is a plain multiply of every channel by
-    the same number of at least 1 followed by the mixer's 0-255 clip, so
-    clip(f * clip(x)) == clip(f * x) and the chain gives the same picture one
-    unlimited mixer would (to within one level of rounding). It reads the same
-    8-bit RGB the single mixer reads and works in 16-bit RGB, so the divided
-    values keep their precision.
-    """
 
-    peak = max(abs(value) for value in (*mat[0], *mat[1], *mat[2], *off))
-    if peak <= _MIXER_LIMIT:
-        return ["format=rgb24", _colorchannelmixer(mat, off)]
-    total = peak / _MIXER_LIMIT
-    steps = math.ceil(math.log(total, _MIXER_LIMIT) - 1e-12)
-    step = total ** (1 / steps)
-    filters = [
-        # Same 8-bit RGB input the single mixer reads, then 16-bit working space.
-        "format=rgb24",
-        "format=rgb48le",
-        _colorchannelmixer([[value / total for value in row] for row in mat],
-                           [value / total for value in off]),
+def _diagonal_filters(value: float, pivot: float = 0.0) -> list[str]:
+    diagonal = lambda factor: [
+        [factor, 0.0, 0.0],
+        [0.0, factor, 0.0],
+        [0.0, 0.0, factor],
     ]
-    scale = [[step, 0, 0], [0, step, 0], [0, 0, step]]
-    filters.extend(_colorchannelmixer(scale, [0.0, 0.0, 0.0]) for _ in range(steps))
-    filters.append("format=rgb24")
-    return filters
+    return [
+        _colorchannelmixer(
+            diagonal(factor),
+            [pivot * (1 - factor)] * 3,
+        )
+        for factor in _factor_steps(value, diagonal)
+    ]
+
+
+def _saturation_matrix(value: float) -> list[list[float]]:
+    sr, sg, sb = 0.2126, 0.7152, 0.0722
+    return [
+        [sr + (1 - sr) * value, sg - sg * value, sb - sb * value],
+        [sr - sr * value, sg + (1 - sg) * value, sb - sb * value],
+        [sr - sr * value, sg - sg * value, sb + (1 - sb) * value],
+    ]
+
+
+def _saturation_filters(value: float) -> list[str]:
+    return [
+        _colorchannelmixer(_saturation_matrix(factor), [0.0, 0.0, 0.0])
+        for factor in _factor_steps(value, _saturation_matrix)
+    ]
 
 
 def build_cc_filter(
@@ -319,40 +339,17 @@ def build_cc_filter(
             item for item in (crop_filter, speed_filter, scale_filter) if item
         ) or "null"
 
-    mat = [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
-    off = [0.0, 0.0, 0.0]
-
-    def mat_mul(a: list, b: list) -> list:
-        return [
-            [sum(a[i][k] * b[k][j] for k in range(3)) for j in range(3)]
-            for i in range(3)
-        ]
-
-    def mat_vec(m: list, v: list) -> list:
-        return [sum(m[i][j] * v[j] for j in range(3)) for i in range(3)]
-
+    # CSS applies filter functions from left to right. Keep those stages
+    # separate instead of composing one oversized matrix. rgba64le provides an
+    # opaque alpha plane, making ra/ga/ba the constant terms that CSS contrast
+    # around 0.5 requires; rgb24 silently made those offsets ineffective.
+    filters = ["format=rgba64le"]
     if abs(css_brightness - 1.0) >= 0.005:
-        b = css_brightness
-        mat = [[b * mat[i][j] for j in range(3)] for i in range(3)]
-        off = [b * o for o in off]
-
+        filters.extend(_diagonal_filters(css_brightness))
     if abs(css_contrast - 1.0) >= 0.005:
-        c = css_contrast
-        bias = 0.5 * (1 - c)
-        mat = [[c * mat[i][j] for j in range(3)] for i in range(3)]
-        off = [c * o + bias for o in off]
-
+        filters.extend(_diagonal_filters(css_contrast, pivot=0.5))
     if abs(css_saturate - 1.0) >= 0.005:
-        s = css_saturate
-        sr, sg, sb = 0.2126, 0.7152, 0.0722
-        sat_mat = [
-            [sr + (1 - sr) * s, sg - sg * s, sb - sb * s],
-            [sr - sr * s, sg + (1 - sg) * s, sb - sb * s],
-            [sr - sr * s, sg - sg * s, sb + (1 - sb) * s],
-        ]
-        off = mat_vec(sat_mat, off)
-        mat = mat_mul(sat_mat, mat)
-
+        filters.extend(_saturation_filters(css_saturate))
     if abs(t_raw) > 1:
         if t_raw > 0:
             amt = min(1.0, t_raw / 200)
@@ -381,8 +378,7 @@ def build_cc_filter(
                     0.072 + 0.928 * cos_a + 0.072 * sin_a,
                 ],
             ]
-        off = mat_vec(t_mat, off)
-        mat = mat_mul(t_mat, mat)
+        filters.append(_colorchannelmixer(t_mat, [0.0, 0.0, 0.0]))
 
     if abs(ti_raw) > 1:
         rad = math.radians(ti_raw / 3)
@@ -404,10 +400,11 @@ def build_cc_filter(
                 0.072 + 0.928 * cos_a + 0.072 * sin_a,
             ],
         ]
-        off = mat_vec(ti_mat, off)
-        mat = mat_mul(ti_mat, mat)
+        filters.append(_colorchannelmixer(ti_mat, [0.0, 0.0, 0.0]))
 
-    filters = _mixer_filters(mat, off)
+    # Return to the established output working format before spatial/effect
+    # filters and the encoder negotiate their final pixel format.
+    filters.append("format=rgb24")
     if sharpness >= 0.001:
         filters.append(f"unsharp=5:5:{sharpness:.2f}:5:5:{sharpness:.2f}")
     if grain_raw >= 0.001:
