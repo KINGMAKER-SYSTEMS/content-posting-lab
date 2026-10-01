@@ -1,0 +1,113 @@
+{
+  "fields": {
+    "align": {
+      "enum": [
+        "left",
+        "center",
+        "right"
+      ],
+      "nullable": false,
+      "required": true,
+      "type": "string"
+    },
+    "background": {
+      "default": "none",
+      "enum": [
+        "none",
+        "box",
+        "highlight"
+      ],
+      "nullable": false,
+      "required": false,
+      "type": "string"
+    },
+    "background_color": {
+      "nullable": true,
+      "required": false,
+      "type": "string"
+    },
+    "case": {
+      "default": "as_written",
+      "enum": [
+        "as_written",
+        "lower",
+        "upper",
+        "title"
+      ],
+      "nullable": false,
+      "required": false,
+      "type": "string"
+    },
+    "color": {
+      "nullable": false,
+      "required": true,
+      "type": "string"
+    },
+    "font": {
+      "maxLength": 128,
+      "minLength": 1,
+      "nullable": false,
+      "required": true,
+      "type": "string"
+    },
+    "inverted": {
+      "default": false,
+      "nullable": false,
+      "required": false,
+      "type": "boolean"
+    },
+    "line_balance": {
+      "maximum": 100,
+      "minimum": 0,
+      "nullable": false,
+      "required": true,
+      "type": "integer"
+    },
+    "line_breaks": {
+      "items": "string",
+      "nullable": true,
+      "required": false,
+      "type": "array"
+    },
+    "offset_pct": {
+      "default": 0,
+      "maximum": 40,
+      "minimum": -40,
+      "nullable": false,
+      "required": false,
+      "type": "number"
+    },
+    "outline": {
+      "nullable": true,
+      "required": false,
+      "type": "string"
+    },
+    "outline_width_px": {
+      "maximum": 20,
+      "minimum": 0,
+      "nullable": true,
+      "required": false,
+      "type": "integer"
+    },
+    "position": {
+      "enum": [
+        "top",
+        "middle",
+        "bottom"
+      ],
+      "nullable": false,
+      "required": true,
+      "type": "string"
+    },
+    "size_pt": {
+      "maximum": 96,
+      "minimum": 12,
+      "nullable": false,
+      "required": true,
+      "type": "number"
+    }
+  },
+  "model": "services/caption_render.py CaptionStyle",
+  "schema": "content-lab.caption-style-contract.v1",
+  "unknown_fields": "rejected"
+}
