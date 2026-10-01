@@ -201,7 +201,7 @@ def test_new_recipe_revision_does_not_recut_seven_of_ten_windows(lab):
     assert repeated == [], f"{len(repeated)} of 10 time frames re-cut"
 
 
-def test_a_tiny_master_keeps_supplying_by_reusing_the_oldest_window(lab, monkeypatch):
+def test_a_tiny_master_keeps_supplying_new_windows_after_the_whole_seconds(lab, monkeypatch):
     # Operator rule 2026-09-30: supply never stops. A 6 s master holds five
     # whole-second time frames (5 s at 0/1 s, 5.5 s at 0/0.5 s, 6 s at 0).
     # Once each is cut, the next jobs start on frames inside the second, each
