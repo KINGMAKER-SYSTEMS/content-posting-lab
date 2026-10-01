@@ -94,8 +94,10 @@ from services.control_plane_generation import (
 )
 from services.control_plane_sources import (
     CAPABILITY_PLAN_SEED,
-    MASTER_WINDOWS_EXHAUSTED,
+    CutUse,
     canonical_source_identity,
+    cut_use_time,
+    explain_empty_source_plan,
     plan_source_cuts,
     source_cut_is_planned,
     resolve_source_recipe,
@@ -140,6 +142,23 @@ router = APIRouter()
 log = logging.getLogger("control_plane")
 
 RESPONSE_SCHEMA = "content-lab.response.v1"
+# Job constraints this Lab understands. Unknown keys and values are ignored,
+# never an error. "priority": "low_runway" marks a page close to running out
+# of posts; it is kept in the job's stored constraints, but the Lab starts
+# every job as soon as it is created (there is no Lab-side queue to reorder),
+# so ordering work by priority is the Control Plane Worker's job.
+SUPPORTED_CONSTRAINTS = ("sourceWindowExclusions", "priority")
+# The deployed Worker rejects any capabilities field it does not know, so
+# `supportedConstraints` is advertised only once this flag is set (after the
+# Worker accepts the field).
+ADVERTISE_CONSTRAINTS_ENV = "CONTENT_LAB_ADVERTISE_SUPPORTED_CONSTRAINTS"
+
+
+def _capabilities_response(entries: list[dict[str, Any]]) -> dict[str, Any]:
+    response: dict[str, Any] = {"schema": RESPONSE_SCHEMA, "capabilities": entries}
+    if os.environ.get(ADVERTISE_CONSTRAINTS_ENV, "").strip().lower() in {"1", "true", "yes", "on"}:
+        response["supportedConstraints"] = list(SUPPORTED_CONSTRAINTS)
+    return response
 ENGINE = "content_lab"
 RECIPES_DIR_NAME = "recipes"
 PROMPTS = "prompts.json"
@@ -306,13 +325,17 @@ def _registered_recipes() -> list[dict[str, Any]]:
 # a lease or expiry window) feeds any reservation or planning function
 # capabilities() calls (_generated_unavailable_prompts,
 # _truck_master_candidates, _slideshow_unavailable_signatures,
-# _source_dna_unavailable_slots, plan_prompt_combinations, plan_source_cuts,
+# _source_dna_cut_ledger, plan_prompt_combinations, plan_source_cuts,
 # plan_slideshows, resolve_generation_recipe, _dossier_source_recipe,
 # resolve_slideshow_recipe, resolve_material_profile) — the one wall-clock
 # read in this file that gates on elapsed time
 # (_source_import_active_deadline_expired) is reachable only from
 # GET /v1/jobs/{id}, never from capabilities(). No request header or param
 # beyond X-RT-Page-Id/X-Page-Id (folded into page_id) is read either.
+# _source_dna_cut_ledger reads the cut times stored on jobs (data covered by
+# the job generation in the key), not the clock. The advertised
+# supportedConstraints flag is read when each response is built, outside the
+# cached entries.
 #
 # The remaining short TTL is a defensive backstop only, not the mechanism
 # this relies on for the inputs actually in the key above — those make a
@@ -513,7 +536,7 @@ def capabilities(
 
     current = _current_intent_for_capabilities(page_id)
     if current is None:
-        return {"schema": RESPONSE_SCHEMA, "capabilities": []}
+        return _capabilities_response([])
     master_pages, master_pages_hash = current
 
     entries = []
@@ -565,7 +588,7 @@ def capabilities(
         )
         cached_entries = _capabilities_cache_lookup(cache_key)
         if cached_entries is not None:
-            return {"schema": RESPONSE_SCHEMA, "capabilities": list(cached_entries)}
+            return _capabilities_response(list(cached_entries))
 
     # capabilities() for one page only ever needs that page's own jobs, plus
     # (for the two async source-recipe kinds below) the jobs of the specific
@@ -676,11 +699,15 @@ def capabilities(
                 f"capability:{page_id}:{slideshow_recipe.executor_version}",
             ))
         elif source_recipe is not None:
-            unavailable_slots = _source_dna_unavailable_slots(
+            unavailable_slots, cut_history = _source_dna_cut_ledger(
                 dossier_source_dna_view, source_recipe, publication["recipeVersion"],
             )
+            # 0 means no never-cut window is left (explain_empty_source_plan
+            # names why at job creation). Other pages' reservations arrive
+            # only with a job, so this count does not subtract them.
             max_quantity = len(plan_source_cuts(
                 source_recipe, source_recipe.max_quantity, unavailable_slots,
+                history=cut_history,
             ))
         else:
             if generation_related_jobs_view is None:
@@ -715,7 +742,7 @@ def capabilities(
 
     if cacheable:
         _capabilities_cache_store(cache_key, entries)
-    return {"schema": RESPONSE_SCHEMA, "capabilities": entries}
+    return _capabilities_response(entries)
 
 
 # Registry reads must not queue behind network-heavy capability/catalog work
@@ -1761,6 +1788,13 @@ def _scan_library(project: str) -> list[str]:
 def _source_dna_unavailable_slots(
     store: dict[str, Any], source_recipe: Any, recipe_version: str,
 ) -> set[str]:
+    """The used/reserved slot ids of _source_dna_cut_ledger."""
+    return _source_dna_cut_ledger(store, source_recipe, recipe_version)[0]
+
+
+def _source_dna_cut_ledger(
+    store: dict[str, Any], source_recipe: Any, recipe_version: str,
+) -> tuple[set[str], dict[str, CutUse]]:
     """Derive reservations from durable job truth, never a write-only ledger.
 
     Queued/running jobs reserve their exact windows across recipe revisions so
@@ -1770,9 +1804,22 @@ def _source_dna_unavailable_slots(
     version that contains the same master bytes: a new recipe re-treats fresh
     time frames instead of re-cutting the ones already delivered. Failed jobs
     release their windows.
+
+    The second value says when each time frame was last cut (its job's
+    completedAt, else createdAt; archived cuts keep it as ``usedAt``), so
+    plan_source_cuts can vary each re-cut against the most recent ones and
+    prefer the least recently cut footage. A cut without a time counts as the
+    oldest.
     """
     master_shas = {master.sha256 for master in source_recipe.masters}
     slots: set[str] = set()
+    history: dict[str, CutUse] = {}
+
+    def remember(frame: str, use: CutUse) -> None:
+        known = history.get(frame)
+        if known is None or (use.at, use.order) > (known.at, known.order):
+            history[frame] = use
+
     for job in store.get("jobs", {}).values():
         if (
             not isinstance(job, dict)
@@ -1788,7 +1835,8 @@ def _source_dna_unavailable_slots(
                 or job.get("recipeVersion") == recipe_version
             )
         )
-        for cut in job.get("sourceCuts", []):
+        used_at = cut_use_time(job.get("completedAt") or job.get("createdAt"))
+        for order, cut in enumerate(job.get("sourceCuts", [])):
             if not isinstance(cut, dict):
                 continue
             slot_id = cut.get("slotId")
@@ -1800,7 +1848,9 @@ def _source_dna_unavailable_slots(
                 master_sha in master_shas
                 and type(start_ms) is int and type(duration_ms) is int
             ):
-                slots.add(f"{master_sha}:{start_ms}:{duration_ms}")
+                frame = f"{master_sha}:{start_ms}:{duration_ms}"
+                slots.add(frame)
+                remember(frame, CutUse(used_at, order))
     # Archived completed source cuts keep their permanent reservations. The
     # exact time frame is reserved forever; the library slot id stays reserved
     # only across the same recipe revision (mirroring the live rule).
@@ -1821,8 +1871,14 @@ def _source_dna_unavailable_slots(
             master_sha in master_shas
             and type(start_ms) is int and type(duration_ms) is int
         ):
-            slots.add(f"{master_sha}:{start_ms}:{duration_ms}")
-    return slots
+            frame = f"{master_sha}:{start_ms}:{duration_ms}"
+            slots.add(frame)
+            order = cut.get("cutIndex")
+            remember(frame, CutUse(
+                cut_use_time(cut.get("usedAt")),
+                order if type(order) is int else 0,
+            ))
+    return slots, history
 
 
 def _slideshow_unavailable_signatures(
@@ -4289,28 +4345,36 @@ async def create_job(
             }
             start_generation = True
         elif source_recipe is not None:
-            served_slots = _source_dna_unavailable_slots(
+            served_slots, cut_history = _source_dna_cut_ledger(
                 store, source_recipe, publication["recipeVersion"],
             )
             # A per-job seed varies the time frames each run cuts; it is
             # recorded so the plan is reproducible. Capability counted with
             # the capability seed, so fall back to it rather than refuse a
-            # quantity that seed can still fill near exhaustion.
+            # quantity that seed can still fill.
             cut_plan_seed = hashlib.sha256(
                 f"{idempotency_key}\0{job_id}".encode(),
             ).hexdigest()[:16]
             cuts = plan_source_cuts(
                 source_recipe, quantity, served_slots, excluded_windows,
-                seed=cut_plan_seed,
+                seed=cut_plan_seed, history=cut_history,
             )
             if len(cuts) != quantity:
                 cut_plan_seed = CAPABILITY_PLAN_SEED
                 cuts = plan_source_cuts(
                     source_recipe, quantity, served_slots, excluded_windows,
-                    seed=cut_plan_seed,
+                    seed=cut_plan_seed, history=cut_history,
                 )
             if not cuts:
-                raise HTTPException(status_code=409, detail=MASTER_WINDOWS_EXHAUSTED)
+                # source_master_too_short, source_windows_exhausted (every
+                # window already cut: the page needs new footage) or
+                # source_windows_reserved_by_other_pages.
+                raise HTTPException(
+                    status_code=409,
+                    detail=explain_empty_source_plan(
+                        source_recipe, served_slots, excluded_windows,
+                    ),
+                )
             if len(cuts) != quantity:
                 raise HTTPException(status_code=409, detail="insufficient_inventory")
             job_root = (
