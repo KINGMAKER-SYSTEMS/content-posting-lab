@@ -50,6 +50,11 @@ _POSITION_Y_PCT = {"top": 15, "middle": 50, "bottom": 85}
 
 _FONT_PATTERN = re.compile(r"^TikTokSans[A-Za-z0-9.-]{0,112}\.ttf$")
 _HEX_PATTERN = re.compile(r"^#[0-9a-fA-F]{6}$")
+_LINE_BREAKS_MAX = 24
+_LINE_BREAK_MAX_CHARS = 500
+_BACKGROUNDS_NEEDING_COLOR = ("box", "highlight")
+# Where an inverted caption always sits (see CaptionStyle.center_inverted_caption).
+_INVERTED_PLACEMENT = {"position": "middle", "offset_pct": 0}
 
 
 class CaptionRenderError(ValueError):
@@ -90,8 +95,8 @@ class CaptionStyle(BaseModel):
         # says. The Worker sends it that way (captionLayouts.js) and the
         # Dossier preview draws it that way (top 50%), so the burn matches.
         if self.inverted:
-            self.position = "middle"
-            self.offset_pct = 0
+            for key, value in _INVERTED_PLACEMENT.items():
+                setattr(self, key, value)
         return self
 
     @model_serializer(mode="wrap")
@@ -121,7 +126,7 @@ class CaptionStyle(BaseModel):
 
     @model_validator(mode="after")
     def validate_background(self) -> "CaptionStyle":
-        if self.background != "none" and self.background_color is None:
+        if self.background in _BACKGROUNDS_NEEDING_COLOR and self.background_color is None:
             raise ValueError("background_color is required for box or highlight")
         return self
 
@@ -130,7 +135,8 @@ class CaptionStyle(BaseModel):
     def validate_line_breaks(cls, value: list[str] | None) -> list[str] | None:
         if value is None:
             return None
-        if not 1 <= len(value) <= 24 or any("\n" in line or "\r" in line or len(line) > 500 for line in value):
+        if not 1 <= len(value) <= _LINE_BREAKS_MAX or any(
+                "\n" in line or "\r" in line or len(line) > _LINE_BREAK_MAX_CHARS for line in value):
             raise ValueError("line_breaks must be 1 through 24 bounded lines")
         return value
 
@@ -140,14 +146,17 @@ CAPTION_STYLE_CONTRACT_PATH = Path(__file__).parents[1] / "contracts" / "caption
 
 
 def caption_style_contract() -> dict:
-    """Every CaptionStyle field with its type, allowed values and numeric range, read off the model.
+    """Every CaptionStyle field, value and cross-field rule Content Lab checks, read off the model.
 
-    The committed copy (contracts/caption-style.v1.json) lets the Worker check
-    in its own CI that every caption field and value it can send is one this
-    renderer takes. It does not carry the rules the model checks in code: the
-    TikTokSans font name, the #rrggbb colours, the line_breaks limits, the
-    background_color a box or highlight needs, and that an inverted caption
-    is centred. tests/test_caption_transforms.py fails when the copy drifts;
+    Types, enums and numeric ranges come from the model's JSON schema; the
+    font and colour patterns, the line_breaks limits and the two cross-field
+    rules come from the same constants the validators use. The committed copy
+    (contracts/caption-style.v1.json) lets the Worker check in its own CI that
+    every caption style it can send is one this renderer takes. Not in it:
+    render-time refusals that depend on the installed fonts and the rendered
+    size (CAPTION_FONT_UNAVAILABLE, italic fonts, CAPTION_LINE_TOO_WIDE,
+    CAPTION_OUT_OF_FRAME), and the request rule that line_breaks must spell
+    the caption. tests/test_caption_transforms.py fails when the copy drifts;
     regenerate it with ``python scripts/export_caption_style_contract.py``.
     """
 
@@ -167,11 +176,24 @@ def caption_style_contract() -> dict:
         if "default" in prop and prop["default"] is not None:
             field["default"] = prop["default"]
         fields[name] = field
+    fields["font"]["pattern"] = _FONT_PATTERN.pattern
+    for name in ("color", "outline", "background_color"):
+        fields[name]["pattern"] = _HEX_PATTERN.pattern
+    fields["line_breaks"].update({
+        "minItems": 1,
+        "maxItems": _LINE_BREAKS_MAX,
+        "itemMaxLength": _LINE_BREAK_MAX_CHARS,
+        "itemForbids": ["\n", "\r"],
+    })
     return {
         "schema": CAPTION_STYLE_CONTRACT_SCHEMA,
         "model": "services/caption_render.py CaptionStyle",
         "unknown_fields": "rejected",
         "fields": fields,
+        "rules": [
+            {"when": {"background": list(_BACKGROUNDS_NEEDING_COLOR)}, "requires": ["background_color"]},
+            {"when": {"inverted": True}, "sets": dict(_INVERTED_PLACEMENT)},
+        ],
     }
 
 

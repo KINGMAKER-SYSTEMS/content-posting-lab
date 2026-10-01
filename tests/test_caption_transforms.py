@@ -10,6 +10,7 @@ model.
 import base64
 import io
 import json
+import re
 import shutil
 from pathlib import Path
 
@@ -282,3 +283,45 @@ def test_caption_style_contract_lists_both_transforms():
     assert contract["fields"]["inverted"] == {"type": "boolean", "required": False, "nullable": False,
                                               "default": False}
     assert set(contract["fields"]) == set(CaptionStyle.model_fields)
+
+
+def test_every_rule_in_the_contract_is_one_the_model_enforces():
+    # Read the rules off the committed contract and break each one: the Worker
+    # trusts this file, so a rule it lists that the model does not hold (or a
+    # bound that is off by one) fails here by name.
+    contract = json.loads(CAPTION_STYLE_CONTRACT_PATH.read_text(encoding="utf-8"))
+    fields = contract["fields"]
+
+    def accepts(style):
+        try:
+            CaptionStyle.model_validate(style)
+            return True
+        except ValidationError:
+            return False
+
+    patterned = [name for name, spec in fields.items() if "pattern" in spec]
+    assert sorted(patterned) == ["background_color", "color", "font", "outline"]
+    for name in patterned:
+        assert re.fullmatch(fields[name]["pattern"], STYLE.get(name, "#112233"))
+        for bad in ("x", "Arial.ttf", "red", "#12345", "#1234567", "TikTokSans16pt-Bold.otf"):
+            assert not re.fullmatch(fields[name]["pattern"], bad)
+            assert not accepts({**STYLE, name: bad}), (name, bad)
+
+    lines = fields["line_breaks"]
+    longest = "a" * lines["itemMaxLength"]
+    assert accepts({**STYLE, "line_breaks": ["a"] * lines["maxItems"]})
+    assert accepts({**STYLE, "line_breaks": [longest]})
+    assert not accepts({**STYLE, "line_breaks": ["a"] * (lines["maxItems"] + 1)})
+    assert not accepts({**STYLE, "line_breaks": [longest + "a"]})
+    assert not accepts({**STYLE, "line_breaks": ["a"] * (lines["minItems"] - 1)})
+    for forbidden in lines["itemForbids"]:
+        assert not accepts({**STYLE, "line_breaks": [f"a{forbidden}b"]})
+
+    requires, sets = contract["rules"]
+    for background in requires["when"]["background"]:
+        assert not accepts({**STYLE, "background": background})
+        assert accepts({**STYLE, "background": background, **{key: "#112233" for key in requires["requires"]}})
+    assert accepts({**STYLE, "background": "none"})
+    assert sets["when"] == {"inverted": True}
+    style = CaptionStyle.model_validate({**STYLE, "position": "bottom", "offset_pct": -12, "inverted": True})
+    assert {key: getattr(style, key) for key in sets["sets"]} == sets["sets"]

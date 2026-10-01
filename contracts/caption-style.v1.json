@@ -23,6 +23,7 @@
     },
     "background_color": {
       "nullable": true,
+      "pattern": "^#[0-9a-fA-F]{6}$",
       "required": false,
       "type": "string"
     },
@@ -40,6 +41,7 @@
     },
     "color": {
       "nullable": false,
+      "pattern": "^#[0-9a-fA-F]{6}$",
       "required": true,
       "type": "string"
     },
@@ -47,6 +49,7 @@
       "maxLength": 128,
       "minLength": 1,
       "nullable": false,
+      "pattern": "^TikTokSans[A-Za-z0-9.-]{0,112}\\.ttf$",
       "required": true,
       "type": "string"
     },
@@ -64,7 +67,14 @@
       "type": "integer"
     },
     "line_breaks": {
+      "itemForbids": [
+        "\n",
+        "\r"
+      ],
+      "itemMaxLength": 500,
       "items": "string",
+      "maxItems": 24,
+      "minItems": 1,
       "nullable": true,
       "required": false,
       "type": "array"
@@ -79,6 +89,7 @@
     },
     "outline": {
       "nullable": true,
+      "pattern": "^#[0-9a-fA-F]{6}$",
       "required": false,
       "type": "string"
     },
@@ -108,6 +119,28 @@
     }
   },
   "model": "services/caption_render.py CaptionStyle",
+  "rules": [
+    {
+      "requires": [
+        "background_color"
+      ],
+      "when": {
+        "background": [
+          "box",
+          "highlight"
+        ]
+      }
+    },
+    {
+      "sets": {
+        "offset_pct": 0,
+        "position": "middle"
+      },
+      "when": {
+        "inverted": true
+      }
+    }
+  ],
   "schema": "content-lab.caption-style-contract.v1",
   "unknown_fields": "rejected"
 }
