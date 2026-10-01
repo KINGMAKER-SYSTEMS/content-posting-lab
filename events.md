@@ -1142,14 +1142,16 @@ area: [backend] [testing]
 
 Operator rule 2026-09-30: when the Lab re-cuts a master it uses a different
 part of the footage and a different length than the cuts before it, lengths
-anywhere from 5 to 10 s, for every sourced page. `plan_source_cuts` now scores
+5 to 9 s in 0.5 s steps, for every sourced page. `plan_source_cuts` now scores
 every candidate (whole-second start x 0.5 s length): never-cut footage first,
 then a start far from the master's last three starts, then a length unlike the
 last three lengths, then least recently cut footage, then the seeded tiebreak.
-The first cut on a master uses the page's Cut length. Lengths are 5-9 s
-(9.5/10 s only with `CONTENT_LAB_SOURCE_CUTS_UP_TO_10S`, off until the Worker's
-5-9 s admission bound is raised and deployed) and the delivered clip at the
-saved speed stays inside the same range. The job ledger now carries when and by
+The first cut on a master uses the page's Cut length. Lengths are 5-9 s (the
+Worker's bound stays the maximum) and the delivered clip at the saved speed
+stays inside the same range. `constraints.priority: "low_runway"` and unknown
+constraint keys are accepted; `supportedConstraints` is advertised only with
+`CONTENT_LAB_ADVERTISE_SUPPORTED_CONSTRAINTS`, because the deployed Worker
+rejects unknown capabilities fields. The job ledger now carries when and by
 which page each window was cut (archive entries keep `usedAt`/`cutIndex`/
 `pageId`; older entries count as oldest). Used-up footage no longer zeroes
 capability or answers 409 `master_windows_exhausted`: the least recently cut

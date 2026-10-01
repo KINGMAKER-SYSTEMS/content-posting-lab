@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 import routers.control_plane as cp
 import routers.control_plane_recipes as recipes
 from services.control_plane_sources import (
+    source_cut_durations,
     plan_source_cuts,
     resolve_source_recipe,
     source_cut_is_planned,
@@ -1006,6 +1007,60 @@ async def test_runner_renders_a_six_second_recut_and_refuses_a_forged_one(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("clip_speed,duration_ms", [
+    (1.0, 5_000), (1.0, 7_500), (1.0, 9_000), (1.5, 7_500), (0.75, 6_500),
+])
+async def test_real_renders_at_the_length_bounds_probe_inside_the_worker_bounds(
+    lab, monkeypatch, clip_speed, duration_ms,
+):
+    # The Worker's visual admission refuses a sourced clip whose probed
+    # duration is outside 5000-9000 ms. Render the shortest, a half-second
+    # and the longest allowed cut (and the delivered extremes at a saved
+    # speed) through the real executor and probe them the way the scanner does.
+    import time
+    from services.visual_admission import _probe
+    client, tmp_path, _ = lab
+    payload = publication(
+        clip_speed=clip_speed, cut_duration_ms=7_000,
+        recipe_version=f"dossier-bounds{int(clip_speed * 100):03d}{duration_ms:05d}",
+    )
+    assert duration_ms in source_cut_durations(cp._dossier_source_recipe(payload))
+    assert client.post(
+        "/api/control-plane/v1/recipes", json=payload,
+        headers=headers(f"source-register-bounds-{clip_speed}-{duration_ms}"),
+    ).status_code == 200
+    response = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(1, payload),
+        headers=headers(f"source-job-bounds-{clip_speed}-{duration_ms}"),
+    )
+    assert response.status_code == 200, response.text
+    job_id = response.json()["jobId"]
+    store = cp._load_jobs()
+    store["jobs"][job_id]["sourceCuts"] = [{
+        "slotId": f"{MASTER_SHA}:0:{duration_ms}",
+        "masterSha256": MASTER_SHA,
+        "libraryStartMs": 0,
+        "startMs": 0,
+        "durationMs": duration_ms,
+    }]
+    cp.atomic_save(cp._jobs_path(), store)
+    source = tmp_path / "master.mp4"
+    _write_av_test_clip(source, duration=12.0)
+
+    async def cached_source(*_):
+        return source
+
+    monkeypatch.setattr(cp, "_cached_source_master", cached_source)
+    await cp._run_dossier_source(job_id)
+    job = cp._load_jobs()["jobs"][job_id]
+    assert job["status"] == "completed", job.get("error")
+    output = Path(job["artifactRoot"]) / job["clips"][0]["path"]
+    *_, probed = _probe(output, time.monotonic() + 30)
+    assert 5_000 <= round(probed * 1_000) <= 9_000, probed
+    assert round(probed * 1_000) == pytest.approx(duration_ms / clip_speed, abs=40)
+
+
+@pytest.mark.asyncio
 async def test_runner_passes_exact_cut_speed_and_crop_to_isolated_render(lab, monkeypatch):
     client, tmp_path, _ = lab
     source = tmp_path / "master.mp4"
@@ -1407,7 +1462,7 @@ def test_source_duration_respects_delivery_range_after_saved_speed(speed):
     cuts = plan_source_cuts(recipe, 20, set())
     assert cuts
     for cut in cuts:
-        # Operator 2026-09-30: 5-10 s cuts are fine; the Worker admits 5-9 s
+        # Operator 2026-09-30: 5-9 s cuts in 0.5 s steps; the Worker admits 5-9 s
         # delivered clips. Speeds no 5-9 s window can deliver within 5-9 s
         # (0.5x, 2x) keep the earlier 6-11 s vocabulary unchanged.
         if 5_000 * speed <= 9_000 and 5_000 <= 9_000 * speed:

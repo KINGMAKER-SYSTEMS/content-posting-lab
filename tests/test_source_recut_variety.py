@@ -1,8 +1,8 @@
 """Re-cut variety (operator rule 2026-09-30).
 
 "When it recuts, it uses a different time cut than the previous one. It
-recuts at a different section in a different time slice", lengths anywhere
-from 5 to 10 s, "just build it in there for everything": every re-cut of a
+recuts at a different section in a different time slice", lengths 5 to 9 s in
+half-second steps, "just build it in there for everything": every re-cut of a
 master lands on a different part of the footage at a different length than
 the cuts just before it, and supply never stops when the windows run out.
 """
@@ -14,7 +14,6 @@ import pytest
 import routers.control_plane as cp
 from services import job_store_compaction as compaction
 from services.control_plane_sources import (
-    LONG_SOURCE_CUTS_ENV,
     NO_CUT_TIME,
     SOURCE_MASTER_TOO_SHORT,
     SOURCE_WINDOWS_RESERVED_ELSEWHERE,
@@ -203,21 +202,16 @@ def test_other_pages_reservations_fall_back_to_this_pages_own_oldest_window():
         assert cut.start_ms >= 40_000
 
 
-def test_lengths_are_half_seconds_from_five_to_nine_and_ten_only_behind_the_flag(monkeypatch):
-    monkeypatch.delenv(LONG_SOURCE_CUTS_ENV, raising=False)
+def test_lengths_are_half_seconds_from_five_to_nine():
     recipe, master = _recipe()
     assert source_cut_durations(recipe) == tuple(range(5_000, 9_001, 500))
-    monkeypatch.setenv(LONG_SOURCE_CUTS_ENV, "1")
-    assert source_cut_durations(recipe) == tuple(range(5_000, 10_001, 500))
     cuts, _, _ = _cut_one_at_a_time(recipe, 40)
-    assert {9_500, 10_000} & {cut.duration_ms for cut in cuts}
-    monkeypatch.setenv(LONG_SOURCE_CUTS_ENV, "0")
-    assert max(source_cut_durations(recipe)) == 9_000
+    assert max(cut.duration_ms for cut in cuts) <= 9_000
+    assert {cut.duration_ms for cut in cuts} & {5_500, 6_500, 7_500, 8_500}, "half seconds are used"
 
 
 @pytest.mark.parametrize("speed", [0.6, 0.75, 1.0, 1.25, 1.75])
-def test_delivered_clip_stays_inside_the_worker_bounds_at_the_saved_speed(speed, monkeypatch):
-    monkeypatch.delenv(LONG_SOURCE_CUTS_ENV, raising=False)
+def test_delivered_clip_stays_inside_the_worker_bounds_at_the_saved_speed(speed):
     recipe, _ = _recipe(clip_speed=speed)
     durations = source_cut_durations(recipe)
     assert durations

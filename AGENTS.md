@@ -40,9 +40,8 @@
   and requeues remaining finalizable artifacts at the tail, preventing a large
   batch from blocking a one-output page. A restart safely makes the prior
   runtime's queued sweep eligible for resubmission.
-- Source cut lengths run 5-9 seconds in 0.5-second steps (to 10 seconds only
-  with `CONTENT_LAB_SOURCE_CUTS_UP_TO_10S`, which stays off until the Worker's
-  5-9 second admission bound is raised and deployed). A length is used only
+- Source cut lengths run 5-9 seconds in 0.5-second steps; 9 seconds is the
+  Worker's admission bound and stays the maximum. A length is used only
   when the delivered clip at the saved playback speed also stays inside that
   range; a speed no length satisfies (about below 0.56x or above 1.8x) keeps
   the earlier 6-11 second delivered vocabulary. Jobs queued under the earlier

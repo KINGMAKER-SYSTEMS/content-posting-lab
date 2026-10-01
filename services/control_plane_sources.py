@@ -16,7 +16,6 @@ from datetime import datetime, timezone
 import hashlib
 import json
 import math
-import os
 import random
 import re
 from urllib.parse import urlsplit, urlunsplit, parse_qsl, quote_plus
@@ -69,13 +68,12 @@ RECUT_FIXED_DURATION_MS = 6_000
 # instead of refusing the job.
 CUT_START_STEP_MS = 1_000
 CAPABILITY_PLAN_SEED = "capability"
-# Allowed lengths: 5 s to 9 s in 0.5 s steps. 9.5 s and 10 s need
-# LONG_SOURCE_CUTS_ENV because the Worker admits only 5-9 s windows today.
+# Allowed lengths: 5 s to 9 s in 0.5 s steps (operator 2026-09-30: the
+# maximum stays 9 s, the Worker's admission bound in
+# control-plane-worker/src/domain/sourceVideoBounds.js).
 CUT_LENGTH_MIN_MS = 5_000
 CUT_LENGTH_STEP_MS = 500
 CUT_LENGTH_MAX_MS = 9_000
-CUT_LENGTH_MAX_LONG_MS = 10_000
-LONG_SOURCE_CUTS_ENV = "CONTENT_LAB_SOURCE_CUTS_UP_TO_10S"
 # Variety score. Any overlap with already-cut footage (OVERLAP_PENALTY plus up
 # to OVERLAP_WEIGHT plus 1 for recency) always costs more than the largest
 # variety penalty (2 x sum(RECENT_WEIGHTS) = 3.8).
@@ -424,32 +422,18 @@ def source_window_exclusions(value: Any) -> list[tuple[str, str | None, int, int
     return windows
 
 
-def long_source_cuts_enabled() -> bool:
-    """True only when the operator has turned on cuts longer than 9 s.
-
-    The Worker admits only 5-9 s source windows and 5-9 s delivered clips
-    (control-plane-worker/src/domain/sourceVideoBounds.js). Until that bound is
-    raised and deployed, a 9.5 s or 10 s cut would be refused after it was
-    rendered, so the longer lengths stay off unless this flag is set.
-    """
-    value = os.environ.get(LONG_SOURCE_CUTS_ENV, "")
-    return value.strip().lower() in {"1", "true", "yes", "on"}
-
-
 def source_cut_durations(recipe: SourceRecipe) -> tuple[int, ...]:
     """Allowed source lengths, ascending: 5 s to 9 s in 0.5 s steps.
 
-    With LONG_SOURCE_CUTS_ENV set the range runs to 10 s. A length is allowed
-    only when the source window AND the delivered clip at the saved playback
-    speed (length / speed) both stay inside that range, which is what the
-    Worker admits. A speed so far from 1x that no length satisfies both
-    (below about 0.56x or above about 1.8x) keeps the earlier vocabulary.
+    A length is allowed only when the source window AND the delivered clip at
+    the saved playback speed (length / speed) both stay inside 5-9 s, which is
+    what the Worker admits. A speed so far from 1x that no length satisfies
+    both (below about 0.56x or above about 1.8x) keeps the earlier vocabulary.
     """
-    maximum = CUT_LENGTH_MAX_LONG_MS if long_source_cuts_enabled() else CUT_LENGTH_MAX_MS
     speed = dossier_clip_speed(recipe)
     lengths = tuple(
-        ms for ms in range(CUT_LENGTH_MIN_MS, maximum + 1, CUT_LENGTH_STEP_MS)
-        if CUT_LENGTH_MIN_MS * speed - 1e-6 <= ms <= maximum * speed + 1e-6
+        ms for ms in range(CUT_LENGTH_MIN_MS, CUT_LENGTH_MAX_MS + 1, CUT_LENGTH_STEP_MS)
+        if CUT_LENGTH_MIN_MS * speed - 1e-6 <= ms <= CUT_LENGTH_MAX_MS * speed + 1e-6
     )
     return lengths or _legacy_source_cut_durations(recipe)
 

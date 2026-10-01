@@ -78,7 +78,7 @@ def test_lengths_vary_within_the_format_bounds():
     lengths = {cut.duration_ms for run in runs for cut in run}
     assert lengths <= set(source_cut_durations(recipe)) == set(range(5_000, 9_001, 500))
     assert len(lengths) >= 6, lengths
-    # The Worker admits 5-9 s source windows (10 s only behind the Lab flag).
+    # The Worker admits 5-9 s source windows; 9 s stays the maximum.
     assert all(5_000 <= length <= 9_000 for length in lengths)
     for run in runs:
         for cut in run:
@@ -321,3 +321,36 @@ def test_reserved_windows_are_skipped_on_long_and_short_masters_alike():
             served |= {cut.slot_id for cut in batch}
         for cut in cuts:
             assert cut.start_ms + cut.duration_ms <= 10_000 or cut.start_ms >= duration_ms - 30_000
+
+
+def test_priority_and_unknown_constraints_are_accepted(lab):
+    # "priority": "low_runway" is accepted and kept on the job; an unknown
+    # constraint key (or an unknown priority value) never breaks creation.
+    client, _, _ = lab
+    for name, constraints in [
+        ("low-runway", {"priority": "low_runway"}),
+        ("future-key", {"priority": "low_runway", "someFutureKey": {"x": 1}}),
+        ("odd-priority", {"priority": "whenever"}),
+    ]:
+        body = job_body(1)
+        body["constraints"] = constraints
+        created = client.post(
+            "/api/control-plane/v1/jobs", json=body, headers=headers(f"constraints-{name}"),
+        )
+        assert created.status_code == 200, (name, created.text)
+        job = cp._load_jobs()["jobs"][created.json()["jobId"]]
+        assert job["constraints"] == constraints
+        cp._update_job(created.json()["jobId"], status="completed")
+
+
+def test_supported_constraints_are_advertised_only_behind_the_flag(lab, monkeypatch):
+    # The deployed Worker rejects unknown capabilities fields, so the list is
+    # sent only once the operator turns the flag on.
+    client, _, _ = lab
+    monkeypatch.delenv(cp.ADVERTISE_CONSTRAINTS_ENV, raising=False)
+    plain = client.get("/api/control-plane/v1/capabilities", headers={"X-RT-Page-Id": PAGE_ID}).json()
+    assert set(plain) == {"schema", "capabilities"}
+    monkeypatch.setenv(cp.ADVERTISE_CONSTRAINTS_ENV, "1")
+    advertised = client.get("/api/control-plane/v1/capabilities", headers={"X-RT-Page-Id": PAGE_ID}).json()
+    assert advertised["supportedConstraints"] == ["sourceWindowExclusions", "priority"]
+    assert advertised["capabilities"] == plain["capabilities"]

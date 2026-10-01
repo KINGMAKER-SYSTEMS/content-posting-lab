@@ -142,6 +142,23 @@ router = APIRouter()
 log = logging.getLogger("control_plane")
 
 RESPONSE_SCHEMA = "content-lab.response.v1"
+# Job constraints this Lab understands. Unknown keys and values are ignored,
+# never an error. "priority": "low_runway" marks a page close to running out
+# of posts; it is kept in the job's stored constraints, but the Lab starts
+# every job as soon as it is created (there is no Lab-side queue to reorder),
+# so ordering work by priority is the Control Plane Worker's job.
+SUPPORTED_CONSTRAINTS = ("sourceWindowExclusions", "priority")
+# The deployed Worker rejects any capabilities field it does not know, so
+# `supportedConstraints` is advertised only once this flag is set (after the
+# Worker accepts the field).
+ADVERTISE_CONSTRAINTS_ENV = "CONTENT_LAB_ADVERTISE_SUPPORTED_CONSTRAINTS"
+
+
+def _capabilities_response(entries: list[dict[str, Any]]) -> dict[str, Any]:
+    response: dict[str, Any] = {"schema": RESPONSE_SCHEMA, "capabilities": entries}
+    if os.environ.get(ADVERTISE_CONSTRAINTS_ENV, "").strip().lower() in {"1", "true", "yes", "on"}:
+        response["supportedConstraints"] = list(SUPPORTED_CONSTRAINTS)
+    return response
 ENGINE = "content_lab"
 RECIPES_DIR_NAME = "recipes"
 PROMPTS = "prompts.json"
@@ -316,9 +333,9 @@ def _registered_recipes() -> list[dict[str, Any]]:
 # GET /v1/jobs/{id}, never from capabilities(). No request header or param
 # beyond X-RT-Page-Id/X-Page-Id (folded into page_id) is read either.
 # _source_dna_cut_ledger reads the cut times stored on jobs (data covered by
-# the job generation in the key), not the clock. plan_source_cuts reads one
-# environment flag (CONTENT_LAB_SOURCE_CUTS_UP_TO_10S); an environment change
-# restarts the process, which starts with an empty cache.
+# the job generation in the key), not the clock. The advertised
+# supportedConstraints flag is read when each response is built, outside the
+# cached entries.
 #
 # The remaining short TTL is a defensive backstop only, not the mechanism
 # this relies on for the inputs actually in the key above — those make a
@@ -519,7 +536,7 @@ def capabilities(
 
     current = _current_intent_for_capabilities(page_id)
     if current is None:
-        return {"schema": RESPONSE_SCHEMA, "capabilities": []}
+        return _capabilities_response([])
     master_pages, master_pages_hash = current
 
     entries = []
@@ -571,7 +588,7 @@ def capabilities(
         )
         cached_entries = _capabilities_cache_lookup(cache_key)
         if cached_entries is not None:
-            return {"schema": RESPONSE_SCHEMA, "capabilities": list(cached_entries)}
+            return _capabilities_response(list(cached_entries))
 
     # capabilities() for one page only ever needs that page's own jobs, plus
     # (for the two async source-recipe kinds below) the jobs of the specific
@@ -724,7 +741,7 @@ def capabilities(
 
     if cacheable:
         _capabilities_cache_store(cache_key, entries)
-    return {"schema": RESPONSE_SCHEMA, "capabilities": entries}
+    return _capabilities_response(entries)
 
 
 # Registry reads must not queue behind network-heavy capability/catalog work
