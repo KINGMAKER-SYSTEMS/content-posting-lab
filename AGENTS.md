@@ -226,6 +226,12 @@
   fails any new path that builds source cuts without the planner. Job creation
   remains exact and all-or-nothing; it never silently returns fewer clips than
   requested.
+- Job `constraints` accepts `sourceWindowExclusions` and `priority`
+  (`"low_runway"`); unknown keys and values are ignored and kept on the job,
+  never an error. The Lab starts every job at creation, so ordering by
+  priority is the Worker's job. Capabilities add `supportedConstraints` only
+  with `CONTENT_LAB_ADVERTISE_SUPPORTED_CONSTRAINTS` set, because the
+  deployed Worker rejects unknown capabilities fields.
   Legacy async jobs without recoverable checkpoints fail closed after runtime
   replacement; generated jobs with durable provider identity retain their
   original prompt reservations while the same job resumes. Source-window
