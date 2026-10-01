@@ -1059,6 +1059,7 @@ from fastapi.responses import FileResponse
 from services.json_store import atomic_load, atomic_save
 from services.generation_recovery import PredictionCheckpoint, runner_lock, store_lock as lock_for
 from services import job_store_compaction as compaction
+from services import generated_media_retention
 
 JOBS_STORE_NAME = "control_plane_jobs.json"
 JOB_ID_PREFIX = "cpl-"
@@ -1617,19 +1618,113 @@ def _compaction_loop() -> None:
             break
 
 
+# ── generated-media retention (frees the volume; job records are untouched) ──
+_MEDIA_RETENTION_THREAD: threading.Thread | None = None
+# Pressure is re-read every minute; a pass runs when its pressure's interval is up.
+_MEDIA_RETENTION_TICK_SECONDS = 60
+_MEDIA_RETENTION_INTERVAL_SECONDS = {"normal": 10 * 60, "tight": 2 * 60, "floor": 60}
+_MEDIA_RETENTION = generated_media_retention.GeneratedMediaRetention()
+
+
+def _generated_volume_pressure() -> str:
+    from services.post_render_jobs import render_claim_floor_bytes, volume_pressure
+    try:
+        usage = shutil.disk_usage(_generation_root())
+    except OSError:
+        log.error("generated media retention: volume usage unavailable; keeping normal windows")
+        return "normal"
+    return volume_pressure(usage.free, usage.total, render_claim_floor_bytes())
+
+
+def run_generated_media_retention_once(now: datetime | None = None, *, pressure: str | None = None) -> dict[str, int]:
+    """One bounded pass over the current read-only job snapshot."""
+    return _MEDIA_RETENTION.sweep(
+        _read_jobs_snapshot_object().data, _generation_root(), now or datetime.now(timezone.utc),
+        pressure=pressure or _generated_volume_pressure(),
+    )
+
+
+def _media_retention_tick(last_run: float, now: float) -> float:
+    """Run one pass if the current pressure's interval has elapsed; return the last-run time."""
+    pressure = _generated_volume_pressure()
+    if now - last_run < _MEDIA_RETENTION_INTERVAL_SECONDS[pressure]:
+        return last_run
+    run_generated_media_retention_once(pressure=pressure)
+    return now
+
+
+def _media_retention_loop() -> None:
+    last_run = float("-inf")
+    while True:
+        try:
+            last_run = _media_retention_tick(last_run, time.monotonic())
+        except Exception:  # retention must never take the process down
+            log.exception("generated media retention pass failed")
+        if _COMPACTION_STOP.wait(_MEDIA_RETENTION_TICK_SECONDS):
+            break
+
+
 def start_compaction_scheduler() -> None:
-    global _COMPACTION_THREAD
-    if _COMPACTION_THREAD is not None and _COMPACTION_THREAD.is_alive():
+    global _COMPACTION_THREAD, _MEDIA_RETENTION_THREAD
+    alive = [thread is not None and thread.is_alive() for thread in (_COMPACTION_THREAD, _MEDIA_RETENTION_THREAD)]
+    if all(alive):
         return
     _COMPACTION_STOP.clear()
-    _COMPACTION_THREAD = threading.Thread(
-        target=_compaction_loop, name="content-lab-job-compaction", daemon=True,
-    )
-    _COMPACTION_THREAD.start()
+    if _COMPACTION_THREAD is None or not _COMPACTION_THREAD.is_alive():
+        _COMPACTION_THREAD = threading.Thread(
+            target=_compaction_loop, name="content-lab-job-compaction", daemon=True,
+        )
+        _COMPACTION_THREAD.start()
+    if _MEDIA_RETENTION_THREAD is None or not _MEDIA_RETENTION_THREAD.is_alive():
+        _MEDIA_RETENTION_THREAD = threading.Thread(
+            target=_media_retention_loop, name="content-lab-media-retention", daemon=True,
+        )
+        _MEDIA_RETENTION_THREAD.start()
 
 
 def stop_compaction_scheduler() -> None:
     _COMPACTION_STOP.set()
+
+
+def _dead_retention_threads() -> list[str]:
+    """Names of the compaction / media-retention threads that are not alive right now."""
+    dead: list[str] = []
+    if _COMPACTION_THREAD is None or not _COMPACTION_THREAD.is_alive():
+        dead.append("compaction")
+    if _MEDIA_RETENTION_THREAD is None or not _MEDIA_RETENTION_THREAD.is_alive():
+        dead.append("media_retention")
+    return dead
+
+
+@router.post("/v1/media-retention/remedy")
+async def run_media_retention_remedy(
+    x_rt_lane: str | None = Header(default=None),
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """Revive a dead retention thread and run one forced floor pass (watcher remedy).
+
+    This is the Lab side of the closed loop the control-plane ``lab-volume-watch``
+    job drives when the volume is at or above 80% and not dropping: the watcher
+    pages only after this automatic step (and its Railway-restart fallback) have
+    both failed. It revives any dead compaction / media-retention thread and then
+    runs exactly one bounded pass of the same sweep the scheduler already runs at
+    floor pressure, so it never deletes anything the sweep would not delete on its
+    own. It is idempotent: a repeat call re-plans from the same job snapshot and
+    finds nothing new. Fail closed behind the machine bearer.
+    """
+    require_control_plane_bearer(authorization)
+    if x_rt_lane != CONTROL_PLANE_LANE:
+        raise HTTPException(status_code=400, detail="X-RT-Lane must be content-bucket-control-plane")
+    revived = _dead_retention_threads()
+    start_compaction_scheduler()
+    summary = await anyio.to_thread.run_sync(
+        lambda: run_generated_media_retention_once(pressure="floor"),
+    )
+    return {
+        "schema": "content-lab.media-retention-remedy.v1",
+        "revivedThreads": revived,
+        "summary": summary,
+    }
 
 
 def _reject_prompt_fields(value: Any, path: str = "job") -> None:
