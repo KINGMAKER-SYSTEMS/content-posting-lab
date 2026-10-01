@@ -749,7 +749,10 @@ def test_retirement_retries_after_partial_deletion_from_durable_authority(tmp_pa
     assert not attempt_dir.exists()
 
 
-def test_unacknowledged_media_is_never_retired_even_after_aging(tmp_path):
+def test_gc_never_retires_unacknowledged_media_even_after_aging(tmp_path):
+    # _gc retires only acknowledged media. Unacknowledged media leaves only
+    # through the separate age-out, and only once R2 confirms it
+    # (tests/test_post_render_age_out.py).
     now = [NOW]
     worker = service(tmp_path, clock=lambda: now[0])
     job = worker.enqueue(submission(slot_id="slot:no-ack"), "no-ack-request")
