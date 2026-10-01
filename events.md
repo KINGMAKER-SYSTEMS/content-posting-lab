@@ -1154,8 +1154,11 @@ constraint keys are accepted; `supportedConstraints` is advertised only with
 rejects unknown capabilities fields. The job ledger now carries when and by
 which page each window was cut (archive entries keep `usedAt`/`cutIndex`/
 `pageId`; older entries count as oldest). Used-up footage no longer zeroes
-capability or answers 409 `master_windows_exhausted`: the least recently cut
-window is reused, and this page's own oldest window when other pages'
-reservations leave nothing. Only `source_master_too_short` and
+capability or answers 409 `master_windows_exhausted`. Once every whole-second
+start x length is cut, starts move inside the second (0.5 s, then ~0.27/0.77 s,
+then every 30 fps frame), so a reuse never renders the same frames while any
+frame start is left; a cut never repeats the master's last length unless
+nothing else fits. Only then is the least recently cut window reused, and this
+page's own oldest window when other pages' reservations leave nothing. Only `source_master_too_short` and
 `source_windows_reserved_by_other_pages` remain. A census test fails any code
 path that builds source cuts without the planner. No deployment was performed.

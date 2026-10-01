@@ -851,8 +851,8 @@ def test_active_source_job_reserves_windows_across_recipe_revisions(lab):
 def test_capability_never_drains_to_zero_and_every_window_is_cut_before_reuse(lab, monkeypatch):
     # Operator rule 2026-09-30: supply never stops. Every whole-second start
     # times every allowed length is cut once (no window twice while another
-    # is unused); after that capacity stays positive and jobs reuse the
-    # least recently cut windows instead of answering 409. A 40 s master
+    # is unused); after that capacity stays positive and jobs move to starts
+    # inside the second instead of answering 409. A 20 s master
     # keeps the drain short; the planner is the same at any length.
     from dataclasses import replace
     client, _, _ = lab
@@ -861,7 +861,7 @@ def test_capability_never_drains_to_zero_and_every_window_is_cut_before_reuse(la
     def short_master(payload):
         recipe = resolve(payload)
         return replace(recipe, masters=tuple(
-            replace(master, duration_ms=40_000) for master in recipe.masters
+            replace(master, duration_ms=20_000) for master in recipe.masters
         ))
 
     monkeypatch.setattr(cp, "_dossier_source_recipe", short_master)
@@ -876,11 +876,11 @@ def test_capability_never_drains_to_zero_and_every_window_is_cut_before_reuse(la
 
     expected = set()
     for length in range(5_000, 9_001, 500):
-        expected |= {(start, length) for start in range(0, 40_000 - length + 1, 1_000)}
-        expected.add((40_000 - length, length))
+        expected |= {(start, length) for start in range(0, 20_000 - length + 1, 1_000)}
+        expected.add((20_000 - length, length))
     frames: list[tuple[int, int]] = []
     round_number = 0
-    while set(frames) != expected:
+    while not expected <= set(frames):
         round_number += 1
         assert round_number < 400, "the windows were never all cut"
         quantity = capability()[0]["maxQuantity"]
@@ -919,8 +919,10 @@ def test_capability_never_drains_to_zero_and_every_window_is_cut_before_reuse(la
         headers=headers("source-capacity-after-saturation"),
     )
     assert again.status_code == 200, again.text
-    reused = cp._load_jobs()["jobs"][again.json()["jobId"]]["sourceCuts"][0]
-    assert (reused["startMs"], reused["durationMs"]) in expected
+    following = cp._load_jobs()["jobs"][again.json()["jobId"]]["sourceCuts"][0]
+    # Next comes a start inside the second, a window never cut before.
+    assert (following["startMs"], following["durationMs"]) not in frames
+    assert following["startMs"] % 1_000
 
 
 @pytest.mark.asyncio
@@ -1058,6 +1060,42 @@ async def test_real_renders_at_the_length_bounds_probe_inside_the_worker_bounds(
     *_, probed = _probe(output, time.monotonic() + 30)
     assert 5_000 <= round(probed * 1_000) <= 9_000, probed
     assert round(probed * 1_000) == pytest.approx(duration_ms / clip_speed, abs=40)
+
+
+@pytest.mark.asyncio
+async def test_sub_second_starts_render_and_never_decode_the_same_frames(lab, monkeypatch):
+    # Frame-offset starts (one frame, a quarter and a half second in) pass
+    # the executor's planner check, render through the exact ffmpeg seek,
+    # and give different bytes from the whole-second cut of the same length.
+    client, tmp_path, _ = lab
+    response = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(1),
+        headers=headers("source-job-subsecond"),
+    )
+    job_id = response.json()["jobId"]
+    store = cp._load_jobs()
+    store["jobs"][job_id]["sourceCuts"] = [{
+        "slotId": f"{MASTER_SHA}:{start}:6000",
+        "masterSha256": MASTER_SHA,
+        "libraryStartMs": start,
+        "startMs": start,
+        "durationMs": 6_000,
+    } for start in (0, 33, 266, 500)]
+    cp.atomic_save(cp._jobs_path(), store)
+    source = tmp_path / "master.mp4"
+    _write_av_test_clip(source)
+
+    async def cached_source(*_):
+        return source
+
+    monkeypatch.setattr(cp, "_cached_source_master", cached_source)
+    await cp._run_dossier_source(job_id)
+    job = cp._load_jobs()["jobs"][job_id]
+    assert job["status"] == "completed", job.get("error")
+    assert len({clip["sha256"] for clip in job["clips"]}) == 4
+    assert [clip["source"]["cutWindow"]["libraryStartMs"] for clip in job["clips"]] == [0, 33, 266, 500]
+    for clip in job["clips"]:
+        assert _probe_duration(Path(job["artifactRoot"]) / clip["path"]) == pytest.approx(6.0, abs=0.15)
 
 
 @pytest.mark.asyncio
@@ -1262,9 +1300,11 @@ def test_used_page_master_is_recut_at_shifted_points_not_declared_exhausted():
         (90_000 - length) // 1_000 + 1 + (length % 1_000 != 0)
         for length in range(5_000, 9_001, 500)
     )
-    # Every window cut: the planner reuses old ones instead of stopping.
-    reused = plan_source_cuts(recipe, 100, total)
-    assert reused and all(cut.slot_id in total for cut in reused)
+    # Every whole-second window cut: the planner moves inside the second
+    # instead of stopping, still never repeating a window.
+    following = plan_source_cuts(recipe, 100, total)
+    assert following and not {cut.slot_id for cut in following} & total
+    assert all(cut.start_ms % 1_000 for cut in following)
     # Another page's window still blocks a re-cut, exactly like a first cut,
     # unless the reused window is this page's own.
     everything = source_window_exclusions([{
@@ -1285,16 +1325,20 @@ def _page_master_recipe(duration_ms):
 
 
 def _drain(recipe, served=frozenset(), exclusions=None):
-    """Plan until a plan's first pick is a reuse, keeping only fresh cuts.
+    """Plan until no never-cut whole-second window is left.
 
-    The planner never stops (it reuses the oldest window), so "drained"
-    means every never-cut window has been planned once.
+    The planner never stops (it moves to sub-second starts, then reuses the
+    oldest window), so "drained" means every whole-second window is cut.
     """
     served = set(served)
     batches = []
     for _ in range(5_000):
         batch = plan_source_cuts(recipe, 100, served, exclusions)
-        fresh = [cut for cut in batch if cut.slot_id not in served]
+        fresh = [
+            cut for cut in batch
+            if cut.slot_id not in served
+            and (cut.start_ms % 1_000 == 0 or cut.start_ms == cut.master.duration_ms - cut.duration_ms)
+        ]
         if not fresh:
             return batches, served
         batches.append(fresh)
@@ -1319,8 +1363,9 @@ def test_short_page_master_is_recut_into_six_second_clips():
     ]
     assert all(len(batch) == 1 for batch in batches)
     assert f"{master.sha256}:0:6000" in served and f"{master.sha256}:1500:6000" in served
-    reused = plan_source_cuts(recipe, 100, served)
-    assert len(reused) == 1 and reused[0].slot_id in served
+    following = plan_source_cuts(recipe, 100, served)
+    assert len(following) == 1 and following[0].slot_id not in served
+    assert following[0].start_ms % 1_000
 
 
 def test_long_footage_yields_every_length_including_the_six_second_grid():
@@ -1331,7 +1376,7 @@ def test_long_footage_yields_every_length_including_the_six_second_grid():
     six = {cut.start_ms for cut in cuts if cut.duration_ms == 6_000}
     assert set(range(0, 84_001, 6_000)) <= six, "the old 6-second pass is a subset"
     assert len(cuts) == len({cut.slot_id for cut in cuts})
-    assert all(cut.slot_id in served for cut in plan_source_cuts(recipe, 100, served))
+    assert not any(cut.slot_id in served for cut in plan_source_cuts(recipe, 100, served))
 
 
 def test_executor_accepts_exactly_the_cuts_the_planner_emits():

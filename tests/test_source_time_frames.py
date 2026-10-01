@@ -93,13 +93,21 @@ def test_the_page_floor_and_master_bounds_are_honored():
         assert cut.start_ms + cut.duration_ms <= master.duration_ms
 
 
+def _whole_second(cut):
+    return cut.start_ms % 1_000 == 0 or cut.start_ms == cut.master.duration_ms - cut.duration_ms
+
+
 def _drain_fresh(recipe, served, exclusions=None, limit=2_000):
-    """Plan until a plan's first pick is a reuse: every fresh window is cut."""
+    """Plan until no never-cut whole-second window is left.
+
+    After that the planner moves to sub-second starts (and only then reuses),
+    so a plan with no fresh whole-second cut means they are all cut.
+    """
     served = set(served)
     runs = []
     for _ in range(limit):
         batch = plan_source_cuts(recipe, 10, served, exclusions, seed=f"drain-{len(runs)}")
-        fresh = [cut for cut in batch if cut.slot_id not in served]
+        fresh = [cut for cut in batch if cut.slot_id not in served and _whole_second(cut)]
         if not fresh:
             return runs, served
         runs.append(fresh)
@@ -195,9 +203,10 @@ def test_new_recipe_revision_does_not_recut_seven_of_ten_windows(lab):
 
 def test_a_tiny_master_keeps_supplying_by_reusing_the_oldest_window(lab, monkeypatch):
     # Operator rule 2026-09-30: supply never stops. A 6 s master holds five
-    # time frames (5 s at 0/1 s, 5.5 s at 0/0.5 s, 6 s at 0). Once each is
-    # cut, the next job reuses the least recently cut one; capability never
-    # reads 0 and job creation never answers 409 for used-up footage.
+    # whole-second time frames (5 s at 0/1 s, 5.5 s at 0/0.5 s, 6 s at 0).
+    # Once each is cut, the next jobs start on frames inside the second, each
+    # a window never cut before; capability never reads 0 and job creation
+    # never answers 409 for used-up footage.
     client, _, _ = lab
     resolve = cp._dossier_source_recipe
 
@@ -226,8 +235,8 @@ def test_a_tiny_master_keeps_supplying_by_reusing_the_oldest_window(lab, monkeyp
             completedAt=f"2026-09-30T12:00:{run:02d}+00:00",
         )
     assert sorted(set(frames[:5])) == [(0, 5_000), (0, 5_500), (0, 6_000), (500, 5_500), (1_000, 5_000)]
-    # Then the oldest cut comes back first, in the order they were cut.
-    assert frames[5:] == frames[:3]
+    assert len(set(frames)) == len(frames), "no window is cut twice"
+    assert all(start % 1_000 for start, _ in frames[5:]), frames[5:]
 
 
 def test_a_master_shorter_than_any_cut_names_its_reason(lab, monkeypatch):
