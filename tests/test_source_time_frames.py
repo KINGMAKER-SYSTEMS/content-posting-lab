@@ -11,6 +11,7 @@ from dataclasses import replace
 import routers.control_plane as cp
 from services.control_plane_sources import (
     SOURCE_MASTER_TOO_SHORT,
+    SOURCE_WINDOWS_EXHAUSTED,
     plan_source_cuts,
     resolve_source_recipe,
     source_cut_durations,
@@ -100,7 +101,7 @@ def _whole_second(cut):
 def _drain_fresh(recipe, served, exclusions=None, limit=2_000):
     """Plan until no never-cut whole-second window is left.
 
-    After that the planner moves to sub-second starts (and only then reuses),
+    After that the planner moves to sub-second starts (and then stops),
     so a plan with no fresh whole-second cut means they are all cut.
     """
     served = set(served)
@@ -201,12 +202,12 @@ def test_new_recipe_revision_does_not_recut_seven_of_ten_windows(lab):
     assert repeated == [], f"{len(repeated)} of 10 time frames re-cut"
 
 
-def test_a_tiny_master_keeps_supplying_new_windows_after_the_whole_seconds(lab, monkeypatch):
-    # Operator rule 2026-09-30: supply never stops. A 6 s master holds five
-    # whole-second time frames (5 s at 0/1 s, 5.5 s at 0/0.5 s, 6 s at 0).
-    # Once each is cut, the next jobs start on frames inside the second, each
-    # a window never cut before; capability never reads 0 and job creation
-    # never answers 409 for used-up footage.
+def test_a_tiny_master_cuts_every_window_once_then_answers_source_windows_exhausted(lab, monkeypatch):
+    # A 6 s master holds five whole-second time frames (5 s at 0/1 s, 5.5 s
+    # at 0/0.5 s, 6 s at 0), then four more at half and quarter-second starts.
+    # Each is cut exactly once; then capability reads 0 and job creation
+    # answers 409 source_windows_exhausted (the page needs new footage)
+    # instead of re-rendering a window the Worker would refuse as a repeat.
     client, _, _ = lab
     resolve = cp._dossier_source_recipe
 
@@ -218,7 +219,7 @@ def test_a_tiny_master_keeps_supplying_new_windows_after_the_whole_seconds(lab, 
 
     monkeypatch.setattr(cp, "_dossier_source_recipe", tiny)
     frames = []
-    for run in range(8):
+    for run in range(9):
         capability = client.get(
             "/api/control-plane/v1/capabilities", headers={"X-RT-Page-Id": PAGE_ID},
         ).json()["capabilities"]
@@ -237,6 +238,17 @@ def test_a_tiny_master_keeps_supplying_new_windows_after_the_whole_seconds(lab, 
     assert sorted(set(frames[:5])) == [(0, 5_000), (0, 5_500), (0, 6_000), (500, 5_500), (1_000, 5_000)]
     assert len(set(frames)) == len(frames), "no window is cut twice"
     assert all(start % 1_000 for start, _ in frames[5:]), frames[5:]
+    assert {start % 1_000 for start, _ in frames[5:]} <= {250, 500, 750}
+    capability = client.get(
+        "/api/control-plane/v1/capabilities", headers={"X-RT-Page-Id": PAGE_ID},
+    ).json()["capabilities"]
+    assert capability[0]["maxQuantity"] == 0
+    stopped = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(1), headers=headers("tiny-master-stop"),
+    )
+    assert stopped.status_code == 409
+    assert stopped.json() == {"detail": SOURCE_WINDOWS_EXHAUSTED}
+    assert SOURCE_WINDOWS_EXHAUSTED == "source_windows_exhausted"
 
 
 def test_a_master_shorter_than_any_cut_names_its_reason(lab, monkeypatch):
@@ -322,10 +334,11 @@ def test_reserved_windows_are_skipped_on_long_and_short_masters_alike():
         }])
         cuts = []
         served: set[str] = set()
-        # Through saturation and into reuse: reused windows respect it too.
-        for run in range(60):
+        # Through every start until the planner stops: no cut enters it.
+        for run in range(2_000):
             batch = plan_source_cuts(recipe, 10, served, excluded, seed=f"x{run}")
-            assert batch
+            if not batch:
+                break
             cuts.extend(batch)
             served |= {cut.slot_id for cut in batch}
         for cut in cuts:

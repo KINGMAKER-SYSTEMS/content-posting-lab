@@ -702,8 +702,9 @@ def capabilities(
             unavailable_slots, cut_history = _source_dna_cut_ledger(
                 dossier_source_dna_view, source_recipe, publication["recipeVersion"],
             )
-            # Used-up windows never zero this: the planner reuses the oldest
-            # window, so 0 means a genuinely impossible library.
+            # 0 means no never-cut window is left (explain_empty_source_plan
+            # names why at job creation). Other pages' reservations arrive
+            # only with a job, so this count does not subtract them.
             max_quantity = len(plan_source_cuts(
                 source_recipe, source_recipe.max_quantity, unavailable_slots,
                 history=cut_history,
@@ -1805,10 +1806,10 @@ def _source_dna_cut_ledger(
     release their windows.
 
     The second value says when each time frame was last cut (its job's
-    completedAt, else createdAt; archived cuts keep it as ``usedAt``) and by
-    which page, so plan_source_cuts can vary each re-cut against the most
-    recent ones and reuse the least recently used window once every window
-    has been cut. A cut without a time counts as the oldest.
+    completedAt, else createdAt; archived cuts keep it as ``usedAt``), so
+    plan_source_cuts can vary each re-cut against the most recent ones and
+    prefer the least recently cut footage. A cut without a time counts as the
+    oldest.
     """
     master_shas = {master.sha256 for master in source_recipe.masters}
     slots: set[str] = set()
@@ -1835,7 +1836,6 @@ def _source_dna_cut_ledger(
             )
         )
         used_at = cut_use_time(job.get("completedAt") or job.get("createdAt"))
-        page = job.get("pageId") if isinstance(job.get("pageId"), str) else None
         for order, cut in enumerate(job.get("sourceCuts", [])):
             if not isinstance(cut, dict):
                 continue
@@ -1850,7 +1850,7 @@ def _source_dna_cut_ledger(
             ):
                 frame = f"{master_sha}:{start_ms}:{duration_ms}"
                 slots.add(frame)
-                remember(frame, CutUse(used_at, order, page))
+                remember(frame, CutUse(used_at, order))
     # Archived completed source cuts keep their permanent reservations. The
     # exact time frame is reserved forever; the library slot id stays reserved
     # only across the same recipe revision (mirroring the live rule).
@@ -1874,11 +1874,9 @@ def _source_dna_cut_ledger(
             frame = f"{master_sha}:{start_ms}:{duration_ms}"
             slots.add(frame)
             order = cut.get("cutIndex")
-            page = cut.get("pageId")
             remember(frame, CutUse(
                 cut_use_time(cut.get("usedAt")),
                 order if type(order) is int else 0,
-                page if isinstance(page, str) else None,
             ))
     return slots, history
 
@@ -4359,21 +4357,23 @@ async def create_job(
             ).hexdigest()[:16]
             cuts = plan_source_cuts(
                 source_recipe, quantity, served_slots, excluded_windows,
-                seed=cut_plan_seed, history=cut_history, page_id=page_id,
+                seed=cut_plan_seed, history=cut_history,
             )
             if len(cuts) != quantity:
                 cut_plan_seed = CAPABILITY_PLAN_SEED
                 cuts = plan_source_cuts(
                     source_recipe, quantity, served_slots, excluded_windows,
-                    seed=cut_plan_seed, history=cut_history, page_id=page_id,
+                    seed=cut_plan_seed, history=cut_history,
                 )
             if not cuts:
-                # Never "used up": only a master too short for any cut, or
-                # one other pages hold entirely while this page has no
-                # window of its own to reuse.
+                # source_master_too_short, source_windows_exhausted (every
+                # window already cut: the page needs new footage) or
+                # source_windows_reserved_by_other_pages.
                 raise HTTPException(
                     status_code=409,
-                    detail=explain_empty_source_plan(source_recipe, excluded_windows),
+                    detail=explain_empty_source_plan(
+                        source_recipe, served_slots, excluded_windows,
+                    ),
                 )
             if len(cuts) != quantity:
                 raise HTTPException(status_code=409, detail="insufficient_inventory")

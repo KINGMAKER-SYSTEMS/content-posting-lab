@@ -164,8 +164,8 @@ def extract_index_entries(job: dict[str, Any]) -> dict[str, Any]:
             entries["sourceIdentities"].append((page_id, identity))
 
     if kind == "dossier_source_dna" and job.get("status") == "completed":
-        # usedAt/cutIndex/pageId let the cut planner vary re-cuts against the
-        # most recent ones and reuse the least recently used window. Entries
+        # usedAt/cutIndex let the cut planner vary re-cuts against the most
+        # recent ones and prefer the least recently cut footage. Entries
         # archived before they existed simply count as the oldest.
         used_at = job.get("completedAt") or job.get("createdAt")
         for cut_index, cut in enumerate(job.get("sourceCuts", [])):
@@ -181,7 +181,6 @@ def extract_index_entries(job: dict[str, Any]) -> dict[str, Any]:
                 "durationMs": cut.get("durationMs"),
                 "usedAt": used_at if isinstance(used_at, str) else None,
                 "cutIndex": cut_index,
-                "pageId": page_id if isinstance(page_id, str) else None,
             })
 
     if kind == "syzygy_slideshow" and job.get("status") == "completed":

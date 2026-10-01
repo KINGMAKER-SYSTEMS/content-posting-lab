@@ -210,25 +210,25 @@
   exact time frames across recipe revisions and library versions of the same
   master bytes, so a new recipe cuts new time frames instead of re-cutting
   delivered ones; failed jobs release theirs. Each reserved time frame keeps
-  when it was cut (job completedAt, else createdAt; archived as `usedAt`) and
-  by which page. Re-cut variety (operator rule 2026-09-30): every plan goes
+  when it was cut (job completedAt, else createdAt; archived as `usedAt`). Re-cut variety (operator rule 2026-09-30): every plan goes
   through `plan_source_cuts`, which prefers never-cut footage, then a start far
   from the master's last few starts, then a length unlike its last few
   lengths, then the least recently cut footage, then a per-job seed recorded
   as `cutPlanSeed`; one plan never holds two overlapping cuts of one master.
   The first cut on a master uses the page's Cut length, and a cut repeats the
-  master's last length only when nothing else fits. Supply never stops for
-  used-up footage and never renders the same frames twice: once every
+  master's last length only when nothing else fits. A window is never cut
+  twice (that would render bytes the Worker refuses as a repeat): once every
   whole-second start x length is cut, starts move inside the second (half a
-  second, then about a quarter / three quarters, then every 30 fps frame;
-  a start is the floor of its frame time so the exact seek lands on that
-  frame). A window counts as cut by its first frame and length. Only when every
-  frame start x length is cut is the least recently cut window reused, and
-  when other pages' reservations leave nothing, this page's own oldest window
-  is reused. A plan never repeats a window while an uncut one remains; it
-  ends short instead. Capability `maxQuantity` is 0 and job creation answers 409 only for
-  genuinely impossible libraries: `source_master_too_short` or
-  `source_windows_reserved_by_other_pages`. `tests/test_source_cut_path_census.py`
+  second, then a quarter and three quarters). Masters carry no verified frame
+  rate, so starts stay at least 250 ms apart and a window counts as cut when an
+  earlier cut of the same length starts under 250 ms away. When every such
+  window is cut, capability `maxQuantity` is 0 and job creation answers 409
+  `source_windows_exhausted`: the page needs new footage. The other named
+  409s are `source_master_too_short` and `source_windows_reserved_by_other_pages`
+  (other pages' reservations arrive only with a job, so capability does not
+  count them). A plan that cannot fit another never-cut window beside its
+  other cuts ends short. Recency and variety are per master, across every page
+  that cut it. `tests/test_source_cut_path_census.py`
   fails any new path that builds source cuts without the planner. Job creation
   remains exact and all-or-nothing; it never silently returns fewer clips than
   requested.

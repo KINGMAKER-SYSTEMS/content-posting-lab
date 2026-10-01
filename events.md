@@ -1137,7 +1137,7 @@ ________________________________________________________________________________
 time: [21:40 EDT] [26-09-30]
 agent: [Claude Code] [claude-opus-5-5]
 worktree: [closeout/varied-recut] [/Users/ecfromthedc/dev/seats/CLOSE-LABRECUT]
-type: [feature] [re-cut variety]: every re-cut uses a new section at a new length; supply never stops
+type: [feature] [re-cut variety]: every re-cut uses a new section at a new length; no window is cut twice
 area: [backend] [testing]
 
 Operator rule 2026-09-30: when the Lab re-cuts a master it uses a different
@@ -1151,14 +1151,15 @@ Worker's bound stays the maximum) and the delivered clip at the saved speed
 stays inside the same range. `constraints.priority: "low_runway"` and unknown
 constraint keys are accepted; `supportedConstraints` is advertised only with
 `CONTENT_LAB_ADVERTISE_SUPPORTED_CONSTRAINTS`, because the deployed Worker
-rejects unknown capabilities fields. The job ledger now carries when and by
-which page each window was cut (archive entries keep `usedAt`/`cutIndex`/
-`pageId`; older entries count as oldest). Used-up footage no longer zeroes
-capability or answers 409 `master_windows_exhausted`. Once every whole-second
-start x length is cut, starts move inside the second (0.5 s, then ~0.27/0.77 s,
-then every 30 fps frame), so a reuse never renders the same frames while any
-frame start is left; a cut never repeats the master's last length unless
-nothing else fits. Only then is the least recently cut window reused, and this
-page's own oldest window when other pages' reservations leave nothing. Only `source_master_too_short` and
-`source_windows_reserved_by_other_pages` remain. A census test fails any code
+rejects unknown capabilities fields. The job ledger now carries when each
+window was cut (archive entries keep `usedAt`/`cutIndex`; older entries count
+as oldest). A window is never cut twice: once every whole-second start x
+length is cut, starts move to half, then quarter and three-quarter seconds
+(at least 250 ms apart, so different first frames at any frame rate above
+4 fps), and a cut repeats the master's last length only when nothing else
+fits. When every window is cut, capability reads 0 and job creation answers
+409 `source_windows_exhausted` (the page needs new footage) instead of
+`master_windows_exhausted`; `source_master_too_short` and
+`source_windows_reserved_by_other_pages` name the other empty plans. A census
+test fails any code
 path that builds source cuts without the planner. No deployment was performed.

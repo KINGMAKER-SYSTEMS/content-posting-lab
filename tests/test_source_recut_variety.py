@@ -8,6 +8,7 @@ the cuts just before it, and supply never stops when the windows run out.
 """
 
 from dataclasses import replace
+import math
 
 import pytest
 
@@ -16,6 +17,7 @@ from services import job_store_compaction as compaction
 from services.control_plane_sources import (
     NO_CUT_TIME,
     SOURCE_MASTER_TOO_SHORT,
+    SOURCE_WINDOWS_EXHAUSTED,
     SOURCE_WINDOWS_RESERVED_ELSEWHERE,
     CutUse,
     explain_empty_source_plan,
@@ -47,19 +49,31 @@ def _recipe(duration_ms=600_000, floor_ms=0, cut_duration_ms=7_000, clip_speed=N
     return replace(recipe, masters=(master,)), master
 
 
-def _cut_one_at_a_time(recipe, count, page_id="acct:page"):
-    """Simulate `count` single-clip jobs, each recorded with a later time."""
+def _cut_one_at_a_time(recipe, count):
+    """Simulate up to `count` single-clip jobs, each recorded with a later
+    time; stops early when the planner returns nothing."""
     served: set[str] = set()
     history: dict[str, CutUse] = {}
     cuts = []
     for run in range(count):
-        (cut,) = plan_source_cuts(
-            recipe, 1, served, seed=f"job-{run}", history=history, page_id=page_id,
-        )
+        plan = plan_source_cuts(recipe, 1, served, seed=f"job-{run}", history=history)
+        if not plan:
+            break
+        (cut,) = plan
         cuts.append(cut)
         served.add(cut.slot_id)
-        history[cut.slot_id] = CutUse(float(run), 0, page_id)
+        history[cut.slot_id] = CutUse(float(run), 0)
     return cuts, served, history
+
+
+def _assert_no_window_twice(cuts):
+    """No two cuts of one master and length start under 250 ms apart."""
+    by_length = {}
+    for cut in cuts:
+        by_length.setdefault((cut.master.sha256, cut.duration_ms), []).append(cut.start_ms)
+    for starts in by_length.values():
+        starts.sort()
+        assert all(b - a >= 250 for a, b in zip(starts, starts[1:])), starts
 
 
 def test_consecutive_recuts_change_both_section_and_length():
@@ -114,8 +128,7 @@ def test_the_last_cut_is_read_from_its_timestamp_not_from_set_order():
     assert abs(cut.start_ms - 100_000) >= 120_000
 
 
-def test_a_used_window_is_never_reused_while_an_unused_one_exists():
-    from services.control_plane_sources import _start_frame
+def test_every_whole_second_window_is_cut_before_any_sub_second_one():
     recipe, master = _recipe(duration_ms=20_000)
     durations = source_cut_durations(recipe)
     every = {
@@ -124,76 +137,66 @@ def test_a_used_window_is_never_reused_while_an_unused_one_exists():
         for start in [*range(0, 20_000 - length + 1, 1_000), 20_000 - length]
     }
     cuts, _, _ = _cut_one_at_a_time(recipe, len(every) + 20)
-    windows = {(cut.start_ms, cut.duration_ms) for cut in cuts}
-    assert every <= windows, "every whole-second window gets cut"
-    identities = [(_start_frame(cut.start_ms), cut.duration_ms) for cut in cuts]
-    assert len(identities) == len(set(identities)), "no window is cut twice"
+    windows = [(cut.start_ms, cut.duration_ms) for cut in cuts]
+    last_whole = max(i for i, window in enumerate(windows) if window in every)
+    assert every <= set(windows)
+    # A sub-second start comes early only to avoid repeating the last length.
+    assert sum(window not in every for window in windows[:last_whole]) <= 3
+    _assert_no_window_twice(cuts)
     for cut in cuts:
         assert source_cut_is_planned(recipe, master, cut.start_ms, cut.duration_ms, cut.slot_id)
 
 
-def _every_window(recipe):
-    """Cut one clip at a time until the planner first reuses a window."""
-    from services.control_plane_sources import _start_frame
-    cuts, seen = [], set()
-    served, history = set(), {}
-    for run in range(500):
-        (cut,) = plan_source_cuts(recipe, 1, served, seed=f"job-{run}", history=history, page_id="acct:page")
-        identity = (_start_frame(cut.start_ms), cut.duration_ms)
-        if identity in seen:
-            return cuts, served, history
-        seen.add(identity)
-        cuts.append(cut)
-        served.add(cut.slot_id)
-        history[cut.slot_id] = CutUse(float(run), 0, "acct:page")
-    raise AssertionError("never saturated")
-
-
-def test_saturation_reuses_the_least_recently_cut_window_and_never_stops():
-    # A 6 s master: 5 whole-second windows, then 43 frame-offset ones. Only
-    # after all 48 does a window come back, oldest first, never at the
-    # length just cut.
+def test_true_saturation_stops_with_a_named_reason_and_never_repeats_a_window():
+    # A 6 s master holds 9 windows: 5 s at 0/0.25/0.5/0.75/1 s, 5.5 s at
+    # 0/0.25/0.5 s and 6 s at 0. Once each is cut, nothing more is planned (a
+    # repeat would render the same bytes, which the Worker refuses) and the
+    # reason is named so the Worker can fetch new footage.
     recipe, master = _recipe(duration_ms=6_000)
-    cuts, served, history = _every_window(recipe)
-    assert len(cuts) == 48
-    reused = []
-    for run in range(len(cuts), len(cuts) + 6):
-        (cut,) = plan_source_cuts(
-            recipe, 1, served, seed=f"job-{run}", history=history, page_id="acct:page",
-        )
-        reused.append(cut)
-        history[cut.slot_id] = CutUse(float(run), 0, "acct:page")
-    oldest_first = [cut.slot_id for cut in cuts]
-    assert all(cut.slot_id in served for cut in reused)
-    positions = [oldest_first.index(cut.slot_id) for cut in reused]
-    assert positions[0] <= 1 and all(p < 10 for p in positions), positions
-    lengths = [cuts[-1].duration_ms] + [cut.duration_ms for cut in reused]
-    assert all(a != b for a, b in zip(lengths, lengths[1:])), lengths
-    assert len(plan_source_cuts(recipe, 10, served, history=history)) == 1, (
-        "capacity stays 1, not 0: one plan never holds overlapping cuts"
-    )
+    cuts, served, history = _cut_one_at_a_time(recipe, 100)
+    assert len(cuts) == 9
+    _assert_no_window_twice(cuts)
+    assert {cut.start_ms % 1_000 for cut in cuts} == {0, 250, 500, 750}
+    assert plan_source_cuts(recipe, 10, served, history=history) == []
+    assert explain_empty_source_plan(recipe, served) == SOURCE_WINDOWS_EXHAUSTED
 
 
-def test_old_cuts_without_a_time_are_reused_first():
+def test_a_five_second_master_stops_on_the_second_job():
+    # The shortest master: one 5 s window. A second job gets the named stop,
+    # never the same window again.
+    recipe, master = _recipe(duration_ms=5_000)
+    cuts, served, history = _cut_one_at_a_time(recipe, 5)
+    assert [(cut.start_ms, cut.duration_ms) for cut in cuts] == [(0, 5_000)]
+    assert plan_source_cuts(recipe, 1, served, history=history) == []
+    assert explain_empty_source_plan(recipe, served) == SOURCE_WINDOWS_EXHAUSTED
+
+
+def test_a_single_length_vocabulary_moves_the_start_and_then_stops():
+    # At 0.56x only 5 s satisfies both the source and delivered 5-9 s bound,
+    # so the length cannot change: every cut is still a new start, and the
+    # master stops with the named reason instead of repeating one.
+    recipe, master = _recipe(duration_ms=8_000, clip_speed=0.56)
+    assert source_cut_durations(recipe) == (5_000,)
+    cuts, served, history = _cut_one_at_a_time(recipe, 100)
+    assert [cut.start_ms for cut in cuts[:4]] and len(cuts) == len({cut.start_ms for cut in cuts})
+    _assert_no_window_twice(cuts)
+    assert len(cuts) == 13  # starts 0..3 s at 0, 0.25, 0.5, 0.75 s (3.25..3.75 do not fit)
+    assert plan_source_cuts(recipe, 1, served, history=history) == []
+    assert explain_empty_source_plan(recipe, served) == SOURCE_WINDOWS_EXHAUSTED
+
+
+def test_capacity_is_zero_only_when_every_window_is_cut():
     recipe, master = _recipe(duration_ms=6_000)
-    cuts, served, history = _every_window(recipe)
-    untimed = next(cut.slot_id for cut in cuts[20:] if cut.duration_ms != cuts[-1].duration_ms)
-    del history[untimed]  # archived before timestamps existed
-    (cut,) = plan_source_cuts(recipe, 1, served, history=history)
-    assert cut.slot_id == untimed
-
-
-def test_capacity_stays_above_zero_after_every_window_is_cut():
-    recipe, master = _recipe(duration_ms=6_000)
-    _, served, history = _cut_one_at_a_time(recipe, 12)
+    _, served, history = _cut_one_at_a_time(recipe, 8)
     assert len(plan_source_cuts(recipe, recipe.max_quantity, served, history=history)) == 1
-    assert len(plan_source_cuts(recipe, recipe.max_quantity, served)) == 1
+    _, served, history = _cut_one_at_a_time(recipe, 9)
+    assert plan_source_cuts(recipe, recipe.max_quantity, served, history=history) == []
 
 
-def test_only_genuinely_impossible_plans_are_empty_and_they_are_named():
+def test_only_impossible_or_used_up_plans_are_empty_and_they_are_named():
     recipe, master = _recipe(duration_ms=4_999)
     assert plan_source_cuts(recipe, 1, set()) == []
-    assert explain_empty_source_plan(recipe) == SOURCE_MASTER_TOO_SHORT
+    assert explain_empty_source_plan(recipe, set()) == SOURCE_MASTER_TOO_SHORT
 
     recipe, master = _recipe(duration_ms=60_000)
     everything = source_window_exclusions([{
@@ -201,32 +204,32 @@ def test_only_genuinely_impossible_plans_are_empty_and_they_are_named():
         "startMs": 0, "endMs": 9_007_199_254_740_991,
     }])
     assert plan_source_cuts(recipe, 1, set(), everything) == []
-    assert explain_empty_source_plan(recipe, everything) == SOURCE_WINDOWS_RESERVED_ELSEWHERE
+    assert explain_empty_source_plan(recipe, set(), everything) == SOURCE_WINDOWS_RESERVED_ELSEWHERE
 
 
-def test_other_pages_reservations_fall_back_to_this_pages_own_oldest_window():
+def test_other_pages_reservations_are_respected_and_never_bypassed():
     recipe, master = _recipe(duration_ms=60_000)
     sha = master.sha256
-    served = {f"{sha}:10000:7000", f"{sha}:30000:6000", f"{sha}:45000:5000"}
-    history = {
-        f"{sha}:10000:7000": CutUse(30.0, 0, "acct:page"),
-        f"{sha}:30000:6000": CutUse(10.0, 0, "acct:page"),
-        f"{sha}:45000:5000": CutUse(5.0, 0, "acct:other"),
-    }
-    everything = source_window_exclusions([{
-        "sourceIdentity": master.provenance["sourceUrl"],
-        "startMs": 0, "endMs": 9_007_199_254_740_991,
-    }])
-    (cut,) = plan_source_cuts(recipe, 1, served, everything, history=history, page_id="acct:page")
-    assert cut.slot_id == f"{sha}:30000:6000", "this page's oldest, never another page's"
-    # Without knowing the page, nothing is safe to reuse.
-    assert plan_source_cuts(recipe, 1, served, everything, history=history) == []
-    # A partial reservation is still respected while fresh footage remains.
+    served = {f"{sha}:10000:7000", f"{sha}:30000:6000"}
+    history = {f"{sha}:10000:7000": CutUse(30.0, 0), f"{sha}:30000:6000": CutUse(10.0, 0)}
     partial = source_window_exclusions([{
         "sourceIdentity": master.provenance["sourceUrl"], "startMs": 0, "endMs": 40_000,
     }])
-    for cut in plan_source_cuts(recipe, 3, served, partial, history=history, page_id="acct:page"):
+    for cut in plan_source_cuts(recipe, 3, served, partial, history=history):
         assert cut.start_ms >= 40_000
+
+
+def test_an_end_on_last_frame_start_next_to_a_grid_start_counts_as_the_same_window():
+    # 80.01 s master: the 5 s window ending on the last frame starts at
+    # 75.01 s, 10 ms from the 75 s grid start; they decode the same frames.
+    recipe, master = _recipe(duration_ms=80_010)
+    sha = master.sha256
+    served = {f"{sha}:75000:5000"}
+    cuts, _, _ = _cut_one_at_a_time(recipe, 400)
+    starts_5s = sorted(cut.start_ms for cut in cuts if cut.duration_ms == 5_000)
+    assert len({75_000, 75_010} & set(starts_5s)) == 1, "only one of the two is ever cut"
+    plan = plan_source_cuts(recipe, 400, served)
+    assert not any(cut.duration_ms == 5_000 and abs(cut.start_ms - 75_000) < 250 for cut in plan)
 
 
 def test_lengths_are_half_seconds_from_five_to_nine():
@@ -257,7 +260,7 @@ def test_jobs_queued_under_the_old_lengths_still_verify():
     assert not source_cut_is_planned(recipe, master, 0, 8_500, f"{sha}:0:8500")
 
 
-def test_archive_round_trip_keeps_when_and_by_whom_each_window_was_cut():
+def test_archive_round_trip_keeps_when_each_window_was_cut():
     recipe, master = _recipe()
     sha = master.sha256
     job = {
@@ -279,16 +282,16 @@ def test_archive_round_trip_keeps_when_and_by_whom_each_window_was_cut():
     assert slots == live_slots
     assert history == live_history
     assert history[f"{sha}:90000:8000"] == CutUse(
-        cp.cut_use_time("2026-09-30T10:05:00+00:00"), 1, "acct:page",
+        cp.cut_use_time("2026-09-30T10:05:00+00:00"), 1,
     )
     # An entry archived before these fields existed still reserves its
     # window and counts as the oldest cut.
     legacy = {key: value for key, value in index["sourceDnaCuts"][0].items()
-              if key not in {"usedAt", "cutIndex", "pageId"}}
+              if key not in {"usedAt", "cutIndex"}}
     old_store = {"jobs": {}, compaction.ARCHIVE_INDEX_KEY: {"sourceDnaCuts": [legacy]}}
     slots, history = cp._source_dna_cut_ledger(old_store, recipe, "rv1")
     assert f"{sha}:1000:7000" in slots
-    assert history[f"{sha}:1000:7000"] == CutUse(NO_CUT_TIME, 0, None)
+    assert history[f"{sha}:1000:7000"] == CutUse(NO_CUT_TIME, 0)
     (cut,) = plan_source_cuts(recipe, 1, slots, history=history)
     assert cut.slot_id not in slots
 
@@ -309,80 +312,88 @@ def test_running_jobs_use_their_creation_time():
     assert history[f"{sha}:50000:6000"].at > history[f"{sha}:1000:7000"].at
 
 
-def _cut_in_jobs(recipe, jobs, quantity=10, page_id="acct:page", until=None):
-    """Simulate up to ``jobs`` replenish runs of ``quantity`` clips in time
-    order, stopping after a run whose cuts satisfy ``until``."""
+def _cut_in_jobs(recipe, jobs, quantity=10):
+    """Simulate up to ``jobs`` replenish runs of ``quantity`` clips, in time
+    order, until a run comes back empty."""
     served: set[str] = set()
     history: dict[str, CutUse] = {}
     cuts = []
     for run in range(jobs):
-        if until is not None and cuts and until(cuts):
+        batch = plan_source_cuts(recipe, quantity, served, seed=f"job-{run}", history=history)
+        if not batch:
             break
-        batch = plan_source_cuts(
-            recipe, quantity, served, seed=f"job-{run}", history=history, page_id=page_id,
-        )
-        assert batch, "supply stopped"
         for order, cut in enumerate(batch):
             cuts.append(cut)
             served.add(cut.slot_id)
-            history[cut.slot_id] = CutUse(float(run), order, page_id)
+            history[cut.slot_id] = CutUse(float(run), order)
     return cuts, served, history
 
 
-def test_an_80_second_master_moves_to_sub_second_starts_and_never_repeats_a_window():
-    # rumi58651-shaped page: one 80 s master cut in runs of 10. Once every
-    # whole-second start x length is cut, new cuts start inside the second
-    # (0.5 s first, then ~0.27/0.77 s, then single frames), each a first
-    # frame x length never cut before, and supply never stops.
-    from services.control_plane_sources import (
-        SUB_SECOND_START_OFFSETS_MS,
-        _start_frame,
-    )
+def test_an_80_second_master_cuts_every_start_once_then_stops_by_name():
+    # rumi58651-shaped page: one 80 s master cut in runs of 10. Every whole
+    # second x length window first, then half-second starts, then quarter and
+    # three-quarter starts; each window exactly once, the length changing
+    # every cut; then a named stop, never a repeat.
     recipe, master = _recipe(duration_ms=80_000)
     durations = source_cut_durations(recipe)
-    whole = sum(
-        (80_000 - length) // 1_000 + 1 + (length % 1_000 != 0) for length in durations
-    )
-    # Half-second starts; for a half-second length the last one is the
-    # end-on-last-frame start, already cut with the whole seconds.
-    half = sum(
-        (80_000 - length - 500) // 1_000 + 1 - (length % 1_000 != 0) for length in durations
-    )
+
+    def fits(offset, length):
+        return (80_000 - length - offset) // 1_000 + 1
+
+    whole = sum(fits(0, length) + (length % 1_000 != 0) for length in durations)
+    half = sum(fits(500, length) - (length % 1_000 != 0) for length in durations)
+    quarter = sum(fits(250, length) + fits(750, length) for length in durations)
+    cuts, served, history = _cut_in_jobs(recipe, 1_000)
+    assert len(cuts) == whole + half + quarter
+    _assert_no_window_twice(cuts)
 
     def level(cut):
         if cut.start_ms % 1_000 == 0 or cut.start_ms == 80_000 - cut.duration_ms:
             return 0
-        return {500: 1, 266: 2, 766: 2}.get(cut.start_ms % 1_000, 3)
-
-    cuts, served, history = _cut_in_jobs(
-        recipe, 1_000, until=lambda cuts: sum(level(cut) >= 2 for cut in cuts) >= 30,
-    )
-    identities = [(_start_frame(cut.start_ms), cut.duration_ms) for cut in cuts]
-    assert len(identities) == len(set(identities)), "a window's frames were cut twice"
+        return {500: 1}.get(cut.start_ms % 1_000, 2)
 
     levels = [level(cut) for cut in cuts]
-    assert levels.count(0) == whole, "every whole-second window is cut"
     # Coarse to fine: a finer start is used early only to change the length.
-    assert levels.count(1) >= half - 20, (levels.count(1), half)
-    first_finer = levels.index(2)
-    assert levels[:first_finer].count(0) >= whole - 20
-    assert levels[-1] >= 2
+    last = {level: len(levels) - 1 - levels[::-1].index(level) for level in (0, 1)}
+    assert sum(level > 0 for level in levels[:last[0]]) <= 20
+    assert sum(level > 1 for level in levels[:last[1]]) <= 20
     lengths = [cut.duration_ms for cut in cuts]
-    assert all(a != b for a, b in zip(lengths, lengths[1:])), "the length always changes"
+    # The length repeats only near the very end, when one length is all that
+    # is left uncut.
+    repeats = [i for i, (a, b) in enumerate(zip(lengths, lengths[1:])) if a == b]
+    assert len(repeats) <= 10 and all(i > len(lengths) - 40 for i in repeats), repeats
     for cut in cuts:
-        assert cut.start_ms % 1_000 in SUB_SECOND_START_OFFSETS_MS or cut.start_ms == 80_000 - cut.duration_ms
         assert source_cut_is_planned(recipe, master, cut.start_ms, cut.duration_ms, cut.slot_id)
-    # Capacity is still there, and the next cut is still a new window.
-    batch = plan_source_cuts(recipe, 10, served, seed="next", history=history, page_id="acct:page")
-    assert batch
-    assert not {(_start_frame(cut.start_ms), cut.duration_ms) for cut in batch} & set(identities)
+    assert plan_source_cuts(recipe, 10, served, history=history) == []
+    assert explain_empty_source_plan(recipe, served) == SOURCE_WINDOWS_EXHAUSTED
 
 
-def test_frame_offsets_decode_distinct_first_frames():
-    from services.control_plane_sources import MASTER_FPS, SUB_SECOND_START_OFFSETS_MS, _start_frame
-    frames = sorted(_start_frame(offset) for offset in SUB_SECOND_START_OFFSETS_MS)
-    assert frames == list(range(MASTER_FPS))
-    # An exact seek starts at the first frame at or after the start time.
-    for offset in SUB_SECOND_START_OFFSETS_MS:
-        frame = _start_frame(offset)
-        assert (frame - 1) * 1_000 / MASTER_FPS < offset <= frame * 1_000 / MASTER_FPS
+def test_sub_second_starts_are_far_enough_apart_for_any_frame_rate_above_4_fps():
+    from services.control_plane_sources import MIN_START_GAP_MS, SUB_SECOND_START_OFFSETS_MS
+    offsets = sorted(SUB_SECOND_START_OFFSETS_MS)
+    assert offsets == [0, 250, 500, 750] and MIN_START_GAP_MS == 250
+    for fps in (5, 23.976, 24, 25, 29.97, 30, 50, 60):
+        # An exact seek begins on the first frame at or after the start.
+        frames = [math.ceil(offset * fps / 1_000 - 1e-9) for offset in offsets]
+        assert len(set(frames)) == len(frames), (fps, frames)
+
+
+def test_a_sampled_master_finds_its_last_uncut_window_exactly(monkeypatch):
+    # Above FULL_SCAN_CANDIDATES a level is sampled. When the sample misses
+    # the few windows left, an exact pass finds them: the planner never
+    # reports a master used up while a never-cut window remains.
+    import services.control_plane_sources as sources
+    monkeypatch.setattr(sources, "SAMPLED_CANDIDATES_PER_CUT", 1)
+    recipe, master = _recipe(duration_ms=700_000)
+    sha = master.sha256
+    durations = source_cut_durations(recipe)
+    every = [
+        (start, length)
+        for length in durations
+        for start in [*range(0, 700_000 - length + 1, 1_000), 700_000 - length]
+    ]
+    assert len(every) > sources.FULL_SCAN_CANDIDATES
+    left = (412_000, 7_500)
+    served = {f"{sha}:{start}:{length}" for start, length in every if (start, length) != left}
+    (cut,) = plan_source_cuts(recipe, 1, served, seed="miss")
+    assert (cut.start_ms, cut.duration_ms) == left
