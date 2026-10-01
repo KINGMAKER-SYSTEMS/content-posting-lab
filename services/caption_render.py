@@ -140,11 +140,14 @@ CAPTION_STYLE_CONTRACT_PATH = Path(__file__).parents[1] / "contracts" / "caption
 
 
 def caption_style_contract() -> dict:
-    """Every CaptionStyle field and value Content Lab accepts, read off the model.
+    """Every CaptionStyle field with its type, allowed values and numeric range, read off the model.
 
     The committed copy (contracts/caption-style.v1.json) lets the Worker check
-    in its own CI that every caption control it offers is one this renderer
-    takes. tests/test_caption_transforms.py fails when the copy drifts;
+    in its own CI that every caption field and value it can send is one this
+    renderer takes. It does not carry the rules the model checks in code: the
+    TikTokSans font name, the #rrggbb colours, the line_breaks limits, the
+    background_color a box or highlight needs, and that an inverted caption
+    is centred. tests/test_caption_transforms.py fails when the copy drifts;
     regenerate it with ``python scripts/export_caption_style_contract.py``.
     """
 
@@ -355,7 +358,8 @@ def _resolve_font(font_dir: Path, filename: str) -> tuple[Path, bytes]:
 
 # Characters that join two letters into one word, as Chrome's CSS
 # ``capitalize`` treats them: "don't", "rock\u2019n\u2019roll", "l\u00b7l".
-_MID_LETTER = frozenset("'\u2018\u2019\u00b7\uff07")
+# Checked one by one in Chrome; ":", "." and "\uff1a" are not joiners there.
+_MID_LETTER = frozenset("'\u2018\u2019\u00b7\uff07\u0387\u055f\u05f4\u2024\u2027\ufe13\ufe52")
 
 
 def _is_letter(char: str) -> bool:
@@ -376,12 +380,23 @@ def _starts_word(char: str) -> bool:
     return _is_letter(char) or unicodedata.category(char) in ("Nd", "Pc")
 
 
-def _continues_word(char: str) -> bool:
+def _is_extend(char: str) -> bool:
     # Combining marks and invisible format characters (soft hyphen, joiners)
-    # stay inside a word; the zero-width space does not.
+    # ride along with the character before them; the zero-width space does not.
     category = unicodedata.category(char)
-    return (_starts_word(char) or category[0] == "M"
-            or (category == "Cf" and char != "\u200b"))
+    return category[0] == "M" or (category == "Cf" and char != "\u200b")
+
+
+def _continues_word(char: str) -> bool:
+    return _starts_word(char) or _is_extend(char)
+
+
+def _next_base(text: str, index: int) -> str:
+    # The first character after ``index`` that is not a mark or format character.
+    for char in text[index + 1:]:
+        if not _is_extend(char):
+            return char
+    return ""
 
 
 def _title_cased(text: str) -> str:
@@ -391,13 +406,16 @@ def _title_cased(text: str) -> str:
     follow the browser's word rule, not Python's ``str.title``. The first
     character of each word is title-cased and every other character is left
     alone ("iPhone" -> "IPhone", "LOL" stays "LOL"). A word is a run of
-    letters, decimal digits, "_" and combining marks. An apostrophe or middle
-    dot between two letters stays inside the word ("don't" -> "Don't"); any
-    other character, including ".", "-", "/", "\u00b2" and emoji, ends it
+    letters, decimal digits, "_" and combining marks. An apostrophe, middle
+    dot or other ``_MID_LETTER`` joiner between two letters stays inside the
+    word ("don't" -> "Don't"), looking past accents and invisible format
+    characters on either side; any other character, including ".", ":", "-",
+    "/", "\u00b2" and emoji, ends it
     ("lo-fi" -> "Lo-Fi", "90's" -> "90'S", "\U0001f525fire" -> "\U0001f525Fire").
     A character with no one-character title case (such as "\u00df") is kept as
     written, as the browser does. tests/fixtures/real/chrome_capitalize.json
-    holds real Chrome output this function is tested against.
+    and chrome_capitalize_real_captions.json hold real Chrome output this
+    function is tested against.
     """
 
     out: list[str] = []
@@ -407,7 +425,7 @@ def _title_cased(text: str) -> str:
         if in_word and _continues_word(char):
             out.append(char)
         elif (in_word and char in _MID_LETTER and _is_letter(previous)
-              and index + 1 < len(text) and _is_letter(text[index + 1])):
+              and (following := _next_base(text, index)) != "" and _is_letter(following)):
             out.append(char)
         elif not in_word and _starts_word(char):
             titled = char.title()
@@ -418,7 +436,8 @@ def _title_cased(text: str) -> str:
             in_word = False
         if _is_wide_ideograph(char):
             in_word = False
-        previous = char
+        if not _is_extend(char):
+            previous = char
     return "".join(out)
 
 

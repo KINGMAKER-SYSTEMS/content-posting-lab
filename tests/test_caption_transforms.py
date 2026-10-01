@@ -29,6 +29,8 @@ from services.caption_render import (
 
 FONT_FILE = "TikTokSans16pt-Bold.ttf"
 CHROME_CAPTURE = Path(__file__).parent / "fixtures" / "real" / "chrome_capitalize.json"
+CHROME_REAL_CAPTIONS = Path(__file__).parent / "fixtures" / "real" / "chrome_capitalize_real_captions.json"
+CHROME_FUZZ = Path(__file__).parent / "fixtures" / "real" / "chrome_capitalize_fuzz.json"
 STYLE = {
     "font": FONT_FILE,
     "size_pt": 32,
@@ -111,6 +113,25 @@ def test_title_case_matches_real_chrome_capitalize_output():
     assert wrong == []
 
 
+def test_title_case_matches_chrome_on_every_real_caption():
+    # The captions pages actually post, not invented ones: Chrome's output for
+    # each, captured the way the Dossier preview draws them.
+    capture = json.loads(CHROME_REAL_CAPTIONS.read_text(encoding="utf-8"))
+    assert len(capture["cases"]) >= 800
+    assert sum(given != chrome for given, chrome in capture["cases"]) >= 700
+    wrong = [(given, chrome, _title_cased(given)) for given, chrome in capture["cases"]
+             if _title_cased(given) != chrome]
+    assert wrong == []
+
+
+def test_title_case_matches_chrome_on_random_joiner_mark_and_format_strings():
+    capture = json.loads(CHROME_FUZZ.read_text(encoding="utf-8"))
+    assert len(capture["cases"]) >= 6000
+    wrong = [(given, chrome, _title_cased(given)) for given, chrome in capture["cases"]
+             if _title_cased(given) != chrome]
+    assert wrong == []
+
+
 @pytest.mark.parametrize("given,expected", [
     ("don't stop me now", "Don't Stop Me Now"),
     ("it’s giving main character", "It’s Giving Main Character"),
@@ -120,6 +141,14 @@ def test_title_case_matches_real_chrome_capitalize_output():
     ("iPhone LOL", "IPhone LOL"),
     ("90's kid", "90'S Kid"),
     ("straße élan", "Straße Élan"),
+    ("don'", "Don'"),
+    ("cafe\u0301's", "Cafe\u0301's"),
+    ("a\u00ad'b", "A\u00ad'b"),
+    ("a'\ufeffb", "A'\ufeffb"),
+    ("col\u00b7legi", "Col\u00b7legi"),
+    ("a\u2027b a\u0387b", "A\u2027b A\u0387b"),
+    ("a.b a:b a\uff1ab", "A.B A:B A\uff1aB"),
+    ("a\u200bb", "A\u200bB"),
 ])
 def test_title_case_examples(given, expected):
     assert _title_cased(given) == expected
@@ -163,20 +192,26 @@ def test_inverted_overlay_is_the_upright_overlay_turned_half_a_turn(font_dir, al
     first, *_, last = inverted.plan.lines
     assert first.text == "first" and last.text == "here"
     assert first.center_y_px > last.center_y_px
+    assert [(line.x_px, line.center_y_px) for line in inverted.plan.lines] == [
+        (1080 - line.x_px, 1920 - line.center_y_px) for line in upright.plan.lines]
     assert inverted.plan.effective_style.inverted is True
     assert inverted.style_sha256 != upright.style_sha256
 
 
-def test_inverted_left_caption_sits_against_the_right_margin_and_passes_the_gate(font_dir):
-    result = render_caption_overlay(caption_request("one short line", align="left", inverted=True),
+@pytest.mark.parametrize("align", ["left", "right"])
+def test_an_inverted_side_aligned_caption_sits_against_the_other_margin_and_passes_the_gate(font_dir, align):
+    result = render_caption_overlay(caption_request("one short line", align=align, inverted=True),
                                     font_dir=font_dir)
     x0, _, x1, _ = overlay_image(result).getchannel("A").getbbox()
-    assert abs(x1 - 972) <= 8 and x0 > 108 + 40
+    if align == "left":
+        assert abs(x1 - 972) <= 8 and x0 > 108 + 40
+    else:
+        assert abs(x0 - 108) <= 8 and x1 < 972 - 40
     style = result.plan.effective_style.model_dump(exclude_none=True)
     assert overlay_geometry_reasons(result.overlay.base64, style) == []
     # Without the turn the gate would (rightly) call the same pixels misaligned.
     upright_style = {key: value for key, value in style.items() if key != "inverted"}
-    assert any(reason.startswith("typed_align:left") for reason in
+    assert any(reason.startswith(f"typed_align:{align}") for reason in
                overlay_geometry_reasons(result.overlay.base64, upright_style))
 
 

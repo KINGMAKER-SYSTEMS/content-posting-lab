@@ -8002,22 +8002,10 @@
 [
 "o•ﬀカ\t.’ﬁ",
 "O•ﬀカ\t.’ﬁ"
-]
-],
-"known_divergences": {
-"why": "Exotic inputs no caption uses: U+0345 at the start of a word, or an invisible format character (U+FEFF, U+200D) right after an in-word apostrophe or middle dot. Content Lab's port does not follow Chrome here.",
-"cases": [
-[
-"\"և🇺🇸\tbZ*ñ-\nͅ.?",
-"\"և🇺🇸\tBZ*Ñ-\nΙ.?"
 ],
 [
 "+ İあ한ǅ'﻿t​Zñ_",
 "+ İあ한ǅ'﻿t​Zñ_"
-],
-[
-"\nͅ❤️″#ʹ←a¿և+և·:’",
-"\nΙ❤️″#ʹ←A¿և+և·:’"
 ],
 [
 "A日bω·﻿ᾳ´🇺🇸ǅカ_",
@@ -8030,6 +8018,18 @@
 [
 "❤️1&ı＇﻿i﻿№ñß\t©",
 "❤️1&I＇﻿i﻿№Ñß\t©"
+]
+],
+"known_divergences": {
+"why": "Exotic inputs no caption uses: U+0345 (combining Greek ypogegrammeni) at the start of a word, which Chrome upper-cases to U+0399. Content Lab's port keeps it as written.",
+"cases": [
+[
+"\"և🇺🇸\tbZ*ñ-\nͅ.?",
+"\"և🇺🇸\tBZ*Ñ-\nΙ.?"
+],
+[
+"\nͅ❤️″#ʹ←a¿և+և·:’",
+"\nΙ❤️″#ʹ←A¿և+և·:’"
 ]
 ]
 }
