@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 import os
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 
 log = logging.getLogger("content_lab.generation_budget")
@@ -142,6 +143,46 @@ def reserve_generation_spend(
     state["spentUsd"] = round(state["spentUsd"] + amount, 4)
     state["calls"][key_id] = int(state["calls"].get(key_id, 0) or 0) + 1
     return True
+
+
+def jobs_store_path() -> Path:
+    """The durable job-store file whose ``generationBudget`` key is the ledger.
+
+    Mirrors ``routers.control_plane._jobs_path()`` (the roster cache dir on the
+    Railway volume) without importing the router, keeping this module pure and
+    free of router imports. The operator-UI generate route reserves against this
+    same file so Replicate and xAI share one daily total.
+    """
+    from services.roster import ROSTER_PATH
+
+    return ROSTER_PATH.parent / "control_plane_jobs.json"
+
+
+def reserve_generation_spend_at(
+    path: Path | str,
+    amount_usd: float,
+    key_id: str,
+    now: datetime | None = None,
+) -> bool:
+    """Reserve against the ledger persisted at ``path`` under its kernel lock.
+
+    For callers that do not already hold the job-store transaction (the
+    operator-UI generate route). Loads the store fresh, mutates it, and persists
+    atomically under the same ``generation_recovery.store_lock`` the Control
+    Plane admission transaction holds, so the two lanes serialize on one ledger.
+    Returns False when the call would exceed the budget (the caller must refuse,
+    never spend).
+    """
+    from services.generation_recovery import store_lock as kernel_lock
+    from services.json_store import atomic_load, atomic_save
+
+    with kernel_lock(path):
+        store = atomic_load(path, default=None)
+        if not isinstance(store, dict) or "jobs" not in store:
+            store = {"version": 1, "jobs": {}, "byIdempotency": {}, "served": {}}
+        ok = reserve_generation_spend(store, amount_usd, key_id, now=now)
+        atomic_save(path, store)
+        return ok
 
 
 def summary(store: dict[str, Any], now: datetime | None = None) -> dict[str, Any]:
