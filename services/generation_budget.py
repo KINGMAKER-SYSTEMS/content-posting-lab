@@ -39,21 +39,23 @@ class BudgetLedgerCorrupt(Exception):
 
 BUDGET_KEY = "generationBudget"
 USD_BUDGET_ENV = "LAB_GENERATION_DAILY_BUDGET_USD"
-DEFAULT_DAILY_BUDGET_USD = 25.0
+# No silent unproven default. The prior $25/day figure was a workload guess, not
+# a measured fleet baseline (402 published recipes, no measured successful daily
+# generation count), so it could neither prove "never quiet pages" nor bound real
+# spend. Paid generation is therefore DISABLED until the operator sets an explicit
+# value derived from production telemetry (active pages × posts/day × deficit ×
+# keeper yield × provider cost, plus retry overhead). 0.0 is the fail-closed
+# value: unset == no paid generation, never an assumed $25.
+DEFAULT_DAILY_BUDGET_USD = 0.0
 # Fail-closed per-gen cost charged when a recipe/provider carries no usable
 # ``cost_per_gen_usd``. 5.0 is the highest known paid per-gen price in the
 # catalog (xAI Grok, ~$5/video); charging it for an unknown provider can only
 # over-count, never let an unmetered paid provider bill as free.
 DEFAULT_COST_PER_GEN_USD = 5.0
-# Why 25: a conservative, fleet-wide ceiling sized to the repo's own catalog
-# per-job costs (truck $0.56, scenic/boat/silhouette $1.20, silhouette-still
-# $0.30), i.e. roughly 20-90 control-plane jobs/day. It is NOT a measured
-# baseline; operators should set LAB_GENERATION_DAILY_BUDGET_USD from real
-# spend and watch /api/health.generation_budget.
 BUDGET_DEFAULT_NOTE = (
-    "Default $25/day is a conservative fleet-wide ceiling (~20-90 control-plane "
-    "jobs/day at current per-job costs), not a measured baseline; set "
-    "LAB_GENERATION_DAILY_BUDGET_USD from measured spend."
+    "Paid generation is disabled until LAB_GENERATION_DAILY_BUDGET_USD is set "
+    "to an explicit measured daily ceiling (active pages × posts/day × deficit "
+    "× keeper yield × provider cost + retry overhead). No silent default."
 )
 
 # Pinned per-model costs for provider submissions that bypass the PROVIDERS
@@ -82,13 +84,18 @@ def per_gen_cost_usd_by_model(model_id: str) -> float:
 def daily_budget_usd() -> float:
     """The per-provider-family daily total, in USD. Fail closed.
 
-    - unset            -> ``DEFAULT_DAILY_BUDGET_USD`` (the new ceiling)
+    - unset / blank    -> 0.0 (paid generation disabled; no unproven default)
     - ``> 0``          -> that ceiling
     - ``0``            -> refuse all paid generation (hard stop)
     - negative / junk / NaN / inf -> refuse all paid generation (fail closed)
     """
     raw = os.environ.get(USD_BUDGET_ENV)
     if raw is None or not raw.strip():
+        log.warning(
+            "%s is not set; paid generation disabled (fail closed). Set an "
+            "explicit measured daily ceiling.",
+            USD_BUDGET_ENV,
+        )
         return DEFAULT_DAILY_BUDGET_USD
     try:
         value = float(raw.strip())

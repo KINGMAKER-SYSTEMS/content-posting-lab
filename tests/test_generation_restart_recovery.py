@@ -17,6 +17,15 @@ from tests.test_generation_moderation_isolation import queue_silhouettes
 from tests.test_replicate_generation_retry import Script as LegacyScript, created, done, status, fast_clock, MODEL
 
 
+@pytest.fixture(autouse=True)
+def _meter_budget(monkeypatch):
+    """The meter fails closed when the daily budget env is unset, so provider-level
+    tests that exercise the PA resubmission path set an explicit high ceiling
+    (they stub the debit identity when asserting metering directly)."""
+    from services import generation_budget
+    monkeypatch.setenv(generation_budget.USD_BUDGET_ENV, "100.0")
+
+
 class Script(LegacyScript):
     def handler(self, request):
         if request.method == "GET" and self.polls and isinstance(self.polls[0], asyncio.CancelledError):

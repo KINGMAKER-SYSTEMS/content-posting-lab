@@ -19,7 +19,8 @@ def test_daily_budget_refuses_nan_and_infinity(monkeypatch):
         monkeypatch.setenv(generation_budget.USD_BUDGET_ENV, raw)
         assert generation_budget.daily_budget_usd() == 0.0, raw
     monkeypatch.delenv(generation_budget.USD_BUDGET_ENV, raising=False)
-    assert generation_budget.daily_budget_usd() == generation_budget.DEFAULT_DAILY_BUDGET_USD
+    # Unset is also fail closed: no silent default.
+    assert generation_budget.daily_budget_usd() == 0.0
 
 
 def test_spent_usd_fails_closed_on_corrupt_current_day():
