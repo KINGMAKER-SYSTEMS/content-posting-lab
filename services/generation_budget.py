@@ -54,10 +54,24 @@ def utc_day(now: datetime | None = None) -> str:
     return (now or datetime.now(timezone.utc)).date().isoformat()
 
 
-def next_reset_iso(now: datetime | None = None) -> str:
+def _next_reset(now: datetime | None = None) -> datetime:
     now = now or datetime.now(timezone.utc)
-    midnight = datetime(now.year, now.month, now.day, tzinfo=timezone.utc) + timedelta(days=1)
-    return midnight.isoformat()
+    return datetime(now.year, now.month, now.day, tzinfo=timezone.utc) + timedelta(days=1)
+
+
+def next_reset_iso(now: datetime | None = None) -> str:
+    return _next_reset(now).isoformat()
+
+
+def retry_after_seconds(now: datetime | None = None) -> int:
+    """Whole seconds until the next UTC reset, for a ``Retry-After`` header.
+
+    Always ``>= 1`` so a client never reads ``0`` (which means "may retry
+    immediately") when the reset is under a second away.
+    """
+    now = now or datetime.now(timezone.utc)
+    seconds = (_next_reset(now) - now).total_seconds()
+    return max(1, int(seconds) + (1 if seconds > int(seconds) else 0))
 
 
 def _fresh_ledger(day: str) -> dict[str, Any]:

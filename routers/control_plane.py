@@ -4338,6 +4338,9 @@ async def create_job(
                         "error": "generation_daily_budget_reached",
                         "resets_at": generation_budget.next_reset_iso(),
                     },
+                    headers={
+                        "Retry-After": str(generation_budget.retry_after_seconds()),
+                    },
                 )
             job_root = (
                 _generation_root() / page_id / recipe_version / job_id

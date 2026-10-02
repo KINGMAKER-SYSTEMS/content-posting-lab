@@ -103,6 +103,27 @@ def test_create_job_budget_is_cumulative_across_jobs(lab, monkeypatch):
     assert second.json()["detail"]["error"] == "generation_daily_budget_reached"
 
 
+def test_budget_429_carries_retry_after_consistent_with_resets_at(lab, monkeypatch):
+    """F1: the budget 429 sends a standard Retry-After header (seconds until
+    resets_at) alongside the unchanged JSON body, so a Retry-After-honouring
+    client backs off instead of spinning."""
+    monkeypatch.setenv(generation_budget.USD_BUDGET_ENV, "0")
+    client, _, _ = lab
+    before = datetime.now(timezone.utc)
+    response = client.post("/api/control-plane/v1/jobs", json=job_body(), headers=HEADERS)
+    assert response.status_code == 429
+    detail = response.json()["detail"]
+    assert detail["error"] == "generation_daily_budget_reached"
+    resets_at = detail["resets_at"]
+    retry_after = response.headers.get("Retry-After")
+    assert retry_after is not None and retry_after.isdigit() and int(retry_after) >= 1
+    reset_dt = datetime.fromisoformat(resets_at)
+    seconds_until_reset = (reset_dt - before).total_seconds()
+    assert abs(int(retry_after) - seconds_until_reset) <= 2
+    # Retry-After is an int (whole seconds), never 0.
+    assert int(retry_after) >= 1
+
+
 # ── non-generation work is never gated ───────────────────────────────────
 
 def test_generation_budget_gate_lives_only_in_the_control_plane_lane():
