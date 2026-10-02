@@ -29,6 +29,21 @@ def test_daily_budget_parses_spend_safe(monkeypatch):
         assert generation_budget.daily_budget_usd() == expected
 
 
+def test_missing_cost_charges_conservative_default():
+    """F5: a missing/zero/negative/non-numeric cost never meters as $0.
+
+    It is charged the fail-closed DEFAULT_COST_PER_GEN_USD; a real positive
+    cost passes through unchanged.
+    """
+    assert generation_budget.charged_cost_per_gen(None) == generation_budget.DEFAULT_COST_PER_GEN_USD
+    assert generation_budget.charged_cost_per_gen(0) == generation_budget.DEFAULT_COST_PER_GEN_USD
+    assert generation_budget.charged_cost_per_gen(0.0) == generation_budget.DEFAULT_COST_PER_GEN_USD
+    assert generation_budget.charged_cost_per_gen(-1) == generation_budget.DEFAULT_COST_PER_GEN_USD
+    assert generation_budget.charged_cost_per_gen("junk") == generation_budget.DEFAULT_COST_PER_GEN_USD
+    assert generation_budget.charged_cost_per_gen(0.28) == pytest.approx(0.28)
+    assert generation_budget.charged_cost_per_gen("0.12") == pytest.approx(0.12)
+
+
 def test_reserve_counts_and_refuses_at_the_cap(monkeypatch):
     monkeypatch.setenv(generation_budget.USD_BUDGET_ENV, "1.0")
     store = {"jobs": {}, "byIdempotency": {}, "served": {}}
