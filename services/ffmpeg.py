@@ -537,10 +537,16 @@ def _hdr_output_color_args(color: dict[str, str]) -> list[str]:
     """Output colour tags that restore the matrix while keeping input metadata.
 
     HDR output must keep the wide-gamut bt2020 matrix the RGB round-trip drops,
-    but must not invent primaries/transfer/range the input didn't have. Only the
-    matrix is fixed; the other tags echo the probed input values (with safe
-    defaults for the rare HDR-by-primaries-only case). No tone-mapping and no
-    pixel change happen here: these are stream metadata tags, not a filter.
+    but must not invent primaries/transfer/range the input didn't have. The
+    matrix is the effective fix: ``-colorspace bt2020nc`` is the flag libx264
+    honours (with ``-color_range``); ``-color_primaries``/``-color_trc`` are
+    emitted as echoes of the probed input but are ignored by libx264, which
+    propagates the input frame's values instead — so on a correctly tagged
+    master the surviving primaries/transfer come from input propagation, not
+    from these flags. The ``or`` defaults below only matter for the rare
+    HDR-by-primaries-only probe and are inert under libx264 for the same
+    reason. No tone-mapping and no pixel change happen here: these are stream
+    metadata tags, not a filter.
     """
     primaries = color.get("color_primaries") or "bt2020"
     transfer = color.get("color_transfer") or "smpte2084"
@@ -623,6 +629,13 @@ async def run_color_correct(
     input_color: dict[str, str] | None = None,
 ) -> None:
     """Run ffmpeg to produce a color-corrected copy of a video.
+
+    ``input_color`` lets a caller that already knows the input's colour fields
+    skip the ffprobe. No production caller passes it today (all of them —
+    control_plane.py's treatment/recut/slideshow renders and video.py's single
+    and bulk colour-correct — take the probe path and re-probe the same cached
+    master per clip); it is the explicit-knowledge seam the HDR unit tests use,
+    so it stays.
 
     Raises RuntimeError with the last ~500 chars of stderr on ffmpeg failure.
     """

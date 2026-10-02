@@ -1,15 +1,30 @@
 """HDR colour-matrix tag restoration (lead decision, option a).
 
 When the input is HDR (transfer smpte2084/arib-std-b67, or primaries bt2020) the
-final Lab output must carry ``color_space=bt2020nc`` plus the input's
-primaries/transfer/range, set explicitly on the output. No tone-mapping and no
-pixel change happen: only the stream metadata tags move. SDR inputs must keep
-the byte-identical ffmpeg command and filter graph.
+Lab's ``run_color_correct`` output carries ``-colorspace bt2020nc`` plus the
+input's primaries/transfer/range as output flags. No tone-mapping and no pixel
+change happen: only the stream metadata tags move. SDR inputs keep the
+byte-identical ffmpeg command and filter graph.
 
-The unit tests prove the command-level invariant (and are the red test on the
-base commit: they assert the explicit tags are emitted for HDR input). The
-integration test renders the real HDR excerpt through the production colour path
-and checks the restored matrix tag plus pixel parity with the pre-change encode.
+What the flags actually do (measured on ffmpeg 9.0.2/libx264, consistent with the
+production 5.1 artifact): ``-colorspace`` is the effective flag — it is what
+restores the matrix the rgba64le→rgb24 round-trip drops. ``-color_range`` is
+honoured too. ``-color_primaries``/``-color_trc`` are ignored by libx264 and the
+input frame's values win, so for a correctly tagged master those two flags are
+belt-and-braces echoes rather than the mechanism; the surviving tags come from
+input propagation. The unit tests prove the command-level invariant (and are the
+red test on the base commit: they assert the explicit tags are emitted for HDR
+input). The integration test renders the real HDR excerpt through the
+production colour path and checks the restored matrix tag plus pixel parity
+with the pre-change encode.
+
+Coverage truth (review finding A): only ``run_color_correct`` callers get these
+tags — ``routers/control_plane.py`` (generated/truck/silhouette treatment,
+sourced-video recut, syzygy slideshow) and ``routers/video.py`` (single + bulk
+colour-correct). ``routers/burn.py`` and ``burn_server.py`` import only
+``build_cc_filter``/``TIKTOK_ENCODE_ARGS`` and build their own ffmpeg commands,
+which perform the same RGB round-trip but are NOT covered by this fix (they
+consume local project videos, not ShipStream HDR masters).
 """
 
 import asyncio
