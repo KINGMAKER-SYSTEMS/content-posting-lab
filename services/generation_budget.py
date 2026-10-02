@@ -56,6 +56,28 @@ BUDGET_DEFAULT_NOTE = (
     "LAB_GENERATION_DAILY_BUDGET_USD from measured spend."
 )
 
+# Pinned per-model costs for provider submissions that bypass the PROVIDERS
+# catalog dispatch (raw-HTTP lanes in ABN/recreate). Kept here so every billable
+# submission is priced in exactly one place. An unlisted model fails closed.
+_MODEL_COST_USD: dict[str, float] = {
+    "black-forest-labs/flux-schnell": 0.003,  # Replicate ~$0.003/image
+    "wan-video/wan-2.5-i2v": 0.30,            # ~$0.06/s × 5 s looping b-roll
+    "dpakkk/image-object-removal": 0.02,      # LaMa inpainting (recreate)
+}
+
+
+def per_gen_cost_usd_by_model(model_id: str) -> float:
+    """Cost of one billable submission for an exact Replicate model id.
+
+    Pinned to ``_MODEL_COST_USD``; an unlisted model raises (fail closed) so a
+    raw-HTTP paid lane can never meter as free. Used by the ABN and recreate
+    lanes that do not go through ``providers.generate_one``.
+    """
+    cost = _MODEL_COST_USD.get(model_id)
+    if cost is None:
+        raise ValueError(f"unpriced model {model_id!r}; cannot meter")
+    return float(cost)
+
 
 def daily_budget_usd() -> float:
     """The per-provider-family daily total, in USD. Fail closed.

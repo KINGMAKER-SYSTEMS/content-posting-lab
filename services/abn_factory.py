@@ -1589,12 +1589,31 @@ def _codex_image(prompt: str, out_name: str, size: str = "1536x1024") -> str | N
         return None
 
 
+def _charge_abn_submission(model_id: str, debit_id: str) -> None:
+    """Reserve one billable ABN provider submission against the daily meter.
+
+    Idempotently keyed by ``debit_id`` so a re-run of the same still/video never
+    double-charges. Fail-closed: an unpriced model (no catalog entry) raises, and
+    an exhausted budget raises ``RuntimeError`` so the caller degrades without
+    spending. Kept local to the factory; it must not pull in the router.
+    """
+    from services import generation_budget
+
+    cost = generation_budget.per_gen_cost_usd_by_model(model_id)
+    ok = generation_budget.debit_generation_spend_at(
+        generation_budget.jobs_store_path(), cost, f"abn:{debit_id}",
+    )
+    if not ok:
+        raise RuntimeError("generation_daily_budget_reached")
+
+
 def _flux_sync(prompt):
     """Generate a real cinematic image via Replicate Flux (raw HTTP, no lib). Returns image URL."""
     tok = os.getenv("REPLICATE_API_TOKEN")
     if not tok:
         return None
     try:
+        _charge_abn_submission("black-forest-labs/flux-schnell", f"flux:{prompt}")
         body = {"input": {"prompt": prompt, "aspect_ratio": "16:9", "output_format": "png"}}
         req = urllib.request.Request(
             "https://api.replicate.com/v1/models/black-forest-labs/flux-schnell/predictions",
@@ -1614,6 +1633,7 @@ def _wan_i2v_sync(image_url, name):
     if not tok or not image_url:
         return None
     try:
+        _charge_abn_submission("wan-video/wan-2.5-i2v", f"wan:{name}")
         body = {"input": {"image": image_url, "duration": 5,
                           "prompt": "slow cinematic drift, ambient particles, subtle depth parallax, no text"}}
         req = urllib.request.Request("https://api.replicate.com/v1/models/wan-video/wan-2.5-i2v/predictions",

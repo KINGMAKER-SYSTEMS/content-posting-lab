@@ -1,6 +1,7 @@
 """Replicate API provider — video models plus FLUX.2 still generation."""
 
 import asyncio
+import hashlib
 import re
 import time
 
@@ -563,6 +564,19 @@ async def remove_text(
     try:
         # Step 1: Generate text mask locally (fast, no API call)
         mask_data_uri = _generate_text_mask(image_data_uri)
+
+        # Reserve the LaMa inpainting submission against the daily meter,
+        # idempotently keyed by the image content so a retry of the SAME
+        # inpainting never double-charges; an exhausted budget refuses.
+        from services import generation_budget
+        cost_usd = generation_budget.per_gen_cost_usd_by_model("dpakkk/image-object-removal")
+        debit_id = "recreate:" + hashlib.sha256(image_data_uri.encode()).hexdigest()[:32]
+        reserved = await asyncio.to_thread(
+            generation_budget.debit_generation_spend_at,
+            generation_budget.jobs_store_path(), cost_usd, debit_id,
+        )
+        if not reserved:
+            raise RuntimeError("generation_daily_budget_reached")
 
         # Step 2: LaMa inpainting — community model, version-based endpoint
         resp = await client.post(

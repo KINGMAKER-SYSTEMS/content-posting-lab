@@ -5167,3 +5167,75 @@ def test_script_segment_uses_template_fallback_when_expert_unavailable(monkeypat
     assert txt, "fallback must produce a non-empty script, not None"
     assert "Anthropic ships X" in txt
     assert "the core detail" in txt
+
+
+# ---------------- P1: ABN still/video submissions are metered ----------------
+
+def test_flux_sync_meters_the_submission(monkeypatch):
+    """P1: the ABN thumbnail/background Flux-schnell still is reserved against
+    the daily meter before the Replicate call, idempotently keyed by prompt."""
+    from services import generation_budget
+
+    monkeypatch.setenv("REPLICATE_API_TOKEN", "tok")
+    debits = []
+
+    def fake_debit(path, amount, debit_id, now=None):
+        debits.append((amount, debit_id))
+        return True
+
+    monkeypatch.setattr(generation_budget, "debit_generation_spend_at", fake_debit)
+    monkeypatch.setattr(generation_budget, "per_gen_cost_usd_by_model", lambda m: 0.003)
+    monkeypatch.setattr(abn_factory.json, "load", lambda *a, **k: {"output": ["http://x.png"]})
+    monkeypatch.setattr(abn_factory.urllib.request, "urlopen", lambda *a, **k: object())
+
+    assert abn_factory._flux_sync("a calm gradient") == "http://x.png"
+    assert debits == [(0.003, "abn:flux:a calm gradient")]
+
+
+def test_flux_sync_refuses_when_budget_exhausted(monkeypatch):
+    """P1: a Flux still that cannot reserve spend degrades to None without
+    spending (never submits)."""
+    from services import generation_budget
+
+    monkeypatch.setenv("REPLICATE_API_TOKEN", "tok")
+    monkeypatch.setattr(generation_budget, "debit_generation_spend_at", lambda *a, **k: False)
+    monkeypatch.setattr(generation_budget, "per_gen_cost_usd_by_model", lambda m: 0.003)
+
+    submitted = []
+    monkeypatch.setattr(abn_factory.urllib.request, "urlopen",
+                        lambda *a, **k: submitted.append(a) or object())
+
+    assert abn_factory._flux_sync("a calm gradient") is None
+    assert submitted == []
+
+
+def test_wan_i2v_sync_meters_the_submission(monkeypatch, tmp_path):
+    """P1: the ABN b-roll wan-2.5-i2v submission is metered, idempotently keyed
+    by the controlled `name` tag."""
+    from services import generation_budget
+
+    monkeypatch.setenv("REPLICATE_API_TOKEN", "tok")
+    debits = []
+
+    def fake_debit(path, amount, debit_id, now=None):
+        debits.append((amount, debit_id))
+        return True
+
+    monkeypatch.setattr(generation_budget, "debit_generation_spend_at", fake_debit)
+    monkeypatch.setattr(generation_budget, "per_gen_cost_usd_by_model", lambda m: 0.30)
+    monkeypatch.setattr(abn_factory.time, "sleep", lambda *a, **k: None)
+
+    create = {"urls": {"get": "http://poll"}}
+    succeeded = {"status": "succeeded", "output": ["http://clip.mp4"]}
+    seq = iter([create, succeeded])
+    monkeypatch.setattr(abn_factory.json, "load", lambda *a, **k: next(seq))
+    monkeypatch.setattr(abn_factory.urllib.request, "urlopen", lambda *a, **k: object())
+
+    dest = tmp_path / "libgen0_broll.mp4"
+    monkeypatch.setattr(abn_factory, "_cross_scratch_path", lambda name: dest)
+    monkeypatch.setattr(abn_factory, "_download", lambda u, p, **k: dest.write_bytes(b"x"))
+    monkeypatch.setattr(abn_factory, "_asset_url", lambda p: "http://asset/" + str(p))
+
+    result = abn_factory._wan_i2v_sync("http://still.png", "libgen0")
+    assert result is not None
+    assert debits == [(0.30, "abn:wan:libgen0")]

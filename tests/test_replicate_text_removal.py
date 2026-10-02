@@ -23,6 +23,57 @@ def test_remove_text_rejects_none_image():
         asyncio.run(remove_text(None, None))  # type: ignore[arg-type]
 
 
+def test_remove_text_meters_the_lama_submission(monkeypatch):
+    """P1: the recreate text-removal LaMa submission is reserved against the
+    daily meter, idempotently keyed by image content, before the prediction."""
+    import hashlib
+    from providers import replicate
+    from services import generation_budget
+
+    monkeypatch.setitem(replicate.API_KEYS, "replicate", "test-tok")
+    debits = []
+
+    def fake_debit(path, amount, debit, now=None):
+        debits.append((amount, debit))
+        return True
+
+    monkeypatch.setattr(generation_budget, "debit_generation_spend_at", fake_debit)
+    monkeypatch.setattr(generation_budget, "per_gen_cost_usd_by_model",
+                        lambda m: 0.02)
+    monkeypatch.setattr(replicate, "_generate_text_mask",
+                        lambda uri: "data:image/png;base64,mask")
+
+    class _FakeClient:
+        async def post(self, *a, **k):
+            raise RuntimeError("post-done")
+
+        async def aclose(self):
+            pass
+
+    with pytest.raises(RuntimeError, match="post-done"):
+        asyncio.run(remove_text("data:image/png;base64,image", _FakeClient()))
+    assert len(debits) == 1
+    amount, debit = debits[0]
+    assert amount == 0.02
+    assert debit == "recreate:" + hashlib.sha256(b"data:image/png;base64,image").hexdigest()[:32]
+
+
+def test_remove_text_refuses_when_budget_exhausted(monkeypatch):
+    """P1: a LaMa inpainting that cannot reserve spend must not submit."""
+    from providers import replicate
+    from services import generation_budget
+
+    monkeypatch.setitem(replicate.API_KEYS, "replicate", "test-tok")
+    monkeypatch.setattr(replicate, "_generate_text_mask",
+                        lambda uri: "data:image/png;base64,mask")
+    monkeypatch.setattr(generation_budget, "debit_generation_spend_at",
+                        lambda *a, **k: False)
+    monkeypatch.setattr(generation_budget, "per_gen_cost_usd_by_model",
+                        lambda m: 0.02)
+    with pytest.raises(RuntimeError, match="generation_daily_budget_reached"):
+        asyncio.run(remove_text("data:image/png;base64,image", None))
+
+
 def test_wan_i2v_fast_includes_negative_prompt_when_supplied():
     payload = _build_wan_i2v_fast_input(
         "Locked-off parked truck shot.",
