@@ -27,3 +27,42 @@ All three production-path renders completed without a `colorchannelmixer` initia
 ## Intended rollout effect
 
 This deliberately changes the posted colour of approximately 30 pages to the look already shown by their Dossier CSS previews. It is a parity correction, not a new creative treatment.
+
+## After deploy
+
+`scripts/contrast_render_proof.py` re-runs the same proof against the **live**
+Lab colour endpoint instead of the local `run_color_correct` call, so the lead
+can confirm the deployed service still reproduces the CSS preview.
+
+It posts the look through `POST /api/video/color-correct` (the Lab's synchronous
+single-video colour endpoint, which routes through the same shared
+`services.ffmpeg.run_color_correct(..., scale=None)` colour math the Worker's
+render uses in `routers/control_plane.py`), decodes the returned frame and the
+source frame to RGB, and compares the output to the CSS preview math
+(MAE <= 1.0 and p99 <= 5; else exit 1). The API key is read from `APP_API_KEY`
+(the env var the Lab's `/api/*` key middleware checks) and is never printed.
+
+The Lab's colour endpoints resolve server-side project paths, so first place a
+1-2 s clip of the master at `<project>/videos/<name>` on the Lab. Extract the
+clip with the same frame-accurate command the script uses (so the server's input
+bytes match the local source frame), then run:
+
+```bash
+# 1. Make the clip (same command the script runs internally).
+ffmpeg -ss 2.0 -i /path/to/master.mp4 -t 1.0 \
+  -c:v libx264 -crf 18 -pix_fmt yuv420p -an clip.mp4
+
+# 2. Place clip.mp4 at <project>/videos/<name> on the Lab, then:
+APP_API_KEY=... python scripts/contrast_render_proof.py \
+  --master /path/to/master.mp4 --at 2.0 --project <project> --remote-path <name>.mp4
+```
+
+To check the comparison offline (no network, no `APP_API_KEY`), run the same
+comparison through `services.ffmpeg.run_color_correct` in-process:
+
+```bash
+python scripts/contrast_render_proof.py --local --master /path/to/master.mp4 --at 2.0
+```
+
+The default look is the live `lovenightdrives` look (`brightness=0.7,
+contrast=1.95, saturation=1.65`); any Dossier look is accepted via `--look`.
