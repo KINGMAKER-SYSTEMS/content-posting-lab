@@ -19,15 +19,6 @@ CREATE = f"/v1/models/{MODEL}/predictions"
 VIDEO = "https://replicate.delivery/out.mp4"
 
 
-@pytest.fixture(autouse=True)
-def _meter_budget(monkeypatch):
-    """The meter fails closed when the daily budget env is unset, so provider-level
-    tests that exercise the PA resubmission path set an explicit high ceiling
-    (they stub the debit identity when asserting metering directly)."""
-    from services import generation_budget
-    monkeypatch.setenv(generation_budget.USD_BUDGET_ENV, "100.0")
-
-
 class Script:
     """A scripted Replicate API: each route pops its next canned outcome."""
 

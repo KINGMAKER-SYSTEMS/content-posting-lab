@@ -39,23 +39,36 @@ class BudgetLedgerCorrupt(Exception):
 
 BUDGET_KEY = "generationBudget"
 USD_BUDGET_ENV = "LAB_GENERATION_DAILY_BUDGET_USD"
-# No silent unproven default. The prior $25/day figure was a workload guess, not
-# a measured fleet baseline (402 published recipes, no measured successful daily
-# generation count), so it could neither prove "never quiet pages" nor bound real
-# spend. Paid generation is therefore DISABLED until the operator sets an explicit
-# value derived from production telemetry (active pages × posts/day × deficit ×
-# keeper yield × provider cost, plus retry overhead). 0.0 is the fail-closed
-# value: unset == no paid generation, never an assumed $25.
-DEFAULT_DAILY_BUDGET_USD = 0.0
+# Derived daily ceiling — an UPPER BOUND from repo facts, NOT a measurement
+# (Eric's "never quiet" rule forbids a 0.0 default: unset must keep pages
+# generating). Derivation (prose in BUDGET_DEFAULT_NOTE):
+#   base demand  = 402 immutable recipe publications (events.md:694)
+#                  × 1 Hailuo keeper/day × $0.28/gen
+#                  (providers/__init__.py hailuo.cost_per_gen_usd)        $112.56
+#   retry margin = a STATED 50% of base, for the moderation/PA overhead the
+#                  meter now counts (E005 variants up to 3 attempts = 1 + 2
+#                  rewrites; PA interruption +1 resubmission). Refusals and
+#                  interruptions are exceptional, so 50% — not the 6× absolute
+#                  worst case, which would be $675 and erase the ceiling.  $ 56.28
+#   ABN/recreate = named flat margin for the thumbnail + cached b-roll
+#                  (Flux $0.003 + Wan $0.30 × _BG_LIB_TARGET 8 slots) and LaMa
+#                  inpainting ($0.02) lanes; their normal-day cadence is NOT
+#                  measured in-repo.                                         $  6.16
+#                                                                            --------
+#                                                                            $175.00
+DEFAULT_DAILY_BUDGET_USD = 175.0
 # Fail-closed per-gen cost charged when a recipe/provider carries no usable
 # ``cost_per_gen_usd``. 5.0 is the highest known paid per-gen price in the
 # catalog (xAI Grok, ~$5/video); charging it for an unknown provider can only
 # over-count, never let an unmetered paid provider bill as free.
 DEFAULT_COST_PER_GEN_USD = 5.0
 BUDGET_DEFAULT_NOTE = (
-    "Paid generation is disabled until LAB_GENERATION_DAILY_BUDGET_USD is set "
-    "to an explicit measured daily ceiling (active pages × posts/day × deficit "
-    "× keeper yield × provider cost + retry overhead). No silent default."
+    "Default $175/day is an upper bound derived from repo facts, not a "
+    "measurement: 402 published recipes × one $0.28 Hailuo keeper = $112.56, "
+    "plus a stated 50% moderation/PA retry margin ($56.28) and a named $6.16 "
+    "ABN/recreate margin. Unset uses this default; set "
+    "LAB_GENERATION_DAILY_BUDGET_USD=0 for the named emergency stop (all paid "
+    "generation refused)."
 )
 
 # Pinned per-model costs for provider submissions that bypass the PROVIDERS
@@ -84,18 +97,13 @@ def per_gen_cost_usd_by_model(model_id: str) -> float:
 def daily_budget_usd() -> float:
     """The per-provider-family daily total, in USD. Fail closed.
 
-    - unset / blank    -> 0.0 (paid generation disabled; no unproven default)
+    - unset / blank    -> ``DEFAULT_DAILY_BUDGET_USD`` (the derived ceiling)
     - ``> 0``          -> that ceiling
-    - ``0``            -> refuse all paid generation (hard stop)
+    - ``0``            -> named emergency stop: refuse all paid generation
     - negative / junk / NaN / inf -> refuse all paid generation (fail closed)
     """
     raw = os.environ.get(USD_BUDGET_ENV)
     if raw is None or not raw.strip():
-        log.warning(
-            "%s is not set; paid generation disabled (fail closed). Set an "
-            "explicit measured daily ceiling.",
-            USD_BUDGET_ENV,
-        )
         return DEFAULT_DAILY_BUDGET_USD
     try:
         value = float(raw.strip())
@@ -107,6 +115,11 @@ def daily_budget_usd() -> float:
             USD_BUDGET_ENV, raw,
         )
         return 0.0
+    if value == 0.0:
+        log.warning(
+            "%s=0 is the named emergency stop; all paid generation refused",
+            USD_BUDGET_ENV,
+        )
     return value
 
 

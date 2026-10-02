@@ -14,7 +14,6 @@ from providers.base import API_KEYS
 import routers.control_plane as cp
 import routers.control_plane_recipes as recipes
 from services.content_engine_registry import REGISTRY_PATH
-from services import generation_budget
 from tests.master_pages_fixtures import bind_current_intent, master_pages
 
 
@@ -117,10 +116,6 @@ def lab(monkeypatch, tmp_path):
     monkeypatch.setenv("CONTROL_PLANE_TOKEN", TOKEN)
     monkeypatch.setenv("CONTENT_LAB_GENERATION_MODE", "ready")
     monkeypatch.setenv("CONTENT_LAB_RECIPE_ROOT", str(tmp_path / "recipes"))
-    # The meter fails closed when LAB_GENERATION_DAILY_BUDGET_USD is unset, so
-    # executor-driving suites must set an explicit high ceiling to exercise
-    # submissions (they assert their own debit ids separately).
-    monkeypatch.setenv(generation_budget.USD_BUDGET_ENV, "100.0")
     monkeypatch.setitem(API_KEYS, "replicate", "test-key")
     monkeypatch.setattr(cp, "_jobs_path", lambda: tmp_path / "jobs.json")
     monkeypatch.setattr(cp, "_generation_root", lambda: tmp_path / "generated")

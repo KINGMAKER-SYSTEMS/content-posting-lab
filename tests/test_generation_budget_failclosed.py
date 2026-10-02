@@ -19,8 +19,28 @@ def test_daily_budget_refuses_nan_and_infinity(monkeypatch):
         monkeypatch.setenv(generation_budget.USD_BUDGET_ENV, raw)
         assert generation_budget.daily_budget_usd() == 0.0, raw
     monkeypatch.delenv(generation_budget.USD_BUDGET_ENV, raising=False)
-    # Unset is also fail closed: no silent default.
+    # Unset uses the derived finite ceiling; the emergency stop is explicit "0".
+    assert generation_budget.daily_budget_usd() == generation_budget.DEFAULT_DAILY_BUDGET_USD
+
+
+def test_unset_default_is_a_finite_nonzero_derived_ceiling(monkeypatch):
+    """Eric's "never quiet" rule: unset must NOT disable generation. The derived
+    default is a finite, positive ceiling — never 0, never NaN/inf."""
+    monkeypatch.delenv(generation_budget.USD_BUDGET_ENV, raising=False)
+    default = generation_budget.daily_budget_usd()
+    assert default == generation_budget.DEFAULT_DAILY_BUDGET_USD
+    assert math.isfinite(default)
+    assert default > 0
+
+
+def test_explicit_zero_is_the_named_emergency_stop(monkeypatch):
+    """An explicit ``LAB_GENERATION_DAILY_BUDGET_USD=0`` refuses all paid
+    generation by name (the emergency stop), unlike unset (derived default)."""
+    monkeypatch.setenv(generation_budget.USD_BUDGET_ENV, "0")
     assert generation_budget.daily_budget_usd() == 0.0
+    store = {"jobs": {}, "byIdempotency": {}, "served": {}}
+    assert generation_budget.reserve_generation_spend(store, 0.28, "replicate") is False
+    assert generation_budget.debit_generation_spend(store, 0.28, "job:g00:s0") is False
 
 
 def test_spent_usd_fails_closed_on_corrupt_current_day():
