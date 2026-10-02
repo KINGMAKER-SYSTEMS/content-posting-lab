@@ -24,6 +24,11 @@ log = logging.getLogger("content_lab.generation_budget")
 BUDGET_KEY = "generationBudget"
 USD_BUDGET_ENV = "LAB_GENERATION_DAILY_BUDGET_USD"
 DEFAULT_DAILY_BUDGET_USD = 25.0
+# Fail-closed per-gen cost charged when a recipe/provider carries no usable
+# ``cost_per_gen_usd``. 5.0 is the highest known paid per-gen price in the
+# catalog (xAI Grok, ~$5/video); charging it for an unknown provider can only
+# over-count, never let an unmetered paid provider bill as free.
+DEFAULT_COST_PER_GEN_USD = 5.0
 
 
 def daily_budget_usd() -> float:
@@ -72,6 +77,20 @@ def retry_after_seconds(now: datetime | None = None) -> int:
     now = now or datetime.now(timezone.utc)
     seconds = (_next_reset(now) - now).total_seconds()
     return max(1, int(seconds) + (1 if seconds > int(seconds) else 0))
+
+
+def charged_cost_per_gen(value: Any) -> float:
+    """A usable per-gen cost, never zero.
+
+    A missing, zero, negative or non-numeric cost is charged the fail-closed
+    ``DEFAULT_COST_PER_GEN_USD`` so an unknown paid provider can never meter as
+    free. A positive numeric cost is returned unchanged.
+    """
+    try:
+        cost = float(value)
+    except (TypeError, ValueError):
+        cost = 0.0
+    return cost if cost > 0 else DEFAULT_COST_PER_GEN_USD
 
 
 def _fresh_ledger(day: str) -> dict[str, Any]:
