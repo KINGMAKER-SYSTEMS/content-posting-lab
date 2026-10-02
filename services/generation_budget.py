@@ -242,10 +242,17 @@ def _ledger(store: dict[str, Any], day: str) -> dict[str, Any]:
 
     Raises ``BudgetLedgerCorrupt`` when the *current-day* total is malformed:
     silently restoring it to zero would hand back the whole day's budget.
+
+    On a UTC day rollover ``spentUsd`` and ``calls`` reset, but the idempotent
+    ``debits`` map is PRESERVED so resuming/polling a prediction submitted on a
+    prior day stays free (the same debit id is recognised as already charged),
+    while a *new* submission (a fresh debit id) is charged to the new day.
     """
     state = store.get(BUDGET_KEY)
     if not isinstance(state, dict) or state.get("day") != day:
+        prior_debits = state.get("debits", {}) if isinstance(state, dict) else {}
         state = store[BUDGET_KEY] = _fresh_ledger(day)
+        state["debits"] = prior_debits
         return state
     if not _is_finite_nonnegative(state.get("spentUsd")):
         raise BudgetLedgerCorrupt(
