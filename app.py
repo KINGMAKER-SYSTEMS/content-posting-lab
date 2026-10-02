@@ -17,6 +17,7 @@ from project_manager import PROJECTS_DIR, ensure_default_project
 from providers import PROVIDERS
 from providers.base import API_KEYS
 from routers.control_plane import router as control_plane_router
+from routers.control_plane import generation_budget_status
 from routers.post_renders import router as post_renders_router, start_workers as start_post_render_workers, readiness as post_render_readiness
 from routers.control_plane_dossier import router as control_plane_dossier_router
 from routers.control_plane_recipes import router as control_plane_recipes_router
@@ -321,6 +322,7 @@ async def health_check():
         "ffmpeg": ffmpeg_ok,
         "ytdlp": ytdlp_ok,
         "providers": providers,
+        "generation_budget": generation_budget_status(),
         "notion_pages": bool(
             os.getenv("NOTION_API_KEY") and os.getenv("NOTION_PAGES_DB")
         ),

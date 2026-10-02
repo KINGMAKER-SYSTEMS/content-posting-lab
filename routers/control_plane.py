@@ -129,7 +129,7 @@ from services.content_engine_registry import load_engine_registry, resolve_mater
 from services.content_format_contracts import CONTRACTS_PATH, load_format_contracts
 from services.ffmpeg import delivery_encode_args, run_color_correct
 from services.master_pages_contract import SCHEMA as MASTER_PAGES_SCHEMA, canonical_intent, exact_intent, intent_hash
-from services import moderation_retry
+from services import generation_budget, moderation_retry
 from services.roster_public import require_roster_auth
 from services.source_treatment import (
     derived_source_treatment,
@@ -1141,6 +1141,14 @@ def _jobs_path() -> Path:
 
 def _empty_jobs() -> dict[str, Any]:
     return {"version": 1, "jobs": {}, "byIdempotency": {}, "served": {}}
+
+
+def generation_budget_status() -> dict[str, Any]:
+    """Read-only current daily generation-budget totals for /api/health."""
+    store = atomic_load(_jobs_path(), default=None)
+    if not isinstance(store, dict):
+        store = _empty_jobs()
+    return generation_budget.summary(store)
 
 
 def _idempotency_job_id(store: dict[str, Any], key: str) -> Any:
@@ -4314,6 +4322,23 @@ async def create_job(
             )
             if len(prompt_plan) != provider_calls:
                 raise HTTPException(status_code=409, detail="prompt_inventory_exhausted")
+            # Daily total generation budget: checked before any paid call and
+            # reserved (fail-closed) in the same transaction that admits the
+            # job. Truck-master recovery and every non-generation executor
+            # never pass through here and stay unblocked.
+            planned_usd = provider_calls * float(
+                generation_recipe.provider_config.get("cost_per_gen_usd") or 0
+            )
+            if not generation_budget.reserve_generation_spend(
+                store, planned_usd, PROVIDERS[generation_recipe.engine]["key_id"],
+            ):
+                raise HTTPException(
+                    status_code=429,
+                    detail={
+                        "error": "generation_daily_budget_reached",
+                        "resets_at": generation_budget.next_reset_iso(),
+                    },
+                )
             job_root = (
                 _generation_root() / page_id / recipe_version / job_id
             ).resolve()
