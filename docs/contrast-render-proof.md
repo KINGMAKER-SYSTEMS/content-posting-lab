@@ -53,7 +53,7 @@ ffmpeg -ss 2.0 -i /path/to/master.mp4 -t 1.0 \
   -c:v libx264 -crf 18 -pix_fmt yuv420p -an clip.mp4
 
 # 2. Place clip.mp4 at <project>/videos/<name> on the Lab, then:
-APP_API_KEY=... python scripts/contrast_render_proof.py \
+APP_API_KEY=... python scripts/contrast_render_proof.py --lab-url <deployed Lab URL> \
   --master /path/to/master.mp4 --at 2.0 --project <project> --remote-path <name>.mp4
 ```
 

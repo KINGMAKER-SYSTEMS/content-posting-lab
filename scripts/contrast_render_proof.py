@@ -56,7 +56,6 @@ from pathlib import Path
 # `services` is a repo-internal dependency (stdlib-only for the colour math).
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-DEFAULT_LAB_URL = "https://risingtides-content-lab-production.up.railway.app"
 DEFAULT_LOOK = "brightness=0.7,contrast=1.95,saturation=1.65"
 API_KEY_ENV = "APP_API_KEY"
 
@@ -347,7 +346,11 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Post-deploy colour render proof (fix/contrast-matches-preview)."
     )
-    parser.add_argument("--lab-url", default=DEFAULT_LAB_URL)
+    parser.add_argument(
+        "--lab-url",
+        default=None,
+        help="the deployed Lab base URL (required for the live mode; no host is built in)",
+    )
     parser.add_argument("--master", required=True, help="path to a real master mp4")
     parser.add_argument(
         "--look",
@@ -404,6 +407,9 @@ def main(argv: list[str] | None = None) -> int:
     try:
         extract_clip(str(master), args.at, args.duration, clip_path)
 
+        if not args.local and not args.lab_url:
+            print("error: --lab-url is required for the live mode", file=sys.stderr)
+            return 2
         if args.local:
             render_local(clip_path, output_path, cc)
         else:
