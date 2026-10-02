@@ -282,6 +282,25 @@ def spent_usd(store: dict[str, Any], now: datetime | None = None) -> float:
     return float(spent)
 
 
+def can_reserve(
+    store: dict[str, Any],
+    amount_usd: float,
+    now: datetime | None = None,
+) -> bool:
+    """Read-only: can the current-day ledger afford ``amount_usd`` right now?
+
+    The admission-time cheap check. Never mutates ``store`` (a refusal must leave
+    no partial ledger write behind). Raises ``ValueError`` for a non-finite/
+    negative amount and ``BudgetLedgerCorrupt`` for a malformed current-day
+    ledger — both fail closed. The per-submission ``debit_generation_spend``
+    remains the real cap; this only avoids creating a job that cannot even
+    afford its first billable submission.
+    """
+    budget = daily_budget_usd()
+    amount = _finite_usd(amount_usd, "amount_usd")
+    return spent_usd(store, now) + amount <= budget + 1e-9
+
+
 def reserve_generation_spend(
     store: dict[str, Any],
     amount_usd: float,

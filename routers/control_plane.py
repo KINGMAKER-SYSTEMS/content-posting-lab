@@ -3003,8 +3003,10 @@ async def _run_owned_dossier_generation(job_id: str) -> None:
                         # Fleet-wide USD budget reached: no later candidate can
                         # reserve either, so stop the remaining plan now (like a
                         # credit failure), preserving any already-claimed output
-                        # through the existing underfilled-batch handling.
-                        raise RuntimeError("provider_generation_failed")
+                        # through the underfilled-batch handling. Raised under
+                        # its own name so the executor records the Worker's
+                        # refusal contract (error/errorClass/errorDetail/resetsAt).
+                        raise RuntimeError("generation_daily_budget_reached")
                     # A confirmed refused prediction whose bounded varied
                     # retries (or the page's daily retry budget) are spent
                     # stays refused. Continue only to the next distinct
@@ -3158,6 +3160,28 @@ async def _run_owned_dossier_generation(job_id: str) -> None:
     except Exception as error:  # provider and ffmpeg failures are job state
         complete_manifests = [clip for clip in manifests
                               if not durable or clip.get("generationIndex") in completed_calls]
+        if str(error) == "generation_daily_budget_reached":
+            # A later billable submission (retry / PA resubmission / second call)
+            # could not reserve against the daily meter. End failed under the
+            # Worker's refusal contract and PRESERVE any already-claimed paid
+            # output (do not discard work). errorClass/errorDetail were already
+            # persisted by the executor loop; add the camelCase resetsAt the
+            # Worker reads from GET /v1/jobs/{id}.
+            resets_at = generation_budget.next_reset_iso()
+            await asyncio.to_thread(_update_job,
+                job_id,
+                status="failed",
+                error="generation_daily_budget_reached",
+                errorClass="generation_budget",
+                errorDetail="daily_budget",
+                resetsAt=resets_at,
+                clips=complete_manifests,
+                uncompletedGenerationClips=[clip for clip in manifests if clip not in complete_manifests],
+                providerCallsCompleted=len(completed_calls),
+                completedGenerationCalls=list(completed_calls),
+                completedAt=datetime.now(timezone.utc).isoformat(),
+            )
+            return
         if (str(error) == "provider_generation_failed" and complete_manifests
                 and _job_matches_current_master_pages(job)):
             # Earlier calls already produced fully treated, claimed clips. A
@@ -4369,6 +4393,32 @@ async def create_job(
                 raise HTTPException(
                     status_code=500, detail=f"generation_pricing_unavailable: {exc}"
                 )
+            # Cheap admission gate (the per-submission debit remains the real
+            # cap): refuse BEFORE creating any job row when the day's metered
+            # spend already leaves no room for the job's FIRST billable
+            # submission. One clock sample feeds both the body `resets_at` and
+            # the `Retry-After` header, so midnight cannot split them. No job
+            # row, no ghost state on refusal.
+            first_call_cost = moderation_retry.attempt_cost_usd(
+                generation_recipe.provider_model
+            )
+            if first_call_cost is None:
+                first_call_cost = generation_budget.charged_cost_per_gen(
+                    generation_recipe.provider_config.get("cost_per_gen_usd")
+                )
+            if not generation_budget.can_reserve(store, first_call_cost):
+                now = datetime.now(timezone.utc)
+                resets_at = generation_budget.next_reset_iso(now)
+                raise HTTPException(
+                    status_code=429,
+                    detail={
+                        "error": "generation_daily_budget_reached",
+                        "resets_at": resets_at,
+                    },
+                    headers={
+                        "Retry-After": str(generation_budget.retry_after_seconds(now)),
+                    },
+                )
             job_root = (
                 _generation_root() / page_id / recipe_version / job_id
             ).resolve()
@@ -4607,6 +4657,13 @@ async def job_status(
         # terminal failure to a generic label.
         response["error"] = job["error"][:300]
     response.update(_job_status_failure_cause(job))
+    resets_at = job.get("resetsAt")
+    if isinstance(resets_at, str) and resets_at:
+        # The budget-refusal contract: the Worker reads this camelCase field
+        # alongside `error` == "generation_daily_budget_reached" to defer a
+        # fresh create until the meter rolls over, instead of re-sending every
+        # ~15 min.
+        response["resetsAt"] = resets_at
     return response
 
 
@@ -4630,7 +4687,7 @@ def _job_status_failure_cause(job: dict[str, Any]) -> dict[str, str]:
     """
     if (
         job.get("status") not in _STATUS_FAILURE_TERMINAL
-        or job.get("error") != "provider_generation_failed"
+        or job.get("error") not in ("provider_generation_failed", "generation_daily_budget_reached")
     ):
         return {}
     cause: dict[str, str] = {}

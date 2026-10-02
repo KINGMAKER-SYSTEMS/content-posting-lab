@@ -98,14 +98,15 @@ def test_summary_reports_budget_and_resets_at(monkeypatch):
 def test_create_job_admission_validates_pricing_and_defers_spend(lab, monkeypatch):
     """F1 (revised): admission no longer reserves the whole planned amount (that
     would let queued work shift unbounded reserved spend across midnight).
-    Admission validates the recipe provider is priced (fail closed) and does not
-    touch the ledger; each billable submission is debited at its own UTC day by
-    the executor loop."""
-    monkeypatch.setenv(generation_budget.USD_BUDGET_ENV, "0")
+    Admission validates the recipe provider is priced (fail closed), runs a cheap
+    read-only gate that the FIRST billable submission can be afforded, and does
+    not touch the ledger; each billable submission is debited at its own UTC day
+    by the executor loop."""
+    monkeypatch.setenv(generation_budget.USD_BUDGET_ENV, "100.0")
     client, _, _ = lab
     response = client.post("/api/control-plane/v1/jobs", json=job_body(), headers=HEADERS)
     assert response.status_code == 200
-    # No reservation happened at admission.
+    # No reservation happened at admission (only the cheap read-only gate ran).
     assert generation_budget.spent_usd(cp._load_jobs()) == 0.0
 
 
