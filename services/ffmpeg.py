@@ -481,10 +481,13 @@ def _probe_input_duration_seconds(input_path: str) -> float | None:
 # Colour-metadata field names as reported by ffprobe (`-show_entries stream=…`).
 _COLOR_FIELDS = ("color_space", "color_transfer", "color_primaries", "color_range")
 
-# Transfers that identify an HDR master. Primaries `bt2020` also identifies HDR
-# even when the transfer tag is absent (some encoders omit the transfer tag but
-# keep the wide-gamut primaries). A transfer or primaries probe failure must not
-# silently mislabel output, so an unknown/missing probe returns None.
+# Transfers that identify an HDR master: smpte2084 is PQ, arib-std-b67 is HLG.
+# The transfer characteristic is the HDR discriminator. BT.2020 primaries alone
+# are NOT proof of HDR: a valid SDR master can pair bt2020 primaries with a
+# bt709 (or absent) transfer, and an encoder sometimes tags wide-gamut
+# primaries while keeping an SDR transfer. Absent, incoherent or partial
+# transfer metadata therefore falls through to the old SDR path (untagged),
+# exactly as before — an unknown/missing transfer is never defaulted to PQ.
 _HDR_TRANSFERS = frozenset({"smpte2084", "arib-std-b67"})
 
 
@@ -524,13 +527,17 @@ def _probe_input_color(input_path: str) -> dict[str, str] | None:
 
 
 def _is_hdr_color(color: dict[str, str] | None) -> bool:
-    """True when the probed colour metadata identifies an HDR stream."""
+    """True when the probed transfer identifies an HDR stream.
+
+    The transfer characteristic is the HDR discriminator: ``smpte2084`` is PQ
+    and ``arib-std-b67`` is HLG. BT.2020 primaries alone are NOT proof of HDR —
+    a valid SDR master can carry bt2020 primaries with a bt709 (or absent)
+    transfer. Absent, incoherent or partial transfer metadata is therefore not
+    HDR and keeps the old SDR path (untagged), exactly as before.
+    """
     if not color:
         return False
-    return (
-        color.get("color_transfer") in _HDR_TRANSFERS
-        or color.get("color_primaries") == "bt2020"
-    )
+    return color.get("color_transfer") in _HDR_TRANSFERS
 
 
 def _hdr_output_color_args(color: dict[str, str]) -> list[str]:
@@ -543,13 +550,16 @@ def _hdr_output_color_args(color: dict[str, str]) -> list[str]:
     emitted as echoes of the probed input but are ignored by libx264, which
     propagates the input frame's values instead — so on a correctly tagged
     master the surviving primaries/transfer come from input propagation, not
-    from these flags. The ``or`` defaults below only matter for the rare
-    HDR-by-primaries-only probe and are inert under libx264 for the same
-    reason. No tone-mapping and no pixel change happen here: these are stream
-    metadata tags, not a filter.
+    from these flags.
+
+    This is only called once ``_is_hdr_color`` has confirmed the transfer is
+    smpte2084 (PQ) or arib-std-b67 (HLG), so the transfer is always present and
+    is never defaulted to PQ. Primaries and range still fall back to the
+    HDR-typical values when the encoder omitted them. No tone-mapping and no
+    pixel change happen here: these are stream metadata tags, not a filter.
     """
     primaries = color.get("color_primaries") or "bt2020"
-    transfer = color.get("color_transfer") or "smpte2084"
+    transfer = color["color_transfer"]  # guaranteed present: gated by _is_hdr_color
     color_range = color.get("color_range") or "tv"
     return [
         "-colorspace", "bt2020nc",

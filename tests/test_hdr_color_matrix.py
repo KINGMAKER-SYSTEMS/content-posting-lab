@@ -1,10 +1,11 @@
 """HDR colour-matrix tag restoration (lead decision, option a).
 
-When the input is HDR (transfer smpte2084/arib-std-b67, or primaries bt2020) the
+When the input is HDR (transfer smpte2084 = PQ, or arib-std-b67 = HLG) the
 Lab's ``run_color_correct`` output carries ``-colorspace bt2020nc`` plus the
-input's primaries/transfer/range as output flags. No tone-mapping and no pixel
-change happen: only the stream metadata tags move. SDR inputs keep the
-byte-identical ffmpeg command and filter graph.
+input's primaries/transfer/range as output flags. BT.2020 primaries alone are
+NOT proof of HDR, so an SDR stream that only carries bt2020 primaries (with a
+bt709 or absent transfer) keeps the byte-identical SDR command and filter graph.
+No tone-mapping and no pixel change happen: only the stream metadata tags move.
 
 What the flags actually do (measured on ffmpeg 9.0.2/libx264, consistent with the
 production 5.1 artifact): ``-colorspace`` is the effective flag — it is what
@@ -100,12 +101,17 @@ def _capture_argv(monkeypatch, **kwargs):
         ({}, False),
         (SDR_COLOR, False),
         (HDR_COLOR, True),
+        # Transfer is the sole HDR discriminator: smpte2084 = PQ, arib-std-b67 = HLG.
         ({"color_transfer": "arib-std-b67", "color_primaries": "bt2020"}, True),
-        ({"color_transfer": "bt709", "color_primaries": "bt2020"}, True),
         ({"color_transfer": "smpte2084", "color_primaries": "bt709"}, True),
+        # BT.2020 primaries are NOT proof of HDR on their own.
+        ({"color_transfer": "bt709", "color_primaries": "bt2020"}, False),
+        ({"color_transfer": "unknown", "color_primaries": "bt2020"}, False),
+        ({"color_primaries": "bt2020"}, False),
+        ({"color_transfer": "bt709"}, False),
     ],
 )
-def test_is_hdr_color_uses_transfer_or_primaries(color, expected):
+def test_is_hdr_color_uses_transfer_as_the_sole_discriminator(color, expected):
     assert _is_hdr_color(color) is expected
 
 
@@ -116,6 +122,25 @@ def test_hdr_output_color_args_fix_matrix_and_echo_input_metadata():
         "-color_trc", "smpte2084",
         "-color_range", "tv",
     ]
+
+
+def test_hdr_output_color_args_echoes_hlg_and_never_defaults_missing_transfer_to_pq():
+    # HLG is echoed verbatim; the helper must not invent a PQ default.
+    hlg = {
+        "color_space": "bt2020nc",
+        "color_transfer": "arib-std-b67",
+        "color_primaries": "bt2020",
+        "color_range": "tv",
+    }
+    assert _hdr_output_color_args(hlg) == [
+        "-colorspace", "bt2020nc",
+        "-color_primaries", "bt2020",
+        "-color_trc", "arib-std-b67",
+        "-color_range", "tv",
+    ]
+    # A transfer-less probe is never HDR, so this helper must refuse to invent PQ.
+    with pytest.raises(KeyError):
+        _hdr_output_color_args({"color_primaries": "bt2020"})
 
 
 def test_probe_input_color_parses_key_value_fields(monkeypatch):
