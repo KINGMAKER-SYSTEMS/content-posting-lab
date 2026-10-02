@@ -13,9 +13,12 @@ and checks the restored matrix tag plus pixel parity with the pre-change encode.
 """
 
 import asyncio
+import functools
+import logging
 import os
 import shutil
 import subprocess
+import threading
 from pathlib import Path
 
 import pytest
@@ -172,6 +175,115 @@ async def test_sdr_input_command_is_byte_identical_to_pre_change(monkeypatch):
     ]
     for token in ("-colorspace", "-color_primaries", "-color_trc", "-color_range"):
         assert token not in captured
+
+
+# --- the probe must never block the event loop ------------------------------
+
+@pytest.mark.asyncio
+async def test_colour_probe_is_offloaded_and_does_not_block_the_loop(monkeypatch):
+    """A slow ffprobe must not stall the loop while it runs (review B).
+
+    The probe is dispatched via asyncio.to_thread; a fake probe that sleeps in
+    its own thread must run concurrently with another coroutine, which keeps
+    making progress on the same loop the whole time. If the probe were ever
+    made inline again, the heartbeat below could not tick until the probe
+    finished and this test fails.
+    """
+    probe_started = threading.Event()
+    release_probe = threading.Event()
+    heartbeats = []
+
+    def slow_fake_probe(_input_path):
+        probe_started.set()
+        # Block in the worker thread (never the loop) until the test releases.
+        release_probe.wait(timeout=10)
+        return HDR_COLOR
+
+    async def fake_to_thread(function, *args, **kwargs):
+        if function is ffmpeg_module._probe_input_color:
+            return await asyncio.get_running_loop().run_in_executor(
+                None, functools.partial(slow_fake_probe, *args, **kwargs)
+            )
+        return await asyncio.to_thread(function, *args, **kwargs)
+
+    captured = _capture_argv(monkeypatch)
+    monkeypatch.setattr(ffmpeg_module.asyncio, "to_thread", fake_to_thread)
+
+    async def heartbeat():
+        ticks = 0
+        while not release_probe.is_set():
+            heartbeats.append(ticks)
+            ticks += 1
+            await asyncio.sleep(0.01)
+
+    render = asyncio.create_task(
+        run_color_correct("slow.mp4", "slow-out.mp4", None, source_duration_ms=2000)
+    )
+    await asyncio.sleep(0)
+    await asyncio.sleep(0.05)  # let the render task reach the awaited probe
+    assert probe_started.is_set(), "colour probe never ran"
+
+    pumper = asyncio.create_task(heartbeat())
+    await asyncio.sleep(0.15)
+    # The loop stayed live while the probe thread was blocked.
+    assert len(heartbeats) >= 3, heartbeats
+
+    release_probe.set()
+    await pumper
+    await render
+    # The probe result still reached the argv: HDR tags were emitted.
+    assert captured[-9:] == [*HDR_TAGS, "slow-out.mp4"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("probe_result", "expected_line"),
+    [
+        (HDR_COLOR, "hdr"),
+        (SDR_COLOR, "sdr"),
+        (None, "failed"),
+    ],
+)
+async def test_probe_outcome_is_logged_with_a_named_line(
+    monkeypatch, caplog, probe_result, expected_line
+):
+    """Review C: 'SDR' must be distinguishable from 'probe failed' in the logs."""
+
+    async def fake_to_thread(function, *_args, **_kwargs):
+        if function is ffmpeg_module._probe_input_color:
+            return probe_result
+        return None
+
+    _capture_argv(monkeypatch)
+    monkeypatch.setattr(ffmpeg_module.asyncio, "to_thread", fake_to_thread)
+    with caplog.at_level(logging.INFO, logger="ffmpeg"):
+        await run_color_correct(
+            f"{expected_line}-input.mp4", f"{expected_line}-out.mp4", None,
+            source_duration_ms=2000,
+        )
+    named = [r for r in caplog.records if r.getMessage().startswith("hdr_probe:")]
+    assert len(named) == 1
+    assert f"hdr_probe: {expected_line} input=" in named[0].getMessage()
+    assert f"{expected_line}-input.mp4" in named[0].getMessage()
+
+
+@pytest.mark.asyncio
+async def test_explicit_input_color_is_not_reprobed(monkeypatch, caplog):
+    """The input_color kwarg skips the probe entirely (no to_thread call)."""
+    calls = []
+
+    async def fail_to_thread(function, *args, **kwargs):
+        calls.append(function)
+        raise AssertionError("no probe should be offloaded when input_color is given")
+
+    _capture_argv(monkeypatch)
+    monkeypatch.setattr(ffmpeg_module.asyncio, "to_thread", fail_to_thread)
+    with caplog.at_level(logging.INFO, logger="ffmpeg"):
+        await run_color_correct(
+            "known.mp4", "known-out.mp4", None,
+            input_color=HDR_COLOR, source_duration_ms=2000,
+        )
+    assert calls == []
 
 
 # --- integration: real HDR excerpt through the production colour path ------

@@ -673,6 +673,13 @@ async def run_color_correct(
         color = await asyncio.to_thread(_probe_input_color, input_path)
     is_hdr = _is_hdr_color(color)
     color_args = _hdr_output_color_args(color) if is_hdr else []
+    # One named line so an operator can tell "input is SDR" (no tags wanted)
+    # from "the probe failed" (no tags because the colour metadata is unknown).
+    log.info(
+        "hdr_probe: %s input=%s",
+        "failed" if color is None else ("hdr" if is_hdr else "sdr"),
+        os.path.basename(input_path),
+    )
     cmd = [
         "ffmpeg", "-y",
         *input_window,
