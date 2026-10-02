@@ -446,12 +446,11 @@ async def generate_video(
         },
     )
 
-    # Daily total generation budget: the operator-UI path draws from the SAME
-    # shared ledger as the Control Plane Worker, so "total budget" is true for
-    # every paid provider family (xAI here, Replicate in the control plane).
-    # Reserved before any provider call; on refusal the caller gets the same
-    # machine-readable reason + resets_at, plus a Retry-After header, surfaced
-    # as a plain 429 message.
+    # Daily generation budget: the operator-UI path draws from the SAME shared
+    # ledger as the Control Plane Worker, so both paid admission lanes (xAI and
+    # Replicate) share one daily total. Reserved before any provider call; on
+    # refusal the caller gets the same machine-readable reason + resets_at, plus
+    # a Retry-After header, surfaced as a plain 429 message.
     cost_per_gen = generation_budget.charged_cost_per_gen(
         PROVIDERS[provider].get("cost_per_gen_usd")
     )
