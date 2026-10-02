@@ -664,13 +664,15 @@ async def run_color_correct(
     )
     color = input_color
     if color is None:
-        # Inline (not via asyncio.to_thread): the encode-timeout tests stub the
-        # standard to_thread offload boundary wholesale, and this private probe
-        # must stay independent of that boundary (see _stub_probe in
-        # tests/test_ffmpeg_encode_timeout.py). subprocess.run is a bounded
-        # local-file ffprobe (~ms), one per clip.
-        color = _probe_input_color(input_path)
-    color_args = _hdr_output_color_args(color) if _is_hdr_color(color) else []
+        # Off the event loop, like the sibling duration probe below: a slow or
+        # hung ffprobe must never stall the single-process service loop (HTTP,
+        # Telegram bot, visual sweep). The encode-timeout tests stub this
+        # offload boundary keyed on the probed function (see _stub_probe in
+        # tests/test_ffmpeg_encode_timeout.py), so this colour probe stays
+        # independently stubbable while still yielding to the loop.
+        color = await asyncio.to_thread(_probe_input_color, input_path)
+    is_hdr = _is_hdr_color(color)
+    color_args = _hdr_output_color_args(color) if is_hdr else []
     cmd = [
         "ffmpeg", "-y",
         *input_window,
