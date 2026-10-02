@@ -478,6 +478,81 @@ def _probe_input_duration_seconds(input_path: str) -> float | None:
     return duration
 
 
+# Colour-metadata field names as reported by ffprobe (`-show_entries stream=…`).
+_COLOR_FIELDS = ("color_space", "color_transfer", "color_primaries", "color_range")
+
+# Transfers that identify an HDR master. Primaries `bt2020` also identifies HDR
+# even when the transfer tag is absent (some encoders omit the transfer tag but
+# keep the wide-gamut primaries). A transfer or primaries probe failure must not
+# silently mislabel output, so an unknown/missing probe returns None.
+_HDR_TRANSFERS = frozenset({"smpte2084", "arib-std-b67"})
+
+
+def _probe_input_color(input_path: str) -> dict[str, str] | None:
+    """Probe the video stream's colour metadata once (key=value ffprobe form).
+
+    Returns a dict of the four colour fields, or None when ffprobe cannot prove
+    them. A failure is deliberately indistinguishable from "not HDR": the caller
+    then emits no extra colour tags, which is the existing byte-for-byte SDR
+    behaviour and fails closed rather than mislabeling an unknown stream.
+    """
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe", "-v", "error", "-protocol_whitelist", "file,pipe",
+                "-select_streams", "v:0",
+                "-show_entries", "stream=" + ",".join(_COLOR_FIELDS),
+                "-of", "default=noprint_wrappers=1",
+                input_path,
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=_INPUT_PROBE_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return None
+    if result.returncode != 0:
+        return None
+    fields: dict[str, str] = {}
+    for line in result.stdout.decode("utf-8", errors="replace").splitlines():
+        key, separator, value = line.strip().partition("=")
+        if separator and key in _COLOR_FIELDS and value:
+            fields[key] = value
+    return fields or None
+
+
+def _is_hdr_color(color: dict[str, str] | None) -> bool:
+    """True when the probed colour metadata identifies an HDR stream."""
+    if not color:
+        return False
+    return (
+        color.get("color_transfer") in _HDR_TRANSFERS
+        or color.get("color_primaries") == "bt2020"
+    )
+
+
+def _hdr_output_color_args(color: dict[str, str]) -> list[str]:
+    """Output colour tags that restore the matrix while keeping input metadata.
+
+    HDR output must keep the wide-gamut bt2020 matrix the RGB round-trip drops,
+    but must not invent primaries/transfer/range the input didn't have. Only the
+    matrix is fixed; the other tags echo the probed input values (with safe
+    defaults for the rare HDR-by-primaries-only case). No tone-mapping and no
+    pixel change happen here: these are stream metadata tags, not a filter.
+    """
+    primaries = color.get("color_primaries") or "bt2020"
+    transfer = color.get("color_transfer") or "smpte2084"
+    color_range = color.get("color_range") or "tv"
+    return [
+        "-colorspace", "bt2020nc",
+        "-color_primaries", primaries,
+        "-color_trc", transfer,
+        "-color_range", color_range,
+    ]
+
+
 async def _bounded_encode_stderr(proc) -> bytes:
     """Drain stderr continuously while retaining only its diagnostic tail."""
     tail = bytearray()
@@ -545,6 +620,7 @@ async def run_color_correct(
     clip_start_ms: int | None = None,
     clip_duration_ms: int | None = None,
     source_duration_ms: int | None = None,
+    input_color: dict[str, str] | None = None,
 ) -> None:
     """Run ffmpeg to produce a color-corrected copy of a video.
 
@@ -586,6 +662,15 @@ async def run_color_correct(
             "-t", f"{window[1] / 1000:.3f}",
         ] if window is not None else []
     )
+    color = input_color
+    if color is None:
+        # Inline (not via asyncio.to_thread): the encode-timeout tests stub the
+        # standard to_thread offload boundary wholesale, and this private probe
+        # must stay independent of that boundary (see _stub_probe in
+        # tests/test_ffmpeg_encode_timeout.py). subprocess.run is a bounded
+        # local-file ffprobe (~ms), one per clip.
+        color = _probe_input_color(input_path)
+    color_args = _hdr_output_color_args(color) if _is_hdr_color(color) else []
     cmd = [
         "ffmpeg", "-y",
         *input_window,
@@ -593,6 +678,7 @@ async def run_color_correct(
         "-vf", vf,
         *audio_args,
         *enc,
+        *color_args,
         *output_window,
         output_path,
     ]
