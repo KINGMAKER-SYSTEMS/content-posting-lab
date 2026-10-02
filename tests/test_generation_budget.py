@@ -187,6 +187,7 @@ def test_health_reports_the_generation_budget(sync_client, monkeypatch, tmp_path
     assert budget["budgetUsd"] == 7.0
     assert budget["spentUsd"] == 0.0
     assert "remainingUsd" in budget and "resetsAt" in budget and "day" in budget
+    assert "note" in budget and "LAB_GENERATION_DAILY_BUDGET_USD" in budget["note"]
 
 
 # ── operator UI generate path (F2) ───────────────────────────────────────

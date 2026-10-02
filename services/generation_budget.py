@@ -37,6 +37,16 @@ DEFAULT_DAILY_BUDGET_USD = 25.0
 # catalog (xAI Grok, ~$5/video); charging it for an unknown provider can only
 # over-count, never let an unmetered paid provider bill as free.
 DEFAULT_COST_PER_GEN_USD = 5.0
+# Why 25: a conservative, fleet-wide ceiling sized to the repo's own catalog
+# per-job costs (truck $0.56, scenic/boat/silhouette $1.20, silhouette-still
+# $0.30), i.e. roughly 20-90 control-plane jobs/day. It is NOT a measured
+# baseline; operators should set LAB_GENERATION_DAILY_BUDGET_USD from real
+# spend and watch /api/health.generation_budget.
+BUDGET_DEFAULT_NOTE = (
+    "Default $25/day is a conservative fleet-wide ceiling (~20-90 control-plane "
+    "jobs/day at current per-job costs), not a measured baseline; set "
+    "LAB_GENERATION_DAILY_BUDGET_USD from measured spend."
+)
 
 
 def daily_budget_usd() -> float:
@@ -203,4 +213,5 @@ def summary(store: dict[str, Any], now: datetime | None = None) -> dict[str, Any
         "spentUsd": round(spent, 4),
         "remainingUsd": round(max(0.0, budget - spent), 4),
         "resetsAt": next_reset_iso(now),
+        "note": BUDGET_DEFAULT_NOTE,
     }
