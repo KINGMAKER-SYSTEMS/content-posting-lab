@@ -413,6 +413,41 @@ async def generate_video(
     output_dir = get_project_video_dir(project)
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    # Daily generation budget: reserve BEFORE creating any job/prompt state so a
+    # refusal leaves no ghost queued job or prompt record. Cost is priced from
+    # the catalog by requested duration (Grok is ~$0.50/s, so a 15 s request is
+    # never under-charged as a 10 s one); an unpriced provider fails closed.
+    # The body `resets_at` and the `Retry-After` header are both computed from a
+    # SINGLE captured `now` so midnight cannot fall between the two samples and
+    # make the header disagree with the body.
+    try:
+        cost_per_gen = generation_budget.per_gen_cost_usd(provider, duration)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "generation_pricing_unavailable", "detail": str(exc)},
+        )
+    planned_usd = count * cost_per_gen
+    if not generation_budget.reserve_generation_spend_at(
+        generation_budget.jobs_store_path(), planned_usd, key_id,
+    ):
+        now = datetime.now(timezone.utc)
+        resets_at = generation_budget.next_reset_iso(now)
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "error": "generation_daily_budget_reached",
+                "resets_at": resets_at,
+                "message": (
+                    "Daily paid-generation budget reached; retries will be "
+                    f"accepted after {resets_at}."
+                ),
+            },
+            headers={
+                "Retry-After": str(generation_budget.retry_after_seconds(now)),
+            },
+        )
+
     job_id = _make_job_id(provider, prompt)
     log.info(
         "generate job=%s provider=%s count=%d project=%s prompt=%s",
@@ -445,38 +480,6 @@ async def generate_video(
             "timestamp": datetime.now(timezone.utc).isoformat(),
         },
     )
-
-    # Daily generation budget: the operator-UI path draws from the SAME shared
-    # ledger as the Control Plane Worker, so both paid admission lanes (xAI and
-    # Replicate) share one daily total. Cost is priced from the catalog by
-    # requested duration (Grok is ~$0.50/s, so a 15 s request is never
-    # under-charged as a 10 s one); an unpriced provider fails closed.
-    try:
-        cost_per_gen = generation_budget.per_gen_cost_usd(provider, duration)
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=500,
-            detail={"error": "generation_pricing_unavailable", "detail": str(exc)},
-        )
-    planned_usd = count * cost_per_gen
-    if not generation_budget.reserve_generation_spend_at(
-        generation_budget.jobs_store_path(), planned_usd, key_id,
-    ):
-        resets_at = generation_budget.next_reset_iso()
-        raise HTTPException(
-            status_code=429,
-            detail={
-                "error": "generation_daily_budget_reached",
-                "resets_at": resets_at,
-                "message": (
-                    "Daily paid-generation budget reached; retries will be "
-                    f"accepted after {resets_at}."
-                ),
-            },
-            headers={
-                "Retry-After": str(generation_budget.retry_after_seconds()),
-            },
-        )
 
     url_prefix = f"/projects/{project}/videos"
 
