@@ -19,6 +19,7 @@ from fastapi.responses import StreamingResponse
 from project_manager import PROJECTS_DIR, get_project_video_dir, is_reserved_volume_dir
 from providers import PROVIDERS
 from providers.base import API_KEYS, generate_one
+from services import generation_budget
 from services.ffmpeg import is_default_cc, run_color_correct
 from services.fsutil import is_within as _contained_in, safe_unlink
 from services.json_store import atomic_save
@@ -444,6 +445,35 @@ async def generate_video(
             "timestamp": datetime.now(timezone.utc).isoformat(),
         },
     )
+
+    # Daily total generation budget: the operator-UI path draws from the SAME
+    # shared ledger as the Control Plane Worker, so "total budget" is true for
+    # every paid provider family (xAI here, Replicate in the control plane).
+    # Reserved before any provider call; on refusal the caller gets the same
+    # machine-readable reason + resets_at, plus a Retry-After header, surfaced
+    # as a plain 429 message.
+    cost_per_gen = generation_budget.charged_cost_per_gen(
+        PROVIDERS[provider].get("cost_per_gen_usd")
+    )
+    planned_usd = count * cost_per_gen
+    if not generation_budget.reserve_generation_spend_at(
+        generation_budget.jobs_store_path(), planned_usd, key_id,
+    ):
+        resets_at = generation_budget.next_reset_iso()
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "error": "generation_daily_budget_reached",
+                "resets_at": resets_at,
+                "message": (
+                    "Daily paid-generation budget reached; retries will be "
+                    f"accepted after {resets_at}."
+                ),
+            },
+            headers={
+                "Retry-After": str(generation_budget.retry_after_seconds()),
+            },
+        )
 
     url_prefix = f"/projects/{project}/videos"
 

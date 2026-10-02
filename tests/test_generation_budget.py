@@ -13,10 +13,24 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 import routers.control_plane as cp
+from routers import video as video_router
 from services import generation_budget
+from services.json_store import atomic_load
 from tests.test_control_plane_dossier_execution import (
     HEADERS, PAGE_ID, TOKEN, job_body, lab,  # noqa: F401 (fixture)
 )
+
+
+async def _fake_generate_one(
+    job_id, index, provider, prompt, aspect_ratio, resolution, duration,
+    image_data_uri, jobs, output_dir, url_prefix, on_complete=None, **extra,
+):
+    """Hermetic stand-in for providers.base.generate_one (no network)."""
+    entry = jobs[job_id]["videos"][index]
+    entry["status"] = "done"
+    entry["file"] = f"{job_id}_{index}.mp4"
+    if on_complete:
+        on_complete(job_id)
 
 
 # ── meter (pure) ─────────────────────────────────────────────────────────
@@ -141,12 +155,14 @@ def test_budget_429_carries_retry_after_consistent_with_resets_at(lab, monkeypat
 
 # ── non-generation work is never gated ───────────────────────────────────
 
-def test_generation_budget_gate_lives_only_in_the_control_plane_lane():
+def test_generation_budget_gate_lives_only_in_the_paid_generation_lanes():
     """Burns, renders, source recut, slideshows and posting never call the meter.
 
-    The gate is reachable only from routers/control_plane.py; every other
-    router must not even import it, so a burn/render/posting request can never
-    be blocked by the daily generation budget.
+    The gate is reachable only from the two paid-generation lanes — the Control
+    Plane admission route (routers/control_plane.py) and the operator-UI
+    generate route (routers/video.py). Every other router must not even import
+    it, so a burn/render/posting request can never be blocked by the daily
+    generation budget.
     """
     repo = pathlib.Path(cp.__file__).resolve().parents[1]
     importers = []
@@ -157,9 +173,9 @@ def test_generation_budget_gate_lives_only_in_the_control_plane_lane():
             importers.append(path.name)
         if "reserve_generation_spend" in text:
             callers.append(path.name)
-    assert callers == ["control_plane.py"], f"unexpected budget gate callers: {callers}"
-    # control_plane is the only router allowed to import the meter.
-    assert importers == ["control_plane.py"], f"unexpected budget importers: {importers}"
+    assert sorted(callers) == ["control_plane.py", "video.py"], f"unexpected budget gate callers: {callers}"
+    # control_plane and video are the only routers allowed to import the meter.
+    assert sorted(importers) == ["control_plane.py", "video.py"], f"unexpected budget importers: {importers}"
 
 
 def test_health_reports_the_generation_budget(sync_client, monkeypatch, tmp_path):
@@ -171,3 +187,65 @@ def test_health_reports_the_generation_budget(sync_client, monkeypatch, tmp_path
     assert budget["budgetUsd"] == 7.0
     assert budget["spentUsd"] == 0.0
     assert "remainingUsd" in budget and "resetsAt" in budget and "day" in budget
+
+
+# ── operator UI generate path (F2) ───────────────────────────────────────
+
+_UI_GENERATE_FORM = {
+    "prompt": "test prompt",
+    "provider": "grok",
+    "count": "1",
+    "duration": "5",
+    "aspect_ratio": "9:16",
+    "resolution": "720p",
+    "project": "budget-suite",
+}
+
+
+def test_ui_generate_is_refused_at_the_daily_budget(sync_client, monkeypatch):
+    """F2: the operator UI path shares the same daily meter and is refused at
+    the cap with the same machine-readable reason + resets_at and Retry-After."""
+    monkeypatch.setenv(generation_budget.USD_BUDGET_ENV, "1.0")
+    monkeypatch.setitem(video_router.API_KEYS, "xai", "test-key")
+    monkeypatch.setattr(video_router, "generate_one", _fake_generate_one)
+    response = sync_client.post("/api/video/generate", data=_UI_GENERATE_FORM)
+    # grok costs 5.0/gen; count 1 = 5.0 > 1.0 budget, so refused.
+    assert response.status_code == 429
+    detail = response.json()["detail"]
+    assert detail["error"] == "generation_daily_budget_reached"
+    assert isinstance(detail["resets_at"], str) and detail["resets_at"].endswith("+00:00")
+    retry_after = response.headers.get("Retry-After")
+    assert retry_after is not None and retry_after.isdigit() and int(retry_after) >= 1
+
+
+def test_ui_generate_reserves_under_budget(sync_client, monkeypatch):
+    """F2: under the cap the UI path reserves spend on the shared ledger before
+    any provider call, so Replicate and xAI share one daily total."""
+    monkeypatch.setenv(generation_budget.USD_BUDGET_ENV, "25.0")
+    monkeypatch.setitem(video_router.API_KEYS, "xai", "test-key")
+    monkeypatch.setattr(video_router, "generate_one", _fake_generate_one)
+    response = sync_client.post("/api/video/generate", data=_UI_GENERATE_FORM)
+    assert response.status_code == 200
+    store = atomic_load(generation_budget.jobs_store_path())
+    assert generation_budget.spent_usd(store) == pytest.approx(5.0)
+    assert store["generationBudget"]["calls"].get("xai") == 1
+
+
+def test_ui_generate_charges_default_for_missing_provider_cost(sync_client, monkeypatch):
+    """F5 (UI): a provider with no cost_per_gen_usd is charged the fail-closed
+    default, never $0."""
+    monkeypatch.setenv(generation_budget.USD_BUDGET_ENV, "100.0")
+    monkeypatch.setitem(video_router.API_KEYS, "replicate", "test-key")
+    monkeypatch.setattr(video_router, "generate_one", _fake_generate_one)
+    # hailuo carries an explicit 0.28; drop it and the meter must charge the
+    # conservative default.
+    monkeypatch.delitem(video_router.PROVIDERS["hailuo"], "cost_per_gen_usd", raising=False)
+    response = sync_client.post(
+        "/api/video/generate",
+        data={**_UI_GENERATE_FORM, "provider": "hailuo"},
+    )
+    assert response.status_code == 200
+    store = atomic_load(generation_budget.jobs_store_path())
+    assert generation_budget.spent_usd(store) == pytest.approx(
+        generation_budget.DEFAULT_COST_PER_GEN_USD
+    )
