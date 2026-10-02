@@ -51,12 +51,14 @@ USD_BUDGET_ENV = "LAB_GENERATION_DAILY_BUDGET_USD"
 #                  rewrites; PA interruption +1 resubmission). Refusals and
 #                  interruptions are exceptional, so 50% — not the 6× absolute
 #                  worst case, which would be $675 and erase the ceiling.  $ 56.28
-#   ABN/recreate = named flat margin for the thumbnail + cached b-roll
-#                  (Flux $0.003 + Wan $0.30 × _BG_LIB_TARGET 8 slots) and LaMa
-#                  inpainting ($0.02) lanes; their normal-day cadence is NOT
-#                  measured in-repo.                                         $  6.16
-#                                                                            --------
-#                                                                            $175.00
+#   ABN/recreate = a NAMED flat margin, not formula-derived: the residual after
+#                  the base and retry terms (175.00 - 112.56 - 56.28 = 6.16).
+#                  Its thumbnail + cached b-roll components (Flux $0.003 + Wan
+#                  $0.30 x _BG_LIB_TARGET 8 slots + LaMa $0.02) sum to $2.42
+#                  in total; the lane's normal-day cadence is NOT measured
+#                  in-repo.                                                $  6.16
+#                                                                           --------
+#                                                                           $175.00
 DEFAULT_DAILY_BUDGET_USD = 175.0
 # Fail-closed per-gen cost charged when a recipe/provider carries no usable
 # ``cost_per_gen_usd``. 5.0 is the highest known paid per-gen price in the
