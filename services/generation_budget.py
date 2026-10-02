@@ -22,12 +22,20 @@ renders, posting) never passes through this meter.
 from __future__ import annotations
 
 import logging
+import math
 import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 log = logging.getLogger("content_lab.generation_budget")
+
+
+class BudgetLedgerCorrupt(Exception):
+    """The durable current-day ledger is malformed and cannot be trusted.
+
+    Callers must refuse spend (fail closed), never reset the total to zero.
+    """
 
 BUDGET_KEY = "generationBudget"
 USD_BUDGET_ENV = "LAB_GENERATION_DAILY_BUDGET_USD"
@@ -55,7 +63,7 @@ def daily_budget_usd() -> float:
     - unset            -> ``DEFAULT_DAILY_BUDGET_USD`` (the new ceiling)
     - ``> 0``          -> that ceiling
     - ``0``            -> refuse all paid generation (hard stop)
-    - negative / junk  -> refuse all paid generation (fail closed, spend-safe)
+    - negative / junk / NaN / inf -> refuse all paid generation (fail closed)
     """
     raw = os.environ.get(USD_BUDGET_ENV)
     if raw is None or not raw.strip():
@@ -63,10 +71,10 @@ def daily_budget_usd() -> float:
     try:
         value = float(raw.strip())
     except ValueError:
-        value = -1.0
-    if value < 0:
+        value = float("nan")
+    if not math.isfinite(value) or value < 0:
         log.warning(
-            "%s=%r is not a number >= 0; paid generation disabled (fail closed)",
+            "%s=%r is not a finite number >= 0; paid generation disabled (fail closed)",
             USD_BUDGET_ENV, raw,
         )
         return 0.0
@@ -97,46 +105,82 @@ def retry_after_seconds(now: datetime | None = None) -> int:
     return max(1, int(seconds) + (1 if seconds > int(seconds) else 0))
 
 
+def _is_finite_nonnegative(value: Any) -> bool:
+    """True only for a finite, non-negative real number (bool excluded)."""
+    if isinstance(value, bool):
+        return False
+    if not isinstance(value, (int, float)):
+        return False
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return False
+    return math.isfinite(number) and number >= 0.0
+
+
+def _finite_usd(value: Any, label: str) -> float:
+    """A finite non-negative USD amount, or raise (fail closed)."""
+    if not _is_finite_nonnegative(value):
+        raise ValueError(f"{label} must be a finite non-negative number, got {value!r}")
+    return float(value)
+
+
 def charged_cost_per_gen(value: Any) -> float:
     """A usable per-gen cost, never zero.
 
     A missing, zero, negative or non-numeric cost is charged the fail-closed
     ``DEFAULT_COST_PER_GEN_USD`` so an unknown paid provider can never meter as
-    free. A positive numeric cost is returned unchanged.
+    free. A positive finite numeric cost is returned unchanged.
     """
     try:
         cost = float(value)
     except (TypeError, ValueError):
-        cost = 0.0
-    return cost if cost > 0 else DEFAULT_COST_PER_GEN_USD
+        cost = float("nan")
+    if math.isfinite(cost) and cost > 0:
+        return cost
+    return DEFAULT_COST_PER_GEN_USD
 
 
 def _fresh_ledger(day: str) -> dict[str, Any]:
-    return {"day": day, "spentUsd": 0.0, "calls": {}}
+    return {"day": day, "spentUsd": 0.0, "calls": {}, "debits": {}}
 
 
 def _ledger(store: dict[str, Any], day: str) -> dict[str, Any]:
-    """Return the store's ledger for ``day``, normalising a stale day in place."""
+    """Return the store's ledger for ``day``, normalising a stale day in place.
+
+    Raises ``BudgetLedgerCorrupt`` when the *current-day* total is malformed:
+    silently restoring it to zero would hand back the whole day's budget.
+    """
     state = store.get(BUDGET_KEY)
     if not isinstance(state, dict) or state.get("day") != day:
         state = store[BUDGET_KEY] = _fresh_ledger(day)
-    spent = state.get("spentUsd")
-    if not isinstance(spent, (int, float)):
-        state["spentUsd"] = 0.0
-    calls = state.get("calls")
-    if not isinstance(calls, dict):
-        state["calls"] = {}
+        return state
+    if not _is_finite_nonnegative(state.get("spentUsd")):
+        raise BudgetLedgerCorrupt(
+            f"generationBudget.spentUsd={state.get('spentUsd')!r} "
+            "is not a finite non-negative number"
+        )
+    state.setdefault("calls", {})
+    state.setdefault("debits", {})
     return state
 
 
 def spent_usd(store: dict[str, Any], now: datetime | None = None) -> float:
-    """Current-day reserved spend, rollover-aware and read-only."""
+    """Current-day reserved spend, rollover-aware and read-only.
+
+    Raises ``BudgetLedgerCorrupt`` when the current-day total is malformed;
+    it never reports corrupt state as zero.
+    """
     day = utc_day(now)
     state = store.get(BUDGET_KEY)
     if not isinstance(state, dict) or state.get("day") != day:
         return 0.0
     spent = state.get("spentUsd")
-    return float(spent) if isinstance(spent, (int, float)) else 0.0
+    if not _is_finite_nonnegative(spent):
+        raise BudgetLedgerCorrupt(
+            f"generationBudget.spentUsd={spent!r} is not a finite non-negative number"
+        )
+    return float(spent)
 
 
 def reserve_generation_spend(
@@ -148,13 +192,16 @@ def reserve_generation_spend(
     """Check-and-reserve ``amount_usd`` against the daily total. Returns False
     when the call would exceed the budget (the caller must refuse, never spend).
 
+    Raises ``ValueError`` for a non-finite/negative amount and
+    ``BudgetLedgerCorrupt`` for a malformed current-day ledger (both fail closed).
+
     ``store`` is the caller's live job-store dict and is mutated in place; the
     caller already holds ``lock_for(_jobs_path())`` and will persist it.
     """
     budget = daily_budget_usd()
     day = utc_day(now)
     state = _ledger(store, day)
-    amount = float(amount_usd) if isinstance(amount_usd, (int, float)) and amount_usd > 0 else 0.0
+    amount = _finite_usd(amount_usd, "amount_usd")
     if state["spentUsd"] + amount > budget + 1e-9:
         return False
     state["spentUsd"] = round(state["spentUsd"] + amount, 4)
@@ -203,15 +250,25 @@ def reserve_generation_spend_at(
 
 
 def summary(store: dict[str, Any], now: datetime | None = None) -> dict[str, Any]:
-    """Current budget totals for a watcher heartbeat (/api/health)."""
+    """Current budget totals for a watcher heartbeat (/api/health).
+
+    A malformed current-day ledger is reported fail-closed (``corrupt`` true and
+    the budget shown fully spent) so a corrupt state never reads as unlimited.
+    """
     day = utc_day(now)
-    spent = spent_usd(store, now)
     budget = daily_budget_usd()
+    try:
+        spent = spent_usd(store, now)
+        corrupt = False
+    except BudgetLedgerCorrupt:
+        spent = budget
+        corrupt = True
     return {
         "day": day,
         "budgetUsd": budget,
-        "spentUsd": round(spent, 4),
+        "spentUsd": None if corrupt else round(spent, 4),
         "remainingUsd": round(max(0.0, budget - spent), 4),
         "resetsAt": next_reset_iso(now),
         "note": BUDGET_DEFAULT_NOTE,
+        "corrupt": corrupt,
     }
