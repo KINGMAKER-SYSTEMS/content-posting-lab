@@ -395,3 +395,102 @@ def test_hdr_render_restores_matrix_tag_and_keeps_pixels_identical(tmp_path, mon
     monkeypatch.setattr(ffmpeg_module, "_is_hdr_color", lambda color: False)
     _render(excerpt, untagged)
     assert _framemd5(tagged) == _framemd5(untagged)
+
+
+# --- integration: real probe path on real files (review B) ------------------
+
+# Real files, cut on seeno from the real SDR master
+# ~/source-archive/lovenightwalks/master-2qo-3600-4500.mp4 (bt709/bt709/bt709).
+# See ~/rt-base-wt/hdr-fixtures/README.md for the exact ffmpeg commands.
+_SDR_FIXTURES = (
+    "sdr-bt709.mp4",                               # plain BT.709 SDR
+    "sdr-bt2020-primaries-bt709-transfer.mp4",     # bt2020 primaries + bt709 transfer
+    "sdr-incomplete-metadata.mp4",                 # bt2020 primaries + unknown transfer
+)
+_HLG_FIXTURE = "hlg-arib-std-b67.mp4"
+
+_COLOUR_TOKENS = ("-colorspace", "-color_primaries", "-color_trc", "-color_range")
+
+
+def _render_probe_path(source: Path, output: Path, cc: dict | None = None) -> None:
+    """Render a short fixture through the real probe path (no input_color, no crop)."""
+    asyncio.run(run_color_correct(
+        str(source), str(output), cc if cc is not None else {"brightness": 20},
+        encode_args=delivery_encode_args("tiktok_delivery_v1"),
+        playback_speed=1.0,
+    ))
+
+
+@pytest.mark.skipif(
+    not shutil.which("ffmpeg") or not shutil.which("ffprobe"),
+    reason="ffmpeg/ffprobe required",
+)
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fixture_name", _SDR_FIXTURES)
+async def test_real_probe_path_sdr_inputs_keep_pre_change_argv(monkeypatch, fixture_name):
+    """A real ffprobe on a real SDR file must append no colour tags (pre-change argv).
+
+    This exercises the probe path directly (no ``input_color`` seam): the
+    BT.2020-primaries + bt709-transfer file is exactly the case the old code
+    misclassified as HDR, and the incomplete-metadata file is exactly the case
+    where a missing transfer must not synthesize a PQ decision.
+    """
+    source = _fixture(fixture_name)
+    if not source.is_file():
+        pytest.skip(f"fixture {fixture_name} not present")
+
+    probed = _probe_input_color(str(source))
+    assert probed is not None, "fixture must be probeable"
+    assert probed.get("color_transfer") not in {"smpte2084", "arib-std-b67"}
+
+    captured = _capture_argv(monkeypatch)
+    await run_color_correct(
+        str(source), "out.mp4", {"brightness": 20}, source_duration_ms=1000,
+    )
+    for token in _COLOUR_TOKENS:
+        assert token not in captured, f"{token} must not appear for SDR input"
+
+
+@pytest.mark.skipif(
+    not shutil.which("ffmpeg") or not shutil.which("ffprobe"),
+    reason="ffmpeg/ffprobe required",
+)
+@pytest.mark.parametrize(
+    "fixture_name,expected_transfer",
+    [
+        ("sdr-bt709.mp4", "bt709"),
+        ("sdr-bt2020-primaries-bt709-transfer.mp4", "bt709"),
+        ("sdr-incomplete-metadata.mp4", "unknown"),
+    ],
+)
+def test_real_probe_path_sdr_output_is_never_tagged_hdr(
+    tmp_path, fixture_name, expected_transfer
+):
+    """Rendering a real SDR file must not emit HDR tags on the output."""
+    source = _fixture(fixture_name)
+    if not source.is_file():
+        pytest.skip(f"fixture {fixture_name} not present")
+    output = tmp_path / "out.mp4"
+    _render_probe_path(source, output)
+    tags = _probe_color(output)
+    assert tags.get("color_transfer") == expected_transfer
+    assert tags.get("color_transfer") not in {"smpte2084", "arib-std-b67"}
+    assert tags.get("color_space") != "bt2020nc"
+
+
+@pytest.mark.skipif(
+    not shutil.which("ffmpeg") or not shutil.which("ffprobe"),
+    reason="ffmpeg/ffprobe required",
+)
+@pytest.mark.skipif(not _fixture(_HLG_FIXTURE).is_file(), reason="HLG fixture not present")
+def test_hlg_render_restores_matrix_tag(tmp_path):
+    """HLG is HDR and must keep bt2020nc / arib-std-b67 / bt2020 / tv end to end."""
+    source = _fixture(_HLG_FIXTURE)
+    output = tmp_path / "hlg-out.mp4"
+    _render_probe_path(source, output)
+    assert _probe_color(output) == {
+        "color_space": "bt2020nc",
+        "color_transfer": "arib-std-b67",
+        "color_primaries": "bt2020",
+        "color_range": "tv",
+    }
