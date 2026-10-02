@@ -55,6 +55,14 @@ def _fixture(name: str) -> Path:
     return Path(root).expanduser() / name
 
 
+_REPO_FIXTURE_DIR = Path(__file__).parent / "fixtures" / "real"
+
+
+def _repo_fixture(name: str) -> Path:
+    """Resolve a fixture cut in-repo (tests/fixtures/real), not the read-only set."""
+    return _REPO_FIXTURE_DIR / name
+
+
 HDR_COLOR = {
     "color_space": "bt2020nc",
     "color_transfer": "smpte2084",
@@ -66,6 +74,20 @@ SDR_COLOR = {
     "color_transfer": "bt709",
     "color_primaries": "bt709",
     "color_range": "tv",
+}
+HLG_COLOR = {
+    "color_space": "bt2020nc",
+    "color_transfer": "arib-std-b67",
+    "color_primaries": "bt2020",
+    "color_range": "tv",
+}
+# A coherent constant-luminance HDR tuple: bt2020c matrix is legal, and any
+# concrete range (tv or pc) is proof enough — we copy it, we never invent one.
+PQ_BT2020C_COLOR = {
+    "color_space": "bt2020c",
+    "color_transfer": "smpte2084",
+    "color_primaries": "bt2020",
+    "color_range": "pc",
 }
 
 
@@ -101,10 +123,17 @@ def _capture_argv(monkeypatch, **kwargs):
         (None, False),
         ({}, False),
         (SDR_COLOR, False),
-        (HDR_COLOR, True),
-        # Transfer is the sole HDR discriminator: smpte2084 = PQ, arib-std-b67 = HLG.
-        ({"color_transfer": "arib-std-b67", "color_primaries": "bt2020"}, True),
-        ({"color_transfer": "smpte2084", "color_primaries": "bt709"}, True),
+        (HDR_COLOR, True),       # complete coherent PQ
+        (HLG_COLOR, True),       # complete coherent HLG
+        (PQ_BT2020C_COLOR, True),  # bt2020c matrix + pc range are coherent
+        # An HDR transfer is necessary but NOT sufficient: partial or incoherent
+        # probes must fail closed to the unchanged SDR path.
+        ({"color_transfer": "smpte2084", "color_primaries": "bt709",
+          "color_space": "bt709", "color_range": "tv"}, False),  # PQ + bt709 primaries
+        ({"color_transfer": "smpte2084", "color_primaries": "bt2020",
+          "color_space": "bt2020nc"}, False),  # PQ + missing range
+        ({"color_transfer": "arib-std-b67", "color_primaries": "bt2020",
+          "color_range": "tv"}, False),  # HLG + missing matrix
         # BT.2020 primaries are NOT proof of HDR on their own.
         ({"color_transfer": "bt709", "color_primaries": "bt2020"}, False),
         ({"color_transfer": "unknown", "color_primaries": "bt2020"}, False),
@@ -112,16 +141,31 @@ def _capture_argv(monkeypatch, **kwargs):
         ({"color_transfer": "bt709"}, False),
     ],
 )
-def test_is_hdr_color_uses_transfer_as_the_sole_discriminator(color, expected):
+def test_is_hdr_color_requires_complete_coherent_hdr_tuple(color, expected):
     assert _is_hdr_color(color) is expected
 
 
-def test_hdr_output_color_args_fix_matrix_and_echo_input_metadata():
+def test_hdr_output_color_args_copy_probed_values_verbatim():
+    # PQ: the bt2020nc matrix echoes through.
     assert _hdr_output_color_args(HDR_COLOR) == [
         "-colorspace", "bt2020nc",
         "-color_primaries", "bt2020",
         "-color_trc", "smpte2084",
         "-color_range", "tv",
+    ]
+    # HLG echoes verbatim.
+    assert _hdr_output_color_args(HLG_COLOR) == [
+        "-colorspace", "bt2020nc",
+        "-color_primaries", "bt2020",
+        "-color_trc", "arib-std-b67",
+        "-color_range", "tv",
+    ]
+    # The probed matrix is copied through — never hardcoded to bt2020nc.
+    assert _hdr_output_color_args(PQ_BT2020C_COLOR) == [
+        "-colorspace", "bt2020c",
+        "-color_primaries", "bt2020",
+        "-color_trc", "smpte2084",
+        "-color_range", "pc",
     ]
 
 
@@ -135,31 +179,12 @@ def test_hdr_output_color_args_preserves_the_known_source_matrix():
     ]
 
 
-@pytest.mark.parametrize("unknown", [None, "unknown"])
-def test_hdr_output_color_args_does_not_invent_missing_metadata(unknown):
-    color = {"color_transfer": "smpte2084"}
-    if unknown is not None:
-        color.update(color_space=unknown, color_primaries=unknown, color_range=unknown)
-    assert _hdr_output_color_args(color) == ["-color_trc", "smpte2084"]
-
-
-def test_hdr_output_color_args_echoes_hlg_and_never_defaults_missing_transfer_to_pq():
-    # HLG is echoed verbatim; the helper must not invent a PQ default.
-    hlg = {
-        "color_space": "bt2020nc",
-        "color_transfer": "arib-std-b67",
-        "color_primaries": "bt2020",
-        "color_range": "tv",
-    }
-    assert _hdr_output_color_args(hlg) == [
-        "-colorspace", "bt2020nc",
-        "-color_primaries", "bt2020",
-        "-color_trc", "arib-std-b67",
-        "-color_range", "tv",
-    ]
-    # A transfer-less probe is never HDR, so this helper must refuse to invent PQ.
+def test_hdr_output_color_args_never_invent_missing_fields():
+    # A partial probe is never HDR, so this helper must refuse to synthesize values.
     with pytest.raises(KeyError):
-        _hdr_output_color_args({"color_primaries": "bt2020"})
+        _hdr_output_color_args(
+            {"color_transfer": "smpte2084", "color_primaries": "bt2020"}
+        )
 
 
 def test_probe_input_color_parses_key_value_fields(monkeypatch):
@@ -387,7 +412,10 @@ def _framemd5(path: Path) -> list[str]:
 @pytest.mark.parametrize(
     "matrix,primaries,transfer",
     [
-        ("bt709", "bt709", "smpte2084"),
+        # bt709 matrix/primaries + a PQ transfer is incoherent, not HDR: that
+        # case now takes the SDR path and is covered by
+        # test_real_probe_path_transfer_positive_partial_or_incoherent_take_sdr_path
+        # via hdr-pq-bt709-primaries.mp4 instead of here.
         ("bt2020nc", "bt2020", "smpte2084"),
         ("bt2020nc", "bt2020", "arib-std-b67"),
     ],
@@ -471,6 +499,16 @@ _SDR_FIXTURES = (
 )
 _HLG_FIXTURE = "hlg-arib-std-b67.mp4"
 
+# Transfer-positive but partial/incoherent probes: an HDR transfer is NOT enough
+# on its own. Each must fail closed to the unchanged SDR path (no colour tags).
+# Cut in-repo (tests/fixtures/real) with the same setparams method as the staging
+# set (see commands in the report).
+_TRANSFER_POSITIVE_SDR_FIXTURES = (
+    ("hdr-pq-bt709-primaries.mp4", "smpte2084"),   # PQ + bt709 primaries (incoherent)
+    ("hdr-pq-absent-primaries.mp4", "smpte2084"),  # PQ + absent primaries/matrix (partial)
+    ("hdr-hlg-absent-matrix.mp4", "arib-std-b67"),  # HLG + absent matrix (partial)
+)
+
 _COLOUR_TOKENS = ("-colorspace", "-color_primaries", "-color_trc", "-color_range")
 
 
@@ -538,6 +576,65 @@ def test_real_probe_path_sdr_output_is_never_tagged_hdr(
     assert tags.get("color_transfer") == expected_transfer
     assert tags.get("color_transfer") not in {"smpte2084", "arib-std-b67"}
     assert tags.get("color_space") != "bt2020nc"
+
+
+@pytest.mark.skipif(
+    not shutil.which("ffmpeg") or not shutil.which("ffprobe"),
+    reason="ffmpeg/ffprobe required",
+)
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fixture_name,transfer", _TRANSFER_POSITIVE_SDR_FIXTURES)
+async def test_real_probe_path_transfer_positive_partial_or_incoherent_take_sdr_path(
+    monkeypatch, fixture_name, transfer
+):
+    """A transfer-positive but partial/incoherent probe must take the SDR path.
+
+    Real ffprobe proves the transfer is PQ/HLG, yet the fail-closed rule requires
+    the full coherent tuple. These inputs must therefore emit no colour tags and
+    keep an argv byte-identical to the base (no HDR branch) path.
+    """
+    source = _repo_fixture(fixture_name)
+    if not source.is_file():
+        pytest.skip(f"fixture {fixture_name} not present")
+
+    probed = _probe_input_color(str(source))
+    assert probed is not None, "fixture must be probeable"
+    assert probed.get("color_transfer") == transfer, "fixture must be transfer-positive"
+    assert _is_hdr_color(probed) is False, "partial/incoherent probe must not be HDR"
+
+    captured = _capture_argv(monkeypatch)
+    await run_color_correct(
+        str(source), "out.mp4", {"brightness": 20}, source_duration_ms=1000,
+    )
+
+    # The unchanged SDR path: the same render with the HDR branch forced off.
+    monkeypatch.setattr(ffmpeg_module, "_is_hdr_color", lambda color: False)
+    base_captured = _capture_argv(monkeypatch)
+    await run_color_correct(
+        str(source), "out.mp4", {"brightness": 20}, source_duration_ms=1000,
+    )
+
+    assert captured == base_captured, "argv must be byte-identical to the base path"
+    for token in _COLOUR_TOKENS:
+        assert token not in captured, f"{token} must not appear for a partial/incoherent probe"
+
+
+@pytest.mark.skipif(
+    not shutil.which("ffmpeg") or not shutil.which("ffprobe"),
+    reason="ffmpeg/ffprobe required",
+)
+@pytest.mark.parametrize("fixture_name,transfer", _TRANSFER_POSITIVE_SDR_FIXTURES)
+def test_real_probe_path_transfer_positive_output_is_never_tagged_hdr(
+    tmp_path, fixture_name, transfer
+):
+    """Rendering these must never stamp a bt2020 matrix on the output."""
+    source = _repo_fixture(fixture_name)
+    if not source.is_file():
+        pytest.skip(f"fixture {fixture_name} not present")
+    output = tmp_path / "out.mp4"
+    _render_probe_path(source, output)
+    tags = _probe_color(output)
+    assert tags.get("color_space") not in {"bt2020nc", "bt2020c"}, tags
 
 
 @pytest.mark.skipif(
