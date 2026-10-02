@@ -190,6 +190,60 @@ async def test_interrupted_resubmission_is_metered(monkeypatch):
     assert debits == [(0.28, "test-job-1:pa1")]
 
 
+async def test_ui_pa_resubmissions_are_scoped_per_index(monkeypatch, tmp_path):
+    """Two indices of one UI job that both hit a Replicate "interrupted
+    (code: PA)" resubmission must each debit their own id. The operator-UI
+    route spawns one generate_one per index with a shared job id, so the PA
+    debit id must be scoped per index — two real paid predictions, two debits."""
+    from services import generation_budget
+
+    debits = []
+
+    def fake_debit(path, amount, debit_id, now=None):
+        debits.append(debit_id)
+        return True
+
+    monkeypatch.setattr(generation_budget, "debit_generation_spend_at", fake_debit)
+
+    pred_ids = iter(["p0a", "p0b", "p1a", "p1b"])
+
+    async def fake_start(client, headers, model_id, input_params):
+        return next(pred_ids)
+
+    outcomes = iter([
+        ("failed", "Prediction interrupted; please retry (code: PA)"),
+        ("succeeded", ["https://x.test/out0.mp4"]),
+        ("failed", "Prediction interrupted; please retry (code: PA)"),
+        ("succeeded", ["https://x.test/out1.mp4"]),
+    ])
+
+    async def fake_await(client, headers, pred_id, *, remaining_seconds=None):
+        return next(outcomes)
+
+    monkeypatch.setattr(replicate, "_start_prediction", fake_start)
+    monkeypatch.setattr(replicate, "_await_prediction", fake_await)
+
+    async def fake_download(client, url, dest):
+        dest.write_bytes(b"x")
+
+    monkeypatch.setattr(base, "download_media", fake_download)
+
+    job_id = "ui-job-1"
+    jobs = {job_id: {"videos": [
+        {"index": 0, "status": "queued"},
+        {"index": 1, "status": "queued"},
+    ]}}
+
+    for index in (0, 1):
+        await base.generate_one(
+            job_id, index, "hailuo", "a truck on a ridge road",
+            "16:9", "720p", 6, None, jobs, output_dir=tmp_path, url_prefix="",
+            cost_usd=0.28,
+        )
+
+    assert debits == ["ui-job-1#0:pa1", "ui-job-1#1:pa1"]
+
+
 async def test_interrupted_resubmission_is_refused_when_budget_exhausted(monkeypatch):
     """A PA resubmission that cannot reserve spend must not submit the second
     prediction — the daily budget is a hard stop on new billable work."""

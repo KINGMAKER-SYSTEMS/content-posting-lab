@@ -414,7 +414,11 @@ async def generate_one(
                 "entry": entry,
                 "model_id": provider_info["models"][0],
                 "variant": provider_info.get("variant"),
-                "job_id": job_id,
+                # Scope the provider-facing job id per UI index: the operator-UI
+                # route spawns several generate_one calls sharing one job_id, so
+                # a per-index suffix keeps a PA resubmission debit id distinct
+                # per index (each real paid prediction debits exactly once).
+                "job_id": f"{job_id}#{index}",
                 "cost_usd": cost_usd,
                 **extra,
             }
