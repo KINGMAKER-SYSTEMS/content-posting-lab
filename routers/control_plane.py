@@ -4325,10 +4325,16 @@ async def create_job(
             # Daily total generation budget: checked before any paid call and
             # reserved (fail-closed) in the same transaction that admits the
             # job. Truck-master recovery and every non-generation executor
-            # never pass through here and stay unblocked.
-            planned_usd = provider_calls * generation_budget.charged_cost_per_gen(
-                generation_recipe.provider_config.get("cost_per_gen_usd")
-            )
+            # never pass through here and stay unblocked. An unpriced recipe
+            # provider fails closed rather than metering as free.
+            try:
+                planned_usd = provider_calls * generation_budget.charged_cost_per_gen(
+                    generation_recipe.provider_config.get("cost_per_gen_usd")
+                )
+            except ValueError as exc:
+                raise HTTPException(
+                    status_code=500, detail=f"generation_pricing_unavailable: {exc}"
+                )
             if not generation_budget.reserve_generation_spend(
                 store, planned_usd, PROVIDERS[generation_recipe.engine]["key_id"],
             ):

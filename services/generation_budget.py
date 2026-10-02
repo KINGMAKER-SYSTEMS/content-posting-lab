@@ -119,26 +119,76 @@ def _is_finite_nonnegative(value: Any) -> bool:
 
 
 def _finite_usd(value: Any, label: str) -> float:
-    """A finite non-negative USD amount, or raise (fail closed)."""
-    if not _is_finite_nonnegative(value):
+    """A finite non-negative USD amount, or raise (fail closed).
+
+    Accepts numeric strings (a catalog may store ``"0.12"``) but rejects junk,
+    NaN, infinity, negatives and bools. Distinct from ``_is_finite_nonnegative``
+    (used for the durable ledger, where a string total is corruption).
+    """
+    if isinstance(value, bool):
         raise ValueError(f"{label} must be a finite non-negative number, got {value!r}")
-    return float(value)
+    if isinstance(value, str):
+        try:
+            number = float(value.strip())
+        except ValueError:
+            raise ValueError(
+                f"{label} must be a finite non-negative number, got {value!r}"
+            ) from None
+    elif isinstance(value, (int, float)):
+        number = float(value)
+    else:
+        raise ValueError(f"{label} must be a finite non-negative number, got {value!r}")
+    if not math.isfinite(number) or number < 0:
+        raise ValueError(f"{label} must be a finite non-negative number, got {value!r}")
+    return number
 
 
 def charged_cost_per_gen(value: Any) -> float:
-    """A usable per-gen cost, never zero.
+    """A usable per-gen cost from an explicit catalog field, fail closed.
 
-    A missing, zero, negative or non-numeric cost is charged the fail-closed
-    ``DEFAULT_COST_PER_GEN_USD`` so an unknown paid provider can never meter as
-    free. A positive finite numeric cost is returned unchanged.
+    A missing, zero, negative, NaN, inf or non-numeric cost is rejected
+    (``ValueError``) so an unpriced paid provider can never meter as free and a
+    corrupt cost can never silently under-count. A positive finite numeric cost
+    is returned unchanged.
     """
-    try:
-        cost = float(value)
-    except (TypeError, ValueError):
-        cost = float("nan")
-    if math.isfinite(cost) and cost > 0:
-        return cost
-    return DEFAULT_COST_PER_GEN_USD
+    cost = _finite_usd(value, "cost_per_gen_usd")
+    if cost == 0.0:
+        raise ValueError(f"cost_per_gen_usd must be > 0, got {value!r}")
+    return cost
+
+
+def per_gen_cost_usd(
+    provider_id: str,
+    duration_seconds: int | float | None = None,
+) -> float:
+    """Cost of one billable generation for ``provider_id``, from the catalog.
+
+    Pinned to the provider catalog: a flat ``cost_per_gen_usd`` is used when
+    present, otherwise a ``cost_per_second_usd`` is multiplied by the requested
+    duration (so a 15 s Grok request is never under-charged as a 10 s one). An
+    unknown provider, a provider with no pricing, or a per-second provider
+    without a duration raises ``ValueError`` — a new paid model can never meter
+    as free.
+    """
+    from providers import PROVIDERS
+
+    info = PROVIDERS.get(provider_id)
+    if not isinstance(info, dict):
+        raise ValueError(f"unknown provider: {provider_id!r}")
+    flat = info.get("cost_per_gen_usd")
+    if flat is not None:
+        return charged_cost_per_gen(flat)
+    per_sec = info.get("cost_per_second_usd")
+    if per_sec is not None:
+        rate = _finite_usd(per_sec, f"{provider_id}.cost_per_second_usd")
+        if rate == 0.0:
+            raise ValueError(f"{provider_id}.cost_per_second_usd must be > 0")
+        if duration_seconds is None or not _is_finite_nonnegative(duration_seconds) or float(duration_seconds) <= 0:
+            raise ValueError(
+                f"{provider_id!r} is priced per second; a positive duration is required"
+            )
+        return round(rate * float(duration_seconds), 4)
+    raise ValueError(f"provider {provider_id!r} has no pricing; cannot meter")
 
 
 def _fresh_ledger(day: str) -> dict[str, Any]:

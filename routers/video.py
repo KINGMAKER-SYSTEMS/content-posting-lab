@@ -448,12 +448,16 @@ async def generate_video(
 
     # Daily generation budget: the operator-UI path draws from the SAME shared
     # ledger as the Control Plane Worker, so both paid admission lanes (xAI and
-    # Replicate) share one daily total. Reserved before any provider call; on
-    # refusal the caller gets the same machine-readable reason + resets_at, plus
-    # a Retry-After header, surfaced as a plain 429 message.
-    cost_per_gen = generation_budget.charged_cost_per_gen(
-        PROVIDERS[provider].get("cost_per_gen_usd")
-    )
+    # Replicate) share one daily total. Cost is priced from the catalog by
+    # requested duration (Grok is ~$0.50/s, so a 15 s request is never
+    # under-charged as a 10 s one); an unpriced provider fails closed.
+    try:
+        cost_per_gen = generation_budget.per_gen_cost_usd(provider, duration)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "generation_pricing_unavailable", "detail": str(exc)},
+        )
     planned_usd = count * cost_per_gen
     if not generation_budget.reserve_generation_spend_at(
         generation_budget.jobs_store_path(), planned_usd, key_id,

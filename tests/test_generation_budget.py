@@ -43,17 +43,13 @@ def test_daily_budget_parses_spend_safe(monkeypatch):
         assert generation_budget.daily_budget_usd() == expected
 
 
-def test_missing_cost_charges_conservative_default():
-    """F5: a missing/zero/negative/non-numeric cost never meters as $0.
-
-    It is charged the fail-closed DEFAULT_COST_PER_GEN_USD; a real positive
-    cost passes through unchanged.
-    """
-    assert generation_budget.charged_cost_per_gen(None) == generation_budget.DEFAULT_COST_PER_GEN_USD
-    assert generation_budget.charged_cost_per_gen(0) == generation_budget.DEFAULT_COST_PER_GEN_USD
-    assert generation_budget.charged_cost_per_gen(0.0) == generation_budget.DEFAULT_COST_PER_GEN_USD
-    assert generation_budget.charged_cost_per_gen(-1) == generation_budget.DEFAULT_COST_PER_GEN_USD
-    assert generation_budget.charged_cost_per_gen("junk") == generation_budget.DEFAULT_COST_PER_GEN_USD
+def test_missing_cost_fails_closed():
+    """F5: a missing/zero/negative/non-numeric/non-finite cost is rejected, so
+    an unpriced paid provider can never meter as free. A real positive cost
+    passes through unchanged."""
+    for bad in (None, 0, 0.0, -1, "junk", float("nan"), float("inf")):
+        with pytest.raises(ValueError):
+            generation_budget.charged_cost_per_gen(bad)
     assert generation_budget.charged_cost_per_gen(0.28) == pytest.approx(0.28)
     assert generation_budget.charged_cost_per_gen("0.12") == pytest.approx(0.12)
 
@@ -228,25 +224,22 @@ def test_ui_generate_reserves_under_budget(sync_client, monkeypatch):
     response = sync_client.post("/api/video/generate", data=_UI_GENERATE_FORM)
     assert response.status_code == 200
     store = atomic_load(generation_budget.jobs_store_path())
-    assert generation_budget.spent_usd(store) == pytest.approx(5.0)
+    # grok is ~$0.50/s; duration 5 -> $2.50 per generation.
+    assert generation_budget.spent_usd(store) == pytest.approx(2.50)
     assert store["generationBudget"]["calls"].get("xai") == 1
 
 
-def test_ui_generate_charges_default_for_missing_provider_cost(sync_client, monkeypatch):
-    """F5 (UI): a provider with no cost_per_gen_usd is charged the fail-closed
-    default, never $0."""
+def test_ui_generate_fails_closed_for_unpriced_provider(sync_client, monkeypatch):
+    """F5 (UI): a provider with no pricing is refused (never metered as free)."""
     monkeypatch.setenv(generation_budget.USD_BUDGET_ENV, "100.0")
     monkeypatch.setitem(video_router.API_KEYS, "replicate", "test-key")
     monkeypatch.setattr(video_router, "generate_one", _fake_generate_one)
-    # hailuo carries an explicit 0.28; drop it and the meter must charge the
-    # conservative default.
+    # hailuo carries an explicit flat 0.28; drop both pricing fields and the
+    # meter must refuse the job rather than charge $0 or a guessed default.
     monkeypatch.delitem(video_router.PROVIDERS["hailuo"], "cost_per_gen_usd", raising=False)
     response = sync_client.post(
         "/api/video/generate",
         data={**_UI_GENERATE_FORM, "provider": "hailuo"},
     )
-    assert response.status_code == 200
-    store = atomic_load(generation_budget.jobs_store_path())
-    assert generation_budget.spent_usd(store) == pytest.approx(
-        generation_budget.DEFAULT_COST_PER_GEN_USD
-    )
+    assert response.status_code == 500
+    assert response.json()["detail"]["error"] == "generation_pricing_unavailable"
