@@ -5,15 +5,16 @@ The Lab's generation lane has per-request ceilings (``MAX_JOB_QUANTITY``,
 14 unattended days the Control Plane Worker admits unbounded paid jobs. This
 module adds a daily USD total, persisted in the SAME durable job store
 (``control_plane_jobs.json``) under a top-level ``generationBudget`` key — no
-new database or file. It is checked before a paid call and counted at
-admission (a fail-closed reserve), and it rolls over at 00:00 UTC.
+new database or file. Every new paid submission is reserved against it at its
+own UTC submission day (fail-closed); resuming or polling the same prediction
+stays free, and the total rolls over at 00:00 UTC.
 
-Scope: this meter covers every *new* paid generation admission — the Control
-Plane generated-job plan (first attempt of each planned provider call) and the
+Scope: this meter covers every *new* paid generation submission — the Control
+Plane generated-job plan (each attempt of each planned provider call) and the
 operator-UI ``POST /api/video/generate`` route (xAI and Replicate providers).
-Moderation re-submissions are a separate paid path: they are bounded per page
-per UTC day by ``CONTENT_LAB_MODERATION_RETRY_DAILY_BUDGET`` (default 6) and
-reported as ``moderationRetryCostUsd`` on the job, not debited from this meter.
+A moderation re-submission is a distinct billable prediction and IS debited
+from this meter; ``CONTENT_LAB_MODERATION_RETRY_DAILY_BUDGET`` (default 6) is
+an additional per-page count bound, not a replacement for the USD cap.
 
 Non-generation work (source recut, slideshows, truck-master recovery, burns,
 renders, posting) never passes through this meter.
