@@ -2822,8 +2822,15 @@ async def _run_owned_dossier_generation(job_id: str) -> None:
             else:
                 attempt, reserve = 0, False
             attempt_cost = moderation_retry.attempt_cost_usd(recipe.provider_model)
+            if attempt_cost is None:
+                # Every paid submission must be priced to be metered; an
+                # unlisted model fails closed rather than metering as free.
+                attempt_cost = generation_budget.charged_cost_per_gen(
+                    recipe.provider_config.get("cost_per_gen_usd")
+                )
             terminal = None
             succeeded = False
+            budget_exhausted = False
             while True:
                 if reserve:
                     reserve = False
@@ -2872,6 +2879,23 @@ async def _run_owned_dossier_generation(job_id: str) -> None:
                     provider_jobs[provider_job_id]["videos"][0]["_prediction_checkpoint"] = PredictionCheckpoint(
                         job.get("providerCheckpoints", {}).get(checkpoint_key), persist,
                     )
+                # Daily total generation budget: reserve this new billable
+                # submission at its own UTC submission day, idempotently. The
+                # debit id embeds job/call/attempt, so a moderation retry (or a
+                # resumed prediction with the same id) reserves exactly once.
+                # Polling/resuming the SAME prediction stays free.
+                debit_id = f"{provider_job_id}:s0"
+                if not await asyncio.to_thread(
+                    generation_budget.debit_generation_spend_at,
+                    generation_budget.jobs_store_path(), attempt_cost, debit_id,
+                ):
+                    row.update({"providerRequestId": None, "class": "generation_budget",
+                                "errorDetail": "daily_budget", "costUsd": None,
+                                "outcome": "refused",
+                                "detail": "Daily paid-generation budget reached before submission"})
+                    terminal = "generation_daily_budget_reached"
+                    budget_exhausted = True
+                    break
                 await generate_one(
                     provider_job_id,
                     0,
@@ -2885,6 +2909,7 @@ async def _run_owned_dossier_generation(job_id: str) -> None:
                     render_root,
                     "",
                     model_id=recipe.provider_model,
+                    cost_usd=attempt_cost,
                     **options,
                 )
                 entry = provider_jobs[provider_job_id]["videos"][0]
@@ -2974,6 +2999,12 @@ async def _run_owned_dossier_generation(job_id: str) -> None:
                     moderationRetryCostUsd=moderation_retry.retry_cost_total(attempts),
                 )
                 if last.get("outcome") == "refused":
+                    if budget_exhausted:
+                        # Fleet-wide USD budget reached: no later candidate can
+                        # reserve either, so stop the remaining plan now (like a
+                        # credit failure), preserving any already-claimed output
+                        # through the existing underfilled-batch handling.
+                        raise RuntimeError("provider_generation_failed")
                     # A confirmed refused prediction whose bounded varied
                     # retries (or the page's daily retry budget) are spent
                     # stays refused. Continue only to the next distinct
@@ -4322,31 +4353,21 @@ async def create_job(
             )
             if len(prompt_plan) != provider_calls:
                 raise HTTPException(status_code=409, detail="prompt_inventory_exhausted")
-            # Daily total generation budget: checked before any paid call and
-            # reserved (fail-closed) in the same transaction that admits the
-            # job. Truck-master recovery and every non-generation executor
-            # never pass through here and stay unblocked. An unpriced recipe
-            # provider fails closed rather than metering as free.
+            # Daily total generation budget: the admission no longer reserves
+            # the whole planned amount (that would let queued work shift
+            # unbounded reserved spend across midnight). Every *new billable
+            # submission* is instead reserved at its own UTC submission day,
+            # idempotently, right before the provider call (see
+            # _run_owned_dossier_generation). Admission still validates that the
+            # recipe provider is priced so a job can never be admitted against
+            # an unmeterable paid provider (fail closed).
             try:
-                planned_usd = provider_calls * generation_budget.charged_cost_per_gen(
+                generation_budget.charged_cost_per_gen(
                     generation_recipe.provider_config.get("cost_per_gen_usd")
                 )
             except ValueError as exc:
                 raise HTTPException(
                     status_code=500, detail=f"generation_pricing_unavailable: {exc}"
-                )
-            if not generation_budget.reserve_generation_spend(
-                store, planned_usd, PROVIDERS[generation_recipe.engine]["key_id"],
-            ):
-                raise HTTPException(
-                    status_code=429,
-                    detail={
-                        "error": "generation_daily_budget_reached",
-                        "resets_at": generation_budget.next_reset_iso(),
-                    },
-                    headers={
-                        "Retry-After": str(generation_budget.retry_after_seconds()),
-                    },
                 )
             job_root = (
                 _generation_root() / page_id / recipe_version / job_id

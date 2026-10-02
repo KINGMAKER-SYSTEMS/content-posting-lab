@@ -259,6 +259,62 @@ def reserve_generation_spend(
     return True
 
 
+def debit_generation_spend(
+    store: dict[str, Any],
+    amount_usd: float,
+    debit_id: str,
+    now: datetime | None = None,
+) -> bool:
+    """Reserve one new billable provider submission, idempotently, at its UTC day.
+
+    ``debit_id`` is a durable identity for a single new billable prediction
+    (e.g. ``job-1:g00:r1:s0``). Re-calling with the same id — polling or
+    resuming the SAME prediction after a restart — is a no-op that returns True,
+    so a resume never charges a second time. Returns False when the day's budget
+    is exhausted (the caller must refuse, never spend).
+    """
+    budget = daily_budget_usd()
+    day = utc_day(now)
+    state = _ledger(store, day)
+    amount = _finite_usd(amount_usd, "amount_usd")
+    if not isinstance(debit_id, str) or not debit_id:
+        raise ValueError("debit_id must be a non-empty string")
+    debits = state.setdefault("debits", {})
+    if debit_id in debits:
+        return True
+    if state["spentUsd"] + amount > budget + 1e-9:
+        return False
+    state["spentUsd"] = round(state["spentUsd"] + amount, 4)
+    debits[debit_id] = round(amount, 4)
+    return True
+
+
+def debit_generation_spend_at(
+    path: Path | str,
+    amount_usd: float,
+    debit_id: str,
+    now: datetime | None = None,
+) -> bool:
+    """Idempotent submission-time reservation against the ledger at ``path``.
+
+    For callers that do not already hold the job-store transaction (the Control
+    Plane executor loop, the Replicate PA resubmission, ABN and recreate lanes).
+    Loads the store fresh and persists atomically under the same kernel lock the
+    admission transaction holds. Returns False when the day's budget is
+    exhausted (the caller must refuse, never spend).
+    """
+    from services.generation_recovery import store_lock as kernel_lock
+    from services.json_store import atomic_load, atomic_save
+
+    with kernel_lock(path):
+        store = atomic_load(path, default=None)
+        if not isinstance(store, dict) or "jobs" not in store:
+            store = {"version": 1, "jobs": {}, "byIdempotency": {}, "served": {}}
+        ok = debit_generation_spend(store, amount_usd, debit_id, now=now)
+        atomic_save(path, store)
+        return ok
+
+
 def jobs_store_path() -> Path:
     """The durable job-store file whose ``generationBudget`` key is the ledger.
 

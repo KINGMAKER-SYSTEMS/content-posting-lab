@@ -397,6 +397,24 @@ async def generate(prompt: str, params: dict, client: httpx.AsyncClient) -> str:
                      "state": "submitting"}
             if checkpoint is not None:
                 await checkpoint.save(state)
+            # A resubmission beyond the first (Replicate's "Prediction
+            # interrupted (code: PA)") creates a second billable prediction.
+            # Reserve its cost against the daily generation meter at this UTC
+            # day, idempotently keyed by job id + submission index. The first
+            # submission is reserved by the caller (admission or executor).
+            if submission > 0:
+                cost_usd = params.get("cost_usd")
+                job_id = params.get("job_id")
+                if not isinstance(cost_usd, (int, float)) or cost_usd <= 0 or not job_id:
+                    raise RuntimeError("generation_pricing_unavailable")
+                from services import generation_budget
+                debit_id = f"{job_id}:pa{submission}"
+                reserved = await asyncio.to_thread(
+                    generation_budget.debit_generation_spend_at,
+                    generation_budget.jobs_store_path(), cost_usd, debit_id,
+                )
+                if not reserved:
+                    raise RuntimeError("generation_daily_budget_reached")
             pred_id = await _start_prediction(client, headers, model_id, input_params)
             # Safe 429/connection backoff precedes acceptance, not processing.
             # Preserve the original ten-minute budget from the accepted id.

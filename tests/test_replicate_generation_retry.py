@@ -75,7 +75,8 @@ def fast_clock(monkeypatch):
 
 async def run(script):
     entry = {}
-    params = {"model_id": MODEL, "entry": entry, "duration": 6, "resolution": "1080p"}
+    params = {"model_id": MODEL, "entry": entry, "duration": 6, "resolution": "1080p",
+              "job_id": "test-job-1", "cost_usd": 0.28}
     async with httpx.AsyncClient(transport=httpx.MockTransport(script.handler)) as client:
         return await replicate.generate("a truck on a ridge road", params, client), entry
 
@@ -167,6 +168,43 @@ async def test_interrupted_prediction_is_resubmitted_once():
     with pytest.raises(RuntimeError, match=r"code: PA"):
         await run(again)
     assert again.count("POST", "predictions") == 2
+
+
+async def test_interrupted_resubmission_is_metered(monkeypatch):
+    """A PA resubmission creates a second billable prediction and is reserved
+    against the daily generation meter under its own idempotent debit id. The
+    first submission is the caller's reservation, so only submission 1 debits."""
+    from services import generation_budget
+
+    debits = []
+
+    def fake_debit(path, amount, debit_id, now=None):
+        debits.append((amount, debit_id))
+        return True
+
+    monkeypatch.setattr(generation_budget, "debit_generation_spend_at", fake_debit)
+    interrupted = status("failed", error="Prediction interrupted; please retry (code: PA)")
+    script = Script(creates=[created("p1"), created("p2")], polls=[interrupted, done()])
+    url, entry = await run(script)
+    assert url == VIDEO and entry["provider_request_id"] == "p2"
+    assert debits == [(0.28, "test-job-1:pa1")]
+
+
+async def test_interrupted_resubmission_is_refused_when_budget_exhausted(monkeypatch):
+    """A PA resubmission that cannot reserve spend must not submit the second
+    prediction — the daily budget is a hard stop on new billable work."""
+    from services import generation_budget
+
+    def fake_debit(path, amount, debit_id, now=None):
+        return False
+
+    monkeypatch.setattr(generation_budget, "debit_generation_spend_at", fake_debit)
+    interrupted = status("failed", error="Prediction interrupted; please retry (code: PA)")
+    script = Script(creates=[created("p1"), created("p2")], polls=[interrupted, done()])
+    with pytest.raises(RuntimeError, match="generation_daily_budget_reached"):
+        await run(script)
+    # The second (billable) submission never reached Replicate.
+    assert script.count("POST", "predictions") == 1
 
 
 async def test_provider_side_failure_is_not_resubmitted():

@@ -398,6 +398,14 @@ async def generate_one(
             provider_info = PROVIDERS[provider]
             mod = provider_info["module"]
 
+            # One billable generation's estimated cost, pinned to the catalog.
+            # The Control Plane executor passes its recipe-pinned cost explicitly;
+            # the operator-UI path derives it from the requested provider/duration.
+            cost_usd = extra.pop("cost_usd", None)
+            if cost_usd is None:
+                from services import generation_budget
+                cost_usd = generation_budget.per_gen_cost_usd(provider, duration)
+
             params = {
                 "aspect_ratio": aspect_ratio,
                 "resolution": resolution,
@@ -406,6 +414,8 @@ async def generate_one(
                 "entry": entry,
                 "model_id": provider_info["models"][0],
                 "variant": provider_info.get("variant"),
+                "job_id": job_id,
+                "cost_usd": cost_usd,
                 **extra,
             }
 

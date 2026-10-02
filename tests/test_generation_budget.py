@@ -92,61 +92,20 @@ def test_summary_reports_budget_and_resets_at(monkeypatch):
     assert "resetsAt" in summary and "day" in summary
 
 
-# ── admission gate (integration) ─────────────────────────────────────────
+# ── admission: pricing is validated, spend is metered at submission ─────
 
-def test_create_job_refuses_generation_at_the_daily_budget(lab, monkeypatch):
+def test_create_job_admission_validates_pricing_and_defers_spend(lab, monkeypatch):
+    """F1 (revised): admission no longer reserves the whole planned amount (that
+    would let queued work shift unbounded reserved spend across midnight).
+    Admission validates the recipe provider is priced (fail closed) and does not
+    touch the ledger; each billable submission is debited at its own UTC day by
+    the executor loop."""
     monkeypatch.setenv(generation_budget.USD_BUDGET_ENV, "0")
-    client, _, _ = lab
-    response = client.post("/api/control-plane/v1/jobs", json=job_body(), headers=HEADERS)
-    assert response.status_code == 429
-    detail = response.json()["detail"]
-    assert detail["error"] == "generation_daily_budget_reached"
-    assert isinstance(detail["resets_at"], str) and detail["resets_at"].endswith("+00:00")
-
-
-def test_create_job_reserves_and_admits_generation_under_budget(lab, monkeypatch):
-    monkeypatch.setenv(generation_budget.USD_BUDGET_ENV, "25.0")
     client, _, _ = lab
     response = client.post("/api/control-plane/v1/jobs", json=job_body(), headers=HEADERS)
     assert response.status_code == 200
-    store = cp._load_jobs()
-    # truck-scenic: quantity 2 -> 1 provider call (clips_per_gen 5) at $0.28.
-    assert generation_budget.spent_usd(store) == pytest.approx(0.28)
-
-
-def test_create_job_budget_is_cumulative_across_jobs(lab, monkeypatch):
-    monkeypatch.setenv(generation_budget.USD_BUDGET_ENV, "0.5")
-    client, _, _ = lab
-    first = client.post("/api/control-plane/v1/jobs", json=job_body(), headers=HEADERS)
-    assert first.status_code == 200
-    second = client.post(
-        "/api/control-plane/v1/jobs", json=job_body(),
-        headers={**HEADERS, "Idempotency-Key": "tt-tucker-reeves:policy:second-budget"},
-    )
-    # 0.28 + 0.28 = 0.56 > 0.5, so the second job is refused.
-    assert second.status_code == 429
-    assert second.json()["detail"]["error"] == "generation_daily_budget_reached"
-
-
-def test_budget_429_carries_retry_after_consistent_with_resets_at(lab, monkeypatch):
-    """F1: the budget 429 sends a standard Retry-After header (seconds until
-    resets_at) alongside the unchanged JSON body, so a Retry-After-honouring
-    client backs off instead of spinning."""
-    monkeypatch.setenv(generation_budget.USD_BUDGET_ENV, "0")
-    client, _, _ = lab
-    before = datetime.now(timezone.utc)
-    response = client.post("/api/control-plane/v1/jobs", json=job_body(), headers=HEADERS)
-    assert response.status_code == 429
-    detail = response.json()["detail"]
-    assert detail["error"] == "generation_daily_budget_reached"
-    resets_at = detail["resets_at"]
-    retry_after = response.headers.get("Retry-After")
-    assert retry_after is not None and retry_after.isdigit() and int(retry_after) >= 1
-    reset_dt = datetime.fromisoformat(resets_at)
-    seconds_until_reset = (reset_dt - before).total_seconds()
-    assert abs(int(retry_after) - seconds_until_reset) <= 2
-    # Retry-After is an int (whole seconds), never 0.
-    assert int(retry_after) >= 1
+    # No reservation happened at admission.
+    assert generation_budget.spent_usd(cp._load_jobs()) == 0.0
 
 
 # ── non-generation work is never gated ───────────────────────────────────
@@ -154,11 +113,12 @@ def test_budget_429_carries_retry_after_consistent_with_resets_at(lab, monkeypat
 def test_generation_budget_gate_lives_only_in_the_paid_generation_lanes():
     """Burns, renders, source recut, slideshows and posting never call the meter.
 
-    The gate is reachable only from the two paid-generation lanes — the Control
-    Plane admission route (routers/control_plane.py) and the operator-UI
-    generate route (routers/video.py). Every other router must not even import
-    it, so a burn/render/posting request can never be blocked by the daily
-    generation budget.
+    The gate is reachable only from the paid-generation lanes — the Control
+    Plane executor/admission (routers/control_plane.py), the operator-UI
+    generate route (routers/video.py), and the Replicate provider adapter
+    (PA resubmission). Every other router must not even import it, so a
+    burn/render/posting request can never be blocked by the daily generation
+    budget.
     """
     repo = pathlib.Path(cp.__file__).resolve().parents[1]
     importers = []
@@ -167,7 +127,7 @@ def test_generation_budget_gate_lives_only_in_the_paid_generation_lanes():
         text = path.read_text(encoding="utf-8")
         if "generation_budget" in text:
             importers.append(path.name)
-        if "reserve_generation_spend" in text:
+        if "reserve_generation_spend" in text or "debit_generation_spend" in text:
             callers.append(path.name)
     assert sorted(callers) == ["control_plane.py", "video.py"], f"unexpected budget gate callers: {callers}"
     # control_plane and video are the only routers allowed to import the meter.
