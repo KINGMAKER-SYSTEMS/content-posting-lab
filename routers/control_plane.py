@@ -2821,7 +2821,9 @@ async def _run_owned_dossier_generation(job_id: str) -> None:
                 attempt, reserve = rows[-1]["attempt"], False
             else:
                 attempt, reserve = 0, False
-            attempt_cost = moderation_retry.attempt_cost_usd(recipe.provider_model)
+            attempt_cost = moderation_retry.attempt_cost_usd(
+                recipe.provider_model, duration,
+            )
             if attempt_cost is None:
                 # Every paid submission must be priced to be metered; an
                 # unlisted model fails closed rather than metering as free.
@@ -4400,7 +4402,8 @@ async def create_job(
             # the `Retry-After` header, so midnight cannot split them. No job
             # row, no ghost state on refusal.
             first_call_cost = moderation_retry.attempt_cost_usd(
-                generation_recipe.provider_model
+                generation_recipe.provider_model,
+                int(generation_options(generation_recipe).get("duration", 6)),
             )
             if first_call_cost is None:
                 first_call_cost = generation_budget.charged_cost_per_gen(

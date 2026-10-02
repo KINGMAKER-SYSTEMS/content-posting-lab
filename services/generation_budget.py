@@ -202,6 +202,29 @@ def charged_cost_per_gen(value: Any) -> float:
     return cost
 
 
+def catalog_cost_usd_by_model(
+    model_id: str,
+    duration_seconds: int | float | None = None,
+) -> float:
+    """Cost of one billable submission for an exact Replicate model id.
+
+    Maps ``model_id`` to its provider entry in ``providers.PROVIDERS`` and
+    prices it exactly as the operator-UI route does (flat ``cost_per_gen_usd``
+    when present, else ``cost_per_second_usd`` × duration). An unknown model, a
+    provider with no pricing, or a per-second provider without a duration raises
+    ``ValueError`` — a paid lane can never meter as free. This is the single
+    pricing source of truth for the moderation-retry (executor) lane.
+    """
+    from providers import PROVIDERS
+
+    for provider_id, info in PROVIDERS.items():
+        if not isinstance(info, dict):
+            continue
+        if model_id in (info.get("models") or []):
+            return per_gen_cost_usd(provider_id, duration_seconds)
+    raise ValueError(f"unknown replicate model: {model_id!r}")
+
+
 def per_gen_cost_usd(
     provider_id: str,
     duration_seconds: int | float | None = None,
