@@ -54,11 +54,21 @@ def _stub_probe(monkeypatch, duration_seconds):
     # Intercept the standard async offload boundary, not a newly added private
     # probe symbol. b8033bd can therefore execute these public-function tests;
     # it fails their timeout behavior rather than their imports/setup.
-    async def fake_to_thread(_function, *_args, **_kwargs):
-        return duration_seconds
+    # Keyed on the probed function: run_color_correct offloads BOTH its probes
+    # through asyncio.to_thread (colour metadata + duration), and only the
+    # duration result drives the encode timeout under test. The colour probe
+    # gets a plain SDR stub so no HDR tags enter the asserted argv.
+    real_to_thread = asyncio.to_thread
+
+    async def fake_to_thread(function, *args, **kwargs):
+        if function is ffmpeg._probe_input_duration_seconds:
+            return duration_seconds
+        if function is ffmpeg._probe_input_color:
+            return {"color_space": "bt709", "color_transfer": "bt709",
+                    "color_primaries": "bt709", "color_range": "tv"}
+        return await real_to_thread(function, *args, **kwargs)
 
     monkeypatch.setattr(ffmpeg.asyncio, "to_thread", fake_to_thread)
-
 
 def _short_timeout_constants(monkeypatch):
     for name, value in {
