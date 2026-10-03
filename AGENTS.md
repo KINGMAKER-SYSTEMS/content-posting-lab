@@ -138,6 +138,9 @@
   `/api/telegram/*` needs the key like every other `/api/` route: the bot
   long-polls, so there is no webhook route to exempt. The UI sends the key
   through `frontend/src/lib/api.ts` (`fetchApi` / `withApiKey`).
+- `routers/upload.py` passes the legacy cookie-login account to its static
+  Python subprocess runner as an argv value. Request values must never be
+  interpolated into executable source; the exact account argument is preserved.
 - `POST /api/telegram/send` delivers only a media file whose real path is under
   `projects/<project>/<videos|clips|burned|recreate|slideshow-images>/` or the
   legacy `output`/`burn_output` dirs. The volume root beside those dirs holds
@@ -150,6 +153,10 @@
   `projects/page_roster.json`. `/api/burn/overlay` also takes `batchId` as one
   directory name. While APP_API_KEY is unset these server-side checks are the
   only guard on `/api/*`.
+- Clipper upload, streaming upload, delete, rename and download-all accept
+  single-component job IDs, including legacy and caller-supplied names, only as
+  resolved non-symlink direct children of the project's clip directory. Path
+  errors return 400; missing jobs on management routes retain 404.
 - `project_manager.is_reserved_volume_dir` names the service-state dirs on the
   projects volume (`_post_render`, `control_plane_generated`,
   `control_plane_recipes`, `agenticnews_assets`, `lost+found`, and any name
@@ -290,6 +297,9 @@
   style: font, size, color, position, alignment, and line balance.
 - Resolve fonts only from Content Lab's installed, advertised TikTokSans files.
   Unsupported, missing, or unreadable font bytes fail closed.
+- `/fonts` supplies explicit font MIME types and strong SHA-256 ETags, with a
+  one-day public cache or one year immutable for a matching 8+ hex `?v=` hash prefix.
+  Digest reuse is bounded to 128 file identities; changed bytes revalidate.
 - Explicit caption line breaks must survive rendering. The line-balance control
   may add balanced breaks inside each explicit line but may not remove an
   explicit break or change word order.
@@ -357,6 +367,12 @@
 - `services.ffmpeg.run_color_correct` serializes its ffmpeg subprocesses within
   each service process so simultaneous asynchronous refill jobs cannot exhaust
   container memory during 1080x1920 libx264 encoding.
+  For PQ (`smpte2084`) or HLG (`arib-std-b67`) inputs, restore only the probed
+  colour tags after the RGB round trip, preserving the source matrix. Missing
+  or unknown fields stay unknown; never infer BT.2020 primaries or limited
+  range from transfer alone. Other/unknown transfers keep the existing encode
+  arguments. The bounded local colour probe runs off the event loop, and this
+  metadata repair does not add tone-mapping or repeat video treatment.
 - Durable preparation is exposed at `/api/control-plane/v1/post-renders`.
   Every request requires the existing control-plane bearer and exact
   `X-RT-Page-Id`; enqueue also requires `Idempotency-Key`. Status, retries,
@@ -505,6 +521,18 @@
 - Run `pytest -q tests/test_generation_budget_raw_submissions.py tests/test_replicate_text_removal.py tests/test_abn_factory.py`
   for repeated raw creates, actual ledger totals, exhausted caps and the explicit
   zero-budget stop without paid requests.
+
+- Run `pytest -q tests/test_font_static_headers.py tests/test_static_path_confinement.py`
+  for font MIME/cache headers, changed-byte validators and static path containment.
+- Run `pytest -q tests/test_hdr_color_matrix.py tests/test_ffmpeg_cc.py tests/test_ffmpeg_encode_timeout.py`
+  for PQ/HLG metadata preservation, unchanged SDR arguments, decoded pixel
+  parity, probe offloading, and bounded encode cleanup. The self-contained
+  HDR encode cases need only ffmpeg/ffprobe; real-master cases additionally
+  use the optional `HDR_FIXTURES_DIR` fixture directory.
+
+- Run `pytest -q tests/test_upload_login_account_data.py tests/test_upload_api.py tests/test_upload_cookies.py`
+  for literal account transport, injected expressions, login failure responses
+  and existing upload/cookie behavior without launching a browser.
 
 - Run `pytest -q tests/test_visual_admission.py` for observed boat-frame OCR
   noise, short readable text, rotated single-frame text, complete coverage,
