@@ -410,16 +410,22 @@ def test_page_and_master_pages_drift_fails_closed(path, value):
 
 
 @pytest.mark.parametrize("notion_page_id", [None, "", " "])
-def test_missing_master_pages_notion_id_cannot_match_omitted_manifest_fields(
-    notion_page_id,
+@pytest.mark.parametrize("omit_manifest_ids", [False, True])
+def test_missing_master_pages_notion_id_cannot_establish_page_authority(
+    notion_page_id, omit_manifest_ids,
 ):
     intent, _ = _intent()
     intent["notionPageId"] = notion_page_id
     manifest = _historical_manifest()
-    manifest["notion"].pop("pageId")
-    manifest["sourceAuthority"].pop("notionPageId")
+    manifest["notion"]["pageId"] = notion_page_id
+    manifest["sourceAuthority"]["notionPageId"] = notion_page_id
     for row in manifest["historicalPostedCuts"]:
-        row.pop("notionPageId")
+        row["notionPageId"] = notion_page_id
+    if omit_manifest_ids:
+        manifest["notion"].pop("pageId")
+        manifest["sourceAuthority"].pop("notionPageId")
+        for row in manifest["historicalPostedCuts"]:
+            row.pop("notionPageId")
 
     with pytest.raises(ShipStreamSourceError, match="Notion page ID is missing"):
         parse_shipstream_source_manifest(
