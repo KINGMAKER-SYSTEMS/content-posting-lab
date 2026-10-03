@@ -40,8 +40,12 @@
   and requeues remaining finalizable artifacts at the tail, preventing a large
   batch from blocking a one-output page. A restart safely makes the prior
   runtime's queued sweep eligible for resubmission.
-- Source cut duration accounts for the saved playback speed so both normal and
-  fixed recuts deliver 6-11 seconds; preserve the saved speed and video treatment.
+- Source cut lengths run 5-9 seconds in 0.5-second steps; 9 seconds is the
+  Worker's admission bound and stays the maximum. A length is used only
+  when the delivered clip at the saved playback speed also stays inside that
+  range; a speed no length satisfies (about below 0.56x or above 1.8x) keeps
+  the earlier 6-11 second delivered vocabulary. Jobs queued under the earlier
+  lengths still verify. Preserve the saved speed and video treatment.
   Normalize cut timestamps and extend a fractional missing tail frame to the
   planned output duration; source-window provenance remains unchanged.
 - Source cut planning honors the immutable original 60-second minimum for raw
@@ -178,6 +182,9 @@
 - Caption rendering accepts the shared `CaptionStyle` wire fields only. A saved
   caption layout may supply exact line breaks and final-frame outline width;
   otherwise the established outline remains 3 px at 1080x1920.
+  Explicit `inverted: false` is the existing upright render, byte-identical to
+  an absent transform. This compatibility does not enable inversion or rewrite
+  the immutable slot/treatment JSON and hashes.
 - Dossier recipe v4 is the executable v3 production selection plus the exact
   Control Plane `captionDiscipline` wire object. Content Lab validates and
   preserves that immutable selection; it does not choose a corpus, sentiment,
@@ -206,13 +213,35 @@
   length is a distinct clip. Queued, running and completed jobs reserve their
   exact time frames across recipe revisions and library versions of the same
   master bytes, so a new recipe cuts new time frames instead of re-cutting
-  delivered ones; failed jobs release theirs. Plans prefer footage that
-  overlaps earlier cuts least, break ties by a per-job seed recorded as
-  `cutPlanSeed`, and never hold two overlapping cuts of one master.
-  Exhausted libraries remain visible with `maxQuantity: 0` so Control Plane can
-  distinguish source exhaustion from an unregistered recipe; job creation then
-  answers 409 `master_windows_exhausted`. Job creation remains exact and
-  all-or-nothing; it never silently returns fewer clips than requested.
+  delivered ones; failed jobs release theirs. Each reserved time frame keeps
+  when it was cut (job completedAt, else createdAt; archived as `usedAt`). Re-cut variety (operator rule 2026-09-30): every plan goes
+  through `plan_source_cuts`, which prefers never-cut footage, then a start far
+  from the master's last few starts, then a length unlike its last few
+  lengths, then the least recently cut footage, then a per-job seed recorded
+  as `cutPlanSeed`; one plan never holds two overlapping cuts of one master.
+  The first cut on a master uses the page's Cut length, and a cut repeats the
+  master's last length only when nothing else fits. A window is never cut
+  twice (that would render bytes the Worker refuses as a repeat): once every
+  whole-second start x length is cut, starts move inside the second (half a
+  second, then a quarter and three quarters). Masters carry no verified frame
+  rate, so starts stay at least 250 ms apart and a window counts as cut when an
+  earlier cut of the same length starts under 250 ms away. When every such
+  window is cut, capability `maxQuantity` is 0 and job creation answers 409
+  `source_windows_exhausted`: the page needs new footage. The other named
+  409s are `source_master_too_short` and `source_windows_reserved_by_other_pages`
+  (other pages' reservations arrive only with a job, so capability does not
+  count them). A plan that cannot fit another never-cut window beside its
+  other cuts ends short. Recency and variety are per master, across every page
+  that cut it. `tests/test_source_cut_path_census.py`
+  fails any new path that builds source cuts without the planner. Job creation
+  remains exact and all-or-nothing; it never silently returns fewer clips than
+  requested.
+- Job `constraints` accepts `sourceWindowExclusions` and `priority`
+  (`"low_runway"`); unknown keys and values are ignored and kept on the job,
+  never an error. The Lab starts every job at creation, so ordering by
+  priority is the Worker's job. Capabilities add `supportedConstraints` only
+  with `CONTENT_LAB_ADVERTISE_SUPPORTED_CONSTRAINTS` set, because the
+  deployed Worker rejects unknown capabilities fields.
   Legacy async jobs without recoverable checkpoints fail closed after runtime
   replacement; generated jobs with durable provider identity retain their
   original prompt reservations while the same job resumes. Source-window

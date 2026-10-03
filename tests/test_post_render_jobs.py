@@ -41,6 +41,24 @@ def submission(*, slot_id="slot:fixture-a", source=b"source", program_id="playli
         "provenance_id": "generation:explicit-fixture"}})
 
 
+def test_explicit_upright_submission_retains_exact_slot_and_treatment_hashes():
+    payload = submission().model_dump(by_alias=True)
+    slot = json.loads(payload["slot_payload_json"])
+    slot["render_treatment"]["captionStyle"]["inverted"] = False
+    treatment = json.dumps(slot["render_treatment"], sort_keys=True, separators=(",", ":"))
+    payload["slot_payload_json"] = json.dumps(slot, separators=(",", ":"))
+    payload["request"].update(
+        render_treatment_json=treatment,
+        treatment_sha256=sha256(treatment.encode()),
+        slot_payload_sha256=sha256(payload["slot_payload_json"].encode()),
+    )
+    accepted = jobs.RenderJobSubmission.model_validate(payload)
+    assert accepted.request.render_treatment_json == treatment
+    assert accepted.request.treatment_sha256 == sha256(treatment.encode())
+    assert accepted.slot_payload_json == payload["slot_payload_json"]
+    assert accepted.request.slot_payload_sha256 == sha256(accepted.slot_payload_json.encode())
+
+
 def _write_fake_render(output, request, *, clock_ms, final, qa=b"qa frame"):
     output.mkdir()
     (output / "final.mp4").write_bytes(final)
@@ -731,7 +749,10 @@ def test_retirement_retries_after_partial_deletion_from_durable_authority(tmp_pa
     assert not attempt_dir.exists()
 
 
-def test_unacknowledged_media_is_never_retired_even_after_aging(tmp_path):
+def test_gc_never_retires_unacknowledged_media_even_after_aging(tmp_path):
+    # _gc retires only acknowledged media. Unacknowledged media leaves only
+    # through the separate age-out, and only once R2 confirms it
+    # (tests/test_post_render_age_out.py).
     now = [NOW]
     worker = service(tmp_path, clock=lambda: now[0])
     job = worker.enqueue(submission(slot_id="slot:no-ack"), "no-ack-request")

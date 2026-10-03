@@ -13,11 +13,20 @@ import hashlib
 import io
 import json
 import re
+import unicodedata
 from pathlib import Path
 from typing import Literal
 
 from PIL import Image, ImageDraw, ImageFont, __version__ as pillow_version
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SerializerFunctionWrapHandler,
+    field_validator,
+    model_serializer,
+    model_validator,
+)
 
 
 REQUEST_SCHEMA = "content-lab.caption-render-request.v1"
@@ -41,6 +50,11 @@ _POSITION_Y_PCT = {"top": 15, "middle": 50, "bottom": 85}
 
 _FONT_PATTERN = re.compile(r"^TikTokSans[A-Za-z0-9.-]{0,112}\.ttf$")
 _HEX_PATTERN = re.compile(r"^#[0-9a-fA-F]{6}$")
+_LINE_BREAKS_MAX = 24
+_LINE_BREAK_MAX_CHARS = 500
+_BACKGROUNDS_NEEDING_COLOR = ("box", "highlight")
+# Where an inverted caption always sits (see CaptionStyle.center_inverted_caption).
+_INVERTED_PLACEMENT = {"position": "middle", "offset_pct": 0}
 
 
 class CaptionRenderError(ValueError):
@@ -63,13 +77,36 @@ class CaptionStyle(BaseModel):
     outline: str | None = None
     position: Literal["top", "middle", "bottom"]
     align: Literal["left", "center", "right"]
-    case: Literal["as_written", "lower", "upper"] = "as_written"
+    case: Literal["as_written", "lower", "upper", "title"] = "as_written"
     background: Literal["none", "box", "highlight"] = "none"
     background_color: str | None = None
     offset_pct: float = Field(default=0, ge=-40, le=40, strict=True)
     line_balance: int = Field(ge=0, le=100, strict=True)
     outline_width_px: int | None = Field(default=None, ge=0, le=20, strict=True)
     line_breaks: list[str] | None = None
+    # Turns the whole caption 180 degrees about its own centre, exactly like
+    # the Dossier preview's CSS ``rotate(180deg)``. Only a real JSON boolean
+    # is accepted.
+    inverted: bool = Field(default=False, strict=True)
+
+    @model_validator(mode="after")
+    def center_inverted_caption(self) -> "CaptionStyle":
+        # An inverted caption is always centred, whatever the page placement
+        # says. The Worker sends it that way (captionLayouts.js) and the
+        # Dossier preview draws it that way (top 50%), so the burn matches.
+        if self.inverted:
+            for key, value in _INVERTED_PLACEMENT.items():
+                setattr(self, key, value)
+        return self
+
+    @model_serializer(mode="wrap")
+    def omit_upright(self, handler: SerializerFunctionWrapHandler):
+        # Upright is the default and is never written out, so every caption
+        # saved before inversion existed keeps byte-identical style hashes.
+        data = handler(self)
+        if isinstance(data, dict) and data.get("inverted") is False:
+            data.pop("inverted")
+        return data
 
     @field_validator("font")
     @classmethod
@@ -89,7 +126,7 @@ class CaptionStyle(BaseModel):
 
     @model_validator(mode="after")
     def validate_background(self) -> "CaptionStyle":
-        if self.background != "none" and self.background_color is None:
+        if self.background in _BACKGROUNDS_NEEDING_COLOR and self.background_color is None:
             raise ValueError("background_color is required for box or highlight")
         return self
 
@@ -98,9 +135,66 @@ class CaptionStyle(BaseModel):
     def validate_line_breaks(cls, value: list[str] | None) -> list[str] | None:
         if value is None:
             return None
-        if not 1 <= len(value) <= 24 or any("\n" in line or "\r" in line or len(line) > 500 for line in value):
+        if not 1 <= len(value) <= _LINE_BREAKS_MAX or any(
+                "\n" in line or "\r" in line or len(line) > _LINE_BREAK_MAX_CHARS for line in value):
             raise ValueError("line_breaks must be 1 through 24 bounded lines")
         return value
+
+
+CAPTION_STYLE_CONTRACT_SCHEMA = "content-lab.caption-style-contract.v1"
+CAPTION_STYLE_CONTRACT_PATH = Path(__file__).parents[1] / "contracts" / "caption-style.v1.json"
+
+
+def caption_style_contract() -> dict:
+    """Every CaptionStyle field, value and cross-field rule Content Lab checks, read off the model.
+
+    Types, enums and numeric ranges come from the model's JSON schema; the
+    font and colour patterns, the line_breaks limits and the two cross-field
+    rules come from the same constants the validators use. The committed copy
+    (contracts/caption-style.v1.json) lets the Worker check in its own CI that
+    every caption style it can send is one this renderer takes. Not in it:
+    render-time refusals that depend on the installed fonts and the rendered
+    size (CAPTION_FONT_UNAVAILABLE, italic fonts, CAPTION_LINE_TOO_WIDE,
+    CAPTION_OUT_OF_FRAME), and the request rule that line_breaks must spell
+    the caption. tests/test_caption_transforms.py fails when the copy drifts;
+    regenerate it with ``python scripts/export_caption_style_contract.py``.
+    """
+
+    schema = CaptionStyle.model_json_schema()
+    required = set(schema.get("required", []))
+    fields: dict[str, dict] = {}
+    for name, prop in sorted(schema["properties"].items()):
+        variants = prop.get("anyOf", [prop])
+        nullable = any(variant.get("type") == "null" for variant in variants)
+        (value,) = [variant for variant in variants if variant.get("type") != "null"]
+        field: dict = {"type": value["type"], "required": name in required, "nullable": nullable}
+        for key in ("enum", "minimum", "maximum", "minLength", "maxLength"):
+            if key in value:
+                field[key] = value[key]
+        if value["type"] == "array":
+            field["items"] = value["items"]["type"]
+        if "default" in prop and prop["default"] is not None:
+            field["default"] = prop["default"]
+        fields[name] = field
+    fields["font"]["pattern"] = _FONT_PATTERN.pattern
+    for name in ("color", "outline", "background_color"):
+        fields[name]["pattern"] = _HEX_PATTERN.pattern
+    fields["line_breaks"].update({
+        "minItems": 1,
+        "maxItems": _LINE_BREAKS_MAX,
+        "itemMaxLength": _LINE_BREAK_MAX_CHARS,
+        "itemForbids": ["\n", "\r"],
+    })
+    return {
+        "schema": CAPTION_STYLE_CONTRACT_SCHEMA,
+        "model": "services/caption_render.py CaptionStyle",
+        "unknown_fields": "rejected",
+        "fields": fields,
+        "rules": [
+            {"when": {"background": list(_BACKGROUNDS_NEEDING_COLOR)}, "requires": ["background_color"]},
+            {"when": {"inverted": True}, "sets": dict(_INVERTED_PLACEMENT)},
+        ],
+    }
 
 
 class CaptionRenderRequest(BaseModel):
@@ -284,11 +378,98 @@ def _resolve_font(font_dir: Path, filename: str) -> tuple[Path, bytes]:
     return candidate, font_bytes
 
 
+# Characters that join two letters into one word, as Chrome's CSS
+# ``capitalize`` treats them: "don't", "rock\u2019n\u2019roll", "l\u00b7l".
+# Checked one by one in Chrome; ":", "." and "\uff1a" are not joiners there.
+_MID_LETTER = frozenset("'\u2018\u2019\u00b7\uff07\u0387\u055f\u05f4\u2024\u2027\ufe13\ufe52")
+
+
+def _is_letter(char: str) -> bool:
+    # Letter-like numerals such as "\u216b" count as letters, as in Unicode's word rules.
+    category = unicodedata.category(char)
+    return (category[0] == "L" or category == "Nl") and not _is_wide_ideograph(char)
+
+
+def _is_wide_ideograph(char: str) -> bool:
+    # Han, kana (full or half width) and hangul are each a word on their own
+    # in the browser, so a letter right after one starts a new word
+    # ("\u65e5a" -> "\u65e5A").
+    return (unicodedata.category(char) == "Lo"
+            and unicodedata.east_asian_width(char) in ("W", "F", "H"))
+
+
+def _starts_word(char: str) -> bool:
+    return _is_letter(char) or unicodedata.category(char) in ("Nd", "Pc")
+
+
+def _is_extend(char: str) -> bool:
+    # Combining marks and invisible format characters (soft hyphen, joiners)
+    # ride along with the character before them; the zero-width space does not.
+    category = unicodedata.category(char)
+    return category[0] == "M" or (category == "Cf" and char != "\u200b")
+
+
+def _continues_word(char: str) -> bool:
+    return _starts_word(char) or _is_extend(char)
+
+
+def _next_base(text: str, index: int) -> str:
+    # The first character after ``index`` that is not a mark or format character.
+    for char in text[index + 1:]:
+        if not _is_extend(char):
+            return char
+    return ""
+
+
+def _title_cased(text: str) -> str:
+    """Python port of the Dossier preview's CSS ``text-transform: capitalize``.
+
+    The Dossier and Schedule previews title-case with CSS, so the burn must
+    follow the browser's word rule, not Python's ``str.title``. The first
+    character of each word is title-cased and every other character is left
+    alone ("iPhone" -> "IPhone", "LOL" stays "LOL"). A word is a run of
+    letters, decimal digits, "_" and combining marks. An apostrophe, middle
+    dot or other ``_MID_LETTER`` joiner between two letters stays inside the
+    word ("don't" -> "Don't"), looking past accents and invisible format
+    characters on either side; any other character, including ".", ":", "-",
+    "/", "\u00b2" and emoji, ends it
+    ("lo-fi" -> "Lo-Fi", "90's" -> "90'S", "\U0001f525fire" -> "\U0001f525Fire").
+    A character with no one-character title case (such as "\u00df") is kept as
+    written, as the browser does. tests/fixtures/real/chrome_capitalize.json
+    and chrome_capitalize_real_captions.json hold real Chrome output this
+    function is tested against.
+    """
+
+    out: list[str] = []
+    in_word = False
+    previous = ""
+    for index, char in enumerate(text):
+        if in_word and _continues_word(char):
+            out.append(char)
+        elif (in_word and char in _MID_LETTER and _is_letter(previous)
+              and (following := _next_base(text, index)) != "" and _is_letter(following)):
+            out.append(char)
+        elif not in_word and _starts_word(char):
+            titled = char.title()
+            out.append(titled if len(titled) == 1 else char)
+            in_word = True
+        else:
+            out.append(char)
+            in_word = False
+        if _is_wide_ideograph(char):
+            in_word = False
+        if not _is_extend(char):
+            previous = char
+    return "".join(out)
+
+
 def _cased(text: str, text_case: str) -> str:
     if text_case == "lower":
         return text.lower()
     if text_case == "upper":
         return text.upper()
+    if text_case == "title":
+        return _title_cased(text)
     return text
 
 
@@ -417,6 +598,19 @@ def render_caption_overlay(
             stroke_width=stroke_width_px,
             stroke_fill=style.outline,
         )
+
+    if style.inverted:
+        # The Dossier preview draws an inverted caption with CSS
+        # ``rotate(180deg)`` about the caption box's own centre. That box is
+        # 80% of the frame wide and always centred (left 10%, top 50%), so
+        # its centre is the frame centre and turning the whole transparent
+        # canvas half a turn is the same rotation: the text reads upside
+        # down, the first line ends up at the bottom and a left-aligned
+        # caption sits against the right margin. A rotation, never a mirror.
+        image = image.transpose(Image.Transpose.ROTATE_180)
+        for record in line_records:
+            record["x_px"] = FRAME_WIDTH - record["x_px"]
+            record["center_y_px"] = FRAME_HEIGHT - record["center_y_px"]
 
     output = io.BytesIO()
     image.save(output, format="PNG", optimize=False, compress_level=9)

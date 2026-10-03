@@ -1132,3 +1132,34 @@ offset 0) whatever the slot's caption style places it, so a caption that fits
 the band stays off the bars (a very tall one can still reach onto them); font,
 size, colour and line breaks are unchanged (owner decision 2026-09-28). No
 deployment was performed.
+
+_________________________________________________________________________________
+time: [21:40 EDT] [26-09-30]
+agent: [Claude Code] [claude-opus-5-5]
+worktree: [closeout/varied-recut] [/Users/ecfromthedc/dev/seats/CLOSE-LABRECUT]
+type: [feature] [re-cut variety]: every re-cut uses a new section at a new length; no window is cut twice
+area: [backend] [testing]
+
+Operator rule 2026-09-30: when the Lab re-cuts a master it uses a different
+part of the footage and a different length than the cuts before it, lengths
+5 to 9 s in 0.5 s steps, for every sourced page. `plan_source_cuts` now scores
+every candidate (whole-second start x 0.5 s length): never-cut footage first,
+then a start far from the master's last three starts, then a length unlike the
+last three lengths, then least recently cut footage, then the seeded tiebreak.
+The first cut on a master uses the page's Cut length. Lengths are 5-9 s (the
+Worker's bound stays the maximum) and the delivered clip at the saved speed
+stays inside the same range. `constraints.priority: "low_runway"` and unknown
+constraint keys are accepted; `supportedConstraints` is advertised only with
+`CONTENT_LAB_ADVERTISE_SUPPORTED_CONSTRAINTS`, because the deployed Worker
+rejects unknown capabilities fields. The job ledger now carries when each
+window was cut (archive entries keep `usedAt`/`cutIndex`; older entries count
+as oldest). A window is never cut twice: once every whole-second start x
+length is cut, starts move to half, then quarter and three-quarter seconds
+(at least 250 ms apart, so different first frames at any frame rate above
+4 fps), and a cut repeats the master's last length only when nothing else
+fits. When every window is cut, capability reads 0 and job creation answers
+409 `source_windows_exhausted` (the page needs new footage) instead of
+`master_windows_exhausted`; `source_master_too_short` and
+`source_windows_reserved_by_other_pages` name the other empty plans. A census
+test fails any code
+path that builds source cuts without the planner. No deployment was performed.

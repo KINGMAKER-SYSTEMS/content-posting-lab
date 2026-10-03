@@ -94,8 +94,10 @@ from services.control_plane_generation import (
 )
 from services.control_plane_sources import (
     CAPABILITY_PLAN_SEED,
-    MASTER_WINDOWS_EXHAUSTED,
+    CutUse,
     canonical_source_identity,
+    cut_use_time,
+    explain_empty_source_plan,
     plan_source_cuts,
     source_cut_is_planned,
     resolve_source_recipe,
@@ -140,6 +142,23 @@ router = APIRouter()
 log = logging.getLogger("control_plane")
 
 RESPONSE_SCHEMA = "content-lab.response.v1"
+# Job constraints this Lab understands. Unknown keys and values are ignored,
+# never an error. "priority": "low_runway" marks a page close to running out
+# of posts; it is kept in the job's stored constraints, but the Lab starts
+# every job as soon as it is created (there is no Lab-side queue to reorder),
+# so ordering work by priority is the Control Plane Worker's job.
+SUPPORTED_CONSTRAINTS = ("sourceWindowExclusions", "priority")
+# The deployed Worker rejects any capabilities field it does not know, so
+# `supportedConstraints` is advertised only once this flag is set (after the
+# Worker accepts the field).
+ADVERTISE_CONSTRAINTS_ENV = "CONTENT_LAB_ADVERTISE_SUPPORTED_CONSTRAINTS"
+
+
+def _capabilities_response(entries: list[dict[str, Any]]) -> dict[str, Any]:
+    response: dict[str, Any] = {"schema": RESPONSE_SCHEMA, "capabilities": entries}
+    if os.environ.get(ADVERTISE_CONSTRAINTS_ENV, "").strip().lower() in {"1", "true", "yes", "on"}:
+        response["supportedConstraints"] = list(SUPPORTED_CONSTRAINTS)
+    return response
 ENGINE = "content_lab"
 RECIPES_DIR_NAME = "recipes"
 PROMPTS = "prompts.json"
@@ -306,13 +325,17 @@ def _registered_recipes() -> list[dict[str, Any]]:
 # a lease or expiry window) feeds any reservation or planning function
 # capabilities() calls (_generated_unavailable_prompts,
 # _truck_master_candidates, _slideshow_unavailable_signatures,
-# _source_dna_unavailable_slots, plan_prompt_combinations, plan_source_cuts,
+# _source_dna_cut_ledger, plan_prompt_combinations, plan_source_cuts,
 # plan_slideshows, resolve_generation_recipe, _dossier_source_recipe,
 # resolve_slideshow_recipe, resolve_material_profile) — the one wall-clock
 # read in this file that gates on elapsed time
 # (_source_import_active_deadline_expired) is reachable only from
 # GET /v1/jobs/{id}, never from capabilities(). No request header or param
 # beyond X-RT-Page-Id/X-Page-Id (folded into page_id) is read either.
+# _source_dna_cut_ledger reads the cut times stored on jobs (data covered by
+# the job generation in the key), not the clock. The advertised
+# supportedConstraints flag is read when each response is built, outside the
+# cached entries.
 #
 # The remaining short TTL is a defensive backstop only, not the mechanism
 # this relies on for the inputs actually in the key above — those make a
@@ -513,7 +536,7 @@ def capabilities(
 
     current = _current_intent_for_capabilities(page_id)
     if current is None:
-        return {"schema": RESPONSE_SCHEMA, "capabilities": []}
+        return _capabilities_response([])
     master_pages, master_pages_hash = current
 
     entries = []
@@ -565,7 +588,7 @@ def capabilities(
         )
         cached_entries = _capabilities_cache_lookup(cache_key)
         if cached_entries is not None:
-            return {"schema": RESPONSE_SCHEMA, "capabilities": list(cached_entries)}
+            return _capabilities_response(list(cached_entries))
 
     # capabilities() for one page only ever needs that page's own jobs, plus
     # (for the two async source-recipe kinds below) the jobs of the specific
@@ -676,11 +699,15 @@ def capabilities(
                 f"capability:{page_id}:{slideshow_recipe.executor_version}",
             ))
         elif source_recipe is not None:
-            unavailable_slots = _source_dna_unavailable_slots(
+            unavailable_slots, cut_history = _source_dna_cut_ledger(
                 dossier_source_dna_view, source_recipe, publication["recipeVersion"],
             )
+            # 0 means no never-cut window is left (explain_empty_source_plan
+            # names why at job creation). Other pages' reservations arrive
+            # only with a job, so this count does not subtract them.
             max_quantity = len(plan_source_cuts(
                 source_recipe, source_recipe.max_quantity, unavailable_slots,
+                history=cut_history,
             ))
         else:
             if generation_related_jobs_view is None:
@@ -715,7 +742,7 @@ def capabilities(
 
     if cacheable:
         _capabilities_cache_store(cache_key, entries)
-    return {"schema": RESPONSE_SCHEMA, "capabilities": entries}
+    return _capabilities_response(entries)
 
 
 # Registry reads must not queue behind network-heavy capability/catalog work
@@ -1059,6 +1086,7 @@ from fastapi.responses import FileResponse
 from services.json_store import atomic_load, atomic_save
 from services.generation_recovery import PredictionCheckpoint, runner_lock, store_lock as lock_for
 from services import job_store_compaction as compaction
+from services import generated_media_retention
 
 JOBS_STORE_NAME = "control_plane_jobs.json"
 JOB_ID_PREFIX = "cpl-"
@@ -1617,19 +1645,113 @@ def _compaction_loop() -> None:
             break
 
 
+# ── generated-media retention (frees the volume; job records are untouched) ──
+_MEDIA_RETENTION_THREAD: threading.Thread | None = None
+# Pressure is re-read every minute; a pass runs when its pressure's interval is up.
+_MEDIA_RETENTION_TICK_SECONDS = 60
+_MEDIA_RETENTION_INTERVAL_SECONDS = {"normal": 10 * 60, "tight": 2 * 60, "floor": 60}
+_MEDIA_RETENTION = generated_media_retention.GeneratedMediaRetention()
+
+
+def _generated_volume_pressure() -> str:
+    from services.post_render_jobs import render_claim_floor_bytes, volume_pressure
+    try:
+        usage = shutil.disk_usage(_generation_root())
+    except OSError:
+        log.error("generated media retention: volume usage unavailable; keeping normal windows")
+        return "normal"
+    return volume_pressure(usage.free, usage.total, render_claim_floor_bytes())
+
+
+def run_generated_media_retention_once(now: datetime | None = None, *, pressure: str | None = None) -> dict[str, int]:
+    """One bounded pass over the current read-only job snapshot."""
+    return _MEDIA_RETENTION.sweep(
+        _read_jobs_snapshot_object().data, _generation_root(), now or datetime.now(timezone.utc),
+        pressure=pressure or _generated_volume_pressure(),
+    )
+
+
+def _media_retention_tick(last_run: float, now: float) -> float:
+    """Run one pass if the current pressure's interval has elapsed; return the last-run time."""
+    pressure = _generated_volume_pressure()
+    if now - last_run < _MEDIA_RETENTION_INTERVAL_SECONDS[pressure]:
+        return last_run
+    run_generated_media_retention_once(pressure=pressure)
+    return now
+
+
+def _media_retention_loop() -> None:
+    last_run = float("-inf")
+    while True:
+        try:
+            last_run = _media_retention_tick(last_run, time.monotonic())
+        except Exception:  # retention must never take the process down
+            log.exception("generated media retention pass failed")
+        if _COMPACTION_STOP.wait(_MEDIA_RETENTION_TICK_SECONDS):
+            break
+
+
 def start_compaction_scheduler() -> None:
-    global _COMPACTION_THREAD
-    if _COMPACTION_THREAD is not None and _COMPACTION_THREAD.is_alive():
+    global _COMPACTION_THREAD, _MEDIA_RETENTION_THREAD
+    alive = [thread is not None and thread.is_alive() for thread in (_COMPACTION_THREAD, _MEDIA_RETENTION_THREAD)]
+    if all(alive):
         return
     _COMPACTION_STOP.clear()
-    _COMPACTION_THREAD = threading.Thread(
-        target=_compaction_loop, name="content-lab-job-compaction", daemon=True,
-    )
-    _COMPACTION_THREAD.start()
+    if _COMPACTION_THREAD is None or not _COMPACTION_THREAD.is_alive():
+        _COMPACTION_THREAD = threading.Thread(
+            target=_compaction_loop, name="content-lab-job-compaction", daemon=True,
+        )
+        _COMPACTION_THREAD.start()
+    if _MEDIA_RETENTION_THREAD is None or not _MEDIA_RETENTION_THREAD.is_alive():
+        _MEDIA_RETENTION_THREAD = threading.Thread(
+            target=_media_retention_loop, name="content-lab-media-retention", daemon=True,
+        )
+        _MEDIA_RETENTION_THREAD.start()
 
 
 def stop_compaction_scheduler() -> None:
     _COMPACTION_STOP.set()
+
+
+def _dead_retention_threads() -> list[str]:
+    """Names of the compaction / media-retention threads that are not alive right now."""
+    dead: list[str] = []
+    if _COMPACTION_THREAD is None or not _COMPACTION_THREAD.is_alive():
+        dead.append("compaction")
+    if _MEDIA_RETENTION_THREAD is None or not _MEDIA_RETENTION_THREAD.is_alive():
+        dead.append("media_retention")
+    return dead
+
+
+@router.post("/v1/media-retention/remedy")
+async def run_media_retention_remedy(
+    x_rt_lane: str | None = Header(default=None),
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """Revive a dead retention thread and run one forced floor pass (watcher remedy).
+
+    This is the Lab side of the closed loop the control-plane ``lab-volume-watch``
+    job drives when the volume is at or above 80% and not dropping: the watcher
+    pages only after this automatic step (and its Railway-restart fallback) have
+    both failed. It revives any dead compaction / media-retention thread and then
+    runs exactly one bounded pass of the same sweep the scheduler already runs at
+    floor pressure, so it never deletes anything the sweep would not delete on its
+    own. It is idempotent: a repeat call re-plans from the same job snapshot and
+    finds nothing new. Fail closed behind the machine bearer.
+    """
+    require_control_plane_bearer(authorization)
+    if x_rt_lane != CONTROL_PLANE_LANE:
+        raise HTTPException(status_code=400, detail="X-RT-Lane must be content-bucket-control-plane")
+    revived = _dead_retention_threads()
+    start_compaction_scheduler()
+    summary = await anyio.to_thread.run_sync(
+        lambda: run_generated_media_retention_once(pressure="floor"),
+    )
+    return {
+        "schema": "content-lab.media-retention-remedy.v1",
+        "revivedThreads": revived,
+        "summary": summary,
+    }
 
 
 def _reject_prompt_fields(value: Any, path: str = "job") -> None:
@@ -1666,6 +1788,13 @@ def _scan_library(project: str) -> list[str]:
 def _source_dna_unavailable_slots(
     store: dict[str, Any], source_recipe: Any, recipe_version: str,
 ) -> set[str]:
+    """The used/reserved slot ids of _source_dna_cut_ledger."""
+    return _source_dna_cut_ledger(store, source_recipe, recipe_version)[0]
+
+
+def _source_dna_cut_ledger(
+    store: dict[str, Any], source_recipe: Any, recipe_version: str,
+) -> tuple[set[str], dict[str, CutUse]]:
     """Derive reservations from durable job truth, never a write-only ledger.
 
     Queued/running jobs reserve their exact windows across recipe revisions so
@@ -1675,9 +1804,22 @@ def _source_dna_unavailable_slots(
     version that contains the same master bytes: a new recipe re-treats fresh
     time frames instead of re-cutting the ones already delivered. Failed jobs
     release their windows.
+
+    The second value says when each time frame was last cut (its job's
+    completedAt, else createdAt; archived cuts keep it as ``usedAt``), so
+    plan_source_cuts can vary each re-cut against the most recent ones and
+    prefer the least recently cut footage. A cut without a time counts as the
+    oldest.
     """
     master_shas = {master.sha256 for master in source_recipe.masters}
     slots: set[str] = set()
+    history: dict[str, CutUse] = {}
+
+    def remember(frame: str, use: CutUse) -> None:
+        known = history.get(frame)
+        if known is None or (use.at, use.order) > (known.at, known.order):
+            history[frame] = use
+
     for job in store.get("jobs", {}).values():
         if (
             not isinstance(job, dict)
@@ -1693,7 +1835,8 @@ def _source_dna_unavailable_slots(
                 or job.get("recipeVersion") == recipe_version
             )
         )
-        for cut in job.get("sourceCuts", []):
+        used_at = cut_use_time(job.get("completedAt") or job.get("createdAt"))
+        for order, cut in enumerate(job.get("sourceCuts", [])):
             if not isinstance(cut, dict):
                 continue
             slot_id = cut.get("slotId")
@@ -1705,7 +1848,9 @@ def _source_dna_unavailable_slots(
                 master_sha in master_shas
                 and type(start_ms) is int and type(duration_ms) is int
             ):
-                slots.add(f"{master_sha}:{start_ms}:{duration_ms}")
+                frame = f"{master_sha}:{start_ms}:{duration_ms}"
+                slots.add(frame)
+                remember(frame, CutUse(used_at, order))
     # Archived completed source cuts keep their permanent reservations. The
     # exact time frame is reserved forever; the library slot id stays reserved
     # only across the same recipe revision (mirroring the live rule).
@@ -1726,8 +1871,14 @@ def _source_dna_unavailable_slots(
             master_sha in master_shas
             and type(start_ms) is int and type(duration_ms) is int
         ):
-            slots.add(f"{master_sha}:{start_ms}:{duration_ms}")
-    return slots
+            frame = f"{master_sha}:{start_ms}:{duration_ms}"
+            slots.add(frame)
+            order = cut.get("cutIndex")
+            remember(frame, CutUse(
+                cut_use_time(cut.get("usedAt")),
+                order if type(order) is int else 0,
+            ))
+    return slots, history
 
 
 def _slideshow_unavailable_signatures(
@@ -4194,28 +4345,36 @@ async def create_job(
             }
             start_generation = True
         elif source_recipe is not None:
-            served_slots = _source_dna_unavailable_slots(
+            served_slots, cut_history = _source_dna_cut_ledger(
                 store, source_recipe, publication["recipeVersion"],
             )
             # A per-job seed varies the time frames each run cuts; it is
             # recorded so the plan is reproducible. Capability counted with
             # the capability seed, so fall back to it rather than refuse a
-            # quantity that seed can still fill near exhaustion.
+            # quantity that seed can still fill.
             cut_plan_seed = hashlib.sha256(
                 f"{idempotency_key}\0{job_id}".encode(),
             ).hexdigest()[:16]
             cuts = plan_source_cuts(
                 source_recipe, quantity, served_slots, excluded_windows,
-                seed=cut_plan_seed,
+                seed=cut_plan_seed, history=cut_history,
             )
             if len(cuts) != quantity:
                 cut_plan_seed = CAPABILITY_PLAN_SEED
                 cuts = plan_source_cuts(
                     source_recipe, quantity, served_slots, excluded_windows,
-                    seed=cut_plan_seed,
+                    seed=cut_plan_seed, history=cut_history,
                 )
             if not cuts:
-                raise HTTPException(status_code=409, detail=MASTER_WINDOWS_EXHAUSTED)
+                # source_master_too_short, source_windows_exhausted (every
+                # window already cut: the page needs new footage) or
+                # source_windows_reserved_by_other_pages.
+                raise HTTPException(
+                    status_code=409,
+                    detail=explain_empty_source_plan(
+                        source_recipe, served_slots, excluded_windows,
+                    ),
+                )
             if len(cuts) != quantity:
                 raise HTTPException(status_code=409, detail="insufficient_inventory")
             job_root = (
