@@ -19,6 +19,7 @@ from fastapi.responses import StreamingResponse
 from project_manager import PROJECTS_DIR, get_project_video_dir, is_reserved_volume_dir
 from providers import PROVIDERS
 from providers.base import API_KEYS, generate_one
+from services import generation_budget
 from services.ffmpeg import is_default_cc, run_color_correct
 from services.fsutil import is_within as _contained_in, safe_unlink
 from services.json_store import atomic_save
@@ -412,6 +413,41 @@ async def generate_video(
     output_dir = get_project_video_dir(project)
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    # Check affordability before creating job/prompt state. Queued indices debit
+    # only after acquiring the generation permit, on their execution UTC day.
+    # Cost is priced from the catalog by duration (Grok is ~$0.50/s, so 15 s is
+    # never under-charged as a 10 s one); an unpriced provider fails closed.
+    # The body `resets_at` and the `Retry-After` header are both computed from a
+    # SINGLE captured `now` so midnight cannot fall between the two samples and
+    # make the header disagree with the body.
+    try:
+        cost_per_gen = generation_budget.per_gen_cost_usd(provider, duration)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "generation_pricing_unavailable", "detail": str(exc)},
+        )
+    planned_usd = count * cost_per_gen
+    if not generation_budget.can_reserve_at(
+        generation_budget.jobs_store_path(), planned_usd,
+    ):
+        now = datetime.now(timezone.utc)
+        resets_at = generation_budget.next_reset_iso(now)
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "error": "generation_daily_budget_reached",
+                "resets_at": resets_at,
+                "message": (
+                    "Daily paid-generation budget reached; retries will be "
+                    f"accepted after {resets_at}."
+                ),
+            },
+            headers={
+                "Retry-After": str(generation_budget.retry_after_seconds(now)),
+            },
+        )
+
     job_id = _make_job_id(provider, prompt)
     log.info(
         "generate job=%s provider=%s count=%d project=%s prompt=%s",
@@ -454,11 +490,18 @@ async def generate_video(
         # flipped to "error" instead of silently sticking on "queued" forever.
         try:
             async with _gen_semaphore:
+                if not await asyncio.to_thread(
+                    generation_budget.debit_generation_spend_at,
+                    generation_budget.jobs_store_path(), cost_per_gen, f"{job_id}#{index}:s0",
+                ):
+                    _mark_entry_error(job_id, index, "generation_daily_budget_reached")
+                    return
                 await generate_one(
                     job_id, index, provider, prompt,
                     aspect_ratio, resolution, duration, image_data_uri,
                     jobs, output_dir, url_prefix,
                     on_complete=_persist_job,
+                    cost_usd=cost_per_gen,
                     **extra,
                 )
         except asyncio.CancelledError:

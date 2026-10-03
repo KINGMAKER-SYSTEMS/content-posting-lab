@@ -33,7 +33,7 @@ def checkpoint(records):
 
 async def provider_run(script, records, prompt="truck on a ridge"):
     params = {"model_id": MODEL, "entry": {"_prediction_checkpoint": checkpoint(records)},
-              "duration": 6, "resolution": "1080p"}
+              "duration": 6, "resolution": "1080p", "job_id": "test-job-1", "cost_usd": 0.28}
     async with httpx.AsyncClient(transport=httpx.MockTransport(script.handler)) as client:
         return await replicate.generate(prompt, params, client)
 

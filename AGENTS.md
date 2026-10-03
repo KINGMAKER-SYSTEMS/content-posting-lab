@@ -85,6 +85,15 @@
   generation/source/recovery outputs through `routers/control_plane.py`.
 - `services/generation_recovery.py` owns private provider checkpoints and
   cross-process generation/store locks. Checkpoints are not admission authority.
+- `services/generation_budget.py` owns the shared durable paid-generation ledger.
+  Raw ABN Flux/WAN and recreate LaMa creates reserve a distinct submission id
+  before every POST, including identical inputs. Only resuming a known provider
+  operation may reuse a debit; prompt text, image bytes and output names are not
+  provider identities.
+  UI admission checks affordability without charging queued work; each index
+  reserves after acquiring its execution permit on the current UTC day.
+  Replicate's bounded HTTP-create retries reserve each additional POST with
+  a distinct debit before requesting it, including 500/503 resubmissions.
 - `services/caption_discipline.py` owns Content Lab's closed validation of the
   caption corpus/register selection already made by Dossier and Control Plane.
 - `services/control_plane_source_imports.py` owns bounded public-HTTPS download,
@@ -518,6 +527,13 @@
   module and return the same versioned schema and hashes.
 
 ## Verification
+
+- Run `pytest -q tests/test_generation_budget_request_boundaries.py` for queued
+  UTC rollover, current-day refusal and each bounded HTTP-create retry debit.
+
+- Run `pytest -q tests/test_generation_budget_raw_submissions.py tests/test_replicate_text_removal.py tests/test_abn_factory.py`
+  for repeated raw creates, actual ledger totals, exhausted caps and the explicit
+  zero-budget stop without paid requests.
 
 - Run `pytest -q tests/test_ytdlp_download_diagnostics.py tests/test_control_plane_source_import_service.py tests/test_control_plane_source_imports.py`
   for private cookie-copy ownership, crash leftovers, failed/cancelled attempts,

@@ -39,6 +39,31 @@ def calls_for(calls, job_id, index):
 
 
 @pytest.mark.asyncio
+async def test_e005_retry_is_metered_as_a_distinct_billable_submission(lab, monkeypatch):
+    """F1 (P1): each new billable submission — first attempt AND the varied
+    retry — is reserved against the daily USD meter at submission time, keyed by
+    a distinct idempotent debit id. Resuming the same prediction never re-debits."""
+    from services import generation_budget
+
+    debits = []
+
+    def fake_debit(path, amount, debit_id, now=None):
+        debits.append((amount, debit_id))
+        return True
+
+    monkeypatch.setattr(generation_budget, "debit_generation_spend_at", fake_debit)
+    job_id, _, _ = queue_silhouettes(lab, monkeypatch, 1)
+    calls = []
+    install_provider(monkeypatch, [MODERATION, "done", "done"], calls)
+    await cp._run_dossier_generation(job_id)
+    assert [call["id"] for call in calls] == [f"{job_id}-g00", f"{job_id}-g00-r1"]
+    assert debits == [
+        (FLUX_COST, f"{job_id}-g00:s0"),
+        (FLUX_COST, f"{job_id}-g00-r1:s0"),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_e005_then_one_varied_retry_succeeds_and_output_counts(lab, monkeypatch):
     client, _, _ = lab
     job_id, _, _ = queue_silhouettes(lab, monkeypatch, 1)
@@ -539,15 +564,35 @@ def test_variants_of_a_people_prompt_keep_the_clothed_silhouette_rewording():
     assert "featureless" not in second and "fully clothed adult" in second
 
 
-def test_attempt_cost_table_equals_the_generation_catalog():
-    catalog = {}
+def test_attempt_cost_resolves_every_generation_catalog_model():
+    """Every replicate model in the generation catalog prices to a finite
+    positive amount through the one provider-catalog source of truth (no
+    unlisted model silently returns None for a priced catalog entry)."""
+    models = {}
     for path in sorted((Path(__file__).resolve().parents[1] / "recipes" / "generation").glob("*.json")):
         for provider in json.loads(path.read_text()).get("providers", {}).values():
-            model, cost = provider.get("replicate_model"), provider.get("cost_per_gen_usd")
+            model = provider.get("replicate_model")
             if model is not None:
-                assert catalog.setdefault(model, cost) == cost, f"{model} priced twice in the catalog"
-    assert catalog, "the catalog was found"
-    assert moderation_retry.ATTEMPT_COST_ESTIMATE_USD == catalog
+                models.setdefault(model)
+    assert models, "the catalog was found"
+    for model in models:
+        cost = moderation_retry.attempt_cost_usd(model, 6)
+        assert cost is not None, f"{model} must price through the provider catalog"
+        assert cost > 0
+
+
+def test_attempt_cost_matches_the_provider_catalog_price():
+    """The moderation-retry (executor) lane and the operator-UI lane must charge
+    the same provider the same amount, from the one provider catalog."""
+    from services import generation_budget
+    for model, provider_id in [
+        ("black-forest-labs/flux-2-pro", "flux-image"),
+        ("minimax/hailuo-2.3", "hailuo"),
+        ("wan-video/wan-2.2-i2v-fast", "wan-i2v-fast"),
+    ]:
+        assert moderation_retry.attempt_cost_usd(model, 6) == pytest.approx(
+            generation_budget.per_gen_cost_usd(provider_id, 6)
+        )
 
 
 # ---------------------------------------------------------------------------

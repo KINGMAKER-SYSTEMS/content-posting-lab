@@ -90,6 +90,87 @@ def test_generate_rejects_unknown_provider(sync_client):
     assert response.status_code == 400
 
 
+def test_generate_budget_refusal_leaves_no_ghost_job_or_prompt(
+    sync_client, monkeypatch, isolated_projects_root,
+):
+    """P2: a 429 refusal must not leave an in-memory queued job or a persisted
+    prompt record — affordability is checked before any job/prompt state is built."""
+    from services import generation_budget
+
+    provider_id = next(iter(video_router.PROVIDERS.keys()))
+    key_id = video_router.PROVIDERS[provider_id]["key_id"]
+    monkeypatch.setitem(video_router.API_KEYS, key_id, "test-key")
+    monkeypatch.setattr(generation_budget, "can_reserve_at",
+                        lambda *a, **k: False)
+    saved_prompts = []
+    monkeypatch.setattr(video_router, "_save_prompt",
+                        lambda proj, entry: saved_prompts.append(entry))
+    before_jobs = dict(video_router.jobs)
+
+    response = sync_client.post(
+        "/api/video/generate",
+        data={
+            "prompt": "ghost prompt",
+            "provider": provider_id,
+            "count": "1",
+            "duration": "5",
+            "aspect_ratio": "9:16",
+            "resolution": "720p",
+            "project": "video-suite",
+        },
+    )
+    assert response.status_code == 429
+    assert response.json()["detail"]["error"] == "generation_daily_budget_reached"
+    assert video_router.jobs == before_jobs, "refusal must not enqueue a ghost job"
+    assert saved_prompts == [], "refusal must not persist a prompt record"
+
+
+def test_generate_budget_refusal_uses_one_clock_sample_for_body_and_header(
+    sync_client, monkeypatch, isolated_projects_root,
+):
+    """P2: `resets_at` in the body and the `Retry-After` header must be derived
+    from a SINGLE `now` so midnight cannot fall between the two samples."""
+    from services import generation_budget
+
+    provider_id = next(iter(video_router.PROVIDERS.keys()))
+    key_id = video_router.PROVIDERS[provider_id]["key_id"]
+    monkeypatch.setitem(video_router.API_KEYS, key_id, "test-key")
+    monkeypatch.setattr(generation_budget, "can_reserve_at",
+                        lambda *a, **k: False)
+
+    seen = {}
+
+    def fake_next_reset_iso(now=None):
+        seen["reset_now"] = now
+        return "2026-10-02T00:00:00+00:00"
+
+    def fake_retry_after_seconds(now=None):
+        seen["retry_now"] = now
+        return 42
+
+    monkeypatch.setattr(generation_budget, "next_reset_iso", fake_next_reset_iso)
+    monkeypatch.setattr(generation_budget, "retry_after_seconds", fake_retry_after_seconds)
+
+    response = sync_client.post(
+        "/api/video/generate",
+        data={
+            "prompt": "midnight prompt",
+            "provider": provider_id,
+            "count": "1",
+            "duration": "5",
+            "aspect_ratio": "9:16",
+            "resolution": "720p",
+            "project": "video-suite",
+        },
+    )
+    assert response.status_code == 429
+    assert response.headers["Retry-After"] == "42"
+    # Both the body and the header were computed from the same captured instant.
+    assert seen["reset_now"] is not None
+    assert seen["retry_now"] is not None
+    assert seen["reset_now"] == seen["retry_now"]
+
+
 def test_generate_stores_and_passes_negative_prompt(sync_client, monkeypatch, isolated_projects_root):
     provider_id = "wan-i2v-fast"
     key_id = video_router.PROVIDERS[provider_id]["key_id"]
