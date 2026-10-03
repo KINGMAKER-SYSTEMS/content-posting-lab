@@ -1239,6 +1239,8 @@ async def _kinetic_insert(title, script, source_url, sid):
     html = tpl_file.read_text()
     html = html.replace('url("fonts/', f'url("file://{tpl_file.parent}/fonts/')
     pjs = "const P = {" + ",".join(f"{k}: {json.dumps(v)}" for k, v in P.items()) + "};"
+    # JSON remains exact data without letting HTML terminate the script element.
+    pjs = pjs.replace("<", "\\u003c")
     html, nsub = re.subn(r'const P = \{.*?\};', lambda _: pjs, html, count=1, flags=re.S)
     if not nsub:
         return None
