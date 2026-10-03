@@ -481,9 +481,12 @@ def _probe_input_duration_seconds(input_path: str) -> float | None:
 # Colour-metadata field names as reported by ffprobe (`-show_entries stream=…`).
 _COLOR_FIELDS = ("color_space", "color_transfer", "color_primaries", "color_range")
 
-# PQ and HLG identify HDR. BT.2020 primaries alone can also describe SDR;
-# a missing or unknown transfer must not be defaulted to PQ.
+# Restore known fields for any declared PQ/HLG transfer. Tuple completeness is
+# diagnostic only: omitting flags does not remove the input's HDR transfer.
 _HDR_TRANSFERS = frozenset({"smpte2084", "arib-std-b67"})
+_HDR_MATRICES = frozenset({"bt2020nc", "bt2020c"})
+_HDR_PRIMARIES = "bt2020"
+_COLOR_RANGES = frozenset({"tv", "pc"})
 
 
 def _probe_input_color(input_path: str) -> dict[str, str] | None:
@@ -516,20 +519,23 @@ def _probe_input_color(input_path: str) -> dict[str, str] | None:
 
 
 def _is_hdr_color(color: dict[str, str] | None) -> bool:
-    """True only when the probed transfer identifies PQ or HLG."""
-    if not color:
-        return False
-    return color.get("color_transfer") in _HDR_TRANSFERS
+    """True when the source declares a PQ or HLG transfer."""
+    return bool(color and color.get("color_transfer") in _HDR_TRANSFERS)
+
+
+def _is_complete_hdr_color(color: dict[str, str] | None) -> bool:
+    """Diagnostic: a declared HDR transfer with a complete BT.2020 tuple."""
+    return (
+        _is_hdr_color(color)
+        and color.get("color_primaries") == _HDR_PRIMARIES
+        and color.get("color_space") in _HDR_MATRICES
+        and color.get("color_range") in _COLOR_RANGES
+    )
 
 
 def _hdr_output_color_args(color: dict[str, str]) -> list[str]:
-    """Restore known HDR colour tags without replacing the source's matrix.
-
-    PQ/HLG transfer does not establish a BT.2020 matrix or limited range.
-    Echo only the fields the input proves; omitted/unknown values stay unknown.
-    These output tags do not add a tone-mapping or colour-conversion filter.
-    """
-    transfer = color["color_transfer"]  # gated by _is_hdr_color
+    """Restore each known HDR field without inferring missing metadata."""
+    transfer = color["color_transfer"]
     args: list[str] = []
     for field, flag in (
         ("color_space", "-colorspace"),
@@ -538,7 +544,7 @@ def _hdr_output_color_args(color: dict[str, str]) -> list[str]:
         ("color_range", "-color_range"),
     ):
         value = transfer if field == "color_transfer" else color.get(field)
-        if value and value != "unknown":
+        if value and value not in {"unknown", "N/A"}:
             args.extend((flag, value))
     return args
 
@@ -660,11 +666,11 @@ async def run_color_correct(
         color = await asyncio.to_thread(_probe_input_color, input_path)
     is_hdr = _is_hdr_color(color)
     color_args = _hdr_output_color_args(color) if is_hdr else []
-    # One named line so an operator can tell "input is SDR" (no tags wanted)
-    # from "the probe failed" (no tags because the colour metadata is unknown).
+    # An incomplete/mixed HDR tuple is still transfer-positive, not SDR.
+    hdr_status = "hdr" if _is_complete_hdr_color(color) else "hdr_partial_or_mixed"
     log.info(
         "hdr_probe: %s input=%s",
-        "failed" if color is None else ("hdr" if is_hdr else "sdr"),
+        "failed" if color is None else (hdr_status if is_hdr else "sdr"),
         os.path.basename(input_path),
     )
     cmd = [
