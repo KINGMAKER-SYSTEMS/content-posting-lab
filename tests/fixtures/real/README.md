@@ -1,43 +1,40 @@
-# HDR colour-matrix test fixtures — how to regenerate
+# HDR metadata fixtures
 
-These are **TAG-ONLY fixtures**: they are cut from an existing SDR master (or
-stream-copied from the existing HDR master excerpt) and then **re-tagged** via
-the `setparams` filter (or, for the master excerpt, stream-copied verbatim).
-They are **not** distinct HDR camera footage — the pixel content is ordinary
-SDR/SDR-master frames with colour-metadata tags forced on top. Nothing here
-tone-maps or changes pixels; only the stream metadata fields move.
+The three committed clips are ordinary SDR footage re-encoded with PQ/HLG
+metadata using `setparams`. They exercise real probing and known-field
+restoration; they are not camera-HDR footage or proof of HDR image quality.
+The source is `~/source-archive/lovenightwalks/master-2qo-3600-4500.mp4`.
 
-Everything is regenerable from `~/source-archive/lovenightwalks/master-2qo-3600-4500.mp4`
-(an ffmpeg two-pass libx264 encode already tagged `bt709/bt709/bt709/tv`) plus
-the public ShipStream master excerpt URL (for the one PQ excerpt fixture).
+The output must retain the complete tuple below, including its PQ/HLG transfer.
+Missing metadata is not synthesized, and partial or mixed declared HDR logs
+`hdr_partial_or_mixed`. This diagnostic does not convert the footage to SDR.
 
-## The 3 in-repo fixtures (`tests/fixtures/real/`, committed in ccba723)
+## Regenerate the committed fixtures
 
-Source: the same real SDR master as the staging set. The `setparams` filter is
-required because the source's own bt709 primaries/transfer would otherwise be
-propagated by libx264 and override the encoder output flags.
+The source is tagged `bt709/bt709/bt709/tv`. `setparams` changes the frame
+metadata that libx264 propagates; encoding flags alone can be overridden by it.
 
 ```bash
 SRC=~/source-archive/lovenightwalks/master-2qo-3600-4500.mp4
 cd tests/fixtures/real
 
-# PQ transfer + bt709 primaries/matrix (incoherent → must NOT be HDR)
+# PQ transfer + bt709 primaries/matrix (mixed metadata; preserve the known matrix)
 ffmpeg -hide_banner -loglevel error -y -ss 8 -i "$SRC" -t 1 -map 0:v:0 -an \
   -vf "scale=1080:1920:flags=lanczos,fps=30,format=yuv420p,setparams=color_primaries=bt709:color_trc=smpte2084:colorspace=bt709:range=tv" \
   -c:v libx264 -preset fast -crf 23 -movflags +faststart hdr-pq-bt709-primaries.mp4
 
-# PQ transfer + absent primaries/matrix (partial → must NOT be HDR)
+# PQ transfer + absent primaries/matrix (partial metadata; restore only known fields)
 ffmpeg -hide_banner -loglevel error -y -ss 8 -i "$SRC" -t 1 -map 0:v:0 -an \
   -vf "scale=1080:1920:flags=lanczos,fps=30,format=yuv420p,setparams=color_primaries=unknown:color_trc=smpte2084:colorspace=unknown:range=tv" \
   -c:v libx264 -preset fast -crf 23 -movflags +faststart hdr-pq-absent-primaries.mp4
 
-# HLG transfer + absent matrix (partial → must NOT be HDR)
+# HLG transfer + absent matrix (partial metadata; restore only known fields)
 ffmpeg -hide_banner -loglevel error -y -ss 8 -i "$SRC" -t 1 -map 0:v:0 -an \
   -vf "scale=1080:1920:flags=lanczos,fps=30,format=yuv420p,setparams=color_primaries=bt2020:color_trc=arib-std-b67:colorspace=unknown:range=tv" \
   -c:v libx264 -preset fast -crf 23 -movflags +faststart hdr-hlg-absent-matrix.mp4
 ```
 
-Expected tuples (verify with the ffprobe command below):
+Expected input and rendered output tuples (verify with ffprobe below):
 
 | file | color_space | color_transfer | color_primaries | color_range |
 |---|---|---|---|---|
@@ -48,8 +45,9 @@ Expected tuples (verify with the ffprobe command below):
 ## The `~/rt-base-wt/hdr-fixtures/` staging set this suite also reads
 
 These live outside the repo (default `HDR_FIXTURES_DIR=~/rt-base-wt/hdr-fixtures`
-in `tests/test_hdr_color_matrix.py::_fixture`). Commands as documented in that
-directory's own `README.md`:
+in `tests/test_hdr_color_matrix.py::_fixture`). The SDR and HLG fixtures below
+are also SDR footage with selected tags; the PQ excerpt is a separate stream
+copy. Regeneration commands:
 
 ```bash
 SRC=~/source-archive/lovenightwalks/master-2qo-3600-4500.mp4
@@ -69,7 +67,7 @@ ffmpeg -hide_banner -loglevel error -y -ss 8 -i "$SRC" -t 1 -map 0:v:0 -an \
   -vf "scale=1080:1920:flags=lanczos,fps=30,format=yuv420p,setparams=color_primaries=bt2020:color_trc=unknown:colorspace=bt709:range=tv" \
   -c:v libx264 -preset fast -crf 23 -movflags +faststart sdr-incomplete-metadata.mp4
 
-# HLG (coherent HDR): bt2020nc / arib-std-b67 / bt2020 / tv
+# Complete HLG metadata on SDR footage: bt2020nc / arib-std-b67 / bt2020 / tv
 ffmpeg -hide_banner -loglevel error -y -ss 8 -i "$SRC" -t 1 -map 0:v:0 -an \
   -vf "scale=1080:1920:flags=lanczos,fps=30,format=yuv420p,setparams=color_primaries=bt2020:color_trc=arib-std-b67:colorspace=bt2020nc:range=tv" \
   -c:v libx264 -preset fast -crf 23 -movflags +faststart hlg-arib-std-b67.mp4
@@ -93,12 +91,16 @@ ffprobe -v error -select_streams v:0 \
   -of default=noprint_wrappers=1 <file>
 ```
 
-## Which real-file tests skip when the seeno fixture paths are absent
+## Coverage and optional fixtures
 
-The in-repo fixtures (`tests/fixtures/real/`) are committed and always present,
-so the `_repo_fixture` tests only skip when ffmpeg/ffprobe are missing. The four
-tests below read the **external** `~/rt-base-wt/hdr-fixtures/` set via
-`_fixture(...)` and **skip in CI when those paths are not present**:
+The committed fixtures require ffmpeg/ffprobe. The self-contained
+`test_synthetic_hdr_signal_preserves_output_tuple_and_pixels` additionally
+computes PQ/HLG code values from linear grey levels and encodes them as 10-bit
+video with libx264. Complete and missing-primaries tuples must preserve their
+actual output fields and decoded pixels. These are synthetic signals, not camera
+footage or phone-display validation.
+
+The tests below read the external `HDR_FIXTURES_DIR` set and skip when absent:
 
 - `test_hdr_render_restores_matrix_tag_and_keeps_pixels_identical` (needs `master-excerpt-400-416.mp4`)
 - `test_hlg_render_restores_matrix_tag` (needs `hlg-arib-std-b67.mp4`)

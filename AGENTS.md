@@ -377,7 +377,10 @@
   colour tags after the RGB round trip, preserving the source matrix. Missing
   or unknown fields stay unknown; never infer BT.2020 primaries or limited
   range from transfer alone. Other/unknown transfers keep the existing encode
-  arguments. The bounded local colour probe runs off the event loop, and this
+  arguments. A complete BT.2020 tuple logs `hdr`; declared PQ/HLG with partial
+  or mixed metadata logs `hdr_partial_or_mixed` and still restores each known
+  field. This diagnostic does not convert the pixels or strip HDR tags.
+  The bounded local colour probe runs off the event loop, and this
   metadata repair does not add tone-mapping or repeat video treatment.
 - Durable preparation is exposed at `/api/control-plane/v1/post-renders`.
   Every request requires the existing control-plane bearer and exact
