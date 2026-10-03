@@ -178,7 +178,14 @@ def test_hdr_output_color_args_copy_probed_values_verbatim():
     ]
 
 
-def test_hdr_output_color_args_preserves_the_known_source_matrix():
+def test_hdr_output_color_args_copies_known_source_matrix_in_isolation():
+    # Direct unit test of the arg-building helper in isolation. The tuple below
+    # (PQ transfer + bt709 primaries/matrix) is incoherent, so _is_hdr_color
+    # rejects it and the real pipeline never reaches this helper for it — that
+    # rejection is proven by
+    # test_is_hdr_color_requires_complete_coherent_hdr_tuple. This test only
+    # asserts the helper copies a known matrix through verbatim when called
+    # directly; it does not claim production (post-gate) reachability.
     color = {**HDR_COLOR, "color_space": "bt709", "color_primaries": "bt709"}
     assert _hdr_output_color_args(color) == [
         "-colorspace", "bt709",
