@@ -8,6 +8,7 @@ across 14 unattended days.
 """
 
 import pathlib
+import threading
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -179,11 +180,18 @@ def test_ui_generate_is_refused_at_the_daily_budget(sync_client, monkeypatch):
 
 def test_ui_generate_debits_queued_execution_under_budget(sync_client, monkeypatch):
     """Admission checks affordability; only the queued execution debits spend."""
+    completed = threading.Event()
+
+    async def finish_job(*args, **kwargs):
+        await _fake_generate_one(*args, **kwargs)
+        completed.set()
+
     monkeypatch.setenv(generation_budget.USD_BUDGET_ENV, "25.0")
     monkeypatch.setitem(video_router.API_KEYS, "xai", "test-key")
-    monkeypatch.setattr(video_router, "generate_one", _fake_generate_one)
+    monkeypatch.setattr(video_router, "generate_one", finish_job)
     response = sync_client.post("/api/video/generate", data=_UI_GENERATE_FORM)
     assert response.status_code == 200
+    assert completed.wait(timeout=5), "the exact queued index did not complete"
     store = atomic_load(generation_budget.jobs_store_path())
     # The wrapper charges queued execution even if this fixture bypasses the
     # actual provider. Real request-boundary coverage lives in its own suite.
