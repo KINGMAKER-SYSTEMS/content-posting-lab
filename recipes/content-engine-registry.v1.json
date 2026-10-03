@@ -73,6 +73,18 @@
       "formatContractVersion": "sha256:f04e1ffa16ae787111ebb0a102397a196e25f92ddf9ddbb77048b18dee21fbcf",
       "maxQuantity": 10
     },
+    "pov-club": {
+      "contentNiche": "POV-Club",
+      "contentEngine": "sourced_video",
+      "materialSource": "source_library",
+      "assetType": "video/mp4",
+      "executionStatus": "commissioned",
+      "executorKind": "source_dna_recut",
+      "executorId": "source-dna-recut",
+      "executorVersion": "sha256:2d0dd20fad4302f799272e7d5e1ba7de1ecb8b9a85646f68cf9720ac14569171",
+      "formatContractVersion": "sha256:c5b04efe7d5681dbe64916d9df0646dea785f61adca86444ecbd1b9408232eaf",
+      "maxQuantity": 10
+    },
     "pov-dusk-core": {
       "contentNiche": "POV",
       "contentEngine": "sourced_video",

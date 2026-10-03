@@ -9,9 +9,9 @@
 
 - `services/visual_admission.py` owns exact-byte pre-caption OCR/vision-provider decisions;
   the authenticated job visual-admission endpoint queues a bounded background
-  whole-job sweep and persists algorithm/byte-bound decisions before
-  Control Plane can admit ready video into R2. Every decoded native-resolution
-  frame receives Tesseract OCR at the configured `CONTENT_LAB_OCR_LONG_EDGE`
+  whole-job sweep and persists algorithm/byte-bound decisions when requested.
+  Control Plane admits completed outputs without waiting for that sweep.
+  Every decoded native-resolution frame receives Tesseract OCR at the configured `CONTENT_LAB_OCR_LONG_EDGE`
   working edge (default `0`, native); the primary GLM-4.6v-flash provider receives up to
   16 native frames per batch, and a named OpenAI `gpt-4o-mini` or Ollama
   `qwen2.5vl:7b` fallback may receive the same

@@ -473,6 +473,83 @@
       },
       "definitionGaps": []
     },
+    "pov-club": {
+      "contentNiche": "POV-Club",
+      "contentEngine": "sourced_video",
+      "materialSource": "source_library",
+      "assetType": "video/mp4",
+      "definitionStatus": "complete",
+      "creativeAuthority": {
+        "kind": "source_dna_recut",
+        "id": "source-dna-recut",
+        "version": "sha256:2d0dd20fad4302f799272e7d5e1ba7de1ecb8b9a85646f68cf9720ac14569171"
+      },
+      "dimensions": {
+        "subject": {
+          "status": "defined",
+          "rule": "Use only the exact page-scoped source master selected for this POV-Club page; do not substitute another page's footage.",
+          "authority": "sourceDna.masters"
+        },
+        "setting": {
+          "status": "defined",
+          "rule": "Club, electronic-music, and festival settings remain source-bound to the approved page master; do not synthesize or replace the setting.",
+          "authority": "sourceDna.masters"
+        },
+        "shotGrammar": {
+          "status": "defined",
+          "rule": "Preserve the source shot's recorded point of view and select a new, non-repeated cut window from the same page-scoped master.",
+          "authority": "sourceDnaRecut.selection"
+        },
+        "lighting": {
+          "status": "defined",
+          "rule": "Lighting originates in the exact approved source; do not synthesize or replace it. Permit only typed Dossier visual grading and filters.",
+          "authority": "sourceDna.masters; Dossier.renderTreatment"
+        },
+        "motion": {
+          "status": "defined",
+          "rule": "Motion comes only from the approved source footage and the typed Dossier playback speed.",
+          "authority": "sourceDnaRecut.cutWindow_and_clipSpeed"
+        },
+        "duration": {
+          "status": "defined",
+          "rule": "Select a unique 5-9 second source window from the page-scoped master; final output duration follows typed Dossier playback speed. Crop and visual filters follow typed Dossier render treatment.",
+          "authority": "sourceDnaRecut.cutWindow_and_clipSpeed; Dossier.renderTreatment"
+        },
+        "textPolicy": {
+          "status": "defined",
+          "rule": "Source imagery remains bound to the exact approved page master. Completed outputs use existing downstream admission without waiting for a separate vision scan; preserve existing scan evidence and do not claim a new clean decision.",
+          "authority": "sourceDna.masters"
+        },
+        "negativeRules": {
+          "status": "defined",
+          "rule": "Reject unregistered or cross-page source bytes, repeated cut windows, technical failures, and reused output bytes.",
+          "authority": "sourceDnaRecut.selection; technical_video; duplicate_and_never_reuse"
+        },
+        "referenceExamples": {
+          "status": "defined",
+          "rule": "The exact page-scoped master SHA-256 set is the complete visual reference library for this page.",
+          "authority": "sourceDna.masters.sha256"
+        }
+      },
+      "output": {
+        "aspectRatio": "9:16",
+        "container": "video/mp4",
+        "durationPolicy": "source_bound",
+        "audioPolicy": "campaign_sound_bound_downstream"
+      },
+      "reviewAuthority": "sourceDna.provenance",
+      "reviewGates": [
+        "byte_exact_provenance",
+        "cut_window_lineage",
+        "technical_video",
+        "duplicate_and_never_reuse"
+      ],
+      "distribution": {
+        "captions": "page_binding_required",
+        "sounds": "page_binding_required"
+      },
+      "definitionGaps": []
+    },
     "pov-dusk-core": {
       "contentNiche": "POV",
       "contentEngine": "sourced_video",
