@@ -481,24 +481,13 @@ def _probe_input_duration_seconds(input_path: str) -> float | None:
 # Colour-metadata field names as reported by ffprobe (`-show_entries stream=…`).
 _COLOR_FIELDS = ("color_space", "color_transfer", "color_primaries", "color_range")
 
-# Transfers that identify an HDR master: smpte2084 is PQ, arib-std-b67 is HLG.
-# The transfer characteristic is the HDR discriminator. BT.2020 primaries alone
-# are NOT proof of HDR: a valid SDR master can pair bt2020 primaries with a
-# bt709 (or absent) transfer, and an encoder sometimes tags wide-gamut
-# primaries while keeping an SDR transfer. Absent, incoherent or partial
-# transfer metadata therefore falls through to the old SDR path (untagged),
-# exactly as before — an unknown/missing transfer is never defaulted to PQ.
+# PQ and HLG identify HDR. BT.2020 primaries alone can also describe SDR;
+# a missing or unknown transfer must not be defaulted to PQ.
 _HDR_TRANSFERS = frozenset({"smpte2084", "arib-std-b67"})
 
 
 def _probe_input_color(input_path: str) -> dict[str, str] | None:
-    """Probe the video stream's colour metadata once (key=value ffprobe form).
-
-    Returns a dict of the four colour fields, or None when ffprobe cannot prove
-    them. A failure is deliberately indistinguishable from "not HDR": the caller
-    then emits no extra colour tags, which is the existing byte-for-byte SDR
-    behaviour and fails closed rather than mislabeling an unknown stream.
-    """
+    """Read local video colour fields, or return None when probing fails."""
     try:
         result = subprocess.run(
             [
@@ -527,46 +516,31 @@ def _probe_input_color(input_path: str) -> dict[str, str] | None:
 
 
 def _is_hdr_color(color: dict[str, str] | None) -> bool:
-    """True when the probed transfer identifies an HDR stream.
-
-    The transfer characteristic is the HDR discriminator: ``smpte2084`` is PQ
-    and ``arib-std-b67`` is HLG. BT.2020 primaries alone are NOT proof of HDR —
-    a valid SDR master can carry bt2020 primaries with a bt709 (or absent)
-    transfer. Absent, incoherent or partial transfer metadata is therefore not
-    HDR and keeps the old SDR path (untagged), exactly as before.
-    """
+    """True only when the probed transfer identifies PQ or HLG."""
     if not color:
         return False
     return color.get("color_transfer") in _HDR_TRANSFERS
 
 
 def _hdr_output_color_args(color: dict[str, str]) -> list[str]:
-    """Output colour tags that restore the matrix while keeping input metadata.
+    """Restore known HDR colour tags without replacing the source's matrix.
 
-    HDR output must keep the wide-gamut bt2020 matrix the RGB round-trip drops,
-    but must not invent primaries/transfer/range the input didn't have. The
-    matrix is the effective fix: ``-colorspace bt2020nc`` is the flag libx264
-    honours (with ``-color_range``); ``-color_primaries``/``-color_trc`` are
-    emitted as echoes of the probed input but are ignored by libx264, which
-    propagates the input frame's values instead — so on a correctly tagged
-    master the surviving primaries/transfer come from input propagation, not
-    from these flags.
-
-    This is only called once ``_is_hdr_color`` has confirmed the transfer is
-    smpte2084 (PQ) or arib-std-b67 (HLG), so the transfer is always present and
-    is never defaulted to PQ. Primaries and range still fall back to the
-    HDR-typical values when the encoder omitted them. No tone-mapping and no
-    pixel change happen here: these are stream metadata tags, not a filter.
+    PQ/HLG transfer does not establish a BT.2020 matrix or limited range.
+    Echo only the fields the input proves; omitted/unknown values stay unknown.
+    These output tags do not add a tone-mapping or colour-conversion filter.
     """
-    primaries = color.get("color_primaries") or "bt2020"
-    transfer = color["color_transfer"]  # guaranteed present: gated by _is_hdr_color
-    color_range = color.get("color_range") or "tv"
-    return [
-        "-colorspace", "bt2020nc",
-        "-color_primaries", primaries,
-        "-color_trc", transfer,
-        "-color_range", color_range,
-    ]
+    transfer = color["color_transfer"]  # gated by _is_hdr_color
+    args: list[str] = []
+    for field, flag in (
+        ("color_space", "-colorspace"),
+        ("color_primaries", "-color_primaries"),
+        ("color_transfer", "-color_trc"),
+        ("color_range", "-color_range"),
+    ):
+        value = transfer if field == "color_transfer" else color.get(field)
+        if value and value != "unknown":
+            args.extend((flag, value))
+    return args
 
 
 async def _bounded_encode_stderr(proc) -> bytes:
@@ -640,12 +614,7 @@ async def run_color_correct(
 ) -> None:
     """Run ffmpeg to produce a color-corrected copy of a video.
 
-    ``input_color`` lets a caller that already knows the input's colour fields
-    skip the ffprobe. No production caller passes it today (all of them —
-    control_plane.py's treatment/recut/slideshow renders and video.py's single
-    and bulk colour-correct — take the probe path and re-probe the same cached
-    master per clip); it is the explicit-knowledge seam the HDR unit tests use,
-    so it stays.
+    ``input_color`` may supply already-probed fields to skip the colour probe.
 
     Raises RuntimeError with the last ~500 chars of stderr on ffmpeg failure.
     """
@@ -687,12 +656,7 @@ async def run_color_correct(
     )
     color = input_color
     if color is None:
-        # Off the event loop, like the sibling duration probe below: a slow or
-        # hung ffprobe must never stall the single-process service loop (HTTP,
-        # Telegram bot, visual sweep). The encode-timeout tests stub this
-        # offload boundary keyed on the probed function (see _stub_probe in
-        # tests/test_ffmpeg_encode_timeout.py), so this colour probe stays
-        # independently stubbable while still yielding to the loop.
+        # A slow ffprobe must not stall the service event loop.
         color = await asyncio.to_thread(_probe_input_color, input_path)
     is_hdr = _is_hdr_color(color)
     color_args = _hdr_output_color_args(color) if is_hdr else []

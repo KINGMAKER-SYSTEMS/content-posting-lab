@@ -1,8 +1,8 @@
-"""HDR colour-matrix tag restoration (lead decision, option a).
+"""HDR colour-matrix tag restoration.
 
 When the input is HDR (transfer smpte2084 = PQ, or arib-std-b67 = HLG) the
-Lab's ``run_color_correct`` output carries ``-colorspace bt2020nc`` plus the
-input's primaries/transfer/range as output flags. BT.2020 primaries alone are
+Lab's ``run_color_correct`` output echoes the input's known colour fields as
+output flags, restoring the matrix lost in the RGB round trip. BT.2020 primaries alone are
 NOT proof of HDR, so an SDR stream that only carries bt2020 primaries (with a
 bt709 or absent transfer) keeps the byte-identical SDR command and filter graph.
 No tone-mapping and no pixel change happen: only the stream metadata tags move.
@@ -17,7 +17,8 @@ input propagation. The unit tests prove the command-level invariant (and are the
 red test on the base commit: they assert the explicit tags are emitted for HDR
 input). The integration test renders the real HDR excerpt through the
 production colour path and checks the restored matrix tag plus pixel parity
-with the pre-change encode.
+with the pre-change encode. Self-contained PQ and HLG inputs additionally prove
+that restoring metadata never replaces a known source matrix with BT.2020.
 
 Coverage truth (review finding A): only ``run_color_correct`` callers get these
 tags — ``routers/control_plane.py`` (generated/truck/silhouette treatment,
@@ -122,6 +123,24 @@ def test_hdr_output_color_args_fix_matrix_and_echo_input_metadata():
         "-color_trc", "smpte2084",
         "-color_range", "tv",
     ]
+
+
+def test_hdr_output_color_args_preserves_the_known_source_matrix():
+    color = {**HDR_COLOR, "color_space": "bt709", "color_primaries": "bt709"}
+    assert _hdr_output_color_args(color) == [
+        "-colorspace", "bt709",
+        "-color_primaries", "bt709",
+        "-color_trc", "smpte2084",
+        "-color_range", "tv",
+    ]
+
+
+@pytest.mark.parametrize("unknown", [None, "unknown"])
+def test_hdr_output_color_args_does_not_invent_missing_metadata(unknown):
+    color = {"color_transfer": "smpte2084"}
+    if unknown is not None:
+        color.update(color_space=unknown, color_primaries=unknown, color_range=unknown)
+    assert _hdr_output_color_args(color) == ["-color_trc", "smpte2084"]
 
 
 def test_hdr_output_color_args_echoes_hlg_and_never_defaults_missing_transfer_to_pq():
@@ -359,6 +378,49 @@ def _framemd5(path: Path) -> list[str]:
         text=True,
     )
     return out.strip().splitlines()
+
+
+@pytest.mark.skipif(
+    not shutil.which("ffmpeg") or not shutil.which("ffprobe"),
+    reason="ffmpeg/ffprobe required",
+)
+@pytest.mark.parametrize(
+    "matrix,primaries,transfer",
+    [
+        ("bt709", "bt709", "smpte2084"),
+        ("bt2020nc", "bt2020", "smpte2084"),
+        ("bt2020nc", "bt2020", "arib-std-b67"),
+    ],
+)
+def test_real_hdr_encode_preserves_source_tags_and_pixels(
+    tmp_path, monkeypatch, matrix, primaries, transfer
+):
+    source = tmp_path / "source.mp4"
+    tagged = tmp_path / "tagged.mp4"
+    untagged = tmp_path / "untagged.mp4"
+    subprocess.run(
+        [
+            "ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i",
+            "testsrc2=size=128x228:rate=10", "-t", "1",
+            "-vf", f"setparams=colorspace={matrix}:color_primaries={primaries}:"
+            f"color_trc={transfer}:range=limited",
+            "-c:v", "libx264", "-pix_fmt", "yuv420p", str(source),
+        ],
+        check=True, capture_output=True, timeout=30,
+    )
+    expected = {
+        "color_space": matrix,
+        "color_transfer": transfer,
+        "color_primaries": primaries,
+        "color_range": "tv",
+    }
+    assert _probe_color(source) == expected
+    asyncio.run(run_color_correct(str(source), str(tagged), {"brightness": 20}))
+    assert _probe_color(tagged) == expected
+
+    monkeypatch.setattr(ffmpeg_module, "_is_hdr_color", lambda color: False)
+    asyncio.run(run_color_correct(str(source), str(untagged), {"brightness": 20}))
+    assert _framemd5(tagged) == _framemd5(untagged)
 
 
 def _render(excerpt: Path, output: Path) -> None:
