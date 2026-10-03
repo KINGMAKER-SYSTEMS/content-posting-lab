@@ -367,7 +367,7 @@ def sweep_private_cookie_jars() -> int:
             leftover.unlink()
             removed += 1
         except FileNotFoundError:
-            # The attempt's own finally may have removed it meanwhile.
+            # The file disappeared during cleanup.
             continue
         finally:
             os.close(fd)
