@@ -133,6 +133,12 @@ def test_pov_club_is_a_source_bound_format_on_the_existing_recut_executor():
     assert profile.executor_id == "source-dna-recut"
     assert profile.format_contract_version == f"sha256:{contract.contract_hash}"
     assert contract.output["audioPolicy"] == "campaign_sound_bound_downstream"
+    assert "visual_admission" in contract.review_gates
+    assert "operator_visual_qa" not in contract.review_gates
+    text_policy = contract.dimensions["textPolicy"]
+    assert text_policy["authority"] == "visualAdmission.decision"
+    assert "exact final output bytes" in text_policy["rule"]
+    assert "bounded recall" in text_policy["rule"]
 
 
 def test_boat_contract_is_commissioned_after_operator_lifted_quarantine():

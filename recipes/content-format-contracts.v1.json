@@ -517,13 +517,13 @@
         },
         "textPolicy": {
           "status": "defined",
-          "rule": "Exclude cut windows with title cards, captions, or legible overlay text; human visual review before scheduling is a required process gate.",
-          "authority": "operator_visual_qa"
+          "rule": "Require a persisted clean Content Lab visual-admission decision on the exact final output bytes; reject positive legible-text findings. The detector has bounded recall and does not guarantee that all text is absent.",
+          "authority": "visualAdmission.decision"
         },
         "negativeRules": {
           "status": "defined",
-          "rule": "Reject unregistered or cross-page source bytes, repeated cut windows, visual-review failures, technical failures, and reused output bytes.",
-          "authority": "sourceDnaRecut.selection; technical_video; operator_visual_qa; duplicate_and_never_reuse"
+          "rule": "Reject unregistered or cross-page source bytes, repeated cut windows, visual-admission failures, technical failures, and reused output bytes.",
+          "authority": "sourceDnaRecut.selection; technical_video; visual_admission; duplicate_and_never_reuse"
         },
         "referenceExamples": {
           "status": "defined",
@@ -542,7 +542,7 @@
         "byte_exact_provenance",
         "cut_window_lineage",
         "technical_video",
-        "operator_visual_qa",
+        "visual_admission",
         "duplicate_and_never_reuse"
       ],
       "distribution": {
