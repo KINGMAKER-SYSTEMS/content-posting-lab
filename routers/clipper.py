@@ -39,6 +39,8 @@ def _make_clip_job_id(project: str = "clip") -> str:
 
 
 _BATCH_ID_RE = re.compile(r"[0-9a-f]{12}")
+
+
 def _clip_job_path(clipper_dir: Path, job_id: str) -> Path:
     """Resolve a legacy or current job ID as a direct, non-symlink child."""
     # Historical clip directories include 12-character UUID hex IDs, full
@@ -48,7 +50,6 @@ def _clip_job_path(clipper_dir: Path, job_id: str) -> Path:
         not isinstance(job_id, str)
         or not job_id
         or job_id in {".", ".."}
-        or ".." in job_id
         or "/" in job_id
         or "\\" in job_id
     ):
@@ -62,7 +63,7 @@ def _clip_job_path(clipper_dir: Path, job_id: str) -> Path:
         resolved_candidate = candidate.resolve()
         if resolved_candidate.parent != resolved_parent or resolved_candidate.name != job_id:
             raise HTTPException(400, "Invalid clipper job path")
-    except OSError:
+    except (OSError, ValueError, RuntimeError):
         raise HTTPException(400, "Invalid clipper job path")
     return resolved_candidate
 
@@ -748,7 +749,7 @@ async def upload_video_stream(request: Request):
     filename = request.query_params.get("filename", "video.mp4")
 
     clipper_dir = _get_clipper_dir(project)
-    job_dir = clipper_dir / job_id
+    job_dir = _clip_job_path(clipper_dir, job_id)
     job_dir.mkdir(parents=True, exist_ok=True)
 
     ext = Path(filename).suffix or ".mp4"
@@ -903,7 +904,7 @@ async def upload_video(
         job_id = str(uuid.uuid4())
 
     clipper_dir = _get_clipper_dir(project)
-    job_dir = clipper_dir / job_id
+    job_dir = _clip_job_path(clipper_dir, job_id)
     job_dir.mkdir(parents=True, exist_ok=True)
 
     # Preserve original extension or default to .mp4

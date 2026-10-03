@@ -141,6 +141,10 @@
   `projects/page_roster.json`. `/api/burn/overlay` also takes `batchId` as one
   directory name. While APP_API_KEY is unset these server-side checks are the
   only guard on `/api/*`.
+- Clipper upload, streaming upload, delete, rename and download-all accept
+  single-component job IDs, including legacy and caller-supplied names, only as
+  resolved non-symlink direct children of the project's clip directory. Path
+  errors return 400; missing jobs on management routes retain 404.
 - `project_manager.is_reserved_volume_dir` names the service-state dirs on the
   projects volume (`_post_render`, `control_plane_generated`,
   `control_plane_recipes`, `agenticnews_assets`, `lost+found`, and any name
