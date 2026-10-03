@@ -275,8 +275,15 @@
   Source-import artifact URLs use only the
   configured `CONTENT_LAB_PUBLIC_ORIGIN`; the separate
   `CONTENT_LAB_CONTROL_PLANE_ORIGIN` remains the authority for reading page-vault
-  media from Control Plane. Source imports never load shared platform/browser
-  cookie stores because their allowlisted permanent URLs are public. Content Lab never admits that artifact into
+  media from Control Plane. Source imports try public downloads first; only an
+  exact YouTube host's authentication refusal may use a private copy of the
+  configured cookie jar. They never probe browser stores or modify the original.
+  Copies stay in the OS temporary directory's private `ytdlp-private-jars/`
+  scratch root and are removed on success, failure or cancellation. Startup
+  cleanup runs before imports in the single-process runtime and skips original
+  jars, links and non-scratch files;
+  it never follows a symlinked scratch root or removes import/publication evidence.
+  Content Lab never admits that artifact into
   ShipStream or mutates the page source manifest. A repeat with
   the same request and idempotency key may resurrect only the exact
   `source_import_runtime_restarted` failure; it reuses the job id under the
@@ -512,6 +519,10 @@
   module and return the same versioned schema and hashes.
 
 ## Verification
+
+- Run `pytest -q tests/test_ytdlp_download_diagnostics.py tests/test_control_plane_source_import_service.py tests/test_control_plane_source_imports.py`
+  for private cookie-copy ownership, crash leftovers, failed/cancelled attempts,
+  original preservation and existing bounded source intake; subprocesses are stubbed.
 
 - Run `pytest -q tests/test_font_static_headers.py tests/test_static_path_confinement.py`
   for font MIME/cache headers, changed-byte validators and static path containment.
