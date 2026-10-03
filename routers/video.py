@@ -413,9 +413,9 @@ async def generate_video(
     output_dir = get_project_video_dir(project)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Daily generation budget: reserve BEFORE creating any job/prompt state so a
-    # refusal leaves no ghost queued job or prompt record. Cost is priced from
-    # the catalog by requested duration (Grok is ~$0.50/s, so a 15 s request is
+    # Check affordability before creating job/prompt state. Queued indices debit
+    # only after acquiring the generation permit, on their execution UTC day.
+    # Cost is priced from the catalog by duration (Grok is ~$0.50/s, so 15 s is
     # never under-charged as a 10 s one); an unpriced provider fails closed.
     # The body `resets_at` and the `Retry-After` header are both computed from a
     # SINGLE captured `now` so midnight cannot fall between the two samples and
@@ -428,8 +428,8 @@ async def generate_video(
             detail={"error": "generation_pricing_unavailable", "detail": str(exc)},
         )
     planned_usd = count * cost_per_gen
-    if not generation_budget.reserve_generation_spend_at(
-        generation_budget.jobs_store_path(), planned_usd, key_id,
+    if not generation_budget.can_reserve_at(
+        generation_budget.jobs_store_path(), planned_usd,
     ):
         now = datetime.now(timezone.utc)
         resets_at = generation_budget.next_reset_iso(now)
@@ -490,11 +490,18 @@ async def generate_video(
         # flipped to "error" instead of silently sticking on "queued" forever.
         try:
             async with _gen_semaphore:
+                if not await asyncio.to_thread(
+                    generation_budget.debit_generation_spend_at,
+                    generation_budget.jobs_store_path(), cost_per_gen, f"{job_id}#{index}:s0",
+                ):
+                    _mark_entry_error(job_id, index, "generation_daily_budget_reached")
+                    return
                 await generate_one(
                     job_id, index, provider, prompt,
                     aspect_ratio, resolution, duration, image_data_uri,
                     jobs, output_dir, url_prefix,
                     on_complete=_persist_job,
+                    cost_usd=cost_per_gen,
                     **extra,
                 )
         except asyncio.CancelledError:

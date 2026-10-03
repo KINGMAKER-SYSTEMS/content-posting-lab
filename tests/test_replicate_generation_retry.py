@@ -207,7 +207,7 @@ async def test_ui_pa_resubmissions_are_scoped_per_index(monkeypatch, tmp_path):
 
     pred_ids = iter(["p0a", "p0b", "p1a", "p1b"])
 
-    async def fake_start(client, headers, model_id, input_params):
+    async def fake_start(client, headers, model_id, input_params, **budget):
         return next(pred_ids)
 
     outcomes = iter([

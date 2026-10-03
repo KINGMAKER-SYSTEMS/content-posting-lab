@@ -449,6 +449,18 @@ def reserve_generation_spend_at(
         return ok
 
 
+def can_reserve_at(path: Path | str, amount_usd: float, now: datetime | None = None) -> bool:
+    """Read-only admission check; queued work reserves only when it executes."""
+    from services.generation_recovery import store_lock as kernel_lock
+    from services.json_store import atomic_load
+
+    with kernel_lock(path):
+        store = atomic_load(path, default=None)
+        if not isinstance(store, dict):
+            store = {}
+        return can_reserve(store, amount_usd, now=now)
+
+
 def summary(store: dict[str, Any], now: datetime | None = None) -> dict[str, Any]:
     """Current budget totals for a watcher heartbeat (/api/health).
 

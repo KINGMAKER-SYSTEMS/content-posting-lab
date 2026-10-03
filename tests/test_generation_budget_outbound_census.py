@@ -20,7 +20,7 @@ Metering: the enclosing function must call a generation-budget reserve/debit
 ``reserve_generation_spend``, or the ABN chokepoint ``_charge_abn_submission``).
 The FIRST submission of the two shared ``generate`` entry points is metered by
 the CALLER (the Control Plane executor debits the ``:s0`` id and the operator-UI
-route reserves), not inside the provider module, so those two functions are an
+execution wrapper debits), not inside the provider module, so those two functions are an
 explicit, reviewed allowlist with a companion assertion that the caller meters
 exist. Replicate visual-admission (``client.stream("POST", ...)`` in
 ``services/visual_admission.py``) is OCR/vision, not media generation, and is
@@ -43,8 +43,8 @@ METER_FUNCS = frozenset({
 
 # The first submission of these two shared provider ``generate`` entry points is
 # metered by the CALLER, not inside the module (replicate.generate's first
-# submission is the executor's ":s0" debit / the UI route's reserve; its PA
-# resubmission IS metered inside generate()). Reviewed allowlist, not a blanket.
+# submission is the executor's ":s0" debit / the UI execution wrapper's debit;
+# HTTP retries and PA resubmission ARE metered inside the provider).
 CALLER_METERED = {
     ("providers/replicate.py", "_start_prediction"),
     ("providers/grok.py", "generate"),
@@ -159,11 +159,11 @@ def test_every_outbound_prediction_creation_site_is_metered():
 
     # The two caller-metered first-submission chokepoints must have their callers
     # metering: the Control Plane executor debits the ":s0" submission and the
-    # operator-UI route reserves before spawning.
+    # operator-UI execution wrapper debits after acquiring its permit.
     cp_src = (ROOT / "routers/control_plane.py").read_text(encoding="utf-8")
     video_src = (ROOT / "routers/video.py").read_text(encoding="utf-8")
     assert "debit_generation_spend_at" in cp_src, "executor must debit the first submission"
-    assert "reserve_generation_spend_at" in video_src, "UI route must reserve the first submission"
+    assert "debit_generation_spend_at" in video_src, "UI execution must debit the first submission"
 
 
 def test_the_census_catches_an_unmetered_prediction_site():

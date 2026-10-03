@@ -94,13 +94,13 @@ def test_generate_budget_refusal_leaves_no_ghost_job_or_prompt(
     sync_client, monkeypatch, isolated_projects_root,
 ):
     """P2: a 429 refusal must not leave an in-memory queued job or a persisted
-    prompt record — the reservation happens before any job/prompt state is built."""
+    prompt record — affordability is checked before any job/prompt state is built."""
     from services import generation_budget
 
     provider_id = next(iter(video_router.PROVIDERS.keys()))
     key_id = video_router.PROVIDERS[provider_id]["key_id"]
     monkeypatch.setitem(video_router.API_KEYS, key_id, "test-key")
-    monkeypatch.setattr(generation_budget, "reserve_generation_spend_at",
+    monkeypatch.setattr(generation_budget, "can_reserve_at",
                         lambda *a, **k: False)
     saved_prompts = []
     monkeypatch.setattr(video_router, "_save_prompt",
@@ -135,7 +135,7 @@ def test_generate_budget_refusal_uses_one_clock_sample_for_body_and_header(
     provider_id = next(iter(video_router.PROVIDERS.keys()))
     key_id = video_router.PROVIDERS[provider_id]["key_id"]
     monkeypatch.setitem(video_router.API_KEYS, key_id, "test-key")
-    monkeypatch.setattr(generation_budget, "reserve_generation_spend_at",
+    monkeypatch.setattr(generation_budget, "can_reserve_at",
                         lambda *a, **k: False)
 
     seen = {}

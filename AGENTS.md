@@ -90,6 +90,10 @@
   before every POST, including identical inputs. Only resuming a known provider
   operation may reuse a debit; prompt text, image bytes and output names are not
   provider identities.
+  UI admission checks affordability without charging queued work; each index
+  reserves after acquiring its execution permit on the current UTC day.
+  Replicate's bounded HTTP-create retries reserve each additional POST with
+  a distinct debit before requesting it, including 500/503 resubmissions.
 - `services/caption_discipline.py` owns Content Lab's closed validation of the
   caption corpus/register selection already made by Dossier and Control Plane.
 - `services/control_plane_source_imports.py` owns bounded public-HTTPS download,
@@ -517,6 +521,9 @@
   module and return the same versioned schema and hashes.
 
 ## Verification
+
+- Run `pytest -q tests/test_generation_budget_request_boundaries.py` for queued
+  UTC rollover, current-day refusal and each bounded HTTP-create retry debit.
 
 - Run `pytest -q tests/test_generation_budget_raw_submissions.py tests/test_replicate_text_removal.py tests/test_abn_factory.py`
   for repeated raw creates, actual ledger totals, exhausted caps and the explicit

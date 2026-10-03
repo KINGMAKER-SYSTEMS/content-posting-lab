@@ -177,18 +177,18 @@ def test_ui_generate_is_refused_at_the_daily_budget(sync_client, monkeypatch):
     assert retry_after is not None and retry_after.isdigit() and int(retry_after) >= 1
 
 
-def test_ui_generate_reserves_under_budget(sync_client, monkeypatch):
-    """F2: under the cap the UI path reserves spend on the shared ledger before
-    any provider call, so Replicate and xAI share one daily total."""
+def test_ui_generate_debits_queued_execution_under_budget(sync_client, monkeypatch):
+    """Admission checks affordability; only the queued execution debits spend."""
     monkeypatch.setenv(generation_budget.USD_BUDGET_ENV, "25.0")
     monkeypatch.setitem(video_router.API_KEYS, "xai", "test-key")
     monkeypatch.setattr(video_router, "generate_one", _fake_generate_one)
     response = sync_client.post("/api/video/generate", data=_UI_GENERATE_FORM)
     assert response.status_code == 200
     store = atomic_load(generation_budget.jobs_store_path())
-    # grok is ~$0.50/s; duration 5 -> $2.50 per generation.
+    # The wrapper charges queued execution even if this fixture bypasses the
+    # actual provider. Real request-boundary coverage lives in its own suite.
     assert generation_budget.spent_usd(store) == pytest.approx(2.50)
-    assert store["generationBudget"]["calls"].get("xai") == 1
+    assert len(store["generationBudget"]["debits"]) == 1
 
 
 def test_ui_generate_fails_closed_for_unpriced_provider(sync_client, monkeypatch):

@@ -273,9 +273,26 @@ def _retry_after_seconds(resp: httpx.Response, attempt: int) -> float:
 
 async def _start_prediction(
     client: httpx.AsyncClient, headers: dict, model_id: str, input_params: dict,
+    *, cost_usd: float | None = None, debit_id: str | None = None,
 ) -> str:
     for attempt in range(START_ATTEMPTS):
         final = attempt == START_ATTEMPTS - 1
+        if attempt:
+            # Each new HTTP create is another possible paid operation. The
+            # caller reserved the first; keep every subsequent request distinct
+            # even when it repeats the same input after a 500/503 or throttle.
+            from services import generation_budget
+            try:
+                cost = generation_budget.charged_cost_per_gen(cost_usd)
+            except ValueError as error:
+                raise RuntimeError("generation_pricing_unavailable") from error
+            if not debit_id:
+                raise RuntimeError("generation_pricing_unavailable")
+            if not await asyncio.to_thread(
+                generation_budget.debit_generation_spend_at,
+                generation_budget.jobs_store_path(), cost, f"{debit_id}:http{attempt}",
+            ):
+                raise RuntimeError("generation_daily_budget_reached")
         try:
             resp = await client.post(
                 f"{REPLICATE_API}/models/{model_id}/predictions",
@@ -416,7 +433,11 @@ async def generate(prompt: str, params: dict, client: httpx.AsyncClient) -> str:
                 )
                 if not reserved:
                     raise RuntimeError("generation_daily_budget_reached")
-            pred_id = await _start_prediction(client, headers, model_id, input_params)
+            job_id = params.get("job_id")
+            debit_id = f"{job_id}:pa{submission}" if submission else f"{job_id}:s0"
+            pred_id = await _start_prediction(client, headers, model_id, input_params,
+                                              cost_usd=params.get("cost_usd"),
+                                              debit_id=debit_id if job_id else None)
             # Safe 429/connection backoff precedes acceptance, not processing.
             # Preserve the original ten-minute budget from the accepted id.
             started = time.time()
