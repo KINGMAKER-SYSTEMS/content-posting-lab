@@ -17,17 +17,36 @@ import os
 import re
 from difflib import SequenceMatcher
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 
 log = logging.getLogger("services.campaign_hub")
 
+from services.config_errors import ConfigError
 from services.telegram import list_sounds, toggle_sound, add_sound, remove_sound
 
-CAMPAIGN_HUB_URL = os.getenv(
-    "CAMPAIGN_HUB_URL",
-    "https://risingtides-campaign-hub-production.up.railway.app",
-).rstrip("/")
+# The Hub origin comes only from the environment. There is no fallback: an
+# unset CAMPAIGN_HUB_URL raises before any request is built.
+CAMPAIGN_HUB_URL_ENV = "CAMPAIGN_HUB_URL"
+
+
+class CampaignHubNotConfigured(ConfigError):
+    pass
+
+
+def campaign_hub_url() -> str:
+    """Return the configured Hub origin, or raise before any network call."""
+    value = os.environ.get(CAMPAIGN_HUB_URL_ENV, "").strip().rstrip("/")
+    parsed = urlsplit(value)
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.hostname
+        or parsed.username
+        or parsed.password
+    ):
+        raise CampaignHubNotConfigured("Campaign Hub not configured")
+    return value
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 
@@ -193,8 +212,9 @@ Only return confident matches. If uncertain, use null. A campaign with "R2"/"r2"
 
 async def fetch_all_campaigns() -> list[dict[str, Any]]:
     """Fetch all campaigns from the Campaign Hub."""
+    base = campaign_hub_url()
     async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.get(f"{CAMPAIGN_HUB_URL}/api/campaigns")
+        resp = await client.get(f"{base}/api/campaigns")
         resp.raise_for_status()
         return resp.json()
 
@@ -205,8 +225,9 @@ async def fetch_campaign_detail(slug: str) -> dict[str, Any]:
     Note the singular /api/campaign/{slug} path — the plural
     /api/campaigns/{slug} falls through to the Campaign Hub SPA.
     """
+    base = campaign_hub_url()
     async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.get(f"{CAMPAIGN_HUB_URL}/api/campaign/{slug}")
+        resp = await client.get(f"{base}/api/campaign/{slug}")
         resp.raise_for_status()
         return resp.json()
 
@@ -406,4 +427,8 @@ async def sync_sound_status(notion_campaigns: list[dict[str, Any]] | None = None
 
 def is_configured() -> bool:
     """Check if Campaign Hub integration is available."""
-    return bool(CAMPAIGN_HUB_URL)
+    try:
+        campaign_hub_url()
+    except CampaignHubNotConfigured:
+        return False
+    return True

@@ -15,6 +15,7 @@ from project_manager import (
     delete_project,
     ensure_default_project,
     get_project,
+    is_reserved_volume_dir,
     list_projects,
     sanitize_project_name,
 )
@@ -136,7 +137,7 @@ async def list_recent_project_videos(
 
     items: list[dict] = []
     for project_dir in PROJECTS_DIR.iterdir():
-        if not project_dir.is_dir():
+        if not project_dir.is_dir() or is_reserved_volume_dir(project_dir.name):
             continue
         if project and project_dir.name != project:
             continue

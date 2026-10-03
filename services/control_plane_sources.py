@@ -3,16 +3,20 @@
 Already-cut outputs are historical evidence, never refillable source DNA. A
 sourced recipe becomes executable only when its typed production selection names
 one registered master library bound to the exact page and format. The executor
-plans unique cut slots deterministically and records the original-source offset
+plans varied cut time frames (a new part of the master at a new length each
+time) from a recorded per-job seed and records the original-source offset
 beside every output.
 """
 
 from __future__ import annotations
 
+from bisect import bisect_left
 from dataclasses import dataclass
+from datetime import datetime, timezone
 import hashlib
 import json
 import math
+import random
 import re
 from urllib.parse import urlsplit, urlunsplit, parse_qsl, quote_plus
 from pathlib import Path
@@ -42,22 +46,75 @@ EXECUTOR_PATH = (
     / "recipes/executors/source-dna-recut.v1.json"
 )
 EXECUTOR_SCHEMA = "content-lab.source-dna-recut-executor.v1"
+# Legacy grid (before 2026-09-25). Jobs queued by an older runtime carry
+# position ids from this 9-second grid, its +3 s/+6 s re-cut phases and the
+# 6-second fixed grid; source_cut_is_planned still verifies them. New plans
+# no longer walk this grid: it held only ~(duration / 9 s) x 3 positions per
+# master, and every recipe revision walked it again from the same first slot.
 CUT_SLOT_STEP_MS = 9_000
-# Re-cut phases. The 0 ms grid is cut first; once a page has used every clean
-# grid slot of its footage, the same footage is cut again from grid slots
-# shifted by 3 s and then 6 s (operator decision 2026-09-18: re-cutting the
-# same source at different points is fine). A 90-second page master yields 10
-# cuts on the plain grid and ~29 across the three phases. Each start position
-# is still used once per recipe version (slot_id), and cuts are never shared
-# across pages.
 RECUT_PHASES_MS = (0, 3_000, 6_000)
-# Fixed-length re-cuts (operator decision 2026-09-18: "do 6-second clips of the
-# same footage"). Once every phase is spent, the footage is cut again into
-# 6-second clips on a 6-second grid plus one clip ending on the last frame, so
-# even a 7.5-second page master yields 0-6 s and 1.5-7.5 s. A fixed-length
-# cut's slot_id carries its length, so it is a different clip from an earlier
-# cut that started at the same point.
 RECUT_FIXED_DURATION_MS = 6_000
+# Time-frame planning (operator rule 2026-09-25: only the EXACT posted clip may
+# never post again; a different time frame of the same master -- another start
+# or another length -- is a new video). Every whole-second start on the master
+# (plus one start ending on its last frame) times every allowed length is a
+# candidate.
+# Re-cut variety (operator rule 2026-09-30): each re-cut uses a different part
+# of the master and a different length than the cuts before it, and supply
+# never stops. plan_source_cuts scores every candidate (fresh footage first,
+# then far from recent starts, then a length unlike recent lengths, then the
+# least recently used footage, then a seeded random tiebreak recorded on the
+# job as cutPlanSeed). When every window has been cut, the oldest is reused
+# instead of refusing the job.
+CUT_START_STEP_MS = 1_000
+CAPABILITY_PLAN_SEED = "capability"
+# Sub-second starts (operator 2026-09-30: never render the same bytes twice).
+# Once every whole-second start x length window of a master is cut, new
+# windows start inside each second, coarse to fine: at half a second, then at
+# a quarter and three quarters. Masters carry no verified frame rate, so starts
+# stay at least MIN_START_GAP_MS apart: two different starts of one length
+# decode different first frames at any frame rate above 4 fps, and a window
+# counts as already cut when an earlier cut of the same length starts less
+# than MIN_START_GAP_MS away. When every such window is cut the master is
+# exhausted (SOURCE_WINDOWS_EXHAUSTED); nothing is ever cut twice.
+START_OFFSET_LEVELS_MS = ((0,), (500,), (250, 750))
+SUB_SECOND_START_OFFSETS_MS = frozenset(
+    offset for level in START_OFFSET_LEVELS_MS for offset in level
+)
+MIN_START_GAP_MS = 250
+# Allowed lengths: 5 s to 9 s in 0.5 s steps (operator 2026-09-30: the
+# maximum stays 9 s, the Worker's admission bound in
+# control-plane-worker/src/domain/sourceVideoBounds.js).
+CUT_LENGTH_MIN_MS = 5_000
+CUT_LENGTH_STEP_MS = 500
+CUT_LENGTH_MAX_MS = 9_000
+# Variety score. Any overlap with already-cut footage (OVERLAP_PENALTY plus up
+# to OVERLAP_WEIGHT plus 1 for recency) costs more than the largest distance
+# and length penalty (2 x sum(RECENT_WEIGHTS) = 3.8), so fresh footage comes
+# first -- except that repeating the master's last length
+# (SAME_AS_LAST_LENGTH_PENALTY) costs more than any overlap.
+RECENT_CUTS_REMEMBERED = 3
+RECENT_WEIGHTS = (1.0, 0.6, 0.3)
+NEAR_START_MS = 120_000
+OVERLAP_PENALTY = 5.0
+# Repeating the master's last length is allowed only when nothing else fits.
+SAME_AS_LAST_LENGTH_PENALTY = 100.0
+OVERLAP_WEIGHT = 4.0
+NO_CUT_TIME = float("-inf")
+# Above this many candidate time frames a plan scores a seeded sample per cut
+# instead of every candidate (a 24 h master has ~777,000).
+FULL_SCAN_CANDIDATES = 5_000
+SAMPLED_CANDIDATES_PER_CUT = 256
+SAMPLE_ROUNDS = 4
+# Why a plan is empty (409 detail at job creation; capability maxQuantity 0).
+SOURCE_MASTER_TOO_SHORT = "source_master_too_short"
+SOURCE_WINDOWS_EXHAUSTED = "source_windows_exhausted"
+SOURCE_WINDOWS_RESERVED_ELSEWHERE = "source_windows_reserved_by_other_pages"
+# Retired 2026-09-30 (replaced by SOURCE_WINDOWS_EXHAUSTED, which is reached
+# only after every sub-second start is cut too). The name stays importable for
+# tests/test_capability_job_snapshot_base_import.py, which loads a historical
+# routers/control_plane.py that imports it; nothing answers with it any more.
+MASTER_WINDOWS_EXHAUSTED = "master_windows_exhausted"
 MIN_ORIGINAL_START_MS = 60_000
 SHIPSTREAM_PAGE_MASTER_AUTHORITY = "ShipStream source-manifest.v1 exact page master"
 SHIPSTREAM_HISTORICAL_AUTHORITY_PREFIX = (
@@ -88,6 +145,17 @@ class SourceRecipe:
     recipe_spec: dict[str, Any]
 
 @dataclass(frozen=True)
+class CutUse:
+    """When a time frame was last cut: its job's completedAt or createdAt.
+
+    ``at`` is POSIX seconds (NO_CUT_TIME when the record has no time, which
+    counts as the oldest); ``order`` is the cut's position inside its job.
+    """
+    at: float
+    order: int = 0
+
+
+@dataclass(frozen=True)
 class SourceCut:
     master: MasterSource
     start_ms: int
@@ -96,10 +164,10 @@ class SourceCut:
 
     @property
     def slot_id(self) -> str:
-        # Deliberately excludes duration/speed/crop. Once a source position is
-        # used, a cosmetically altered near-duplicate may not re-enter a job.
-        # A re-cut phase is a different position (start_ms), so it has its own id.
-        # A fixed-length re-cut names its length: same start, different clip.
+        # A time-frame id names master, start and length: the same start at a
+        # different length is a different clip. Speed/crop are deliberately
+        # excluded, so a cosmetic re-treatment of a used time frame is not new.
+        # Legacy grid positions (fixed_length=False) excluded their length.
         if self.fixed_length:
             return f"{self.master.sha256}:{self.start_ms}:{self.duration_ms}"
         return f"{self.master.sha256}:{self.start_ms}"
@@ -370,80 +438,522 @@ def source_window_exclusions(value: Any) -> list[tuple[str, str | None, int, int
     return windows
 
 
+def source_cut_durations(recipe: SourceRecipe) -> tuple[int, ...]:
+    """Allowed source lengths, ascending: 5 s to 9 s in 0.5 s steps.
+
+    A length is allowed only when the source window AND the delivered clip at
+    the saved playback speed (length / speed) both stay inside 5-9 s, which is
+    what the Worker admits. A speed so far from 1x that no length satisfies
+    both (below about 0.56x or above about 1.8x) keeps the earlier vocabulary.
+    """
+    speed = dossier_clip_speed(recipe)
+    lengths = tuple(
+        ms for ms in range(CUT_LENGTH_MIN_MS, CUT_LENGTH_MAX_MS + 1, CUT_LENGTH_STEP_MS)
+        if CUT_LENGTH_MIN_MS * speed - 1e-6 <= ms <= CUT_LENGTH_MAX_MS * speed + 1e-6
+    )
+    return lengths or _legacy_source_cut_durations(recipe)
+
+
+def _legacy_source_cut_durations(recipe: SourceRecipe) -> tuple[int, ...]:
+    """Lengths planned before 2026-09-30: the page target +/- 2 s, plus 6 s.
+
+    Every value is adjusted by delivery_cut_duration so the delivered clip
+    stays 6-11 seconds at the saved playback speed. Jobs queued under this
+    vocabulary still verify (source_cut_is_planned).
+    """
+    values = range(
+        max(5_000, recipe.cut_duration_ms - 2_000),
+        min(9_000, recipe.cut_duration_ms + 2_000) + 1,
+        1_000,
+    )
+    durations = {delivery_cut_duration(recipe, ms) for ms in values}
+    durations.add(delivery_cut_duration(recipe, RECUT_FIXED_DURATION_MS))
+    return tuple(sorted(durations))
+
+
+def _starting_length(recipe: SourceRecipe, durations: tuple[int, ...]) -> int:
+    """The allowed length nearest the page's Cut length (ties: the shorter)."""
+    return min(durations, key=lambda ms: (abs(ms - recipe.cut_duration_ms), ms))
+
+
+def cut_use_time(value: Any) -> float:
+    """POSIX seconds of an ISO timestamp; NO_CUT_TIME (oldest) when absent."""
+    if not isinstance(value, str) or not value:
+        return NO_CUT_TIME
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return NO_CUT_TIME
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.timestamp()
+
+
+def _first_start_ms(recipe: SourceRecipe, master: MasterSource) -> int:
+    """Earliest whole-second library start honoring the original-timeline floor."""
+    minimum = minimum_original_start_ms(recipe, master) - master.source_offset_ms
+    return max(0, -(-minimum // CUT_START_STEP_MS) * CUT_START_STEP_MS)
+
+
+def _used_time_frames(
+    recipe: SourceRecipe, served_slots: set[str],
+) -> dict[str, list[tuple[int, int]]]:
+    """Parse served slot ids into (start, duration) time frames per master."""
+    masters = {master.sha256: master for master in recipe.masters}
+    used: dict[str, set[tuple[int, int]]] = {sha: set() for sha in masters}
+    for slot in served_slots:
+        parts = slot.split(":")
+        master = masters.get(parts[0])
+        if master is None or not all(part.isdigit() for part in parts[1:]):
+            continue
+        if len(parts) == 3:
+            used[master.sha256].add((int(parts[1]), int(parts[2])))
+        elif len(parts) == 2:
+            # A legacy grid position id: recover the length it was cut at.
+            try:
+                duration = planned_source_cut_duration(recipe, master, int(parts[1]))
+            except ValueError:
+                continue
+            used[master.sha256].add((int(parts[1]), duration))
+    return {sha: sorted(frames) for sha, frames in used.items()}
+
+
+def _merged_reservations(
+    master: MasterSource, identity: str | None,
+    exclusions: list[tuple[str, str | None, int, int]] | None,
+) -> list[tuple[int, int]]:
+    """Other pages' reservations of this master on its library timeline, merged."""
+    merged: list[list[int]] = []
+    for begin, end in sorted(
+        (start - master.source_offset_ms, end - master.source_offset_ms)
+        for source, master_sha256, start, end in (exclusions or [])
+        if source == identity and (master_sha256 is None or master_sha256 == master.sha256)
+    ):
+        if merged and begin < merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], end)
+        else:
+            merged.append([begin, end])
+    return [(begin, end) for begin, end in merged]
+
+
+def _start_runs(
+    master: MasterSource, first_ms: int, duration_ms: int,
+    reserved: list[tuple[int, int]], *, include_end: bool = True,
+) -> list[tuple[int, int, int]]:
+    """Candidate starts for one length as ascending ``(first, step, count)`` runs.
+
+    Whole-second starts from ``first_ms``, then one start ending on the last
+    frame, minus every start whose window overlaps a reservation. Reserved
+    stretches are skipped arithmetically, never enumerated.
+    """
+    last = master.duration_ms - duration_ms
+    if last < first_ms:
+        return []
+
+    def free(start: int) -> bool:
+        index = bisect_left(reserved, (start + duration_ms, -1))
+        return not (index and reserved[index - 1][1] > start)
+
+    runs: list[tuple[int, int, int]] = []
+    low = first_ms
+    for begin, end in [*reserved, (last + duration_ms, last + duration_ms)]:
+        # Starts in [low, begin - duration] do not reach this reservation.
+        high = min(last, begin - duration_ms)
+        if high >= low:
+            k_low = -(-(low - first_ms) // CUT_START_STEP_MS)
+            k_high = (high - first_ms) // CUT_START_STEP_MS
+            if k_high >= k_low:
+                runs.append((first_ms + k_low * CUT_START_STEP_MS, CUT_START_STEP_MS, k_high - k_low + 1))
+        low = max(low, end)
+        if low > last:
+            break
+    if include_end and (last - first_ms) % CUT_START_STEP_MS and free(last):
+        runs.append((last, CUT_START_STEP_MS, 1))
+    return runs
+
+
+class _Lane:
+    """One master's planning state: its candidates and its cut history."""
+
+    def __init__(
+        self, recipe: SourceRecipe, master: MasterSource,
+        frames: list[tuple[int, int]], history: dict[str, CutUse],
+        exclusions: list[tuple[str, str | None, int, int]] | None,
+        durations: tuple[int, ...],
+    ) -> None:
+        self.master = master
+        identity = canonical_source_identity(master.provenance.get("sourceUrl"))
+        self.reserved = _merged_reservations(master, identity, exclusions)
+        self.first = _first_start_ms(recipe, master)
+        # levels[k]: [(length, runs)] for starts at START_OFFSET_LEVELS_MS[k]
+        # inside each second (level 0 also ends on the last frame).
+        self.levels = [
+            [
+                (duration_ms, [
+                    run
+                    for offset in offsets
+                    for run in _start_runs(
+                        master, self.first + offset,
+                        duration_ms, self.reserved, include_end=not level,
+                    )
+                ])
+                for duration_ms in durations
+            ]
+            for level, offsets in enumerate(START_OFFSET_LEVELS_MS)
+        ]
+        self.counts = [
+            sum(count for _, rows in runs for _, _, count in rows)
+            for runs in self.levels
+        ]
+        self.frames = frames
+        # Starts already cut, per length (see is_taken).
+        self.taken: dict[int, list[int]] = {}
+        for start, duration in frames:
+            self.taken.setdefault(duration, []).append(start)
+        for starts in self.taken.values():
+            starts.sort()
+        uses = [history.get(f"{master.sha256}:{start}:{duration}") for start, duration in frames]
+        self.keys = [
+            (use.at, use.order) if use is not None else (NO_CUT_TIME, 0)
+            for use in uses
+        ]
+        self.key_of = dict(zip(frames, self.keys))
+        self.distinct_keys = sorted(set(self.keys))
+        # Footage already cut, as merged intervals, and the newest cut that
+        # touched each second of the master: scoring a candidate costs a few
+        # steps however densely the master has been cut.
+        merged: list[list[int]] = []
+        for start, duration in frames:
+            if merged and start <= merged[-1][1]:
+                merged[-1][1] = max(merged[-1][1], start + duration)
+            else:
+                merged.append([start, start + duration])
+        self.covered = [(begin, end) for begin, end in merged]
+        self.newest_by_second: dict[int, tuple[float, int]] = {}
+        for (start, duration), key in zip(frames, self.keys):
+            for second in range(start // 1_000, (start + duration - 1) // 1_000 + 1):
+                known = self.newest_by_second.get(second)
+                if known is None or key > known:
+                    self.newest_by_second[second] = key
+        # Newest first. Only cuts with a known time count as "recent": an old
+        # archive entry without one says nothing about what was cut last.
+        dated = sorted(
+            (key, frame) for key, frame in zip(self.keys, frames)
+            if key[0] != NO_CUT_TIME
+        )
+        self.recent = [frame for _, frame in reversed(dated[-RECENT_CUTS_REMEMBERED:])]
+        span = max(0, master.duration_ms - durations[0] - self.first)
+        self.near_ms = min(max(span / 3, CUT_START_STEP_MS), NEAR_START_MS)
+        self.chosen: list[tuple[int, int]] = []
+
+    def overlaps_chosen(self, start: int, duration: int) -> bool:
+        return any(
+            other_start < start + duration and start < other_start + other_duration
+            for other_start, other_duration in self.chosen
+        )
+
+    def reserved_overlap(self, start: int, duration: int) -> bool:
+        index = bisect_left(self.reserved, (start + duration, -1))
+        return bool(index and self.reserved[index - 1][1] > start)
+
+    def static_score(self, start: int, duration: int) -> tuple[float, tuple[float, int]]:
+        """(footage-reuse penalty, newest cut touching it) for one candidate.
+
+        Any overlap with footage this master already cut costs more than any
+        distance or length penalty except repeating the last length, so fresh
+        footage comes first; more of the window already cut costs more. When
+        a window must overlap, footage cut longest ago is preferred: the age
+        term is the rank of the newest cut touching the window's seconds, 0
+        for the oldest and 1 for the newest.
+        """
+        end = start + duration
+        covered = 0
+        index = max(0, bisect_left(self.covered, (start, -1)) - 1)
+        while index < len(self.covered) and self.covered[index][0] < end:
+            begin, finish = self.covered[index]
+            covered += max(0, min(end, finish) - max(start, begin))
+            index += 1
+        if not covered:
+            return 0.0, (NO_CUT_TIME, -1)
+        newest = max(
+            (self.newest_by_second[second]
+             for second in range(start // 1_000, (end - 1) // 1_000 + 1)
+             if second in self.newest_by_second),
+            default=(NO_CUT_TIME, 0),
+        )
+        rank = bisect_left(self.distinct_keys, newest) / max(1, len(self.distinct_keys) - 1)
+        return OVERLAP_PENALTY + OVERLAP_WEIGHT * covered / duration + rank, newest
+
+    def variety_penalty(self, start: int, duration: int, starting_length: int) -> float:
+        """Penalty for sitting near recent starts or repeating recent lengths.
+
+        The first cut on a master (no dated history) uses the page's Cut
+        length. After that, the last cut's length is used again only when no
+        other length fits, and a start within ``near_ms`` of a recent start
+        and a length equal to (or 0.5 s from) a recent length cost more,
+        newest cut weighted most.
+        """
+        if not self.recent:
+            return 0.0 if duration == starting_length else 1.0
+        penalty = SAME_AS_LAST_LENGTH_PENALTY if duration == self.recent[0][1] else 0.0
+        for weight, (recent_start, recent_duration) in zip(RECENT_WEIGHTS, self.recent):
+            distance = abs(start - recent_start)
+            if distance < self.near_ms:
+                penalty += weight * (1 - distance / self.near_ms)
+            if recent_duration == duration:
+                penalty += weight
+            elif abs(recent_duration - duration) <= CUT_LENGTH_STEP_MS:
+                penalty += weight / 2
+        return penalty
+
+    def is_taken(self, start: int, duration: int) -> bool:
+        """True when a cut of this length starts less than MIN_START_GAP_MS away.
+
+        Starts at least that far apart decode different first frames at any
+        frame rate above 4 fps; closer ones may decode the same frames. This
+        also catches an end-on-last-frame start a few ms from a grid start.
+        """
+        starts = self.taken.get(duration)
+        if not starts:
+            return False
+        index = bisect_left(starts, start - MIN_START_GAP_MS + 1)
+        return index < len(starts) and starts[index] < start + MIN_START_GAP_MS
+
+    def record(self, start: int, duration: int) -> None:
+        self.chosen.append((start, duration))
+        starts = self.taken.setdefault(duration, [])
+        starts.insert(bisect_left(starts, start), start)
+        self.recent = [(start, duration), *self.recent][:RECENT_CUTS_REMEMBERED]
+
+
 def plan_source_cuts(
     recipe: SourceRecipe,
     quantity: int,
     served_slots: set[str],
-    exclusions: list[tuple[str, int, int]] | None = None,
+    exclusions: list[tuple[str, str | None, int, int]] | None = None,
+    *,
+    seed: str = CAPABILITY_PLAN_SEED,
+    history: dict[str, CutUse] | None = None,
 ) -> list[SourceCut]:
+    """Plan up to ``quantity`` never-cut windows, as varied as possible.
+
+    Every cut path goes through here (tests/test_source_cut_path_census.py).
+    Candidates are every whole-second start on the master's timeline (from
+    the page floor; plus one start ending on the last frame) at every allowed
+    length (source_cut_durations). Only when every one of those is cut do
+    starts move inside the second, coarse to fine (START_OFFSET_LEVELS_MS:
+    half a second, then a quarter and three quarters). Each candidate is
+    scored, lower is better:
+
+    1. repeating the master's last length (only when nothing else fits),
+    2. overlap with footage this master already cut (fresh footage first;
+       when everything overlaps, footage cut longest ago wins),
+    3. closeness of its start to the last few starts on this master,
+    4. the same (or a 0.5 s different) length as the last few cuts,
+
+    then least-recently-used footage, then a seeded random tiebreak, so the
+    same seed and inputs always yield the same plan. Every pick updates the
+    "recent" state, so one multi-clip plan is itself spread out, and one plan
+    never holds two overlapping cuts of a master. The first cut on a master
+    uses the page's Cut length. Recency and variety are per master, across
+    every page that cut it.
+
+    ``served_slots`` holds every time frame already cut or reserved (slot ids
+    ``sha:start:duration``; legacy ``sha:start`` grid ids resolve to the length
+    they were cut at). No window within MIN_START_GAP_MS of one of those (same
+    length) is ever planned: a cut never renders the same bytes twice.
+    ``history`` maps ``sha:start:duration`` to when it was cut (CutUse); a
+    window without one counts as the oldest. Windows overlapping another
+    page's reservation (``exclusions``) are never candidates.
+
+    The plan is empty or short only when no further never-cut window fits:
+    explain_empty_source_plan names why an empty plan is empty
+    (SOURCE_MASTER_TOO_SHORT, SOURCE_WINDOWS_EXHAUSTED or
+    SOURCE_WINDOWS_RESERVED_ELSEWHERE). A coarser never-cut window that does
+    not fit beside the plan's other cuts ends the plan; the next plan cuts it.
+
+    A start level with more than FULL_SCAN_CANDIDATES candidates scores a
+    seeded sample of SAMPLED_CANDIDATES_PER_CUT candidates per cut (up to
+    SAMPLE_ROUNDS samples while none is usable), so a 24 h master stays cheap
+    on every capability poll; a sample that finds nothing usable is confirmed
+    by an exact pass over the level, so no never-cut window is passed over.
+    """
     if not isinstance(quantity, int) or isinstance(quantity, bool) or quantity <= 0:
         raise ValueError("quantity must be a positive integer")
     if not isinstance(served_slots, set) or any(
         not isinstance(value, str) for value in served_slots
     ):
         raise ValueError("served_slots must be a string set")
-    candidates: list[SourceCut] = []
-    lanes = []
-    for master in recipe.masters:
-        identity = canonical_source_identity(master.provenance.get("sourceUrl"))
-        minimum_start_ms = minimum_original_start_ms(recipe, master)
-        reserved = [
-            (start, end)
-            for source, master_sha256, start, end in (exclusions or [])
-            if source == identity and (master_sha256 is None or master_sha256 == master.sha256)
-        ]
-        lanes.append((master, minimum_start_ms, reserved))
-    # The saved cutDurationMs is the page's target. Each immutable master
-    # deterministically rotates around that target, adjusted for 6-11 second
-    # delivery at the saved speed. Admission skips overlapping source windows
-    # when faster playback needs a cut longer than the 9-second grid spacing.
-    # slot_id continues to reserve positions across treatment changes.
-    # Phases run in order, so fresh footage is always cut before a re-cut, and
-    # one plan never holds two overlapping cuts of the same master.
-    def admit(master, minimum_start_ms, reserved, start_ms, duration_ms, fixed_length):
-        if master.source_offset_ms + start_ms < minimum_start_ms:
-            return
-        if start_ms + duration_ms > master.duration_ms:
-            return
-        original_start = master.source_offset_ms + start_ms
-        if any(begin < original_start + duration_ms and end > original_start for begin, end in reserved):
-            return
-        if any(
-            chosen.master.sha256 == master.sha256
-            and chosen.start_ms < start_ms + duration_ms
-            and start_ms < chosen.start_ms + chosen.duration_ms
-            for chosen in candidates
-        ):
-            return
-        cut = SourceCut(master, start_ms, duration_ms, fixed_length)
-        if cut.slot_id not in served_slots:
-            candidates.append(cut)
+    if not isinstance(seed, str):
+        raise ValueError("seed must be a string")
+    if history is not None and (
+        not isinstance(history, dict)
+        or any(not isinstance(use, CutUse) for use in history.values())
+    ):
+        raise ValueError("history must map time frames to CutUse")
+    used = _used_time_frames(recipe, served_slots)
+    durations = source_cut_durations(recipe)
+    starting_length = _starting_length(recipe, durations)
+    lanes = [
+        _Lane(recipe, master, used[master.sha256], history or {}, exclusions, durations)
+        for master in recipe.masters
+    ]
+    rng = random.Random(hashlib.sha256(
+        f"{seed}\0{recipe.source_library_hash}".encode("utf-8"),
+    ).digest())
+    Row = tuple[float, tuple[float, int], float, int, int, int]
+    scanned: dict[int, list[Row]] = {}
+    sample_indexes: dict[int, tuple[list[tuple[int, int, int, int, int]], list[int]]] = {}
 
-    for phase_ms in RECUT_PHASES_MS:
-        for master, minimum_start_ms, reserved in lanes:
-            for start_ms in range(phase_ms, master.duration_ms, CUT_SLOT_STEP_MS):
-                duration_ms = planned_source_cut_duration(recipe, master, start_ms)
-                admit(master, minimum_start_ms, reserved, start_ms, duration_ms, False)
-                if len(candidates) >= quantity:
-                    return candidates
-    fixed_duration = delivery_cut_duration(recipe, RECUT_FIXED_DURATION_MS)
-    for master, minimum_start_ms, reserved in lanes:
-        for start_ms in fixed_length_recut_starts(master, fixed_duration):
-            admit(master, minimum_start_ms, reserved, start_ms, fixed_duration, True)
-            if len(candidates) >= quantity:
-                return candidates
-    return candidates
+    def candidates(level: int):
+        for index, lane in enumerate(lanes):
+            for duration_ms, runs in lane.levels[level]:
+                for run_first, step, count in runs:
+                    for start_ms in range(run_first, run_first + step * count, step):
+                        yield index, start_ms, duration_ms
+
+    def scan(level: int) -> list[Row]:
+        rows = []
+        for index, start_ms, duration_ms in candidates(level):
+            lane = lanes[index]
+            if lane.is_taken(start_ms, duration_ms):
+                continue
+            static, age = lane.static_score(start_ms, duration_ms)
+            rows.append((static, age, rng.random(), index, start_ms, duration_ms))
+        rows.sort()
+        return rows
+
+    def scored(index: int, start_ms: int, duration_ms: int, tiebreak: float) -> Row:
+        lane = lanes[index]
+        static, age = lane.static_score(start_ms, duration_ms)
+        score = static + lane.variety_penalty(start_ms, duration_ms, starting_length)
+        return (score, age, tiebreak, index, start_ms, duration_ms)
+
+    def usable(index: int, start_ms: int, duration_ms: int) -> bool:
+        lane = lanes[index]
+        return not lane.is_taken(start_ms, duration_ms) and not lane.overlaps_chosen(start_ms, duration_ms)
+
+    def best_scanned(rows: list[Row]) -> Row | None:
+        # Rows are sorted by their static score, and the variety penalty is
+        # never negative: once a row cannot beat the best, no later row can.
+        best = None
+        for static, age, tiebreak, index, start_ms, duration_ms in rows:
+            if best is not None and (static, age, tiebreak) >= best[:3]:
+                break
+            if not usable(index, start_ms, duration_ms):
+                continue
+            row = scored(index, start_ms, duration_ms, tiebreak)
+            if best is None or row < best:
+                best = row
+        return best
+
+    def best_sampled(level: int, total: int) -> Row | None:
+        if level not in sample_indexes:
+            index_rows, offset = [], 0
+            for index, lane in enumerate(lanes):
+                for duration_ms, runs in lane.levels[level]:
+                    for run_first, step, count in runs:
+                        index_rows.append((offset, index, duration_ms, run_first, step))
+                        offset += count
+            sample_indexes[level] = (index_rows, [row[0] for row in index_rows])
+        index_rows, offsets = sample_indexes[level]
+        best = None
+        for attempt in range(SAMPLE_ROUNDS * SAMPLED_CANDIDATES_PER_CUT):
+            if best is not None and attempt % SAMPLED_CANDIDATES_PER_CUT == 0:
+                break
+            position = rng.randrange(total)
+            run_offset, index, duration_ms, run_first, step = index_rows[
+                bisect_left(offsets, position + 1) - 1
+            ]
+            start_ms = run_first + (position - run_offset) * step
+            if usable(index, start_ms, duration_ms):
+                row = scored(index, start_ms, duration_ms, rng.random())
+                if best is None or row < best:
+                    best = row
+        if best is None:
+            # Never-cut windows are sparse: find them exactly (no sort), and
+            # score the first few so the pick still varies.
+            found = []
+            for index, start_ms, duration_ms in candidates(level):
+                if usable(index, start_ms, duration_ms):
+                    found.append(scored(index, start_ms, duration_ms, rng.random()))
+                    if len(found) >= SAMPLED_CANDIDATES_PER_CUT:
+                        break
+            best = min(found, default=None)
+        return best
+
+    def best_new(level: int) -> Row | None:
+        total = sum(lane.counts[level] for lane in lanes)
+        if not total:
+            return None
+        if total > FULL_SCAN_CANDIDATES:
+            return best_sampled(level, total)
+        if level not in scanned:
+            scanned[level] = scan(level)
+        return best_scanned(scanned[level])
+
+    def has_uncut(level: int) -> bool:
+        return any(
+            not lanes[index].is_taken(start_ms, duration_ms)
+            for index, start_ms, duration_ms in candidates(level)
+        )
+
+    def repeats_last_length(row: Row) -> bool:
+        lane = lanes[row[3]]
+        return bool(lane.recent) and row[5] == lane.recent[0][1]
+
+    chosen: list[SourceCut] = []
+    for _ in range(quantity):
+        # Whole-second starts first; a finer start only once every window at
+        # the coarser level is cut. A coarser window that is uncut but does
+        # not fit beside this plan's other cuts ends the plan; the next plan
+        # cuts it. The one exception: a window repeating the master's last
+        # length is taken only when no finer level offers another length,
+        # and only as a plan's first cut.
+        pick = fallback = None
+        for level in range(len(START_OFFSET_LEVELS_MS)):
+            candidate = best_new(level)
+            if candidate is not None and not repeats_last_length(candidate):
+                pick = candidate
+                break
+            fallback = fallback or candidate
+            if candidate is None and has_uncut(level):
+                break
+        pick = pick or (fallback if not chosen else None)
+        if pick is None:
+            break
+        *_, index, start_ms, duration_ms = pick
+        lane = lanes[index]
+        lane.record(start_ms, duration_ms)
+        chosen.append(SourceCut(lane.master, start_ms, duration_ms, True))
+    return chosen
 
 
-def fixed_length_recut_starts(master: MasterSource, duration_ms: int = RECUT_FIXED_DURATION_MS) -> list[int]:
-    """Fixed recut grid, plus one clip ending on the master's last frame."""
-    last = master.duration_ms - duration_ms
-    if last < 0:
-        return []
-    starts = list(range(0, last + 1, duration_ms))
-    if starts[-1] != last:
-        starts.append(last)
-    return starts
+def explain_empty_source_plan(
+    recipe: SourceRecipe,
+    served_slots: set[str],
+    exclusions: list[tuple[str, str | None, int, int]] | None = None,
+) -> str:
+    """Name why plan_source_cuts returned nothing.
+
+    SOURCE_MASTER_TOO_SHORT: no master fits even the shortest allowed cut
+    after the page's start floor (or the library has no master).
+    SOURCE_WINDOWS_EXHAUSTED: every start (whole, half and quarter second) x
+    length window of every master is already cut; the page needs new footage.
+    SOURCE_WINDOWS_RESERVED_ELSEWHERE: never-cut windows remain, but other
+    pages' reservations cover all of them.
+    """
+    durations = source_cut_durations(recipe)
+    fits = any(
+        _start_runs(master, _first_start_ms(recipe, master), duration_ms, [])
+        for master in recipe.masters
+        for duration_ms in durations
+    )
+    if not fits:
+        return SOURCE_MASTER_TOO_SHORT
+    if not plan_source_cuts(recipe, 1, served_slots):
+        return SOURCE_WINDOWS_EXHAUSTED
+    return SOURCE_WINDOWS_RESERVED_ELSEWHERE
 
 
 def source_cut_is_planned(
@@ -463,10 +973,18 @@ def source_cut_is_planned(
     ):
         return False
     if slot_id == f"{master.sha256}:{start_ms}:{duration_ms}":
+        # A time frame: an allowed length at a whole-second start or one of
+        # the planner's frame offsets inside a second, or ending on the
+        # master's last frame. Lengths planned before 2026-09-30 (every
+        # legacy 6 s re-cut included) still verify for jobs queued then.
         return (
-            duration_ms == delivery_cut_duration(recipe, RECUT_FIXED_DURATION_MS)
-            and start_ms in fixed_length_recut_starts(master, duration_ms)
+            duration_ms in source_cut_durations(recipe)
+            or duration_ms in _legacy_source_cut_durations(recipe)
+        ) and (
+            start_ms % CUT_START_STEP_MS in SUB_SECOND_START_OFFSETS_MS
+            or start_ms == master.duration_ms - duration_ms
         )
+    # Legacy grid position ids from jobs queued before time-frame planning.
     if slot_id != f"{master.sha256}:{start_ms}":
         return False
     try:
@@ -496,7 +1014,11 @@ def minimum_original_start_ms(recipe: SourceRecipe, master: MasterSource) -> int
 
 
 def delivery_cut_duration(recipe: SourceRecipe, duration_ms: int) -> int:
-    """Select whole source seconds that deliver 6-11 seconds at saved speed."""
+    """Legacy lengths only: whole source seconds delivering 6-11 s at speed.
+
+    New plans use source_cut_durations; this keeps verifying jobs queued
+    under the earlier vocabulary and legacy grid ids.
+    """
     speed = dossier_clip_speed(recipe)
     minimum = math.ceil(6 * speed) * 1_000
     maximum = math.floor(11 * speed) * 1_000
@@ -506,7 +1028,11 @@ def delivery_cut_duration(recipe: SourceRecipe, duration_ms: int) -> int:
 def planned_source_cut_duration(
     recipe: SourceRecipe, master: MasterSource, start_ms: int,
 ) -> int:
-    """Return the hash-bound varied duration for one reserved source slot."""
+    """Return the hash-bound duration of one legacy 9-second-grid position.
+
+    Used only to verify jobs queued before time-frame planning and to resolve a
+    legacy ``sha:start`` id to the exact time frame it reserved.
+    """
     if (
         not isinstance(start_ms, int)
         or isinstance(start_ms, bool)

@@ -4,7 +4,11 @@ import asyncio
 
 import pytest
 
-from providers.replicate import _build_wan_i2v_fast_input, remove_text
+from providers.replicate import (
+    _build_flux_2_pro_input,
+    _build_wan_i2v_fast_input,
+    remove_text,
+)
 
 
 def test_remove_text_rejects_empty_image():
@@ -29,3 +33,45 @@ def test_wan_i2v_fast_includes_negative_prompt_when_supplied():
     )
 
     assert payload["negative_prompt"] == "driving, tire rotation, camera pan"
+
+
+def test_flux_2_pro_builds_the_locked_portrait_still_request():
+    payload = _build_flux_2_pro_input(
+        "Two lovers embrace beside a pickup in a field.",
+        {
+            "aspect_ratio": "9:16",
+            "image_resolution": "2 MP",
+            "output_format": "jpg",
+            "output_quality": 95,
+        },
+    )
+
+    assert payload == {
+        "prompt": "Two lovers embrace beside a pickup in a field.",
+        "aspect_ratio": "9:16",
+        "resolution": "2 MP",
+        "output_format": "jpg",
+        "output_quality": 95,
+    }
+
+
+def test_flux_2_pro_rejects_non_portrait_requests():
+    with pytest.raises(ValueError, match="9:16"):
+        _build_flux_2_pro_input("scene", {"aspect_ratio": "16:9"})
+
+
+def test_flux_2_pro_sends_an_explicit_safety_tolerance_only_when_opted_in():
+    params = {"aspect_ratio": "9:16", "image_resolution": "2 MP"}
+
+    assert "safety_tolerance" not in _build_flux_2_pro_input("scene", params)
+    assert _build_flux_2_pro_input(
+        "scene", {**params, "safety_tolerance": 3},
+    )["safety_tolerance"] == 3
+
+
+@pytest.mark.parametrize("value", [0, 6, -1, "3", 3.0, True, False])
+def test_flux_2_pro_rejects_safety_tolerance_outside_the_provider_range(value):
+    with pytest.raises(ValueError, match="safety_tolerance"):
+        _build_flux_2_pro_input(
+            "scene", {"aspect_ratio": "9:16", "safety_tolerance": value},
+        )

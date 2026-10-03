@@ -43,7 +43,7 @@ def test_set_page_persists_master_pages_generation_ontology(store):
         "content_niche": "POV — Night Core",
         "content_engine": "sourced_video",
         "automation_mode": "Automation",
-        "vault_url": "https://shipstream.risingtidesviral.com/vault/miles.of.memories77",
+        "vault_url": "https://shipstream.test/vault/miles.of.memories77",
         "account_status": "active",
         "archived": False,
     })
@@ -52,7 +52,7 @@ def test_set_page_persists_master_pages_generation_ontology(store):
     assert entry["content_niche"] == "POV — Night Core"
     assert entry["content_engine"] == "sourced_video"
     assert entry["automation_mode"] == "Automation"
-    assert entry["vault_url"] == "https://shipstream.risingtidesviral.com/vault/miles.of.memories77"
+    assert entry["vault_url"] == "https://shipstream.test/vault/miles.of.memories77"
     assert entry["account_status"] == "active"
     assert entry["archived"] is False
 

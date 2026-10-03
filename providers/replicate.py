@@ -1,11 +1,13 @@
-"""Replicate API provider — Hailuo 2.3, Wan 2.2 T2V, Wan 2.2 I2V."""
+"""Replicate API provider — video models plus FLUX.2 still generation."""
 
 import asyncio
+import re
 import time
 
 import httpx
 
 from .base import API_KEYS
+from services.generation_recovery import input_hash
 
 REPLICATE_API = "https://api.replicate.com/v1"
 
@@ -151,11 +153,59 @@ def _build_wan_i2v_fast_input(prompt: str, params: dict) -> dict:
     return inp
 
 
+FLUX_SAFETY_TOLERANCE_RANGE = (1, 5)  # 1 strictest, 5 most permissive
+
+
+def _flux_safety_tolerance(params: dict) -> int | None:
+    """Return the caller's explicit FLUX moderation level, or None to omit it.
+
+    Omitting the field keeps Replicate's default (2).  Only a recipe that opts
+    in -- today the silhouette family, see ``generation_options`` -- sends one.
+    """
+    value = params.get("safety_tolerance")
+    if value is None:
+        return None
+    low, high = FLUX_SAFETY_TOLERANCE_RANGE
+    if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= high:
+        raise ValueError(
+            f"FLUX safety_tolerance must be an integer from {low} to {high}"
+        )
+    return value
+
+
+def _build_flux_2_pro_input(prompt: str, params: dict) -> dict:
+    """Build a portrait-native FLUX.2 Pro still-image request."""
+    aspect_ratio = params.get("aspect_ratio", "9:16")
+    if aspect_ratio != "9:16":
+        raise ValueError("FLUX silhouette stills require a 9:16 aspect ratio")
+    resolution = params.get("image_resolution", "2 MP")
+    if resolution not in {"1 MP", "2 MP"}:
+        raise ValueError("FLUX silhouette still resolution must be 1 MP or 2 MP")
+    output_format = params.get("output_format", "jpg")
+    if output_format not in {"jpg", "png", "webp"}:
+        raise ValueError("FLUX output format is unsupported")
+    quality = int(params.get("output_quality", 95))
+    if not 1 <= quality <= 100:
+        raise ValueError("FLUX output quality must be between 1 and 100")
+    safety_tolerance = _flux_safety_tolerance(params)
+    payload = {
+        "prompt": prompt,
+        "aspect_ratio": aspect_ratio,
+        "resolution": resolution,
+        "output_format": output_format,
+        "output_quality": quality,
+    }
+    if safety_tolerance is not None:
+        payload["safety_tolerance"] = safety_tolerance
+    return payload
+
+
 _INPUT_BUILDERS = {
     "minimax/hailuo-2.3": _build_hailuo_input,
     "wan-video/wan-2.2-t2v-fast": _build_wan_t2v_input,
     "wan-video/wan-2.2-i2v-a14b": _build_wan_i2v_input,
     "wan-video/wan-2.2-i2v-fast": _build_wan_i2v_fast_input,
+    "black-forest-labs/flux-2-pro": _build_flux_2_pro_input,
     "prunaai/p-video": _build_pvideo_input,
 }
 
@@ -259,12 +309,18 @@ async def _cancel_prediction(client: httpx.AsyncClient, headers: dict, pred_id: 
 
 async def _await_prediction(
     client: httpx.AsyncClient, headers: dict, pred_id: str,
+    *, remaining_seconds: float | None = None,
 ) -> tuple[str, object]:
     """Poll one existing prediction. Returns ("succeeded", output) or (status, error)."""
     poll_url = f"{REPLICATE_API}/predictions/{pred_id}"
-    deadline = _now() + PREDICTION_DEADLINE_SECONDS
+    deadline = _now() + (PREDICTION_DEADLINE_SECONDS if remaining_seconds is None else max(0, remaining_seconds))
     transient = 0
-    while _now() < deadline:
+    # A completed prediction may have finished while the process was down.
+    # Observe that exact id once even past its processing deadline, never
+    # extend the time allowed for a still-running recovered prediction.
+    first = remaining_seconds is not None
+    while first or _now() < deadline:
+        first = False
         data = None
         try:
             r = await client.get(poll_url, headers=headers, timeout=30)
@@ -312,11 +368,51 @@ async def generate(prompt: str, params: dict, client: httpx.AsyncClient) -> str:
         raise RuntimeError(f"No input builder for model: {model_id}")
     input_params = builder(prompt, params)
 
-    for submission in range(INTERRUPTED_RESUBMITS + 1):
-        pred_id = await _start_prediction(client, headers, model_id, input_params)
+    checkpoint = entry.get("_prediction_checkpoint")
+    record = checkpoint.record if checkpoint is not None else None
+    fingerprint = input_hash(model_id, input_params)
+    if record:
+        if record.get("model") != model_id or record.get("inputHash") != fingerprint:
+            raise RuntimeError("generation_checkpoint_input_mismatch")
+        if record.get("state") not in {"submitted", "retry_ready"}:
+            raise RuntimeError("generation_submission_uncertain")
+        if type(record.get("submission")) is not int or not 0 <= record["submission"] <= INTERRUPTED_RESUBMITS:
+            raise RuntimeError("generation_checkpoint_invalid")
+    first_submission = record["submission"] if record else 0
+
+    for submission in range(first_submission, INTERRUPTED_RESUBMITS + 1):
+        record = checkpoint.record if checkpoint is not None else None
+        resume = bool(record and record.get("state") == "submitted")
+        if resume:
+            pred_id = record.get("predictionId")
+            if not isinstance(pred_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", pred_id):
+                raise RuntimeError("generation_checkpoint_invalid")
+            started = record.get("submittedAt")
+            if type(started) not in (int, float) or not 0 < started <= time.time() + 1:
+                raise RuntimeError("generation_checkpoint_invalid")
+        else:
+            started = time.time()
+            state = {"model": model_id, "inputHash": fingerprint,
+                     "submission": submission, "submittedAt": started,
+                     "state": "submitting"}
+            if checkpoint is not None:
+                await checkpoint.save(state)
+            pred_id = await _start_prediction(client, headers, model_id, input_params)
+            # Safe 429/connection backoff precedes acceptance, not processing.
+            # Preserve the original ten-minute budget from the accepted id.
+            started = time.time()
+            if checkpoint is not None:
+                await checkpoint.save({**state, "state": "submitted", "predictionId": pred_id,
+                                       "submittedAt": started})
         entry["provider_request_id"] = pred_id
         entry["status"] = "polling"
-        status, result = await _await_prediction(client, headers, pred_id)
+        if checkpoint is not None:
+            status, result = await _await_prediction(
+                client, headers, pred_id,
+                remaining_seconds=PREDICTION_DEADLINE_SECONDS - (time.time() - started),
+            )
+        else:
+            status, result = await _await_prediction(client, headers, pred_id)
         if status == "succeeded":
             if isinstance(result, str):
                 return result
@@ -328,6 +424,10 @@ async def generate(prompt: str, params: dict, client: httpx.AsyncClient) -> str:
             and _INTERRUPTED_MARKER in str(result)
             and submission < INTERRUPTED_RESUBMITS
         ):
+            if checkpoint is not None:
+                await checkpoint.save({"model": model_id, "inputHash": fingerprint,
+                                       "submission": submission + 1, "state": "retry_ready",
+                                       "interruptedPredictionId": pred_id})
             continue
         raise RuntimeError(f"Replicate {status}: {result}")
     raise RuntimeError("Replicate generation failed: resubmissions exhausted")  # pragma: no cover

@@ -28,6 +28,7 @@ from project_manager import (
 )
 from services import sound_cache
 from services.captions import scan_project_captions
+from services.config_errors import ConfigError
 from services.cropper import crop_to_916
 from services.fsutil import safe_rmtree, safe_unlink
 from services.json_store import atomic_save
@@ -773,6 +774,8 @@ async def prepare_sound_endpoint(body: PrepareSoundRequest):
     """
     try:
         return await sound_cache.prepare_sound(body.telegram_sound_id, body.label)
+    except ConfigError as e:
+        raise HTTPException(status_code=503, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:

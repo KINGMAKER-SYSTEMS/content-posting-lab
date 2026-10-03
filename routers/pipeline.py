@@ -4,15 +4,24 @@ Pipeline router — page sale handoff operations.
 Reads roster pages grouped by Notion `Status`, exposes per-stage actions
 (setup, transition, health). Notion is the canonical source; all status
 changes also write back to Notion.
+
+Credential boundary: roster rows carry account credentials (signup email,
+password, forwarding address, email alias/rule, notes). This router answers
+an unauthenticated UI, so every row leaves through
+services.roster_public.public_page and every JSON body through the
+CredentialGuardRoute scrub. The only credential-shaped keys it serialises
+are values the caller just created in the same request (the minted alias and
+its destination), marked with allow_credential_keys.
 """
 
+import hashlib
 import logging
 import os
 from datetime import datetime, timezone
 from typing import Any
 
 import httpx
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel
 
 from services import r2
@@ -25,8 +34,10 @@ from services.email_routing import (
     list_rules as cf_list_rules,
 )
 from services.notion_pages import (
+    canonical_notion_page_id,
     create_intake_page,
     is_configured as notion_configured,
+    mint_integration_id,
     sync_into_roster,
     update_intake_page,
     update_page_drive_folder,
@@ -34,7 +45,17 @@ from services.notion_pages import (
     update_page_status,
 )
 from services.poster_router import resolve_poster_for_page
+from services.roster_public import has_control_plane_credential
 from services.roster import get_page, list_all_pages, set_page
+from services.roster_public import (
+    CredentialGuardRoute,
+    allow_credential_keys,
+    public_page,
+)
+
+
+def _public_or_none(page: dict | None) -> dict | None:
+    return public_page(page) if page else None
 from services.telegram import (
     assign_page_to_poster,
     get_poster,
@@ -43,10 +64,41 @@ from services.upload import get_cookie_status
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter()
+router = APIRouter(route_class=CredentialGuardRoute)
 
 
-DEFAULT_INTAKE_PASSWORD = os.getenv("DEFAULT_INTAKE_PASSWORD", "changeme")
+INTAKE_PASSWORD_ENV = "DEFAULT_INTAKE_PASSWORD"
+INTAKE_PASSWORD_NOT_CONFIGURED = "intake_password_not_configured"
+INTAKE_PASSWORD_RETIRED = "intake_password_retired"
+
+# SHA-256 digests of intake passwords that have been exposed and must never be
+# written again: the default once shipped in the public frontend bundle, and the
+# guessable fallback previously used when the env var was unset. Digests only;
+# tests/test_no_shipped_default_password.py forbids the plaintext in the repo.
+RETIRED_INTAKE_PASSWORD_SHA256 = frozenset({
+    "2c04122561f52246bb9d4baa62cd53f23886d9d2540542e9c8c69a34d1adc2a7",
+    "057ba03d6c44104863dc7361fe4578965d1887360f90a0895882e58a6248fc86",
+})
+
+# Invisible characters that survive copy/paste into env settings.
+_ZERO_WIDTH = dict.fromkeys(map(ord, "\u200b\u200c\u200d\u2060\ufeff"))
+
+
+def _intake_password() -> str:
+    """Return the server-owned intake password, or refuse the intake.
+
+    Read at request time from the environment only. Zero-width characters are
+    removed and surrounding whitespace stripped. There is no fallback: a value
+    that is then blank raises a typed 503 (`intake_password_not_configured`),
+    and a retired value raises a typed 503 (`intake_password_retired`), both
+    before any alias, Notion row or roster entry is written.
+    """
+    value = (os.getenv(INTAKE_PASSWORD_ENV) or "").translate(_ZERO_WIDTH).strip()
+    if not value:
+        raise HTTPException(status_code=503, detail=INTAKE_PASSWORD_NOT_CONFIGURED)
+    if hashlib.sha256(value.encode("utf-8")).hexdigest() in RETIRED_INTAKE_PASSWORD_SHA256:
+        raise HTTPException(status_code=503, detail=INTAKE_PASSWORD_RETIRED)
+    return value
 
 
 # Pipeline stages — must match the Notion Status select values exactly.
@@ -171,7 +223,8 @@ async def _mint_random_alias(
         if full_alias in existing_aliases:
             raise HTTPException(
                 status_code=409,
-                detail=f"Email '{full_alias}' is already taken — pick a different name",
+                # Generic: never echo the alias (existence oracle).
+                detail="That email name is already taken — pick a different name",
             )
     else:
         alias_local = _random_alias_local()
@@ -241,6 +294,7 @@ class MintAliasResponse(BaseModel):
 
 
 @router.post("/mint-alias")
+@allow_credential_keys("alias")  # the alias this request just minted, for the TikTok signup
 async def mint_random_alias_endpoint(req: MintAliasRequest | None = None) -> MintAliasResponse:
     """Step 1 of intake: mint a CF email alias AND create a placeholder Notion row.
 
@@ -256,6 +310,7 @@ async def mint_random_alias_endpoint(req: MintAliasRequest | None = None) -> Min
     User can also specify a custom name (`desired_local`) so emails are
     human-readable in the inbox (e.g. "samb-truck-04@..." instead of random).
     """
+    intake_password = _intake_password()
     pipeline = (req.pipeline if req else None) or None
     desired_local = (req.desired_local if req else None) or None
     info = await _mint_random_alias(pipeline=pipeline, desired_local=desired_local)
@@ -272,7 +327,7 @@ async def mint_random_alias_endpoint(req: MintAliasRequest | None = None) -> Min
                 pipeline_choice=pipeline,
                 email=info["alias"],
                 fwd_address=info["alias"],
-                password=DEFAULT_INTAKE_PASSWORD,
+                password=intake_password,
             )
             notion_page_id = created.get("id")
         except Exception as exc:
@@ -288,8 +343,80 @@ async def mint_random_alias_endpoint(req: MintAliasRequest | None = None) -> Min
     )
 
 
+def _existing_page_for_handle(account_username: str) -> dict | None:
+    """The roster page an intake for this handle would write to, if any.
+
+    Intake writes ``acct:{_slug_alias(handle)}``; the Notion sync mints
+    ``acct:{slugify(handle)}``. They differ for handles with '.' or '_', so
+    both are checked.
+    """
+    for integration_id in (
+        f"acct:{_slug_alias(account_username)}",
+        mint_integration_id(account_username),
+    ):
+        page = get_page(integration_id)
+        if page:
+            return page
+    return None
+
+
+_PLACEHOLDER_STATUS = "New — Pending Setup"
+_INTAKE_CONFLICT = "An account with this handle already exists — ask an operator to update it"
+
+
+def _is_unfinished_placeholder(page: dict) -> bool:
+    """A step-1 (mint-alias) placeholder that step 2 has not completed yet.
+
+    Still pending, never linked to a CF rule, and still titled with its own
+    alias local part (step 2 renames it to the real handle). A live or
+    renamed page fails at least one of these.
+    """
+    signup = str(page.get("signup_email") or "").strip().lower()
+    local = signup.partition("@")[0] if "@" in signup else ""
+    return (
+        (page.get("status") or "") == _PLACEHOLDER_STATUS
+        and not page.get("email_rule_id")
+        and bool(local)
+        and str(page.get("name") or "").strip().lower() == local
+    )
+
+
+def _refuse_anonymous_intake_tamper(req: "IntakeRequest", notion_page_id: str) -> None:
+    """Refuse (409) an anonymous intake that would touch an existing page's identity.
+
+    1. ``notion_page_id`` naming a roster page that is not an unfinished
+       placeholder: intake would rename that live row, the sync would prune its
+       roster page (dropping its rule link) and /setup would write the caller's
+       alias into its Notion email. Completing a placeholder also requires the
+       caller to send that placeholder's own alias.
+    2. ``account_username`` naming an existing page, unless that page is the
+       same unfinished placeholder this request is completing (step 1's row
+       synced before step 2 with handle == email name).
+    """
+    own: dict | None = None
+    if notion_page_id:  # already canonical (see submit_intake)
+        for page in list_all_pages():
+            if canonical_notion_page_id(page.get("notion_page_id")) != notion_page_id:
+                continue
+            alias = (req.email_alias or "").strip().lower()
+            signup = str(page.get("signup_email") or "").strip().lower()
+            if not _is_unfinished_placeholder(page) or alias != signup:
+                raise HTTPException(status_code=409, detail=_INTAKE_CONFLICT)
+            own = page
+    existing = _existing_page_for_handle(req.account_username)
+    if existing and not (
+        own is not None and existing.get("integration_id") == own.get("integration_id")
+    ):
+        raise HTTPException(status_code=409, detail=_INTAKE_CONFLICT)
+
+
 @router.post("/intake")
-async def submit_intake(req: IntakeRequest):
+@allow_credential_keys("email_alias", "fwd_destination")  # echo of this request's own alias
+async def submit_intake(
+    req: IntakeRequest,
+    authorization: str | None = Header(default=None),
+    x_api_key: str | None = Header(default=None),
+):
     """Step 2 of intake: fill in TikTok handle + page details.
 
     If `notion_page_id` is provided (step 1 already created the placeholder
@@ -298,6 +425,7 @@ async def submit_intake(req: IntakeRequest):
 
     Either way, status stays "New — Pending Setup" so it lands in lane 1.
     """
+    intake_password = _intake_password()
     if not notion_configured():
         raise HTTPException(
             status_code=503,
@@ -306,12 +434,26 @@ async def submit_intake(req: IntakeRequest):
     if not req.account_username.strip():
         raise HTTPException(status_code=400, detail="account_username is required")
 
+    # One canonical Notion page id (32 lowercase hex) or a 400, for every
+    # caller: the same value drives the ownership check below and every
+    # Notion call, so the raw input never reaches a Notion URL.
+    notion_page_id = ""
+    if (req.notion_page_id or "").strip():
+        notion_page_id = canonical_notion_page_id(req.notion_page_id) or ""
+        if not notion_page_id:
+            raise HTTPException(status_code=400, detail="notion_page_id must be a Notion page id")
+
+    # An anonymous intake must not touch an existing page's email identity,
+    # by handle or by notion_page_id. Refused before any mint, Notion or
+    # roster write; an operator with CONTROL_PLANE_TOKEN may override.
+    if not has_control_plane_credential(authorization, x_api_key):
+        _refuse_anonymous_intake_tamper(req, notion_page_id)
+
     # Email alias is expected to have been minted in step 1 (POST /mint-alias)
     # before the user did the TikTok signup. If it's missing here, mint one
     # now as a fallback (covers cases where step 1 was skipped or failed).
     email_alias = (req.email_alias or "").strip()
     fwd_destination = (req.fwd_destination or "").strip()
-    notion_page_id = (req.notion_page_id or "").strip()
     rule_id = ""
 
     if not email_alias:
@@ -358,7 +500,7 @@ async def submit_intake(req: IntakeRequest):
                 account_type=req.account_type,
                 email=email_alias,
                 fwd_address=email_alias,
-                password=DEFAULT_INTAKE_PASSWORD,
+                password=intake_password,
             )
             created_id = created.get("id", "")
     except httpx.HTTPStatusError as exc:
@@ -417,10 +559,10 @@ async def get_stages():
     for page in pages:
         status = (page.get("status") or "").strip()
         if status in by_status:
-            by_status[status].append(page)
+            by_status[status].append(public_page(page))
         elif status:
             # Unknown status — bucket separately so user can spot data drift
-            unassigned.append({**page, "_unknown_status": status})
+            unassigned.append({**public_page(page), "_unknown_status": status})
         # No status at all = legacy/active page that didn't come through the
         # sale-handoff intake. Skip — the Pipeline tab is ONLY for pages
         # currently moving through the onboarding lifecycle. Operational
@@ -519,7 +661,7 @@ async def run_setup(integration_id: str, req: SetupRequest | None = None):
             ),
         )
 
-    result["steps"]["cf_alias"] = {"ok": True, "skipped": True, "alias": existing_alias}
+    result["steps"]["cf_alias"] = {"ok": True, "skipped": True}
 
     # ── Step 2: Write email back to Notion (shared — both pipelines need this) ─
     fresh = get_page(integration_id) or {}
@@ -581,7 +723,7 @@ async def run_setup(integration_id: str, req: SetupRequest | None = None):
             result["steps"]["status_flip"] = {"ok": True, "new_status": "In Production", "local_only": True}
 
         result["completed"] = True
-        result["page"] = get_page(integration_id)
+        result["page"] = _public_or_none(get_page(integration_id))
         return result
 
     # ── King Maker path (this app handles delivery via R2 + Telegram) ───
@@ -714,7 +856,7 @@ async def run_setup(integration_id: str, req: SetupRequest | None = None):
         }
 
     result["completed"] = True
-    result["page"] = get_page(integration_id)
+    result["page"] = _public_or_none(get_page(integration_id))
     return result
 
 
@@ -747,7 +889,7 @@ async def transition_status(integration_id: str, req: TransitionRequest):
             raise HTTPException(status_code=502, detail=f"Notion update failed: {exc}")
 
     set_page(integration_id, {"status": req.status, "updated_at": _today_utc_iso()})
-    return {"ok": True, "page": get_page(integration_id)}
+    return {"ok": True, "page": _public_or_none(get_page(integration_id))}
 
 
 # ── King Maker workspace ─────────────────────────────────────────────────────
@@ -769,7 +911,7 @@ async def get_workspace(integration_id: str):
         raise HTTPException(status_code=404, detail=f"Page {integration_id} not found")
 
     workspace: dict[str, Any] = {
-        "page": page,
+        "page": public_page(page),
         "r2": {
             "configured": r2.is_configured(),
             "prefix": page.get("r2_prefix"),

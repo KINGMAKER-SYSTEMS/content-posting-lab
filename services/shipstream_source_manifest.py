@@ -11,13 +11,15 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import re
 from dataclasses import dataclass
 from typing import Any, Callable
-from urllib.parse import quote, unquote, urlparse
+from urllib.parse import quote, unquote, urlparse, urlsplit
 
 import httpx
 
+from services.config_errors import ConfigError
 from services.source_dna_registry import (
     SourceDnaLibrary,
     SourceDnaError,
@@ -25,7 +27,9 @@ from services.source_dna_registry import (
 )
 
 
-SHIPSTREAM_ORIGIN = "https://shipstream.risingtidesviral.com"
+# The vault origin comes only from the environment. There is no fallback: an
+# unset or malformed value raises before any vault URL is trusted or fetched.
+SHIPSTREAM_VAULT_ORIGIN_ENV = "SHIPSTREAM_VAULT_ORIGIN"
 MANIFEST_SCHEMA = "shipstream.source-manifest.v1"
 HANDLE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -54,6 +58,26 @@ class ShipStreamSourceUnavailable(ShipStreamSourceError):
 
 class ShipStreamApprovedCutsError(ShipStreamSourceError):
     pass
+
+
+class ShipStreamNotConfigured(ShipStreamSourceUnavailable, ConfigError):
+    """Callers already treat an unavailable vault as fail-closed."""
+
+
+def shipstream_origin() -> str:
+    """Return the configured vault origin, or raise before any network call."""
+    parsed = urlsplit(os.environ.get(SHIPSTREAM_VAULT_ORIGIN_ENV, "").strip())
+    if (
+        parsed.scheme != "https"
+        or not parsed.hostname
+        or parsed.username
+        or parsed.password
+        or parsed.path not in {"", "/"}
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ShipStreamNotConfigured("ShipStream not configured")
+    return f"https://{parsed.netloc.lower()}"
 
 
 @dataclass(frozen=True)
@@ -107,6 +131,7 @@ def _vault_handle(master_pages: dict[str, Any]) -> str:
         raise ShipStreamSourceError("ShipStream page handle is invalid")
     if not isinstance(vault_url, str):
         raise ShipStreamSourceError("ShipStream vault URL is missing")
+    vault_netloc = urlsplit(shipstream_origin()).netloc
     parsed = urlparse(vault_url)
     try:
         path_handle = unquote(parsed.path.removeprefix("/vault/").rstrip("/"))
@@ -114,7 +139,7 @@ def _vault_handle(master_pages: dict[str, Any]) -> str:
         raise ShipStreamSourceError("ShipStream vault URL is invalid") from error
     if (
         parsed.scheme != "https"
-        or parsed.netloc != "shipstream.risingtidesviral.com"
+        or parsed.netloc != vault_netloc
         or not parsed.path.startswith("/vault/")
         or parsed.params
         or parsed.query
@@ -127,7 +152,7 @@ def _vault_handle(master_pages: dict[str, Any]) -> str:
 
 def source_manifest_url(handle: str) -> str:
     key = quote(f"vault/{handle}/source-manifest.json", safe="")
-    return f"{SHIPSTREAM_ORIGIN}/assets/{key}"
+    return f"{shipstream_origin()}/assets/{key}"
 
 
 def _fetch_manifest(url: str) -> bytes:
@@ -420,7 +445,7 @@ def _master_from_page_master(row: Any, handle: str) -> dict[str, Any]:
         # source-floor and cross-page exclusion checks use original time.
         "sourceOffsetMs": source_offset_ms,
         "provenance": {
-            "sourceUrl": source_url or f"{SHIPSTREAM_ORIGIN}/assets/{quote(storage_key, safe='')}",
+            "sourceUrl": source_url or f"{shipstream_origin()}/assets/{quote(storage_key, safe='')}",
             "acquiredAt": registered_at,
             "authority": "ShipStream source-manifest.v1 exact page master",
         },
@@ -459,7 +484,7 @@ def _master_from_historical_cut(row: Any, handle: str, notion_page_id: str) -> d
         "durationMs": _milliseconds(media.get("durationSeconds"), "ShipStream historical source duration"),
         "sourceOffsetMs": 0,
         "provenance": {
-            "sourceUrl": f"{SHIPSTREAM_ORIGIN}/assets/{quote(storage_key, safe='')}",
+            "sourceUrl": f"{shipstream_origin()}/assets/{quote(storage_key, safe='')}",
             "acquiredAt": uploaded_at,
             "authority": (
                 "ShipStream source-manifest.v1 page-bound historical posted cut; "

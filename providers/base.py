@@ -1,9 +1,10 @@
-"""Shared utilities for all video generation providers."""
+"""Shared utilities for generated video and still-backed video providers."""
 
 import asyncio
 import logging
 import os
 import re
+import time
 from pathlib import Path
 
 import httpx
@@ -15,6 +16,90 @@ load_dotenv()
 
 OUTPUT_DIR = Path("output")
 OUTPUT_DIR.mkdir(exist_ok=True)
+
+# Provider artifacts are bounded in bytes and total wall time so a hostile or
+# broken provider/CDN cannot occupy a job forever or fill the shared volume.
+# Two generous defaults; operators may lower either to match their volume.
+_DEFAULT_PROVIDER_DOWNLOAD_BYTES = 2 * 1024 * 1024 * 1024
+_DEFAULT_PROVIDER_DOWNLOAD_SECONDS = 30 * 60
+# Media-like content types a provider artifact is expected to carry. Absent or
+# octet-stream stays allowed (many providers omit or genericize MIME); HTML,
+# JSON and plain text indicate an error page, not an artifact.
+_PROVIDER_ARTIFACT_REJECT_CONTENT_TYPES = {
+    "text/html", "application/json", "text/plain", "application/xml", "text/xml",
+}
+
+
+def _provider_download_limit() -> int:
+    raw = os.getenv("CONTENT_LAB_PROVIDER_DOWNLOAD_BYTES", "").strip()
+    if raw:
+        try:
+            value = int(raw)
+        except ValueError:
+            value = 0
+        if value > 0:
+            return value
+    return _DEFAULT_PROVIDER_DOWNLOAD_BYTES
+
+
+def _provider_download_deadline() -> float:
+    raw = os.getenv("CONTENT_LAB_PROVIDER_DOWNLOAD_SECONDS", "").strip()
+    if raw:
+        try:
+            value = float(raw)
+        except ValueError:
+            value = 0.0
+        if value > 0:
+            return value
+    return _DEFAULT_PROVIDER_DOWNLOAD_SECONDS
+
+
+def _reject_provider_artifact_mime(content_type: str) -> None:
+    """Fail a provider response whose declared type cannot be a media artifact."""
+    base = content_type.split(";", 1)[0].strip().lower()
+    if base in _PROVIDER_ARTIFACT_REJECT_CONTENT_TYPES:
+        raise RuntimeError("provider_artifact_not_media")
+
+
+async def download_media(client: httpx.AsyncClient, url: str, dest: Path):
+    """Download one provider artifact to a local file, bounded in bytes and time.
+
+    Declared and observed byte ceilings, a monotonic whole-download deadline, a
+    ``*.part`` write with fsync/rename, and unconditional partial cleanup mean a
+    drip-fed or oversized response cannot outlive the job or leak partial bytes.
+    """
+    limit = _provider_download_limit()
+    deadline = time.monotonic() + _provider_download_deadline()
+    partial = dest.with_name(dest.name + ".part")
+    partial.unlink(missing_ok=True)
+    try:
+        async with client.stream("GET", url, timeout=120) as resp:
+            resp.raise_for_status()
+            _reject_provider_artifact_mime(resp.headers.get("content-type", ""))
+            declared = resp.headers.get("content-length")
+            if declared is not None:
+                try:
+                    declared_bytes = int(declared)
+                except ValueError:
+                    raise RuntimeError("provider_artifact_content_length_invalid")
+                if declared_bytes < 0 or declared_bytes > limit:
+                    raise RuntimeError("provider_artifact_too_large")
+            total = 0
+            with partial.open("xb") as f:
+                async for chunk in resp.aiter_bytes(8192):
+                    if time.monotonic() > deadline:
+                        raise RuntimeError("provider_artifact_download_timeout")
+                    total += len(chunk)
+                    if total > limit:
+                        raise RuntimeError("provider_artifact_too_large")
+                    f.write(chunk)
+                f.flush()
+                os.fsync(f.fileno())
+        if declared is not None and total != declared_bytes:
+            raise RuntimeError("provider_artifact_size_mismatch")
+        os.replace(partial, dest)
+    finally:
+        partial.unlink(missing_ok=True)
 
 # ---------------------------------------------------------------------------
 # API keys (all optional -- only configured providers appear in /api/providers)
@@ -29,13 +114,26 @@ API_KEYS = {
 FORCE_LANDSCAPE = {"hailuo", "pruna-pvideo"}
 
 
-async def download_video(client: httpx.AsyncClient, url: str, dest: Path):
-    """Download a video from URL to local file."""
-    async with client.stream("GET", url, timeout=120) as resp:
-        resp.raise_for_status()
-        with open(dest, "wb") as f:
-            async for chunk in resp.aiter_bytes(8192):
-                f.write(chunk)
+async def still_to_video(image: Path, dest: Path, duration: int) -> None:
+    """Hold one portrait still without motion in a delivery-compatible MP4."""
+    bounded_duration = max(1, min(int(duration), 30))
+    proc = await asyncio.create_subprocess_exec(
+        "ffmpeg", "-y", "-loop", "1", "-i", str(image),
+        "-t", str(bounded_duration),
+        "-vf",
+        (
+            "scale=1080:1920:force_original_aspect_ratio=increase,"
+            "crop=1080:1920,fps=30,setsar=1,format=yuv420p"
+        ),
+        "-an", "-c:v", "libx264", "-preset", "medium", "-crf", "18",
+        "-movflags", "+faststart", str(dest),
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    _, stderr = await proc.communicate()
+    if proc.returncode != 0 or not dest.is_file() or dest.stat().st_size <= 0:
+        dest.unlink(missing_ok=True)
+        raise RuntimeError(f"ffmpeg still hold failed: {stderr.decode()[-200:]}")
 
 
 async def crop_to_vertical(src: Path) -> None:
@@ -200,6 +298,12 @@ async def multi_crop_vertical(src: Path, mode: str) -> list[Path]:
 # trouble that a retry does fix; one generic label hid that difference.
 _PROVIDER_FAILURE_RULES = (
     ("insufficient_credit", re.compile(r'"status":\s*402|insufficient credit', re.I)),
+    # Provider HTTP 401/403: an account/token action, never retried (like 402).
+    # "Error code: 401" is the shape a provider's own moderation dependency
+    # raised in production (2026-09-25, "Moderation check failed: Error code:
+    # 401 ... deactivated"); it must not fall through to the moderation class.
+    ("provider_auth", re.compile(
+        r'"status":\s*40[13]\b|error code:\s*40[13]\b|unauthenticated|invalid (api )?token', re.I)),
     ("rate_limited", re.compile(r'"status":\s*429|throttled', re.I)),
     ("provider_5xx", re.compile(r'"status":\s*5\d\d', re.I)),
     ("prediction_timeout", re.compile(r"timed out after", re.I)),
@@ -219,6 +323,30 @@ def classify_provider_error(message: object) -> str:
         if pattern.search(text):
             return name
     return "other"
+
+
+_PROVIDER_ERROR_CODE = re.compile(r"\((?:code:\s*)?(E\d{3,4}|PA)\)")
+# The 401/403 a model's own moderation dependency raises inside a prediction
+# (2026-09-25: "Moderation check failed: Error code: 401 ... deactivated") is
+# not our Replicate token, so its detail names that dependency; our own token's
+# 401/403 stays "HTTP 40x". Both fit the #175 detail charset.
+_MODERATION_MODEL_AUTH = re.compile(r"moderation\b.*?\berror code:\s*(40[13])\b", re.I | re.S)
+_PROVIDER_HTTP_STATUS = re.compile(r'"status":\s*(\d{3})|error code:\s*(\d{3})\b', re.I)
+
+
+def provider_error_code(message: object) -> str | None:
+    """Extract a short, non-secret provider code such as ``E005`` or ``HTTP 402``."""
+    text = str(message or "")
+    model_auth = _MODERATION_MODEL_AUTH.search(text)
+    if model_auth:
+        return f"moderation model HTTP {model_auth.group(1)}"
+    code = _PROVIDER_ERROR_CODE.search(text)
+    if code:
+        return code.group(1)
+    status = _PROVIDER_HTTP_STATUS.search(text)
+    if status:
+        return f"HTTP {status.group(1) or status.group(2)}"
+    return None
 
 
 def slugify(text: str, max_len: int = 40) -> str:
@@ -243,7 +371,7 @@ async def generate_one(
     on_complete=None,
     **extra,
 ):
-    """Orchestrate a single video generation: call provider, download, crop.
+    """Generate one delivery video, including a motionless still-backed video.
 
     Args:
         output_dir: Base directory for video files. Defaults to OUTPUT_DIR.
@@ -281,12 +409,22 @@ async def generate_one(
                 **extra,
             }
 
-            video_url = await mod.generate(prompt, params, client)
+            media_url = await mod.generate(prompt, params, client)
 
             filename = f"{job_id}_{index}.mp4"
             dest = sub_dir / filename
             entry["status"] = "downloading"
-            await download_video(client, video_url, dest)
+            if provider_info.get("output_kind") == "image":
+                output_format = str(params.get("output_format") or "jpg")
+                image_name = f"{job_id}_{index}.{output_format}"
+                image_dest = sub_dir / image_name
+                await download_media(client, media_url, image_dest)
+                entry["status"] = "holding"
+                await still_to_video(image_dest, dest, duration)
+                entry["provider_image_file"] = f"{rel_dir}/{image_name}"
+                entry["provider_image_url"] = f"{url_prefix}/{rel_dir}/{image_name}"
+            else:
+                await download_media(client, media_url, dest)
 
             # Multi-crop mode: split one 16:9 into multiple 9:16 crops.
             # Complete-subject dossier recipes instead use ``contain`` so a

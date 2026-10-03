@@ -40,8 +40,12 @@
   and requeues remaining finalizable artifacts at the tail, preventing a large
   batch from blocking a one-output page. A restart safely makes the prior
   runtime's queued sweep eligible for resubmission.
-- Source cut duration accounts for the saved playback speed so both normal and
-  fixed recuts deliver 6-11 seconds; preserve the saved speed and video treatment.
+- Source cut lengths run 5-9 seconds in 0.5-second steps; 9 seconds is the
+  Worker's admission bound and stays the maximum. A length is used only
+  when the delivered clip at the saved playback speed also stays inside that
+  range; a speed no length satisfies (about below 0.56x or above 1.8x) keeps
+  the earlier 6-11 second delivered vocabulary. Jobs queued under the earlier
+  lengths still verify. Preserve the saved speed and video treatment.
   Normalize cut timestamps and extend a fractional missing tail frame to the
   planned output duration; source-window provenance remains unchanged.
 - Source cut planning honors the immutable original 60-second minimum for raw
@@ -79,18 +83,81 @@
   separate browser/machine ingress configuration before release.
 - `services/source_treatment.py` owns actual applied-video provenance emitted by
   generation/source/recovery outputs through `routers/control_plane.py`.
+- `services/generation_recovery.py` owns private provider checkpoints and
+  cross-process generation/store locks. Checkpoints are not admission authority.
 - `services/caption_discipline.py` owns Content Lab's closed validation of the
   caption corpus/register selection already made by Dossier and Control Plane.
 - `services/control_plane_source_imports.py` owns bounded public-HTTPS download,
   exact-byte hashing, media probing, and refillable-master normalization for
   page-scoped source-link intake.
 - `routers/burn.py` exposes caption rendering and final video compositing.
+- `services/roster_public.py` owns what `/api/roster`, `/api/pipeline` and
+  `/api/email` may serialise: an allowlist of roster row fields plus a
+  credential-key scrub (`CredentialGuardRoute`) applied to every response of
+  those routers. `allow_credential_keys` exemptions are pinned by a test and
+  may only echo values the request itself created. The Slack pipeline handoff
+  says "see Notion" instead of carrying the password. Signup email, password, forwarding address, email
+  alias/rule/destination and notes stay in the roster cache and never cross
+  HTTP there. It also owns the roster machine credential (CONTROL_PLANE_TOKEN
+  or APP_API_KEY) required on roster routes no unauthenticated UI calls.
+- `routers/email_routing.py` routes that can change where a page's mail goes
+  (POST /destinations, DELETE /rules/{id}, POST /auto-create) require
+  `require_control_plane_auth` (CONTROL_PLANE_TOKEN only, never the
+  browser-bundled APP_API_KEY; fails closed when unset), normalise the
+  destination once and send that value to Cloudflare, honour the optional EMAIL_DESTINATION_DOMAINS allowlist, and
+  auto-create never re-points an alias a roster page records without
+  `replace: true`. Pipeline mint-alias calls the CF service directly and is
+  not gated by these routes.
+  GET /destinations (the team's real inbox addresses) requires the same
+  credential; only GET /status stays anonymous.
+- `services/slack.py` pipeline handoffs never carry the login email, password
+  or free-text notes; those fields point at Notion.
+- `routers/pipeline.py` /intake refuses (generic 409) an anonymous intake for
+  a handle that already has a roster page (either `acct:` id form) or with a
+  `notion_page_id` of a roster page that is not an unfinished step-1
+  placeholder (placeholder completion must carry its own alias);
+  CONTROL_PLANE_TOKEN may override. `notion_page_id` is canonicalised once
+  (`services.notion_pages.canonical_notion_page_id`, 32 lowercase hex; else
+  400) and that value is used for the check and every Notion call;
+  `_patch_page` refuses non-canonical ids before any request. Alias-collision 409s never echo the alias.
 - `burn_server.py` exposes the same typed caption-render route on the posting
   Mac's canonical port-8002 Burn runtime for Rail consumption.
 - `events.md` is the repository's append-only chronological ledger.
 
 ## Local Contracts
 
+- Caption word count is diagnostic only; never reject or rewrite a caption for exceeding a word-count threshold.
+
+- The `/api/` key middleware (`app.py` `_AUTH_SKIP`) exempts only `/api/health`
+  and `/api/miniapp/*`, which verifies Telegram `initData` itself.
+  `/api/telegram/*` needs the key like every other `/api/` route: the bot
+  long-polls, so there is no webhook route to exempt. The UI sends the key
+  through `frontend/src/lib/api.ts` (`fetchApi` / `withApiKey`).
+- `routers/upload.py` passes the legacy cookie-login account to its static
+  Python subprocess runner as an argv value. Request values must never be
+  interpolated into executable source; the exact account argument is preserved.
+- `POST /api/telegram/send` delivers only a media file whose real path is under
+  `projects/<project>/<videos|clips|burned|recreate|slideshow-images>/` or the
+  legacy `output`/`burn_output` dirs. The volume root beside those dirs holds
+  the roster, cookies and Telegram config and is never sendable.
+  `/send-batch` and `/assign-batch` take one batch-dir segment and skip files
+  that resolve outside it. `routers/video.py` accepts `project` only as one
+  directory name under the projects root and checks containment on real paths.
+- Path containment uses `services.fsutil.is_within` (real paths, component-wise),
+  never a string prefix: project `p` is a string prefix of
+  `projects/page_roster.json`. `/api/burn/overlay` also takes `batchId` as one
+  directory name. While APP_API_KEY is unset these server-side checks are the
+  only guard on `/api/*`.
+- Clipper upload, streaming upload, delete, rename and download-all accept
+  single-component job IDs, including legacy and caller-supplied names, only as
+  resolved non-symlink direct children of the project's clip directory. Path
+  errors return 400; missing jobs on management routes retain 404.
+- `project_manager.is_reserved_volume_dir` names the service-state dirs on the
+  projects volume (`_post_render`, `control_plane_generated`,
+  `control_plane_recipes`, `agenticnews_assets`, `lost+found`, and any name
+  starting with `_`). `sanitize_project_name` refuses them, project listings
+  skip them, and `/send` never serves from them. Put new private volume roots
+  under a leading-underscore name.
 - Format-contract HTTP reads use a separate two-permit thread limiter, not the
   shared synchronous endpoint pool. Preserve per-request registry validation,
   authentication, current-file visibility and fail-closed errors; disk reads
@@ -101,6 +168,12 @@
 - Recipe listing reuses unchanged file bytes after checking every current file's
   inode, size and timestamps; additions, edits and removals apply on the next read.
   Callers receive independent matching rows, not mutable shared cache entries.
+- A registered recipe tuple's bytes are immutable: different bytes under the
+  same page/recipe/engine/version remain a 409. Byte-identical bytes from a
+  later Dossier lock succeed and advance the stored dossier revision and
+  idempotency key atomically, keeping the superseded pairs in
+  `priorRegistrations`; replaying any known pair returns success without a
+  rewrite. Jobs keep the revision they were created under.
 - Capability planning shares one read-only job-history snapshot per unchanged
   file identity. Job creation/progress/admission still load fresh mutable data
   under their existing transaction lock; never mutate the capability snapshot.
@@ -112,6 +185,9 @@
 - Caption rendering accepts the shared `CaptionStyle` wire fields only. A saved
   caption layout may supply exact line breaks and final-frame outline width;
   otherwise the established outline remains 3 px at 1080x1920.
+  Explicit `inverted: false` is the existing upright render, byte-identical to
+  an absent transform. This compatibility does not enable inversion or rewrite
+  the immutable slot/treatment JSON and hashes.
 - Dossier recipe v4 is the executable v3 production selection plus the exact
   Control Plane `captionDiscipline` wire object. Content Lab validates and
   preserves that immutable selection; it does not choose a corpus, sentiment,
@@ -135,16 +211,44 @@
   Every sourced-video capability also returns the unique immutable source URLs
   used by those masters so Control Plane can exclude already-used cross-page
   windows before it creates paid work.
-  Active jobs reserve their windows across recipe revisions. Completed outputs
-  reserve windows for the exact locked recipe that produced them; a later locked
-  recipe may recut those page-bound windows with its new treatment and provenance.
-  Exhausted libraries remain visible with `maxQuantity: 0` so Control Plane can
-  distinguish source exhaustion from an unregistered recipe. Job creation
+  A source window is a time frame: master SHA, start and length. Every
+  whole-second start (plus one ending on the last frame) at every allowed
+  length is a distinct clip. Queued, running and completed jobs reserve their
+  exact time frames across recipe revisions and library versions of the same
+  master bytes, so a new recipe cuts new time frames instead of re-cutting
+  delivered ones; failed jobs release theirs. Each reserved time frame keeps
+  when it was cut (job completedAt, else createdAt; archived as `usedAt`). Re-cut variety (operator rule 2026-09-30): every plan goes
+  through `plan_source_cuts`, which prefers never-cut footage, then a start far
+  from the master's last few starts, then a length unlike its last few
+  lengths, then the least recently cut footage, then a per-job seed recorded
+  as `cutPlanSeed`; one plan never holds two overlapping cuts of one master.
+  The first cut on a master uses the page's Cut length, and a cut repeats the
+  master's last length only when nothing else fits. A window is never cut
+  twice (that would render bytes the Worker refuses as a repeat): once every
+  whole-second start x length is cut, starts move inside the second (half a
+  second, then a quarter and three quarters). Masters carry no verified frame
+  rate, so starts stay at least 250 ms apart and a window counts as cut when an
+  earlier cut of the same length starts under 250 ms away. When every such
+  window is cut, capability `maxQuantity` is 0 and job creation answers 409
+  `source_windows_exhausted`: the page needs new footage. The other named
+  409s are `source_master_too_short` and `source_windows_reserved_by_other_pages`
+  (other pages' reservations arrive only with a job, so capability does not
+  count them). A plan that cannot fit another never-cut window beside its
+  other cuts ends short. Recency and variety are per master, across every page
+  that cut it. `tests/test_source_cut_path_census.py`
+  fails any new path that builds source cuts without the planner. Job creation
   remains exact and all-or-nothing; it never silently returns fewer clips than
   requested.
-  Capability reads fail queued or running async jobs owned by an older process
-  runtime before calculating capacity, so abandoned work cannot reserve finite
-  source windows.
+- Job `constraints` accepts `sourceWindowExclusions` and `priority`
+  (`"low_runway"`); unknown keys and values are ignored and kept on the job,
+  never an error. The Lab starts every job at creation, so ordering by
+  priority is the Worker's job. Capabilities add `supportedConstraints` only
+  with `CONTENT_LAB_ADVERTISE_SUPPORTED_CONSTRAINTS` set, because the
+  deployed Worker rejects unknown capabilities fields.
+  Legacy async jobs without recoverable checkpoints fail closed after runtime
+  replacement; generated jobs with durable provider identity retain their
+  original prompt reservations while the same job resumes. Source-window
+  reservation and source-import restart rules remain independent.
 - `POV — Scenic` is commissioned through the same page-scoped source recut
   executor as Night Core and Dirtbike. It may use only the exact source library
   bound to that Master Pages row; it may not borrow another page's footage or
@@ -188,6 +292,9 @@
   style: font, size, color, position, alignment, and line balance.
 - Resolve fonts only from Content Lab's installed, advertised TikTokSans files.
   Unsupported, missing, or unreadable font bytes fail closed.
+- `/fonts` supplies explicit font MIME types and strong SHA-256 ETags, with a
+  one-day public cache or one year immutable for a matching 8+ hex `?v=` hash prefix.
+  Digest reuse is bounded to 128 file identities; changed bytes revalidate.
 - Explicit caption line breaks must survive rendering. The line-balance control
   may add balanced breaks inside each explicit line but may not remove an
   explicit break or change word order.
@@ -198,6 +305,11 @@
   alignment, and offset instead of forcing every page back to that legacy look.
 - Do not publish or queue a TikTok post from Content Lab without explicit user
   authorization.
+- The Pipeline intake password comes only from the server-side
+  `DEFAULT_INTAKE_PASSWORD`, read per request. Unset or blank makes
+  `/api/pipeline/mint-alias` and `/intake` return 503
+  `intake_password_not_configured` before any alias, Notion or roster write.
+  Never add a fallback default or ship an account password in the frontend.
 - The machine roster refresh and roster snapshot share one sanitized canonical
   Master Pages projection. Refresh returns that projection's exact count and
   full SHA-256 content hash plus a server-owned completeness flag; consumers may perform
@@ -209,8 +321,11 @@
   request. The source must already have the requested video grade, speed and
   crop, proven by source-bound applied-video evidence. Caption style belongs to
   final rendering and may change without regenerating an otherwise matching
-  source. Unknown or different video provenance requires regeneration. This renderer adds the typed caption and
-  delivery encoding only; it never repeats grade, crop or speed.
+  source. Unknown or different video provenance requires regeneration. This renderer adds the typed caption,
+  the page frame's letterbox and delivery encoding only; it never repeats grade, crop or speed.
+  An optional slot-treatment `frame` (16:9, 1:1, 3:4, 4:3; absent or 9:16 is full-bleed) keeps
+  the centred band of the 1080x1920 picture on plain black and draws the caption in the middle.
+  The frame is not source treatment: existing sources stay reusable when a page changes frame.
 - Prepared artifacts require source-byte verification and upright square-pixel
   near-9:16 input at least 1080 pixels high. Exact and chroma-aligned frames
   scale directly; native provider frames within three percent of 9:16 are
@@ -247,6 +362,12 @@
 - `services.ffmpeg.run_color_correct` serializes its ffmpeg subprocesses within
   each service process so simultaneous asynchronous refill jobs cannot exhaust
   container memory during 1080x1920 libx264 encoding.
+  For PQ (`smpte2084`) or HLG (`arib-std-b67`) inputs, restore only the probed
+  colour tags after the RGB round trip, preserving the source matrix. Missing
+  or unknown fields stay unknown; never infer BT.2020 primaries or limited
+  range from transfer alone. Other/unknown transfers keep the existing encode
+  arguments. The bounded local colour probe runs off the event loop, and this
+  metadata repair does not add tone-mapping or repeat video treatment.
 - Durable preparation is exposed at `/api/control-plane/v1/post-renders`.
   Every request requires the existing control-plane bearer and exact
   `X-RT-Page-Id`; enqueue also requires `Idempotency-Key`. Status, retries,
@@ -296,11 +417,46 @@
   provider, model, call index, prediction id, bounded detail) in the job store
   only; the Control Plane's strict status schema is unchanged.
 - AI generation reserves prompt combinations only for queued or running jobs.
-  A later provider failure preserves already treated, claimed outputs as a
+  A confirmed Replicate moderation refusal (class `moderation`, prediction id,
+  "Replicate failed:") retains its prediction. Only an exact E005 refusal
+  (with no embedded HTTP status) may be retried, at most twice
+  for that planned call (`services/moderation_retry.py`), each time with the
+  next fixed, deterministic prompt rewording; provider, model, safety settings
+  and the immutable prompt plan never change and no alternate engine is used.
+  Other moderation-class text (a 429/5xx from the provider's moderation
+  dependency, failed-prediction logs that mention "safety") is never retried.
+  Any standalone 4xx/5xx number in the message outside a URL (`Error code: 503`,
+  `429 Too Many Requests`, `HTTP Error 503`, `{"code": 500}`, `status_code=429`,
+  …) blocks the retry even when `(E005)` is present; the real E005 message
+  carries no number.
+  A rewording never adds a subject the prompt lacks: person wording applies
+  only to prompts that depict people, and a person term preceded in its clause
+  by a negation ("no people", "without any people", "free of people") does not
+  count; "figure(s)" and "body/bodies" are not person terms. The per-attempt cost table is
+  pinned equal to the `recipes/generation` catalog by a test.
+  Retries draw on a per-page UTC-day budget
+  (`CONTENT_LAB_MODERATION_RETRY_DAILY_BUDGET`, default 6, 0 disables),
+  counted from every job's durable `generationAttempts` rows; first attempts
+  never consume it. Each retry has its own prediction checkpoint key `i:k`.
+  A retried clip records the sent `promptHash`, the plan's `basePromptHash`
+  and `promptVariant`; recovery accepts a variant hash only from a succeeded
+  attempt row of that call. Each attempt records its estimated cost, and the
+  job keeps `moderationRetryCostUsd`. When retries or budget are spent (or the
+  refusal is not an exact E005), the refusal stays
+  terminal with a named `terminal` reason in `providerFailures`, and only the
+  other distinct candidates of the original plan continue; the status contract
+  is unchanged. Persist every failure in the private job store and count only
+  successful calls as completed. Credit (402), provider auth (401/403,
+  including "Error code: 401" raised inside the moderation check, whose
+  errorDetail is `moderation model HTTP 401`/`403` so it is not read as our
+  token; our own token keeps `HTTP 401`/`403`), transport,
+  ambiguous submission and other failures are never retried and still stop the
+  remaining plan.
+  Provider failures preserve already treated, claimed outputs as a
   completed underfilled batch, retaining the provider error and planned/completed
   call counts. Artifact count stays truthful; downstream refill plans the deficit
-  with a new job rather than replaying the failed provider call. Zero-output
-  failures, cancellation and changed page strategy retain their failure behavior.
+  with a new job rather than replaying the failed provider call. All-zero-output
+  failures, explicit cancellation and changed page strategy retain their failure behavior.
   Final clip admission applies the same active-only prompt rule while retaining
   completed output SHA rejection and within-job prompt exclusion.
   Completed prompts remain approved inputs for fresh rendering; prompt text is
@@ -308,6 +464,40 @@
   idempotent replay returns the original job and downstream output-byte checks
   continue to prevent duplicate asset admission. Source-video window reservations
   remain unchanged.
+- New Replicate generation jobs durably record submission intent before the
+  request and the accepted prediction id before polling. Resumption validates
+  the exact model/input hash and polls that same id; an intent with no known id
+  is ambiguous and must never be submitted again. The existing one-time PA
+  interruption retry remains bounded across restarts. Processing deadlines do
+  not reset; an already-completed prediction may still be read after downtime.
+- Application shutdown pauses checkpointed generation instead of deleting its
+  paid artifacts. Authenticated, exact-page status/idempotency reads resume the
+  same active job after replacement. A kernel-held per-job lock prevents two
+  runtimes driving it, and the existing JSON transaction lock also serializes
+  cross-process writers. Lock-file presence alone is not ownership. Explicit
+  cancellation and legacy jobs without checkpoints remain terminal.
+- Recovery verifies preserved artifact paths, sizes and hashes and rechecks
+  the current page intent, recipe and executor. Completed calls/crop sets are
+  retained exactly; unfinished candidates render into a separate directory so
+  they cannot overwrite claimed bytes. Incomplete crop sets are never admitted
+  as complete calls. Corrupt recovery evidence remains private for inspection;
+  it is not served or replaced by fresh paid work. No provider safety, caption,
+  sound, treatment, public status schema or downstream QA rule changes.
+- `silhouette-truck` is a still-first format. FLUX.2 Pro creates one native 9:16
+  photograph of exactly two embracing adult silhouettes beside one complete
+  pickup in a field; WAN/I2V, anchor drift, and synthetic motion are not legal
+  substitutes. Retain the exact provider image and its hash in the artifact
+  manifest, then hold that image without pan, zoom, or interpolation in a
+  seven-second 1080x1920 MP4 so the existing caption, sound, QA, and posting
+  contracts remain unchanged.
+- `recipes/generation/silhouette_stills.v1.json` versions only the silhouette
+  replacement. Keep the shared prompt catalog and unrelated format/profile
+  versions unchanged so switching silhouettes does not invalidate other pages.
+
+- Boat pages use varied MiniMax/Hailuo text-to-video with the existing five-way
+  dual-plus-triptych crop, without a fixed boat-image anchor. The scoped
+  `recipes/generation/boat_minimax.v1.json` changes only boat generation;
+  preserve unrelated prompt/provider versions and use the existing boat inventory.
 
 ## Work Guidance
 
@@ -323,6 +513,18 @@
 
 ## Verification
 
+- Run `pytest -q tests/test_font_static_headers.py tests/test_static_path_confinement.py`
+  for font MIME/cache headers, changed-byte validators and static path containment.
+- Run `pytest -q tests/test_hdr_color_matrix.py tests/test_ffmpeg_cc.py tests/test_ffmpeg_encode_timeout.py`
+  for PQ/HLG metadata preservation, unchanged SDR arguments, decoded pixel
+  parity, probe offloading, and bounded encode cleanup. The self-contained
+  HDR encode cases need only ffmpeg/ffprobe; real-master cases additionally
+  use the optional `HDR_FIXTURES_DIR` fixture directory.
+
+- Run `pytest -q tests/test_upload_login_account_data.py tests/test_upload_api.py tests/test_upload_cookies.py`
+  for literal account transport, injected expressions, login failure responses
+  and existing upload/cookie behavior without launching a browser.
+
 - Run `pytest -q tests/test_visual_admission.py` for observed boat-frame OCR
   noise, short readable text, rotated single-frame text, complete coverage,
   unavailable providers, exact-byte binding, and cached-decision behavior.
@@ -330,10 +532,21 @@
 - Run `pytest -q tests/test_production_image_imports.py` for isolated imports from
   the Dockerfile's backend file selection. Build the Docker image for release;
   its app-import smoke check must pass before deployment.
+- Run `pytest -q tests/test_generation_restart_recovery.py tests/test_replicate_generation_retry.py`
+  for paid-request identity, ambiguous submission, shutdown, crop recovery,
+  processing deadlines and cross-process checkpoint transaction checks.
+- Run `pytest -q tests/test_generation_moderation_retry.py tests/test_generation_moderation_isolation.py`
+  for bounded varied moderation retries, the daily retry budget, fail-fast
+  credit/auth classes and restart of a retried call.
 - Run `pytest -q tests/test_post_render_jobs.py tests/test_source_treatment.py`
   for durable crash/retry/lock/auth/source-grant and applied-video provenance checks.
 - Run `pytest -q tests/test_post_render.py` for prepared rendering, actual MP4
   decode, treatment-once preservation, byte-budget retry and bounded failures.
+
+- Run `pytest -q tests/test_no_shipped_default_password.py` after `npm run build`
+  in `frontend/`; it fails if a retired credential (stored only as a SHA-256
+  digest) appears in backend or other repository sources or the built bundle.
+  Run `pytest -q tests/test_pipeline_api.py` for the intake-password 503 path.
 
 - Run `pytest -q tests/test_caption_render_contract.py` for the typed caption
   contract and `pytest -q tests/test_burn_and_captions_api.py` for Burn API
