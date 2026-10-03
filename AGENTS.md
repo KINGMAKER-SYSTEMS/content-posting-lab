@@ -202,7 +202,8 @@
   Source-manifest reads are hard size-bounded; transport failure is reported as
   unavailable rather than falsely reported as missing. The selected Content
   Lab format must match the Master Pages niche before a source is displayed or
-  executed.
+  executed. The Master Pages Notion page id itself must be nonblank; a null id
+  never matches omitted manifest fields or establishes exact-page authority.
 - Capability and job execution dispatch only to the resolver named by the
   publication's closed content engine. A sourced-video publication never probes
   the AI-video resolver, and an unknown engine exposes no executor.

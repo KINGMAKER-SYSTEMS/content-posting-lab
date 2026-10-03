@@ -409,6 +409,30 @@ def test_page_and_master_pages_drift_fails_closed(path, value):
         )
 
 
+@pytest.mark.parametrize("notion_page_id", [None, "", " "])
+@pytest.mark.parametrize("omit_manifest_ids", [False, True])
+def test_missing_master_pages_notion_id_cannot_establish_page_authority(
+    notion_page_id, omit_manifest_ids,
+):
+    intent, _ = _intent()
+    intent["notionPageId"] = notion_page_id
+    manifest = _historical_manifest()
+    manifest["notion"]["pageId"] = notion_page_id
+    manifest["sourceAuthority"]["notionPageId"] = notion_page_id
+    for row in manifest["historicalPostedCuts"]:
+        row["notionPageId"] = notion_page_id
+    if omit_manifest_ids:
+        manifest["notion"].pop("pageId")
+        manifest["sourceAuthority"].pop("notionPageId")
+        for row in manifest["historicalPostedCuts"]:
+            row.pop("notionPageId")
+
+    with pytest.raises(ShipStreamSourceError, match="Notion page ID is missing"):
+        parse_shipstream_source_manifest(
+            _raw(manifest), intent, page_id=PAGE_ID, expected_format=FORMAT,
+        )
+
+
 def test_loader_uses_only_the_master_pages_vault_handle():
     intent, _ = _intent()
     calls = []

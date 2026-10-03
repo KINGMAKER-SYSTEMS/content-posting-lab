@@ -513,6 +513,8 @@ def parse_shipstream_source_manifest(
     authority = value.get("sourceAuthority") if isinstance(value, dict) else None
     format_slug = value.get("format") if isinstance(value, dict) else None
     notion_page_id = master_pages.get("notionPageId")
+    if not _nonblank(notion_page_id):
+        raise ShipStreamSourceError("Master Pages Notion page ID is missing")
     exact_page_authority = (
         isinstance(authority, dict)
         and (
