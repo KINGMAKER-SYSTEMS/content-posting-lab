@@ -292,6 +292,9 @@
   style: font, size, color, position, alignment, and line balance.
 - Resolve fonts only from Content Lab's installed, advertised TikTokSans files.
   Unsupported, missing, or unreadable font bytes fail closed.
+- `/fonts` supplies explicit font MIME types and strong SHA-256 ETags, with a
+  one-day public cache or one year immutable for a matching 8+ hex `?v=` hash prefix.
+  Digest reuse is bounded to 128 file identities; changed bytes revalidate.
 - Explicit caption line breaks must survive rendering. The line-balance control
   may add balanced breaks inside each explicit line but may not remove an
   explicit break or change word order.
@@ -510,6 +513,8 @@
 
 ## Verification
 
+- Run `pytest -q tests/test_font_static_headers.py tests/test_static_path_confinement.py`
+  for font MIME/cache headers, changed-byte validators and static path containment.
 - Run `pytest -q tests/test_hdr_color_matrix.py tests/test_ffmpeg_cc.py tests/test_ffmpeg_encode_timeout.py`
   for PQ/HLG metadata preservation, unchanged SDR arguments, decoded pixel
   parity, probe offloading, and bounded encode cleanup. The self-contained
