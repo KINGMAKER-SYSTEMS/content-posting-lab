@@ -1,0 +1,73 @@
+# Prepared rendering setup
+
+The hosted `python main.py` service owns durable final-render jobs. It fetches
+an already-approved source from the Worker's pending-artifact grant, renders the
+selected caption once, and serves hash-bound final/QA/receipt files. It neither
+claims a phone nor starts posting.
+
+Configure these values only as part of an authorized service release:
+
+| Setting | Purpose |
+| --- | --- |
+| `CONTENT_LAB_POST_RENDER_ROOT` | Absolute private directory on persistent storage; for the existing Railway `/app/projects` volume, use a dedicated directory such as `/app/projects/_post_render`. Blank leaves the preparation workers stopped. |
+| `CONTENT_LAB_POST_RENDER_SOURCE_ORIGIN` | `https://content-buckets.risingtidesviral.com`, the machine ingress for `/api/control-plane/v1/service/posting/v1/artifacts/.../source`. Required; no browser-origin fallback. |
+| `CONTENT_LAB_POST_RENDER_WORKERS` | Concurrent render workers (threads and lock permits). Optional; default `2`, clamped to `1..4`. An unset, blank, non-integer, or out-of-range value falls back to `2` with a logged warning. Each worker can run a concurrent `ffmpeg` process, so raise this only after confirming the target Railway instance has the CPU headroom for that many concurrent encodes. |
+| `CONTENT_LAB_POST_RENDER_RETIRE_AFTER_MS` | Safety window before acknowledged successful media is retired. Optional; default 24 hours. The verified receipt/final/QA hash authority remains in SQLite. |
+| `CONTENT_LAB_POST_RENDER_MIN_FREE_BYTES` | Free bytes that must remain after reserved render workspace. Optional; default 1 GiB. Admission additionally reserves 1,140,151,642 bytes per configured worker; unreadable filesystem capacity fails closed with `post_render_free_space_unavailable`. |
+| `CONTROL_PLANE_SERVICE_ID` | Existing Worker service identity, currently `gutenberg-shipstream`; it must retain the relevant scheduler lane and page grants. |
+| `CONTROL_PLANE_SERVICE_SECRET` | The same machine credential held by the Worker. Provision it through the service secret store; never put its value in source, examples or logs. |
+| `CONTROL_PLANE_TOKEN` | Existing inbound Lab bearer, matching Worker's `CONTENT_LAB_TOKEN`. Every render endpoint also requires the exact `X-RT-Page-Id`. |
+
+Keep `CONTENT_LAB_CONTROL_PLANE_ORIGIN=https://control.risingtidesviral.com`
+for existing `/api/control-plane/v1/pages/...` source-media reads. Those routes
+use the browser ingress. Repointing this shared setting to the machine host
+would break existing source generation. If the Lab's optional `APP_API_KEY`
+middleware is enabled separately, the Worker also needs the matching
+`CONTENT_LAB_API_KEY` for its `X-Api-Key` header.
+
+The render root holds SQLite WAL state, locks, attempts and final artifacts.
+Use one persistent volume with ordinary file-lock semantics; do not put the
+root in the image's temporary filesystem or share it through storage lacking
+those semantics. The service creates private subdirectories and starts two
+bounded workers. Restart preserves the same remote job and recovers completed
+outputs before rendering again.
+
+Retention never deletes no-repeat authority: every `jobs` row (request/slot
+binding, counters, and receipt/final/QA hashes) and every `idempotency` row is
+permanent. Failed or interrupted attempt media is diagnostic and is removed
+after 24 hours. Non-authoritative `attempts` and `provenance_updates` history is
+removed after 30 days, after which the service checkpoints the SQLite WAL.
+
+The per-worker 1,140,151,642-byte peak reserve is derived from two simultaneous
+512 MiB source files (the authenticated download and renderer verification
+copy), a bounded 16 MiB overlay, its base64-bearing caption JSON, one 22 MiB
+final, one 2 MiB QA frame, and bounded request/receipt/decode metadata. A retry
+removes its first final before writing another. The claim gate reserves that
+peak for every configured worker in addition to the retained free-space floor;
+it does not start work when filesystem free space cannot be measured.
+
+The production Railway target is project `f512351a-26a8-4c33-98ef-eddd2f48c11e`,
+environment `99ff0f13-254f-4bf2-960a-134f4f2e0e0f`, service
+`a6dcd562-df4c-4ae1-a4e6-414f0d61b74c`. Use these explicit selectors when
+inspecting release state; a checkout's default Railway link may name another
+project. The application path is `/app`, its start command is `python main.py`,
+and the persistent volume is mounted at `/app/projects`.
+
+Before connecting a canary, integrate and validate current Lab and Worker
+source, verify the actual running Lab revision and mounted root, and apply the
+separately authorized Worker migration/configuration release. Worker preparation
+remains off until explicitly enabled. A healthy `/api/health` response alone
+does not establish that the render router, source grant or durable workers are
+available. Verify authenticated page-bound status and an authorized preparation
+job through actual final-byte admission before allowing phone execution.
+
+Historical assets without genuine applied-video treatment evidence still need
+regeneration. New generation emits that evidence; final rendering compares the
+video treatment and adds only the caption and delivery encode. Neither setup
+nor a successful render invents provenance for old bytes or authorizes a post.
+
+Offline verification:
+
+```sh
+python3 -m pytest -q tests/test_post_render_jobs.py tests/test_post_render.py tests/test_source_treatment.py tests/test_control_plane_dossier_execution.py tests/test_control_plane_source_execution.py
+```

@@ -31,6 +31,15 @@ import routers.control_plane as cp
 from routers.control_plane import router
 
 
+ROSTER_TOKEN = "test-control-plane-token"
+
+
+@pytest.fixture(autouse=True)
+def configured_roster_auth(monkeypatch):
+    monkeypatch.setenv("CONTROL_PLANE_TOKEN", ROSTER_TOKEN)
+    monkeypatch.delenv("APP_API_KEY", raising=False)
+
+
 @pytest.fixture
 def client(monkeypatch, tmp_path):
     monkeypatch.setattr(roster, "ROSTER_PATH", tmp_path / "page_roster.json")
@@ -49,6 +58,13 @@ def _seed(**pages):
     roster.save_roster(data)
 
 
+def _roster_headers(lane="warner"):
+    return {
+        "X-RT-Lane": lane,
+        "Authorization": f"Bearer {ROSTER_TOKEN}",
+    }
+
+
 NOTION_ROW = {
     "name": "truck.tok.daily",
     "provider": "tiktok",
@@ -64,7 +80,7 @@ NOTION_ROW = {
     "source": "notion",
     "content_engine": "ai_video",
     "automation_mode": "Automation",
-    "vault_url": "https://shipstream.risingtidesviral.com/vault/truck.tok.daily",
+    "vault_url": "https://shipstream.test/vault/truck.tok.daily",
     "pipeline": "Flow Stage",
     "sounds_reference": "https://example.com/sounds/trucks",
     "archived": False,
@@ -76,17 +92,68 @@ NOTION_ROW = {
 }
 
 
+def test_roster_snapshot_rejects_lane_only_when_control_plane_token_is_configured(
+    client,
+):
+    response = client.get(
+        "/api/control-plane/v1/roster",
+        headers={"X-RT-Lane": "content-bucket-control-plane"},
+    )
+    assert response.status_code == 401
+
+
+def test_roster_snapshot_accepts_control_plane_bearer_without_changing_body(
+    client,
+):
+    _seed(**{"acct:truck-tok-daily": dict(NOTION_ROW)})
+    expected = cp.roster_snapshot(x_rt_lane="content-bucket-control-plane")
+
+    response = client.get(
+        "/api/control-plane/v1/roster",
+        headers=_roster_headers("content-bucket-control-plane"),
+    )
+
+    assert response.status_code == 200
+    assert response.json() == expected
+
+
+def test_roster_snapshot_rejects_wrong_bearer(client):
+    response = client.get(
+        "/api/control-plane/v1/roster",
+        headers={
+            "X-RT-Lane": "content-bucket-control-plane",
+            "Authorization": "Bearer wrong-token",
+        },
+    )
+    assert response.status_code == 401
+
+
+def test_roster_snapshot_fails_closed_without_configured_credentials(client, monkeypatch):
+    monkeypatch.delenv("CONTROL_PLANE_TOKEN", raising=False)
+    monkeypatch.delenv("APP_API_KEY", raising=False)
+    response = client.get(
+        "/api/control-plane/v1/roster",
+        headers={"X-RT-Lane": "content-bucket-control-plane"},
+    )
+    assert response.status_code == 503
+
+
 def test_requires_lane_header(client):
-    assert client.get("/api/control-plane/v1/roster").status_code == 400
+    assert client.get(
+        "/api/control-plane/v1/roster",
+        headers={"Authorization": f"Bearer {ROSTER_TOKEN}"},
+    ).status_code == 400
 
 
 def test_snapshot_carries_the_ontology_and_only_the_ontology(client):
     _seed(**{"acct:truck-tok-daily": dict(NOTION_ROW)})
-    res = client.get("/api/control-plane/v1/roster", headers={"X-RT-Lane": "warner"})
+    res = client.get("/api/control-plane/v1/roster", headers=_roster_headers())
     assert res.status_code == 200
     body = res.json()
     assert body["schema"] == "content-lab.response.v1"
     assert body["snapshotVersion"].startswith("r")
+    assert body["projectionHash"].startswith("sha256:")
+    assert len(body["projectionHash"]) == 71
 
     [page] = body["pages"]
     assert page["pageId"] == "acct:truck-tok-daily"
@@ -99,7 +166,7 @@ def test_snapshot_carries_the_ontology_and_only_the_ontology(client):
     assert page["source"] == "notion"
     assert page["contentEngine"] == "ai_video"
     assert page["automationMode"] == "Automation"
-    assert page["vaultUrl"] == "https://shipstream.risingtidesviral.com/vault/truck.tok.daily"
+    assert page["vaultUrl"] == "https://shipstream.test/vault/truck.tok.daily"
     assert page["pipeline"] == "Flow Stage"
     assert page["archived"] is False
 
@@ -110,7 +177,7 @@ def test_snapshot_carries_the_ontology_and_only_the_ontology(client):
 
 def test_null_fields_are_explicit_never_dropped(client):
     _seed(**{"acct:bare": {"name": "bare.page", "source": "notion", "project": None, "group": None}})
-    res = client.get("/api/control-plane/v1/roster", headers={"X-RT-Lane": "warner"})
+    res = client.get("/api/control-plane/v1/roster", headers=_roster_headers())
     [page] = res.json()["pages"]
     for field in ("group", "groupLabel", "pageType", "accountType", "posterName",
                   "status", "project", "tiktokUrl", "notionPageId",
@@ -124,37 +191,37 @@ def test_null_fields_are_explicit_never_dropped(client):
 
 def test_version_is_a_content_hash_not_a_counter(client):
     _seed(**{"acct:a": {"name": "a.page", "source": "notion"}, "acct:b": {"name": "b.page", "source": "notion"}})
-    first = client.get("/api/control-plane/v1/roster", headers={"X-RT-Lane": "warner"}).json()
-    again = client.get("/api/control-plane/v1/roster", headers={"X-RT-Lane": "warner"}).json()
+    first = client.get("/api/control-plane/v1/roster", headers=_roster_headers()).json()
+    again = client.get("/api/control-plane/v1/roster", headers=_roster_headers()).json()
     assert first["snapshotVersion"] == again["snapshotVersion"]
 
     _seed(**{"acct:a": {"name": "a.page", "source": "notion"}, "acct:b": {"name": "b.page", "source": "notion", "group": "WARNER"}})
-    changed = client.get("/api/control-plane/v1/roster", headers={"X-RT-Lane": "warner"}).json()
+    changed = client.get("/api/control-plane/v1/roster", headers=_roster_headers()).json()
     assert changed["snapshotVersion"] != first["snapshotVersion"]
 
 
 def test_pages_are_deterministically_ordered(client):
     _seed(**{"acct:z": {"name": "z", "source": "notion"}, "acct:a": {"name": "a", "source": "notion"}, "acct:m": {"name": "m", "source": "notion"}})
-    pages = client.get("/api/control-plane/v1/roster", headers={"X-RT-Lane": "warner"}).json()["pages"]
+    pages = client.get("/api/control-plane/v1/roster", headers=_roster_headers()).json()["pages"]
     assert [p["pageId"] for p in pages] == ["acct:a", "acct:m", "acct:z"]
 
 
 def test_rows_without_stable_identity_never_cross(client):
     data = {"version": 1, "pages": {"row-no-name": {"integration_id": "row-no-name", "source": "notion"}}}
     roster.save_roster(data)
-    pages = client.get("/api/control-plane/v1/roster", headers={"X-RT-Lane": "warner"}).json()["pages"]
+    pages = client.get("/api/control-plane/v1/roster", headers=_roster_headers()).json()["pages"]
     assert pages == []
 
 
 def test_captured_at_is_the_cache_mtime_not_the_request_clock(client):
     _seed(**{"acct:a": {"name": "a.page", "source": "notion"}})
-    body = client.get("/api/control-plane/v1/roster", headers={"X-RT-Lane": "warner"}).json()
+    body = client.get("/api/control-plane/v1/roster", headers=_roster_headers()).json()
     mtime = os.path.getmtime(roster.ROSTER_PATH)
     assert abs(body["capturedAt"] and __import__("datetime").datetime.fromisoformat(body["capturedAt"]).timestamp() - mtime) < 1
 
 
 def test_empty_cache_is_an_empty_snapshot_not_an_error(client):
-    body = client.get("/api/control-plane/v1/roster", headers={"X-RT-Lane": "warner"}).json()
+    body = client.get("/api/control-plane/v1/roster", headers=_roster_headers()).json()
     assert body["pages"] == []
     assert body["capturedAt"] is None
     assert body["snapshotVersion"].startswith("r")
@@ -168,14 +235,14 @@ def test_legacy_operator_rows_do_not_enter_the_master_pages_projection(client):
         },
     )
     pages = client.get(
-        "/api/control-plane/v1/roster", headers={"X-RT-Lane": "warner"},
+        "/api/control-plane/v1/roster", headers=_roster_headers(),
     ).json()["pages"]
     assert [page["pageId"] for page in pages] == ["acct:notion"]
 
 
 def test_snapshot_carries_the_content_niche(client):
     _seed(**{"acct:truck-tok-daily": dict(NOTION_ROW, content_niche="TRUCK")})
-    res = client.get("/api/control-plane/v1/roster", headers={"X-RT-Lane": "warner"})
+    res = client.get("/api/control-plane/v1/roster", headers=_roster_headers())
     [page] = res.json()["pages"]
     assert page["contentNiche"] == "TRUCK"
 
@@ -188,10 +255,10 @@ def test_current_intent_rebinds_one_notion_identity_to_the_operational_rail_page
         content_niche="POV — Night Core",
         content_engine="sourced_video",
         notion_page_id="3281465b-b829-807d-b852-dffeb7a48468",
-        vault_url="https://shipstream.risingtidesviral.com/vault/miles.of.memories77",
+        vault_url="https://shipstream.test/vault/miles.of.memories77",
     )})
     snapshot = client.get(
-        "/api/control-plane/v1/roster", headers={"X-RT-Lane": "automation"},
+        "/api/control-plane/v1/roster", headers=_roster_headers("automation"),
     ).json()["pages"][0]
     operational_id = "acct:rail:6880a7944b9f074c700d6218"
     asserted = {"schema": "master-pages.page-intent.v1", **snapshot, "pageId": operational_id}
@@ -231,9 +298,103 @@ def test_machine_refresh_returns_counts_without_roster_rows(client, monkeypatch)
         "added": 3,
         "updated": 19,
         "totalInNotion": 22,
+        "projectedCount": 0,
+        "snapshotVersion": "r4f53cda18c2b",
+        "projectionHash": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "complete": False,
         "errorCount": 1,
     }
     assert "password" not in response.text
+
+
+def test_machine_refresh_proof_matches_the_immediate_canonical_snapshot(client, monkeypatch):
+    import services.notion_pages as notion_pages
+
+    monkeypatch.setattr(notion_pages, "is_configured", lambda: True)
+    monkeypatch.setenv("CONTROL_PLANE_TOKEN", "test-control-plane-token")
+
+    async def refresh():
+        _seed(
+            **{
+                "acct:canonical": {
+                    "name": "canonical.page",
+                    "source": "notion",
+                    "notion_page_id": "3281465b-b829-8000-8000-000000000001",
+                },
+                "postiz:legacy": {
+                    "name": "legacy.page",
+                    "source": None,
+                },
+            },
+        )
+        return {
+            "added": 1,
+            "updated": 0,
+            "total_in_notion": 2,
+            "errors": [],
+            "pages": [{"password": "must-not-cross"}],
+        }
+
+    monkeypatch.setattr(notion_pages, "sync_into_roster", refresh)
+    refresh_response = client.post(
+        "/api/control-plane/v1/roster/refresh",
+        headers={
+            "X-RT-Lane": "content-bucket-control-plane",
+            "Authorization": "Bearer test-control-plane-token",
+        },
+    )
+    assert refresh_response.status_code == 200
+    proof = refresh_response.json()
+    snapshot = client.get(
+        "/api/control-plane/v1/roster",
+        headers=_roster_headers("content-bucket-control-plane"),
+    ).json()
+
+    assert proof["complete"] is True
+    assert proof["totalInNotion"] == 2
+    assert proof["projectedCount"] == len(snapshot["pages"]) == 1
+    assert proof["snapshotVersion"] == snapshot["snapshotVersion"]
+    assert proof["projectionHash"] == snapshot["projectionHash"]
+    assert "pages" not in proof
+    assert "password" not in refresh_response.text
+
+
+def test_machine_refresh_never_marks_a_bounded_projection_as_complete(client, monkeypatch):
+    import services.notion_pages as notion_pages
+
+    monkeypatch.setattr(notion_pages, "is_configured", lambda: True)
+    monkeypatch.setenv("CONTROL_PLANE_TOKEN", "test-control-plane-token")
+
+    pages = {
+        f"acct:page-{index:03d}": {
+            "name": f"page.{index:03d}",
+            "source": "notion",
+        }
+        for index in range(cp.MAX_ROSTER_PAGES + 1)
+    }
+
+    async def refresh():
+        _seed(**pages)
+        return {
+            "added": len(pages),
+            "updated": 0,
+            "total_in_notion": len(pages),
+            "errors": [],
+            "pages": [],
+        }
+
+    monkeypatch.setattr(notion_pages, "sync_into_roster", refresh)
+    response = client.post(
+        "/api/control-plane/v1/roster/refresh",
+        headers={
+            "X-RT-Lane": "content-bucket-control-plane",
+            "Authorization": "Bearer test-control-plane-token",
+        },
+    )
+    assert response.status_code == 200
+    proof = response.json()
+    assert proof["projectedCount"] == cp.MAX_ROSTER_PAGES
+    assert proof["complete"] is False
 
 
 def test_machine_refresh_requires_lane_and_notion_configuration(client, monkeypatch):

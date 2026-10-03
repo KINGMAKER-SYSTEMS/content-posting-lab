@@ -1,0 +1,1 @@
+{"fixtureOnly":true,"glm":"stub","transport":"real HTTP","results":[{"outputIndex":0,"verdict":"clean","frames":25,"durationMs":5000},{"outputIndex":1,"verdict":"text","frames":13,"durationMs":5000}],"bankWrites":[0]}

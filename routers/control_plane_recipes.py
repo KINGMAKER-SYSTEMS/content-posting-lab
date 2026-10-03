@@ -2,7 +2,9 @@
 
 Registration is not execution. Publications remain absent from the capability
 catalog until a new-media executor can consume the exact typed treatment.
-Every accepted publication is immutable and page-scoped.
+Every accepted publication is page-scoped and its recipe bytes are immutable.
+A later Dossier lock of byte-identical recipe bytes may advance the stored
+dossier revision and idempotency key; the superseded pair is kept as history.
 """
 
 from __future__ import annotations
@@ -12,11 +14,15 @@ import hmac
 import json
 import math
 import os
+import threading
+from copy import deepcopy
 from pathlib import Path
+from threading import Lock
 from typing import Any
 
 from fastapi import APIRouter, Header, HTTPException
 
+from services.json_store import lock_for
 from services.roster import ROSTER_PATH
 from services.master_pages_contract import exact_intent, intent_hash
 from services.dossier_ingredients import (
@@ -25,6 +31,8 @@ from services.dossier_ingredients import (
     is_pinned_legacy_catalog_version,
 )
 from services.caption_discipline import validate_caption_discipline
+from services.source_controls import source_start_ms
+from services.page_frame import frame_band_height
 
 
 LANE = "content-bucket-control-plane"
@@ -42,15 +50,58 @@ PRODUCTION_FIELDS = {
     "referenceSetId", "sourceLibraryId", "variationValues", "controls",
 }
 RENDER_REQUIRED_FIELDS = {"stylePreset", "filters", "captionStyle"}
-RENDER_OPTIONAL_FIELDS = {"clipSpeed", "clipCrop"}
+# frame is the page picture frame, applied only at prepared-post render.
+RENDER_OPTIONAL_FIELDS = {"clipSpeed", "clipCrop", "frame"}
 CLIP_CROP_FIELDS = {"zoom", "focusX", "focusY"}
 DEMAND_FIELDS = {"formatMix"}
 TOKEN_CHARS = frozenset(
     "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.:-"
 )
 MAX_SPEC_BYTES = 131_072
+# Which Dossier lock registered a tuple; may advance while the bytes stay fixed.
+REGISTRATION_FIELDS = frozenset({"dossierRevision", "idempotencyKey"})
+PRIOR_REGISTRATIONS_FIELD = "priorRegistrations"
+MAX_PRIOR_REGISTRATIONS = 64
 
 router = APIRouter()
+
+_recipe_cache_lock = Lock()
+_recipe_cache: dict[Path, tuple[tuple[int, ...], dict[str, Any]]] = {}
+
+
+def _file_signature(stat: os.stat_result) -> tuple[int, ...]:
+    return (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+
+
+def _registered_records() -> tuple[dict[str, Any], ...]:
+    """Reuse unchanged publication bytes, never an old directory snapshot.
+
+    Capability polls used to reread every page's publications twice, filling
+    the API thread pool. Stat each current file and read only changed bytes.
+    The lock coalesces concurrent cold scans; callers copy only matching rows.
+    """
+    with _recipe_cache_lock:
+        current = {}
+        for path in sorted(_root().glob("*.json")):
+            try:
+                signature = _file_signature(path.stat())
+                cached = _recipe_cache.get(path)
+                if cached is None or cached[0] != signature:
+                    with path.open("r", encoding="utf-8") as handle:
+                        before = _file_signature(os.fstat(handle.fileno()))
+                        record = json.load(handle)
+                        after = _file_signature(os.fstat(handle.fileno()))
+                    # Publication creation writes its new inode in place. A
+                    # concurrent write must not become a reusable snapshot.
+                    if before != after or not isinstance(record, dict):
+                        continue
+                    cached = (after, record)
+                current[path] = cached
+            except (OSError, ValueError):
+                continue
+        _recipe_cache.clear()
+        _recipe_cache.update(current)
+        return tuple(record for _, record in current.values())
 
 
 def _root() -> Path:
@@ -145,6 +196,10 @@ def _validate_spec(
     preset = render.get("stylePreset")
     if preset is not None and (not isinstance(preset, str) or not preset.strip()):
         raise HTTPException(400, "stylePreset must be a non-empty string or null")
+    try:
+        frame_band_height(render)
+    except ValueError as error:
+        raise HTTPException(400, str(error)) from error
     clip_speed = render.get("clipSpeed", 1.0)
     if (
         isinstance(clip_speed, bool)
@@ -221,8 +276,8 @@ def _valid_control_value(value: Any, control: dict[str, Any]) -> bool:
         valid = (
             not isinstance(value, bool)
             and isinstance(value, (int, float))
-            and math.isfinite(float(value))
-            and float(control.get("min")) <= float(value) <= float(control.get("max"))
+            and (not isinstance(value, float) or math.isfinite(value))
+            and control.get("min") <= value <= control.get("max")
         )
         step = control.get("step")
         if not valid or step is None:
@@ -237,6 +292,20 @@ def _valid_control_value(value: Any, control: dict[str, Any]) -> bool:
             ) < 1e-9
         )
     return False
+
+
+def _valid_source_start_control(value: Any, intent: dict[str, Any]) -> bool:
+    """Validate the reserved page-specific upstream source floor.
+
+    This control deliberately stays outside the shared executor catalog: adding
+    it there would change the catalog hash and invalidate every already-locked
+    sourced-video publication. It is accepted only for sourced-video pages and
+    only as a bounded whole-second timestamp.
+    """
+    return (
+        intent.get("contentEngine") == "sourced_video"
+        and source_start_ms(value) is not None
+    )
 
 
 def _validate_production_selection(
@@ -302,10 +371,20 @@ def _validate_production_selection(
         raise HTTPException(409, "selected reference set is not bound to the format")
     source_id = production.get("sourceLibraryId")
     source = _ingredient(format_entry, "master-source-video")
+    image_library = _ingredient(format_entry, "image-library")
+    source_options = [
+        *(source or {}).get("options", []),
+        *(image_library or {}).get("options", []),
+    ]
     if source_id is not None and not any(option.get("libraryId") == source_id
-                                         for option in (source or {}).get("options", [])):
+                                         for option in source_options):
         raise HTTPException(409, "selected source library is not registered as master source DNA")
-    if source is not None and source.get("required") is True and source_id is None:
+    required_source = next(
+        (entry for entry in (source, image_library)
+         if entry is not None and entry.get("required") is True),
+        None,
+    )
+    if required_source is not None and source_id is None:
         raise HTTPException(409, "sourceLibraryId is required for sourced master DNA")
 
     variations = production.get("variationValues", {})
@@ -325,6 +404,8 @@ def _validate_production_selection(
         advertised.update(treatment_controls)
     advanced = advertised.get("_advanced", {}) if isinstance(advertised, dict) else {}
     for key, value in controls.items():
+        if key == "sourceStartMs" and _valid_source_start_control(value, intent):
+            continue
         control = advertised.get(key) if isinstance(advertised, dict) else None
         if control is None and isinstance(advanced, dict):
             control = advanced.get(key)
@@ -362,21 +443,87 @@ def register_recipe(
 
     record = {**body, "idempotencyKey": idempotency_key, "status": "registered"}
     path = _record_path(_root(), body)
-    encoded = json.dumps(
+    with lock_for(path):
+        try:
+            descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            existing = json.loads(path.read_text(encoding="utf-8"))
+            if not _same_recipe_bytes(existing, record):
+                raise HTTPException(409, "recipe tuple is already registered with different bytes")
+            registration = _registration_of(record)
+            prior = existing.get(PRIOR_REGISTRATIONS_FIELD, [])
+            if registration != _registration_of(existing) and registration not in prior:
+                # A content-neutral dossier relock: identical recipe bytes under
+                # a new dossier revision/key. Advance the registration and keep
+                # the superseded one; replays of any known registration are
+                # answered below without rewriting (or rewinding) the record.
+                _replace_record(path, {
+                    **record,
+                    PRIOR_REGISTRATIONS_FIELD: [
+                        *prior, _registration_of(existing),
+                    ][-MAX_PRIOR_REGISTRATIONS:],
+                })
+        else:
+            with os.fdopen(descriptor, "wb") as handle:
+                handle.write(_encode_record(record))
+                handle.flush()
+                os.fsync(handle.fileno())
+    return _registration_response(record)
+
+
+def _encode_record(record: dict[str, Any]) -> bytes:
+    return json.dumps(
         record, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
     ).encode("utf-8")
+
+
+def _registration_of(record: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "dossierRevision": record.get("dossierRevision"),
+        "idempotencyKey": record.get("idempotencyKey"),
+    }
+
+
+def _same_recipe_bytes(existing: Any, record: dict[str, Any]) -> bool:
+    """True when a stored tuple holds exactly the recipe being registered.
+
+    The dossier revision and idempotency key say which Dossier lock asked for
+    the recipe; they are not recipe bytes. Everything else, including the
+    canonical spec and its hash, must be byte-identical. Unknown stored fields
+    fail closed.
+    """
+    if not isinstance(existing, dict):
+        return False
+    prior = existing.get(PRIOR_REGISTRATIONS_FIELD, [])
+    if not isinstance(prior, list) or set(existing) - {PRIOR_REGISTRATIONS_FIELD} != set(record):
+        return False
+    return all(
+        existing[field] == value
+        for field, value in record.items()
+        if field not in REGISTRATION_FIELDS
+    )
+
+
+def _replace_record(path: Path, record: dict[str, Any]) -> None:
+    """Atomically replace one publication, keeping fresh-record mode and bytes."""
+    temporary = path.with_name(
+        f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp"
+    )
     try:
-        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    except FileExistsError:
-        existing = json.loads(path.read_text(encoding="utf-8"))
-        if existing != record:
-            raise HTTPException(409, "recipe tuple is already registered with different bytes")
-    else:
+        descriptor = os.open(
+            temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600,
+        )
         with os.fdopen(descriptor, "wb") as handle:
-            handle.write(encoded)
+            handle.write(_encode_record(record))
             handle.flush()
             os.fsync(handle.fileno())
-    return _registration_response(record)
+        os.replace(temporary, path)
+    except BaseException:
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+        raise
 
 
 def _walk_keys(value: Any):
@@ -495,11 +642,7 @@ def load_registered_recipe_binding(
         return page_id, exact
 
     matches: list[tuple[str, dict[str, Any]]] = []
-    for path in sorted(_root().glob("*.json")):
-        try:
-            record = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            continue
+    for record in _registered_records():
         publication_page_id = str(record.get("pageId") or "")
         if (
             publication_page_id == page_id
@@ -512,7 +655,7 @@ def load_registered_recipe_binding(
             )
         ):
             continue
-        matches.append((publication_page_id, record))
+        matches.append((publication_page_id, deepcopy(record)))
     return matches[0] if len(matches) == 1 else None
 
 
@@ -523,11 +666,7 @@ def list_registered_recipe_bindings(
 ) -> list[tuple[str, dict[str, Any]]]:
     """List current exact/aliased publications, preferring exact tuples."""
     candidates: dict[tuple[str, str, str], list[tuple[str, dict[str, Any]]]] = {}
-    for path in sorted(_root().glob("*.json")):
-        try:
-            record = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            continue
+    for record in _registered_records():
         if (
             record.get("status") != "registered"
             or not publication_matches_master_pages(
@@ -547,21 +686,17 @@ def list_registered_recipe_bindings(
         rows = candidates[key]
         exact = [row for row in rows if row[0] == page_id]
         if len(exact) == 1:
-            resolved.append(exact[0])
+            resolved.append(deepcopy(exact[0]))
         elif len(rows) == 1:
-            resolved.append(rows[0])
+            resolved.append(deepcopy(rows[0]))
     return resolved
 
 
 def list_registered_recipes(page_id: str) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
-    for path in sorted(_root().glob("*.json")):
-        try:
-            record = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            continue
+    for record in _registered_records():
         if record.get("status") == "registered" and record.get("pageId") == page_id:
-            records.append(record)
+            records.append(deepcopy(record))
     return records
 
 

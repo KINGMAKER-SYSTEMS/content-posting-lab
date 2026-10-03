@@ -14,6 +14,26 @@ fonts, unknown fields, incomplete styles, or clipped output. Verification:
 40 passed. No deployment, video mutation, phone action, scheduling, or post.
 _________________________________________________________________________________
 
+time: [17:00 EDT] [24-09-26]
+agent: [Codex desktop] [gpt-6-astra]
+worktree: [fix/source-master-loop-20260924] [/Users/ecfromthedc/dev/wt/source-master-loop]
+type: [bug report] [durability]: Preserve full creator masters and safe retries
+area: [backend] [testing]
+
+Adversarial review of the long-master intake found that source-import mode still
+preferred a Google Drive streaming derivative over its original `source` format,
+the post-download capacity gate counted bytes already present on disk, and an
+expired live runner could continue deleting or writing inside a retry's reused
+artifact root. Source imports now prefer the original source format with bounded
+fallbacks, reserve only the additional normalized output after download, and
+cancel plus join an owned expired runner before allowing an idempotent retry.
+The task registry also removes only the exact completed task so an old callback
+cannot evict a replacement. The expanded source-import, yt-dlp, execution, and
+production-image suites pass 82 tests; a live extractor probe selects the 28:22
+Google Drive master as format `source` rather than the 137+140 derivative.
+
+_________________________________________________________________________________
+
 _________________________________________________________________________________
 
 time: [17:51] [09-01-26]
@@ -226,3 +246,945 @@ contracts plus every append-only ledger entry. The source-master authority
 check remains separate from the approved derivative catalog. No generation,
 bucket write, scheduler, slot, lease, device, phone, deployment, or post action.
 _________________________________________________________________________________
+time: [16:19] [02-09-26]
+agent: [codex desktop] [gpt-5.6-sol]
+worktree: [fix/roster-completeness-proof-20260902] /private/tmp/content-lab-roster.L7umT8
+type: [bug report]: Bind roster refresh completeness to the canonical projection
+area: [backend]: Master Pages roster machine contract
+
+The refresh route now reports the exact bounded canonical projection count,
+legacy short snapshot version, full SHA-256 projection hash, and a server-owned
+completeness flag from the same projection returned by the roster snapshot.
+Raw Notion row count remains diagnostic and no longer stands in for canonical
+page count. Errors or projection overflow force completeness false; a later
+consumer read must match the count, version, and full hash before any
+destructive alias cleanup is eligible. The response remains credential-free.
+
+Focused roster verification passed 15 tests. The complete control-plane,
+Notion, and roster regression set passed 133 tests after the full-hash
+hardening. The repository-wide suite remains
+stopped at collection by the pre-existing missing `factory.formats` package in
+`tests/test_cards_no_shell.py`. Independent P1/P2 review is clean. No
+generation, storage, scheduler, device, phone, slot, lease, or post mutation
+occurred.
+_________________________________________________________________________________
+
+_________________________________________________________________________________
+
+time: [03:09] [09-03-26]
+agent: [codex desktop] [gpt-5.6-sol]
+worktree: [codex/commission-pov-scenic-source] /private/tmp/content-lab-scenic.so3ESQ
+type: [bug report]: Commission the existing POV Scenic source libraries
+area: [backend]: Content Lab page-bound source execution
+
+Changed POV Scenic from an undefined blocker to the existing commissioned
+source recut executor. Each page remains bound to its own Master Pages identity
+and ShipStream source library, with unique 6-8 second cut windows, exact source
+lineage, 9:16 output, text scan, and no cross-page or AI fallback. Added a
+positive execution regression for a page-owned Scenic library and retained the
+separate AI resolver boundary. Focused Content Lab verification passed 75 tests;
+the expanded control-plane suite was also run before release. No storage,
+scheduler, device, phone, slot, lease, or post mutation occurred.
+_________________________________________________________________________________
+
+_________________________________________________________________________________
+
+time: [21:05] [06-09-26]
+agent: [codex desktop] [gpt-5]
+worktree: [fix/source-capacity-aware-capabilities-20260906]
+type: [bug report]: Bound source refill plans to reservable windows
+area: [backend]: Content Lab sourced-video capability contract
+
+Sourced-video capabilities now advertise only the unique immutable-master
+windows that durable queued, running, and completed jobs have not reserved.
+An exhausted library disappears from capabilities, while job creation remains
+exact and all-or-nothing. This prevents Control Plane from requesting a batch
+larger than remaining source inventory and losing the entire refill instead of
+using the safe remainder. Added focused coverage for declining capacity and
+complete exhaustion. The expanded Content Lab Control Plane suite passed 88
+tests. No generation, storage, scheduler, device, phone, slot, lease, or post
+mutation occurred.
+_________________________________________________________________________________
+
+_________________________________________________________________________________
+
+time: [09:21pm] [06-09-26]
+agent: [codex desktop] [gpt-5]
+worktree: [fix/zero-capacity-contract-20260906]
+type: [bug report]: Preserve exhausted source recipe identity
+area: [backend]: Content Lab capability contract
+
+Exhausted page-bound source recipes now remain visible to Control Plane with
+`maxQuantity: 0`. This preserves exact recipe identity while allowing the
+deployed consumer to classify source-library exhaustion separately from a
+missing recipe and direct the operator to add a page source master. Job
+creation remains exact and still rejects any quantity above current reservable
+capacity. No generation, storage, scheduler, device, phone, slot, lease, or
+post mutation occurred.
+_________________________________________________________________________________
+_________________________________________________________________________________
+
+time: [01:21P] [11-09-26]
+agent: [codex desktop] [gpt-6]
+worktree: [caption-stroke-fix at origin/main]
+type: [bug report]: Restore caption outline thickness
+area: [backend]: Prepared-post caption rendering
+
+The final-size Pillow renderer incorrectly scaled a 4 px preview stroke to 10 px,
+which merged letters and adjacent lines into heavy black blocks. Prepared-post
+caption rendering now uses the established 3 px final-resolution outline, and
+the caption contract test pins that value. Fifteen focused caption-render tests
+passed before deployment.
+_________________________________________________________________________________
+_________________________________________________________________________________
+
+time: [07:05 am] [11-09-26]
+agent: [codex desktop] [gpt-6]
+worktree: [fix/reuse-source-windows-after-recipe-change-20260911]
+type: [bug report]
+area: [backend]
+
+Completed source-DNA jobs reserved raw page-bound cut windows across every later
+recipe revision, permanently exhausting finite masters even when a newly locked
+recipe required different video treatment and new provenance. Completed outputs
+now reserve windows only for the exact recipe-spec hash that produced them;
+queued and running jobs remain exclusive across revisions, failed jobs still
+release their windows, and page/library/hash isolation remains unchanged. The
+source execution, dossier, generation, and format contract suites passed 56
+checks. Local Docker release verification was unavailable because the Docker
+daemon was not running; the Railway remote image build remains the release gate.
+_________________________________________________________________________________
+_________________________________________________________________________________
+
+time: [07:16 am] [11-09-26]
+agent: [codex desktop] [gpt-6]
+worktree: [main]
+type: [bug report]
+area: [backend]
+
+Merged PR #108 as 830c530. Railway served the changed recipe-scoped capacity
+behavior: Missed Exit's current dossier recipe advertised ten windows while its
+completed older recipe remained at zero. Two authenticated control-plane refill
+jobs then produced and admitted ten page-bound assets; macOS Vision accepted
+eight and rejected two. The scheduler materialized all five required Missed Exit
+slots for September 11, and the page disappeared from the materializer blocker
+set. Dashboard Confessions and Hopecore remain capacity-exhausted under their
+exact current recipes and require separate source repair.
+_________________________________________________________________________________
+_________________________________________________________________________________
+
+time: [07:43 am] [11-09-26]
+agent: [codex desktop] [gpt-6]
+worktree: [fix/release-stale-source-job-windows-20260911]
+type: [bug report]
+area: [backend]
+
+Sourced-video capability calculation now applies the existing runtime-restart
+fence before counting reserved source windows. Queued or running async jobs from
+a dead process become failed with their bounded restart reason, releasing only
+their unrendered windows; current-runtime work and completed outputs remain
+unchanged. This prevents abandoned jobs from advertising permanent zero capacity.
+The source execution, dossier, generation, and recipe suites passed 65 checks.
+_________________________________________________________________________________
+
+_________________________________________________________________________________
+
+time: [6:28pm] [09-11-26]
+agent: [Codex desktop] [GPT-6]
+worktree: [fix/reopen-exhausted-source-jobs-20260911]
+type: [bug report]
+area: [backend]
+
+A repaired Control Plane source route could not revive 106 post-render jobs
+because Content Lab retained the terminal slot/hash job at three attempts even
+when the caller supplied a fresh idempotency key. An identical exhausted
+source_response_rejected job now reopens only for a new authenticated key; a
+replay of that recovery key only observes the current job. The focused durable
+post-render suite passed 32 checks.
+_________________________________________________________________________________
+_________________________________________________________________________________
+
+time: [6:37pm] [09-11-26]
+agent: [Codex desktop] [GPT-6]
+worktree: [fix/accept-wan-near-vertical-20260911]
+type: [bug report]
+area: [backend]
+
+Wan I2V can return 704x1280 for a requested vertical clip. The prepared-post
+gate treated that provider-native sizing as regeneration_required even though a
+small center crop makes exact 9:16 delivery without stretching. The renderer now
+accepts upright square-pixel inputs within three percent of 9:16, center-crops
+only the excess edge, and still emits verified 1080x1920 output. The prepared
+render and durable job suites passed 68 checks, including an actual 704x1280 MP4.
+_________________________________________________________________________________
+
+_________________________________________________________________________________
+time: [11:39pm] [09-11-26]
+agent: [Codex desktop] [GPT-6]
+worktree: [fix/ffmpeg-source-refill-capacity-20260912]
+type: [bug report]
+area: [backend]
+
+A burst of scheduler refill jobs started independent 1080x1920 libx264 processes in Content Lab and six were killed during encoder initialization. Serialized services.ffmpeg.run_color_correct through one process-local permit so asynchronous jobs wait instead of exhausting the production container. Added a concurrency regression; the focused FFmpeg suite passed 47/47.
+_________________________________________________________________________________
+_________________________________________________________________________________
+time: [12:09am] [09-12-26]
+agent: [codex desktop] [gpt-6]
+worktree: [fix/source-treatment-artifact-receipts-20260912]
+type: [bug report]
+area: [backend]
+
+Content Lab generated and sourced clips with the requested video treatment but omitted the producer treatment receipt from the artifact contract, so Control Plane excluded paid clips before scheduling. Wired source-treatment receipts into generated, sourced-video, slideshow, and inherited truck-recovery manifests. The artifact serializer can recover completed jobs only from persisted applied speed/crop plus the exact registered recipe hash. Focused generation, sourced-video, and receipt tests passed (56).
+_________________________________________________________________________________
+_________________________________________________________________________________
+time: [12:11am] [09-12-26]
+agent: [codex desktop] [gpt-6]
+worktree: [fix/source-treatment-artifact-receipts-20260912]
+type: [bug report]
+area: [backend]
+
+Correction to the preceding entry: this change wires receipts for generated, sourced-video, and slideshow outputs. It leaves truck-master recovery unchanged because that path must preserve its parent producer receipt rather than restate the current job recipe hash. Focused tests remain 56 passing.
+_________________________________________________________________________________
+
+## 2026-09-12 — Fleet visual admission
+
+worktree: /Users/ecfromthedc/dev/wt/lab-fleet-vision
+
+Added authenticated exact-job/page/SHA/byte-bound visual decisions, native every-frame OCR and GLM-4.6v-flash evidence before ready-clip admission. Decisions persist in job truth. Decoder/OCR/model/coverage failures remain unavailable. Docker installs Tesseract. Tests include real 1/30-second text and endpoint authentication/identity/persistence. Full deployment and live fleet acceptance remain integration-owned.
+
+Source planning now skips original timestamps below 60 seconds and consumes the Worker's bounded global source-window exclusions before rendering. Native 1080x1920 throughput: 7s/210 frames in 228.38s with fixture model; 9s/270 frames completed OCR in 211.53s total with unavailable live model evidence. Flash API independently returned 429/provider 1305 overload. Decisions remain unavailable and paid jobs remain resumable; this is not a live-clean claim.
+
+Final focused suite: 77 passing across visual admission, packaged imports, recipe/generation and source execution. Peer review repaired stale wrong-page cached decisions with full identity checks in the sweep and a recovery regression.
+
+Follow-up review: capabilities expose current-recipe canonical source identities before the Worker exclusion limit. Multi-crop provider calls now require complete commissioned groups; the artifact endpoint preserves boundary groups for non-multiple quantities. Malformed candidate sets fail before artifact processing.
+
+Expanded verification passes 105 tests including actual generated-job malformed crop-set regressions and source-identity capability checks. Candidate indices are normalized into order before whole-group transport.
+
+## 2026-09-13 — Vision fallback transport honesty
+
+worktree: /Users/ecfromthedc/dev/wt/lab-fleet-vision
+
+Fixed the Lab GLM-to-Ollama vision ladder after adversarial review: httpx transport failures now trigger the fallback, and dual transport failure returns `vision_unavailable_all_providers` while naming the Ollama model that actually failed. Primary malformed or oversized responses now trigger the fallback as documented; if both legs fail, the decision remains unavailable. Added behavioral coverage for primary transport fallback, dual transport failure, and oversized-body fallback. Focused visual-admission suite: 22 passed, 1 existing warning.
+
+## 2026-09-14 — Hosted vision fallback credential boundary
+
+worktree: /Users/ecfromthedc/dev/wt/lab-fleet-vision
+
+Added `CONTENT_LAB_VISION_FALLBACK_API_KEY` as an optional fallback-only credential. The primary Z.AI key is never forwarded to the fallback host; unset fallback credentials produce no Authorization header. Corrected deployment truth: production is Railway at `https://risingtides-content-lab-production.up.railway.app`, so the configured fallback endpoint must be reachable from the Railway container.
+
+## 2026-09-14 — Configurable primary vision endpoint
+
+worktree: /Users/ecfromthedc/dev/wt/lab-fleet-vision
+
+Added the optional `CONTENT_LAB_VISION_URL` override, restricted to the server-owned `api.z.ai` and `open.bigmodel.cn` chat-completions URLs. The selected URL host is recorded in the decision model block. HTTP 429/provider-1305 primary responses remain unavailable and trigger the existing fallback ladder; unallowlisted endpoints fail closed. No API key values are read or logged.
+
+## 2026-09-14 — OpenAI-compatible vision fallback
+
+worktree: /Users/ecfromthedc/dev/wt/lab-fleet-vision
+
+Added the allow-listed `gpt-4o-mini` fallback on OpenAI's compatible chat-completions endpoint. Fallback requests retain image data-URL parts, omit provider-specific thinking controls, use the fallback-only credential, and record `name`, `provider`, and fallback status in every decision. Added request-shape and provider attribution coverage.
+
+## 2026-09-14 — Remove Lab posting obstacles without bypassing evidence
+
+worktree: /Users/ecfromthedc/dev/wt/lab-fleet-vision
+
+Capabilities now expose the commissioned format route implied by a page's current Master Pages niche/engine before its first registered Dossier publication, while registered versions remain authoritative. Transient visual-admission/provider/runtime failures now persist as retryable `scan_pending` decisions; positive text and artifact identity refusals remain unchanged. Added coverage for bootstrap capabilities and retry behavior.
+_________________________________________________________________________________
+
+time: [03:46pm] [16-09-26]
+agent: [codex desktop] [gpt-6]
+worktree: [fix/dossier-capacity-20260916] /private/tmp/content-lab-caption-capacity-20260916
+type: [bug report]: Restore sourced-video refill after dossier revisions
+area: [backend]: Content Lab capability and source-window authority
+
+Completed sourced-video jobs now reserve windows only for the exact locked
+recipe that produced them, while active jobs still reserve windows across
+revisions. Sourced capabilities also return their immutable source identities
+so Control Plane can calculate cross-page exclusions before job creation. The
+focused source, dossier, and source-library suite passed 53 tests.
+_________________________________________________________________________________
+_________________________________________________________________________________
+
+time: [04:11pm] [16-09-26]
+agent: [codex desktop] [gpt-6]
+worktree: [fix/source-window-master-binding-20260916] /private/tmp/content-lab-caption-capacity-20260916
+type: [bug report]: Bind shared-library exclusions to one master clip
+area: [backend]: Content Lab source cut planning
+
+Source-window exclusions now accept an exact master SHA so separate clips that
+share one library URL do not suppress each other's timelines. Legacy exclusions
+without a master SHA stay broad. The focused source and dossier suites passed
+69 tests.
+_________________________________________________________________________________
+_________________________________________________________________________________
+
+time:      [05:10pm] [09-16-26]
+agent:     [codex desktop] [gpt-6]
+worktree:  [fix/source-import-active-deadline-20260916]
+type:      [bug report]
+area:      [backend]
+
+Content Lab status now retires a page-source import that remains active beyond
+its 20-minute bounded download and normalization runtime, using the existing
+idempotent runtime-restart path. This prevents a dead running job from holding
+the page's only dossier import slot and the two-job global capacity indefinitely.
+The exact source-import suite passes 12 tests and the production-image import
+suite passes 2 tests. A local Docker build could not start because Docker Desktop
+was not running; the repository's packaged-app import checks passed.
+_________________________________________________________________________________
+_________________________________________________________________________________
+
+time:      [05:26pm] [09-16-26]
+agent:     [codex desktop] [gpt-6]
+worktree:  [fix/source-import-restart-clock-20260916]
+type:      [bug report]
+area:      [backend]
+
+Corrected the page-source import deadline to measure from restartedAt when an
+old durable job is resumed. The first live rollout exposed that createdAt stays
+immutable across a restart; using it as the active-runtime clock immediately
+expired the resumed job on every status poll. The regression now proves an
+expired job is retired once, restarts under the same idempotency key, and then
+remains queued inside its fresh runtime window. All 12 source-import tests pass.
+_________________________________________________________________________________
+_________________________________________________________________________________
+
+time:      [05:36pm] [09-16-26]
+agent:     [codex desktop] [gpt-6]
+worktree:  [fix/source-import-exact-copy-20260916]
+type:      [bug report]
+area:      [backend]
+
+Page source intake now retains an input byte-for-byte when it already satisfies
+the refillable master contract: 1080x1920 H.264/yuv420p at 30 fps with no audio.
+The live Healing and Soul inputs both have exactly those facts, so re-encoding
+them consumed minutes without changing their deliverable shape. Nonconforming
+inputs still use the bounded normalization path and the final contract check.
+The exact-copy regression plus all 12 source-import route tests pass, and both
+production-image import checks pass.
+_________________________________________________________________________________
+
+_________________________________________________________________________________
+
+time:      [05:51pm] [09-16-26]
+agent:     [codex desktop] [gpt-6]
+worktree:  [fix/source-import-public-no-auth-20260916]
+type:      [bug report]
+area:      [backend]
+
+Page source intake now bypasses every shared platform and browser cookie store.
+This lane already accepts only validated public, permanent URLs, so loading a
+stale or oversized TikTok cookie jar added latency without adding access. The
+regression proves source-import yt-dlp calls use verified TLS, one owned process
+group, and no cookie flags. All 9 downloader diagnostics and all 12 page-source
+import route tests pass. The broader local media-service suite could not run its
+2.5 GB free-space preflight because this Mac had under 400 MB free.
+_________________________________________________________________________________
+
+_________________________________________________________________________________
+
+time:      [06:06pm] [09-16-26]
+agent:     [codex desktop] [gpt-6]
+worktree:  [fix/accept-imported-source-authority-20260916]
+type:      [bug report]
+area:      [backend]
+
+Content Lab now projects ShipStream `content_lab_page_source_import` masters as
+exact page-bound source libraries when the authority repeats the active Control
+Plane page id, page handle, Notion page id, and replacement eligibility. This
+aligns the Dossier reader with the source-registration producer while rejecting
+a different page id. The source-manifest and Dossier ingredient suites pass 36
+tests.
+_________________________________________________________________________________
+_________________________________________________________________________________
+
+time:      [06:27pm] [09-16-26]
+agent:     [codex desktop] [gpt-6]
+worktree:  [fix/accept-imported-source-authority-20260916] /private/tmp/content-lab-caption-capacity-20260916
+type:      [bug report]: Restore capacity for short imported page masters
+area:      [backend]: Content Lab source cut planning
+
+Exact page-bound ShipStream masters now begin at their first immutable frame instead of receiving the raw-source 60-second skip a second time. Deterministic cut duration selection uses only durations that fit the remaining master bytes, so a valid 7.5-second imported master advertises and executes one cut instead of zero. Raw original-source libraries retain the 60-second minimum. The source execution, source library, and dossier execution suites pass 76 tests.
+_________________________________________________________________________________
+
+_________________________________________________________________________________
+
+time:      [10:21] [09-18-26]
+agent:     [codex desktop] [gpt-5]
+worktree:  [fix/visual-replicate-fallback-20260918] /tmp/content-lab-live.VMR5lI/repo
+type:      [bug report]: Unblock fail-closed visual admission for automatic source recuts
+area:      [backend]: Content Lab visual admission and bucket replenishment
+
+Live Control Plane and Content Lab evidence showed that automatic sourced-video
+replenishment is producing new six-second outputs from the same approved page
+masters with distinct output hashes. Those completed recuts remained outside
+ready buckets because Z.ai was rate-limited and the configured OpenAI fallback
+had exhausted quota. Visual admission now uses the already-configured Replicate
+token as a third, fixed-host fallback through the official
+google/gemini-2.5-flash model. It sends every sampled frame in bounded batches
+of at most ten, validates strict JSON verdicts, polls only fixed Replicate
+prediction URLs, and still fails closed on missing, invalid, incomplete, or
+uncertain evidence. Existing two-provider error attribution is unchanged when
+Replicate is not configured. Visual admission, sourced-video execution, and
+production-image import verification pass 96 tests.
+_________________________________________________________________________________
+
+_________________________________________________________________________________
+
+time:      [10:43] [09-18-26]
+agent:     [codex desktop] [gpt-5]
+worktree:  [fix/serialize-visual-sweeps-20260918] /tmp/content-lab-live.VMR5lI/repo
+type:      [bug report]: Serialize automatic visual-admission sweeps
+area:      [backend]: Content Lab admission throughput
+
+The first live autonomous poll after the Replicate fallback deployed proved a
+second blocker: Control Plane concurrently requested several completed jobs,
+while Content Lab allowed only one scanner. The winning sweep ran and the rest
+persisted `scan_pending` with `scanner_busy_retry`, including Soul's new
+same-master six-second recut. Authenticated whole-job sweeps now enter a single
+process-wide executor. They remain page and byte bound, execute one at a time,
+do not duplicate while queued in the current runtime, and become eligible for
+resubmission immediately after a process restart. Visual admission,
+sourced-video execution, and production-image import verification pass 97
+tests, including an overlap regression that proves peak scanner concurrency is
+one.
+_________________________________________________________________________________
+
+_________________________________________________________________________________
+
+time:      [10:59] [09-18-26]
+agent:     [codex desktop] [gpt-5]
+worktree:  [fix/replicate-verdict-contract-20260918] /tmp/content-lab-live.VMR5lI/repo
+type:      [bug report]: Require complete Replicate visual verdicts
+area:      [backend]: Content Lab visual admission
+
+The first serialized live sweep reached Replicate but its response stopped in
+the middle of the reason string under the old pseudo-JSON union prompt. Strict
+parsing correctly refused that evidence. A live bounded probe established that
+the same official model returns complete JSON when given a natural-language
+two-field schema, a reason limit, and a 1024-token ceiling. The fixed prompt
+retains strict verdict parsing and complete sampled-frame coverage. A transient
+pending verdict now stops the rest of that job's sweep so provider trouble does
+not spend calls or hold the serialized scanner ahead of other pages. Visual
+admission, sourced-video execution, and production-image import verification
+pass 98 tests.
+_________________________________________________________________________________
+
+_________________________________________________________________________________
+
+time:      [11:35] [09-18-26]
+agent:     [codex desktop] [gpt-5]
+worktree:  [fix/fair-visual-sweep-queue-20260918] /tmp/content-lab-live.VMR5lI/repo
+type:      [bug report]: Make visual-admission queue fair across pages
+area:      [backend]: Content Lab admission throughput
+
+Live inspection after serialized scanning showed fourteen active whole-job
+sweeps. Ten-output jobs could hold the only scanner for minutes while a
+one-output sourced recut waited behind the entire batch. A sweep executor turn
+now scans one nonfinal artifact. A final decision requeues any remaining work
+at the tail under the same runtime-bound sweep id; a transient pending decision
+stops until the next authenticated poll. This preserves one scanner and exact
+full-frame QA while giving small depleted pages a turn between large batches.
+Visual admission, sourced-video execution, and production-image import
+verification pass 99 tests, including one-artifact tail-requeue and peak-one
+concurrency regressions.
+_________________________________________________________________________________
+
+_________________________________________________________________________________
+
+time:      [6:56pm] [09-22-26]
+agent:     [codex desktop] [gpt-5]
+worktree:  [codex/dossier-syzygy-timeout] /tmp/content-lab-probe.Wlgd6c
+type:      [bug report]: Restore fleet-wide Dossier loading
+area:      [backend]: Content Lab Dossier ingredient catalog
+
+Live Control Plane probes showed every tested Dossier timing out on the shared
+ingredient catalog while fonts, captions, and ShipStream manifests remained
+available. The catalog queried both live Syzygy slideshow libraries for every
+page, including unrelated AI and sourced-video pages, and each query could hold
+15 seconds behind the Control Plane's five-second request budget. The catalog
+now reads Syzygy only for the page's exact Master Pages slideshow niche and
+engine, and bounds that one relevant read to two seconds. Verification: 15
+Dossier ingredient tests and 88 recipe, generation, source, and slideshow
+execution tests passed. No production deployment or service mutation occurred.
+_________________________________________________________________________________
+
+_________________________________________________________________________________
+time: [05:09 EDT] [24-09-26]
+agent: [Codex desktop] [gpt-6-astra]
+worktree: [codex/page-scoped-recipe-reads] [/tmp/rt-lab-registry.WCseqY]
+type: [bug report] [refactor]: Shared Content Lab capability-read congestion
+area: [backend] [testing]
+
+Railway live stack sampling found all 40 AnyIO request workers inside capability reads, predominantly reopening all 402 immutable recipe publications. The last 300 upstream requests to capabilities, Dossier ingredients and format contracts timed out at about three seconds; a container-local authenticated registry read also timed out while health answered. The volume has 143 GiB free, so this is not disk exhaustion. Recipe listing now coalesces cold reads and reuses each unchanged file only after checking its device/inode/size/mtime/ctime; additions, removals, corruption and edits remain immediately visible, and selected records are copied before returning to callers. Exact page/Notion identity and ambiguous-alias checks are unchanged. All 166 targeted recipe, Dossier, generation, source, format and production-image-import tests passed. A separate read-only process on the production volume returned identical results for 16 concurrent page registry probes, improving 2.787s to 0.405s. No production source, settings, content, or posting authority was changed during this test. Root AGENTS records cache freshness/copy ownership; no child boundary changed. Separately, Replicate rejected Dallas and Rhett refills for insufficient credit; no purchase or provider substitution was made. Release and authenticated post-deploy proof follow separately.
+
+
+_________________________________________________________________________________
+time: [05:20 EDT] [24-09-26]
+agent: [Codex desktop] [gpt-6-astra]
+worktree: [codex/coalesce-capability-job-reads] [/tmp/rt-lab-registry.WCseqY]
+type: [bug report] [refactor]: Capability job-history decode herd
+area: [backend] [testing]
+
+PR #150 merged as 11ddc57; branch deleted; Railway deployment 336ad350-c7cf-4a0e-9c3a-3f8600f043a5 and Docker app-import succeeded. Authenticated format registry and Healing/Chase catalogs initially returned 200 in 79/262/189ms; both live Dossiers reopened. Sustained verification caught renewed timeouts on the next capability burst, so that release is not full outage resolution. Live stack sampling found concurrent capability calls still decoding the entire 28 MB jobs store while recipe readers waited. Capability planning now shares a file-identity-checked read-only history snapshot; transaction writers still use fresh mutable loads and existing locks. All 171 focused tests pass, including immediate progress updates, same-size replacement with retained mtime, corrupt/missing history, and 120 concurrent reads decoding once. A separate read-only production-volume benchmark produced identical complete capability responses, improving 16 calls from 8.999s to 1.893s. Root AGENTS records read-only ownership; no child boundaries changed. No paid work, provider substitution, account changes or phone action performed. Follow-up live burst verification remains required.
+
+
+_________________________________________________________________________________
+time: [09:52am] [24-09-26]
+agent: [Codex desktop] [gpt-6-astra]
+worktree: [codex/silhouette-static-still-20260924] [/Users/smathdaddy-macbook/content-posting-lab-silhouette-still]
+type: [feature-request] [refactor]: Replace silhouette I2V with a static generated photo
+area: [backend] [research] [testing]
+
+Replicate model research selected official Black Forest Labs FLUX.2 Pro for the
+silhouette format's portrait-native photorealistic stills. The prompt family now
+produces exactly two adult lovers embracing beside one complete pickup in a field,
+keeps the upper 45 percent as clean caption sky, and rejects anatomy, vehicle,
+count, text, and geometry failures. Content Lab retains the exact generated JPG
+and byte hash, then holds it without pan, zoom, interpolation, or subject motion
+in a seven-second 1080x1920 MP4 so downstream captions, sounds, QA, and posting
+remain unchanged. The WAN I2V provider, motion prompt, and anchor pool are removed
+from this format. The focused provider, contract, Dossier, and ffmpeg suites pass
+86 tests. A broader run reached 1,535 passes and 23 skips before the machine filled
+its temporary disk; its two genuine failures are pre-existing Agentic Broadcast
+Network card-background promotion tests, unrelated to the files changed here.
+No production deployment or paid Replicate generation was performed; no local
+Replicate credential is configured.
+_________________________________________________________________________________
+_________________________________________________________________________________
+time: [17:26 EDT] [24-09-26]
+agent: [Codex desktop] [gpt-6-astra]
+worktree: [feat/source-start-floor-20260924] [/Users/ecfromthedc/dev/wt/source-master-loop]
+type: [feature]: Durable per-page earliest source timestamp
+area: [backend] [source recut planning]
+
+Sourced-video recipes may now carry an optional `sourceStartMs` scalar in the
+existing production-controls map. The recut planner combines that page choice
+with the established raw-library/page-master minimum, so every refill skips the
+same unusable lead-in while absent controls preserve current behavior. The
+control is bounded to the supported two-hour master duration and invalid values
+make the recipe unexecutable. This deliberately leaves the shared executor
+catalog bytes unchanged, avoiding a fleet-wide catalog-version invalidation.
+The focused source-execution suite passes: 46 tests.
+
+_________________________________________________________________________________
+time: [08:12 EDT] [25-09-26]
+agent: [Claude Code] [claude-opus-5-5]
+worktree: [fix/ai-gen-transient-retry] [/Users/ecfromthedc/dev/wt/lab-gen-retry]
+type: [bug report]: AI refill `provider_generation_failed` classified; transient Replicate faults retried
+area: [backend] [providers] [testing]
+
+All 70 `provider_generation_failed` AI refills since 2026-09-20 in Control Plane
+D1 were joined to Railway provider logs (69 classified, 1 log expired). 52 were
+Replicate account credit: 43 HTTP 402 insufficient credit plus 9 HTTP 429
+throttles that Replicate applies while credit is under $5. The throttles are now
+retried, but credit exhaustion itself needs an operator top-up/auto-reload. The other 17 were transient:
+6 submission 5xx, 6 600-second prediction timeouts, 3 transport faults (two on
+the poll of an already-created prediction), 1 "interrupted (code: PA)", and 1
+provider-side moderation 401. There was no retry anywhere in the generation
+path. Replicate generation now retries only faults that cannot create a second
+paid prediction, cancels timed-out predictions, and persists a closed
+`providerFailure` class in the job store without changing the status response
+the Control Plane validates strictly. New tests fail on main and pass here. No
+paid generation, purchase, provider substitution or deploy was performed.
+
+_________________________________________________________________________________
+time: [15:52 EDT] [26-09-25]
+agent: [Claude Code] [claude-opus-5-5]
+worktree: [fix/recipe-reregister-identical-bytes] [/Users/ecfromthedc/dev/wt/lab-recipe-reregister]
+type: [bug report]: identical-bytes recipe re-registration no longer 409s
+area: [backend] [control-plane] [testing]
+
+A content-neutral Dossier relock of page rhett re-sent the exact recipe bytes
+already registered for its tuple under a new dossier revision and idempotency
+key. `register_recipe` compared the whole stored record, so those two fields
+alone produced `409 recipe tuple is already registered with different bytes`
+on every retry, and the Worker could only recover by forcing a new recipe
+version. Byte-identical re-registration now succeeds, advances the stored
+revision/key atomically and keeps the superseded pairs; replays of any known
+pair are answered without a rewrite; different bytes still 409. Validation,
+including exact pinned-legacy catalog binding, runs before the store as
+before. The recipe test file goes from 3 failed / 18 passed on main to 21
+passed; the six recipe, generation and execution test files pass: 151 tests.
+No deploy was performed.
+
+_________________________________________________________________________________
+time: [18:46 EDT] [26-09-25]
+agent: [Claude Code] [claude-opus-5-5]
+worktree: [fix/frontend-no-default-password] [/Users/ecfromthedc/dev/wt/lab-fe-default-pw]
+type: [security]: default account password removed from the bundle; intake fails closed
+area: [frontend] [backend] [security] [testing]
+
+The Pipeline intake modal printed the shared default TikTok account password
+as literal text in three places, so Vite compiled it into the public JS bundle
+(3 occurrences in the live production bundle). It has been in the frontend
+since the Pipeline tab landed (#38, 2026-04-29). The backend copy moved to the
+`DEFAULT_INTAKE_PASSWORD` env var on 2026-06-19 but kept a guessable hard-coded
+fallback, and that variable is unset in production, so intakes since then
+wrote the fallback to Notion while the UI still named the old literal. The
+modal now refers to "the team's standard intake password"; `/mint-alias` and
+`/intake` read the env var per request and return 503
+`intake_password_not_configured` before minting an alias or writing Notion or
+roster state when it is unset or blank. The fallback literal is gone and
+`.env.example` documents the variable. `tests/test_no_shipped_default_password.py`
+stores only SHA-256 digests of both retired values and fails if either appears
+in backend sources, other repository text or a built `frontend/dist`. Both
+values remain in git history (including the messages of 0649233 and 4e03918)
+and previously served bundles; the old literal must be rotated by the
+operator, and history was not rewritten. Until the operator sets
+`DEFAULT_INTAKE_PASSWORD`, intake is refused. No deploy was performed.
+
+_________________________________________________________________________________
+time: [15:25 EDT] [25-09-26]
+agent: [Claude Code] [claude-opus-5-5]
+worktree: [fix/replenish-unique-cuts] [/Users/ecfromthedc/dev/wt/lab-unique-cuts]
+type: [bug report]: sourced replenish re-cut the same time frames after every recipe revision
+area: [backend] [testing]
+
+Sourced-video cut planning walked one fixed 9-second grid (+3 s/+6 s phases,
+then a 6-second grid) from the page floor, with each slot's length a pure hash
+of library and master. Completed cuts reserved their positions only for the
+exact recipe version that made them, so every dossier republish re-cut the same
+time frames from the first slot; and a grid id (`sha:start`) and a 6-second id
+(`sha:start:6000`) could name the same time frame, so one version could cut it
+twice. Control Plane D1 (read-only, 2026-09-25) holds page masters whose
+identical original windows were cut 3-5 times, e.g. ourbriefhourstogether
+0-6 s four times across three recipe versions (twice within one) and 18-26 s
+four times across four. The planner now enumerates every whole-second start at every allowed
+length, excludes every time frame already cut from the same master under any
+recipe or library version, prefers the least-overlapping fresh footage, and
+orders ties by a per-job seed recorded as `cutPlanSeed`. Exhaustion answers 409
+`master_windows_exhausted`. Output-SHA duplicate checks in Control Plane are
+unchanged. Separately, the `duplicates` counts on Worker source_replenish rows
+are mostly the Worker's own multi-pass continuation re-counting clips the same
+Lab job admitted in an earlier pass (admitted + duplicates equals that job's
+asset count on every row checked); that accounting is Worker-side and not
+
+_________________________________________________________________________________
+time: [18:00 EDT] [26-09-25]
+agent: [Claude Code] [claude-opus-5-5]
+worktree: [fix/roster-routes-auth] [/Users/ecfromthedc/dev/wt/lab-roster-auth]
+type: [security]: /api/roster no longer serialises account credentials
+area: [backend] [security] [testing]
+
+Production does not set APP_API_KEY, so the /api key middleware is off and
+every /api/roster route answers the public internet. GET /api/roster/, GET
+/api/roster/project/{name}, PUT /api/roster/{id} and POST
+/api/roster/sync-notion and /sync returned full roster rows, including the
+Notion signup email and password, forwarding address and Cloudflare email
+alias/rule/destination. Every roster row now leaves through an allowlist
+(`services/roster_public.py`) and every roster router JSON body through a
+credential-key scrub; the credentials stay in the roster cache for the
+server-side code that uses them. DELETE /api/roster/{id}, which no UI calls,
+now requires CONTROL_PLANE_TOKEN or APP_API_KEY and fails closed when neither
+is configured. The operator UI sends no credential, so the routes it calls
+stay unauthenticated; their responses are credential-free. The UI's email
+alias, signup and forward columns now read "hidden pending operator auth"
+(the Create/Mint alias buttons are hidden with them, since the alias state is
+unknown), and alias removal reports that it is disabled pending operator auth
+instead of silently doing nothing. POST /dedup and PUT /{id} remain anonymous
+pending operator auth. The key scrub normalises spellings and also removes
+notes, pwd/pw/pass, passcode, recovery/backup codes, email and login keys. New HTTP tests fail on main (12 of 16) and pass here.
+/api/pipeline and /api/email still serialise full roster rows and are not
+changed here. No deploy was performed.
+
+_________________________________________________________________________________
+time: [19:45 EDT] [26-09-25]
+agent: [Claude Code] [claude-opus-5-5]
+worktree: [fix/telegram-auth] [/Users/ecfromthedc/dev/seats/LAB-TELEGRAM-AUTH]
+type: [security]: /api/telegram behind the API key; /send confined to media
+area: [backend] [frontend] [security] [testing]
+
+`app.py` exempted every `/api/telegram/` route from the API-key middleware and
+the Telegram router has no auth of its own, so with APP_API_KEY set anyone
+could still replace or delete the bot token, repoint the staging group and
+`POST /api/telegram/send` any file under the repo root to that chat. The
+Railway volume is mounted at /app/projects, so that included the roster
+(passwords), cookies.txt, control_plane_jobs.json and telegram_config.json.
+The bot long-polls; no webhook route exists, so the prefix is no longer
+exempt (only /api/health and the initData-verified /api/miniapp/ remain).
+`/send` now accepts only a media file whose real path is inside a project
+media dir or the legacy output dirs; `/send-batch` and `/assign-batch` refuse
+a traversing batch id and skip files that resolve outside the batch. The
+video router's `project` parameter is one safe directory name, and its
+string-prefix containment checks (which let `videos-evil/` pass as inside
+`videos/`) are real-path checks. The Distribution and Slideshow Telegram calls
+now send the key through `withApiKey`. Earlier reviews report APP_API_KEY
+unset in production; while it is, the middleware stays inert there, and the
+`/send` confinement is what applies. Campaign Hub's sound-assignment proxies call
+/api/telegram without a key and will need one if APP_API_KEY is set. New tests
+fail on main (150 of 163) and pass here. No deploy was performed.
+Follow-up in the same branch: `/api/burn/overlay` checked its source with a
+string prefix, so project `p` (a prefix of `projects/page_roster.json`) or `c`
+(`cookies.txt`) queued a copy of that file into
+`projects/<p>/burned/<batch>/burned_000.mp4`, which /send and the /projects
+mount then serve. It now uses the shared real-path `services.fsutil.is_within`
+and takes `batchId` as one directory name. A sweep of routers/ and services/
+found no other string-prefix filesystem containment. New burn tests fail on
+main (10 of 13) and pass here.
+Second follow-up: `/api/burn/overlay`, `/send-batch`, `/assign-batch` and the
+video router still accepted service-state volume dirs as a project name
+(`_post_render` holds jobs.sqlite and private renders; also
+control_plane_generated/recipes), and `/send` and the recent-videos listing
+did not skip `_post_render`. `sanitize_project_name` now refuses
+`project_manager.is_reserved_volume_dir` names (that set plus any leading
+underscore), listings skip them and `/send` uses the same predicate. New
+tests: 37 of 45 fail before, 45 pass.
+
+_________________________________________________________________________________
+time: [19:50 EDT] [26-09-25]
+agent: [Claude Code] [claude-opus-5-5]
+worktree: [fix/pipeline-email-credential-scrub] [/Users/ecfromthedc/dev/wt/lab-pipeline-scrub]
+type: [security]: /api/pipeline and /api/email no longer serialise account credentials
+area: [backend] [frontend] [security] [testing]
+
+The same unauthenticated exposure as /api/roster existed one router over:
+GET /api/pipeline/stages returned every page's full roster row (signup email,
+password, forwarding address, email alias/rule/destination, notes), and
+/workspace, /setup, /transition and POST /api/email/auto-create returned the
+full row for one page. Both routers now use the roster credential guard route
+and the public row allowlist. The only credential-shaped keys still served are
+the alias a mint/intake/auto-create request itself just created and the team's
+verified destination inboxes, each pinned by a test. The Slack pipeline
+handoff now says "see Notion" instead of carrying the password. The Pipeline
+workspace, stage cards, Roster and Email tabs label the hidden fields
+"hidden pending operator auth". New HTTP tests fail on main (16 of 21) and pass
+here. A whole-app sweep test calls all 104 non-streaming GET routes
+(anonymously and with every machine credential) against a roster seeded with
+sentinel credentials; on main it catches /api/roster/, /api/roster/project,
+/api/pipeline/stages and /api/pipeline/{id}/workspace, and here it passes.
+Pages, miniapp/poster content and telegram routes build named safe fields.
+time: [22:10 EDT] [26-09-25]
+agent: [Claude Code] [claude-opus-5-5]
+worktree: [fix/email-routing-lockdown] [/Users/ecfromthedc/dev/wt/lab-email-lockdown]
+type: [security]: email routing routes no longer re-point page mail anonymously
+area: [backend] [security] [testing]
+
+POST /api/email/destinations, DELETE /api/email/rules/{id} and POST
+/api/email/auto-create were unauthenticated in production and chained into a
+forwarding takeover: add and self-verify a destination, delete a page's rule
+(its id had leaked via /api/roster and /api/pipeline), recreate the same
+account_name-derived alias forwarding to that destination, then receive the
+page's TikTok reset mail. All three now require CONTROL_PLANE_TOKEN (Bearer or
+X-API-Key, constant time) and only it: APP_API_KEY ships in the public
+frontend bundle, so it is refused here. They fail closed (503) when
+CONTROL_PLANE_TOKEN is unset. Destinations are normalised once (ASCII, exactly
+one '@', lowercased) and that same value is validated and sent to Cloudflare. An optional
+EMAIL_DESTINATION_DOMAINS allowlist refuses outside domains on add-destination
+and auto-create. Auto-create refuses (409) to re-point an alias that any roster
+page records with a different alias/destination unless replace=true; recreating
+the identical alias -> destination pair still works. The Distribution tab's
+add-destination, create-alias and remove-alias buttons send no credential and
+now fail until operator auth exists; GET status/destinations stay open.
+Pipeline mint-alias/intake call the CF service directly and are unchanged.
+No deploy was performed.
+
+_________________________________________________________________________________
+time: [23:20 EDT] [26-09-25]
+agent: [Claude Code] [claude-opus-5-5]
+worktree: [fix/email-destinations-and-slack-scrub] [/Users/ecfromthedc/dev/wt/lab-email-dest-slack]
+type: [security]: team inbox list and Slack handoff stop carrying addresses
+area: [backend] [security] [testing]
+
+Follow-up to #176, stacked on it for require_control_plane_auth. GET
+/api/email/destinations served every Cloudflare forwarding destination (the
+team's real inboxes) to anonymous callers; it now requires CONTROL_PLANE_TOKEN
+and fails closed. The Distribution Email tab reads it without a credential and
+shows an empty destination list; Pipeline mint-alias reads destinations
+server-side and is unaffected. The Slack pipeline handoff no longer posts the
+page login email, password or free-text notes (notes can hold backup codes);
+those fields say "see Notion" and the Notion button remains. An anonymous
+POST /api/pipeline/intake is refused with a generic 409, before any mint,
+Notion or roster write, when its handle names an existing roster page (under
+both the intake id and the Notion-sync id) or its notion_page_id names a roster
+page that is not an unfinished step-1 placeholder; completing a placeholder
+anonymously also requires that placeholder's own alias, and a placeholder
+synced before step 2 (handle == email name) may still be completed. Before
+this, a fresh handle plus a live page's notion_page_id renamed that Notion row,
+the sync pruned the live roster page and its rule link, and /setup wrote the
+caller's alias into the row's Notion email. The notion_page_id is first
+reduced to one canonical Notion page id (32 lowercase hex, dashes optional);
+anything else, such as a '#', '?', '/', '%', inner whitespace or non-ASCII
+digits, is a 400 for every caller before any lookup or write, and that same
+canonical value is used for the roster check and every Notion call. The Notion
+write-back helper also refuses a non-canonical id before any request. A page
+whose Notion row is absent from the roster cannot be matched by the ownership
+check. CONTROL_PLANE_TOKEN holders may override the ownership check, not the
+id format. The mint-alias and
+auto-create 409s no longer echo the alias or a page's recorded alias. No
+deploy was performed.
+
+_________________________________________________________________________________
+time: [04:56 EDT] [26-09-26]
+agent: [Claude Code] [claude-opus-5-5]
+worktree: [sec/lab-no-prod-defaults] [/Users/ecfromthedc/dev/wt/lab-no-prod-defaults]
+type: [security]: no Lab code defaults to a production URL
+area: [backend] [security] [testing]
+
+During a review a local probe ran the sound-sync handler un-stubbed; its
+hardcoded Campaign Hub default made one unauthenticated read-only GET to
+production /api/campaigns (404, nothing written). CAMPAIGN_HUB_URL and the new
+SHIPSTREAM_VAULT_ORIGIN are now required: unset or malformed, the Hub and
+ShipStream vault code raise ConfigError before building a request, and
+POST /api/telegram/sounds/sync and /api/slideshow/sounds/prepare answer 503
+"Campaign Hub not configured". A ShipStream vault that is not configured reads
+as "unavailable", the state an unreachable vault already produced. The
+.env.example template no longer carries production origins, and a usage
+docstring no longer names the Supabase project. tests/test_no_production_host_guard.py
+fails on any production hostname in app Python, and on production URLs in
+other tracked files outside a justified docs allowlist. A conftest audit hook
+refuses and fails any test that looks up or connects to a non-loopback host. Its first
+full run found two live leaks in the suite: every TestClient lifespan started
+the ABN factory, which scraped HN, GitHub, Reddit and lobste.rs, and the
+source-execution tests fetched page manifests from the production ShipStream
+vault. Only TestClient lifespans now get an idle factory start, and those
+tests answer manifest reads as an unreachable vault.
+Production needs CAMPAIGN_HUB_URL and SHIPSTREAM_VAULT_ORIGIN set before this
+deploys; neither was set on 2026-09-26. No deploy was performed.
+
+
+_________________________________________________________________________________
+time: [10:00pm] [09-26-26]
+agent: [Codex desktop]
+worktree: [codex/restore-boat-minimax-five-crops]
+type: [bug report]
+area: [backend]
+Restored boat-lake to the operator-requested MiniMax/Hailuo five-way crop using six existing boat-bucket prompts verbatim. Removed the fixed Wan boat-anchor requirement through a boat-only catalog overlay; unrelated catalog/provider versions remain unchanged. Both active boat pages must adopt the advertised selection and existing usable Minimax inventory.
+
+_________________________________________________________________________________
+_________________________________________________________________________________
+time: [04:59 EDT] [26-09-26]
+agent: [Claude Code] [claude-opus-5-5]
+worktree: [claude/lab-moderation-retry] [/Users/ecfromthedc/dev/seats/LAB-MODRETRY]
+type: [feature-request] [supply self-healing]: Bounded varied retry of a confirmed moderation refusal
+area: [backend] [testing]
+
+A confirmed Replicate moderation refusal (E005) on a planned generation call
+is now retried at most twice, each time with the next fixed deterministic
+prompt rewording (`services/moderation_retry.py`), on the same engine, model
+and safety settings. Retries draw on a per-page UTC-day budget
+(`CONTENT_LAB_MODERATION_RETRY_DAILY_BUDGET`, default 6) counted from durable
+`generationAttempts` rows; first attempts never consume it. Each retry has its
+own prediction checkpoint, records its estimated cost, and a retried clip
+records the sent prompt hash plus the plan's base hash and variant id, which
+restart recovery accepts only from a succeeded attempt row. Credit (402),
+provider auth (401/403, new `provider_auth` class) and all other classes still
+fail fast with no retry; the job status contract is unchanged. New tests in
+`tests/test_generation_moderation_retry.py` fail on main and pass here. No
+deployment was performed.
+
+_________________________________________________________________________________
+time: [08:10 EDT] [26-09-26]
+agent: [Claude Code] [claude-opus-5-5]
+worktree: [claude/lab-moderation-retry] [/Users/ecfromthedc/dev/seats/LAB-MODRETRY]
+type: [bug-fix] [supply self-healing]: #181 review round 2, narrower retry trigger and pinned spend guards
+area: [backend] [testing]
+
+Review defects on #181 fixed. The retry trigger is now exactly E005
+(`moderation_retry.retry_blocked`): moderation-class text without E005, or with
+an embedded HTTP status (a 429/5xx/402 from the provider's moderation
+dependency, failed-prediction logs mentioning "safety"), stays a terminal
+refusal named `moderation_not_e005_not_retried`. "Error code: 401/403" (the
+auth failure observed inside the moderation check on 2026-09-25) is now
+classed `provider_auth` with errorDetail `HTTP 401`, and fails fast; the
+errorClass/errorDetail charsets are unchanged. Rewordings no longer add people
+to people-free prompts (variant ids bumped to `family-safe.v2` and
+`backlit-shapes.v2`), and the cost table is pinned to the catalog. New tests
+pin the durable reservation before the paid retry, in-flight retries counting
+against the page budget, and the prediction-id + "Replicate failed:" guard;
+each is killed by its mutation. No deployment was performed.
+
+_________________________________________________________________________________
+time: [08:57 EDT] [26-09-26]
+agent: [Claude Code] [claude-opus-5-5]
+worktree: [claude/lab-moderation-retry] [/Users/ecfromthedc/dev/seats/LAB-MODRETRY]
+type: [bug-fix] [supply self-healing]: #181 review round 3, negation-aware person gate and wider status guard
+area: [backend] [testing]
+
+The person-wording gate for moderation-retry rewordings matched negations, so
+the scenic, ugc, boat and coffee catalog families ("no people") would have
+received "fully clothed" / silhouette-adult wording on an E005 retry. A person
+term now counts only when no negation (no, without, zero, not any, free of,
+devoid of, never) precedes it within three words of the same clause;
+"figure(s)" and "body/bodies" are no longer person terms. A test composes
+every combination of every catalog family. The embedded-HTTP-status guard
+that blocks a retry even with (E005) is now pinned and also matches
+`Error code 429`, `{'status': 500}`, `status_code=429`, `HTTP 503` and httpx
+`Server error '503 …'`; the real 09-25 E005 message is pinned as retried. By
+lead decision, the moderation model's own 401/403 keeps class `provider_auth`
+with errorDetail `moderation model HTTP 401`/`403`; our own token keeps
+`HTTP 401`/`403`. No deployment was performed.
+
+_________________________________________________________________________________
+time: [09:32 EDT] [26-09-26]
+agent: [Claude Code] [claude-opus-5-5]
+worktree: [claude/lab-moderation-retry] [/Users/ecfromthedc/dev/seats/LAB-MODRETRY]
+type: [bug-fix] [supply self-healing]: #181 review round 4, any 4xx/5xx number blocks an E005 retry
+area: [backend] [testing]
+
+The E005 retry no longer enumerates HTTP-status formats. Any standalone
+4xx/5xx number outside a URL refuses the retry even when (E005) is present,
+which also catches "429 Too Many Requests", urllib "HTTP Error 503", requests
+"429 Client Error", JSON "code": 500, error_code=503 and "RateLimitError 429".
+The real 09-25 E005 message carries no number and stays retried. A test pins
+the clause split of the person gate ("No cars; adults walk at dusk." depicts
+people). No deployment was performed.
+
+_________________________________________________________________________________
+time: [19:52 EDT] [26-09-28]
+agent: [Claude Code] [claude-opus-5-5]
+worktree: [dossier/page-frame] [/Users/ecfromthedc/dev/wt/lab-page-frame]
+type: [feature] [per-page frame]: page picture frame applied at prepared-post render
+area: [backend] [testing]
+
+A page may pick a picture frame: 9:16 (default, full-bleed), 16:9, 1:1, 3:4 or
+4:3. The Control Plane sends `frame` in the slot/render treatment only when it
+is not vertical; "9:16" is accepted as absent and anything else fails closed.
+Prepared-post rendering keeps the delivered 1080x1920 H.264 canvas and, after
+the existing near-9:16 normalization, applies
+`crop=1080:H:0:(1920-H)/2,pad=1080:1920:0:(1920-H)/2:black` (H 608/1080/1440/810)
+before the unchanged caption overlay. Frame is not source treatment: the
+normalized visual treatment, applied-video evidence and render capability
+schema are unchanged, so existing inventory stays reusable and a frame change
+reaches the next prepared post. Recipe registration (v2/v3/v4) and the
+generation decoder accept an optional valid `frame`; recipe bytes round-trip
+unchanged. With no frame the ffmpeg graph and final bytes are identical to
+before. Real-ffmpeg tests on the committed 1080x1920 portrait fixture prove
+black bars and the untouched centred band for every frame. The band's top row
+is rounded down to an even row so every source lands on the chroma grid the
+same way (4:3 is rows 554-1363). On a framed page the caption is drawn in the very middle (position middle,
+offset 0) whatever the slot's caption style places it, so a caption that fits
+the band stays off the bars (a very tall one can still reach onto them); font,
+size, colour and line breaks are unchanged (owner decision 2026-09-28). No
+deployment was performed.
+
+_________________________________________________________________________________
+time: [21:40 EDT] [26-09-30]
+agent: [Claude Code] [claude-opus-5-5]
+worktree: [closeout/varied-recut] [/Users/ecfromthedc/dev/seats/CLOSE-LABRECUT]
+type: [feature] [re-cut variety]: every re-cut uses a new section at a new length; no window is cut twice
+area: [backend] [testing]
+
+Operator rule 2026-09-30: when the Lab re-cuts a master it uses a different
+part of the footage and a different length than the cuts before it, lengths
+5 to 9 s in 0.5 s steps, for every sourced page. `plan_source_cuts` now scores
+every candidate (whole-second start x 0.5 s length): never-cut footage first,
+then a start far from the master's last three starts, then a length unlike the
+last three lengths, then least recently cut footage, then the seeded tiebreak.
+The first cut on a master uses the page's Cut length. Lengths are 5-9 s (the
+Worker's bound stays the maximum) and the delivered clip at the saved speed
+stays inside the same range. `constraints.priority: "low_runway"` and unknown
+constraint keys are accepted; `supportedConstraints` is advertised only with
+`CONTENT_LAB_ADVERTISE_SUPPORTED_CONSTRAINTS`, because the deployed Worker
+rejects unknown capabilities fields. The job ledger now carries when each
+window was cut (archive entries keep `usedAt`/`cutIndex`; older entries count
+as oldest). A window is never cut twice: once every whole-second start x
+length is cut, starts move to half, then quarter and three-quarter seconds
+(at least 250 ms apart, so different first frames at any frame rate above
+4 fps), and a cut repeats the master's last length only when nothing else
+fits. When every window is cut, capability reads 0 and job creation answers
+409 `source_windows_exhausted` (the page needs new footage) instead of
+`master_windows_exhausted`; `source_master_too_short` and
+`source_windows_reserved_by_other_pages` name the other empty plans. A census
+test fails any code
+path that builds source cuts without the planner. No deployment was performed.

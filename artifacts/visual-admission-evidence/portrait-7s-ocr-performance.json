@@ -1,0 +1,35 @@
+{
+  "schema": "content-lab.visual-admission.v1",
+  "verdict": "unavailable",
+  "jobId": "fixture",
+  "outputIndex": 0,
+  "pageId": "acct:fixture",
+  "sha256": "74bac037915808365f1559c403e3e6e7fd0cbc8e8f9568472d863dbf6f171892",
+  "bytes": 121366,
+  "scannedAt": "2026-09-12T17:18:29.359676+00:00",
+  "reason": "visual_evidence_unavailable",
+  "sampling": {
+    "mode": "all_frames",
+    "frameCount": 52,
+    "expectedFrameCount": 210,
+    "width": 1080,
+    "height": 1920,
+    "durationSeconds": 7.0,
+    "durationMs": 7000
+  },
+  "model": {
+    "name": "glm-4.6v-flash",
+    "status": "unavailable",
+    "sampledFrames": [
+      0,
+      14,
+      28,
+      42
+    ]
+  },
+  "ocr": {
+    "engine": "tesseract",
+    "status": "unavailable"
+  },
+  "elapsedSeconds": 240.01
+}

@@ -66,6 +66,21 @@ def test_renderer_returns_deterministic_9_by_16_png_and_hashes(font_dir):
         assert image.getchannel("A").getbbox() is not None
 
 
+def test_explicit_upright_is_byte_identical_without_mutating_input(font_dir):
+    plain = request()
+    payload = plain.model_dump(by_alias=True)
+    payload["style"]["inverted"] = False
+    upright = CaptionRenderRequest.model_validate(payload)
+    assert payload["style"]["inverted"] is False
+    assert render_caption_overlay(upright, font_dir=font_dir) == render_caption_overlay(plain, font_dir=font_dir)
+
+
+@pytest.mark.parametrize("value", [0, 1, "false", "true", None])
+def test_inverted_accepts_only_a_real_boolean(value):
+    with pytest.raises(ValidationError):
+        request(inverted=value)
+
+
 def test_explicit_newlines_survive_balance_and_case_transform(font_dir):
     payload = request(case="upper", line_balance=50)
     payload = payload.model_copy(update={"caption": "one two three\n\nfour five"})
@@ -121,7 +136,7 @@ def test_every_typed_style_control_reaches_the_effective_render_plan(font_dir):
         "line_balance": 100,
     }
     assert result["plan"]["font_size_px"] == 110
-    assert result["plan"]["stroke_width_px"] == 10
+    assert result["plan"]["stroke_width_px"] == 3
     assert {line["x_px"] for line in result["plan"]["lines"]} == {972}
     assert result["plan"]["rendered_text"] == "one\nshort\nline"
 
@@ -205,6 +220,27 @@ def test_api_contract_returns_png_and_fail_closed_errors(sync_client, monkeypatc
     assert invented_field.status_code == 422
 
 
+def test_reusable_layout_uses_exact_lines_and_saved_outline_geometry(font_dir):
+    payload = request(
+        line_balance=100,
+        line_breaks=["one", "short line"],
+        outline_width_px=7,
+    )
+
+    result = render_caption_overlay(payload, font_dir=font_dir).model_dump(
+        mode="json", by_alias=True, exclude_none=True
+    )
+
+    assert result["plan"]["rendered_text"] == "one\nshort line"
+    assert [line["text"] for line in result["plan"]["lines"]] == ["one", "short line"]
+    assert result["plan"]["stroke_width_px"] == 7
+
+
+def test_reusable_layout_cannot_change_the_caption_words():
+    with pytest.raises(ValidationError, match="line_breaks must preserve the caption text"):
+        request(line_breaks=["different", "words"])
+
+
 def test_port_8002_burn_server_exposes_the_same_typed_contract(
     monkeypatch, font_dir, tmp_path
 ):
@@ -240,3 +276,18 @@ def test_port_8002_burn_server_exposes_the_same_typed_contract(
         json={**payload, "style": {**payload["style"], "weight": 700}},
     )
     assert invalid.status_code == 422
+
+
+def test_long_caption_renders_without_word_count_rejection(font_dir):
+    lines = [f"these are the original words number {i}" for i in range(8)]
+    caption = " ".join(lines)
+    raw = request(size_pt=18).model_dump(mode="json", by_alias=True)
+    raw["caption"] = caption
+    raw["style"]["line_breaks"] = lines
+    payload = CaptionRenderRequest.model_validate(raw)
+    result = render_caption_overlay(payload, font_dir=font_dir).model_dump(mode="json", by_alias=True)
+    assert result["plan"]["rendered_text"] == "\n".join(lines)
+    from burn_quality_gate import run_quality_check
+    check = run_quality_check(caption, overlay_png=result["overlay"]["base64"],
+                              caption_style=raw["style"])
+    assert check["ok"] is True, check["reasons"]

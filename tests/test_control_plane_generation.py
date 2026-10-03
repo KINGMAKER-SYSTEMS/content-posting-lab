@@ -6,13 +6,18 @@ import json
 import pytest
 
 from providers.base import API_KEYS
+from providers.replicate import _build_flux_2_pro_input
 from services.control_plane_generation import (
     GenerationRecipe,
     compose_prompt,
     dossier_clip_crop,
     dossier_clip_speed,
     dossier_filters_to_color_correction,
+    generation_options,
     load_generation_anchor,
+    load_prompt_catalog,
+    plan_prompt_combinations,
+    prompt_combination_space,
     resolve_generation_recipe,
 )
 from services.dossier_ingredients import (
@@ -68,7 +73,7 @@ def test_truck_recipe_resolves_from_the_master_pages_engine_and_server_owned_pro
     assert recipe.family_name == "truck"
     assert recipe.provider_model == "minimax/hailuo-2.3"
     assert recipe.engine == "hailuo"
-    assert recipe.prompt_catalog_hash == "c80cc32e6e762be05e6655190432e945c55afeb196fc488f3b09ad2fad51b9f1"
+    assert recipe.prompt_catalog_hash == "e7c2a13a818da636bb32ea3027cd3d2be1a88fd8c9c74e87cf67206f3188ceff"
     assert recipe.family["extra"]["crop_mode"] == "both"
     assert recipe.clips_per_generation == 5
     assert recipe.planned_provider_calls(1) == 1
@@ -252,7 +257,7 @@ def test_master_pages_niche_cannot_borrow_another_niches_generator():
     assert resolve_generation_recipe(payload) is None
 
     coffee = _format_publication(
-        "coffee-tok", "coffee-tok:master", "ai_video",
+        "construction-scenic", "construction-scenic:master", "ai_video",
     )
     assert resolve_generation_recipe(coffee) is None
 
@@ -277,14 +282,75 @@ def _format_publication(format_slug, recipe_id, engine):
     return payload
 
 
-def test_failed_boat_and_silhouette_visual_libraries_are_not_advertised():
-    assert resolve_generation_recipe(_format_publication(
+def test_recommissioned_boat_and_silhouette_are_advertised_after_operator_lift():
+    # The 8249ba1 quarantine was lifted by operator decision (2026-09-11):
+    # both formats are commissioned again and their recipes resolve.
+    boat = resolve_generation_recipe(_format_publication(
         "boat-lake", "boat-lake:master", "ai_video",
-    )) is None
-    assert resolve_generation_recipe(_format_publication(
+    ))
+    assert boat is not None
+    assert boat.engine == "hailuo"
+    assert boat.provider_model == "minimax/hailuo-2.3"
+    assert boat.family["method"] == "t2v"
+    assert boat.family.get("base_anchor") is None
+    assert boat.family["extra"]["crop_mode"] == "both"
+    assert boat.clips_per_generation == 5
+    assert boat.planned_provider_calls(10) == 2
+    prompts = {compose_prompt(boat, "boat-variety", i)[0] for i in range(6)}
+    assert len(prompts) > 1
+    assert all("identical to the reference" not in prompt for prompt in prompts)
+    silhouette = resolve_generation_recipe(_format_publication(
         "silhouette-truck", "silhouette-truck:master", "ai_video",
-    )) is None
+    ))
+    assert silhouette is not None
+    assert silhouette.family["method"] == "t2i"
+    assert silhouette.engine == "flux-image"
+    assert silhouette.provider_model == "black-forest-labs/flux-2-pro"
+    assert silhouette.family.get("base_anchor") is None
+    prompt, _ = compose_prompt(silhouette, "static-silhouette", 0)
+    assert "pickup truck parked in an open field" in prompt
+    assert "single still photograph" in prompt
+    assert "Motion:" not in prompt
 
+
+def test_only_the_silhouette_flux_recipe_sends_a_raised_safety_tolerance():
+    # 2026-09-25: at Replicate's default tolerance (2) the silhouette stills
+    # were flagged E005 "sensitive" on 23 of 83 FLUX calls. Only that recipe
+    # opts in, at the lowest step above the default.
+    silhouette = resolve_generation_recipe(_format_publication(
+        "silhouette-truck", "silhouette-truck:master", "ai_video",
+    ))
+    options = generation_options(silhouette)
+    assert options["safety_tolerance"] == 3
+    prompt, _ = compose_prompt(silhouette, "static-silhouette", 0)
+    assert _build_flux_2_pro_input(prompt, options)["safety_tolerance"] == 3
+
+    for format_slug in ("truck-scenic", "boat-lake"):
+        other = resolve_generation_recipe(_format_publication(
+            format_slug, f"{format_slug}:master", "ai_video",
+        ))
+        assert other is not None
+        assert "safety_tolerance" not in generation_options(other)
+
+
+def test_safety_tolerance_leaves_the_silhouette_catalog_and_prompt_plan_unchanged():
+    # The silhouette catalog bytes are its version and the prompt-plan
+    # authority; the moderation level must not re-version saved recipes.
+    _, version = load_prompt_catalog("silhouette-truck")
+    assert version == "2ba10a69a2a25eb0c60ed238b9badb5b7531a994a364e0f06ef4acfcc7bda3a0"
+    silhouette = resolve_generation_recipe(_format_publication(
+        "silhouette-truck", "silhouette-truck:master", "ai_video",
+    ))
+    assert silhouette.executor_version == f"sha256:{version}"
+    assert "safety_tolerance" not in silhouette.provider_config["base_input"]
+    assert plan_prompt_combinations(silhouette, "flux-safety-pin", 3, set()) == [
+        {"combinationId": 325, "promptHash": "02729f7c6fc68c9747f67cc7e38413a679c65d119e5dbddeab3dfca8c11dced0"},
+        {"combinationId": 114, "promptHash": "a39b61f0f356e44af8f6fb786a5f60ed97ed8ae409c644d79b67b802ba4301ef"},
+        {"combinationId": 443, "promptHash": "dfbc78c02af227f048c76266aa8458fc569ef72fa2a6d7f091e7eb86482da8ca"},
+    ]
+
+
+def test_scenic_is_not_misrouted_through_the_ai_video_resolver():
     assert resolve_generation_recipe(_format_publication(
         "pov-scenic", "pov-scenic:master", "sourced_video",
     )) is None
@@ -387,6 +453,22 @@ def test_prompt_rotation_is_deterministic_and_non_repeating():
     assert all("{" not in prompt and "}" not in prompt for prompt in prompts)
 
 
+def test_prompt_planner_counts_only_effective_variations_and_fails_closed_at_exhaustion():
+    recipe = resolve_generation_recipe(publication())
+    selected = recipe.recipe_spec.setdefault("production", {}).setdefault(
+        "variationValues", {},
+    )
+    for name, values in recipe.family["slots"].items():
+        selected[name] = values[0]
+
+    assert prompt_combination_space(recipe) == 1
+    first = plan_prompt_combinations(recipe, "first-job", 1, set())
+    assert len(first) == 1
+    assert plan_prompt_combinations(
+        recipe, "second-job", 1, {first[0]["promptHash"]},
+    ) == []
+
+
 def test_dossier_filter_units_map_to_the_existing_ffmpeg_slider_contract():
     recipe = resolve_generation_recipe(publication())
     recipe.recipe_spec["renderTreatment"]["filters"].update({"grain": 0.2, "vignette": 0.3})
@@ -414,3 +496,26 @@ def test_dossier_filter_units_map_to_the_existing_ffmpeg_slider_contract():
     legacy = resolve_generation_recipe(old)
     assert dossier_clip_speed(legacy) == pytest.approx(1.0)
     assert dossier_clip_crop(legacy) is None
+
+
+@pytest.mark.parametrize("frame", ["9:16", "16:9", "1:1", "3:4", "4:3"])
+def test_page_frame_resolves_without_changing_source_treatment(frame):
+    payload = publication()
+    spec = json.loads(payload["recipeSpecCanonical"])
+    spec["renderTreatment"]["frame"] = frame
+    payload["recipeSpecCanonical"] = json.dumps(spec, sort_keys=True, separators=(",", ":"))
+    framed = resolve_generation_recipe(payload)
+    plain = resolve_generation_recipe(publication())
+    assert framed is not None and plain is not None
+    assert framed.recipe_spec["renderTreatment"]["frame"] == frame
+    assert dossier_clip_speed(framed) == dossier_clip_speed(plain)
+    assert dossier_clip_crop(framed) == dossier_clip_crop(plain)
+
+
+@pytest.mark.parametrize("frame", ["2:3", "", None, 1.0, ["16:9"]])
+def test_unknown_page_frame_is_not_executable(frame):
+    payload = publication()
+    spec = json.loads(payload["recipeSpecCanonical"])
+    spec["renderTreatment"]["frame"] = frame
+    payload["recipeSpecCanonical"] = json.dumps(spec, sort_keys=True, separators=(",", ":"))
+    assert resolve_generation_recipe(payload) is None

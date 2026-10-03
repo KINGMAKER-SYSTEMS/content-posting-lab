@@ -157,6 +157,7 @@ def test_download_source_video_reuses_clipper_and_hashes_exact_bytes(monkeypatch
     original = b"downloaded-video"
     normalized = b"normalized-vertical-video"
     calls = []
+    space_requirements = []
 
     async def downloader(
         url, destination, cookies_file=None, *, max_filesize=None,
@@ -195,6 +196,10 @@ def test_download_source_video_reuses_clipper_and_hashes_exact_bytes(monkeypatch
     monkeypatch.setattr(imports, "download_video", downloader)
     monkeypatch.setattr(imports, "_probe_video", probe)
     monkeypatch.setattr(imports, "_normalize_video", normalize)
+    monkeypatch.setattr(
+        imports, "_require_free_space",
+        lambda _path, required: space_requirements.append(required),
+    )
     destination = tmp_path / "source" / "source.mp4"
     result = asyncio.run(imports.download_source_video(
         "https://cdn.example.com/video.mp4", destination,
@@ -213,6 +218,55 @@ def test_download_source_video_reuses_clipper_and_hashes_exact_bytes(monkeypatch
     assert result.original_sha256 == hashlib.sha256(original).hexdigest()
     assert result.original_bytes == len(original)
     assert result.original_media == original_media
+    assert not destination.with_name("original.mp4").exists()
+    assert space_requirements == [
+        imports.MIN_SOURCE_IMPORT_FREE_BYTES,
+        imports._expected_normalized_bytes(original_media.duration_ms)
+        + imports.MIN_SOURCE_IMPORT_FREE_BYTES,
+    ]
+
+
+def test_download_source_video_keeps_an_exact_refillable_master_without_reencoding(
+    monkeypatch, tmp_path,
+):
+    original = b"already-refillable-master"
+    media = imports.SourceImportMedia(
+        duration_ms=7_500,
+        width=1080,
+        height=1920,
+        video_codec="h264",
+        pixel_format="yuv420p",
+        fps=30.0,
+        audio_streams=0,
+    )
+
+    async def downloader(
+        _url, destination, cookies_file=None, *, max_filesize=None,
+        source_import_mode=False,
+    ):
+        destination.write_bytes(original)
+        return destination
+
+    async def never_normalize(_source, _destination):
+        raise AssertionError("an exact refillable master must not be re-encoded")
+
+    monkeypatch.setattr(imports, "download_video", downloader)
+    monkeypatch.setattr(imports, "_probe_video", lambda _path: asyncio.sleep(0, result=media))
+    monkeypatch.setattr(imports, "_normalize_video", never_normalize)
+    monkeypatch.setattr(imports, "_require_free_space", lambda *_args: None)
+
+    destination = tmp_path / "source" / "source.mp4"
+    result = asyncio.run(imports.download_source_video(
+        "https://cdn.example.com/video.mp4", destination,
+    ))
+    expected_sha = hashlib.sha256(original).hexdigest()
+    assert destination.read_bytes() == original
+    assert result.sha256 == expected_sha
+    assert result.original_sha256 == expected_sha
+    assert result.bytes == len(original)
+    assert result.original_bytes == len(original)
+    assert result.media == media
+    assert result.original_media == media
     assert not destination.with_name("original.mp4").exists()
 
 
@@ -245,6 +299,20 @@ def test_expected_output_and_disk_capacity_fail_before_normalization(monkeypatch
     monkeypatch.setattr(imports.shutil, "disk_usage", lambda _path: Usage())
     with pytest.raises(imports.SourceImportUnavailable, match="capacity"):
         imports._require_free_space(tmp_path, 10)
+
+
+def test_long_creator_masters_fit_the_refillable_source_import_contract():
+    """One long master must remain a viable source for many future recuts."""
+    thirty_minutes_ms = 30 * 60 * 1_000
+    one_hour_ms = 60 * 60 * 1_000
+
+    assert imports.MAX_SOURCE_IMPORT_BYTES >= 3_080_000_000
+    assert imports.MAX_SOURCE_DURATION_MS >= one_hour_ms
+    assert imports._expected_normalized_bytes(thirty_minutes_ms) <= imports.MAX_NORMALIZED_SOURCE_BYTES
+    assert imports._expected_normalized_bytes(one_hour_ms) <= imports.MAX_NORMALIZED_SOURCE_BYTES
+    assert imports.MAX_SOURCE_IMPORT_WORKSPACE_BYTES >= (
+        imports.MAX_SOURCE_IMPORT_BYTES + imports.MAX_NORMALIZED_SOURCE_BYTES
+    )
 
 
 def test_workspace_overflow_cancels_download_and_removes_partial_directory(

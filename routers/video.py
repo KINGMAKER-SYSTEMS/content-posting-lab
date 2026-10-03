@@ -16,11 +16,11 @@ from pathlib import Path
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 
-from project_manager import PROJECTS_DIR, get_project_video_dir
+from project_manager import PROJECTS_DIR, get_project_video_dir, is_reserved_volume_dir
 from providers import PROVIDERS
 from providers.base import API_KEYS, generate_one
 from services.ffmpeg import is_default_cc, run_color_correct
-from services.fsutil import safe_unlink
+from services.fsutil import is_within as _contained_in, safe_unlink
 from services.json_store import atomic_save
 
 log = logging.getLogger("video")
@@ -44,6 +44,35 @@ _cc_semaphore = asyncio.Semaphore(4)
 _CC_BULK_MAX_ITEMS = 50
 
 
+def _safe_project(project) -> str:
+    """Return ``project`` if it is one safe directory name under PROJECTS_DIR.
+
+    ``project`` is joined onto PROJECTS_DIR for prompts.json / jobs.json, so a
+    value such as ``..`` or ``a/b`` would reach files outside the projects root.
+    Raises ValueError otherwise.
+    """
+    if (
+        not isinstance(project, str)
+        or not project
+        or project.startswith(".")
+        or any(ch in project for ch in ("/", "\\", "\x00"))
+        or is_reserved_volume_dir(project)
+    ):
+        raise ValueError("Invalid project")
+    root = Path(os.path.realpath(PROJECTS_DIR))
+    if Path(os.path.realpath(root / project)).parent != root:
+        raise ValueError("Invalid project")
+    return project
+
+
+def _require_project(project) -> str:
+    """_safe_project for request input: HTTP 400 instead of ValueError."""
+    try:
+        return _safe_project(project)
+    except ValueError:
+        raise HTTPException(400, "Invalid project")
+
+
 def _resolve_safe_video_path(project: str, path: str) -> Path:
     """Resolve a user-supplied video path against the project's video dir.
 
@@ -52,11 +81,12 @@ def _resolve_safe_video_path(project: str, path: str) -> Path:
     """
     if not project:
         raise HTTPException(400, "project is required")
+    project = _require_project(project)
     if not path:
         raise HTTPException(400, "path is required")
     video_dir = get_project_video_dir(project)
     target = (video_dir / path).resolve()
-    if not str(target).startswith(str(video_dir.resolve())):
+    if not _contained_in(target, video_dir):
         raise HTTPException(400, "Invalid path")
     if not target.exists() or not target.is_file():
         raise HTTPException(404, "File not found")
@@ -77,11 +107,11 @@ def _make_job_id(provider: str, prompt: str) -> str:
 
 
 def _prompts_path(project: str) -> Path:
-    return PROJECTS_DIR / project / "prompts.json"
+    return PROJECTS_DIR / _safe_project(project) / "prompts.json"
 
 
 def _jobs_path(project: str) -> Path:
-    return PROJECTS_DIR / project / "jobs.json"
+    return PROJECTS_DIR / _safe_project(project) / "jobs.json"
 
 
 def _save_jobs(project: str) -> None:
@@ -89,12 +119,12 @@ def _save_jobs(project: str) -> None:
     project_jobs = {jid: j for jid, j in jobs.items() if j.get("project") == project}
     if not project_jobs:
         return
-    p = _jobs_path(project)
-    p.parent.mkdir(parents=True, exist_ok=True)
     try:
+        p = _jobs_path(project)
+        p.parent.mkdir(parents=True, exist_ok=True)
         atomic_save(p, project_jobs)
-    except OSError as e:
-        log.error("Failed to save jobs for project %s: %s", project, e)
+    except (OSError, ValueError) as e:
+        log.error("Failed to save jobs for project %r: %s", project, e)
 
 
 _TERMINAL_STATUSES = {"done", "error"}
@@ -130,7 +160,10 @@ def _load_jobs(project: str) -> None:
     are marked as done-with-crops if crop files exist on disk, or as error otherwise.
     This handles server restarts that kill in-flight async tasks.
     """
-    p = _jobs_path(project)
+    try:
+        p = _jobs_path(project)
+    except ValueError:
+        return
     if not p.exists():
         return
     try:
@@ -274,12 +307,12 @@ async def get_provider_schemas():
 
 @router.get("/prompts")
 async def list_prompts(project: str = "quick-test"):
-    return _read_prompts(project)
+    return _read_prompts(_require_project(project))
 
 
 @router.delete("/prompts")
 async def clear_prompts(project: str = "quick-test"):
-    p = _prompts_path(project)
+    p = _prompts_path(_require_project(project))
     safe_unlink(p)
     return {"ok": True}
 
@@ -289,11 +322,14 @@ async def delete_video_file(project: str = "quick-test", path: str = ""):
     """Delete a single video file from a project's videos directory."""
     if not path:
         raise HTTPException(400, "path is required")
+    project = _require_project(project)
     video_dir = get_project_video_dir(project)
-    target = (video_dir / path).resolve()
-    # Prevent path traversal
-    if not str(target).startswith(str(video_dir.resolve())):
+    target = video_dir / path
+    # Prevent path traversal: real-path containment, not a string prefix
+    # (`videos-evil/` starts with `videos`), with symlinks resolved.
+    if not _contained_in(target, video_dir):
         raise HTTPException(400, "Invalid path")
+    target = Path(os.path.realpath(target))
     if not target.exists():
         raise HTTPException(404, "File not found")
     safe_unlink(target)
@@ -326,6 +362,7 @@ async def generate_video(
     negative_prompt: str | None = Form(None),
     crop_mode: str | None = Form(None),
 ):
+    project = _require_project(project)
     if provider not in PROVIDERS:
         raise HTTPException(status_code=400, detail=f"Unknown provider: {provider}")
     key_id = PROVIDERS[provider]["key_id"]
@@ -499,6 +536,7 @@ def _sweep_stuck_entries(job: dict) -> None:
 
 @router.get("/jobs")
 async def list_jobs(project: str = "quick-test"):
+    project = _require_project(project)
     _load_jobs(project)
     project_jobs = [j for j in jobs.values() if j.get("project") == project]
     for j in project_jobs:
@@ -522,6 +560,7 @@ async def get_job(job_id: str):
 @router.delete("/jobs/{job_id}")
 async def delete_job(job_id: str, project: str = "quick-test"):
     """Delete a job and all its video files from disk."""
+    project = _require_project(project)
     if job_id not in jobs:
         _load_jobs(project)
     job = jobs.get(job_id)
@@ -529,7 +568,10 @@ async def delete_job(job_id: str, project: str = "quick-test"):
         raise HTTPException(status_code=404, detail="Job not found")
 
     proj = job.get("project", project)
-    video_dir = get_project_video_dir(proj)
+    try:
+        video_dir = get_project_video_dir(_safe_project(proj))
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid project")
 
     # Delete all video files on disk
     deleted_files = 0
@@ -537,13 +579,13 @@ async def delete_job(job_id: str, project: str = "quick-test"):
         # Delete main file
         if v.get("file"):
             target = (video_dir / v["file"]).resolve()
-            if str(target).startswith(str(video_dir.resolve())) and safe_unlink(target):
+            if _contained_in(target, video_dir) and safe_unlink(target):
                 deleted_files += 1
         # Delete crop files
         for crop in v.get("crops", []):
             if crop.get("file"):
                 target = (video_dir / crop["file"]).resolve()
-                if str(target).startswith(str(video_dir.resolve())) and safe_unlink(target):
+                if _contained_in(target, video_dir) and safe_unlink(target):
                     deleted_files += 1
 
     # Remove from in-memory state
@@ -630,6 +672,7 @@ async def bulk_download(body: dict):
     project = body.get("project", "quick-test")
     if not job_ids:
         raise HTTPException(status_code=400, detail="No job IDs provided")
+    project = _require_project(project)
 
     _load_jobs(project)
     base_dir = get_project_video_dir(project)
@@ -697,6 +740,7 @@ async def bulk_delete(body: dict):
     project = body.get("project", "quick-test")
     if not job_ids:
         raise HTTPException(status_code=400, detail="No job IDs provided")
+    project = _require_project(project)
 
     _load_jobs(project)
     video_dir = get_project_video_dir(project)
@@ -708,16 +752,19 @@ async def bulk_delete(body: dict):
         if not job:
             continue
         proj = job.get("project", project)
-        vdir = get_project_video_dir(proj)
+        try:
+            vdir = get_project_video_dir(_safe_project(proj))
+        except ValueError:
+            continue
         for v in job.get("videos", []):
             if v.get("file"):
                 target = (vdir / v["file"]).resolve()
-                if str(target).startswith(str(vdir.resolve())) and safe_unlink(target):
+                if _contained_in(target, vdir) and safe_unlink(target):
                     deleted_files += 1
             for crop in v.get("crops", []):
                 if crop.get("file"):
                     target = (vdir / crop["file"]).resolve()
-                    if str(target).startswith(str(vdir.resolve())) and safe_unlink(target):
+                    if _contained_in(target, vdir) and safe_unlink(target):
                         deleted_files += 1
         del jobs[jid]
         deleted_jobs += 1
@@ -822,6 +869,7 @@ async def color_correct_bulk(body: dict):
     items = body.get("items") or []
     if not project:
         raise HTTPException(400, "project is required")
+    project = _require_project(project)
     if not items:
         raise HTTPException(400, "items is required")
     if len(items) > _CC_BULK_MAX_ITEMS:

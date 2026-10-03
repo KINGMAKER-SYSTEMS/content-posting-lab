@@ -1,5 +1,6 @@
 """Closed contracts for page-scoped immutable-master recut execution."""
 
+import asyncio
 import hashlib
 import json
 from pathlib import Path
@@ -12,7 +13,12 @@ from fastapi.testclient import TestClient
 
 import routers.control_plane as cp
 import routers.control_plane_recipes as recipes
-from services.control_plane_sources import CUT_SLOT_STEP_MS, resolve_source_recipe
+from services.control_plane_sources import (
+    source_cut_durations,
+    plan_source_cuts,
+    resolve_source_recipe,
+    source_cut_is_planned,
+)
 from services.dossier_ingredients import (
     PINNED_LEGACY_DOSSIER_CATALOG_VERSIONS_BY_PUBLICATION,
     build_dossier_ingredient_catalog,
@@ -25,6 +31,22 @@ TOKEN = "test-control-plane-token"
 PAGE_ID = "tt-chase-miles-4l"
 LIBRARY_ID = "pov-dirt-bike-chase-miles-4l-v1"
 MASTER_SHA = "c434bf9678fbaa20b9b081c68260cca75eb3dd109ddc1cb82df556ec59ae5bd5"
+SOURCE_IDENTITY = "https://www.youtube.com/watch?v=vt5im2TRAKw"
+_start_source_runner = cp._start_dossier_source
+
+
+@pytest.fixture(autouse=True)
+def offline_shipstream_manifest(monkeypatch):
+    """publication() builds the Dossier catalog for a sourced page, which reads
+    that page's ShipStream manifest. Tests that need a manifest patch
+    _fetch_manifest themselves; any other read answers as an unreachable
+    vault instead of leaving the process."""
+    import services.shipstream_source_manifest as source_manifest
+
+    def unreachable(_url):
+        raise source_manifest.ShipStreamSourceUnavailable("ShipStream vault is offline in tests")
+
+    monkeypatch.setattr(source_manifest, "_fetch_manifest", unreachable)
 
 
 def publication(
@@ -32,6 +54,7 @@ def publication(
     clip_speed=1.0,
     clip_crop=None,
     cut_duration_ms=6_000,
+    source_start_ms=None,
     source_library_id=LIBRARY_ID,
     recipe_version="dossier-feedfacefeedface",
     schema="dossier.recipe-spec.v3",
@@ -41,7 +64,7 @@ def publication(
         handle="chase.miles.4l",
         content_niche="POV - Dirtbike",
         content_engine="sourced_video",
-        vault_url="https://shipstream.risingtidesviral.com/vault/chase.miles.4l",
+        vault_url="https://shipstream.test/vault/chase.miles.4l",
     )
     catalog = build_dossier_ingredient_catalog(PAGE_ID, intent, revision)
     render_treatment = {
@@ -61,6 +84,8 @@ def publication(
         "variationValues": {},
         "controls": {"cutDurationMs": cut_duration_ms},
     }
+    if source_start_ms is not None:
+        production["controls"]["sourceStartMs"] = source_start_ms
     production["catalogVersion"] = catalog_selection_version(
         catalog, "pov-dirt-bike", production,
     )
@@ -152,7 +177,7 @@ def test_source_recipe_resolves_the_exact_shipstream_page_library(monkeypatch):
         handle="chase.miles.4l",
         content_niche="POV - Dirtbike",
         content_engine="sourced_video",
-        vault_url="https://shipstream.risingtidesviral.com/vault/chase.miles.4l",
+        vault_url="https://shipstream.test/vault/chase.miles.4l",
     )
     manifest = {
         "schema": "shipstream.source-manifest.v1",
@@ -217,6 +242,109 @@ def test_source_recipe_resolves_the_exact_shipstream_page_library(monkeypatch):
     assert resolve_source_recipe(payload) is None
 
 
+def test_scenic_source_recipe_resolves_the_pages_own_shipstream_library(monkeypatch):
+    import services.shipstream_source_manifest as source_manifest
+
+    page_id = "acct:scenic:city-pines"
+    handle = "city.pines"
+    source_sha = "c" * 64
+    intent, revision = master_pages(
+        page_id,
+        handle=handle,
+        content_niche="POV — Scenic",
+        content_engine="sourced_video",
+        vault_url=f"https://shipstream.test/vault/{handle}",
+    )
+    manifest = {
+        "schema": "shipstream.source-manifest.v1",
+        "page": handle,
+        "notion": {
+            "pageId": intent["notionPageId"],
+            "contentEngine": intent["contentEngine"],
+            "contentNiche": intent["contentNiche"],
+            "serviceMode": intent["automationMode"],
+        },
+        "format": "pov-scenic",
+        "sourceAuthority": {
+            "kind": "historical_posted_cut_recovery",
+            "pageHandle": handle,
+            "notionPageId": intent["notionPageId"],
+            "pageBound": True,
+            "replacementEligible": True,
+        },
+        "master": None,
+        "historicalPostedCuts": [{
+            "type": "historical_posted_cut",
+            "pageHandle": handle,
+            "notionPageId": intent["notionPageId"],
+            "sha256": source_sha,
+            "bytes": 12_345_678,
+            "storageKey": f"vault/{handle}/pool/{source_sha}.mp4",
+            "uploadedAt": "2026-09-03T10:00:00.000Z",
+            "media": {"durationSeconds": 10.0},
+        }],
+        "cuts": [],
+    }
+    monkeypatch.setattr(
+        source_manifest, "_fetch_manifest",
+        lambda _url: json.dumps(manifest).encode(),
+    )
+    library = source_manifest.load_shipstream_source_dna_library(
+        intent, page_id=page_id, expected_format="pov-scenic",
+    )
+    catalog = build_dossier_ingredient_catalog(page_id, intent, revision)
+    production = {
+        "catalogVersion": "",
+        "providerId": None,
+        "modelId": None,
+        "promptModuleId": None,
+        "referenceSetId": None,
+        "sourceLibraryId": library.library_id,
+        "variationValues": {},
+        "controls": {"cutDurationMs": 6_000},
+    }
+    production["catalogVersion"] = catalog_selection_version(
+        catalog, "pov-scenic", production,
+    )
+    spec = {
+        "schema": "dossier.recipe-spec.v4",
+        "masterPages": intent,
+        "masterPagesHash": revision,
+        "production": production,
+        "renderTreatment": {
+            "stylePreset": None,
+            "filters": {},
+            "captionStyle": {},
+            "clipSpeed": 1.0,
+            "clipCrop": {"zoom": 1.0, "focusX": 0.5, "focusY": 0.5},
+        },
+        "captionDiscipline": {
+            "captionSet": "night-core",
+            "register": ["nostalgia"],
+            "slingshotShare": None,
+        },
+        "demand": {"formatMix": {"pov-scenic": 1.0}},
+    }
+    canonical = json.dumps(spec, sort_keys=True, separators=(",", ":"))
+    publication = {
+        "schema": recipes.REQUEST_SCHEMA,
+        "pageId": page_id,
+        "lane": recipes.LANE,
+        "recipeId": "pov-scenic:master",
+        "engine": "sourced_video",
+        "recipeVersion": "dossier-scenic000000",
+        "dossierRevision": "rev-scenic-source",
+        "recipeSpecHash": "sha256:" + hashlib.sha256(canonical.encode()).hexdigest(),
+        "recipeSpecCanonical": canonical,
+    }
+
+    resolved = resolve_source_recipe(publication)
+    assert resolved is not None
+    assert resolved.format_slug == "pov-scenic"
+    assert resolved.source_library_id == library.library_id
+    assert resolved.masters[0].sha256 == source_sha
+
+
 def headers(idempotency="source-job-0001"):
     return {
         "Authorization": f"Bearer {TOKEN}",
@@ -265,6 +393,29 @@ def _probe_duration(path: Path) -> float:
     return float(completed.stdout.strip())
 
 
+def _overlapping(left_cuts, right_cuts):
+    """Pairs of stored cuts of the same master whose windows overlap."""
+    return [
+        (left, right)
+        for left in left_cuts for right in right_cuts
+        if left["masterSha256"] == right["masterSha256"]
+        and left["startMs"] < right["startMs"] + right["durationMs"]
+        and right["startMs"] < left["startMs"] + left["durationMs"]
+    ]
+
+
+def _pin_cuts_to_first_frame(job_id):
+    """Move a planned job's cuts to start 0 so a short synthetic clip covers them."""
+    store = cp._load_jobs()
+    for cut in store["jobs"][job_id]["sourceCuts"]:
+        cut.update({
+            "slotId": f"{cut['masterSha256']}:0:{cut['durationMs']}",
+            "libraryStartMs": 0,
+            "startMs": 0,
+        })
+    cp.atomic_save(cp._jobs_path(), store)
+
+
 @pytest.fixture
 def lab(monkeypatch, tmp_path):
     monkeypatch.setenv("CONTROL_PLANE_TOKEN", TOKEN)
@@ -276,7 +427,7 @@ def lab(monkeypatch, tmp_path):
         handle="chase.miles.4l",
         content_niche="POV - Dirtbike",
         content_engine="sourced_video",
-        vault_url="https://shipstream.risingtidesviral.com/vault/chase.miles.4l",
+        vault_url="https://shipstream.test/vault/chase.miles.4l",
     )
     bind_current_intent(monkeypatch, cp, intent, revision)
     started = []
@@ -308,17 +459,115 @@ def test_source_recipe_requires_v3_page_scoped_master_and_exact_controls():
     assert resolved.masters[0].sha256 == MASTER_SHA
     assert resolved.masters[0].source_offset_ms == 120_000
     assert resolved.cut_duration_ms == 6_000
+    assert resolved.minimum_source_start_ms == 0
     assert (resolved.output_width, resolved.output_height) == (1080, 1920)
     assert resolved.encode_preset == "tiktok_delivery_v1"
 
     assert resolve_source_recipe(publication(source_library_id="not-registered")) is None
     assert resolve_source_recipe(publication(cut_duration_ms=6_500)) is None
+    assert resolve_source_recipe(publication(source_start_ms=True)) is None
+    assert resolve_source_recipe(publication(source_start_ms=210_000.0)) is None
+    assert resolve_source_recipe(publication(source_start_ms=210_500)) is None
+    assert resolve_source_recipe(publication(source_start_ms=float("nan"))) is None
+    assert resolve_source_recipe(publication(source_start_ms=7_200_001)) is None
+    assert resolve_source_recipe(publication(source_start_ms=10**1_000)) is None
+    assert resolve_source_recipe(publication(source_start_ms=-(10**1_000))) is None
+    assert resolve_source_recipe(publication(cut_duration_ms=10**1_000)) is None
     legacy = publication()
     spec = json.loads(legacy["recipeSpecCanonical"])
     spec.pop("production")
     spec["schema"] = "dossier.recipe-spec.v2"
     legacy["recipeSpecCanonical"] = json.dumps(spec, sort_keys=True, separators=(",", ":"))
     assert resolve_source_recipe(legacy) is None
+
+
+def test_source_start_is_accepted_by_the_publication_api(lab):
+    client, _, _ = lab
+    payload = publication(
+        source_start_ms=210_000,
+        recipe_version="dossier-source-floor0001",
+    )
+    response = client.post(
+        "/api/control-plane/v1/recipes",
+        json=payload,
+        headers=headers("source-register-floor-0001"),
+    )
+    assert response.status_code == 200, response.text
+
+
+@pytest.mark.parametrize("value", [True, 210_500, -1_000, 7_201_000])
+def test_source_start_publication_rejects_invalid_values(lab, value):
+    client, _, _ = lab
+    payload = publication(
+        source_start_ms=value,
+        recipe_version=f"dossier-invalid-floor-{str(value).replace('-', 'n').lower()}",
+    )
+    response = client.post(
+        "/api/control-plane/v1/recipes",
+        json=payload,
+        headers=headers(f"source-register-invalid-{str(value).replace('-', 'n').lower()}"),
+    )
+    assert response.status_code == 409
+
+
+def test_source_planner_rotates_five_to_nine_second_disjoint_windows():
+    resolved = resolve_source_recipe(publication(cut_duration_ms=7_000))
+    assert resolved is not None
+    cuts = plan_source_cuts(resolved, 20, set())
+    assert len(cuts) == 20
+    lengths = [cut.duration_ms for cut in cuts]
+    assert set(lengths) <= set(range(5_000, 9_001, 500))
+    assert len(set(lengths)) >= 6, lengths
+    assert lengths[0] == 7_000, "the first cut uses the page's Cut length"
+    assert all(a != b for a, b in zip(lengths, lengths[1:])), lengths
+    ordered = sorted(cuts, key=lambda cut: cut.start_ms)
+    for previous, current in zip(ordered, ordered[1:]):
+        assert previous.start_ms + previous.duration_ms <= current.start_ms
+
+
+def test_source_planner_honors_page_earliest_original_timestamp():
+    resolved = resolve_source_recipe(publication(source_start_ms=210_000))
+    assert resolved is not None
+    assert resolved.minimum_source_start_ms == 210_000
+    cuts = plan_source_cuts(resolved, 5, set())
+    assert len(cuts) == 5
+    assert all(
+        cut.master.source_offset_ms + cut.start_ms >= 210_000
+        for cut in cuts
+    )
+
+
+def test_page_master_floor_is_compared_on_the_original_timeline():
+    from dataclasses import replace
+
+    recipe = resolve_source_recipe(publication(source_start_ms=135_000))
+    assert recipe is not None
+    master = replace(
+        recipe.masters[0],
+        source_offset_ms=120_000,
+        provenance={
+            **recipe.masters[0].provenance,
+            "authority": "ShipStream source-manifest.v1 exact page master",
+        },
+    )
+    recipe = replace(recipe, masters=(master,))
+    cuts = plan_source_cuts(recipe, 100, set())
+    assert all(cut.start_ms >= 15_000 for cut in cuts)
+    _, served = _drain(recipe)
+    assert min(int(slot.split(":")[1]) for slot in served) == 15_000
+    assert not source_cut_is_planned(
+        recipe,
+        master,
+        0,
+        6_000,
+        f"{master.sha256}:0",
+    )
+    assert not source_cut_is_planned(
+        recipe, master, 14_000, 6_000, f"{master.sha256}:14000:6000",
+    )
+    assert source_cut_is_planned(
+        recipe, master, 15_000, 6_000, f"{master.sha256}:15000:6000",
+    )
 
 
 def test_source_recipe_accepts_v4_and_preserves_the_caption_selection():
@@ -350,7 +599,8 @@ def test_capability_and_jobs_bind_master_hash_and_unique_windows(lab):
     assert first_job["sourceKind"] == "dossier_source_dna"
     assert first_job["sourceLibraryId"] == LIBRARY_ID
     assert first_job["sourceLibraryHash"]
-    assert [cut["startMs"] for cut in first_job["sourceCuts"]] == [0, CUT_SLOT_STEP_MS]
+    assert len(first_job["sourceCuts"]) == 2
+    assert first_job["cutPlanSeed"]
 
     second_payload = publication(recipe_version="dossier-second000000")
     assert client.post(
@@ -362,10 +612,160 @@ def test_capability_and_jobs_bind_master_hash_and_unique_windows(lab):
         headers=headers("source-job-second"),
     )
     second_job = cp._load_jobs()["jobs"][second.json()["jobId"]]
-    assert [cut["startMs"] for cut in second_job["sourceCuts"]] == [
-        CUT_SLOT_STEP_MS * 2, CUT_SLOT_STEP_MS * 3,
-    ]
+    assert len(second_job["sourceCuts"]) == 2
+    assert second_job["cutPlanSeed"] != first_job["cutPlanSeed"]
+    assert not _overlapping(first_job["sourceCuts"], second_job["sourceCuts"])
     assert len(started) == 2
+
+
+@pytest.mark.asyncio
+async def test_queued_source_job_fails_before_media_work_when_strategy_changes(
+    lab, monkeypatch,
+):
+    client, _, _ = lab
+    queued = client.post(
+        "/api/control-plane/v1/jobs",
+        json=job_body(1),
+        headers=headers("source-job-before-strategy-change"),
+    )
+    assert queued.status_code == 200
+    prior = job_body(1)["masterPages"]
+    changed = {
+        **prior,
+        "contentNiche": "TRUCK",
+        "contentEngine": "ai_video",
+    }
+    bind_current_intent(monkeypatch, cp, changed, recipes.intent_hash(changed))
+
+    async def fail_source(*_args, **_kwargs):
+        raise AssertionError("stale strategy reached source media")
+
+    monkeypatch.setattr(cp, "_cached_source_master", fail_source)
+    await cp._run_dossier_source(queued.json()["jobId"])
+    stored = cp._load_jobs()["jobs"][queued.json()["jobId"]]
+    assert stored["status"] == "failed"
+    assert stored["error"] == "master_pages_strategy_changed"
+
+
+@pytest.mark.asyncio
+async def test_source_setup_exception_terminalizes_not_ghosts(lab, monkeypatch):
+    client, _, _ = lab
+    queued = client.post(
+        "/api/control-plane/v1/jobs",
+        json=job_body(1),
+        headers=headers("source-job-setup-failure"),
+    )
+    assert queued.status_code == 200
+    job_id = queued.json()["jobId"]
+
+    def boom(recipe):
+        raise OSError("recipe read failed")
+
+    monkeypatch.setattr(cp, "dossier_filters_to_color_correction", boom)
+    # Drive the REAL entrypoint (captured at import time, before `lab`
+    # monkeypatched _start_dossier_source to `started.append`).
+    _start_source_runner(job_id)
+    task = cp._source_tasks[job_id]
+    await asyncio.wait_for(task, timeout=5)
+    stored = cp._get_job_or_404(job_id)
+    assert stored["status"] == "failed"
+    assert "recipe read failed" in stored["error"]
+    assert stored.get("completedAt")
+
+
+@pytest.mark.asyncio
+async def test_cached_source_master_hash_runs_off_the_event_loop(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    import threading
+
+    monkeypatch.setattr(cp, "_generation_root", lambda: tmp_path)
+    master = SimpleNamespace(sha256="c" * 64, bytes=4)
+    cache_root = tmp_path / "_source_dna"
+    cache_root.mkdir(parents=True, exist_ok=True)
+    target = cache_root / f"{master.sha256}.mp4"
+    target.write_bytes(b"data")
+
+    loop_thread = threading.get_ident()
+    saw = {}
+
+    def recording_sha256(path):
+        saw["thread"] = threading.get_ident()
+        return master.sha256
+
+    monkeypatch.setattr(cp, "_sha256", recording_sha256)
+    result = await cp._cached_source_master("acct:page", master, "job-1")
+    assert result == target
+    assert saw["thread"] != loop_thread, "cache-hit hash must not run on the event loop"
+
+
+
+
+def test_capabilities_include_only_completed_page_source_import_identities(lab):
+    client, _, _ = lab
+    cp.atomic_save(cp._jobs_path(), {
+        **cp._empty_jobs(),
+        "jobs": {
+            "completed-import": {
+                "pageId": PAGE_ID,
+                "sourceKind": "page_source_import",
+                "status": "completed",
+                "sourceUrl": "https://cdn.example.com/imported-master.mp4",
+            },
+            "pending-import": {
+                "pageId": PAGE_ID,
+                "sourceKind": "page_source_import",
+                "status": "running",
+                "sourceUrl": "https://cdn.example.com/pending-master.mp4",
+            },
+        },
+    })
+    headers_for_page = {"X-RT-Page-Id": PAGE_ID}
+    capabilities = client.get(
+        "/api/control-plane/v1/capabilities", headers=headers_for_page,
+    ).json()["capabilities"]
+    assert capabilities[0]["sourceIdentities"] == [
+        "https://cdn.example.com/imported-master.mp4",
+        "https://www.youtube.com/watch?v=vt5im2TRAKw",
+    ]
+
+    store = cp._load_jobs()
+    store["jobs"]["completed-import"]["status"] = "failed"
+    cp.atomic_save(cp._jobs_path(), store)
+    capabilities = client.get(
+        "/api/control-plane/v1/capabilities", headers=headers_for_page,
+    ).json()["capabilities"]
+    assert capabilities[0]["sourceIdentities"] == [
+        "https://www.youtube.com/watch?v=vt5im2TRAKw",
+    ]
+
+
+def test_sourced_paths_never_probe_the_ai_video_resolver(lab, monkeypatch):
+    client, _, started = lab
+
+    def unexpected_generation_probe(_publication):
+        raise AssertionError("sourced_video must not probe the ai_video resolver")
+
+    monkeypatch.setattr(cp, "resolve_generation_recipe", unexpected_generation_probe)
+    capabilities = client.get(
+        "/api/control-plane/v1/capabilities",
+        headers={"X-RT-Page-Id": PAGE_ID},
+    )
+    assert capabilities.status_code == 200
+    assert capabilities.json()["capabilities"] == [{
+        "recipeId": "pov-dirt-bike:master",
+        "engine": "sourced_video",
+        "sourceIdentities": ["https://www.youtube.com/watch?v=vt5im2TRAKw"],
+        "recipeVersion": "dossier-feedfacefeedface",
+        "maxQuantity": 10,
+        "sourceIdentities": [SOURCE_IDENTITY],
+    }]
+
+    created = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(1),
+        headers=headers("source-job-engine-dispatch"),
+    )
+    assert created.status_code == 200
+    assert len(started) == 1
 
 
 def test_failed_source_job_releases_unrendered_cut_windows(lab):
@@ -377,10 +777,15 @@ def test_failed_source_job_releases_unrendered_cut_windows(lab):
     assert first.status_code == 200
     first_id = first.json()["jobId"]
     first_job = cp._load_jobs()["jobs"][first_id]
-    assert [cut["startMs"] for cut in first_job["sourceCuts"]] == [
-        0, CUT_SLOT_STEP_MS,
-    ]
+    first_slots = {cut["slotId"] for cut in first_job["sourceCuts"]}
+    recipe = cp._dossier_source_recipe(publication())
+    assert first_slots <= cp._source_dna_unavailable_slots(
+        cp._load_jobs(), recipe, first_job["recipeVersion"],
+    )
     cp._update_job(first_id, status="failed", error="source_dna_master_unavailable")
+    assert not first_slots & cp._source_dna_unavailable_slots(
+        cp._load_jobs(), recipe, first_job["recipeVersion"],
+    )
 
     retry_payload = publication(recipe_version="dossier-released000000")
     assert client.post(
@@ -393,12 +798,10 @@ def test_failed_source_job_releases_unrendered_cut_windows(lab):
     )
     assert retry.status_code == 200
     retry_job = cp._load_jobs()["jobs"][retry.json()["jobId"]]
-    assert [cut["startMs"] for cut in retry_job["sourceCuts"]] == [
-        0, CUT_SLOT_STEP_MS,
-    ]
+    assert len(retry_job["sourceCuts"]) == 2
 
 
-def test_completed_source_job_keeps_rendered_cut_windows_unavailable(lab):
+def test_later_recipe_cuts_new_time_frames_not_completed_ones(lab):
     client, _, _ = lab
     first = client.post(
         "/api/control-plane/v1/jobs", json=job_body(2),
@@ -418,9 +821,96 @@ def test_completed_source_job_keeps_rendered_cut_windows_unavailable(lab):
     )
     assert following.status_code == 200
     following_job = cp._load_jobs()["jobs"][following.json()["jobId"]]
-    assert [cut["startMs"] for cut in following_job["sourceCuts"]] == [
-        CUT_SLOT_STEP_MS * 2, CUT_SLOT_STEP_MS * 3,
-    ]
+    first_job = cp._load_jobs()["jobs"][first.json()["jobId"]]
+    assert not _overlapping(first_job["sourceCuts"], following_job["sourceCuts"])
+
+
+def test_active_source_job_reserves_windows_across_recipe_revisions(lab):
+    client, _, _ = lab
+    first = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(2),
+        headers=headers("source-job-active-first"),
+    )
+    assert first.status_code == 200
+
+    next_payload = publication(recipe_version="dossier-active00000000")
+    assert client.post(
+        "/api/control-plane/v1/recipes", json=next_payload,
+        headers=headers("source-register-active-next"),
+    ).status_code == 200
+    following = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(2, next_payload),
+        headers=headers("source-job-active-next"),
+    )
+    assert following.status_code == 200
+    following_job = cp._load_jobs()["jobs"][following.json()["jobId"]]
+    first_job = cp._load_jobs()["jobs"][first.json()["jobId"]]
+    assert not _overlapping(first_job["sourceCuts"], following_job["sourceCuts"])
+
+
+def test_capability_counts_down_to_zero_only_when_every_window_is_cut(lab, monkeypatch):
+    # Every whole-second start x length is cut once first, then the half and
+    # quarter-second starts; no window is ever cut twice. Capacity reaches 0
+    # only then, and job creation answers 409 source_windows_exhausted. A
+    # 12 s master keeps the drain short; the planner is the same at any length.
+    from dataclasses import replace
+    client, _, _ = lab
+    resolve = cp._dossier_source_recipe
+
+    def short_master(payload):
+        recipe = resolve(payload)
+        return replace(recipe, masters=tuple(
+            replace(master, duration_ms=12_000) for master in recipe.masters
+        ))
+
+    monkeypatch.setattr(cp, "_dossier_source_recipe", short_master)
+
+    def capability():
+        response = client.get(
+            "/api/control-plane/v1/capabilities",
+            headers={"X-RT-Page-Id": PAGE_ID},
+        )
+        assert response.status_code == 200
+        return response.json()["capabilities"]
+
+    every = set()
+    for length in range(5_000, 9_001, 500):
+        for offset in (0, 250, 500, 750):
+            every |= {(start, length) for start in range(offset, 12_000 - length + 1, 1_000)}
+        every.add((12_000 - length, length))
+    frames: list[tuple[int, int]] = []
+    round_number = 0
+    while (quantity := capability()[0]["maxQuantity"]) > 0:
+        round_number += 1
+        assert round_number < 600, "capacity never reached 0"
+        created = client.post(
+            "/api/control-plane/v1/jobs", json=job_body(quantity),
+            headers=headers(f"source-capacity-{round_number}"),
+        )
+        assert created.status_code == 200, created.text
+        job = cp._load_jobs()["jobs"][created.json()["jobId"]]
+        assert len(job["sourceCuts"]) == quantity
+        planned = [(cut["startMs"], cut["durationMs"]) for cut in job["sourceCuts"]]
+        assert not set(planned) & set(frames), "a window was cut twice"
+        frames.extend(planned)
+        cp._update_job(created.json()["jobId"], status="completed")
+
+    assert set(frames) == every
+    assert len(frames) == len(every)
+    assert capability() == [{
+        "recipeId": "pov-dirt-bike:master",
+        "engine": "sourced_video",
+        "sourceIdentities": ["https://www.youtube.com/watch?v=vt5im2TRAKw"],
+        "recipeVersion": "dossier-feedfacefeedface",
+        "maxQuantity": 0,
+        "sourceIdentities": [SOURCE_IDENTITY],
+    }]
+    stopped = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(1),
+        headers=headers("source-capacity-exhausted"),
+    )
+    assert stopped.status_code == 409
+    assert stopped.json() == {"detail": "source_windows_exhausted"}
 
 
 @pytest.mark.asyncio
@@ -441,8 +931,9 @@ async def test_runner_cuts_real_window_changes_speed_and_records_original_lineag
         "/api/control-plane/v1/jobs", json=job_body(1, payload),
         headers=headers("source-job-speed"),
     )
+    _pin_cuts_to_first_frame(response.json()["jobId"])
     source = tmp_path / "master.mp4"
-    _write_av_test_clip(source)
+    _write_av_test_clip(source, duration=15.0)
 
     async def cached_source(*_):
         return source
@@ -450,19 +941,150 @@ async def test_runner_cuts_real_window_changes_speed_and_records_original_lineag
     monkeypatch.setattr(cp, "_cached_source_master", cached_source)
     await cp._run_dossier_source(response.json()["jobId"])
     job = cp._load_jobs()["jobs"][response.json()["jobId"]]
-    assert job["status"] == "completed"
+    assert job["status"] == "completed", job.get("error")
     output = Path(job["artifactRoot"]) / job["clips"][0]["path"]
-    assert _probe_duration(output) == pytest.approx(3.0, abs=0.15)
+    planned_duration = job["sourceCuts"][0]["durationMs"]
+    assert _probe_duration(output) == pytest.approx(planned_duration / 2_000, abs=0.15)
     lineage = job["clips"][0]["source"]
     assert lineage["master"]["sha256"] == MASTER_SHA
     assert lineage["cutWindow"] == {
         "libraryStartMs": 0,
-        "libraryEndMs": 6_000,
-        "durationMs": 6_000,
+        "libraryEndMs": planned_duration,
+        "durationMs": planned_duration,
         "originalStartMs": 120_000,
-        "originalEndMs": 126_000,
+        "originalEndMs": 120_000 + planned_duration,
     }
     assert lineage["pageId"] == PAGE_ID
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("duration_ms,ok", [(6_000, True), (6_250, False), (9_500, False)])
+async def test_runner_renders_a_six_second_recut_and_refuses_a_forged_one(
+    lab, monkeypatch, duration_ms, ok,
+):
+    client, tmp_path, _ = lab
+    response = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(1),
+        headers=headers(f"source-job-sixsec-{duration_ms}"),
+    )
+    job_id = response.json()["jobId"]
+    store = cp._load_jobs()
+    store["jobs"][job_id]["sourceCuts"] = [{
+        "slotId": f"{MASTER_SHA}:0:{duration_ms}",
+        "masterSha256": MASTER_SHA,
+        "libraryStartMs": 0,
+        "startMs": 0,
+        "durationMs": duration_ms,
+    }]
+    cp.atomic_save(cp._jobs_path(), store)
+    source = tmp_path / "master.mp4"
+    _write_av_test_clip(source)
+
+    async def cached_source(*_):
+        return source
+
+    monkeypatch.setattr(cp, "_cached_source_master", cached_source)
+    await cp._run_dossier_source(job_id)
+    job = cp._load_jobs()["jobs"][job_id]
+    if ok:
+        assert job["status"] == "completed", job.get("error")
+        output = Path(job["artifactRoot"]) / job["clips"][0]["path"]
+        assert _probe_duration(output) == pytest.approx(6.0, abs=0.15)
+        assert job["clips"][0]["source"]["cutWindow"]["durationMs"] == 6_000
+    else:
+        assert job["status"] == "failed"
+        assert "source_recipe_cut_invalid" in (job.get("error") or "")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("clip_speed,duration_ms", [
+    (1.0, 5_000), (1.0, 7_500), (1.0, 9_000), (1.5, 7_500), (0.75, 6_500),
+])
+async def test_real_renders_at_the_length_bounds_probe_inside_the_worker_bounds(
+    lab, monkeypatch, clip_speed, duration_ms,
+):
+    # The Worker's visual admission refuses a sourced clip whose probed
+    # duration is outside 5000-9000 ms. Render the shortest, a half-second
+    # and the longest allowed cut (and the delivered extremes at a saved
+    # speed) through the real executor and probe them the way the scanner does.
+    import time
+    from services.visual_admission import _probe
+    client, tmp_path, _ = lab
+    payload = publication(
+        clip_speed=clip_speed, cut_duration_ms=7_000,
+        recipe_version=f"dossier-bounds{int(clip_speed * 100):03d}{duration_ms:05d}",
+    )
+    assert duration_ms in source_cut_durations(cp._dossier_source_recipe(payload))
+    assert client.post(
+        "/api/control-plane/v1/recipes", json=payload,
+        headers=headers(f"source-register-bounds-{clip_speed}-{duration_ms}"),
+    ).status_code == 200
+    response = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(1, payload),
+        headers=headers(f"source-job-bounds-{clip_speed}-{duration_ms}"),
+    )
+    assert response.status_code == 200, response.text
+    job_id = response.json()["jobId"]
+    store = cp._load_jobs()
+    store["jobs"][job_id]["sourceCuts"] = [{
+        "slotId": f"{MASTER_SHA}:0:{duration_ms}",
+        "masterSha256": MASTER_SHA,
+        "libraryStartMs": 0,
+        "startMs": 0,
+        "durationMs": duration_ms,
+    }]
+    cp.atomic_save(cp._jobs_path(), store)
+    source = tmp_path / "master.mp4"
+    _write_av_test_clip(source, duration=12.0)
+
+    async def cached_source(*_):
+        return source
+
+    monkeypatch.setattr(cp, "_cached_source_master", cached_source)
+    await cp._run_dossier_source(job_id)
+    job = cp._load_jobs()["jobs"][job_id]
+    assert job["status"] == "completed", job.get("error")
+    output = Path(job["artifactRoot"]) / job["clips"][0]["path"]
+    *_, probed = _probe(output, time.monotonic() + 30)
+    assert 5_000 <= round(probed * 1_000) <= 9_000, probed
+    assert round(probed * 1_000) == pytest.approx(duration_ms / clip_speed, abs=40)
+
+
+@pytest.mark.asyncio
+async def test_sub_second_starts_render_and_never_decode_the_same_frames(lab, monkeypatch):
+    # Sub-second starts (a quarter, a half and three quarters of a second in)
+    # pass the executor's planner check, render through the exact ffmpeg
+    # seek, and give different bytes from the whole-second cut of the same
+    # length.
+    client, tmp_path, _ = lab
+    response = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(1),
+        headers=headers("source-job-subsecond"),
+    )
+    job_id = response.json()["jobId"]
+    store = cp._load_jobs()
+    store["jobs"][job_id]["sourceCuts"] = [{
+        "slotId": f"{MASTER_SHA}:{start}:6000",
+        "masterSha256": MASTER_SHA,
+        "libraryStartMs": start,
+        "startMs": start,
+        "durationMs": 6_000,
+    } for start in (0, 250, 500, 750)]
+    cp.atomic_save(cp._jobs_path(), store)
+    source = tmp_path / "master.mp4"
+    _write_av_test_clip(source)
+
+    async def cached_source(*_):
+        return source
+
+    monkeypatch.setattr(cp, "_cached_source_master", cached_source)
+    await cp._run_dossier_source(job_id)
+    job = cp._load_jobs()["jobs"][job_id]
+    assert job["status"] == "completed", job.get("error")
+    assert len({clip["sha256"] for clip in job["clips"]}) == 4
+    assert [clip["source"]["cutWindow"]["libraryStartMs"] for clip in job["clips"]] == [0, 250, 500, 750]
+    for clip in job["clips"]:
+        assert _probe_duration(Path(job["artifactRoot"]) / clip["path"]) == pytest.approx(6.0, abs=0.15)
 
 
 @pytest.mark.asyncio
@@ -483,6 +1105,7 @@ async def test_runner_passes_exact_cut_speed_and_crop_to_isolated_render(lab, mo
         "/api/control-plane/v1/jobs", json=job_body(1, payload),
         headers=headers("source-job-crop"),
     )
+    _pin_cuts_to_first_frame(response.json()["jobId"])
     calls = []
 
     async def cached_source(*_):
@@ -502,11 +1125,16 @@ async def test_runner_passes_exact_cut_speed_and_crop_to_isolated_render(lab, mo
         "clip_crop": crop,
         "clip_crop_size": (1080, 1920),
         "clip_start_ms": 0,
-        "clip_duration_ms": 8_000,
+        "clip_duration_ms": cp._load_jobs()["jobs"][response.json()["jobId"]]["sourceCuts"][0]["durationMs"],
     }
     job = cp._load_jobs()["jobs"][response.json()["jobId"]]
     assert job["status"] == "completed"
     assert Path(job["artifactRoot"]) in Path(calls[0][1]).parents
+    receipt = job["clips"][0]["sourceTreatment"]
+    assert receipt["sourceSha256"] == job["clips"][0]["sha256"]
+    assert receipt["generationJobId"] == response.json()["jobId"]
+    assert receipt["visualTreatment"]["clipSpeed"] == pytest.approx(0.75)
+    assert receipt["visualTreatment"]["clipCrop"] == crop
 
 
 @pytest.mark.asyncio
@@ -545,6 +1173,8 @@ async def test_runner_enforces_neutral_vertical_delivery_without_custom_crop(
     monkeypatch.setattr(cp, "_cached_source_master", cached_source)
     monkeypatch.setattr(cp, "run_color_correct", render)
     await cp._run_dossier_source(response.json()["jobId"])
+    checked = cp._load_jobs()["jobs"][response.json()["jobId"]]
+    assert checked["status"] == "completed", checked.get("error")
     assert calls[0][3]["clip_crop"] == {
         "zoom": 1.0, "focusX": 0.5, "focusY": 0.5,
     }
@@ -585,3 +1215,292 @@ def test_failed_source_job_status_exposes_only_the_bounded_terminal_error(lab):
     assert failed.status_code == 200
     assert failed.json()["error"] == exact_error[:300]
     assert len(failed.json()["error"]) == 300
+
+
+def test_og_source_skips_first_minute_but_preserves_immutable_offsets():
+    from dataclasses import replace
+    recipe = resolve_source_recipe(publication(cut_duration_ms=7_000))
+    original = replace(recipe.masters[0], source_offset_ms=0)
+    whole = replace(recipe, masters=(original,))
+    cuts = plan_source_cuts(whole, 100, set())
+    assert all(cut.master.source_offset_ms + cut.start_ms >= 60_000 for cut in cuts)
+    _, served = _drain(whole)
+    assert min(int(slot.split(":")[1]) for slot in served) == 60_000
+    offset = replace(recipe, masters=(replace(original, source_offset_ms=60_000),))
+    _, served = _drain(offset)
+    assert min(int(slot.split(":")[1]) for slot in served) == 0
+    short = replace(whole, masters=(replace(original, duration_ms=60_000),))
+    assert plan_source_cuts(short, 1, set()) == []
+
+
+@pytest.mark.parametrize("authority", [
+    "ShipStream source-manifest.v1 exact page master",
+    (
+        "ShipStream source-manifest.v1 page-bound historical posted cut; "
+        "original source unavailable"
+    ),
+])
+def test_page_bound_shipstream_master_can_use_first_frame(authority):
+    from dataclasses import replace
+    recipe = resolve_source_recipe(publication(cut_duration_ms=7_000))
+    original = recipe.masters[0]
+    page_master = replace(
+        original,
+        duration_ms=7_500,
+        source_offset_ms=0,
+        provenance={**original.provenance, "authority": authority},
+    )
+    page_recipe = replace(recipe, masters=(page_master,))
+    cuts = plan_source_cuts(page_recipe, 2, set())
+    assert len(cuts) == 1, "two cuts of a 7.5 s master would overlap"
+    assert cuts[0].start_ms + cuts[0].duration_ms <= 7_500
+    _, served = _drain(page_recipe)
+    assert min(int(slot.split(":")[1]) for slot in served) == 0
+
+
+def test_used_page_master_is_recut_at_shifted_points_not_declared_exhausted():
+    from services.control_plane_sources import source_window_exclusions
+    # Production 2026-09-18: bambisrevenge11 and tender.acres each have one
+    # 90-second page master and read capability_capacity_exhausted once its
+    # 9-second grid was cut. Every whole-second start and allowed length of the
+    # same footage is now a distinct time frame before the page is exhausted.
+    from dataclasses import replace
+    recipe = resolve_source_recipe(publication(cut_duration_ms=7_000))
+    original = recipe.masters[0]
+    page_master = replace(
+        original, duration_ms=90_000, source_offset_ms=0,
+        provenance={**original.provenance, "authority": "ShipStream source-manifest.v1 exact page master"},
+    )
+    recipe = replace(recipe, masters=(page_master,))
+    first = plan_source_cuts(recipe, 100, set())
+    served = {cut.slot_id for cut in first}
+    recut = plan_source_cuts(recipe, 100, served)
+    assert recut, "a used page master must still offer re-cuts"
+    assert not {cut.slot_id for cut in recut} & served
+    assert all(cut.start_ms + cut.duration_ms <= 90_000 for cut in recut)
+    assert all(5_000 <= cut.duration_ms <= 9_000 for cut in recut)
+    for i, left in enumerate(recut):
+        for right in recut[i + 1:]:
+            assert not (left.start_ms < right.start_ms + right.duration_ms
+                        and right.start_ms < left.start_ms + left.duration_ms), (left, right)
+    _, total = _drain(recipe)
+    # Whole-second starts, plus one ending on the last frame for half-second lengths.
+    assert len(total) == sum(
+        (90_000 - length) // 1_000 + 1 + (length % 1_000 != 0)
+        for length in range(5_000, 9_001, 500)
+    )
+    # Every whole-second window cut: the planner moves inside the second
+    # (half, then quarter seconds) instead of stopping, never repeating one.
+    following = plan_source_cuts(recipe, 100, total)
+    assert following and not {cut.slot_id for cut in following} & total
+    assert all(cut.start_ms % 1_000 for cut in following)
+    # Another page's window still blocks a re-cut, exactly like a first cut.
+    everything = source_window_exclusions([{
+        "sourceIdentity": page_master.provenance["sourceUrl"], "startMs": 0, "endMs": 90_000,
+    }])
+    assert plan_source_cuts(recipe, 100, served, everything) == []
+
+
+def _page_master_recipe(duration_ms):
+    from dataclasses import replace
+    recipe = resolve_source_recipe(publication(cut_duration_ms=7_000))
+    original = recipe.masters[0]
+    master = replace(
+        original, duration_ms=duration_ms, source_offset_ms=0,
+        provenance={**original.provenance, "authority": "ShipStream source-manifest.v1 exact page master"},
+    )
+    return replace(recipe, masters=(master,)), master
+
+
+def _drain(recipe, served=frozenset(), exclusions=None):
+    """Plan until no never-cut whole-second window is left.
+
+    The planner then moves to sub-second starts, so "drained" means every
+    whole-second window is cut.
+    """
+    served = set(served)
+    batches = []
+    for _ in range(5_000):
+        batch = plan_source_cuts(recipe, 100, served, exclusions)
+        fresh = [
+            cut for cut in batch
+            if cut.slot_id not in served
+            and (cut.start_ms % 1_000 == 0 or cut.start_ms == cut.master.duration_ms - cut.duration_ms)
+        ]
+        if not fresh:
+            return batches, served
+        batches.append(fresh)
+        served |= {cut.slot_id for cut in fresh}
+    raise AssertionError("fresh windows never ran out")
+
+
+def test_short_page_master_is_recut_into_six_second_clips():
+    # Production 2026-09-18: healing.in.the.hills has one 7.5-second page
+    # master, so the grid gave it exactly one cut and it read
+    # capability_capacity_exhausted. Operator: "do 6-second clips of the same
+    # footage". Every fitting time frame, including 0-6 s and 1.5-7.5 s, is
+    # cut once, one per job (they overlap); then come sub-second starts.
+    recipe, master = _page_master_recipe(7_500)
+    batches, served = _drain(recipe)
+    cuts = [cut for batch in batches for cut in batch]
+    assert sorted((cut.start_ms, cut.duration_ms) for cut in cuts) == [
+        (0, 5_000), (0, 5_500), (0, 6_000), (0, 6_500), (0, 7_000), (0, 7_500),
+        (500, 7_000), (1_000, 5_000), (1_000, 5_500), (1_000, 6_000),
+        (1_000, 6_500), (1_500, 6_000), (2_000, 5_000), (2_000, 5_500),
+        (2_500, 5_000),
+    ]
+    assert all(len(batch) == 1 for batch in batches)
+    assert f"{master.sha256}:0:6000" in served and f"{master.sha256}:1500:6000" in served
+    following = plan_source_cuts(recipe, 100, served)
+    assert len(following) == 1 and following[0].slot_id not in served
+    assert following[0].start_ms % 1_000
+
+
+def test_long_footage_yields_every_length_including_the_six_second_grid():
+    recipe, master = _page_master_recipe(90_000)
+    batches, served = _drain(recipe)
+    cuts = [cut for batch in batches for cut in batch]
+    assert {cut.duration_ms for cut in cuts} == set(range(5_000, 9_001, 500))
+    six = {cut.start_ms for cut in cuts if cut.duration_ms == 6_000}
+    assert set(range(0, 84_001, 6_000)) <= six, "the old 6-second pass is a subset"
+    assert len(cuts) == len({cut.slot_id for cut in cuts})
+    assert not any(cut.slot_id in served for cut in plan_source_cuts(recipe, 100, served))
+
+
+def test_executor_accepts_exactly_the_cuts_the_planner_emits():
+    from services.control_plane_sources import source_cut_is_planned
+    recipe, master = _page_master_recipe(7_500)
+    batches, _ = _drain(recipe)
+    for cut in (cut for batch in batches for cut in batch):
+        assert source_cut_is_planned(recipe, master, cut.start_ms, cut.duration_ms, cut.slot_id), cut
+    sha = master.sha256
+    assert source_cut_is_planned(recipe, master, 1_500, 6_000, f"{sha}:1500:6000"), "ends on the last frame"
+    assert not source_cut_is_planned(recipe, master, 0, 4_500, f"{sha}:0:4500"), "length outside the allowed range"
+    assert not source_cut_is_planned(recipe, master, 100, 6_000, f"{sha}:100:6000"), "off the quarter-second grid"
+    assert not source_cut_is_planned(recipe, master, 2_000, 6_000, f"{sha}:2000:6000"), "past the last frame"
+    assert not source_cut_is_planned(recipe, master, 0, 5_000, f"{sha}:0"), "grid id with a non-planned length"
+    assert not source_cut_is_planned(recipe, master, 0, 6_000, "other:0:6000")
+
+
+def test_shared_source_exclusions_skip_other_page_windows_and_reencoding():
+    from dataclasses import replace
+    from services.control_plane_sources import source_window_exclusions
+    recipe = resolve_source_recipe(publication(cut_duration_ms=7_000))
+    master = replace(recipe.masters[0], sha256='f'*64, source_offset_ms=0)
+    recipe = replace(recipe, masters=(master,))
+    excluded = source_window_exclusions([{'sourceIdentity':'https://youtu.be/vt5im2TRAKw?si=x','startMs':60_000,'endMs':80_000}])
+    _, served = _drain(recipe, exclusions=excluded)
+    assert min(int(slot.split(':')[1]) for slot in served) == 80_000
+    # Half-open touching intervals do not block a valid next slot.
+    excluded = source_window_exclusions([{'sourceIdentity':master.provenance['sourceUrl'],'startMs':0,'endMs':63_000}])
+    _, served = _drain(recipe, exclusions=excluded)
+    assert min(int(slot.split(':')[1]) for slot in served) == 63_000
+    # Unknown legacy timing blocks the whole source, not a guessed short window.
+    excluded = source_window_exclusions([{'sourceIdentity':master.provenance['sourceUrl'],'startMs':0,'endMs':9_007_199_254_740_991}])
+    assert plan_source_cuts(recipe, 1, set(), excluded) == []
+
+
+def test_shared_folder_exclusions_bind_to_the_exact_master_file():
+    from dataclasses import replace
+    from services.control_plane_sources import source_window_exclusions
+    recipe = resolve_source_recipe(publication(cut_duration_ms=7_000))
+    folder_url = 'https://drive.google.com/drive/folders/library'
+    first = replace(recipe.masters[0], sha256='a'*64, source_offset_ms=0,
+                    provenance={'sourceUrl': folder_url})
+    second = replace(recipe.masters[0], sha256='b'*64, source_offset_ms=0,
+                     provenance={'sourceUrl': folder_url})
+    recipe = replace(recipe, masters=(first, second))
+    excluded = source_window_exclusions([{
+        'sourceIdentity': folder_url,
+        'masterSha256': first.sha256,
+        'startMs': 0,
+        'endMs': 9_007_199_254_740_991,
+    }])
+    cuts = plan_source_cuts(recipe, 1, set(), excluded)
+    assert cuts[0].master.sha256 == second.sha256
+
+
+@pytest.mark.parametrize('excluded', [[{'sourceIdentity':'bad','startMs':0,'endMs':1}],
+    [{'sourceIdentity':'https://example.com/v','startMs':True,'endMs':2}],
+    [{'sourceIdentity':'https://example.com/v','startMs':2,'endMs':1}], [{}]*2001])
+def test_source_exclusions_fail_closed(excluded):
+    from services.control_plane_sources import source_window_exclusions
+    with pytest.raises(ValueError): source_window_exclusions(excluded)
+
+
+def test_job_creation_consumes_global_source_exclusions(lab):
+    client, _, _ = lab
+    body = job_body(1)
+    body['constraints']['sourceWindowExclusions'] = [{'sourceIdentity':'https://youtu.be/vt5im2TRAKw','startMs':120_000,'endMs':140_000}]
+    response=client.post('/api/control-plane/v1/jobs',json=body,headers=headers('source-with-exclusions'))
+    assert response.status_code == 200, response.text
+    job=cp._load_jobs()['jobs'][response.json()['jobId']]
+    # Original 120-140 s is library 0-20 s on this master (offset 120 s).
+    assert job['sourceCuts'][0]['startMs'] >= 20_000
+
+
+def test_source_identity_matches_worker_query_and_youtube_rules():
+    from services.control_plane_sources import canonical_source_identity
+    assert canonical_source_identity('https://youtube.com/watch?v=abcdefghijk&v=12345678901') == 'https://www.youtube.com/watch?v=abcdefghijk'
+    assert canonical_source_identity('https://example.com/v?x=~*&utm_source=no') == 'https://example.com/v?x=%7E*'
+    assert canonical_source_identity('https://example.com:443/v?b=2&a=1#fragment') == 'https://example.com/v?a=1&b=2'
+
+
+def test_source_capability_suppresses_unknown_original_identity(lab, monkeypatch):
+    from dataclasses import replace
+    client, _, _ = lab
+    resolve = cp._dossier_source_recipe
+    def malformed(publication):
+        recipe = resolve(publication)
+        return replace(recipe, masters=tuple(replace(master, provenance={}) for master in recipe.masters))
+    monkeypatch.setattr(cp, "_dossier_source_recipe", malformed)
+    response = client.get("/api/control-plane/v1/capabilities", headers={"X-RT-Page-Id": PAGE_ID})
+    assert response.status_code == 200
+    assert response.json()["capabilities"] == []
+
+@pytest.mark.asyncio
+async def test_source_cancellation_releases_windows_and_removes_own_root(lab, monkeypatch):
+    client, tmp_path, _ = lab
+    response = client.post("/api/control-plane/v1/jobs", json=job_body(1), headers=headers("source-cancel"))
+    assert response.status_code == 200
+    job_id = response.json()["jobId"]
+    started = asyncio.Event(); hold = asyncio.Event()
+    async def stalled_source(*args, **kwargs):
+        started.set(); await hold.wait()
+    monkeypatch.setattr(cp, "_cached_source_master", stalled_source)
+    task = asyncio.create_task(cp._run_dossier_source(job_id))
+    await asyncio.wait_for(started.wait(), 5)
+    saved = cp._load_jobs()["jobs"][job_id]
+    root = Path(saved["artifactRoot"])
+    assert root.exists()
+    recipe = cp._dossier_source_recipe(cp.load_registered_recipe(PAGE_ID, saved["recipeId"], saved["engine"], saved["recipeVersion"]))
+    slots = {cut["slotId"] for cut in saved["sourceCuts"]}
+    assert slots & cp._source_dna_unavailable_slots(
+        cp._load_jobs(), recipe, saved["recipeVersion"],
+    )
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError): await task
+    saved = cp._load_jobs()["jobs"][job_id]
+    assert saved["status"] == "failed" and saved["error"] == "generation_cancelled" and saved["completedAt"]
+    assert not root.exists()
+    assert not (slots & cp._source_dna_unavailable_slots(
+        cp._load_jobs(), recipe, saved["recipeVersion"],
+    ))
+
+
+@pytest.mark.parametrize("speed", [0.5, 0.8, 1.0, 1.2, 2.0])
+def test_source_duration_respects_delivery_range_after_saved_speed(speed):
+    recipe = resolve_source_recipe(publication(clip_speed=speed, cut_duration_ms=7_000))
+    assert recipe is not None
+    cuts = plan_source_cuts(recipe, 20, set())
+    assert cuts
+    for cut in cuts:
+        # Operator 2026-09-30: 5-9 s cuts in 0.5 s steps; the Worker admits 5-9 s
+        # delivered clips. Speeds no 5-9 s window can deliver within 5-9 s
+        # (0.5x, 2x) keep the earlier 6-11 s vocabulary unchanged.
+        if 5_000 * speed <= 9_000 and 5_000 <= 9_000 * speed:
+            assert 5_000 <= cut.duration_ms <= 9_000
+            assert 5_000 <= cut.duration_ms / speed <= 9_000
+        else:
+            assert 6_000 <= cut.duration_ms / speed <= 11_000
+        assert source_cut_is_planned(recipe, cut.master, cut.start_ms, cut.duration_ms, cut.slot_id)

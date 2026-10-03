@@ -5,6 +5,7 @@ import base64
 import os
 import signal
 import shutil
+import stat
 import tempfile
 from pathlib import Path
 
@@ -304,6 +305,95 @@ def _classify(err: str) -> str:
     return "other"
 
 
+_YOUTUBE_HOSTS = frozenset({
+    "youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be",
+})
+
+
+def _is_youtube_url(url: str) -> bool:
+    from urllib.parse import urlsplit
+
+    try:
+        host = (urlsplit(url).hostname or "").lower()
+    except ValueError:
+        return False
+    return host in _YOUTUBE_HOSTS
+
+
+def _private_jar_dir() -> Path:
+    """Container-local home for per-attempt cookie-jar copies.
+
+    Kept off the persistent volume on purpose: a hard kill (SIGKILL, OOM,
+    Railway replacement) skips the attempt's ``finally``, and a copy left in
+    an import workspace would outlive the process. Container temp storage is
+    discarded on replacement, and ``sweep_private_cookie_jars`` clears what a
+    killed process left behind within the same container at the next boot.
+    """
+    root = Path(tempfile.gettempdir()) / "ytdlp-private-jars"
+    root.mkdir(mode=0o700, exist_ok=True)
+    fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        if os.fstat(fd).st_uid != os.getuid():
+            raise PermissionError("private cookie directory has a different owner")
+        os.fchmod(fd, 0o700)
+    finally:
+        os.close(fd)
+    return root
+
+
+def sweep_private_cookie_jars() -> int:
+    """Delete stale scratch copies only at startup, before imports can run."""
+    removed = 0
+    sources = [_cookies_path, _volume_cookies_path(), Path("cookies.txt")]
+    if explicit := os.getenv("YTDLP_COOKIES_FILE"):
+        sources.append(Path(explicit))
+    root = _private_jar_dir()
+    for leftover in root.glob(".ytdlp-cookies-*"):
+        try:
+            fd = os.open(leftover, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        except OSError:
+            continue
+        try:
+            info = os.fstat(fd)
+            if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                    or stat.S_IMODE(info.st_mode) != 0o600 or info.st_nlink != 1):
+                continue
+            if any(source is not None and source.exists() and leftover.samefile(source)
+                   for source in sources):
+                continue
+            current = leftover.lstat()
+            if (current.st_dev, current.st_ino) != (info.st_dev, info.st_ino):
+                continue
+            leftover.unlink()
+            removed += 1
+        except FileNotFoundError:
+            # The file disappeared during cleanup.
+            continue
+        finally:
+            os.close(fd)
+    return removed
+
+
+async def _communicate_or_kill(proc, source_import_mode: bool):
+    try:
+        return await proc.communicate()
+    except asyncio.CancelledError:
+        # Callers may enforce a bounded import timeout. Do not leave yt-dlp
+        # running after the awaiting task has been cancelled.
+        if proc.returncode is None:
+            if source_import_mode and getattr(proc, "pid", None):
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                except OSError:
+                    proc.kill()
+            else:
+                proc.kill()
+            await proc.communicate()
+        raise
+
+
 async def download_video(
     video_url: str,
     dest: Path,
@@ -327,12 +417,18 @@ async def download_video(
 
     if not isinstance(source_import_mode, bool):
         raise ValueError("source_import_mode must be a boolean")
+    format_selector = (
+        "source/bestvideo[ext=mp4]+bestaudio[ext=m4a]/"
+        "bestvideo+bestaudio/best[ext=mp4]/best"
+        if source_import_mode
+        else "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best[ext=mp4]/best"
+    )
     base_cmd = [
         "yt-dlp",
         "--no-warnings",
         "--no-playlist",
         "-f",
-        "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best[ext=mp4]/best",
+        format_selector,
         "--merge-output-format",
         "mp4",
         "-o",
@@ -347,55 +443,66 @@ async def download_video(
             raise ValueError("max_filesize must be a positive integer")
         base_cmd += ["--max-filesize", str(max_filesize)]
 
-    # Build auth strategies in order of preference.
+    # Page source imports accept only validated public, permanent URLs. They
+    # never use browser cookies, and a stale or oversized cookie jar must not
+    # delay a public MP4 import: the public attempt always runs first.
     strategies: list[tuple[str, list[str]]] = []
     cookies_source: str | None = None
-    if cookies_file and cookies_file.exists():
-        strategies.append(("cookies-file", ["--cookies", str(cookies_file)]))
-        cookies_source = "explicit cookies_file arg"
-    env_cookies = get_cookies_path()
-    if env_cookies is not None and env_cookies.exists():
-        strategies.append(("cookies-from-env", ["--cookies", str(env_cookies)]))
-        if cookies_source is None:
-            cookies_source = str(env_cookies)
-    if not _in_container():
-        for browser in ("chrome", "safari", "firefox", "edge", "brave"):
-            strategies.append(
-                (f"cookies-from-{browser}", ["--cookies-from-browser", browser])
-            )
+    if not source_import_mode:
+        if cookies_file and cookies_file.exists():
+            strategies.append(("cookies-file", ["--cookies", str(cookies_file)]))
+            cookies_source = "explicit cookies_file arg"
+        env_cookies = get_cookies_path()
+        if env_cookies is not None and env_cookies.exists():
+            strategies.append(("cookies-from-env", ["--cookies", str(env_cookies)]))
+            if cookies_source is None:
+                cookies_source = str(env_cookies)
+        if not _in_container():
+            for browser in ("chrome", "safari", "firefox", "edge", "brave"):
+                strategies.append(
+                    (f"cookies-from-{browser}", ["--cookies-from-browser", browser])
+                )
     strategies.append(("no-auth", []))
+    # YouTube refuses anonymous downloads from datacenter IPs ("Sign in to
+    # confirm you're not a bot"), so every YouTube page import failed on
+    # Railway (15/15 through 2026-09-25). The public attempt still runs first;
+    # only its auth refusal falls back to the operator-managed cookies.txt, and
+    # only for YouTube, so other hosts never receive the jar.
+    # yt-dlp rewrites its --cookies file in place (non-atomically) when it
+    # exits, and page imports run concurrently, so this lane only ever reads a
+    # private copy: the shared jar the Clipper also uses is never written here.
+    private_jar: Path | None = None
+    if source_import_mode and _is_youtube_url(video_url):
+        env_cookies = get_cookies_path()
+        if env_cookies is not None and env_cookies.exists():
+            strategies.append(("cookies-from-env", ["--cookies", "<private-jar>"]))
+            cookies_source = str(env_cookies)
 
     # (label, cleaned_error, kind) for every strategy that failed.
     failures: list[tuple[str, str, str]] = []
 
     for label, extra in strategies:
-        cmd = base_cmd + extra + [video_url]
-        process_options = {
-            "stdout": asyncio.subprocess.PIPE,
-            "stderr": asyncio.subprocess.PIPE,
-        }
-        if source_import_mode:
-            # yt-dlp may spawn ffmpeg. A bounded source-import timeout must own
-            # and stop the complete subprocess tree, not only the yt-dlp parent.
-            process_options["start_new_session"] = True
-        proc = await asyncio.create_subprocess_exec(*cmd, **process_options)
         try:
-            _, stderr = await proc.communicate()
-        except asyncio.CancelledError:
-            # Callers may enforce a bounded import timeout. Do not leave yt-dlp
-            # running after the awaiting task has been cancelled.
-            if proc.returncode is None:
-                if source_import_mode and getattr(proc, "pid", None):
-                    try:
-                        os.killpg(proc.pid, signal.SIGKILL)
-                    except ProcessLookupError:
-                        pass
-                    except OSError:
-                        proc.kill()
-                else:
-                    proc.kill()
-                await proc.communicate()
-            raise
+            if "<private-jar>" in extra:
+                fd, name = tempfile.mkstemp(prefix=".ytdlp-cookies-", suffix=".txt", dir=_private_jar_dir())
+                private_jar = Path(name)
+                os.close(fd)
+                shutil.copyfile(env_cookies, private_jar)
+                extra = [str(private_jar) if arg == "<private-jar>" else arg for arg in extra]
+            cmd = base_cmd + extra + [video_url]
+            process_options = {
+                "stdout": asyncio.subprocess.PIPE,
+                "stderr": asyncio.subprocess.PIPE,
+            }
+            if source_import_mode:
+                # yt-dlp may spawn ffmpeg. Own the complete subprocess tree.
+                process_options["start_new_session"] = True
+            proc = await asyncio.create_subprocess_exec(*cmd, **process_options)
+            _, stderr = await _communicate_or_kill(proc, source_import_mode)
+        finally:
+            if private_jar is not None:
+                private_jar.unlink(missing_ok=True)
+                private_jar = None
 
         if proc.returncode == 0:
             if dest.exists():

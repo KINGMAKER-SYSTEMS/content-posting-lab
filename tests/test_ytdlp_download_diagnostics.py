@@ -48,9 +48,12 @@ def _fake_exec(script):
 
 
 @pytest.fixture(autouse=True)
-def _stub_deps(monkeypatch):
+def _stub_deps(monkeypatch, tmp_path):
     monkeypatch.setattr(fe, "_check_deps", lambda: None)
     monkeypatch.setattr(fe, "get_cookies_path", lambda: None)
+    monkeypatch.setattr(fe.tempfile, "gettempdir", lambda: str(tmp_path))
+    monkeypatch.setattr(fe, "_cookies_path", None)
+    monkeypatch.delenv("YTDLP_COOKIES_FILE", raising=False)
     monkeypatch.delenv("RAILWAY_ENVIRONMENT", raising=False)
     monkeypatch.delenv("RAILWAY_SERVICE_ID", raising=False)
 
@@ -114,6 +117,9 @@ def test_source_import_mode_verifies_tls_and_starts_an_owned_process_group(
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", _exec)
     monkeypatch.setattr(fe, "_in_container", lambda: True)
+    cookies = tmp_path / "cookies.txt"
+    cookies.write_text("stale")
+    monkeypatch.setattr(fe, "get_cookies_path", lambda: cookies)
 
     with pytest.raises(RuntimeError):
         asyncio.run(fe.download_video(
@@ -124,6 +130,9 @@ def test_source_import_mode_verifies_tls_and_starts_an_owned_process_group(
 
     command, options = calls[0]
     assert "--no-check-certificates" not in command
+    assert "--cookies" not in command
+    assert "--cookies-from-browser" not in command
+    assert command[command.index("-f") + 1].startswith("source/")
     assert options["start_new_session"] is True
 
 
@@ -247,3 +256,231 @@ def test_tried_strategies_are_listed_for_debugging(monkeypatch, tmp_path):
         asyncio.run(fe.download_video("https://example.com/x", tmp_path / "o.mp4"))
 
     assert "tried: no-auth" in str(exc.value)
+
+
+_BOT_CHECK = (
+    b"ERROR: [youtube] bxkIIQKC8aA: Sign in to confirm you\xe2\x80\x99re not a bot. "
+    b"Use --cookies-from-browser or --cookies for the authentication."
+)
+
+
+def _source_import_exec(results):
+    calls = []
+
+    async def _exec(*cmd, **kwargs):
+        calls.append((list(cmd), kwargs))
+        rc, err = results[min(len(calls), len(results)) - 1]
+        if rc == 0:
+            Path(cmd[cmd.index("-o") + 1]).write_bytes(b"mp4")
+        return _FakeProc(rc, err)
+
+    return _exec, calls
+
+
+def test_youtube_source_import_falls_back_to_cookies_after_the_bot_check(
+    monkeypatch, tmp_path,
+):
+    """Live 2026-09-25: every YouTube page import failed `no-auth` on Railway."""
+    exec_stub, calls = _source_import_exec([(1, _BOT_CHECK), (0, b"")])
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", exec_stub)
+    monkeypatch.setattr(fe, "_in_container", lambda: True)
+    cookies = tmp_path / "cookies.txt"
+    cookies.write_text("# Netscape HTTP Cookie File\n")
+    monkeypatch.setattr(fe, "get_cookies_path", lambda: cookies)
+
+    out = asyncio.run(fe.download_video(
+        "https://www.youtube.com/watch?v=bxkIIQKC8aA",
+        tmp_path / "o.mp4",
+        source_import_mode=True,
+    ))
+
+    assert out == tmp_path / "o.mp4"
+    (public, public_options), (retry, retry_options) = calls
+    assert "--cookies" not in public
+    private = Path(retry[retry.index("--cookies") + 1])
+    assert private != cookies and private.parent == fe._private_jar_dir()
+    assert private.parent != tmp_path, "the copy must never land in the import workspace"
+    assert not private.exists()
+    for command, options in ((public, public_options), (retry, retry_options)):
+        assert "--no-check-certificates" not in command
+        assert "--cookies-from-browser" not in command
+        assert options["start_new_session"] is True
+
+
+def test_non_youtube_source_import_never_receives_the_cookie_jar(monkeypatch, tmp_path):
+    exec_stub, calls = _source_import_exec([(1, _BOT_CHECK)])
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", exec_stub)
+    monkeypatch.setattr(fe, "_in_container", lambda: True)
+    cookies = tmp_path / "cookies.txt"
+    cookies.write_text("# Netscape HTTP Cookie File\n")
+    monkeypatch.setattr(fe, "get_cookies_path", lambda: cookies)
+
+    with pytest.raises(RuntimeError):
+        asyncio.run(fe.download_video(
+            "https://youtube.com.example.net/watch?v=x",
+            tmp_path / "o.mp4",
+            source_import_mode=True,
+        ))
+
+    assert len(calls) == 1
+    assert "--cookies" not in calls[0][0]
+
+
+def test_public_youtube_source_import_succeeds_without_touching_cookies(
+    monkeypatch, tmp_path,
+):
+    exec_stub, calls = _source_import_exec([(0, b"")])
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", exec_stub)
+    monkeypatch.setattr(fe, "_in_container", lambda: True)
+    cookies = tmp_path / "cookies.txt"
+    cookies.write_text("# Netscape HTTP Cookie File\n")
+    monkeypatch.setattr(fe, "get_cookies_path", lambda: cookies)
+
+    asyncio.run(fe.download_video(
+        "https://youtu.be/bxkIIQKC8aA", tmp_path / "o.mp4", source_import_mode=True,
+    ))
+
+    assert len(calls) == 1
+    assert "--cookies" not in calls[0][0]
+
+
+def test_youtube_source_import_never_writes_the_shared_cookie_jar(monkeypatch, tmp_path):
+    """yt-dlp rewrites its --cookies file on exit; imports run concurrently."""
+    seen = []
+
+    async def _exec(*cmd, **kwargs):
+        cmd = list(cmd)
+        if "--cookies" in cmd:
+            jar = Path(cmd[cmd.index("--cookies") + 1])
+            seen.append(jar.read_text())
+            jar.write_text("# rewritten by yt-dlp\n")
+            Path(cmd[cmd.index("-o") + 1]).write_bytes(b"mp4")
+            return _FakeProc(0, b"")
+        return _FakeProc(1, _BOT_CHECK)
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _exec)
+    monkeypatch.setattr(fe, "_in_container", lambda: True)
+    shared = tmp_path / "shared" / "cookies.txt"
+    shared.parent.mkdir()
+    shared.write_text("# Netscape HTTP Cookie File\nshared\n")
+    monkeypatch.setattr(fe, "get_cookies_path", lambda: shared)
+    work = tmp_path / "work"
+    work.mkdir()
+
+    asyncio.run(fe.download_video(
+        "https://www.youtube.com/watch?v=bxkIIQKC8aA", work / "o.mp4", source_import_mode=True,
+    ))
+
+    assert seen == ["# Netscape HTTP Cookie File\nshared\n"]
+    assert shared.read_text() == "# Netscape HTTP Cookie File\nshared\n"
+    assert sorted(p.name for p in work.iterdir()) == ["o.mp4"]
+
+
+def test_private_jar_copies_left_by_a_hard_kill_are_swept_at_startup(monkeypatch, tmp_path):
+    monkeypatch.setattr(fe.tempfile, "gettempdir", lambda: str(tmp_path))
+    jars = fe._private_jar_dir()
+    (jars / ".ytdlp-cookies-abc.txt").write_text("# jar")
+    (jars / ".ytdlp-cookies-def.txt").write_text("# jar")
+    (jars / ".ytdlp-cookies-abc.txt").chmod(0o600)
+    (jars / ".ytdlp-cookies-def.txt").chmod(0o600)
+    (jars / "unrelated.txt").write_text("keep")
+
+    assert fe.sweep_private_cookie_jars() == 2
+    assert sorted(p.name for p in jars.iterdir()) == ["unrelated.txt"]
+    assert oct(jars.stat().st_mode & 0o777) == "0o700"
+
+
+def test_private_jar_directory_never_follows_a_symlink(monkeypatch, tmp_path):
+    original = tmp_path / "originals"
+    original.mkdir()
+    cookie = original / ".ytdlp-cookies-original.txt"
+    cookie.write_text("synthetic original")
+    (tmp_path / "ytdlp-private-jars").symlink_to(original, target_is_directory=True)
+
+    with pytest.raises(OSError):
+        fe.sweep_private_cookie_jars()
+
+    assert cookie.read_text() == "synthetic original"
+
+
+def test_private_jar_directory_restores_private_permissions(tmp_path):
+    root = tmp_path / "ytdlp-private-jars"
+    root.mkdir(mode=0o755)
+    assert fe._private_jar_dir() == root
+    assert root.stat().st_mode & 0o777 == 0o700
+
+
+@pytest.mark.parametrize("original_binding", ["explicit", "cached"])
+def test_sweep_preserves_originals_links_and_non_scratch_files(monkeypatch, tmp_path, original_binding):
+    root = fe._private_jar_dir()
+    original = root / ".ytdlp-cookies-original.txt"
+    original.write_text("synthetic original")
+    original.chmod(0o600)
+    if original_binding == "explicit":
+        monkeypatch.setenv("YTDLP_COOKIES_FILE", str(original))
+    else:
+        monkeypatch.setattr(fe, "_cookies_path", original)
+    outside = tmp_path / "user-cookies.txt"
+    outside.write_text("synthetic user cookies")
+    (root / ".ytdlp-cookies-link.txt").symlink_to(outside)
+    (root / ".ytdlp-cookies-directory").mkdir()
+    unrelated = root / ".ytdlp-cookies-readable.txt"
+    unrelated.write_text("unrelated")
+    unrelated.chmod(0o644)
+    hardlink = root / ".ytdlp-cookies-hardlink.txt"
+    fe.os.link(outside, hardlink)
+    hardlink.chmod(0o600)
+
+    assert fe.sweep_private_cookie_jars() == 0
+    assert original.read_text() == "synthetic original"
+    assert outside.read_text() == "synthetic user cookies"
+    assert (root / ".ytdlp-cookies-link.txt").is_symlink()
+    assert (root / ".ytdlp-cookies-directory").is_dir()
+    assert unrelated.read_text() == "unrelated"
+    assert hardlink.exists()
+
+
+@pytest.mark.parametrize("failure", ["copy", "spawn", "download", "cancel"])
+def test_cookie_attempt_cleanup_preserves_original_on_failure(monkeypatch, tmp_path, failure):
+    original = tmp_path / "cookies.txt"
+    original.write_text("synthetic original")
+    monkeypatch.setattr(fe, "get_cookies_path", lambda: original)
+    killed = []
+
+    if failure == "copy":
+        def partial_copy(source, destination):
+            Path(destination).write_text("synthetic partial copy")
+            raise OSError("copy failed")
+        monkeypatch.setattr(fe.shutil, "copyfile", partial_copy)
+
+    class CancelledProc:
+        pid = 4321
+        returncode = None
+        calls = 0
+
+        async def communicate(self):
+            self.calls += 1
+            if self.calls == 1:
+                raise asyncio.CancelledError()
+            self.returncode = -9
+            return b"", b""
+
+    async def execute(*cmd, **kwargs):
+        if "--cookies" not in cmd:
+            return _FakeProc(1, _BOT_CHECK)
+        if failure == "spawn":
+            raise OSError("spawn failed")
+        if failure == "cancel":
+            return CancelledProc()
+        return _FakeProc(1, b"ERROR: unavailable video")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", execute)
+    monkeypatch.setattr(fe.os, "killpg", lambda pid, sig: killed.append((pid, sig)))
+    error = asyncio.CancelledError if failure == "cancel" else OSError if failure in {"copy", "spawn"} else RuntimeError
+    with pytest.raises(error):
+        asyncio.run(fe.download_video("https://youtu.be/x", tmp_path / "o.mp4", source_import_mode=True))
+
+    assert list(fe._private_jar_dir().iterdir()) == []
+    assert original.read_text() == "synthetic original"
+    if failure == "cancel":
+        assert killed == [(4321, fe.signal.SIGKILL)]

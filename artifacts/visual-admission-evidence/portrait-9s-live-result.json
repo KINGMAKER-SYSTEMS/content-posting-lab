@@ -1,0 +1,48 @@
+{
+  "schema": "content-lab.visual-admission.v1",
+  "verdict": "unavailable",
+  "jobId": "fixture-9s",
+  "outputIndex": 0,
+  "pageId": "acct:fixture",
+  "sha256": "581f74e18d740c01705d182ea0d476286b5f1854a2863b36c7698d8b7992cfe2",
+  "bytes": 160746,
+  "scannedAt": "2026-09-12T17:31:08.448921+00:00",
+  "reason": "visual_evidence_unavailable",
+  "sampling": {
+    "mode": "all_frames",
+    "algorithm": "tesseract-psm12-native-rgb-v1",
+    "frameCount": 270,
+    "expectedFrameCount": 270,
+    "width": 1080,
+    "height": 1920,
+    "durationSeconds": 9.0,
+    "durationMs": 9000
+  },
+  "model": {
+    "name": "glm-4.6v-flash",
+    "status": "unavailable",
+    "sampledFrames": [
+      0,
+      18,
+      36,
+      54,
+      72,
+      90,
+      108,
+      126,
+      143,
+      161,
+      179,
+      197,
+      215,
+      233,
+      251,
+      269
+    ]
+  },
+  "ocr": {
+    "engine": "tesseract",
+    "status": "clean"
+  },
+  "elapsedSeconds": 211.53
+}

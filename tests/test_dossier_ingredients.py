@@ -118,6 +118,51 @@ def test_catalog_is_rooted_in_exact_master_pages_and_content_lab_registries(monk
     }
 
 
+def test_non_slideshow_catalog_does_not_query_live_syzygy(monkeypatch):
+    import services.dossier_ingredients as ingredients
+
+    calls = []
+
+    def unexpected_read(*args, **kwargs):
+        calls.append((args, kwargs))
+        raise AssertionError("an unrelated slideshow library was queried")
+
+    monkeypatch.setattr(ingredients, "load_syzygy_library", unexpected_read)
+    request = _request()
+    catalog = ingredients.build_dossier_ingredient_catalog(
+        PAGE_ID, request["masterPages"], request["masterPagesHash"],
+    )
+
+    assert catalog["currentFormatCandidates"] == ["truck-scenic", "truck-ugc"]
+    assert calls == []
+
+
+def test_current_slideshow_library_read_finishes_inside_dossier_budget(monkeypatch):
+    import services.dossier_ingredients as ingredients
+
+    calls = []
+
+    def unavailable(profile, master_pages, *, timeout):
+        calls.append((profile.format_slug, master_pages["contentEngine"], timeout))
+        raise ingredients.SyzygyError("test unavailable")
+
+    monkeypatch.setattr(ingredients, "load_syzygy_library", unavailable)
+    intent, revision = master_pages(
+        PAGE_ID,
+        handle="meme.page",
+        content_niche="meme",
+        content_engine="sourced_slideshow",
+    )
+    catalog = ingredients.build_dossier_ingredient_catalog(PAGE_ID, intent, revision)
+
+    assert catalog["currentFormatCandidates"] == ["meme-slideshow"]
+    assert calls == [(
+        "meme-slideshow", "sourced_slideshow",
+        ingredients.DOSSIER_LIBRARY_TIMEOUT_SECONDS,
+    )]
+    assert ingredients.DOSSIER_LIBRARY_TIMEOUT_SECONDS < 5
+
+
 def test_selected_version_ignores_unrelated_format_authority_changes(monkeypatch):
     import services.dossier_ingredients as ingredients
 
@@ -131,11 +176,12 @@ def test_selected_version_ignores_unrelated_format_authority_changes(monkeypatch
     def changed_unrelated(
         contract, profile, catalog, model_options, page_id,
         shipstream_library=None, shipstream_status=None,
-        shipstream_projection=None,
+        shipstream_projection=None, master_pages=None,
     ):
         entry = original(
             contract, profile, catalog, model_options, page_id,
             shipstream_library, shipstream_status, shipstream_projection,
+            master_pages,
         )
         if entry["formatId"] == "pov-night-core":
             entry = copy.deepcopy(entry)
@@ -164,11 +210,12 @@ def test_selected_version_ignores_an_unused_same_niche_format(monkeypatch):
     def changed_unused_candidate(
         contract, profile, catalog, model_options, page_id,
         shipstream_library=None, shipstream_status=None,
-        shipstream_projection=None,
+        shipstream_projection=None, master_pages=None,
     ):
         entry = original(
             contract, profile, catalog, model_options, page_id,
             shipstream_library, shipstream_status, shipstream_projection,
+            master_pages,
         )
         if entry["formatId"] == "truck-ugc":
             entry = copy.deepcopy(entry)
@@ -281,11 +328,12 @@ def test_selected_version_changes_with_its_exact_format_authority(monkeypatch):
     def changed_current(
         contract, profile, catalog, model_options, page_id,
         shipstream_library=None, shipstream_status=None,
-        shipstream_projection=None,
+        shipstream_projection=None, master_pages=None,
     ):
         entry = original(
             contract, profile, catalog, model_options, page_id,
             shipstream_library, shipstream_status, shipstream_projection,
+            master_pages,
         )
         if entry["formatId"] == "truck-scenic":
             entry = copy.deepcopy(entry)
@@ -317,7 +365,7 @@ def test_live_legacy_exemption_is_bound_to_the_complete_immutable_publication():
     publications = (
         ingredients.PINNED_LEGACY_DOSSIER_CATALOG_VERSIONS_BY_PUBLICATION
     )
-    assert len(publications) == 6
+    assert len(publications) == 27
     for key, catalog_version in publications.items():
         page_id, recipe_id, recipe_version, dossier_revision, recipe_spec_hash = key
         assert ingredients.is_pinned_legacy_catalog_version(
@@ -353,8 +401,8 @@ def test_reference_and_source_slots_come_from_real_catalogs(monkeypatch):
         headers=_headers(),
     ).json()
     boat_reference = _ingredient(_format(body, "boat-lake"), "reference-media")
-    assert boat_reference["status"] == "bound"
-    assert boat_reference["binding"]["sha256"] == "6fcf8daf2cc422457af7de83032b90f018f66ceec801eba9e22f7d80f7f6a583"
+    assert boat_reference["required"] is False
+    assert boat_reference["binding"] is None
 
     dirtbike = _format(body, "pov-dirt-bike")
     master_source = _ingredient(dirtbike, "master-source-video")
@@ -372,7 +420,7 @@ def test_reference_and_source_slots_come_from_real_catalogs(monkeypatch):
     assert all(clip["parentSource"] is None and clip["cutWindow"] is None
                for clip in library["binding"]["clips"])
     assert treatment["binding"]["scope"] == "master_source_window"
-    assert treatment["binding"]["recutWindow"] == "deterministic_without_replacement"
+    assert treatment["binding"]["recutWindow"] == "deterministic_varied_duration_without_replacement"
     assert treatment["binding"]["reservation"] == "active_jobs_and_completed_outputs"
     assert treatment["binding"]["output"] == {
         "aspectRatio": "9:16",
@@ -381,7 +429,7 @@ def test_reference_and_source_slots_come_from_real_catalogs(monkeypatch):
         "width": 1080,
     }
     assert treatment["binding"]["controls"]["cutDurationMs"] == {
-        "type": "range", "min": 6000, "max": 8000,
+        "type": "range", "min": 5000, "max": 9000,
         "step": 1000, "default": 7000,
     }
     assert treatment["binding"]["clipSpeed"] == {
@@ -390,8 +438,18 @@ def test_reference_and_source_slots_come_from_real_catalogs(monkeypatch):
     assert "window" not in treatment["binding"]
 
     coffee = _format(body, "coffee-tok")
-    assert _ingredient(coffee, "visual-model")["status"] == "missing"
-    assert _ingredient(coffee, "prompt-module")["status"] == "missing"
+    assert _ingredient(coffee, "visual-model")["status"] == "bound"
+    selected = _production_selection(body, "coffee-tok", "wan-i2v-fast")
+    assert selected["providerId"] == "wan-i2v-fast"
+    assert selected["promptModuleId"] == "coffee"
+    assert _ingredient(coffee, "prompt-module")["status"] == "bound"
+    assert _ingredient(coffee, "reference-media")["status"] == "bound"
+    assert _ingredient(coffee, "reference-media")["binding"]["sha256"] == "ee2dd41949eb6566a858db9c88ae9c9349dcc77a199d08088336143a4e1d1649"
+    assert coffee["blockers"] == []
+
+    construction = _format(body, "construction-scenic")
+    assert _ingredient(construction, "visual-model")["status"] == "missing"
+    assert _ingredient(construction, "prompt-module")["status"] == "missing"
 
 
 def test_shipstream_page_source_is_bound_only_to_its_matching_format(monkeypatch):
@@ -407,7 +465,7 @@ def test_shipstream_page_source_is_bound_only_to_its_matching_format(monkeypatch
         handle="lovenightwalks",
         content_niche="POV — Night Core",
         content_engine="sourced_video",
-        vault_url="https://shipstream.risingtidesviral.com/vault/lovenightwalks",
+        vault_url="https://shipstream.test/vault/lovenightwalks",
     )
     intent["notionPageId"] = "3c61465b-b829-8095-86ec-f979f90ee48a"
     intent["automationMode"] = "Operator"
@@ -550,6 +608,78 @@ def test_shipstream_page_source_is_bound_only_to_its_matching_format(monkeypatch
     )["catalogVersion"] == selected_version
 
 
+def test_newest_ready_shipstream_import_binds_over_legacy_source_dna(monkeypatch):
+    """chase.miles.4l's imported vault master supersedes its source-dna master."""
+    import services.dossier_ingredients as ingredients
+    from services.shipstream_source_manifest import (
+        parse_shipstream_source_projection,
+    )
+
+    page_id = "tt-chase-miles-4l"
+    notion_page_id = "3981465b-b829-8067-9317-eccc81093e4b"
+    intent, _ = master_pages(
+        page_id,
+        handle="chase.miles.4l",
+        content_niche="POV - Dirtbike",
+        content_engine="sourced_video",
+        vault_url="https://shipstream.test/vault/chase.miles.4l",
+    )
+    intent["notionPageId"] = notion_page_id
+    intent["automationMode"] = "Automation"
+    revision = intent_hash(intent)
+    imported_sha = "a3073e1000b1a760e38dc8f054c422bbcf1bc9451101dd67e9e354c81148a6dd"
+    manifest = {
+        "schema": "shipstream.source-manifest.v1",
+        "page": "chase.miles.4l",
+        "notion": {
+            "pageId": notion_page_id,
+            "contentEngine": "sourced_video",
+            "contentNiche": "POV - Dirtbike",
+            "serviceMode": "Automation",
+        },
+        "format": "pov-dirt-bike",
+        "sourceAuthority": {
+            "kind": "content_lab_page_source_import",
+            "pageId": page_id,
+            "pageHandle": "chase.miles.4l",
+            "notionPageId": notion_page_id,
+            "replacementEligible": True,
+        },
+        "master": {
+            "sha256": imported_sha,
+            "storageKey": f"vault/chase.miles.4l/masters/{imported_sha}.mp4",
+            "bytes": 99_140_709,
+            "media": {"durationSeconds": 120.0},
+            "originSourceUrl": "https://www.youtube.com/watch?v=vt5im2TRAKw",
+            "originWindowSeconds": [0.0, 120.0],
+            "registeredAt": "2026-10-01T18:13:51Z",
+        },
+        "historicalPostedCuts": [],
+        "cuts": [],
+        "updatedAt": "2026-10-01T18:13:51Z",
+    }
+    projection = parse_shipstream_source_projection(
+        json.dumps(manifest).encode(), intent,
+        page_id=page_id, expected_format="pov-dirt-bike",
+    )
+    monkeypatch.setattr(
+        ingredients, "load_shipstream_source_projection", lambda *args, **kwargs: projection,
+    )
+
+    catalog = ingredients.build_dossier_ingredient_catalog(page_id, intent, revision)
+    dirtbike = _format(catalog, "pov-dirt-bike")
+    master = _ingredient(dirtbike, "master-source-video")
+
+    assert master["status"] == "bound"
+    assert master["binding"]["libraryId"] == projection.source_library.library_id
+    assert master["binding"]["masters"][0]["sha256"] == imported_sha
+    assert {option["libraryId"] for option in master["options"]} == {
+        "pov-dirt-bike-chase-miles-4l-v1",
+        projection.source_library.library_id,
+    }
+    assert "master-source-video:selection_required" not in dirtbike["blockers"]
+
+
 def test_shipstream_manifest_format_cannot_override_master_pages_niche(monkeypatch):
     import services.dossier_ingredients as ingredients
     import services.shipstream_source_manifest as source_manifest
@@ -560,7 +690,7 @@ def test_shipstream_manifest_format_cannot_override_master_pages_niche(monkeypat
         handle="lovenightwalks",
         content_niche="POV — Night Core",
         content_engine="sourced_video",
-        vault_url="https://shipstream.risingtidesviral.com/vault/lovenightwalks",
+        vault_url="https://shipstream.test/vault/lovenightwalks",
     )
     intent["notionPageId"] = "3c61465b-b829-8095-86ec-f979f90ee48a"
     intent["automationMode"] = "Operator"

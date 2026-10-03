@@ -1,8 +1,3 @@
 {
-  "mcpServers": {
-    "postiz": {
-      "type": "http",
-      "url": "https://api.postiz.com/mcp/f1f93b9098cab88876c2724df1c6dc49f16c446296ec68186fbfcea4ccbffd73"
-    }
-  }
+  "mcpServers": {}
 }

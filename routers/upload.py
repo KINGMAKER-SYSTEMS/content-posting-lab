@@ -143,7 +143,8 @@ async def trigger_login(account_name: str):
         proc = await asyncio.create_subprocess_exec(
             sys.executable,
             "-c",
-            f"""
+            """
+import sys
 from tiktokautouploader import upload_tiktok
 # Trigger login flow by attempting upload with headless=False
 # This will open browser for manual login, save cookies, then we can cancel
@@ -151,13 +152,14 @@ try:
     upload_tiktok(
         video='__login_trigger__',
         description='',
-        accountname='{account_name}',
+        accountname=sys.argv[1],
         headless=False,
         stealth=True,
     )
 except Exception:
     pass  # Expected — we just need the login/cookie save
 """,
+            account_name,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )

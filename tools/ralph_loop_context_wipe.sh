@@ -11,7 +11,13 @@ PASS_NUMBER="$2"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="${3:-$(cd "${SCRIPT_DIR}/.." && pwd)}"
 
-python "${SCRIPT_DIR}/ralph_loop.py" wipe \
+PYTHON_BIN="${PYTHON_BIN:-$(command -v python3 || command -v python)}"
+if [[ -z "${PYTHON_BIN}" ]]; then
+  echo "python3 (or python) is required" >&2
+  exit 127
+fi
+
+"${PYTHON_BIN}" "${SCRIPT_DIR}/ralph_loop.py" wipe \
   "${ISSUE_ID}" \
   --repo-root "${REPO_ROOT}" \
   --pass-number "${PASS_NUMBER}"

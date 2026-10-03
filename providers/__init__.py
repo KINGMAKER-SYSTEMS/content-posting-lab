@@ -41,6 +41,15 @@ PROVIDERS = {
         "models": ["wan-video/wan-2.2-i2v-fast"],
         "module": replicate,
     },
+    "flux-image": {
+        "name": "FLUX.2 Pro Still",
+        "group": "Black Forest Labs",
+        "key_id": "replicate",
+        "pricing": "~$0.03/2MP still",
+        "models": ["black-forest-labs/flux-2-pro"],
+        "module": replicate,
+        "output_kind": "image",
+    },
     "pruna-pvideo": {
         "name": "P-Video",
         "group": "PrunaAI",

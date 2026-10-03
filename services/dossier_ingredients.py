@@ -24,6 +24,12 @@ from services.control_plane_generation import (
     render_treatment_capability,
 )
 from services.control_plane_sources import source_treatment_capability
+from services.control_plane_slideshows import (
+    SyzygyError,
+    load_syzygy_library,
+    slideshow_library_address,
+    slideshow_treatment_capability,
+)
 from services.control_plane_source_libraries import (
     MANIFEST_DIR,
     SourceLibraryError,
@@ -50,6 +56,7 @@ from services.shipstream_source_manifest import (
 
 SCHEMA = "content-lab.dossier-ingredient-catalog.v1"
 SELECTION_AUTHORITY_SCHEMA = "content-lab.dossier-selection-authority.v1"
+DOSSIER_LIBRARY_TIMEOUT_SECONDS = 2.0
 PINNED_LEGACY_DOSSIER_CATALOG_VERSIONS_BY_PUBLICATION = {
     # Exact active v3 publications inventoried through the live dossier
     # gateway on 2026-09-01 before this migration. The tuple binding prevents
@@ -96,6 +103,158 @@ PINNED_LEGACY_DOSSIER_CATALOG_VERSIONS_BY_PUBLICATION = {
         "534-8243fac0434f0890",
         "sha256:7192f9772f30999bd06b4938b17549e39de224066096c5daef1294b30d24c21c",
     ): "sha256:00910ba76b3ba4cba312670fa734e6ac769fd7cfe42ea946d8599b318feb2b69",
+    # 2026-09-14 silhouette anchor pool v2 re-versioned the prompt catalog
+    # (2da2ce13… -> e7c2a13a…). These active non-silhouette ai_video publications
+    # are materially unchanged (same model, prompt family, reference set,
+    # treatment); their pre-re-version selection hash stays executable so the
+    # fleet does not need a re-lock. Silhouette pages are re-locked instead.
+    (
+        "acct:6amthoughts-nyc",
+        "coffee-tok:master",
+        "dossier-89f1d037106ee8d9",
+        "895-12f753c82b516ce8",
+        "sha256:89f1d037106ee8d9ed2b795acb00825abb4082679a737381cc876bfe62efc3e1",
+    ): "sha256:bc1d8ce2777b6e38d5260fdc01c1215900de39ecd64098e0f34a307365b2ae5a",
+    (
+        "acct:backroaddriver",
+        "truck-scenic:master",
+        "dossier-48a4f1ad895b3ce7",
+        "818-208fc80b20f6d1e5",
+        "sha256:48a4f1ad895b3ce75951b2c18d4fc4557d526fde35145b2885c481aa648b1de7",
+    ): "sha256:a1c3dac3f75430e96fbb70507c0c4a15ffa3161bdaf707e0f00bc20b40763dbc",
+    (
+        "acct:coffee-tunes",
+        "coffee-tok:master",
+        "dossier-c4ee305f0058af21",
+        "845-a9a69f8d1cbae9ce",
+        "sha256:c4ee305f0058af21a5df935ef4d36c81f1321230c53df1fd95496258db7fe161",
+    ): "sha256:bc1d8ce2777b6e38d5260fdc01c1215900de39ecd64098e0f34a307365b2ae5a",
+    (
+        "acct:earl-boone1",
+        "truck-scenic:master",
+        "dossier-8ca9b11fc21c8080",
+        "791-1f53fb699568edb3",
+        "sha256:8ca9b11fc21c808096a9137a68061d0b5d8624f395f5fca815de3785ce7fcac9",
+    ): "sha256:2f811d0e5e479b6fdef0cb3c6839ab63cc512aaa52a6bf38762ae762550f63e4",
+    (
+        "acct:matt-jenkins56",
+        "truck-scenic:master",
+        "dossier-87b3c6d8eb4f9895",
+        "797-8e1b4124a90b6e42",
+        "sha256:87b3c6d8eb4f9895d8a4d17509f69fdad4e691525a09605b911fb01a46f488a9",
+    ): "sha256:2f811d0e5e479b6fdef0cb3c6839ab63cc512aaa52a6bf38762ae762550f63e4",
+    (
+        "acct:rail:5ad66e4b4b735115ae660111",
+        "coffee-tok:master",
+        "dossier-bd96b2459d4c69d3",
+        "676-147d5a52a6793f3b",
+        "sha256:bd96b2459d4c69d38225eabff9073698d90b78b963293a76f89754793d5c3043",
+    ): "sha256:bc1d8ce2777b6e38d5260fdc01c1215900de39ecd64098e0f34a307365b2ae5a",
+    (
+        "acct:rail:bacc74107b722f39adfc0347",
+        "truck-scenic:master",
+        "dossier-5cde661ce314bb23",
+        "811-6acdc4e0996e1b3a",
+        "sha256:5cde661ce314bb23c1abfaf4e1423fd7d8ad5c65595ae71dfcd9210f2e153963",
+    ): "sha256:2f811d0e5e479b6fdef0cb3c6839ab63cc512aaa52a6bf38762ae762550f63e4",
+    (
+        "acct:rail:e4fedfe529058ecbf023e7f5",
+        "truck-scenic:master",
+        "dossier-d37fe862737ff844",
+        "810-2a4a05325b7b7b25",
+        "sha256:d37fe862737ff844fbe01bd793277912341607438a39972da56deaaf548f2671",
+    ): "sha256:2f811d0e5e479b6fdef0cb3c6839ab63cc512aaa52a6bf38762ae762550f63e4",
+    (
+        "acct:rhett0153",
+        "truck-scenic:master",
+        "dossier-9c1f7861ab7e1198",
+        "787-749e6f1b143204d5",
+        "sha256:9c1f7861ab7e1198bd87d282491ed8c0e5fc5e10e4a30adb9b746cc59b5b659c",
+    ): "sha256:2f811d0e5e479b6fdef0cb3c6839ab63cc512aaa52a6bf38762ae762550f63e4",
+    (
+        "acct:train-of-thought11",
+        "truck-scenic:master",
+        "dossier-83228afb6ba5197f",
+        "806-01eeaa6c1785e600",
+        "sha256:83228afb6ba5197f36a6285aa5b2f9156512e546ac58d22972889c13622d5b88",
+    ): "sha256:a1c3dac3f75430e96fbb70507c0c4a15ffa3161bdaf707e0f00bc20b40763dbc",
+    (
+        "tt-boone-reynolds",
+        "truck-scenic:master",
+        "dossier-803fe66e0c6269f8",
+        "354-f85cec96e812ddfa",
+        "sha256:803fe66e0c6269f80ef2444f719b6b790c3e0a88621ebd8278f4508b9848e049",
+    ): "sha256:2f811d0e5e479b6fdef0cb3c6839ab63cc512aaa52a6bf38762ae762550f63e4",
+    (
+        "tt-cash-culpepper",
+        "truck-scenic:master",
+        "dossier-b30f41765a6f6a30",
+        "354-f4a2fda1de3053d7",
+        "sha256:b30f41765a6f6a309924d076d0c93420841d89c56bb2ad09302e2a54398dad79",
+    ): "sha256:2f811d0e5e479b6fdef0cb3c6839ab63cc512aaa52a6bf38762ae762550f63e4",
+    (
+        "tt-dallasramsey53",
+        "truck-scenic:master",
+        "dossier-eb6fef04d037aa12",
+        "355-0d8ac834a0877181",
+        "sha256:eb6fef04d037aa12d8cedd416b74409809544360813927f23a70de8d0e68480a",
+    ): "sha256:2f811d0e5e479b6fdef0cb3c6839ab63cc512aaa52a6bf38762ae762550f63e4",
+    (
+        "tt-deucebailey0",
+        "boat-lake:master",
+        "dossier-c42c91dcd73e1391",
+        "854-6094863b71eb0396",
+        "sha256:c42c91dcd73e13912529d12a2ee3656980754e1592a67c9b3f6b6a5710f73128",
+    ): "sha256:a4e104ac3d5faab80e042b37355226200d276d84efbe6697071f5e7c26ec1aca",
+    (
+        "tt-dieselmechanic4life",
+        "truck-scenic:master",
+        "dossier-fa13f3a4a7f60473",
+        "805-5ebf77dcd0beba94",
+        "sha256:fa13f3a4a7f6047392e982d553c47b684a66cb7fd8dd56011f1b96cc34e3988a",
+    ): "sha256:2f811d0e5e479b6fdef0cb3c6839ab63cc512aaa52a6bf38762ae762550f63e4",
+    (
+        "tt-geoff-gordon24",
+        "truck-scenic:master",
+        "dossier-adb1ad84ff7e14ee",
+        "354-fe8a2e24c1d36d9c",
+        "sha256:adb1ad84ff7e14eea8837a48e3c271d151997be30503214338126796d5b40ae2",
+    ): "sha256:2f811d0e5e479b6fdef0cb3c6839ab63cc512aaa52a6bf38762ae762550f63e4",
+    (
+        "tt-hookedupfishing61",
+        "truck-scenic:master",
+        "dossier-284a19d4c67cfa9e",
+        "801-9d7d61ed8d27860a",
+        "sha256:284a19d4c67cfa9e87d848705a587d635b8a07e30f9edda97bfef2a020c9c371",
+    ): "sha256:2f811d0e5e479b6fdef0cb3c6839ab63cc512aaa52a6bf38762ae762550f63e4",
+    (
+        "tt-jetsirrskii",
+        "boat-lake:master",
+        "dossier-a0c8ab2b34264614",
+        "852-3c17e7b838c4bcc4",
+        "sha256:a0c8ab2b34264614cb4f657e61106cdacff54126fa500610fa37fa7c2e046d45",
+    ): "sha256:a4e104ac3d5faab80e042b37355226200d276d84efbe6697071f5e7c26ec1aca",
+    (
+        "tt-southpawoutlaw1",
+        "truck-scenic:master",
+        "dossier-5229e5d18650f5bc",
+        "797-f31d5991d19b11b1",
+        "sha256:5229e5d18650f5bc70f682430b1592e372f8418241b40c5b6f04b81bfbc1737e",
+    ): "sha256:2f811d0e5e479b6fdef0cb3c6839ab63cc512aaa52a6bf38762ae762550f63e4",
+    (
+        "tt-tucker-reeves",
+        "truck-scenic:master",
+        "dossier-9baa9418a41ccba6",
+        "826-0342de9791911734",
+        "sha256:9baa9418a41ccba6ea8114f6fea1440d8352624dc905b9589dc8c68ff308acd2",
+    ): "sha256:a1c3dac3f75430e96fbb70507c0c4a15ffa3161bdaf707e0f00bc20b40763dbc",
+    (
+        "tt-waylon-berry",
+        "truck-scenic:master",
+        "dossier-722f7ef365cb21d2",
+        "791-7fa719af478c2b76",
+        "sha256:722f7ef365cb21d2018cdb28faff4bba6d389627215c6e3f11ac43070d45269e",
+    ): "sha256:2f811d0e5e479b6fdef0cb3c6839ab63cc512aaa52a6bf38762ae762550f63e4",
 }
 PINNED_LEGACY_DOSSIER_CATALOG_VERSIONS = frozenset(
     PINNED_LEGACY_DOSSIER_CATALOG_VERSIONS_BY_PUBLICATION.values()
@@ -173,7 +332,10 @@ def _selection_catalog_version(
         reference.get("referenceSetId") if isinstance(reference, dict) else None
     ):
         return None
-    source = ingredients.get("master-source-video")
+    source = (
+        ingredients.get("master-source-video")
+        or ingredients.get("image-library")
+    )
     source_id = production.get("sourceLibraryId")
     selected_source = None
     if source_id is not None:
@@ -208,7 +370,18 @@ def _selection_catalog_version(
             ),
             "prompt": prompt,
             "reference": reference,
-            "source": selected_source,
+            "source": (
+                {
+                    key: selected_source.get(key)
+                    for key in (
+                        "libraryId", "lane", "subject", "role",
+                        "minimumLibraryItems",
+                    )
+                }
+                if isinstance(selected_source, dict)
+                and selected_source.get("role") == "syzygy_r2_library"
+                else selected_source
+            ),
             "treatment": treatment,
         },
     }
@@ -229,7 +402,10 @@ def _production_selections(format_entry: dict[str, Any]) -> list[dict[str, Any]]
         "referenceSetId": reference.get("referenceSetId") if isinstance(reference, dict) else None,
     }
     model = ingredients.get("visual-model")
-    source = ingredients.get("master-source-video")
+    source = (
+        ingredients.get("master-source-video")
+        or ingredients.get("image-library")
+    )
     if model is not None:
         identities = [{
             **base,
@@ -548,7 +724,17 @@ def _sourced_ingredients(
         )
         options.append(projected_cuts)
     master_options = _master_source_options(format_slug, page_id, shipstream_library)
-    bound_master = master_options[0] if len(master_options) == 1 else None
+    # A valid page manifest is ShipStream's current source authority. When it
+    # supersedes a legacy source-dna registration, keep both choices visible but
+    # bind the ShipStream library so replacement can proceed without an
+    # impossible selection_required state.
+    bound_master = next((
+        option for option in master_options
+        if shipstream_library is not None
+        and option["libraryId"] == shipstream_library.library_id
+    ), None)
+    if bound_master is None and len(master_options) == 1:
+        bound_master = master_options[0]
     if projection_matches:
         selected = projected_cuts
         approved_cut_status = shipstream_projection.approved_cut_status
@@ -584,11 +770,56 @@ def _sourced_ingredients(
     ]
 
 
-def _slideshow_ingredients(profile: MaterialProfile) -> list[dict[str, Any]]:
+def _slideshow_ingredients(
+    profile: MaterialProfile,
+    master_pages: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
     kind = "lyric_image_library" if profile.content_engine == "lyrics_slideshows" else "image_library"
+    address = (
+        slideshow_library_address(profile, master_pages)
+        if isinstance(master_pages, dict) else None
+    )
+    library_option = None
+    library_status = "missing"
+    if address is not None:
+        try:
+            library = load_syzygy_library(
+                profile, master_pages, timeout=DOSSIER_LIBRARY_TIMEOUT_SECONDS,
+            )
+            treatment = slideshow_treatment_capability(profile.format_slug)
+            minimum = treatment["minimumLibraryItems"]
+            library_option = {
+                "libraryId": library.library_id,
+                "lane": library.lane,
+                "subject": library.subject,
+                "role": "syzygy_r2_library",
+                "minimumLibraryItems": minimum,
+                "mediaCount": len(library.objects),
+                "mediaKinds": sorted({item.media_type for item in library.objects}),
+                "snapshotHash": f"sha256:{library.snapshot_hash}",
+            }
+            library_status = (
+                "bound" if len(library.objects) >= minimum else "missing"
+            )
+        except SyzygyError:
+            library_status = "unavailable"
+        try:
+            treatment_binding = slideshow_treatment_capability(profile.format_slug)
+        except ValueError:
+            treatment_binding = None
+    else:
+        treatment_binding = None
     return [
-        _ingredient("image-library", kind, required=True, status="missing"),
-        _ingredient("slideshow-treatment", "slideshow_treatment", required=True, status="missing"),
+        _ingredient(
+            "image-library", kind, required=True, status=library_status,
+            binding=library_option if library_status == "bound" else None,
+            options=[library_option] if library_option is not None else [],
+        ),
+        _ingredient(
+            "slideshow-treatment", "slideshow_treatment", required=True,
+            status="bound" if treatment_binding is not None else "missing",
+            binding=treatment_binding,
+        ),
     ]
 
 
@@ -601,6 +832,7 @@ def _format_entry(
     shipstream_library: SourceDnaLibrary | None = None,
     shipstream_status: str | None = None,
     shipstream_projection: ShipStreamSourceProjection | None = None,
+    master_pages: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if profile.content_engine == "ai_video":
         ingredients = _generated_ingredients(contract.format_slug, catalog, model_options)
@@ -610,7 +842,19 @@ def _format_entry(
             shipstream_status, shipstream_projection,
         )
     else:
-        ingredients = _slideshow_ingredients(profile)
+        # A catalog contains every registered format, but the page can select
+        # only formats matching its Master Pages niche and engine. Querying the
+        # live Syzygy library for every unrelated slideshow format made one
+        # stalled slideshow service consume the whole Dossier request budget
+        # for every page in the fleet.
+        current_slideshow_page = (
+            master_pages
+            if isinstance(master_pages, dict)
+            and contract.content_niche == master_pages.get("contentNiche")
+            and contract.content_engine == master_pages.get("contentEngine")
+            else None
+        )
+        ingredients = _slideshow_ingredients(profile, current_slideshow_page)
     ingredients.extend([
         _ingredient("caption-bank", "caption_bank", required=True, status="page_binding_required"),
         _ingredient("sound-collection", "sound_collection", required=True, status="page_binding_required"),
@@ -692,7 +936,7 @@ def build_dossier_ingredient_catalog(
             contracts[format_slug], profiles[format_slug], prompt_catalog,
             model_options, page_id, shipstream_library,
             shipstream_status if format_slug == expected_source_format else None,
-            shipstream_projection,
+            shipstream_projection, intent,
         )
         for format_slug in sorted(contracts)
     ]
@@ -758,7 +1002,7 @@ def selected_dossier_catalog_version(
             return None
     entry = _format_entry(
         contract, profile, prompt_catalog, _model_options(prompt_catalog), page_id,
-        shipstream_library,
+        shipstream_library, master_pages=intent,
     )
     return _selection_catalog_version(entry, production)
 

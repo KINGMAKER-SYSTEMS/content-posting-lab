@@ -117,7 +117,10 @@ def atomic_save(
     tmp = p.with_suffix(f"{p.suffix}.{os.getpid()}.{threading.get_ident()}.tmp")
     try:
         with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2, ensure_ascii=False, default=default)
+            # One-shot encoding uses the C encoder instead of millions of
+            # Python writes while the growing generation ledger holds the API.
+            f.write(json.dumps(data, ensure_ascii=False, default=default,
+                               separators=(",", ":")))
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp, p)

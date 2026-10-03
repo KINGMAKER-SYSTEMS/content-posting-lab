@@ -12,14 +12,14 @@ RUN npm run build
 FROM python:3.11-slim-bookworm
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg \
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg tesseract-ocr tesseract-ocr-eng tesseract-ocr-osd \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
 RUN grep -v -E '^(playwright|pytesseract|tiktokautouploader)' requirements.txt > requirements-prod.txt \
     && pip install --no-cache-dir -r requirements-prod.txt
 
-COPY app.py main.py project_manager.py telegram_bot.py debug_logger.py ./
+COPY app.py main.py project_manager.py telegram_bot.py debug_logger.py burn_quality_gate.py ./
 COPY routers/ ./routers/
 # Recipe registrations. The image copies named paths rather than the whole
 # tree, so a directory that is committed but not listed here simply does not
@@ -32,7 +32,8 @@ COPY services/ ./services/
 COPY fonts/ ./fonts/
 COPY --from=frontend /app/frontend/dist ./frontend/dist
 
-RUN mkdir -p output caption_output burn_output projects
+RUN mkdir -p output caption_output burn_output projects \
+    && python -c "import app"
 
 EXPOSE 8000
 CMD ["python", "main.py"]

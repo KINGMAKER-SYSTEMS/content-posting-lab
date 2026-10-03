@@ -76,14 +76,18 @@ def test_legacy_project_recipe_cannot_execute_without_master_pages_engine_alignm
     assert not cp._jobs_path().exists()
 
 
-def test_legacy_projects_are_never_advertised_as_page_capabilities(lab):
+def test_intent_format_is_advertised_before_recipe_publication(lab):
     client, _, _, _ = lab
     response = client.get(
         "/api/control-plane/v1/capabilities",
         headers={"X-RT-Page-Id": PAGE_ID},
     )
     assert response.status_code == 200
-    assert response.json()["capabilities"] == []
+    capabilities = response.json()["capabilities"]
+    assert any(entry["recipeId"] == "truck-scenic:master"
+               and entry["engine"] == "ai_video"
+               and entry["maxQuantity"] > 0 for entry in capabilities)
+    assert all(entry["recipeId"] != "trucks" for entry in capabilities)
 
 
 def test_job_contract_rejects_prompt_fields_unknown_fields_and_missing_auth(lab):

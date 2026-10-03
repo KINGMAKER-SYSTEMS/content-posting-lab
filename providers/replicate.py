@@ -1,11 +1,13 @@
-"""Replicate API provider — Hailuo 2.3, Wan 2.2 T2V, Wan 2.2 I2V."""
+"""Replicate API provider — video models plus FLUX.2 still generation."""
 
 import asyncio
+import re
 import time
 
 import httpx
 
 from .base import API_KEYS
+from services.generation_recovery import input_hash
 
 REPLICATE_API = "https://api.replicate.com/v1"
 
@@ -151,13 +153,206 @@ def _build_wan_i2v_fast_input(prompt: str, params: dict) -> dict:
     return inp
 
 
+FLUX_SAFETY_TOLERANCE_RANGE = (1, 5)  # 1 strictest, 5 most permissive
+
+
+def _flux_safety_tolerance(params: dict) -> int | None:
+    """Return the caller's explicit FLUX moderation level, or None to omit it.
+
+    Omitting the field keeps Replicate's default (2).  Only a recipe that opts
+    in -- today the silhouette family, see ``generation_options`` -- sends one.
+    """
+    value = params.get("safety_tolerance")
+    if value is None:
+        return None
+    low, high = FLUX_SAFETY_TOLERANCE_RANGE
+    if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= high:
+        raise ValueError(
+            f"FLUX safety_tolerance must be an integer from {low} to {high}"
+        )
+    return value
+
+
+def _build_flux_2_pro_input(prompt: str, params: dict) -> dict:
+    """Build a portrait-native FLUX.2 Pro still-image request."""
+    aspect_ratio = params.get("aspect_ratio", "9:16")
+    if aspect_ratio != "9:16":
+        raise ValueError("FLUX silhouette stills require a 9:16 aspect ratio")
+    resolution = params.get("image_resolution", "2 MP")
+    if resolution not in {"1 MP", "2 MP"}:
+        raise ValueError("FLUX silhouette still resolution must be 1 MP or 2 MP")
+    output_format = params.get("output_format", "jpg")
+    if output_format not in {"jpg", "png", "webp"}:
+        raise ValueError("FLUX output format is unsupported")
+    quality = int(params.get("output_quality", 95))
+    if not 1 <= quality <= 100:
+        raise ValueError("FLUX output quality must be between 1 and 100")
+    safety_tolerance = _flux_safety_tolerance(params)
+    payload = {
+        "prompt": prompt,
+        "aspect_ratio": aspect_ratio,
+        "resolution": resolution,
+        "output_format": output_format,
+        "output_quality": quality,
+    }
+    if safety_tolerance is not None:
+        payload["safety_tolerance"] = safety_tolerance
+    return payload
+
+
 _INPUT_BUILDERS = {
     "minimax/hailuo-2.3": _build_hailuo_input,
     "wan-video/wan-2.2-t2v-fast": _build_wan_t2v_input,
     "wan-video/wan-2.2-i2v-a14b": _build_wan_i2v_input,
     "wan-video/wan-2.2-i2v-fast": _build_wan_i2v_fast_input,
+    "black-forest-labs/flux-2-pro": _build_flux_2_pro_input,
     "prunaai/p-video": _build_pvideo_input,
 }
+
+
+# ---------------------------------------------------------------------------
+# Transient-failure handling for video generation.
+#
+# Production evidence (2026-09-23/24): paid-for Replicate predictions were
+# abandoned because one poll GET hit a ReadError/ConnectTimeout, and whole
+# replenishment jobs failed on a 429 throttle or a 5xx at submission.  Each
+# such job blocked its page's refill for hours downstream.  Only failures that
+# cannot create a second paid prediction are retried here:
+#
+# * submission: HTTP 429 (honouring ``retry_after``), 500 and 503 -- Replicate
+#   returned no prediction id in every observed case (2026-09-24) -- or a
+#   connection that was never established.  502/504 are gateway results whose
+#   upstream may already have created the prediction, so they are NOT retried.  A read/write failure after the
+#   request body may have reached Replicate is ambiguous and is NOT retried,
+#   so a lost response can never become a duplicate paid prediction.
+# * polling: the prediction already exists, so a transport error, 429, 5xx or
+#   unparseable body is retried on the SAME prediction until the deadline.
+# * "Prediction interrupted; please retry (code: PA)" is resubmitted once.
+#
+# Insufficient credit (402), validation errors, provider-side failures and
+# timeouts are never retried.  A prediction that exceeds the deadline is
+# cancelled so output that will be discarded stops accruing cost.  The model,
+# input and prompt are identical on every attempt; nothing here changes the
+# provider a recipe pinned.
+# ---------------------------------------------------------------------------
+START_ATTEMPTS = 4
+START_RETRY_STATUSES = frozenset({429, 500, 503})
+START_BACKOFF_SECONDS = (2.0, 5.0, 10.0)
+RETRY_AFTER_CAP_SECONDS = 30.0
+POLL_INTERVAL_SECONDS = 5.0
+POLL_TRANSIENT_LIMIT = 12
+PREDICTION_DEADLINE_SECONDS = 600.0
+INTERRUPTED_RESUBMITS = 1
+_INTERRUPTED_MARKER = "(code: PA)"
+
+
+async def _sleep(seconds: float) -> None:
+    await asyncio.sleep(seconds)
+
+
+def _now() -> float:
+    return time.monotonic()
+
+
+def _retry_after_seconds(resp: httpx.Response, attempt: int) -> float:
+    fallback = START_BACKOFF_SECONDS[min(attempt, len(START_BACKOFF_SECONDS) - 1)]
+    if resp.status_code != 429:
+        return fallback
+    try:
+        hinted = float(resp.json().get("retry_after"))
+    except Exception:
+        try:
+            hinted = float(resp.headers.get("retry-after", ""))
+        except ValueError:
+            return fallback
+    if hinted != hinted or hinted <= 0:  # NaN or non-positive
+        return fallback
+    return min(hinted, RETRY_AFTER_CAP_SECONDS)
+
+
+async def _start_prediction(
+    client: httpx.AsyncClient, headers: dict, model_id: str, input_params: dict,
+) -> str:
+    for attempt in range(START_ATTEMPTS):
+        final = attempt == START_ATTEMPTS - 1
+        try:
+            resp = await client.post(
+                f"{REPLICATE_API}/models/{model_id}/predictions",
+                headers=headers,
+                json={"input": input_params},
+                timeout=30,
+            )
+        except (httpx.ConnectError, httpx.ConnectTimeout):
+            # No connection means no request reached Replicate: safe to retry.
+            if final:
+                raise
+            await _sleep(START_BACKOFF_SECONDS[min(attempt, len(START_BACKOFF_SECONDS) - 1)])
+            continue
+        if resp.status_code in (200, 201):
+            return resp.json()["id"]
+        if resp.status_code in START_RETRY_STATUSES and not final:
+            await _sleep(_retry_after_seconds(resp, attempt))
+            continue
+        raise RuntimeError(f"Replicate start failed: {resp.text}")
+    raise RuntimeError("Replicate start failed: retries exhausted")  # pragma: no cover
+
+
+async def _cancel_prediction(client: httpx.AsyncClient, headers: dict, pred_id: str) -> None:
+    """Best effort: stop an abandoned prediction from producing billable output."""
+    try:
+        await client.post(
+            f"{REPLICATE_API}/predictions/{pred_id}/cancel", headers=headers, timeout=15,
+        )
+    except Exception:
+        pass
+
+
+async def _await_prediction(
+    client: httpx.AsyncClient, headers: dict, pred_id: str,
+    *, remaining_seconds: float | None = None,
+) -> tuple[str, object]:
+    """Poll one existing prediction. Returns ("succeeded", output) or (status, error)."""
+    poll_url = f"{REPLICATE_API}/predictions/{pred_id}"
+    deadline = _now() + (PREDICTION_DEADLINE_SECONDS if remaining_seconds is None else max(0, remaining_seconds))
+    transient = 0
+    # A completed prediction may have finished while the process was down.
+    # Observe that exact id once even past its processing deadline, never
+    # extend the time allowed for a still-running recovered prediction.
+    first = remaining_seconds is not None
+    while first or _now() < deadline:
+        first = False
+        data = None
+        try:
+            r = await client.get(poll_url, headers=headers, timeout=30)
+            if r.status_code == 429 or r.status_code >= 500:
+                raise httpx.HTTPStatusError("transient poll status", request=r.request, response=r)
+            if r.status_code != 200:
+                raise RuntimeError(f"Replicate poll failed: HTTP {r.status_code}: {r.text[:200]}")
+            data = r.json()
+            if not isinstance(data, dict):
+                raise ValueError("poll body is not an object")
+        except (httpx.TransportError, httpx.HTTPStatusError, ValueError) as error:
+            transient += 1
+            if transient > POLL_TRANSIENT_LIMIT:
+                await _cancel_prediction(client, headers, pred_id)
+                raise RuntimeError(
+                    f"Replicate poll unavailable after {transient} attempts "
+                    f"(prediction {pred_id}): {error!r}"
+                ) from error
+            await _sleep(POLL_INTERVAL_SECONDS)
+            continue
+        transient = 0
+        status = data.get("status", "")
+        if status == "succeeded":
+            return status, data.get("output")
+        if status in ("failed", "canceled"):
+            return status, data.get("error") or data.get("logs") or "unknown error (no details from API)"
+        await _sleep(POLL_INTERVAL_SECONDS)
+    await _cancel_prediction(client, headers, pred_id)
+    raise RuntimeError(
+        f"Replicate generation timed out after {int(PREDICTION_DEADLINE_SECONDS)}s "
+        f"(prediction {pred_id})"
+    )
 
 
 async def generate(prompt: str, params: dict, client: httpx.AsyncClient) -> str:
@@ -173,39 +368,69 @@ async def generate(prompt: str, params: dict, client: httpx.AsyncClient) -> str:
         raise RuntimeError(f"No input builder for model: {model_id}")
     input_params = builder(prompt, params)
 
-    resp = await client.post(
-        f"{REPLICATE_API}/models/{model_id}/predictions",
-        headers=headers,
-        json={"input": input_params},
-        timeout=30,
-    )
-    if resp.status_code not in (200, 201):
-        raise RuntimeError(f"Replicate start failed: {resp.text}")
-    prediction = resp.json()
-    pred_id = prediction["id"]
-    entry["provider_request_id"] = pred_id
-    entry["status"] = "polling"
+    checkpoint = entry.get("_prediction_checkpoint")
+    record = checkpoint.record if checkpoint is not None else None
+    fingerprint = input_hash(model_id, input_params)
+    if record:
+        if record.get("model") != model_id or record.get("inputHash") != fingerprint:
+            raise RuntimeError("generation_checkpoint_input_mismatch")
+        if record.get("state") not in {"submitted", "retry_ready"}:
+            raise RuntimeError("generation_submission_uncertain")
+        if type(record.get("submission")) is not int or not 0 <= record["submission"] <= INTERRUPTED_RESUBMITS:
+            raise RuntimeError("generation_checkpoint_invalid")
+    first_submission = record["submission"] if record else 0
 
-    poll_url = f"{REPLICATE_API}/predictions/{pred_id}"
-    deadline = time.time() + 600
-    while time.time() < deadline:
-        r = await client.get(poll_url, headers=headers, timeout=30)
-        data = r.json()
-        status = data.get("status", "")
-        if status == "succeeded":
-            output = data.get("output")
-            if isinstance(output, str):
-                return output
-            if isinstance(output, list) and output:
-                return output[0]
-            raise RuntimeError(f"Replicate unexpected output: {output}")
-        if status in ("failed", "canceled"):
-            err = data.get("error") or data.get("logs") or "unknown error (no details from API)"
-            raise RuntimeError(
-                f"Replicate {status}: {err}"
+    for submission in range(first_submission, INTERRUPTED_RESUBMITS + 1):
+        record = checkpoint.record if checkpoint is not None else None
+        resume = bool(record and record.get("state") == "submitted")
+        if resume:
+            pred_id = record.get("predictionId")
+            if not isinstance(pred_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", pred_id):
+                raise RuntimeError("generation_checkpoint_invalid")
+            started = record.get("submittedAt")
+            if type(started) not in (int, float) or not 0 < started <= time.time() + 1:
+                raise RuntimeError("generation_checkpoint_invalid")
+        else:
+            started = time.time()
+            state = {"model": model_id, "inputHash": fingerprint,
+                     "submission": submission, "submittedAt": started,
+                     "state": "submitting"}
+            if checkpoint is not None:
+                await checkpoint.save(state)
+            pred_id = await _start_prediction(client, headers, model_id, input_params)
+            # Safe 429/connection backoff precedes acceptance, not processing.
+            # Preserve the original ten-minute budget from the accepted id.
+            started = time.time()
+            if checkpoint is not None:
+                await checkpoint.save({**state, "state": "submitted", "predictionId": pred_id,
+                                       "submittedAt": started})
+        entry["provider_request_id"] = pred_id
+        entry["status"] = "polling"
+        if checkpoint is not None:
+            status, result = await _await_prediction(
+                client, headers, pred_id,
+                remaining_seconds=PREDICTION_DEADLINE_SECONDS - (time.time() - started),
             )
-        await asyncio.sleep(5)
-    raise RuntimeError(f"Replicate generation timed out after 600s (prediction {pred_id})")
+        else:
+            status, result = await _await_prediction(client, headers, pred_id)
+        if status == "succeeded":
+            if isinstance(result, str):
+                return result
+            if isinstance(result, list) and result:
+                return result[0]
+            raise RuntimeError(f"Replicate unexpected output: {result}")
+        if (
+            status == "failed"
+            and _INTERRUPTED_MARKER in str(result)
+            and submission < INTERRUPTED_RESUBMITS
+        ):
+            if checkpoint is not None:
+                await checkpoint.save({"model": model_id, "inputHash": fingerprint,
+                                       "submission": submission + 1, "state": "retry_ready",
+                                       "interruptedPredictionId": pred_id})
+            continue
+        raise RuntimeError(f"Replicate {status}: {result}")
+    raise RuntimeError("Replicate generation failed: resubmissions exhausted")  # pragma: no cover
 
 
 async def _poll_prediction(
