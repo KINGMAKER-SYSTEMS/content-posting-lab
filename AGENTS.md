@@ -408,18 +408,17 @@
   `source_response_rejected`; replaying that recovery key only observes the
   current job.
 
-- Replicate video generation (`providers/replicate.py`) retries only faults
-  that cannot buy a second prediction: submission HTTP 429 (honouring
-  `retry_after`, capped), 500 and 503 (no prediction id returned in every
-  observed case) or a never-established connection, at most four
-  submissions; 502/504 gateway results may hide a created prediction and
-  are terminal; poll transport/429/5xx/unparseable
-  replies on the same prediction within its 600-second deadline; and one
-  resubmission of Replicate's "Prediction interrupted (code: PA)". A read or
-  write fault after the submission may have reached Replicate is not retried.
-  402 insufficient credit, validation and provider-side failures are terminal.
-  Deadline or persistent poll loss cancels the prediction. Model, input and
-  recipe-pinned provider never change between attempts.
+- Replicate video generation (`providers/replicate.py`) makes at most four
+  create attempts on HTTP 429 (honouring capped `retry_after`), 500/503 or
+  ConnectError/ConnectTimeout. A 500/503 response does not prove that creation
+  failed: retrying sends another POST and can create a second paid prediction.
+  Submission 502/504 and ambiguous read/write failures are not retried.
+  Poll transport/429/5xx/unparseable replies retry the same prediction within
+  its 600-second deadline and consecutive-fault limit. A failed prediction
+  with `(code: PA)` permits one resubmission; other failed/canceled predictions,
+  credit (402) and other submission errors are terminal. Deadline or persistent
+  poll loss triggers best-effort cancellation. Model, input and recipe-pinned
+  provider never change between these attempts.
 - A zero-output provider failure keeps the terminal `provider_generation_failed`
   status contract and additionally persists `providerFailure` (closed `class`,
   provider, model, call index, prediction id, bounded detail) in the job store
