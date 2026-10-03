@@ -48,9 +48,12 @@ def _fake_exec(script):
 
 
 @pytest.fixture(autouse=True)
-def _stub_deps(monkeypatch):
+def _stub_deps(monkeypatch, tmp_path):
     monkeypatch.setattr(fe, "_check_deps", lambda: None)
     monkeypatch.setattr(fe, "get_cookies_path", lambda: None)
+    monkeypatch.setattr(fe.tempfile, "gettempdir", lambda: str(tmp_path))
+    monkeypatch.setattr(fe, "_cookies_path", None)
+    monkeypatch.delenv("YTDLP_COOKIES_FILE", raising=False)
     monkeypatch.delenv("RAILWAY_ENVIRONMENT", raising=False)
     monkeypatch.delenv("RAILWAY_SERVICE_ID", raising=False)
 
@@ -378,8 +381,106 @@ def test_private_jar_copies_left_by_a_hard_kill_are_swept_at_startup(monkeypatch
     jars = fe._private_jar_dir()
     (jars / ".ytdlp-cookies-abc.txt").write_text("# jar")
     (jars / ".ytdlp-cookies-def.txt").write_text("# jar")
+    (jars / ".ytdlp-cookies-abc.txt").chmod(0o600)
+    (jars / ".ytdlp-cookies-def.txt").chmod(0o600)
     (jars / "unrelated.txt").write_text("keep")
 
     assert fe.sweep_private_cookie_jars() == 2
     assert sorted(p.name for p in jars.iterdir()) == ["unrelated.txt"]
     assert oct(jars.stat().st_mode & 0o777) == "0o700"
+
+
+def test_private_jar_directory_never_follows_a_symlink(monkeypatch, tmp_path):
+    original = tmp_path / "originals"
+    original.mkdir()
+    cookie = original / ".ytdlp-cookies-original.txt"
+    cookie.write_text("synthetic original")
+    (tmp_path / "ytdlp-private-jars").symlink_to(original, target_is_directory=True)
+
+    with pytest.raises(OSError):
+        fe.sweep_private_cookie_jars()
+
+    assert cookie.read_text() == "synthetic original"
+
+
+def test_private_jar_directory_restores_private_permissions(tmp_path):
+    root = tmp_path / "ytdlp-private-jars"
+    root.mkdir(mode=0o755)
+    assert fe._private_jar_dir() == root
+    assert root.stat().st_mode & 0o777 == 0o700
+
+
+@pytest.mark.parametrize("original_binding", ["explicit", "cached"])
+def test_sweep_preserves_originals_links_and_non_scratch_files(monkeypatch, tmp_path, original_binding):
+    root = fe._private_jar_dir()
+    original = root / ".ytdlp-cookies-original.txt"
+    original.write_text("synthetic original")
+    original.chmod(0o600)
+    if original_binding == "explicit":
+        monkeypatch.setenv("YTDLP_COOKIES_FILE", str(original))
+    else:
+        monkeypatch.setattr(fe, "_cookies_path", original)
+    outside = tmp_path / "user-cookies.txt"
+    outside.write_text("synthetic user cookies")
+    (root / ".ytdlp-cookies-link.txt").symlink_to(outside)
+    (root / ".ytdlp-cookies-directory").mkdir()
+    unrelated = root / ".ytdlp-cookies-readable.txt"
+    unrelated.write_text("unrelated")
+    unrelated.chmod(0o644)
+    hardlink = root / ".ytdlp-cookies-hardlink.txt"
+    fe.os.link(outside, hardlink)
+    hardlink.chmod(0o600)
+
+    assert fe.sweep_private_cookie_jars() == 0
+    assert original.read_text() == "synthetic original"
+    assert outside.read_text() == "synthetic user cookies"
+    assert (root / ".ytdlp-cookies-link.txt").is_symlink()
+    assert (root / ".ytdlp-cookies-directory").is_dir()
+    assert unrelated.read_text() == "unrelated"
+    assert hardlink.exists()
+
+
+@pytest.mark.parametrize("failure", ["copy", "spawn", "download", "cancel"])
+def test_cookie_attempt_cleanup_preserves_original_on_failure(monkeypatch, tmp_path, failure):
+    original = tmp_path / "cookies.txt"
+    original.write_text("synthetic original")
+    monkeypatch.setattr(fe, "get_cookies_path", lambda: original)
+    killed = []
+
+    if failure == "copy":
+        def partial_copy(source, destination):
+            Path(destination).write_text("synthetic partial copy")
+            raise OSError("copy failed")
+        monkeypatch.setattr(fe.shutil, "copyfile", partial_copy)
+
+    class CancelledProc:
+        pid = 4321
+        returncode = None
+        calls = 0
+
+        async def communicate(self):
+            self.calls += 1
+            if self.calls == 1:
+                raise asyncio.CancelledError()
+            self.returncode = -9
+            return b"", b""
+
+    async def execute(*cmd, **kwargs):
+        if "--cookies" not in cmd:
+            return _FakeProc(1, _BOT_CHECK)
+        if failure == "spawn":
+            raise OSError("spawn failed")
+        if failure == "cancel":
+            return CancelledProc()
+        return _FakeProc(1, b"ERROR: unavailable video")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", execute)
+    monkeypatch.setattr(fe.os, "killpg", lambda pid, sig: killed.append((pid, sig)))
+    error = asyncio.CancelledError if failure == "cancel" else OSError if failure in {"copy", "spawn"} else RuntimeError
+    with pytest.raises(error):
+        asyncio.run(fe.download_video("https://youtu.be/x", tmp_path / "o.mp4", source_import_mode=True))
+
+    assert list(fe._private_jar_dir().iterdir()) == []
+    assert original.read_text() == "synthetic original"
+    if failure == "cancel":
+        assert killed == [(4321, fe.signal.SIGKILL)]

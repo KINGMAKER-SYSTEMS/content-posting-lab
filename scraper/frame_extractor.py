@@ -5,6 +5,7 @@ import base64
 import os
 import signal
 import shutil
+import stat
 import tempfile
 from pathlib import Path
 
@@ -330,15 +331,46 @@ def _private_jar_dir() -> Path:
     """
     root = Path(tempfile.gettempdir()) / "ytdlp-private-jars"
     root.mkdir(mode=0o700, exist_ok=True)
+    fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        if os.fstat(fd).st_uid != os.getuid():
+            raise PermissionError("private cookie directory has a different owner")
+        os.fchmod(fd, 0o700)
+    finally:
+        os.close(fd)
     return root
 
 
 def sweep_private_cookie_jars() -> int:
-    """Delete stale cookie-jar copies. Call only at startup, before any import runs."""
+    """Delete stale scratch copies only at startup, before imports can run."""
     removed = 0
-    for leftover in _private_jar_dir().glob(".ytdlp-cookies-*"):
-        leftover.unlink(missing_ok=True)
-        removed += 1
+    sources = [_cookies_path, _volume_cookies_path(), Path("cookies.txt")]
+    if explicit := os.getenv("YTDLP_COOKIES_FILE"):
+        sources.append(Path(explicit))
+    root = _private_jar_dir()
+    for leftover in root.glob(".ytdlp-cookies-*"):
+        try:
+            fd = os.open(leftover, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        except OSError:
+            continue
+        try:
+            info = os.fstat(fd)
+            if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                    or stat.S_IMODE(info.st_mode) != 0o600 or info.st_nlink != 1):
+                continue
+            if any(source is not None and source.exists() and leftover.samefile(source)
+                   for source in sources):
+                continue
+            current = leftover.lstat()
+            if (current.st_dev, current.st_ino) != (info.st_dev, info.st_ino):
+                continue
+            leftover.unlink()
+            removed += 1
+        except FileNotFoundError:
+            # The attempt's own finally may have removed it meanwhile.
+            continue
+        finally:
+            os.close(fd)
     return removed
 
 
@@ -450,22 +482,21 @@ async def download_video(
     failures: list[tuple[str, str, str]] = []
 
     for label, extra in strategies:
-        if "<private-jar>" in extra:
-            fd, name = tempfile.mkstemp(prefix=".ytdlp-cookies-", suffix=".txt", dir=_private_jar_dir())
-            os.close(fd)
-            private_jar = Path(name)
-            shutil.copyfile(get_cookies_path(), private_jar)
-            extra = [str(private_jar) if arg == "<private-jar>" else arg for arg in extra]
-        cmd = base_cmd + extra + [video_url]
-        process_options = {
-            "stdout": asyncio.subprocess.PIPE,
-            "stderr": asyncio.subprocess.PIPE,
-        }
-        if source_import_mode:
-            # yt-dlp may spawn ffmpeg. A bounded source-import timeout must own
-            # and stop the complete subprocess tree, not only the yt-dlp parent.
-            process_options["start_new_session"] = True
         try:
+            if "<private-jar>" in extra:
+                fd, name = tempfile.mkstemp(prefix=".ytdlp-cookies-", suffix=".txt", dir=_private_jar_dir())
+                private_jar = Path(name)
+                os.close(fd)
+                shutil.copyfile(env_cookies, private_jar)
+                extra = [str(private_jar) if arg == "<private-jar>" else arg for arg in extra]
+            cmd = base_cmd + extra + [video_url]
+            process_options = {
+                "stdout": asyncio.subprocess.PIPE,
+                "stderr": asyncio.subprocess.PIPE,
+            }
+            if source_import_mode:
+                # yt-dlp may spawn ffmpeg. Own the complete subprocess tree.
+                process_options["start_new_session"] = True
             proc = await asyncio.create_subprocess_exec(*cmd, **process_options)
             _, stderr = await _communicate_or_kill(proc, source_import_mode)
         finally:
