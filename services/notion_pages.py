@@ -395,16 +395,44 @@ async def sync_into_roster() -> dict[str, Any]:
 # ── Write-back helpers (round-trip to Notion) ────────────────────────────────
 
 
+_NOTION_PAGE_ID_RE = re.compile(r"[0-9a-f]{32}")
+
+
+def canonical_notion_page_id(value: object) -> str | None:
+    """The one canonical form of a Notion page id: 32 lowercase hex characters.
+
+    Accepts the id with or without dashes (outer whitespace ignored) and
+    nothing else: no '#', '?', '/', '.', '%', inner whitespace or non-ASCII
+    look-alikes. Returns None for anything that is not exactly a page id, so
+    a caller-supplied value can never add path, query or fragment parts to a
+    Notion URL.
+    """
+    if not isinstance(value, str):
+        return None
+    candidate = value.strip()
+    if not candidate.isascii():
+        return None
+    candidate = candidate.replace("-", "").lower()
+    return candidate if _NOTION_PAGE_ID_RE.fullmatch(candidate) else None
+
+
 async def _patch_page(notion_page_id: str, properties: dict[str, Any]) -> dict[str, Any]:
-    """PATCH a Notion page's properties. Internal helper."""
-    if not is_configured():
-        raise RuntimeError("Notion not configured")
+    """PATCH a Notion page's properties. Internal helper.
+
+    Refuses (ValueError, before any HTTP call) an id that is not a canonical
+    Notion page id; the URL only ever carries the canonical form.
+    """
     if not notion_page_id:
         raise ValueError("notion_page_id is required")
+    page_id = canonical_notion_page_id(notion_page_id)
+    if page_id is None:
+        raise ValueError("notion_page_id is not a Notion page id")
+    if not is_configured():
+        raise RuntimeError("Notion not configured")
 
     async with httpx.AsyncClient(timeout=15) as client:
         resp = await client.patch(
-            f"{NOTION_API_BASE}/pages/{notion_page_id}",
+            f"{NOTION_API_BASE}/pages/{page_id}",
             headers=_headers(),
             json={"properties": properties},
         )

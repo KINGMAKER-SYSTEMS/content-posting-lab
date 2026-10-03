@@ -10,6 +10,7 @@ router's TikTok-optimized encodes.
 import asyncio
 import math
 import re
+from pathlib import Path
 
 import pytest
 
@@ -24,6 +25,16 @@ from services.ffmpeg import (
 
 
 # --- helpers ---------------------------------------------------------------
+
+class FakeStderr:
+    """Small StreamReader-like stderr pipe that reaches EOF after its chunks."""
+
+    def __init__(self, chunks=()):
+        self._chunks = iter(chunks)
+
+    async def read(self, _size=-1):
+        return next(self._chunks, b"")
+
 
 def _coeffs(vf: str) -> dict[str, float]:
     """Parse the colorchannelmixer coefficients out of a -vf filter string."""
@@ -143,9 +154,10 @@ async def test_speed_render_keeps_optional_audio_in_lockstep(monkeypatch):
 
     class Process:
         returncode = 0
+        stderr = FakeStderr()
 
-        async def communicate(self):
-            return b"", b""
+        async def wait(self):
+            return self.returncode
 
     async def fake_exec(*args, **kwargs):
         captured.extend(args)
@@ -168,9 +180,10 @@ async def test_source_window_is_an_input_bound_before_speed_treatment(monkeypatc
 
     class Process:
         returncode = 0
+        stderr = FakeStderr()
 
-        async def communicate(self):
-            return b"", b""
+        async def wait(self):
+            return self.returncode
 
     async def fake_exec(*args, **kwargs):
         captured.extend(args)
@@ -197,15 +210,16 @@ async def test_color_correct_serializes_ffmpeg_processes(monkeypatch):
 
     class Process:
         returncode = 0
+        stderr = FakeStderr()
 
-        async def communicate(self):
+        async def wait(self):
             nonlocal active, peak
             active += 1
             peak = max(peak, active)
             first_started.set()
             await release_first.wait()
             active -= 1
-            return b"", b""
+            return self.returncode
 
     async def fake_exec(*args, **kwargs):
         return Process()
@@ -261,10 +275,10 @@ def test_default_cc_with_scale_passes_through_scale_only():
     )
 
 
-def test_active_cc_appends_scale_filter_last():
+def test_active_cc_uses_alpha_bearing_precision_and_appends_scale_last():
     vf = build_cc_filter({"brightness": 20}, scale="1080:1920")
-    assert vf.startswith("format=rgb24,colorchannelmixer=")
-    assert vf.endswith(",scale=1080:1920:flags=lanczos,setsar=1")
+    assert vf.startswith("format=rgba64le,colorchannelmixer=")
+    assert ",format=rgb24,scale=1080:1920:flags=lanczos,setsar=1" in vf
 
 
 # --- second default check (L120-131) ---------------------------------------
@@ -383,10 +397,10 @@ def test_sharpness_appends_unsharp_filter():
     assert "unsharp=5:5:0.50:5:5:0.50" in vf
 
 
-def test_sharpness_alone_keeps_identity_mixer():
-    # Sharpness doesn't touch the color matrix; the mixer stays identity.
+def test_sharpness_alone_does_not_invent_a_colour_matrix():
     vf = build_cc_filter({"sharpness": 25})
-    assert _is_identity(vf)
+    assert "colorchannelmixer" not in vf
+    assert vf == "format=rgba64le,format=rgb24,unsharp=5:5:0.50:5:5:0.50"
 
 
 @pytest.mark.asyncio
@@ -414,3 +428,144 @@ async def test_tail_cut_keeps_delivery_duration_at_fractional_frame(tmp_path, sp
     ], text=True).strip())
     assert 6 <= actual <= 11
     assert actual == pytest.approx(raw_ms / 1000 / speed, abs=1 / 30)
+
+
+# --- Pixel-output parity with the Dossier CSS preview -----------------------
+
+LOVENIGHTDRIVES = {"brightness": 0.7, "contrast": 1.95, "saturation": 1.65}
+
+
+def _dossier_cc(look: dict) -> dict:
+    # services.control_plane_generation.dossier_filters_to_color_correction
+    cc = {
+        key: (float(look[key]) - 1.0) * 100.0
+        for key in ("brightness", "contrast", "saturation")
+        if key in look
+    }
+    if "warmth" in look:
+        cc["temperature"] = float(look["warmth"]) * 100.0
+    if "fade" in look:
+        cc["fade"] = float(look["fade"]) * 100.0
+    return cc
+
+
+def _mixer_coefficients(vf: str) -> list[dict[str, float]]:
+    mixers = []
+    for body in re.findall(r"colorchannelmixer=([^,]+)", vf):
+        coefficients = dict(
+            (key, float(value))
+            for key, value in (part.split("=") for part in body.split(":"))
+        )
+        assert all(abs(value) <= 2.0 for value in coefficients.values()), body
+        mixers.append(coefficients)
+    return mixers
+
+
+_PIXELS = [
+    (18, 52, 91), (47, 113, 173), (79, 146, 201), (108, 72, 42),
+    (137, 169, 94), (166, 104, 188), (196, 211, 126), (229, 181, 153),
+] * 2
+
+
+def _render_pixels(look: dict) -> list[tuple[int, int, int]]:
+    import shutil
+    import subprocess
+    if not shutil.which("ffmpeg"):
+        pytest.skip("ffmpeg required")
+    source = bytes(channel for pixel in _PIXELS for channel in pixel)
+    completed = subprocess.run(
+        [
+            "ffmpeg", "-v", "error", "-f", "rawvideo", "-pixel_format", "rgb24",
+            "-video_size", "8x2", "-i", "pipe:0", "-vf",
+            build_cc_filter(_dossier_cc(look)), "-frames:v", "1", "-f", "rawvideo",
+            "-pix_fmt", "rgb24", "pipe:1",
+        ],
+        input=source,
+        check=True,
+        capture_output=True,
+    ).stdout
+    return [tuple(completed[index:index + 3]) for index in range(0, len(completed), 3)]
+
+
+def _matrix(pixel: list[float], matrix: list[list[float]]) -> list[float]:
+    return [sum(row[index] * pixel[index] for index in range(3)) for row in matrix]
+
+
+def _css_preview_pixel(source: tuple[int, int, int], look: dict) -> tuple[int, int, int]:
+    """Evaluate the CSS filter functions emitted by applyCSSFilterPreview."""
+    brightness = float(look.get("brightness", 1.0))
+    contrast = float(look.get("contrast", 1.0))
+    saturation = float(look.get("saturation", 1.0))
+    fade = float(look.get("fade", 0.0))
+    if fade > 0:
+        brightness = min(2.0, brightness + fade * 0.4)
+        contrast = max(0.2, contrast - fade * 0.3)
+        saturation = max(0.2, saturation - fade * 0.4)
+
+    def clamp(values):
+        # CSS filter functions are separate primitives; each primitive's
+        # output is clamped before the next function consumes it.
+        return [min(1.0, max(0.0, channel)) for channel in values]
+
+    pixel = [channel / 255 for channel in source]
+    pixel = clamp([brightness * channel for channel in pixel])
+    pixel = clamp([contrast * channel + 0.5 * (1 - contrast) for channel in pixel])
+    pixel = clamp(_matrix(pixel, ffmpeg_module._saturation_matrix(saturation)))
+
+    warmth = float(look.get("warmth", 0.0))
+    if warmth > 0:
+        amount = min(1.0, warmth / 2)
+        pixel = _matrix(pixel, [
+            [1 - amount + amount * 0.393, amount * 0.769, amount * 0.189],
+            [amount * 0.349, 1 - amount + amount * 0.686, amount * 0.168],
+            [amount * 0.272, amount * 0.534, 1 - amount + amount * 0.131],
+        ])
+    elif warmth < 0:
+        angle = math.radians(warmth * 20)
+        cos_a, sin_a = math.cos(angle), math.sin(angle)
+        pixel = _matrix(pixel, [
+            [0.213 + 0.787 * cos_a - 0.213 * sin_a, 0.715 - 0.715 * cos_a - 0.715 * sin_a, 0.072 - 0.072 * cos_a + 0.928 * sin_a],
+            [0.213 - 0.213 * cos_a + 0.143 * sin_a, 0.715 + 0.285 * cos_a + 0.140 * sin_a, 0.072 - 0.072 * cos_a - 0.283 * sin_a],
+            [0.213 - 0.213 * cos_a - 0.787 * sin_a, 0.715 - 0.715 * cos_a + 0.715 * sin_a, 0.072 + 0.928 * cos_a + 0.072 * sin_a],
+        ])
+    return tuple(round(255 * min(1.0, max(0.0, channel))) for channel in pixel)
+
+
+@pytest.mark.parametrize("look", [
+    {"brightness": 0.7},
+    {"contrast": 1.95},
+    {"saturation": 1.65},
+    {"warmth": 0.8},
+    {"warmth": -0.8},
+    {"brightness": 0.85, "contrast": 1.35, "saturation": 1.2, "fade": 0.25},
+    LOVENIGHTDRIVES,
+])
+def test_ffmpeg_pixels_match_the_dossier_css_preview_math(look):
+    got = _render_pixels(look)
+    expected = [_css_preview_pixel(pixel, look) for pixel in _PIXELS]
+    worst = max(abs(actual - wanted) for output, preview in zip(got, expected) for actual, wanted in zip(output, preview))
+    # rgba64le retains the calculated matrix between stages; conversion and
+    # final integer rounding may differ from the browser by one 8-bit level.
+    assert worst <= 1
+
+
+def test_strong_look_uses_real_alpha_offsets_and_only_legal_stages():
+    vf = build_cc_filter(_dossier_cc(LOVENIGHTDRIVES))
+    assert vf.startswith("format=rgba64le,")
+    assert vf.endswith(",format=rgb24")
+    mixers = _mixer_coefficients(vf)
+    assert len(mixers) == 3
+    contrast = mixers[1]
+    assert contrast["rr"] == pytest.approx(1.95)
+    assert contrast["ra"] == pytest.approx(-0.475)
+    assert contrast["ga"] == pytest.approx(-0.475)
+    assert contrast["ba"] == pytest.approx(-0.475)
+
+
+@pytest.mark.parametrize("brightness", [0.0, 1.0, 3.0])
+@pytest.mark.parametrize("contrast", [0.0, 1.0, 3.0])
+@pytest.mark.parametrize("saturation", [0.0, 1.0, 3.0])
+@pytest.mark.parametrize("warmth,fade", [(0.0, 0.0), (1.0, 0.0), (-1.0, 0.0), (0.0, 1.0), (1.0, 1.0)])
+def test_every_dossier_slider_extreme_stays_inside_the_mixer_range(brightness, contrast, saturation, warmth, fade):
+    look = {"brightness": brightness, "contrast": contrast, "saturation": saturation, "warmth": warmth, "fade": fade}
+    _mixer_coefficients(build_cc_filter(_dossier_cc(look)))

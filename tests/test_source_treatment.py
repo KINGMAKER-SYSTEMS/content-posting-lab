@@ -103,3 +103,17 @@ def test_recovery_skips_unpreparable_master_without_inventing_treatment(change):
     elif change == "requested_crop":
         treatment["clipCrop"]["zoom"] = 1
     assert not recovery_treatment_matches(receipt, job, "b" * 64, treatment)
+
+
+@pytest.mark.parametrize("frame", ["9:16", "16:9", "1:1", "3:4", "4:3"])
+def test_page_frame_is_not_part_of_applied_source_treatment(frame):
+    job, treatment, receipt = recovery_evidence()
+    framed = {**treatment, "frame": frame}
+    assert normalized_visual_treatment(framed) == normalized_visual_treatment(treatment)
+    assert "frame" not in normalized_visual_treatment(framed)
+    # Unframed inventory stays reusable for a page that now picks a frame.
+    assert recovery_treatment_matches(receipt, job, "b" * 64, framed)
+    framed_receipt = source_treatment_receipt(job, framed, "b" * 64,
+        clip_speed=treatment["clipSpeed"], clip_crop=treatment["clipCrop"])
+    assert framed_receipt["visualTreatment"] == receipt["visualTreatment"]
+    assert recovery_treatment_matches(framed_receipt, job, "b" * 64, treatment)

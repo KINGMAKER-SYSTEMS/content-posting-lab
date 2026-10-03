@@ -1,0 +1,3402 @@
+{
+"what": "Real Chrome output of CSS text-transform: capitalize on REAL captions: every distinct caption text in Content Lab's production caption tables (page captions, sound caption lines, playlist captions, scheduled slot captions) from the 2026-09-26 read-only control-plane snapshot. Captured 2026-10-01 in Chrome under lang=\"en\" (as the Dossier page), white-space: pre-wrap, by setting each caption as a div's textContent and reading back HTMLElement.innerText.",
+"captured_with": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Claude/2.9939.2 Chrome/152.0.7977.130 Safari/537.36",
+"cases": [
+[
+"\"Are we still going to be friends even after highschool?\"",
+"\"Are We Still Going To Be Friends Even After Highschool?\""
+],
+[
+"\"Can't win em all\" well, I would like to win at least one",
+"\"Can't Win Em All\" Well, I Would Like To Win At Least One"
+],
+[
+"\"Just leave them\"\nNo because at this point\nthe occasional pain is\nworth not being alone",
+"\"Just Leave Them\"\nNo Because At This Point\nThe Occasional Pain Is\nWorth Not Being Alone"
+],
+[
+"\"Wanna call?\"\nNever ask just call me.\nif don't pick up blow up my phone.",
+"\"Wanna Call?\"\nNever Ask Just Call Me.\nIf Don't Pick Up Blow Up My Phone."
+],
+[
+"\"a person born in a burning house believes that the world is on fire.\"",
+"\"A Person Born In A Burning House Believes That The World Is On Fire.\""
+],
+[
+"\"are you okay?\"\nno i want to leave the\ncountry and start a\nnew life.",
+"\"Are You Okay?\"\nNo I Want To Leave The\nCountry And Start A\nNew Life."
+],
+[
+"\"can we reschedule?\"\nYES GOD YES\nPLEASE YES\nWOOHOO",
+"\"Can We Reschedule?\"\nYES GOD YES\nPLEASE YES\nWOOHOO"
+],
+[
+"\"don't tell anyone\" k but i alr told twin. but twin is not just anyone. twin is another me fr",
+"\"Don't Tell Anyone\" K But I Alr Told Twin. But Twin Is Not Just Anyone. Twin Is Another Me Fr"
+],
+[
+"\"don't tell nobody\"\nok but i already told\ntwin. but twin isn't just\nanybody. twin is a part\nof me. i love you twin",
+"\"Don't Tell Nobody\"\nOk But I Already Told\nTwin. But Twin Isn't Just\nAnybody. Twin Is A Part\nOf Me. I Love You Twin"
+],
+[
+"\"everything they know abt you, is bc you told them, not bc they asked.\"",
+"\"Everything They Know Abt You, Is Bc You Told Them, Not Bc They Asked.\""
+],
+[
+"\"i can fix him\" no i can't. i'm a leaver, a quitter, and a walk awayer.",
+"\"I Can Fix Him\" No I Can't. I'm A Leaver, A Quitter, And A Walk Awayer."
+],
+[
+"\"i guess bro\" is a top 5 passive aggressive insult right up there with \"ok?\"",
+"\"I Guess Bro\" Is A Top 5 Passive Aggressive Insult Right Up There With \"Ok?\""
+],
+[
+"\"it's his loss, you deserve better\" but i'm the one crying every night cause i still want it to be him. i don't want better. i want HIM.",
+"\"It's His Loss, You Deserve Better\" But I'm The One Crying Every Night Cause I Still Want It To Be Him. I Don't Want Better. I Want HIM."
+],
+[
+"\"she's been my bestfriend for 7+ years\"",
+"\"She's Been My Bestfriend For 7+ Years\""
+],
+[
+"\"you look happier\"\nthanks... someone's\ndaughter is bringing\nmy spark back",
+"\"You Look Happier\"\nThanks... Someone's\nDaughter Is Bringing\nMy Spark Back"
+],
+[
+"\"you seem happier\"\nyeah, i finally came back\nto myself.",
+"\"You Seem Happier\"\nYeah, I Finally Came Back\nTo Myself."
+],
+[
+"\"you're insane\"\ngod forbid i\nkeep the family\ntradition alive",
+"\"You're Insane\"\nGod Forbid I\nKeep The Family\nTradition Alive"
+],
+[
+"'Ass or tits' idk man a comforting hug and a 'it's gonna be okay' might be nice.",
+"'Ass Or Tits' Idk Man A Comforting Hug And A 'It's Gonna Be Okay' Might Be Nice."
+],
+[
+"'Why do you reply so fast' no one talks to me man.",
+"'Why Do You Reply So Fast' No One Talks To Me Man."
+],
+[
+"10 years from now I wanna be loving the same gorgeous girl that I love now, and that girl is you.",
+"10 Years From Now I Wanna Be Loving The Same Gorgeous Girl That I Love Now, And That Girl Is You."
+],
+[
+"4 reasons we should get MARRIED\n1. We'll be happy\n2. We can have UNLIMITED hugs\n3. We can create MINI versions of ourself\n4. We can have unlimited sleepovers",
+"4 Reasons We Should Get MARRIED\n1. We'll Be Happy\n2. We Can Have UNLIMITED Hugs\n3. We Can Create MINI Versions Of Ourself\n4. We Can Have Unlimited Sleepovers"
+],
+[
+"4ever dance partner",
+"4ever Dance Partner"
+],
+[
+"5 reasons we should get MARRIED\n1. We'll be happy.\n2. We can have UNLIMITED hugs.\n3. We can create MINI versions of ourselfs.\n4. We can have unlimited cuddles/ movie time\n5. Unlimited backroad drives with the windows down.",
+"5 Reasons We Should Get MARRIED\n1. We'll Be Happy.\n2. We Can Have UNLIMITED Hugs.\n3. We Can Create MINI Versions Of Ourselfs.\n4. We Can Have Unlimited Cuddles/ Movie Time\n5. Unlimited Backroad Drives With The Windows Down."
+],
+[
+"5 reasons we should get MARRIED\n1. We'll be happy.\n2. We can have UNLIMITED hugs.\n3. We can create MINI versions of ourselfs.\n4. We can have unlimited cuddles/ movie time\n5. Unlimited bad singing in the truck with nobody watching.",
+"5 Reasons We Should Get MARRIED\n1. We'll Be Happy.\n2. We Can Have UNLIMITED Hugs.\n3. We Can Create MINI Versions Of Ourselfs.\n4. We Can Have Unlimited Cuddles/ Movie Time\n5. Unlimited Bad Singing In The Truck With Nobody Watching."
+],
+[
+"5 reasons we should get MARRIED\n1. We'll be happy.\n2. We can have UNLIMITED hugs.\n3. We can create MINI versions of ourselfs.\n4. We can have unlimited cuddles/ movie time\n5. Unlimited bible studies whenever.",
+"5 Reasons We Should Get MARRIED\n1. We'll Be Happy.\n2. We Can Have UNLIMITED Hugs.\n3. We Can Create MINI Versions Of Ourselfs.\n4. We Can Have Unlimited Cuddles/ Movie Time\n5. Unlimited Bible Studies Whenever."
+],
+[
+"5 reasons we should get MARRIED\n1. We'll be happy.\n2. We can have UNLIMITED hugs.\n3. We can create MINI versions of ourselfs.\n4. We can have unlimited cuddles/ movie time\n5. Unlimited front porch mornings with the coffee still hot.",
+"5 Reasons We Should Get MARRIED\n1. We'll Be Happy.\n2. We Can Have UNLIMITED Hugs.\n3. We Can Create MINI Versions Of Ourselfs.\n4. We Can Have Unlimited Cuddles/ Movie Time\n5. Unlimited Front Porch Mornings With The Coffee Still Hot."
+],
+[
+"5 reasons we should get MARRIED\n1. We'll be happy.\n2. We can have UNLIMITED hugs.\n3. We can create MINI versions of ourselfs.\n4. We can have unlimited cuddles/ movie time\n5. Unlimited kitchen hugs while nothing is even happening.",
+"5 Reasons We Should Get MARRIED\n1. We'll Be Happy.\n2. We Can Have UNLIMITED Hugs.\n3. We Can Create MINI Versions Of Ourselfs.\n4. We Can Have Unlimited Cuddles/ Movie Time\n5. Unlimited Kitchen Hugs While Nothing Is Even Happening."
+],
+[
+"5 reasons we should get MARRIED\n1. We'll be happy.\n2. We can have UNLIMITED hugs.\n3. We can create MINI versions of ourselfs.\n4. We can have unlimited cuddles/ movie time\n5. Unlimited late night grocery runs for no reason.",
+"5 Reasons We Should Get MARRIED\n1. We'll Be Happy.\n2. We Can Have UNLIMITED Hugs.\n3. We Can Create MINI Versions Of Ourselfs.\n4. We Can Have Unlimited Cuddles/ Movie Time\n5. Unlimited Late Night Grocery Runs For No Reason."
+],
+[
+"A man gets meaner when he doesn't want you anymore. Not bc you did something, but bc he's trying to push you away without having to be the one to leave.",
+"A Man Gets Meaner When He Doesn't Want You Anymore. Not Bc You Did Something, But Bc He's Trying To Push You Away Without Having To Be The One To Leave."
+],
+[
+"A man who is able to leave a girl he loves for the sake of his own peace is a man who's beaten a battle he shouldn't have fought.",
+"A Man Who Is Able To Leave A Girl He Loves For The Sake Of His Own Peace Is A Man Who's Beaten A Battle He Shouldn't Have Fought."
+],
+[
+"A woman being single but unavailable usually means she loved hard once..... and paid for it. So If she's single but doesn't entertain anyone, that's not standards that's scars.",
+"A Woman Being Single But Unavailable Usually Means She Loved Hard Once..... And Paid For It. So If She's Single But Doesn't Entertain Anyone, That's Not Standards That's Scars."
+],
+[
+"Accepting  \nEverything  \nExpecting  \nNothing",
+"Accepting  \nEverything  \nExpecting  \nNothing"
+],
+[
+"After a days worth of evaluation I realized that I am indeed goated",
+"After A Days Worth Of Evaluation I Realized That I Am Indeed Goated"
+],
+[
+"Ain't no real love out here, just temporary feelings & beneficial reasonings",
+"Ain't No Real Love Out Here, Just Temporary Feelings & Beneficial Reasonings"
+],
+[
+"All jokes aside I really want it to be you.",
+"All Jokes Aside I Really Want It To Be You."
+],
+[
+"And anyone who made you talk to god in tears should never get access to you ever again",
+"And Anyone Who Made You Talk To God In Tears Should Never Get Access To You Ever Again"
+],
+[
+"And if you start to miss me,\nremember your the one that\nmade me walk away when all I\nwanted to do was stay",
+"And If You Start To Miss Me,\nRemember Your The One That\nMade Me Walk Away When All I\nWanted To Do Was Stay"
+],
+[
+"And if you're ever wondering if I need you, just know I was a mess before I met you",
+"And If You're Ever Wondering If I Need You, Just Know I Was A Mess Before I Met You"
+],
+[
+"And when I look\ninto your eyes,\nsuddenly all my\nproblems start to\nfade away",
+"And When I Look\nInto Your Eyes,\nSuddenly All My\nProblems Start To\nFade Away"
+],
+[
+"And yes I'm going to ball my eyes out when I see you walking down that aisle.",
+"And Yes I'm Going To Ball My Eyes Out When I See You Walking Down That Aisle."
+],
+[
+"Arguments mean nothing when the person means everything.",
+"Arguments Mean Nothing When The Person Means Everything."
+],
+[
+"As long as I'm breathing you will always have someone to smoke a drunk cig with.",
+"As Long As I'm Breathing You Will Always Have Someone To Smoke A Drunk Cig With."
+],
+[
+"As long as I'm here, you'll always have someone who is proud of you in everything you do",
+"As Long As I'm Here, You'll Always Have Someone Who Is Proud Of You In Everything You Do"
+],
+[
+"Be careful useing that 'baby' word, you might just lose your ability to walk ma'am.",
+"Be Careful Useing That 'Baby' Word, You Might Just Lose Your Ability To Walk Ma'am."
+],
+[
+"Bro wake up\nShe's the type to let you do\nyour own thing. She may have\nan attitude 24/7 but she's as\nhonest as they come. She's\nsarcastic but has a heart of\ngold. She's stubborn as hell\nbut as loyal as it gets.\nShe doesn't need you and\ndoesn't use you. So treat her\nright or lose the realest one\nyou'll ever have",
+"Bro Wake Up\nShe's The Type To Let You Do\nYour Own Thing. She May Have\nAn Attitude 24/7 But She's As\nHonest As They Come. She's\nSarcastic But Has A Heart Of\nGold. She's Stubborn As Hell\nBut As Loyal As It Gets.\nShe Doesn't Need You And\nDoesn't Use You. So Treat Her\nRight Or Lose The Realest One\nYou'll Ever Have"
+],
+[
+"Btw you\nReally are the\nBest girlfriend\nIn the World i\nlove you.",
+"Btw You\nReally Are The\nBest Girlfriend\nIn The World I\nLove You."
+],
+[
+"Btw, you're the only girl I've ever felt this comfortable around.",
+"Btw, You're The Only Girl I've Ever Felt This Comfortable Around."
+],
+[
+"Btw, you're the only girl I've ever felt this comfortable around. 💖",
+"Btw, You're The Only Girl I've Ever Felt This Comfortable Around. 💖"
+],
+[
+"Can I just have you forever.",
+"Can I Just Have You Forever."
+],
+[
+"Can't wait for the day 'come over' turns into 'come home'",
+"Can't Wait For The Day 'Come Over' Turns Into 'Come Home'"
+],
+[
+"Cause I'm good at\nleaving\nfor no good reason\nI get in my head",
+"Cause I'm Good At\nLeaving\nFor No Good Reason\nI Get In My Head"
+],
+[
+"Consistently feel like your giving up on me.",
+"Consistently Feel Like Your Giving Up On Me."
+],
+[
+"Could spend the whole day with you and l'd still miss you the moment you leave.",
+"Could Spend The Whole Day With You And L'd Still Miss You The Moment You Leave."
+],
+[
+"Cutting people off isn't always about hate. Sometimes it's just about different mindsets. Some drain your energy, some lack loyalty and some wears two faces. Not everyone wants to stay around that.",
+"Cutting People Off Isn't Always About Hate. Sometimes It's Just About Different Mindsets. Some Drain Your Energy, Some Lack Loyalty And Some Wears Two Faces. Not Everyone Wants To Stay Around That."
+],
+[
+"Dating me is awesome.\nYou get an over protective guy, dumb decision maker,\nvery caring comedian, cuddle buddy, body guard, freak,\nand a loyal bf all in one.",
+"Dating Me Is Awesome.\nYou Get An Over Protective Guy, Dumb Decision Maker,\nVery Caring Comedian, Cuddle Buddy, Body Guard, Freak,\nAnd A Loyal Bf All In One."
+],
+[
+"Deep down I just want to be able to love somebody without looking dumb",
+"Deep Down I Just Want To Be Able To Love Somebody Without Looking Dumb"
+],
+[
+"Did you ever notice that most couples are in love when they're together and argue when they are texting.",
+"Did You Ever Notice That Most Couples Are In Love When They're Together And Argue When They Are Texting."
+],
+[
+"Distant? Yes.\nBut a bad friend?\nNever.",
+"Distant? Yes.\nBut A Bad Friend?\nNever."
+],
+[
+"Diva, stand up. Your lethal face card would have saved their bloodline.",
+"Diva, Stand Up. Your Lethal Face Card Would Have Saved Their Bloodline."
+],
+[
+"Don't be scared to start over, you may like your new story better",
+"Don't Be Scared To Start Over, You May Like Your New Story Better"
+],
+[
+"Don't need a perfect relationship, just want a mature one.",
+"Don't Need A Perfect Relationship, Just Want A Mature One."
+],
+[
+"Don't push me away and then act like I gave up on YOU",
+"Don't Push Me Away And Then Act Like I Gave Up On YOU"
+],
+[
+"Don't worry about me losing feelings, I'm not going anywhere,\nI'm not like the rest,\ni actually care about you, just wanna make\nyou happy and never\nlose you..",
+"Don't Worry About Me Losing Feelings, I'm Not Going Anywhere,\nI'm Not Like The Rest,\nI Actually Care About You, Just Wanna Make\nYou Happy And Never\nLose You.."
+],
+[
+"Don’t mind me. Just vibing here by myself",
+"Don’t Mind Me. Just Vibing Here By Myself"
+],
+[
+"ENJOYING BEING LOVED",
+"ENJOYING BEING LOVED"
+],
+[
+"Eres más que suficiente",
+"Eres Más Que Suficiente"
+],
+[
+"Eternally grateful for friends like this",
+"Eternally Grateful For Friends Like This"
+],
+[
+"Even at my lowest I’ll be here for you",
+"Even At My Lowest I’ll Be Here For You"
+],
+[
+"Even on my worst days you never fail to make me smile.",
+"Even On My Worst Days You Never Fail To Make Me Smile."
+],
+[
+"Even through all our arguments, you're still the only one I want.",
+"Even Through All Our Arguments, You're Still The Only One I Want."
+],
+[
+"Even with an empty wallet i'm the richest person in the world because i have you",
+"Even With An Empty Wallet I'm The Richest Person In The World Because I Have You"
+],
+[
+"Every guy has one girl in his life that he would drop everything for. For me that girl is you.",
+"Every Guy Has One Girl In His Life That He Would Drop Everything For. For Me That Girl Is You."
+],
+[
+"Every time I look at you I\nrealize how gratefull am to\nhave such a beautiful girl like\nyou in my life.",
+"Every Time I Look At You I\nRealize How Gratefull Am To\nHave Such A Beautiful Girl Like\nYou In My Life."
+],
+[
+"Everyone has a special person in their life, for me that person is you.",
+"Everyone Has A Special Person In Their Life, For Me That Person Is You."
+],
+[
+"Everytime i look at you i think \"damn that's my girl\" and i'm so proud of you, you're mine.",
+"Everytime I Look At You I Think \"Damn That's My Girl\" And I'm So Proud Of You, You're Mine."
+],
+[
+"F*ck a breakup ever had a buddy call you and tell you how he don't wanna be here anymore.",
+"F*Ck A Breakup Ever Had A Buddy Call You And Tell You How He Don't Wanna Be Here Anymore."
+],
+[
+"Falling in love with you\nwas the best thing that\never happened to me",
+"Falling In Love With You\nWas The Best Thing That\nEver Happened To Me"
+],
+[
+"First in my bloodline to ignore whatever the bloodline believes in",
+"First In My Bloodline To Ignore Whatever The Bloodline Believes In"
+],
+[
+"For as long as I exist, you will always be loved.",
+"For As Long As I Exist, You Will Always Be Loved."
+],
+[
+"Forever grateful my past relationships didn't work out, because now I have everything l've ever wanted.",
+"Forever Grateful My Past Relationships Didn't Work Out, Because Now I Have Everything L've Ever Wanted."
+],
+[
+"Fortunately for me im a retired pos, so i know when your shit doesn't add up.",
+"Fortunately For Me Im A Retired Pos, So I Know When Your Shit Doesn't Add Up."
+],
+[
+"Free for you\nBusy for others\nAnd that about sums me\nup as a person",
+"Free For You\nBusy For Others\nAnd That About Sums Me\nUp As A Person"
+],
+[
+"Fun and games until you find out I'm actually crazy and it's not a joke.",
+"Fun And Games Until You Find Out I'm Actually Crazy And It's Not A Joke."
+],
+[
+"Get out and live. Do it sad, do it anxious, do it even when you feel down. Don't let your emotions stop you from living. Sometimes it takes new experiences to heal, and to remind you there's more to life than your current situation, twin.",
+"Get Out And Live. Do It Sad, Do It Anxious, Do It Even When You Feel Down. Don't Let Your Emotions Stop You From Living. Sometimes It Takes New Experiences To Heal, And To Remind You There's More To Life Than Your Current Situation, Twin."
+],
+[
+"Ghosting me doesn't work. Idgaf if we never talk again.",
+"Ghosting Me Doesn't Work. Idgaf If We Never Talk Again."
+],
+[
+"Girlfriend???\nNah your my future wife.",
+"Girlfriend???\nNah Your My Future Wife."
+],
+[
+"Going from \"Goodnight, I hope you sleep well\" to \"stop stealing the blanket I'm coldddd\" is one of my biggest dreams",
+"Going From \"Goodnight, I Hope You Sleep Well\" To \"Stop Stealing The Blanket I'm Coldddd\" Is One Of My Biggest Dreams"
+],
+[
+"Going from \"Goodnight, I hope you sleep well, see U tmrw\" to \"Pass me the blanket, it's cold\" is my biggest goal with you.",
+"Going From \"Goodnight, I Hope You Sleep Well, See U Tmrw\" To \"Pass Me The Blanket, It's Cold\" Is My Biggest Goal With You."
+],
+[
+"Gonna be with you\nalways and forever\nI promise that.",
+"Gonna Be With You\nAlways And Forever\nI Promise That."
+],
+[
+"Good men do exist, and I got the best one.",
+"Good Men Do Exist, And I Got The Best One."
+],
+[
+"Got this bad habit of acting okay with things, while they're really tearing me apart on the inside.",
+"Got This Bad Habit Of Acting Okay With Things, While They're Really Tearing Me Apart On The Inside."
+],
+[
+"Happiest boy on this planet because I found the sweetest, most amazing girl in this generation.",
+"Happiest Boy On This Planet Because I Found The Sweetest, Most Amazing Girl In This Generation."
+],
+[
+"Heavy on \"are you okay?\"\nBecause I'd genuinely be\nlost if anything ever\nhappened to you.",
+"Heavy On \"Are You Okay?\"\nBecause I'd Genuinely Be\nLost If Anything Ever\nHappened To You."
+],
+[
+"Heavy on 'I don't wanna mess this one up' because you're truly everything I've ever wanted",
+"Heavy On 'I Don't Wanna Mess This One Up' Because You're Truly Everything I've Ever Wanted"
+],
+[
+"Heavy on 'what's wrong' because I actually do care unlike most others.",
+"Heavy On 'What's Wrong' Because I Actually Do Care Unlike Most Others."
+],
+[
+"Hey baby,\nNo matter how many times\ni look at you, ill never get tired\nof telling you how beautiful\nyou are.",
+"Hey Baby,\nNo Matter How Many Times\nI Look At You, Ill Never Get Tired\nOf Telling You How Beautiful\nYou Are."
+],
+[
+"Hey ho, im your bestfriend im always here for you so if you need me im just 7 missed calls and 12 messages away",
+"Hey Ho, Im Your Bestfriend Im Always Here For You So If You Need Me Im Just 7 Missed Calls And 12 Messages Away"
+],
+[
+"High key wanna marry you and annoy you for the rest of our lives.",
+"High Key Wanna Marry You And Annoy You For The Rest Of Our Lives."
+],
+[
+"How can i love another\nperson? when I keep smiling\nlike an idiot thinking about\nyou.",
+"How Can I Love Another\nPerson? When I Keep Smiling\nLike An Idiot Thinking About\nYou."
+],
+[
+"How could I ever lose interest when every time I look at you, I fall more in love with you each time.",
+"How Could I Ever Lose Interest When Every Time I Look At You, I Fall More In Love With You Each Time."
+],
+[
+"How do people cheat on their partners? I’d literally die for mine.",
+"How Do People Cheat On Their Partners? I’d Literally Die For Mine."
+],
+[
+"How it feels to gossip with\nsomeone who has the same\nopinion as\nYOU:",
+"How It Feels To Gossip With\nSomeone Who Has The Same\nOpinion As\nYOU:"
+],
+[
+"How it feels trying to treat everyone nicely and be kind but still feeling like everyone secretly hates you",
+"How It Feels Trying To Treat Everyone Nicely And Be Kind But Still Feeling Like Everyone Secretly Hates You"
+],
+[
+"I am so glad that we dont hide our weirdness from each other, twin",
+"I Am So Glad That We Dont Hide Our Weirdness From Each Other, Twin"
+],
+[
+"I am so glad we don't hide our weirdness from each other, twin. purple font btw",
+"I Am So Glad We Don't Hide Our Weirdness From Each Other, Twin. Purple Font Btw"
+],
+[
+"I am so glad we don’t hide our weirdness from each other, twin. purple font btw",
+"I Am So Glad We Don’t Hide Our Weirdness From Each Other, Twin. Purple Font Btw"
+],
+[
+"I am the way I am because I've never once been someone's first choice and am continuously shown how easily replaceable I am.",
+"I Am The Way I Am Because I've Never Once Been Someone's First Choice And Am Continuously Shown How Easily Replaceable I Am."
+],
+[
+"I asked god to give me my smile back, so he gave me you.",
+"I Asked God To Give Me My Smile Back, So He Gave Me You."
+],
+[
+"I cannot emphasize this enough as a practical life skill: learn how to say no to authority figures. Learn how to tell them that nothing they can do to you will change your mind. Disappoint your parents. You have to live your own life.",
+"I Cannot Emphasize This Enough As A Practical Life Skill: Learn How To Say No To Authority Figures. Learn How To Tell Them That Nothing They Can Do To You Will Change Your Mind. Disappoint Your Parents. You Have To Live Your Own Life."
+],
+[
+"I can’t make\nthis feeling\ngo away I miss\nyou",
+"I Can’t Make\nThis Feeling\nGo Away I Miss\nYou"
+],
+[
+"I can’t wait to spend the\nrest of my life with you.",
+"I Can’t Wait To Spend The\nRest Of My Life With You."
+],
+[
+"I constantly feel like I'm not enough for you.",
+"I Constantly Feel Like I'm Not Enough For You."
+],
+[
+"I could find a thousand\nfriends, but our friendship\nwill always be my\nfavourite.",
+"I Could Find A Thousand\nFriends, But Our Friendship\nWill Always Be My\nFavourite."
+],
+[
+"I do actually watch all the tiktoks you send me but I'm just way too lazy to react to all of them, pls keep sending them",
+"I Do Actually Watch All The Tiktoks You Send Me But I'm Just Way Too Lazy To React To All Of Them, Pls Keep Sending Them"
+],
+[
+"I don't care where I end up\nin 50 years, I just pray that\nI'm next to you",
+"I Don't Care Where I End Up\nIn 50 Years, I Just Pray That\nI'm Next To You"
+],
+[
+"I don't ever run into my ex's in public. They can't afford to be where I be.",
+"I Don't Ever Run Into My Ex's In Public. They Can't Afford To Be Where I Be."
+],
+[
+"I don't get hungover because I approach alcohol with good intentions and a pure heart",
+"I Don't Get Hungover Because I Approach Alcohol With Good Intentions And A Pure Heart"
+],
+[
+"I don't go thru phones because if I see something from 3 years ago I'll still get mad",
+"I Don't Go Thru Phones Because If I See Something From 3 Years Ago I'll Still Get Mad"
+],
+[
+"I don't go thru phones because if see something from 3 years ago I'll still get mad.",
+"I Don't Go Thru Phones Because If See Something From 3 Years Ago I'll Still Get Mad."
+],
+[
+"I don't know what you see\nin me but I pray you never\nstop seeing it",
+"I Don't Know What You See\nIn Me But I Pray You Never\nStop Seeing It"
+],
+[
+"I don't need a perfect relationship, just a mature one. No lies, no cheating, no bs. Just pure love.",
+"I Don't Need A Perfect Relationship, Just A Mature One. No Lies, No Cheating, No Bs. Just Pure Love."
+],
+[
+"I don't want perfect. I want honest, I want genuine, I want effort, I want respect, I want loyalty, I want something real.",
+"I Don't Want Perfect. I Want Honest, I Want Genuine, I Want Effort, I Want Respect, I Want Loyalty, I Want Something Real."
+],
+[
+"I don't want you for a night, a month, or a year, I want you for the rest of my life",
+"I Don't Want You For A Night, A Month, Or A Year, I Want You For The Rest Of My Life"
+],
+[
+"I finally understood that when a person doesn't want you anymore, they will repeat the same things which you don't like and hurt you until you leave them.",
+"I Finally Understood That When A Person Doesn't Want You Anymore, They Will Repeat The Same Things Which You Don't Like And Hurt You Until You Leave Them."
+],
+[
+"I found peace in knowing you're mine.",
+"I Found Peace In Knowing You're Mine."
+],
+[
+"I freaking love you my pretty girlfriend.",
+"I Freaking Love You My Pretty Girlfriend."
+],
+[
+"I have no clue how my life is gonna look in 60 years, all I know is I still wanna be loving you.",
+"I Have No Clue How My Life Is Gonna Look In 60 Years, All I Know Is I Still Wanna Be Loving You."
+],
+[
+"I have no clue what you see in me, but I pray you don't stop seeing it.",
+"I Have No Clue What You See In Me, But I Pray You Don't Stop Seeing It."
+],
+[
+"I hope you don't get bored of me, I love you more than l love myself.",
+"I Hope You Don't Get Bored Of Me, I Love You More Than L Love Myself."
+],
+[
+"I hope you don't get bored of me. I love you more than I love myself.",
+"I Hope You Don't Get Bored Of Me. I Love You More Than I Love Myself."
+],
+[
+"I hope your serious about us, I'm literally giving you all I have left.",
+"I Hope Your Serious About Us, I'm Literally Giving You All I Have Left."
+],
+[
+"I hug my pillow at night and wish it was you",
+"I Hug My Pillow At Night And Wish It Was You"
+],
+[
+"I just really want a tight and long hug right now.",
+"I Just Really Want A Tight And Long Hug Right Now."
+],
+[
+"I just want you to rest every night knowing you are loved by me and to wake up every morning knowing I love you more than yesterday.",
+"I Just Want You To Rest Every Night Knowing You Are Loved By Me And To Wake Up Every Morning Knowing I Love You More Than Yesterday."
+],
+[
+"I know beauty exists, because you exist and you are the most beautiful person I have ever seen.",
+"I Know Beauty Exists, Because You Exist And You Are The Most Beautiful Person I Have Ever Seen."
+],
+[
+"I know how hard you've been trying, and I want you to know that I'm so proud of you. keep going, okay? ilysm.",
+"I Know How Hard You've Been Trying, And I Want You To Know That I'm So Proud Of You. Keep Going, Okay? Ilysm."
+],
+[
+"I know neither of us will ever call eachother but I also know both of us will always answer, so I guess it really is over this time, twin",
+"I Know Neither Of Us Will Ever Call Eachother But I Also Know Both Of Us Will Always Answer, So I Guess It Really Is Over This Time, Twin"
+],
+[
+"I love\nrandom\nparagraphs\nthey\nmake me\nso happy",
+"I Love\nRandom\nParagraphs\nThey\nMake Me\nSo Happy"
+],
+[
+"I love good mornings\nI love your random text\nI love hearing about your day\nI just love having you around",
+"I Love Good Mornings\nI Love Your Random Text\nI Love Hearing About Your Day\nI Just Love Having You Around"
+],
+[
+"I love how I can just look at you and be happy.",
+"I Love How I Can Just Look At You And Be Happy."
+],
+[
+"I love it when some random person is really kind to me like omg wtf hi I love you",
+"I Love It When Some Random Person Is Really Kind To Me Like Omg Wtf Hi I Love You"
+],
+[
+"I love my bsf so much. I hope one day we get a photo together.",
+"I Love My Bsf So Much. I Hope One Day We Get A Photo Together."
+],
+[
+"I love quality time with you. I honestly don't care what we do, as long as I get to spend it with YOU.",
+"I Love Quality Time With You. I Honestly Don't Care What We Do, As Long As I Get To Spend It With YOU."
+],
+[
+"I love saying \"of course\" instead of \"you're welcome\" — like of course I'm helping you, that's what I do. You were foolish to consider an alternate universe in which I'm not helping you.",
+"I Love Saying \"Of Course\" Instead Of \"You're Welcome\" — Like Of Course I'm Helping You, That's What I Do. You Were Foolish To Consider An Alternate Universe In Which I'm Not Helping You."
+],
+[
+"I love the people who bring out my super talkative side",
+"I Love The People Who Bring Out My Super Talkative Side"
+],
+[
+"I love the people who bring out my super talkative side.",
+"I Love The People Who Bring Out My Super Talkative Side."
+],
+[
+"I love you so much I hope we get reborn as house cats who sleep together like puzzle pieces",
+"I Love You So Much I Hope We Get Reborn As House Cats Who Sleep Together Like Puzzle Pieces"
+],
+[
+"I love you so much that words, aren't enough to describe it.",
+"I Love You So Much That Words, Aren't Enough To Describe It."
+],
+[
+"I love you, that means I'm not here just for the pretty parts and happy days.",
+"I Love You, That Means I'm Not Here Just For The Pretty Parts And Happy Days."
+],
+[
+"I love you. \neveryday. \nevery hour. \nevery minute. \nevery second.",
+"I Love You. \nEveryday. \nEvery Hour. \nEvery Minute. \nEvery Second."
+],
+[
+"I love youuu sooooo\nmucchhhhhhhhhhh",
+"I Love Youuu Sooooo\nMucchhhhhhhhhhh"
+],
+[
+"I may not have all my \"friends\" anymore but I got one mf that has been with me through hell and back",
+"I May Not Have All My \"Friends\" Anymore But I Got One Mf That Has Been With Me Through Hell And Back"
+],
+[
+"I might not be able to hold you in my arms rn, but I hold you in my heart every minute of the day.",
+"I Might Not Be Able To Hold You In My Arms Rn, But I Hold You In My Heart Every Minute Of The Day."
+],
+[
+"I miss my ex bestfriend & everyone else that I have ever loved but don't want any of them back either",
+"I Miss My Ex Bestfriend & Everyone Else That I Have Ever Loved But Don't Want Any Of Them Back Either"
+],
+[
+"I never wanted to be right,\nI just wanted to be\nunderstood from my point\nof view.",
+"I Never Wanted To Be Right,\nI Just Wanted To Be\nUnderstood From My Point\nOf View."
+],
+[
+"I never wanted your body. I wanted your loyalty.",
+"I Never Wanted Your Body. I Wanted Your Loyalty."
+],
+[
+"I really hope I'm treating you right. I'm trying my best, I promise",
+"I Really Hope I'm Treating You Right. I'm Trying My Best, I Promise"
+],
+[
+"I refuse to let it be anyone\nelse. If it ain't you, I guess\ni'll be unhappy for the rest\nof my life.",
+"I Refuse To Let It Be Anyone\nElse. If It Ain't You, I Guess\nI'll Be Unhappy For The Rest\nOf My Life."
+],
+[
+"I still can't believe you fell in love with me, like really, me!?!! (i need an explanation)",
+"I Still Can't Believe You Fell In Love With Me, Like Really, Me!?!! (I Need An Explanation)"
+],
+[
+"I swear I have, like, a billion kisses saved up for you",
+"I Swear I Have, Like, A Billion Kisses Saved Up For You"
+],
+[
+"I think nap dates should be a thing, forget going to a fancy dinner. bring your PJs, get under the covers and let's cuddle",
+"I Think Nap Dates Should Be A Thing, Forget Going To A Fancy Dinner. Bring Your PJs, Get Under The Covers And Let's Cuddle"
+],
+[
+"I thought my favorite thing was music until i saw your smile",
+"I Thought My Favorite Thing Was Music Until I Saw Your Smile"
+],
+[
+"I wanna be that man she looks at and thinks: \"I'm safe. I'm loved. I'm finally home.\"",
+"I Wanna Be That Man She Looks At And Thinks: \"I'm Safe. I'm Loved. I'm Finally Home.\""
+],
+[
+"I want the \"damn they're still together\" type of relationship not \"yeah that's not gonna last\"",
+"I Want The \"Damn They're Still Together\" Type Of Relationship Not \"Yeah That's Not Gonna Last\""
+],
+[
+"I want to marry you.",
+"I Want To Marry You."
+],
+[
+"I want to work on myself with you by my side, I want you to work on yourself with me by yours. Life is not easy, let's do it together.",
+"I Want To Work On Myself With You By My Side, I Want You To Work On Yourself With Me By Yours. Life Is Not Easy, Let's Do It Together."
+],
+[
+"I want us\nI want you\nJust us\nOnly you",
+"I Want Us\nI Want You\nJust Us\nOnly You"
+],
+[
+"I want you. not for fun, not to hurt you, and not to use you. i want you because I truly care. You deserve to feel loved, supported, valued, and safe.",
+"I Want You. Not For Fun, Not To Hurt You, And Not To Use You. I Want You Because I Truly Care. You Deserve To Feel Loved, Supported, Valued, And Safe."
+],
+[
+"I was walking my shark when my fish drowned so basically I'm in love with you.",
+"I Was Walking My Shark When My Fish Drowned So Basically I'm In Love With You."
+],
+[
+"I went to the locked in and everybody there knew you twin — they’re really proud of you",
+"I Went To The Locked In And Everybody There Knew You Twin — They’re Really Proud Of You"
+],
+[
+"I will always be your biggest supporter",
+"I Will Always Be Your Biggest Supporter"
+],
+[
+"I will forever be your biggest supporter",
+"I Will Forever Be Your Biggest Supporter"
+],
+[
+"I will forever believe that if you're thinking or dreaming about someone a lot it's because they are too",
+"I Will Forever Believe That If You're Thinking Or Dreaming About Someone A Lot It's Because They Are Too"
+],
+[
+"I will never forget those who came with a lamp when I was in the dark. Not to fix me, but to sit beside me until I could see again.",
+"I Will Never Forget Those Who Came With A Lamp When I Was In The Dark. Not To Fix Me, But To Sit Beside Me Until I Could See Again."
+],
+[
+"I will never stop loving you.",
+"I Will Never Stop Loving You."
+],
+[
+"I wish I was better for you, I'm sorry.",
+"I Wish I Was Better For You, I'm Sorry."
+],
+[
+"I wish you knew how much our little talks and the time we spend together mean to me. You're literally my favorite person.",
+"I Wish You Knew How Much Our Little Talks And The Time We Spend Together Mean To Me. You're Literally My Favorite Person."
+],
+[
+"I wonder who my summer situationship will be this year",
+"I Wonder Who My Summer Situationship Will Be This Year"
+],
+[
+"I would cancel all my plans if you tell me you want to see me",
+"I Would Cancel All My Plans If You Tell Me You Want To See Me"
+],
+[
+"I would choose you to be my best friend in every lifetime",
+"I Would Choose You To Be My Best Friend In Every Lifetime"
+],
+[
+"I would rather fix things with you a thousand times than lose you",
+"I Would Rather Fix Things With You A Thousand Times Than Lose You"
+],
+[
+"I would use the last of my\nenergy to squeeze your\nhand 3 times so that you\nknow I love you",
+"I Would Use The Last Of My\nEnergy To Squeeze Your\nHand 3 Times So That You\nKnow I Love You"
+],
+[
+"I'd choose you to be my bestfriend in every universe ever btw.",
+"I'd Choose You To Be My Bestfriend In Every Universe Ever Btw."
+],
+[
+"I'd delete all social media if it meant we work out in the end.",
+"I'd Delete All Social Media If It Meant We Work Out In The End."
+],
+[
+"I'd literally do anything to prove my love and loyalty to you",
+"I'd Literally Do Anything To Prove My Love And Loyalty To You"
+],
+[
+"I'll admit it, I'm deeply in love with you",
+"I'll Admit It, I'm Deeply In Love With You"
+],
+[
+"I'll always be grateful to have you as a friend, because you've always been there for me when no one else was.",
+"I'll Always Be Grateful To Have You As A Friend, Because You've Always Been There For Me When No One Else Was."
+],
+[
+"I'll always be proud of you, because I know you're trying your best.",
+"I'll Always Be Proud Of You, Because I Know You're Trying Your Best."
+],
+[
+"I'll be okay at graduation until i start walking the stage and see my junior best friend sitting in the crowd bc we don't get to graduate together",
+"I'll Be Okay At Graduation Until I Start Walking The Stage And See My Junior Best Friend Sitting In The Crowd Bc We Don't Get To Graduate Together"
+],
+[
+"I'll forever be a \"you should've just told me\" type of person cause i'd rather get hurt by the truth than be protected by your lies",
+"I'll Forever Be A \"You Should've Just Told Me\" Type Of Person Cause I'd Rather Get Hurt By The Truth Than Be Protected By Your Lies"
+],
+[
+"I'll never forget the night we started talking, not knowing how much you'd end up meaning to me.",
+"I'll Never Forget The Night We Started Talking, Not Knowing How Much You'd End Up Meaning To Me."
+],
+[
+"I'm at the age where I don't correct my autocorrect anymore. If I text you \"let's meef for lunh\", that's your puzzle to solve now.",
+"I'm At The Age Where I Don't Correct My Autocorrect Anymore. If I Text You \"Let's Meef For Lunh\", That's Your Puzzle To Solve Now."
+],
+[
+"I'm done chasing,\nyou text, I'll text back,\nyou call, I'll answer,\nyou put in effort,\nI'll return, we don't talk,\nwe don't talk",
+"I'm Done Chasing,\nYou Text, I'll Text Back,\nYou Call, I'll Answer,\nYou Put In Effort,\nI'll Return, We Don't Talk,\nWe Don't Talk"
+],
+[
+"I'm done chasing, you text, I'll text back, you call, I'll answer, you put in effort, I'll return, we don't talk, we don't talk",
+"I'm Done Chasing, You Text, I'll Text Back, You Call, I'll Answer, You Put In Effort, I'll Return, We Don't Talk, We Don't Talk"
+],
+[
+"I'm forever grateful for you twin",
+"I'm Forever Grateful For You Twin"
+],
+[
+"I'm gonna marry you one day, I promise.",
+"I'm Gonna Marry You One Day, I Promise."
+],
+[
+"I'm good at leaving for no good reason",
+"I'm Good At Leaving For No Good Reason"
+],
+[
+"I'm here for the long run, I wanna take my last breath next to you",
+"I'm Here For The Long Run, I Wanna Take My Last Breath Next To You"
+],
+[
+"I'm literally obsessed with you. Loyalty isn't even something you gotta ask for.",
+"I'm Literally Obsessed With You. Loyalty Isn't Even Something You Gotta Ask For."
+],
+[
+"I'm not asking you to be perfect, I just want your time, effort and loyalty.",
+"I'm Not Asking You To Be Perfect, I Just Want Your Time, Effort And Loyalty."
+],
+[
+"I'm not going to find someone better, I'm not going to lose feelings. I want you and only you, because in my eyes, you're perfect.",
+"I'm Not Going To Find Someone Better, I'm Not Going To Lose Feelings. I Want You And Only You, Because In My Eyes, You're Perfect."
+],
+[
+"I'm not ignoring you im waiting to see that you will put efforts to talk to me or not",
+"I'm Not Ignoring You Im Waiting To See That You Will Put Efforts To Talk To Me Or Not"
+],
+[
+"I'm not insecure, I'm terrified of losing the one person that finally made me feel at home.",
+"I'm Not Insecure, I'm Terrified Of Losing The One Person That Finally Made Me Feel At Home."
+],
+[
+"I'm not the old me\nanymore, no long\nparagraphs, no begging,\nno hope, it is what it is,\nyou have me or you don't.",
+"I'm Not The Old Me\nAnymore, No Long\nParagraphs, No Begging,\nNo Hope, It Is What It Is,\nYou Have Me Or You Don't."
+],
+[
+"I'm permanently in\nlove with you, always\nand forever",
+"I'm Permanently In\nLove With You, Always\nAnd Forever"
+],
+[
+"I'm permanently in love with you, always and forverrr.",
+"I'm Permanently In Love With You, Always And Forverrr."
+],
+[
+"I'm so glad that I have you by my side and as a bestfriend",
+"I'm So Glad That I Have You By My Side And As A Bestfriend"
+],
+[
+"I'm so lucky to have you in my life btw.",
+"I'm So Lucky To Have You In My Life Btw."
+],
+[
+"I'm such a \"saved snap in chat\" person.\nIf you look good, that shit gettin saved.\nUNASHAMED AND ILL DO IT AGAIN IDC",
+"I'm Such A \"Saved Snap In Chat\" Person.\nIf You Look Good, That Shit Gettin Saved.\nUNASHAMED AND ILL DO IT AGAIN IDC"
+],
+[
+"I'm such a \"saved snap in chat\" person. If you look good, that shit gettin saved: UNASHAMED AND ILL DO IT AGAIN IDC.",
+"I'm Such A \"Saved Snap In Chat\" Person. If You Look Good, That Shit Gettin Saved: UNASHAMED AND ILL DO IT AGAIN IDC."
+],
+[
+"I'm the friend you meet through people. I ain't out in public enough for you to stumble upon me.",
+"I'm The Friend You Meet Through People. I Ain't Out In Public Enough For You To Stumble Upon Me."
+],
+[
+"I'm too late to be your first, but I'd do anything to be your last.",
+"I'm Too Late To Be Your First, But I'd Do Anything To Be Your Last."
+],
+[
+"I'm trying to be the last guy your parents have to meet.",
+"I'm Trying To Be The Last Guy Your Parents Have To Meet."
+],
+[
+"I'm yours and you're mine, okay?",
+"I'm Yours And You're Mine, Okay?"
+],
+[
+"I've been called weird but never unfunny let that sink in",
+"I've Been Called Weird But Never Unfunny Let That Sink In"
+],
+[
+"Idc what anyone else\ndoes, I’m happy with you\nand only you",
+"Idc What Anyone Else\nDoes, I’m Happy With You\nAnd Only You"
+],
+[
+"Idk how to flirt, imma just stare at you until you marry me.",
+"Idk How To Flirt, Imma Just Stare At You Until You Marry Me."
+],
+[
+"If I don't end up marrying this girl then imma settle as the lonely Uncle with all the cool toys because I refuse to do this with anyone else..",
+"If I Don't End Up Marrying This Girl Then Imma Settle As The Lonely Uncle With All The Cool Toys Because I Refuse To Do This With Anyone Else.."
+],
+[
+"If death sat next too you at a bar, looked you in the face and said \"times up what would you say",
+"If Death Sat Next Too You At A Bar, Looked You In The Face And Said \"Times Up What Would You Say"
+],
+[
+"If he sent you this he\nliterally thinks you're the\nbest thing that ever\nhappened to him.",
+"If He Sent You This He\nLiterally Thinks You're The\nBest Thing That Ever\nHappened To Him."
+],
+[
+"If he sent you this, it means he stopped scrolling to tell his favorite girl how beautiful she is.",
+"If He Sent You This, It Means He Stopped Scrolling To Tell His Favorite Girl How Beautiful She Is."
+],
+[
+"If it's not you then guess I'll just be unhappy for the rest of my life.",
+"If It's Not You Then Guess I'll Just Be Unhappy For The Rest Of My Life."
+],
+[
+"If life is a never ending loop of dirty dishes and laundry then that means life is a never ending loop of home cooked meals and comfy clean clothes",
+"If Life Is A Never Ending Loop Of Dirty Dishes And Laundry Then That Means Life Is A Never Ending Loop Of Home Cooked Meals And Comfy Clean Clothes"
+],
+[
+"If someone was to ask who my heart belongs to, I'd say you. Without hesitation, without doubt.",
+"If Someone Was To Ask Who My Heart Belongs To, I'd Say You. Without Hesitation, Without Doubt."
+],
+[
+"If we dating you gotta be\ncomfortable with a lot of\ncasual silence because\nsometimes I barely talk.\nsometimes I don't shut up. and sometimes I will\njust say the most random stuff ever",
+"If We Dating You Gotta Be\nComfortable With A Lot Of\nCasual Silence Because\nSometimes I Barely Talk.\nSometimes I Don't Shut Up. And Sometimes I Will\nJust Say The Most Random Stuff Ever"
+],
+[
+"If we have a misunderstanding and u automatically assume my intentions are bad i kinda don't wanna be associated with u twin",
+"If We Have A Misunderstanding And U Automatically Assume My Intentions Are Bad I Kinda Don't Wanna Be Associated With U Twin"
+],
+[
+"If you\nweren't\ncapable,\nyou\nwouldn't\nhave the\ndesire.",
+"If You\nWeren't\nCapable,\nYou\nWouldn't\nHave The\nDesire."
+],
+[
+"If you asked me how many times you came into my mind, I would say once, because you came and never left. 💕",
+"If You Asked Me How Many Times You Came Into My Mind, I Would Say Once, Because You Came And Never Left. 💕"
+],
+[
+"If you could see yourself through my eyes, you'd see why I'm so scared to loose you.",
+"If You Could See Yourself Through My Eyes, You'd See Why I'm So Scared To Loose You."
+],
+[
+"If you don't treat your woman well, God will take her from you and give her to someone who will treat her like a princess. i got you girl, welcome to my page...",
+"If You Don't Treat Your Woman Well, God Will Take Her From You And Give Her To Someone Who Will Treat Her Like A Princess. I Got You Girl, Welcome To My Page..."
+],
+[
+"If you ever feel like you have no one, remember you have me. I might not be much but l'll always be here for you",
+"If You Ever Feel Like You Have No One, Remember You Have Me. I Might Not Be Much But L'll Always Be Here For You"
+],
+[
+"If your not busy for the next 50 years I would like to spend them with you.",
+"If Your Not Busy For The Next 50 Years I Would Like To Spend Them With You."
+],
+[
+"If your not busy for the next 75 years I would like to spend them with you.",
+"If Your Not Busy For The Next 75 Years I Would Like To Spend Them With You."
+],
+[
+"Imagine a mini you and me running around our backyard one day.",
+"Imagine A Mini You And Me Running Around Our Backyard One Day."
+],
+[
+"Imagine her being so excited to see you she does a run and jump hug (imagine)",
+"Imagine Her Being So Excited To See You She Does A Run And Jump Hug (Imagine)"
+],
+[
+"Imagine leaving the\nwedding in the truck that\nwatched us fall in love",
+"Imagine Leaving The\nWedding In The Truck That\nWatched Us Fall In Love"
+],
+[
+"In a room full of everyone I've ever met I'd instantly run to you.",
+"In A Room Full Of Everyone I've Ever Met I'd Instantly Run To You."
+],
+[
+"In a world full of\ntemporary people I'm glad\nI found my forever",
+"In A World Full Of\nTemporary People I'm Glad\nI Found My Forever"
+],
+[
+"In case\nnobody told\nyou today,\nyou look\nbeautiful",
+"In Case\nNobody Told\nYou Today,\nYou Look\nBeautiful"
+],
+[
+"In five years you'll be laying next to a loser wondering if l ever got my shit together...",
+"In Five Years You'll Be Laying Next To A Loser Wondering If L Ever Got My Shit Together..."
+],
+[
+"In the most selfish way I want to be the one who gets to watch you become everything you're meant to be. I want to stand beside you for it all, the quiet, the loud, the in-between, the always.",
+"In The Most Selfish Way I Want To Be The One Who Gets To Watch You Become Everything You're Meant To Be. I Want To Stand Beside You For It All, The Quiet, The Loud, The In-Between, The Always."
+],
+[
+"It's time to forgive my hands for being hands. I'm going to hate myself a little less tomorrow. I'm going to hate myself a little less tomorrow.",
+"It's Time To Forgive My Hands For Being Hands. I'm Going To Hate Myself A Little Less Tomorrow. I'm Going To Hate Myself A Little Less Tomorrow."
+],
+[
+"I’m forever grateful for you twin",
+"I’m Forever Grateful For You Twin"
+],
+[
+"Just a reminder: Cheating isn't just kissing or sleeping with someone. It's also deleting messages, talking to your ex, entertaining the people who flirt with you, and keeping old pictures of you and your ex on your phone",
+"Just A Reminder: Cheating Isn't Just Kissing Or Sleeping With Someone. It's Also Deleting Messages, Talking To Your Ex, Entertaining The People Who Flirt With You, And Keeping Old Pictures Of You And Your Ex On Your Phone"
+],
+[
+"Just wanted to remind you\nthat I'm madly in love with you.\nMy heart is literally addicted to you.\nMy favorite thing in the world is\nYOUUU",
+"Just Wanted To Remind You\nThat I'm Madly In Love With You.\nMy Heart Is Literally Addicted To You.\nMy Favorite Thing In The World Is\nYOUUU"
+],
+[
+"Loving her was the most disrespectful thing i ever did to myself.",
+"Loving Her Was The Most Disrespectful Thing I Ever Did To Myself."
+],
+[
+"Loving her was the most disrespectful thing lever did to myself.",
+"Loving Her Was The Most Disrespectful Thing Lever Did To Myself."
+],
+[
+"Lowkey craving a big fat hug from you rn twin",
+"Lowkey Craving A Big Fat Hug From You Rn Twin"
+],
+[
+"Making yourself happy again is the biggest comeback.",
+"Making Yourself Happy Again Is The Biggest Comeback."
+],
+[
+"Man enough to admit I'm absolutely terrified for my future.",
+"Man Enough To Admit I'm Absolutely Terrified For My Future."
+],
+[
+"Man enough to admit if I lose this girl I genuinely don't what l'd do.",
+"Man Enough To Admit If I Lose This Girl I Genuinely Don't What L'd Do."
+],
+[
+"Manifesting greatness upon you twin",
+"Manifesting Greatness Upon You Twin"
+],
+[
+"Me if there was protein in beer:",
+"Me If There Was Protein In Beer:"
+],
+[
+"Mention a girl who\nneeds absolutely zero makeup to look jaw\ndropping gorgeous everyday",
+"Mention A Girl Who\nNeeds Absolutely Zero Makeup To Look Jaw\nDropping Gorgeous Everyday"
+],
+[
+"My biggest goal with you is to see you walking down the isle one day.",
+"My Biggest Goal With You Is To See You Walking Down The Isle One Day."
+],
+[
+"My day starts and ends with thinking about you.",
+"My Day Starts And Ends With Thinking About You."
+],
+[
+"My favourite love story is ours.",
+"My Favourite Love Story Is Ours."
+],
+[
+"My favourite part of the day is when I finally get to talk to you.",
+"My Favourite Part Of The Day Is When I Finally Get To Talk To You."
+],
+[
+"My girlfriend: *Makes fun of me all day*\nMe: *Makes one small joke back*\nMy girlfriend:",
+"My Girlfriend: *Makes Fun Of Me All Day*\nMe: *Makes One Small Joke Back*\nMy Girlfriend:"
+],
+[
+"My heart is so full of love for you I can’t even call it mine anymore.",
+"My Heart Is So Full Of Love For You I Can’t Even Call It Mine Anymore."
+],
+[
+"My heart will never get tired of loving you my baby.",
+"My Heart Will Never Get Tired Of Loving You My Baby."
+],
+[
+"My love language is\nphysical touch, but my\nbiggest fear is making\nyou feel uncomfortable",
+"My Love Language Is\nPhysical Touch, But My\nBiggest Fear Is Making\nYou Feel Uncomfortable"
+],
+[
+"My love language is physical touch, but my biggest fear is making you feel uncomfortable.",
+"My Love Language Is Physical Touch, But My Biggest Fear Is Making You Feel Uncomfortable."
+],
+[
+"My loyalty has kept me in situations that my common sense should've kept me out of.",
+"My Loyalty Has Kept Me In Situations That My Common Sense Should've Kept Me Out Of."
+],
+[
+"My nervous system doesn't tolerate yelling or arguing. Speak to me calmly or don't speak to me at all",
+"My Nervous System Doesn't Tolerate Yelling Or Arguing. Speak To Me Calmly Or Don't Speak To Me At All"
+],
+[
+"My old friends don't know\nabout my life now.\nMy new friends don't know\nabout my life before.\nBut not you.\nYou know everything.",
+"My Old Friends Don't Know\nAbout My Life Now.\nMy New Friends Don't Know\nAbout My Life Before.\nBut Not You.\nYou Know Everything."
+],
+[
+"Need to be distracted every second to prevent a thought from occurring",
+"Need To Be Distracted Every Second To Prevent A Thought From Occurring"
+],
+[
+"Never give up because the whole Bloodline is watching.",
+"Never Give Up Because The Whole Bloodline Is Watching."
+],
+[
+"Next time you decide to ignore the 30 tiktoks I sent you remember that means I thought of you 30 times, ungrateful ho",
+"Next Time You Decide To Ignore The 30 Tiktoks I Sent You Remember That Means I Thought Of You 30 Times, Ungrateful Ho"
+],
+[
+"Ngl im craving the longest and tightest hug from you rn.",
+"Ngl Im Craving The Longest And Tightest Hug From You Rn."
+],
+[
+"Ngl we should be laying down together cuddling rn imy.",
+"Ngl We Should Be Laying Down Together Cuddling Rn Imy."
+],
+[
+"No argument will ever change they way I feel about you.",
+"No Argument Will Ever Change They Way I Feel About You."
+],
+[
+"No matter how bad my day was taking to you will always make it better.",
+"No Matter How Bad My Day Was Taking To You Will Always Make It Better."
+],
+[
+"No matter how bad my day was, even just talking to you for a minute makes it so much better",
+"No Matter How Bad My Day Was, Even Just Talking To You For A Minute Makes It So Much Better"
+],
+[
+"No matter how hard things get between us, I'll never entertain someone else.",
+"No Matter How Hard Things Get Between Us, I'll Never Entertain Someone Else."
+],
+[
+"No matter what happens between us, I will never expose the secrets you trusted me with.",
+"No Matter What Happens Between Us, I Will Never Expose The Secrets You Trusted Me With."
+],
+[
+"No matter what you needed, if you called me at 2am, I'd be there. If you were in trouble, I'd be there, I'll always be here for you",
+"No Matter What You Needed, If You Called Me At 2am, I'd Be There. If You Were In Trouble, I'd Be There, I'll Always Be Here For You"
+],
+[
+"No matter what you needed, if you called me at 2am, I'd be there. If you were in trouble, I'd be there. I'll always be here for you.",
+"No Matter What You Needed, If You Called Me At 2am, I'd Be There. If You Were In Trouble, I'd Be There. I'll Always Be Here For You."
+],
+[
+"No matter what you needed, if you called me at 2am, I’d be there. If you were in trouble, I’d be there, I’ll always be here for you",
+"No Matter What You Needed, If You Called Me At 2am, I’d Be There. If You Were In Trouble, I’d Be There, I’ll Always Be Here For You"
+],
+[
+"No matter what you’re going through, I’ll always be here to listen twin",
+"No Matter What You’re Going Through, I’ll Always Be Here To Listen Twin"
+],
+[
+"No need to overthink my love, I'm not going anywhere.",
+"No Need To Overthink My Love, I'm Not Going Anywhere."
+],
+[
+"No revenge because you were once my home and I don't burn places I once prayed in",
+"No Revenge Because You Were Once My Home And I Don't Burn Places I Once Prayed In"
+],
+[
+"No this isn't an act, no I'm not playing you, no I'm not using you. I genuinely want you for the rest of my life.",
+"No This Isn't An Act, No I'm Not Playing You, No I'm Not Using You. I Genuinely Want You For The Rest Of My Life."
+],
+[
+"Not a single person in this universe could even begin to comprehend the amount of love I have for you",
+"Not A Single Person In This Universe Could Even Begin To Comprehend The Amount Of Love I Have For You"
+],
+[
+"Not even close to the person I want to be, but so far from the person I was.",
+"Not Even Close To The Person I Want To Be, But So Far From The Person I Was."
+],
+[
+"Not many people annoy me, but you make me wanna kick a fvcking land mine",
+"Not Many People Annoy Me, But You Make Me Wanna Kick A Fvcking Land Mine"
+],
+[
+"Not to be dramatic but the second leave you I don't feel whole.",
+"Not To Be Dramatic But The Second Leave You I Don't Feel Whole."
+],
+[
+"Not to flirt but maybe we can find out wtf your problem is over dinner sometime.",
+"Not To Flirt But Maybe We Can Find Out Wtf Your Problem Is Over Dinner Sometime."
+],
+[
+"Not to flirt or anything but I can't wait to make our bed and wash your clothes, make you dinner and clean our house.",
+"Not To Flirt Or Anything But I Can't Wait To Make Our Bed And Wash Your Clothes, Make You Dinner And Clean Our House."
+],
+[
+"Not to flirt or anything but I stay up past my bedtime to talk to you",
+"Not To Flirt Or Anything But I Stay Up Past My Bedtime To Talk To You"
+],
+[
+"Not to flirt or anything but I think it'll be pretty cool if we had a permanent sleep over.",
+"Not To Flirt Or Anything But I Think It'll Be Pretty Cool If We Had A Permanent Sleep Over."
+],
+[
+"Not to flirt or anything but I'd dance in the headlights on some backroad with you",
+"Not To Flirt Or Anything But I'd Dance In The Headlights On Some Backroad With You"
+],
+[
+"Not to flirt or anything but I'd happily sit in the garage and hand you the wrong tools, distract you with the funny tiktoks that pop up on my phone, say I'm hungry prolly 10x, and throw an attitude all. while you try to fix your truck",
+"Not To Flirt Or Anything But I'd Happily Sit In The Garage And Hand You The Wrong Tools, Distract You With The Funny Tiktoks That Pop Up On My Phone, Say I'm Hungry Prolly 10x, And Throw An Attitude All. While You Try To Fix Your Truck"
+],
+[
+"Not to flirt or anything,\nbut I would definitely give you the password to my blanket fort in the living room, and share all my snacks",
+"Not To Flirt Or Anything,\nBut I Would Definitely Give You The Password To My Blanket Fort In The Living Room, And Share All My Snacks"
+],
+[
+"Not trying to be flirty but I thought I was in my \"I don't need anyone\" era and you've got me grinning ear to ear like a damn fool every time your name pops up on my phone",
+"Not Trying To Be Flirty But I Thought I Was In My \"I Don't Need Anyone\" Era And You've Got Me Grinning Ear To Ear Like A Damn Fool Every Time Your Name Pops Up On My Phone"
+],
+[
+"Not trying to flirt or anything... but maybe we should watch finding Nemo and idk maybe kiss everytime we see a fish.",
+"Not Trying To Flirt Or Anything... But Maybe We Should Watch Finding Nemo And Idk Maybe Kiss Everytime We See A Fish."
+],
+[
+"Nothing tears a guy apart like always having that sick feeling that there's someone else.",
+"Nothing Tears A Guy Apart Like Always Having That Sick Feeling That There's Someone Else."
+],
+[
+"Now that I know you,\nI can't imagine a life\nwithout you",
+"Now That I Know You,\nI Can't Imagine A Life\nWithout You"
+],
+[
+"Now, for my next trick, Imma show you how to turn a bottle of crown into assault and battery",
+"Now, For My Next Trick, Imma Show You How To Turn A Bottle Of Crown Into Assault And Battery"
+],
+[
+"Obsessed with your eyes\nObsessed with your smile\nObsessed with your voice\nObsessed with your humor\nObsessed with your laugh\nObsessed with everything.",
+"Obsessed With Your Eyes\nObsessed With Your Smile\nObsessed With Your Voice\nObsessed With Your Humor\nObsessed With Your Laugh\nObsessed With Everything."
+],
+[
+"Ofc I overthink, I've never experienced someone only having eyes for me.",
+"Ofc I Overthink, I've Never Experienced Someone Only Having Eyes For Me."
+],
+[
+"Once you let go of lust you realize how mid most of this generation really is.",
+"Once You Let Go Of Lust You Realize How Mid Most Of This Generation Really Is."
+],
+[
+"Once you lose access to me, don't expect the same me I once gave you. Expect the version you deserve, from the energy you created.",
+"Once You Lose Access To Me, Don't Expect The Same Me I Once Gave You. Expect The Version You Deserve, From The Energy You Created."
+],
+[
+"One day I'll see you walking down the isle, even if it isn't my wedding.",
+"One Day I'll See You Walking Down The Isle, Even If It Isn't My Wedding."
+],
+[
+"One of the worst pains is feeling like you mean nothing to the people who mean the most to you",
+"One Of The Worst Pains Is Feeling Like You Mean Nothing To The People Who Mean The Most To You"
+],
+[
+"One person is enough,\nand that person is you,\nalways you:)",
+"One Person Is Enough,\nAnd That Person Is You,\nAlways You:)"
+],
+[
+"Only 2% of teens stay together forever, let's be that 2%.",
+"Only 2% Of Teens Stay Together Forever, Let's Be That 2%."
+],
+[
+"Onna real note. I just wanna be loved, not left wondering why I'm never good enough..",
+"Onna Real Note. I Just Wanna Be Loved, Not Left Wondering Why I'm Never Good Enough.."
+],
+[
+"Our relationship is way deeper than just bf and gf. You're my whole heart in human form. You're my soulmate and my everything literally.",
+"Our Relationship Is Way Deeper Than Just Bf And Gf. You're My Whole Heart In Human Form. You're My Soulmate And My Everything Literally."
+],
+[
+"People come and go\n#butyouaintgoingnowhere",
+"People Come And Go\n#Butyouaintgoingnowhere"
+],
+[
+"People who fall asleep right away freak me out. Don't u b*tches Have a story plot about you and your crush to direct?",
+"People Who Fall Asleep Right Away Freak Me Out. Don't U B*Tches Have A Story Plot About You And Your Crush To Direct?"
+],
+[
+"Please don't find anyone else, I'm really in love with you.",
+"Please Don't Find Anyone Else, I'm Really In Love With You."
+],
+[
+"Please don't leave, I promise I'm getting better.",
+"Please Don't Leave, I Promise I'm Getting Better."
+],
+[
+"Question for the girls:\nname one thing that he hasn't done yet that you\nwant him to do",
+"Question For The Girls:\nName One Thing That He Hasn't Done Yet That You\nWant Him To Do"
+],
+[
+"Real women don't give a fck about your money. All they want is your attention, time, food and for you to answer ur phone.",
+"Real Women Don't Give A Fck About Your Money. All They Want Is Your Attention, Time, Food And For You To Answer Ur Phone."
+],
+[
+"Screw sleeping together.\nThe real question is, can\nyou still love me when I'm\noverthinking, sending 10\nmessages back to back\nasking for reassurance,\nmaking sure I'm still wanted.\nAnd you're not leaving\nwhen times get hard.",
+"Screw Sleeping Together.\nThe Real Question Is, Can\nYou Still Love Me When I'm\nOverthinking, Sending 10\nMessages Back To Back\nAsking For Reassurance,\nMaking Sure I'm Still Wanted.\nAnd You're Not Leaving\nWhen Times Get Hard."
+],
+[
+"She just gave birth 19 days ago btw. She's so gorgeous. That man is lucky to have her",
+"She Just Gave Birth 19 Days Ago Btw. She's So Gorgeous. That Man Is Lucky To Have Her"
+],
+[
+"She told me her ex treated her like shit, so I did everything in my power to show her what real love is like. Guess how that story ended",
+"She Told Me Her Ex Treated Her Like Shit, So I Did Everything In My Power To Show Her What Real Love Is Like. Guess How That Story Ended"
+],
+[
+"She's pretty,\nshe's amazing,\nshe's rare,\nshe's a diamond,\nshe is youuuuu.",
+"She's Pretty,\nShe's Amazing,\nShe's Rare,\nShe's A Diamond,\nShe Is Youuuuu."
+],
+[
+"Should of hugged you tighter the last time I saw you, really missing you right now.",
+"Should Of Hugged You Tighter The Last Time I Saw You, Really Missing You Right Now."
+],
+[
+"Since the day we started\ntalking there hasn't been a\nday where I haven't fallen\nasleep thinking about us",
+"Since The Day We Started\nTalking There Hasn't Been A\nDay Where I Haven't Fallen\nAsleep Thinking About Us"
+],
+[
+"So blessed because the hardest part of our relationship is just missing eachother",
+"So Blessed Because The Hardest Part Of Our Relationship Is Just Missing Eachother"
+],
+[
+"So jealous to the point where i genuinely hate everyone that spends time with you that isn't me.",
+"So Jealous To The Point Where I Genuinely Hate Everyone That Spends Time With You That Isn't Me."
+],
+[
+"So no one's gonna talk about how painful it is for the person who wasn't ready to commit to a relationship but flirted with you and made you feel special & loved but ended up in a no label breakup.",
+"So No One's Gonna Talk About How Painful It Is For The Person Who Wasn't Ready To Commit To A Relationship But Flirted With You And Made You Feel Special & Loved But Ended Up In A No Label Breakup."
+],
+[
+"So there's this girl.\nBeautiful eyes, beautiful\nface beautiful personality,\nperfect in every way. and\nyes it's you.",
+"So There's This Girl.\nBeautiful Eyes, Beautiful\nFace Beautiful Personality,\nPerfect In Every Way. And\nYes It's You."
+],
+[
+"Somebody taking your parking spot at your own home is a different type of anger",
+"Somebody Taking Your Parking Spot At Your Own Home Is A Different Type Of Anger"
+],
+[
+"Someone once said: \"Trust the overthinker who tells you they love you. Bc by now they've thought of 100 reasons not to, yet they still choose to stay\"",
+"Someone Once Said: \"Trust The Overthinker Who Tells You They Love You. Bc By Now They've Thought Of 100 Reasons Not To, Yet They Still Choose To Stay\""
+],
+[
+"Sometimes you just have to be absurdly optimistic and watch life rearrange itself around that belief",
+"Sometimes You Just Have To Be Absurdly Optimistic And Watch Life Rearrange Itself Around That Belief"
+],
+[
+"Sorry if I get too much sometimes, the thought of losing you absolutely terrifies me.",
+"Sorry If I Get Too Much Sometimes, The Thought Of Losing You Absolutely Terrifies Me."
+],
+[
+"Staring at my old pictures because I am my own dead wife",
+"Staring At My Old Pictures Because I Am My Own Dead Wife"
+],
+[
+"Staring at the \"I understand.\" text I just sent, knowing I just got my entire heart ripped out of my chest.",
+"Staring At The \"I Understand.\" Text I Just Sent, Knowing I Just Got My Entire Heart Ripped Out Of My Chest."
+],
+[
+"Started the call crying. ended the call laughing, that pretty much sums up our relationship.",
+"Started The Call Crying. Ended The Call Laughing, That Pretty Much Sums Up Our Relationship."
+],
+[
+"Stop asking me 'wyd' bc I'd probs be doin you if you weren't so far away.",
+"Stop Asking Me 'Wyd' Bc I'd Probs Be Doin You If You Weren't So Far Away."
+],
+[
+"Thank you for being someone I can yap about my problems to",
+"Thank You For Being Someone I Can Yap About My Problems To"
+],
+[
+"The biggest disrespect is when you realize they would've never told you if you hadn't found out first",
+"The Biggest Disrespect Is When You Realize They Would've Never Told You If You Hadn't Found Out First"
+],
+[
+"The devil couldn't reach me so he made me fall in love with someone who first healed me but then broke my heart into thousand pieces.",
+"The Devil Couldn't Reach Me So He Made Me Fall In Love With Someone Who First Healed Me But Then Broke My Heart Into Thousand Pieces."
+],
+[
+"The end goal with you",
+"The End Goal With You"
+],
+[
+"The fact a man will post about his mental health and not a soul take it serious...",
+"The Fact A Man Will Post About His Mental Health And Not A Soul Take It Serious..."
+],
+[
+"The love for yourself gotta be stronger than your desire to be loved by others. make sure you showing up for you first",
+"The Love For Yourself Gotta Be Stronger Than Your Desire To Be Loved By Others. Make Sure You Showing Up For You First"
+],
+[
+"The only type of love i want is with you.",
+"The Only Type Of Love I Want Is With You."
+],
+[
+"The potential you have is so tuff twin",
+"The Potential You Have Is So Tuff Twin"
+],
+[
+"The way that you show that you care is o tuff twin you make me feel appreciated",
+"The Way That You Show That You Care Is O Tuff Twin You Make Me Feel Appreciated"
+],
+[
+"The way that you show that you care is so tuff twin you make me feel appreciated",
+"The Way That You Show That You Care Is So Tuff Twin You Make Me Feel Appreciated"
+],
+[
+"The way we send each other TikTok's is so tuff twin",
+"The Way We Send Each Other TikTok's Is So Tuff Twin"
+],
+[
+"The way we send each other TikTok’s is so tuff twin",
+"The Way We Send Each Other TikTok’s Is So Tuff Twin"
+],
+[
+"There is something beautiful about having long term friends that have witnessed multiple versions of you and loved you unconditionally through each version",
+"There Is Something Beautiful About Having Long Term Friends That Have Witnessed Multiple Versions Of You And Loved You Unconditionally Through Each Version"
+],
+[
+"This line is exactly how it feels trying to persue romance while trying to retrain a nervous system that's been A through years of trauma and betrayal",
+"This Line Is Exactly How It Feels Trying To Persue Romance While Trying To Retrain A Nervous System That's Been A Through Years Of Trauma And Betrayal"
+],
+[
+"This song is how it feels when someone taught you that you were loveable, just to be terrified of being loved again because of everyone's lies and how much it destroyed you",
+"This Song Is How It Feels When Someone Taught You That You Were Loveable, Just To Be Terrified Of Being Loved Again Because Of Everyone's Lies And How Much It Destroyed You"
+],
+[
+"This song is the perfect explanation of what it's like to have a mother wanting to have a relationship, but at the same time has emotionally and mentally damaged-you as a child",
+"This Song Is The Perfect Explanation Of What It's Like To Have A Mother Wanting To Have A Relationship, But At The Same Time Has Emotionally And Mentally Damaged-You As A Child"
+],
+[
+"This song is the perfect representation of what it feels like to have severe anxiety and how it effects your desire for intimacy in a relationship",
+"This Song Is The Perfect Representation Of What It Feels Like To Have Severe Anxiety And How It Effects Your Desire For Intimacy In A Relationship"
+],
+[
+"To be honest I don't even know who I'm yearning for I just want to feel sad that's why I miss him Idk which him",
+"To Be Honest I Don't Even Know Who I'm Yearning For I Just Want To Feel Sad That's Why I Miss Him Idk Which Him"
+],
+[
+"Too late to be your first\nbut I’d do anything to be\nyour last",
+"Too Late To Be Your First\nBut I’d Do Anything To Be\nYour Last"
+],
+[
+"Treating your girl right isn't called being a simp it's called being a man.",
+"Treating Your Girl Right Isn't Called Being A Simp It's Called Being A Man."
+],
+[
+"Unfortunately if you don't give me an answer, my mind will make up for me.",
+"Unfortunately If You Don't Give Me An Answer, My Mind Will Make Up For Me."
+],
+[
+"Unfortunately no matter\nwhat im doing, who im\nwith, where i am I'll always\npick up the phone for you",
+"Unfortunately No Matter\nWhat Im Doing, Who Im\nWith, Where I Am I'll Always\nPick Up The Phone For You"
+],
+[
+"Watching her repost about how much she truly wants to be cared and loved for, but when i tried to give her everything she wanted, i just felt pushed away",
+"Watching Her Repost About How Much She Truly Wants To Be Cared And Loved For, But When I Tried To Give Her Everything She Wanted, I Just Felt Pushed Away"
+],
+[
+"We can literally spend the whole day together, and I'll still miss you the moment you leave.",
+"We Can Literally Spend The Whole Day Together, And I'll Still Miss You The Moment You Leave."
+],
+[
+"We started as a \"hi.\"\nNow you're my good\nmorning, my drive\nsafe, my text me when\nyou're home, my see\nyou in my dreams.",
+"We Started As A \"Hi.\"\nNow You're My Good\nMorning, My Drive\nSafe, My Text Me When\nYou're Home, My See\nYou In My Dreams."
+],
+[
+"We'll figure it out.\nLike we always do.",
+"We'll Figure It Out.\nLike We Always Do."
+],
+[
+"We're both new to this thing called life, and there is no one else I wanna figure it out with more than you.",
+"We're Both New To This Thing Called Life, And There Is No One Else I Wanna Figure It Out With More Than You."
+],
+[
+"What an awesome privilege it is to have a true friend that picks you up and drops you off home without ever complaining",
+"What An Awesome Privilege It Is To Have A True Friend That Picks You Up And Drops You Off Home Without Ever Complaining"
+],
+[
+"What doesn't kill you hits you up six months later when its too late",
+"What Doesn't Kill You Hits You Up Six Months Later When Its Too Late"
+],
+[
+"What really bothers me is how easy it was for you to let me go. i thought i meant more than that. i thought we meant more than that.",
+"What Really Bothers Me Is How Easy It Was For You To Let Me Go. I Thought I Meant More Than That. I Thought We Meant More Than That."
+],
+[
+"When I forgot to stay busy for 5 minutes and get a wave of everything that's hurt me",
+"When I Forgot To Stay Busy For 5 Minutes And Get A Wave Of Everything That's Hurt Me"
+],
+[
+"Where do you see yourself in 10 years?",
+"Where Do You See Yourself In 10 Years?"
+],
+[
+"While everyone is slowly starting to find their person and I'm still laying awake at night wondering when I'll be good enough for someone",
+"While Everyone Is Slowly Starting To Find Their Person And I'm Still Laying Awake At Night Wondering When I'll Be Good Enough For Someone"
+],
+[
+"Wifey material didn't wake up this morning hungover btw.",
+"Wifey Material Didn't Wake Up This Morning Hungover Btw."
+],
+[
+"Without your goodnight there is no goodnight.",
+"Without Your Goodnight There Is No Goodnight."
+],
+[
+"Won in life because I have someone like you.",
+"Won In Life Because I Have Someone Like You."
+],
+[
+"Words can't even describe how much you mean to me.",
+"Words Can't Even Describe How Much You Mean To Me."
+],
+[
+"You absolutely HAVE to become ok with not being liked. No matter how loving or kind you are, you will never people please your way into collective acceptance. You could be a whole ray of sunshine and people will hate you cuz they're used to rain. Be ok with shining regardless.",
+"You Absolutely HAVE To Become Ok With Not Being Liked. No Matter How Loving Or Kind You Are, You Will Never People Please Your Way Into Collective Acceptance. You Could Be A Whole Ray Of Sunshine And People Will Hate You Cuz They're Used To Rain. Be Ok With Shining Regardless."
+],
+[
+"You are a choice and not an option.",
+"You Are A Choice And Not An Option."
+],
+[
+"You are more than your bad days. You are more than your mistakes.",
+"You Are More Than Your Bad Days. You Are More Than Your Mistakes."
+],
+[
+"You are my soulmate",
+"You Are My Soulmate"
+],
+[
+"You are not just my partner, you are my home, my rest, my heart and my safe place. love youuu",
+"You Are Not Just My Partner, You Are My Home, My Rest, My Heart And My Safe Place. Love Youuu"
+],
+[
+"You are someone i never wanna lose btw.",
+"You Are Someone I Never Wanna Lose Btw."
+],
+[
+"You blink and all of a sudden\nyou've been friends with\nsomeone for 7 years that's\ncrazy",
+"You Blink And All Of A Sudden\nYou've Been Friends With\nSomeone For 7 Years That's\nCrazy"
+],
+[
+"You don't deserve a paragraph, you deserve a whole book about how amazing you are.",
+"You Don't Deserve A Paragraph, You Deserve A Whole Book About How Amazing You Are."
+],
+[
+"You don't have to be perfect around me. Come to me messy, moody, tired, broken I'll still choose you like you're the only peace I've ever known.",
+"You Don't Have To Be Perfect Around Me. Come To Me Messy, Moody, Tired, Broken I'll Still Choose You Like You're The Only Peace I've Ever Known."
+],
+[
+"You have no idea how much our small talk, jokes, and time spent together means to me.",
+"You Have No Idea How Much Our Small Talk, Jokes, And Time Spent Together Means To Me."
+],
+[
+"You have the prettiest eyes btw.",
+"You Have The Prettiest Eyes Btw."
+],
+[
+"You know you love\nsomeone when you don't\nhate them for breaking\nyour heart",
+"You Know You Love\nSomeone When You Don't\nHate Them For Breaking\nYour Heart"
+],
+[
+"You know you love\nsomeone when you don’t\nhate them for breaking\nyour heart",
+"You Know You Love\nSomeone When You Don’t\nHate Them For Breaking\nYour Heart"
+],
+[
+"You lied straight to my face and then got mad at me for not being able to trust you, but I ruined us right?",
+"You Lied Straight To My Face And Then Got Mad At Me For Not Being Able To Trust You, But I Ruined Us Right?"
+],
+[
+"You mean the absolute world to me btw.",
+"You Mean The Absolute World To Me Btw."
+],
+[
+"You today. You tomorrow. You forever. In every lifetime.",
+"You Today. You Tomorrow. You Forever. In Every Lifetime."
+],
+[
+"You're gonna be mine today, tomorrow, and always",
+"You're Gonna Be Mine Today, Tomorrow, And Always"
+],
+[
+"You're mine,\nmy girl, my wife, my\neverything, my world,\nmy favorite person.",
+"You're Mine,\nMy Girl, My Wife, My\nEverything, My World,\nMy Favorite Person."
+],
+[
+"Your smile is proof that even after hard days, hope still exists.",
+"Your Smile Is Proof That Even After Hard Days, Hope Still Exists."
+],
+[
+"a baddie with a great sense of humor who occasionally bullies you is all you need sometimes",
+"A Baddie With A Great Sense Of Humor Who Occasionally Bullies You Is All You Need Sometimes"
+],
+[
+"after losing my\nmind for a few\nhours i've made the\nexecutive decision\nthat it's no longer\nthat serious",
+"After Losing My\nMind For A Few\nHours I've Made The\nExecutive Decision\nThat It's No Longer\nThat Serious"
+],
+[
+"all I want is you.",
+"All I Want Is You."
+],
+[
+"all of my friends\nhave someone\nthey'd choose\nover me while i\nhave nobody\nbut them.",
+"All Of My Friends\nHave Someone\nThey'd Choose\nOver Me While I\nHave Nobody\nBut Them."
+],
+[
+"all of the love you have given to the wrong people will eventually find it's way back to you",
+"All Of The Love You Have Given To The Wrong People Will Eventually Find It's Way Back To You"
+],
+[
+"all roads lead back to yourself",
+"All Roads Lead Back To Yourself"
+],
+[
+"always remember, i will always be your biggest supporter and will be there for you anytime you'll ever need me.",
+"Always Remember, I Will Always Be Your Biggest Supporter And Will Be There For You Anytime You'll Ever Need Me."
+],
+[
+"an older gentleman once said, a cemetery is full of people who thought they had more time\" and that really hit me.",
+"An Older Gentleman Once Said, A Cemetery Is Full Of People Who Thought They Had More Time\" And That Really Hit Me."
+],
+[
+"and I hope yk i'm\nnot gonna give\nup on you bc\ni love you\nway too much.",
+"And I Hope Yk I'm\nNot Gonna Give\nUp On You Bc\nI Love You\nWay Too Much."
+],
+[
+"and even after everything, i still love you like i promised you i would",
+"And Even After Everything, I Still Love You Like I Promised You I Would"
+],
+[
+"and if love ever finds me again\nplease let it come without having\nto worry if they're going to give\nup. on me on a random day",
+"And If Love Ever Finds Me Again\nPlease Let It Come Without Having\nTo Worry If They're Going To Give\nUp. On Me On A Random Day"
+],
+[
+"and if you ever\nstart to miss me,\ni'm as far away as\nyou pushed me",
+"And If You Ever\nStart To Miss Me,\nI'm As Far Away As\nYou Pushed Me"
+],
+[
+"and if you're\never going thru\ndifficulties j know\nu always got me in\nur corner no matter\nwhat, twin",
+"And If You're\nEver Going Thru\nDifficulties J Know\nU Always Got Me In\nUr Corner No Matter\nWhat, Twin"
+],
+[
+"and if you're\never going thru\ndifficulties js know\nu always got me in\nur corner no matter\nwhat, twin",
+"And If You're\nEver Going Thru\nDifficulties Js Know\nU Always Got Me In\nUr Corner No Matter\nWhat, Twin"
+],
+[
+"and then u gave up\non our relationship\nwhich was weird because\nlosing me used to be your\nbiggest fear",
+"And Then U Gave Up\nOn Our Relationship\nWhich Was Weird Because\nLosing Me Used To Be Your\nBiggest Fear"
+],
+[
+"and when things feel heavy just know you can run to me",
+"And When Things Feel Heavy Just Know You Can Run To Me"
+],
+[
+"and when you can't find the light i promise to sit with you in the dark until life feels worth it again, twin",
+"And When You Can't Find The Light I Promise To Sit With You In The Dark Until Life Feels Worth It Again, Twin"
+],
+[
+"as long as my heart is beating you'll forever have someone praying for you",
+"As Long As My Heart Is Beating You'll Forever Have Someone Praying For You"
+],
+[
+"at some\npoint you\njust have to\nchoose to\nlet go even\nif it hurts",
+"At Some\nPoint You\nJust Have To\nChoose To\nLet Go Even\nIf It Hurts"
+],
+[
+"at the end of the day, the real \nloser is me when i say i accept \neverything, but deep down, i \ndon't. it's hard, and it hurts more \nthan i can put into words.",
+"At The End Of The Day, The Real \nLoser Is Me When I Say I Accept \nEverything, But Deep Down, I \nDon't. It's Hard, And It Hurts More \nThan I Can Put Into Words."
+],
+[
+"baby, you're the one\nthat i wanna marry.",
+"Baby, You're The One\nThat I Wanna Marry."
+],
+[
+"back to my\nparty era\nbecause my\nlove era didn't\nwork out",
+"Back To My\nParty Era\nBecause My\nLove Era Didn't\nWork Out"
+],
+[
+"be a good\nperson\neven if\nnothing\ncomes\nback\nin return",
+"Be A Good\nPerson\nEven If\nNothing\nComes\nBack\nIn Return"
+],
+[
+"be okay\nwith\nwaiting a\nlittle longer\nfor what\nyou\ndeserve",
+"Be Okay\nWith\nWaiting A\nLittle Longer\nFor What\nYou\nDeserve"
+],
+[
+"be patient with me, last time I got into a relationship I didn't smile for 6 months.",
+"Be Patient With Me, Last Time I Got Into A Relationship I Didn't Smile For 6 Months."
+],
+[
+"be with someone \nthat thinks that \nbeing with you is \nthe biggest win",
+"Be With Someone \nThat Thinks That \nBeing With You Is \nThe Biggest Win"
+],
+[
+"be with someone who \nthinks being with you \nis the biggest win",
+"Be With Someone Who \nThinks Being With You \nIs The Biggest Win"
+],
+[
+"become obsessed with the fact that your potential is endless and your ability to grow is infinite. you can be anything and everything you want twin.",
+"Become Obsessed With The Fact That Your Potential Is Endless And Your Ability To Grow Is Infinite. You Can Be Anything And Everything You Want Twin."
+],
+[
+"becoming friends with you has healed me in so many ways, twin",
+"Becoming Friends With You Has Healed Me In So Many Ways, Twin"
+],
+[
+"becoming friends with you somehow healed me in so many ways, twin",
+"Becoming Friends With You Somehow Healed Me In So Many Ways, Twin"
+],
+[
+"been cheated on, lied to, and left for someone else, and I'm still tryna love like i've never been hurt.",
+"Been Cheated On, Lied To, And Left For Someone Else, And I'm Still Tryna Love Like I've Never Been Hurt."
+],
+[
+"been so worried about getting my life together I almost forgot I’ve achieved some of my childhood dreams",
+"Been So Worried About Getting My Life Together I Almost Forgot I’ve Achieved Some Of My Childhood Dreams"
+],
+[
+"being normal\nwas never an\noption for me",
+"Being Normal\nWas Never An\nOption For Me"
+],
+[
+"biggest fear is getting into a relationship with a boy that has money and a normal family incase he's secretly judging my house, my family and my life.",
+"Biggest Fear Is Getting Into A Relationship With A Boy That Has Money And A Normal Family Incase He's Secretly Judging My House, My Family And My Life."
+],
+[
+"btw i really miss having class with you",
+"Btw I Really Miss Having Class With You"
+],
+[
+"btw i'd still kiss you if you were sick, knowing i could get sick too.",
+"Btw I'd Still Kiss You If You Were Sick, Knowing I Could Get Sick Too."
+],
+[
+"btw thank you for being such an amazing girlfriend.",
+"Btw Thank You For Being Such An Amazing Girlfriend."
+],
+[
+"btw the \"correct\" way to pronounce someone's name is however the fuck they told you to pronounce it",
+"Btw The \"Correct\" Way To Pronounce Someone's Name Is However The Fuck They Told You To Pronounce It"
+],
+[
+"btw you are that one friend i always update when anything happens even if it's the most boring thing. & thank you for never complaining i do",
+"Btw You Are That One Friend I Always Update When Anything Happens Even If It's The Most Boring Thing. & Thank You For Never Complaining I Do"
+],
+[
+"btw you are the person I trust with everything and tell everything.",
+"Btw You Are The Person I Trust With Everything And Tell Everything."
+],
+[
+"by the way i MISS you every second of the day.",
+"By The Way I MISS You Every Second Of The Day."
+],
+[
+"choose peace\nover one last\nconversation that\nwon't change\nanything",
+"Choose Peace\nOver One Last\nConversation That\nWon't Change\nAnything"
+],
+[
+"control your hunger for attention & you'll see how irrelevant most validation is.",
+"Control Your Hunger For Attention & You'll See How Irrelevant Most Validation Is."
+],
+[
+"daily streak:\nIt will feel calmer when we learn\nnot to react to everything.\nJust know, then let it pass.",
+"Daily Streak:\nIt Will Feel Calmer When We Learn\nNot To React To Everything.\nJust Know, Then Let It Pass."
+],
+[
+"daily streak:\ni don't need a million friends to be\nhappy, when i have someone like\nyou who is worth a million.",
+"Daily Streak:\nI Don't Need A Million Friends To Be\nHappy, When I Have Someone Like\nYou Who Is Worth A Million."
+],
+[
+"daily streak:\nthe real loser is me, when i say i accept\neverything but deep down i don't, it's\nso hard, and it pains me more than i\ncan explain.",
+"Daily Streak:\nThe Real Loser Is Me, When I Say I Accept\nEverything But Deep Down I Don't, It's\nSo Hard, And It Pains Me More Than I\nCan Explain."
+],
+[
+"daily streak:\nwhen you focus on the good, the\ngood gets better.",
+"Daily Streak:\nWhen You Focus On The Good, The\nGood Gets Better."
+],
+[
+"daily streak: Find a place where you are grateful, even if it is simple, at least your efforts are appreciated.",
+"Daily Streak: Find A Place Where You Are Grateful, Even If It Is Simple, At Least Your Efforts Are Appreciated."
+],
+[
+"daily streak: Maybe now everything feels heavy, but one day you will smile widely when you see all your dreams come true.",
+"Daily Streak: Maybe Now Everything Feels Heavy, But One Day You Will Smile Widely When You See All Your Dreams Come True."
+],
+[
+"daily streak: Whatever you face today, hopefully it will be better than yesterday.",
+"Daily Streak: Whatever You Face Today, Hopefully It Will Be Better Than Yesterday."
+],
+[
+"daily streak: always be gentle with yourself, you deserve so much more than all the negative thoughts in your head.",
+"Daily Streak: Always Be Gentle With Yourself, You Deserve So Much More Than All The Negative Thoughts In Your Head."
+],
+[
+"daily streak: when you focus on the good, the good gets better.",
+"Daily Streak: When You Focus On The Good, The Good Gets Better."
+],
+[
+"date idea: we sit and listen to my playlist in complete silence and you stand up and applaud me when it's finished",
+"Date Idea: We Sit And Listen To My Playlist In Complete Silence And You Stand Up And Applaud Me When It's Finished"
+],
+[
+"death is so sure of winning that it gives you a whole life as a head start so remember to carpe diem twin",
+"Death Is So Sure Of Winning That It Gives You A Whole Life As A Head Start So Remember To Carpe Diem Twin"
+],
+[
+"deleting me on social media is cool, but adding me again? lol respect yourself",
+"Deleting Me On Social Media Is Cool, But Adding Me Again? Lol Respect Yourself"
+],
+[
+"do you ever write a message but halfway through you think \"you know what fuck it, they don't even care\" and delete it",
+"Do You Ever Write A Message But Halfway Through You Think \"You Know What Fuck It, They Don't Even Care\" And Delete It"
+],
+[
+"don't do them how they did you, just disappear and do better",
+"Don't Do Them How They Did You, Just Disappear And Do Better"
+],
+[
+"don't know where I'm gonna be five years from now, but I pray to god it's somewhere with a beautiful view and beside you.",
+"Don't Know Where I'm Gonna Be Five Years From Now, But I Pray To God It's Somewhere With A Beautiful View And Beside You."
+],
+[
+"don't lower your expectations so people can fit in your life. i don't care if you're lonely on that mountain, it's your mountain. honor that\nDo not settle for less.\nNever.",
+"Don't Lower Your Expectations So People Can Fit In Your Life. I Don't Care If You're Lonely On That Mountain, It's Your Mountain. Honor That\nDo Not Settle For Less.\nNever."
+],
+[
+"don't wanna force anything but just know i want you and want us to work, hope you feel the same",
+"Don't Wanna Force Anything But Just Know I Want You And Want Us To Work, Hope You Feel The Same"
+],
+[
+"downside of being \nemotionally intelligent is \nthat i can list a thousand \nreasons why i should hate \na person, but ive analyzed \nthem to a point where i \nunderstand why they act \nthe way they do so really \ncan't even be mad",
+"Downside Of Being \nEmotionally Intelligent Is \nThat I Can List A Thousand \nReasons Why I Should Hate \nA Person, But Ive Analyzed \nThem To A Point Where I \nUnderstand Why They Act \nThe Way They Do So Really \nCan't Even Be Mad"
+],
+[
+"enjoy your\nunemployed\ndays while\nyou still can",
+"Enjoy Your\nUnemployed\nDays While\nYou Still Can"
+],
+[
+"even if you were a burden to bear I would gladly carry you — you are my friend",
+"Even If You Were A Burden To Bear I Would Gladly Carry You — You Are My Friend"
+],
+[
+"even on my worst days\nyou never fail to put a smile\non my face",
+"Even On My Worst Days\nYou Never Fail To Put A Smile\nOn My Face"
+],
+[
+"even on the worst days\nI only want you",
+"Even On The Worst Days\nI Only Want You"
+],
+[
+"eventually, you'll have to learn how to separate yourself from people who aren't on the same page as you anymore. spiritually, mentally, emotionally.",
+"Eventually, You'll Have To Learn How To Separate Yourself From People Who Aren't On The Same Page As You Anymore. Spiritually, Mentally, Emotionally."
+],
+[
+"everything happens for a reason. Example, we met bc we're gonna get married.",
+"Everything Happens For A Reason. Example, We Met Bc We're Gonna Get Married."
+],
+[
+"everything i want,\ni want with you.",
+"Everything I Want,\nI Want With You."
+],
+[
+"feeling alone???\ndon't!!\nI'm somewhere in your house right now",
+"Feeling Alone???\nDon't!!\nI'm Somewhere In Your House Right Now"
+],
+[
+"fell in love so hard i can't even picture us without each other in the future",
+"Fell In Love So Hard I Can't Even Picture Us Without Each Other In The Future"
+],
+[
+"fine ignore me then",
+"Fine Ignore Me Then"
+],
+[
+"for me, this song is about second guessing my worth when it comes to dating",
+"For Me, This Song Is About Second Guessing My Worth When It Comes To Dating"
+],
+[
+"forever choosing you,\nbecause you've made me\nfeel a way no one ever\ncould.",
+"Forever Choosing You,\nBecause You've Made Me\nFeel A Way No One Ever\nCould."
+],
+[
+"forever grateful for the ones who make me laugh no matter how bad my day was.",
+"Forever Grateful For The Ones Who Make Me Laugh No Matter How Bad My Day Was."
+],
+[
+"forever grateful of how close\nwe got randomly",
+"Forever Grateful Of How Close\nWe Got Randomly"
+],
+[
+"forgetting your headphones at home is the modern equivalent of leaving your sword behind in medieval times",
+"Forgetting Your Headphones At Home Is The Modern Equivalent Of Leaving Your Sword Behind In Medieval Times"
+],
+[
+"fortunately i do care about u so whenever you seem off i will worry.",
+"Fortunately I Do Care About U So Whenever You Seem Off I Will Worry."
+],
+[
+"fortunately, i do give up on people. you can't continuously drain me, disappoint me, and disrespect me while expecting me to keep being around",
+"Fortunately, I Do Give Up On People. You Can't Continuously Drain Me, Disappoint Me, And Disrespect Me While Expecting Me To Keep Being Around"
+],
+[
+"friends who go through hard times together stay together. thank u for being here",
+"Friends Who Go Through Hard Times Together Stay Together. Thank U For Being Here"
+],
+[
+"from the\nbottom of\nmy heart, i\nwant you to\nknow how\ngrateful i\nam to have\nyou in my\nlife.",
+"From The\nBottom Of\nMy Heart, I\nWant You To\nKnow How\nGrateful I\nAm To Have\nYou In My\nLife."
+],
+[
+"from the bottom of my heart, want you to know that i could never love another soul the way that i love yours.",
+"From The Bottom Of My Heart, Want You To Know That I Could Never Love Another Soul The Way That I Love Yours."
+],
+[
+"funny isn't it, how around this exact time last year we were so close and now we're strangers",
+"Funny Isn't It, How Around This Exact Time Last Year We Were So Close And Now We're Strangers"
+],
+[
+"girl friendships are so weird be i watched you forgive a man 100 times but then we have one issue and never speak again",
+"Girl Friendships Are So Weird Be I Watched You Forgive A Man 100 Times But Then We Have One Issue And Never Speak Again"
+],
+[
+"girlfriend?? nah I'm his wife. just not legally yet.",
+"Girlfriend?? Nah I'm His Wife. Just Not Legally Yet."
+],
+[
+"go to work, come home, go to sleep, repeat. whatever you do, just don't think about everything that hurt you.",
+"Go To Work, Come Home, Go To Sleep, Repeat. Whatever You Do, Just Don't Think About Everything That Hurt You."
+],
+[
+"good luck sending me mixed signals I dont even understand the direct ones",
+"Good Luck Sending Me Mixed Signals I Dont Even Understand The Direct Ones"
+],
+[
+"hahahahah chill\nguys i cant\nreply to all 0\nnotifications at\nonce",
+"Hahahahah Chill\nGuys I Cant\nReply To All 0\nNotifications At\nOnce"
+],
+[
+"hate to break this to you but if you call yourself self aware but you are only aware of your faults and never acknowledge your strengths you are not self aware. you have repackaged your self hatred",
+"Hate To Break This To You But If You Call Yourself Self Aware But You Are Only Aware Of Your Faults And Never Acknowledge Your Strengths You Are Not Self Aware. You Have Repackaged Your Self Hatred"
+],
+[
+"hate when i\nhave to be\nmean\nwhy would\nyou push a\nsweet girl like\nme this far",
+"Hate When I\nHave To Be\nMean\nWhy Would\nYou Push A\nSweet Girl Like\nMe This Far"
+],
+[
+"hate when i am respecting someone's distance but at the same time suffocating in the love i have for them. yellow font theory",
+"Hate When I Am Respecting Someone's Distance But At The Same Time Suffocating In The Love I Have For Them. Yellow Font Theory"
+],
+[
+"haven't seen\nmy bestie in\na minute\nfeeling kinda\nemotional",
+"Haven't Seen\nMy Bestie In\nA Minute\nFeeling Kinda\nEmotional"
+],
+[
+"having that friend that you can just really talk about life, religious beliefs, brainrot, serious moments, family, also laugh with and they won't judge you",
+"Having That Friend That You Can Just Really Talk About Life, Religious Beliefs, Brainrot, Serious Moments, Family, Also Laugh With And They Won't Judge You"
+],
+[
+"her laugh. her eyes. her smile. her personality. her voice. her humors. her hair. HER.",
+"Her Laugh. Her Eyes. Her Smile. Her Personality. Her Voice. Her Humors. Her Hair. HER."
+],
+[
+"hey bestie i miss eating lunch at school with you",
+"Hey Bestie I Miss Eating Lunch At School With You"
+],
+[
+"hey ho I wish you lived closer",
+"Hey Ho I Wish You Lived Closer"
+],
+[
+"hey ho did you get all the love I just sent you telepathically",
+"Hey Ho Did You Get All The Love I Just Sent You Telepathically"
+],
+[
+"hey ho i appreciate our friendship more than you could ever know",
+"Hey Ho I Appreciate Our Friendship More Than You Could Ever Know"
+],
+[
+"hey ho i miss eating school lunch with u",
+"Hey Ho I Miss Eating School Lunch With U"
+],
+[
+"hey ho i miss having class with u",
+"Hey Ho I Miss Having Class With U"
+],
+[
+"hey ho i miss late night roblox with you",
+"Hey Ho I Miss Late Night Roblox With You"
+],
+[
+"hey ho i miss the late night roblox with you",
+"Hey Ho I Miss The Late Night Roblox With You"
+],
+[
+"hey ho miss when we we're still in the same class making fun of everyone together",
+"Hey Ho Miss When We We're Still In The Same Class Making Fun Of Everyone Together"
+],
+[
+"hey ho please never stop being my friend. I fear I will never find someone who gets me like you do",
+"Hey Ho Please Never Stop Being My Friend. I Fear I Will Never Find Someone Who Gets Me Like You Do"
+],
+[
+"hey ho thank u for being the person i can have deep conversations with and also laugh about the most random and dumb stuff",
+"Hey Ho Thank U For Being The Person I Can Have Deep Conversations With And Also Laugh About The Most Random And Dumb Stuff"
+],
+[
+"hey ho thank u for spamming me with 50+ tiktoks every day, sorry if I didn't reply to all of them. love u",
+"Hey Ho Thank U For Spamming Me With 50+ Tiktoks Every Day, Sorry If I Didn't Reply To All Of Them. Love U"
+],
+[
+"hey ho ur my best friend ever, so if u ever need me I'm just 5 missed calls and 15 texts away",
+"Hey Ho Ur My Best Friend Ever, So If U Ever Need Me I'm Just 5 Missed Calls And 15 Texts Away"
+],
+[
+"hey ho we should definitely take more pictures together",
+"Hey Ho We Should Definitely Take More Pictures Together"
+],
+[
+"hey ho you're my best friend ever so if you ever need me I'm just 5 missed calls and 15 unread text messages away",
+"Hey Ho You're My Best Friend Ever So If You Ever Need Me I'm Just 5 Missed Calls And 15 Unread Text Messages Away"
+],
+[
+"hey ho, can u please move to my class? nobody understands my jokes like you do",
+"Hey Ho, Can U Please Move To My Class? Nobody Understands My Jokes Like You Do"
+],
+[
+"hey ho, could u please just stay by my side forever? ur such a good friend and being with u feels like home",
+"Hey Ho, Could U Please Just Stay By My Side Forever? Ur Such A Good Friend And Being With U Feels Like Home"
+],
+[
+"hey ho, i just wanna say thanks for being the one who makes me laugh even when everything feels so heavy",
+"Hey Ho, I Just Wanna Say Thanks For Being The One Who Makes Me Laugh Even When Everything Feels So Heavy"
+],
+[
+"hey ho, i miss having class with u so much",
+"Hey Ho, I Miss Having Class With U So Much"
+],
+[
+"hey ho, i miss seeing u every day in class",
+"Hey Ho, I Miss Seeing U Every Day In Class"
+],
+[
+"hey ho, i miss when we went to school together",
+"Hey Ho, I Miss When We Went To School Together"
+],
+[
+"hey ho, i really miss having class with u and all the silly laughs we used to share",
+"Hey Ho, I Really Miss Having Class With U And All The Silly Laughs We Used To Share"
+],
+[
+"hey ho, i wish we lived closer",
+"Hey Ho, I Wish We Lived Closer"
+],
+[
+"hey ho, i'm not great with words, but i hope you know i care about you a lot",
+"Hey Ho, I'm Not Great With Words, But I Hope You Know I Care About You A Lot"
+],
+[
+"hey ho, if there's one thing i didn't mess up, it's picking u as my bestie",
+"Hey Ho, If There's One Thing I Didn't Mess Up, It's Picking U As My Bestie"
+],
+[
+"hey ho, just thank u for being an amazing friend",
+"Hey Ho, Just Thank U For Being An Amazing Friend"
+],
+[
+"hey ho, no matter how many friends i make, no one could ever replace you, you're my soulmate for life",
+"Hey Ho, No Matter How Many Friends I Make, No One Could Ever Replace You, You're My Soulmate For Life"
+],
+[
+"hey ho, our friendship will forever be my favourite",
+"Hey Ho, Our Friendship Will Forever Be My Favourite"
+],
+[
+"hey ho, please never stop being my friend. i fear I'll never find someone who gets me like you do",
+"Hey Ho, Please Never Stop Being My Friend. I Fear I'll Never Find Someone Who Gets Me Like You Do"
+],
+[
+"hey ho, so when are we playing roblox again?",
+"Hey Ho, So When Are We Playing Roblox Again?"
+],
+[
+"hey ho, sometimes i randomly miss being in class with u",
+"Hey Ho, Sometimes I Randomly Miss Being In Class With U"
+],
+[
+"hey ho, thank u 4 listening to me talk about it again, again, again and again",
+"Hey Ho, Thank U 4 Listening To Me Talk About It Again, Again, Again And Again"
+],
+[
+"hey ho, thank u for getting me out of the house and distracting me from everything going on in my head",
+"Hey Ho, Thank U For Getting Me Out Of The House And Distracting Me From Everything Going On In My Head"
+],
+[
+"hey ho, thank you for being the person I can have deep conversations with but also laugh about the dumbest stuff",
+"Hey Ho, Thank You For Being The Person I Can Have Deep Conversations With But Also Laugh About The Dumbest Stuff"
+],
+[
+"hey ho, thanks for letting me complain about the same situation over and over again",
+"Hey Ho, Thanks For Letting Me Complain About The Same Situation Over And Over Again"
+],
+[
+"hey ho, u don't have any disorders these are symptoms of being an angel",
+"Hey Ho, U Don't Have Any Disorders These Are Symptoms Of Being An Angel"
+],
+[
+"hey ho, you're not just my friend, you're my family",
+"Hey Ho, You're Not Just My Friend, You're My Family"
+],
+[
+"hey ho, you’re not just my friend, you’re my family",
+"Hey Ho, You’re Not Just My Friend, You’re My Family"
+],
+[
+"hey ho. sorry i send you so many tiktoks. i love u ho",
+"Hey Ho. Sorry I Send You So Many Tiktoks. I Love U Ho"
+],
+[
+"hey so i kinda miss you rn or wtv. jk not kinda. alot.\nI miss you a lot so teleport to me. please and thank u",
+"Hey So I Kinda Miss You Rn Or Wtv. Jk Not Kinda. Alot.\nI Miss You A Lot So Teleport To Me. Please And Thank U"
+],
+[
+"hey twin i miss you let's hang out soon",
+"Hey Twin I Miss You Let's Hang Out Soon"
+],
+[
+"hey twin our\nfriendship healed\nme... thank you",
+"Hey Twin Our\nFriendship Healed\nMe... Thank You"
+],
+[
+"hey twin our friendship healed me. thank you",
+"Hey Twin Our Friendship Healed Me. Thank You"
+],
+[
+"hey twin ur actually living proof that genuine people with beautiful souls do exist",
+"Hey Twin Ur Actually Living Proof That Genuine People With Beautiful Souls Do Exist"
+],
+[
+"hey twin,\nI’ll miss eating\nschool lunch\nwith you sm",
+"Hey Twin,\nI’ll Miss Eating\nSchool Lunch\nWith You Sm"
+],
+[
+"hey you're my best friend ever so if\nyou ever need me I'm only 5 missed calls\nand 15 unread text messages away",
+"Hey You're My Best Friend Ever So If\nYou Ever Need Me I'm Only 5 Missed Calls\nAnd 15 Unread Text Messages Away"
+],
+[
+"hey, i miss u a little extra when i realize no laugh will ever hit as hard as the ones we had in school for absolutely no reason",
+"Hey, I Miss U A Little Extra When I Realize No Laugh Will Ever Hit As Hard As The Ones We Had In School For Absolutely No Reason"
+],
+[
+"high key wanna marry you and annoy you for the rest of our lives.",
+"High Key Wanna Marry You And Annoy You For The Rest Of Our Lives."
+],
+[
+"hope none of my friends are suffering in silence. if u are u can call me twin anytime anywhere love u.",
+"Hope None Of My Friends Are Suffering In Silence. If U Are U Can Call Me Twin Anytime Anywhere Love U."
+],
+[
+"how could i ever replace you\nwith someone else when you're\nthe one i wished for for so long",
+"How Could I Ever Replace You\nWith Someone Else When You're\nThe One I Wished For For So Long"
+],
+[
+"how could i ever replace you with someone else whenever I literally talk God abt you.",
+"How Could I Ever Replace You With Someone Else Whenever I Literally Talk God Abt You."
+],
+[
+"how i expect my gf to defend me when the restaurant gets my order wrong",
+"How I Expect My Gf To Defend Me When The Restaurant Gets My Order Wrong"
+],
+[
+"how it feels\ngoing into\nsummer with\nthe best\ngirlfriend\never",
+"How It Feels\nGoing Into\nSummer With\nThe Best\nGirlfriend\nEver"
+],
+[
+"how it feels to get your old self back, take control over your mind and break every mental barrier.",
+"How It Feels To Get Your Old Self Back, Take Control Over Your Mind And Break Every Mental Barrier."
+],
+[
+"i am a lover with or without a lover. because love is who i am not who i'm with",
+"I Am A Lover With Or Without A Lover. Because Love Is Who I Am Not Who I'm With"
+],
+[
+"i am not meant for casual\ni crave soul crushing\ndevotion",
+"I Am Not Meant For Casual\nI Crave Soul Crushing\nDevotion"
+],
+[
+"i automatically say idk to everything when im too lazy to talk",
+"I Automatically Say Idk To Everything When Im Too Lazy To Talk"
+],
+[
+"i can't wait for the day when home is somewhere we both live",
+"I Can't Wait For The Day When Home Is Somewhere We Both Live"
+],
+[
+"i can't wait till\nit's just us living\ntogether never\nhaving to say\ngoodbye to\ncuddles and\nkisses.",
+"I Can't Wait Till\nIt's Just Us Living\nTogether Never\nHaving To Say\nGoodbye To\nCuddles And\nKisses."
+],
+[
+"i choose you. and i'll choose you over and over. without a pause, without a doubt, in a heartbeat. i'll keep choosing you.",
+"I Choose You. And I'll Choose You Over And Over. Without A Pause, Without A Doubt, In A Heartbeat. I'll Keep Choosing You."
+],
+[
+"i could be thousands of miles away and still know who i'm loyal to.",
+"I Could Be Thousands Of Miles Away And Still Know Who I'm Loyal To."
+],
+[
+"i could be with you for hours and still manage to not wanna leave. the minute i leave i miss you so much.",
+"I Could Be With You For Hours And Still Manage To Not Wanna Leave. The Minute I Leave I Miss You So Much."
+],
+[
+"i don't care how much\nweight you can lift or\nhow many push-ups\nyou can do, if u can't\ncontrol your lust then\nyou're no man.",
+"I Don't Care How Much\nWeight You Can Lift Or\nHow Many Push-Ups\nYou Can Do, If U Can't\nControl Your Lust Then\nYou're No Man."
+],
+[
+"i don't know how to thank you, but i am so glad you came into my life because you made it so much better",
+"I Don't Know How To Thank You, But I Am So Glad You Came Into My Life Because You Made It So Much Better"
+],
+[
+"i don't know how to thank you, but i am to glad you came into my life because you made it so much better.",
+"I Don't Know How To Thank You, But I Am To Glad You Came Into My Life Because You Made It So Much Better."
+],
+[
+"i don't think\ni'm afraid\nof people leaving.\ni think\ni'm afraid\nthey'll be happier\nwithout me.",
+"I Don't Think\nI'm Afraid\nOf People Leaving.\nI Think\nI'm Afraid\nThey'll Be Happier\nWithout Me."
+],
+[
+"i don’t think\ni’m afraid\nof people leaving.\ni think\ni’m afraid\nthey’ll be happier\nwithout me.",
+"I Don’t Think\nI’m Afraid\nOf People Leaving.\nI Think\nI’m Afraid\nThey’ll Be Happier\nWithout Me."
+],
+[
+"i found the person i want to marry.",
+"I Found The Person I Want To Marry."
+],
+[
+"i hope 10 years from now, we still be friends and every single one of us will be successful in life.",
+"I Hope 10 Years From Now, We Still Be Friends And Every Single One Of Us Will Be Successful In Life."
+],
+[
+"i hope death is like being carried to your bedroom when you were a child fell asleep on the couch during a family party i hope you can hear the laughter from the next room 3",
+"I Hope Death Is Like Being Carried To Your Bedroom When You Were A Child Fell Asleep On The Couch During A Family Party I Hope You Can Hear The Laughter From The Next Room 3"
+],
+[
+"i hope everything goes well for you today. i hope the universe give you all the good and genuine things you deserve",
+"I Hope Everything Goes Well For You Today. I Hope The Universe Give You All The Good And Genuine Things You Deserve"
+],
+[
+"i hope good things happen to you this week and when they do, just know you deserve every bit of it, twin",
+"I Hope Good Things Happen To You This Week And When They Do, Just Know You Deserve Every Bit Of It, Twin"
+],
+[
+"i hope i make\nyou as happy\nas you make\nme.",
+"I Hope I Make\nYou As Happy\nAs You Make\nMe."
+],
+[
+"i hope that you will win in life,\nbecause you deserve it more\nthan anything else.",
+"I Hope That You Will Win In Life,\nBecause You Deserve It More\nThan Anything Else."
+],
+[
+"i hope the next global trend will be basic human empathy",
+"I Hope The Next Global Trend Will Be Basic Human Empathy"
+],
+[
+"i hope the next global trend will be critical thinking, empathy, and loving your neighbor as much as you love yourself",
+"I Hope The Next Global Trend Will Be Critical Thinking, Empathy, And Loving Your Neighbor As Much As You Love Yourself"
+],
+[
+"i hope the next global trend will be empathy and critical thinking",
+"I Hope The Next Global Trend Will Be Empathy And Critical Thinking"
+],
+[
+"i hope the next global trend will be empathy and humanity",
+"I Hope The Next Global Trend Will Be Empathy And Humanity"
+],
+[
+"i hope the next global trend will be empathy, critical thinking, and common decency",
+"I Hope The Next Global Trend Will Be Empathy, Critical Thinking, And Common Decency"
+],
+[
+"i hope you don't forget the way we looked at each other, when it was just us",
+"I Hope You Don't Forget The Way We Looked At Each Other, When It Was Just Us"
+],
+[
+"i hope you feel pretty today, your coffee tastes good, and something good happens to you",
+"I Hope You Feel Pretty Today, Your Coffee Tastes Good, And Something Good Happens To You"
+],
+[
+"i hope you find someone who speaks your language so you don't have to spend a lifetime translating your soul.",
+"I Hope You Find Someone Who Speaks Your Language So You Don't Have To Spend A Lifetime Translating Your Soul."
+],
+[
+"i hope you find success, happiness, and everything you wanted. just don't forget the person who believed in you before anyone else did.",
+"I Hope You Find Success, Happiness, And Everything You Wanted. Just Don't Forget The Person Who Believed In You Before Anyone Else Did."
+],
+[
+"i hope you know how highly i speak of you, twin",
+"I Hope You Know How Highly I Speak Of You, Twin"
+],
+[
+"i just want to remind you that whatever you're struggling with right now, i'm sure you can overcome it. just believe in yourself a little more that you can do it, and everything will work out the way you want it to. i know you've got this.",
+"I Just Want To Remind You That Whatever You're Struggling With Right Now, I'm Sure You Can Overcome It. Just Believe In Yourself A Little More That You Can Do It, And Everything Will Work Out The Way You Want It To. I Know You've Got This."
+],
+[
+"i know God is\nreal because\ni prayed for\nsomeone like\nyou and now\nyou are in my\nlife",
+"I Know God Is\nReal Because\nI Prayed For\nSomeone Like\nYou And Now\nYou Are In My\nLife"
+],
+[
+"i know i can't undo the hurt i caused,\nbut a part of me will always hope\nyou're happy, loved, and doing\nok without me.",
+"I Know I Can't Undo The Hurt I Caused,\nBut A Part Of Me Will Always Hope\nYou're Happy, Loved, And Doing\nOk Without Me."
+],
+[
+"i know i won in life\nbecause i have someone\nlike you.",
+"I Know I Won In Life\nBecause I Have Someone\nLike You."
+],
+[
+"i know im healing when i no longer chase after people who show me that they're not interested. nothing good comes out of trying to \"meet in the middle\" with people who wouldn't move an inch for me",
+"I Know Im Healing When I No Longer Chase After People Who Show Me That They're Not Interested. Nothing Good Comes Out Of Trying To \"Meet In The Middle\" With People Who Wouldn't Move An Inch For Me"
+],
+[
+"i know love exists cause my trio exists, i love u guys with my whole heart",
+"I Know Love Exists Cause My Trio Exists, I Love U Guys With My Whole Heart"
+],
+[
+"i know true friendships exist cause we exist",
+"I Know True Friendships Exist Cause We Exist"
+],
+[
+"i liked him too early, i liked him too late he never liked me at all!",
+"I Liked Him Too Early, I Liked Him Too Late He Never Liked Me At All!"
+],
+[
+"i love how happy i feel after being around the right friends, there's something so special about platonic love that fills my heart.",
+"I Love How Happy I Feel After Being Around The Right Friends, There's Something So Special About Platonic Love That Fills My Heart."
+],
+[
+"i love nerdy people like yes yap to me about your niche interests that i know nothing about, twin",
+"I Love Nerdy People Like Yes Yap To Me About Your Niche Interests That I Know Nothing About, Twin"
+],
+[
+"i love our silly conversations more than you think",
+"I Love Our Silly Conversations More Than You Think"
+],
+[
+"i love to sleep but for you i'd mess up my sleep schedule",
+"I Love To Sleep But For You I'd Mess Up My Sleep Schedule"
+],
+[
+"i love you",
+"I Love You"
+],
+[
+"i love you with all my heart.",
+"I Love You With All My Heart."
+],
+[
+"i love you, and i will always love you because loving you always felt like home.",
+"I Love You, And I Will Always Love You Because Loving You Always Felt Like Home."
+],
+[
+"i love you. i want us both to eat well",
+"I Love You. I Want Us Both To Eat Well"
+],
+[
+"i loveeee youuuu soooooo muchhhhh, my beautifulll girlfriend.",
+"I Loveeee Youuuu Soooooo Muchhhhh, My Beautifulll Girlfriend."
+],
+[
+"i meow you , do you meow me???",
+"I Meow You , Do You Meow Me???"
+],
+[
+"i met you. i liked you. i love you. i'm keeping you.",
+"I Met You. I Liked You. I Love You. I'm Keeping You."
+],
+[
+"i miss having\nlunch break at\nschool with you",
+"I Miss Having\nLunch Break At\nSchool With You"
+],
+[
+"i miss our night roblox sessions",
+"I Miss Our Night Roblox Sessions"
+],
+[
+"i miss playing Fortnite with you",
+"I Miss Playing Fortnite With You"
+],
+[
+"i miss playing minecraft with you",
+"I Miss Playing Minecraft With You"
+],
+[
+"i miss u a little extra when nobody gets my brainrot reference and looks at me like I'm crazy or something",
+"I Miss U A Little Extra When Nobody Gets My Brainrot Reference And Looks At Me Like I'm Crazy Or Something"
+],
+[
+"i miss you\ni wanna hang out with you\ni wanna hug you\ni wanna yap with you\ni miss you",
+"I Miss You\nI Wanna Hang Out With You\nI Wanna Hug You\nI Wanna Yap With You\nI Miss You"
+],
+[
+"i miss you a little extra when i realize we're never going to be in the same class again",
+"I Miss You A Little Extra When I Realize We're Never Going To Be In The Same Class Again"
+],
+[
+"i miss you a little more\nwhen i catch myself saying\nthings you used to say",
+"I Miss You A Little More\nWhen I Catch Myself Saying\nThings You Used To Say"
+],
+[
+"i miss.. actually i don't even know what i FREAKING miss but i just miss something",
+"I Miss.. Actually I Don't Even Know What I FREAKING Miss But I Just Miss Something"
+],
+[
+"i need only YOUUU. i want only YOUUU. i love only YOUUU.",
+"I Need Only YOUUU. I Want Only YOUUU. I Love Only YOUUU."
+],
+[
+"i never used to let people come too close and then there was you that came in and settled in the depths of my soul.",
+"I Never Used To Let People Come Too Close And Then There Was You That Came In And Settled In The Depths Of My Soul."
+],
+[
+"i never want to lose you,\nbecause my life has been so\nmuch better since the day\ni met you.",
+"I Never Want To Lose You,\nBecause My Life Has Been So\nMuch Better Since The Day\nI Met You."
+],
+[
+"i never wanted you to be\nanother lesson, out of all\npeople i wanted you to stay,\ni wanted to love you",
+"I Never Wanted You To Be\nAnother Lesson, Out Of All\nPeople I Wanted You To Stay,\nI Wanted To Love You"
+],
+[
+"i only wanted 1 bf this summer but if god wants me to have 3 then ig 7 will have to do",
+"I Only Wanted 1 Bf This Summer But If God Wants Me To Have 3 Then Ig 7 Will Have To Do"
+],
+[
+"i pray something so beautiful\nwill happen to you, that you'll\nforget everything that has\never hurt you.",
+"I Pray Something So Beautiful\nWill Happen To You, That You'll\nForget Everything That Has\nEver Hurt You."
+],
+[
+"i promise to choose you, even on days where we don't understand each other. I'll always choose you.",
+"I Promise To Choose You, Even On Days Where We Don't Understand Each Other. I'll Always Choose You."
+],
+[
+"i really hope I'm treating you right sweetheart, l love you more than I love myself.",
+"I Really Hope I'm Treating You Right Sweetheart, L Love You More Than I Love Myself."
+],
+[
+"i really hope we don't\nturn into strangers.",
+"I Really Hope We Don't\nTurn Into Strangers."
+],
+[
+"i really miss\nhaving school\nlunch break\nwith you",
+"I Really Miss\nHaving School\nLunch Break\nWith You"
+],
+[
+"i still remember how shy we were when we first met each other and now look at US",
+"I Still Remember How Shy We Were When We First Met Each Other And Now Look At US"
+],
+[
+"i want to learn\nall the things\nabout you\nnobody has\ncared enough\nto get to know",
+"I Want To Learn\nAll The Things\nAbout You\nNobody Has\nCared Enough\nTo Get To Know"
+],
+[
+"i want to see you win i want to\nsee you achieve all your dreams\nbecause you deserve the world",
+"I Want To See You Win I Want To\nSee You Achieve All Your Dreams\nBecause You Deserve The World"
+],
+[
+"i was going to wait for you but my self worth showed up instead",
+"I Was Going To Wait For You But My Self Worth Showed Up Instead"
+],
+[
+"i was thinking about you earlier did you feel it twin",
+"I Was Thinking About You Earlier Did You Feel It Twin"
+],
+[
+"i will ALWAYS\nbing you up as an\nexample of what a\ntrue friend should\nlook like, gng",
+"I Will ALWAYS\nBing You Up As An\nExample Of What A\nTrue Friend Should\nLook Like, Gng"
+],
+[
+"i will ALWAYS\nbring you up as an\nexample of what a\ntrue friend should\nlook like, gng",
+"I Will ALWAYS\nBring You Up As An\nExample Of What A\nTrue Friend Should\nLook Like, Gng"
+],
+[
+"i will always\ncare about you,\nalways.",
+"I Will Always\nCare About You,\nAlways."
+],
+[
+"i will always\npurposely\nignore hints so\npeople can\nspeak up and\nbe direct",
+"I Will Always\nPurposely\nIgnore Hints So\nPeople Can\nSpeak Up And\nBe Direct"
+],
+[
+"i will never regret the choices i made\nbecause, somehow, they shaped me\ninto the person i am today",
+"I Will Never Regret The Choices I Made\nBecause, Somehow, They Shaped Me\nInto The Person I Am Today"
+],
+[
+"i wish i knew you when we were kids",
+"I Wish I Knew You When We Were Kids"
+],
+[
+"i wish you all the good things this world can offer",
+"I Wish You All The Good Things This World Can Offer"
+],
+[
+"i would choose\nyou as my best\nfriend in every\nlifetime again\nand again",
+"I Would Choose\nYou As My Best\nFriend In Every\nLifetime Again\nAnd Again"
+],
+[
+"i would choose\nyou to be my\nbest friend in\nevery lifetime\nagain and again.",
+"I Would Choose\nYou To Be My\nBest Friend In\nEvery Lifetime\nAgain And Again."
+],
+[
+"i'll distance myself quietly. no fight. no explanation. just gone.",
+"I'll Distance Myself Quietly. No Fight. No Explanation. Just Gone."
+],
+[
+"i'll either go out and wish i was home or stay home and wish i went out",
+"I'll Either Go Out And Wish I Was Home Or Stay Home And Wish I Went Out"
+],
+[
+"i'll forever miss being in class with you",
+"I'll Forever Miss Being In Class With You"
+],
+[
+"i'm awake\nmy wallet\nis in danger",
+"I'm Awake\nMy Wallet\nIs In Danger"
+],
+[
+"i'm flirting telepathically rn so if you randomly start giggling out of nowhere just know that was me",
+"I'm Flirting Telepathically Rn So If You Randomly Start Giggling Out Of Nowhere Just Know That Was Me"
+],
+[
+"i'm forever grateful for how close we have gotten this year",
+"I'm Forever Grateful For How Close We Have Gotten This Year"
+],
+[
+"i'm lowk not even that funny y'all just wanna hit",
+"I'm Lowk Not Even That Funny Y'all Just Wanna Hit"
+],
+[
+"i'm really scared of losing you.",
+"I'm Really Scared Of Losing You."
+],
+[
+"i'm single in case someone not ugly was wondering",
+"I'm Single In Case Someone Not Ugly Was Wondering"
+],
+[
+"i'm the happiest depressed person you'l ever meet. i'm losing my battle more than you know but yet you think i'm the happiest person ever.",
+"I'm The Happiest Depressed Person You'l Ever Meet. I'm Losing My Battle More Than You Know But Yet You Think I'm The Happiest Person Ever."
+],
+[
+"i. hope. our. friendship. never. ends.",
+"I. Hope. Our. Friendship. Never. Ends."
+],
+[
+"i. hope. out. friendship. never. ends.",
+"I. Hope. Out. Friendship. Never. Ends."
+],
+[
+"idc how little we talk ill always call you my twin because you were always there for me when nobody else was",
+"Idc How Little We Talk Ill Always Call You My Twin Because You Were Always There For Me When Nobody Else Was"
+],
+[
+"idk I kinda love the concept that being your authentic self will scare away the people who aren't meant for you.",
+"Idk I Kinda Love The Concept That Being Your Authentic Self Will Scare Away The People Who Aren't Meant For You."
+],
+[
+"idk how i got so lucky but im so glad i get to be with you",
+"Idk How I Got So Lucky But Im So Glad I Get To Be With You"
+],
+[
+"idk how to flirt but i can drink.",
+"Idk How To Flirt But I Can Drink."
+],
+[
+"idk what my future holds but i know that i want you there",
+"Idk What My Future Holds But I Know That I Want You There"
+],
+[
+"if I was a bird,\nI know exactly\nwho I'd shit\non.",
+"If I Was A Bird,\nI Know Exactly\nWho I'd Shit\nOn."
+],
+[
+"if both of us were words you'd be my synonym, twin",
+"If Both Of Us Were Words You'd Be My Synonym, Twin"
+],
+[
+"if guys pee standing and poop sitting\nand girls pee sitting\ndoes that mean...",
+"If Guys Pee Standing And Poop Sitting\nAnd Girls Pee Sitting\nDoes That Mean..."
+],
+[
+"if he sent you this, it means he stopped scrolling to tell his favourite girl how beautiful she is.",
+"If He Sent You This, It Means He Stopped Scrolling To Tell His Favourite Girl How Beautiful She Is."
+],
+[
+"if i could show you how awful you made me feel, you would never be able to look me in the eyes again",
+"If I Could Show You How Awful You Made Me Feel, You Would Never Be Able To Look Me In The Eyes Again"
+],
+[
+"if i do nothing else on this earth\nbut make people feel heard &\nseen during a time when they\nfelt like they were drowning,\ni've served my time well.",
+"If I Do Nothing Else On This Earth\nBut Make People Feel Heard &\nSeen During A Time When They\nFelt Like They Were Drowning,\nI've Served My Time Well."
+],
+[
+"if i had a\nflower for\nevery time i\nthought\nof you, i\ncould walk\nthrough my\ngarden\nforever",
+"If I Had A\nFlower For\nEvery Time I\nThought\nOf You, I\nCould Walk\nThrough My\nGarden\nForever"
+],
+[
+"if someone can smoke knowing it destroys their lungs, what's wrong w waiting for a love that u knew wouldn’t return",
+"If Someone Can Smoke Knowing It Destroys Their Lungs, What's Wrong W Waiting For A Love That U Knew Wouldn’t Return"
+],
+[
+"if you believe friendships can't have romantic or sexual dimensions and that platonic soulmates aren't a thing, i'm just gonna think you're very, very, painfully straight",
+"If You Believe Friendships Can't Have Romantic Or Sexual Dimensions And That Platonic Soulmates Aren't A Thing, I'm Just Gonna Think You're Very, Very, Painfully Straight"
+],
+[
+"if you can love the wrong person that much, just imagine how much you'll love the right one",
+"If You Can Love The Wrong Person That Much, Just Imagine How Much You'll Love The Right One"
+],
+[
+"if your absence doesn't affect them your presence never mattered.",
+"If Your Absence Doesn't Affect Them Your Presence Never Mattered."
+],
+[
+"ill either go out and wish i was at home or ill stay home anf wish i went out",
+"Ill Either Go Out And Wish I Was At Home Or Ill Stay Home Anf Wish I Went Out"
+],
+[
+"imagine how boring your life would be without my annoying self.",
+"Imagine How Boring Your Life Would Be Without My Annoying Self."
+],
+[
+"immediately understood\nwhy it didn't work with\nanyone else because it was\nsupposed to be you all\nalong",
+"Immediately Understood\nWhy It Didn't Work With\nAnyone Else Because It Was\nSupposed To Be You All\nAlong"
+],
+[
+"in my eyes\nyou are\nprefect.",
+"In My Eyes\nYou Are\nPrefect."
+],
+[
+"in your life, there will be a moment where you will choose between a life you know & a life you want. it's very important you choose the life that scares you.",
+"In Your Life, There Will Be A Moment Where You Will Choose Between A Life You Know & A Life You Want. It's Very Important You Choose The Life That Scares You."
+],
+[
+"is anyone else constantly ignored by LITERALLY everyone in their life or is it just me ok",
+"Is Anyone Else Constantly Ignored By LITERALLY Everyone In Their Life Or Is It Just Me Ok"
+],
+[
+"it feels so good when someone says \"that's so you\" — it feels so good to know I exist and have a vibe",
+"It Feels So Good When Someone Says \"That's So You\" — It Feels So Good To Know I Exist And Have A Vibe"
+],
+[
+"it is what it is, but what it is will never be how i want it",
+"It Is What It Is, But What It Is Will Never Be How I Want It"
+],
+[
+"it still feels unreal that i get to dream like this with you 🥺❤️",
+"It Still Feels Unreal That I Get To Dream Like This With You 🥺❤️"
+],
+[
+"it's so cool to realize that\nwe're friends not because of\nmoney, status, or benefits,\nbut because we're two idiots\nwho laugh at everything",
+"It's So Cool To Realize That\nWe're Friends Not Because Of\nMoney, Status, Or Benefits,\nBut Because We're Two Idiots\nWho Laugh At Everything"
+],
+[
+"i’m actually a very self aware person i just like to do stuff for the plot sometimes",
+"I’m Actually A Very Self Aware Person I Just Like To Do Stuff For The Plot Sometimes"
+],
+[
+"just a reminder, you're not just my friend, you're my family",
+"Just A Reminder, You're Not Just My Friend, You're My Family"
+],
+[
+"just saw a girl on tiktok say gas prices don't effect her cause she puts 20 every time",
+"Just Saw A Girl On Tiktok Say Gas Prices Don't Effect Her Cause She Puts 20 Every Time"
+],
+[
+"keep in mind there's a clock ticking we can't see, so love who loves you and live life.",
+"Keep In Mind There's A Clock Ticking We Can't See, So Love Who Loves You And Live Life."
+],
+[
+"kinda miss you rn.",
+"Kinda Miss You Rn."
+],
+[
+"kinda tired of being\nokay with things i'm not\nokay with.",
+"Kinda Tired Of Being\nOkay With Things I'm Not\nOkay With."
+],
+[
+"know neither of us will ever call eachother but I also know both of us will always answer, so I guess it really is over this time, twin",
+"Know Neither Of Us Will Ever Call Eachother But I Also Know Both Of Us Will Always Answer, So I Guess It Really Is Over This Time, Twin"
+],
+[
+"life might throw challenges your way, but remember, you're growing stronger with every obstacle. you've got this",
+"Life Might Throw Challenges Your Way, But Remember, You're Growing Stronger With Every Obstacle. You've Got This"
+],
+[
+"literally everything just makes me sick to my stomach at this point",
+"Literally Everything Just Makes Me Sick To My Stomach At This Point"
+],
+[
+"luckiest boy on earth\nrn because you are my\ngirlfriend.",
+"Luckiest Boy On Earth\nRn Because You Are My\nGirlfriend."
+],
+[
+"luckiest boy on earth because you're my girlfriend.",
+"Luckiest Boy On Earth Because You're My Girlfriend."
+],
+[
+"made an\nexception in my\nstrict single life\nand got ghosted\nthat's my why.",
+"Made An\nException In My\nStrict Single Life\nAnd Got Ghosted\nThat's My Why."
+],
+[
+"making a person feel loved\nis more important than\ntelling them you love them",
+"Making A Person Feel Loved\nIs More Important Than\nTelling Them You Love Them"
+],
+[
+"manifesting greatness upon you twin",
+"Manifesting Greatness Upon You Twin"
+],
+[
+"may we all be given the strength to keep going with what we're working on every day and may we find the kind of happiness that fills our hearts along the way.",
+"May We All Be Given The Strength To Keep Going With What We're Working On Every Day And May We Find The Kind Of Happiness That Fills Our Hearts Along The Way."
+],
+[
+"maybe I'm scared of us",
+"Maybe I'm Scared Of Us"
+],
+[
+"maybe in another universe you lived across the street from me and not so far away",
+"Maybe In Another Universe You Lived Across The Street From Me And Not So Far Away"
+],
+[
+"maybe u don't know but every time we hang out everything stops hurting for a while",
+"Maybe U Don't Know But Every Time We Hang Out Everything Stops Hurting For A While"
+],
+[
+"maybe,\nforever was\na word\nmeant for\nmemories\nand not for\npeople.",
+"Maybe,\nForever Was\nA Word\nMeant For\nMemories\nAnd Not For\nPeople."
+],
+[
+"mood because our friendship\nhas lasted longer than most\nrelationships in this generation",
+"Mood Because Our Friendship\nHas Lasted Longer Than Most\nRelationships In This Generation"
+],
+[
+"most of the time i'm pretending it's my first time hearing the tea because i can't expose my source",
+"Most Of The Time I'm Pretending It's My First Time Hearing The Tea Because I Can't Expose My Source"
+],
+[
+"most unnecessary dramas disappear once you hang out with smarter, more thoughtful, more grateful people.",
+"Most Unnecessary Dramas Disappear Once You Hang Out With Smarter, More Thoughtful, More Grateful People."
+],
+[
+"my baby. \nmy girlfriend. \nmy wife. \nmy only. \nmy world. \nmy love. \nmy sweet girl. \nmy pretty girl. \nmy everything. \niloveyousoomuchh",
+"My Baby. \nMy Girlfriend. \nMy Wife. \nMy Only. \nMy World. \nMy Love. \nMy Sweet Girl. \nMy Pretty Girl. \nMy Everything. \nIloveyousoomuchh"
+],
+[
+"my baby. \nmy girlfriend. \nmy wife. \nmy only. \nmy world. \nmy love. \nmy sweet girl. \nmy pretty girl. \nmy everything. \niloveyousoomuchhh",
+"My Baby. \nMy Girlfriend. \nMy Wife. \nMy Only. \nMy World. \nMy Love. \nMy Sweet Girl. \nMy Pretty Girl. \nMy Everything. \nIloveyousoomuchhh"
+],
+[
+"my curse is forgetting everything a person has ever done wrong to me as soon as they start being nice to me again",
+"My Curse Is Forgetting Everything A Person Has Ever Done Wrong To Me As Soon As They Start Being Nice To Me Again"
+],
+[
+"my girlfriend after saying communication is key:",
+"My Girlfriend After Saying Communication Is Key:"
+],
+[
+"never giving up on us\nbecause at the end of the\nday you're the only one i\nwant by my side.",
+"Never Giving Up On Us\nBecause At The End Of The\nDay You're The Only One I\nWant By My Side."
+],
+[
+"never giving up on us cause ik you the one",
+"Never Giving Up On Us Cause Ik You The One"
+],
+[
+"never stop finding beauty in your surroundings even in the hardest seasons of life",
+"Never Stop Finding Beauty In Your Surroundings Even In The Hardest Seasons Of Life"
+],
+[
+"no beef but you definitely tore my heart to pieces and pretended like you did nothing wrong",
+"No Beef But You Definitely Tore My Heart To Pieces And Pretended Like You Did Nothing Wrong"
+],
+[
+"no matter how late you reply my chats, you're still the person who i want to talk to everytime and everyday",
+"No Matter How Late You Reply My Chats, You're Still The Person Who I Want To Talk To Everytime And Everyday"
+],
+[
+"no matter how little we talk i will always call you my best friend because you were there for me when i needed you",
+"No Matter How Little We Talk I Will Always Call You My Best Friend Because You Were There For Me When I Needed You"
+],
+[
+"no matter how little we talk i will always call you my best friend because you were there for me when i needed you twin",
+"No Matter How Little We Talk I Will Always Call You My Best Friend Because You Were There For Me When I Needed You Twin"
+],
+[
+"no matter how many\nfriends i make, our\nfriendship will always\nbe my favorite",
+"No Matter How Many\nFriends I Make, Our\nFriendship Will Always\nBe My Favorite"
+],
+[
+"no matter how much i say\ni love you, i always love you\nmore than that",
+"No Matter How Much I Say\nI Love You, I Always Love You\nMore Than That"
+],
+[
+"no matter how you see yourself you're the most sweetest and most amazing person in my eyes. i love you so much.",
+"No Matter How You See Yourself You're The Most Sweetest And Most Amazing Person In My Eyes. I Love You So Much."
+],
+[
+"no matter what life throws\nat us, i want you forever",
+"No Matter What Life Throws\nAt Us, I Want You Forever"
+],
+[
+"no one ever talks\nabout how lonely your\ndays feel after you stop\ntalking to the person\nwho was part of your\ndaily routine",
+"No One Ever Talks\nAbout How Lonely Your\nDays Feel After You Stop\nTalking To The Person\nWho Was Part Of Your\nDaily Routine"
+],
+[
+"no one tells me what to do except little 5'3 bundle of attitude (she scares me)",
+"No One Tells Me What To Do Except Little 5'3 Bundle Of Attitude (She Scares Me)"
+],
+[
+"normalise lying to people when they are in your business too much",
+"Normalise Lying To People When They Are In Your Business Too Much"
+],
+[
+"not saying i'm attractive but when i take my clothes off in the bathroom i turn the shower on",
+"Not Saying I'm Attractive But When I Take My Clothes Off In The Bathroom I Turn The Shower On"
+],
+[
+"not sure why you picked me but I'm forever grateful that you did.",
+"Not Sure Why You Picked Me But I'm Forever Grateful That You Did."
+],
+[
+"not the most present friend but if you were to need a kidney i'd give u one of mine, twin",
+"Not The Most Present Friend But If You Were To Need A Kidney I'd Give U One Of Mine, Twin"
+],
+[
+"not to flirt but I would make u food in the middle of the night if u asked me to",
+"Not To Flirt But I Would Make U Food In The Middle Of The Night If U Asked Me To"
+],
+[
+"not to flirt but I'll buy you icecream with your money when you're feeling down",
+"Not To Flirt But I'll Buy You Icecream With Your Money When You're Feeling Down"
+],
+[
+"not to flirt or anything but\nI would wash your work\nclothes, pack your lunch\nwith little notes, cook\ndinner and wait for you to\ncome home.",
+"Not To Flirt Or Anything But\nI Would Wash Your Work\nClothes, Pack Your Lunch\nWith Little Notes, Cook\nDinner And Wait For You To\nCome Home."
+],
+[
+"not to flirt or anything but I would wash your work clothes, pack your lunch with little notes, cook dinner and wait for you to come home.",
+"Not To Flirt Or Anything But I Would Wash Your Work Clothes, Pack Your Lunch With Little Notes, Cook Dinner And Wait For You To Come Home."
+],
+[
+"not to flirt or anything but I'd wash your work clothes, pack your lunch with little notes, cook dinner and wait for you to come home and scratch your back",
+"Not To Flirt Or Anything But I'd Wash Your Work Clothes, Pack Your Lunch With Little Notes, Cook Dinner And Wait For You To Come Home And Scratch Your Back"
+],
+[
+"not to flirt or anything but i'd give you back and head scratches while you lay down and scroll on marketplace",
+"Not To Flirt Or Anything But I'd Give You Back And Head Scratches While You Lay Down And Scroll On Marketplace"
+],
+[
+"not to flirt or anything but if you were a dinosaur you'd be a gorgeousaurus.",
+"Not To Flirt Or Anything But If You Were A Dinosaur You'd Be A Gorgeousaurus."
+],
+[
+"not to flirt or anything, but! would definitely give you the password to my blanket fort in the living room, and share all my snacks",
+"Not To Flirt Or Anything, But! Would Definitely Give You The Password To My Blanket Fort In The Living Room, And Share All My Snacks"
+],
+[
+"not to flirt, but i would push you in a bush when we are walking",
+"Not To Flirt, But I Would Push You In A Bush When We Are Walking"
+],
+[
+"nothing humbles you more than snapchat memories",
+"Nothing Humbles You More Than Snapchat Memories"
+],
+[
+"nothing makes me \nhappier than \nseeing you \nhappy btw",
+"Nothing Makes Me \nHappier Than \nSeeing You \nHappy Btw"
+],
+[
+"nothing replays in my head\nmore than when i walked in\nthat funeral home and felt my\nheart shatter into a million\npieces.",
+"Nothing Replays In My Head\nMore Than When I Walked In\nThat Funeral Home And Felt My\nHeart Shatter Into A Million\nPieces."
+],
+[
+"obsessed with your eyes obsessed with your smile obsessed with your voice obsessed with your laugh obsessed with your humor obsessed with everything",
+"Obsessed With Your Eyes Obsessed With Your Smile Obsessed With Your Voice Obsessed With Your Laugh Obsessed With Your Humor Obsessed With Everything"
+],
+[
+"one day i might be gone.\nand you'll just think i'm offline.",
+"One Day I Might Be Gone.\nAnd You'll Just Think I'm Offline."
+],
+[
+"one thing i love about myself is that even through everything i've experienced, i still have the biggest heart and so much love and kindness to give",
+"One Thing I Love About Myself Is That Even Through Everything I've Experienced, I Still Have The Biggest Heart And So Much Love And Kindness To Give"
+],
+[
+"our friendship healed me btw. thank u",
+"Our Friendship Healed Me Btw. Thank U"
+],
+[
+"our friendship healed me. thank u",
+"Our Friendship Healed Me. Thank U"
+],
+[
+"our friendship saved me, thank u",
+"Our Friendship Saved Me, Thank U"
+],
+[
+"people thousands of years ago had memorials for their dead loved ones carved into stone as if to whisper into the ages, \"do you know that i loved them?\" and we get to whisper back, thousands of years later, \"i do. i do know that you loved them.\"",
+"People Thousands Of Years Ago Had Memorials For Their Dead Loved Ones Carved Into Stone As If To Whisper Into The Ages, \"Do You Know That I Loved Them?\" And We Get To Whisper Back, Thousands Of Years Later, \"I Do. I Do Know That You Loved Them.\""
+],
+[
+"photo keeper\nmessage rereader\nsong replayer\nmemory reminiscer",
+"Photo Keeper\nMessage Rereader\nSong Replayer\nMemory Reminiscer"
+],
+[
+"pinky promise I'm not leaving, no matter how hard life gets",
+"Pinky Promise I'm Not Leaving, No Matter How Hard Life Gets"
+],
+[
+"please God, protect this girl when I'm not around.",
+"Please God, Protect This Girl When I'm Not Around."
+],
+[
+"please let's be friends forever and never let ourselves become strangers to each other",
+"Please Let's Be Friends Forever And Never Let Ourselves Become Strangers To Each Other"
+],
+[
+"please never be afraid\nto talk to me about your\nproblems. you don't\nbother or annoy me. i'll\nalways listen to you,\ntwin.",
+"Please Never Be Afraid\nTo Talk To Me About Your\nProblems. You Don't\nBother Or Annoy Me. I'll\nAlways Listen To You,\nTwin."
+],
+[
+"please never stop being my friend I fear no one else will ever get me like u do",
+"Please Never Stop Being My Friend I Fear No One Else Will Ever Get Me Like U Do"
+],
+[
+"please never stop being my friend I love u with my whole heart",
+"Please Never Stop Being My Friend I Love U With My Whole Heart"
+],
+[
+"please never stop being my friend, my days are better with u",
+"Please Never Stop Being My Friend, My Days Are Better With U"
+],
+[
+"please never stop being my friend.",
+"Please Never Stop Being My Friend."
+],
+[
+"ppl who ask \"can i call you\" are so sweet. like obviously you cannot but so sweet",
+"Ppl Who Ask \"Can I Call You\" Are So Sweet. Like Obviously You Cannot But So Sweet"
+],
+[
+"quality time means a lot to me, so yes I still wanna see you even if all we do is sit there.",
+"Quality Time Means A Lot To Me, So Yes I Still Wanna See You Even If All We Do Is Sit There."
+],
+[
+"really wanna be your wife\none day.",
+"Really Wanna Be Your Wife\nOne Day."
+],
+[
+"run to me when tthe world feels heavy, obokay?",
+"Run To Me When Tthe World Feels Heavy, Obokay?"
+],
+[
+"sacrificing my nap to see someone is the greatest act of love can do in life",
+"Sacrificing My Nap To See Someone Is The Greatest Act Of Love Can Do In Life"
+],
+[
+"self reminder,\nStay motivated, because the\nfuture is built from what you\ndo today.",
+"Self Reminder,\nStay Motivated, Because The\nFuture Is Built From What You\nDo Today."
+],
+[
+"self reminder:\nmaybe silence and distance\nmyself will make it all better.",
+"Self Reminder:\nMaybe Silence And Distance\nMyself Will Make It All Better."
+],
+[
+"self sabotage is real af don't let your mind destroy yourself",
+"Self Sabotage Is Real Af Don't Let Your Mind Destroy Yourself"
+],
+[
+"should've\nnever grown\nout of that\nphase at 14\nwhen i was an\nabsolute bitch\nto everyone",
+"Should've\nNever Grown\nOut Of That\nPhase At 14\nWhen I Was An\nAbsolute Bitch\nTo Everyone"
+],
+[
+"some people\nreally are the\nhuman definition\nof a good friend\nand you're one of\nthem, twin",
+"Some People\nReally Are The\nHuman Definition\nOf A Good Friend\nAnd You're One Of\nThem, Twin"
+],
+[
+"some people are human\nmedicine.\nyou're with them for an\nhour and everything gets\nbetter\nThat person is you.",
+"Some People Are Human\nMedicine.\nYou're With Them For An\nHour And Everything Gets\nBetter\nThat Person Is You."
+],
+[
+"some people are human medicine. you spend an hour with them and it's like everything is ok and feels so much better",
+"Some People Are Human Medicine. You Spend An Hour With Them And It's Like Everything Is Ok And Feels So Much Better"
+],
+[
+"some people leave the\nrelationship before they leave\nthe person",
+"Some People Leave The\nRelationship Before They Leave\nThe Person"
+],
+[
+"some things are always there",
+"Some Things Are Always There"
+],
+[
+"sometimes I look at you and\nthink how someone can\nbe this perfect",
+"Sometimes I Look At You And\nThink How Someone Can\nBe This Perfect"
+],
+[
+"sometimes ur self respect has to be greater than ur desire to feel loved",
+"Sometimes Ur Self Respect Has To Be Greater Than Ur Desire To Feel Loved"
+],
+[
+"sometimes we forget to thank the people who make our lives better just by being in it, so thank you for being you",
+"Sometimes We Forget To Thank The People Who Make Our Lives Better Just By Being In It, So Thank You For Being You"
+],
+[
+"somewhere between\ncaring too much and not\ngiving af",
+"Somewhere Between\nCaring Too Much And Not\nGiving Af"
+],
+[
+"sorry for\nalways being\nfunny pretty\nand right idk\nwhat’s wrong\nwith me",
+"Sorry For\nAlways Being\nFunny Pretty\nAnd Right Idk\nWhat’s Wrong\nWith Me"
+],
+[
+"sorry for\nsending you\nso many\ntiktoks but\ni'm not going\nto stop",
+"Sorry For\nSending You\nSo Many\nTiktoks But\nI'm Not Going\nTo Stop"
+],
+[
+"still have the biggest crush on you, even though you're already mine",
+"Still Have The Biggest Crush On You, Even Though You're Already Mine"
+],
+[
+"streak of the day:\nOh God, i accept Four plan\nfor me, but forgive me if i still\ncry every day while trying to\nlive with it.",
+"Streak Of The Day:\nOh God, I Accept Four Plan\nFor Me, But Forgive Me If I Still\nCry Every Day While Trying To\nLive With It."
+],
+[
+"streak of the day:\nOh God, i accept your plan\nfor me, but forgive me if i still\ncry every day while trying to\nlive with it.",
+"Streak Of The Day:\nOh God, I Accept Your Plan\nFor Me, But Forgive Me If I Still\nCry Every Day While Trying To\nLive With It."
+],
+[
+"streak of the day:\noh God, I would run away from\neverything, it I could.",
+"Streak Of The Day:\nOh God, I Would Run Away From\nEverything, It I Could."
+],
+[
+"streak of the day: life starts to sound softer when you choose peace and focus only on what you can control.",
+"Streak Of The Day: Life Starts To Sound Softer When You Choose Peace And Focus Only On What You Can Control."
+],
+[
+"streak of the day: may we all have the future we always talked about having. may everything work out in the end",
+"Streak Of The Day: May We All Have The Future We Always Talked About Having. May Everything Work Out In The End"
+],
+[
+"take a moment to be proud of yourself. proud of the hard things you're overcoming. proud of the healing you're doing. proud of the progress you are making. you'll get through this too, and if no one has told you yet today, i am so proud of you, i see you trying, and i believe in you. you'll be okay",
+"Take A Moment To Be Proud Of Yourself. Proud Of The Hard Things You're Overcoming. Proud Of The Healing You're Doing. Proud Of The Progress You Are Making. You'll Get Through This Too, And If No One Has Told You Yet Today, I Am So Proud Of You, I See You Trying, And I Believe In You. You'll Be Okay"
+],
+[
+"talking to you makes my day better btw.",
+"Talking To You Makes My Day Better Btw."
+],
+[
+"thank u for always givin me five stars in dress to impress, ur a real friend, love u",
+"Thank U For Always Givin Me Five Stars In Dress To Impress, Ur A Real Friend, Love U"
+],
+[
+"thank u for showing me that soulmates can come in the form of friendship too",
+"Thank U For Showing Me That Soulmates Can Come In The Form Of Friendship Too"
+],
+[
+"thank you for\nbeing my friend\nyou mean the\nworld to me",
+"Thank You For\nBeing My Friend\nYou Mean The\nWorld To Me"
+],
+[
+"thank you for being the friend that tells me what I need to hear and not what I want to hear",
+"Thank You For Being The Friend That Tells Me What I Need To Hear And Not What I Want To Hear"
+],
+[
+"thank you for being the friend who tells me what l need to hear not what l want to hear",
+"Thank You For Being The Friend Who Tells Me What L Need To Hear Not What L Want To Hear"
+],
+[
+"thank you for letting me talk about the same thing 1000 times till i'm over it",
+"Thank You For Letting Me Talk About The Same Thing 1000 Times Till I'm Over It"
+],
+[
+"thank you for letting me talk about the same thing 1000 times till im over it",
+"Thank You For Letting Me Talk About The Same Thing 1000 Times Till Im Over It"
+],
+[
+"thank you for listening to me talk about it again, again, again and again",
+"Thank You For Listening To Me Talk About It Again, Again, Again And Again"
+],
+[
+"thank you so much\nfor being the person i\ncan have deep\nconversations with,\nbut also laugh about\nthe most random\nstuff ever.",
+"Thank You So Much\nFor Being The Person I\nCan Have Deep\nConversations With,\nBut Also Laugh About\nThe Most Random\nStuff Ever."
+],
+[
+"thanks for being that friend who can make me go from uncontrollably laughing to having a deep conversation. ur the best of both worlds.",
+"Thanks For Being That Friend Who Can Make Me Go From Uncontrollably Laughing To Having A Deep Conversation. Ur The Best Of Both Worlds."
+],
+[
+"thanks for being the person I can have deep conversations with and also laugh about the most random and dumb stuff",
+"Thanks For Being The Person I Can Have Deep Conversations With And Also Laugh About The Most Random And Dumb Stuff"
+],
+[
+"thanks for being the person i can have deep conversations with, but also laugh about the most random and silly things.",
+"Thanks For Being The Person I Can Have Deep Conversations With, But Also Laugh About The Most Random And Silly Things."
+],
+[
+"thanks for being the person who tells me what I need to hear and not what i want to hear",
+"Thanks For Being The Person Who Tells Me What I Need To Hear And Not What I Want To Hear"
+],
+[
+"thanks for showing me that soulmates exist in friendships too",
+"Thanks For Showing Me That Soulmates Exist In Friendships Too"
+],
+[
+"the bravest thing i've\never done was live when i\nwanted so badly to die.",
+"The Bravest Thing I've\nEver Done Was Live When I\nWanted So Badly To Die."
+],
+[
+"the easiest way to become\nhappy is to become\ngrateful.",
+"The Easiest Way To Become\nHappy Is To Become\nGrateful."
+],
+[
+"the easiest way to become happy is to become grateful",
+"The Easiest Way To Become Happy Is To Become Grateful"
+],
+[
+"the goal is to become pretty and disgustingly educated",
+"The Goal Is To Become Pretty And Disgustingly Educated"
+],
+[
+"the intimacy of choosing each other again after seeing the worst sides of one another.",
+"The Intimacy Of Choosing Each Other Again After Seeing The Worst Sides Of One Another."
+],
+[
+"the love for yourself gotta be stronger thar your desire to be loved by others, make sure you showing up for you first.",
+"The Love For Yourself Gotta Be Stronger Thar Your Desire To Be Loved By Others, Make Sure You Showing Up For You First."
+],
+[
+"the reward for being a good person is peace. you don't have to watch your back or carry guilt. you sleep good at night knowing you're not fake, and you didn't do anyone dirty.",
+"The Reward For Being A Good Person Is Peace. You Don't Have To Watch Your Back Or Carry Guilt. You Sleep Good At Night Knowing You're Not Fake, And You Didn't Do Anyone Dirty."
+],
+[
+"the worst feeling is slowly losing yourself while pretending you're okay.",
+"The Worst Feeling Is Slowly Losing Yourself While Pretending You're Okay."
+],
+[
+"there is no relationship without rules, if you want freedom stay fucking single.",
+"There Is No Relationship Without Rules, If You Want Freedom Stay Fucking Single."
+],
+[
+"there is peace\nin silence",
+"There Is Peace\nIn Silence"
+],
+[
+"there is peace in not telling anyone anything",
+"There Is Peace In Not Telling Anyone Anything"
+],
+[
+"there is something so beautiful about having long term friends that have witnessed multiple versions of you and loved you unconditionally through each version.",
+"There Is Something So Beautiful About Having Long Term Friends That Have Witnessed Multiple Versions Of You And Loved You Unconditionally Through Each Version."
+],
+[
+"there was no weird talking\nstage, we met and we\nclicked immediately and\nfrom then on I knew this\nwould be the one",
+"There Was No Weird Talking\nStage, We Met And We\nClicked Immediately And\nFrom Then On I Knew This\nWould Be The One"
+],
+[
+"there's a special place in my heart for people who made an effort to be my friend regardless of how quiet or distant i can get at times",
+"There's A Special Place In My Heart For People Who Made An Effort To Be My Friend Regardless Of How Quiet Or Distant I Can Get At Times"
+],
+[
+"they say soulmates recognize each other instantly, and I think that's why I felt so comfortable from the start. I didn't need time to understand how much you meant to me. my heart already knew. you're not just my person you're my forever.",
+"They Say Soulmates Recognize Each Other Instantly, And I Think That's Why I Felt So Comfortable From The Start. I Didn't Need Time To Understand How Much You Meant To Me. My Heart Already Knew. You're Not Just My Person You're My Forever."
+],
+[
+"this song but never feeling good enough because of what other people did to you.",
+"This Song But Never Feeling Good Enough Because Of What Other People Did To You."
+],
+[
+"this song is exactly how it feels trying to pursue romantic relationships while also trying to retrain a nervous system that's been through years of hurt and betrayal",
+"This Song Is Exactly How It Feels Trying To Pursue Romantic Relationships While Also Trying To Retrain A Nervous System That's Been Through Years Of Hurt And Betrayal"
+],
+[
+"this song is exactly how it feels trying to pursue romantic relationships while also trying to retrain a nervous system-that's been through years of hurt and betrayal",
+"This Song Is Exactly How It Feels Trying To Pursue Romantic Relationships While Also Trying To Retrain A Nervous System-That's Been Through Years Of Hurt And Betrayal"
+],
+[
+"this song is like when u are trying so hard to be open again and let someone in but being drowned in the thought of experiencing what u have in the past again",
+"This Song Is Like When U Are Trying So Hard To Be Open Again And Let Someone In But Being Drowned In The Thought Of Experiencing What U Have In The Past Again"
+],
+[
+"thx for letting me talk about the same situation over and over again, twin",
+"Thx For Letting Me Talk About The Same Situation Over And Over Again, Twin"
+],
+[
+"to leave is to live",
+"To Leave Is To Live"
+],
+[
+"to love without constantly checking if you're asking for too much, without apologizing for needing reassurance, without feeling guilty for wanting consistency.",
+"To Love Without Constantly Checking If You're Asking For Too Much, Without Apologizing For Needing Reassurance, Without Feeling Guilty For Wanting Consistency."
+],
+[
+"to me yearn always sounds too\ndelicate. whatever i go through is\nmuch more disgusting",
+"To Me Yearn Always Sounds Too\nDelicate. Whatever I Go Through Is\nMuch More Disgusting"
+],
+[
+"u ever look at someone and start tearing up bc they so fine",
+"U Ever Look At Someone And Start Tearing Up Bc They So Fine"
+],
+[
+"unfortunately I'm \na person who \ntakes words very \nseriously, so yes \nI'll remember \nevery little things \nyou've said about \nme, whether if it's \ngood or bad, it will \nstay in my mind \nfor a very long \ntime.",
+"Unfortunately I'm \nA Person Who \nTakes Words Very \nSeriously, So Yes \nI'll Remember \nEvery Little Things \nYou've Said About \nMe, Whether If It's \nGood Or Bad, It Will \nStay In My Mind \nFor A Very Long \nTime."
+],
+[
+"unfortunately i will not overplay my role anymore you text me, i text back, you stop texting, i'll stop texting, you ignore me, i'll ignore you",
+"Unfortunately I Will Not Overplay My Role Anymore You Text Me, I Text Back, You Stop Texting, I'll Stop Texting, You Ignore Me, I'll Ignore You"
+],
+[
+"unfortunately, I have no idea how to flirt so I just speak nonsense and hope you think I'm cute and then you fall in love with me",
+"Unfortunately, I Have No Idea How To Flirt So I Just Speak Nonsense And Hope You Think I'm Cute And Then You Fall In Love With Me"
+],
+[
+"ur someone\ni never want\nto lose",
+"Ur Someone\nI Never Want\nTo Lose"
+],
+[
+"us in 50 years",
+"Us In 50 Years"
+],
+[
+"wasted 2 weeks\ninstead of 2 years\n#improvement",
+"Wasted 2 Weeks\nInstead Of 2 Years\n#Improvement"
+],
+[
+"we already married, just\nnot legally yet.",
+"We Already Married, Just\nNot Legally Yet."
+],
+[
+"we fight, we fix, we stay\nbecause i couldn't imagine\ngoing through life without\nyou by my side.",
+"We Fight, We Fix, We Stay\nBecause I Couldn't Imagine\nGoing Through Life Without\nYou By My Side."
+],
+[
+"we have lost the art of\n\"what about you\" in\ndaily conversations\nand im so sick of it",
+"We Have Lost The Art Of\n\"What About You\" In\nDaily Conversations\nAnd Im So Sick Of It"
+],
+[
+"we still have a million experiences ahead of us twin",
+"We Still Have A Million Experiences Ahead Of Us Twin"
+],
+[
+"we still have a million experiences ahead of us, twin",
+"We Still Have A Million Experiences Ahead Of Us, Twin"
+],
+[
+"we'll never be this young again",
+"We'll Never Be This Young Again"
+],
+[
+"we'll never be this young again.",
+"We'll Never Be This Young Again."
+],
+[
+"whatever you're working on, i hope it slowly turns into something you're proud of. not rushed, not perfect, just yours. you don't have to have it all figured out yet. it's enough that you're still trying",
+"Whatever You're Working On, I Hope It Slowly Turns Into Something You're Proud Of. Not Rushed, Not Perfect, Just Yours. You Don't Have To Have It All Figured Out Yet. It's Enough That You're Still Trying"
+],
+[
+"when you ask your homegirl for advice and she uses big words like \"block\" and \"delete\"",
+"When You Ask Your Homegirl For Advice And She Uses Big Words Like \"Block\" And \"Delete\""
+],
+[
+"wherever you are, i hope you're safe. i hope you're happy. and i hope life is treating you as gently as you deserve.",
+"Wherever You Are, I Hope You're Safe. I Hope You're Happy. And I Hope Life Is Treating You As Gently As You Deserve."
+],
+[
+"whether i'm part of your story or not,\ni'll always want to see you succeed.\ni hope you build the life you've\nalways talked about, achieve the\nthings you've worked so hard for,\nand become the person you've\nalways wanted to be. i'll be proud of\nyou from any distance.",
+"Whether I'm Part Of Your Story Or Not,\nI'll Always Want To See You Succeed.\nI Hope You Build The Life You've\nAlways Talked About, Achieve The\nThings You've Worked So Hard For,\nAnd Become The Person You've\nAlways Wanted To Be. I'll Be Proud Of\nYou From Any Distance."
+],
+[
+"while you\nare busy\ndoubting\nyourself,\nsomeone is\nthinking\nhow you\ndo it all.",
+"While You\nAre Busy\nDoubting\nYourself,\nSomeone Is\nThinking\nHow You\nDo It All."
+],
+[
+"winning\nin\nlife\nbc\ni\nhave\nyou.",
+"Winning\nIn\nLife\nBc\nI\nHave\nYou."
+],
+[
+"winning in life because you are my best friend",
+"Winning In Life Because You Are My Best Friend"
+],
+[
+"with the right person you never have to ask they just do, they study you and just do.",
+"With The Right Person You Never Have To Ask They Just Do, They Study You And Just Do."
+],
+[
+"you are forgetting how far you have come",
+"You Are Forgetting How Far You Have Come"
+],
+[
+"you are here to risk your heart",
+"You Are Here To Risk Your Heart"
+],
+[
+"you can always tell when someone's music taste is performative and not a true expression of their soul",
+"You Can Always Tell When Someone's Music Taste Is Performative And Not A True Expression Of Their Soul"
+],
+[
+"you can't\nmake someone\nchoose you\nbtw",
+"You Can't\nMake Someone\nChoose You\nBtw"
+],
+[
+"you don't\ndeserve bare\nminimum. you\ndeserve the\nwhole universe\nbecause you are\nmore than\nanyone could\never ask for",
+"You Don't\nDeserve Bare\nMinimum. You\nDeserve The\nWhole Universe\nBecause You Are\nMore Than\nAnyone Could\nEver Ask For"
+],
+[
+"you don't deserve bare minimum, twin. you literally deserve the moon, the stars and maybe even a whole planet system",
+"You Don't Deserve Bare Minimum, Twin. You Literally Deserve The Moon, The Stars And Maybe Even A Whole Planet System"
+],
+[
+"you don't understand\nand i can't explain.",
+"You Don't Understand\nAnd I Can't Explain."
+],
+[
+"you dont deserve bare minimum, twin. you literally deserve the moon, the stars and maybe even a whole planet system",
+"You Dont Deserve Bare Minimum, Twin. You Literally Deserve The Moon, The Stars And Maybe Even A Whole Planet System"
+],
+[
+"you fumbled someone who would've done anything for you. good luck finding that twice.",
+"You Fumbled Someone Who Would've Done Anything For You. Good Luck Finding That Twice."
+],
+[
+"you have two options\nmarry me or be my wife.",
+"You Have Two Options\nMarry Me Or Be My Wife."
+],
+[
+"you let me go...",
+"You Let Me Go..."
+],
+[
+"you make 12 hours feel like 12 minutes.",
+"You Make 12 Hours Feel Like 12 Minutes."
+],
+[
+"you mean the\nworld to me so\ndon't ever\nthink i'll give\nup on you, not\ntoday, not\ntomorrow,\nnot ever.",
+"You Mean The\nWorld To Me So\nDon't Ever\nThink I'll Give\nUp On You, Not\nToday, Not\nTomorrow,\nNot Ever."
+],
+[
+"you remembered? I remember everything about everyone i’ve ever loved",
+"You Remembered? I Remember Everything About Everyone I’ve Ever Loved"
+],
+[
+"you seem to love him a lot for someone who's always hurting bc of him",
+"You Seem To Love Him A Lot For Someone Who's Always Hurting Bc Of Him"
+],
+[
+"you will always be the most special person in my heart.",
+"You Will Always Be The Most Special Person In My Heart."
+],
+[
+"you will always have me okay? I might not be much, but I will be by your side no matter what.",
+"You Will Always Have Me Okay? I Might Not Be Much, But I Will Be By Your Side No Matter What."
+],
+[
+"you'll get there, but for\nnow you're exactly where\nyou need to be.",
+"You'll Get There, But For\nNow You're Exactly Where\nYou Need To Be."
+],
+[
+"you're my comfort person. i appreciate our friendship more than u could ever know",
+"You're My Comfort Person. I Appreciate Our Friendship More Than U Could Ever Know"
+],
+[
+"you're my everything",
+"You're My Everything"
+],
+[
+"you're not just a friend, you're a part of me",
+"You're Not Just A Friend, You're A Part Of Me"
+],
+[
+"you're so beautiful i'm gonna try to develop a secure attachment style, twin",
+"You're So Beautiful I'm Gonna Try To Develop A Secure Attachment Style, Twin"
+],
+[
+"you're the best\ngirlfriend in the world\nI love youuuu ml.",
+"You're The Best\nGirlfriend In The World\nI Love Youuuu Ml."
+],
+[
+"your Bloodline waited centuries for someone like you to wake up.",
+"Your Bloodline Waited Centuries For Someone Like You To Wake Up."
+],
+[
+"your bloodline waited centuries for someone like you to finally show up, twin",
+"Your Bloodline Waited Centuries For Someone Like You To Finally Show Up, Twin"
+],
+[
+"your boyfriend sent\nyou this because he\nloves you.",
+"Your Boyfriend Sent\nYou This Because He\nLoves You."
+],
+[
+"your commitment to your future has to be greater than your attachment to your past.",
+"Your Commitment To Your Future Has To Be Greater Than Your Attachment To Your Past."
+],
+[
+"your girlfriend\nsent you this\nbecause she\nloves you btw.",
+"Your Girlfriend\nSent You This\nBecause She\nLoves You Btw."
+],
+[
+"your life gets better\nwhen you stop choosing\nwhat keeps hurting you.",
+"Your Life Gets Better\nWhen You Stop Choosing\nWhat Keeps Hurting You."
+],
+[
+"your my favourite notification btw",
+"Your My Favourite Notification Btw"
+],
+[
+"your so perfect you've made every other person unattractive.",
+"Your So Perfect You've Made Every Other Person Unattractive."
+],
+[
+"your value doesn't decrease based on someone's inability to see your worth",
+"Your Value Doesn't Decrease Based On Someone's Inability To See Your Worth"
+],
+[
+"you’re my comfort person. i appreciate our friendship more than u could ever know",
+"You’re My Comfort Person. I Appreciate Our Friendship More Than U Could Ever Know"
+],
+[
+"you’re not just a friend, you’re a part of me",
+"You’re Not Just A Friend, You’re A Part Of Me"
+],
+[
+"“I love you in a way that would worry a therapist and thrill a poet”",
+"“I Love You In A Way That Would Worry A Therapist And Thrill A Poet”"
+]
+]
+}

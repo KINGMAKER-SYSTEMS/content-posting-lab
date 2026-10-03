@@ -1,8 +1,10 @@
+import hashlib
 import logging
 import os
 import subprocess
 import time
 from contextlib import asynccontextmanager
+from functools import lru_cache
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -10,6 +12,8 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.datastructures import Headers, QueryParams
+from starlette.staticfiles import NotModifiedResponse
 import uvicorn
 
 import debug_logger
@@ -17,7 +21,7 @@ from project_manager import PROJECTS_DIR, ensure_default_project
 from providers import PROVIDERS
 from providers.base import API_KEYS
 from routers.control_plane import router as control_plane_router
-from routers.post_renders import router as post_renders_router, start_workers as start_post_render_workers
+from routers.post_renders import router as post_renders_router, start_workers as start_post_render_workers, readiness as post_render_readiness
 from routers.control_plane_dossier import router as control_plane_dossier_router
 from routers.control_plane_recipes import router as control_plane_recipes_router
 from routers.control_plane_source_libraries import (
@@ -119,6 +123,16 @@ async def lifespan(app: FastAPI):
     # Initialize structured logging before anything else
     debug_logger.setup_logging()
 
+    # main.py runs one process, and imports cannot start before this sweep.
+    # Hard-killed imports skip finally; their private scratch copies are stale.
+    # Keep this before imports, not in individual workers or request handlers.
+    try:
+        from scraper.frame_extractor import sweep_private_cookie_jars
+        sweep_private_cookie_jars()
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(f"cookie-jar sweep failed: {e}")
+
     Path("output").mkdir(parents=True, exist_ok=True)
     Path("caption_output").mkdir(parents=True, exist_ok=True)
     Path("burn_output").mkdir(parents=True, exist_ok=True)
@@ -192,7 +206,12 @@ async def lifespan(app: FastAPI):
         log.error("sounds bot: failed (%s)", e)
 
     post_render_jobs = start_post_render_workers()
+    from routers.control_plane import start_compaction_scheduler
+    start_compaction_scheduler()
     yield
+    from routers.control_plane import shutdown_dossier_generation, stop_compaction_scheduler
+    stop_compaction_scheduler()
+    await shutdown_dossier_generation()
     if post_render_jobs is not None:
         post_render_jobs.stop()
 
@@ -225,7 +244,11 @@ app.add_middleware(
 
 
 _APP_API_KEY = os.getenv("APP_API_KEY")
-_AUTH_SKIP = ("/api/health", "/api/miniapp/", "/api/telegram/")
+# Only routes with their own authentication may skip the API key:
+# /api/miniapp/* verifies Telegram initData (HMAC over the bot token).
+# /api/telegram/* is NOT exempt: the bot long-polls (no webhook route), and the
+# router can replace the bot token, repoint the staging group and send files.
+_AUTH_SKIP = ("/api/health", "/api/miniapp/")
 
 
 @app.middleware("http")
@@ -334,11 +357,62 @@ async def health_check():
     }
 
 
-app.mount("/fonts", StaticFiles(directory="fonts", check_dir=False), name="fonts")
+@app.get("/api/ready")
+async def ready_check():
+    """Readiness is separate from liveness: /api/health always answers 200 when
+    the process is up, but /api/ready fails non-2xx when a configured worker
+    lane did not start or has no live worker."""
+    ready, detail = await post_render_readiness()
+    if not ready:
+        return JSONResponse(status_code=503, content={"status": "unavailable", **detail})
+    return {"status": "ok", **detail}
+
+
+class SafeStaticFiles(StaticFiles):
+    """StaticFiles that answers 404, not 500, for a NUL byte in the path."""
+
+    async def get_response(self, path: str, scope):
+        if "\x00" in path:
+            raise HTTPException(status_code=404)
+        return await super().get_response(path, scope)
+
+
+class FontStaticFiles(SafeStaticFiles):
+    """Serve font MIME types and cache validators from the installed file bytes."""
+
+    MEDIA_TYPES = {".ttf": "font/ttf", ".otf": "font/otf", ".woff": "font/woff", ".woff2": "font/woff2"}
+
+    @staticmethod
+    @lru_cache(maxsize=128)
+    def _digest(full_path: str, file_identity: tuple) -> str:
+        sha = hashlib.sha256()
+        with open(full_path, "rb") as handle:
+            for chunk in iter(lambda: handle.read(1 << 16), b""):
+                sha.update(chunk)
+        return sha.hexdigest()
+
+    def file_response(self, full_path, stat_result, scope, status_code: int = 200):
+        file_identity = (stat_result.st_dev, stat_result.st_ino, stat_result.st_size,
+                         stat_result.st_mtime_ns, stat_result.st_ctime_ns)
+        digest = self._digest(str(full_path), file_identity)
+        pinned = QueryParams(scope.get("query_string", b"")).get("v", "")
+        immutable = len(pinned) >= 8 and digest.startswith(pinned.lower())
+        media_type = self.MEDIA_TYPES.get(Path(str(full_path)).suffix.lower())
+        response = FileResponse(full_path, status_code=status_code, stat_result=stat_result, media_type=media_type)
+        response.headers["etag"] = f'"{digest}"'
+        response.headers["cache-control"] = (
+            "public, max-age=31536000, immutable" if immutable else "public, max-age=86400"
+        )
+        if self.is_not_modified(response.headers, Headers(scope=scope)):
+            return NotModifiedResponse(response.headers)
+        return response
+
+
+app.mount("/fonts", FontStaticFiles(directory="fonts", check_dir=False), name="fonts")
 # AgenticBuilderNews: rendered assets + the workspace SPA
 app.mount(
     "/agenticnews-assets",
-    StaticFiles(directory=str(agenticnews_db.ASSETS_DIR), check_dir=False),
+    SafeStaticFiles(directory=str(agenticnews_db.ASSETS_DIR), check_dir=False),
     name="agenticnews-assets",
 )
 
@@ -364,20 +438,78 @@ async def serve_abn_editor(ep_id: str = ""):
     return FileResponse(Path(__file__).resolve().parent / "yt-pipeline" / "editor.html", media_type="text/html")
 
 
+# The Railway volume is mounted AT /app/projects (railway.toml), so this
+# directory's root is also the volume root that holds page_roster.json,
+# telegram_config.json, cookies.txt, control_plane_jobs.json, agenticnews.db
+# and the bearer-gated control_plane_generated/ tree. A plain StaticFiles mount
+# served all of it without auth. Only project media is public.
+_PROJECT_MEDIA_KINDS = frozenset(
+    {"videos", "clips", "burned", "captions", "recreate", "slideshow-images", "slideshow-audio"}
+)
+# Media the app writes into those dirs (routers/projects.py _VIDEO_EXTS,
+# routers/slideshow.py VALID_EXTENSIONS / VALID_AUDIO_EXTENSIONS, clipper
+# thumbnails) plus subtitle sidecars. JSON sidecars (_state.json,
+# job_meta.json, jobs.json, prompts.json) are read through the API only.
+_PROJECT_MEDIA_SUFFIXES = frozenset(
+    {".mp4", ".mov", ".webm", ".mkv", ".m4v",
+     ".jpg", ".jpeg", ".png", ".webp", ".gif",
+     ".mp3", ".wav", ".m4a", ".aac", ".ogg",
+     ".srt", ".vtt"}
+)
+_NON_PROJECT_VOLUME_DIRS = frozenset(
+    {"control_plane_generated", "control_plane_recipes", "agenticnews_assets", "lost+found"}
+)
+
+
+def _is_public_project_path(path: str) -> bool:
+    """True only for `<project>/<media kind>/<...>/<media file>` under the projects mount."""
+    parts = [p for p in path.replace("\\", "/").split("/") if p not in ("", ".")]
+    if any(p == ".." or p.startswith(".") or "\x00" in p for p in parts):
+        return False
+    return (
+        len(parts) >= 3
+        and parts[0] not in _NON_PROJECT_VOLUME_DIRS
+        and parts[1] in _PROJECT_MEDIA_KINDS
+        and os.path.splitext(parts[-1])[1].lower() in _PROJECT_MEDIA_SUFFIXES
+    )
+
+
+class ProjectMediaFiles(SafeStaticFiles):
+    """StaticFiles that refuses anything but project media (see above).
+
+    The allowlist is applied to the requested path AND to the resolved real
+    path, so a symlink under a media dir that points at volume-root state
+    (page_roster.json, cookies.txt, ...) is refused too.
+    """
+
+    async def get_response(self, path: str, scope):
+        if not _is_public_project_path(path):
+            raise HTTPException(status_code=404)
+        try:
+            root = os.path.realpath(self.directory)
+            real = os.path.realpath(os.path.join(root, path))
+        except (OSError, ValueError):
+            raise HTTPException(status_code=404)
+        rel = os.path.relpath(real, root)
+        if rel == ".." or rel.startswith(".." + os.sep) or not _is_public_project_path(rel):
+            raise HTTPException(status_code=404)
+        return await super().get_response(path, scope)
+
+
 app.mount(
     "/projects",
-    StaticFiles(directory="projects", check_dir=False),
+    ProjectMediaFiles(directory="projects", check_dir=False),
     name="projects",
 )
-app.mount("/output", StaticFiles(directory="output", check_dir=False), name="output")
+app.mount("/output", SafeStaticFiles(directory="output", check_dir=False), name="output")
 app.mount(
     "/caption-output",
-    StaticFiles(directory="caption_output", check_dir=False),
+    SafeStaticFiles(directory="caption_output", check_dir=False),
     name="caption-output",
 )
 app.mount(
     "/burn-output",
-    StaticFiles(directory="burn_output", check_dir=False),
+    SafeStaticFiles(directory="burn_output", check_dir=False),
     name="burn-output",
 )
 
@@ -392,22 +524,49 @@ async def serve_font_preview():
     raise HTTPException(status_code=404, detail="font_preview.html not found")
 
 
+def _frontend_file(full_path: str, dist_dir: Path) -> Path | None:
+    """Return the regular file inside ``dist_dir`` that ``full_path`` names, else None.
+
+    ``full_path`` is attacker-controlled and this route is not under /api/, so
+    APP_API_KEY never guards it. Before any file is opened this refuses:
+    absolute paths (``//etc/passwd`` arrives here as ``/etc/passwd``), empty,
+    ``.`` and ``..`` segments, backslashes, NUL bytes, any residual ``%``
+    (Starlette already percent-decoded once, so ``%`` means double encoding),
+    and any path, symlinks included, that resolves outside ``dist_dir``.
+    """
+    if not full_path or full_path.startswith("/"):
+        return None
+    if any(ch in full_path for ch in ("\\", "\x00", "%")):
+        return None
+    if any(seg in ("", ".", "..") for seg in full_path.split("/")):
+        return None
+    try:
+        root = dist_dir.resolve(strict=True)
+        candidate = (root / full_path).resolve(strict=True)
+    except (OSError, RuntimeError, ValueError):
+        return None
+    if not candidate.is_relative_to(root) or not candidate.is_file():
+        return None
+    return candidate
+
+
+async def serve_frontend(full_path: str):
+    requested = _frontend_file(full_path, FRONTEND_DIR)
+    if requested is not None:
+        return FileResponse(requested)
+
+    index_path = FRONTEND_DIR / "index.html"
+    if index_path.is_file():
+        return FileResponse(index_path)
+
+    raise HTTPException(
+        status_code=404,
+        detail="Frontend not built. Run 'npm run build' in frontend/ directory.",
+    )
+
+
 if FRONTEND_DIR.exists():
-
-    @app.get("/{full_path:path}")
-    async def serve_frontend(full_path: str):
-        requested = FRONTEND_DIR / full_path
-        if full_path and requested.exists() and requested.is_file():
-            return FileResponse(requested)
-
-        index_path = FRONTEND_DIR / "index.html"
-        if index_path.exists():
-            return FileResponse(index_path)
-
-        raise HTTPException(
-            status_code=404,
-            detail="Frontend not built. Run 'npm run build' in frontend/ directory.",
-        )
+    app.get("/{full_path:path}")(serve_frontend)
 
 
 if __name__ == "__main__":

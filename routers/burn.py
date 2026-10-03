@@ -36,7 +36,7 @@ from services.caption_render import (
     render_caption_overlay,
 )
 from services.ffmpeg import TIKTOK_ENCODE_ARGS, build_cc_filter
-from services.fsutil import safe_unlink
+from services.fsutil import is_within, safe_unlink
 from services.json_store import atomic_load, atomic_save
 
 log = logging.getLogger("burn")
@@ -188,168 +188,17 @@ def _list_fonts() -> list[dict]:
     return fonts
 
 
-# ── FFmpeg Pipeline (preserved exactly from burn_server.py) ──────────
+# ── Shared FFmpeg colour pipeline ─────────────────────────────────────
 
 
 def _build_filter_complex(color_correction: dict | None = None) -> str:
-    """Build ffmpeg filter_complex that replicates CSS filter behavior.
-
-    All color transforms are composed into a SINGLE colorchannelmixer filter
-    to avoid multiple YUV<>RGB conversions that degrade video quality.
-    Each CSS filter (brightness, contrast, saturate, sepia, hue-rotate) is
-    a linear per-pixel transform expressible as a 3x3 matrix + offset.
-    We pre-multiply them into one combined matrix.
-    """
-    if not color_correction:
-        return "[0:v]scale=1080:1920:flags=lanczos,setsar=1[vid];[1:v]scale=1080:1920:flags=lanczos[ovr];[vid][ovr]overlay=0:0"
-
-    # Raw slider integers
-    b_raw = float(color_correction.get("brightness", 0))
-    c_raw = float(color_correction.get("contrast", 0))
-    s_raw = float(color_correction.get("saturation", 0))
-    sh_raw = float(color_correction.get("sharpness", 0))
-    sd_raw = float(color_correction.get("shadow", 0))
-    t_raw = float(color_correction.get("temperature", 0))
-    ti_raw = float(color_correction.get("tint", 0))
-    f_raw = float(color_correction.get("fade", 0))
-
-    # Map to CSS-equivalent values
-    css_brightness = 1 + b_raw / 100
-    css_contrast = 1 + c_raw / 100
-    css_saturate = 1 + s_raw / 100
-
-    if f_raw > 0:
-        fade = f_raw / 100
-        css_brightness = min(2.0, css_brightness + fade * 0.4)
-        css_contrast = max(0.2, css_contrast - fade * 0.3)
-        css_saturate = max(0.2, css_saturate - fade * 0.4)
-
-    if sd_raw != 0:
-        css_brightness += sd_raw / 400
-
-    sharpness = sh_raw / 50
-
-    is_default = (
-        abs(css_brightness - 1.0) < 0.005
-        and abs(css_contrast - 1.0) < 0.005
-        and abs(css_saturate - 1.0) < 0.005
-        and abs(t_raw) <= 1
-        and abs(ti_raw) <= 1
-        and sharpness < 0.001
+    """Build the overlay graph with the shared CSS-equivalent colour path."""
+    chain = build_cc_filter(color_correction, scale="1080:1920")
+    return (
+        f"[0:v]{chain}[corrected];"
+        "[1:v]scale=1080:1920:flags=lanczos[ovr];"
+        "[corrected][ovr]overlay=0:0"
     )
-    if is_default:
-        return "[0:v]scale=1080:1920:flags=lanczos,setsar=1[vid];[1:v]scale=1080:1920:flags=lanczos[ovr];[vid][ovr]overlay=0:0"
-
-    # --- Compose all transforms into one 3x3 matrix + offset ---
-    mat = [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
-    off = [0.0, 0.0, 0.0]
-
-    def mat_mul(a: list, b: list) -> list:
-        return [
-            [sum(a[i][k] * b[k][j] for k in range(3)) for j in range(3)]
-            for i in range(3)
-        ]
-
-    def mat_vec(m: list, v: list) -> list:
-        return [sum(m[i][j] * v[j] for j in range(3)) for i in range(3)]
-
-    # CSS brightness(b): out = in * b
-    if abs(css_brightness - 1.0) >= 0.005:
-        b = css_brightness
-        mat = [[b * mat[i][j] for j in range(3)] for i in range(3)]
-        off = [b * o for o in off]
-
-    # CSS contrast(c): out = (in - 0.5) * c + 0.5 = in*c + 0.5*(1-c)
-    if abs(css_contrast - 1.0) >= 0.005:
-        c = css_contrast
-        bias = 0.5 * (1 - c)
-        mat = [[c * mat[i][j] for j in range(3)] for i in range(3)]
-        off = [c * o + bias for o in off]
-
-    # CSS saturate(s): BT.709 saturation matrix
-    if abs(css_saturate - 1.0) >= 0.005:
-        s = css_saturate
-        sr, sg, sb = 0.2126, 0.7152, 0.0722
-        sat_mat = [
-            [sr + (1 - sr) * s, sg - sg * s, sb - sb * s],
-            [sr - sr * s, sg + (1 - sg) * s, sb - sb * s],
-            [sr - sr * s, sg - sg * s, sb + (1 - sb) * s],
-        ]
-        off = mat_vec(sat_mat, off)
-        mat = mat_mul(sat_mat, mat)
-
-    # Temperature: warm = CSS sepia(), cool = CSS hue-rotate(negative deg)
-    if abs(t_raw) > 1:
-        if t_raw > 0:
-            amt = min(1.0, t_raw / 200)
-            t_mat = [
-                [1 - amt + amt * 0.393, amt * 0.769, amt * 0.189],
-                [amt * 0.349, 1 - amt + amt * 0.686, amt * 0.168],
-                [amt * 0.272, amt * 0.534, 1 - amt + amt * 0.131],
-            ]
-        else:
-            rad = math.radians(t_raw / 5)
-            cos_a, sin_a = math.cos(rad), math.sin(rad)
-            t_mat = [
-                [
-                    0.213 + 0.787 * cos_a - 0.213 * sin_a,
-                    0.715 - 0.715 * cos_a - 0.715 * sin_a,
-                    0.072 - 0.072 * cos_a + 0.928 * sin_a,
-                ],
-                [
-                    0.213 - 0.213 * cos_a + 0.143 * sin_a,
-                    0.715 + 0.285 * cos_a + 0.140 * sin_a,
-                    0.072 - 0.072 * cos_a - 0.283 * sin_a,
-                ],
-                [
-                    0.213 - 0.213 * cos_a - 0.787 * sin_a,
-                    0.715 - 0.715 * cos_a + 0.715 * sin_a,
-                    0.072 + 0.928 * cos_a + 0.072 * sin_a,
-                ],
-            ]
-        off = mat_vec(t_mat, off)
-        mat = mat_mul(t_mat, mat)
-
-    # Tint: CSS hue-rotate
-    if abs(ti_raw) > 1:
-        rad = math.radians(ti_raw / 3)
-        cos_a, sin_a = math.cos(rad), math.sin(rad)
-        ti_mat = [
-            [
-                0.213 + 0.787 * cos_a - 0.213 * sin_a,
-                0.715 - 0.715 * cos_a - 0.715 * sin_a,
-                0.072 - 0.072 * cos_a + 0.928 * sin_a,
-            ],
-            [
-                0.213 - 0.213 * cos_a + 0.143 * sin_a,
-                0.715 + 0.285 * cos_a + 0.140 * sin_a,
-                0.072 - 0.072 * cos_a - 0.283 * sin_a,
-            ],
-            [
-                0.213 - 0.213 * cos_a - 0.787 * sin_a,
-                0.715 - 0.715 * cos_a + 0.715 * sin_a,
-                0.072 + 0.928 * cos_a + 0.072 * sin_a,
-            ],
-        ]
-        off = mat_vec(ti_mat, off)
-        mat = mat_mul(ti_mat, mat)
-
-    # --- Build filter string ---
-    ccm = (
-        f"colorchannelmixer="
-        f"rr={mat[0][0]:.6f}:rg={mat[0][1]:.6f}:rb={mat[0][2]:.6f}:ra={off[0]:.6f}:"
-        f"gr={mat[1][0]:.6f}:gg={mat[1][1]:.6f}:gb={mat[1][2]:.6f}:ga={off[1]:.6f}:"
-        f"br={mat[2][0]:.6f}:bg={mat[2][1]:.6f}:bb={mat[2][2]:.6f}:ba={off[2]:.6f}"
-    )
-
-    filters = ["format=rgb24", ccm]
-
-    if sharpness >= 0.001:
-        filters.append(f"unsharp=5:5:{sharpness:.2f}:5:5:{sharpness:.2f}")
-
-    chain = ",".join(filters)
-    return f"[0:v]{chain},scale=1080:1920:flags=lanczos,setsar=1[corrected];[1:v]scale=1080:1920:flags=lanczos[ovr];[corrected][ovr]overlay=0:0"
-
 
 def _build_color_only_filter(color_correction: dict | None) -> str:
     """Build a -vf filter string for color correction only (no overlay input).
@@ -625,11 +474,17 @@ async def burn_overlay(request: Request):
 
     log.info("overlay #%d project=%s batch=%s video=%s overlay=%s cc=%s", idx, project, batch_id, video_rel, 'yes' if overlay_b64 else 'no', 'yes' if color_correction else 'no')
 
+    # batch_id names one directory under the burn dir; the output is written there.
+    if (
+        not isinstance(batch_id, str)
+        or not batch_id
+        or batch_id.startswith(".")
+        or any(ch in batch_id for ch in ("/", "\\", "\x00"))
+    ):
+        return JSONResponse({"index": idx, "ok": False, "error": "Invalid batch id"}, status_code=400)
+
     try:
         burn_dir = get_project_burn_dir(project)
-        burn_dir.mkdir(parents=True, exist_ok=True)
-        batch_dir = burn_dir / batch_id
-        batch_dir.mkdir(exist_ok=True)
 
         if video_rel.startswith("clips/"):
             project_dir = PROJECTS_DIR / sanitize_project_name(project)
@@ -638,8 +493,10 @@ async def burn_overlay(request: Request):
             video_dir = get_project_video_dir(project)
             video_abs = str(video_dir / video_rel)
 
-        project_root = (PROJECTS_DIR / sanitize_project_name(project)).resolve()
-        if not str(Path(video_abs).resolve()).startswith(str(project_root)):
+        # Real-path containment, not a string prefix: project `p` is a string
+        # prefix of `projects/page_roster.json`, `c` of `projects/cookies.txt`.
+        project_root = PROJECTS_DIR / sanitize_project_name(project)
+        if not is_within(video_abs, project_root):
             log.error("burn #%d: path traversal blocked: %s", idx, video_rel)
             return JSONResponse({"index": idx, "ok": False, "error": "Invalid path"}, status_code=400)
 
@@ -647,6 +504,9 @@ async def burn_overlay(request: Request):
             log.error("burn #%d: video not found: %s", idx, video_abs)
             return JSONResponse({"index": idx, "ok": False, "error": f"Video not found: {video_rel}"}, status_code=404)
 
+        burn_dir.mkdir(parents=True, exist_ok=True)
+        batch_dir = burn_dir / batch_id
+        batch_dir.mkdir(exist_ok=True)
         mp4_path = str(batch_dir / f"burned_{idx:03d}.mp4")
 
         # Track as queued and fire background task

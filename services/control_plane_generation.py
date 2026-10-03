@@ -27,6 +27,7 @@ from providers.base import API_KEYS
 from services.content_engine_registry import resolve_material_profile
 from services.caption_discipline import validate_caption_discipline
 from services.content_format_contracts import load_format_contracts
+from services.page_frame import frame_band_height
 
 
 CATALOG_PATH = (
@@ -174,7 +175,7 @@ def _catalog_path() -> Path:
     return Path(configured).resolve() if configured else CATALOG_PATH
 
 
-def load_prompt_catalog() -> tuple[dict[str, Any], str]:
+def load_prompt_catalog(format_slug: str | None = None) -> tuple[dict[str, Any], str]:
     raw = _catalog_path().read_bytes()
     catalog = json.loads(raw)
     if not isinstance(catalog, dict):
@@ -182,7 +183,38 @@ def load_prompt_catalog() -> tuple[dict[str, Any], str]:
     for field in ("formats", "families", "providers"):
         if not isinstance(catalog.get(field), dict):
             raise ValueError(f"prompt catalog {field} must be an object")
-    return catalog, hashlib.sha256(raw).hexdigest()
+    version = hashlib.sha256(raw).hexdigest()
+    # Keep unrelated saved recipes bound to their unchanged catalog bytes.
+    # A custom catalog is self-contained; only the bundled catalog has this
+    # separately versioned silhouette replacement.
+    if _catalog_path() == CATALOG_PATH.resolve():
+        still_raw = CATALOG_PATH.with_name("silhouette_stills.v1.json").read_bytes()
+        still = json.loads(still_raw)
+        for field, names in {
+            "formats": {"silhouette-truck"},
+            "families": {"silhouette"},
+            "providers": {"flux-image"},
+        }.items():
+            if not isinstance(still.get(field), dict) or set(still[field]) != names:
+                raise ValueError("silhouette catalog must be scoped to silhouette only")
+            catalog[field].update(still[field])
+        if format_slug == "silhouette-truck":
+            version = hashlib.sha256(still_raw).hexdigest()
+    if _catalog_path() == CATALOG_PATH.resolve():
+        boat_raw = CATALOG_PATH.with_name("boat_minimax.v1.json").read_bytes()
+        boat = json.loads(boat_raw)
+        for field, names in {
+            "formats": {"boat-lake"}, "families": {"boat"}, "providers": {"hailuo"},
+        }.items():
+            if not isinstance(boat.get(field), dict) or set(boat[field]) != names:
+                raise ValueError("boat catalog must be scoped to boat only")
+            # Hailuo is shared with trucks; the overlay cannot alter that provider.
+            if field == "providers" and boat[field] != {"hailuo": catalog[field]["hailuo"]}:
+                raise ValueError("boat catalog must preserve the shared Hailuo provider")
+            catalog[field].update(boat[field])
+        if format_slug == "boat-lake":
+            version = hashlib.sha256(boat_raw).hexdigest()
+    return catalog, version
 
 
 def _runtime_ready(engine: str) -> bool:
@@ -253,6 +285,11 @@ def _typed_recipe_spec(publication: dict[str, Any]) -> dict[str, Any] | None:
             or not MIN_CLIP_CROP_FOCUS <= float(focus_y) <= MAX_CLIP_CROP_FOCUS
         ):
             return None
+    try:
+        # Optional page frame; delivery-only, never part of source treatment.
+        frame_band_height(render)
+    except ValueError:
+        return None
     if spec.get("schema") == "dossier.recipe-spec.v4":
         try:
             validate_caption_discipline(spec.get("captionDiscipline"))
@@ -300,7 +337,7 @@ def resolve_generation_recipe(
         or profile.executor_version is None
     ):
         return _unavailable(publication, "material_profile")
-    catalog, catalog_hash = load_prompt_catalog()
+    catalog, catalog_hash = load_prompt_catalog(format_slug)
     if profile.executor_version != f"sha256:{catalog_hash}":
         return _unavailable(publication, "executor_version")
     format_config = catalog["formats"].get(format_slug)
@@ -317,10 +354,10 @@ def resolve_generation_recipe(
     ):
         return _unavailable(publication, "prompt_family")
     method = family.get("method")
-    if method not in {"t2v", "i2v"}:
+    if method not in {"t2v", "i2v", "t2i"}:
         return _unavailable(publication, "generation_method")
-    if method == "t2v" and family.get("base_anchor") not in (None, ""):
-        return _unavailable(publication, "unexpected_t2v_anchor")
+    if method in {"t2v", "t2i"} and family.get("base_anchor") not in (None, ""):
+        return _unavailable(publication, "unexpected_generation_anchor")
     if method == "i2v":
         manifest_sha = family.get("anchor_manifest_sha256")
         base_sha = family.get("base_anchor_sha256")
@@ -676,6 +713,18 @@ async def load_generation_anchor(
     return data_uri, metadata
 
 
+# Per-recipe provider moderation level, keyed by (prompt family, engine).  Only
+# the FLUX silhouette stills opt in: at Replicate's default of 2 their benign
+# embracing-silhouette prompts were flagged E005 "sensitive" on 23 of 83 calls
+# (2026-09-25).  3 is the lowest step above the default; raise it only on
+# measured flag rates.  This lives in code, not in silhouette_stills.v1.json,
+# because those catalog bytes are the silhouette catalog version and the
+# prompt-plan authority.  Every other recipe sends no safety_tolerance.
+PROVIDER_SAFETY_TOLERANCE: dict[tuple[str, str], int] = {
+    ("silhouette", "flux-image"): 3,
+}
+
+
 def generation_options(recipe: GenerationRecipe) -> dict[str, Any]:
     base = recipe.provider_config.get("base_input")
     options = dict(base) if isinstance(base, dict) else {}
@@ -687,6 +736,10 @@ def generation_options(recipe: GenerationRecipe) -> dict[str, Any]:
     selected = recipe.recipe_spec.get("production", {}).get("controls", {})
     if isinstance(selected, dict):
         options.update(selected)
+    tolerance = PROVIDER_SAFETY_TOLERANCE.get((recipe.family_name, recipe.engine))
+    if tolerance is not None:
+        # An explicit catalog value still wins; the provider builder validates it.
+        options.setdefault("safety_tolerance", tolerance)
     return options
 
 

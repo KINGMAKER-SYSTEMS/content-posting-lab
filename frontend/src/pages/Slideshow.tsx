@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useWorkflowStore } from '../stores/workflowStore';
-import { apiUrl } from '../lib/api';
+import { apiUrl, withApiKey } from '../lib/api';
 import { captureTextOverlay, fontFamilyName, getTextTranslateX } from '../lib/textOverlay';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -162,7 +162,7 @@ export function SlideshowPage() {
 
   const fetchCampaignSounds = useCallback(async () => {
     try {
-      const res = await fetch(apiUrl('/api/telegram/sounds?active_only=true'));
+      const res = await fetch(apiUrl('/api/telegram/sounds?active_only=true'), withApiKey());
       if (res.ok) {
         const data = await res.json();
         // /api/telegram/sounds returns an array directly, not { sounds: [...] }

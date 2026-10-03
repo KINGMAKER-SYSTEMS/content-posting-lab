@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useWorkflowStore } from '@/stores/workflowStore';
-import { apiUrl } from '@/lib/api';
+import { apiUrl, withApiKey } from '@/lib/api';
 import { TabNav } from '@/components/TabNav';
 import type {
   TelegramStatus,
@@ -24,13 +24,14 @@ import { TelegramTab } from './distribution/TelegramTab';
 import { SoundsTab } from './distribution/SoundsTab';
 import { UploadsTab } from './distribution/UploadsTab';
 import { EmailTab } from './distribution/EmailTab';
+import { ALIAS_REMOVAL_DISABLED, rosterEmailHidden } from '@/lib/rosterRedaction';
 
 // ---------------------------------------------------------------------------
 // Helpers (shared across tabs)
 // ---------------------------------------------------------------------------
 
 async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(url, init);
+  const res = await fetch(url, withApiKey(init));
   if (!res.ok) {
     const text = await res.text();
     throw new Error(text || `Request failed (${res.status})`);
@@ -39,7 +40,7 @@ async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
 }
 
 async function fetchOk(url: string, init?: RequestInit): Promise<void> {
-  const res = await fetch(url, init);
+  const res = await fetch(url, withApiKey(init));
   if (!res.ok) {
     const text = await res.text();
     throw new Error(text || `Request failed (${res.status})`);
@@ -389,7 +390,7 @@ export function DistributionPage() {
     setTgLoading(true);
     refreshTelegram().finally(() => {
       setTgLoading(false);
-      fetch(apiUrl('/api/telegram/sounds/sync'), { method: 'POST' })
+      fetch(apiUrl('/api/telegram/sounds/sync'), withApiKey({ method: 'POST' }))
         .then(() => refreshTelegram())
         .catch(() => {});
     });
@@ -590,18 +591,18 @@ export function DistributionPage() {
     setAssignChainLoading(page.integration_id);
     try {
       // 1. Assign the page to the poster
-      const assignRes = await fetch(apiUrl(`/api/telegram/posters/${encodeURIComponent(posterId)}/pages`), {
+      const assignRes = await fetch(apiUrl(`/api/telegram/posters/${encodeURIComponent(posterId)}/pages`), withApiKey({
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ page_ids: [page.integration_id], page_names: { [page.integration_id]: page.name } }),
-      });
+      }));
       if (!assignRes.ok) {
         const text = await assignRes.text();
         throw new Error(text || `Assign failed (${assignRes.status})`);
       }
 
       // 2. Sync topics — creates the forum topic in the poster's group
-      const syncRes = await fetch(apiUrl(`/api/telegram/posters/${encodeURIComponent(posterId)}/sync-topics`), { method: 'POST' });
+      const syncRes = await fetch(apiUrl(`/api/telegram/posters/${encodeURIComponent(posterId)}/sync-topics`), withApiKey({ method: 'POST' }));
       if (!syncRes.ok) {
         const text = await syncRes.text();
         throw new Error(text || `Topic sync failed (${syncRes.status})`);
@@ -627,10 +628,10 @@ export function DistributionPage() {
         const page = rosterPages.find((p) => p.integration_id === pid);
         if (page?.name) pageNames[pid] = page.name;
       }
-      const res = await fetch(apiUrl(`/api/telegram/posters/${encodeURIComponent(posterId)}/pages`), {
+      const res = await fetch(apiUrl(`/api/telegram/posters/${encodeURIComponent(posterId)}/pages`), withApiKey({
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ page_ids: pageIds, page_names: pageNames }),
-      });
+      }));
       const data = await res.json();
       if (!res.ok) throw new Error(data?.detail || JSON.stringify(data) || `Request failed (${res.status})`);
       setPosterSelectedPages((prev) => ({ ...prev, [posterId]: new Set() }));
@@ -739,7 +740,7 @@ export function DistributionPage() {
   const handleScanInventory = useCallback(async () => {
     setScanning(true); setScanResult(null); setScanProgress('Starting scan...');
     try {
-      await fetch(apiUrl('/api/telegram/staging-group/scan-inventory'), { method: 'POST' });
+      await fetch(apiUrl('/api/telegram/staging-group/scan-inventory'), withApiKey({ method: 'POST' }));
       for (let i = 0; i < 300; i++) {
         await new Promise((r) => setTimeout(r, 2000));
         try {
@@ -762,7 +763,7 @@ export function DistributionPage() {
   const handleDiscoverTopics = useCallback(async () => {
     setDiscovering(true); setDiscoverProgress('Starting discovery...');
     try {
-      await fetch(apiUrl('/api/telegram/staging-group/discover-topics'), { method: 'POST' });
+      await fetch(apiUrl('/api/telegram/staging-group/discover-topics'), withApiKey({ method: 'POST' }));
       for (let i = 0; i < 600; i++) {
         await new Promise((r) => setTimeout(r, 2000));
         try {
@@ -855,7 +856,10 @@ export function DistributionPage() {
   }, [verifiedDestinations, rosterPages, storeSetRosterPages, addNotification]);
 
   const deleteEmailAlias = useCallback(async (page: RosterPage) => {
-    if (!page.email_rule_id) return;
+    if (!page.email_rule_id) {
+      if (rosterEmailHidden(page)) addNotification('error', ALIAS_REMOVAL_DISABLED);
+      return;
+    }
     try {
       const resp = await fetch(apiUrl(`/api/email/rules/${page.email_rule_id}?integration_id=${page.integration_id}`), { method: 'DELETE' });
       if (!resp.ok) throw new Error('Failed to delete');
