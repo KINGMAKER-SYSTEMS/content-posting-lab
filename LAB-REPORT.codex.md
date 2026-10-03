@@ -1,0 +1,48 @@
+## lab-pr-149
+
+- Merge: `origin/main` `7a970212432d4e24f23efbef67c3a2068e93e2f1` merged into PR head `07e61f880a4e4ef4a7e04ad47a6edb6e72ddc380`; merge commit `c51ba58bbe6cfcfab3b7f752ec719d59d6b1d90c`. Merge base: `e50fb9c27d56452adf12154dd34c107667201a1a`. Git `ort` merge had no conflicts. No migration or schema files occur in the PR diff or merge conflict set.
+- The PR fixes staging cleanup in `upload_batch`, `r2_upload_complete`, `_run_batch_job`, and `download_url`, while using the path returned by `download_video`. For URL downloads the directory is exactly `clipper_dir / f"_staging_{batch_id}"`; `download_url` calls `safe_rmtree(staging_dir)` only in the download exception handler, immediately before raising `HTTPException(500, f"Download failed: {e}")`. Thus it deletes that failed request's staging directory and its partial `.part`, stream, and remux files. It cannot delete a finished/ready clip because those are written under `clipper_dir / job_id` (`job_dir`), and this call's argument is only the `_staging_<batch_id>` path. It cannot delete the vault because `_get_clipper_dir` resolves to `PROJECTS_DIR / sanitized / "clips"`, and no vault path is passed to `safe_rmtree`. It cannot delete another job's staging: `download_url` generates its own `uuid.uuid4().hex[:12]` `batch_id`, and cleanup passes only that one exact staging path. In the wider PR, `stage_streamed` is expressly exempt (`# staging-leak-exempt:`) because its caller-supplied batch id is shared by sibling requests; it frees its own bytes per branch rather than removing that shared directory.
+- Added/renamed focused regression `test_failed_download_only_removes_its_staging`: it seeds another job's staging and payload, forces the download to fail after writing partial artifacts, then requires only the failed request's directory to be gone and the sibling payload to remain. The passing run and requested fail proof could not be executed: this worktree has no `pytest` command or installed `pytest` Python module (`python3 -m pytest` reports `No module named pytest`). A fail-proof attempt with the cleanup temporarily removed stopped at `nice: pytest: No such file or directory` (exit 127), so it is not counted as a test failure proof. The temporary source edit was restored. `git diff --check origin/main...HEAD` passed before the focused test edit.
+- Test counts: 0 executed / 0 passed / 0 failed. Consequently the changed-module tests (`routers/clipper.py`, `services/fsutil.py`), clipper/R2/download suites (`test_clipper_*.py`, `test_ytdlp_download_diagnostics.py`, `test_provider_download_bounds.py`), and full suite were not run. The known 7-failure main baseline from 2026-09-28 could not be reproduced or compared against this branch, so no claim is made that the failure set is unchanged. Full-suite runtime/offline status is unknown; without a local test runner it was not attempted.
+
+VERDICT: NOT READY c51ba58bbe6cfcfab3b7f752ec719d59d6b1d90c tests unavailable; baseline comparison and regression fail proof not run
+
+## lab-pr-149b
+
+- Confirmed batch IDs are minted as `uuid.uuid4().hex[:12]` in `/r2/upload-init`, `/upload-batch`, and `/download-url`; `/stage-streamed` uses the same mint when its optional query ID is absent.
+- Added full-match `[0-9a-f]{12}` validation before filesystem work for caller-supplied IDs in `/r2/upload-complete`, `/stage-streamed`, `/trim-batch`, and `/process-batch`. `/process-batch` continues to allow an omitted/empty ID because that is not caller-supplied; any nonempty supplied value must validate.
+- Added `_delete_staging_dir(clipper_dir, batch_id)`: it rejects invalid IDs, symlink staging entries, and resolved paths that are not the exact direct `_staging_<id>` child of the resolved clipper directory. It logs refusals and only then calls `safe_rmtree`.
+- Routed every staging removal through the guarded helper: `r2_upload_complete` exception and all-failed paths; `upload_batch` exception and all-failed paths; `download_url` download-failure path; `trim_batch`; and `_run_batch_job` `finally`. The sole other `safe_rmtree` in `routers/clipper.py` remains `delete_clipper_job(job_dir)`, a server-derived non-staging path, and was left unchanged.
+- Added regression coverage for traversal rejection in R2 completion and batch-job requests with an outside sentinel, symlink-target preservation, valid-ID cleanup scoped to its own staging directory, and updated the staging cleanup census to recognize the guarded helper. Existing successful-download staging retention coverage remains.
+- Static verification: `python3 -m py_compile` on the changed Python modules and `git diff --check` completed without reported errors. Pytest was intentionally not run per instruction. `nice -n 19` was requested for the command, but this environment returned `nice: setpriority: Operation not permitted`; it did not stop the static check.
+
+VERDICT: READY e88f22717b0902b9cdd5cde73512af1bbf32507f
+
+## lab-pr-149c
+
+- Reworked `test_clipper_uses_safe_rmtree` to assert the safety property instead of a brittle call-site count: no bare `shutil.rmtree`, exactly one `safe_rmtree` call inside `_delete_staging_dir`, the guard used by staging deletion.
+- Added direct cleanup-helper cases for traversal IDs, an outside-target symlink (including asserting the symlink itself remains), and a valid real staging directory with a sibling that must survive.
+- Strengthened the R2 traversal rejection case to require the exact batch ID validation detail and verify that neither R2 download nor any `Path.mkdir` operation occurred before rejection.
+- Verification: pytest was not run, as requested. `python3 -m py_compile` and `git diff --check` passed. The environment returned `nice: setpriority: Operation not permitted`; commands still ran, but niceness could not be changed.
+
+VERDICT: READY a103586e151779c6c80ae1ea1f084e85709db126
+
+## lab-pr-149d
+
+- Reworked `test_clipper_uses_safe_rmtree` to allow the legitimate
+  `safe_rmtree(job_dir)` in `delete_clipper_job` without pinning a total call
+  count. It requires no bare `shutil.rmtree`, requires the staging helper to
+  call `safe_rmtree`, restricts outside calls to `delete_clipper_job`, and
+  checks that function's source and call argument contain no staging marker.
+  It also traces AST-local names assigned from `_staging_` expressions and
+  rejects passing those names (or direct staging expressions) to
+  `safe_rmtree` outside the helper.
+- Reasoned head check: the helper call is found; the sole outside call is
+  `delete_clipper_job(job_dir)` and its function segment has no `_staging_`;
+  staging directory assignments elsewhere do not feed any `safe_rmtree`
+  argument. A bypass mutant that adds `safe_rmtree(staging_dir)` in, for
+  example, `download_url` fails the outside-function allowlist; a mutant that
+  calls it in `delete_clipper_job` fails the function-source staging-marker
+  check. Pytest was not run per instruction.
+
+VERDICT: READY 1b169c1ff5ecc7bd2f15948e0c9b55029914a6b7

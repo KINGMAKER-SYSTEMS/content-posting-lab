@@ -40,8 +40,12 @@
   and requeues remaining finalizable artifacts at the tail, preventing a large
   batch from blocking a one-output page. A restart safely makes the prior
   runtime's queued sweep eligible for resubmission.
-- Source cut duration accounts for the saved playback speed so both normal and
-  fixed recuts deliver 6-11 seconds; preserve the saved speed and video treatment.
+- Source cut lengths run 5-9 seconds in 0.5-second steps; 9 seconds is the
+  Worker's admission bound and stays the maximum. A length is used only
+  when the delivered clip at the saved playback speed also stays inside that
+  range; a speed no length satisfies (about below 0.56x or above 1.8x) keeps
+  the earlier 6-11 second delivered vocabulary. Jobs queued under the earlier
+  lengths still verify. Preserve the saved speed and video treatment.
   Normalize cut timestamps and extend a fractional missing tail frame to the
   planned output duration; source-window provenance remains unchanged.
 - Source cut planning honors the immutable original 60-second minimum for raw
@@ -122,6 +126,8 @@
 
 ## Local Contracts
 
+- Caption word count is diagnostic only; never reject or rewrite a caption for exceeding a word-count threshold.
+
 - The `/api/` key middleware (`app.py` `_AUTH_SKIP`) exempts only `/api/health`
   and `/api/miniapp/*`, which verifies Telegram `initData` itself.
   `/api/telegram/*` needs the key like every other `/api/` route: the bot
@@ -139,6 +145,10 @@
   `projects/page_roster.json`. `/api/burn/overlay` also takes `batchId` as one
   directory name. While APP_API_KEY is unset these server-side checks are the
   only guard on `/api/*`.
+- Clipper upload, streaming upload, delete, rename and download-all accept
+  single-component job IDs, including legacy and caller-supplied names, only as
+  resolved non-symlink direct children of the project's clip directory. Path
+  errors return 400; missing jobs on management routes retain 404.
 - `project_manager.is_reserved_volume_dir` names the service-state dirs on the
   projects volume (`_post_render`, `control_plane_generated`,
   `control_plane_recipes`, `agenticnews_assets`, `lost+found`, and any name
@@ -172,6 +182,9 @@
 - Caption rendering accepts the shared `CaptionStyle` wire fields only. A saved
   caption layout may supply exact line breaks and final-frame outline width;
   otherwise the established outline remains 3 px at 1080x1920.
+  Explicit `inverted: false` is the existing upright render, byte-identical to
+  an absent transform. This compatibility does not enable inversion or rewrite
+  the immutable slot/treatment JSON and hashes.
 - Dossier recipe v4 is the executable v3 production selection plus the exact
   Control Plane `captionDiscipline` wire object. Content Lab validates and
   preserves that immutable selection; it does not choose a corpus, sentiment,
@@ -200,13 +213,35 @@
   length is a distinct clip. Queued, running and completed jobs reserve their
   exact time frames across recipe revisions and library versions of the same
   master bytes, so a new recipe cuts new time frames instead of re-cutting
-  delivered ones; failed jobs release theirs. Plans prefer footage that
-  overlaps earlier cuts least, break ties by a per-job seed recorded as
-  `cutPlanSeed`, and never hold two overlapping cuts of one master.
-  Exhausted libraries remain visible with `maxQuantity: 0` so Control Plane can
-  distinguish source exhaustion from an unregistered recipe; job creation then
-  answers 409 `master_windows_exhausted`. Job creation remains exact and
-  all-or-nothing; it never silently returns fewer clips than requested.
+  delivered ones; failed jobs release theirs. Each reserved time frame keeps
+  when it was cut (job completedAt, else createdAt; archived as `usedAt`). Re-cut variety (operator rule 2026-09-30): every plan goes
+  through `plan_source_cuts`, which prefers never-cut footage, then a start far
+  from the master's last few starts, then a length unlike its last few
+  lengths, then the least recently cut footage, then a per-job seed recorded
+  as `cutPlanSeed`; one plan never holds two overlapping cuts of one master.
+  The first cut on a master uses the page's Cut length, and a cut repeats the
+  master's last length only when nothing else fits. A window is never cut
+  twice (that would render bytes the Worker refuses as a repeat): once every
+  whole-second start x length is cut, starts move inside the second (half a
+  second, then a quarter and three quarters). Masters carry no verified frame
+  rate, so starts stay at least 250 ms apart and a window counts as cut when an
+  earlier cut of the same length starts under 250 ms away. When every such
+  window is cut, capability `maxQuantity` is 0 and job creation answers 409
+  `source_windows_exhausted`: the page needs new footage. The other named
+  409s are `source_master_too_short` and `source_windows_reserved_by_other_pages`
+  (other pages' reservations arrive only with a job, so capability does not
+  count them). A plan that cannot fit another never-cut window beside its
+  other cuts ends short. Recency and variety are per master, across every page
+  that cut it. `tests/test_source_cut_path_census.py`
+  fails any new path that builds source cuts without the planner. Job creation
+  remains exact and all-or-nothing; it never silently returns fewer clips than
+  requested.
+- Job `constraints` accepts `sourceWindowExclusions` and `priority`
+  (`"low_runway"`); unknown keys and values are ignored and kept on the job,
+  never an error. The Lab starts every job at creation, so ordering by
+  priority is the Worker's job. Capabilities add `supportedConstraints` only
+  with `CONTENT_LAB_ADVERTISE_SUPPORTED_CONSTRAINTS` set, because the
+  deployed Worker rejects unknown capabilities fields.
   Legacy async jobs without recoverable checkpoints fail closed after runtime
   replacement; generated jobs with durable provider identity retain their
   original prompt reservations while the same job resumes. Source-window
@@ -280,8 +315,11 @@
   request. The source must already have the requested video grade, speed and
   crop, proven by source-bound applied-video evidence. Caption style belongs to
   final rendering and may change without regenerating an otherwise matching
-  source. Unknown or different video provenance requires regeneration. This renderer adds the typed caption and
-  delivery encoding only; it never repeats grade, crop or speed.
+  source. Unknown or different video provenance requires regeneration. This renderer adds the typed caption,
+  the page frame's letterbox and delivery encoding only; it never repeats grade, crop or speed.
+  An optional slot-treatment `frame` (16:9, 1:1, 3:4, 4:3; absent or 9:16 is full-bleed) keeps
+  the centred band of the 1080x1920 picture on plain black and draws the caption in the middle.
+  The frame is not source treatment: existing sources stay reusable when a page changes frame.
 - Prepared artifacts require source-byte verification and upright square-pixel
   near-9:16 input at least 1080 pixels high. Exact and chroma-aligned frames
   scale directly; native provider frames within three percent of 9:16 are
@@ -318,6 +356,12 @@
 - `services.ffmpeg.run_color_correct` serializes its ffmpeg subprocesses within
   each service process so simultaneous asynchronous refill jobs cannot exhaust
   container memory during 1080x1920 libx264 encoding.
+  For PQ (`smpte2084`) or HLG (`arib-std-b67`) inputs, restore only the probed
+  colour tags after the RGB round trip, preserving the source matrix. Missing
+  or unknown fields stay unknown; never infer BT.2020 primaries or limited
+  range from transfer alone. Other/unknown transfers keep the existing encode
+  arguments. The bounded local colour probe runs off the event loop, and this
+  metadata repair does not add tone-mapping or repeat video treatment.
 - Durable preparation is exposed at `/api/control-plane/v1/post-renders`.
   Every request requires the existing control-plane bearer and exact
   `X-RT-Page-Id`; enqueue also requires `Idempotency-Key`. Status, retries,
@@ -367,12 +411,41 @@
   provider, model, call index, prediction id, bounded detail) in the job store
   only; the Control Plane's strict status schema is unchanged.
 - AI generation reserves prompt combinations only for queued or running jobs.
-  A confirmed Replicate moderation refusal retains its prediction and never
-  retries or changes its prompt, provider or safety settings. Continue only
-  through the other distinct candidates in that job's original bounded plan;
-  do not buy replacement calls. Persist every failure in the private job store
-  and count only successful calls as completed. Credit, transport, ambiguous
-  submission and other failures still stop the remaining plan.
+  A confirmed Replicate moderation refusal (class `moderation`, prediction id,
+  "Replicate failed:") retains its prediction. Only an exact E005 refusal
+  (with no embedded HTTP status) may be retried, at most twice
+  for that planned call (`services/moderation_retry.py`), each time with the
+  next fixed, deterministic prompt rewording; provider, model, safety settings
+  and the immutable prompt plan never change and no alternate engine is used.
+  Other moderation-class text (a 429/5xx from the provider's moderation
+  dependency, failed-prediction logs that mention "safety") is never retried.
+  Any standalone 4xx/5xx number in the message outside a URL (`Error code: 503`,
+  `429 Too Many Requests`, `HTTP Error 503`, `{"code": 500}`, `status_code=429`,
+  …) blocks the retry even when `(E005)` is present; the real E005 message
+  carries no number.
+  A rewording never adds a subject the prompt lacks: person wording applies
+  only to prompts that depict people, and a person term preceded in its clause
+  by a negation ("no people", "without any people", "free of people") does not
+  count; "figure(s)" and "body/bodies" are not person terms. The per-attempt cost table is
+  pinned equal to the `recipes/generation` catalog by a test.
+  Retries draw on a per-page UTC-day budget
+  (`CONTENT_LAB_MODERATION_RETRY_DAILY_BUDGET`, default 6, 0 disables),
+  counted from every job's durable `generationAttempts` rows; first attempts
+  never consume it. Each retry has its own prediction checkpoint key `i:k`.
+  A retried clip records the sent `promptHash`, the plan's `basePromptHash`
+  and `promptVariant`; recovery accepts a variant hash only from a succeeded
+  attempt row of that call. Each attempt records its estimated cost, and the
+  job keeps `moderationRetryCostUsd`. When retries or budget are spent (or the
+  refusal is not an exact E005), the refusal stays
+  terminal with a named `terminal` reason in `providerFailures`, and only the
+  other distinct candidates of the original plan continue; the status contract
+  is unchanged. Persist every failure in the private job store and count only
+  successful calls as completed. Credit (402), provider auth (401/403,
+  including "Error code: 401" raised inside the moderation check, whose
+  errorDetail is `moderation model HTTP 401`/`403` so it is not read as our
+  token; our own token keeps `HTTP 401`/`403`), transport,
+  ambiguous submission and other failures are never retried and still stop the
+  remaining plan.
   Provider failures preserve already treated, claimed outputs as a
   completed underfilled batch, retaining the provider error and planned/completed
   call counts. Artifact count stays truthful; downstream refill plans the deficit
@@ -434,6 +507,11 @@
 
 ## Verification
 
+- Run `pytest -q tests/test_hdr_color_matrix.py tests/test_ffmpeg_cc.py tests/test_ffmpeg_encode_timeout.py`
+  for PQ/HLG metadata preservation, unchanged SDR arguments, decoded pixel
+  parity, probe offloading, and bounded encode cleanup. The self-contained
+  HDR encode cases need only ffmpeg/ffprobe; real-master cases additionally
+  use the optional `HDR_FIXTURES_DIR` fixture directory.
 - Run `pytest -q tests/test_visual_admission.py` for observed boat-frame OCR
   noise, short readable text, rotated single-frame text, complete coverage,
   unavailable providers, exact-byte binding, and cached-decision behavior.
@@ -444,6 +522,9 @@
 - Run `pytest -q tests/test_generation_restart_recovery.py tests/test_replicate_generation_retry.py`
   for paid-request identity, ambiguous submission, shutdown, crop recovery,
   processing deadlines and cross-process checkpoint transaction checks.
+- Run `pytest -q tests/test_generation_moderation_retry.py tests/test_generation_moderation_isolation.py`
+  for bounded varied moderation retries, the daily retry budget, fail-fast
+  credit/auth classes and restart of a retried call.
 - Run `pytest -q tests/test_post_render_jobs.py tests/test_source_treatment.py`
   for durable crash/retry/lock/auth/source-grant and applied-video provenance checks.
 - Run `pytest -q tests/test_post_render.py` for prepared rendering, actual MP4

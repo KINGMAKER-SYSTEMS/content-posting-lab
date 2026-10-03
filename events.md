@@ -1025,3 +1025,141 @@ worktree: [codex/restore-boat-minimax-five-crops]
 type: [bug report]
 area: [backend]
 Restored boat-lake to the operator-requested MiniMax/Hailuo five-way crop using six existing boat-bucket prompts verbatim. Removed the fixed Wan boat-anchor requirement through a boat-only catalog overlay; unrelated catalog/provider versions remain unchanged. Both active boat pages must adopt the advertised selection and existing usable Minimax inventory.
+
+_________________________________________________________________________________
+_________________________________________________________________________________
+time: [04:59 EDT] [26-09-26]
+agent: [Claude Code] [claude-opus-5-5]
+worktree: [claude/lab-moderation-retry] [/Users/ecfromthedc/dev/seats/LAB-MODRETRY]
+type: [feature-request] [supply self-healing]: Bounded varied retry of a confirmed moderation refusal
+area: [backend] [testing]
+
+A confirmed Replicate moderation refusal (E005) on a planned generation call
+is now retried at most twice, each time with the next fixed deterministic
+prompt rewording (`services/moderation_retry.py`), on the same engine, model
+and safety settings. Retries draw on a per-page UTC-day budget
+(`CONTENT_LAB_MODERATION_RETRY_DAILY_BUDGET`, default 6) counted from durable
+`generationAttempts` rows; first attempts never consume it. Each retry has its
+own prediction checkpoint, records its estimated cost, and a retried clip
+records the sent prompt hash plus the plan's base hash and variant id, which
+restart recovery accepts only from a succeeded attempt row. Credit (402),
+provider auth (401/403, new `provider_auth` class) and all other classes still
+fail fast with no retry; the job status contract is unchanged. New tests in
+`tests/test_generation_moderation_retry.py` fail on main and pass here. No
+deployment was performed.
+
+_________________________________________________________________________________
+time: [08:10 EDT] [26-09-26]
+agent: [Claude Code] [claude-opus-5-5]
+worktree: [claude/lab-moderation-retry] [/Users/ecfromthedc/dev/seats/LAB-MODRETRY]
+type: [bug-fix] [supply self-healing]: #181 review round 2, narrower retry trigger and pinned spend guards
+area: [backend] [testing]
+
+Review defects on #181 fixed. The retry trigger is now exactly E005
+(`moderation_retry.retry_blocked`): moderation-class text without E005, or with
+an embedded HTTP status (a 429/5xx/402 from the provider's moderation
+dependency, failed-prediction logs mentioning "safety"), stays a terminal
+refusal named `moderation_not_e005_not_retried`. "Error code: 401/403" (the
+auth failure observed inside the moderation check on 2026-09-25) is now
+classed `provider_auth` with errorDetail `HTTP 401`, and fails fast; the
+errorClass/errorDetail charsets are unchanged. Rewordings no longer add people
+to people-free prompts (variant ids bumped to `family-safe.v2` and
+`backlit-shapes.v2`), and the cost table is pinned to the catalog. New tests
+pin the durable reservation before the paid retry, in-flight retries counting
+against the page budget, and the prediction-id + "Replicate failed:" guard;
+each is killed by its mutation. No deployment was performed.
+
+_________________________________________________________________________________
+time: [08:57 EDT] [26-09-26]
+agent: [Claude Code] [claude-opus-5-5]
+worktree: [claude/lab-moderation-retry] [/Users/ecfromthedc/dev/seats/LAB-MODRETRY]
+type: [bug-fix] [supply self-healing]: #181 review round 3, negation-aware person gate and wider status guard
+area: [backend] [testing]
+
+The person-wording gate for moderation-retry rewordings matched negations, so
+the scenic, ugc, boat and coffee catalog families ("no people") would have
+received "fully clothed" / silhouette-adult wording on an E005 retry. A person
+term now counts only when no negation (no, without, zero, not any, free of,
+devoid of, never) precedes it within three words of the same clause;
+"figure(s)" and "body/bodies" are no longer person terms. A test composes
+every combination of every catalog family. The embedded-HTTP-status guard
+that blocks a retry even with (E005) is now pinned and also matches
+`Error code 429`, `{'status': 500}`, `status_code=429`, `HTTP 503` and httpx
+`Server error '503 …'`; the real 09-25 E005 message is pinned as retried. By
+lead decision, the moderation model's own 401/403 keeps class `provider_auth`
+with errorDetail `moderation model HTTP 401`/`403`; our own token keeps
+`HTTP 401`/`403`. No deployment was performed.
+
+_________________________________________________________________________________
+time: [09:32 EDT] [26-09-26]
+agent: [Claude Code] [claude-opus-5-5]
+worktree: [claude/lab-moderation-retry] [/Users/ecfromthedc/dev/seats/LAB-MODRETRY]
+type: [bug-fix] [supply self-healing]: #181 review round 4, any 4xx/5xx number blocks an E005 retry
+area: [backend] [testing]
+
+The E005 retry no longer enumerates HTTP-status formats. Any standalone
+4xx/5xx number outside a URL refuses the retry even when (E005) is present,
+which also catches "429 Too Many Requests", urllib "HTTP Error 503", requests
+"429 Client Error", JSON "code": 500, error_code=503 and "RateLimitError 429".
+The real 09-25 E005 message carries no number and stays retried. A test pins
+the clause split of the person gate ("No cars; adults walk at dusk." depicts
+people). No deployment was performed.
+
+_________________________________________________________________________________
+time: [19:52 EDT] [26-09-28]
+agent: [Claude Code] [claude-opus-5-5]
+worktree: [dossier/page-frame] [/Users/ecfromthedc/dev/wt/lab-page-frame]
+type: [feature] [per-page frame]: page picture frame applied at prepared-post render
+area: [backend] [testing]
+
+A page may pick a picture frame: 9:16 (default, full-bleed), 16:9, 1:1, 3:4 or
+4:3. The Control Plane sends `frame` in the slot/render treatment only when it
+is not vertical; "9:16" is accepted as absent and anything else fails closed.
+Prepared-post rendering keeps the delivered 1080x1920 H.264 canvas and, after
+the existing near-9:16 normalization, applies
+`crop=1080:H:0:(1920-H)/2,pad=1080:1920:0:(1920-H)/2:black` (H 608/1080/1440/810)
+before the unchanged caption overlay. Frame is not source treatment: the
+normalized visual treatment, applied-video evidence and render capability
+schema are unchanged, so existing inventory stays reusable and a frame change
+reaches the next prepared post. Recipe registration (v2/v3/v4) and the
+generation decoder accept an optional valid `frame`; recipe bytes round-trip
+unchanged. With no frame the ffmpeg graph and final bytes are identical to
+before. Real-ffmpeg tests on the committed 1080x1920 portrait fixture prove
+black bars and the untouched centred band for every frame. The band's top row
+is rounded down to an even row so every source lands on the chroma grid the
+same way (4:3 is rows 554-1363). On a framed page the caption is drawn in the very middle (position middle,
+offset 0) whatever the slot's caption style places it, so a caption that fits
+the band stays off the bars (a very tall one can still reach onto them); font,
+size, colour and line breaks are unchanged (owner decision 2026-09-28). No
+deployment was performed.
+
+_________________________________________________________________________________
+time: [21:40 EDT] [26-09-30]
+agent: [Claude Code] [claude-opus-5-5]
+worktree: [closeout/varied-recut] [/Users/ecfromthedc/dev/seats/CLOSE-LABRECUT]
+type: [feature] [re-cut variety]: every re-cut uses a new section at a new length; no window is cut twice
+area: [backend] [testing]
+
+Operator rule 2026-09-30: when the Lab re-cuts a master it uses a different
+part of the footage and a different length than the cuts before it, lengths
+5 to 9 s in 0.5 s steps, for every sourced page. `plan_source_cuts` now scores
+every candidate (whole-second start x 0.5 s length): never-cut footage first,
+then a start far from the master's last three starts, then a length unlike the
+last three lengths, then least recently cut footage, then the seeded tiebreak.
+The first cut on a master uses the page's Cut length. Lengths are 5-9 s (the
+Worker's bound stays the maximum) and the delivered clip at the saved speed
+stays inside the same range. `constraints.priority: "low_runway"` and unknown
+constraint keys are accepted; `supportedConstraints` is advertised only with
+`CONTENT_LAB_ADVERTISE_SUPPORTED_CONSTRAINTS`, because the deployed Worker
+rejects unknown capabilities fields. The job ledger now carries when each
+window was cut (archive entries keep `usedAt`/`cutIndex`; older entries count
+as oldest). A window is never cut twice: once every whole-second start x
+length is cut, starts move to half, then quarter and three-quarter seconds
+(at least 250 ms apart, so different first frames at any frame rate above
+4 fps), and a cut repeats the master's last length only when nothing else
+fits. When every window is cut, capability reads 0 and job creation answers
+409 `source_windows_exhausted` (the page needs new footage) instead of
+`master_windows_exhausted`; `source_master_too_short` and
+`source_windows_reserved_by_other_pages` name the other empty plans. A census
+test fails any code
+path that builds source cuts without the planner. No deployment was performed.

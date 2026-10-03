@@ -8,6 +8,9 @@ battle-tested color-matrix math without cross-router imports.
 import asyncio
 import logging
 import math
+import os
+import signal
+import subprocess
 
 log = logging.getLogger("ffmpeg")
 
@@ -182,6 +185,74 @@ def _clip_crop_filter(
     )
 
 
+# colorchannelmixer accepts a coefficient only inside [-2, 2]. More
+# importantly, its *a coefficients are alpha-channel multipliers, not constants:
+# ra/ga/ba are real RGB offsets only while the input has an opaque alpha plane.
+_MIXER_LIMIT = 2.0
+
+
+def _colorchannelmixer(mat: list, off: list) -> str:
+    values = (*mat[0], *mat[1], *mat[2], *off)
+    if any(not math.isfinite(value) or abs(value) > _MIXER_LIMIT for value in values):
+        raise ValueError("colorchannelmixer coefficient outside [-2, 2]")
+    return (
+        f"colorchannelmixer="
+        f"rr={mat[0][0]:.6f}:rg={mat[0][1]:.6f}:rb={mat[0][2]:.6f}:ra={off[0]:.6f}:"
+        f"gr={mat[1][0]:.6f}:gg={mat[1][1]:.6f}:gb={mat[1][2]:.6f}:ga={off[1]:.6f}:"
+        f"br={mat[2][0]:.6f}:bg={mat[2][1]:.6f}:bb={mat[2][2]:.6f}:ba={off[2]:.6f}"
+    )
+
+
+def _factor_steps(value: float, matrix_for_factor) -> list[float]:
+    """Split one composable CSS factor until every mixer stage is legal."""
+    if abs(value) <= 2:
+        candidates = [value]
+    else:
+        count = math.ceil(math.log(abs(value), 2))
+        root = abs(value) ** (1 / count)
+        candidates = [math.copysign(root, value), *([root] * (count - 1))]
+    while any(
+        max(abs(coefficient) for row in matrix_for_factor(factor) for coefficient in row)
+        > _MIXER_LIMIT
+        for factor in candidates
+    ):
+        count = len(candidates) + 1
+        root = abs(value) ** (1 / count)
+        candidates = [math.copysign(root, value), *([root] * (count - 1))]
+    return candidates
+
+
+def _diagonal_filters(value: float, pivot: float = 0.0) -> list[str]:
+    diagonal = lambda factor: [
+        [factor, 0.0, 0.0],
+        [0.0, factor, 0.0],
+        [0.0, 0.0, factor],
+    ]
+    return [
+        _colorchannelmixer(
+            diagonal(factor),
+            [pivot * (1 - factor)] * 3,
+        )
+        for factor in _factor_steps(value, diagonal)
+    ]
+
+
+def _saturation_matrix(value: float) -> list[list[float]]:
+    sr, sg, sb = 0.2126, 0.7152, 0.0722
+    return [
+        [sr + (1 - sr) * value, sg - sg * value, sb - sb * value],
+        [sr - sr * value, sg + (1 - sg) * value, sb - sb * value],
+        [sr - sr * value, sg - sg * value, sb + (1 - sb) * value],
+    ]
+
+
+def _saturation_filters(value: float) -> list[str]:
+    return [
+        _colorchannelmixer(_saturation_matrix(factor), [0.0, 0.0, 0.0])
+        for factor in _factor_steps(value, _saturation_matrix)
+    ]
+
+
 def build_cc_filter(
     cc: dict | None,
     scale: str | None = None,
@@ -268,40 +339,17 @@ def build_cc_filter(
             item for item in (crop_filter, speed_filter, scale_filter) if item
         ) or "null"
 
-    mat = [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
-    off = [0.0, 0.0, 0.0]
-
-    def mat_mul(a: list, b: list) -> list:
-        return [
-            [sum(a[i][k] * b[k][j] for k in range(3)) for j in range(3)]
-            for i in range(3)
-        ]
-
-    def mat_vec(m: list, v: list) -> list:
-        return [sum(m[i][j] * v[j] for j in range(3)) for i in range(3)]
-
+    # CSS applies filter functions from left to right. Keep those stages
+    # separate instead of composing one oversized matrix. rgba64le provides an
+    # opaque alpha plane, making ra/ga/ba the constant terms that CSS contrast
+    # around 0.5 requires; rgb24 silently made those offsets ineffective.
+    filters = ["format=rgba64le"]
     if abs(css_brightness - 1.0) >= 0.005:
-        b = css_brightness
-        mat = [[b * mat[i][j] for j in range(3)] for i in range(3)]
-        off = [b * o for o in off]
-
+        filters.extend(_diagonal_filters(css_brightness))
     if abs(css_contrast - 1.0) >= 0.005:
-        c = css_contrast
-        bias = 0.5 * (1 - c)
-        mat = [[c * mat[i][j] for j in range(3)] for i in range(3)]
-        off = [c * o + bias for o in off]
-
+        filters.extend(_diagonal_filters(css_contrast, pivot=0.5))
     if abs(css_saturate - 1.0) >= 0.005:
-        s = css_saturate
-        sr, sg, sb = 0.2126, 0.7152, 0.0722
-        sat_mat = [
-            [sr + (1 - sr) * s, sg - sg * s, sb - sb * s],
-            [sr - sr * s, sg + (1 - sg) * s, sb - sb * s],
-            [sr - sr * s, sg - sg * s, sb + (1 - sb) * s],
-        ]
-        off = mat_vec(sat_mat, off)
-        mat = mat_mul(sat_mat, mat)
-
+        filters.extend(_saturation_filters(css_saturate))
     if abs(t_raw) > 1:
         if t_raw > 0:
             amt = min(1.0, t_raw / 200)
@@ -330,8 +378,7 @@ def build_cc_filter(
                     0.072 + 0.928 * cos_a + 0.072 * sin_a,
                 ],
             ]
-        off = mat_vec(t_mat, off)
-        mat = mat_mul(t_mat, mat)
+        filters.append(_colorchannelmixer(t_mat, [0.0, 0.0, 0.0]))
 
     if abs(ti_raw) > 1:
         rad = math.radians(ti_raw / 3)
@@ -353,17 +400,11 @@ def build_cc_filter(
                 0.072 + 0.928 * cos_a + 0.072 * sin_a,
             ],
         ]
-        off = mat_vec(ti_mat, off)
-        mat = mat_mul(ti_mat, mat)
+        filters.append(_colorchannelmixer(ti_mat, [0.0, 0.0, 0.0]))
 
-    ccm = (
-        f"colorchannelmixer="
-        f"rr={mat[0][0]:.6f}:rg={mat[0][1]:.6f}:rb={mat[0][2]:.6f}:ra={off[0]:.6f}:"
-        f"gr={mat[1][0]:.6f}:gg={mat[1][1]:.6f}:gb={mat[1][2]:.6f}:ga={off[1]:.6f}:"
-        f"br={mat[2][0]:.6f}:bg={mat[2][1]:.6f}:bb={mat[2][2]:.6f}:ba={off[2]:.6f}"
-    )
-
-    filters = ["format=rgb24", ccm]
+    # Return to the established output working format before spatial/effect
+    # filters and the encoder negotiate their final pixel format.
+    filters.append("format=rgb24")
     if sharpness >= 0.001:
         filters.append(f"unsharp=5:5:{sharpness:.2f}:5:5:{sharpness:.2f}")
     if grain_raw >= 0.001:
@@ -385,6 +426,178 @@ def build_cc_filter(
     return ",".join(filters)
 
 
+# A hung encode must not own the only treatment-lane permit forever. Four times
+# the input duration plus two minutes tolerates slow shared hosts, while the
+# ten-minute floor covers startup-heavy short media and the three-hour ceiling
+# prevents a corrupt duration or unknown input from turning into a multi-day
+# lock. Unknown duration deliberately receives the ceiling, never a short guess.
+_ENCODE_TIMEOUT_FLOOR_SECONDS = 600.0
+_ENCODE_TIMEOUT_MULTIPLIER = 4.0
+_ENCODE_TIMEOUT_GRACE_SECONDS = 120.0
+_ENCODE_TIMEOUT_CEILING_SECONDS = 3 * 60 * 60.0
+_ENCODE_STDERR_TAIL_BYTES = 64 * 1024
+_ENCODE_STDERR_READ_BYTES = 8 * 1024
+_ENCODE_REAP_TIMEOUT_SECONDS = 1.0
+_INPUT_PROBE_TIMEOUT_SECONDS = 30.0
+
+
+def _encode_timeout_seconds(input_duration_seconds: float | None) -> float:
+    if input_duration_seconds is None:
+        return _ENCODE_TIMEOUT_CEILING_SECONDS
+    return min(
+        _ENCODE_TIMEOUT_CEILING_SECONDS,
+        max(
+            _ENCODE_TIMEOUT_FLOOR_SECONDS,
+            input_duration_seconds * _ENCODE_TIMEOUT_MULTIPLIER
+            + _ENCODE_TIMEOUT_GRACE_SECONDS,
+        ),
+    )
+
+
+def _probe_input_duration_seconds(input_path: str) -> float | None:
+    """Return a local input's duration, or None when ffprobe cannot prove it."""
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe", "-v", "error", "-protocol_whitelist", "file,pipe",
+                "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                input_path,
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=_INPUT_PROBE_TIMEOUT_SECONDS,
+            check=False,
+        )
+        duration = float(result.stdout.strip())
+    except (FileNotFoundError, subprocess.TimeoutExpired, TypeError, ValueError, OSError):
+        return None
+    if result.returncode != 0 or not math.isfinite(duration) or duration <= 0:
+        return None
+    return duration
+
+
+# Colour-metadata field names as reported by ffprobe (`-show_entries stream=…`).
+_COLOR_FIELDS = ("color_space", "color_transfer", "color_primaries", "color_range")
+
+# PQ and HLG identify HDR. BT.2020 primaries alone can also describe SDR;
+# a missing or unknown transfer must not be defaulted to PQ.
+_HDR_TRANSFERS = frozenset({"smpte2084", "arib-std-b67"})
+
+
+def _probe_input_color(input_path: str) -> dict[str, str] | None:
+    """Read local video colour fields, or return None when probing fails."""
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe", "-v", "error", "-protocol_whitelist", "file,pipe",
+                "-select_streams", "v:0",
+                "-show_entries", "stream=" + ",".join(_COLOR_FIELDS),
+                "-of", "default=noprint_wrappers=1",
+                input_path,
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=_INPUT_PROBE_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return None
+    if result.returncode != 0:
+        return None
+    fields: dict[str, str] = {}
+    for line in result.stdout.decode("utf-8", errors="replace").splitlines():
+        key, separator, value = line.strip().partition("=")
+        if separator and key in _COLOR_FIELDS and value:
+            fields[key] = value
+    return fields or None
+
+
+def _is_hdr_color(color: dict[str, str] | None) -> bool:
+    """True only when the probed transfer identifies PQ or HLG."""
+    if not color:
+        return False
+    return color.get("color_transfer") in _HDR_TRANSFERS
+
+
+def _hdr_output_color_args(color: dict[str, str]) -> list[str]:
+    """Restore known HDR colour tags without replacing the source's matrix.
+
+    PQ/HLG transfer does not establish a BT.2020 matrix or limited range.
+    Echo only the fields the input proves; omitted/unknown values stay unknown.
+    These output tags do not add a tone-mapping or colour-conversion filter.
+    """
+    transfer = color["color_transfer"]  # gated by _is_hdr_color
+    args: list[str] = []
+    for field, flag in (
+        ("color_space", "-colorspace"),
+        ("color_primaries", "-color_primaries"),
+        ("color_transfer", "-color_trc"),
+        ("color_range", "-color_range"),
+    ):
+        value = transfer if field == "color_transfer" else color.get(field)
+        if value and value != "unknown":
+            args.extend((flag, value))
+    return args
+
+
+async def _bounded_encode_stderr(proc) -> bytes:
+    """Drain stderr continuously while retaining only its diagnostic tail."""
+    tail = bytearray()
+    while True:
+        chunk = await proc.stderr.read(_ENCODE_STDERR_READ_BYTES)
+        if not chunk:
+            return bytes(tail)
+        tail.extend(chunk)
+        if len(tail) > _ENCODE_STDERR_TAIL_BYTES:
+            del tail[:-_ENCODE_STDERR_TAIL_BYTES]
+
+
+async def _wait_for_encode(proc) -> bytes:
+    _, stderr = await asyncio.gather(proc.wait(), _bounded_encode_stderr(proc))
+    return stderr
+
+
+async def _terminate_encode_process(proc) -> None:
+    """Kill the encode's process group and reap it for a bounded time."""
+    if proc.returncode is None:
+        try:
+            # start_new_session=True made the child a session/group leader, so
+            # its pid is the process-group id. Never signal the caller's group.
+            os.killpg(proc.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+    # A killed process should normally be reaped immediately. Keep cleanup
+    # bounded too: Process.wait() may still be waiting for subprocess transport
+    # shutdown (and test doubles or unusual loop implementations may never
+    # complete it). The process group has already received SIGKILL, so leaving
+    # this waiter behind is safer than holding the request and global encode
+    # gate forever.
+    wait_task = asyncio.create_task(proc.wait())
+    done, _ = await asyncio.wait(
+        {wait_task}, timeout=_ENCODE_REAP_TIMEOUT_SECONDS,
+    )
+    if wait_task not in done:
+        wait_task.cancel()
+        wait_task.add_done_callback(_consume_encode_wait_result)
+        return
+    try:
+        wait_task.result()
+    except Exception:
+        pass
+
+
+def _consume_encode_wait_result(task: asyncio.Task) -> None:
+    """Retrieve a detached bounded-cleanup task's eventual exception."""
+    if not task.cancelled():
+        try:
+            task.exception()
+        except asyncio.CancelledError:
+            pass
+
+
 async def run_color_correct(
     input_path: str,
     output_path: str,
@@ -396,13 +609,23 @@ async def run_color_correct(
     clip_crop_size: tuple[int, int] = (1_080, 1_920),
     clip_start_ms: int | None = None,
     clip_duration_ms: int | None = None,
+    source_duration_ms: int | None = None,
+    input_color: dict[str, str] | None = None,
 ) -> None:
     """Run ffmpeg to produce a color-corrected copy of a video.
+
+    ``input_color`` may supply already-probed fields to skip the colour probe.
 
     Raises RuntimeError with the last ~500 chars of stderr on ffmpeg failure.
     """
     speed = _validated_playback_speed(playback_speed)
     window = _validated_clip_window(clip_start_ms, clip_duration_ms)
+    if source_duration_ms is not None and (
+        isinstance(source_duration_ms, bool)
+        or not isinstance(source_duration_ms, int)
+        or not 1 <= source_duration_ms <= 86_400_000
+    ):
+        raise ValueError("source_duration_ms must be a positive bounded integer")
     vf = build_cc_filter(
         cc,
         scale=scale,
@@ -431,6 +654,19 @@ async def run_color_correct(
             "-t", f"{window[1] / 1000:.3f}",
         ] if window is not None else []
     )
+    color = input_color
+    if color is None:
+        # A slow ffprobe must not stall the service event loop.
+        color = await asyncio.to_thread(_probe_input_color, input_path)
+    is_hdr = _is_hdr_color(color)
+    color_args = _hdr_output_color_args(color) if is_hdr else []
+    # One named line so an operator can tell "input is SDR" (no tags wanted)
+    # from "the probe failed" (no tags because the colour metadata is unknown).
+    log.info(
+        "hdr_probe: %s input=%s",
+        "failed" if color is None else ("hdr" if is_hdr else "sdr"),
+        os.path.basename(input_path),
+    )
     cmd = [
         "ffmpeg", "-y",
         *input_window,
@@ -438,16 +674,54 @@ async def run_color_correct(
         "-vf", vf,
         *audio_args,
         *enc,
+        *color_args,
         *output_window,
         output_path,
     ]
+    if window is not None:
+        input_duration_seconds = window[1] / 1000.0
+    elif source_duration_ms is not None:
+        input_duration_seconds = source_duration_ms / 1000.0
+    else:
+        input_duration_seconds = await asyncio.to_thread(
+            _probe_input_duration_seconds,
+            input_path,
+        )
+    timeout = _encode_timeout_seconds(input_duration_seconds)
     async with _COLOR_CORRECT_GATE:
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.PIPE,
+            start_new_session=True,
         )
-        _, stderr = await proc.communicate()
+        try:
+            stderr = await asyncio.wait_for(_wait_for_encode(proc), timeout=timeout)
+        except asyncio.TimeoutError as error:
+            await _terminate_encode_process(proc)
+            try:
+                os.unlink(output_path)
+            except OSError:
+                pass
+            raise RuntimeError("ffmpeg_encode_timeout") from error
+        except asyncio.CancelledError:
+            await _terminate_encode_process(proc)
+            try:
+                os.unlink(output_path)
+            except OSError:
+                pass
+            raise
+        except Exception:
+            await _terminate_encode_process(proc)
+            try:
+                os.unlink(output_path)
+            except OSError:
+                pass
+            raise
     if proc.returncode != 0:
+        try:
+            os.unlink(output_path)
+        except OSError:
+            pass
         tail = stderr.decode("utf-8", errors="replace")[-500:]
         raise RuntimeError(f"ffmpeg color-correct failed: {tail}")

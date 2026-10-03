@@ -496,3 +496,26 @@ def test_dossier_filter_units_map_to_the_existing_ffmpeg_slider_contract():
     legacy = resolve_generation_recipe(old)
     assert dossier_clip_speed(legacy) == pytest.approx(1.0)
     assert dossier_clip_crop(legacy) is None
+
+
+@pytest.mark.parametrize("frame", ["9:16", "16:9", "1:1", "3:4", "4:3"])
+def test_page_frame_resolves_without_changing_source_treatment(frame):
+    payload = publication()
+    spec = json.loads(payload["recipeSpecCanonical"])
+    spec["renderTreatment"]["frame"] = frame
+    payload["recipeSpecCanonical"] = json.dumps(spec, sort_keys=True, separators=(",", ":"))
+    framed = resolve_generation_recipe(payload)
+    plain = resolve_generation_recipe(publication())
+    assert framed is not None and plain is not None
+    assert framed.recipe_spec["renderTreatment"]["frame"] == frame
+    assert dossier_clip_speed(framed) == dossier_clip_speed(plain)
+    assert dossier_clip_crop(framed) == dossier_clip_crop(plain)
+
+
+@pytest.mark.parametrize("frame", ["2:3", "", None, 1.0, ["16:9"]])
+def test_unknown_page_frame_is_not_executable(frame):
+    payload = publication()
+    spec = json.loads(payload["recipeSpecCanonical"])
+    spec["renderTreatment"]["frame"] = frame
+    payload["recipeSpecCanonical"] = json.dumps(spec, sort_keys=True, separators=(",", ":"))
+    assert resolve_generation_recipe(payload) is None

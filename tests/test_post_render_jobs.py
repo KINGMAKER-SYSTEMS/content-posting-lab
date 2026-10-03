@@ -23,8 +23,8 @@ def _iso_ms(ms: int) -> str:
 
 
 def submission(*, slot_id="slot:fixture-a", source=b"source", program_id="playlist:fixture",
-               planned_at=None, planned_at_ms=None):
-    request = render_request(sha256(source), slot_id=slot_id, program_id=program_id)
+               planned_at=None, planned_at_ms=None, **treatment):
+    request = render_request(sha256(source), slot_id=slot_id, program_id=program_id, **treatment)
     slot = {"schema_version": 4, "slot_id": request.slot_id, "page_id": request.page_id,
             "handle": request.account, "asset": {"sha256": request.source_sha256},
             "device_hint": {"device_serial": request.device_serial},
@@ -41,9 +41,26 @@ def submission(*, slot_id="slot:fixture-a", source=b"source", program_id="playli
         "provenance_id": "generation:explicit-fixture"}})
 
 
-def fake_render(source, output, request, *, clock_ms):
+def test_explicit_upright_submission_retains_exact_slot_and_treatment_hashes():
+    payload = submission().model_dump(by_alias=True)
+    slot = json.loads(payload["slot_payload_json"])
+    slot["render_treatment"]["captionStyle"]["inverted"] = False
+    treatment = json.dumps(slot["render_treatment"], sort_keys=True, separators=(",", ":"))
+    payload["slot_payload_json"] = json.dumps(slot, separators=(",", ":"))
+    payload["request"].update(
+        render_treatment_json=treatment,
+        treatment_sha256=sha256(treatment.encode()),
+        slot_payload_sha256=sha256(payload["slot_payload_json"].encode()),
+    )
+    accepted = jobs.RenderJobSubmission.model_validate(payload)
+    assert accepted.request.render_treatment_json == treatment
+    assert accepted.request.treatment_sha256 == sha256(treatment.encode())
+    assert accepted.slot_payload_json == payload["slot_payload_json"]
+    assert accepted.request.slot_payload_sha256 == sha256(accepted.slot_payload_json.encode())
+
+
+def _write_fake_render(output, request, *, clock_ms, final, qa=b"qa frame"):
     output.mkdir()
-    final, qa = b"final:" + request.caption.encode(), b"qa frame"
     (output / "final.mp4").write_bytes(final)
     (output / "qa.jpg").write_bytes(qa)
     receipt = {key: getattr(request, key) for key in ("slot_id", "slot_payload_sha256", "page_id", "program_id",
@@ -54,6 +71,15 @@ def fake_render(source, output, request, *, clock_ms):
     (output / "receipt.json").write_text(json.dumps(receipt, separators=(",", ":")))
     (output / "decode.json").write_text(json.dumps({"final_sha256": sha256(final), "qa_frame_sha256": sha256(qa),
         "decoded_video_frames": 30, "final_probe": {"duration_ms": 1000}}))
+
+
+def fake_render(source, output, request, *, clock_ms):
+    _write_fake_render(
+        output,
+        request,
+        clock_ms=clock_ms,
+        final=b"final:" + request.slot_id.encode() + b":" + request.caption.encode(),
+    )
 
 
 def service(tmp_path, *, renderer=fake_render, fetcher=None, clock=None):
@@ -597,3 +623,497 @@ def test_new_provenance_unblocks_same_slot_and_old_enqueue_replay_preserves_it(t
     assert worker.status(first["id"])["state"] == "succeeded"
     with pytest.raises(jobs.RenderJobError):
         worker.provide_provenance(first["id"], submission(program_id="playlist:other"))
+
+
+def _run_succeeded(tmp_path, *, clock=None, idempotency="retire-request"):
+    worker = service(tmp_path, clock=clock)
+    job = worker.enqueue(submission(), idempotency)
+    assert worker.run_one()
+    assert worker.status(job["id"])["state"] == "succeeded"
+    return worker, job
+
+
+def test_acknowledge_gates_on_succeeded_and_is_idempotent(tmp_path):
+    worker, job = _run_succeeded(tmp_path)
+    with pytest.raises(jobs.RenderJobError, match="job_not_found"):
+        worker.acknowledge(job["id"] + "-nope")
+    # A queued (not-yet-rendered) job cannot be acknowledged.
+    queued = worker.enqueue(submission(slot_id="slot:queued-ack"), "queued-ack")
+    with pytest.raises(jobs.RenderJobError, match="acknowledge_not_ready"):
+        worker.acknowledge(queued["id"])
+
+    first = worker.acknowledge(job["id"])
+    assert first["acknowledged_at_ms"] is not None
+    replay = worker.acknowledge(job["id"])
+    assert replay["acknowledged_at_ms"] == first["acknowledged_at_ms"]
+
+
+def test_retire_removes_media_but_keeps_hash_and_idempotency_authority(tmp_path):
+    worker, job = _run_succeeded(tmp_path, idempotency="retire-tombstone")
+    worker.acknowledge(job["id"])
+    attempt_dir = worker._output(worker._row(job["id"])).parent.parent
+    assert attempt_dir.exists()
+
+    receipt_sha = worker.status(job["id"])["receipt_sha256"]
+    worker.retire(job["id"])
+
+    assert not attempt_dir.exists()
+    status = worker.status(job["id"])
+    assert status["state"] == "succeeded"
+    assert status["receipt_sha256"] == receipt_sha
+    assert status["retired_at_ms"] is not None
+    # The durable tombstone keeps the row and idempotency authoritative.
+    replay = service(tmp_path).enqueue(submission(), "retire-tombstone")
+    assert replay["id"] == job["id"]
+    assert replay["state"] == "succeeded"
+    # Artifacts are no longer served once retired.
+    with pytest.raises(jobs.RenderJobError, match="artifact_not_ready"):
+        worker.artifact(job["id"], "final")
+
+
+def test_retirement_tombstone_keeps_output_hash_authority(tmp_path):
+    worker, job = _run_succeeded(tmp_path, idempotency="retire-output-hashes")
+    receipt = json.loads(worker.artifact(job["id"], "receipt").read_text())
+    worker.acknowledge(job["id"])
+
+    worker.retire(job["id"])
+
+    status = service(tmp_path).status(job["id"])
+    assert status["final_sha256"] == receipt["final_sha256"]
+    assert status["qa_frame_sha256"] == receipt["qa_frame_sha256"]
+    verified = worker._verify_output(worker._row(job["id"]))
+    assert verified["final_sha256"] == receipt["final_sha256"]
+    assert verified["qa_frame_sha256"] == receipt["qa_frame_sha256"]
+
+
+def test_retired_output_hash_authority_refuses_duplicate_output(tmp_path):
+    def fixed_output(_source, output, request, *, clock_ms):
+        _write_fake_render(output, request, clock_ms=clock_ms, final=b"same final output")
+
+    worker = service(tmp_path, renderer=fixed_output)
+    first = worker.enqueue(submission(), "first-output")
+    assert worker.run_one()
+    first_hash = json.loads(worker.artifact(first["id"], "receipt").read_text())["final_sha256"]
+    worker.acknowledge(first["id"])
+    worker.retire(first["id"])
+
+    duplicate = worker.enqueue(submission(slot_id="slot:duplicate-output"), "duplicate-output")
+    assert worker.run_one()
+    duplicate_status = worker.status(duplicate["id"])
+    assert duplicate_status["state"] == "failed"
+    assert duplicate_status["error_code"] == "duplicate_output"
+    assert worker.status(first["id"])["final_sha256"] == first_hash
+
+
+def test_retirement_does_not_tombstone_failed_deletion(tmp_path, monkeypatch, caplog):
+    worker, job = _run_succeeded(tmp_path, idempotency="failed-retirement")
+    worker.acknowledge(job["id"])
+    attempt_dir = worker._output(worker._row(job["id"])).parent.parent
+    monkeypatch.setattr(jobs.shutil, "rmtree", lambda _path, **_kwargs: None)
+
+    with pytest.raises(jobs.RenderJobError, match="retirement_failed"):
+        worker.retire(job["id"])
+
+    assert attempt_dir.exists()
+    assert worker.status(job["id"])["retired_at_ms"] is None
+    assert "post render retirement deletion failed" in caplog.text
+
+
+def test_retirement_retries_after_partial_deletion_from_durable_authority(tmp_path, monkeypatch):
+    worker, job = _run_succeeded(tmp_path, idempotency="partial-retirement")
+    worker.acknowledge(job["id"])
+    row = worker._row(job["id"])
+    attempt_dir = worker._output(row).parent.parent
+    receipt = worker._output(row) / "receipt.json"
+    real_rmtree = jobs.shutil.rmtree
+    calls = []
+
+    def partial_failure(path, **kwargs):
+        calls.append(path)
+        if len(calls) == 1:
+            receipt.unlink()
+            if kwargs.get("ignore_errors"):
+                return None
+            raise OSError("simulated partial directory removal")
+        return real_rmtree(path)
+
+    monkeypatch.setattr(jobs.shutil, "rmtree", partial_failure)
+    with pytest.raises(jobs.RenderJobError, match="retirement_failed"):
+        worker.retire(job["id"])
+    assert attempt_dir.exists()
+    assert worker.status(job["id"])["retired_at_ms"] is None
+
+    retired = worker.retire(job["id"])
+
+    assert retired["retired_at_ms"] is not None
+    assert not attempt_dir.exists()
+
+
+def test_gc_never_retires_unacknowledged_media_even_after_aging(tmp_path):
+    # _gc retires only acknowledged media. Unacknowledged media leaves only
+    # through the separate age-out, and only once R2 confirms it
+    # (tests/test_post_render_age_out.py).
+    now = [NOW]
+    worker = service(tmp_path, clock=lambda: now[0])
+    job = worker.enqueue(submission(slot_id="slot:no-ack"), "no-ack-request")
+    assert worker.run_one()
+    with pytest.raises(jobs.RenderJobError, match="retire_not_ready"):
+        worker.retire(job["id"])
+    # Age far past the safety window; GC must still leave it downloadable.
+    now[0] += jobs._retire_after_ms() + 1
+    worker._gc()
+    assert worker.status(job["id"])["retired_at_ms"] is None
+    assert worker.artifact(job["id"], "final").exists()
+
+
+def test_gc_retires_only_aged_acknowledged_jobs(tmp_path):
+    now = [NOW]
+    worker = service(tmp_path, clock=lambda: now[0])
+    aged = worker.enqueue(submission(slot_id="slot:aged"), "aged-ack")
+    fresh = worker.enqueue(submission(slot_id="slot:fresh"), "fresh-ack")
+    assert worker.run_one()
+    assert worker.run_one()
+    worker.acknowledge(aged["id"])
+    now[0] += jobs._retire_after_ms() + 1
+    worker.acknowledge(fresh["id"])
+
+    worker._gc()
+
+    assert worker.status(aged["id"])["retired_at_ms"] is not None
+    assert worker.status(fresh["id"])["retired_at_ms"] is None
+    assert worker.artifact(fresh["id"], "final").exists()
+    with pytest.raises(jobs.RenderJobError, match="artifact_not_ready"):
+        worker.artifact(aged["id"], "final")
+
+
+def test_gc_bounds_terminal_failed_attempt_media(tmp_path):
+    now = [NOW]
+
+    def failed_after_output(source, output, request, **kwargs):
+        fake_render(source, output, request, **kwargs)
+        raise ValueError("verification failed after output")
+
+    worker = service(tmp_path, renderer=failed_after_output, clock=lambda: now[0])
+    job = worker.enqueue(submission(slot_id="slot:failed-media"), "failed-media")
+    assert worker.run_one()
+    row = worker._row(job["id"])
+    attempt_dir = worker._output(row).parent
+    assert row["state"] == "failed" and attempt_dir.exists()
+
+    now[0] += 366 * 24 * 60 * 60 * 1000
+    worker._gc()
+
+    assert not attempt_dir.exists()
+    replay = worker.enqueue(submission(slot_id="slot:failed-media"), "failed-media")
+    assert replay["id"] == job["id"]
+    assert replay["state"] == "failed"
+
+
+def test_gc_prunes_only_non_authoritative_sqlite_history(tmp_path, monkeypatch):
+    now = [NOW]
+
+    def failed_after_output(source, output, request, **kwargs):
+        fake_render(source, output, request, **kwargs)
+        raise ValueError("verification failed after output")
+
+    worker = service(tmp_path, renderer=failed_after_output, clock=lambda: now[0])
+    checkpoints = []
+    monkeypatch.setattr(worker, "_checkpoint_wal", lambda: checkpoints.append(True), raising=False)
+    job = worker.enqueue(submission(slot_id="slot:history-retention"), "history-retention")
+    assert worker.run_one()
+    with worker._db() as db:
+        db.execute(
+            "INSERT INTO provenance_updates(job_id,old_submission_json,new_request_hash,updated_at_ms) "
+            "VALUES(?,?,?,?)",
+            (job["id"], "{}", "old-request-hash", NOW),
+        )
+
+    now[0] += 366 * 24 * 60 * 60 * 1000
+    worker._gc()
+
+    with worker._db() as db:
+        assert db.execute("SELECT COUNT(*) FROM attempts").fetchone()[0] == 0
+        assert db.execute("SELECT COUNT(*) FROM provenance_updates").fetchone()[0] == 0
+        authority = db.execute(
+            "SELECT request_hash,submission_json FROM jobs WHERE id=?", (job["id"],)
+        ).fetchone()
+        idempotency = db.execute(
+            "SELECT request_hash FROM idempotency WHERE key='history-retention'"
+        ).fetchone()
+    assert authority["request_hash"] == idempotency["request_hash"]
+    assert jobs.RenderJobSubmission.model_validate_json(authority["submission_json"])
+    assert checkpoints == [True]
+
+
+def test_volume_watermark_defers_new_renders(monkeypatch, tmp_path):
+    worker, job = _run_succeeded(tmp_path)
+    monkeypatch.setattr(worker, "_free_bytes", lambda: 1)
+    monkeypatch.setenv("CONTENT_LAB_POST_RENDER_MIN_FREE_BYTES", "10")
+    queued = worker.enqueue(submission(slot_id="slot:deferred"), "deferred-render")
+    worker.run_one()  # watermark blocks the claim
+    assert worker.status(queued["id"])["state"] == "queued"
+
+
+def test_watermark_reserves_derived_peak_for_all_workers(monkeypatch, tmp_path, caplog):
+    monkeypatch.setenv("CONTENT_LAB_POST_RENDER_MIN_FREE_BYTES", "10")
+    worker = service(tmp_path)
+    queued = worker.enqueue(submission(slot_id="slot:peak-reserve"), "peak-reserve")
+    expected_peak = (
+        2 * jobs.MAX_SOURCE_BYTES
+        + jobs.MAX_OVERLAY_BYTES
+        + 4 * ((jobs.MAX_OVERLAY_BYTES + 2) // 3)
+        + jobs.MAX_RENDER_METADATA_BYTES
+        + jobs.MAX_FINAL_BYTES + 1
+        + jobs.MAX_QA_BYTES + 1
+        + jobs.MAX_RENDER_METADATA_BYTES
+    )
+    assert jobs.PEAK_RENDER_WORKSPACE_BYTES == expected_peak
+    required = 10 + expected_peak * worker.worker_count
+    monkeypatch.setattr(worker, "_free_bytes", lambda: required - 1)
+
+    assert worker.run_one() is False
+    assert worker.status(queued["id"])["state"] == "queued"
+    assert "post_render_workspace_capacity_insufficient" in caplog.text
+
+
+def test_disk_usage_failure_defers_post_render_claim(monkeypatch, tmp_path, caplog):
+    worker = service(tmp_path)
+    queued = worker.enqueue(submission(slot_id="slot:disk-unknown"), "disk-unknown")
+
+    def unavailable(_path):
+        raise OSError("disk usage unavailable")
+
+    monkeypatch.setattr(jobs.shutil, "disk_usage", unavailable)
+
+    assert worker.run_one() is False
+    assert worker.status(queued["id"])["state"] == "queued"
+    assert "post_render_free_space_unavailable" in caplog.text
+
+
+def test_worker_startup_failure_latches_reason_and_fails_readiness(tmp_path, monkeypatch):
+    import app as app_module
+
+    monkeypatch.setenv("CONTENT_LAB_POST_RENDER_ROOT", str(tmp_path / "render"))
+    monkeypatch.setattr(routes, "_startup_failure", None, raising=False)
+    monkeypatch.setattr(routes, "_started_service", None, raising=False)
+    monkeypatch.setattr(app_module, "_APP_API_KEY", None)
+
+    def boom():
+        raise OSError("sqlite unwritable")
+
+    monkeypatch.setattr(routes, "service", boom)
+    with TestClient(app_module.app) as client:
+        response = client.get("/api/ready")
+    assert response.status_code == 503
+    assert response.json()["post_render"]["state"] == "startup_failed"
+    assert "sqlite unwritable" in response.json()["post_render"]["reason"]
+
+
+def test_readiness_healthy_when_workers_start(tmp_path, monkeypatch):
+    import app as app_module
+
+    monkeypatch.setenv("CONTENT_LAB_POST_RENDER_ROOT", str(tmp_path / "render"))
+    monkeypatch.setattr(routes, "_service", None)
+    monkeypatch.setattr(routes, "_startup_failure", None, raising=False)
+    monkeypatch.setattr(routes, "_started_service", None, raising=False)
+    monkeypatch.setattr(app_module, "_APP_API_KEY", None)
+    with TestClient(app_module.app) as client:
+        response = client.get("/api/ready")
+    assert response.status_code == 200
+    assert response.json()["post_render"]["state"] == "healthy"
+    assert response.json()["post_render"]["workers"] >= 1
+
+
+def test_readiness_disabled_when_lane_unconfigured(monkeypatch):
+    import app as app_module
+
+    monkeypatch.delenv("CONTENT_LAB_POST_RENDER_ROOT", raising=False)
+    monkeypatch.setattr(routes, "_startup_failure", None, raising=False)
+    monkeypatch.setattr(routes, "_started_service", None, raising=False)
+    monkeypatch.setattr(app_module, "_APP_API_KEY", None)
+    with TestClient(app_module.app) as client:
+        response = client.get("/api/ready")
+    assert response.status_code == 200
+    assert response.json()["post_render"]["state"] == "disabled"
+
+
+def test_ready_endpoint_503_when_worker_lane_fails_during_lifespan(tmp_path, monkeypatch):
+    import app as app_module
+
+    monkeypatch.setenv("CONTENT_LAB_POST_RENDER_ROOT", str(tmp_path / "render"))
+    monkeypatch.setattr(routes, "_service", None)
+    monkeypatch.setattr(routes, "_startup_failure", None, raising=False)
+    monkeypatch.setattr(routes, "_started_service", None, raising=False)
+    monkeypatch.setattr(app_module, "_APP_API_KEY", None)
+
+    def boom():
+        raise OSError("sqlite unwritable")
+
+    monkeypatch.setattr(routes, "service", boom)
+    with TestClient(app_module.app) as client:
+        assert client.get("/api/health").status_code == 200
+        response = client.get("/api/ready")
+        assert response.status_code == 503
+        assert response.json()["post_render"]["state"] == "startup_failed"
+
+
+def test_dead_worker_thread_fails_readiness_with_reason_and_health_is_unchanged(
+    tmp_path, monkeypatch,
+):
+    import app as app_module
+
+    class DiedAfterStart:
+        worker_count = 1
+
+        def __init__(self):
+            self.thread = None
+
+        def start(self):
+            self.thread = threading.Thread(target=lambda: None)
+            self.thread.start()
+            self.thread.join()
+
+        def stop(self):
+            pass
+
+        def workers_alive(self):
+            return int(self.thread is not None and self.thread.is_alive())
+
+        def queue_age_ms(self):
+            return 123
+
+    dead = DiedAfterStart()
+    monkeypatch.setenv("CONTENT_LAB_POST_RENDER_ROOT", str(tmp_path / "render"))
+    monkeypatch.setattr(routes, "_startup_failure", None, raising=False)
+    monkeypatch.setattr(routes, "_started_service", None, raising=False)
+    monkeypatch.setattr(routes, "service", lambda: dead)
+    monkeypatch.setattr(app_module, "_APP_API_KEY", None)
+
+    with TestClient(app_module.app) as client:
+        health = client.get("/api/health")
+        ready = client.get("/api/ready")
+
+    assert health.status_code == 200
+    assert "post_render" not in health.json()
+    assert ready.status_code == 503
+    assert ready.json()["post_render"] == {
+        "state": "workers_died",
+        "reason": "no_post_render_workers_alive",
+        "workers": 0,
+        "worker_count": 1,
+        "queue_age_ms": 123,
+    }
+
+
+def test_ready_queue_age_query_runs_off_event_loop(monkeypatch, tmp_path):
+    import app as app_module
+
+    calls = {}
+
+    class LiveService:
+        worker_count = 1
+
+        def start(self):
+            pass
+
+        def stop(self):
+            pass
+
+        def workers_alive(self):
+            calls["readiness_thread"] = threading.get_ident()
+            return 1
+
+        def queue_age_ms(self):
+            calls["query_thread"] = threading.get_ident()
+            return 0
+
+    monkeypatch.setenv("CONTENT_LAB_POST_RENDER_ROOT", str(tmp_path / "render"))
+    monkeypatch.setattr(routes, "_startup_failure", None, raising=False)
+    monkeypatch.setattr(routes, "_started_service", None, raising=False)
+    monkeypatch.setattr(routes, "service", lambda: LiveService())
+    monkeypatch.setattr(app_module, "_APP_API_KEY", None)
+
+    with TestClient(app_module.app) as client:
+        response = client.get("/api/ready")
+
+    assert response.status_code == 200
+    assert calls["query_thread"] != calls["readiness_thread"]
+
+
+def test_ready_queue_age_query_timeout_fails_closed(monkeypatch, tmp_path):
+    import app as app_module
+
+    release = threading.Event()
+
+    class BlockedQueueService:
+        worker_count = 1
+
+        def start(self):
+            pass
+
+        def stop(self):
+            release.set()
+
+        def workers_alive(self):
+            return 1
+
+        def queue_age_ms(self):
+            assert release.wait(1)
+            return 0
+
+    monkeypatch.setenv("CONTENT_LAB_POST_RENDER_ROOT", str(tmp_path / "render"))
+    monkeypatch.setattr(routes, "_startup_failure", None, raising=False)
+    monkeypatch.setattr(routes, "_started_service", None, raising=False)
+    monkeypatch.setattr(routes, "service", lambda: BlockedQueueService())
+    monkeypatch.setattr(routes, "_READINESS_QUEUE_TIMEOUT_SECONDS", 0.01, raising=False)
+    monkeypatch.setattr(app_module, "_APP_API_KEY", None)
+
+    with TestClient(app_module.app) as client:
+        timer = threading.Timer(0.2, release.set)
+        timer.start()
+        try:
+            response = client.get("/api/ready")
+        finally:
+            release.set()
+            timer.cancel()
+
+    assert response.status_code == 503
+    assert response.json()["post_render"]["state"] == "queue_check_failed"
+    assert response.json()["post_render"]["reason"] == "queue_age_timeout"
+
+
+def test_ready_requires_api_key_while_health_remains_exempt(monkeypatch):
+    import app as app_module
+
+    monkeypatch.delenv("CONTENT_LAB_POST_RENDER_ROOT", raising=False)
+    monkeypatch.setattr(app_module, "_APP_API_KEY", "readiness-secret")
+    with TestClient(app_module.app) as client:
+        assert client.get("/api/health").status_code == 200
+        assert client.get("/api/ready").status_code == 401
+        authenticated = client.get(
+            "/api/ready",
+            headers={"X-API-Key": "readiness-secret"},
+        )
+    assert authenticated.status_code == 200
+    assert authenticated.json()["post_render"]["state"] == "disabled"
+
+
+def test_page_frame_is_bound_by_the_slot_and_request_hash_but_needs_no_new_source(tmp_path):
+    jobs_service = service(tmp_path)
+    plain, framed = submission(), submission(frame="16:9")
+    assert json.loads(framed.slot_payload_json)["render_treatment"]["frame"] == "16:9"
+    assert framed.request.source_visual_treatment_sha256 == plain.request.source_visual_treatment_sha256
+    status = jobs_service.enqueue(framed, "framed-slot-key")
+    assert status["state"] == "queued"
+    # Same slot with a different frame is a different immutable request.
+    with pytest.raises(jobs.RenderJobError) as error:
+        jobs_service.enqueue(plain, "framed-slot-key")
+    assert error.value.code == "idempotency_conflict"
+    # The slot payload must carry the same frame the render request carries.
+    slot = json.loads(plain.slot_payload_json)
+    raw = json.dumps(slot, separators=(",", ":"))
+    mismatched = PostRenderRequest.model_validate({**framed.request.model_dump(by_alias=True),
+                                                   "slot_payload_sha256": sha256(raw.encode())})
+    with pytest.raises(ValidationError, match="slot treatment does not match"):
+        jobs.RenderJobSubmission.model_validate({"schema": jobs.JOB_SCHEMA, "request": mismatched,
+            "slot_payload_json": raw, "source_provenance": framed.source_provenance.model_dump(by_alias=True)})

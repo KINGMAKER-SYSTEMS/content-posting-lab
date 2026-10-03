@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 import routers.control_plane as cp
 import routers.control_plane_recipes as recipes
 from services.control_plane_sources import (
+    source_cut_durations,
     plan_source_cuts,
     resolve_source_recipe,
     source_cut_is_planned,
@@ -31,6 +32,7 @@ PAGE_ID = "tt-chase-miles-4l"
 LIBRARY_ID = "pov-dirt-bike-chase-miles-4l-v1"
 MASTER_SHA = "c434bf9678fbaa20b9b081c68260cca75eb3dd109ddc1cb82df556ec59ae5bd5"
 SOURCE_IDENTITY = "https://www.youtube.com/watch?v=vt5im2TRAKw"
+_start_source_runner = cp._start_dossier_source
 
 
 @pytest.fixture(autouse=True)
@@ -513,9 +515,11 @@ def test_source_planner_rotates_five_to_nine_second_disjoint_windows():
     assert resolved is not None
     cuts = plan_source_cuts(resolved, 20, set())
     assert len(cuts) == 20
-    assert {cut.duration_ms for cut in cuts} == {
-        6_000, 7_000, 8_000, 9_000,
-    }
+    lengths = [cut.duration_ms for cut in cuts]
+    assert set(lengths) <= set(range(5_000, 9_001, 500))
+    assert len(set(lengths)) >= 6, lengths
+    assert lengths[0] == 7_000, "the first cut uses the page's Cut length"
+    assert all(a != b for a, b in zip(lengths, lengths[1:])), lengths
     ordered = sorted(cuts, key=lambda cut: cut.start_ms)
     for previous, current in zip(ordered, ordered[1:]):
         assert previous.start_ms + previous.duration_ms <= current.start_ms
@@ -641,6 +645,57 @@ async def test_queued_source_job_fails_before_media_work_when_strategy_changes(
     stored = cp._load_jobs()["jobs"][queued.json()["jobId"]]
     assert stored["status"] == "failed"
     assert stored["error"] == "master_pages_strategy_changed"
+
+
+@pytest.mark.asyncio
+async def test_source_setup_exception_terminalizes_not_ghosts(lab, monkeypatch):
+    client, _, _ = lab
+    queued = client.post(
+        "/api/control-plane/v1/jobs",
+        json=job_body(1),
+        headers=headers("source-job-setup-failure"),
+    )
+    assert queued.status_code == 200
+    job_id = queued.json()["jobId"]
+
+    def boom(recipe):
+        raise OSError("recipe read failed")
+
+    monkeypatch.setattr(cp, "dossier_filters_to_color_correction", boom)
+    # Drive the REAL entrypoint (captured at import time, before `lab`
+    # monkeypatched _start_dossier_source to `started.append`).
+    _start_source_runner(job_id)
+    task = cp._source_tasks[job_id]
+    await asyncio.wait_for(task, timeout=5)
+    stored = cp._get_job_or_404(job_id)
+    assert stored["status"] == "failed"
+    assert "recipe read failed" in stored["error"]
+    assert stored.get("completedAt")
+
+
+@pytest.mark.asyncio
+async def test_cached_source_master_hash_runs_off_the_event_loop(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    import threading
+
+    monkeypatch.setattr(cp, "_generation_root", lambda: tmp_path)
+    master = SimpleNamespace(sha256="c" * 64, bytes=4)
+    cache_root = tmp_path / "_source_dna"
+    cache_root.mkdir(parents=True, exist_ok=True)
+    target = cache_root / f"{master.sha256}.mp4"
+    target.write_bytes(b"data")
+
+    loop_thread = threading.get_ident()
+    saw = {}
+
+    def recording_sha256(path):
+        saw["thread"] = threading.get_ident()
+        return master.sha256
+
+    monkeypatch.setattr(cp, "_sha256", recording_sha256)
+    result = await cp._cached_source_master("acct:page", master, "job-1")
+    assert result == target
+    assert saw["thread"] != loop_thread, "cache-hit hash must not run on the event loop"
 
 
 
@@ -793,11 +848,11 @@ def test_active_source_job_reserves_windows_across_recipe_revisions(lab):
     assert not _overlapping(first_job["sourceCuts"], following_job["sourceCuts"])
 
 
-def test_capability_advertises_only_currently_reservable_source_windows(lab, monkeypatch):
-    # Capacity is exactly the time frames a job could still reserve: every
-    # whole-second start times every allowed length, each cut once. Capacity
-    # reaches 0 only when every time frame of the master is spent. A 40 s
-    # master keeps the drain short; the planner is the same at any length.
+def test_capability_counts_down_to_zero_only_when_every_window_is_cut(lab, monkeypatch):
+    # Every whole-second start x length is cut once first, then the half and
+    # quarter-second starts; no window is ever cut twice. Capacity reaches 0
+    # only then, and job creation answers 409 source_windows_exhausted. A
+    # 12 s master keeps the drain short; the planner is the same at any length.
     from dataclasses import replace
     client, _, _ = lab
     resolve = cp._dossier_source_recipe
@@ -805,7 +860,7 @@ def test_capability_advertises_only_currently_reservable_source_windows(lab, mon
     def short_master(payload):
         recipe = resolve(payload)
         return replace(recipe, masters=tuple(
-            replace(master, duration_ms=40_000) for master in recipe.masters
+            replace(master, duration_ms=12_000) for master in recipe.masters
         ))
 
     monkeypatch.setattr(cp, "_dossier_source_recipe", short_master)
@@ -818,12 +873,16 @@ def test_capability_advertises_only_currently_reservable_source_windows(lab, mon
         assert response.status_code == 200
         return response.json()["capabilities"]
 
+    every = set()
+    for length in range(5_000, 9_001, 500):
+        for offset in (0, 250, 500, 750):
+            every |= {(start, length) for start in range(offset, 12_000 - length + 1, 1_000)}
+        every.add((12_000 - length, length))
     frames: list[tuple[int, int]] = []
-    slots: list[str] = []
     round_number = 0
     while (quantity := capability()[0]["maxQuantity"]) > 0:
         round_number += 1
-        assert round_number < 200, "capacity never drained"
+        assert round_number < 600, "capacity never reached 0"
         created = client.post(
             "/api/control-plane/v1/jobs", json=job_body(quantity),
             headers=headers(f"source-capacity-{round_number}"),
@@ -831,18 +890,13 @@ def test_capability_advertises_only_currently_reservable_source_windows(lab, mon
         assert created.status_code == 200, created.text
         job = cp._load_jobs()["jobs"][created.json()["jobId"]]
         assert len(job["sourceCuts"]) == quantity
-        frames.extend((cut["startMs"], cut["durationMs"]) for cut in job["sourceCuts"])
-        slots.extend(cut["slotId"] for cut in job["sourceCuts"])
+        planned = [(cut["startMs"], cut["durationMs"]) for cut in job["sourceCuts"]]
+        assert not set(planned) & set(frames), "a window was cut twice"
+        frames.extend(planned)
         cp._update_job(created.json()["jobId"], status="completed")
 
-    assert len(slots) == len(set(slots)), "a time frame was cut twice"
-    # Every whole-second start of every allowed length (6/7/8 s) is reached.
-    expected = {
-        (start, length)
-        for length in (6_000, 7_000, 8_000)
-        for start in range(0, 40_000 - length + 1, 1_000)
-    }
-    assert set(frames) == expected
+    assert set(frames) == every
+    assert len(frames) == len(every)
     assert capability() == [{
         "recipeId": "pov-dirt-bike:master",
         "engine": "sourced_video",
@@ -851,12 +905,12 @@ def test_capability_advertises_only_currently_reservable_source_windows(lab, mon
         "maxQuantity": 0,
         "sourceIdentities": [SOURCE_IDENTITY],
     }]
-    exhausted = client.post(
+    stopped = client.post(
         "/api/control-plane/v1/jobs", json=job_body(1),
         headers=headers("source-capacity-exhausted"),
     )
-    assert exhausted.status_code == 409
-    assert exhausted.json()["detail"] == "master_windows_exhausted"
+    assert stopped.status_code == 409
+    assert stopped.json() == {"detail": "source_windows_exhausted"}
 
 
 @pytest.mark.asyncio
@@ -904,7 +958,7 @@ async def test_runner_cuts_real_window_changes_speed_and_records_original_lineag
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("duration_ms,ok", [(6_000, True), (6_500, False), (9_000, False)])
+@pytest.mark.parametrize("duration_ms,ok", [(6_000, True), (6_250, False), (9_500, False)])
 async def test_runner_renders_a_six_second_recut_and_refuses_a_forged_one(
     lab, monkeypatch, duration_ms, ok,
 ):
@@ -940,6 +994,97 @@ async def test_runner_renders_a_six_second_recut_and_refuses_a_forged_one(
     else:
         assert job["status"] == "failed"
         assert "source_recipe_cut_invalid" in (job.get("error") or "")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("clip_speed,duration_ms", [
+    (1.0, 5_000), (1.0, 7_500), (1.0, 9_000), (1.5, 7_500), (0.75, 6_500),
+])
+async def test_real_renders_at_the_length_bounds_probe_inside_the_worker_bounds(
+    lab, monkeypatch, clip_speed, duration_ms,
+):
+    # The Worker's visual admission refuses a sourced clip whose probed
+    # duration is outside 5000-9000 ms. Render the shortest, a half-second
+    # and the longest allowed cut (and the delivered extremes at a saved
+    # speed) through the real executor and probe them the way the scanner does.
+    import time
+    from services.visual_admission import _probe
+    client, tmp_path, _ = lab
+    payload = publication(
+        clip_speed=clip_speed, cut_duration_ms=7_000,
+        recipe_version=f"dossier-bounds{int(clip_speed * 100):03d}{duration_ms:05d}",
+    )
+    assert duration_ms in source_cut_durations(cp._dossier_source_recipe(payload))
+    assert client.post(
+        "/api/control-plane/v1/recipes", json=payload,
+        headers=headers(f"source-register-bounds-{clip_speed}-{duration_ms}"),
+    ).status_code == 200
+    response = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(1, payload),
+        headers=headers(f"source-job-bounds-{clip_speed}-{duration_ms}"),
+    )
+    assert response.status_code == 200, response.text
+    job_id = response.json()["jobId"]
+    store = cp._load_jobs()
+    store["jobs"][job_id]["sourceCuts"] = [{
+        "slotId": f"{MASTER_SHA}:0:{duration_ms}",
+        "masterSha256": MASTER_SHA,
+        "libraryStartMs": 0,
+        "startMs": 0,
+        "durationMs": duration_ms,
+    }]
+    cp.atomic_save(cp._jobs_path(), store)
+    source = tmp_path / "master.mp4"
+    _write_av_test_clip(source, duration=12.0)
+
+    async def cached_source(*_):
+        return source
+
+    monkeypatch.setattr(cp, "_cached_source_master", cached_source)
+    await cp._run_dossier_source(job_id)
+    job = cp._load_jobs()["jobs"][job_id]
+    assert job["status"] == "completed", job.get("error")
+    output = Path(job["artifactRoot"]) / job["clips"][0]["path"]
+    *_, probed = _probe(output, time.monotonic() + 30)
+    assert 5_000 <= round(probed * 1_000) <= 9_000, probed
+    assert round(probed * 1_000) == pytest.approx(duration_ms / clip_speed, abs=40)
+
+
+@pytest.mark.asyncio
+async def test_sub_second_starts_render_and_never_decode_the_same_frames(lab, monkeypatch):
+    # Sub-second starts (a quarter, a half and three quarters of a second in)
+    # pass the executor's planner check, render through the exact ffmpeg
+    # seek, and give different bytes from the whole-second cut of the same
+    # length.
+    client, tmp_path, _ = lab
+    response = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(1),
+        headers=headers("source-job-subsecond"),
+    )
+    job_id = response.json()["jobId"]
+    store = cp._load_jobs()
+    store["jobs"][job_id]["sourceCuts"] = [{
+        "slotId": f"{MASTER_SHA}:{start}:6000",
+        "masterSha256": MASTER_SHA,
+        "libraryStartMs": start,
+        "startMs": start,
+        "durationMs": 6_000,
+    } for start in (0, 250, 500, 750)]
+    cp.atomic_save(cp._jobs_path(), store)
+    source = tmp_path / "master.mp4"
+    _write_av_test_clip(source)
+
+    async def cached_source(*_):
+        return source
+
+    monkeypatch.setattr(cp, "_cached_source_master", cached_source)
+    await cp._run_dossier_source(job_id)
+    job = cp._load_jobs()["jobs"][job_id]
+    assert job["status"] == "completed", job.get("error")
+    assert len({clip["sha256"] for clip in job["clips"]}) == 4
+    assert [clip["source"]["cutWindow"]["libraryStartMs"] for clip in job["clips"]] == [0, 250, 500, 750]
+    for clip in job["clips"]:
+        assert _probe_duration(Path(job["artifactRoot"]) / clip["path"]) == pytest.approx(6.0, abs=0.15)
 
 
 @pytest.mark.asyncio
@@ -1139,8 +1284,16 @@ def test_used_page_master_is_recut_at_shifted_points_not_declared_exhausted():
             assert not (left.start_ms < right.start_ms + right.duration_ms
                         and right.start_ms < left.start_ms + left.duration_ms), (left, right)
     _, total = _drain(recipe)
-    assert len(total) == sum(90_000 - length + 1_000 for length in (6_000, 7_000, 8_000, 9_000)) // 1_000
-    assert plan_source_cuts(recipe, 100, total) == []
+    # Whole-second starts, plus one ending on the last frame for half-second lengths.
+    assert len(total) == sum(
+        (90_000 - length) // 1_000 + 1 + (length % 1_000 != 0)
+        for length in range(5_000, 9_001, 500)
+    )
+    # Every whole-second window cut: the planner moves inside the second
+    # (half, then quarter seconds) instead of stopping, never repeating one.
+    following = plan_source_cuts(recipe, 100, total)
+    assert following and not {cut.slot_id for cut in following} & total
+    assert all(cut.start_ms % 1_000 for cut in following)
     # Another page's window still blocks a re-cut, exactly like a first cut.
     everything = source_window_exclusions([{
         "sourceIdentity": page_master.provenance["sourceUrl"], "startMs": 0, "endMs": 90_000,
@@ -1160,12 +1313,25 @@ def _page_master_recipe(duration_ms):
 
 
 def _drain(recipe, served=frozenset(), exclusions=None):
+    """Plan until no never-cut whole-second window is left.
+
+    The planner then moves to sub-second starts, so "drained" means every
+    whole-second window is cut.
+    """
     served = set(served)
     batches = []
-    while batch := plan_source_cuts(recipe, 100, served, exclusions):
-        batches.append(batch)
-        served |= {cut.slot_id for cut in batch}
-    return batches, served
+    for _ in range(5_000):
+        batch = plan_source_cuts(recipe, 100, served, exclusions)
+        fresh = [
+            cut for cut in batch
+            if cut.slot_id not in served
+            and (cut.start_ms % 1_000 == 0 or cut.start_ms == cut.master.duration_ms - cut.duration_ms)
+        ]
+        if not fresh:
+            return batches, served
+        batches.append(fresh)
+        served |= {cut.slot_id for cut in fresh}
+    raise AssertionError("fresh windows never ran out")
 
 
 def test_short_page_master_is_recut_into_six_second_clips():
@@ -1173,27 +1339,32 @@ def test_short_page_master_is_recut_into_six_second_clips():
     # master, so the grid gave it exactly one cut and it read
     # capability_capacity_exhausted. Operator: "do 6-second clips of the same
     # footage". Every fitting time frame, including 0-6 s and 1.5-7.5 s, is
-    # cut once, one per job (they overlap), and only then is it exhausted.
+    # cut once, one per job (they overlap); then come sub-second starts.
     recipe, master = _page_master_recipe(7_500)
     batches, served = _drain(recipe)
     cuts = [cut for batch in batches for cut in batch]
     assert sorted((cut.start_ms, cut.duration_ms) for cut in cuts) == [
-        (0, 6_000), (0, 7_000), (500, 7_000), (1_000, 6_000), (1_500, 6_000),
+        (0, 5_000), (0, 5_500), (0, 6_000), (0, 6_500), (0, 7_000), (0, 7_500),
+        (500, 7_000), (1_000, 5_000), (1_000, 5_500), (1_000, 6_000),
+        (1_000, 6_500), (1_500, 6_000), (2_000, 5_000), (2_000, 5_500),
+        (2_500, 5_000),
     ]
     assert all(len(batch) == 1 for batch in batches)
     assert f"{master.sha256}:0:6000" in served and f"{master.sha256}:1500:6000" in served
-    assert plan_source_cuts(recipe, 100, served) == []
+    following = plan_source_cuts(recipe, 100, served)
+    assert len(following) == 1 and following[0].slot_id not in served
+    assert following[0].start_ms % 1_000
 
 
 def test_long_footage_yields_every_length_including_the_six_second_grid():
     recipe, master = _page_master_recipe(90_000)
     batches, served = _drain(recipe)
     cuts = [cut for batch in batches for cut in batch]
-    assert {cut.duration_ms for cut in cuts} == {6_000, 7_000, 8_000, 9_000}
+    assert {cut.duration_ms for cut in cuts} == set(range(5_000, 9_001, 500))
     six = {cut.start_ms for cut in cuts if cut.duration_ms == 6_000}
     assert set(range(0, 84_001, 6_000)) <= six, "the old 6-second pass is a subset"
     assert len(cuts) == len({cut.slot_id for cut in cuts})
-    assert plan_source_cuts(recipe, 100, served) == []
+    assert not any(cut.slot_id in served for cut in plan_source_cuts(recipe, 100, served))
 
 
 def test_executor_accepts_exactly_the_cuts_the_planner_emits():
@@ -1204,8 +1375,8 @@ def test_executor_accepts_exactly_the_cuts_the_planner_emits():
         assert source_cut_is_planned(recipe, master, cut.start_ms, cut.duration_ms, cut.slot_id), cut
     sha = master.sha256
     assert source_cut_is_planned(recipe, master, 1_500, 6_000, f"{sha}:1500:6000"), "ends on the last frame"
-    assert not source_cut_is_planned(recipe, master, 0, 5_000, f"{sha}:0:5000"), "length outside the page range"
-    assert not source_cut_is_planned(recipe, master, 250, 6_000, f"{sha}:250:6000"), "off the whole-second grid"
+    assert not source_cut_is_planned(recipe, master, 0, 4_500, f"{sha}:0:4500"), "length outside the allowed range"
+    assert not source_cut_is_planned(recipe, master, 100, 6_000, f"{sha}:100:6000"), "off the quarter-second grid"
     assert not source_cut_is_planned(recipe, master, 2_000, 6_000, f"{sha}:2000:6000"), "past the last frame"
     assert not source_cut_is_planned(recipe, master, 0, 5_000, f"{sha}:0"), "grid id with a non-planned length"
     assert not source_cut_is_planned(recipe, master, 0, 6_000, "other:0:6000")
@@ -1324,5 +1495,12 @@ def test_source_duration_respects_delivery_range_after_saved_speed(speed):
     cuts = plan_source_cuts(recipe, 20, set())
     assert cuts
     for cut in cuts:
-        assert 6_000 <= cut.duration_ms / speed <= 11_000
+        # Operator 2026-09-30: 5-9 s cuts in 0.5 s steps; the Worker admits 5-9 s
+        # delivered clips. Speeds no 5-9 s window can deliver within 5-9 s
+        # (0.5x, 2x) keep the earlier 6-11 s vocabulary unchanged.
+        if 5_000 * speed <= 9_000 and 5_000 <= 9_000 * speed:
+            assert 5_000 <= cut.duration_ms <= 9_000
+            assert 5_000 <= cut.duration_ms / speed <= 9_000
+        else:
+            assert 6_000 <= cut.duration_ms / speed <= 11_000
         assert source_cut_is_planned(recipe, cut.master, cut.start_ms, cut.duration_ms, cut.slot_id)

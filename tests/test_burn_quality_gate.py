@@ -72,7 +72,7 @@ def test_long_voice_caption_fails():
     )
     assert result["ok"] is False
     joined = " ".join(result["reasons"])
-    assert "caption_too_long" in joined
+    assert "caption_too_long" not in joined
     assert "persona_voice" in joined
 
 
@@ -155,7 +155,8 @@ def test_quality_check_endpoint_rejects_long_voice(client):
     assert res.status_code == 422
     body = res.json()
     assert body["ok"] is False
-    assert any("caption_too_long" in r for r in body["reasons"])
+    assert any("persona_voice" in r for r in body["reasons"])
+    assert not any("caption_too_long" in r for r in body["reasons"])
 
 
 def test_quality_check_endpoint_rejects_disaster_overlay(client):
@@ -197,3 +198,19 @@ def test_quality_check_never_honours_force(client):
     )
     assert res.status_code == 422
     assert res.json()["ok"] is False
+
+
+def test_long_caption_with_fitting_overlay_is_accepted():
+    caption = " ".join(["keep these words"] * 20)
+    result = run_quality_check(caption, persona="male", overlay_png=v4_overlay())
+    assert result["ok"] is True
+    assert result["caption_words"] == 60
+
+
+def test_quality_check_endpoint_accepts_long_caption(client):
+    res = client.post("/api/quality-check", json={
+        "caption": " ".join(["keep these words"] * 20),
+        "persona": "male", "overlayPng": v4_overlay(),
+    })
+    assert res.status_code == 200
+    assert res.json()["ok"] is True

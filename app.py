@@ -20,7 +20,7 @@ from project_manager import PROJECTS_DIR, ensure_default_project
 from providers import PROVIDERS
 from providers.base import API_KEYS
 from routers.control_plane import router as control_plane_router
-from routers.post_renders import router as post_renders_router, start_workers as start_post_render_workers
+from routers.post_renders import router as post_renders_router, start_workers as start_post_render_workers, readiness as post_render_readiness
 from routers.control_plane_dossier import router as control_plane_dossier_router
 from routers.control_plane_recipes import router as control_plane_recipes_router
 from routers.control_plane_source_libraries import (
@@ -195,8 +195,11 @@ async def lifespan(app: FastAPI):
         log.error("sounds bot: failed (%s)", e)
 
     post_render_jobs = start_post_render_workers()
+    from routers.control_plane import start_compaction_scheduler
+    start_compaction_scheduler()
     yield
-    from routers.control_plane import shutdown_dossier_generation
+    from routers.control_plane import shutdown_dossier_generation, stop_compaction_scheduler
+    stop_compaction_scheduler()
     await shutdown_dossier_generation()
     if post_render_jobs is not None:
         post_render_jobs.stop()
@@ -341,6 +344,17 @@ async def health_check():
             and os.getenv("EMAIL_HANDOFF_TO")
         ),
     }
+
+
+@app.get("/api/ready")
+async def ready_check():
+    """Readiness is separate from liveness: /api/health always answers 200 when
+    the process is up, but /api/ready fails non-2xx when a configured worker
+    lane did not start or has no live worker."""
+    ready, detail = await post_render_readiness()
+    if not ready:
+        return JSONResponse(status_code=503, content={"status": "unavailable", **detail})
+    return {"status": "ok", **detail}
 
 
 class SafeStaticFiles(StaticFiles):
