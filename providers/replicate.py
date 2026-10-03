@@ -214,27 +214,19 @@ _INPUT_BUILDERS = {
 # ---------------------------------------------------------------------------
 # Transient-failure handling for video generation.
 #
-# Production evidence (2026-09-23/24): paid-for Replicate predictions were
-# abandoned because one poll GET hit a ReadError/ConnectTimeout, and whole
-# replenishment jobs failed on a 429 throttle or a 5xx at submission.  Each
-# such job blocked its page's refill for hours downstream.  Only failures that
-# cannot create a second paid prediction are retried here:
+# * submission: at most four create attempts on ConnectError/ConnectTimeout
+#   or HTTP 429/500/503, honouring a capped ``retry_after`` for 429. A 500/503
+#   response does not prove that creation failed: retrying sends another POST
+#   and can create a second paid prediction. Submission 502/504 and ambiguous
+#   read/write failures are not retried.
+# * polling: transport errors, 429, 5xx and unparseable replies are retried on
+#   the SAME prediction, bounded by the deadline and consecutive-fault limit.
+# * a failed prediction with "(code: PA)" is resubmitted once.
 #
-# * submission: HTTP 429 (honouring ``retry_after``), 500 and 503 -- Replicate
-#   returned no prediction id in every observed case (2026-09-24) -- or a
-#   connection that was never established.  502/504 are gateway results whose
-#   upstream may already have created the prediction, so they are NOT retried.  A read/write failure after the
-#   request body may have reached Replicate is ambiguous and is NOT retried,
-#   so a lost response can never become a duplicate paid prediction.
-# * polling: the prediction already exists, so a transport error, 429, 5xx or
-#   unparseable body is retried on the SAME prediction until the deadline.
-# * "Prediction interrupted; please retry (code: PA)" is resubmitted once.
-#
-# Insufficient credit (402), validation errors, provider-side failures and
-# timeouts are never retried.  A prediction that exceeds the deadline is
-# cancelled so output that will be discarded stops accruing cost.  The model,
-# input and prompt are identical on every attempt; nothing here changes the
-# provider a recipe pinned.
+# Other submission statuses, including insufficient credit (402), and other
+# failed/canceled predictions are terminal. Deadline or persistent poll loss
+# triggers best-effort cancellation. Model, input and recipe-pinned provider
+# remain identical across these attempts.
 # ---------------------------------------------------------------------------
 START_ATTEMPTS = 4
 START_RETRY_STATUSES = frozenset({429, 500, 503})

@@ -1,10 +1,9 @@
-"""Replicate video generation survives transient provider faults without extra spend.
+"""Exercise the existing bounded Replicate create and poll retries.
 
-Each scenario replays a failure observed in production on 2026-09-23/24 (see
-events.md). The invariants: a fault that proves no prediction was created, or
-that hits the poll of an existing prediction, is retried; a fault that may
-already have created a paid prediction is never resubmitted; account-level
-refusals (402) fail immediately.
+Create requests retry connection failures and HTTP 429/500/503; retrying a
+500/503 can create a second paid prediction. Poll retries keep the accepted
+prediction id. Ambiguous submission read/write failures and 502/504 do not
+resubmit, and account-level refusals (402) fail immediately.
 """
 
 import json
