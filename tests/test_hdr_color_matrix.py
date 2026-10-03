@@ -13,12 +13,21 @@ restores the matrix the rgba64le→rgb24 round-trip drops. ``-color_range`` is
 honoured too. ``-color_primaries``/``-color_trc`` are ignored by libx264 and the
 input frame's values win, so for a correctly tagged master those two flags are
 belt-and-braces echoes rather than the mechanism; the surviving tags come from
-input propagation. The unit tests prove the command-level invariant (and are the
-red test on the base commit: they assert the explicit tags are emitted for HDR
-input). The integration test renders the real HDR excerpt through the
-production colour path and checks the restored matrix tag plus pixel parity
-with the pre-change encode. Self-contained PQ and HLG inputs additionally prove
-that restoring metadata never replaces a known source matrix with BT.2020.
+input propagation.
+
+What the tests prove (current split): the
+``test_is_hdr_color_requires_complete_coherent_hdr_tuple`` parametrize block
+proves the complete-and-coherent gate directly — the coherent PQ/HLG/bt2020c
+tuples pass and the incoherent/partial tuples fail closed to the SDR path, and
+three added cases each kill one gate-constituent mutant (a dropped primaries
+check, a widened matrix set, a widened range set).
+``test_hdr_output_color_args_copies_known_source_matrix_in_isolation`` is a
+direct unit test of the arg-building helper in isolation — it does not claim
+the tuple it feeds is production-reachable (that tuple is incoherent and is
+rejected by the gate before the helper runs). The integration tests render the
+real HDR excerpt and the real probe-path fixtures through the production colour
+path and check the restored matrix tag plus pixel parity with the pre-change
+encode.
 
 Coverage truth (review finding A): only ``run_color_correct`` callers get these
 tags — ``routers/control_plane.py`` (generated/truck/silhouette treatment,
