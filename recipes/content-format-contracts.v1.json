@@ -517,7 +517,7 @@
         },
         "textPolicy": {
           "status": "defined",
-          "rule": "Exclude cut windows with title cards, captions, or legible overlay text; record a human visual check before scheduling.",
+          "rule": "Exclude cut windows with title cards, captions, or legible overlay text; human visual review before scheduling is a required process gate.",
           "authority": "operator_visual_qa"
         },
         "negativeRules": {
