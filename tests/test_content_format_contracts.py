@@ -92,7 +92,7 @@ def test_every_known_format_has_a_strict_contract_and_registry_binding():
     assert set(contracts) == set(profiles) == {
         "boat-lake", "coffee-tok", "construction-scenic", "lyric-edits",
         "meme-slideshow", "pov-dirt-bike", "pov-dusk-core",
-        "pov-night-core", "pov-night-core-ai", "pov-scenic",
+        "pov-club", "pov-night-core", "pov-night-core-ai", "pov-scenic",
         "silhouette-truck", "truck-scenic", "truck-ugc",
     }
     for slug, profile in profiles.items():
@@ -109,7 +109,7 @@ def test_only_complete_hash_bound_formats_are_commissioned():
         if profile.execution_status == "commissioned"
     } == {
         "boat-lake", "coffee-tok", "lyric-edits", "meme-slideshow",
-        "pov-dirt-bike", "pov-night-core", "pov-scenic", "silhouette-truck",
+        "pov-club", "pov-dirt-bike", "pov-night-core", "pov-scenic", "silhouette-truck",
         "truck-scenic",
     }
     assert all(
@@ -119,6 +119,20 @@ def test_only_complete_hash_bound_formats_are_commissioned():
     )
     assert contracts["truck-ugc"].definition_status == "complete"
     assert profiles["truck-ugc"].execution_status == "uncommissioned"
+
+
+def test_pov_club_is_a_source_bound_format_on_the_existing_recut_executor():
+    contracts, _ = load_format_contracts()
+    profiles, _ = load_engine_registry()
+    contract = contracts["pov-club"]
+    profile = profiles["pov-club"]
+    assert contract.content_niche == "POV-Club"
+    assert profile.content_niche == "POV-Club"
+    assert profile.content_engine == "sourced_video"
+    assert profile.execution_status == "commissioned"
+    assert profile.executor_id == "source-dna-recut"
+    assert profile.format_contract_version == f"sha256:{contract.contract_hash}"
+    assert contract.output["audioPolicy"] == "campaign_sound_bound_downstream"
 
 
 def test_boat_contract_is_commissioned_after_operator_lifted_quarantine():
