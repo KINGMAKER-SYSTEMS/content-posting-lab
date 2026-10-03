@@ -130,6 +130,15 @@ def _capture_argv(monkeypatch, **kwargs):
         # probes must fail closed to the unchanged SDR path.
         ({"color_transfer": "smpte2084", "color_primaries": "bt709",
           "color_space": "bt709", "color_range": "tv"}, False),  # PQ + bt709 primaries
+        # Three gate-constituent mutants: each case below passes only on the real
+        # coherent-tuple gate and goes red if one of its checks is dropped or
+        # widened (primaries==bt2020, matrix in _HDR_MATRICES, range in _COLOR_RANGES).
+        ({"color_transfer": "smpte2084", "color_primaries": "bt709",
+          "color_space": "bt2020nc", "color_range": "tv"}, False),  # PQ + bt709 primaries + bt2020nc matrix
+        ({"color_transfer": "smpte2084", "color_primaries": "bt2020",
+          "color_space": "bt2020nc", "color_range": "unknown"}, False),  # PQ + range "unknown"
+        ({"color_transfer": "smpte2084", "color_primaries": "bt2020",
+          "color_space": "bt709", "color_range": "tv"}, False),  # PQ + bt709 matrix
         ({"color_transfer": "smpte2084", "color_primaries": "bt2020",
           "color_space": "bt2020nc"}, False),  # PQ + missing range
         ({"color_transfer": "arib-std-b67", "color_primaries": "bt2020",
