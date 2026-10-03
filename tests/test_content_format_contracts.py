@@ -136,7 +136,7 @@ def test_pov_club_is_a_source_bound_format_on_the_existing_recut_executor():
     assert "visual_admission" in contract.review_gates
     assert "operator_visual_qa" not in contract.review_gates
     text_policy = contract.dimensions["textPolicy"]
-    assert text_policy["authority"] == "visualAdmission.decision"
+    assert text_policy["authority"] == "visualAdmission[outputIndex].sha256"
     assert "exact final output bytes" in text_policy["rule"]
     assert "bounded recall" in text_policy["rule"]
 

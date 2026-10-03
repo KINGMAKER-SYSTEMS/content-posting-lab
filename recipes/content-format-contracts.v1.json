@@ -518,7 +518,7 @@
         "textPolicy": {
           "status": "defined",
           "rule": "Require a persisted clean Content Lab visual-admission decision on the exact final output bytes; reject positive legible-text findings. The detector has bounded recall and does not guarantee that all text is absent.",
-          "authority": "visualAdmission.decision"
+          "authority": "visualAdmission[outputIndex].sha256"
         },
         "negativeRules": {
           "status": "defined",
