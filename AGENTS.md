@@ -85,6 +85,11 @@
   generation/source/recovery outputs through `routers/control_plane.py`.
 - `services/generation_recovery.py` owns private provider checkpoints and
   cross-process generation/store locks. Checkpoints are not admission authority.
+- `services/generation_budget.py` owns the shared durable paid-generation ledger.
+  Raw ABN Flux/WAN and recreate LaMa creates reserve a distinct submission id
+  before every POST, including identical inputs. Only resuming a known provider
+  operation may reuse a debit; prompt text, image bytes and output names are not
+  provider identities.
 - `services/caption_discipline.py` owns Content Lab's closed validation of the
   caption corpus/register selection already made by Dossier and Control Plane.
 - `services/control_plane_source_imports.py` owns bounded public-HTTPS download,
@@ -496,6 +501,10 @@
   module and return the same versioned schema and hashes.
 
 ## Verification
+
+- Run `pytest -q tests/test_generation_budget_raw_submissions.py tests/test_replicate_text_removal.py tests/test_abn_factory.py`
+  for repeated raw creates, actual ledger totals, exhausted caps and the explicit
+  zero-budget stop without paid requests.
 
 - Run `pytest -q tests/test_visual_admission.py` for observed boat-frame OCR
   noise, short readable text, rotated single-frame text, complete coverage,

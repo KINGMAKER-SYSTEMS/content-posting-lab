@@ -5173,7 +5173,8 @@ def test_script_segment_uses_template_fallback_when_expert_unavailable(monkeypat
 
 def test_flux_sync_meters_the_submission(monkeypatch):
     """P1: the ABN thumbnail/background Flux-schnell still is reserved against
-    the daily meter before the Replicate call, idempotently keyed by prompt."""
+    the daily meter before the Replicate call with a new submission identity."""
+    from uuid import UUID
     from services import generation_budget
 
     monkeypatch.setenv("REPLICATE_API_TOKEN", "tok")
@@ -5189,7 +5190,11 @@ def test_flux_sync_meters_the_submission(monkeypatch):
     monkeypatch.setattr(abn_factory.urllib.request, "urlopen", lambda *a, **k: object())
 
     assert abn_factory._flux_sync("a calm gradient") == "http://x.png"
-    assert debits == [(0.003, "abn:flux:a calm gradient")]
+    assert len(debits) == 1
+    assert debits[0][0] == 0.003
+    prefix = "abn:black-forest-labs/flux-schnell:"
+    assert debits[0][1].startswith(prefix)
+    assert UUID(debits[0][1].removeprefix(prefix)).version == 4
 
 
 def test_flux_sync_refuses_when_budget_exhausted(monkeypatch):
@@ -5210,8 +5215,8 @@ def test_flux_sync_refuses_when_budget_exhausted(monkeypatch):
 
 
 def test_wan_i2v_sync_meters_the_submission(monkeypatch, tmp_path):
-    """P1: the ABN b-roll wan-2.5-i2v submission is metered, idempotently keyed
-    by the controlled `name` tag."""
+    """P1: each ABN b-roll wan-2.5-i2v create has its own metered submission."""
+    from uuid import UUID
     from services import generation_budget
 
     monkeypatch.setenv("REPLICATE_API_TOKEN", "tok")
@@ -5238,4 +5243,8 @@ def test_wan_i2v_sync_meters_the_submission(monkeypatch, tmp_path):
 
     result = abn_factory._wan_i2v_sync("http://still.png", "libgen0")
     assert result is not None
-    assert debits == [(0.30, "abn:wan:libgen0")]
+    assert len(debits) == 1
+    assert debits[0][0] == 0.30
+    prefix = "abn:wan-video/wan-2.5-i2v:"
+    assert debits[0][1].startswith(prefix)
+    assert UUID(debits[0][1].removeprefix(prefix)).version == 4

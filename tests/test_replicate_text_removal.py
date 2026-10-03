@@ -25,8 +25,8 @@ def test_remove_text_rejects_none_image():
 
 def test_remove_text_meters_the_lama_submission(monkeypatch):
     """P1: the recreate text-removal LaMa submission is reserved against the
-    daily meter, idempotently keyed by image content, before the prediction."""
-    import hashlib
+    daily meter with a distinct submission identity before the prediction."""
+    from uuid import UUID
     from providers import replicate
     from services import generation_budget
 
@@ -55,7 +55,8 @@ def test_remove_text_meters_the_lama_submission(monkeypatch):
     assert len(debits) == 1
     amount, debit = debits[0]
     assert amount == 0.02
-    assert debit == "recreate:" + hashlib.sha256(b"data:image/png;base64,image").hexdigest()[:32]
+    assert debit.startswith("recreate:")
+    assert UUID(debit.removeprefix("recreate:")).version == 4
 
 
 def test_remove_text_refuses_when_budget_exhausted(monkeypatch):
