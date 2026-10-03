@@ -517,13 +517,13 @@
         },
         "textPolicy": {
           "status": "defined",
-          "rule": "Require a persisted clean Content Lab visual-admission decision on the exact final output bytes; reject positive legible-text findings. The detector has bounded recall and does not guarantee that all text is absent.",
-          "authority": "visualAdmission[outputIndex].sha256"
+          "rule": "Source imagery remains bound to the exact approved page master. Completed outputs use existing downstream admission without waiting for a separate vision scan; preserve existing scan evidence and do not claim a new clean decision.",
+          "authority": "sourceDna.masters"
         },
         "negativeRules": {
           "status": "defined",
-          "rule": "Reject unregistered or cross-page source bytes, repeated cut windows, visual-admission failures, technical failures, and reused output bytes.",
-          "authority": "sourceDnaRecut.selection; technical_video; visual_admission; duplicate_and_never_reuse"
+          "rule": "Reject unregistered or cross-page source bytes, repeated cut windows, technical failures, and reused output bytes.",
+          "authority": "sourceDnaRecut.selection; technical_video; duplicate_and_never_reuse"
         },
         "referenceExamples": {
           "status": "defined",
@@ -542,7 +542,6 @@
         "byte_exact_provenance",
         "cut_window_lineage",
         "technical_video",
-        "visual_admission",
         "duplicate_and_never_reuse"
       ],
       "distribution": {
