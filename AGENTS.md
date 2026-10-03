@@ -356,6 +356,12 @@
 - `services.ffmpeg.run_color_correct` serializes its ffmpeg subprocesses within
   each service process so simultaneous asynchronous refill jobs cannot exhaust
   container memory during 1080x1920 libx264 encoding.
+  For PQ (`smpte2084`) or HLG (`arib-std-b67`) inputs, restore only the probed
+  colour tags after the RGB round trip, preserving the source matrix. Missing
+  or unknown fields stay unknown; never infer BT.2020 primaries or limited
+  range from transfer alone. Other/unknown transfers keep the existing encode
+  arguments. The bounded local colour probe runs off the event loop, and this
+  metadata repair does not add tone-mapping or repeat video treatment.
 - Durable preparation is exposed at `/api/control-plane/v1/post-renders`.
   Every request requires the existing control-plane bearer and exact
   `X-RT-Page-Id`; enqueue also requires `Idempotency-Key`. Status, retries,
@@ -501,6 +507,11 @@
 
 ## Verification
 
+- Run `pytest -q tests/test_hdr_color_matrix.py tests/test_ffmpeg_cc.py tests/test_ffmpeg_encode_timeout.py`
+  for PQ/HLG metadata preservation, unchanged SDR arguments, decoded pixel
+  parity, probe offloading, and bounded encode cleanup. The self-contained
+  HDR encode cases need only ffmpeg/ffprobe; real-master cases additionally
+  use the optional `HDR_FIXTURES_DIR` fixture directory.
 - Run `pytest -q tests/test_visual_admission.py` for observed boat-frame OCR
   noise, short readable text, rotated single-frame text, complete coverage,
   unavailable providers, exact-byte binding, and cached-decision behavior.

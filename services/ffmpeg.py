@@ -478,6 +478,71 @@ def _probe_input_duration_seconds(input_path: str) -> float | None:
     return duration
 
 
+# Colour-metadata field names as reported by ffprobe (`-show_entries stream=…`).
+_COLOR_FIELDS = ("color_space", "color_transfer", "color_primaries", "color_range")
+
+# PQ and HLG identify HDR. BT.2020 primaries alone can also describe SDR;
+# a missing or unknown transfer must not be defaulted to PQ.
+_HDR_TRANSFERS = frozenset({"smpte2084", "arib-std-b67"})
+
+
+def _probe_input_color(input_path: str) -> dict[str, str] | None:
+    """Read local video colour fields, or return None when probing fails."""
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe", "-v", "error", "-protocol_whitelist", "file,pipe",
+                "-select_streams", "v:0",
+                "-show_entries", "stream=" + ",".join(_COLOR_FIELDS),
+                "-of", "default=noprint_wrappers=1",
+                input_path,
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=_INPUT_PROBE_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return None
+    if result.returncode != 0:
+        return None
+    fields: dict[str, str] = {}
+    for line in result.stdout.decode("utf-8", errors="replace").splitlines():
+        key, separator, value = line.strip().partition("=")
+        if separator and key in _COLOR_FIELDS and value:
+            fields[key] = value
+    return fields or None
+
+
+def _is_hdr_color(color: dict[str, str] | None) -> bool:
+    """True only when the probed transfer identifies PQ or HLG."""
+    if not color:
+        return False
+    return color.get("color_transfer") in _HDR_TRANSFERS
+
+
+def _hdr_output_color_args(color: dict[str, str]) -> list[str]:
+    """Restore known HDR colour tags without replacing the source's matrix.
+
+    PQ/HLG transfer does not establish a BT.2020 matrix or limited range.
+    Echo only the fields the input proves; omitted/unknown values stay unknown.
+    These output tags do not add a tone-mapping or colour-conversion filter.
+    """
+    transfer = color["color_transfer"]  # gated by _is_hdr_color
+    args: list[str] = []
+    for field, flag in (
+        ("color_space", "-colorspace"),
+        ("color_primaries", "-color_primaries"),
+        ("color_transfer", "-color_trc"),
+        ("color_range", "-color_range"),
+    ):
+        value = transfer if field == "color_transfer" else color.get(field)
+        if value and value != "unknown":
+            args.extend((flag, value))
+    return args
+
+
 async def _bounded_encode_stderr(proc) -> bytes:
     """Drain stderr continuously while retaining only its diagnostic tail."""
     tail = bytearray()
@@ -545,8 +610,11 @@ async def run_color_correct(
     clip_start_ms: int | None = None,
     clip_duration_ms: int | None = None,
     source_duration_ms: int | None = None,
+    input_color: dict[str, str] | None = None,
 ) -> None:
     """Run ffmpeg to produce a color-corrected copy of a video.
+
+    ``input_color`` may supply already-probed fields to skip the colour probe.
 
     Raises RuntimeError with the last ~500 chars of stderr on ffmpeg failure.
     """
@@ -586,6 +654,19 @@ async def run_color_correct(
             "-t", f"{window[1] / 1000:.3f}",
         ] if window is not None else []
     )
+    color = input_color
+    if color is None:
+        # A slow ffprobe must not stall the service event loop.
+        color = await asyncio.to_thread(_probe_input_color, input_path)
+    is_hdr = _is_hdr_color(color)
+    color_args = _hdr_output_color_args(color) if is_hdr else []
+    # One named line so an operator can tell "input is SDR" (no tags wanted)
+    # from "the probe failed" (no tags because the colour metadata is unknown).
+    log.info(
+        "hdr_probe: %s input=%s",
+        "failed" if color is None else ("hdr" if is_hdr else "sdr"),
+        os.path.basename(input_path),
+    )
     cmd = [
         "ffmpeg", "-y",
         *input_window,
@@ -593,6 +674,7 @@ async def run_color_correct(
         "-vf", vf,
         *audio_args,
         *enc,
+        *color_args,
         *output_window,
         output_path,
     ]
