@@ -133,6 +133,9 @@
   `/api/telegram/*` needs the key like every other `/api/` route: the bot
   long-polls, so there is no webhook route to exempt. The UI sends the key
   through `frontend/src/lib/api.ts` (`fetchApi` / `withApiKey`).
+- `routers/upload.py` passes the legacy cookie-login account to its static
+  Python subprocess runner as an argv value. Request values must never be
+  interpolated into executable source; the exact account argument is preserved.
 - `POST /api/telegram/send` delivers only a media file whose real path is under
   `projects/<project>/<videos|clips|burned|recreate|slideshow-images>/` or the
   legacy `output`/`burn_output` dirs. The volume root beside those dirs holds
@@ -517,6 +520,11 @@
   parity, probe offloading, and bounded encode cleanup. The self-contained
   HDR encode cases need only ffmpeg/ffprobe; real-master cases additionally
   use the optional `HDR_FIXTURES_DIR` fixture directory.
+
+- Run `pytest -q tests/test_upload_login_account_data.py tests/test_upload_api.py tests/test_upload_cookies.py`
+  for literal account transport, injected expressions, login failure responses
+  and existing upload/cookie behavior without launching a browser.
+
 - Run `pytest -q tests/test_visual_admission.py` for observed boat-frame OCR
   noise, short readable text, rotated single-frame text, complete coverage,
   unavailable providers, exact-byte binding, and cached-decision behavior.
