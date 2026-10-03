@@ -126,6 +126,9 @@
 
 ## Local Contracts
 
+- `services/abn_factory.py` kinetic-template parameters remain inert JSON inside
+  the HTML script. Escape HTML script delimiters while preserving decoded values.
+
 - Caption word count is diagnostic only; never reject or rewrite a caption for exceeding a word-count threshold.
 
 - The `/api/` key middleware (`app.py` `_AUTH_SKIP`) exempts only `/api/health`
@@ -519,6 +522,9 @@
   module and return the same versioned schema and hashes.
 
 ## Verification
+
+- Run `pytest -q tests/test_abn_factory_atomic_text.py tests/test_abn_factory.py -k 'atomic_write_text or kinetic'`
+  for atomic scratch writes, inert script parameters and exact JSON round trips.
 
 - Run `pytest -q tests/test_ytdlp_download_diagnostics.py tests/test_control_plane_source_import_service.py tests/test_control_plane_source_imports.py`
   for private cookie-copy ownership, crash leftovers, failed/cancelled attempts,
