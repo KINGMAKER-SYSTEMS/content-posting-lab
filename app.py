@@ -4,6 +4,7 @@ import os
 import subprocess
 import time
 from contextlib import asynccontextmanager
+from functools import lru_cache
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -367,33 +368,23 @@ class SafeStaticFiles(StaticFiles):
 
 
 class FontStaticFiles(SafeStaticFiles):
-    """Fonts, typed and cached by their own bytes.
-
-    python:3.11-slim ships no /etc/mime.types, so StaticFiles guessed
-    application/octet-stream for .ttf and sent no Cache-Control; the Control
-    Plane, which proxies these for every Dossier open, will only cache a body
-    declared as a font. The ETag is the file's SHA-256, the cache is a day,
-    and a request pinning that hash with ?v=<prefix> may keep it a year.
-    """
+    """Serve font MIME types and cache validators from the installed file bytes."""
 
     MEDIA_TYPES = {".ttf": "font/ttf", ".otf": "font/otf", ".woff": "font/woff", ".woff2": "font/woff2"}
-    _digests: dict = {}
 
-    @classmethod
-    def _digest(cls, full_path, stat_result) -> str:
-        key = (str(full_path), stat_result.st_mtime_ns, stat_result.st_size)
-        digest = cls._digests.get(key)
-        if digest is None:
-            sha = hashlib.sha256()
-            with open(full_path, "rb") as handle:
-                for chunk in iter(lambda: handle.read(1 << 16), b""):
-                    sha.update(chunk)
-            digest = sha.hexdigest()
-            cls._digests[key] = digest
-        return digest
+    @staticmethod
+    @lru_cache(maxsize=128)
+    def _digest(full_path: str, file_identity: tuple) -> str:
+        sha = hashlib.sha256()
+        with open(full_path, "rb") as handle:
+            for chunk in iter(lambda: handle.read(1 << 16), b""):
+                sha.update(chunk)
+        return sha.hexdigest()
 
     def file_response(self, full_path, stat_result, scope, status_code: int = 200):
-        digest = self._digest(full_path, stat_result)
+        file_identity = (stat_result.st_dev, stat_result.st_ino, stat_result.st_size,
+                         stat_result.st_mtime_ns, stat_result.st_ctime_ns)
+        digest = self._digest(str(full_path), file_identity)
         pinned = QueryParams(scope.get("query_string", b"")).get("v", "")
         immutable = len(pinned) >= 8 and digest.startswith(pinned.lower())
         media_type = self.MEDIA_TYPES.get(Path(str(full_path)).suffix.lower())
