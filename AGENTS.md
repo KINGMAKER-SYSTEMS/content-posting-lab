@@ -126,6 +126,9 @@
 
 ## Local Contracts
 
+- `services/abn_factory.py` kinetic-template parameters remain inert JSON inside
+  the HTML script. Escape HTML script delimiters while preserving decoded values.
+
 - Caption word count is diagnostic only; never reject or rewrite a caption for exceeding a word-count threshold.
 
 - The `/api/` key middleware (`app.py` `_AUTH_SKIP`) exempts only `/api/health`
@@ -133,6 +136,9 @@
   `/api/telegram/*` needs the key like every other `/api/` route: the bot
   long-polls, so there is no webhook route to exempt. The UI sends the key
   through `frontend/src/lib/api.ts` (`fetchApi` / `withApiKey`).
+- `routers/upload.py` passes the legacy cookie-login account to its static
+  Python subprocess runner as an argv value. Request values must never be
+  interpolated into executable source; the exact account argument is preserved.
 - `POST /api/telegram/send` delivers only a media file whose real path is under
   `projects/<project>/<videos|clips|burned|recreate|slideshow-images>/` or the
   legacy `output`/`burn_output` dirs. The volume root beside those dirs holds
@@ -145,6 +151,10 @@
   `projects/page_roster.json`. `/api/burn/overlay` also takes `batchId` as one
   directory name. While APP_API_KEY is unset these server-side checks are the
   only guard on `/api/*`.
+- Clipper upload, streaming upload, delete, rename and download-all accept
+  single-component job IDs, including legacy and caller-supplied names, only as
+  resolved non-symlink direct children of the project's clip directory. Path
+  errors return 400; missing jobs on management routes retain 404.
 - `project_manager.is_reserved_volume_dir` names the service-state dirs on the
   projects volume (`_post_render`, `control_plane_generated`,
   `control_plane_recipes`, `agenticnews_assets`, `lost+found`, and any name
@@ -195,7 +205,8 @@
   Source-manifest reads are hard size-bounded; transport failure is reported as
   unavailable rather than falsely reported as missing. The selected Content
   Lab format must match the Master Pages niche before a source is displayed or
-  executed.
+  executed. The Master Pages Notion page id itself must be nonblank; a null id
+  never matches omitted manifest fields or establishes exact-page authority.
 - Capability and job execution dispatch only to the resolver named by the
   publication's closed content engine. A sourced-video publication never probes
   the AI-video resolver, and an unknown engine exposes no executor.
@@ -268,8 +279,15 @@
   Source-import artifact URLs use only the
   configured `CONTENT_LAB_PUBLIC_ORIGIN`; the separate
   `CONTENT_LAB_CONTROL_PLANE_ORIGIN` remains the authority for reading page-vault
-  media from Control Plane. Source imports never load shared platform/browser
-  cookie stores because their allowlisted permanent URLs are public. Content Lab never admits that artifact into
+  media from Control Plane. Source imports try public downloads first; only an
+  exact YouTube host's authentication refusal may use a private copy of the
+  configured cookie jar. They never probe browser stores or modify the original.
+  Copies stay in the OS temporary directory's private `ytdlp-private-jars/`
+  scratch root and are removed on success, failure or cancellation. Startup
+  cleanup runs before imports in the single-process runtime and skips original
+  jars, links and non-scratch files;
+  it never follows a symlinked scratch root or removes import/publication evidence.
+  Content Lab never admits that artifact into
   ShipStream or mutates the page source manifest. A repeat with
   the same request and idempotency key may resurrect only the exact
   `source_import_runtime_restarted` failure; it reuses the job id under the
@@ -285,6 +303,9 @@
   style: font, size, color, position, alignment, and line balance.
 - Resolve fonts only from Content Lab's installed, advertised TikTokSans files.
   Unsupported, missing, or unreadable font bytes fail closed.
+- `/fonts` supplies explicit font MIME types and strong SHA-256 ETags, with a
+  one-day public cache or one year immutable for a matching 8+ hex `?v=` hash prefix.
+  Digest reuse is bounded to 128 file identities; changed bytes revalidate.
 - Explicit caption line breaks must survive rendering. The line-balance control
   may add balanced breaks inside each explicit line but may not remove an
   explicit break or change word order.
@@ -390,18 +411,17 @@
   `source_response_rejected`; replaying that recovery key only observes the
   current job.
 
-- Replicate video generation (`providers/replicate.py`) retries only faults
-  that cannot buy a second prediction: submission HTTP 429 (honouring
-  `retry_after`, capped), 500 and 503 (no prediction id returned in every
-  observed case) or a never-established connection, at most four
-  submissions; 502/504 gateway results may hide a created prediction and
-  are terminal; poll transport/429/5xx/unparseable
-  replies on the same prediction within its 600-second deadline; and one
-  resubmission of Replicate's "Prediction interrupted (code: PA)". A read or
-  write fault after the submission may have reached Replicate is not retried.
-  402 insufficient credit, validation and provider-side failures are terminal.
-  Deadline or persistent poll loss cancels the prediction. Model, input and
-  recipe-pinned provider never change between attempts.
+- Replicate video generation (`providers/replicate.py`) makes at most four
+  create attempts on HTTP 429 (honouring capped `retry_after`), 500/503 or
+  ConnectError/ConnectTimeout. A 500/503 response does not prove that creation
+  failed: retrying sends another POST and can create a second paid prediction.
+  Submission 502/504 and ambiguous read/write failures are not retried.
+  Poll transport/429/5xx/unparseable replies retry the same prediction within
+  its 600-second deadline and consecutive-fault limit. A failed prediction
+  with `(code: PA)` permits one resubmission; other failed/canceled predictions,
+  credit (402) and other submission errors are terminal. Deadline or persistent
+  poll loss triggers best-effort cancellation. Model, input and recipe-pinned
+  provider never change between these attempts.
 - A zero-output provider failure keeps the terminal `provider_generation_failed`
   status contract and additionally persists `providerFailure` (closed `class`,
   provider, model, call index, prediction id, bounded detail) in the job store
@@ -503,11 +523,25 @@
 
 ## Verification
 
+- Run `pytest -q tests/test_abn_factory_atomic_text.py tests/test_abn_factory.py -k 'atomic_write_text or kinetic'`
+  for atomic scratch writes, inert script parameters and exact JSON round trips.
+
+- Run `pytest -q tests/test_ytdlp_download_diagnostics.py tests/test_control_plane_source_import_service.py tests/test_control_plane_source_imports.py`
+  for private cookie-copy ownership, crash leftovers, failed/cancelled attempts,
+  original preservation and existing bounded source intake; subprocesses are stubbed.
+
+- Run `pytest -q tests/test_font_static_headers.py tests/test_static_path_confinement.py`
+  for font MIME/cache headers, changed-byte validators and static path containment.
 - Run `pytest -q tests/test_hdr_color_matrix.py tests/test_ffmpeg_cc.py tests/test_ffmpeg_encode_timeout.py`
   for PQ/HLG metadata preservation, unchanged SDR arguments, decoded pixel
   parity, probe offloading, and bounded encode cleanup. The self-contained
   HDR encode cases need only ffmpeg/ffprobe; real-master cases additionally
   use the optional `HDR_FIXTURES_DIR` fixture directory.
+
+- Run `pytest -q tests/test_upload_login_account_data.py tests/test_upload_api.py tests/test_upload_cookies.py`
+  for literal account transport, injected expressions, login failure responses
+  and existing upload/cookie behavior without launching a browser.
+
 - Run `pytest -q tests/test_visual_admission.py` for observed boat-frame OCR
   noise, short readable text, rotated single-frame text, complete coverage,
   unavailable providers, exact-byte binding, and cached-decision behavior.

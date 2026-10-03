@@ -1,8 +1,10 @@
+import hashlib
 import logging
 import os
 import subprocess
 import time
 from contextlib import asynccontextmanager
+from functools import lru_cache
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -10,6 +12,8 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.datastructures import Headers, QueryParams
+from starlette.staticfiles import NotModifiedResponse
 import uvicorn
 
 import debug_logger
@@ -118,6 +122,16 @@ def _log_startup_validation(ffmpeg_ok: bool, ytdlp_ok: bool):
 async def lifespan(app: FastAPI):
     # Initialize structured logging before anything else
     debug_logger.setup_logging()
+
+    # main.py runs one process, and imports cannot start before this sweep.
+    # Hard-killed imports skip finally; their private scratch copies are stale.
+    # Keep this before imports, not in individual workers or request handlers.
+    try:
+        from scraper.frame_extractor import sweep_private_cookie_jars
+        sweep_private_cookie_jars()
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(f"cookie-jar sweep failed: {e}")
 
     Path("output").mkdir(parents=True, exist_ok=True)
     Path("caption_output").mkdir(parents=True, exist_ok=True)
@@ -363,7 +377,38 @@ class SafeStaticFiles(StaticFiles):
         return await super().get_response(path, scope)
 
 
-app.mount("/fonts", SafeStaticFiles(directory="fonts", check_dir=False), name="fonts")
+class FontStaticFiles(SafeStaticFiles):
+    """Serve font MIME types and cache validators from the installed file bytes."""
+
+    MEDIA_TYPES = {".ttf": "font/ttf", ".otf": "font/otf", ".woff": "font/woff", ".woff2": "font/woff2"}
+
+    @staticmethod
+    @lru_cache(maxsize=128)
+    def _digest(full_path: str, file_identity: tuple) -> str:
+        sha = hashlib.sha256()
+        with open(full_path, "rb") as handle:
+            for chunk in iter(lambda: handle.read(1 << 16), b""):
+                sha.update(chunk)
+        return sha.hexdigest()
+
+    def file_response(self, full_path, stat_result, scope, status_code: int = 200):
+        file_identity = (stat_result.st_dev, stat_result.st_ino, stat_result.st_size,
+                         stat_result.st_mtime_ns, stat_result.st_ctime_ns)
+        digest = self._digest(str(full_path), file_identity)
+        pinned = QueryParams(scope.get("query_string", b"")).get("v", "")
+        immutable = len(pinned) >= 8 and digest.startswith(pinned.lower())
+        media_type = self.MEDIA_TYPES.get(Path(str(full_path)).suffix.lower())
+        response = FileResponse(full_path, status_code=status_code, stat_result=stat_result, media_type=media_type)
+        response.headers["etag"] = f'"{digest}"'
+        response.headers["cache-control"] = (
+            "public, max-age=31536000, immutable" if immutable else "public, max-age=86400"
+        )
+        if self.is_not_modified(response.headers, Headers(scope=scope)):
+            return NotModifiedResponse(response.headers)
+        return response
+
+
+app.mount("/fonts", FontStaticFiles(directory="fonts", check_dir=False), name="fonts")
 # AgenticBuilderNews: rendered assets + the workspace SPA
 app.mount(
     "/agenticnews-assets",
