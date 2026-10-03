@@ -481,9 +481,23 @@ def _probe_input_duration_seconds(input_path: str) -> float | None:
 # Colour-metadata field names as reported by ffprobe (`-show_entries stream=…`).
 _COLOR_FIELDS = ("color_space", "color_transfer", "color_primaries", "color_range")
 
-# PQ and HLG identify HDR. BT.2020 primaries alone can also describe SDR;
-# a missing or unknown transfer must not be defaulted to PQ.
+# An HDR transfer is necessary but NOT sufficient to tag the output: the probe
+# must also be complete and coherent (bt2020 primaries + a bt2020 matrix + a
+# concrete range). BT.2020 primaries alone are NOT proof of HDR, and a valid SDR
+# master can pair bt2020 primaries with a bt709 (or absent) transfer. Any
+# absent, partial or incoherent colour metadata therefore falls through to the
+# old SDR path (untagged), exactly as before — no field is ever invented, and a
+# missing or "unknown" transfer must not be defaulted to PQ.
 _HDR_TRANSFERS = frozenset({"smpte2084", "arib-std-b67"})
+# The wide-gamut matrices that pair with an HDR transfer. "nc" is the usual
+# non-constant-luminance matrix; "c" (constant luminance) is also legal and is
+# copied through verbatim rather than coerced to bt2020nc.
+_HDR_MATRICES = frozenset({"bt2020nc", "bt2020c"})
+_HDR_PRIMARIES = "bt2020"
+# A concrete range is part of the proof. "unknown"/absent is not proof and
+# fails closed: we never invent a range the probe did not show. Real HDR
+# streams carry tv or pc; an unproven range is not made up as tv.
+_COLOR_RANGES = frozenset({"tv", "pc"})
 
 
 def _probe_input_color(input_path: str) -> dict[str, str] | None:
@@ -516,31 +530,44 @@ def _probe_input_color(input_path: str) -> dict[str, str] | None:
 
 
 def _is_hdr_color(color: dict[str, str] | None) -> bool:
-    """True only when the probed transfer identifies PQ or HLG."""
+    """True only for a complete, coherent HDR probe.
+
+    HDR is identified by a complete AND coherent tuple: a PQ (``smpte2084``) or
+    HLG (``arib-std-b67``) transfer with ``bt2020`` primaries, a
+    ``bt2020nc``/``bt2020c`` matrix, and a concrete ``tv``/``pc`` range. The
+    transfer alone is necessary but not sufficient — a partial probe (missing
+    matrix/primaries/range) or an incoherent one (e.g. smpte2084 with bt709
+    primaries) is not proven HDR and keeps the old SDR path (untagged), exactly
+    as before. We never invent a missing value, so an absent or
+    ``unknown``/``N/A`` field fails closed.
+    """
     if not color:
         return False
-    return color.get("color_transfer") in _HDR_TRANSFERS
+    return (
+        color.get("color_transfer") in _HDR_TRANSFERS
+        and color.get("color_primaries") == _HDR_PRIMARIES
+        and color.get("color_space") in _HDR_MATRICES
+        and color.get("color_range") in _COLOR_RANGES
+    )
 
 
 def _hdr_output_color_args(color: dict[str, str]) -> list[str]:
-    """Restore known HDR colour tags without replacing the source's matrix.
+    """Echo the probed HDR colour tags verbatim.
 
-    PQ/HLG transfer does not establish a BT.2020 matrix or limited range.
-    Echo only the fields the input proves; omitted/unknown values stay unknown.
-    These output tags do not add a tone-mapping or colour-conversion filter.
+    Only called once ``_is_hdr_color`` has proven the tuple complete and
+    coherent, so every field is present and concrete. The matrix flag is the
+    effective fix (it restores the wide-gamut matrix the rgba64le->rgb24
+    round-trip drops); primaries/transfer/range are belt-and-braces echoes of
+    the probed input, copied through — never invented and never coerced to an
+    HDR-typical default. No tone-mapping and no pixel change happen here:
+    these are stream metadata tags, not a filter.
     """
-    transfer = color["color_transfer"]  # gated by _is_hdr_color
-    args: list[str] = []
-    for field, flag in (
-        ("color_space", "-colorspace"),
-        ("color_primaries", "-color_primaries"),
-        ("color_transfer", "-color_trc"),
-        ("color_range", "-color_range"),
-    ):
-        value = transfer if field == "color_transfer" else color.get(field)
-        if value and value != "unknown":
-            args.extend((flag, value))
-    return args
+    return [
+        "-colorspace", color["color_space"],
+        "-color_primaries", color["color_primaries"],
+        "-color_trc", color["color_transfer"],
+        "-color_range", color["color_range"],
+    ]
 
 
 async def _bounded_encode_stderr(proc) -> bytes:
