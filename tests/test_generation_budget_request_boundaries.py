@@ -217,3 +217,61 @@ async def test_actual_ui_payload_fees_are_guarded_before_post(monkeypatch, provi
     else:
         assert posts[0]["image"]["url"].startswith("data:image/png;base64,")
     assert generation_budget.spent_usd_at(generation_budget.jobs_store_path()) == pytest.approx(cost)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider,cost", [("wan-i2v", 1.0), ("wan-i2v-fast", 0.11)])
+@pytest.mark.parametrize("has_image", [False, True])
+async def test_ui_wan_validates_actual_input_before_any_debit(monkeypatch, provider, cost, has_image):
+    import io
+    from fastapi import HTTPException, UploadFile
+    from starlette.datastructures import Headers
+
+    monkeypatch.setenv(generation_budget.USD_BUDGET_ENV, str(cost * 2))
+    monkeypatch.setitem(base.API_KEYS, "replicate", "fixture-token")
+    posts = []
+    def handler(request):
+        if request.method == "POST":
+            posts.append(json.loads(request.content))
+            assert generation_budget.spent_usd_at(generation_budget.jobs_store_path()) == pytest.approx(cost * len(posts))
+            return httpx.Response(201, json={"id": f"paid-id-{len(posts)}"})
+        return httpx.Response(200, json={"status": "succeeded", "output": "https://fixture.test/video.mp4"})
+    original_client = httpx.AsyncClient
+    monkeypatch.setattr(base.httpx, "AsyncClient", lambda *a, **kw: original_client(transport=httpx.MockTransport(handler)))
+    async def download(_client, _url, dest):
+        dest.write_bytes(b"fixture")
+    monkeypatch.setattr(base, "download_media", download)
+    tasks = []
+    create_task = asyncio.create_task
+    def capture(coro):
+        task = create_task(coro)
+        tasks.append(task)
+        return task
+    monkeypatch.setattr(video.asyncio, "create_task", capture)
+    args = {name: parameter.default.default for name, parameter in inspect.signature(video.generate_video).parameters.items()}
+    args.update(prompt="fixture scene", provider=provider, count=2, duration=6,
+                resolution="720p", project="wan-input-boundary")
+    if has_image:
+        args["media"] = UploadFile(io.BytesIO(b"fixture"), filename="fixture.png", size=7,
+                                   headers=Headers({"content-type": "image/png"}))
+    refused = None
+    try:
+        result = await video.generate_video(**args)
+    except HTTPException as error:
+        refused = error
+    await asyncio.gather(*tasks)
+    if not has_image:
+        # On the old head the real builders reject before POST, but both queued
+        # indices have already spent the durable budget. Observe that execution
+        # before asserting the absence of a debit so this is a real accounting RED.
+        assert posts == []
+        assert generation_budget.spent_usd_at(generation_budget.jobs_store_path()) == 0
+        assert refused is not None and refused.status_code == 400
+        assert "requires an image" in refused.detail
+        assert tasks == []
+        return
+    assert refused is None
+    assert len(posts) == 2 and debit_count() == 2
+    assert all(post["input"]["image"] == "data:image/png;base64,Zml4dHVyZQ==" for post in posts)
+    assert all(entry["status"] == "done" for entry in video.jobs[result["job_id"]]["videos"])
+    assert generation_budget.spent_usd_at(generation_budget.jobs_store_path()) == pytest.approx(cost * 2)

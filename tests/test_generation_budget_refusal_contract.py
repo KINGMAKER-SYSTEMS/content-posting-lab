@@ -159,3 +159,49 @@ async def test_provider_retry_budget_refusal_keeps_named_job_contract(lab, monke
     assert status["errorClass"] == "generation_budget"
     assert status["errorDetail"] == stored["errorDetail"]
     assert "resetsAt" not in status
+
+
+@pytest.mark.parametrize("lane", ["operator", "control_plane"])
+def test_admission_clock_drives_decision_reset_and_retry_after(lab, sync_client, monkeypatch, lane):
+    from datetime import datetime, timezone
+    from routers import video
+
+    yesterday = datetime(2026, 10, 2, 23, 59, 50, tzinfo=timezone.utc)
+    today = datetime(2026, 10, 3, 0, 0, 10, tzinfo=timezone.utc)
+    monkeypatch.setenv(generation_budget.USD_BUDGET_ENV, "1")
+    monkeypatch.setitem(video.API_KEYS, "xai", "fixture-token")
+    path = cp._jobs_path() if lane == "control_plane" else generation_budget.jobs_store_path()
+    assert generation_budget.debit_generation_spend_at(path, 1, "already-paid-yesterday", now=yesterday)
+    before = dict(cp._load_jobs()["jobs"])
+    clock = {"now": yesterday}
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return clock["now"]
+    monkeypatch.setattr(cp, "datetime", Clock)
+    monkeypatch.setattr(video, "datetime", Clock)
+    monkeypatch.setattr(generation_budget, "datetime", Clock)
+    can_reserve = generation_budget.can_reserve_at
+    decision_samples = []
+    def crossing_midnight(path, amount, now=None):
+        decision_samples.append(now)
+        affordable = can_reserve(path, amount, now=now)
+        clock["now"] = today
+        return affordable
+    monkeypatch.setattr(generation_budget, "can_reserve_at", crossing_midnight)
+    if lane == "control_plane":
+        client, _, started = lab
+        response = client.post("/api/control-plane/v1/jobs", json=job_body(), headers=HEADERS)
+        assert started == [] and cp._load_jobs()["jobs"] == before
+    else:
+        response = sync_client.post("/api/video/generate", data={
+            "prompt": "fixture scene", "provider": "grok", "count": "1",
+            "duration": "5", "resolution": "720p", "project": "admission-clock",
+        })
+    assert response.status_code == 429
+    assert response.json()["detail"]["error"] == "generation_daily_budget_reached"
+    assert response.json()["detail"]["resets_at"] == "2026-10-03T00:00:00+00:00"
+    assert response.headers["Retry-After"] == "10"
+    assert decision_samples == [yesterday]
+    assert generation_budget.spent_usd_at(path, now=yesterday) == 1
+    assert generation_budget.spent_usd_at(path, now=today) == 0
