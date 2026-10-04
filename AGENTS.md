@@ -254,9 +254,10 @@
   change generation quantities, reservation semantics or source recut policy.
 - GitHub page capture accepts only HTTPS `github.com` repository URLs, blocks
   browser requests outside the fixed GitHub asset host allowlist, and writes
-  new `.mp4` files only under the repository. Capture duration is bounded to
-  10-45 whole seconds; workflow-provided names and output paths are never
-  interpolated into shell instructions.
+  new `.mp4` files only under the repository. It creates missing output
+  directories one component at a time and rejects symlink components and
+  traversal. Capture duration is bounded to 10-45 whole seconds; workflow-
+  provided names and output paths are never interpolated into shell instructions.
 
 - Caption rendering accepts the shared `CaptionStyle` wire fields only. A saved
   caption layout may supply exact line breaks and final-frame outline width;
@@ -663,6 +664,7 @@
   typed overlay placement gates. Run the control-plane recipe, generation, and
   source-execution test files together when changing a Dossier recipe schema.
 - Run `node --test tools/gh-capture/target_policy.test.cjs` for GitHub URL,
-  browser-request, duration and output-path confinement rules.
+  browser-request, duration, missing-parent creation and output-path confinement
+  rules.
 
 ## Child devlog Index

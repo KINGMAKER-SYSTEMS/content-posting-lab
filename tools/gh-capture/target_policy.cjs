@@ -65,16 +65,39 @@ function resolveOutputPath(value, repoRoot) {
   if (typeof value !== 'string' || !value || value.length > 4096) {
     throw new Error('output path must be a non-empty path');
   }
-  const root = fs.realpathSync(repoRoot);
-  const candidate = path.resolve(value);
-  const parent = fs.realpathSync(path.dirname(candidate));
-  const relative = path.relative(root, parent);
-  if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+  const repoPath = path.resolve(repoRoot);
+  const root = fs.realpathSync(repoPath);
+  const requested = path.resolve(value);
+  const requestedParent = path.dirname(requested);
+  const isWithin = (base, target) => {
+    const relative = path.relative(base, target);
+    return relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative)
+      ? relative
+      : null;
+  };
+  const relative = isWithin(repoPath, requestedParent) ?? isWithin(root, requestedParent);
+  if (relative === null) {
     throw new Error('output directory must be inside the repository');
   }
+  const candidate = path.join(root, relative, path.basename(requested));
   if (path.extname(candidate).toLowerCase() !== '.mp4') {
     throw new Error('output file must use the .mp4 extension');
   }
+
+  let parent = root;
+  for (const component of relative.split(path.sep).filter(Boolean)) {
+    parent = path.join(parent, component);
+    try {
+      fs.mkdirSync(parent, { mode: 0o755 });
+    } catch (error) {
+      if (error.code !== 'EEXIST') throw error;
+    }
+    const stat = fs.lstatSync(parent);
+    if (!stat.isDirectory() || stat.isSymbolicLink() || fs.realpathSync(parent) !== parent) {
+      throw new Error('output directory must use real directories inside the repository');
+    }
+  }
+
   try {
     fs.lstatSync(candidate);
     throw new Error('output file already exists');

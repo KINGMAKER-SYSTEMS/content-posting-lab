@@ -1303,3 +1303,20 @@ tools/gh-capture/target_policy.test.cjs`, syntax checks for both CommonJS files
 and the workflow, and `git diff --check` passed. No deployment performed.
 
 _________________________________________________________________________________
+
+_________________________________________________________________________________
+time: [02:30pm] [10-04-26]
+agent: [Codex desktop] [gpt-6.1]
+worktree: [codex/secure-gh-capture-navigation] [/tmp/content-posting-lab-security]
+type: [security]: Create first-run capture output safely
+area: [backend] [testing] [review]
+
+Independent review found that a clean checkout lacks the fixed footage parent,
+which made capture fail before navigation. Output validation now creates missing
+parent components one at a time under the canonical repository root, rejects
+symlink components and traversal before creation, and still refuses overwrites.
+A regression test covers the missing nested parent. The checkout reproduced the
+absent fixed directory; all seven focused Node tests passed. No deployment
+performed.
+
+_________________________________________________________________________________

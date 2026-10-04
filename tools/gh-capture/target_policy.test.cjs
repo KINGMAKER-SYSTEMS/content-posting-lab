@@ -61,6 +61,16 @@ test('output is constrained to the repository and cannot overwrite existing file
   assert.throws(() => resolveOutputPath(path.join(outputDir, 'existing.mp4'), root), /already exists/);
 });
 
+test('output path safely creates a missing nested parent on first capture', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gh-capture-policy-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const output = path.join(root, 'yt-pipeline', 'src', 'animations', 'ep3', 'footage', 'capture.mp4');
+  const outputParent = path.dirname(output);
+  assert.equal(fs.existsSync(outputParent), false);
+  assert.equal(resolveOutputPath(output, root), path.join(fs.realpathSync(root), 'yt-pipeline', 'src', 'animations', 'ep3', 'footage', 'capture.mp4'));
+  assert.equal(fs.lstatSync(outputParent).isDirectory(), true);
+});
+
 test('output directory symlink cannot escape the repository', (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gh-capture-policy-'));
   const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'gh-capture-outside-'));
