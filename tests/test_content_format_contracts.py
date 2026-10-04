@@ -170,7 +170,8 @@ def test_profile_authority_ignores_admission_cap_but_rejects_material_drift():
     ) != original_hash
     legacy_pins = {"formatContractVersion": selected["formatContractVersion"]}
     assert not job_profile_authority_matches({}, original_hash)
-    assert job_profile_authority_matches({}, original_hash, legacy_pins)
+    assert not job_profile_authority_matches({}, original_hash, legacy_pins)
+    assert job_profile_authority_matches(legacy_pins, original_hash, legacy_pins)
     assert job_profile_authority_matches(
         {"engineProfileHash": original_hash}, original_hash,
     )

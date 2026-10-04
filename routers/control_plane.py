@@ -2040,6 +2040,42 @@ def _truck_master_candidates(
 
     candidates: list[dict[str, Any]] = []
     seen = set(reserved)
+    profile_pins = {
+        "engine": content_engine,
+        "formatContractVersion": generation_recipe.format_contract_version,
+        "executorVersion": generation_recipe.executor_version,
+        "promptCatalogHash": generation_recipe.prompt_catalog_hash,
+        "family": generation_recipe.family_name,
+        "providerModel": generation_recipe.provider_model,
+        "materialSource": generation_recipe.material_source,
+        "assetType": generation_recipe.asset_type,
+    }
+    legacy_archive_pins = {
+        key: profile_pins[key]
+        for key in (
+            "engine", "formatContractVersion", "executorVersion",
+            "promptCatalogHash", "providerModel",
+        )
+    }
+
+    def profile_matches(job: dict[str, Any]) -> bool:
+        if job_profile_authority_matches(
+            job, generation_recipe.engine_profile_hash, profile_pins,
+        ):
+            return True
+        # Archive indexes written before profile-scoped pins omit family,
+        # materialSource, assetType, and engineProfileHash. They remain safe
+        # only while their global registry digest and every retained profile
+        # pin still match exactly; full legacy jobs use the pins above and can
+        # survive unrelated changes to other profiles.
+        return (
+            job.get("engineProfileHash") is None
+            and job.get("engineRegistryHash") == generation_recipe.engine_registry_hash
+            and job_profile_authority_matches(
+                job, generation_recipe.engine_profile_hash, legacy_archive_pins,
+            )
+        )
+
     # Archived completed generated truck renders remain live re-crop candidates
     # (full manifests preserved in the index); include them in the ordered scan.
     ordered_jobs = sorted(
@@ -2054,23 +2090,14 @@ def _truck_master_candidates(
             or job.get("status") != "completed"
             or job.get("engine") != content_engine
             or job.get("recipeId") != recipe_id
-            or not job_profile_authority_matches(job, generation_recipe.engine_profile_hash, {
-                "engine": generation_recipe.engine,
-                "formatContractVersion": generation_recipe.format_contract_version,
-                "executorVersion": generation_recipe.executor_version,
-                "promptCatalogHash": generation_recipe.prompt_catalog_hash,
-                "family": generation_recipe.family_name,
-                "providerModel": generation_recipe.provider_model,
-                "materialSource": generation_recipe.material_source,
-                "assetType": generation_recipe.asset_type,
-            })
+            or not profile_matches(job)
             or job.get("formatContractVersion") != generation_recipe.format_contract_version
             or job.get("executorVersion") != generation_recipe.executor_version
             or job.get("promptCatalogHash") != generation_recipe.prompt_catalog_hash
-            or job.get("family") != generation_recipe.family_name
+            or job.get("family") not in (None, generation_recipe.family_name)
             or job.get("providerModel") != generation_recipe.provider_model
-            or job.get("materialSource") != generation_recipe.material_source
-            or job.get("assetType") != generation_recipe.asset_type
+            or job.get("materialSource") not in (None, generation_recipe.material_source)
+            or job.get("assetType") not in (None, generation_recipe.asset_type)
             or not isinstance(job.get("artifactRoot"), str)
         ):
             continue
@@ -2674,7 +2701,6 @@ async def _run_owned_dossier_generation(job_id: str) -> None:
     if (
         recipe is None
         or not job_profile_authority_matches(job, recipe.engine_profile_hash, {
-            "engine": recipe.engine,
             "formatContractVersion": recipe.format_contract_version,
             "executorVersion": recipe.executor_version,
             "promptCatalogHash": recipe.prompt_catalog_hash,
@@ -2683,7 +2709,6 @@ async def _run_owned_dossier_generation(job_id: str) -> None:
             "materialSource": recipe.material_source,
             "assetType": recipe.asset_type,
         })
-        or job.get("engine") != recipe.engine
         or job.get("formatContractVersion") != recipe.format_contract_version
         or job.get("promptCatalogHash") != recipe.prompt_catalog_hash
         or job.get("executorVersion") != recipe.executor_version

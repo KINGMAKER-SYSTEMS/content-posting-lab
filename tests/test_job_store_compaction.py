@@ -247,6 +247,45 @@ def test_truck_master_candidates_unchanged_after_compaction(tmp_path, monkeypatc
     # but it must be in the reserved set -> no candidate with that sha)
 
 
+def test_legacy_truck_archive_index_remains_eligible_only_at_matching_registry(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.setattr(cp, "_is_exact_16x9_video", lambda p: True)
+    root = tmp_path / "gen"
+    root.mkdir()
+    (root / f"clip-{SHA[:8]}.mp4").write_bytes(b"1234")
+    job = _truck_job("truck-legacy", SHA, "acct:p", root, created=_old())
+    job["engineRegistryHash"] = "e" * 64
+    # This is the pre-profile-pin archive summary emitted by origin/main.
+    archived = {
+        key: job.get(key)
+        for key in (
+            "jobId", "pageId", "sourceKind", "status", "engine", "recipeId",
+            "engineRegistryHash", "formatContractVersion", "executorVersion",
+            "promptCatalogHash", "providerModel", "artifactRoot", "createdAt",
+            "recipeSpecHash", "clips",
+        )
+    }
+    store = _empty()
+    store[c.ARCHIVE_INDEX_KEY] = {"truckCandidateJobs": [archived]}
+    recipe = SimpleNamespace(
+        engine="hailuo", recipe_id="truck-scenic:master",
+        engine_registry_hash="e" * 64, format_contract_version="sha256:" + "a" * 64,
+        engine_profile_hash="sha256:" + "b" * 64,
+        executor_version="v1", prompt_catalog_hash="p" * 64,
+        family_name="truck", material_source="generated_video", asset_type="video/mp4",
+        provider_model="minimax/hailuo-2.3",
+        recipe_spec={"renderTreatment": {"filters": {"brightness": 1.0}, "clipSpeed": 1.0,
+                                           "clipCrop": {"zoom": 1.0, "focusX": 0.5, "focusY": 0.5}}},
+        clips_per_generation=5,
+    )
+    kwargs = dict(content_engine="hailuo", recipe_id="truck-scenic:master",
+                  generation_recipe=recipe)
+    assert [x["sha256"] for x in cp._truck_master_candidates(store, "acct:p", 10, **kwargs)] == [SHA]
+    recipe.engine_registry_hash = "f" * 64
+    assert cp._truck_master_candidates(store, "acct:p", 10, **kwargs) == []
+
+
 # ── K1 reader: same-asset dedupe / no-repeat ──────────────────────────────
 
 def test_generated_dedupe_unchanged_after_compaction(job_path):

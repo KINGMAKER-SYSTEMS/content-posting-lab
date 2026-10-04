@@ -800,6 +800,8 @@ def plan_source_cuts(
         raise ValueError("history must map time frames to CutUse")
     used = _used_time_frames(recipe, served_slots)
     durations = source_cut_durations(recipe)
+    if not durations:
+        return []
     starting_length = _starting_length(recipe, durations)
     lanes = [
         _Lane(recipe, master, used[master.sha256], history or {}, exclusions, durations)
