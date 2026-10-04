@@ -113,7 +113,7 @@ async def test_mid_job_budget_refusal_exposes_resets_at_and_keeps_partial_output
     assert status["errorClass"] == "generation_budget"
     assert status["errorDetail"] == stored["errorDetail"]
     assert len(status["errorDetail"]) <= 64
-    assert set(status) <= {"jobId", "status", "progress", "error", "errorClass", "errorDetail"}
+    assert set(status) <= {"schema", "jobId", "status", "progress", "error", "errorClass", "errorDetail"}
 
 
 @pytest.mark.asyncio

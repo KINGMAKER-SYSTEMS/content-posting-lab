@@ -193,3 +193,14 @@ def test_known_underpriced_payload_is_refused_before_queue(monkeypatch, provider
     assert response.status_code == 429, response.text
     assert response.json()["detail"]["error"] == "generation_daily_budget_reached"
     assert not queued and not video.jobs
+
+
+@pytest.mark.parametrize("provider,expected", [("wan-i2v", 1.00), ("wan-i2v-fast", 0.11)])
+def test_wan_price_does_not_change_missing_image_failure_semantics(provider, expected):
+    from providers import PROVIDERS, replicate
+
+    parameters = {"resolution": "720p", "image_data_uri": None}
+    assert generation_budget.per_gen_cost_usd(provider, 6, parameters=parameters) == pytest.approx(expected)
+    assert parameters["image_data_uri"] is None  # pure pricing never fills execution inputs
+    with pytest.raises(ValueError, match="requires an image"):
+        replicate._INPUT_BUILDERS[PROVIDERS[provider]["models"][0]]("fixture scene", parameters)

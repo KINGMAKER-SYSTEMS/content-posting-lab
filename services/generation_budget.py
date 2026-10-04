@@ -46,34 +46,13 @@ class BudgetLedgerCorrupt(Exception):
 
 BUDGET_KEY = "generationBudget"
 USD_BUDGET_ENV = "LAB_GENERATION_DAILY_BUDGET_USD"
-# Configured daily reservation ceiling; its stated planning basis is NOT a measurement
-# (Eric's "never quiet" rule forbids a 0.0 default: unset must keep pages
-# generating). Derivation (prose in BUDGET_DEFAULT_NOTE):
-#   base demand  = 402 immutable recipe publications (events.md:694)
-#                  × 1 standard 768p/6s Hailuo/day × $0.28/gen
-#                  (published standard 768p/6s price)        $112.56
-#   retry margin = a STATED 50% of base, for the moderation/PA overhead the
-#                  meter now counts (E005 variants up to 3 attempts = 1 + 2
-#                  rewrites; PA interruption +1 resubmission). Refusals and
-#                  interruptions are exceptional, so 50% — not the 6× absolute
-#                  worst case, which would be $675 and erase the ceiling.  $ 56.28
-#   ABN/recreate = a NAMED flat margin, not formula-derived: the residual after
-#                  the base and retry terms (175.00 - 112.56 - 56.28 = 6.16).
-#                  Its thumbnail + cached b-roll components (Flux $0.003 + Wan
-#                  $0.50 x _BG_LIB_TARGET 8 slots + LaMa $0.405) sum to $4.408
-#                  in total; the lane's normal-day cadence is NOT measured
-#                  in-repo.                                                $  6.16
-#                                                                           --------
-#                                                                           $175.00
+# Configured reservation ceiling; unset/blank keeps generation available.
+# Explicit zero is the emergency stop; malformed values fail closed.
 DEFAULT_DAILY_BUDGET_USD = 175.0
 BUDGET_DEFAULT_NOTE = (
     "Default $175/day is a configured reservation ceiling, not measured spend. "
-    "Its planning basis is 402 recipes × one standard 768p/6s $0.28 Hailuo "
-    "prediction = $112.56, "
-    "plus a stated 50% moderation/PA retry margin ($56.28) and a named $6.16 "
-    "ABN/recreate margin. Unset uses this default; set "
-    "LAB_GENERATION_DAILY_BUDGET_USD=0 for the named emergency stop (all paid "
-    "generation refused)."
+    "Unset or blank uses this default; LAB_GENERATION_DAILY_BUDGET_USD=0 "
+    "stops all paid generation. Invalid, negative or nonfinite values fail closed."
 )
 
 # Pinned per-model costs for provider submissions that bypass the PROVIDERS
@@ -109,7 +88,7 @@ def per_gen_cost_usd_by_model(model_id: str) -> float:
 def daily_budget_usd() -> float:
     """The per-provider-family daily total, in USD. Fail closed.
 
-    - unset / blank    -> ``DEFAULT_DAILY_BUDGET_USD`` (the derived ceiling)
+    - unset / blank    -> ``DEFAULT_DAILY_BUDGET_USD`` (the configured ceiling)
     - ``> 0``          -> that ceiling
     - ``0``            -> named emergency stop: refuse all paid generation
     - negative / junk / NaN / inf -> refuse all paid generation (fail closed)
@@ -270,7 +249,8 @@ def per_gen_cost_usd(
     # Image content does not select a WAN price. Admission runs before the
     # immutable recipe anchor is loaded; this placeholder is never submitted.
     if model in {"wan-video/wan-2.2-i2v-a14b", "wan-video/wan-2.2-i2v-fast"}:
-        params.setdefault("image_data_uri", "pricing-only")
+        if not params.get("image_data_uri"):
+            params["image_data_uri"] = "pricing-only"
     payload = builder("", params)
     if model == "prunaai/p-video":
         rate = (info.get("cost_per_second_usd_by_resolution") or {}).get(payload["resolution"])

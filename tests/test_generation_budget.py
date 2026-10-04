@@ -38,7 +38,7 @@ async def _fake_generate_one(
 
 def test_daily_budget_parses_spend_safe(monkeypatch):
     monkeypatch.delenv(generation_budget.USD_BUDGET_ENV, raising=False)
-    # Unset == the derived finite ceiling (never 0, never a silent unproven $25).
+    # Unset == the configured finite ceiling (never 0, never a silent unproven $25).
     assert generation_budget.daily_budget_usd() == generation_budget.DEFAULT_DAILY_BUDGET_USD
     for raw, expected in [("0", 0.0), ("12.5", 12.5), (" 3 ", 3.0), ("-1", 0.0), ("many", 0.0)]:
         monkeypatch.setenv(generation_budget.USD_BUDGET_ENV, raw)

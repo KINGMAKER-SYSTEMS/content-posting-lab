@@ -93,8 +93,8 @@
   The private `_generation_budget/<jobs-file>.sqlite3` beside the durable job
   JSON uses SQLite WAL/FULL transactions: an indexed exact-ID lookup and one
   UTC-day total update commit with each new immutable debit. The implicit UTC
-  submission day is sampled after acquiring the writer lock, even at midnight. Prior IDs and
-  uncertain paid intents are never pruned, refunded, repriced, or resubmitted.
+  submission day is sampled after acquiring the writer lock, even at midnight.
+  Prior IDs and uncertain paid intents are never pruned, refunded, repriced, or resubmitted.
   Migration retains the original JSON bytes in an immutable audit row, imports
   every legacy ID without inventing its submission day, and preserves the
   declared day's total. It leaves the original jobs JSON unchanged. Missing,
