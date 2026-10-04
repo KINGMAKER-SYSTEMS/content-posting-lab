@@ -124,6 +124,27 @@ def test_persisted_corrupt_store_refuses_spend_and_preserves_bytes(
     assert path.read_bytes() == original
 
 
+@pytest.mark.parametrize("operation", ["debit", "reserve", "admission"])
+def test_scalar_persisted_generation_budget_refuses_spend_and_preserves_bytes(
+    operation, monkeypatch, tmp_path,
+):
+    """A non-object budget must not roll over to a fresh zero-spend ledger."""
+    monkeypatch.setenv(generation_budget.USD_BUDGET_ENV, "25.0")
+    path = tmp_path / "control_plane_jobs.json"
+    original = b'{"jobs":{},"generationBudget":"corrupt"}'
+    path.write_bytes(original)
+
+    with pytest.raises(generation_budget.BudgetLedgerCorrupt):
+        if operation == "debit":
+            generation_budget.debit_generation_spend_at(path, 0.28, "new-job")
+        elif operation == "reserve":
+            generation_budget.reserve_generation_spend_at(path, 0.28, "new-job")
+        else:
+            generation_budget.can_reserve_at(path, 0.28)
+
+    assert path.read_bytes() == original
+
+
 @pytest.mark.parametrize("operation", ["debit", "reserve"])
 def test_absent_persisted_store_is_initialized_for_spend(operation, monkeypatch, tmp_path):
     """Only a genuinely absent file may start with an empty daily ledger."""

@@ -430,6 +430,10 @@ def _load_jobs_store_or_initialize(path: Path | str) -> dict[str, Any]:
         raise BudgetLedgerCorrupt(
             f"generation job store {store_path} has an invalid top-level shape"
         )
+    if BUDGET_KEY in store and not isinstance(store[BUDGET_KEY], dict):
+        raise BudgetLedgerCorrupt(
+            f"generation job store {store_path} has an invalid {BUDGET_KEY} shape"
+        )
     return store
 
 
