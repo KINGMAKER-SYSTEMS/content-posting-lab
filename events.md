@@ -1285,3 +1285,21 @@ process running as the same account. Recursive cleanup remains limited to the
 renderer-created unique temporary directory.
 
 _________________________________________________________________________________
+
+_________________________________________________________________________________
+time: [02:22pm] [10-04-26]
+agent: [Codex desktop] [gpt-6.1]
+worktree: [codex/secure-gh-capture-navigation] [/tmp/content-posting-lab-security]
+type: [security]: Restrict GitHub capture navigation and shell inputs
+area: [backend] [testing] [review]
+
+The GitHub capture workflow now accepts only bounded HTTPS github.com repository
+URLs, ignores caller-selected output directories and names, quotes fixed shell
+arguments, and blocks Playwright requests outside the GitHub and fixed asset
+host allowlist. The capture CLI bounds duration and confines new MP4 output to
+the repository without overwriting an existing file. Added six Node regression
+tests for URL, request, duration and filesystem boundaries. `node --test
+tools/gh-capture/target_policy.test.cjs`, syntax checks for both CommonJS files
+and the workflow, and `git diff --check` passed. No deployment performed.
+
+_________________________________________________________________________________
