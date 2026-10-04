@@ -7,6 +7,17 @@
 
 ## Ownership
 
+- `tools/seekable-html-video/render_seekable.cjs` owns seekable HTML-to-MP4 frame capture.
+  An explicit `--frames-dir` may be an existing empty, real directory or a
+  missing path, which is created; populated or symlink paths are refused.
+  Caller-selected contents are never recursively removed. Writes check the
+  selected directory identity and create frame paths exclusively. Cleanup
+  checks directory identity before its pass and unlinks only tracked frame paths
+  whose file identity still matches. These checks guard ordinary replacement
+  and preexisting-file accidents, not hostile concurrent same-account actors.
+  Recursive cleanup is limited to the renderer's unique managed temporary
+  directory.
+
 - `services/visual_admission.py` owns exact-byte pre-caption OCR/vision-provider decisions;
   the authenticated job visual-admission endpoint queues a bounded background
   whole-job sweep and persists algorithm/byte-bound decisions for endpoint
@@ -584,6 +595,8 @@
   module and return the same versioned schema and hashes.
 
 ## Verification
+
+- Run `node --test tools/seekable-html-video/frame_directory.test.cjs` for caller-directory preservation, exclusive writes, directory replacement, cleanup ownership, and managed temporary-directory cleanup.
 
 - Run `pytest -q tests/test_abn_factory_atomic_text.py tests/test_abn_factory.py -k 'atomic_write_text or kinetic'`
   for atomic scratch writes, inert script parameters and exact JSON round trips.

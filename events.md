@@ -1246,3 +1246,42 @@ submitted. This verifies the public response redaction, not paid-generation
 accounting behavior.
 
 _________________________________________________________________________________
+
+_________________________________________________________________________________
+
+time: [14:15 EDT] [04-10-26]
+agent: [Codex desktop] [gpt-6.1]
+worktree: [codex/fix-seekable-frames-dir-safety] [seekable-frames-dir-safety]
+type: [bug report]: Seekable renderer deleted caller-selected frame directories
+area: [backend] [testing]
+
+The seekable HTML renderer previously recursively removed --frames-dir before
+rendering and could erase the working directory or unrelated user files. It
+now refuses populated or symlink frame paths, checks directory identity around
+writes and cleanup, writes frames exclusively, and
+cleans only the files created by this render in caller-owned directories.
+Recursive cleanup is restricted to the renderer's unique managed temporary
+directory. Regression tests cover the current directory and arbitrary populated
+paths, directory replacement, precise caller-directory cleanup, and managed temporary-directory
+cleanup. Failed renders clean only frame files created by that attempt. No
+deployment performed.
+
+_________________________________________________________________________________
+
+_________________________________________________________________________________
+
+time: [14:20 EDT] [04-10-26]
+agent: [Codex desktop] [gpt-6.1]
+worktree: [codex/fix-seekable-frames-dir-safety] [seekable-frames-dir-safety]
+type: [documentation correction]: State seekable frame-path guarantees precisely
+area: [writing] [analysis]
+
+Clarified that explicit --frames-dir paths may be existing empty directories or
+missing paths that the renderer creates. Directory identity is checked before
+writes and before cleanup; each frame path is created exclusively, and cleanup
+unlinks only tracked files whose identity still matches. These checks guard
+ordinary replacement and preexisting-file accidents, not a hostile concurrent
+process running as the same account. Recursive cleanup remains limited to the
+renderer-created unique temporary directory.
+
+_________________________________________________________________________________
