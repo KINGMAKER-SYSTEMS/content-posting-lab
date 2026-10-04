@@ -331,12 +331,20 @@ async def health_check():
     ffmpeg_ok = _check_ffmpeg()
     ytdlp_ok = _check_ytdlp()
     providers = _provider_status()
+    budget_status = generation_budget_status()
     return {
         "status": "ok" if ffmpeg_ok and ytdlp_ok else "degraded",
         "ffmpeg": ffmpeg_ok,
         "ytdlp": ytdlp_ok,
         "providers": providers,
-        "generation_budget": generation_budget_status(),
+        # This route is deliberately unauthenticated. Keep only the integrity
+        # signal public; exact spend and configured limits are omitted from this
+        # anonymous response.
+        "generation_budget": {
+            "corrupt": bool(budget_status.get("corrupt", True))
+            if isinstance(budget_status, dict)
+            else True
+        },
         "notion_pages": bool(
             os.getenv("NOTION_API_KEY") and os.getenv("NOTION_PAGES_DB")
         ),
