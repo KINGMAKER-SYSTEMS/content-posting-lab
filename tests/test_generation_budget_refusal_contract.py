@@ -114,3 +114,48 @@ async def test_mid_job_budget_refusal_exposes_resets_at_and_keeps_partial_output
     assert status["errorDetail"] == stored["errorDetail"]
     assert len(status["errorDetail"]) <= 64
     assert set(status) <= {"jobId", "status", "progress", "error", "errorClass", "errorDetail"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("retry_kind", ["pa", "http500"])
+async def test_provider_retry_budget_refusal_keeps_named_job_contract(lab, monkeypatch, retry_kind):
+    import httpx
+    import re
+    import sqlite3
+    from providers import base, replicate
+
+    client, _, _ = lab
+    monkeypatch.setenv(generation_budget.USD_BUDGET_ENV, str(FLUX_COST))
+    job_id, _, _ = queue_silhouettes(lab, monkeypatch, 1)
+    posts = []
+    def handler(request):
+        if request.method == "POST":
+            posts.append(request.url.path)
+            assert len(posts) == 1, "the exhausted retry must never send another paid POST"
+            if retry_kind == "http500":
+                return httpx.Response(500, text="temporary provider error")
+            return httpx.Response(201, json={"id": "already-paid-id"})
+        return httpx.Response(200, json={"status": "failed", "error": "Prediction interrupted (code: PA)"})
+    original_client = httpx.AsyncClient
+    monkeypatch.setattr(base.httpx, "AsyncClient", lambda *a, **kw: original_client(transport=httpx.MockTransport(handler)))
+    async def no_wait(_):
+        pass
+    monkeypatch.setattr(replicate, "_sleep", no_wait)
+    monkeypatch.setattr(cp, "generate_one", base.generate_one)
+    await cp._run_dossier_generation(job_id)
+    stored = cp._load_jobs()["jobs"][job_id]
+    assert stored["status"] == "failed"
+    assert stored["error"] == "generation_daily_budget_reached"
+    assert stored["errorClass"] == "generation_budget"
+    assert re.fullmatch(r"daily_budget reset=\d{4}-\d{2}-\d{2}T00:00:00Z", stored["errorDetail"])
+    assert len(posts) == 1
+    assert stored["providerCallsCompleted"] == 0 and stored["clips"] == []
+    assert generation_budget.spent_usd_at(generation_budget.jobs_store_path()) == pytest.approx(FLUX_COST)
+    with sqlite3.connect(generation_budget.ledger_path(generation_budget.jobs_store_path())) as db:
+        assert db.execute("SELECT COUNT(*) FROM debits").fetchone()[0] == 1
+    if retry_kind == "pa":
+        assert stored["providerFailure"]["providerRequestId"] == "already-paid-id"
+    status = status_of(client, job_id)
+    assert status["errorClass"] == "generation_budget"
+    assert status["errorDetail"] == stored["errorDetail"]
+    assert "resetsAt" not in status

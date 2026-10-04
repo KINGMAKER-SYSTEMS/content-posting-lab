@@ -129,6 +129,8 @@
   reserves after acquiring its execution permit on the current UTC day.
   Replicate's bounded HTTP-create retries reserve each additional POST with
   a distinct debit before requesting it, including 500/503 resubmissions.
+  Provider-layer HTTP/PA retry budget refusals use the same named terminal
+  budget/reset envelope as an outer planned-call refusal.
 - `services/caption_discipline.py` owns Content Lab's closed validation of the
   caption corpus/register selection already made by Dossier and Control Plane.
 - `services/control_plane_source_imports.py` owns bounded public-HTTPS download,

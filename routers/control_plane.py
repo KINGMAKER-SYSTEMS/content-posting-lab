@@ -2923,6 +2923,16 @@ async def _run_owned_dossier_generation(job_id: str) -> None:
                             moderationRetryCostUsd=moderation_retry.retry_cost_total(attempts))
                     break
                 provider_error = str(entry.get("error") or "")
+                if provider_error == "generation_daily_budget_reached":
+                    # A provider-layer HTTP/PA retry hit the same daily meter.
+                    # Preserve the already-paid ID and use the named terminal
+                    # contract, just as an outer planned-call refusal does.
+                    row.update({"providerRequestId": request_id, "class": "generation_budget",
+                                "errorDetail": "daily_budget", "detail": provider_error,
+                                "costUsd": attempt_cost if request_id else None, "outcome": "refused"})
+                    terminal = provider_error
+                    budget_exhausted = True
+                    break
                 error_class = classify_provider_error(provider_error)
                 refused = moderation_retry.confirmed_refusal(error_class, request_id, provider_error)
                 # A refused Replicate prediction is billed like a successful
@@ -3000,7 +3010,7 @@ async def _run_owned_dossier_generation(job_id: str) -> None:
                         # credit failure), preserving any already-claimed output
                         # through the underfilled-batch handling. Raised under
                         # its own name so the executor records the Worker's
-                        # refusal contract (error/errorClass/errorDetail/resetsAt).
+                        # refusal contract (error/errorClass/errorDetail).
                         raise RuntimeError("generation_daily_budget_reached")
                     # A confirmed refused prediction whose bounded varied
                     # retries (or the page's daily retry budget) are spent
