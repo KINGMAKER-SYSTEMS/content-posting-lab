@@ -133,16 +133,39 @@ def test_generation_budget_gate_lives_only_in_the_paid_generation_lanes():
     assert sorted(importers) == ["control_plane.py", "video.py"], f"unexpected budget importers: {importers}"
 
 
-def test_health_reports_the_generation_budget(sync_client, monkeypatch, tmp_path):
+@pytest.mark.parametrize("corrupt", [False, True])
+def test_health_exposes_only_generation_budget_integrity(
+    sync_client, monkeypatch, tmp_path, corrupt
+):
+    import app as app_module
+
+    now = datetime(2026, 10, 4, 12, tzinfo=timezone.utc)
+
+    class FixedDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return now
+
+    path = tmp_path / "jobs.json"
+    if corrupt:
+        path.write_text("{", encoding="utf-8")
     monkeypatch.setenv(generation_budget.USD_BUDGET_ENV, "7.0")
-    monkeypatch.setattr(cp, "_jobs_path", lambda: tmp_path / "jobs.json")
+    monkeypatch.setattr(generation_budget, "datetime", FixedDatetime)
+    monkeypatch.setattr(cp, "_jobs_path", lambda: path)
+    monkeypatch.setattr(app_module, "_APP_API_KEY", "test-health-api-key")
+
+    budget = cp.generation_budget_status()
+    assert budget["budgetUsd"] == 7.0
+    assert budget["spentUsd"] == (None if corrupt else 0.0)
+    assert budget["remainingUsd"] == (0.0 if corrupt else 7.0)
+    assert budget["day"] == "2026-10-04"
+    assert budget["resetsAt"] == "2026-10-05T00:00:00+00:00"
+    assert "LAB_GENERATION_DAILY_BUDGET_USD" in budget["note"]
+    assert budget["corrupt"] is corrupt
+
     response = sync_client.get("/api/health")
     assert response.status_code == 200
-    budget = response.json()["generation_budget"]
-    assert budget["budgetUsd"] == 7.0
-    assert budget["spentUsd"] == 0.0
-    assert "remainingUsd" in budget and "resetsAt" in budget and "day" in budget
-    assert "note" in budget and "LAB_GENERATION_DAILY_BUDGET_USD" in budget["note"]
+    assert response.json()["generation_budget"] == {"corrupt": corrupt}
 
 
 # ── operator UI generate path (F2) ───────────────────────────────────────
