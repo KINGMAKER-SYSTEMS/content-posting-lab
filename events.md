@@ -14,6 +14,17 @@ fonts, unknown fields, incomplete styles, or clipped output. Verification:
 40 passed. No deployment, video mutation, phone action, scheduling, or post.
 _________________________________________________________________________________
 
+time: [16:30 EDT] [04-10-26]
+agent: [Codex desktop] [gpt-6.1]
+worktree: [codex/miniapp-agent-authz-20261004-r2] [/tmp/content-posting-lab-pr217-envdoc]
+type: [docs]: Document Mini App agent key requirement
+area: [writing] [backend]
+
+Clarified that `MINIAPP_AGENT_KEY` is required to enable Mini App agent routes,
+which return 503 when blank or unset. Added no secret value. Documentation-only
+PR #217 update; no merge or deployment performed.
+_________________________________________________________________________________
+
 time: [17:00 EDT] [24-09-26]
 agent: [Codex desktop] [gpt-6-astra]
 worktree: [fix/source-master-loop-20260924] [/Users/ecfromthedc/dev/wt/source-master-loop]
