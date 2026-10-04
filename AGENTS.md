@@ -9,8 +9,9 @@
 
 - `services/visual_admission.py` owns exact-byte pre-caption OCR/vision-provider decisions;
   the authenticated job visual-admission endpoint queues a bounded background
-  whole-job sweep and persists algorithm/byte-bound decisions before
-  Control Plane can admit ready video into R2. Every decoded native-resolution
+  whole-job sweep and persists algorithm/byte-bound decisions for endpoint
+  consumers. Current Control Plane replenishment does not wait for a separate
+  vision-provider scan; inventory admission stays downstream. Every decoded native-resolution
   frame receives Tesseract OCR at the configured `CONTENT_LAB_OCR_LONG_EDGE`
   working edge (default `0`, native); the primary GLM-4.6v-flash provider receives up to
   16 native frames per batch, and a named OpenAI `gpt-4o-mini` or Ollama
@@ -33,8 +34,8 @@
   decision records the answering model, provider, fallback flag and reason. Both
   detectors and complete coverage are required for clean. Production runs on
   Railway at `https://risingtides-content-lab-production.up.railway.app`; the
-  fallback endpoint must be reachable from the Railway container or the gate
-  remains fail closed. Authenticated job sweeps enter one process-wide executor
+  scan decision remains unavailable when all applicable vision providers fail
+  or return incomplete evidence. Authenticated job sweeps enter one process-wide executor
   so concurrent Control Plane polls queue behind the single scanner instead of
   persisting `scanner_busy_retry`. Each executor turn scans at most one artifact
   and requeues remaining finalizable artifacts at the tail, preventing a large
@@ -69,8 +70,11 @@
   scenery batch must not dilute a transient text candidate. All remaining batches
   of at most 16 frames must be clean within the existing cumulative byte/time
   budgets, and their provider/frame evidence is retained. The algorithm id
-  versions these rules so cached decisions from the glyph-based detector are
-  rescanned against the same original bytes. Confidence is detector evidence,
+  versions these rules so cached decisions from earlier detector or text-policy
+  versions are rescanned against the same original bytes. All vision providers
+  refuse added overlays while allowing writing physically in the scene; ambiguous
+  origin remains unavailable. OCR candidates remain evidence, not an automatic refusal.
+  Confidence is detector evidence,
   not a calibrated probability or a guarantee of text absence.
   Each batch retains its answering provider, including the configured fallback.
 

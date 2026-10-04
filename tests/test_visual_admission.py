@@ -758,6 +758,105 @@ def test_final_decision_classification(decision, final):
     assert gate.is_final_decision(decision) is final
 
 
+@pytest.mark.parametrize('answering_provider', ['primary', 'fallback', 'replicate'])
+@pytest.mark.parametrize('verdict', ['clean', 'text', 'unavailable'])
+def test_scene_text_policy_reaches_every_actual_provider(monkeypatch, answering_provider, verdict):
+    import json
+    import httpx
+
+    monkeypatch.setenv('CONTENT_LAB_VISION_API_KEY', 'primary-fixture')
+    monkeypatch.setenv('CONTENT_LAB_VISION_FALLBACK_API_KEY', 'fallback-fixture')
+    monkeypatch.setenv('REPLICATE_API_TOKEN', 'replicate-fixture')
+    monkeypatch.setattr(gate, 'VISION_FALLBACK_MODEL', 'gpt-4o-mini')
+    seen = []
+    original_client = gate.httpx.Client
+    answer = json.dumps({'verdict': verdict, 'reason': 'Observed fixture scene'})
+
+    def handler(request):
+        seen.append(request)
+        payload = json.loads(request.content)
+        if str(request.url) == gate.VISION_URL:
+            if answering_provider != 'primary':
+                return httpx.Response(429)
+            prompt = payload['messages'][0]['content'][0]['text']
+        elif str(request.url) == gate.VISION_FALLBACK_URL:
+            if answering_provider == 'replicate':
+                return httpx.Response(503)
+            prompt = payload['messages'][0]['content'][0]['text']
+        else:
+            assert str(request.url) == gate.REPLICATE_VISION_URL
+            prompt = payload['input']['prompt']
+            assert request.headers['authorization'] == 'Bearer replicate-fixture'
+            assert len(payload['input']['images']) <= 10
+        policy = prompt.lower()
+        assert 'scene text must not be reported as text' in policy
+        assert all(word in policy for word in ['road sign', 'hub logo', 'caption', 'watermark'])
+        assert 'cannot distinguish' in policy and 'unavailable' in policy
+        if answering_provider == 'replicate':
+            return httpx.Response(200, json={'status': 'succeeded', 'output': [answer]})
+        return httpx.Response(200, json={'choices': [{'message': {'content': answer}}]})
+
+    monkeypatch.setattr(gate.httpx, 'Client',
+                        lambda **kw: original_client(transport=httpx.MockTransport(handler), **kw))
+    result = gate._vision(['ZmFrZQ=='] * 16, time.monotonic() + 5)
+    assert result['verdict'] == verdict
+    assert result['model']['fallback'] is (answering_provider != 'primary')
+    if answering_provider == 'replicate':
+        assert len(seen) == 4  # primary, configured fallback, then 10+6 frames
+        assert result['model']['provider'] == 'replicate'
+    else:
+        assert len(seen) == (1 if answering_provider == 'primary' else 2)
+        expected_key = 'primary-fixture' if answering_provider == 'primary' else 'fallback-fixture'
+        assert seen[-1].headers['authorization'] == 'Bearer ' + expected_key
+
+
+def test_prior_text_policy_cache_is_rescanned_without_losing_ocr_candidates(monkeypatch, tmp_path):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from routers import control_plane as cp
+
+    path = fake_media(monkeypatch, tmp_path)
+    monkeypatch.setattr(gate, '_ocr', lambda *args: 'ROAD 24')
+    job_id = 'cpl-0123456789abcdef'
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    old = gate.pending_decision(page_id='acct:test', job_id=job_id, index=0,
+                                sha256=digest, byte_count=path.stat().st_size)
+    old.update(verdict='text', reason='pre_existing_text_vision')
+    old['sampling']['algorithm'] = 'tesseract-psm12-words-vision-corroborated-v4'
+    job = {'pageId': 'acct:test', 'artifactRoot': str(tmp_path),
+           'clips': [{'path': path.name, 'sha256': digest, 'bytes': path.stat().st_size}],
+           'visualAdmission': {'0': old}}
+    monkeypatch.setattr(cp, '_jobs_path', lambda: tmp_path / 'jobs.json')
+    cp.atomic_save(cp._jobs_path(), {'jobs': {job_id: job}})
+    monkeypatch.setenv('CONTROL_PLANE_TOKEN', 'test-secret')
+    scans = []
+    original_scan = gate.scan_artifact
+
+    def scan(*args, **kwargs):
+        scans.append(kwargs)
+        return original_scan(*args, **kwargs)
+
+    monkeypatch.setattr(gate, 'scan_artifact', scan)
+    monkeypatch.setattr(cp, '_submit_visual_sweep',
+                        lambda queued, sweep: cp._finish_visual_sweep(queued, sweep))
+    app = FastAPI(); app.include_router(cp.router, prefix='/api/control-plane')
+    client = TestClient(app)
+    url = f'/api/control-plane/v1/jobs/{job_id}/visual-admission/0'
+    body = {'sha256': digest, 'bytes': path.stat().st_size}
+    headers = {'Authorization': 'Bearer test-secret', 'X-RT-Page-Id': 'acct:test'}
+    assert client.post(url, json=body, headers=headers).json()['reason'] == 'scan_pending'
+    result = client.post(url, json=body, headers=headers).json()
+    assert len(scans) == 1
+    assert result['verdict'] == 'clean'
+    assert result['ocr']['candidateFrames'] == [0, 1, 2]
+    assert result['sampling']['frameCount'] == result['sampling']['expectedFrameCount'] == 3
+    assert result['sampling']['algorithm'] == gate.ALGORITHM
+    assert result['sha256'] == digest
+    assert cp._load_jobs()['jobs'][job_id]['visualAdmission']['0'] == result
+    assert client.post(url, json=body, headers=headers).json() == result
+    assert len(scans) == 1
+
+
 def test_visual_sweep_failure_is_recorded_and_logged_not_silent(monkeypatch, tmp_path, caplog):
     import logging
     import threading
