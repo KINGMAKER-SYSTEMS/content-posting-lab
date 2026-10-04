@@ -1143,7 +1143,7 @@ def _empty_jobs() -> dict[str, Any]:
 
 
 def generation_budget_status() -> dict[str, Any]:
-    """Read-only current daily generation-budget totals for /api/health."""
+    """Read-only current daily generation-budget totals for internal use."""
     return generation_budget.summary_at(_jobs_path())
 
 
