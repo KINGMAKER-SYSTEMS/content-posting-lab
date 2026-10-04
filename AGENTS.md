@@ -187,6 +187,9 @@
 
 - The `/api/` key middleware (`app.py` `_AUTH_SKIP`) exempts only `/api/health`
   and `/api/miniapp/*`, which verifies Telegram `initData` itself.
+  Because `/api/health` is anonymous, expose only coarse integrity/availability
+  signals there; exact paid-generation budget, spend, and reset details belong
+  on authenticated Control Plane routes.
   `/api/telegram/*` needs the key like every other `/api/` route: the bot
   long-polls, so there is no webhook route to exempt. The UI sends the key
   through `frontend/src/lib/api.ts` (`fetchApi` / `withApiKey`).

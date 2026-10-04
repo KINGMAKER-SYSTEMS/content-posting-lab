@@ -1188,3 +1188,19 @@ fits. When every window is cut, capability reads 0 and job creation answers
 `source_windows_reserved_by_other_pages` name the other empty plans. A census
 test fails any code
 path that builds source cuts without the planner. No deployment was performed.
+time: [03:04 EDT] [10-04-26]
+agent: [Codex desktop] [gpt-6.1]
+worktree: [codex/public-health-budget-redaction] [/private/tmp/content-posting-lab-health-redaction-20261004]
+type: [bug report]: Public health endpoint exposed exact paid-generation accounting
+area: [backend] [security] [testing]
+
+After PR #210 deployed, an anonymous production GET to `/api/health` exposed
+the exact configured generation budget and reserved spend. The public response
+now preserves only the budget-integrity corruption boolean; exact monetary
+accounting remains on authenticated Control Plane routes. Added a smoke
+regression for both healthy and corrupt ledger states and recorded the
+anonymous-health boundary in this contract. Local pytest is unavailable and
+the app import is blocked by missing `boto3`; hosted checks are required before
+merge. No deployment performed.
+
+_________________________________________________________________________________
