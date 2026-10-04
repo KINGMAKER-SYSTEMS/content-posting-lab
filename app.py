@@ -339,7 +339,7 @@ async def health_check():
         "providers": providers,
         # This route is deliberately unauthenticated. Keep only the integrity
         # signal public; exact spend and configured limits belong to the
-        # authenticated Control Plane status route.
+        # this anonymous response.
         "generation_budget": {
             "corrupt": bool(budget_status.get("corrupt", True))
             if isinstance(budget_status, dict)
