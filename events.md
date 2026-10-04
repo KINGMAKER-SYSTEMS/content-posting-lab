@@ -1228,3 +1228,21 @@ accounting remains on authenticated Control Plane routes. Repository review
 found no such read endpoint; this PR only redacts the anonymous health route.
 
 _________________________________________________________________________________
+
+time: [03:18 EDT] [10-04-26]
+agent: [Codex desktop] [gpt-6.1]
+worktree: [main]
+type: [gh actions]: Pull Request #211 post-merge verification
+area: [backend] [deployment] [testing]
+
+PR #211 merged as ba958a67e5251a6b255406aa4c327ee74f3c1204 at 03:17 EDT.
+Railway production deployment 6838117246 for that exact merge SHA completed
+success at 03:17:51 EDT. Anonymous GET /api/health returned HTTP 200 with
+generation_budget {corrupt:false}; day, budgetUsd, spentUsd, remainingUsd,
+resetsAt and note were absent. The branch has no CI workflow or check runs;
+local compileall and diff-check passed before merge, but pytest could not run
+because dependencies and disk space were unavailable. No paid generation was
+submitted. This verifies the public response redaction, not paid-generation
+accounting behavior.
+
+_________________________________________________________________________________
