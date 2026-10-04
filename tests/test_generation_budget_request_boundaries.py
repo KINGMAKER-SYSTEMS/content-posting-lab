@@ -227,7 +227,15 @@ async def test_ui_wan_validates_actual_input_before_any_debit(monkeypatch, provi
     from fastapi import HTTPException, UploadFile
     from starlette.datastructures import Headers
 
-    monkeypatch.setenv(generation_budget.USD_BUDGET_ENV, str(cost * 2))
+    prior_spend = 0.25 if not has_image else 0
+    monkeypatch.setenv(generation_budget.USD_BUDGET_ENV, str(cost * 2 + prior_spend))
+    ledger = generation_budget.ledger_path(generation_budget.jobs_store_path())
+    if not has_image:
+        assert generation_budget.debit_generation_spend_at(
+            generation_budget.jobs_store_path(), prior_spend, "preserved-paid-id")
+        with sqlite3.connect(ledger) as db:
+            prior_debits = db.execute("SELECT id,day,amount_usd FROM debits ORDER BY id").fetchall()
+            prior_days = db.execute("SELECT day,spent_usd FROM days ORDER BY day").fetchall()
     monkeypatch.setitem(base.API_KEYS, "replicate", "fixture-token")
     posts = []
     def handler(request):
@@ -270,12 +278,10 @@ async def test_ui_wan_validates_actual_input_before_any_debit(monkeypatch, provi
         # indices have already spent the durable budget. Observe that execution
         # before asserting the absence of a debit so this is a real accounting RED.
         assert posts == []
-        assert generation_budget.spent_usd_at(generation_budget.jobs_store_path()) == 0
-        ledger = generation_budget.ledger_path(generation_budget.jobs_store_path())
-        if ledger.exists():
-            with sqlite3.connect(ledger) as db:
-                assert db.execute("SELECT COUNT(*) FROM debits").fetchone()[0] == 0
-                assert db.execute("SELECT COUNT(*) FROM daily_totals").fetchone()[0] == 0
+        assert generation_budget.spent_usd_at(generation_budget.jobs_store_path()) == prior_spend
+        with sqlite3.connect(ledger) as db:
+            assert db.execute("SELECT id,day,amount_usd FROM debits ORDER BY id").fetchall() == prior_debits
+            assert db.execute("SELECT day,spent_usd FROM days ORDER BY day").fetchall() == prior_days
         assert set(video.jobs) == before_jobs
         assert not video._jobs_path(args["project"]).exists()
         assert not video._prompts_path(args["project"]).exists()
