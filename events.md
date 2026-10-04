@@ -1379,3 +1379,43 @@ tests/test_caption_render_contract.py tests/test_post_render.py
 tests/test_burn_quality_gate.py`. The checkout's regular conftest cannot import
 because boto3 is unavailable in its interpreter; tests were run with
 `--noconftest` and the router-only client plugin. No merge or deployment.
+
+time: [05:53pm] [10-04-26]
+agent: [Codex desktop] [gpt-6.1]
+worktree: [l13-frame-fit] [/private/tmp/cpl-pr216-contract]
+type: [refactor]: Build TgCrypto on ARM64 without shipping gcc
+area: [backend] [testing]
+
+The ARM64 production-image build could not compile TgCrypto because gcc was
+missing. The Docker dependency-install layer now installs gcc, installs the
+existing production requirements, and purges gcc and its auto-installed build
+dependencies in the same layer. The root Docker verification contract now
+requires a target-architecture TgCrypto build and confirms gcc is absent from
+the completed image. Validation is in progress; no push, merge, or deployment.
+
+time: [05:55pm] [10-04-26]
+agent: [Codex desktop] [gpt-6.1]
+worktree: [l13-frame-fit] [/private/tmp/cpl-pr216-contract]
+type: [refactor]: Keep TgCrypto build toolchain out of image layers
+area: [backend] [testing]
+
+Adversarial review caught that purging gcc from a later Docker RUN would leave
+its binaries in a lower image layer. Moved gcc installation into the same RUN
+as pip installation and purge, leaving the ffmpeg/tesseract runtime layer
+unchanged. The ARM64 build then exposed a missing `stdint.h`, so libc6-dev is
+also installed and purged in that same RUN. The corrected full image build is
+in progress; no push, merge, or deployment.
+
+time: [06:00pm] [10-04-26]
+agent: [Codex desktop] [gpt-6.1]
+worktree: [l13-frame-fit] [/private/tmp/cpl-pr216-contract]
+type: [testing]: Verify ARM64 TgCrypto image build
+area: [testing]
+
+The corrected full Docker build passed with `--platform linux/arm64`. TgCrypto
+compiled into a CPython 3.11 aarch64 wheel; pip installed all production
+requirements; apt purged gcc, libc6-dev, and their auto-installed toolchain in
+the same RUN layer; and the packaged `import app` smoke check passed. Running
+the resulting image reported `aarch64` and imported the TgCrypto extension.
+Separate image checks confirmed both the `gcc` executable and Debian gcc
+package are absent. `git diff --check` passed. No push, merge, or deployment.

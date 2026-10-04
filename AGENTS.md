@@ -598,7 +598,11 @@
 
 - The production Docker image uses explicit COPY paths. Include every required
   backend module and import `app` during the image build; checkout-only imports
-  are not proof that the packaged service can start.
+  are not proof that the packaged service can start. The slim ARM64 image may
+  need temporary `gcc` and libc development headers to build the pinned
+  TgCrypto wheel during `pip install`; install and remove that toolchain with
+  `apt-get purge --auto-remove` in the same RUN layer so it is absent from the
+  final image.
 - Reuse the current TikTokSans fonts and production Burn geometry. Do not add a
   parallel caption-style vocabulary or silently substitute a font.
 - Keep browser preview, backend render, and Rail consumption on one versioned
@@ -647,7 +651,9 @@
 
 - Run `pytest -q tests/test_production_image_imports.py` for isolated imports from
   the Dockerfile's backend file selection. Build the Docker image for release;
-  its app-import smoke check must pass before deployment.
+  its app-import smoke check must pass before deployment. Confirm TgCrypto can
+  build for the target architecture during dependency installation and that
+  `gcc` is absent from the completed image.
 - Run `pytest -q tests/test_generation_restart_recovery.py tests/test_replicate_generation_retry.py`
   for paid-request identity, ambiguous submission, shutdown, crop recovery,
   processing deadlines and cross-process checkpoint transaction checks.
