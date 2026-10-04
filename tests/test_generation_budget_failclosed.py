@@ -6,6 +6,7 @@ never read as "unlimited". These red tests fail on fce90bc (the old meter
 accepts NaN and silently resets a corrupt ledger to 0.0).
 """
 
+import json
 import math
 
 import pytest
@@ -100,3 +101,40 @@ def test_finite_amounts_still_reserve(monkeypatch):
     store = {"jobs": {}, "byIdempotency": {}, "served": {}}
     assert generation_budget.reserve_generation_spend(store, 0.28, "replicate") is True
     assert math.isfinite(generation_budget.spent_usd(store))
+
+
+@pytest.mark.parametrize("operation", ["debit", "reserve", "admission"])
+def test_persisted_corrupt_store_refuses_spend_and_preserves_bytes(
+    operation, monkeypatch, tmp_path,
+):
+    """A malformed jobs file must never be mistaken for a fresh empty ledger."""
+    monkeypatch.setenv(generation_budget.USD_BUDGET_ENV, "25.0")
+    path = tmp_path / "control_plane_jobs.json"
+    original = b'{"jobs":{"old-job":{}},BROKEN'
+    path.write_bytes(original)
+
+    with pytest.raises(generation_budget.BudgetLedgerCorrupt):
+        if operation == "debit":
+            generation_budget.debit_generation_spend_at(path, 0.28, "new-job")
+        elif operation == "reserve":
+            generation_budget.reserve_generation_spend_at(path, 0.28, "new-job")
+        else:
+            generation_budget.can_reserve_at(path, 0.28)
+
+    assert path.read_bytes() == original
+
+
+@pytest.mark.parametrize("operation", ["debit", "reserve"])
+def test_absent_persisted_store_is_initialized_for_spend(operation, monkeypatch, tmp_path):
+    """Only a genuinely absent file may start with an empty daily ledger."""
+    monkeypatch.setenv(generation_budget.USD_BUDGET_ENV, "25.0")
+    path = tmp_path / "control_plane_jobs.json"
+
+    if operation == "debit":
+        accepted = generation_budget.debit_generation_spend_at(path, 0.28, "new-job")
+    else:
+        accepted = generation_budget.reserve_generation_spend_at(path, 0.28, "new-job")
+
+    assert accepted is True
+    store = json.loads(path.read_text(encoding="utf-8"))
+    assert store["generationBudget"]["spentUsd"] == pytest.approx(0.28)

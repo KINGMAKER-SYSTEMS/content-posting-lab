@@ -86,6 +86,9 @@
 - `services/generation_recovery.py` owns private provider checkpoints and
   cross-process generation/store locks. Checkpoints are not admission authority.
 - `services/generation_budget.py` owns the shared durable paid-generation ledger.
+  Only a missing job-store file may initialize an empty ledger; malformed,
+  unreadable, or structurally invalid persisted state fails closed without
+  overwriting the source bytes.
   Raw ABN Flux/WAN and recreate LaMa creates reserve a distinct submission id
   before every POST, including identical inputs. Only resuming a known provider
   operation may reuse a debit; prompt text, image bytes and output names are not

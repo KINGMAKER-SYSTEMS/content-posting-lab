@@ -22,6 +22,7 @@ renders, posting) never passes through this meter.
 
 from __future__ import annotations
 
+import json
 import logging
 import math
 import os
@@ -398,15 +399,38 @@ def debit_generation_spend_at(
     exhausted (the caller must refuse, never spend).
     """
     from services.generation_recovery import store_lock as kernel_lock
-    from services.json_store import atomic_load, atomic_save
+    from services.json_store import atomic_save
 
     with kernel_lock(path):
-        store = atomic_load(path, default=None)
-        if not isinstance(store, dict) or "jobs" not in store:
-            store = {"version": 1, "jobs": {}, "byIdempotency": {}, "served": {}}
+        store = _load_jobs_store_or_initialize(path)
         ok = debit_generation_spend(store, amount_usd, debit_id, now=now)
         atomic_save(path, store)
         return ok
+
+
+def _load_jobs_store_or_initialize(path: Path | str) -> dict[str, Any]:
+    """Load an existing job store or initialize only when it is absent.
+
+    A corrupt/unreadable file is not equivalent to a new store: replacing it
+    with an empty ledger would erase today's reserved spend and hand back the
+    full daily budget. Fail closed and leave the original bytes untouched.
+    """
+    store_path = Path(path)
+    try:
+        with store_path.open("r", encoding="utf-8") as stream:
+            store = json.load(stream)
+    except FileNotFoundError:
+        return {"version": 1, "jobs": {}, "byIdempotency": {}, "served": {}}
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raise BudgetLedgerCorrupt(
+            f"cannot read generation job store {store_path}: {error}"
+        ) from error
+
+    if not isinstance(store, dict) or not isinstance(store.get("jobs"), dict):
+        raise BudgetLedgerCorrupt(
+            f"generation job store {store_path} has an invalid top-level shape"
+        )
+    return store
 
 
 def jobs_store_path() -> Path:
@@ -438,12 +462,10 @@ def reserve_generation_spend_at(
     never spend).
     """
     from services.generation_recovery import store_lock as kernel_lock
-    from services.json_store import atomic_load, atomic_save
+    from services.json_store import atomic_save
 
     with kernel_lock(path):
-        store = atomic_load(path, default=None)
-        if not isinstance(store, dict) or "jobs" not in store:
-            store = {"version": 1, "jobs": {}, "byIdempotency": {}, "served": {}}
+        store = _load_jobs_store_or_initialize(path)
         ok = reserve_generation_spend(store, amount_usd, key_id, now=now)
         atomic_save(path, store)
         return ok
@@ -452,12 +474,8 @@ def reserve_generation_spend_at(
 def can_reserve_at(path: Path | str, amount_usd: float, now: datetime | None = None) -> bool:
     """Read-only admission check; queued work reserves only when it executes."""
     from services.generation_recovery import store_lock as kernel_lock
-    from services.json_store import atomic_load
-
     with kernel_lock(path):
-        store = atomic_load(path, default=None)
-        if not isinstance(store, dict):
-            store = {}
+        store = _load_jobs_store_or_initialize(path)
         return can_reserve(store, amount_usd, now=now)
 
 
