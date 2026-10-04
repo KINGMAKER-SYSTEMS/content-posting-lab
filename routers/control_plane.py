@@ -2064,13 +2064,12 @@ def _truck_master_candidates(
         ):
             return True
         # Archive indexes written before profile-scoped pins omit family,
-        # materialSource, assetType, and engineProfileHash. They remain safe
-        # only while their global registry digest and every retained profile
-        # pin still match exactly; full legacy jobs use the pins above and can
-        # survive unrelated changes to other profiles.
+        # materialSource, assetType, and engineProfileHash. The retained
+        # selected-profile pins still establish the producing authority; an
+        # unrelated registry member must not invalidate an otherwise matching
+        # paid master. Full legacy jobs use the richer pins above.
         return (
             job.get("engineProfileHash") is None
-            and job.get("engineRegistryHash") == generation_recipe.engine_registry_hash
             and job_profile_authority_matches(
                 job, generation_recipe.engine_profile_hash, legacy_archive_pins,
             )

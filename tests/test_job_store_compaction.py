@@ -247,7 +247,7 @@ def test_truck_master_candidates_unchanged_after_compaction(tmp_path, monkeypatc
     # but it must be in the reserved set -> no candidate with that sha)
 
 
-def test_legacy_truck_archive_index_remains_eligible_only_at_matching_registry(
+def test_legacy_truck_archive_index_uses_profile_pins_not_global_registry(
     tmp_path, monkeypatch,
 ):
     monkeypatch.setattr(cp, "_is_exact_16x9_video", lambda p: True)
@@ -283,6 +283,15 @@ def test_legacy_truck_archive_index_remains_eligible_only_at_matching_registry(
                   generation_recipe=recipe)
     assert [x["sha256"] for x in cp._truck_master_candidates(store, "acct:p", 10, **kwargs)] == [SHA]
     recipe.engine_registry_hash = "f" * 64
+    assert [x["sha256"] for x in cp._truck_master_candidates(store, "acct:p", 10, **kwargs)] == [SHA]
+
+    archived["pageId"] = "acct:other"
+    assert cp._truck_master_candidates(store, "acct:p", 10, **kwargs) == []
+    archived["pageId"] = "acct:p"
+
+    # The global hash no longer gates archive reuse, but the retained profile
+    # pins remain exact compatibility requirements.
+    archived["executorVersion"] = "sha256:" + "0" * 64
     assert cp._truck_master_candidates(store, "acct:p", 10, **kwargs) == []
 
 
