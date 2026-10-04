@@ -224,13 +224,13 @@ def test_truck_master_candidates_unchanged_after_compaction(tmp_path, monkeypatc
 
     before = cp._truck_master_candidates(
         store, "acct:p", 10, content_engine="hailuo", recipe_id="truck-scenic:master",
-        generation_recipe=recipe, current_recipe_spec_hash="sha256:" + "d" * 64,
+        generation_recipe=recipe,
     )
     new_store, archived = c.compact_job_store(store, _now())
     assert {j["jobId"] for j in archived} == {"truck-old", "recovery-old"}
     after = cp._truck_master_candidates(
         new_store, "acct:p", 10, content_engine="hailuo", recipe_id="truck-scenic:master",
-        generation_recipe=recipe, current_recipe_spec_hash="sha256:" + "d" * 64,
+        generation_recipe=recipe,
     )
     assert [x["sha256"] for x in before] == [x["sha256"] for x in after]
     assert {x["sha256"] for x in after} == {SHA, SHA2}
@@ -822,7 +822,7 @@ def test_generation_view_keeps_archived_truck_jobs(job_path, tmp_path, monkeypat
         clips_per_generation=5,
     )
     kwargs = dict(content_engine="hailuo", recipe_id="truck-scenic:master",
-                  generation_recipe=recipe, current_recipe_spec_hash="sha256:" + "d" * 64)
+                  generation_recipe=recipe)
     before = cp._truck_master_candidates(store, "acct:p", 10, **kwargs)
     assert [x["sha256"] for x in before] == [SHA]
     new_store, archived = c.compact_job_store(store, _now())

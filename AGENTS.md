@@ -368,6 +368,8 @@
   Recovery crops inherit proven parent video treatment; they never assert the
   current desired treatment for historical bytes. `sourceRecipeTreatment` is
   recipe context and does not claim a caption overlay already exists.
+  A recovery crop binds its new job and exact registered recipe context while
+  retaining the unchanged parent video treatment and `derivedFrom` lineage.
   Truck replenishment reuses a preserved master only when its exact producer
   receipt proves the requested video grade, speed and crop. Missing, malformed
   or mismatched treatment skips that master and allows normal fresh generation;
