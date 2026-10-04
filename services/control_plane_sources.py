@@ -110,6 +110,7 @@ SAMPLE_ROUNDS = 4
 SOURCE_MASTER_TOO_SHORT = "source_master_too_short"
 SOURCE_WINDOWS_EXHAUSTED = "source_windows_exhausted"
 SOURCE_WINDOWS_RESERVED_ELSEWHERE = "source_windows_reserved_by_other_pages"
+SOURCE_SPEED_DURATION_UNSUPPORTED = "source_speed_duration_unsupported"
 # Retired 2026-09-30 (replaced by SOURCE_WINDOWS_EXHAUSTED, which is reached
 # only after every sub-second start is cut too). The name stays importable for
 # tests/test_capability_job_snapshot_base_import.py, which loads a historical
@@ -143,6 +144,7 @@ class SourceRecipe:
     material_source: str
     asset_type: str
     recipe_spec: dict[str, Any]
+    engine_profile_hash: str = ""
 
 @dataclass(frozen=True)
 class CutUse:
@@ -369,6 +371,7 @@ def resolve_source_recipe(
         engine=engine,
         max_quantity=profile.max_quantity,
         engine_registry_hash=profile.registry_hash,
+        engine_profile_hash=profile.authority_hash,
         format_contract_version=profile.format_contract_version,
         executor_id=profile.executor_id,
         executor_version=profile.executor_version,
@@ -443,15 +446,19 @@ def source_cut_durations(recipe: SourceRecipe) -> tuple[int, ...]:
 
     A length is allowed only when the source window AND the delivered clip at
     the saved playback speed (length / speed) both stay inside 5-9 s, which is
-    what the Worker admits. A speed so far from 1x that no length satisfies
-    both (below about 0.56x or above about 1.8x) keeps the earlier vocabulary.
+    what the Worker admits. POV Club refuses when no legal length satisfies
+    both bounds; legacy formats retain their historical fallback vocabulary.
     """
     speed = dossier_clip_speed(recipe)
     lengths = tuple(
         ms for ms in range(CUT_LENGTH_MIN_MS, CUT_LENGTH_MAX_MS + 1, CUT_LENGTH_STEP_MS)
         if CUT_LENGTH_MIN_MS * speed - 1e-6 <= ms <= CUT_LENGTH_MAX_MS * speed + 1e-6
     )
-    return lengths or _legacy_source_cut_durations(recipe)
+    if lengths:
+        return lengths
+    if recipe.format_slug == "pov-club":
+        return ()
+    return _legacy_source_cut_durations(recipe)
 
 
 def _legacy_source_cut_durations(recipe: SourceRecipe) -> tuple[int, ...]:
@@ -977,9 +984,13 @@ def source_cut_is_planned(
         # the planner's frame offsets inside a second, or ending on the
         # master's last frame. Lengths planned before 2026-09-30 (every
         # legacy 6 s re-cut included) still verify for jobs queued then.
+        legacy_durations = (
+            () if recipe.format_slug == "pov-club"
+            else _legacy_source_cut_durations(recipe)
+        )
         return (
             duration_ms in source_cut_durations(recipe)
-            or duration_ms in _legacy_source_cut_durations(recipe)
+            or duration_ms in legacy_durations
         ) and (
             start_ms % CUT_START_STEP_MS in SUB_SECOND_START_OFFSETS_MS
             or start_ms == master.duration_ms - duration_ms

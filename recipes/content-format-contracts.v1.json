@@ -512,7 +512,7 @@
         },
         "duration": {
           "status": "defined",
-          "rule": "Select a unique 5-9 second source window from the page-scoped master; final output duration follows typed Dossier playback speed. Crop and visual filters follow typed Dossier render treatment.",
+          "rule": "Select a unique 5-9 second source window from the page-scoped master and require the measured final output to remain 5-9 seconds after typed Dossier playback speed. If no source length satisfies both bounds, refuse before reserving source windows with source_speed_duration_unsupported; never use a longer legacy source window. Crop and visual filters follow typed Dossier render treatment.",
           "authority": "sourceDnaRecut.cutWindow_and_clipSpeed; Dossier.renderTreatment"
         },
         "textPolicy": {

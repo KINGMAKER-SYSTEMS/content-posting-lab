@@ -181,6 +181,7 @@ def _truck_job(job_id, sha, page_id, root, *, created):
         "jobId": job_id, "pageId": page_id, "sourceKind": "generated", "status": "completed",
         "engine": "hailuo", "recipeId": "truck-scenic:master",
         "engineRegistryHash": "e" * 64, "formatContractVersion": "sha256:" + "a" * 64,
+        "engineProfileHash": "sha256:" + "b" * 64,
         "executorVersion": "v1", "promptCatalogHash": "p" * 64, "providerModel": "minimax/hailuo-2.3",
         "artifactRoot": str(root), "createdAt": created, "completedAt": created,
         "recipeSpecHash": recipe_spec_hash,
@@ -215,6 +216,7 @@ def test_truck_master_candidates_unchanged_after_compaction(tmp_path, monkeypatc
     recipe = SimpleNamespace(
         engine="hailuo", recipe_id="truck-scenic:master",
         engine_registry_hash="e" * 64, format_contract_version="sha256:" + "a" * 64,
+        engine_profile_hash="sha256:" + "b" * 64,
         executor_version="v1", prompt_catalog_hash="p" * 64,
         provider_model="minimax/hailuo-2.3",
         recipe_spec={"renderTreatment": {"filters": {"brightness": 1.0}, "clipSpeed": 1.0,
@@ -228,6 +230,9 @@ def test_truck_master_candidates_unchanged_after_compaction(tmp_path, monkeypatc
     )
     new_store, archived = c.compact_job_store(store, _now())
     assert {j["jobId"] for j in archived} == {"truck-old", "recovery-old"}
+    archived_truck = next(j for j in new_store[c.ARCHIVE_INDEX_KEY]["truckCandidateJobs"]
+                          if j["jobId"] == "truck-old")
+    assert archived_truck["engineProfileHash"] == "sha256:" + "b" * 64
     after = cp._truck_master_candidates(
         new_store, "acct:p", 10, content_engine="hailuo", recipe_id="truck-scenic:master",
         generation_recipe=recipe,
@@ -815,6 +820,7 @@ def test_generation_view_keeps_archived_truck_jobs(job_path, tmp_path, monkeypat
     recipe = SimpleNamespace(
         engine="hailuo", recipe_id="truck-scenic:master",
         engine_registry_hash="e" * 64, format_contract_version="sha256:" + "a" * 64,
+        engine_profile_hash="sha256:" + "b" * 64,
         executor_version="v1", prompt_catalog_hash="p" * 64,
         provider_model="minimax/hailuo-2.3",
         recipe_spec={"renderTreatment": {"filters": {"brightness": 1.0}, "clipSpeed": 1.0,

@@ -15,7 +15,9 @@ import routers.control_plane as control_plane
 import routers.control_plane_recipes as recipes
 from services.content_engine_registry import (
     REGISTRY_PATH,
+    job_profile_authority_matches,
     load_engine_registry,
+    profile_authority_hash,
 )
 from services.content_format_contracts import (
     CONTRACTS_PATH,
@@ -142,6 +144,37 @@ def test_pov_club_is_a_source_bound_format_on_the_existing_recut_executor():
     assert text_policy["authority"] == "sourceDna.masters"
     assert "without waiting for a separate vision scan" in text_policy["rule"]
     assert "preserve existing scan evidence" in text_policy["rule"]
+
+
+def test_profile_authority_is_stable_when_an_unrelated_profile_is_added():
+    registry = json.loads(REGISTRY_PATH.read_text())
+    selected = registry["profiles"]["pov-club"]
+    original_hash = profile_authority_hash("pov-club", selected)
+    registry["profiles"]["unrelated-test-profile"] = {
+        **registry["profiles"]["truck-ugc"],
+    }
+    assert profile_authority_hash(
+        "pov-club", registry["profiles"]["pov-club"],
+    ) == original_hash
+
+
+def test_profile_authority_ignores_admission_cap_but_rejects_material_drift():
+    registry = json.loads(REGISTRY_PATH.read_text())
+    selected = registry["profiles"]["pov-club"]
+    original_hash = profile_authority_hash("pov-club", selected)
+    assert profile_authority_hash(
+        "pov-club", {**selected, "maxQuantity": selected["maxQuantity"] - 1},
+    ) == original_hash
+    assert profile_authority_hash(
+        "pov-club", {**selected, "executorVersion": "sha256:" + "0" * 64},
+    ) != original_hash
+    assert job_profile_authority_matches({}, original_hash)
+    assert job_profile_authority_matches(
+        {"engineProfileHash": original_hash}, original_hash,
+    )
+    assert not job_profile_authority_matches(
+        {"engineProfileHash": "sha256:" + "0" * 64}, original_hash,
+    )
 
 
 def test_boat_contract_is_commissioned_after_operator_lifted_quarantine():

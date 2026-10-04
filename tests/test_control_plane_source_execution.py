@@ -1,6 +1,7 @@
 """Closed contracts for page-scoped immutable-master recut execution."""
 
 import asyncio
+from dataclasses import replace
 import hashlib
 import json
 from pathlib import Path
@@ -1504,3 +1505,29 @@ def test_source_duration_respects_delivery_range_after_saved_speed(speed):
         else:
             assert 6_000 <= cut.duration_ms / speed <= 11_000
         assert source_cut_is_planned(recipe, cut.master, cut.start_ms, cut.duration_ms, cut.slot_id)
+
+
+@pytest.mark.parametrize("speed", [0.5, 2.0])
+def test_pov_club_refuses_speeds_without_a_worker_admissible_window(speed):
+    recipe = resolve_source_recipe(publication(clip_speed=speed, cut_duration_ms=7_000))
+    assert recipe is not None
+    club_recipe = replace(recipe, format_slug="pov-club")
+    assert source_cut_durations(club_recipe) == ()
+    assert plan_source_cuts(club_recipe, 1, set()) == []
+    master = club_recipe.masters[0]
+    assert not source_cut_is_planned(
+        club_recipe, master, 120_000, 12_000,
+        f"{master.sha256}:120000:12000",
+    )
+
+
+@pytest.mark.parametrize("speed", [0.6, 0.8, 1.0, 1.5, 1.8])
+def test_pov_club_supported_speeds_stay_inside_worker_source_and_output_bounds(speed):
+    recipe = resolve_source_recipe(publication(clip_speed=speed, cut_duration_ms=7_000))
+    assert recipe is not None
+    club_recipe = replace(recipe, format_slug="pov-club")
+    cuts = plan_source_cuts(club_recipe, 10, set())
+    assert cuts
+    for cut in cuts:
+        assert 5_000 <= cut.duration_ms <= 9_000
+        assert 5_000 <= cut.duration_ms / speed <= 9_000

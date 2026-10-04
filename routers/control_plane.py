@@ -100,8 +100,10 @@ from services.control_plane_sources import (
     explain_empty_source_plan,
     plan_source_cuts,
     source_cut_is_planned,
+    source_cut_durations,
     resolve_source_recipe,
     source_window_exclusions,
+    SOURCE_SPEED_DURATION_UNSUPPORTED,
 )
 from services.control_plane_slideshows import (
     SyzygyError,
@@ -125,7 +127,11 @@ from services.control_plane_source_imports import (
     source_import_slot,
     validate_source_url,
 )
-from services.content_engine_registry import load_engine_registry, resolve_material_profile
+from services.content_engine_registry import (
+    job_profile_authority_matches,
+    load_engine_registry,
+    resolve_material_profile,
+)
 from services.content_format_contracts import CONTRACTS_PATH, load_format_contracts
 from services.ffmpeg import delivery_encode_args, run_color_correct
 from services.master_pages_contract import SCHEMA as MASTER_PAGES_SCHEMA, canonical_intent, exact_intent, intent_hash
@@ -2048,7 +2054,9 @@ def _truck_master_candidates(
             or job.get("status") != "completed"
             or job.get("engine") != content_engine
             or job.get("recipeId") != recipe_id
-            or job.get("engineRegistryHash") != generation_recipe.engine_registry_hash
+            or not job_profile_authority_matches(
+                job, generation_recipe.engine_profile_hash,
+            )
             or job.get("formatContractVersion") != generation_recipe.format_contract_version
             or job.get("executorVersion") != generation_recipe.executor_version
             or job.get("promptCatalogHash") != generation_recipe.prompt_catalog_hash
@@ -2655,7 +2663,7 @@ async def _run_owned_dossier_generation(job_id: str) -> None:
     recipe = resolve_generation_recipe(publication) if publication else None
     if (
         recipe is None
-        or job.get("engineRegistryHash") != recipe.engine_registry_hash
+        or not job_profile_authority_matches(job, recipe.engine_profile_hash)
         or job.get("formatContractVersion") != recipe.format_contract_version
         or job.get("promptCatalogHash") != recipe.prompt_catalog_hash
         or job.get("executorVersion") != recipe.executor_version
@@ -3360,7 +3368,7 @@ async def _run_dossier_source(job_id: str) -> None:
         recipe is None
         or job.get("sourceLibraryId") != recipe.source_library_id
         or job.get("sourceLibraryHash") != recipe.source_library_hash
-        or job.get("engineRegistryHash") != recipe.engine_registry_hash
+        or not job_profile_authority_matches(job, recipe.engine_profile_hash)
         or job.get("formatContractVersion") != recipe.format_contract_version
         or job.get("executorVersion") != recipe.executor_version
     ):
@@ -3521,7 +3529,7 @@ async def _run_syzygy_slideshow(job_id: str) -> None:
     if (
         recipe is None
         or job.get("sourceLibraryId") != recipe.library_id
-        or job.get("engineRegistryHash") != recipe.engine_registry_hash
+        or not job_profile_authority_matches(job, recipe.engine_profile_hash)
         or job.get("formatContractVersion") != recipe.format_contract_version
         or job.get("executorVersion") != recipe.executor_version
     ):
@@ -4302,6 +4310,7 @@ async def create_job(
                 "dossierRevision": publication["dossierRevision"],
                 "recipeSpecHash": publication["recipeSpecHash"],
                 "engineRegistryHash": generation_recipe.engine_registry_hash,
+                "engineProfileHash": generation_recipe.engine_profile_hash,
                 "formatContractVersion": generation_recipe.format_contract_version,
                 "materialSource": generation_recipe.material_source,
                 "assetType": generation_recipe.asset_type,
@@ -4341,6 +4350,7 @@ async def create_job(
                 "dossierRevision": publication["dossierRevision"],
                 "recipeSpecHash": publication["recipeSpecHash"],
                 "engineRegistryHash": generation_recipe.engine_registry_hash,
+                "engineProfileHash": generation_recipe.engine_profile_hash,
                 "formatContractVersion": generation_recipe.format_contract_version,
                 "materialSource": generation_recipe.material_source,
                 "assetType": generation_recipe.asset_type,
@@ -4358,6 +4368,11 @@ async def create_job(
             }
             start_generation = True
         elif source_recipe is not None:
+            if source_recipe.format_slug == "pov-club" and not source_cut_durations(source_recipe):
+                raise HTTPException(
+                    status_code=409,
+                    detail=SOURCE_SPEED_DURATION_UNSUPPORTED,
+                )
             served_slots, cut_history = _source_dna_cut_ledger(
                 store, source_recipe, publication["recipeVersion"],
             )
@@ -4412,6 +4427,7 @@ async def create_job(
                 "sourceLibraryId": source_recipe.source_library_id,
                 "sourceLibraryHash": source_recipe.source_library_hash,
                 "engineRegistryHash": source_recipe.engine_registry_hash,
+                "engineProfileHash": source_recipe.engine_profile_hash,
                 "formatContractVersion": source_recipe.format_contract_version,
                 "executorVersion": source_recipe.executor_version,
                 "materialSource": source_recipe.material_source,
@@ -4456,6 +4472,7 @@ async def create_job(
                 "sourceLibraryId": slideshow_recipe.library_id,
                 "librarySnapshotHash": slideshow_library.snapshot_hash,
                 "engineRegistryHash": slideshow_recipe.engine_registry_hash,
+                "engineProfileHash": slideshow_recipe.engine_profile_hash,
                 "formatContractVersion": slideshow_recipe.format_contract_version,
                 "executorVersion": slideshow_recipe.executor_version,
                 "materialSource": slideshow_recipe.material_source,

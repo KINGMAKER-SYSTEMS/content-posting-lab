@@ -233,6 +233,7 @@ def extract_index_entries(job: dict[str, Any]) -> dict[str, Any]:
                 "engine": job.get("engine"),
                 "recipeId": job.get("recipeId"),
                 "engineRegistryHash": job.get("engineRegistryHash"),
+                "engineProfileHash": job.get("engineProfileHash"),
                 "formatContractVersion": job.get("formatContractVersion"),
                 "executorVersion": job.get("executorVersion"),
                 "promptCatalogHash": job.get("promptCatalogHash"),
