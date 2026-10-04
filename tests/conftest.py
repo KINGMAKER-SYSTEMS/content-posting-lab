@@ -152,6 +152,25 @@ def isolated_projects_root(monkeypatch, tmp_path):
 
 
 @pytest.fixture(autouse=True)
+def isolated_generation_budget_store(monkeypatch, tmp_path):
+    """Point the operator-UI generation ledger at a per-test temp file.
+
+    ``POST /api/video/generate`` reserves against
+    ``generation_budget.jobs_store_path()`` (the shared control-plane ledger);
+    isolate it so video API tests never touch the real ``control_plane_jobs.json``
+    and spend never accumulates across tests within one UTC day.
+    """
+    from services import generation_budget
+    from routers import control_plane
+
+    monkeypatch.setattr(control_plane, "_jobs_path", lambda: tmp_path / "generation_budget.json")
+    monkeypatch.setattr(
+        generation_budget, "jobs_store_path", lambda: control_plane._jobs_path(),
+    )
+    yield
+
+
+@pytest.fixture(autouse=True)
 def reset_in_memory_state():
     video_router.jobs.clear()
     captions_router._ws_clients.clear()
