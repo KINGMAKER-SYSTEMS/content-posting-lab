@@ -1363,3 +1363,18 @@ supported frames, visible-area containment, strict enum/unknown-field behavior,
 plan and PNG hashes, endpoint parity, and v1 compatibility. Focused checks:
 caption contract 70 passed; post-render and quality gate 101 passed. No merge or
 deployment.
+
+time: [10:22pm] [04-10-26]
+agent: [Codex desktop] [gpt-6]
+worktree: [l13-frame-fit] [/private/tmp/cpl-pr216-contract]
+type: [testing]: Bind endpoint tests to the bundled caption font fixture
+area: [testing]
+
+The first hosted-style focused run exposed that the global test isolation
+fixture redirects the Burn router font directory to an empty temporary path.
+The new v2 frame-parity cases and v1 compatibility case now explicitly bind
+their existing `font_dir` fixture to the router, matching the port-8002 parity
+test. The focused caption-render, post-render, and burn-quality suites pass
+171 tests with the isolated router client. The checkout's regular conftest
+cannot import because boto3 is unavailable in its interpreter; tests were run
+with `--noconftest` and the router-only client plugin. No merge or deployment.

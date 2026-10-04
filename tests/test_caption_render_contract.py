@@ -472,8 +472,11 @@ def test_quality_gate_agrees_with_the_fit(font_dir, frame, line_count):
     [("9:16", 10), ("16:9", 4), ("4:3", 6), ("1:1", 8), ("3:4", 10)],
 )
 def test_v2_api_binds_fit_to_the_required_picture_frame(
-    sync_client, frame, line_count
+    sync_client, monkeypatch, font_dir, frame, line_count
 ):
+    from routers import burn as burn_router
+
+    monkeypatch.setattr(burn_router, "FONT_DIR", font_dir)
     payload = lines_request(SHORT_LINES[:line_count], size_pt=96)
     wire = payload.model_dump(mode="json", by_alias=True)
     wire["schema"] = "content-lab.caption-render-request.v2"
@@ -490,7 +493,12 @@ def test_v2_api_binds_fit_to_the_required_picture_frame(
     assert body["render_plan_sha256"] == "sha256:" + hashlib.sha256(plan_bytes).hexdigest()
 
 
-def test_v1_keeps_its_old_plan_shape_and_refuses_new_fit_behavior(sync_client):
+def test_v1_keeps_its_old_plan_shape_and_refuses_new_fit_behavior(
+    sync_client, monkeypatch, font_dir
+):
+    from routers import burn as burn_router
+
+    monkeypatch.setattr(burn_router, "FONT_DIR", font_dir)
     payload = request(size_pt=96).model_copy(
         update={"caption": "this line is much too wide"}
     )
