@@ -599,6 +599,10 @@
 - The production Docker image uses explicit COPY paths. Include every required
   backend module and import `app` during the image build; checkout-only imports
   are not proof that the packaged service can start.
+- When production Python requirements need native compilation, install the
+  compiler and headers only in the same Docker layer as pip installation, then
+  purge them before that layer ends. Verify the full image imports the native
+  extension and contains no compiler.
 - Reuse the current TikTokSans fonts and production Burn geometry. Do not add a
   parallel caption-style vocabulary or silently substitute a font.
 - Keep browser preview, backend render, and Rail consumption on one versioned
