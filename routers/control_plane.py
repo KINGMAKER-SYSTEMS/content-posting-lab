@@ -716,7 +716,6 @@ def capabilities(
                 )
             max_quantity = _generated_capability_quantity(
                 generation_related_jobs_view, generation_recipe, page_id, master_pages,
-                publication["recipeSpecHash"],
             )
         source_identities = None
         if source_recipe is not None:
@@ -1962,7 +1961,7 @@ def _generated_unavailable_prompts(
 
 def _generated_capability_quantity(
     store: dict[str, Any], recipe: Any, page_id: str,
-    master_pages: dict[str, Any], recipe_spec_hash: str,
+    master_pages: dict[str, Any],
 ) -> int:
     """Advertise only fresh output the current recipe can reserve now."""
     unavailable_hashes, unavailable_slots = _generated_unavailable_prompts(
@@ -1992,7 +1991,6 @@ def _generated_capability_quantity(
                 content_engine=recipe.engine,
                 recipe_id=recipe.recipe_id,
                 generation_recipe=recipe,
-                current_recipe_spec_hash=recipe_spec_hash,
             )) * recipe.clips_per_generation,
         )
     return max(fresh_capacity, recovery_capacity)
@@ -2001,7 +1999,6 @@ def _generated_capability_quantity(
 def _truck_master_candidates(
     store: dict[str, Any], page_id: str, limit: int, *,
     content_engine: str, recipe_id: str, generation_recipe: Any,
-    current_recipe_spec_hash: str,
 ) -> list[dict[str, Any]]:
     """Return durable, unused, current-authority truck masters for re-cropping.
 
@@ -2013,8 +2010,8 @@ def _truck_master_candidates(
     model. This prevents old-model or old-prompt renders from silently becoming
     new five-crop deliveries after the page's creative authority changes. The
     source files are checked again, byte-for-byte, by the recovery runner.
-    Applied-video evidence must also match the current recipe hash, requested
-    grade, speed and crop; otherwise fresh generation produces new evidence.
+    Applied-video evidence must bind the producer and match the requested
+    grade, speed and crop; caption-only recipe changes still permit reuse.
     """
     reserved: set[str] = set()
     jobs = store.get("jobs", {})
@@ -2081,8 +2078,6 @@ def _truck_master_candidates(
                 or str(source.get("contentNiche") or "").strip().upper() != "TRUCK"
                 or source.get("contentEngine") != content_engine
                 or not isinstance(clip.get("sourceTreatment"), dict)
-                or clip["sourceTreatment"].get("recipeSpecHash")
-                    != current_recipe_spec_hash
                 or not recovery_treatment_matches(
                     clip["sourceTreatment"], job, sha256,
                     generation_recipe.recipe_spec["renderTreatment"],
@@ -3201,6 +3196,24 @@ async def _run_truck_master_recovery(job_id: str) -> None:
             completedAt=datetime.now(timezone.utc).isoformat(),
         )
         return
+    publication = load_registered_recipe(
+        job.get("recipePublicationPageId") or job["pageId"],
+        job["recipeId"], job["engine"], job["recipeVersion"],
+    )
+    recipe_spec = typed_recipe_spec(publication) if publication else None
+    if (
+        recipe_spec is None
+        or publication.get("recipeSpecHash") != job.get("recipeSpecHash")
+        or publication.get("recipeSpecHash") != "sha256:" + hashlib.sha256(
+            publication["recipeSpecCanonical"].encode("utf-8"),
+        ).hexdigest()
+        or not publication_matches_master_pages(publication, job["masterPages"], job["masterPagesHash"])
+    ):
+        await asyncio.to_thread(_update_job,
+            job_id, status="failed", error="truck_master_recipe_unavailable",
+            completedAt=datetime.now(timezone.utc).isoformat(),
+        )
+        return
     job_root = Path(job["artifactRoot"]).resolve()
     master_root = job_root / "masters"
     master_root.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -3247,7 +3260,8 @@ async def _run_truck_master_recovery(job_id: str) -> None:
                 manifest = _generated_manifest(job_root, crop)
                 inherited_treatment = derived_source_treatment(
                     candidate.get("sourceTreatment"), candidate["sha256"],
-                    manifest["sha256"], job["jobId"],
+                    manifest["sha256"], job, recipe_spec["renderTreatment"],
+                    parent_job_id=candidate.get("sourceJobId"),
                 )
                 if inherited_treatment is not None:
                     manifest["sourceTreatment"] = inherited_treatment
@@ -4261,7 +4275,6 @@ async def create_job(
                 content_engine=engine,
                 recipe_id=recipe_id,
                 generation_recipe=generation_recipe,
-                current_recipe_spec_hash=publication["recipeSpecHash"],
             )
             if generation_recipe is not None
             and recipe_id == TRUCK_RECIPE_ID

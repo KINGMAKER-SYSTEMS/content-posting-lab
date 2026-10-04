@@ -316,11 +316,11 @@ def test_dropping_truck_reservations_over_admits_is_caught(tmp_path, monkeypatch
 
     shipped_candidates = cp._truck_master_candidates(
         shipped_view, page_id, 10, content_engine="ai_video", recipe_id=recipe_id,
-        generation_recipe=generation_recipe, current_recipe_spec_hash=recipe_spec_hash,
+        generation_recipe=generation_recipe,
     )
     mutant_candidates = cp._truck_master_candidates(
         mutant_view, page_id, 10, content_engine="ai_video", recipe_id=recipe_id,
-        generation_recipe=generation_recipe, current_recipe_spec_hash=recipe_spec_hash,
+        generation_recipe=generation_recipe,
     )
 
     # Shipped view: the completed recovery reserves the sha256, so the
