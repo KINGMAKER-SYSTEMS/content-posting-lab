@@ -1,6 +1,7 @@
 import base64
 import hashlib
 import io
+import json
 import shutil
 from pathlib import Path
 
@@ -11,6 +12,8 @@ from pydantic import ValidationError
 from services.caption_render import (
     CaptionRenderError,
     CaptionRenderRequest,
+    CaptionRenderRequestV2,
+    caption_fit_area,
     render_caption_overlay,
 )
 
@@ -452,7 +455,7 @@ def test_caption_that_cannot_fit_even_at_12_pt_still_refuses(font_dir):
 def test_quality_gate_agrees_with_the_fit(font_dir, frame, line_count):
     from burn_quality_gate import overlay_geometry_reasons
 
-    payload = lines_request(SHORT_LINES[:line_count], size_pt=60)
+    payload = lines_request(SHORT_LINES[:line_count], size_pt=96)
     style = payload.style.model_dump(exclude_none=True)
     rows = FRAME_BAND_ROWS.get(frame)
     fitted = render_caption_overlay(payload, font_dir=font_dir, fit_rows=rows)
@@ -462,3 +465,99 @@ def test_quality_gate_agrees_with_the_fit(font_dir, frame, line_count):
         full_screen = render_caption_overlay(payload, font_dir=font_dir)
         reasons = overlay_geometry_reasons(full_screen.overlay.base64, style, band_rows=rows)
         assert any(reason.startswith("outside_area:") for reason in reasons)
+
+
+@pytest.mark.parametrize(
+    "frame,line_count",
+    [("9:16", 10), ("16:9", 4), ("4:3", 6), ("1:1", 8), ("3:4", 10)],
+)
+def test_v2_api_binds_fit_to_the_required_picture_frame(
+    sync_client, frame, line_count
+):
+    payload = lines_request(SHORT_LINES[:line_count], size_pt=96)
+    wire = payload.model_dump(mode="json", by_alias=True)
+    wire["schema"] = "content-lab.caption-render-request.v2"
+    wire["picture_frame"] = frame
+    response = sync_client.post("/api/burn/caption-render/v2", json=wire)
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["schema"] == "content-lab.caption-render-result.v2"
+    assert body["plan"]["picture_frame"] == frame
+    assert 30 <= body["plan"]["fitted_font_size_px"] < body["plan"]["font_size_px"]
+    plan_bytes = json.dumps(
+        body["plan"], sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    ).encode()
+    assert body["render_plan_sha256"] == "sha256:" + hashlib.sha256(plan_bytes).hexdigest()
+
+
+def test_v1_keeps_its_old_plan_shape_and_refuses_new_fit_behavior(sync_client):
+    payload = request(size_pt=96).model_copy(
+        update={"caption": "this line is much too wide"}
+    )
+    response = sync_client.post(
+        "/api/burn/caption-render/v1",
+        json=payload.model_dump(mode="json", by_alias=True),
+    )
+    assert response.status_code == 422
+    assert response.json()["error"] == "CAPTION_FIT_REQUIRES_V2"
+
+    small = sync_client.post(
+        "/api/burn/caption-render/v1",
+        json=request().model_dump(mode="json", by_alias=True),
+    )
+    assert small.status_code == 200
+    assert small.json()["schema"] == "content-lab.caption-render-result.v1"
+    assert "fitted_font_size_px" not in small.json()["plan"]
+
+
+@pytest.mark.parametrize(
+    "frame,line_count",
+    [("9:16", 10), ("16:9", 4), ("4:3", 6), ("1:1", 8), ("3:4", 10)],
+)
+def test_v2_port_8002_route_matches_hosted_frame_fit(
+    sync_client, monkeypatch, font_dir, tmp_path, frame, line_count
+):
+    from fastapi.testclient import TestClient
+
+    from routers import burn as burn_router
+
+    (tmp_path / "static" / "burn").mkdir(parents=True)
+    monkeypatch.chdir(tmp_path)
+    import burn_server
+
+    monkeypatch.setattr(burn_router, "FONT_DIR", font_dir)
+    monkeypatch.setattr(burn_server, "FONT_DIR", font_dir)
+    payload = lines_request(SHORT_LINES[:line_count], size_pt=96)
+    wire = payload.model_dump(mode="json", by_alias=True)
+    wire.update(schema="content-lab.caption-render-request.v2", picture_frame=frame)
+    hosted = sync_client.post("/api/burn/caption-render/v2", json=wire)
+    local = TestClient(burn_server.app).post(
+        "/api/burn/caption-render/v2", json=wire
+    )
+    assert hosted.status_code == local.status_code == 200
+    assert hosted.json() == local.json()
+    body = local.json()
+    assert body["plan"]["picture_frame"] == frame
+    assert body["plan"]["fitted_font_size_px"] < body["plan"]["font_size_px"]
+    from services.page_frame import FRAME_BAND_HEIGHTS, frame_band_rows
+
+    rows = FRAME_BAND_HEIGHTS.get(frame)
+    band_rows = frame_band_rows(rows) if rows is not None else None
+    with Image.open(io.BytesIO(base64.b64decode(body["overlay"]["base64"]))) as image:
+        bounds = image.getchannel("A").getbbox()
+    left, top, right, bottom = caption_fit_area(band_rows)
+    assert left <= bounds[0] and top <= bounds[1]
+    assert bounds[2] - 1 <= right and bounds[3] - 1 <= bottom
+    png = base64.b64decode(body["overlay"]["base64"])
+    assert body["overlay"]["sha256"] == "sha256:" + hashlib.sha256(png).hexdigest()
+
+
+def test_v2_requires_a_supported_frame_and_rejects_unknown_fields():
+    raw = request().model_dump(mode="json", by_alias=True)
+    raw.update(schema="content-lab.caption-render-request.v2", picture_frame="2:1")
+    with pytest.raises(ValidationError):
+        CaptionRenderRequestV2.model_validate(raw)
+    raw["picture_frame"] = "1:1"
+    raw["surprise"] = True
+    with pytest.raises(ValidationError):
+        CaptionRenderRequestV2.model_validate(raw)

@@ -90,6 +90,12 @@
   Each batch retains its answering provider, including the configured fallback.
 
 - `services/caption_render.py` owns the typed Dossier-to-render caption contract.
+  V1 remains the full-screen compatibility request/result shape; render requests
+  that need the `fitted_font_size_px` evidence use the closed frame-aware v2
+  request/result on both the hosted Burn router and port-8002 server. V2 requires
+  `picture_frame` (`9:16`, `16:9`, `4:3`, `1:1`, or `3:4`) and binds it into the
+  exact render-plan hash. Rail is the v2 consumer; legacy v1 callers remain
+  supported for captions that do not require the new fit behavior.
 - `services/post_render.py` owns local prepared-final rendering and exact artifact
   receipts; control-plane admission remains downstream authority.
 - `services/post_render_jobs.py` and `routers/post_renders.py` own durable pre-lease

@@ -1346,3 +1346,20 @@ Verification on maj: focused caption/post-render/gate files 213 passed (the
 new tests fail on main: 37 failed). A 11,664-style matrix against main: 7,569
 byte-identical; no caption that rendered on main is refused now; 243 near-edge
 captions now shrink; 2,808 that main refused now render. No deployment.
+
+time: [10:14pm] [04-10-26]
+agent: [Codex desktop] [gpt-6]
+worktree: [l13-frame-fit] [/private/tmp/cpl-pr216-contract]
+type: [refactor]: Frame-aware caption render v2 contract
+area: [backend] [testing]
+
+Closed the cross-service PR #216 mismatch with an explicit caption-render/v2
+request/result contract. V2 requires a closed picture_frame enum, binds that
+frame into the strict plan/hash, and returns fitted_font_size_px only when the
+caption shrinks. Both the hosted router and port-8002 burn server expose the
+same v2 behavior. V1 retains its original response shape and returns typed 422
+when a caption requires shrinking. Regression coverage verifies all five
+supported frames, visible-area containment, strict enum/unknown-field behavior,
+plan and PNG hashes, endpoint parity, and v1 compatibility. Focused checks:
+caption contract 70 passed; post-render and quality gate 101 passed. No merge or
+deployment.

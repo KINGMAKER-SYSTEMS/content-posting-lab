@@ -32,7 +32,10 @@ from services.caption_render import (
     ERROR_SCHEMA as CAPTION_RENDER_ERROR_SCHEMA,
     CaptionRenderError,
     CaptionRenderRequest,
+    CaptionRenderRequestV2,
     CaptionRenderResult,
+    CaptionRenderResultV2,
+    picture_frame_rows,
     render_caption_overlay,
 )
 from services.ffmpeg import TIKTOK_ENCODE_ARGS, build_cc_filter
@@ -398,7 +401,37 @@ async def caption_render_v1(request: CaptionRenderRequest):
     """
 
     try:
-        return render_caption_overlay(request, font_dir=FONT_DIR)
+        result = render_caption_overlay(request, font_dir=FONT_DIR)
+        if result.plan.fitted_font_size_px is not None:
+            raise CaptionRenderError(
+                "CAPTION_FIT_REQUIRES_V2",
+                "frame-aware caption fitting requires caption-render/v2",
+            )
+        return result
+    except CaptionRenderError as error:
+        return JSONResponse(
+            {
+                "schema": CAPTION_RENDER_ERROR_SCHEMA,
+                "error": error.code,
+                "message": error.message,
+            },
+            status_code=422,
+        )
+
+
+@router.post(
+    "/caption-render/v2",
+    response_model=CaptionRenderResultV2,
+    response_model_exclude_none=True,
+)
+async def caption_render_v2(request: CaptionRenderRequestV2):
+    """Render against the required, explicit viewer-visible picture frame."""
+    try:
+        return render_caption_overlay(
+            request,
+            font_dir=FONT_DIR,
+            fit_rows=picture_frame_rows(request.picture_frame),
+        )
     except CaptionRenderError as error:
         return JSONResponse(
             {

@@ -32,8 +32,11 @@ from pydantic import (
 
 REQUEST_SCHEMA = "content-lab.caption-render-request.v1"
 RESULT_SCHEMA = "content-lab.caption-render-result.v1"
+REQUEST_SCHEMA_V2 = "content-lab.caption-render-request.v2"
+RESULT_SCHEMA_V2 = "content-lab.caption-render-result.v2"
 ERROR_SCHEMA = "content-lab.caption-render-error.v1"
 RENDERER_ID = "content-lab.pillow-caption.v1"
+PictureFrame = Literal["9:16", "16:9", "4:3", "1:1", "3:4"]
 
 FRAME_WIDTH = 1080
 FRAME_HEIGHT = 1920
@@ -238,6 +241,13 @@ class CaptionRenderRequest(BaseModel):
         return self
 
 
+class CaptionRenderRequestV2(CaptionRenderRequest):
+    """Frame-aware request; v1 remains the full-screen compatibility contract."""
+
+    schema_: Literal[REQUEST_SCHEMA_V2] = Field(alias="schema")
+    picture_frame: PictureFrame
+
+
 class CaptionRendererIdentity(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -287,6 +297,12 @@ class CaptionRenderPlan(BaseModel):
         return data
 
 
+class CaptionRenderPlanV2(CaptionRenderPlan):
+    """V2 plan binds the fit calculation to the caller's visible picture."""
+
+    picture_frame: PictureFrame
+
+
 class CaptionRenderOverlay(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -307,6 +323,26 @@ class CaptionRenderResult(BaseModel):
     render_plan_sha256: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
     plan: CaptionRenderPlan
     overlay: CaptionRenderOverlay
+
+
+class CaptionRenderResultV2(BaseModel):
+    model_config = ConfigDict(extra="forbid", serialize_by_alias=True)
+
+    schema_: Literal[RESULT_SCHEMA_V2] = Field(alias="schema")
+    renderer: CaptionRendererIdentity
+    caption_sha256: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    style_sha256: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    render_plan_sha256: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    plan: CaptionRenderPlanV2
+    overlay: CaptionRenderOverlay
+
+
+def picture_frame_rows(picture_frame: PictureFrame) -> tuple[int, int] | None:
+    """Resolve the closed frame enum to the exact delivery-band rows."""
+    from services.page_frame import FRAME_BAND_HEIGHTS, frame_band_rows
+
+    band_height = FRAME_BAND_HEIGHTS.get(picture_frame)
+    return frame_band_rows(band_height) if band_height is not None else None
 
 
 def _sha256(data: bytes) -> str:
@@ -646,7 +682,7 @@ def _fit_font_size(
 
 
 def render_caption_overlay(
-    request: CaptionRenderRequest,
+    request: CaptionRenderRequest | CaptionRenderRequestV2,
     *,
     font_dir: Path,
     fit_rows: tuple[int, int] | None = None,
@@ -802,9 +838,13 @@ def render_caption_overlay(
         "rendered_text": "\n".join(lines),
         "lines": line_records,
     }
-    return CaptionRenderResult.model_validate(
-        {
-            "schema": RESULT_SCHEMA,
+    picture_frame = (
+        request.picture_frame if isinstance(request, CaptionRenderRequestV2) else None
+    )
+    if picture_frame is not None:
+        plan["picture_frame"] = picture_frame
+    result_payload = {
+            "schema": RESULT_SCHEMA_V2 if picture_frame is not None else RESULT_SCHEMA,
             "renderer": renderer,
             "caption_sha256": _sha256(request.caption.encode("utf-8")),
             "style_sha256": _sha256(_canonical_json(effective_style)),
@@ -818,4 +858,5 @@ def render_caption_overlay(
                 "base64": base64.b64encode(png_bytes).decode("ascii"),
             },
         }
-    )
+    result_model = CaptionRenderResultV2 if picture_frame is not None else CaptionRenderResult
+    return result_model.model_validate(result_payload)
