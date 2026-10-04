@@ -92,10 +92,14 @@ def current_generation_authority():
         "engine": "ai_video",
         "recipeId": recipe.recipe_id,
         "engineRegistryHash": recipe.engine_registry_hash,
+        "engineProfileHash": recipe.engine_profile_hash,
         "formatContractVersion": recipe.format_contract_version,
         "executorVersion": recipe.executor_version,
         "promptCatalogHash": recipe.prompt_catalog_hash,
+        "family": recipe.family_name,
         "providerModel": recipe.provider_model,
+        "materialSource": recipe.material_source,
+        "assetType": recipe.asset_type,
     }
 
 
@@ -173,6 +177,7 @@ def test_registered_dossier_is_advertised_and_queues_new_media_only(lab, monkeyp
     assert stored["engineRegistryHash"] == hashlib.sha256(
         REGISTRY_PATH.read_bytes(),
     ).hexdigest()
+    assert stored["engineProfileHash"].startswith("sha256:")
     assert stored["materialSource"] == "generated_video"
     assert stored["assetType"] == "video/mp4"
     assert stored["promptCatalogHash"] == "e7c2a13a818da636bb32ea3027cd3d2be1a88fd8c9c74e87cf67206f3188ceff"
@@ -550,7 +555,7 @@ def prior_caption_publication(client):
 @pytest.mark.parametrize("evidence", [
     "matching", "caption_only", "missing", "invalid_binding", "producer_recipe_mismatch",
     "foreign_producer", "foreign_page", "foreign_source_page", "malformed_receipt",
-    "grade_changed", "speed_changed", "crop_changed",
+    "grade_changed", "speed_changed", "crop_changed", "unrelated_registry_change",
 ])
 def test_truck_job_reuses_only_preparable_paid_master_before_new_provider_spend(
     lab, monkeypatch, evidence,
@@ -593,8 +598,14 @@ def test_truck_job_reuses_only_preparable_paid_master_before_new_provider_spend(
         actual["visualTreatment"]["clipCrop"]["zoom"] = 1
         actual["sourceRecipeTreatment"]["clipCrop"]["zoom"] = 1
     store = cp._load_jobs()
+    prior_authority = current_generation_authority()
+    if evidence == "unrelated_registry_change":
+        # A historical job has the old global registry digest but all selected
+        # profile authorities still match; it must remain a paid re-crop input.
+        prior_authority["engineRegistryHash"] = "sha256:" + "0" * 64
+        prior_authority.pop("engineProfileHash")
     store["jobs"]["cpl-1111111111111111"] = {
-        **current_generation_authority(),
+        **prior_authority,
         "recipeSpecHash": producer_recipe_hash,
         "jobId": "cpl-1111111111111111",
         "pageId": "tt-another-page" if evidence == "foreign_page" else PAGE_ID,
@@ -635,7 +646,7 @@ def test_truck_job_reuses_only_preparable_paid_master_before_new_provider_spend(
     stored = after["jobs"][job_id]
     assert after["jobs"]["cpl-1111111111111111"] == original_producer
     assert hashlib.sha256(master.read_bytes()).hexdigest() == master_sha
-    if evidence in {"matching", "caption_only"}:
+    if evidence in {"matching", "caption_only", "unrelated_registry_change"}:
         assert stored["sourceKind"] == "truck_master_recovery"
         assert stored["providerCallsPlanned"] == 0
         assert [entry["sha256"] for entry in stored["recoveryMasters"]] == [master_sha]
@@ -881,12 +892,26 @@ async def _async_value(value):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("later_provider_failure", [False, True])
-async def test_generation_runner_lands_treated_artifacts_under_the_isolated_job_root(lab, monkeypatch, later_provider_failure):
+@pytest.mark.parametrize("unrelated_registry_digest_changed", [False, True])
+async def test_queued_generation_runner_accepts_unrelated_registry_digest_drift(
+    lab, monkeypatch, later_provider_failure, unrelated_registry_digest_changed,
+):
     client, tmp_path, _ = lab
     response = client.post(
         "/api/control-plane/v1/jobs", json=job_body(quantity=6 if later_provider_failure else 2), headers=HEADERS,
     )
     job_id = response.json()["jobId"]
+    assert cp._load_jobs()["jobs"][job_id]["status"] == "queued"
+    if unrelated_registry_digest_changed:
+        # Model a persisted queued job from before per-profile hashes were
+        # stored. Its explicit truck pins still authorize this work despite a
+        # later unrelated registry change.
+        store = cp._load_jobs()
+        selected_profile_hash = store["jobs"][job_id].pop("engineProfileHash")
+        store["jobs"][job_id]["engineRegistryHash"] = "0" * 64
+        cp.atomic_save(cp._jobs_path(), store)
+        assert cp._load_jobs()["jobs"][job_id].get("engineProfileHash") is None
+        assert selected_profile_hash.startswith("sha256:")
     corrections = []
 
     async def fake_generate_one(

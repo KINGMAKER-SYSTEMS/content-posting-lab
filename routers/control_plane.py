@@ -100,8 +100,10 @@ from services.control_plane_sources import (
     explain_empty_source_plan,
     plan_source_cuts,
     source_cut_is_planned,
+    source_cut_durations,
     resolve_source_recipe,
     source_window_exclusions,
+    SOURCE_SPEED_DURATION_UNSUPPORTED,
 )
 from services.control_plane_slideshows import (
     SyzygyError,
@@ -125,9 +127,16 @@ from services.control_plane_source_imports import (
     source_import_slot,
     validate_source_url,
 )
-from services.content_engine_registry import load_engine_registry, resolve_material_profile
+from services.content_engine_registry import (
+    job_profile_authority_matches,
+    load_engine_registry,
+    resolve_material_profile,
+)
 from services.content_format_contracts import CONTRACTS_PATH, load_format_contracts
-from services.ffmpeg import delivery_encode_args, run_color_correct
+from services.ffmpeg import (
+    delivery_encode_args, run_color_correct,
+    _probe_input_duration_seconds as probe_source_output_duration_seconds,
+)
 from services.master_pages_contract import SCHEMA as MASTER_PAGES_SCHEMA, canonical_intent, exact_intent, intent_hash
 from services import generation_budget, moderation_retry
 from services.roster_public import require_roster_auth
@@ -2011,7 +2020,7 @@ def _truck_master_candidates(
     recoveries reserve them against concurrent replenishment. Failed recovery
     jobs release them because no new delivery bytes crossed the API boundary.
     A landscape file alone is not enough: the producing job must match the
-    current recipe, engine registry, prompt catalog, executor and provider
+    selected profile, recipe, prompt catalog, executor and provider
     model. This prevents old-model or old-prompt renders from silently becoming
     new five-crop deliveries after the page's creative authority changes. The
     source files are checked again, byte-for-byte, by the recovery runner.
@@ -2039,6 +2048,41 @@ def _truck_master_candidates(
 
     candidates: list[dict[str, Any]] = []
     seen = set(reserved)
+    profile_pins = {
+        "engine": content_engine,
+        "formatContractVersion": generation_recipe.format_contract_version,
+        "executorVersion": generation_recipe.executor_version,
+        "promptCatalogHash": generation_recipe.prompt_catalog_hash,
+        "family": generation_recipe.family_name,
+        "providerModel": generation_recipe.provider_model,
+        "materialSource": generation_recipe.material_source,
+        "assetType": generation_recipe.asset_type,
+    }
+    legacy_archive_pins = {
+        key: profile_pins[key]
+        for key in (
+            "engine", "formatContractVersion", "executorVersion",
+            "promptCatalogHash", "providerModel",
+        )
+    }
+
+    def profile_matches(job: dict[str, Any]) -> bool:
+        if job_profile_authority_matches(
+            job, generation_recipe.engine_profile_hash, profile_pins,
+        ):
+            return True
+        # Archive indexes written before profile-scoped pins omit family,
+        # materialSource, assetType, and engineProfileHash. The retained
+        # selected-profile pins still establish the producing authority; an
+        # unrelated registry member must not invalidate an otherwise matching
+        # paid master. Full legacy jobs use the richer pins above.
+        return (
+            job.get("engineProfileHash") is None
+            and job_profile_authority_matches(
+                job, generation_recipe.engine_profile_hash, legacy_archive_pins,
+            )
+        )
+
     # Archived completed generated truck renders remain live re-crop candidates
     # (full manifests preserved in the index); include them in the ordered scan.
     ordered_jobs = sorted(
@@ -2053,11 +2097,14 @@ def _truck_master_candidates(
             or job.get("status") != "completed"
             or job.get("engine") != content_engine
             or job.get("recipeId") != recipe_id
-            or job.get("engineRegistryHash") != generation_recipe.engine_registry_hash
+            or not profile_matches(job)
             or job.get("formatContractVersion") != generation_recipe.format_contract_version
             or job.get("executorVersion") != generation_recipe.executor_version
             or job.get("promptCatalogHash") != generation_recipe.prompt_catalog_hash
+            or job.get("family") not in (None, generation_recipe.family_name)
             or job.get("providerModel") != generation_recipe.provider_model
+            or job.get("materialSource") not in (None, generation_recipe.material_source)
+            or job.get("assetType") not in (None, generation_recipe.asset_type)
             or not isinstance(job.get("artifactRoot"), str)
         ):
             continue
@@ -2660,12 +2707,22 @@ async def _run_owned_dossier_generation(job_id: str) -> None:
     recipe = resolve_generation_recipe(publication) if publication else None
     if (
         recipe is None
-        or job.get("engineRegistryHash") != recipe.engine_registry_hash
+        or not job_profile_authority_matches(job, recipe.engine_profile_hash, {
+            "formatContractVersion": recipe.format_contract_version,
+            "executorVersion": recipe.executor_version,
+            "promptCatalogHash": recipe.prompt_catalog_hash,
+            "family": recipe.family_name,
+            "providerModel": recipe.provider_model,
+            "materialSource": recipe.material_source,
+            "assetType": recipe.asset_type,
+        })
         or job.get("formatContractVersion") != recipe.format_contract_version
         or job.get("promptCatalogHash") != recipe.prompt_catalog_hash
         or job.get("executorVersion") != recipe.executor_version
         or job.get("family") != recipe.family_name
         or job.get("providerModel") != recipe.provider_model
+        or job.get("materialSource") != recipe.material_source
+        or job.get("assetType") != recipe.asset_type
     ):
         await asyncio.to_thread(_update_job,
             job_id,
@@ -3432,9 +3489,20 @@ async def _run_dossier_source(job_id: str) -> None:
         recipe is None
         or job.get("sourceLibraryId") != recipe.source_library_id
         or job.get("sourceLibraryHash") != recipe.source_library_hash
-        or job.get("engineRegistryHash") != recipe.engine_registry_hash
+        or not job_profile_authority_matches(job, recipe.engine_profile_hash, {
+            "engine": recipe.engine,
+            "sourceLibraryId": recipe.source_library_id,
+            "sourceLibraryHash": recipe.source_library_hash,
+            "formatContractVersion": recipe.format_contract_version,
+            "executorVersion": recipe.executor_version,
+            "materialSource": recipe.material_source,
+            "assetType": recipe.asset_type,
+        })
+        or job.get("engine") != recipe.engine
         or job.get("formatContractVersion") != recipe.format_contract_version
         or job.get("executorVersion") != recipe.executor_version
+        or job.get("materialSource") != recipe.material_source
+        or job.get("assetType") != recipe.asset_type
     ):
         await asyncio.to_thread(_update_job,
             job_id,
@@ -3494,6 +3562,12 @@ async def _run_dossier_source(job_id: str) -> None:
                 clip_start_ms=start_ms,
                 clip_duration_ms=duration_ms,
             )
+            if recipe.format_slug == "pov-club":
+                measured_duration = await asyncio.to_thread(
+                    probe_source_output_duration_seconds, str(destination),
+                )
+                if measured_duration is None or not 5.0 <= measured_duration <= 9.0:
+                    raise RuntimeError("source_output_duration_unsupported")
             manifest = _generated_manifest(job_root, destination)
             manifest["clipSpeed"] = clip_speed
             manifest["clipCrop"] = clip_crop
@@ -3593,9 +3667,19 @@ async def _run_syzygy_slideshow(job_id: str) -> None:
     if (
         recipe is None
         or job.get("sourceLibraryId") != recipe.library_id
-        or job.get("engineRegistryHash") != recipe.engine_registry_hash
+        or not job_profile_authority_matches(job, recipe.engine_profile_hash, {
+            "engine": recipe.engine,
+            "sourceLibraryId": recipe.library_id,
+            "formatContractVersion": recipe.format_contract_version,
+            "executorVersion": recipe.executor_version,
+            "materialSource": recipe.material_source,
+            "assetType": recipe.asset_type,
+        })
+        or job.get("engine") != recipe.engine
         or job.get("formatContractVersion") != recipe.format_contract_version
         or job.get("executorVersion") != recipe.executor_version
+        or job.get("materialSource") != recipe.material_source
+        or job.get("assetType") != recipe.asset_type
     ):
         await asyncio.to_thread(_update_job,
             job_id,
@@ -4374,6 +4458,7 @@ async def create_job(
                 "dossierRevision": publication["dossierRevision"],
                 "recipeSpecHash": publication["recipeSpecHash"],
                 "engineRegistryHash": generation_recipe.engine_registry_hash,
+                "engineProfileHash": generation_recipe.engine_profile_hash,
                 "formatContractVersion": generation_recipe.format_contract_version,
                 "materialSource": generation_recipe.material_source,
                 "assetType": generation_recipe.asset_type,
@@ -4458,6 +4543,7 @@ async def create_job(
                 "dossierRevision": publication["dossierRevision"],
                 "recipeSpecHash": publication["recipeSpecHash"],
                 "engineRegistryHash": generation_recipe.engine_registry_hash,
+                "engineProfileHash": generation_recipe.engine_profile_hash,
                 "formatContractVersion": generation_recipe.format_contract_version,
                 "materialSource": generation_recipe.material_source,
                 "assetType": generation_recipe.asset_type,
@@ -4475,6 +4561,11 @@ async def create_job(
             }
             start_generation = True
         elif source_recipe is not None:
+            if source_recipe.format_slug == "pov-club" and not source_cut_durations(source_recipe):
+                raise HTTPException(
+                    status_code=409,
+                    detail=SOURCE_SPEED_DURATION_UNSUPPORTED,
+                )
             served_slots, cut_history = _source_dna_cut_ledger(
                 store, source_recipe, publication["recipeVersion"],
             )
@@ -4529,6 +4620,7 @@ async def create_job(
                 "sourceLibraryId": source_recipe.source_library_id,
                 "sourceLibraryHash": source_recipe.source_library_hash,
                 "engineRegistryHash": source_recipe.engine_registry_hash,
+                "engineProfileHash": source_recipe.engine_profile_hash,
                 "formatContractVersion": source_recipe.format_contract_version,
                 "executorVersion": source_recipe.executor_version,
                 "materialSource": source_recipe.material_source,
@@ -4573,6 +4665,7 @@ async def create_job(
                 "sourceLibraryId": slideshow_recipe.library_id,
                 "librarySnapshotHash": slideshow_library.snapshot_hash,
                 "engineRegistryHash": slideshow_recipe.engine_registry_hash,
+                "engineProfileHash": slideshow_recipe.engine_profile_hash,
                 "formatContractVersion": slideshow_recipe.format_contract_version,
                 "executorVersion": slideshow_recipe.executor_version,
                 "materialSource": slideshow_recipe.material_source,
