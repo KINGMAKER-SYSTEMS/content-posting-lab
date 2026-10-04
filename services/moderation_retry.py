@@ -121,7 +121,13 @@ _STATUS_NUMBER = re.compile(r"\b[45]\d\d\b")
 # two different ways. An unlisted model returns None and the caller fails closed.
 
 
-def attempt_cost_usd(model: str, duration_seconds: int | float | None = None) -> float | None:
+def attempt_cost_usd(
+    model: str,
+    duration_seconds: int | float | None = None,
+    *,
+    resolution: str | None = None,
+    draft: bool | None = None,
+) -> float | None:
     """Cost of one billable attempt for a Replicate model id, or None if unpriced.
 
     Prices from the provider catalog (``generation_budget.catalog_cost_usd_by_model``),
@@ -130,7 +136,9 @@ def attempt_cost_usd(model: str, duration_seconds: int | float | None = None) ->
     """
     from services import generation_budget
     try:
-        return generation_budget.catalog_cost_usd_by_model(model, duration_seconds)
+        return generation_budget.catalog_cost_usd_by_model(
+            model, duration_seconds, resolution=resolution, draft=draft,
+        )
     except ValueError:
         return None
 

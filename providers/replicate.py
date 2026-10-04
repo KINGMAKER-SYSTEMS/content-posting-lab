@@ -111,7 +111,7 @@ def _build_pvideo_input(prompt: str, params: dict) -> dict:
         "aspect_ratio": aspect_ratio,
         "resolution": resolution,
         "fps": 24,
-        "draft": False,
+        "draft": params.get("draft", False),
         "prompt_upsampling": params.get("optimize_prompt", True),
         "disable_safety_filter": True,
         "save_audio": False,

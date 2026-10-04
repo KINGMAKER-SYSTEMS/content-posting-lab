@@ -199,6 +199,58 @@ def test_ui_generate_debits_queued_execution_under_budget(sync_client, monkeypat
     assert len(store["generationBudget"]["debits"]) == 1
 
 
+@pytest.mark.parametrize(
+    ("resolution", "budget", "expected_cost", "accepted"),
+    [
+        ("720p", 0.12, 0.12, True),
+        ("720p", 0.119, 0.12, False),
+        ("1080p", 0.24, 0.24, True),
+        ("1080p", 0.239, 0.24, False),
+    ],
+)
+def test_pvideo_resolution_cost_is_debited_before_submission_at_cap_boundary(
+    sync_client, monkeypatch, tmp_path, resolution, budget, expected_cost, accepted,
+):
+    """P-Video cap checks and each first debit use the submitted resolution rate."""
+    store_path = tmp_path / "control_plane_jobs.json"
+    calls = []
+    submitted = threading.Event()
+
+    async def record_submission(*args, **kwargs):
+        store = atomic_load(store_path, default={})
+        calls.append((
+            kwargs.get("cost_usd"),
+            generation_budget.spent_usd(store),
+        ))
+        await _fake_generate_one(*args, **kwargs)
+        submitted.set()
+
+    monkeypatch.setenv(generation_budget.USD_BUDGET_ENV, str(budget))
+    monkeypatch.setattr(generation_budget, "jobs_store_path", lambda: store_path)
+    monkeypatch.setitem(video_router.API_KEYS, "replicate", "test-key")
+    monkeypatch.setattr(video_router, "generate_one", record_submission)
+    data = {
+        **_UI_GENERATE_FORM,
+        "provider": "pruna-pvideo",
+        "duration": "6",
+        "resolution": resolution,
+        "project": f"pvideo-budget-{resolution}",
+    }
+
+    response = sync_client.post("/api/video/generate", data=data)
+    if not accepted:
+        assert response.status_code == 429
+        assert calls == [], "the provider was not submitted below its resolution-specific cap"
+        return
+
+    assert response.status_code == 200
+    assert submitted.wait(timeout=5), "the provider was not called after its budget debit"
+    assert calls == [(pytest.approx(expected_cost), pytest.approx(expected_cost))]
+    refused = sync_client.post("/api/video/generate", data=data)
+    assert refused.status_code == 429, "the exact-cost first call exhausts the daily cap"
+    assert len(calls) == 1
+
+
 def test_ui_generate_fails_closed_for_unpriced_provider(sync_client, monkeypatch):
     """F5 (UI): a provider with no pricing is refused (never metered as free)."""
     monkeypatch.setenv(generation_budget.USD_BUDGET_ENV, "100.0")

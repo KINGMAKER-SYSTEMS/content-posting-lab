@@ -1,5 +1,10 @@
 from . import grok, replicate
 
+_PVIDEO_RATES_USD_PER_SECOND = {
+    "720p": {"standard": 0.02, "draft": 0.005},
+    "1080p": {"standard": 0.04, "draft": 0.01},
+}
+
 PROVIDERS = {
     "grok": {
         "name": "Grok",
@@ -60,8 +65,10 @@ PROVIDERS = {
         "name": "P-Video",
         "group": "PrunaAI",
         "key_id": "replicate",
-        "pricing": "~$0.02/sec → 5 crops per run",
-        "cost_per_second_usd": 0.02,
+        "pricing": "$0.02/sec 720p standard; $0.04/sec 1080p standard",
+        "cost_per_second_usd_by_resolution": _PVIDEO_RATES_USD_PER_SECOND,
+        "default_resolution": "720p",
+        "default_draft": False,
         "models": ["prunaai/p-video"],
         "module": replicate,
         "variant": "landscape",
@@ -70,8 +77,10 @@ PROVIDERS = {
         "name": "P-Video Vertical",
         "group": "PrunaAI",
         "key_id": "replicate",
-        "pricing": "~$0.02/sec",
-        "cost_per_second_usd": 0.02,
+        "pricing": "$0.02/sec 720p standard; $0.04/sec 1080p standard",
+        "cost_per_second_usd_by_resolution": _PVIDEO_RATES_USD_PER_SECOND,
+        "default_resolution": "720p",
+        "default_draft": False,
         "models": ["prunaai/p-video"],
         "module": replicate,
         "variant": "vertical",

@@ -28,6 +28,50 @@ def test_pruna_priced_by_requested_duration():
     assert generation_budget.per_gen_cost_usd("pruna-pvideo", 15) == pytest.approx(0.30)
 
 
+@pytest.mark.parametrize(
+    ("provider_id", "resolution", "draft", "cost"),
+    [
+        ("pruna-pvideo", "720p", False, 0.12),
+        ("pruna-pvideo", "720p", True, 0.03),
+        ("pruna-pvideo", "1080p", False, 0.24),
+        ("pruna-pvideo", "1080p", True, 0.06),
+        ("pruna-pvideo-vertical", "720p", False, 0.12),
+        ("pruna-pvideo-vertical", "1080p", False, 0.24),
+    ],
+)
+def test_pvideo_cost_matches_resolution_and_draft_input(
+    provider_id, resolution, draft, cost,
+):
+    from providers.replicate import _build_pvideo_input
+
+    payload = _build_pvideo_input(
+        "prompt", {"duration": 6, "resolution": resolution, "draft": draft},
+    )
+    assert payload["resolution"] == resolution
+    assert payload["draft"] is draft
+    assert generation_budget.per_gen_cost_usd(
+        provider_id, 6, resolution=payload["resolution"], draft=payload["draft"],
+    ) == pytest.approx(cost)
+
+
+def test_pvideo_rejects_unpriced_resolution_or_invalid_draft_mode():
+    with pytest.raises(ValueError):
+        generation_budget.per_gen_cost_usd("pruna-pvideo", 6, resolution="4k")
+    with pytest.raises(ValueError):
+        generation_budget.per_gen_cost_usd("pruna-pvideo", 6, resolution="720p", draft="true")
+
+
+def test_pvideo_model_id_retry_cost_uses_the_same_resolution_and_draft_rate():
+    from services.moderation_retry import attempt_cost_usd
+
+    assert attempt_cost_usd(
+        "prunaai/p-video", 6, resolution="1080p", draft=False,
+    ) == pytest.approx(0.24)
+    assert attempt_cost_usd(
+        "prunaai/p-video", 6, resolution="1080p", draft=True,
+    ) == pytest.approx(0.06)
+
+
 def test_flat_cost_provider_ignores_duration():
     # hailuo is flat ~$0.28/video regardless of requested seconds.
     assert generation_budget.per_gen_cost_usd("hailuo", 6) == pytest.approx(0.28)

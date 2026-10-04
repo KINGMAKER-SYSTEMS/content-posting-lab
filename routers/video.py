@@ -415,13 +415,16 @@ async def generate_video(
 
     # Check affordability before creating job/prompt state. Queued indices debit
     # only after acquiring the generation permit, on their execution UTC day.
-    # Cost is priced from the catalog by duration (Grok is ~$0.50/s, so 15 s is
-    # never under-charged as a 10 s one); an unpriced provider fails closed.
+    # Cost is priced from the catalog by actual request settings (duration,
+    # resolution and draft mode). P-Video currently submits standard mode;
+    # its 1080p rate is twice the 720p rate. Unpriced inputs fail closed.
     # The body `resets_at` and the `Retry-After` header are both computed from a
     # SINGLE captured `now` so midnight cannot fall between the two samples and
     # make the header disagree with the body.
     try:
-        cost_per_gen = generation_budget.per_gen_cost_usd(provider, duration)
+        cost_per_gen = generation_budget.per_gen_cost_usd(
+            provider, duration, resolution=resolution, draft=False,
+        )
     except ValueError as exc:
         raise HTTPException(
             status_code=500,

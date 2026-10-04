@@ -404,7 +404,10 @@ async def generate_one(
             cost_usd = extra.pop("cost_usd", None)
             if cost_usd is None:
                 from services import generation_budget
-                cost_usd = generation_budget.per_gen_cost_usd(provider, duration)
+                cost_usd = generation_budget.per_gen_cost_usd(
+                    provider, duration, resolution=resolution,
+                    draft=extra.get("draft"),
+                )
 
             params = {
                 "aspect_ratio": aspect_ratio,

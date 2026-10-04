@@ -95,8 +95,10 @@
   provider identities.
   UI admission checks affordability without charging queued work; each index
   reserves after acquiring its execution permit on the current UTC day.
-  Replicate's bounded HTTP-create retries reserve each additional POST with
-  a distinct debit before requesting it, including 500/503 resubmissions.
+  Charges use the submitted provider settings, including resolution and draft
+  mode when the catalog prices those options separately. Replicate's bounded
+  HTTP-create retries reserve each additional POST with a distinct debit before
+  requesting it, including 500/503 resubmissions.
 - `services/caption_discipline.py` owns Content Lab's closed validation of the
   caption corpus/register selection already made by Dossier and Control Plane.
 - `services/control_plane_source_imports.py` owns bounded public-HTTPS download,

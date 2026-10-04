@@ -206,15 +206,17 @@ def charged_cost_per_gen(value: Any) -> float:
 def catalog_cost_usd_by_model(
     model_id: str,
     duration_seconds: int | float | None = None,
+    resolution: str | None = None,
+    draft: bool | None = None,
 ) -> float:
     """Cost of one billable submission for an exact Replicate model id.
 
     Maps ``model_id`` to its provider entry in ``providers.PROVIDERS`` and
-    prices it exactly as the operator-UI route does (flat ``cost_per_gen_usd``
-    when present, else ``cost_per_second_usd`` × duration). An unknown model, a
-    provider with no pricing, or a per-second provider without a duration raises
-    ``ValueError`` — a paid lane can never meter as free. This is the single
-    pricing source of truth for the moderation-retry (executor) lane.
+    prices it exactly as the operator-UI route does (flat, per-second, or
+    resolution/draft-specific pricing). An unknown model, a provider with no
+    pricing, or a per-second provider without a duration raises ``ValueError``
+    — a paid lane can never meter as free. This is the single pricing source
+    of truth for the moderation-retry (executor) lane.
     """
     from providers import PROVIDERS
 
@@ -222,28 +224,65 @@ def catalog_cost_usd_by_model(
         if not isinstance(info, dict):
             continue
         if model_id in (info.get("models") or []):
-            return per_gen_cost_usd(provider_id, duration_seconds)
+            return per_gen_cost_usd(
+                provider_id, duration_seconds, resolution=resolution, draft=draft,
+            )
     raise ValueError(f"unknown replicate model: {model_id!r}")
 
 
 def per_gen_cost_usd(
     provider_id: str,
     duration_seconds: int | float | None = None,
+    *,
+    resolution: str | None = None,
+    draft: bool | None = None,
 ) -> float:
     """Cost of one billable generation for ``provider_id``, from the catalog.
 
     Pinned to the provider catalog: a flat ``cost_per_gen_usd`` is used when
-    present, otherwise a ``cost_per_second_usd`` is multiplied by the requested
-    duration (so a 15 s Grok request is never under-charged as a 10 s one). An
-    unknown provider, a provider with no pricing, or a per-second provider
-    without a duration raises ``ValueError`` — a new paid model can never meter
-    as free.
+    present, otherwise the applicable per-second rate is multiplied by the
+    requested duration. Resolution/draft-priced providers require a supported
+    resolution and a boolean draft mode; omitted settings use the provider's
+    declared defaults. An unknown provider, missing pricing, or a per-second
+    provider without a duration raises ``ValueError`` — a new paid model can
+    never meter as free.
     """
     from providers import PROVIDERS
 
     info = PROVIDERS.get(provider_id)
     if not isinstance(info, dict):
         raise ValueError(f"unknown provider: {provider_id!r}")
+    rates_by_resolution = info.get("cost_per_second_usd_by_resolution")
+    if rates_by_resolution is not None:
+        if not isinstance(rates_by_resolution, dict):
+            raise ValueError(f"{provider_id}.cost_per_second_usd_by_resolution is invalid")
+        selected_resolution = resolution or info.get("default_resolution")
+        if not isinstance(selected_resolution, str) or selected_resolution not in rates_by_resolution:
+            raise ValueError(
+                f"{provider_id!r} has no pricing for resolution {selected_resolution!r}"
+            )
+        selected_draft = info.get("default_draft", False) if draft is None else draft
+        if type(selected_draft) is not bool:
+            raise ValueError(f"{provider_id}.draft must be a boolean")
+        mode = "draft" if selected_draft else "standard"
+        resolution_rates = rates_by_resolution[selected_resolution]
+        if not isinstance(resolution_rates, dict) or mode not in resolution_rates:
+            raise ValueError(
+                f"{provider_id!r} has no {mode} pricing for {selected_resolution}"
+            )
+        rate = _finite_usd(
+            resolution_rates[mode],
+            f"{provider_id}.{selected_resolution}.{mode} cost_per_second_usd",
+        )
+        if rate == 0.0:
+            raise ValueError(
+                f"{provider_id}.{selected_resolution}.{mode} cost_per_second_usd must be > 0"
+            )
+        if duration_seconds is None or not _is_finite_nonnegative(duration_seconds) or float(duration_seconds) <= 0:
+            raise ValueError(
+                f"{provider_id!r} is priced per second; a positive duration is required"
+            )
+        return round(rate * float(duration_seconds), 4)
     flat = info.get("cost_per_gen_usd")
     if flat is not None:
         return charged_cost_per_gen(flat)
