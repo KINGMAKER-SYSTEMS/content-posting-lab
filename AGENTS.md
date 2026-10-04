@@ -123,6 +123,8 @@
 - `burn_server.py` exposes the same typed caption-render route on the posting
   Mac's canonical port-8002 Burn runtime for Rail consumption.
 - `events.md` is the repository's append-only chronological ledger.
+- `SCHEMA.md` describes the current Editor Bay timeline, edit-command, ABN import,
+  and render-cache contracts; `services/editor_timeline.py` and `routers/agenticnews.py` own the implementation.
 
 ## Local Contracts
 
