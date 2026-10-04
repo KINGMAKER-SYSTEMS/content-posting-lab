@@ -113,3 +113,67 @@ def test_finite_amounts_still_reserve(monkeypatch, tmp_path):
     path.write_text(json.dumps(store))
     assert generation_budget.debit_generation_spend_at(path, 0.28, "replicate") is True
     assert math.isfinite(generation_budget.spent_usd_at(path))
+
+
+@pytest.mark.parametrize("operation", ["debit", "admission", "summary"])
+@pytest.mark.parametrize("original", [
+    b"{}", b'{"version":1,"byIdempotency":{},"served":{}}',
+    b'{"jobs":[]}', b'{"jobs":null}',
+])
+def test_existing_legacy_store_requires_jobs_mapping(operation, original, tmp_path):
+    path = tmp_path / "jobs.json"
+    path.write_bytes(original)
+    if operation == "summary":
+        value = generation_budget.summary_at(path)
+        assert value["corrupt"] is True
+        assert value["spentUsd"] is None and value["remainingUsd"] == 0
+    else:
+        with pytest.raises(generation_budget.BudgetLedgerCorrupt):
+            if operation == "debit":
+                generation_budget.debit_generation_spend_at(path, 0.28, "new-paid-intent")
+            else:
+                generation_budget.can_reserve_at(path, 0.28)
+    assert path.read_bytes() == original
+    assert not generation_budget.ledger_path(path).exists()
+
+
+@pytest.mark.parametrize("operation", ["debit", "admission", "summary"])
+def test_unreadable_legacy_store_uses_named_corrupt_contract(operation, monkeypatch, tmp_path):
+    from pathlib import Path
+    path = tmp_path / "jobs.json"
+    original = b'{"jobs":{},"byIdempotency":{},"served":{}}'
+    path.write_bytes(original)
+    read_bytes = Path.read_bytes
+    def unreadable(target):
+        if target == path:
+            raise PermissionError("fixture denied read")
+        return read_bytes(target)
+    monkeypatch.setattr(Path, "read_bytes", unreadable)
+    if operation == "summary":
+        value = generation_budget.summary_at(path)
+        assert value["corrupt"] is True
+        assert value["spentUsd"] is None and value["remainingUsd"] == 0
+    else:
+        with pytest.raises(generation_budget.BudgetLedgerCorrupt):
+            if operation == "debit":
+                generation_budget.debit_generation_spend_at(path, 0.28, "new-paid-intent")
+            else:
+                generation_budget.can_reserve_at(path, 0.28)
+    assert read_bytes(path) == original
+    assert not generation_budget.ledger_path(path).exists()
+
+
+@pytest.mark.parametrize("operation", ["debit", "admission", "summary"])
+def test_only_absent_legacy_store_starts_empty(operation, tmp_path):
+    path = tmp_path / "absent-jobs.json"
+    if operation == "debit":
+        assert generation_budget.debit_generation_spend_at(path, 0.28, "first-paid-intent")
+        assert generation_budget.spent_usd_at(path) == pytest.approx(0.28)
+    elif operation == "admission":
+        assert generation_budget.can_reserve_at(path, 0.28)
+        assert not generation_budget.ledger_path(path).exists()
+    else:
+        value = generation_budget.summary_at(path)
+        assert value["corrupt"] is False and value["spentUsd"] == 0
+        assert not generation_budget.ledger_path(path).exists()
+    assert not path.exists()  # private ledger initialization never overwrites legacy job bytes
