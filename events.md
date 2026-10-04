@@ -1328,24 +1328,22 @@ worktree: [l13-frame-fit] [/Users/ecfromthedc/dev/seats/L13-lab-fit]
 type: [feature-request]: Captions shrink to fit inside the visible picture
 area: [backend] [testing]
 
-Owner rule 2026-10-04: a typed caption stays inside the visible picture - the
-whole 1080x1920 canvas on a full-screen page, or the band of rows a framed page
-keeps (16:9 656-1263, 4:3 554-1363, 1:1 420-1499, 3:4 240-1679). The style's
-size is the maximum. A caption inside the safe area (44 px each side, ceil(4% of
-the picture height) top and bottom) is drawn exactly as styled at any size; one
+Owner rule 2026-10-04: a typed caption stays inside the visible picture - every
+row of the 1080x1920 canvas on a full-screen page, or the band of rows a framed
+page keeps (16:9 656-1263, 4:3 554-1363, 1:1 420-1499, 3:4 240-1679) - and 44 px
+in from each side (the gate's existing 4% side margin). The style's size is the
+maximum. A caption inside that area is drawn exactly as styled at any size; one
 that would leave it shrinks to the largest size that fits, never below 12 pt
-(30 px). Lines are scaled, not re-wrapped. A caption placed too near the top or
-bottom edge to keep that margin even at 12 pt may use the margin rows. Only one
-that cannot fit the picture at 12 pt refuses (CAPTION_OUT_OF_FRAME).
-CAPTION_LINE_TOO_WIDE and the fixed 80% column / full-canvas block checks are
-gone. The typed quality gate drops its 80% width and 45% height caps for
-"inside the picture" with the 4% side margins; the legacy untyped gate is
-unchanged. The plan records fitted_font_size_px only when a caption shrank, so
-captions that already fit keep byte-identical overlays, plans and hashes.
-Verification on maj: focused caption/post-render/gate files 213 passed (the
-new tests fail on main: 37 failed). A 11,664-style matrix against main: 7,569
-byte-identical; no caption that rendered on main is refused now; 243 near-edge
-captions now shrink; 2,808 that main refused now render. No deployment.
+(30 px). Lines are scaled, not re-wrapped. Only a caption that cannot fit at
+12 pt refuses (CAPTION_OUT_OF_FRAME). CAPTION_LINE_TOO_WIDE and the fixed 80%
+column / full-canvas block checks are gone. The typed quality gate drops its 80%
+width and 45% height caps for "inside the same area"; the legacy untyped gate
+is unchanged. The plan records fitted_font_size_px only when a caption shrank,
+so captions that fit keep byte-identical overlays, plans and hashes. (Lead 13
+ruling, later the same day: no top/bottom inset, so the earlier 4% top/bottom
+inset and its near-edge fallback were removed.)
+Verification on maj: see PR #216 (focused files and full suite, plus an
+11,664-style old-vs-new render comparison). No deployment.
 
 time: [10:14pm] [04-10-26]
 agent: [Codex desktop] [gpt-6]

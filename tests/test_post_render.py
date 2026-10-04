@@ -409,8 +409,8 @@ def test_framed_bottom_caption_is_burned_over_the_picture_not_the_bar(real_portr
 
 TALL_LINES = ["when you", "finally", "see the", "light", "again", "at last",
               "and it", "all ends", "so well", "tonight"]
-# Inclusive caption safe areas: 44 px each side, ceil(4% of picture height) top/bottom.
-SAFE_AREAS = {"9:16": (44, 77, 1035, 1842), "16:9": (44, 681, 1035, 1238), "4:3": (44, 587, 1035, 1330)}
+# Inclusive caption fit areas: the picture's rows, 44 px in from each side.
+SAFE_AREAS = {"9:16": (44, 0, 1035, 1919), "16:9": (44, 656, 1035, 1263), "4:3": (44, 554, 1035, 1363)}
 FRAME_ROWS = {"16:9": (656, 1263), "4:3": (554, 1363)}
 
 

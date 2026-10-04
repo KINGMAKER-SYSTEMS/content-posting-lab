@@ -60,16 +60,13 @@ _BACKGROUNDS_NEEDING_COLOR = ("box", "highlight")
 # Where an inverted caption always sits (see CaptionStyle.center_inverted_caption).
 _INVERTED_PLACEMENT = {"position": "middle", "offset_pct": 0}
 # Fit inside the visible picture (owner rule, 2026-10-04). The style's size is
-# the maximum: a caption that stays inside the picture's safe area is drawn
-# exactly as styled, however big, and one that would leave it only shrinks.
-# The picture is the whole 1080x1920 canvas on a full-screen page, or the band
-# of rows a framed page keeps. Its safe area is inset FIT_SIDE_MARGIN_PX on the
-# left and right (the quality gate's 4% side margin: 44/1080 >= 0.04) and
-# ceil(4% of the picture's height) at the top and bottom. The smallest size a
-# caption may shrink to is the smallest size_pt the style allows: 12 pt, 30 px.
-# A caption placed so near the top or bottom edge that it cannot keep that
-# top/bottom margin even at 12 pt may use it (it still stays inside the
-# picture and the side margins); only one that cannot fit then is refused.
+# the maximum: a caption that stays inside the picture is drawn exactly as
+# styled, however big, and one that would leave it only shrinks. The picture is
+# every row of the 1080x1920 canvas on a full-screen page, or the band of rows a
+# framed page keeps, inset FIT_SIDE_MARGIN_PX on the left and right (the quality
+# gate's 4% side margin: 44/1080 >= 0.04); there is no top or bottom inset. The
+# smallest size a caption may shrink to is the smallest size_pt the style
+# allows: 12 pt, 30 px.
 FIT_SIDE_MARGIN_PX = 44
 FIT_FLOOR_PX = round(12 * _OUTPUT_SCALE)
 # Rows and columns a box or highlight background paints beyond the text ink.
@@ -537,22 +534,17 @@ def _cased(text: str, text_case: str) -> str:
     return text
 
 
-def caption_fit_area(
-    picture_rows: tuple[int, int] | None = None, *, vertical_margin: bool = True
-) -> tuple[int, int, int, int]:
+def caption_fit_area(picture_rows: tuple[int, int] | None = None) -> tuple[int, int, int, int]:
     """Inclusive ``(left, top, right, bottom)`` pixels a caption's ink must stay inside.
 
     ``picture_rows`` is the first and last visible canvas row (inclusive): a
-    framed page's band, or None for the whole full-screen canvas. Without
-    ``vertical_margin`` the area reaches the picture's top and bottom rows.
+    framed page's band, or None for the whole full-screen canvas.
     """
 
     first, last = picture_rows if picture_rows is not None else (0, FRAME_HEIGHT - 1)
     if not 0 <= first < last < FRAME_HEIGHT:
         raise ValueError("picture rows must be two increasing rows on the 1920-row canvas")
-    vertical_margin = (4 * (last - first + 1) + 99) // 100 if vertical_margin else 0
-    return (FIT_SIDE_MARGIN_PX, first + vertical_margin,
-            FRAME_WIDTH - 1 - FIT_SIDE_MARGIN_PX, last - vertical_margin)
+    return (FIT_SIDE_MARGIN_PX, first, FRAME_WIDTH - 1 - FIT_SIDE_MARGIN_PX, last)
 
 
 def _load_font(font_path: Path, size_px: int) -> ImageFont.FreeTypeFont:
@@ -690,7 +682,7 @@ def render_caption_overlay(
     """Render and return a deterministic transparent 1080x1920 caption PNG.
 
     The caption is drawn at the style's size when its ink stays inside the
-    visible picture's safe area (see ``caption_fit_area``); otherwise it
+    visible picture (see ``caption_fit_area``); otherwise it
     shrinks to the largest size that does, down to 12 pt. ``fit_rows`` is the
     first and last row (inclusive) of a framed page's picture band; None is
     the whole full-screen canvas.
@@ -727,15 +719,13 @@ def render_caption_overlay(
         * ((_POSITION_Y_PCT[style.position] + style.offset_pct) / 100)
     )
 
-    def unturned(area: tuple[int, int, int, int]) -> tuple[int, int, int, int]:
-        if not style.inverted:
-            return area
+    area = caption_fit_area(fit_rows)
+    if style.inverted:
         # The finished canvas is turned half a turn below, so fit against
         # where the area sits before that turn.
-        return (FRAME_WIDTH - 1 - area[2], FRAME_HEIGHT - 1 - area[3],
+        area = (FRAME_WIDTH - 1 - area[2], FRAME_HEIGHT - 1 - area[3],
                 FRAME_WIDTH - 1 - area[0], FRAME_HEIGHT - 1 - area[1])
-
-    fit = lambda area: _fit_font_size(
+    drawn_font_size_px = _fit_font_size(
         font_at,
         lines,
         max_px=font_size_px,
@@ -746,14 +736,6 @@ def render_caption_overlay(
         center_y_px=center_y_px,
         area=area,
     )
-    area = unturned(caption_fit_area(fit_rows))
-    try:
-        drawn_font_size_px = fit(area)
-    except CaptionRenderError:
-        # Placed too near the top or bottom edge to keep that margin even at
-        # 12 pt: it may use the margin rows, but never leave the picture.
-        area = unturned(caption_fit_area(fit_rows, vertical_margin=False))
-        drawn_font_size_px = fit(area)
 
     while True:
         font = font_at(drawn_font_size_px)

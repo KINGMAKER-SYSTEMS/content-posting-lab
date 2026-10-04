@@ -305,9 +305,9 @@ def test_long_caption_renders_without_word_count_rejection(font_dir):
 # Its size is the maximum: inside, it is drawn as styled however big;
 # leaving, it only shrinks. Band rows are what services/page_frame.py keeps.
 FRAME_BAND_ROWS = {"16:9": (656, 1263), "4:3": (554, 1363), "1:1": (420, 1499), "3:4": (240, 1679)}
-# Inclusive safe areas: 44 px each side, ceil(4% of the picture height) top and bottom.
-SAFE_AREAS = {None: (44, 77, 1035, 1842), "16:9": (44, 681, 1035, 1238), "4:3": (44, 587, 1035, 1330),
-              "1:1": (44, 464, 1035, 1455), "3:4": (44, 298, 1035, 1621)}
+# Inclusive fit areas: the picture's rows, 44 px in from each side.
+SAFE_AREAS = {None: (44, 0, 1035, 1919), "16:9": (44, 656, 1035, 1263), "4:3": (44, 554, 1035, 1363),
+              "1:1": (44, 420, 1035, 1499), "3:4": (44, 240, 1035, 1679)}
 SHORT_LINES = ["when you", "finally", "see the", "light", "again", "at last",
                "and it", "all ends", "so well", "tonight"]
 
@@ -330,7 +330,7 @@ def inside(box, area):
     return area[0] <= box[0] and area[1] <= box[1] and box[2] <= area[2] and box[3] <= area[3]
 
 
-def test_safe_areas_are_the_picture_inset_by_the_gate_margins():
+def test_fit_areas_are_the_picture_inset_by_the_gate_side_margins():
     from services.caption_render import caption_fit_area
     from services.page_frame import FRAME_BAND_HEIGHTS, frame_band_rows
     assert {frame: frame_band_rows(height) for frame, height in FRAME_BAND_HEIGHTS.items()} == FRAME_BAND_ROWS
@@ -393,7 +393,7 @@ def test_small_caption_on_a_framed_page_is_not_shrunk(font_dir, frame):
 
 def test_huge_caption_inside_the_full_screen_is_drawn_as_styled(font_dir):
     # 983 px wide: it used to refuse (CAPTION_LINE_TOO_WIDE, over 864 px), but
-    # it is inside the screen's safe area, so it is drawn exactly as styled.
+    # it is inside the screen and its side margins, so it is drawn exactly as styled.
     payload = request(size_pt=72).model_copy(update={"caption": "keep going"})
     result = render_caption_overlay(payload, font_dir=font_dir)
     assert result.plan.font_size_px == 180 and result.plan.fitted_font_size_px is None
@@ -404,7 +404,7 @@ def test_huge_caption_inside_the_full_screen_is_drawn_as_styled(font_dir):
 
 
 def test_caption_slightly_too_wide_for_the_full_screen_shrinks_to_fit(font_dir):
-    # 1028 px wide at 72 pt: more than the 992 px safe width, so it shrinks.
+    # 1028 px wide at 72 pt: more than the 992 px between the side margins, so it shrinks.
     payload = request(size_pt=72).model_copy(update={"caption": "never again"})
     result = render_caption_overlay(payload, font_dir=font_dir)
     assert 170 <= result.plan.fitted_font_size_px < 180
@@ -427,17 +427,16 @@ def test_framed_caption_with_a_too_wide_line_shrinks_into_the_picture(font_dir):
 
 
 @pytest.mark.parametrize("position,offset", [("top", -10), ("bottom", 10)])
-def test_caption_placed_at_the_edge_may_use_the_margin_rather_than_be_refused(font_dir, position, offset):
-    # Centred about 96 rows from the edge, two lines cannot keep the 77-row
-    # top/bottom margin even at 12 pt. They posted before the fit existed and
-    # still do: inside the screen and the side margins, never refused.
+def test_caption_near_the_edge_but_inside_the_picture_is_unchanged(font_dir, position, offset):
+    # Two lines centred about 96 rows from the screen's edge: inside the
+    # picture, so drawn exactly as styled and passed by the gate.
     from burn_quality_gate import overlay_geometry_reasons
 
     payload = request(size_pt=16, position=position, offset_pct=offset, line_balance=50)
     result = render_caption_overlay(payload, font_dir=font_dir)
+    assert result.plan.fitted_font_size_px is None
     box = ink_box(result)
-    assert inside(box, (44, 0, 1035, 1919))
-    assert not inside(box, SAFE_AREAS[None])
+    assert inside(box, SAFE_AREAS[None]) and (box[1] < 77 or box[3] > 1842)
     assert overlay_geometry_reasons(result.overlay.base64, payload.style.model_dump(exclude_none=True)) == []
 
 

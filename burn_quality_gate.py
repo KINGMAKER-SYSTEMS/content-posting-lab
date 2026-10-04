@@ -171,9 +171,8 @@ def overlay_geometry_reasons(
         if height_pct > 0.45:
             reasons.append(f"height:{height_pct:.3f}>0.45")
     else:
-        # The picture itself with the 4% side margins; the renderer's extra
-        # top/bottom margin is a preference it drops only near the edge.
-        left, top, right, bottom = caption_fit_area(band_rows, vertical_margin=False)
+        # The same area the renderer fits to: the picture with the 4% side margins.
+        left, top, right, bottom = caption_fit_area(band_rows)
         if (w, h) != (FRAME_WIDTH, FRAME_HEIGHT) or not (
                 left <= min_x and top <= min_y and max_x <= right and max_y <= bottom):
             reasons.append(
