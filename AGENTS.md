@@ -89,6 +89,39 @@
   generation/source/recovery outputs through `routers/control_plane.py`.
 - `services/generation_recovery.py` owns private provider checkpoints and
   cross-process generation/store locks. Checkpoints are not admission authority.
+- `services/generation_budget.py` owns the shared durable paid-generation ledger.
+  The private `_generation_budget/<jobs-file>.sqlite3` beside the durable job
+  JSON uses SQLite WAL/FULL transactions: an indexed exact-ID lookup and one
+  UTC-day total update commit with each new immutable debit. Prior IDs and
+  uncertain paid intents are never pruned, refunded, repriced, or resubmitted.
+  Migration retains the original JSON bytes in an immutable audit row, imports
+  every legacy ID without inventing its submission day, and preserves the
+  declared day's total. It leaves the original jobs JSON unchanged. Missing,
+  corrupt or mismatched storage fails closed; it never restores a fresh balance.
+  Unset `LAB_GENERATION_DAILY_BUDGET_USD` uses $175/day; explicit zero is the
+  emergency stop, and malformed/nonfinite/negative values refuse paid work.
+  Pricing follows the unchanged model input builders and current published
+  catalog rates, including normalized Hailuo duration/resolution, standard
+  P-Video duration/resolution, WAN per-output resolution/interpolation, FLUX's
+  run fee and actual output megapixels, and direct xAI's classic Grok
+  resolution/duration plus its input-image fee. FLUX forwards no input images.
+  Crop count and requested WAN duration/FPS do not change provider-run price.
+  Invalid known-model pricing cannot fall back to a stale recipe estimate.
+  Operator submission IDs retain the full UUID; persisted prediction/debit IDs
+  remain unchanged and replaying a known prediction remains free.
+  Initial budget refusal returns 429, `detail.error`, `detail.resets_at` and
+  `Retry-After` from one clock sample. Terminal status uses the existing bounded
+  `error`/`errorClass`/`errorDetail` fields with `daily_budget reset=<UTC Z>`;
+  retained paid outputs and consumer reset-aware scheduling require their own
+  artifact/admission evidence. No top-level status reset field is added.
+  Raw ABN Flux/WAN and recreate LaMa creates reserve a distinct submission id
+  before every POST, including identical inputs. Only resuming a known provider
+  operation may reuse a debit; prompt text, image bytes and output names are not
+  provider identities.
+  UI admission checks affordability without charging queued work; each index
+  reserves after acquiring its execution permit on the current UTC day.
+  Replicate's bounded HTTP-create retries reserve each additional POST with
+  a distinct debit before requesting it, including 500/503 resubmissions.
 - `services/caption_discipline.py` owns Content Lab's closed validation of the
   caption corpus/register selection already made by Dossier and Control Plane.
 - `services/control_plane_source_imports.py` owns bounded public-HTTPS download,
@@ -536,6 +569,18 @@
 
 - Run `pytest -q tests/test_abn_factory_atomic_text.py tests/test_abn_factory.py -k 'atomic_write_text or kinetic'`
   for atomic scratch writes, inert script parameters and exact JSON round trips.
+
+- Run `pytest -q tests/test_generation_budget_request_boundaries.py` for queued
+  UTC rollover, current-day refusal and each bounded HTTP-create retry debit.
+
+- Run `pytest -q tests/test_generation_budget_pricing.py tests/test_generation_budget_debits.py tests/test_generation_budget_failclosed.py tests/test_generation_budget_refusal_contract.py tests/test_video_api.py`
+  for actual payload cap boundaries and operator-ID collisions, indexed accounting, immutable
+  migration/audit, corruption/loss refusal, and preserved partial paid outputs
+  within the existing status schema.
+
+- Run `pytest -q tests/test_generation_budget_raw_submissions.py tests/test_replicate_text_removal.py tests/test_abn_factory.py`
+  for repeated raw creates, actual ledger totals, exhausted caps and the explicit
+  zero-budget stop without paid requests.
 
 - Run `pytest -q tests/test_ytdlp_download_diagnostics.py tests/test_control_plane_source_import_service.py tests/test_control_plane_source_imports.py`
   for private cookie-copy ownership, crash leftovers, failed/cancelled attempts,

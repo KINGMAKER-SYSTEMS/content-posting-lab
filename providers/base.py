@@ -398,6 +398,14 @@ async def generate_one(
             provider_info = PROVIDERS[provider]
             mod = provider_info["module"]
 
+            # One billable generation's estimated cost, pinned to the catalog.
+            # The Control Plane executor passes its recipe-pinned cost explicitly;
+            # the operator-UI path derives it from the requested provider/duration.
+            cost_usd = extra.pop("cost_usd", None)
+            if cost_usd is None:
+                from services import generation_budget
+                cost_usd = generation_budget.per_gen_cost_usd(provider, duration, resolution=resolution)
+
             params = {
                 "aspect_ratio": aspect_ratio,
                 "resolution": resolution,
@@ -406,6 +414,12 @@ async def generate_one(
                 "entry": entry,
                 "model_id": provider_info["models"][0],
                 "variant": provider_info.get("variant"),
+                # Scope the provider-facing job id per UI index: the operator-UI
+                # route spawns several generate_one calls sharing one job_id, so
+                # a per-index suffix keeps a PA resubmission debit id distinct
+                # per index (each real paid prediction debits exactly once).
+                "job_id": f"{job_id}#{index}",
+                "cost_usd": cost_usd,
                 **extra,
             }
 
