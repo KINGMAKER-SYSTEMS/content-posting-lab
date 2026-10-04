@@ -1595,3 +1595,49 @@ def test_pov_club_rejects_legacy_grid_ids_without_breaking_older_formats(speed):
         assert source_cut_is_planned(
             club_recipe, cut.master, cut.start_ms, cut.duration_ms, cut.slot_id,
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("measured_seconds", [None, 4.99, 9.01, 5.0, 9.0])
+async def test_pov_club_measures_output_before_admitting_manifest(lab, monkeypatch, measured_seconds):
+    client, tmp_path, _ = lab
+    payload = publication()
+    assert client.post(
+        "/api/control-plane/v1/recipes", json=payload,
+        headers=headers("club-measured-register"),
+    ).status_code == 200
+    response = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(1, payload),
+        headers=headers("club-measured-job"),
+    )
+    job_id = response.json()["jobId"]
+    resolver = cp._dossier_source_recipe
+    monkeypatch.setattr(cp, "_dossier_source_recipe", lambda p: replace(resolver(p), format_slug="pov-club"))
+    source = tmp_path / "master.mp4"
+    source.write_bytes(b"master")
+
+    async def cached_source(*_):
+        return source
+
+    async def render(_src, dst, *_args, **_kwargs):
+        Path(dst).write_bytes(b"derived")
+
+    probed = []
+    def probe(path):
+        assert Path(path).read_bytes() == b"derived"
+        probed.append(path)
+        return measured_seconds
+
+    monkeypatch.setattr(cp, "_cached_source_master", cached_source)
+    monkeypatch.setattr(cp, "run_color_correct", render)
+    monkeypatch.setattr(cp, "probe_source_output_duration_seconds", probe)
+    await cp._run_dossier_source(job_id)
+    job = cp._load_jobs()["jobs"][job_id]
+    assert len(probed) == 1
+    if measured_seconds in (5.0, 9.0):
+        assert job["status"] == "completed"
+        assert len(job["clips"]) == 1
+    else:
+        assert job["status"] == "failed"
+        assert job["error"] == "source_output_duration_unsupported"
+        assert not job.get("clips")

@@ -133,7 +133,10 @@ from services.content_engine_registry import (
     resolve_material_profile,
 )
 from services.content_format_contracts import CONTRACTS_PATH, load_format_contracts
-from services.ffmpeg import delivery_encode_args, run_color_correct
+from services.ffmpeg import (
+    delivery_encode_args, run_color_correct,
+    _probe_input_duration_seconds as probe_source_output_duration_seconds,
+)
 from services.master_pages_contract import SCHEMA as MASTER_PAGES_SCHEMA, canonical_intent, exact_intent, intent_hash
 from services import moderation_retry
 from services.roster_public import require_roster_auth
@@ -3487,6 +3490,12 @@ async def _run_dossier_source(job_id: str) -> None:
                 clip_start_ms=start_ms,
                 clip_duration_ms=duration_ms,
             )
+            if recipe.format_slug == "pov-club":
+                measured_duration = await asyncio.to_thread(
+                    probe_source_output_duration_seconds, str(destination),
+                )
+                if measured_duration is None or not 5.0 <= measured_duration <= 9.0:
+                    raise RuntimeError("source_output_duration_unsupported")
             manifest = _generated_manifest(job_root, destination)
             manifest["clipSpeed"] = clip_speed
             manifest["clipCrop"] = clip_crop
