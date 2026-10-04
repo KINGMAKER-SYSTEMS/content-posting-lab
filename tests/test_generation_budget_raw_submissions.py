@@ -12,7 +12,7 @@ from services import abn_factory, generation_budget
 @pytest.mark.parametrize("emergency_stop", [False, True])
 def test_repeated_lama_input_cannot_bypass_budget(monkeypatch, tmp_path, emergency_stop):
     store = tmp_path / "jobs.json"
-    monkeypatch.setenv("LAB_GENERATION_DAILY_BUDGET_USD", "0.04")
+    monkeypatch.setenv("LAB_GENERATION_DAILY_BUDGET_USD", "0.81")
     monkeypatch.setattr(generation_budget, "jobs_store_path", lambda: store)
     monkeypatch.setitem(replicate.API_KEYS, "replicate", "fixture-token")
     monkeypatch.setattr(replicate, "_generate_text_mask", lambda _: "fixture-mask")
@@ -43,10 +43,10 @@ def test_repeated_lama_input_cannot_bypass_budget(monkeypatch, tmp_path, emergen
         asyncio.run(replicate.remove_text(image, Client()))
     expected_posts = 1 if emergency_stop else 2
     assert len(posts) == expected_posts
-    assert generation_budget.spent_usd_at(store) == expected_posts * 0.02
+    assert generation_budget.spent_usd_at(store) == expected_posts * 0.405
 
 
-@pytest.mark.parametrize("lane,cost", [("flux", 0.003), ("wan", 0.30)])
+@pytest.mark.parametrize("lane,cost", [("flux", 0.003), ("wan", 0.50)])
 @pytest.mark.parametrize("emergency_stop", [False, True])
 def test_repeated_abn_input_cannot_bypass_budget(monkeypatch, tmp_path, lane, cost, emergency_stop):
     store = tmp_path / "jobs.json"
@@ -87,3 +87,28 @@ def test_repeated_abn_input_cannot_bypass_budget(monkeypatch, tmp_path, lane, co
     expected_posts = 1 if emergency_stop else 2
     assert len(posts) == expected_posts
     assert generation_budget.spent_usd_at(store) == expected_posts * cost
+
+
+@pytest.mark.parametrize("lane,prior_estimate", [("wan", "0.30"), ("lama", "0.02")])
+def test_raw_lane_refuses_before_post_at_prior_underestimate(monkeypatch, tmp_path, lane, prior_estimate):
+    monkeypatch.setenv("LAB_GENERATION_DAILY_BUDGET_USD", prior_estimate)
+    monkeypatch.setenv("REPLICATE_API_TOKEN", "fixture-token")
+    monkeypatch.setattr(generation_budget, "jobs_store_path", lambda: tmp_path / "jobs.json")
+    monkeypatch.setitem(replicate.API_KEYS, "replicate", "fixture-token")
+    posts = []
+    def urlopen(request, **kwargs):
+        posts.append(request)
+        raise AssertionError("a refused paid request must never be sent")
+    monkeypatch.setattr(abn_factory.urllib.request, "urlopen", urlopen)
+    if lane == "wan":
+        assert abn_factory._wan_i2v_sync("https://fixture.example/still.png", "fixture") is None
+    else:
+        monkeypatch.setattr(replicate, "_generate_text_mask", lambda _: "fixture-mask")
+        class Client:
+            async def post(self, *args, **kwargs):
+                posts.append(kwargs)
+                raise AssertionError("a refused paid request must never be sent")
+        with pytest.raises(RuntimeError, match="generation_daily_budget_reached"):
+            asyncio.run(replicate.remove_text("data:image/png;base64,fixture", Client()))
+    assert posts == []
+    assert generation_budget.spent_usd_at(generation_budget.jobs_store_path()) == 0

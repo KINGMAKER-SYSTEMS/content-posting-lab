@@ -114,6 +114,13 @@
   `error`/`errorClass`/`errorDetail` fields with `daily_budget reset=<UTC Z>`;
   retained paid outputs and consumer reset-aware scheduling require their own
   artifact/admission evidence. No top-level status reset field is added.
+  Raw WAN2.5's unchanged 5s/default-720p request reserves $0.50. LaMa reserves
+  a conservative $0.405 for its pinned T4 public version at $0.000225/second
+  and Replicate's documented default 30-minute server maximum. Local polling
+  does not cancel server work; the reservation is retained in full, not an
+  invoice-exact cost. Reverify hardware/rate/default-timeout assumptions when
+  these external contracts change. Provider headers and creative inputs stay
+  unchanged.
   Raw ABN Flux/WAN and recreate LaMa creates reserve a distinct submission id
   before every POST, including identical inputs. Only resuming a known provider
   operation may reuse a debit; prompt text, image bytes and output names are not

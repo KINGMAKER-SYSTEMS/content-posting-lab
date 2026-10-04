@@ -46,12 +46,12 @@ class BudgetLedgerCorrupt(Exception):
 
 BUDGET_KEY = "generationBudget"
 USD_BUDGET_ENV = "LAB_GENERATION_DAILY_BUDGET_USD"
-# Derived daily ceiling — an UPPER BOUND from repo facts, NOT a measurement
+# Configured daily reservation ceiling; its stated planning basis is NOT a measurement
 # (Eric's "never quiet" rule forbids a 0.0 default: unset must keep pages
 # generating). Derivation (prose in BUDGET_DEFAULT_NOTE):
 #   base demand  = 402 immutable recipe publications (events.md:694)
-#                  × 1 Hailuo keeper/day × $0.28/gen
-#                  (providers/__init__.py hailuo.cost_per_gen_usd)        $112.56
+#                  × 1 standard 768p/6s Hailuo/day × $0.28/gen
+#                  (published standard 768p/6s price)        $112.56
 #   retry margin = a STATED 50% of base, for the moderation/PA overhead the
 #                  meter now counts (E005 variants up to 3 attempts = 1 + 2
 #                  rewrites; PA interruption +1 resubmission). Refusals and
@@ -60,15 +60,16 @@ USD_BUDGET_ENV = "LAB_GENERATION_DAILY_BUDGET_USD"
 #   ABN/recreate = a NAMED flat margin, not formula-derived: the residual after
 #                  the base and retry terms (175.00 - 112.56 - 56.28 = 6.16).
 #                  Its thumbnail + cached b-roll components (Flux $0.003 + Wan
-#                  $0.30 x _BG_LIB_TARGET 8 slots + LaMa $0.02) sum to $2.42
+#                  $0.50 x _BG_LIB_TARGET 8 slots + LaMa $0.405) sum to $4.429
 #                  in total; the lane's normal-day cadence is NOT measured
 #                  in-repo.                                                $  6.16
 #                                                                           --------
 #                                                                           $175.00
 DEFAULT_DAILY_BUDGET_USD = 175.0
 BUDGET_DEFAULT_NOTE = (
-    "Default $175/day is an upper bound derived from repo facts, not a "
-    "measurement: 402 published recipes × one $0.28 Hailuo keeper = $112.56, "
+    "Default $175/day is a configured reservation ceiling, not measured spend. "
+    "Its planning basis is 402 recipes × one standard 768p/6s $0.28 Hailuo "
+    "prediction = $112.56, "
     "plus a stated 50% moderation/PA retry margin ($56.28) and a named $6.16 "
     "ABN/recreate margin. Unset uses this default; set "
     "LAB_GENERATION_DAILY_BUDGET_USD=0 for the named emergency stop (all paid "
@@ -80,11 +81,18 @@ BUDGET_DEFAULT_NOTE = (
 # submission is priced in exactly one place. An unlisted model fails closed.
 _MODEL_COST_USD: dict[str, float] = {
     "black-forest-labs/flux-schnell": 0.003,  # Replicate ~$0.003/image
-    "wan-video/wan-2.5-i2v": 0.30,            # ~$0.06/s × 5 s looping b-roll
-    "dpakkk/image-object-removal": 0.02,      # LaMa inpainting (recreate)
+    "wan-video/wan-2.5-i2v": 0.50,            # unchanged 5s, default 720p: $0.10/s
+    "dpakkk/image-object-removal": 0.405,     # conservative T4 × default 30min maximum
 }
 
 
+# Raw WAN pricing: https://replicate.com/wan-video/wan-2.5-i2v/api/schema
+# and https://replicate.com/wan-video/wan-2.5-i2v . LaMa reservation assumes the
+# pinned public version remains on T4 at $0.000225/s and the documented default
+# 1800s server maximum (not its 180s local polling timeout). No invoice-exactness
+# or refund is claimed. Reverify these assumptions if hardware/deadlines change:
+# https://replicate.com/pricing
+# https://replicate.com/docs/topics/predictions/lifecycle/
 def per_gen_cost_usd_by_model(model_id: str) -> float:
     """Cost of one billable submission for an exact Replicate model id.
 
@@ -380,7 +388,7 @@ def _add_money(left: Decimal, right: Decimal) -> Decimal:
     # A finite float can have 309 integral places. Preserve even tiny charges
     # beside a large configured or migrated total without a global context change.
     with localcontext() as context:
-        context.prec = 400
+        context.prec = 700
         return left + right
 
 
