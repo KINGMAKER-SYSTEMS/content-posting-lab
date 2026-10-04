@@ -205,6 +205,9 @@ def test_generate_stores_and_passes_negative_prompt(sync_client, monkeypatch, is
     monkeypatch.setattr(video_router, "generate_one", fake_generate_one)
 
     negative_prompt = "driving, tire rotation, camera pan, morphing, extra vehicles"
+    from PIL import Image
+    image = BytesIO()
+    Image.new("RGB", (2, 2), "black").save(image, format="PNG")
     response = sync_client.post(
         "/api/video/generate",
         data={
@@ -217,6 +220,7 @@ def test_generate_stores_and_passes_negative_prompt(sync_client, monkeypatch, is
             "negative_prompt": f"  {negative_prompt}  ",
             "project": "video-suite",
         },
+        files={"media": ("fixture.png", image.getvalue(), "image/png")},
     )
     assert response.status_code == 200
     job_id = response.json()["job_id"]

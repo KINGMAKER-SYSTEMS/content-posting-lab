@@ -251,8 +251,13 @@ async def test_ui_wan_validates_actual_input_before_any_debit(monkeypatch, provi
     args = {name: parameter.default.default for name, parameter in inspect.signature(video.generate_video).parameters.items()}
     args.update(prompt="fixture scene", provider=provider, count=2, duration=6,
                 resolution="720p", project="wan-input-boundary")
+    before_jobs = set(video.jobs)
+    from PIL import Image
+    image = io.BytesIO()
+    Image.new("RGB", (2, 2), "black").save(image, format="PNG")
+    data = image.getvalue()
     if has_image:
-        args["media"] = UploadFile(io.BytesIO(b"fixture"), filename="fixture.png", size=7,
+        args["media"] = UploadFile(io.BytesIO(data), filename="fixture.png", size=len(data),
                                    headers=Headers({"content-type": "image/png"}))
     refused = None
     try:
@@ -266,12 +271,22 @@ async def test_ui_wan_validates_actual_input_before_any_debit(monkeypatch, provi
         # before asserting the absence of a debit so this is a real accounting RED.
         assert posts == []
         assert generation_budget.spent_usd_at(generation_budget.jobs_store_path()) == 0
+        ledger = generation_budget.ledger_path(generation_budget.jobs_store_path())
+        if ledger.exists():
+            with sqlite3.connect(ledger) as db:
+                assert db.execute("SELECT COUNT(*) FROM debits").fetchone()[0] == 0
+                assert db.execute("SELECT COUNT(*) FROM daily_totals").fetchone()[0] == 0
+        assert set(video.jobs) == before_jobs
+        assert not video._jobs_path(args["project"]).exists()
+        assert not video._prompts_path(args["project"]).exists()
         assert refused is not None and refused.status_code == 400
         assert "requires an image" in refused.detail
         assert tasks == []
         return
     assert refused is None
     assert len(posts) == 2 and debit_count() == 2
-    assert all(post["input"]["image"] == "data:image/png;base64,Zml4dHVyZQ==" for post in posts)
+    import base64
+    image_uri = "data:image/png;base64," + base64.b64encode(data).decode()
+    assert all(post["input"]["image"] == image_uri for post in posts)
     assert all(entry["status"] == "done" for entry in video.jobs[result["job_id"]]["videos"])
     assert generation_budget.spent_usd_at(generation_budget.jobs_store_path()) == pytest.approx(cost * 2)

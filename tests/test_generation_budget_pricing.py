@@ -186,10 +186,15 @@ def test_known_underpriced_payload_is_refused_before_queue(monkeypatch, provider
     monkeypatch.setattr(video.asyncio, "create_task", capture)
     app = FastAPI()
     app.include_router(video.router, prefix="/api/video")
+    from io import BytesIO
+    from PIL import Image
+    image = BytesIO()
+    Image.new("RGB", (2, 2), "black").save(image, format="PNG")
+    files = {"media": ("fixture.png", image.getvalue(), "image/png")} if provider == "wan-i2v" else None
     response = TestClient(app).post("/api/video/generate", data={
         "prompt": "fixture scene", "provider": provider, "count": 1,
         "duration": duration, "resolution": resolution, "project": "catalog-cap",
-    })
+    }, files=files)
     assert response.status_code == 429, response.text
     assert response.json()["detail"]["error"] == "generation_daily_budget_reached"
     assert not queued and not video.jobs
