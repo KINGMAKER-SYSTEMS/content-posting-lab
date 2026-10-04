@@ -407,6 +407,69 @@ def test_framed_bottom_caption_is_burned_over_the_picture_not_the_bar(real_portr
         assert lower_bar.mean[0] < 16 and lower_bar.extrema[0][1] < 40
 
 
+TALL_LINES = ["when you", "finally", "see the", "light", "again", "at last",
+              "and it", "all ends", "so well", "tonight"]
+# Inclusive caption safe areas: 44 px each side, ceil(4% of picture height) top/bottom.
+SAFE_AREAS = {"9:16": (44, 77, 1035, 1842), "16:9": (44, 681, 1035, 1238), "4:3": (44, 587, 1035, 1330)}
+FRAME_ROWS = {"16:9": (656, 1263), "4:3": (554, 1363)}
+
+
+def _tall_caption_request(frame, sha, line_count, size_pt=60):
+    lines = TALL_LINES[:line_count]
+    caption = " ".join(lines)
+    treatment = {**TREATMENT, "frame": frame, "captionStyle": {**STYLE, "size_pt": size_pt, "line_breaks": lines}}
+    encoded = json.dumps(treatment, sort_keys=True, separators=(",", ":"))
+    return request(sha, render_treatment_json=encoded, treatment_sha256=render.sha256(encoded.encode()),
+                   caption=caption, caption_sha256=render.sha256(caption.encode()))
+
+
+def _overlay_ink_inside(directory, area):
+    with Image.open(directory / "overlay.png") as overlay:
+        box = overlay.getchannel("A").getbbox()
+    return area[0] <= box[0] and area[1] <= box[1] and box[2] - 1 <= area[2] and box[3] - 1 <= area[3]
+
+
+@pytest.mark.parametrize("frame,line_count", [("16:9", 4), ("4:3", 6)])
+def test_framed_tall_caption_shrinks_inside_the_picture_not_over_the_bars(real_portrait, tmp_path, frame, line_count):
+    # Owner rule 2026-10-04: at the look's full 60 pt these lines are taller
+    # than the band; the caption must scale down to fit inside the picture.
+    sha = render.sha256(real_portrait.read_bytes())
+    top, bottom = FRAME_ROWS[frame]
+    result = render.render_post(real_portrait, tmp_path / "render", _tall_caption_request(frame, sha, line_count),
+                                clock_ms=lambda: NOW)
+    assert _overlay_ink_inside(tmp_path / "render", SAFE_AREAS[frame])
+    plan = json.loads((tmp_path / "render" / "caption-render.json").read_text())["plan"]
+    assert plan["font_size_px"] == 150 and plan["fitted_font_size_px"] < 150
+    with Image.open(result.qa_frame_path) as qa:
+        qa.load()
+        for bar in (_luma_rows(qa, 0, top - 4), _luma_rows(qa, bottom + 1 + 4, 1920)):
+            assert bar.mean[0] < 16 and bar.extrema[0][1] < 40
+
+
+def test_full_screen_big_caption_inside_the_screen_posts_as_styled(real_portrait, tmp_path):
+    # Ten 60 pt lines are 84% of the screen tall. That used to refuse
+    # (caption_geometry_invalid, over 45%); it is inside the screen, so it
+    # posts at its full size.
+    sha = render.sha256(real_portrait.read_bytes())
+    render.render_post(real_portrait, tmp_path / "render", _tall_caption_request("9:16", sha, 10),
+                       clock_ms=lambda: NOW)
+    plan = json.loads((tmp_path / "render" / "caption-render.json").read_text())["plan"]
+    assert plan["font_size_px"] == 150 and plan["line_height_px"] == 162
+    assert "fitted_font_size_px" not in plan
+    assert _overlay_ink_inside(tmp_path / "render", SAFE_AREAS["9:16"])
+
+
+def test_full_screen_caption_taller_than_the_screen_shrinks_and_posts(real_portrait, tmp_path):
+    # Ten 96 pt lines would run off the screen: that used to refuse with
+    # CAPTION_OUT_OF_FRAME. Now it shrinks to fit and the post goes ahead.
+    sha = render.sha256(real_portrait.read_bytes())
+    render.render_post(real_portrait, tmp_path / "render", _tall_caption_request("9:16", sha, 10, size_pt=96),
+                       clock_ms=lambda: NOW)
+    plan = json.loads((tmp_path / "render" / "caption-render.json").read_text())["plan"]
+    assert plan["font_size_px"] == 240 and plan["fitted_font_size_px"] < 240
+    assert _overlay_ink_inside(tmp_path / "render", SAFE_AREAS["9:16"])
+
+
 def test_page_frame_letterboxes_a_scaled_provider_source_the_same_way(real_portrait, tmp_path):
     # A 704x1280 provider frame goes through scale+crop before the letterbox.
     scaled = tmp_path / "provider-704x1280.mp4"

@@ -12,10 +12,11 @@ import base64
 import hashlib
 import io
 import json
+import math
 import re
 import unicodedata
 from pathlib import Path
-from typing import Literal
+from typing import Callable, Literal
 
 from PIL import Image, ImageDraw, ImageFont, __version__ as pillow_version
 from pydantic import (
@@ -55,6 +56,21 @@ _LINE_BREAK_MAX_CHARS = 500
 _BACKGROUNDS_NEEDING_COLOR = ("box", "highlight")
 # Where an inverted caption always sits (see CaptionStyle.center_inverted_caption).
 _INVERTED_PLACEMENT = {"position": "middle", "offset_pct": 0}
+# Fit inside the visible picture (owner rule, 2026-10-04). The style's size is
+# the maximum: a caption that stays inside the picture's safe area is drawn
+# exactly as styled, however big, and one that would leave it only shrinks.
+# The picture is the whole 1080x1920 canvas on a full-screen page, or the band
+# of rows a framed page keeps. Its safe area is inset FIT_SIDE_MARGIN_PX on the
+# left and right (the quality gate's 4% side margin: 44/1080 >= 0.04) and
+# ceil(4% of the picture's height) at the top and bottom. The smallest size a
+# caption may shrink to is the smallest size_pt the style allows: 12 pt, 30 px.
+# A caption placed so near the top or bottom edge that it cannot keep that
+# top/bottom margin even at 12 pt may use it (it still stays inside the
+# picture and the side margins); only one that cannot fit then is refused.
+FIT_SIDE_MARGIN_PX = 44
+FIT_FLOOR_PX = round(12 * _OUTPUT_SCALE)
+# Rows and columns a box or highlight background paints beyond the text ink.
+_BACKGROUND_PAD_PX = {"box": (18, 12), "highlight": (14, 8)}
 
 
 class CaptionRenderError(ValueError):
@@ -154,8 +170,8 @@ def caption_style_contract() -> dict:
     (contracts/caption-style.v1.json) lets the Worker check in its own CI that
     every caption style it can send is one this renderer takes. Not in it:
     render-time refusals that depend on the installed fonts and the rendered
-    size (CAPTION_FONT_UNAVAILABLE, italic fonts, CAPTION_LINE_TOO_WIDE,
-    CAPTION_OUT_OF_FRAME), and the request rule that line_breaks must spell
+    size (CAPTION_FONT_UNAVAILABLE, italic fonts, and CAPTION_OUT_OF_FRAME for a
+    caption that cannot fit the visible picture even at 12 pt), and the request rule that line_breaks must spell
     the caption. tests/test_caption_transforms.py fails when the copy drifts;
     regenerate it with ``python scripts/export_caption_style_contract.py``.
     """
@@ -252,11 +268,23 @@ class CaptionRenderPlan(BaseModel):
     canvas: CaptionRenderCanvas
     effective_style: CaptionStyle
     font_sha256: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    # The style's size: the most the caption may use.
     font_size_px: int = Field(gt=0)
+    # Only when the caption had to shrink to stay inside the visible picture:
+    # the size actually drawn. line_height_px follows the drawn size. Absent
+    # when it fit as styled, so those plans and their hashes are unchanged.
+    fitted_font_size_px: int | None = Field(default=None, gt=0)
     stroke_width_px: int = Field(ge=0)
     line_height_px: int = Field(gt=0)
     rendered_text: str
     lines: list[CaptionRenderLine]
+
+    @model_serializer(mode="wrap")
+    def omit_unfitted(self, handler: SerializerFunctionWrapHandler):
+        data = handler(self)
+        if isinstance(data, dict) and data.get("fitted_font_size_px") is None:
+            data.pop("fitted_font_size_px", None)
+        return data
 
 
 class CaptionRenderOverlay(BaseModel):
@@ -473,26 +501,175 @@ def _cased(text: str, text_case: str) -> str:
     return text
 
 
-def render_caption_overlay(
-    request: CaptionRenderRequest,
-    *,
-    font_dir: Path,
-) -> CaptionRenderResult:
-    """Render and return a deterministic transparent 1080x1920 caption PNG."""
+def caption_fit_area(
+    picture_rows: tuple[int, int] | None = None, *, vertical_margin: bool = True
+) -> tuple[int, int, int, int]:
+    """Inclusive ``(left, top, right, bottom)`` pixels a caption's ink must stay inside.
 
-    style = request.style
-    font_path, font_bytes = _resolve_font(font_dir, style.font)
-    font_size_px = max(1, round(style.size_pt * _OUTPUT_SCALE))
-    stroke_width_px = (style.outline_width_px if style.outline_width_px is not None else _OUTPUT_STROKE_PX) if style.outline else 0
-    line_height_px = max(1, round(font_size_px * _LINE_HEIGHT_MULTIPLIER))
+    ``picture_rows`` is the first and last visible canvas row (inclusive): a
+    framed page's band, or None for the whole full-screen canvas. Without
+    ``vertical_margin`` the area reaches the picture's top and bottom rows.
+    """
 
+    first, last = picture_rows if picture_rows is not None else (0, FRAME_HEIGHT - 1)
+    if not 0 <= first < last < FRAME_HEIGHT:
+        raise ValueError("picture rows must be two increasing rows on the 1920-row canvas")
+    vertical_margin = (4 * (last - first + 1) + 99) // 100 if vertical_margin else 0
+    return (FIT_SIDE_MARGIN_PX, first + vertical_margin,
+            FRAME_WIDTH - 1 - FIT_SIDE_MARGIN_PX, last - vertical_margin)
+
+
+def _load_font(font_path: Path, size_px: int) -> ImageFont.FreeTypeFont:
     try:
-        font = ImageFont.truetype(str(font_path), size=font_size_px)
+        return ImageFont.truetype(str(font_path), size=size_px)
     except OSError as error:
         raise CaptionRenderError(
             "CAPTION_FONT_INVALID",
             "installed font could not be loaded",
         ) from error
+
+
+def _line_height_px(font_size_px: int) -> int:
+    return max(1, round(font_size_px * _LINE_HEIGHT_MULTIPLIER))
+
+
+def _layout_lines(
+    draw: ImageDraw.ImageDraw,
+    font: ImageFont.FreeTypeFont,
+    lines: list[str],
+    *,
+    x_px: int,
+    anchor: str,
+    stroke_width_px: int,
+    line_height_px: int,
+    center_y_px: int,
+) -> tuple[list[dict], list[tuple[int, int, int, int] | None]]:
+    block_top_px = center_y_px - len(lines) * line_height_px / 2
+    line_records: list[dict] = []
+    text_boxes: list[tuple[int, int, int, int] | None] = []
+    for index, line in enumerate(lines):
+        center_line_y = round(block_top_px + (index + 0.5) * line_height_px)
+        if not line:
+            text_boxes.append(None)
+            line_records.append({"text": "", "x_px": x_px, "center_y_px": center_line_y, "width_px": 0})
+            continue
+        bbox = draw.textbbox(
+            (x_px, center_line_y),
+            line,
+            font=font,
+            anchor=anchor,
+            stroke_width=stroke_width_px,
+        )
+        text_boxes.append(bbox)
+        line_records.append(
+            {"text": line, "x_px": x_px, "center_y_px": center_line_y, "width_px": bbox[2] - bbox[0]}
+        )
+    return line_records, text_boxes
+
+
+def _ink_box(text_boxes: list[tuple[int, int, int, int] | None], background: str) -> tuple[int, int, int, int]:
+    """Every pixel the text, its outline and any box/highlight can paint (inclusive)."""
+
+    pad_x, pad_y = _BACKGROUND_PAD_PX.get(background, (0, 0))
+    boxes = [box for box in text_boxes if box is not None]
+    return (min(box[0] for box in boxes) - pad_x, min(box[1] for box in boxes) - pad_y,
+            max(box[2] for box in boxes) + pad_x, max(box[3] for box in boxes) + pad_y)
+
+
+def _inside(box: tuple[int, int, int, int], area: tuple[int, int, int, int]) -> bool:
+    return area[0] <= box[0] and area[1] <= box[1] and box[2] <= area[2] and box[3] <= area[3]
+
+
+def _scale_about(centre: float, low: int, high: int, ink_low: int, ink_high: int) -> float:
+    # The caption scales about its anchor, so each side scales on its own.
+    scales = [1.0]
+    if ink_low < centre:
+        scales.append((centre - low) / (centre - ink_low))
+    if ink_high > centre:
+        scales.append((high - centre) / (ink_high - centre))
+    return min(scales)
+
+
+def _fit_font_size(
+    font_at: Callable[[int], ImageFont.FreeTypeFont],
+    lines: list[str],
+    *,
+    max_px: int,
+    stroke_width_px: int,
+    background: str,
+    x_px: int,
+    anchor: str,
+    center_y_px: int,
+    area: tuple[int, int, int, int],
+) -> int:
+    """Largest size up to ``max_px`` whose ink stays inside ``area``.
+
+    The ink is measured exactly as the draw places it: every line's text box
+    with its outline, grown by the box or highlight padding. The lines are
+    kept as chosen and only scaled; the outline and background padding keep
+    their pixel sizes. Never grows past ``max_px``; refuses below FIT_FLOOR_PX.
+    """
+
+    measure = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
+
+    def ink(size: int) -> tuple[int, int, int, int]:
+        _, boxes = _layout_lines(
+            measure, font_at(size), lines, x_px=x_px, anchor=anchor,
+            stroke_width_px=stroke_width_px, line_height_px=_line_height_px(size), center_y_px=center_y_px,
+        )
+        return _ink_box(boxes, background)
+
+    size = max_px
+    largest_fit: int | None = None
+    smallest_miss: int | None = None
+    while True:
+        box = ink(size)
+        if _inside(box, area):
+            # A proportional jump can land a pixel low (line heights and glyph
+            # boxes round), so creep back up to the largest size that fits.
+            largest_fit = size
+            if smallest_miss is None or size + 1 >= smallest_miss:
+                return size
+            size += 1
+            continue
+        smallest_miss = size
+        if largest_fit is not None:
+            return largest_fit
+        if size <= FIT_FLOOR_PX:
+            raise CaptionRenderError(
+                "CAPTION_OUT_OF_FRAME",
+                "caption does not fit inside the visible picture even at 12 pt",
+            )
+        scale = min(_scale_about(x_px, area[0], area[2], box[0], box[2]),
+                    _scale_about(center_y_px, area[1], area[3], box[1], box[3]))
+        size = max(FIT_FLOOR_PX, min(size - 1, math.floor(size * scale)))
+
+
+def render_caption_overlay(
+    request: CaptionRenderRequest,
+    *,
+    font_dir: Path,
+    fit_rows: tuple[int, int] | None = None,
+) -> CaptionRenderResult:
+    """Render and return a deterministic transparent 1080x1920 caption PNG.
+
+    The caption is drawn at the style's size when its ink stays inside the
+    visible picture's safe area (see ``caption_fit_area``); otherwise it
+    shrinks to the largest size that does, down to 12 pt. ``fit_rows`` is the
+    first and last row (inclusive) of a framed page's picture band; None is
+    the whole full-screen canvas.
+    """
+
+    style = request.style
+    font_path, font_bytes = _resolve_font(font_dir, style.font)
+    font_size_px = max(1, round(style.size_pt * _OUTPUT_SCALE))
+    stroke_width_px = (style.outline_width_px if style.outline_width_px is not None else _OUTPUT_STROKE_PX) if style.outline else 0
+    fonts = {font_size_px: _load_font(font_path, font_size_px)}
+
+    def font_at(size: int) -> ImageFont.FreeTypeFont:
+        if size not in fonts:
+            fonts[size] = _load_font(font_path, size)
+        return fonts[size]
 
     rendered_source = _cased(request.caption, style.case)
     lines = ([_cased(line, style.case) for line in style.line_breaks]
@@ -500,9 +677,6 @@ def render_caption_overlay(
              else _wrap_preserving_explicit_newlines(rendered_source, style.line_balance))
     if not lines:
         raise CaptionRenderError("CAPTION_EMPTY", "caption produced no renderable lines")
-
-    image = Image.new("RGBA", (FRAME_WIDTH, FRAME_HEIGHT), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(image)
 
     max_width_px = round(FRAME_WIDTH * (_MAX_WIDTH_PCT / 100))
     horizontal_margin_px = (FRAME_WIDTH - max_width_px) // 2
@@ -512,92 +686,85 @@ def render_caption_overlay(
         "right": FRAME_WIDTH - horizontal_margin_px,
     }[style.align]
     anchor = {"left": "lm", "center": "mm", "right": "rm"}[style.align]
-
-    block_height_px = len(lines) * line_height_px
     center_y_px = round(
         FRAME_HEIGHT
         * ((_POSITION_Y_PCT[style.position] + style.offset_pct) / 100)
     )
-    block_top_px = center_y_px - block_height_px / 2
-    block_bottom_px = block_top_px + block_height_px
-    if block_top_px < 0 or block_bottom_px > FRAME_HEIGHT:
-        raise CaptionRenderError(
-            "CAPTION_OUT_OF_FRAME",
-            "caption block does not fit vertically in the 9:16 frame",
+
+    def unturned(area: tuple[int, int, int, int]) -> tuple[int, int, int, int]:
+        if not style.inverted:
+            return area
+        # The finished canvas is turned half a turn below, so fit against
+        # where the area sits before that turn.
+        return (FRAME_WIDTH - 1 - area[2], FRAME_HEIGHT - 1 - area[3],
+                FRAME_WIDTH - 1 - area[0], FRAME_HEIGHT - 1 - area[1])
+
+    fit = lambda area: _fit_font_size(
+        font_at,
+        lines,
+        max_px=font_size_px,
+        stroke_width_px=stroke_width_px,
+        background=style.background,
+        x_px=x_px,
+        anchor=anchor,
+        center_y_px=center_y_px,
+        area=area,
+    )
+    area = unturned(caption_fit_area(fit_rows))
+    try:
+        drawn_font_size_px = fit(area)
+    except CaptionRenderError:
+        # Placed too near the top or bottom edge to keep that margin even at
+        # 12 pt: it may use the margin rows, but never leave the picture.
+        area = unturned(caption_fit_area(fit_rows, vertical_margin=False))
+        drawn_font_size_px = fit(area)
+
+    while True:
+        font = font_at(drawn_font_size_px)
+        line_height_px = _line_height_px(drawn_font_size_px)
+        image = Image.new("RGBA", (FRAME_WIDTH, FRAME_HEIGHT), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(image)
+        line_records, text_boxes = _layout_lines(
+            draw, font, lines, x_px=x_px, anchor=anchor, stroke_width_px=stroke_width_px,
+            line_height_px=line_height_px, center_y_px=center_y_px,
         )
 
-    line_records: list[dict] = []
-    text_boxes: list[tuple[int, int, int, int] | None] = []
-    for index, line in enumerate(lines):
-        center_line_y = round(block_top_px + (index + 0.5) * line_height_px)
-        if not line:
-            text_boxes.append(None)
-            line_records.append(
-                {
-                    "text": "",
-                    "x_px": x_px,
-                    "center_y_px": center_line_y,
-                    "width_px": 0,
-                }
+        background_fill = style.background_color
+        if style.background == "box":
+            draw.rectangle(_ink_box(text_boxes, "box"), fill=background_fill)
+        elif style.background == "highlight":
+            pad_x, pad_y = _BACKGROUND_PAD_PX["highlight"]
+            for box in text_boxes:
+                if box is not None:
+                    draw.rectangle(
+                        (box[0] - pad_x, box[1] - pad_y, box[2] + pad_x, box[3] + pad_y),
+                        fill=background_fill,
+                    )
+
+        for record in line_records:
+            if not record["text"]:
+                continue
+            draw.text(
+                (record["x_px"], record["center_y_px"]),
+                record["text"],
+                font=font,
+                anchor=anchor,
+                align=style.align,
+                fill=style.color,
+                stroke_width=stroke_width_px,
+                stroke_fill=style.outline,
             )
-            continue
-        bbox = draw.textbbox(
-            (x_px, center_line_y),
-            line,
-            font=font,
-            anchor=anchor,
-            stroke_width=stroke_width_px,
-        )
-        width_px = bbox[2] - bbox[0]
-        if width_px > max_width_px:
-            raise CaptionRenderError(
-                "CAPTION_LINE_TOO_WIDE",
-                "caption line exceeds the established 80% render width; increase line_balance or reduce size_pt",
-            )
-        if bbox[0] < 0 or bbox[2] > FRAME_WIDTH:
+
+        # The drawn pixels, not only the measurement, must stay inside.
+        drawn = image.getchannel("A").getbbox()
+        if drawn is None or _inside((drawn[0], drawn[1], drawn[2] - 1, drawn[3] - 1), area):
+            break
+        if drawn_font_size_px <= FIT_FLOOR_PX:
             raise CaptionRenderError(
                 "CAPTION_OUT_OF_FRAME",
-                "caption line does not fit horizontally in the 9:16 frame",
+                "caption does not fit inside the visible picture even at 12 pt",
             )
-        text_boxes.append(bbox)
-        line_records.append(
-            {
-                "text": line,
-                "x_px": x_px,
-                "center_y_px": center_line_y,
-                "width_px": width_px,
-            }
-        )
-
-    background_fill = style.background_color
-    if style.background == "box":
-        nonempty_boxes = [box for box in text_boxes if box is not None]
-        left = min(box[0] for box in nonempty_boxes) - 18
-        top = min(box[1] for box in nonempty_boxes) - 12
-        right = max(box[2] for box in nonempty_boxes) + 18
-        bottom = max(box[3] for box in nonempty_boxes) + 12
-        draw.rectangle((left, top, right, bottom), fill=background_fill)
-    elif style.background == "highlight":
-        for box in text_boxes:
-            if box is not None:
-                draw.rectangle(
-                    (box[0] - 14, box[1] - 8, box[2] + 14, box[3] + 8),
-                    fill=background_fill,
-                )
-
-    for record in line_records:
-        if not record["text"]:
-            continue
-        draw.text(
-            (record["x_px"], record["center_y_px"]),
-            record["text"],
-            font=font,
-            anchor=anchor,
-            align=style.align,
-            fill=style.color,
-            stroke_width=stroke_width_px,
-            stroke_fill=style.outline,
-        )
+        drawn_font_size_px -= 1
 
     if style.inverted:
         # The Dossier preview draws an inverted caption with CSS
@@ -627,6 +794,9 @@ def render_caption_overlay(
         "effective_style": effective_style,
         "font_sha256": _sha256(font_bytes),
         "font_size_px": font_size_px,
+        # Only a shrunk caption records its drawn size, so every caption that
+        # already fit keeps a byte-identical plan and render_plan_sha256.
+        **({"fitted_font_size_px": drawn_font_size_px} if drawn_font_size_px != font_size_px else {}),
         "stroke_width_px": stroke_width_px,
         "line_height_px": line_height_px,
         "rendered_text": "\n".join(lines),

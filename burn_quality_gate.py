@@ -7,6 +7,10 @@ Contract (operator-approved burned_003 / contentlab-v4, 2026-08-05):
     - centered within +/- 5% of frame center
     - vertical center between 30% and 62%
     - height <= 45%
+  Typed Dossier caption overlays (owner rule, 2026-10-04) instead keep their
+  alignment and position checks and must sit inside the visible picture
+  (services.caption_render.caption_fit_area: the canvas or a framed page's
+  band, with the 4% side margins), at any size.
   Caption:
     - persona voice blacklist (male persona rejects female-voiced lines)
 
@@ -22,6 +26,8 @@ import re
 from typing import Any
 
 from PIL import Image
+
+from services.caption_render import FRAME_HEIGHT, FRAME_WIDTH, caption_fit_area
 
 # Female-voiced / mismatched-persona phrases that burned live truck posts.
 # Keep in sync with rail data/caption_gate.json defaults where possible.
@@ -77,9 +83,18 @@ def _decode_overlay(overlay_b64: str) -> Image.Image:
 
 
 def overlay_geometry_reasons(
-    overlay_b64: str | None, caption_style: dict[str, Any] | None = None
+    overlay_b64: str | None,
+    caption_style: dict[str, Any] | None = None,
+    *,
+    band_rows: tuple[int, int] | None = None,
 ) -> list[str]:
-    """Measure alpha geometry against legacy v4 or the typed Dossier style."""
+    """Measure alpha geometry against legacy v4 or the typed Dossier style.
+
+    A typed caption may be any size that stays inside the visible picture,
+    the hard limit the renderer fits it to (owner rule, 2026-10-04). ``band_rows`` is the first and last row (inclusive) of a
+    framed page's picture band; None is the whole full-screen canvas. The
+    legacy untyped overlay keeps its fixed 70% width and 45% height caps.
+    """
     if not overlay_b64:
         return ["overlay_missing"]
     try:
@@ -115,12 +130,11 @@ def overlay_geometry_reasons(
     if right_margin < 0.04:
         reasons.append(f"side_margin_right:{right_margin:.3f}<0.04")
 
-    width_pct = box_w / w
-    max_width = 0.80 if caption_style is not None else 0.70
-    if width_pct > max_width:
-        reasons.append(f"width:{width_pct:.3f}>{max_width:.2f}")
-
     if caption_style is None:
+        width_pct = box_w / w
+        if width_pct > 0.70:
+            reasons.append(f"width:{width_pct:.3f}>0.70")
+
         center_off = abs(cx - (w / 2.0)) / w
         if center_off > 0.05:
             reasons.append(f"not_centered:{center_off:.3f}>0.05")
@@ -152,9 +166,19 @@ def overlay_geometry_reasons(
                 f"typed_position:{caption_style['position']}:{position_off:.3f}>0.08"
             )
 
-    height_pct = box_h / h
-    if height_pct > 0.45:
-        reasons.append(f"height:{height_pct:.3f}>0.45")
+    if caption_style is None:
+        height_pct = box_h / h
+        if height_pct > 0.45:
+            reasons.append(f"height:{height_pct:.3f}>0.45")
+    else:
+        # The picture itself with the 4% side margins; the renderer's extra
+        # top/bottom margin is a preference it drops only near the edge.
+        left, top, right, bottom = caption_fit_area(band_rows, vertical_margin=False)
+        if (w, h) != (FRAME_WIDTH, FRAME_HEIGHT) or not (
+                left <= min_x and top <= min_y and max_x <= right and max_y <= bottom):
+            reasons.append(
+                f"outside_area:{min_x},{min_y}-{max_x},{max_y}_not_in_{left},{top}-{right},{bottom}"
+            )
 
     return reasons
 
