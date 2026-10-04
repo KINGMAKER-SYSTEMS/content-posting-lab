@@ -379,11 +379,13 @@ def _legacy_snapshot(path: Path) -> tuple[dict[str, Any], bytes]:
         raw = path.read_bytes()
     except FileNotFoundError:
         return {}, b""
+    except OSError as error:
+        raise BudgetLedgerCorrupt("legacy jobs JSON is unreadable; refusing migration") from error
     try:
         store = json.loads(raw)
     except (ValueError, UnicodeError) as error:
         raise BudgetLedgerCorrupt("legacy jobs JSON is corrupt; refusing migration") from error
-    if not isinstance(store, dict) or ("jobs" in store and not isinstance(store["jobs"], dict)):
+    if not isinstance(store, dict) or not isinstance(store.get("jobs"), dict):
         raise BudgetLedgerCorrupt("legacy jobs store is malformed; refusing migration")
     if BUDGET_KEY in store:
         state = store[BUDGET_KEY]

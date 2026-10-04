@@ -99,6 +99,9 @@
   every legacy ID without inventing its submission day, and preserves the
   declared day's total. It leaves the original jobs JSON unchanged. Missing,
   corrupt or mismatched storage fails closed; it never restores a fresh balance.
+  Existing legacy bytes require a `jobs` mapping; unreadable bytes use the
+  same `BudgetLedgerCorrupt` contract for admission, debit and summary. Only a
+  genuinely missing legacy file may initialize an empty ledger.
   Unset `LAB_GENERATION_DAILY_BUDGET_USD` uses $175/day; explicit zero is the
   emergency stop, and malformed/nonfinite/negative values refuse paid work.
   Pricing follows the unchanged model input builders and current published
