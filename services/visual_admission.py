@@ -232,8 +232,24 @@ def _strict_vision_json(content):
     return {"verdict": result["verdict"], "reason": result["reason"]}
 
 
+_TEXT_POLICY = (
+    'Inspect every supplied frame before our caption stage. Return text only for '
+    'writing added on top of the picture: captions, subtitles, titles, watermarks, '
+    'app or platform logos, user-interface chrome, stickers, overlaid timestamps, '
+    'numbers or progress bars. Tiny or brief overlays still count. '
+    'Return clean when the only writing physically belongs to the depicted scene: '
+    'road signs and their numbers, licence plates, hub logos and vehicle badges, '
+    'clothing marks, storefronts, packaging, printed paper, graffiti or instrument '
+    'dials. Scene text must not be reported as text regardless of size or legibility. '
+    'Return unavailable if any frame is unreadable or you cannot distinguish an '
+    'overlay from scene text. Describe the scene, observed writing and its origin. '
+)
+
+
 def _vision_request(samples, deadline, *, url, model, provider, key=""):
-    content = [{"type": "text", "text": 'Inspect every supplied frame for any existing writing, captions, logos with letters, numbers or watermarks. Return ONLY JSON {"verdict":"clean"|"text"|"unavailable","reason":"describe the visible scene and any text actually observed"}. Use unavailable when unreadable or uncertain. Any text, even brief or tiny, means text. These frames precede our caption stage.'}]
+    content = [{"type": "text", "text": _TEXT_POLICY +
+                'Return ONLY JSON {"verdict":"clean"|"text"|"unavailable",'
+                '"reason":"describe the visible evidence"}.'}]
     for sample in samples:
         content.append({"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + sample}})
     headers = {"Authorization": f"Bearer {key}"} if key else {}
@@ -283,15 +299,11 @@ def _replicate_vision_request(samples, deadline, *, token):
         "Content-Type": "application/json",
         "Prefer": "wait=60",
     }
-    prompt = (
-        'Inspect every supplied frame for any existing writing, captions, logos '
-        'containing letters or numbers, or watermarks. Return exactly one JSON '
+    prompt = _TEXT_POLICY + (
+        'Return exactly one JSON '
         'object and nothing else. It must contain exactly two string fields named '
         'verdict and reason. verdict must be exactly clean, text, or unavailable. '
-        'Keep reason under 200 characters and describe the visible scene plus any '
-        'text actually observed. Choose unavailable if any frame is unreadable or '
-        'uncertain. Any text, however brief or tiny, requires verdict text. These '
-        'frames precede our caption stage.'
+        'Keep reason under 200 characters.'
     )
     with httpx.Client(timeout=min(60, max(.1, deadline-time.monotonic())), follow_redirects=False) as client:
         for start in range(0, len(samples), REPLICATE_VISION_BATCH):
@@ -402,9 +414,9 @@ def _vision(samples, deadline):
         "fallbackError": replicate_error})
 
 
-# v4: vision frames are native-resolution JPEG (quality 95) instead of PNG, so
-# the 32 MiB vision budget holds ~50 detailed 1080x1920 frames instead of ~14.
-ALGORITHM = "tesseract-psm12-words-vision-corroborated-v4"
+# v6: all providers share the scene-text/added-overlay policy. Earlier tokens
+# must rescan the same exact bytes rather than reuse the old text policy.
+ALGORITHM = "tesseract-psm12-words-vision-corroborated-v6"
 VISION_JPEG_QUALITY = 95
 
 # These failures describe a service/runtime that can be retried next cycle.
