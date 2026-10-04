@@ -1204,3 +1204,15 @@ the app import is blocked by missing `boto3`; hosted checks are required before
 merge. No deployment performed.
 
 _________________________________________________________________________________
+
+time: [03:10 EDT] [10-04-26]
+agent: [Codex desktop] [gpt-6.1]
+worktree: [codex/public-health-budget-redaction] [/private/tmp/content-posting-lab-health-redaction-20261004]
+type: [documentation correction]: Anonymous health data boundary
+area: [backend] [analysis]
+
+Corrected the PR description and source contract: this repository does not
+expose an authenticated exact-budget read endpoint. Public health preserves
+only the corruption signal; no route is claimed for exact accounting reads.
+
+_________________________________________________________________________________
