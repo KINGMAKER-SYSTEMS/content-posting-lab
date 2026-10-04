@@ -1,17 +1,16 @@
-"""Regression pin: the configured vault origin derives the same identities as the
-pre-PR hardcoded origin did.
+"""Configured vault origin preserves source and selected execution identities.
 
-Before #180 the ShipStream origin was a module constant. It is now read from
-SHIPSTREAM_VAULT_ORIGIN. The origin feeds provenance ``sourceUrl`` values,
-so it also feeds source-library ids and hashes, approved-cut ids, the Dossier
-``catalogVersion`` and the manifest URL. If production is configured with the
-old origin, every one of those must come out byte-identical.
+Before #180 the ShipStream origin was a module constant; it is now read from
+SHIPSTREAM_VAULT_ORIGIN. Source URLs, library ids and hashes, approved cuts,
+selected catalog versions and the manifest URL retain their pre-PR pins.
+The full editor catalog versions separately reflect the current formats
+snapshot, including additive POV-Club metadata.
 
-PINNED was computed by running the pre-PR code (commit 8137cb8) with its
-origin constant and host pin pointed at the synthetic ORIGIN below, so the
-real production origin never appears here. Its formula is
-``f"{origin}/assets/{quote(storage_key, safe='')}"``. Any change to how the
-origin enters an identity turns this test red.
+Source and selected pins were computed with commit8137cb8 using the synthetic
+ORIGIN below. Only the two full-editor catalogVersion pins were refreshed.
+The origin URL formula remains
+``f"{origin}/assets/{quote(storage_key, safe='')}"``. Equality assertions cover
+both stable executable identities and the separately versioned editor snapshot.
 """
 
 from __future__ import annotations
@@ -172,7 +171,7 @@ PINNED = {'fetchedUrls': ['https://vault.identity.test/assets/vault%2Flovenightw
             'sourceUrls': ['https://vault.identity.test/assets/vault%2Flovenightwalks%2Fmasters%2Faaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.mp4']}}
 
 
-def test_configured_origin_derives_the_pre_pr_identities(monkeypatch):
+def test_configured_origin_preserves_source_and_selected_identity_pins(monkeypatch):
     monkeypatch.setenv("SHIPSTREAM_VAULT_ORIGIN", ORIGIN)
     assert compute_identities() == PINNED
 
