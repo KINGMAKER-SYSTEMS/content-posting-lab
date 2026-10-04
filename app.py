@@ -338,8 +338,8 @@ async def health_check():
         "ytdlp": ytdlp_ok,
         "providers": providers,
         # This route is deliberately unauthenticated. Keep only the integrity
-        # signal public; exact spend and configured limits are omitted from the
-        # this anonymous response.
+        # signal public; exact spend and configured limits are omitted from this
+        # anonymous response.
         "generation_budget": {
             "corrupt": bool(budget_status.get("corrupt", True))
             if isinstance(budget_status, dict)
