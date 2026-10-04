@@ -66,7 +66,10 @@ _INVERTED_PLACEMENT = {"position": "middle", "offset_pct": 0}
 # framed page keeps, inset FIT_SIDE_MARGIN_PX on the left and right (the quality
 # gate's 4% side margin: 44/1080 >= 0.04); there is no top or bottom inset. The
 # smallest size a caption may shrink to is the smallest size_pt the style
-# allows: 12 pt, 30 px.
+# allows: 12 pt, 30 px. One exception to "unchanged": a caption the older
+# renderer already drew partly off the screen edge (such as descenders cut off
+# at row 1919) is not inside, so it now shrinks to fit, or is refused when even
+# 12 pt cannot keep it inside.
 FIT_SIDE_MARGIN_PX = 44
 FIT_FLOOR_PX = round(12 * _OUTPUT_SCALE)
 # Rows and columns a box or highlight background paints beyond the text ink.

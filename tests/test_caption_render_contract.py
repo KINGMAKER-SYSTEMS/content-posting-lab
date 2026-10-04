@@ -440,6 +440,28 @@ def test_caption_near_the_edge_but_inside_the_picture_is_unchanged(font_dir, pos
     assert overlay_geometry_reasons(result.overlay.base64, payload.style.model_dump(exclude_none=True)) == []
 
 
+@pytest.mark.parametrize("lines,size_pt,fits", [(SHORT_LINES[:4], 60, True),
+                                               ([f"line {i}" for i in range(24)], 12, False)])
+def test_drawn_pixels_are_rechecked_even_when_the_measurement_under_reports(
+        font_dir, monkeypatch, lines, size_pt, fits):
+    # Fake a fit measurement that always says the style's size fits. The check
+    # of the drawn pixels must still shrink the caption into the band, or
+    # refuse it, instead of letting it cover the black bars.
+    from services import caption_render
+
+    monkeypatch.setattr(caption_render, "_fit_font_size", lambda font_at, lines, **kw: kw["max_px"])
+    payload = lines_request(lines, size_pt=size_pt)
+    rows = FRAME_BAND_ROWS["16:9"]
+    if not fits:
+        with pytest.raises(CaptionRenderError) as error:
+            render_caption_overlay(payload, font_dir=font_dir, fit_rows=rows)
+        assert error.value.code == "CAPTION_OUT_OF_FRAME"
+        return
+    result = render_caption_overlay(payload, font_dir=font_dir, fit_rows=rows)
+    assert result.plan.fitted_font_size_px is not None and result.plan.fitted_font_size_px < 150
+    assert inside(ink_box(result), SAFE_AREAS["16:9"])
+
+
 def test_caption_that_cannot_fit_even_at_12_pt_still_refuses(font_dir):
     lines = [f"line {i}" for i in range(24)]
     payload = lines_request(lines, size_pt=12)
