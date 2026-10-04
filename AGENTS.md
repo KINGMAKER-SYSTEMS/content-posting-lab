@@ -113,8 +113,8 @@
   Invalid known-model pricing cannot fall back to a stale recipe estimate.
   Operator submission IDs retain the full UUID; persisted prediction/debit IDs
   remain unchanged and replaying a known prediction remains free.
-  Initial budget refusal returns 429, `detail.error`, `detail.resets_at` and
-  `Retry-After` from one clock sample. Terminal status uses the existing bounded
+  Initial budget admission decisions and 429 `detail.error`, `detail.resets_at`
+  and `Retry-After` use one UTC clock sample. Terminal status uses the existing bounded
   `error`/`errorClass`/`errorDetail` fields with `daily_budget reset=<UTC Z>`;
   retained paid outputs and consumer reset-aware scheduling require their own
   artifact/admission evidence. No top-level status reset field is added.
@@ -129,6 +129,8 @@
   before every POST, including identical inputs. Only resuming a known provider
   operation may reuse a debit; prompt text, image bytes and output names are not
   provider identities.
+  UI WAN image-to-video requests validate their actual builder inputs before
+  admission or job/prompt state; missing images never consume a debit.
   UI admission checks affordability without charging queued work; each index
   reserves after acquiring its execution permit on the current UTC day.
   Replicate's bounded HTTP-create retries reserve each additional POST with

@@ -413,13 +413,22 @@ async def generate_video(
     output_dir = get_project_video_dir(project)
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    # Pricing may use a WAN anchor placeholder; only the real input builder
+    # can validate that this operator request actually has its required image.
+    if provider in {"wan-i2v", "wan-i2v-fast"}:
+        info = PROVIDERS[provider]
+        builder = info["module"]._INPUT_BUILDERS[info["models"][0]]
+        try:
+            builder(prompt, {"aspect_ratio": aspect_ratio, "resolution": resolution,
+                             "duration": duration, "image_data_uri": image_data_uri, **extra})
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+
     # Check affordability before creating job/prompt state. Queued indices debit
     # only after acquiring the generation permit, on their execution UTC day.
     # Cost follows the unchanged provider payload; an unpriced provider
     # or unsupported pricing input fails closed before any paid request.
-    # The body `resets_at` and the `Retry-After` header are both computed from a
-    # SINGLE captured `now` so midnight cannot fall between the two samples and
-    # make the header disagree with the body.
+    # The admission decision, body and Retry-After share one UTC sample.
     try:
         cost_per_gen = generation_budget.per_gen_cost_usd(provider, duration, resolution=resolution,
                     parameters={**extra, "aspect_ratio": aspect_ratio, "image_data_uri": image_data_uri})
@@ -429,10 +438,10 @@ async def generate_video(
             detail={"error": "generation_pricing_unavailable", "detail": str(exc)},
         )
     planned_usd = count * cost_per_gen
+    now = datetime.now(timezone.utc)
     if not generation_budget.can_reserve_at(
-        generation_budget.jobs_store_path(), planned_usd,
+        generation_budget.jobs_store_path(), planned_usd, now=now,
     ):
-        now = datetime.now(timezone.utc)
         resets_at = generation_budget.next_reset_iso(now)
         raise HTTPException(
             status_code=429,

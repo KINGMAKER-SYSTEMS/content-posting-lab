@@ -4418,8 +4418,8 @@ async def create_job(
             # Cheap admission gate (the per-submission debit remains the real
             # cap): refuse BEFORE creating any job row when the day's metered
             # spend already leaves no room for the job's FIRST billable
-            # submission. One clock sample feeds both the body `resets_at` and
-            # the `Retry-After` header, so midnight cannot split them. No job
+            # submission. One clock sample feeds the admission decision, body
+            # `resets_at` and `Retry-After` header. No job
             # row, no ghost state on refusal.
             first_call_cost = moderation_retry.attempt_cost_usd(
                 generation_recipe.provider_model,
@@ -4431,8 +4431,8 @@ async def create_job(
                 first_call_cost = generation_budget.charged_cost_per_gen(
                     generation_recipe.provider_config.get("cost_per_gen_usd")
                 )
-            if not generation_budget.can_reserve_at(_jobs_path(), first_call_cost):
-                now = datetime.now(timezone.utc)
+            now = datetime.now(timezone.utc)
+            if not generation_budget.can_reserve_at(_jobs_path(), first_call_cost, now=now):
                 resets_at = generation_budget.next_reset_iso(now)
                 raise HTTPException(
                     status_code=429,
