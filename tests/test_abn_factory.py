@@ -1933,6 +1933,8 @@ def test_ensure_card_backgrounds_promotes_through_gateway(monkeypatch, tmp_path)
     monkeypatch.setattr(abn_factory, "ASSETS", tmp_path)
     monkeypatch.setattr(abn_assets, "ASSETS_DIR", tmp_path)
     monkeypatch.setattr(abn_factory, "_V2_VISUALS", True)
+    from types import SimpleNamespace
+    monkeypatch.setattr(abn_factory, "_v2cards", SimpleNamespace(_ASSETS_DIR=None))
 
     calls = {"n": 0}
 
@@ -2076,6 +2078,8 @@ def test_ensure_card_backgrounds_promotes_real_scratch_file_not_symlink(monkeypa
     monkeypatch.setattr(abn_factory, "ASSETS", tmp_path)
     monkeypatch.setattr(abn_assets, "ASSETS_DIR", tmp_path)
     monkeypatch.setattr(abn_factory, "_V2_VISUALS", True)
+    from types import SimpleNamespace
+    monkeypatch.setattr(abn_factory, "_v2cards", SimpleNamespace(_ASSETS_DIR=None))
 
     def fake_codex_image(prompt, out_name, size="1536x1024"):
         src = tmp_path / "_scratch" / f"{out_name}.png"

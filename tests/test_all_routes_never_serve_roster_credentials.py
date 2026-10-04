@@ -20,6 +20,7 @@ import threading
 
 import pytest
 from fastapi.routing import APIRoute
+from tests.route_inventory import registered_routes
 from fastapi.testclient import TestClient
 
 import services.roster as roster
@@ -63,9 +64,8 @@ def _fill(path: str) -> str:
 
 def _get_routes(app):
     seen = set()
-    for route in app.routes:
-        if isinstance(route, APIRoute) and "GET" in route.methods:
-            path = route.path
+    for route, path, methods in registered_routes(app):
+        if isinstance(route, APIRoute) and "GET" in methods:
             if path in seen or path in STREAMING:
                 continue
             seen.add(path)

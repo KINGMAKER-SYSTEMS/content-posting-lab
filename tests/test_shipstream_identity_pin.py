@@ -149,11 +149,12 @@ def compute_identities() -> dict:
     return out
 
 
-# Computed by the pre-PR code (8137cb8); see the module docstring.
+# Source and selected identities retain pre-PR pins (8137cb8).
+# Only full editor catalog versions reflect the additive POV-Club snapshot.
 PINNED = {'fetchedUrls': ['https://vault.identity.test/assets/vault%2Flovenightwalks%2Fsource-manifest.json'],
  'historical': {'approvedCuts': ['shipstream-lovenightwalks-424b1424c96c3bd3-cuts',
                                  '68bb7a0aefb39340e8ecfa6eae7c7ca063599b96598a3e8300b64067b38e5c9e'],
-                'catalogVersion': 'sha256:a39e39d6255e4a6c2acbd1cc16fb4745f465957bb48b3c036cc8d44abed7bdcb',
+                'catalogVersion': 'sha256:9ff03a12e19579b42f9cd462c9e6ea1cfe4891be11557fbb235838902d006cff',
                 'libraryId': 'shipstream-lovenightwalks-424b1424c96c3bd3',
                 'librarySha256': '6de6e331fc409c4af05de284f9fdebe79a42c33be2e087879de4037a4d43c121',
                 'selectedCatalogVersion': 'sha256:166cc1648410c5f4b2cf20103dc55e52bd8013fea7d944a76dd6bb932933ca48',
@@ -163,7 +164,7 @@ PINNED = {'fetchedUrls': ['https://vault.identity.test/assets/vault%2Flovenightw
  'manifestUrl': 'https://vault.identity.test/assets/vault%2Flovenightwalks%2Fsource-manifest.json',
  'master': {'approvedCuts': ['shipstream-lovenightwalks-9fb1c5a785851769-cuts',
                              '1db4533ce3f2b6794a894e203e8f5d2e3168df568ba54a6d0f87c15280ec8eb0'],
-            'catalogVersion': 'sha256:a1218cfec0082b1531567dabc0e731847b540b9bb1434dfbe256e419eed27558',
+            'catalogVersion': 'sha256:115f76812b57ba207bf48f0f5164a38b9b75f5c570e6f6d6a6146fadaf80ae1b',
             'libraryId': 'shipstream-lovenightwalks-9fb1c5a785851769',
             'librarySha256': '9cb2290055bb563668154448122a3d22ab82b607dd9b9880682f5ec1dcb6a44a',
             'selectedCatalogVersion': 'sha256:b38d8d9c3da191376aae26102b8246640033776ae2433e9cb5088b2487c9310a',
