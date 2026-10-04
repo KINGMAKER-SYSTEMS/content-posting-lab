@@ -176,10 +176,18 @@ def profile_authority_hash(format_slug: str, value: dict[str, Any]) -> str:
     return "sha256:" + hashlib.sha256(authority_bytes).hexdigest()
 
 
-def job_profile_authority_matches(job: dict[str, Any], expected_hash: str) -> bool:
-    """Accept exact new pins and legacy jobs whose other authority pins survive."""
+def job_profile_authority_matches(
+    job: dict[str, Any], expected_hash: str,
+    legacy_pins: dict[str, Any] | None = None,
+) -> bool:
+    """Accept exact new pins, or legacy jobs with explicit matching authority pins."""
     persisted = job.get("engineProfileHash")
-    return persisted is None or persisted == expected_hash
+    if persisted is not None:
+        return persisted == expected_hash
+    return bool(legacy_pins) and all(
+        job.get(key) == expected_value
+        for key, expected_value in legacy_pins.items()
+    )
 
 
 def load_engine_registry() -> tuple[dict[str, MaterialProfile], str]:

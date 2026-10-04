@@ -2012,7 +2012,7 @@ def _truck_master_candidates(
     recoveries reserve them against concurrent replenishment. Failed recovery
     jobs release them because no new delivery bytes crossed the API boundary.
     A landscape file alone is not enough: the producing job must match the
-    current recipe, engine registry, prompt catalog, executor and provider
+    selected profile, recipe, prompt catalog, executor and provider
     model. This prevents old-model or old-prompt renders from silently becoming
     new five-crop deliveries after the page's creative authority changes. The
     source files are checked again, byte-for-byte, by the recovery runner.
@@ -2054,13 +2054,23 @@ def _truck_master_candidates(
             or job.get("status") != "completed"
             or job.get("engine") != content_engine
             or job.get("recipeId") != recipe_id
-            or not job_profile_authority_matches(
-                job, generation_recipe.engine_profile_hash,
-            )
+            or not job_profile_authority_matches(job, generation_recipe.engine_profile_hash, {
+                "engine": generation_recipe.engine,
+                "formatContractVersion": generation_recipe.format_contract_version,
+                "executorVersion": generation_recipe.executor_version,
+                "promptCatalogHash": generation_recipe.prompt_catalog_hash,
+                "family": generation_recipe.family_name,
+                "providerModel": generation_recipe.provider_model,
+                "materialSource": generation_recipe.material_source,
+                "assetType": generation_recipe.asset_type,
+            })
             or job.get("formatContractVersion") != generation_recipe.format_contract_version
             or job.get("executorVersion") != generation_recipe.executor_version
             or job.get("promptCatalogHash") != generation_recipe.prompt_catalog_hash
+            or job.get("family") != generation_recipe.family_name
             or job.get("providerModel") != generation_recipe.provider_model
+            or job.get("materialSource") != generation_recipe.material_source
+            or job.get("assetType") != generation_recipe.asset_type
             or not isinstance(job.get("artifactRoot"), str)
         ):
             continue
@@ -2663,12 +2673,24 @@ async def _run_owned_dossier_generation(job_id: str) -> None:
     recipe = resolve_generation_recipe(publication) if publication else None
     if (
         recipe is None
-        or not job_profile_authority_matches(job, recipe.engine_profile_hash)
+        or not job_profile_authority_matches(job, recipe.engine_profile_hash, {
+            "engine": recipe.engine,
+            "formatContractVersion": recipe.format_contract_version,
+            "executorVersion": recipe.executor_version,
+            "promptCatalogHash": recipe.prompt_catalog_hash,
+            "family": recipe.family_name,
+            "providerModel": recipe.provider_model,
+            "materialSource": recipe.material_source,
+            "assetType": recipe.asset_type,
+        })
+        or job.get("engine") != recipe.engine
         or job.get("formatContractVersion") != recipe.format_contract_version
         or job.get("promptCatalogHash") != recipe.prompt_catalog_hash
         or job.get("executorVersion") != recipe.executor_version
         or job.get("family") != recipe.family_name
         or job.get("providerModel") != recipe.provider_model
+        or job.get("materialSource") != recipe.material_source
+        or job.get("assetType") != recipe.asset_type
     ):
         await asyncio.to_thread(_update_job,
             job_id,
@@ -3368,9 +3390,20 @@ async def _run_dossier_source(job_id: str) -> None:
         recipe is None
         or job.get("sourceLibraryId") != recipe.source_library_id
         or job.get("sourceLibraryHash") != recipe.source_library_hash
-        or not job_profile_authority_matches(job, recipe.engine_profile_hash)
+        or not job_profile_authority_matches(job, recipe.engine_profile_hash, {
+            "engine": recipe.engine,
+            "sourceLibraryId": recipe.source_library_id,
+            "sourceLibraryHash": recipe.source_library_hash,
+            "formatContractVersion": recipe.format_contract_version,
+            "executorVersion": recipe.executor_version,
+            "materialSource": recipe.material_source,
+            "assetType": recipe.asset_type,
+        })
+        or job.get("engine") != recipe.engine
         or job.get("formatContractVersion") != recipe.format_contract_version
         or job.get("executorVersion") != recipe.executor_version
+        or job.get("materialSource") != recipe.material_source
+        or job.get("assetType") != recipe.asset_type
     ):
         await asyncio.to_thread(_update_job,
             job_id,
@@ -3529,9 +3562,19 @@ async def _run_syzygy_slideshow(job_id: str) -> None:
     if (
         recipe is None
         or job.get("sourceLibraryId") != recipe.library_id
-        or not job_profile_authority_matches(job, recipe.engine_profile_hash)
+        or not job_profile_authority_matches(job, recipe.engine_profile_hash, {
+            "engine": recipe.engine,
+            "sourceLibraryId": recipe.library_id,
+            "formatContractVersion": recipe.format_contract_version,
+            "executorVersion": recipe.executor_version,
+            "materialSource": recipe.material_source,
+            "assetType": recipe.asset_type,
+        })
+        or job.get("engine") != recipe.engine
         or job.get("formatContractVersion") != recipe.format_contract_version
         or job.get("executorVersion") != recipe.executor_version
+        or job.get("materialSource") != recipe.material_source
+        or job.get("assetType") != recipe.asset_type
     ):
         await asyncio.to_thread(_update_job,
             job_id,

@@ -96,7 +96,10 @@ def current_generation_authority():
         "formatContractVersion": recipe.format_contract_version,
         "executorVersion": recipe.executor_version,
         "promptCatalogHash": recipe.prompt_catalog_hash,
+        "family": recipe.family_name,
         "providerModel": recipe.provider_model,
+        "materialSource": recipe.material_source,
+        "assetType": recipe.asset_type,
     }
 
 

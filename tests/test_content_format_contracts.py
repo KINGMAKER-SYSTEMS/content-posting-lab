@@ -168,7 +168,9 @@ def test_profile_authority_ignores_admission_cap_but_rejects_material_drift():
     assert profile_authority_hash(
         "pov-club", {**selected, "executorVersion": "sha256:" + "0" * 64},
     ) != original_hash
-    assert job_profile_authority_matches({}, original_hash)
+    legacy_pins = {"formatContractVersion": selected["formatContractVersion"]}
+    assert not job_profile_authority_matches({}, original_hash)
+    assert job_profile_authority_matches({}, original_hash, legacy_pins)
     assert job_profile_authority_matches(
         {"engineProfileHash": original_hash}, original_hash,
     )

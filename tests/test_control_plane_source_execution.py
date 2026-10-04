@@ -1521,6 +1521,39 @@ def test_pov_club_refuses_speeds_without_a_worker_admissible_window(speed):
     )
 
 
+def test_pov_club_unsupported_speed_is_refused_before_job_or_window_admission(lab, monkeypatch):
+    client, _, started = lab
+    payload = publication(
+        clip_speed=2.0,
+        recipe_version="dossier-pov-club-unsupported-speed",
+    )
+    registered = client.post(
+        "/api/control-plane/v1/recipes", json=payload,
+        headers=headers("source-register-pov-club-speed"),
+    )
+    assert registered.status_code == 200
+    original_resolver = cp._dossier_source_recipe
+    monkeypatch.setattr(
+        cp, "_dossier_source_recipe",
+        lambda publication: replace(
+            original_resolver(publication), format_slug="pov-club",
+        ),
+    )
+    monkeypatch.setattr(
+        cp, "_source_dna_cut_ledger",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("windows were reserved")),
+    )
+    response = client.post(
+        "/api/control-plane/v1/jobs",
+        json=job_body(1, payload),
+        headers=headers("source-job-pov-club-unsupported-speed"),
+    )
+    assert response.status_code == 409
+    assert response.json() == {"detail": "source_speed_duration_unsupported"}
+    assert cp._load_jobs()["jobs"] == {}
+    assert started == []
+
+
 @pytest.mark.parametrize("speed", [0.6, 0.8, 1.0, 1.5, 1.8])
 def test_pov_club_supported_speeds_stay_inside_worker_source_and_output_bounds(speed):
     recipe = resolve_source_recipe(publication(clip_speed=speed, cut_duration_ms=7_000))
