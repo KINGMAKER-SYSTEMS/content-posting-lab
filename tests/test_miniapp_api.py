@@ -21,6 +21,8 @@ from services.miniapp_auth import (
 
 
 FAKE_TOKEN = "123456:FAKE-bot-token-for-tests"
+AGENT_KEY = "test-agent-key"
+AGENT_HEADERS = {"X-Agent-Key": AGENT_KEY}
 
 
 @pytest.fixture(autouse=True)
@@ -136,7 +138,53 @@ def test_videos_lists_rendered_videos(sync_client):
     assert v["url"] == "/projects/acme-tiktok/videos/provider-a/job_0.mp4"
 
 
-def test_content_request_lifecycle(sync_client):
+def test_caller_page_id_must_be_owned_by_authenticated_poster(sync_client):
+    _seed_poster_with_page()
+    poster_headers = {"X-Dev-Poster-Id": "test-poster"}
+
+    foreign_videos = sync_client.get(
+        "/api/miniapp/videos",
+        params={"page_id": "acct:someone-else"},
+        headers=poster_headers,
+    )
+    assert foreign_videos.status_code == 404
+
+    foreign_request = sync_client.post(
+        "/api/miniapp/requests",
+        headers=poster_headers,
+        json={
+            "text": "route this to another poster's page",
+            "page_id": "acct:someone-else",
+        },
+    )
+    assert foreign_request.status_code == 404
+    assert content_requests.list_requests(poster_id="test-poster") == []
+
+    owned_videos = sync_client.get(
+        "/api/miniapp/videos",
+        params={"page_id": "acct:test-page"},
+        headers=poster_headers,
+    )
+    assert owned_videos.status_code == 200
+    assert [page["integration_id"] for page in owned_videos.json()["pages"]] == [
+        "acct:test-page"
+    ]
+
+    owned_request = sync_client.post(
+        "/api/miniapp/requests",
+        headers=poster_headers,
+        json={"text": "request for my page", "page_id": "acct:test-page"},
+    )
+    assert owned_request.status_code == 201
+    assert owned_request.json()["page_name"] == "ACME TikTok"
+    assert (
+        content_requests.get_request(owned_request.json()["id"])["page_id"]
+        == "acct:test-page"
+    )
+
+
+def test_content_request_lifecycle(sync_client, monkeypatch):
+    monkeypatch.setenv("MINIAPP_AGENT_KEY", AGENT_KEY)
     _seed_poster_with_page()
     # File a request as the poster.
     created = sync_client.post(
@@ -158,12 +206,15 @@ def test_content_request_lifecycle(sync_client):
     assert any(r["id"] == rid for r in listed.json()["requests"])
 
     # Agent picks it up and fulfills it.
-    agent_list = sync_client.get("/api/miniapp/agent/requests?status=open")
+    agent_list = sync_client.get(
+        "/api/miniapp/agent/requests?status=open", headers=AGENT_HEADERS
+    )
     assert agent_list.status_code == 200
     assert any(r["id"] == rid for r in agent_list.json()["requests"])
 
     patched = sync_client.patch(
         f"/api/miniapp/agent/requests/{rid}",
+        headers=AGENT_HEADERS,
         json={"status": "fulfilled", "agent_note": "rendered + sent"},
     )
     assert patched.status_code == 200
@@ -190,6 +241,26 @@ def test_agent_key_enforced_when_set(sync_client, monkeypatch):
         "/api/miniapp/agent/requests", headers={"X-Agent-Key": "s3cret"}
     )
     assert ok.status_code == 200
+
+
+def test_agent_routes_fail_closed_when_key_is_unset(sync_client):
+    _seed_poster_with_page()
+    created = sync_client.post(
+        "/api/miniapp/requests",
+        headers={"X-Dev-Poster-Id": "test-poster"},
+        json={"text": "request before agent access is configured"},
+    )
+    assert created.status_code == 201
+    request_id = created.json()["id"]
+
+    listed = sync_client.get("/api/miniapp/agent/requests")
+    mutated = sync_client.patch(
+        f"/api/miniapp/agent/requests/{request_id}",
+        json={"status": "in_progress"},
+    )
+    assert listed.status_code == 503
+    assert mutated.status_code == 503
+    assert content_requests.get_request(request_id)["status"] == "open"
 
 
 # ── initData binding flow (no dev bypass) ────────────────────────────
@@ -396,15 +467,18 @@ def test_agent_patch_key_enforced(sync_client, monkeypatch):
 # ── Agent endpoint edge cases ────────────────────────────────────────
 
 
-def test_agent_patch_unknown_request_404(sync_client):
+def test_agent_patch_unknown_request_404(sync_client, monkeypatch):
+    monkeypatch.setenv("MINIAPP_AGENT_KEY", AGENT_KEY)
     resp = sync_client.patch(
         "/api/miniapp/agent/requests/does-not-exist",
+        headers=AGENT_HEADERS,
         json={"status": "fulfilled"},
     )
     assert resp.status_code == 404
 
 
-def test_agent_patch_invalid_status_400(sync_client):
+def test_agent_patch_invalid_status_400(sync_client, monkeypatch):
+    monkeypatch.setenv("MINIAPP_AGENT_KEY", AGENT_KEY)
     _seed_poster_with_page()
     created = sync_client.post(
         "/api/miniapp/requests",
@@ -413,7 +487,9 @@ def test_agent_patch_invalid_status_400(sync_client):
     )
     rid = created.json()["id"]
     resp = sync_client.patch(
-        f"/api/miniapp/agent/requests/{rid}", json={"status": "bogus-status"}
+        f"/api/miniapp/agent/requests/{rid}",
+        headers=AGENT_HEADERS,
+        json={"status": "bogus-status"},
     )
     assert resp.status_code == 400
 
@@ -421,7 +497,8 @@ def test_agent_patch_invalid_status_400(sync_client):
 # ── Request filtering edge cases ─────────────────────────────────────
 
 
-def test_requests_status_filter(sync_client):
+def test_requests_status_filter(sync_client, monkeypatch):
+    monkeypatch.setenv("MINIAPP_AGENT_KEY", AGENT_KEY)
     _seed_poster_with_page()
     hdr = {"X-Dev-Poster-Id": "test-poster"}
     a = sync_client.post(
@@ -430,7 +507,9 @@ def test_requests_status_filter(sync_client):
     sync_client.post("/api/miniapp/requests", headers=hdr, json={"text": "second"})
     # Move one request to in_progress.
     sync_client.patch(
-        f"/api/miniapp/agent/requests/{a['id']}", json={"status": "in_progress"}
+        f"/api/miniapp/agent/requests/{a['id']}",
+        headers=AGENT_HEADERS,
+        json={"status": "in_progress"},
     )
 
     open_only = sync_client.get(
@@ -467,7 +546,8 @@ def test_requests_scoped_to_calling_poster(sync_client):
     assert {r["text"] for r in mine} == {"mine"}
 
 
-def test_agent_list_status_empty_returns_all(sync_client):
+def test_agent_list_status_empty_returns_all(sync_client, monkeypatch):
+    monkeypatch.setenv("MINIAPP_AGENT_KEY", AGENT_KEY)
     # status="" (empty) on the agent listing means "all statuses".
     _seed_poster_with_page()
     hdr = {"X-Dev-Poster-Id": "test-poster"}
@@ -475,24 +555,27 @@ def test_agent_list_status_empty_returns_all(sync_client):
         "/api/miniapp/requests", headers=hdr, json={"text": "one"}
     ).json()
     sync_client.patch(
-        f"/api/miniapp/agent/requests/{a['id']}", json={"status": "fulfilled"}
+        f"/api/miniapp/agent/requests/{a['id']}",
+        headers=AGENT_HEADERS,
+        json={"status": "fulfilled"},
     )
     sync_client.post("/api/miniapp/requests", headers=hdr, json={"text": "two"})
 
     all_reqs = sync_client.get(
-        "/api/miniapp/agent/requests?status="
+        "/api/miniapp/agent/requests?status=", headers=AGENT_HEADERS
     ).json()["requests"]
     statuses = {r["status"] for r in all_reqs}
     assert {"fulfilled", "open"} <= statuses
 
     # Default (no status param) lists only open.
     open_default = sync_client.get(
-        "/api/miniapp/agent/requests"
+        "/api/miniapp/agent/requests", headers=AGENT_HEADERS
     ).json()["requests"]
     assert all(r["status"] == "open" for r in open_default)
 
 
-def test_agent_list_poster_filter(sync_client):
+def test_agent_list_poster_filter(sync_client, monkeypatch):
+    monkeypatch.setenv("MINIAPP_AGENT_KEY", AGENT_KEY)
     _seed_poster_with_page()
     tg.set_poster("other-poster", {"name": "Other", "chat_id": -200})
     sync_client.post(
@@ -506,7 +589,8 @@ def test_agent_list_poster_filter(sync_client):
         json={"text": "theirs"},
     )
     only_test = sync_client.get(
-        "/api/miniapp/agent/requests?status=&poster_id=test-poster"
+        "/api/miniapp/agent/requests?status=&poster_id=test-poster",
+        headers=AGENT_HEADERS,
     ).json()["requests"]
     assert {r["poster_id"] for r in only_test} == {"test-poster"}
 

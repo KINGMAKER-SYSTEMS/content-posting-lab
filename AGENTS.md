@@ -204,6 +204,12 @@
   `/api/telegram/*` needs the key like every other `/api/` route: the bot
   long-polls, so there is no webhook route to exempt. The UI sends the key
   through `frontend/src/lib/api.ts` (`fetchApi` / `withApiKey`).
+  Mini App agent queue routes additionally require a nonblank server-owned
+  `MINIAPP_AGENT_KEY` and matching `X-Agent-Key`; an unset key returns 503,
+  while missing or incorrect caller keys return 401. Caller-supplied `page_id`
+  values for video filtering or content requests must resolve inside the
+  authenticated poster's pages; unknown or foreign IDs return 404 before
+  content is returned or queued.
 - `routers/upload.py` passes the legacy cookie-login account to its static
   Python subprocess runner as an argv value. Request values must never be
   interpolated into executable source; the exact account argument is preserved.
