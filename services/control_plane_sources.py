@@ -998,6 +998,10 @@ def source_cut_is_planned(
             or start_ms == master.duration_ms - duration_ms
         )
     # Legacy grid position ids from jobs queued before time-frame planning.
+    # POV Club was commissioned after that vocabulary was retired, so it has
+    # no legitimate queued job with a legacy grid id.
+    if recipe.format_slug == "pov-club":
+        return False
     if slot_id != f"{master.sha256}:{start_ms}":
         return False
     try:

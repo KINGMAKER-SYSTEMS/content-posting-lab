@@ -19,6 +19,7 @@ from services.control_plane_sources import (
     plan_source_cuts,
     resolve_source_recipe,
     source_cut_is_planned,
+    planned_source_cut_duration,
 )
 from services.dossier_ingredients import (
     PINNED_LEGACY_DOSSIER_CATALOG_VERSIONS_BY_PUBLICATION,
@@ -1577,3 +1578,20 @@ def test_pov_club_supported_speeds_stay_inside_worker_source_and_output_bounds(s
     for cut in cuts:
         assert 5_000 <= cut.duration_ms <= 9_000
         assert 5_000 <= cut.duration_ms / speed <= 9_000
+
+
+@pytest.mark.parametrize("speed", [0.5, 1.0, 2.0])
+def test_pov_club_rejects_legacy_grid_ids_without_breaking_older_formats(speed):
+    recipe = resolve_source_recipe(publication(clip_speed=speed, cut_duration_ms=7_000))
+    assert recipe is not None
+    master = recipe.masters[0]
+    start_ms = 120_000
+    duration_ms = planned_source_cut_duration(recipe, master, start_ms)
+    legacy_id = f"{master.sha256}:{start_ms}"
+    assert source_cut_is_planned(recipe, master, start_ms, duration_ms, legacy_id)
+    club_recipe = replace(recipe, format_slug="pov-club")
+    assert not source_cut_is_planned(club_recipe, master, start_ms, duration_ms, legacy_id)
+    for cut in plan_source_cuts(club_recipe, 1, set()):
+        assert source_cut_is_planned(
+            club_recipe, cut.master, cut.start_ms, cut.duration_ms, cut.slot_id,
+        )
