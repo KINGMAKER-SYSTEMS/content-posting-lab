@@ -1089,7 +1089,9 @@ async def test_sub_second_starts_render_and_never_decode_the_same_frames(lab, mo
 
 
 @pytest.mark.asyncio
-async def test_runner_passes_exact_cut_speed_and_crop_to_isolated_render(lab, monkeypatch):
+async def test_queued_source_runner_accepts_unrelated_registry_digest_drift_and_passes_exact_treatment(
+    lab, monkeypatch,
+):
     client, tmp_path, _ = lab
     source = tmp_path / "master.mp4"
     source.write_bytes(b"master")
@@ -1106,7 +1108,18 @@ async def test_runner_passes_exact_cut_speed_and_crop_to_isolated_render(lab, mo
         "/api/control-plane/v1/jobs", json=job_body(1, payload),
         headers=headers("source-job-crop"),
     )
-    _pin_cuts_to_first_frame(response.json()["jobId"])
+    job_id = response.json()["jobId"]
+    assert cp._load_jobs()["jobs"][job_id]["status"] == "queued"
+    _pin_cuts_to_first_frame(job_id)
+    # Model a persisted queued job from before per-profile hashes were stored.
+    # Its explicit source pins still authorize this work after unrelated
+    # registry contents change.
+    store = cp._load_jobs()
+    selected_profile_hash = store["jobs"][job_id].pop("engineProfileHash")
+    store["jobs"][job_id]["engineRegistryHash"] = "0" * 64
+    cp.atomic_save(cp._jobs_path(), store)
+    assert cp._load_jobs()["jobs"][job_id].get("engineProfileHash") is None
+    assert selected_profile_hash.startswith("sha256:")
     calls = []
 
     async def cached_source(*_):
@@ -1118,7 +1131,7 @@ async def test_runner_passes_exact_cut_speed_and_crop_to_isolated_render(lab, mo
 
     monkeypatch.setattr(cp, "_cached_source_master", cached_source)
     monkeypatch.setattr(cp, "run_color_correct", render)
-    await cp._run_dossier_source(response.json()["jobId"])
+    await cp._run_dossier_source(job_id)
     assert calls[0][3] == {
         "scale": None,
         "encode_args": cp.delivery_encode_args("tiktok_delivery_v1"),
@@ -1126,14 +1139,14 @@ async def test_runner_passes_exact_cut_speed_and_crop_to_isolated_render(lab, mo
         "clip_crop": crop,
         "clip_crop_size": (1080, 1920),
         "clip_start_ms": 0,
-        "clip_duration_ms": cp._load_jobs()["jobs"][response.json()["jobId"]]["sourceCuts"][0]["durationMs"],
+        "clip_duration_ms": cp._load_jobs()["jobs"][job_id]["sourceCuts"][0]["durationMs"],
     }
-    job = cp._load_jobs()["jobs"][response.json()["jobId"]]
+    job = cp._load_jobs()["jobs"][job_id]
     assert job["status"] == "completed"
     assert Path(job["artifactRoot"]) in Path(calls[0][1]).parents
     receipt = job["clips"][0]["sourceTreatment"]
     assert receipt["sourceSha256"] == job["clips"][0]["sha256"]
-    assert receipt["generationJobId"] == response.json()["jobId"]
+    assert receipt["generationJobId"] == job_id
     assert receipt["visualTreatment"]["clipSpeed"] == pytest.approx(0.75)
     assert receipt["visualTreatment"]["clipCrop"] == crop
 

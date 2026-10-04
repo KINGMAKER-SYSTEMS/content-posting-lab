@@ -892,12 +892,26 @@ async def _async_value(value):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("later_provider_failure", [False, True])
-async def test_generation_runner_lands_treated_artifacts_under_the_isolated_job_root(lab, monkeypatch, later_provider_failure):
+@pytest.mark.parametrize("unrelated_registry_digest_changed", [False, True])
+async def test_queued_generation_runner_accepts_unrelated_registry_digest_drift(
+    lab, monkeypatch, later_provider_failure, unrelated_registry_digest_changed,
+):
     client, tmp_path, _ = lab
     response = client.post(
         "/api/control-plane/v1/jobs", json=job_body(quantity=6 if later_provider_failure else 2), headers=HEADERS,
     )
     job_id = response.json()["jobId"]
+    assert cp._load_jobs()["jobs"][job_id]["status"] == "queued"
+    if unrelated_registry_digest_changed:
+        # Model a persisted queued job from before per-profile hashes were
+        # stored. Its explicit truck pins still authorize this work despite a
+        # later unrelated registry change.
+        store = cp._load_jobs()
+        selected_profile_hash = store["jobs"][job_id].pop("engineProfileHash")
+        store["jobs"][job_id]["engineRegistryHash"] = "0" * 64
+        cp.atomic_save(cp._jobs_path(), store)
+        assert cp._load_jobs()["jobs"][job_id].get("engineProfileHash") is None
+        assert selected_profile_hash.startswith("sha256:")
     corrections = []
 
     async def fake_generate_one(
