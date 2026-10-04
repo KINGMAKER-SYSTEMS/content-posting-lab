@@ -60,7 +60,7 @@ USD_BUDGET_ENV = "LAB_GENERATION_DAILY_BUDGET_USD"
 #   ABN/recreate = a NAMED flat margin, not formula-derived: the residual after
 #                  the base and retry terms (175.00 - 112.56 - 56.28 = 6.16).
 #                  Its thumbnail + cached b-roll components (Flux $0.003 + Wan
-#                  $0.50 x _BG_LIB_TARGET 8 slots + LaMa $0.405) sum to $4.429
+#                  $0.50 x _BG_LIB_TARGET 8 slots + LaMa $0.405) sum to $4.408
 #                  in total; the lane's normal-day cadence is NOT measured
 #                  in-repo.                                                $  6.16
 #                                                                           --------

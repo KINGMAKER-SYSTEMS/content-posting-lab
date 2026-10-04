@@ -421,7 +421,8 @@ async def generate_video(
     # SINGLE captured `now` so midnight cannot fall between the two samples and
     # make the header disagree with the body.
     try:
-        cost_per_gen = generation_budget.per_gen_cost_usd(provider, duration, resolution=resolution)
+        cost_per_gen = generation_budget.per_gen_cost_usd(provider, duration, resolution=resolution,
+                    parameters={**extra, "aspect_ratio": aspect_ratio, "image_data_uri": image_data_uri})
     except ValueError as exc:
         raise HTTPException(
             status_code=500,

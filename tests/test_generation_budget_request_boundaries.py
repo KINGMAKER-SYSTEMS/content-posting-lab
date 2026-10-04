@@ -155,3 +155,64 @@ async def test_every_bounded_create_attempt_has_its_own_debit(monkeypatch):
     ledger = generation_budget.summary_at(generation_budget.jobs_store_path())
     assert ledger["spentUsd"] == pytest.approx(0.28 * replicate.START_ATTEMPTS)
     assert debit_count() == replicate.START_ATTEMPTS
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider,cost", [("wan-i2v-fast", 0.145), ("grok", 0.072)])
+@pytest.mark.parametrize("affordable", [False, True])
+async def test_actual_ui_payload_fees_are_guarded_before_post(monkeypatch, provider, cost, affordable):
+    import io
+    from fastapi import HTTPException, UploadFile
+    from PIL import Image
+    from starlette.datastructures import Headers
+
+    image = io.BytesIO()
+    Image.new("RGB", (2, 2), "black").save(image, format="PNG")
+    data = image.getvalue()
+    monkeypatch.setenv(generation_budget.USD_BUDGET_ENV, str(cost if affordable else cost - 0.001))
+    monkeypatch.setitem(base.API_KEYS, "replicate", "fixture-token")
+    monkeypatch.setitem(base.API_KEYS, "xai", "fixture-token")
+    monkeypatch.setattr(base, "FORCE_LANDSCAPE", set())
+    posts = []
+    def handler(request):
+        if request.method == "POST":
+            posts.append(json.loads(request.content))
+            assert generation_budget.spent_usd_at(generation_budget.jobs_store_path()) == pytest.approx(cost)
+            return httpx.Response(201 if provider == "wan-i2v-fast" else 200,
+                                  json={"id": "paid-id", "request_id": "paid-id"})
+        return httpx.Response(200, json={"status": "succeeded", "output": "https://fixture.test/video.mp4",
+                                       "video": {"url": "https://fixture.test/video.mp4"}})
+    original_client = httpx.AsyncClient
+    monkeypatch.setattr(base.httpx, "AsyncClient", lambda *a, **kw: original_client(transport=httpx.MockTransport(handler)))
+    async def download(_client, _url, dest):
+        dest.write_bytes(b"fixture")
+    monkeypatch.setattr(base, "download_media", download)
+    tasks = []
+    create_task = asyncio.create_task
+    def capture(coro):
+        task = create_task(coro)
+        tasks.append(task)
+        return task
+    monkeypatch.setattr(video.asyncio, "create_task", capture)
+    args = {name: parameter.default.default for name, parameter in inspect.signature(video.generate_video).parameters.items()}
+    args.update(prompt="fixture scene", provider=provider, count=1, duration=1, resolution="720p",
+                interpolate_output=True, project="actual-payload-fees",
+                media=UploadFile(io.BytesIO(data), filename="fixture.png", size=len(data),
+                                 headers=Headers({"content-type": "image/png"})))
+    if not affordable:
+        with pytest.raises(HTTPException) as refused:
+            await video.generate_video(**args)
+        assert refused.value.status_code == 429
+        assert refused.value.detail["error"] == "generation_daily_budget_reached"
+        assert posts == [] and tasks == []
+        return
+    result = await video.generate_video(**args)
+    await asyncio.gather(*tasks)
+    assert len(posts) == 1
+    assert video.jobs[result["job_id"]]["videos"][0]["status"] == "done"
+    if provider == "wan-i2v-fast":
+        assert posts[0]["input"]["interpolate_output"] is True
+        assert posts[0]["input"]["resolution"] == "720p"
+    else:
+        assert posts[0]["image"]["url"].startswith("data:image/png;base64,")
+    assert generation_budget.spent_usd_at(generation_budget.jobs_store_path()) == pytest.approx(cost)
