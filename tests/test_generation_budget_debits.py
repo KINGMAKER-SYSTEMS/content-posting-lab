@@ -200,3 +200,33 @@ def test_offset_clock_uses_actual_utc_submission_day(monkeypatch, tmp_path):
     assert generation_budget.debit_generation_spend_at(path, 0.28, "first", now=local)
     with sqlite3.connect(generation_budget.ledger_path(path)) as db:
         assert db.execute("SELECT day FROM debits").fetchall() == [("2026-10-04",)]
+
+
+def test_writer_lock_crossing_midnight_uses_submission_day(monkeypatch, tmp_path):
+    import contextlib
+    import json
+    from services import generation_recovery
+
+    day1 = datetime(2026, 10, 4, 23, 59, 59, tzinfo=timezone.utc)
+    day2 = datetime(2026, 10, 5, 0, 0, 1, tzinfo=timezone.utc)
+    clock = {"now": day1}
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return clock["now"]
+    monkeypatch.setattr(generation_budget, "datetime", Clock)
+    monkeypatch.setenv(generation_budget.USD_BUDGET_ENV, "1")
+    path = tmp_path / "jobs.json"
+    path.write_text(json.dumps({"jobs": {}, "generationBudget": {
+        "day": "2026-10-04", "spentUsd": 1, "debits": {"old-paid-intent": 1},
+    }}))
+    original_lock = generation_recovery.store_lock
+    @contextlib.contextmanager
+    def crossing_lock(target):
+        with original_lock(target):
+            clock["now"] = day2
+            yield
+    monkeypatch.setattr(generation_recovery, "store_lock", crossing_lock)
+    assert generation_budget.debit_generation_spend_at(path, 0.28, "new-after-lock")
+    assert generation_budget.spent_usd_at(path, now=day1) == 1
+    assert generation_budget.spent_usd_at(path, now=day2) == pytest.approx(0.28)

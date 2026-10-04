@@ -327,8 +327,10 @@ def debit_generation_spend_at(
     amount = _money(_finite_usd(amount_usd, "amount_usd"))
     if amount <= 0 or not isinstance(debit_id, str) or not debit_id:
         raise ValueError("a paid debit requires a positive amount and exact non-empty ID")
-    day = utc_day(now)
     with _database(path, write=True) as db:
+        # The writer lock can wait across midnight; charge the actual locked
+        # submission day. An explicitly supplied clock remains deterministic.
+        day = utc_day(now)
         old = db.execute("SELECT amount_usd FROM debits WHERE id=?", (debit_id,)).fetchone()
         if old is not None:
             _money(old[0])  # Corrupt audit evidence never grants a free replay.
