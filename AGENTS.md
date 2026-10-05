@@ -95,7 +95,14 @@
   request/result on both the hosted Burn router and port-8002 server. V2 requires
   `picture_frame` (`9:16`, `16:9`, `4:3`, `1:1`, or `3:4`) and binds it into the
   exact render-plan hash. Rail is the v2 consumer; legacy v1 callers remain
-  supported for captions that do not require the new fit behavior.
+  supported for captions that do not require the new fit behavior. In v2 and
+  prepared-post frame-aware rendering, top/bottom anchors are 15/85 percent of
+  the visible picture band; the zero-offset middle anchor remains at the canvas
+  center to preserve the established placement. `offset_pct` is relative to the
+  band. Keep the requested anchor if the ink fits, otherwise shift it by the
+  smallest vertical amount needed to fit. When the ink itself is too tall,
+  center it for the size search. V1 and v2 `9:16` retain full-canvas placement
+  coordinates.
 - `services/post_render.py` owns local prepared-final rendering and exact artifact
   receipts; control-plane admission remains downstream authority.
 - `services/post_render_jobs.py` and `routers/post_renders.py` own durable pre-lease

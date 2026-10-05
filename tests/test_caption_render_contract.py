@@ -514,6 +514,91 @@ def test_v2_api_binds_fit_to_the_required_picture_frame(
     assert body["render_plan_sha256"] == "sha256:" + hashlib.sha256(plan_bytes).hexdigest()
 
 
+@pytest.mark.parametrize(
+    "frame,rows",
+    [("16:9", (656, 1263)), ("4:3", (554, 1363)), ("1:1", (420, 1499)),
+     ("3:4", (240, 1679))],
+)
+@pytest.mark.parametrize(
+    "position,percentage",
+    [("top", 15), ("middle", 50), ("bottom", 85)],
+)
+def test_v2_places_all_short_caption_positions_inside_the_picture_band(
+    font_dir, frame, rows, position, percentage
+):
+    raw = request(size_pt=16.0, position=position).model_dump(mode="json", by_alias=True)
+    raw.update(schema="content-lab.caption-render-request.v2", picture_frame=frame)
+    payload = CaptionRenderRequestV2.model_validate(raw)
+
+    result = render_caption_overlay(
+        payload, font_dir=font_dir, fit_rows=rows
+    )
+
+    assert inside(ink_box(result), SAFE_AREAS[frame])
+    expected_center = (
+        960 if position == "middle"
+        else round(rows[0] + (rows[1] - rows[0]) * percentage / 100)
+    )
+    assert result.plan.lines[0].center_y_px == expected_center
+    assert result.plan.fitted_font_size_px is None
+
+
+@pytest.mark.parametrize("frame", ["16:9", "4:3", "1:1", "3:4"])
+@pytest.mark.parametrize("position", ["top", "bottom"])
+def test_v2_endpoint_does_not_refuse_short_top_or_bottom_caption(
+    sync_client, monkeypatch, font_dir, frame, position
+):
+    from routers import burn as burn_router
+
+    monkeypatch.setattr(burn_router, "FONT_DIR", font_dir)
+    raw = request(size_pt=16.0, position=position).model_dump(mode="json", by_alias=True)
+    raw.update(schema="content-lab.caption-render-request.v2", picture_frame=frame)
+
+    response = sync_client.post("/api/burn/caption-render/v2", json=raw)
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["schema"] == "content-lab.caption-render-result.v2"
+    assert body["plan"]["picture_frame"] == frame
+    assert body["plan"]["effective_style"]["position"] == position
+
+
+@pytest.mark.parametrize("frame,rows", [("16:9", (656, 1263)),
+                                         ("4:3", (554, 1363)),
+                                         ("1:1", (420, 1499))])
+@pytest.mark.parametrize("position", ["top", "bottom"])
+def test_v2_fits_tall_top_and_bottom_captions_without_false_out_of_frame(
+    font_dir, frame, rows, position
+):
+    payload = lines_request(SHORT_LINES[:4], size_pt=60.0, position=position)
+    request_wire = payload.model_dump(mode="json", by_alias=True)
+    request_wire.update(schema="content-lab.caption-render-request.v2", picture_frame=frame)
+    payload = CaptionRenderRequestV2.model_validate(request_wire)
+
+    result = render_caption_overlay(payload, font_dir=font_dir, fit_rows=rows)
+
+    assert inside(ink_box(result), SAFE_AREAS[frame])
+    assert result.plan.rendered_text == "\n".join(SHORT_LINES[:4])
+    # Prefer the requested band-relative position, but nudge only as needed
+    # to fit a tall block inside the picture.
+    assert rows[0] <= result.plan.lines[0].center_y_px <= rows[1]
+    assert result.plan.fitted_font_size_px is None or 30 <= result.plan.fitted_font_size_px < 150
+
+
+@pytest.mark.parametrize("position", ["top", "middle", "bottom"])
+def test_v2_portrait_positions_keep_the_v1_coordinates_and_overlay(font_dir, position):
+    legacy = request(size_pt=16.0, position=position)
+    legacy_result = render_caption_overlay(legacy, font_dir=font_dir)
+    raw = legacy.model_dump(mode="json", by_alias=True)
+    raw.update(schema="content-lab.caption-render-request.v2", picture_frame="9:16")
+    framed_result = render_caption_overlay(
+        CaptionRenderRequestV2.model_validate(raw), font_dir=font_dir
+    )
+
+    assert framed_result.overlay == legacy_result.overlay
+    assert framed_result.plan.lines == legacy_result.plan.lines
+
+
 def test_v1_keeps_its_old_plan_shape_and_refuses_new_fit_behavior(
     sync_client, monkeypatch, font_dir
 ):
@@ -543,8 +628,9 @@ def test_v1_keeps_its_old_plan_shape_and_refuses_new_fit_behavior(
     "frame,line_count",
     [("9:16", 10), ("16:9", 4), ("4:3", 6), ("1:1", 8), ("3:4", 10)],
 )
+@pytest.mark.parametrize("position", ["top", "middle", "bottom"])
 def test_v2_port_8002_route_matches_hosted_frame_fit(
-    sync_client, monkeypatch, font_dir, tmp_path, frame, line_count
+    sync_client, monkeypatch, font_dir, tmp_path, frame, line_count, position
 ):
     from fastapi.testclient import TestClient
 
@@ -556,7 +642,7 @@ def test_v2_port_8002_route_matches_hosted_frame_fit(
 
     monkeypatch.setattr(burn_router, "FONT_DIR", font_dir)
     monkeypatch.setattr(burn_server, "FONT_DIR", font_dir)
-    payload = lines_request(SHORT_LINES[:line_count], size_pt=96)
+    payload = lines_request(SHORT_LINES[:line_count], size_pt=96, position=position)
     wire = payload.model_dump(mode="json", by_alias=True)
     wire.update(schema="content-lab.caption-render-request.v2", picture_frame=frame)
     hosted = sync_client.post("/api/burn/caption-render/v2", json=wire)

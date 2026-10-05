@@ -1419,3 +1419,21 @@ the same RUN layer; and the packaged `import app` smoke check passed. Running
 the resulting image reported `aarch64` and imported the TgCrypto extension.
 Separate image checks confirmed both the `gcc` executable and Debian gcc
 package are absent. `git diff --check` passed. No push, merge, or deployment.
+
+time: [10:05pm] [10-04-26]
+agent: [Codex desktop] [gpt-6]
+worktree: [l13-frame-fit] [/private/tmp/cpl-pr216-contract]
+type: [bug report]: Keep framed top and bottom captions renderable
+area: [backend] [testing]
+
+Adversarial review reproduced 422 responses for short top/bottom captions on
+16:9, 4:3, and 1:1 frames because the frame-aware fitter kept their anchors at
+15%/85% of the full canvas, outside the visible band. Frame-aware rendering now
+positions those anchors at 15%/85% of the band, keeps zero-offset middle at the
+established canvas center, interprets offset as a band-relative adjustment, and
+minimally shifts ink into the band when needed. Full-screen v1/9:16 placement
+remains unchanged. Added band-position, fit/no-false-422, hosted-route, and
+portrait-compatibility regressions; updated the owning contract. Focused
+caption-render tests: 111 passed; prepared-post and quality-gate tests: 101
+passed; compileall, Python compilation, and `git diff --check` passed. No push,
+merge, or deployment.

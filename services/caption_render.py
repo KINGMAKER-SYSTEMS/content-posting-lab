@@ -611,6 +611,29 @@ def _inside(box: tuple[int, int, int, int], area: tuple[int, int, int, int]) -> 
     return area[0] <= box[0] and area[1] <= box[1] and box[2] <= area[2] and box[3] <= area[3]
 
 
+def _center_y_to_fit(
+    preferred_center_y_px: int,
+    ink_box: tuple[int, int, int, int],
+    area: tuple[int, int, int, int],
+) -> int:
+    """Keep a preferred position, moving only enough to fit its ink vertically.
+
+    If the ink itself is taller than the picture area, center it so the fit
+    search can reduce its size instead of treating an out-of-band anchor as an
+    impossible fit.
+    """
+
+    min_shift = area[1] - ink_box[1]
+    max_shift = area[3] - ink_box[3]
+    if min_shift <= 0 <= max_shift:
+        shift = 0
+    elif min_shift <= max_shift:
+        shift = min_shift if min_shift > 0 else max_shift
+    else:
+        shift = round((area[1] + area[3]) / 2) - round((ink_box[1] + ink_box[3]) / 2)
+    return preferred_center_y_px + shift
+
+
 def _scale_about(centre: float, low: int, high: int, ink_low: int, ink_high: int) -> float:
     # The caption scales about its anchor, so each side scales on its own.
     scales = [1.0]
@@ -632,6 +655,7 @@ def _fit_font_size(
     anchor: str,
     center_y_px: int,
     area: tuple[int, int, int, int],
+    move_anchor_into_area: bool = False,
 ) -> int:
     """Largest size up to ``max_px`` whose ink stays inside ``area``.
 
@@ -643,18 +667,29 @@ def _fit_font_size(
 
     measure = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
 
-    def ink(size: int) -> tuple[int, int, int, int]:
+    def placement(size: int) -> tuple[int, tuple[int, int, int, int]]:
         _, boxes = _layout_lines(
             measure, font_at(size), lines, x_px=x_px, anchor=anchor,
             stroke_width_px=stroke_width_px, line_height_px=_line_height_px(size), center_y_px=center_y_px,
         )
-        return _ink_box(boxes, background)
+        box = _ink_box(boxes, background)
+        if not move_anchor_into_area:
+            return center_y_px, box
+
+        # Preserve the preferred top/middle/bottom placement whenever its ink
+        # fits. Otherwise move it by the smallest vertical amount that puts it
+        # inside the visible picture. If the block itself is taller than the
+        # picture, center it to find the largest size that can fit at all.
+        placed_center_y_px = _center_y_to_fit(center_y_px, box, area)
+        shift = placed_center_y_px - center_y_px
+        placed = (box[0], box[1] + shift, box[2], box[3] + shift)
+        return placed_center_y_px, placed
 
     size = max_px
     largest_fit: int | None = None
     smallest_miss: int | None = None
     while True:
-        box = ink(size)
+        placed_center_y_px, box = placement(size)
         if _inside(box, area):
             # A proportional jump can land a pixel low (line heights and glyph
             # boxes round), so creep back up to the largest size that fits.
@@ -672,7 +707,7 @@ def _fit_font_size(
                 "caption does not fit inside the visible picture even at 12 pt",
             )
         scale = min(_scale_about(x_px, area[0], area[2], box[0], box[2]),
-                    _scale_about(center_y_px, area[1], area[3], box[1], box[3]))
+                    _scale_about(placed_center_y_px, area[1], area[3], box[1], box[3]))
         size = max(FIT_FLOOR_PX, min(size - 1, math.floor(size * scale)))
 
 
@@ -717,10 +752,20 @@ def render_caption_overlay(
         "right": FRAME_WIDTH - horizontal_margin_px,
     }[style.align]
     anchor = {"left": "lm", "center": "mm", "right": "rm"}[style.align]
-    center_y_px = round(
-        FRAME_HEIGHT
-        * ((_POSITION_Y_PCT[style.position] + style.offset_pct) / 100)
-    )
+    position_pct = _POSITION_Y_PCT[style.position] + style.offset_pct
+    if fit_rows is None:
+        # Keep the established full-screen/v1 coordinate contract byte-for-byte.
+        center_y_px = round(FRAME_HEIGHT * (position_pct / 100))
+    else:
+        band_top, band_bottom = fit_rows
+        band_height = band_bottom - band_top + 1
+        if style.position == "middle" and style.offset_pct == 0:
+            # Preserve the established center coordinate. Chroma-aligned frame
+            # bands can be one row asymmetric, but their viewer center remains
+            # the canvas center and the caption still fits inside the band.
+            center_y_px = FRAME_HEIGHT // 2
+        else:
+            center_y_px = round(band_top + (band_height - 1) * (position_pct / 100))
 
     area = caption_fit_area(fit_rows)
     if style.inverted:
@@ -738,16 +783,30 @@ def render_caption_overlay(
         anchor=anchor,
         center_y_px=center_y_px,
         area=area,
+        move_anchor_into_area=fit_rows is not None,
     )
 
     while True:
         font = font_at(drawn_font_size_px)
         line_height_px = _line_height_px(drawn_font_size_px)
+        if fit_rows is None:
+            drawn_center_y_px = center_y_px
+        else:
+            # Use the same deterministic minimal shift as the size search,
+            # based on the exact text/background bounds at this size.
+            measure = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
+            _, measured_boxes = _layout_lines(
+                measure, font, lines, x_px=x_px, anchor=anchor,
+                stroke_width_px=stroke_width_px, line_height_px=line_height_px,
+                center_y_px=center_y_px,
+            )
+            measured_box = _ink_box(measured_boxes, style.background)
+            drawn_center_y_px = _center_y_to_fit(center_y_px, measured_box, area)
         image = Image.new("RGBA", (FRAME_WIDTH, FRAME_HEIGHT), (0, 0, 0, 0))
         draw = ImageDraw.Draw(image)
         line_records, text_boxes = _layout_lines(
             draw, font, lines, x_px=x_px, anchor=anchor, stroke_width_px=stroke_width_px,
-            line_height_px=line_height_px, center_y_px=center_y_px,
+            line_height_px=line_height_px, center_y_px=drawn_center_y_px,
         )
 
         background_fill = style.background_color
