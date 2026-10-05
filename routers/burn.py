@@ -16,7 +16,7 @@ import zipfile
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import APIRouter, Query, Request
+from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from project_manager import (
@@ -41,8 +41,13 @@ from services.caption_render import (
 from services.ffmpeg import TIKTOK_ENCODE_ARGS, build_cc_filter
 from services.fsutil import is_within, safe_unlink
 from services.json_store import atomic_load, atomic_save
+from services.route_auth import require_access
 
 log = logging.getLogger("burn")
+
+# Route auth (services/route_auth.py): operator UI only (Cloudflare Access),
+# except GET /fonts, the public font catalog the Worker's font proxy reads.
+_OPERATOR = [Depends(require_access)]
 
 router = APIRouter()
 
@@ -295,7 +300,7 @@ async def _burn_video(
 # ── API Routes ───────────────────────────────────────────────────────
 
 
-@router.get("/videos")
+@router.get("/videos", dependencies=_OPERATOR)
 async def list_videos(project: str = Query(..., description="Project name")):
     """List all videos in project's videos/ directory, grouped by folder."""
     try:
@@ -304,7 +309,7 @@ async def list_videos(project: str = Query(..., description="Project name")):
         return JSONResponse({"error": str(e)}, status_code=400)
 
 
-@router.get("/captions")
+@router.get("/captions", dependencies=_OPERATOR)
 async def list_captions(project: str = Query(..., description="Project name")):
     """List caption CSVs plus facets (creators / sounds / moods) for filtering."""
     try:
@@ -314,7 +319,7 @@ async def list_captions(project: str = Query(..., description="Project name")):
         return JSONResponse({"error": str(e)}, status_code=400)
 
 
-@router.post("/import-tos")
+@router.post("/import-tos", dependencies=_OPERATOR)
 async def import_tos_captions(project: str = Query(..., description="Project name")):
     """Pull Slingshot TOS captions from Supabase into this project's caption bank.
 
@@ -389,6 +394,7 @@ async def list_fonts():
 
 @router.post(
     "/caption-render/v1",
+    dependencies=_OPERATOR,
     response_model=CaptionRenderResult,
     response_model_exclude_none=True,
 )
@@ -421,6 +427,7 @@ async def caption_render_v1(request: CaptionRenderRequest):
 
 @router.post(
     "/caption-render/v2",
+    dependencies=[Depends(require_access)],
     response_model=CaptionRenderResultV2,
     response_model_exclude_none=True,
 )
@@ -485,7 +492,7 @@ async def _burn_background(
         }
 
 
-@router.post("/overlay")
+@router.post("/overlay", dependencies=_OPERATOR)
 async def burn_overlay(request: Request):
     """Accept a burn request and process it in the background.
 
@@ -561,7 +568,7 @@ async def burn_overlay(request: Request):
         )
 
 
-@router.get("/batch-status/{batch_id}")
+@router.get("/batch-status/{batch_id}", dependencies=_OPERATOR)
 async def batch_status(batch_id: str):
     """Poll endpoint for burn batch progress.
 
@@ -581,7 +588,7 @@ async def batch_status(batch_id: str):
     }
 
 
-@router.get("/batches")
+@router.get("/batches", dependencies=_OPERATOR)
 async def list_batches(project: str = Query(..., description="Project name")):
     """List all past burn batches with file counts and timestamps."""
     try:
@@ -611,7 +618,7 @@ async def list_batches(project: str = Query(..., description="Project name")):
     return {"batches": batches}
 
 
-@router.patch("/batches/{batch_id}/rename")
+@router.patch("/batches/{batch_id}/rename", dependencies=_OPERATOR)
 async def rename_batch(
     batch_id: str,
     body: dict,
@@ -671,7 +678,7 @@ def _is_virtual_folder(folder: str) -> bool:
     return False
 
 
-@router.patch("/folders/rename")
+@router.patch("/folders/rename", dependencies=_OPERATOR)
 async def rename_folder(
     body: dict,
     project: str = Query(..., description="Project name"),
@@ -763,7 +770,7 @@ async def rename_folder(
     return {"ok": True, "old_folder": folder, "new_folder": new_folder}
 
 
-@router.get("/zip/{batch_id}")
+@router.get("/zip/{batch_id}", dependencies=_OPERATOR)
 async def download_burn_zip(
     batch_id: str,
     project: str = Query(..., description="Project name"),

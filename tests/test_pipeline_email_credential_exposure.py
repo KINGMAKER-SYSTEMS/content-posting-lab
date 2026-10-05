@@ -25,7 +25,7 @@ from fastapi.testclient import TestClient
 
 import services.roster as roster
 import services.telegram as tg
-from services import json_store
+from services import json_store, route_auth
 from routers import email_routing as email_router
 from routers import pipeline as pipeline_router
 
@@ -144,14 +144,75 @@ def test_workspace_never_carries_the_password(client, monkeypatch):
     _assert_no_credentials(r)
 
 
-def test_health_keeps_presence_flags_only(client):
+def _configure_access(monkeypatch):
+    monkeypatch.setenv("LAB_ACCESS_TEAM_DOMAIN", "team.example")
+    monkeypatch.setenv("LAB_ACCESS_AUD", "lab-audience")
+    monkeypatch.setattr(
+        route_auth,
+        "verify_access_jwt",
+        lambda token: {"sub": "operator"} if token == "test-access-jwt" else None,
+    )
+
+
+@pytest.mark.real_route_auth
+def test_health_requires_access_before_page_state_or_r2(client, monkeypatch):
     _seed()
-    r = client.get("/api/pipeline/acct1/health")
-    assert r.status_code == 200
-    body = r.json()
+    _configure_access(monkeypatch)
+    calls = []
+    monkeypatch.setattr(
+        pipeline_router, "get_page",
+        lambda iid: calls.append(("page", iid)) or {"name": "Acct One"},
+    )
+    monkeypatch.setattr(pipeline_router.r2, "is_configured", lambda: True)
+    monkeypatch.setattr(
+        pipeline_router.r2, "count_account_objects",
+        lambda iid: calls.append(("r2", iid)) or 37,
+    )
+    monkeypatch.setattr(
+        pipeline_router, "get_cookie_status",
+        lambda name: calls.append(("cookie", name)) or "valid",
+    )
+    monkeypatch.setattr(
+        pipeline_router, "resolve_poster_for_page",
+        lambda page: calls.append(("poster", page["name"]) or None),
+    )
+
+    response = client.get("/api/pipeline/acct1/health")
+
+    assert response.status_code == 401
+    assert calls == []
+    _assert_no_credentials(response)
+    assert "37" not in response.text
+
+
+@pytest.mark.real_route_auth
+def test_health_returns_setup_metrics_to_access(client, monkeypatch):
+    _seed()
+    _configure_access(monkeypatch)
+    monkeypatch.setattr(pipeline_router.r2, "is_configured", lambda: True)
+    monkeypatch.setattr(pipeline_router.r2, "count_account_objects", lambda iid: 37)
+    monkeypatch.setattr(
+        pipeline_router,
+        "resolve_poster_for_page",
+        lambda page: {"topics": {"acct1": {"topic_name": "Private Setup Topic"}}},
+    )
+    monkeypatch.setattr(pipeline_router, "get_cookie_status", lambda name: "valid")
+
+    response = client.get(
+        "/api/pipeline/acct1/health",
+        headers={"Cf-Access-Jwt-Assertion": "test-access-jwt"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["integration_id"] == "acct1"
+    assert body["r2_count"] == 37
+    assert body["telegram_topic_present"] is True
+    assert body["telegram_topic_name"] == "Private Setup Topic"
+    assert body["cookie_status"] == "valid"
     assert body["has_email_alias"] is True
     assert body["has_r2_prefix"] is True
-    _assert_no_credentials(r)
+    _assert_no_credentials(response)
 
 
 def test_transition_never_carries_credentials(client):
