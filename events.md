@@ -1371,3 +1371,12 @@ from `1f3a84c06adc4128db4ca449a66503bd7b1afa59` against main
 clean with no hosted checks reported. Independent review and hosted gates remain
 pending; no merge or deployment performed.
 _________________________________________________________________________________
+
+_________________________________________________________________________________
+time: [22:38] [04-10-26]
+agent: [Codex desktop] [gpt-6.1-sol]
+worktree: [codex/freddy-vault-projection] [/tmp/rt-merge-lab217]
+type: [workflow]: Ready exact vault-path source projection
+area: [backend] [review] [testing]
+
+Reviewed draft #208 and merged current main without losing its case-insensitive page identity checks or exact vault-path storage binding. The owning devlog now describes that storage contract. Source-manifest regressions run on the isolated test host before merge; no vault writer, phone driver or runtime configuration was changed.
