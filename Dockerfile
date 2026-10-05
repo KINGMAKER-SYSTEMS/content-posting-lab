@@ -16,8 +16,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg tesserac
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
-RUN grep -v -E '^(playwright|pytesseract|tiktokautouploader)' requirements.txt > requirements-prod.txt \
-    && pip install --no-cache-dir -r requirements-prod.txt
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends gcc libc6-dev \
+    && grep -v -E '^(playwright|pytesseract|tiktokautouploader)' requirements.txt > requirements-prod.txt \
+    && pip install --no-cache-dir -r requirements-prod.txt \
+    && apt-get purge -y --auto-remove gcc libc6-dev \
+    && rm -rf /var/lib/apt/lists/*
 
 COPY app.py main.py project_manager.py telegram_bot.py debug_logger.py burn_quality_gate.py ./
 COPY routers/ ./routers/

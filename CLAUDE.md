@@ -191,7 +191,8 @@ the pages they run, and can request more from the attached agent.
   Posters file them via `POST /api/miniapp/requests`; the external agent reads
   the queue via `GET /api/miniapp/agent/requests` and marks them
   `in_progress`/`fulfilled` via `PATCH /api/miniapp/agent/requests/{id}`
-  (gated by `X-Agent-Key` when `MINIAPP_AGENT_KEY` is set).
+  (requires a matching `X-Agent-Key`; endpoints return 503 if
+  `MINIAPP_AGENT_KEY` is unset).
 - Local dev without Telegram: run with `MINIAPP_DEV_AUTH=1` and open
   `/m?dev=<poster_id>` (sends an `X-Dev-Poster-Id` header).
 
@@ -310,7 +311,7 @@ Some pages use CSS-based tab switching (display:none for inactive) to preserve s
 | `NOTION_PAGES_DB` | Notion Master Pages database ID (account roster + Poster assignment) |
 | `NOTION_SOUND_CUTOFF` | Filter Notion campaigns by created_time (default `2026-03-01`) |
 | `MINIAPP_INITDATA_MAX_AGE` | Max age (s) of Mini App `initData` auth_date; `0` disables (default `86400`) |
-| `MINIAPP_AGENT_KEY` | If set, Mini App agent endpoints require matching `X-Agent-Key` |
+| `MINIAPP_AGENT_KEY` | Required to enable Mini App agent endpoints; unset = 503, missing or incorrect `X-Agent-Key` = 401 |
 | `MINIAPP_DEV_AUTH` | `1` enables the `X-Dev-Poster-Id` bypass — **local dev only** |
 | `CAMPAIGN_HUB_URL` | Campaign Hub base URL. Required, no default: unset = sound sync/prepare answer 503, library calls raise `ConfigError` |
 | `SHIPSTREAM_VAULT_ORIGIN` | ShipStream vault origin (https, no path). Required, no default: unset = sourced pages read the vault as "unavailable" |

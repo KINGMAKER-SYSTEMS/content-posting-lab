@@ -204,6 +204,12 @@
   `/api/telegram/*` needs the key like every other `/api/` route: the bot
   long-polls, so there is no webhook route to exempt. The UI sends the key
   through `frontend/src/lib/api.ts` (`fetchApi` / `withApiKey`).
+  Mini App agent queue routes additionally require a nonblank server-owned
+  `MINIAPP_AGENT_KEY` and matching `X-Agent-Key`; an unset key returns 503,
+  while missing or incorrect caller keys return 401. Caller-supplied `page_id`
+  values for video filtering or content requests must resolve inside the
+  authenticated poster's pages; unknown or foreign IDs return 404 before
+  content is returned or queued.
 - `routers/upload.py` passes the legacy cookie-login account to its static
   Python subprocess runner as an argv value. Request values must never be
   interpolated into executable source; the exact account argument is preserved.
@@ -593,6 +599,10 @@
 - The production Docker image uses explicit COPY paths. Include every required
   backend module and import `app` during the image build; checkout-only imports
   are not proof that the packaged service can start.
+- When production Python requirements need native compilation, install the
+  compiler and headers only in the same Docker layer as pip installation, then
+  purge them before that layer ends. Verify the full image imports the native
+  extension and contains no compiler.
 - Reuse the current TikTokSans fonts and production Burn geometry. Do not add a
   parallel caption-style vocabulary or silently substitute a font.
 - Keep browser preview, backend render, and Rail consumption on one versioned
