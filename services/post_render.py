@@ -26,7 +26,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from burn_quality_gate import overlay_geometry_reasons
 from services.caption_render import CaptionRenderRequest, CaptionStyle, render_caption_overlay
 from services.ffmpeg import delivery_encode_args
-from services.page_frame import frame_band_height, frame_band_rows, letterbox_filter
+from services.page_frame import frame_band_height, frame_band_rows, frame_fit, letterbox_filter
 from services.source_treatment import normalized_visual_treatment
 
 REQUEST_SCHEMA = "content-lab.post-render-request.v1"
@@ -157,8 +157,9 @@ def _reject_nonfinite(_value: str):
 
 
 SLOT_TREATMENT_FIELDS = frozenset({"stylePreset", "filters", "captionStyle", "clipSpeed", "clipCrop"})
-# The page frame is delivery-only. Absent means full-bleed 9:16.
-SLOT_TREATMENT_OPTIONAL_FIELDS = frozenset({"frame"})
+# The page frame and its fit are not source treatment. Absent frame means
+# full-bleed 9:16; frameFit is legal only with a non-9:16 frame.
+SLOT_TREATMENT_OPTIONAL_FIELDS = frozenset({"frame", "frameFit"})
 
 
 def _slot_treatment(request: PostRenderRequest) -> dict:
@@ -167,7 +168,7 @@ def _slot_treatment(request: PostRenderRequest) -> dict:
     if (not isinstance(treatment, dict) or not SLOT_TREATMENT_FIELDS <= set(treatment)
             or set(treatment) - SLOT_TREATMENT_FIELDS - SLOT_TREATMENT_OPTIONAL_FIELDS):
         raise ValueError("exact complete slot render treatment is required")
-    frame_band_height(treatment)
+    frame_fit(treatment)
     return treatment
 
 

@@ -128,3 +128,22 @@ def test_page_frame_is_not_part_of_applied_source_treatment(frame):
         clip_speed=treatment["clipSpeed"], clip_crop=treatment["clipCrop"])
     assert framed_receipt["visualTreatment"] == receipt["visualTreatment"]
     assert recovery_treatment_matches(framed_receipt, job, "b" * 64, treatment)
+
+
+@pytest.mark.parametrize("frame", ["16:9", "1:1", "3:4", "4:3"])
+@pytest.mark.parametrize("fit", ["fill", "fit"])
+def test_frame_fit_is_recipe_context_not_applied_source_treatment(frame, fit):
+    # Lenient by decision (Team 2 gap doc): visualTreatment stays exactly
+    # {filters, clipSpeed, clipCrop}; the cut's frame and fit are recorded
+    # through sourceRecipeTreatment, and no new refusal is introduced.
+    job, treatment, receipt = recovery_evidence()
+    framed = {**treatment, "frame": frame, "frameFit": fit}
+    assert normalized_visual_treatment(framed) == normalized_visual_treatment(treatment)
+    framed_receipt = source_treatment_receipt(job, framed, "b" * 64,
+        clip_speed=treatment["clipSpeed"], clip_crop=treatment["clipCrop"])
+    assert set(framed_receipt["visualTreatment"]) == {"filters", "clipSpeed", "clipCrop"}
+    assert framed_receipt["visualTreatment"] == receipt["visualTreatment"]
+    assert framed_receipt["sourceRecipeTreatment"]["frame"] == frame
+    assert framed_receipt["sourceRecipeTreatment"]["frameFit"] == fit
+    assert recovery_treatment_matches(receipt, job, "b" * 64, framed)
+    assert recovery_treatment_matches(framed_receipt, job, "b" * 64, treatment)

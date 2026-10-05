@@ -6,11 +6,29 @@ battle-tested color-matrix math without cross-router imports.
 """
 
 import asyncio
+import json
 import logging
 import math
 import os
 import signal
 import subprocess
+from fractions import Fraction
+
+from services.page_frame import (
+    ACCEPTED_FRAMES,
+    CANVAS_HEIGHT,
+    CANVAS_WIDTH,
+    DISPLAY_PIXELS_FILTER,
+    FRAME_BAND_HEIGHTS,
+    FRAME_FITS,
+    VERTICAL_FRAME,
+    band_height,
+    default_frame_fit,
+    display_size,
+    effective_frame_fit,
+    fill_pad_filter,
+    fit_cut_filters,
+)
 
 log = logging.getLogger("ffmpeg")
 
@@ -185,6 +203,57 @@ def _clip_crop_filter(
     )
 
 
+def _framed_cut_filters(
+    clip_crop: dict | None,
+    clip_crop_size: tuple[int, int],
+    scale: str | None,
+    page_frame: str | None,
+    frame_fit: str | None,
+    source_size: tuple[int, int] | None,
+) -> tuple[str, str, str] | None:
+    """(square-pixel prefix, band-aware picture filter, canvas pad), or None for 9:16.
+
+    A framed page's clip is cut into its band on the 1080x1920 canvas (see
+    services.page_frame.geometry) on square display pixels: the chain starts
+    with page_frame.DISPLAY_PIXELS_FILTER, so an anamorphic master is laid out
+    as a viewer (and the Dossier preview) sees it. fill evaluates the same clip
+    crop against the band; fit contains the zoomed source window, which needs
+    the display size probe_display_size reports. A missing crop is the neutral
+    centred crop, as on the sourced executor; a source under 2 px either way
+    is cut fill.
+    """
+    if page_frame is None or page_frame == VERTICAL_FRAME:
+        if frame_fit is not None:
+            raise ValueError("frameFit requires a " + ", ".join(FRAME_BAND_HEIGHTS) + " frame")
+        return None
+    if not isinstance(page_frame, str) or page_frame not in ACCEPTED_FRAMES:
+        raise ValueError("frame must be one of " + ", ".join(ACCEPTED_FRAMES))
+    fit = default_frame_fit(page_frame) if frame_fit is None else frame_fit
+    if not isinstance(fit, str) or fit not in FRAME_FITS:
+        raise ValueError("frameFit must be one of " + ", ".join(FRAME_FITS))
+    if scale:
+        raise ValueError("a framed cut ends on the 1080x1920 canvas; it takes no trailing scale")
+    if _validated_clip_crop_size(clip_crop_size) != (CANVAS_WIDTH, CANVAS_HEIGHT):
+        raise ValueError("clip_crop_size of a framed cut must be the 1080x1920 canvas")
+    crop = _validated_clip_crop(clip_crop) or {"zoom": 1.0, "focusX": 0.5, "focusY": 0.5}
+    if fit == "fit":
+        if (
+            not isinstance(source_size, tuple)
+            or len(source_size) != 2
+            or any(isinstance(item, bool) or not isinstance(item, int) or item <= 0 for item in source_size)
+        ):
+            raise ValueError("source_size of a framed fit cut must be the positive probed display size")
+        fit = effective_frame_fit(source_size[0], source_size[1], page_frame, fit)
+    if fit == "fill":
+        return (DISPLAY_PIXELS_FILTER,
+                _clip_crop_filter(crop, (CANVAS_WIDTH, band_height(page_frame))),
+                fill_pad_filter(page_frame))
+    picture_filter, pad_filter = fit_cut_filters(
+        source_size[0], source_size[1], page_frame, crop["zoom"], crop["focusX"], crop["focusY"],
+    )
+    return DISPLAY_PIXELS_FILTER, picture_filter, pad_filter
+
+
 # colorchannelmixer accepts a coefficient only inside [-2, 2]. More
 # importantly, its *a coefficients are alpha-channel multipliers, not constants:
 # ra/ga/ba are real RGB offsets only while the input has an opaque alpha plane.
@@ -259,6 +328,9 @@ def build_cc_filter(
     playback_speed: float = 1.0,
     clip_crop: dict | None = None,
     clip_crop_size: tuple[int, int] = (1_080, 1_920),
+    page_frame: str | None = None,
+    frame_fit: str | None = None,
+    source_size: tuple[int, int] | None = None,
 ) -> str:
     """Build an ffmpeg `-vf` filter string for color correction.
 
@@ -277,6 +349,15 @@ def build_cc_filter(
         clip_crop_size: Exact even-pixel output width and height used when a
             normalized crop is present. Sourced executors pass their typed,
             hash-bound delivery size here.
+        page_frame / frame_fit / source_size: A non-9:16 page frame cuts the
+            clip into its band (services.page_frame.geometry) on square
+            display pixels (the chain starts with DISPLAY_PIXELS_FILTER): fill
+            evaluates the crop against the band, fit (the default for such a
+            frame) contains the source window and needs the probed display
+            size. The grade and speed stay exactly where they are without a
+            frame and a pad to the black 1080x1920 canvas comes last, so the
+            grade never touches the bars. Absent or "9:16" is today's cut,
+            byte for byte.
 
     Returns:
         A comma-joined filter string ready for ffmpeg's `-vf` argument. When
@@ -285,7 +366,14 @@ def build_cc_filter(
     """
     speed = _validated_playback_speed(playback_speed)
     speed_filter = None if speed == 1.0 else f"setpts=PTS/{speed:.6f}"
-    crop_filter = _clip_crop_filter(clip_crop, clip_crop_size)
+    framed = _framed_cut_filters(
+        clip_crop, clip_crop_size, scale, page_frame, frame_fit, source_size,
+    )
+    if framed is None:
+        square_filter = pad_filter = None
+        crop_filter = _clip_crop_filter(clip_crop, clip_crop_size)
+    else:
+        square_filter, crop_filter, pad_filter = framed
     scale_filter = (
         f"scale={scale}:flags=lanczos,setsar=1" if scale else None
     )
@@ -293,7 +381,8 @@ def build_cc_filter(
     # Fast path: no CC → just the scale (or null if no scale either).
     if is_default_cc(cc):
         return ",".join(
-            item for item in (crop_filter, speed_filter, scale_filter) if item
+            item for item in (square_filter, crop_filter, speed_filter, scale_filter, pad_filter)
+            if item
         ) or "null"
 
     b_raw = float(cc.get("brightness", 0))
@@ -336,14 +425,15 @@ def build_cc_filter(
     )
     if is_default:
         return ",".join(
-            item for item in (crop_filter, speed_filter, scale_filter) if item
+            item for item in (square_filter, crop_filter, speed_filter, scale_filter, pad_filter)
+            if item
         ) or "null"
 
     # CSS applies filter functions from left to right. Keep those stages
     # separate instead of composing one oversized matrix. rgba64le provides an
     # opaque alpha plane, making ra/ga/ba the constant terms that CSS contrast
     # around 0.5 requires; rgb24 silently made those offsets ineffective.
-    filters = ["format=rgba64le"]
+    filters = [item for item in (square_filter, "format=rgba64le") if item]
     if abs(css_brightness - 1.0) >= 0.005:
         filters.extend(_diagonal_filters(css_brightness))
     if abs(css_contrast - 1.0) >= 0.005:
@@ -422,6 +512,8 @@ def build_cc_filter(
         filters.append(speed_filter)
     if scale_filter:
         filters.append(scale_filter)
+    if pad_filter:
+        filters.append(pad_filter)
 
     return ",".join(filters)
 
@@ -604,6 +696,90 @@ def _consume_encode_wait_result(task: asyncio.Task) -> None:
             pass
 
 
+_FRAME_PROBE_OUTPUT_LIMIT_BYTES = 64 * 1024
+
+
+class FrameGeometryUnavailable(RuntimeError):
+    """ffprobe could not prove a framed fit cut's source size; that cut falls back to fill."""
+
+    def __init__(self, reason: str):
+        super().__init__(f"frame_source_geometry_unavailable:{reason}")
+        self.reason = reason
+
+
+def _sample_aspect_ratio(value) -> Fraction:
+    """ffprobe's num:den; an unknown ratio (absent, N/A, 0:x) is square, as in ffmpeg."""
+    if value in (None, "", "N/A"):
+        return Fraction(1)
+    try:
+        numerator, denominator = (int(part) for part in str(value).split(":"))
+    except ValueError as error:
+        raise FrameGeometryUnavailable("sample_aspect_ratio_invalid") from error
+    if numerator < 0 or denominator <= 0:
+        raise FrameGeometryUnavailable("sample_aspect_ratio_invalid")
+    return Fraction(numerator, denominator) if numerator else Fraction(1)
+
+
+async def probe_display_size(input_path) -> tuple[int, int]:
+    """Display width and height the framed cut's filters work on.
+
+    run_color_correct lets ffmpeg autorotate: a quarter-turn display rotation
+    swaps the coded width and height and inverts the sample aspect ratio (a
+    half turn or any other angle keeps both). Every framed cut then starts
+    with page_frame.DISPLAY_PIXELS_FILTER, so this returns
+    page_frame.display_size of the upright frame. Anything ffprobe cannot
+    prove raises FrameGeometryUnavailable; the caller then cuts fill, which
+    needs no size. Bounded like the other probes: its own process group, a
+    deadline and a byte cap on the reply.
+    """
+    try:
+        process = await asyncio.create_subprocess_exec(
+            "ffprobe", "-v", "error", "-protocol_whitelist", "file,pipe",
+            "-select_streams", "v:0",
+            "-show_entries",
+            "stream=width,height,sample_aspect_ratio:stream_tags=rotate:stream_side_data=rotation",
+            "-of", "json", str(input_path),
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except OSError as error:
+        raise FrameGeometryUnavailable("ffprobe_unavailable") from error
+
+    async def bounded_reply() -> bytes:
+        reply = bytearray()
+        while chunk := await process.stdout.read(_ENCODE_STDERR_READ_BYTES):
+            reply.extend(chunk)
+            if len(reply) > _FRAME_PROBE_OUTPUT_LIMIT_BYTES:
+                raise FrameGeometryUnavailable("reply_too_large")
+        await process.wait()
+        return bytes(reply)
+
+    try:
+        raw = await asyncio.wait_for(bounded_reply(), timeout=_INPUT_PROBE_TIMEOUT_SECONDS)
+    except asyncio.TimeoutError as error:
+        raise FrameGeometryUnavailable("timeout") from error
+    finally:
+        await _terminate_encode_process(process)
+    if process.returncode != 0:
+        raise FrameGeometryUnavailable("ffprobe_failed")
+    try:
+        stream = json.loads(raw)["streams"][0]
+        width, height = stream["width"], stream["height"]
+        rotations = [float(row.get("rotation", 0)) for row in stream.get("side_data_list", [])]
+        rotations.append(float(stream.get("tags", {}).get("rotate", 0)))
+    except (KeyError, IndexError, TypeError, ValueError, AttributeError) as error:
+        raise FrameGeometryUnavailable("reply_invalid") from error
+    if any(isinstance(value, bool) or not isinstance(value, int) or value <= 0 for value in (width, height)):
+        raise FrameGeometryUnavailable("size_invalid")
+    sample_aspect_ratio = _sample_aspect_ratio(stream.get("sample_aspect_ratio"))
+    rotation = next((value for value in rotations if value != 0), 0.0) % 360
+    if abs(rotation - 90) < 1 or abs(rotation - 270) < 1:
+        width, height, sample_aspect_ratio = height, width, 1 / sample_aspect_ratio
+    return display_size(width, height, sample_aspect_ratio)
+
+
 async def run_color_correct(
     input_path: str,
     output_path: str,
@@ -616,6 +792,9 @@ async def run_color_correct(
     clip_start_ms: int | None = None,
     clip_duration_ms: int | None = None,
     source_duration_ms: int | None = None,
+    page_frame: str | None = None,
+    frame_fit: str | None = None,
+    source_size: tuple[int, int] | None = None,
     input_color: dict[str, str] | None = None,
 ) -> None:
     """Run ffmpeg to produce a color-corrected copy of a video.
@@ -638,6 +817,9 @@ async def run_color_correct(
         playback_speed=speed,
         clip_crop=clip_crop,
         clip_crop_size=clip_crop_size,
+        page_frame=page_frame,
+        frame_fit=frame_fit,
+        source_size=source_size,
     )
     enc = list(encode_args if encode_args is not None else STANDARD_ENCODE_ARGS)
     output_window: list[str] = []

@@ -33,7 +33,7 @@ from services.dossier_ingredients import (
 )
 from services.caption_discipline import validate_caption_discipline
 from services.source_controls import source_start_ms
-from services.page_frame import frame_band_height
+from services.page_frame import frame_fit
 
 
 LANE = "content-bucket-control-plane"
@@ -51,8 +51,9 @@ PRODUCTION_FIELDS = {
     "referenceSetId", "sourceLibraryId", "variationValues", "controls",
 }
 RENDER_REQUIRED_FIELDS = {"stylePreset", "filters", "captionStyle"}
-# frame is the page picture frame, applied only at prepared-post render.
-RENDER_OPTIONAL_FIELDS = {"clipSpeed", "clipCrop", "frame"}
+# frame is the page picture frame (the band the picture occupies on the
+# 1080x1920 canvas); frameFit (fill | fit) is legal only with a non-9:16 frame.
+RENDER_OPTIONAL_FIELDS = {"clipSpeed", "clipCrop", "frame", "frameFit"}
 CLIP_CROP_FIELDS = {"zoom", "focusX", "focusY"}
 DEMAND_FIELDS = {"formatMix"}
 TOKEN_CHARS = frozenset(
@@ -198,7 +199,7 @@ def _validate_spec(
     if preset is not None and (not isinstance(preset, str) or not preset.strip()):
         raise HTTPException(400, "stylePreset must be a non-empty string or null")
     try:
-        frame_band_height(render)
+        frame_fit(render)
     except ValueError as error:
         raise HTTPException(400, str(error)) from error
     clip_speed = render.get("clipSpeed", 1.0)

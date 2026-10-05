@@ -27,7 +27,7 @@ from providers.base import API_KEYS
 from services.content_engine_registry import resolve_material_profile
 from services.caption_discipline import validate_caption_discipline
 from services.content_format_contracts import load_format_contracts
-from services.page_frame import frame_band_height
+from services.page_frame import frame_fit
 
 
 CATALOG_PATH = (
@@ -287,8 +287,9 @@ def _typed_recipe_spec(publication: dict[str, Any]) -> dict[str, Any] | None:
         ):
             return None
     try:
-        # Optional page frame; delivery-only, never part of source treatment.
-        frame_band_height(render)
+        # Optional page frame and frameFit: they shape the cut but are never
+        # part of the applied source treatment (visualTreatment).
+        frame_fit(render)
     except ValueError:
         return None
     if spec.get("schema") == "dossier.recipe-spec.v4":

@@ -26,8 +26,10 @@ TREATMENT = {"stylePreset": "treated-source-test", "filters": {"brightness": 0.8
 _NO_FRAME = object()
 
 
-def request(source_sha="a" * 64, frame=_NO_FRAME, **changes):
+def request(source_sha="a" * 64, frame=_NO_FRAME, frame_fit=_NO_FRAME, **changes):
     slot_treatment = TREATMENT if frame is _NO_FRAME else {**TREATMENT, "frame": frame}
+    if frame_fit is not _NO_FRAME:
+        slot_treatment = {**slot_treatment, "frameFit": frame_fit}
     treatment = json.dumps(slot_treatment, sort_keys=True, separators=(",", ":"))
     visual_json = json.dumps(normalized_visual_treatment(TREATMENT), sort_keys=True, separators=(",", ":"))
     payload = {"schema": render.REQUEST_SCHEMA, "slot_id": "slot:page-a:20260908T120000Z",
@@ -507,3 +509,30 @@ def test_page_frame_band_edges_land_on_the_even_rows_for_a_scaled_source(tmp_pat
         row = lambda y: ImageStat.Stat(luma.crop((20, y, 120, y + 1))).mean[0]
         assert row(553) < 40 and row(1364) < 40
         assert row(554) > 200 and row(1363) > 200
+
+
+@pytest.mark.parametrize("frame", list(FRAME_BANDS))
+@pytest.mark.parametrize("fit", ["fill", "fit"])
+def test_frame_fit_is_accepted_with_a_frame_and_keeps_sources_reusable(frame, fit):
+    framed = request(frame=frame, frame_fit=fit)
+    # Lenient by decision: frameFit is not source treatment, so no new refusal.
+    assert render.source_visual_matches(framed)
+    assert framed.source_visual_treatment_json == request().source_visual_treatment_json
+    assert framed.treatment_sha256 != request(frame=frame).treatment_sha256
+    assert render._frame_band_height(framed) == FRAME_BANDS[frame]
+    style = render._caption_request(framed).style
+    assert (style.position, style.offset_pct) == ("middle", 0)
+    # The prepared-post graph stays #193's letterbox whichever fit cut the clip.
+    for probe in (render.MediaProbe(1080, 1920, 1000, "h264", "yuv420p", "1:1", 0),
+                  render.MediaProbe(704, 1280, 1000, "h264", "yuv420p", "1:1", 0)):
+        assert render._video_graph(probe, render._frame_band_height(framed)) == render._video_graph(
+            probe, render._frame_band_height(request(frame=frame)))
+
+
+@pytest.mark.parametrize("frame,fit", [
+    (_NO_FRAME, "fill"), (_NO_FRAME, "fit"), ("9:16", "fill"), ("9:16", "fit"),
+    ("16:9", "stretch"), ("16:9", None), ("1:1", ""), ("4:3", ["fit"]),
+])
+def test_frame_fit_without_a_frame_or_unknown_is_rejected_at_the_request_boundary(frame, fit):
+    with pytest.raises(ValidationError):
+        request(frame=frame, frame_fit=fit)
