@@ -1,12 +1,8 @@
-"""Gap 5 decision (no new refusal): a framed page's caption faces the same gate.
+"""Frame-cut integration keeps typed captions inside their visible picture band.
 
-burn_quality_gate is unchanged. post_render draws a framed page's caption in the
-middle of the canvas (middle/0), which is the centre of every band, and fill/fit
-never move the band. So for the same caption and style the typed gate verdict of
-a framed render is identical to the verdict of a 9:16 render: the overlay bytes
-themselves are identical. Band-relative, only the height rule would differ: a
-caption box taller than the band still reaches the bars (john's decision; the
-Dossier preview warns, nothing refuses).
+The caption renderer and quality gate share full-canvas pixel coordinates.
+A caption that fits the band keeps its exact bytes; a taller caption shrinks
+before the gate instead of painting onto the bars.
 """
 from __future__ import annotations
 
@@ -58,8 +54,10 @@ def _request(style: dict, caption: str, frame=None, fit=None):
 def _gate(request):
     """Exactly render_post's typed gate call."""
     caption_request = render._caption_request(request)
-    overlay = render_caption_overlay(caption_request, font_dir=FONTS)
-    reasons = overlay_geometry_reasons(overlay.overlay.base64, caption_request.style.model_dump(exclude_none=True))
+    height = render._frame_band_height(request)
+    band_rows = page_frame.frame_band_rows(height) if height is not None else None
+    overlay = render_caption_overlay(caption_request, font_dir=FONTS, fit_rows=band_rows)
+    reasons = overlay_geometry_reasons(overlay.overlay.base64, caption_request.style.model_dump(exclude_none=True), band_rows=band_rows)
     return overlay, reasons, caption_request.style.model_dump(exclude_none=True)
 
 
@@ -88,6 +86,7 @@ def gate_identity_rows() -> list[dict]:
                 for position, offset in PAGE_PLACEMENTS:
                     page_style = {**BASE_STYLE, **style_change, "position": position, "offset_pct": offset}
                     overlay, reasons, _ = _gate(_request(page_style, caption, frame, fit))
+                    left, top, right, bottom = _ink_box(overlay.overlay.base64)
                     rows.append({
                         "style": style_name, "caption": caption_name, "frame": frame, "fit": fit,
                         "pagePlacement": f"{position}/{offset}",
@@ -105,8 +104,9 @@ def test_framed_gate_verdict_is_the_vertical_verdict_for_the_same_caption_and_st
     rows = gate_identity_rows()
     assert len(rows) == len(PAIRS) * len(FRAMES) * len(FITS) * len(PAGE_PLACEMENTS)
     for row in rows:
-        # Same overlay bytes, so the unchanged gate returns the same verdict.
-        assert row["identicalOverlay"], row
+        assert not row["reachesBars"], row
+        if row["style"] != "52pt-centre":
+            assert row["identicalOverlay"], row
         assert row["framedReasons"] == row["verticalReasons"], row
         # The caption block sits on the band's centre (canvas row 960; 4:3's
         # band centre is row 959 because its top row is rounded down to 554).
@@ -116,8 +116,8 @@ def test_framed_gate_verdict_is_the_vertical_verdict_for_the_same_caption_and_st
 
 
 @pytest.mark.parametrize("frame", FRAMES)
-def test_band_relative_gate_differs_only_in_the_height_rule(frame):
-    """Position, width and alignment verdicts are the same measured against the band."""
+def test_band_gate_uses_full_canvas_coordinates(frame):
+    """The gate receives a full overlay and the visible band separately."""
     band, top = page_frame.band_height(frame), page_frame.band_top(frame)
     checked = 0
     for _, style_change, _, caption in PAIRS:
@@ -130,16 +130,17 @@ def test_band_relative_gate_differs_only_in_the_height_rule(frame):
             buffer = io.BytesIO()
             banded.save(buffer, format="PNG")
         band_reasons = overlay_geometry_reasons(base64.b64encode(buffer.getvalue()).decode(), style)
-        strip = lambda values: [value for value in values if not value.startswith("height:")]
-        assert strip(band_reasons) == strip(reasons), (frame, style_change, caption)
+        assert any(reason.startswith("outside_area:") for reason in band_reasons)
+        assert reasons == []
         checked += 1
     assert checked >= 3
 
 
-def test_a_caption_taller_than_the_band_still_passes_the_unchanged_gate():
-    """Recorded observation, not a refusal: the box reaches the bars (john decides)."""
+def test_a_caption_taller_than_the_band_shrinks_and_passes():
+    """The integrated smart-fit renderer keeps tall captions off the bars."""
     overlay, reasons, _ = _gate(_request({**BASE_STYLE, "size_pt": 52}, PAIRS[-1][3], "16:9"))
     _, top, _, bottom = _ink_box(overlay.overlay.base64)
-    assert bottom - top > page_frame.band_height("16:9")
-    assert top < page_frame.band_top("16:9") and bottom > page_frame.band_top("16:9") + 608
+    assert bottom - top <= page_frame.band_height("16:9")
+    assert top >= page_frame.band_top("16:9") and bottom <= page_frame.band_top("16:9") + 608
+    assert overlay.plan.fitted_font_size_px < overlay.plan.font_size_px
     assert reasons == []
