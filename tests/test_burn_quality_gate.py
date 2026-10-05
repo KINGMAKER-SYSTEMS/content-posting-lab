@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import base64
 import io
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -16,6 +17,7 @@ from PIL import Image, ImageDraw
 
 import burn_server
 from burn_quality_gate import run_quality_check
+from services.caption_render import CaptionRenderRequestV2, picture_frame_rows, render_caption_overlay
 
 
 def _png_b64(img: Image.Image) -> str:
@@ -124,6 +126,35 @@ def test_typed_style_uses_its_declared_alignment_and_position():
     )
     assert mismatch["ok"] is False
     assert any("typed_position" in reason for reason in mismatch["reasons"])
+
+
+@pytest.mark.parametrize("frame", ["9:16", "16:9", "4:3", "1:1", "3:4"])
+@pytest.mark.parametrize("position", ["top", "middle", "bottom"])
+def test_quality_check_accepts_actual_frame_relative_caption(frame, position):
+    request = CaptionRenderRequestV2.model_validate({
+        "schema": "content-lab.caption-render-request.v2",
+        "picture_frame": frame,
+        "caption": "a fitting caption",
+        "style": {
+            "font": "TikTokSans16pt-Bold.ttf", "size_pt": 32.0,
+            "color": "#ffffff", "outline": "#000000", "position": position,
+            "align": "center", "offset_pct": 0.0, "line_balance": 0,
+        },
+    })
+    overlay = render_caption_overlay(request, font_dir=Path(__file__).parents[1] / "fonts",
+                                     fit_rows=picture_frame_rows(frame))
+    result = run_quality_check("a fitting caption", overlay_png=overlay.overlay.base64,
+                               caption_style=overlay.plan.effective_style.model_dump(),
+                               picture_frame=frame)
+    assert result["ok"] is True
+    assert result["reasons"] == []
+
+
+@pytest.mark.parametrize("frame", ["2:1", [], {}])
+def test_quality_check_rejects_invalid_frame(frame):
+    result = run_quality_check("a caption", overlay_png=v4_overlay(), picture_frame=frame)
+    assert result["ok"] is False
+    assert "picture_frame_invalid" in result["reasons"]
 
 
 @pytest.fixture
