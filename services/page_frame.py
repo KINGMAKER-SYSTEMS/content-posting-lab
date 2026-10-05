@@ -80,6 +80,19 @@ def band_top(frame: str) -> int:
     return ((CANVAS_HEIGHT - band_height(frame)) // 2) & ~1
 
 
+def frame_band_rows(band_height: int) -> tuple[int, int]:
+    """First and last canvas row (both inclusive) of the centred picture band.
+
+    The top offset is rounded down to an even row so the band lands on the
+    4:2:0 chroma grid the same way for every source: an odd offset (4:3's
+    555) was kept or moved by a row depending on the pixel format ffmpeg
+    chose for the graph. 4:3 is therefore rows 554-1363 (bars 554 and 556);
+    16:9 is rows 656-1263.
+    """
+    top = ((CANVAS_HEIGHT - band_height) // 2) & ~1
+    return top, top + band_height - 1
+
+
 def letterbox_filter(band_height: int) -> str:
     """Keep the centred band of an exact 1080x1920 frame and pad it with black.
 

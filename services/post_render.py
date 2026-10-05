@@ -26,7 +26,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from burn_quality_gate import overlay_geometry_reasons
 from services.caption_render import CaptionRenderRequest, CaptionStyle, render_caption_overlay
 from services.ffmpeg import delivery_encode_args
-from services.page_frame import frame_band_height, frame_fit, letterbox_filter
+from services.page_frame import frame_band_height, frame_band_rows, frame_fit, letterbox_filter
 from services.source_treatment import normalized_visual_treatment
 
 REQUEST_SCHEMA = "content-lab.post-render-request.v1"
@@ -385,19 +385,25 @@ def render_post(source_path: Path, output_directory: Path, request: PostRenderRe
                 or source_probe.rotation != 0 or not near_vertical):
             raise PostRenderError("regeneration_required", "source must be upright square-pixel near-9:16 video at least 1080 pixels high")
         caption_request = _caption_request(request)
-        overlay = render_caption_overlay(caption_request, font_dir=font_dir or Path(__file__).parents[1] / "fonts")
+        band_height = _frame_band_height(request)
+        # A caption shrinks only if it would leave the visible picture: the
+        # framed page's band, or the whole canvas when full-screen (owner
+        # rule, 2026-10-04). The gate checks the same area.
+        band_rows = frame_band_rows(band_height) if band_height is not None else None
+        overlay = render_caption_overlay(caption_request, font_dir=font_dir or Path(__file__).parents[1] / "fonts",
+                                         fit_rows=band_rows)
         overlay_bytes = base64.b64decode(overlay.overlay.base64, validate=True)
         if (not 0 < len(overlay_bytes) <= MAX_OVERLAY_BYTES
                 or sha256(overlay_bytes) != overlay.overlay.sha256.removeprefix("sha256:")
                 or overlay.caption_sha256 != "sha256:" + request.caption_sha256):
             raise PostRenderError("caption_evidence_mismatch", "typed caption renderer evidence does not match requested bytes")
-        if overlay_geometry_reasons(overlay.overlay.base64, caption_request.style.model_dump(exclude_none=True)):
+        if overlay_geometry_reasons(overlay.overlay.base64, caption_request.style.model_dump(exclude_none=True),
+                                    band_rows=band_rows):
             raise PostRenderError("caption_geometry_invalid", "typed caption overlay failed the existing geometry check")
         overlay_path = output_directory / "overlay.png"
         overlay_path.write_bytes(overlay_bytes)
         final_path = output_directory / "final.mp4"
-        final_probe = _encode_final(source, overlay_path, final_path, source_probe, tools,
-                                    _frame_band_height(request))
+        final_probe = _encode_final(source, overlay_path, final_path, source_probe, tools, band_height)
         if (final_probe.width, final_probe.height, final_probe.video_codec, final_probe.pixel_format,
             final_probe.sample_aspect_ratio, final_probe.rotation) != (1080, 1920, "h264", "yuv420p", "1:1", 0):
             raise PostRenderError("final_probe_mismatch", "encoded final media facts do not match delivery contract")

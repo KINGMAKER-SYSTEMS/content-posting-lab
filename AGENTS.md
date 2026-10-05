@@ -90,6 +90,22 @@
   Each batch retains its answering provider, including the configured fallback.
 
 - `services/caption_render.py` owns the typed Dossier-to-render caption contract.
+  V1 remains the full-screen compatibility request/result shape; render requests
+  that need the `fitted_font_size_px` evidence use the closed frame-aware v2
+  request/result on both the hosted Burn router and port-8002 server. V2 requires
+  `picture_frame` (`9:16`, `16:9`, `4:3`, `1:1`, or `3:4`) and binds it into the
+  exact render-plan hash. Rail is the v2 consumer; legacy v1 callers remain
+  supported for captions that do not require the new fit behavior. In v2 and
+  prepared-post frame-aware rendering, top/bottom anchors are 15/85 percent of
+  the visible picture band; the zero-offset middle anchor remains at the canvas
+  center to preserve the established placement. `offset_pct` is relative to the
+  band. Keep the requested anchor if the ink fits, otherwise shift it by the
+  smallest vertical amount needed to fit. When the ink itself is too tall,
+  center it for the size search. V1 and v2 `9:16` retain full-canvas placement
+  coordinates.
+  The local quality-check request carries the same optional `picture_frame`;
+  its typed placement and bounds use that picture band and retain full-canvas
+  behavior when the field is absent.
 - `services/post_render.py` owns local prepared-final rendering and exact artifact
   receipts; control-plane admission remains downstream authority.
 - `services/post_render_jobs.py` and `routers/post_renders.py` own durable pre-lease
@@ -662,7 +678,9 @@
 
 - Run `pytest -q tests/test_production_image_imports.py` for isolated imports from
   the Dockerfile's backend file selection. Build the Docker image for release;
-  its app-import smoke check must pass before deployment.
+  its app-import smoke check must pass before deployment. Confirm TgCrypto can
+  build for the target architecture during dependency installation and that
+  `gcc` is absent from the completed image.
 - Run `pytest -q tests/test_generation_restart_recovery.py tests/test_replicate_generation_retry.py`
   for paid-request identity, ambiguous submission, shutdown, crop recovery,
   processing deadlines and cross-process checkpoint transaction checks.

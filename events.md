@@ -1360,6 +1360,121 @@ performed.
 _________________________________________________________________________________
 
 _________________________________________________________________________________
+time: [12:40pm PDT] [10-04-26]
+agent: [Claude Code] [claude-opus-5-5] [lead 13 Lab builder]
+worktree: [l13-frame-fit] [/Users/ecfromthedc/dev/seats/L13-lab-fit]
+type: [feature-request]: Captions shrink to fit inside the visible picture
+area: [backend] [testing]
+
+Owner rule 2026-10-04: a typed caption stays inside the visible picture - every
+row of the 1080x1920 canvas on a full-screen page, or the band of rows a framed
+page keeps (16:9 656-1263, 4:3 554-1363, 1:1 420-1499, 3:4 240-1679) - and 44 px
+in from each side (the gate's existing 4% side margin). The style's size is the
+maximum. A caption inside that area is drawn exactly as styled at any size; one
+that would leave it shrinks to the largest size that fits, never below 12 pt
+(30 px). Lines are scaled, not re-wrapped. Only a caption that cannot fit at
+12 pt refuses (CAPTION_OUT_OF_FRAME). CAPTION_LINE_TOO_WIDE and the fixed 80%
+column / full-canvas block checks are gone. The typed quality gate drops its 80%
+width and 45% height caps for "inside the same area"; the legacy untyped gate
+is unchanged. The plan records fitted_font_size_px only when a caption shrank,
+so captions that fit keep byte-identical overlays, plans and hashes. (Lead 13
+ruling, later the same day: no top/bottom inset, so the earlier 4% top/bottom
+inset and its near-edge fallback were removed.)
+Verification on maj: see PR #216 (focused files and full suite, plus an
+11,664-style old-vs-new render comparison). No deployment.
+
+time: [10:14pm] [04-10-26]
+agent: [Codex desktop] [gpt-6]
+worktree: [l13-frame-fit] [/private/tmp/cpl-pr216-contract]
+type: [refactor]: Frame-aware caption render v2 contract
+area: [backend] [testing]
+
+Closed the cross-service PR #216 mismatch with an explicit caption-render/v2
+request/result contract. V2 requires a closed picture_frame enum, binds that
+frame into the strict plan/hash, and returns fitted_font_size_px only when the
+caption shrinks. Both the hosted router and port-8002 burn server expose the
+same v2 behavior. V1 retains its original response shape and returns typed 422
+when a caption requires shrinking. Regression coverage verifies all five
+supported frames, visible-area containment, strict enum/unknown-field behavior,
+plan and PNG hashes, endpoint parity, and v1 compatibility. Focused checks:
+caption contract 70 passed; post-render and quality gate 101 passed. No merge or
+deployment.
+
+time: [16:52 EDT] [04-10-26]
+agent: [Codex desktop] [gpt-6]
+worktree: [l13-frame-fit] [/private/tmp/cpl-pr216-contract]
+type: [testing]: Bind endpoint tests to the bundled caption font fixture
+area: [testing]
+
+The first hosted-style focused run exposed that the global test isolation
+fixture redirects the Burn router font directory to an empty temporary path.
+The new v2 frame-parity cases and v1 compatibility case now explicitly bind
+their existing `font_dir` fixture to the router, matching the port-8002 parity
+test. The focused caption-render, post-render, and burn-quality suites pass
+171 tests with the isolated router client using
+`pytest --noconftest -p no:cacheprovider -p cplcaptiontest_plugin -q
+tests/test_caption_render_contract.py tests/test_post_render.py
+tests/test_burn_quality_gate.py`. The checkout's regular conftest cannot import
+because boto3 is unavailable in its interpreter; tests were run with
+`--noconftest` and the router-only client plugin. No merge or deployment.
+
+time: [05:53pm] [10-04-26]
+agent: [Codex desktop] [gpt-6.1]
+worktree: [l13-frame-fit] [/private/tmp/cpl-pr216-contract]
+type: [refactor]: Build TgCrypto on ARM64 without shipping gcc
+area: [backend] [testing]
+
+The ARM64 production-image build could not compile TgCrypto because gcc was
+missing. The Docker dependency-install layer now installs gcc, installs the
+existing production requirements, and purges gcc and its auto-installed build
+dependencies in the same layer. The root Docker verification contract now
+requires a target-architecture TgCrypto build and confirms gcc is absent from
+the completed image. Validation is in progress; no push, merge, or deployment.
+
+time: [05:55pm] [10-04-26]
+agent: [Codex desktop] [gpt-6.1]
+worktree: [l13-frame-fit] [/private/tmp/cpl-pr216-contract]
+type: [refactor]: Keep TgCrypto build toolchain out of image layers
+area: [backend] [testing]
+
+Adversarial review caught that purging gcc from a later Docker RUN would leave
+its binaries in a lower image layer. Moved gcc installation into the same RUN
+as pip installation and purge, leaving the ffmpeg/tesseract runtime layer
+unchanged. The ARM64 build then exposed a missing `stdint.h`, so libc6-dev is
+also installed and purged in that same RUN. The corrected full image build is
+in progress; no push, merge, or deployment.
+
+time: [06:00pm] [10-04-26]
+agent: [Codex desktop] [gpt-6.1]
+worktree: [l13-frame-fit] [/private/tmp/cpl-pr216-contract]
+type: [testing]: Verify ARM64 TgCrypto image build
+area: [testing]
+
+The corrected full Docker build passed with `--platform linux/arm64`. TgCrypto
+compiled into a CPython 3.11 aarch64 wheel; pip installed all production
+requirements; apt purged gcc, libc6-dev, and their auto-installed toolchain in
+the same RUN layer; and the packaged `import app` smoke check passed. Running
+the resulting image reported `aarch64` and imported the TgCrypto extension.
+Separate image checks confirmed both the `gcc` executable and Debian gcc
+package are absent. `git diff --check` passed. No push, merge, or deployment.
+
+time: [10:05pm] [10-04-26]
+agent: [Codex desktop] [gpt-6]
+worktree: [l13-frame-fit] [/private/tmp/cpl-pr216-contract]
+type: [bug report]: Keep framed top and bottom captions renderable
+area: [backend] [testing]
+
+Adversarial review reproduced 422 responses for short top/bottom captions on
+16:9, 4:3, and 1:1 frames because the frame-aware fitter kept their anchors at
+15%/85% of the full canvas, outside the visible band. Frame-aware rendering now
+positions those anchors at 15%/85% of the band, keeps zero-offset middle at the
+established canvas center, interprets offset as a band-relative adjustment, and
+minimally shifts ink into the band when needed. Full-screen v1/9:16 placement
+remains unchanged. Added band-position, fit/no-false-422, hosted-route, and
+portrait-compatibility regressions; updated the owning contract. Focused
+caption-render tests: 111 passed; prepared-post and quality-gate tests: 101
+passed; compileall, Python compilation, and `git diff --check` passed. No push,
+merge, or deployment.
 
 time: [16:25 EDT] [04-10-26]
 agent: [Codex desktop] [gpt-6.1]
@@ -1398,3 +1513,12 @@ from `1f3a84c06adc4128db4ca449a66503bd7b1afa59` against main
 clean with no hosted checks reported. Independent review and hosted gates remain
 pending; no merge or deployment performed.
 _________________________________________________________________________________
+
+_________________________________________________________________________________
+time: [22:32] [04-10-26]
+agent: [Codex desktop] [gpt-6.1-sol]
+worktree: [l13-frame-fit] [/tmp/rt-merge-lab217]
+type: [bug report]: Align frame-aware caption quality checks
+area: [backend] [testing] [review]
+
+Reviewed PR #216 against current main and retained the Mini App authorization repair. The local quality-check endpoint now accepts the same picture frame used to render the caption and evaluates its position against that band, including the renderer's minimal anchor adjustment. Frame-relative top/middle/bottom coverage and invalid-frame controls accompany the repair; the existing 253 focused renderer, gate and prepared-final tests passed before the correction. No phone input or runtime installation was performed.
