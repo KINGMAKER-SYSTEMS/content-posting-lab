@@ -134,10 +134,11 @@ from services.content_engine_registry import (
 )
 from services.content_format_contracts import CONTRACTS_PATH, load_format_contracts
 from services.ffmpeg import (
-    delivery_encode_args, run_color_correct,
+    FrameGeometryUnavailable, delivery_encode_args, probe_display_size, run_color_correct,
     _probe_input_duration_seconds as probe_source_output_duration_seconds,
 )
 from services.master_pages_contract import SCHEMA as MASTER_PAGES_SCHEMA, canonical_intent, exact_intent, intent_hash
+from services.page_frame import VERTICAL_FRAME, resolved_frame
 from services import generation_budget, moderation_retry
 from services.roster_public import require_roster_auth
 from services.source_treatment import (
@@ -2748,6 +2749,10 @@ async def _run_owned_dossier_generation(job_id: str) -> None:
     color_correction = dossier_filters_to_color_correction(recipe)
     clip_speed = dossier_clip_speed(recipe)
     clip_crop = dossier_clip_crop(recipe)
+    # A framed page's candidate is always cut into its band, even when the
+    # recipe has no grade, speed or crop of its own.
+    framed = (resolved_frame(recipe.recipe_spec["renderTreatment"])[0] != VERTICAL_FRAME
+              and "frameFit" in recipe.recipe_spec["renderTreatment"])
     manifests: list[dict[str, Any]] = list(job.get("clips", [])) if durable else []
     provider_failures: list[dict[str, Any]] = list(job.get("providerFailures", [])) if durable else []
     completed_calls = list(job.get("completedGenerationCalls", [])) if durable else []
@@ -3090,13 +3095,18 @@ async def _run_owned_dossier_generation(job_id: str) -> None:
                 if render_root.resolve() not in source.parents or not source.is_file():
                     raise RuntimeError("provider_artifact_invalid")
                 artifact = source
-                if color_correction or clip_speed != 1.0 or clip_crop is not None:
+                frame_cut = {}
+                if color_correction or clip_speed != 1.0 or clip_crop is not None or framed:
                     treated_root.mkdir(parents=True, exist_ok=True, mode=0o700)
                     artifact = treated_root / f"g{call_index:02d}-c{candidate_index:02d}.mp4"
+                    frame_cut = await _page_frame_cut_kwargs(
+                        recipe.recipe_spec["renderTreatment"], source,
+                    )
                     await run_color_correct(
                         str(source), str(artifact), color_correction, scale=None,
                         playback_speed=clip_speed,
                         clip_crop=clip_crop,
+                        **frame_cut,
                     )
                 manifest = _generated_manifest(job_root, artifact)
                 manifest["generationIndex"] = call_index
@@ -3110,6 +3120,8 @@ async def _run_owned_dossier_generation(job_id: str) -> None:
                 manifest["promptSlots"] = slots
                 manifest["clipSpeed"] = clip_speed
                 manifest["clipCrop"] = clip_crop
+                if frame_cut:
+                    manifest["frameCut"] = {"frame": frame_cut["page_frame"], "frameFit": frame_cut["frame_fit"]}
                 manifest["sourceTreatment"] = source_treatment_receipt(
                     job,
                     recipe.recipe_spec["renderTreatment"],
@@ -3288,6 +3300,28 @@ async def _run_owned_dossier_generation(job_id: str) -> None:
         completedGenerationCalls=list(completed_calls),
         completedAt=datetime.now(timezone.utc).isoformat(),
     )
+
+
+async def _page_frame_cut_kwargs(render_treatment: dict[str, Any], source: Path) -> dict[str, Any]:
+    """Band-aware cut arguments for a framed page; none at all for a 9:16 page.
+
+    The frame and frameFit come from the locked recipe's render treatment.
+    fit contains the source window, so it needs the display size the cut's
+    filters will see; fill uses ffmpeg's own scale arithmetic and needs no
+    probe. When ffprobe cannot prove that size the clip is cut fill (logged),
+    never a failed job. A 9:16 page passes nothing, so its cut call is exactly
+    today's.
+    """
+    frame, fit = resolved_frame(render_treatment)
+    if frame == VERTICAL_FRAME or "frameFit" not in render_treatment:
+        return {}
+    if fit == "fit":
+        try:
+            return {"page_frame": frame, "frame_fit": fit, "source_size": await probe_display_size(source)}
+        except FrameGeometryUnavailable as error:
+            log.warning("page frame %s: cutting %s fill, its display size is unavailable (%s)",
+                        frame, Path(source).name, error.reason)
+    return {"page_frame": frame, "frame_fit": "fill"}
 
 
 async def _video_geometry(path: Path) -> tuple[int, int]:
@@ -3553,6 +3587,9 @@ async def _run_dossier_source(job_id: str) -> None:
                 raise RuntimeError("source_recipe_cut_invalid")
             source = await _cached_source_master(job["pageId"], master, job_id)
             destination = treated_root / f"source-{index:04d}.mp4"
+            frame_cut = await _page_frame_cut_kwargs(
+                recipe.recipe_spec["renderTreatment"], source,
+            )
             await run_color_correct(
                 str(source), str(destination), color_correction, scale=None,
                 encode_args=delivery_encode_args(recipe.encode_preset),
@@ -3561,6 +3598,7 @@ async def _run_dossier_source(job_id: str) -> None:
                 clip_crop_size=(recipe.output_width, recipe.output_height),
                 clip_start_ms=start_ms,
                 clip_duration_ms=duration_ms,
+                **frame_cut,
             )
             if recipe.format_slug == "pov-club":
                 measured_duration = await asyncio.to_thread(
@@ -3571,6 +3609,8 @@ async def _run_dossier_source(job_id: str) -> None:
             manifest = _generated_manifest(job_root, destination)
             manifest["clipSpeed"] = clip_speed
             manifest["clipCrop"] = clip_crop
+            if frame_cut:
+                manifest["frameCut"] = {"frame": frame_cut["page_frame"], "frameFit": frame_cut["frame_fit"]}
             manifest["sourceTreatment"] = source_treatment_receipt(
                 job,
                 recipe.recipe_spec["renderTreatment"],

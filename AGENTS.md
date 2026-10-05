@@ -434,7 +434,18 @@
   the page frame's letterbox and delivery encoding only; it never repeats grade, crop or speed.
   An optional slot-treatment `frame` (16:9, 1:1, 3:4, 4:3; absent or 9:16 is full-bleed) keeps
   the centred band of the 1080x1920 picture on plain black and draws the caption in the middle.
-  The frame is not source treatment: existing sources stay reusable when a page changes frame.
+  An explicit saved `frameFit` shapes the cut: the sourced and generation executors cut a framed page's clip
+  into its band on the black 1080x1920 canvas. `frameFit` (legal only with a non-9:16 frame)
+  is `fill` (the clip crop evaluated against the band) or `fit` (the whole zoomed source window
+  contained in the band); the pad comes after the grade, so the
+  letterbox is idempotent on such clips. Geometry lives in `services/page_frame.py`, pinned by
+  the shared Team 2 fixture table; unframed cuts stay byte-identical. A framed cut runs on
+  square display pixels (an anamorphic master is stretched first) and never refuses a source:
+  when ffprobe cannot prove a fit cut's display size, or the source is under 2 px, that clip is
+  cut fill and the fallback is logged and retained as `frameCut` on the durable clip manifest.
+  Recipes without `frameFit` keep the established full-canvas cut until a caller explicitly selects a mode.
+  The frame is not source treatment: existing sources stay reusable when a page changes frame
+  (they post through the centre band); new cuts carry the page's frame and fit.
 - Prepared artifacts require source-byte verification and upright square-pixel
   near-9:16 input at least 1080 pixels high. Exact and chroma-aligned frames
   scale directly; native provider frames within three percent of 9:16 are
@@ -682,6 +693,11 @@
   for durable crash/retry/lock/auth/source-grant and applied-video provenance checks.
 - Run `pytest -q tests/test_post_render.py` for prepared rendering, actual MP4
   decode, treatment-once preservation, byte-budget retry and bounded failures.
+- Run `pytest -q tests/test_page_frame_geometry.py tests/test_page_frame_cut.py
+  tests/test_page_frame_no_frame_identity.py tests/test_page_frame_gate.py
+  tests/test_page_frame_render.py` for page-frame table parity, the band-aware
+  cut, unframed byte identity, gate identity and measured real renders
+  (`PAGE_FRAME_QA_DIR=<dir>` keeps QA frames and writes `lab-matrix.md`).
 
 - Run `pytest -q tests/test_no_shipped_default_password.py` after `npm run build`
   in `frontend/`; it fails if a retired credential (stored only as a SHA-256
