@@ -142,8 +142,9 @@ def wrong_header_sets() -> dict[str, dict[str, str]]:
 def route_keys(app) -> list[tuple[str, str]]:
     """Every (method, path) the app answers: APIRoutes, websockets, plain routes, mounts."""
     keys: list[tuple[str, str]] = []
-    for route in app.routes:
-        if isinstance(route, APIRoute):
+    for route in route_auth.effective_routes(app):
+        original = getattr(route, "original_route", route)
+        if isinstance(original, APIRoute):
             keys.extend((m, route.path) for m in sorted(route.methods))
         elif isinstance(route, APIWebSocketRoute):
             keys.append(("WS", route.path))
@@ -157,8 +158,9 @@ def route_keys(app) -> list[tuple[str, str]]:
 
 
 def find_route(app, method: str, path: str):
-    for route in app.routes:
-        if isinstance(route, APIRoute) and route.path == path and method in route.methods:
+    for route in route_auth.effective_routes(app):
+        original = getattr(route, "original_route", route)
+        if isinstance(original, APIRoute) and route.path == path and method in route.methods:
             return route
         if method == "WS" and isinstance(route, APIWebSocketRoute) and route.path == path:
             return route

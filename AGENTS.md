@@ -217,6 +217,10 @@
   enforces the route's dependency, and header-only checks marked
   `before_body` (Mini App agent key, initData), before the body is read. `/api/miniapp/agent/*`
   fails closed (503) without MINIAPP_AGENT_KEY.
+  Middleware and auth inventory resolve FastAPI's effective include contexts
+  in dispatch order, retaining combined prefixes and include-level dependencies
+  for HTTP and websocket checks before body parsing. Use the public iterator
+  when available, with the earlier lazy-include and flat-route fallbacks retained.
 - `burn_server.py` exposes the same typed caption-render route on the posting
   Mac's canonical port-8002 Burn runtime for Rail consumption.
 - `events.md` is the repository's append-only chronological ledger.
@@ -658,6 +662,10 @@
   module and return the same versioned schema and hashes.
 
 ## Verification
+
+- Run `pytest -q tests/test_route_auth_dispatch.py tests/test_route_auth_guard.py tests/test_route_auth_access_jwt.py`
+  for effective include prefixes/dependencies, dispatch order, HTTP/websocket
+  pre-body authentication, public mounts and legacy flat-router compatibility.
 
 - Run `node --test tools/seekable-html-video/frame_directory.test.cjs` for caller-directory preservation, exclusive writes, directory replacement, cleanup ownership, and managed temporary-directory cleanup.
 

@@ -300,6 +300,33 @@ def route_requirement(route) -> tuple[frozenset[str], bool] | None:
     return None
 
 
+def effective_routes(routes_owner):
+    """Routes in dispatch order, including FastAPI's public include contexts."""
+    from fastapi import routing
+
+    contexts = getattr(routing, "iter_route_contexts", None)
+    if contexts is None:
+        # Lazy includes preceded the public iterator in FastAPI 0.137.0/.1.
+        candidates = (
+            context
+            for route in routes_owner.routes
+            for context in (
+                route.effective_route_contexts()
+                if hasattr(route, "effective_route_contexts") else (route,)
+            )
+        )
+    else:
+        candidates = contexts(routes_owner.routes)
+    for context in candidates:
+        starlette_route = getattr(context, "starlette_route", None)
+        if starlette_route is not None:
+            yield starlette_route
+        elif isinstance(getattr(context, "original_route", context), routing.APIRoute):
+            yield context
+        else:
+            yield getattr(context, "original_route", context)
+
+
 class RouteAuthMiddleware:
     """Authenticate route_auth-gated routes before the body is read.
 
@@ -317,13 +344,17 @@ class RouteAuthMiddleware:
         """(route_auth requirement, before-body checks, child scope) of the matched route."""
         from starlette.routing import Match
 
-        for route in self._owner.routes:
+        for route in effective_routes(self._owner):
             match, child_scope = route.matches(scope)
             if match == Match.FULL:
-                key = id(route)
+                dependant = getattr(route, "dependant", None)
+                if dependant is None:
+                    return None, [], child_scope
+                # Public context wrappers are transient; dependency trees are not.
+                key = id(dependant)
                 if key not in self._cache:
-                    self._cache[key] = (route_requirement(route), before_body_checks(route))
-                requirement, checks = self._cache[key]
+                    self._cache[key] = (dependant, route_requirement(route), before_body_checks(route))
+                _, requirement, checks = self._cache[key]
                 return requirement, checks, child_scope
         return None, [], {}
 

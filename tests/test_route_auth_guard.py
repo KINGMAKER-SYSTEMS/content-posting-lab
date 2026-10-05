@@ -861,7 +861,8 @@ def test_side_effect_gets_get_the_csrf_check(configured, monkeypatch):
     """GET /api/clipper/jobs/{id}/download-all backfills clips to R2, so a cross-site
     GET riding the login cookie is refused like a write (review NIT a)."""
     side_effect_gets = {
-        (m, r.path) for r in app.routes if isinstance(r, APIRoute)
+        (m, r.path) for r in route_auth.effective_routes(app)
+        if isinstance(getattr(r, "original_route", r), APIRoute)
         for m in r.methods if m == "GET" and getattr(r.endpoint, "route_auth_side_effect", False)
     }
     assert side_effect_gets == {("GET", "/api/clipper/jobs/{job_id}/download-all")}
