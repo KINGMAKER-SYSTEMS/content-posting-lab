@@ -340,7 +340,7 @@ UI = the Lab frontend calls this path (grep of `frontend/src`, path-level).
 | `GET` | `/api/pipeline/{integration_id}/workspace` | PII-READ | Access JWT | yes |  | roster/poster/account data |
 | `POST` | `/api/pipeline/{integration_id}/upload-presign` | WRITE | Access JWT | yes |  |  |
 | `POST` | `/api/pipeline/{integration_id}/forward-to-topic` | WRITE | Access JWT | yes |  |  |
-| `GET` | `/api/pipeline/{integration_id}/health` | PUBLIC | - |  |  | setup checks: booleans, R2 object count, cookie status, Telegram topic name; no credentials (triggers one R2 list) |
+| `GET` | `/api/pipeline/{integration_id}/health` | READ | Access JWT |  |  | page-specific setup health, including R2 count, cookie status and Telegram topic name |
 | `POST` | `/api/upload/submit` | WRITE | Access JWT | yes |  |  |
 | `GET` | `/api/upload/jobs` | PII-READ | Access JWT | yes |  | roster/poster/account data |
 | `GET` | `/api/upload/jobs/{job_id}` | PII-READ | Access JWT |  |  | roster/poster/account data |

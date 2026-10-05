@@ -193,6 +193,9 @@
 - `services/slack.py` pipeline handoffs never carry the login email, password
   or free-text notes; those fields point at Notion.
 - `routers/pipeline.py` /mint-alias and /intake are operator-only (Access JWT).
+  `GET /api/pipeline/{integration_id}/health` is also operator-only because it
+  returns page-specific setup, storage, cookie, and Telegram state; it is not a
+  public liveness endpoint.
   /intake refuses (generic 409) an intake without CONTROL_PLANE_TOKEN for
   a handle that already has a roster page (either `acct:` id form) or with a
   `notion_page_id` of a roster page that is not an unfinished step-1

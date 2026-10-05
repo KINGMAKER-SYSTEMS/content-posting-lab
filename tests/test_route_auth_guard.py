@@ -257,7 +257,7 @@ TABLE = {
     ('GET', '/api/pipeline/{integration_id}/workspace'): ('PII-READ', 'A', 'roster/poster/account data'),
     ('POST', '/api/pipeline/{integration_id}/upload-presign'): ('WRITE', 'A', ''),
     ('POST', '/api/pipeline/{integration_id}/forward-to-topic'): ('WRITE', 'A', ''),
-    ('GET', '/api/pipeline/{integration_id}/health'): ('PUBLIC', '', 'setup checks: booleans, R2 object count, cookie status, Telegram topic name; no credentials (triggers one R2 list)'),
+    ('GET', '/api/pipeline/{integration_id}/health'): ('READ', 'A', 'page-specific setup health, including R2 count, cookie status and Telegram topic name'),
     ('POST', '/api/upload/submit'): ('WRITE', 'A', ''),
     ('GET', '/api/upload/jobs'): ('PII-READ', 'A', 'roster/poster/account data'),
     ('GET', '/api/upload/jobs/{job_id}'): ('PII-READ', 'A', 'roster/poster/account data'),
@@ -388,7 +388,7 @@ def test_keyless_allowlist_is_the_reviewed_one():
         ("MOUNT", "/output"), ("MOUNT", "/caption-output"), ("MOUNT", "/burn-output"),
         ("GET", "/{full_path:path}"),
         ("GET", "/api/email/status"),
-        ("GET", "/api/pipeline/{integration_id}/health"), ("GET", "/api/roster/sync-notion/status"),
+        ("GET", "/api/roster/sync-notion/status"),
         ("GET", "/api/burn/fonts"),
     }
     # Empty since lead decision 5 (mint-alias and intake are operator-only). A new

@@ -1080,7 +1080,7 @@ async def forward_r2_to_topic(integration_id: str, req: ForwardToTopicRequest):
 # ── Per-page health check ────────────────────────────────────────────────────
 
 
-@router.get("/{integration_id}/health")
+@router.get("/{integration_id}/health", dependencies=[Depends(require_access)])
 async def page_health(integration_id: str):
     """Derived health metrics for a single page."""
     page = get_page(integration_id)
