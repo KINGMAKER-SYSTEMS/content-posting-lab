@@ -298,6 +298,8 @@
   states the original source is unavailable. Handle, Notion page id, niche,
   engine, delivery mode, format, SHA, byte count, duration, and R2 key must all
   match; no niche-wide or cross-page source fallback is allowed.
+  Handle identity comparison is case-insensitive; manifest URLs and R2 keys
+  retain the exact validated vault URL path segment.
   Source-manifest reads are hard size-bounded; transport failure is reported as
   unavailable rather than falsely reported as missing. The selected Content
   Lab format must match the Master Pages niche before a source is displayed or
