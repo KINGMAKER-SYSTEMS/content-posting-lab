@@ -579,7 +579,7 @@ def _matrix_markdown(results: list[dict]) -> str:
         "residual).",
         "",
         "Unframed pages: tests/test_page_frame_no_frame_identity.py reproduces, byte for byte, goldens frozen "
-        "from 7a97021 before any code change (248 cut filter strings over grades x speeds x crops, 120 full "
+        "from untouched main dca377d5 before importing the frame-cut implementation (248 cut filter strings over grades x speeds x crops, 120 full "
         "ffmpeg argv of the sourced and generation cut calls, 24 prepared-post graphs, 4 encode argv pairs, "
         "6 caption placements).",
         "",
@@ -600,11 +600,11 @@ def _matrix_markdown(results: list[dict]) -> str:
             f"| {row['qa'] or '-'} |")
     gate = gate_identity_rows()
     identical = sum(row["identicalOverlay"] and row["framedReasons"] == row["verticalReasons"] for row in gate)
-    lines += ["", "## Gate identity (Gap 5: no new refusal, burn_quality_gate unchanged)", "",
+    lines += ["", "## Caption placement and gate integration", "",
               f"{identical}/{len(gate)} framed renders (4 style/caption pairs x 4 frames x frameFit absent/fill/fit "
               "x page placement bottom/-12 and middle/0) get the same typed-gate verdict as the 9:16 render of the "
-              "same caption middle/0; the overlay bytes are identical, and the caption block centre is on the "
-              "band centre (row 960; 4:3's band centre is row 959).", "",
+              "same caption middle/0 with identical overlay bytes. Captions that fit retain their middle anchor; "
+              "taller captions shrink and move only enough to keep their glyph ink inside the picture band.", "",
               "| style | caption | caption box rows | 16:9 (608 @656) | 1:1 (1080 @420) | 3:4 (1440 @240) "
               "| 4:3 (810 @554) | gate verdict |", "|---|---|---|---|---|---|---|---|"]
     seen = {}
@@ -617,11 +617,9 @@ def _matrix_markdown(results: list[dict]) -> str:
                  for frame in ("16:9", "1:1", "3:4", "4:3")]
         lines.append(f"| {style} | {caption} | {box['top']}-{box['bottom'] - 1} ({box['height']} px) | "
                      + " | ".join(cells) + f" | {any_row['framedReasons'] or 'pass'} |")
-    lines += ["", "Band-height observation (john's decision, recorded not refused): the gate's height rule is "
-              "frame-relative (box <= 0.45 x 1920 = 864 px). On 16:9 (608 px band) and 4:3 (810 px band) a caption "
-              "that passes the gate can still be taller than the band and reach onto the bars (above: the 52 pt "
-              "six-line caption, 779 px, passes and reaches the 16:9 bars). On 1:1 and 3:4 any passing caption fits "
-              "the band."]
+    lines += ["", "The renderer and typed gate share the full-canvas picture-band coordinates. "
+              "The six-line 52 pt caption now shrinks to stay inside the 16:9 band; "
+              "the matrix checks that no caption paints onto the bars."]
     return "\n".join(lines) + "\n"
 
 
