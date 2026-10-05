@@ -14,6 +14,17 @@ fonts, unknown fields, incomplete styles, or clipped output. Verification:
 40 passed. No deployment, video mutation, phone action, scheduling, or post.
 _________________________________________________________________________________
 
+time: [16:30 EDT] [04-10-26]
+agent: [Codex desktop] [gpt-6.1]
+worktree: [codex/miniapp-agent-authz-20261004-r2] [/tmp/content-posting-lab-pr217-envdoc]
+type: [docs]: Document Mini App agent key requirement
+area: [writing] [backend]
+
+Clarified that `MINIAPP_AGENT_KEY` is required to enable Mini App agent routes,
+which return 503 when blank or unset. Added no secret value. Documentation-only
+PR #217 update; no merge or deployment performed.
+_________________________________________________________________________________
+
 time: [17:00 EDT] [24-09-26]
 agent: [Codex desktop] [gpt-6-astra]
 worktree: [fix/source-master-loop-20260924] [/Users/ecfromthedc/dev/wt/source-master-loop]
@@ -1188,3 +1199,175 @@ fits. When every window is cut, capability reads 0 and job creation answers
 `source_windows_reserved_by_other_pages` name the other empty plans. A census
 test fails any code
 path that builds source cuts without the planner. No deployment was performed.
+time: [03:04 EDT] [10-04-26]
+agent: [Codex desktop] [gpt-6.1]
+worktree: [codex/public-health-budget-redaction] [/private/tmp/content-posting-lab-health-redaction-20261004]
+type: [bug report]: Public health endpoint exposed exact paid-generation accounting
+area: [backend] [security] [testing]
+
+After PR #210 deployed, an anonymous production GET to `/api/health` exposed
+the exact configured generation budget and reserved spend. The public response
+now preserves only the budget-integrity corruption boolean; exact monetary
+accounting remains on authenticated Control Plane routes. Added a smoke
+regression for both healthy and corrupt ledger states and recorded the
+anonymous-health boundary in this contract. Local pytest is unavailable and
+the app import is blocked by missing `boto3`; hosted checks are required before
+merge. No deployment performed.
+
+_________________________________________________________________________________
+
+time: [03:10 EDT] [10-04-26]
+agent: [Codex desktop] [gpt-6.1]
+worktree: [codex/public-health-budget-redaction] [/private/tmp/content-posting-lab-health-redaction-20261004]
+type: [documentation correction]: Anonymous health data boundary
+area: [backend] [analysis]
+
+Corrected the PR description and source contract: this repository does not
+expose an authenticated exact-budget read endpoint. Public health preserves
+only the corruption signal; no route is claimed for exact accounting reads.
+
+_________________________________________________________________________________
+
+time: [03:11 EDT] [10-04-26]
+agent: [Codex desktop] [gpt-6.1]
+worktree: [codex/public-health-budget-redaction] [/private/tmp/content-posting-lab-health-redaction-20261004]
+type: [documentation correction]: Retract authenticated budget-route claim
+area: [backend] [analysis]
+
+Explicitly retracts the earlier event-log statement that exact monetary
+accounting remains on authenticated Control Plane routes. Repository review
+found no such read endpoint; this PR only redacts the anonymous health route.
+
+_________________________________________________________________________________
+
+time: [03:18 EDT] [10-04-26]
+agent: [Codex desktop] [gpt-6.1]
+worktree: [main]
+type: [gh actions]: Pull Request #211 post-merge verification
+area: [backend] [deployment] [testing]
+
+PR #211 merged as ba958a67e5251a6b255406aa4c327ee74f3c1204 at 03:17 EDT.
+Railway production deployment 6838117246 for that exact merge SHA completed
+success at 03:17:51 EDT. Anonymous GET /api/health returned HTTP 200 with
+generation_budget {corrupt:false}; day, budgetUsd, spentUsd, remainingUsd,
+resetsAt and note were absent. The branch has no CI workflow or check runs;
+local compileall and diff-check passed before merge, but pytest could not run
+because dependencies and disk space were unavailable. No paid generation was
+submitted. This verifies the public response redaction, not paid-generation
+accounting behavior.
+
+_________________________________________________________________________________
+
+_________________________________________________________________________________
+
+time: [14:15 EDT] [04-10-26]
+agent: [Codex desktop] [gpt-6.1]
+worktree: [codex/fix-seekable-frames-dir-safety] [seekable-frames-dir-safety]
+type: [bug report]: Seekable renderer deleted caller-selected frame directories
+area: [backend] [testing]
+
+The seekable HTML renderer previously recursively removed --frames-dir before
+rendering and could erase the working directory or unrelated user files. It
+now refuses populated or symlink frame paths, checks directory identity around
+writes and cleanup, writes frames exclusively, and
+cleans only the files created by this render in caller-owned directories.
+Recursive cleanup is restricted to the renderer's unique managed temporary
+directory. Regression tests cover the current directory and arbitrary populated
+paths, directory replacement, precise caller-directory cleanup, and managed temporary-directory
+cleanup. Failed renders clean only frame files created by that attempt. No
+deployment performed.
+
+_________________________________________________________________________________
+
+_________________________________________________________________________________
+
+time: [14:20 EDT] [04-10-26]
+agent: [Codex desktop] [gpt-6.1]
+worktree: [codex/fix-seekable-frames-dir-safety] [seekable-frames-dir-safety]
+type: [documentation correction]: State seekable frame-path guarantees precisely
+area: [writing] [analysis]
+
+Clarified that explicit --frames-dir paths may be existing empty directories or
+missing paths that the renderer creates. Directory identity is checked before
+writes and before cleanup; each frame path is created exclusively, and cleanup
+unlinks only tracked files whose identity still matches. These checks guard
+ordinary replacement and preexisting-file accidents, not a hostile concurrent
+process running as the same account. Recursive cleanup remains limited to the
+renderer-created unique temporary directory.
+
+_________________________________________________________________________________
+
+_________________________________________________________________________________
+time: [02:22pm] [10-04-26]
+agent: [Codex desktop] [gpt-6.1]
+worktree: [codex/secure-gh-capture-navigation] [/tmp/content-posting-lab-security]
+type: [security]: Restrict GitHub capture navigation and shell inputs
+area: [backend] [testing] [review]
+
+The GitHub capture workflow now accepts only bounded HTTPS github.com repository
+URLs, ignores caller-selected output directories and names, quotes fixed shell
+arguments, and blocks Playwright requests outside the GitHub and fixed asset
+host allowlist. The capture CLI bounds duration and confines new MP4 output to
+the repository without overwriting an existing file. Added six Node regression
+tests for URL, request, duration and filesystem boundaries. `node --test
+tools/gh-capture/target_policy.test.cjs`, syntax checks for both CommonJS files
+and the workflow, and `git diff --check` passed. No deployment performed.
+
+_________________________________________________________________________________
+
+_________________________________________________________________________________
+time: [02:30pm] [10-04-26]
+agent: [Codex desktop] [gpt-6.1]
+worktree: [codex/secure-gh-capture-navigation] [/tmp/content-posting-lab-security]
+type: [security]: Create first-run capture output safely
+area: [backend] [testing] [review]
+
+Independent review found that a clean checkout lacks the fixed footage parent,
+which made capture fail before navigation. Output validation now creates missing
+parent components one at a time under the canonical repository root, rejects
+symlink components and traversal before creation, and still refuses overwrites.
+A regression test covers the missing nested parent. The checkout reproduced the
+absent fixed directory; all seven focused Node tests passed. No deployment
+performed.
+
+_________________________________________________________________________________
+
+_________________________________________________________________________________
+
+time: [16:25 EDT] [04-10-26]
+agent: [Codex desktop] [gpt-6.1]
+worktree: [codex/miniapp-agent-authz-20261004-r2] [/private/tmp/cpl-miniapp-authz]
+type: [security]: Close Mini App agent and page authorization gaps
+area: [backend] [testing] [review]
+
+The independent review of Content Lab PR #43 identified two authorization gaps
+that were also present on current main `8f7f83343a6b4594ffe9db5c81dcd705751f70d4`:
+Mini App agent queue list/update routes allowed anonymous access when
+`MINIAPP_AGENT_KEY` was unset, and `POST /api/miniapp/requests` persisted a
+caller-supplied `page_id` without proving it belonged to the authenticated
+poster. Video filtering also silently accepted a foreign page ID as an empty
+result. Agent routes now return 503 when the server key is unset and 401 for a
+missing/incorrect key; page-scoped video and request calls return 404 for
+unknown or foreign pages, while owned pages continue to work. Added regressions
+for unset-key list/mutation (including unchanged request state), foreign and
+owned page IDs, and updated queue tests to send the key. All 45 tests in
+`tests/test_miniapp_api.py` passed with a temporary router-only fixture. The
+standard pytest setup could not import repository `tests/conftest.py` because
+`boto3` is unavailable in this environment. `compileall` and `git diff --check`
+passed. No merge or deployment performed.
+_________________________________________________________________________________
+
+_________________________________________________________________________________
+
+time: [16:26 EDT] [04-10-26]
+agent: [Codex desktop] [gpt-6.1]
+worktree: [codex/miniapp-agent-authz-20261004-r2] [/private/tmp/cpl-miniapp-authz]
+type: [handoff]: Publish Mini App authorization repair for independent review
+area: [review] [testing]
+
+Opened PR #217: https://github.com/KINGMAKER-SYSTEMS/content-posting-lab/pull/217
+from `1f3a84c06adc4128db4ca449a66503bd7b1afa59` against main
+`8f7f83343a6b4594ffe9db5c81dcd705751f70d4`. GitHub reports the PR open and
+clean with no hosted checks reported. Independent review and hosted gates remain
+pending; no merge or deployment performed.
+_________________________________________________________________________________

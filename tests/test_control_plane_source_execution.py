@@ -1,6 +1,7 @@
 """Closed contracts for page-scoped immutable-master recut execution."""
 
 import asyncio
+from dataclasses import replace
 import hashlib
 import json
 from pathlib import Path
@@ -18,6 +19,7 @@ from services.control_plane_sources import (
     plan_source_cuts,
     resolve_source_recipe,
     source_cut_is_planned,
+    planned_source_cut_duration,
 )
 from services.dossier_ingredients import (
     PINNED_LEGACY_DOSSIER_CATALOG_VERSIONS_BY_PUBLICATION,
@@ -1088,7 +1090,9 @@ async def test_sub_second_starts_render_and_never_decode_the_same_frames(lab, mo
 
 
 @pytest.mark.asyncio
-async def test_runner_passes_exact_cut_speed_and_crop_to_isolated_render(lab, monkeypatch):
+async def test_queued_source_runner_accepts_unrelated_registry_digest_drift_and_passes_exact_treatment(
+    lab, monkeypatch,
+):
     client, tmp_path, _ = lab
     source = tmp_path / "master.mp4"
     source.write_bytes(b"master")
@@ -1105,7 +1109,18 @@ async def test_runner_passes_exact_cut_speed_and_crop_to_isolated_render(lab, mo
         "/api/control-plane/v1/jobs", json=job_body(1, payload),
         headers=headers("source-job-crop"),
     )
-    _pin_cuts_to_first_frame(response.json()["jobId"])
+    job_id = response.json()["jobId"]
+    assert cp._load_jobs()["jobs"][job_id]["status"] == "queued"
+    _pin_cuts_to_first_frame(job_id)
+    # Model a persisted queued job from before per-profile hashes were stored.
+    # Its explicit source pins still authorize this work after unrelated
+    # registry contents change.
+    store = cp._load_jobs()
+    selected_profile_hash = store["jobs"][job_id].pop("engineProfileHash")
+    store["jobs"][job_id]["engineRegistryHash"] = "0" * 64
+    cp.atomic_save(cp._jobs_path(), store)
+    assert cp._load_jobs()["jobs"][job_id].get("engineProfileHash") is None
+    assert selected_profile_hash.startswith("sha256:")
     calls = []
 
     async def cached_source(*_):
@@ -1117,7 +1132,7 @@ async def test_runner_passes_exact_cut_speed_and_crop_to_isolated_render(lab, mo
 
     monkeypatch.setattr(cp, "_cached_source_master", cached_source)
     monkeypatch.setattr(cp, "run_color_correct", render)
-    await cp._run_dossier_source(response.json()["jobId"])
+    await cp._run_dossier_source(job_id)
     assert calls[0][3] == {
         "scale": None,
         "encode_args": cp.delivery_encode_args("tiktok_delivery_v1"),
@@ -1125,14 +1140,14 @@ async def test_runner_passes_exact_cut_speed_and_crop_to_isolated_render(lab, mo
         "clip_crop": crop,
         "clip_crop_size": (1080, 1920),
         "clip_start_ms": 0,
-        "clip_duration_ms": cp._load_jobs()["jobs"][response.json()["jobId"]]["sourceCuts"][0]["durationMs"],
+        "clip_duration_ms": cp._load_jobs()["jobs"][job_id]["sourceCuts"][0]["durationMs"],
     }
-    job = cp._load_jobs()["jobs"][response.json()["jobId"]]
+    job = cp._load_jobs()["jobs"][job_id]
     assert job["status"] == "completed"
     assert Path(job["artifactRoot"]) in Path(calls[0][1]).parents
     receipt = job["clips"][0]["sourceTreatment"]
     assert receipt["sourceSha256"] == job["clips"][0]["sha256"]
-    assert receipt["generationJobId"] == response.json()["jobId"]
+    assert receipt["generationJobId"] == job_id
     assert receipt["visualTreatment"]["clipSpeed"] == pytest.approx(0.75)
     assert receipt["visualTreatment"]["clipCrop"] == crop
 
@@ -1504,3 +1519,125 @@ def test_source_duration_respects_delivery_range_after_saved_speed(speed):
         else:
             assert 6_000 <= cut.duration_ms / speed <= 11_000
         assert source_cut_is_planned(recipe, cut.master, cut.start_ms, cut.duration_ms, cut.slot_id)
+
+
+@pytest.mark.parametrize("speed", [0.5, 2.0])
+def test_pov_club_refuses_speeds_without_a_worker_admissible_window(speed):
+    recipe = resolve_source_recipe(publication(clip_speed=speed, cut_duration_ms=7_000))
+    assert recipe is not None
+    club_recipe = replace(recipe, format_slug="pov-club")
+    assert source_cut_durations(club_recipe) == ()
+    assert plan_source_cuts(club_recipe, 1, set()) == []
+    master = club_recipe.masters[0]
+    assert not source_cut_is_planned(
+        club_recipe, master, 120_000, 12_000,
+        f"{master.sha256}:120000:12000",
+    )
+
+
+def test_pov_club_unsupported_speed_is_refused_before_job_or_window_admission(lab, monkeypatch):
+    client, _, started = lab
+    payload = publication(
+        clip_speed=2.0,
+        recipe_version="dossier-pov-club-unsupported-speed",
+    )
+    registered = client.post(
+        "/api/control-plane/v1/recipes", json=payload,
+        headers=headers("source-register-pov-club-speed"),
+    )
+    assert registered.status_code == 200
+    original_resolver = cp._dossier_source_recipe
+    monkeypatch.setattr(
+        cp, "_dossier_source_recipe",
+        lambda publication: replace(
+            original_resolver(publication), format_slug="pov-club",
+        ),
+    )
+    monkeypatch.setattr(
+        cp, "_source_dna_cut_ledger",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("windows were reserved")),
+    )
+    response = client.post(
+        "/api/control-plane/v1/jobs",
+        json=job_body(1, payload),
+        headers=headers("source-job-pov-club-unsupported-speed"),
+    )
+    assert response.status_code == 409
+    assert response.json() == {"detail": "source_speed_duration_unsupported"}
+    assert cp._load_jobs()["jobs"] == {}
+    assert started == []
+
+
+@pytest.mark.parametrize("speed", [0.6, 0.8, 1.0, 1.5, 1.8])
+def test_pov_club_supported_speeds_stay_inside_worker_source_and_output_bounds(speed):
+    recipe = resolve_source_recipe(publication(clip_speed=speed, cut_duration_ms=7_000))
+    assert recipe is not None
+    club_recipe = replace(recipe, format_slug="pov-club")
+    cuts = plan_source_cuts(club_recipe, 10, set())
+    assert cuts
+    for cut in cuts:
+        assert 5_000 <= cut.duration_ms <= 9_000
+        assert 5_000 <= cut.duration_ms / speed <= 9_000
+
+
+@pytest.mark.parametrize("speed", [0.5, 1.0, 2.0])
+def test_pov_club_rejects_legacy_grid_ids_without_breaking_older_formats(speed):
+    recipe = resolve_source_recipe(publication(clip_speed=speed, cut_duration_ms=7_000))
+    assert recipe is not None
+    master = recipe.masters[0]
+    start_ms = 120_000
+    duration_ms = planned_source_cut_duration(recipe, master, start_ms)
+    legacy_id = f"{master.sha256}:{start_ms}"
+    assert source_cut_is_planned(recipe, master, start_ms, duration_ms, legacy_id)
+    club_recipe = replace(recipe, format_slug="pov-club")
+    assert not source_cut_is_planned(club_recipe, master, start_ms, duration_ms, legacy_id)
+    for cut in plan_source_cuts(club_recipe, 1, set()):
+        assert source_cut_is_planned(
+            club_recipe, cut.master, cut.start_ms, cut.duration_ms, cut.slot_id,
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("measured_seconds", [None, 4.99, 9.01, 5.0, 9.0])
+async def test_pov_club_measures_output_before_admitting_manifest(lab, monkeypatch, measured_seconds):
+    client, tmp_path, _ = lab
+    payload = publication()
+    assert client.post(
+        "/api/control-plane/v1/recipes", json=payload,
+        headers=headers("club-measured-register"),
+    ).status_code == 200
+    response = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(1, payload),
+        headers=headers("club-measured-job"),
+    )
+    job_id = response.json()["jobId"]
+    resolver = cp._dossier_source_recipe
+    monkeypatch.setattr(cp, "_dossier_source_recipe", lambda p: replace(resolver(p), format_slug="pov-club"))
+    source = tmp_path / "master.mp4"
+    source.write_bytes(b"master")
+
+    async def cached_source(*_):
+        return source
+
+    async def render(_src, dst, *_args, **_kwargs):
+        Path(dst).write_bytes(b"derived")
+
+    probed = []
+    def probe(path):
+        assert Path(path).read_bytes() == b"derived"
+        probed.append(path)
+        return measured_seconds
+
+    monkeypatch.setattr(cp, "_cached_source_master", cached_source)
+    monkeypatch.setattr(cp, "run_color_correct", render)
+    monkeypatch.setattr(cp, "probe_source_output_duration_seconds", probe)
+    await cp._run_dossier_source(job_id)
+    job = cp._load_jobs()["jobs"][job_id]
+    assert len(probed) == 1
+    if measured_seconds in (5.0, 9.0):
+        assert job["status"] == "completed"
+        assert len(job["clips"]) == 1
+    else:
+        assert job["status"] == "failed"
+        assert job["error"] == "source_output_duration_unsupported"
+        assert not job.get("clips")

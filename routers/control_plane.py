@@ -100,8 +100,10 @@ from services.control_plane_sources import (
     explain_empty_source_plan,
     plan_source_cuts,
     source_cut_is_planned,
+    source_cut_durations,
     resolve_source_recipe,
     source_window_exclusions,
+    SOURCE_SPEED_DURATION_UNSUPPORTED,
 )
 from services.control_plane_slideshows import (
     SyzygyError,
@@ -125,11 +127,18 @@ from services.control_plane_source_imports import (
     source_import_slot,
     validate_source_url,
 )
-from services.content_engine_registry import load_engine_registry, resolve_material_profile
+from services.content_engine_registry import (
+    job_profile_authority_matches,
+    load_engine_registry,
+    resolve_material_profile,
+)
 from services.content_format_contracts import CONTRACTS_PATH, load_format_contracts
-from services.ffmpeg import delivery_encode_args, run_color_correct
+from services.ffmpeg import (
+    delivery_encode_args, run_color_correct,
+    _probe_input_duration_seconds as probe_source_output_duration_seconds,
+)
 from services.master_pages_contract import SCHEMA as MASTER_PAGES_SCHEMA, canonical_intent, exact_intent, intent_hash
-from services import moderation_retry
+from services import generation_budget, moderation_retry
 from services.roster_public import require_roster_auth
 from services.source_treatment import (
     derived_source_treatment,
@@ -716,7 +725,6 @@ def capabilities(
                 )
             max_quantity = _generated_capability_quantity(
                 generation_related_jobs_view, generation_recipe, page_id, master_pages,
-                publication["recipeSpecHash"],
             )
         source_identities = None
         if source_recipe is not None:
@@ -1141,6 +1149,11 @@ def _jobs_path() -> Path:
 
 def _empty_jobs() -> dict[str, Any]:
     return {"version": 1, "jobs": {}, "byIdempotency": {}, "served": {}}
+
+
+def generation_budget_status() -> dict[str, Any]:
+    """Read-only current daily generation-budget totals for internal use."""
+    return generation_budget.summary_at(_jobs_path())
 
 
 def _idempotency_job_id(store: dict[str, Any], key: str) -> Any:
@@ -1962,7 +1975,7 @@ def _generated_unavailable_prompts(
 
 def _generated_capability_quantity(
     store: dict[str, Any], recipe: Any, page_id: str,
-    master_pages: dict[str, Any], recipe_spec_hash: str,
+    master_pages: dict[str, Any],
 ) -> int:
     """Advertise only fresh output the current recipe can reserve now."""
     unavailable_hashes, unavailable_slots = _generated_unavailable_prompts(
@@ -1992,7 +2005,6 @@ def _generated_capability_quantity(
                 content_engine=recipe.engine,
                 recipe_id=recipe.recipe_id,
                 generation_recipe=recipe,
-                current_recipe_spec_hash=recipe_spec_hash,
             )) * recipe.clips_per_generation,
         )
     return max(fresh_capacity, recovery_capacity)
@@ -2001,7 +2013,6 @@ def _generated_capability_quantity(
 def _truck_master_candidates(
     store: dict[str, Any], page_id: str, limit: int, *,
     content_engine: str, recipe_id: str, generation_recipe: Any,
-    current_recipe_spec_hash: str,
 ) -> list[dict[str, Any]]:
     """Return durable, unused, current-authority truck masters for re-cropping.
 
@@ -2009,12 +2020,12 @@ def _truck_master_candidates(
     recoveries reserve them against concurrent replenishment. Failed recovery
     jobs release them because no new delivery bytes crossed the API boundary.
     A landscape file alone is not enough: the producing job must match the
-    current recipe, engine registry, prompt catalog, executor and provider
+    selected profile, recipe, prompt catalog, executor and provider
     model. This prevents old-model or old-prompt renders from silently becoming
     new five-crop deliveries after the page's creative authority changes. The
     source files are checked again, byte-for-byte, by the recovery runner.
-    Applied-video evidence must also match the current recipe hash, requested
-    grade, speed and crop; otherwise fresh generation produces new evidence.
+    Applied-video evidence must bind the producer and match the requested
+    grade, speed and crop; caption-only recipe changes still permit reuse.
     """
     reserved: set[str] = set()
     jobs = store.get("jobs", {})
@@ -2037,6 +2048,41 @@ def _truck_master_candidates(
 
     candidates: list[dict[str, Any]] = []
     seen = set(reserved)
+    profile_pins = {
+        "engine": content_engine,
+        "formatContractVersion": generation_recipe.format_contract_version,
+        "executorVersion": generation_recipe.executor_version,
+        "promptCatalogHash": generation_recipe.prompt_catalog_hash,
+        "family": generation_recipe.family_name,
+        "providerModel": generation_recipe.provider_model,
+        "materialSource": generation_recipe.material_source,
+        "assetType": generation_recipe.asset_type,
+    }
+    legacy_archive_pins = {
+        key: profile_pins[key]
+        for key in (
+            "engine", "formatContractVersion", "executorVersion",
+            "promptCatalogHash", "providerModel",
+        )
+    }
+
+    def profile_matches(job: dict[str, Any]) -> bool:
+        if job_profile_authority_matches(
+            job, generation_recipe.engine_profile_hash, profile_pins,
+        ):
+            return True
+        # Archive indexes written before profile-scoped pins omit family,
+        # materialSource, assetType, and engineProfileHash. The retained
+        # selected-profile pins still establish the producing authority; an
+        # unrelated registry member must not invalidate an otherwise matching
+        # paid master. Full legacy jobs use the richer pins above.
+        return (
+            job.get("engineProfileHash") is None
+            and job_profile_authority_matches(
+                job, generation_recipe.engine_profile_hash, legacy_archive_pins,
+            )
+        )
+
     # Archived completed generated truck renders remain live re-crop candidates
     # (full manifests preserved in the index); include them in the ordered scan.
     ordered_jobs = sorted(
@@ -2051,11 +2097,14 @@ def _truck_master_candidates(
             or job.get("status") != "completed"
             or job.get("engine") != content_engine
             or job.get("recipeId") != recipe_id
-            or job.get("engineRegistryHash") != generation_recipe.engine_registry_hash
+            or not profile_matches(job)
             or job.get("formatContractVersion") != generation_recipe.format_contract_version
             or job.get("executorVersion") != generation_recipe.executor_version
             or job.get("promptCatalogHash") != generation_recipe.prompt_catalog_hash
+            or job.get("family") not in (None, generation_recipe.family_name)
             or job.get("providerModel") != generation_recipe.provider_model
+            or job.get("materialSource") not in (None, generation_recipe.material_source)
+            or job.get("assetType") not in (None, generation_recipe.asset_type)
             or not isinstance(job.get("artifactRoot"), str)
         ):
             continue
@@ -2081,8 +2130,6 @@ def _truck_master_candidates(
                 or str(source.get("contentNiche") or "").strip().upper() != "TRUCK"
                 or source.get("contentEngine") != content_engine
                 or not isinstance(clip.get("sourceTreatment"), dict)
-                or clip["sourceTreatment"].get("recipeSpecHash")
-                    != current_recipe_spec_hash
                 or not recovery_treatment_matches(
                     clip["sourceTreatment"], job, sha256,
                     generation_recipe.recipe_spec["renderTreatment"],
@@ -2660,12 +2707,22 @@ async def _run_owned_dossier_generation(job_id: str) -> None:
     recipe = resolve_generation_recipe(publication) if publication else None
     if (
         recipe is None
-        or job.get("engineRegistryHash") != recipe.engine_registry_hash
+        or not job_profile_authority_matches(job, recipe.engine_profile_hash, {
+            "formatContractVersion": recipe.format_contract_version,
+            "executorVersion": recipe.executor_version,
+            "promptCatalogHash": recipe.prompt_catalog_hash,
+            "family": recipe.family_name,
+            "providerModel": recipe.provider_model,
+            "materialSource": recipe.material_source,
+            "assetType": recipe.asset_type,
+        })
         or job.get("formatContractVersion") != recipe.format_contract_version
         or job.get("promptCatalogHash") != recipe.prompt_catalog_hash
         or job.get("executorVersion") != recipe.executor_version
         or job.get("family") != recipe.family_name
         or job.get("providerModel") != recipe.provider_model
+        or job.get("materialSource") != recipe.material_source
+        or job.get("assetType") != recipe.asset_type
     ):
         await asyncio.to_thread(_update_job,
             job_id,
@@ -2813,9 +2870,19 @@ async def _run_owned_dossier_generation(job_id: str) -> None:
                 attempt, reserve = rows[-1]["attempt"], False
             else:
                 attempt, reserve = 0, False
-            attempt_cost = moderation_retry.attempt_cost_usd(recipe.provider_model)
+            attempt_cost = moderation_retry.attempt_cost_usd(
+                recipe.provider_model, duration, resolution=resolution,
+                parameters={**options, "aspect_ratio": aspect_ratio, "image_data_uri": image_data_uri},
+            )
+            if attempt_cost is None:
+                # Every paid submission must be priced to be metered; an
+                # unlisted model fails closed rather than metering as free.
+                attempt_cost = generation_budget.charged_cost_per_gen(
+                    recipe.provider_config.get("cost_per_gen_usd")
+                )
             terminal = None
             succeeded = False
+            budget_exhausted = False
             while True:
                 if reserve:
                     reserve = False
@@ -2864,6 +2931,23 @@ async def _run_owned_dossier_generation(job_id: str) -> None:
                     provider_jobs[provider_job_id]["videos"][0]["_prediction_checkpoint"] = PredictionCheckpoint(
                         job.get("providerCheckpoints", {}).get(checkpoint_key), persist,
                     )
+                # Daily total generation budget: reserve this new billable
+                # submission at its own UTC submission day, idempotently. The
+                # debit id embeds job/call/attempt, so a moderation retry (or a
+                # resumed prediction with the same id) reserves exactly once.
+                # Polling/resuming the SAME prediction stays free.
+                debit_id = f"{provider_job_id}:s0"
+                if not await asyncio.to_thread(
+                    generation_budget.debit_generation_spend_at,
+                    generation_budget.jobs_store_path(), attempt_cost, debit_id,
+                ):
+                    row.update({"providerRequestId": None, "class": "generation_budget",
+                                "errorDetail": "daily_budget", "costUsd": None,
+                                "outcome": "refused",
+                                "detail": "Daily paid-generation budget reached before submission"})
+                    terminal = "generation_daily_budget_reached"
+                    budget_exhausted = True
+                    break
                 await generate_one(
                     provider_job_id,
                     0,
@@ -2877,6 +2961,7 @@ async def _run_owned_dossier_generation(job_id: str) -> None:
                     render_root,
                     "",
                     model_id=recipe.provider_model,
+                    cost_usd=attempt_cost,
                     **options,
                 )
                 entry = provider_jobs[provider_job_id]["videos"][0]
@@ -2895,6 +2980,16 @@ async def _run_owned_dossier_generation(job_id: str) -> None:
                             moderationRetryCostUsd=moderation_retry.retry_cost_total(attempts))
                     break
                 provider_error = str(entry.get("error") or "")
+                if provider_error == "generation_daily_budget_reached":
+                    # A provider-layer HTTP/PA retry hit the same daily meter.
+                    # Preserve the already-paid ID and use the named terminal
+                    # contract, just as an outer planned-call refusal does.
+                    row.update({"providerRequestId": request_id, "class": "generation_budget",
+                                "errorDetail": "daily_budget", "detail": provider_error,
+                                "costUsd": attempt_cost if request_id else None, "outcome": "refused"})
+                    terminal = provider_error
+                    budget_exhausted = True
+                    break
                 error_class = classify_provider_error(provider_error)
                 refused = moderation_retry.confirmed_refusal(error_class, request_id, provider_error)
                 # A refused Replicate prediction is billed like a successful
@@ -2966,6 +3061,14 @@ async def _run_owned_dossier_generation(job_id: str) -> None:
                     moderationRetryCostUsd=moderation_retry.retry_cost_total(attempts),
                 )
                 if last.get("outcome") == "refused":
+                    if budget_exhausted:
+                        # Fleet-wide USD budget reached: no later candidate can
+                        # reserve either, so stop the remaining plan now (like a
+                        # credit failure), preserving any already-claimed output
+                        # through the underfilled-batch handling. Raised under
+                        # its own name so the executor records the Worker's
+                        # refusal contract (error/errorClass/errorDetail).
+                        raise RuntimeError("generation_daily_budget_reached")
                     # A confirmed refused prediction whose bounded varied
                     # retries (or the page's daily retry budget) are spent
                     # stays refused. Continue only to the next distinct
@@ -3119,6 +3222,27 @@ async def _run_owned_dossier_generation(job_id: str) -> None:
     except Exception as error:  # provider and ffmpeg failures are job state
         complete_manifests = [clip for clip in manifests
                               if not durable or clip.get("generationIndex") in completed_calls]
+        if str(error) == "generation_daily_budget_reached":
+            # A later billable submission (retry / PA resubmission / second call)
+            # could not reserve against the daily meter. End failed under the
+            # Worker's refusal contract and PRESERVE any already-claimed paid
+            # output (do not discard work). errorClass/errorDetail were already
+            # persisted by the executor loop; report the reset within the
+            # Worker's existing closed terminal-error envelope.
+            budget_detail = generation_budget.failure_detail()
+            await asyncio.to_thread(_update_job,
+                job_id,
+                status="failed",
+                error="generation_daily_budget_reached",
+                errorClass="generation_budget",
+                errorDetail=budget_detail,
+                clips=complete_manifests,
+                uncompletedGenerationClips=[clip for clip in manifests if clip not in complete_manifests],
+                providerCallsCompleted=len(completed_calls),
+                completedGenerationCalls=list(completed_calls),
+                completedAt=datetime.now(timezone.utc).isoformat(),
+            )
+            return
         if (str(error) == "provider_generation_failed" and complete_manifests
                 and _job_matches_current_master_pages(job)):
             # Earlier calls already produced fully treated, claimed clips. A
@@ -3201,6 +3325,24 @@ async def _run_truck_master_recovery(job_id: str) -> None:
             completedAt=datetime.now(timezone.utc).isoformat(),
         )
         return
+    publication = load_registered_recipe(
+        job.get("recipePublicationPageId") or job["pageId"],
+        job["recipeId"], job["engine"], job["recipeVersion"],
+    )
+    recipe_spec = typed_recipe_spec(publication) if publication else None
+    if (
+        recipe_spec is None
+        or publication.get("recipeSpecHash") != job.get("recipeSpecHash")
+        or publication.get("recipeSpecHash") != "sha256:" + hashlib.sha256(
+            publication["recipeSpecCanonical"].encode("utf-8"),
+        ).hexdigest()
+        or not publication_matches_master_pages(publication, job["masterPages"], job["masterPagesHash"])
+    ):
+        await asyncio.to_thread(_update_job,
+            job_id, status="failed", error="truck_master_recipe_unavailable",
+            completedAt=datetime.now(timezone.utc).isoformat(),
+        )
+        return
     job_root = Path(job["artifactRoot"]).resolve()
     master_root = job_root / "masters"
     master_root.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -3247,7 +3389,8 @@ async def _run_truck_master_recovery(job_id: str) -> None:
                 manifest = _generated_manifest(job_root, crop)
                 inherited_treatment = derived_source_treatment(
                     candidate.get("sourceTreatment"), candidate["sha256"],
-                    manifest["sha256"], job["jobId"],
+                    manifest["sha256"], job, recipe_spec["renderTreatment"],
+                    parent_job_id=candidate.get("sourceJobId"),
                 )
                 if inherited_treatment is not None:
                     manifest["sourceTreatment"] = inherited_treatment
@@ -3346,9 +3489,20 @@ async def _run_dossier_source(job_id: str) -> None:
         recipe is None
         or job.get("sourceLibraryId") != recipe.source_library_id
         or job.get("sourceLibraryHash") != recipe.source_library_hash
-        or job.get("engineRegistryHash") != recipe.engine_registry_hash
+        or not job_profile_authority_matches(job, recipe.engine_profile_hash, {
+            "engine": recipe.engine,
+            "sourceLibraryId": recipe.source_library_id,
+            "sourceLibraryHash": recipe.source_library_hash,
+            "formatContractVersion": recipe.format_contract_version,
+            "executorVersion": recipe.executor_version,
+            "materialSource": recipe.material_source,
+            "assetType": recipe.asset_type,
+        })
+        or job.get("engine") != recipe.engine
         or job.get("formatContractVersion") != recipe.format_contract_version
         or job.get("executorVersion") != recipe.executor_version
+        or job.get("materialSource") != recipe.material_source
+        or job.get("assetType") != recipe.asset_type
     ):
         await asyncio.to_thread(_update_job,
             job_id,
@@ -3408,6 +3562,12 @@ async def _run_dossier_source(job_id: str) -> None:
                 clip_start_ms=start_ms,
                 clip_duration_ms=duration_ms,
             )
+            if recipe.format_slug == "pov-club":
+                measured_duration = await asyncio.to_thread(
+                    probe_source_output_duration_seconds, str(destination),
+                )
+                if measured_duration is None or not 5.0 <= measured_duration <= 9.0:
+                    raise RuntimeError("source_output_duration_unsupported")
             manifest = _generated_manifest(job_root, destination)
             manifest["clipSpeed"] = clip_speed
             manifest["clipCrop"] = clip_crop
@@ -3507,9 +3667,19 @@ async def _run_syzygy_slideshow(job_id: str) -> None:
     if (
         recipe is None
         or job.get("sourceLibraryId") != recipe.library_id
-        or job.get("engineRegistryHash") != recipe.engine_registry_hash
+        or not job_profile_authority_matches(job, recipe.engine_profile_hash, {
+            "engine": recipe.engine,
+            "sourceLibraryId": recipe.library_id,
+            "formatContractVersion": recipe.format_contract_version,
+            "executorVersion": recipe.executor_version,
+            "materialSource": recipe.material_source,
+            "assetType": recipe.asset_type,
+        })
+        or job.get("engine") != recipe.engine
         or job.get("formatContractVersion") != recipe.format_contract_version
         or job.get("executorVersion") != recipe.executor_version
+        or job.get("materialSource") != recipe.material_source
+        or job.get("assetType") != recipe.asset_type
     ):
         await asyncio.to_thread(_update_job,
             job_id,
@@ -4261,7 +4431,6 @@ async def create_job(
                 content_engine=engine,
                 recipe_id=recipe_id,
                 generation_recipe=generation_recipe,
-                current_recipe_spec_hash=publication["recipeSpecHash"],
             )
             if generation_recipe is not None
             and recipe_id == TRUCK_RECIPE_ID
@@ -4289,6 +4458,7 @@ async def create_job(
                 "dossierRevision": publication["dossierRevision"],
                 "recipeSpecHash": publication["recipeSpecHash"],
                 "engineRegistryHash": generation_recipe.engine_registry_hash,
+                "engineProfileHash": generation_recipe.engine_profile_hash,
                 "formatContractVersion": generation_recipe.format_contract_version,
                 "materialSource": generation_recipe.material_source,
                 "assetType": generation_recipe.asset_type,
@@ -4314,6 +4484,51 @@ async def create_job(
             )
             if len(prompt_plan) != provider_calls:
                 raise HTTPException(status_code=409, detail="prompt_inventory_exhausted")
+            # Daily total generation budget: the admission no longer reserves
+            # the whole planned amount (that would let queued work shift
+            # unbounded reserved spend across midnight). Every *new billable
+            # submission* is instead reserved at its own UTC submission day,
+            # idempotently, right before the provider call (see
+            # _run_owned_dossier_generation). Admission still validates that the
+            # recipe provider is priced so a job can never be admitted against
+            # an unmeterable paid provider (fail closed).
+            try:
+                generation_budget.charged_cost_per_gen(
+                    generation_recipe.provider_config.get("cost_per_gen_usd")
+                )
+            except ValueError as exc:
+                raise HTTPException(
+                    status_code=500, detail=f"generation_pricing_unavailable: {exc}"
+                )
+            # Cheap admission gate (the per-submission debit remains the real
+            # cap): refuse BEFORE creating any job row when the day's metered
+            # spend already leaves no room for the job's FIRST billable
+            # submission. One clock sample feeds the admission decision, body
+            # `resets_at` and `Retry-After` header. No job
+            # row, no ghost state on refusal.
+            first_call_cost = moderation_retry.attempt_cost_usd(
+                generation_recipe.provider_model,
+                int(generation_options(generation_recipe).get("duration", 6)),
+                resolution=str(generation_options(generation_recipe).get("resolution", "1080p")),
+                parameters=generation_options(generation_recipe),
+            )
+            if first_call_cost is None:
+                first_call_cost = generation_budget.charged_cost_per_gen(
+                    generation_recipe.provider_config.get("cost_per_gen_usd")
+                )
+            now = datetime.now(timezone.utc)
+            if not generation_budget.can_reserve_at(_jobs_path(), first_call_cost, now=now):
+                resets_at = generation_budget.next_reset_iso(now)
+                raise HTTPException(
+                    status_code=429,
+                    detail={
+                        "error": "generation_daily_budget_reached",
+                        "resets_at": resets_at,
+                    },
+                    headers={
+                        "Retry-After": str(generation_budget.retry_after_seconds(now)),
+                    },
+                )
             job_root = (
                 _generation_root() / page_id / recipe_version / job_id
             ).resolve()
@@ -4328,6 +4543,7 @@ async def create_job(
                 "dossierRevision": publication["dossierRevision"],
                 "recipeSpecHash": publication["recipeSpecHash"],
                 "engineRegistryHash": generation_recipe.engine_registry_hash,
+                "engineProfileHash": generation_recipe.engine_profile_hash,
                 "formatContractVersion": generation_recipe.format_contract_version,
                 "materialSource": generation_recipe.material_source,
                 "assetType": generation_recipe.asset_type,
@@ -4345,6 +4561,11 @@ async def create_job(
             }
             start_generation = True
         elif source_recipe is not None:
+            if source_recipe.format_slug == "pov-club" and not source_cut_durations(source_recipe):
+                raise HTTPException(
+                    status_code=409,
+                    detail=SOURCE_SPEED_DURATION_UNSUPPORTED,
+                )
             served_slots, cut_history = _source_dna_cut_ledger(
                 store, source_recipe, publication["recipeVersion"],
             )
@@ -4399,6 +4620,7 @@ async def create_job(
                 "sourceLibraryId": source_recipe.source_library_id,
                 "sourceLibraryHash": source_recipe.source_library_hash,
                 "engineRegistryHash": source_recipe.engine_registry_hash,
+                "engineProfileHash": source_recipe.engine_profile_hash,
                 "formatContractVersion": source_recipe.format_contract_version,
                 "executorVersion": source_recipe.executor_version,
                 "materialSource": source_recipe.material_source,
@@ -4443,6 +4665,7 @@ async def create_job(
                 "sourceLibraryId": slideshow_recipe.library_id,
                 "librarySnapshotHash": slideshow_library.snapshot_hash,
                 "engineRegistryHash": slideshow_recipe.engine_registry_hash,
+                "engineProfileHash": slideshow_recipe.engine_profile_hash,
                 "formatContractVersion": slideshow_recipe.format_contract_version,
                 "executorVersion": slideshow_recipe.executor_version,
                 "materialSource": slideshow_recipe.material_source,
@@ -4575,7 +4798,7 @@ def _job_status_failure_cause(job: dict[str, Any]) -> dict[str, str]:
     """
     if (
         job.get("status") not in _STATUS_FAILURE_TERMINAL
-        or job.get("error") != "provider_generation_failed"
+        or job.get("error") not in ("provider_generation_failed", "generation_daily_budget_reached")
     ):
         return {}
     cause: dict[str, str] = {}

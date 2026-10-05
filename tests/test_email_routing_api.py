@@ -6,17 +6,11 @@ PUT /api/email/rules/{rule_id} were dead code and removed.
 """
 
 from app import app
+from tests.route_inventory import registered_routes
 
 
 def _routes() -> set[tuple[str, frozenset]]:
-    out = set()
-    for r in app.routes:
-        path = getattr(r, "path", None)
-        methods = getattr(r, "methods", None)
-        if path and methods:
-            out.add((path, frozenset(methods)))
-    return out
-
+    return {(path, methods) for _, path, methods in registered_routes(app)}
 
 def test_dead_rule_management_routes_removed():
     paths = {p for p, _ in _routes()}

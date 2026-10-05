@@ -92,10 +92,14 @@ def current_generation_authority():
         "engine": "ai_video",
         "recipeId": recipe.recipe_id,
         "engineRegistryHash": recipe.engine_registry_hash,
+        "engineProfileHash": recipe.engine_profile_hash,
         "formatContractVersion": recipe.format_contract_version,
         "executorVersion": recipe.executor_version,
         "promptCatalogHash": recipe.prompt_catalog_hash,
+        "family": recipe.family_name,
         "providerModel": recipe.provider_model,
+        "materialSource": recipe.material_source,
+        "assetType": recipe.asset_type,
     }
 
 
@@ -173,6 +177,7 @@ def test_registered_dossier_is_advertised_and_queues_new_media_only(lab, monkeyp
     assert stored["engineRegistryHash"] == hashlib.sha256(
         REGISTRY_PATH.read_bytes(),
     ).hexdigest()
+    assert stored["engineProfileHash"].startswith("sha256:")
     assert stored["materialSource"] == "generated_video"
     assert stored["assetType"] == "video/mp4"
     assert stored["promptCatalogHash"] == "e7c2a13a818da636bb32ea3027cd3d2be1a88fd8c9c74e87cf67206f3188ceff"
@@ -257,7 +262,7 @@ def test_generated_capability_bounds_planning_without_changing_capacity(lab, mon
     monkeypatch.setattr(cp, "plan_prompt_combinations", observed_planner)
     # Isolate fresh-generation capacity from the separately tested truck recuts.
     quantity = cp._generated_capability_quantity(
-        {"jobs": {}}, recipe, PAGE_ID, {"contentNiche": "COFFEE"}, publication["recipeSpecHash"],
+        {"jobs": {}}, recipe, PAGE_ID, {"contentNiche": "COFFEE"},
     )
     assert quantity == min(cp.MAX_CAPABILITY_QUANTITY, available * recipe.clips_per_generation)
     assert requested == [recipe.planned_provider_calls(cp.MAX_CAPABILITY_QUANTITY)]
@@ -524,9 +529,33 @@ def test_canonical_page_queues_from_one_exact_notion_bound_operational_publicati
     assert started == [job_id]
 
 
+def prior_caption_publication(client):
+    publication = recipe_publication()
+    spec = json.loads(publication["recipeSpecCanonical"])
+    spec["renderTreatment"]["captionStyle"] = {"position": "bottom"}
+    canonical = json.dumps(spec, sort_keys=True, separators=(",", ":"))
+    publication.update({
+        "recipeVersion": "dossier-567890abcdef1234",
+        "dossierRevision": "rev-prior-caption",
+        "recipeSpecCanonical": canonical,
+        "recipeSpecHash": "sha256:" + hashlib.sha256(canonical.encode()).hexdigest(),
+    })
+    registration = client.post(
+        "/api/control-plane/v1/recipes", json=publication,
+        headers={**HEADERS, "Idempotency-Key": "prior-caption-publication"},
+    )
+    assert registration.status_code == 200
+    registered = recipes.load_registered_recipe(
+        PAGE_ID, "truck-scenic:master", "ai_video", publication["recipeVersion"],
+    )
+    assert registered["recipeSpecHash"] != recipe_publication()["recipeSpecHash"]
+    return registered
+
+
 @pytest.mark.parametrize("evidence", [
-    "matching", "caption_only", "missing", "invalid_binding", "prior_recipe",
-    "grade_changed", "speed_changed", "crop_changed",
+    "matching", "caption_only", "missing", "invalid_binding", "producer_recipe_mismatch",
+    "foreign_producer", "foreign_page", "foreign_source_page", "malformed_receipt",
+    "grade_changed", "speed_changed", "crop_changed", "unrelated_registry_change",
 ])
 def test_truck_job_reuses_only_preparable_paid_master_before_new_provider_spend(
     lab, monkeypatch, evidence,
@@ -539,20 +568,26 @@ def test_truck_job_reuses_only_preparable_paid_master_before_new_provider_spend(
     master.write_bytes(b"exact-paid-provider-master")
     master_sha = hashlib.sha256(master.read_bytes()).hexdigest()
     intent, revision = master_pages(PAGE_ID, handle="tucker.reeves")
-    producer_recipe_hash = (
-        "sha256:" + "9" * 64
-        if evidence == "prior_recipe"
-        else recipe_publication()["recipeSpecHash"]
+    producer_publication = (
+        prior_caption_publication(client) if evidence == "caption_only" else recipe_publication()
     )
-    actual = source_treatment_for(
-        "cpl-1111111111111111", master_sha, producer_recipe_hash,
+    producer_treatment = json.loads(producer_publication["recipeSpecCanonical"])["renderTreatment"]
+    producer_recipe_hash = producer_publication["recipeSpecHash"]
+    actual = cp.source_treatment_receipt(
+        {"jobId": "cpl-1111111111111111", "recipeSpecHash": producer_recipe_hash},
+        producer_treatment, master_sha,
+        clip_speed=producer_treatment["clipSpeed"], clip_crop=producer_treatment["clipCrop"],
     )
-    if evidence == "caption_only":
-        actual["sourceRecipeTreatment"]["captionStyle"] = {"position": "bottom"}
-    elif evidence == "missing":
+    if evidence == "missing":
         actual = None
     elif evidence == "invalid_binding":
         actual["sourceSha256"] = "0" * 64
+    elif evidence == "producer_recipe_mismatch":
+        producer_recipe_hash = "sha256:" + "9" * 64
+    elif evidence == "foreign_producer":
+        actual["generationJobId"] = "cpl-2222222222222222"
+    elif evidence == "malformed_receipt":
+        del actual["visualTreatment"]
     elif evidence == "grade_changed":
         actual["visualTreatment"]["filters"]["brightness"] = 1
         actual["sourceRecipeTreatment"]["filters"]["brightness"] = 1
@@ -563,11 +598,18 @@ def test_truck_job_reuses_only_preparable_paid_master_before_new_provider_spend(
         actual["visualTreatment"]["clipCrop"]["zoom"] = 1
         actual["sourceRecipeTreatment"]["clipCrop"]["zoom"] = 1
     store = cp._load_jobs()
+    prior_authority = current_generation_authority()
+    if evidence == "unrelated_registry_change":
+        # A historical job has the old global registry digest but all selected
+        # profile authorities still match; it must remain a paid re-crop input.
+        prior_authority["engineRegistryHash"] = "sha256:" + "0" * 64
+        prior_authority.pop("engineProfileHash")
     store["jobs"]["cpl-1111111111111111"] = {
-        **current_generation_authority(),
+        **prior_authority,
         "recipeSpecHash": producer_recipe_hash,
         "jobId": "cpl-1111111111111111",
-        "pageId": PAGE_ID,
+        "pageId": "tt-another-page" if evidence == "foreign_page" else PAGE_ID,
+        "recipeVersion": producer_publication["recipeVersion"],
         "sourceKind": "generated",
         "status": "completed",
         "artifactRoot": str(old_root),
@@ -579,11 +621,11 @@ def test_truck_job_reuses_only_preparable_paid_master_before_new_provider_spend(
             **({"sourceTreatment": actual} if actual is not None else {}),
             "source": {
                 "recipeId": "truck-scenic:master",
-                "recipeVersion": "dossier-legacy0000000",
+                "recipeVersion": producer_publication["recipeVersion"],
                 "path": "renders/paid-master.mp4",
                 "sha256": master_sha,
                 "bytes": master.stat().st_size,
-                "pageId": PAGE_ID,
+                "pageId": "tt-another-page" if evidence == "foreign_source_page" else PAGE_ID,
                 "masterPagesHash": revision,
                 "contentNiche": intent["contentNiche"],
                 "contentEngine": intent["contentEngine"],
@@ -592,6 +634,7 @@ def test_truck_job_reuses_only_preparable_paid_master_before_new_provider_spend(
         }],
     }
     cp.atomic_save(cp._jobs_path(), store)
+    original_producer = cp._load_jobs()["jobs"]["cpl-1111111111111111"]
     monkeypatch.setattr(cp, "_is_exact_16x9_video", lambda _: True)
 
     response = client.post(
@@ -599,11 +642,16 @@ def test_truck_job_reuses_only_preparable_paid_master_before_new_provider_spend(
     )
     assert response.status_code == 200
     job_id = response.json()["jobId"]
-    stored = cp._load_jobs()["jobs"][job_id]
-    if evidence in {"matching", "caption_only"}:
+    after = cp._load_jobs()
+    stored = after["jobs"][job_id]
+    assert after["jobs"]["cpl-1111111111111111"] == original_producer
+    assert hashlib.sha256(master.read_bytes()).hexdigest() == master_sha
+    if evidence in {"matching", "caption_only", "unrelated_registry_change"}:
         assert stored["sourceKind"] == "truck_master_recovery"
         assert stored["providerCallsPlanned"] == 0
         assert [entry["sha256"] for entry in stored["recoveryMasters"]] == [master_sha]
+        assert stored["recoveryMasters"][0]["sourceTreatment"] == actual
+        assert stored["recipeSpecHash"] == recipe_publication()["recipeSpecHash"]
         assert started == [f"recovery:{job_id}"]
     else:
         assert stored["sourceKind"] == "generated"
@@ -625,6 +673,7 @@ def test_truck_job_never_recrops_a_master_from_stale_creative_authority(lab, mon
     store = cp._load_jobs()
     store["jobs"]["cpl-3333333333333333"] = {
         **stale_authority,
+        "recipeSpecHash": recipe_publication()["recipeSpecHash"],
         "jobId": "cpl-3333333333333333",
         "pageId": PAGE_ID,
         "sourceKind": "generated",
@@ -635,6 +684,7 @@ def test_truck_job_never_recrops_a_master_from_stale_creative_authority(lab, mon
             "path": "renders/stale-master.mp4",
             "sha256": master_sha,
             "bytes": master.stat().st_size,
+            "sourceTreatment": source_treatment_for("cpl-3333333333333333", master_sha),
             "source": {
                 "recipeId": "truck-scenic:master",
                 "recipeVersion": "dossier-stale00000000",
@@ -663,7 +713,14 @@ def test_truck_job_never_recrops_a_master_from_stale_creative_authority(lab, mon
 
 
 @pytest.mark.asyncio
-async def test_truck_master_recovery_emits_five_crops_without_model_call(lab, monkeypatch):
+@pytest.mark.parametrize("caption_only,fault", [
+    (False, None), (True, None),
+    (True, "missing_publication"), (True, "publication_hash"),
+    (True, "malformed_publication"), (True, "changed_publication_bytes"),
+    (True, "foreign_publication_intent"), (True, "cached_parent_speed"),
+    (True, "cached_parent_job"), (True, "cached_parent_malformed"),
+])
+async def test_truck_master_recovery_emits_five_crops_without_model_call(lab, monkeypatch, caption_only, fault):
     client, tmp_path, started = lab
     old_root = tmp_path / "generated" / PAGE_ID / "legacy" / "cpl-2222222222222222"
     old_root.mkdir(parents=True)
@@ -672,10 +729,18 @@ async def test_truck_master_recovery_emits_five_crops_without_model_call(lab, mo
     master.write_bytes(b"another-exact-paid-provider-master")
     master_sha = hashlib.sha256(master.read_bytes()).hexdigest()
     intent, revision = master_pages(PAGE_ID, handle="tucker.reeves")
+    producer_publication = prior_caption_publication(client) if caption_only else recipe_publication()
+    producer_treatment = json.loads(producer_publication["recipeSpecCanonical"])["renderTreatment"]
+    parent_treatment = cp.source_treatment_receipt(
+        {"jobId": "cpl-2222222222222222", "recipeSpecHash": producer_publication["recipeSpecHash"]},
+        producer_treatment, master_sha,
+        clip_speed=producer_treatment["clipSpeed"], clip_crop=producer_treatment["clipCrop"],
+    )
     store = cp._load_jobs()
     store["jobs"]["cpl-2222222222222222"] = {
         **current_generation_authority(),
-        "recipeSpecHash": recipe_publication()["recipeSpecHash"],
+        "recipeSpecHash": producer_publication["recipeSpecHash"],
+        "recipeVersion": producer_publication["recipeVersion"],
         "jobId": "cpl-2222222222222222",
         "pageId": PAGE_ID,
         "sourceKind": "generated",
@@ -686,12 +751,10 @@ async def test_truck_master_recovery_emits_five_crops_without_model_call(lab, mo
             "path": "renders/paid-master.mp4",
             "sha256": master_sha,
             "bytes": master.stat().st_size,
-            "sourceTreatment": source_treatment_for(
-                "cpl-2222222222222222", master_sha,
-            ),
+            "sourceTreatment": parent_treatment,
             "source": {
                 "recipeId": "truck-scenic:master",
-                "recipeVersion": "dossier-legacy0000000",
+                "recipeVersion": producer_publication["recipeVersion"],
                 "path": "renders/paid-master.mp4",
                 "sha256": master_sha,
                 "bytes": master.stat().st_size,
@@ -704,12 +767,50 @@ async def test_truck_master_recovery_emits_five_crops_without_model_call(lab, mo
         }],
     }
     cp.atomic_save(cp._jobs_path(), store)
+    original_producer = cp._load_jobs()["jobs"]["cpl-2222222222222222"]
     monkeypatch.setattr(cp, "_is_exact_16x9_video", lambda _: True)
     response = client.post(
         "/api/control-plane/v1/jobs", json=job_body(quantity=1), headers=HEADERS,
     )
     job_id = response.json()["jobId"]
     assert started == [f"recovery:{job_id}"]
+    if fault is not None:
+        store = cp._load_jobs()
+        queued = store["jobs"][job_id]
+        publication = recipes.load_registered_recipe(
+            PAGE_ID, queued["recipeId"], queued["engine"], queued["recipeVersion"],
+        )
+        publication_path = recipes._record_path(recipes._root(), publication)
+        if fault == "missing_publication":
+            publication_path.unlink()
+        elif fault == "publication_hash":
+            queued["recipeSpecHash"] = "sha256:" + "0" * 64
+        elif fault == "malformed_publication":
+            publication["recipeSpecCanonical"] = "{"
+            publication_path.write_text(json.dumps(publication))
+        elif fault in {"changed_publication_bytes", "foreign_publication_intent"}:
+            spec = json.loads(publication["recipeSpecCanonical"])
+            if fault == "changed_publication_bytes":
+                spec["renderTreatment"]["captionStyle"] = {"position": "top"}
+            else:
+                spec["masterPages"]["notionPageId"] = "f" * 32
+                spec["masterPagesHash"] = recipes.intent_hash(spec["masterPages"])
+            publication["recipeSpecCanonical"] = json.dumps(spec, sort_keys=True, separators=(",", ":"))
+            if fault == "foreign_publication_intent":
+                publication["recipeSpecHash"] = "sha256:" + hashlib.sha256(publication["recipeSpecCanonical"].encode()).hexdigest()
+                queued["recipeSpecHash"] = publication["recipeSpecHash"]
+            publication_path.write_text(json.dumps(publication))
+        else:
+            cached = queued["recoveryMasters"][0]["sourceTreatment"]
+            if fault == "cached_parent_speed":
+                cached["visualTreatment"]["clipSpeed"] = 1
+                cached["sourceRecipeTreatment"]["clipSpeed"] = 1
+            elif fault == "cached_parent_job":
+                cached["generationJobId"] = "cpl-another-producer"
+            else:
+                del cached["visualTreatment"]
+        cp.atomic_save(cp._jobs_path(), store)
+    original_recovery_masters = cp._load_jobs()["jobs"][job_id]["recoveryMasters"]
 
     async def fake_crops(copied, mode):
         assert mode == "both"
@@ -737,6 +838,17 @@ async def test_truck_master_recovery_emits_five_crops_without_model_call(lab, mo
     await cp._run_truck_master_recovery(job_id)
 
     stored = cp._load_jobs()["jobs"][job_id]
+    assert cp._load_jobs()["jobs"]["cpl-2222222222222222"] == original_producer
+    assert stored["recoveryMasters"] == original_recovery_masters
+    assert hashlib.sha256(master.read_bytes()).hexdigest() == master_sha
+    if fault is not None:
+        assert stored["status"] == "failed"
+        assert stored["clips"] == []
+        assert stored["error"] == (
+            "recovery source treatment binding mismatch" if fault.startswith("cached_parent")
+            else "truck_master_recipe_unavailable"
+        )
+        return
     assert stored["status"] == "completed"
     assert len(stored["clips"]) == 5
     assert [clip["delivery"]["crop"]["index"] for clip in stored["clips"]] == list(range(5))
@@ -747,13 +859,13 @@ async def test_truck_master_recovery_emits_five_crops_without_model_call(lab, mo
     )
     assert artifacts.status_code == 200
     assert len(artifacts.json()["artifacts"]) == 5
-    parent_treatment = source_treatment_for(
-        "cpl-2222222222222222", master_sha,
-    )
+    assert cp._load_jobs()["jobs"]["cpl-2222222222222222"] == original_producer
     for artifact in artifacts.json()["artifacts"]:
         treatment = artifact["sourceTreatment"]
         assert treatment["sourceSha256"] == artifact["sha256"]
         assert treatment["generationJobId"] == job_id
+        assert treatment["recipeSpecHash"] == stored["recipeSpecHash"] == recipe_publication()["recipeSpecHash"]
+        assert treatment["sourceRecipeTreatment"] == json.loads(recipe_publication()["recipeSpecCanonical"])["renderTreatment"]
         assert treatment["visualTreatment"] == parent_treatment["visualTreatment"]
         assert treatment["derivedFrom"] == {
             "sourceSha256": master_sha,
@@ -780,12 +892,26 @@ async def _async_value(value):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("later_provider_failure", [False, True])
-async def test_generation_runner_lands_treated_artifacts_under_the_isolated_job_root(lab, monkeypatch, later_provider_failure):
+@pytest.mark.parametrize("unrelated_registry_digest_changed", [False, True])
+async def test_queued_generation_runner_accepts_unrelated_registry_digest_drift(
+    lab, monkeypatch, later_provider_failure, unrelated_registry_digest_changed,
+):
     client, tmp_path, _ = lab
     response = client.post(
         "/api/control-plane/v1/jobs", json=job_body(quantity=6 if later_provider_failure else 2), headers=HEADERS,
     )
     job_id = response.json()["jobId"]
+    assert cp._load_jobs()["jobs"][job_id]["status"] == "queued"
+    if unrelated_registry_digest_changed:
+        # Model a persisted queued job from before per-profile hashes were
+        # stored. Its explicit truck pins still authorize this work despite a
+        # later unrelated registry change.
+        store = cp._load_jobs()
+        selected_profile_hash = store["jobs"][job_id].pop("engineProfileHash")
+        store["jobs"][job_id]["engineRegistryHash"] = "0" * 64
+        cp.atomic_save(cp._jobs_path(), store)
+        assert cp._load_jobs()["jobs"][job_id].get("engineProfileHash") is None
+        assert selected_profile_hash.startswith("sha256:")
     corrections = []
 
     async def fake_generate_one(
@@ -1108,7 +1234,12 @@ async def test_truck_recovery_cancel_is_terminal_and_preserves_candidate_root(la
     job_id = "cpl-cancel-recovery"
     sibling_root = tmp_path / "sibling"; sibling_root.mkdir()
     store = cp._load_jobs()
+    publication = recipe_publication()
+    spec = json.loads(publication["recipeSpecCanonical"])
     store["jobs"][job_id] = {"jobId": job_id, "pageId": PAGE_ID, "status": "queued",
+        "recipeId": publication["recipeId"], "engine": publication["engine"],
+        "recipeVersion": publication["recipeVersion"], "recipeSpecHash": publication["recipeSpecHash"],
+        "masterPages": spec["masterPages"], "masterPagesHash": spec["masterPagesHash"],
         "artifactRoot": str(job_root), "recoveryMasters": [{"artifactRoot": str(candidate_root),
         "path": "masters/paid.mp4", "sha256": candidate_sha, "bytes": master.stat().st_size,
         "source": {"recipeId": "truck-scenic:master"}}]}

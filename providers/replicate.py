@@ -3,6 +3,7 @@
 import asyncio
 import re
 import time
+import uuid
 
 import httpx
 
@@ -264,9 +265,26 @@ def _retry_after_seconds(resp: httpx.Response, attempt: int) -> float:
 
 async def _start_prediction(
     client: httpx.AsyncClient, headers: dict, model_id: str, input_params: dict,
+    *, cost_usd: float | None = None, debit_id: str | None = None,
 ) -> str:
     for attempt in range(START_ATTEMPTS):
         final = attempt == START_ATTEMPTS - 1
+        if attempt:
+            # Each new HTTP create is another possible paid operation. The
+            # caller reserved the first; keep every subsequent request distinct
+            # even when it repeats the same input after a 500/503 or throttle.
+            from services import generation_budget
+            try:
+                cost = generation_budget.charged_cost_per_gen(cost_usd)
+            except ValueError as error:
+                raise RuntimeError("generation_pricing_unavailable") from error
+            if not debit_id:
+                raise RuntimeError("generation_pricing_unavailable")
+            if not await asyncio.to_thread(
+                generation_budget.debit_generation_spend_at,
+                generation_budget.jobs_store_path(), cost, f"{debit_id}:http{attempt}",
+            ):
+                raise RuntimeError("generation_daily_budget_reached")
         try:
             resp = await client.post(
                 f"{REPLICATE_API}/models/{model_id}/predictions",
@@ -389,7 +407,29 @@ async def generate(prompt: str, params: dict, client: httpx.AsyncClient) -> str:
                      "state": "submitting"}
             if checkpoint is not None:
                 await checkpoint.save(state)
-            pred_id = await _start_prediction(client, headers, model_id, input_params)
+            # A resubmission beyond the first (Replicate's "Prediction
+            # interrupted (code: PA)") creates a second billable prediction.
+            # Reserve its cost against the daily generation meter at this UTC
+            # day, idempotently keyed by job id + submission index. The first
+            # submission is reserved by the caller (admission or executor).
+            if submission > 0:
+                cost_usd = params.get("cost_usd")
+                job_id = params.get("job_id")
+                if not isinstance(cost_usd, (int, float)) or cost_usd <= 0 or not job_id:
+                    raise RuntimeError("generation_pricing_unavailable")
+                from services import generation_budget
+                debit_id = f"{job_id}:pa{submission}"
+                reserved = await asyncio.to_thread(
+                    generation_budget.debit_generation_spend_at,
+                    generation_budget.jobs_store_path(), cost_usd, debit_id,
+                )
+                if not reserved:
+                    raise RuntimeError("generation_daily_budget_reached")
+            job_id = params.get("job_id")
+            debit_id = f"{job_id}:pa{submission}" if submission else f"{job_id}:s0"
+            pred_id = await _start_prediction(client, headers, model_id, input_params,
+                                              cost_usd=params.get("cost_usd"),
+                                              debit_id=debit_id if job_id else None)
             # Safe 429/connection backoff precedes acceptance, not processing.
             # Preserve the original ten-minute budget from the accepted id.
             started = time.time()
@@ -537,6 +577,18 @@ async def remove_text(
     try:
         # Step 1: Generate text mask locally (fast, no API call)
         mask_data_uri = _generate_text_mask(image_data_uri)
+
+        # This call always creates a new prediction; identical image bytes do
+        # not resume the prior one. Reserve a distinct submission before POST.
+        from services import generation_budget
+        cost_usd = generation_budget.per_gen_cost_usd_by_model("dpakkk/image-object-removal")
+        debit_id = "recreate:" + uuid.uuid4().hex
+        reserved = await asyncio.to_thread(
+            generation_budget.debit_generation_spend_at,
+            generation_budget.jobs_store_path(), cost_usd, debit_id,
+        )
+        if not reserved:
+            raise RuntimeError("generation_daily_budget_reached")
 
         # Step 2: LaMa inpainting — community model, version-based endpoint
         resp = await client.post(

@@ -1,17 +1,16 @@
-"""Regression pin: the configured vault origin derives the same identities as the
-pre-PR hardcoded origin did.
+"""Configured vault origin preserves source and selected execution identities.
 
-Before #180 the ShipStream origin was a module constant. It is now read from
-SHIPSTREAM_VAULT_ORIGIN. The origin feeds provenance ``sourceUrl`` values,
-so it also feeds source-library ids and hashes, approved-cut ids, the Dossier
-``catalogVersion`` and the manifest URL. If production is configured with the
-old origin, every one of those must come out byte-identical.
+Before #180 the ShipStream origin was a module constant; it is now read from
+SHIPSTREAM_VAULT_ORIGIN. Source URLs, library ids and hashes, approved cuts,
+selected catalog versions and the manifest URL retain their pre-PR pins.
+The full editor catalog versions separately reflect the current formats
+snapshot, including additive POV-Club metadata.
 
-PINNED was computed by running the pre-PR code (commit 8137cb8) with its
-origin constant and host pin pointed at the synthetic ORIGIN below, so the
-real production origin never appears here. Its formula is
-``f"{origin}/assets/{quote(storage_key, safe='')}"``. Any change to how the
-origin enters an identity turns this test red.
+Source and selected pins were computed with commit8137cb8 using the synthetic
+ORIGIN below. Only the two full-editor catalogVersion pins were refreshed.
+The origin URL formula remains
+``f"{origin}/assets/{quote(storage_key, safe='')}"``. Equality assertions cover
+both stable executable identities and the separately versioned editor snapshot.
 """
 
 from __future__ import annotations
@@ -149,11 +148,12 @@ def compute_identities() -> dict:
     return out
 
 
-# Computed by the pre-PR code (8137cb8); see the module docstring.
+# Source and selected identities retain pre-PR pins (8137cb8).
+# Only full editor catalog versions reflect the additive POV-Club snapshot.
 PINNED = {'fetchedUrls': ['https://vault.identity.test/assets/vault%2Flovenightwalks%2Fsource-manifest.json'],
  'historical': {'approvedCuts': ['shipstream-lovenightwalks-424b1424c96c3bd3-cuts',
                                  '68bb7a0aefb39340e8ecfa6eae7c7ca063599b96598a3e8300b64067b38e5c9e'],
-                'catalogVersion': 'sha256:a39e39d6255e4a6c2acbd1cc16fb4745f465957bb48b3c036cc8d44abed7bdcb',
+                'catalogVersion': 'sha256:9ff03a12e19579b42f9cd462c9e6ea1cfe4891be11557fbb235838902d006cff',
                 'libraryId': 'shipstream-lovenightwalks-424b1424c96c3bd3',
                 'librarySha256': '6de6e331fc409c4af05de284f9fdebe79a42c33be2e087879de4037a4d43c121',
                 'selectedCatalogVersion': 'sha256:166cc1648410c5f4b2cf20103dc55e52bd8013fea7d944a76dd6bb932933ca48',
@@ -163,7 +163,7 @@ PINNED = {'fetchedUrls': ['https://vault.identity.test/assets/vault%2Flovenightw
  'manifestUrl': 'https://vault.identity.test/assets/vault%2Flovenightwalks%2Fsource-manifest.json',
  'master': {'approvedCuts': ['shipstream-lovenightwalks-9fb1c5a785851769-cuts',
                              '1db4533ce3f2b6794a894e203e8f5d2e3168df568ba54a6d0f87c15280ec8eb0'],
-            'catalogVersion': 'sha256:a1218cfec0082b1531567dabc0e731847b540b9bb1434dfbe256e419eed27558',
+            'catalogVersion': 'sha256:115f76812b57ba207bf48f0f5164a38b9b75f5c570e6f6d6a6146fadaf80ae1b',
             'libraryId': 'shipstream-lovenightwalks-9fb1c5a785851769',
             'librarySha256': '9cb2290055bb563668154448122a3d22ab82b607dd9b9880682f5ec1dcb6a44a',
             'selectedCatalogVersion': 'sha256:b38d8d9c3da191376aae26102b8246640033776ae2433e9cb5088b2487c9310a',
@@ -171,7 +171,7 @@ PINNED = {'fetchedUrls': ['https://vault.identity.test/assets/vault%2Flovenightw
             'sourceUrls': ['https://vault.identity.test/assets/vault%2Flovenightwalks%2Fmasters%2Faaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.mp4']}}
 
 
-def test_configured_origin_derives_the_pre_pr_identities(monkeypatch):
+def test_configured_origin_preserves_source_and_selected_identity_pins(monkeypatch):
     monkeypatch.setenv("SHIPSTREAM_VAULT_ORIGIN", ORIGIN)
     assert compute_identities() == PINNED
 
