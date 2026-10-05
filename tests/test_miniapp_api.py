@@ -245,7 +245,8 @@ def test_agent_key_enforced_when_set(sync_client, monkeypatch):
     assert ok.status_code == 200
 
 
-def test_agent_routes_fail_closed_when_key_is_unset(sync_client):
+def test_agent_routes_fail_closed_when_key_is_unset(sync_client, monkeypatch):
+    monkeypatch.delenv("MINIAPP_AGENT_KEY", raising=False)
     _seed_poster_with_page()
     created = sync_client.post(
         "/api/miniapp/requests",

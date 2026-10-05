@@ -80,16 +80,16 @@ Before step 3 the new routes answer 503 (fail closed), never open.
 | Class | Routes | Credential |
 |---|---|---|
 | MONEY | 5 | A (5) |
-| WRITE (state-changing / destructive) | 141 | A (121, incl. mint-alias and intake), A or H (7), A or W (3: email routing), W (10: control-plane writes whose inline bearer check came after the body or the lane check; the bearer is now also a dependency) |
+| WRITE (state-changing / destructive) | 142 | A (122, incl. mint-alias and intake), A or H (7), A or W (3: email routing), W (10: control-plane writes whose inline bearer check came after the body or the lane check; the bearer is now also a dependency) |
 | PII-READ | 25 | A (17), A or H (6), A or W (1: `GET /api/email/destinations`), W (1: `GET /api/control-plane/v1/roster`) |
 | READ (gated with its router, no PII/spend) | 53 | A (51), A or H (1: `GET /api/telegram/sounds`), W (1: `GET /api/control-plane/v1/capabilities`) |
-| TOKEN (unchanged, credential inside the route) | 18 | bearer / per-job token / agent key |
+| TOKEN (unchanged, credential inside the route) | 21 | bearer / per-job token / agent key |
 | HMAC (Telegram initData) | 4 | Mini App |
-| PUBLIC (keyless allowlist) | 17 | none |
+| PUBLIC (keyless allowlist) | 18 | none |
 | KNOWN-OPEN | 0 | (mint-alias and intake are operator-only since lead decision 5) |
-| **Total** | **263** | |
+| **Total** | **268** | |
 
-By credential set over the 224 must-auth routes: A only 194, A or H 14, A or W 4, W only 12.
+By credential set over the 225 must-auth routes: A only 195, A or H 14, A or W 4, W only 12.
 "A or W" on the four email-routing routes means an Access JWT or CONTROL_PLANE_TOKEN
 as Bearer **or** X-API-Key (the #176 contract is kept).
 
@@ -406,3 +406,9 @@ UI = the Lab frontend calls this path (grep of `frontend/src`, path-level).
 | `MOUNT` | `/burn-output` | PUBLIC | - |  |  | generated media, public by design (WATCH) |
 | `GET` | `/font-preview` | PUBLIC | - |  |  | static HTML page |
 | `GET` | `/{full_path:path}` | PUBLIC | - |  |  | SPA fallback; only files inside frontend/dist (traversal-guarded) |
+
+| `POST` | `/api/control-plane/v1/media-retention/remedy` | TOKEN | - |  |  | CONTROL_PLANE_TOKEN bearer and registered lane (inline; no request body) |
+| `POST` | `/api/control-plane/v1/post-renders/{job_id}/acknowledge` | TOKEN | - |  |  | CONTROL_PLANE_TOKEN bearer and exact page binding (no request body) |
+| `POST` | `/api/control-plane/v1/post-renders/{job_id}/retire` | TOKEN | - |  |  | CONTROL_PLANE_TOKEN bearer and exact page binding (no request body) |
+| `POST` | `/api/burn/caption-render/v2` | WRITE | Access JWT |  |  | same explicit operator authorization as caption-render/v1 |
+| `GET` | `/api/ready` | PUBLIC | - |  |  | worker readiness status; no roster or credential values |

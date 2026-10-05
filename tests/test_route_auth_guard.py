@@ -58,6 +58,7 @@ OPTIONAL = {("GET", "/{full_path:path}")}
 TABLE = {
     ('GET', '/api/control-plane/v1/capabilities'): ('READ', 'W', 'page recipe catalog (no PII); the Worker and manual tools send the bearer (Access bypasses /api/control-plane/*)'),
     ('GET', '/api/control-plane/v1/format-contracts'): ('TOKEN', '', 'CONTROL_PLANE_TOKEN bearer (inline)'),
+    ('POST', '/api/control-plane/v1/media-retention/remedy'): ('TOKEN', '', 'CONTROL_PLANE_TOKEN bearer and registered lane (inline; no request body)'),
     ('GET', '/api/control-plane/v1/roster'): ('PII-READ', 'W', 'roster/poster/account data'),
     ('POST', '/api/control-plane/v1/roster/refresh'): ('WRITE', 'W', 'Notion sync; bearer as a dependency so auth precedes the X-RT-Lane check (was 400 to anonymous)'),
     ('POST', '/api/control-plane/v1/source-imports'): ('WRITE', 'W', 'control-plane machine write; bearer as a dependency so auth precedes the body (review D8)'),
@@ -70,6 +71,8 @@ TABLE = {
     ('POST', '/api/control-plane/v1/post-renders'): ('WRITE', 'W', 'control-plane machine write; bearer now also a dependency (the body was validated before the inline check: 422 to anonymous)'),
     ('GET', '/api/control-plane/v1/post-renders/{job_id}'): ('TOKEN', '', 'CONTROL_PLANE_TOKEN bearer (post_renders)'),
     ('POST', '/api/control-plane/v1/post-renders/{job_id}/retry'): ('TOKEN', '', 'CONTROL_PLANE_TOKEN bearer (post_renders)'),
+    ('POST', '/api/control-plane/v1/post-renders/{job_id}/acknowledge'): ('TOKEN', '', 'CONTROL_PLANE_TOKEN bearer and exact page binding (post_renders; no request body)'),
+    ('POST', '/api/control-plane/v1/post-renders/{job_id}/retire'): ('TOKEN', '', 'CONTROL_PLANE_TOKEN bearer and exact page binding (post_renders; no request body)'),
     ('POST', '/api/control-plane/v1/post-renders/{job_id}/provenance'): ('WRITE', 'W', 'control-plane machine write; bearer now also a dependency (was 422 to anonymous)'),
     ('GET', '/api/control-plane/v1/post-renders/{job_id}/artifacts/{kind}'): ('TOKEN', '', 'CONTROL_PLANE_TOKEN bearer (post_renders)'),
     ('POST', '/api/control-plane/v1/dossier-ingredients'): ('WRITE', 'W', 'control-plane machine write; bearer as a dependency so auth precedes the body (review D8)'),
@@ -106,6 +109,7 @@ TABLE = {
     ('POST', '/api/burn/import-tos'): ('WRITE', 'A', ''),
     ('GET', '/api/burn/fonts'): ('PUBLIC', '', 'font catalog (names/files); the Worker font proxy calls it with no headers'),
     ('POST', '/api/burn/caption-render/v1'): ('WRITE', 'A', ''),
+    ('POST', '/api/burn/caption-render/v2'): ('WRITE', 'A', ''),
     ('POST', '/api/burn/overlay'): ('WRITE', 'A', ''),
     ('GET', '/api/burn/batch-status/{batch_id}'): ('READ', 'A', 'operator read, no PII/spend (gated with its router)'),
     ('GET', '/api/burn/batches'): ('READ', 'A', 'operator read, no PII/spend (gated with its router)'),
@@ -307,6 +311,7 @@ TABLE = {
     ('POST', '/api/agenticnews/editor/{ep_id}/apply'): ('WRITE', 'A', ''),
     ('GET', '/api/projects'): ('READ', 'A', 'operator read, no PII/spend (gated with its router)'),
     ('GET', '/api/health'): ('PUBLIC', '', 'liveness; presence flags only (no values)'),
+    ('GET', '/api/ready'): ('PUBLIC', '', 'worker readiness status; no roster or credential values'),
     ('MOUNT', '/fonts'): ('PUBLIC', '', 'font files; read by the Worker font proxy and slideshow-agent'),
     ('MOUNT', '/agenticnews-assets'): ('PUBLIC', '', 'rendered ABN media (public by design, WATCH)'),
     ('GET', '/workspace'): ('PUBLIC', '', 'static HTML shell; its APIs are gated'),
@@ -376,6 +381,7 @@ def test_keyless_allowlist_is_the_reviewed_one():
     """PUBLIC grows only by editing this list too (criteria §10b.4 + the font catalog)."""
     assert set(_rows("PUBLIC")) == {
         ("GET", "/api/health"),
+        ("GET", "/api/ready"),
         ("GET", "/workspace"), ("GET", "/factory"), ("GET", "/abn-editor"), ("GET", "/abn-editor/{ep_id}"),
         ("GET", "/font-preview"),
         ("MOUNT", "/fonts"), ("MOUNT", "/agenticnews-assets"), ("MOUNT", "/projects"),

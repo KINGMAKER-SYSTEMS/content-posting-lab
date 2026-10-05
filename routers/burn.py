@@ -427,6 +427,7 @@ async def caption_render_v1(request: CaptionRenderRequest):
 
 @router.post(
     "/caption-render/v2",
+    dependencies=[Depends(require_access)],
     response_model=CaptionRenderResultV2,
     response_model_exclude_none=True,
 )
