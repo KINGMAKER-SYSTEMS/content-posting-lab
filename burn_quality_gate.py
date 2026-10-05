@@ -27,7 +27,7 @@ from typing import Any
 
 from PIL import Image
 
-from services.caption_render import FRAME_HEIGHT, FRAME_WIDTH, caption_fit_area
+from services.caption_render import FRAME_HEIGHT, FRAME_WIDTH, caption_fit_area, picture_frame_rows
 
 # Female-voiced / mismatched-persona phrases that burned live truck posts.
 # Keep in sync with rail data/caption_gate.json defaults where possible.
@@ -160,7 +160,14 @@ def overlay_geometry_reasons(
         target = {"top": 0.15, "middle": 0.50, "bottom": 0.85}[
             caption_style["position"]
         ] + float(caption_style["offset_pct"]) / 100.0
-        position_off = abs((cy / h) - target)
+        target_y = target * h
+        if band_rows is not None:
+            first, last = band_rows
+            target_y = first + (last - first) * target
+            # The renderer moves the anchor only enough to keep its ink inside
+            # the band; measure that same placement instead of the full canvas.
+            target_y = max(first + (box_h - 1) / 2, min(last - (box_h - 1) / 2, target_y))
+        position_off = abs(cy - target_y) / h
         if position_off > 0.08:
             reasons.append(
                 f"typed_position:{caption_style['position']}:{position_off:.3f}>0.08"
@@ -189,10 +196,15 @@ def run_quality_check(
     *,
     require_overlay: bool = True,
     caption_style: dict[str, Any] | None = None,
+    picture_frame: str | None = None,
 ) -> dict[str, Any]:
     reasons = caption_reasons(caption, persona)
     if require_overlay or overlay_png:
-        reasons.extend(overlay_geometry_reasons(overlay_png, caption_style))
+        if picture_frame is not None and (not isinstance(picture_frame, str) or picture_frame not in {"9:16", "16:9", "4:3", "1:1", "3:4"}):
+            reasons.append("picture_frame_invalid")
+        else:
+            rows = picture_frame_rows(picture_frame) if picture_frame is not None else None
+            reasons.extend(overlay_geometry_reasons(overlay_png, caption_style, band_rows=rows))
     return {
         "ok": len(reasons) == 0,
         "reasons": reasons,

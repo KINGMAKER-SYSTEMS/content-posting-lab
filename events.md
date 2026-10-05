@@ -1486,3 +1486,12 @@ from `1f3a84c06adc4128db4ca449a66503bd7b1afa59` against main
 clean with no hosted checks reported. Independent review and hosted gates remain
 pending; no merge or deployment performed.
 _________________________________________________________________________________
+
+_________________________________________________________________________________
+time: [22:32] [04-10-26]
+agent: [Codex desktop] [gpt-6.1-sol]
+worktree: [l13-frame-fit] [/tmp/rt-merge-lab217]
+type: [bug report]: Align frame-aware caption quality checks
+area: [backend] [testing] [review]
+
+Reviewed PR #216 against current main and retained the Mini App authorization repair. The local quality-check endpoint now accepts the same picture frame used to render the caption and evaluates its position against that band, including the renderer's minimal anchor adjustment. Frame-relative top/middle/bottom coverage and invalid-frame controls accompany the repair; the existing 253 focused renderer, gate and prepared-final tests passed before the correction. No phone input or runtime installation was performed.

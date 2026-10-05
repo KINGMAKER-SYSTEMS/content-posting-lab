@@ -239,6 +239,7 @@ async def api_quality_check(request: Request):
         overlay_png=body.get("overlayPng"),
         require_overlay=True,
         caption_style=caption_style,
+        picture_frame=body.get("picture_frame"),
     )
     if not result["ok"]:
         return JSONResponse(result, status_code=422)
