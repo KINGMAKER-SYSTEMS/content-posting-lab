@@ -15,7 +15,9 @@ import routers.control_plane as control_plane
 import routers.control_plane_recipes as recipes
 from services.content_engine_registry import (
     REGISTRY_PATH,
+    job_profile_authority_matches,
     load_engine_registry,
+    profile_authority_hash,
 )
 from services.content_format_contracts import (
     CONTRACTS_PATH,
@@ -92,7 +94,7 @@ def test_every_known_format_has_a_strict_contract_and_registry_binding():
     assert set(contracts) == set(profiles) == {
         "boat-lake", "coffee-tok", "construction-scenic", "lyric-edits",
         "meme-slideshow", "pov-dirt-bike", "pov-dusk-core",
-        "pov-night-core", "pov-night-core-ai", "pov-scenic",
+        "pov-club", "pov-night-core", "pov-night-core-ai", "pov-scenic",
         "silhouette-truck", "truck-scenic", "truck-ugc",
     }
     for slug, profile in profiles.items():
@@ -109,7 +111,7 @@ def test_only_complete_hash_bound_formats_are_commissioned():
         if profile.execution_status == "commissioned"
     } == {
         "boat-lake", "coffee-tok", "lyric-edits", "meme-slideshow",
-        "pov-dirt-bike", "pov-night-core", "pov-scenic", "silhouette-truck",
+        "pov-club", "pov-dirt-bike", "pov-night-core", "pov-scenic", "silhouette-truck",
         "truck-scenic",
     }
     assert all(
@@ -119,6 +121,63 @@ def test_only_complete_hash_bound_formats_are_commissioned():
     )
     assert contracts["truck-ugc"].definition_status == "complete"
     assert profiles["truck-ugc"].execution_status == "uncommissioned"
+
+
+def test_pov_club_is_a_source_bound_format_on_the_existing_recut_executor():
+    contracts, _ = load_format_contracts()
+    profiles, _ = load_engine_registry()
+    contract = contracts["pov-club"]
+    profile = profiles["pov-club"]
+    assert contract.content_niche == "POV-Club"
+    assert profile.content_niche == "POV-Club"
+    assert profile.content_engine == "sourced_video"
+    assert profile.execution_status == "commissioned"
+    assert profile.executor_id == "source-dna-recut"
+    assert profile.format_contract_version == f"sha256:{contract.contract_hash}"
+    assert contract.output["audioPolicy"] == "campaign_sound_bound_downstream"
+    assert contract.review_gates == (
+        "byte_exact_provenance", "cut_window_lineage", "technical_video",
+        "duplicate_and_never_reuse",
+    )
+    assert "operator_visual_qa" not in contract.review_gates
+    text_policy = contract.dimensions["textPolicy"]
+    assert text_policy["authority"] == "sourceDna.masters"
+    assert "without waiting for a separate vision scan" in text_policy["rule"]
+    assert "preserve existing scan evidence" in text_policy["rule"]
+
+
+def test_profile_authority_is_stable_when_an_unrelated_profile_is_added():
+    registry = json.loads(REGISTRY_PATH.read_text())
+    selected = registry["profiles"]["pov-club"]
+    original_hash = profile_authority_hash("pov-club", selected)
+    registry["profiles"]["unrelated-test-profile"] = {
+        **registry["profiles"]["truck-ugc"],
+    }
+    assert profile_authority_hash(
+        "pov-club", registry["profiles"]["pov-club"],
+    ) == original_hash
+
+
+def test_profile_authority_ignores_admission_cap_but_rejects_material_drift():
+    registry = json.loads(REGISTRY_PATH.read_text())
+    selected = registry["profiles"]["pov-club"]
+    original_hash = profile_authority_hash("pov-club", selected)
+    assert profile_authority_hash(
+        "pov-club", {**selected, "maxQuantity": selected["maxQuantity"] - 1},
+    ) == original_hash
+    assert profile_authority_hash(
+        "pov-club", {**selected, "executorVersion": "sha256:" + "0" * 64},
+    ) != original_hash
+    legacy_pins = {"formatContractVersion": selected["formatContractVersion"]}
+    assert not job_profile_authority_matches({}, original_hash)
+    assert not job_profile_authority_matches({}, original_hash, legacy_pins)
+    assert job_profile_authority_matches(legacy_pins, original_hash, legacy_pins)
+    assert job_profile_authority_matches(
+        {"engineProfileHash": original_hash}, original_hash,
+    )
+    assert not job_profile_authority_matches(
+        {"engineProfileHash": "sha256:" + "0" * 64}, original_hash,
+    )
 
 
 def test_boat_contract_is_commissioned_after_operator_lifted_quarantine():
@@ -136,7 +195,7 @@ def test_boat_contract_is_commissioned_after_operator_lifted_quarantine():
     # The restored rules are hash-bound to the live boat prompt family.
     from services.control_plane_generation import load_prompt_catalog
 
-    _, catalog_hash = load_prompt_catalog()
+    _, catalog_hash = load_prompt_catalog("boat-lake")
     assert boat.creative_authority == CreativeAuthority(
         "prompt_family", "boat", f"sha256:{catalog_hash}",
     )
@@ -187,7 +246,7 @@ def test_silhouette_stills_do_not_reversion_unrelated_prompt_families():
     assert still["families"]["silhouette"]["method"] == "t2i"
     assert still["families"]["silhouette"]["provider"] == "flux-image"
     profiles, _ = load_engine_registry()
-    for slug in ("boat-lake", "coffee-tok", "truck-scenic"):
+    for slug in ("coffee-tok", "truck-scenic"):
         assert profiles[slug].executor_version == f"sha256:{shared_hash}"
     assert profiles["silhouette-truck"].executor_version == f"sha256:{still_hash}"
 

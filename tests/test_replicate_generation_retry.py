@@ -1,10 +1,9 @@
-"""Replicate video generation survives transient provider faults without extra spend.
+"""Exercise the existing bounded Replicate create and poll retries.
 
-Each scenario replays a failure observed in production on 2026-09-23/24 (see
-events.md). The invariants: a fault that proves no prediction was created, or
-that hits the poll of an existing prediction, is retried; a fault that may
-already have created a paid prediction is never resubmitted; account-level
-refusals (402) fail immediately.
+Create requests retry connection failures and HTTP 429/500/503; retrying a
+500/503 can create a second paid prediction. Poll retries keep the accepted
+prediction id. Ambiguous submission read/write failures and 502/504 do not
+resubmit, and account-level refusals (402) fail immediately.
 """
 
 import json
@@ -75,7 +74,8 @@ def fast_clock(monkeypatch):
 
 async def run(script):
     entry = {}
-    params = {"model_id": MODEL, "entry": entry, "duration": 6, "resolution": "1080p"}
+    params = {"model_id": MODEL, "entry": entry, "duration": 6, "resolution": "1080p",
+              "job_id": "test-job-1", "cost_usd": 0.28}
     async with httpx.AsyncClient(transport=httpx.MockTransport(script.handler)) as client:
         return await replicate.generate("a truck on a ridge road", params, client), entry
 
@@ -169,6 +169,97 @@ async def test_interrupted_prediction_is_resubmitted_once():
     assert again.count("POST", "predictions") == 2
 
 
+async def test_interrupted_resubmission_is_metered(monkeypatch):
+    """A PA resubmission creates a second billable prediction and is reserved
+    against the daily generation meter under its own idempotent debit id. The
+    first submission is the caller's reservation, so only submission 1 debits."""
+    from services import generation_budget
+
+    debits = []
+
+    def fake_debit(path, amount, debit_id, now=None):
+        debits.append((amount, debit_id))
+        return True
+
+    monkeypatch.setattr(generation_budget, "debit_generation_spend_at", fake_debit)
+    interrupted = status("failed", error="Prediction interrupted; please retry (code: PA)")
+    script = Script(creates=[created("p1"), created("p2")], polls=[interrupted, done()])
+    url, entry = await run(script)
+    assert url == VIDEO and entry["provider_request_id"] == "p2"
+    assert debits == [(0.28, "test-job-1:pa1")]
+
+
+async def test_ui_pa_resubmissions_are_scoped_per_index(monkeypatch, tmp_path):
+    """Two indices of one UI job that both hit a Replicate "interrupted
+    (code: PA)" resubmission must each debit their own id. The operator-UI
+    route spawns one generate_one per index with a shared job id, so the PA
+    debit id must be scoped per index — two real paid predictions, two debits."""
+    from services import generation_budget
+
+    debits = []
+
+    def fake_debit(path, amount, debit_id, now=None):
+        debits.append(debit_id)
+        return True
+
+    monkeypatch.setattr(generation_budget, "debit_generation_spend_at", fake_debit)
+
+    pred_ids = iter(["p0a", "p0b", "p1a", "p1b"])
+
+    async def fake_start(client, headers, model_id, input_params, **budget):
+        return next(pred_ids)
+
+    outcomes = iter([
+        ("failed", "Prediction interrupted; please retry (code: PA)"),
+        ("succeeded", ["https://x.test/out0.mp4"]),
+        ("failed", "Prediction interrupted; please retry (code: PA)"),
+        ("succeeded", ["https://x.test/out1.mp4"]),
+    ])
+
+    async def fake_await(client, headers, pred_id, *, remaining_seconds=None):
+        return next(outcomes)
+
+    monkeypatch.setattr(replicate, "_start_prediction", fake_start)
+    monkeypatch.setattr(replicate, "_await_prediction", fake_await)
+
+    async def fake_download(client, url, dest):
+        dest.write_bytes(b"x")
+
+    monkeypatch.setattr(base, "download_media", fake_download)
+
+    job_id = "ui-job-1"
+    jobs = {job_id: {"videos": [
+        {"index": 0, "status": "queued"},
+        {"index": 1, "status": "queued"},
+    ]}}
+
+    for index in (0, 1):
+        await base.generate_one(
+            job_id, index, "hailuo", "a truck on a ridge road",
+            "16:9", "720p", 6, None, jobs, output_dir=tmp_path, url_prefix="",
+            cost_usd=0.28,
+        )
+
+    assert debits == ["ui-job-1#0:pa1", "ui-job-1#1:pa1"]
+
+
+async def test_interrupted_resubmission_is_refused_when_budget_exhausted(monkeypatch):
+    """A PA resubmission that cannot reserve spend must not submit the second
+    prediction — the daily budget is a hard stop on new billable work."""
+    from services import generation_budget
+
+    def fake_debit(path, amount, debit_id, now=None):
+        return False
+
+    monkeypatch.setattr(generation_budget, "debit_generation_spend_at", fake_debit)
+    interrupted = status("failed", error="Prediction interrupted; please retry (code: PA)")
+    script = Script(creates=[created("p1"), created("p2")], polls=[interrupted, done()])
+    with pytest.raises(RuntimeError, match="generation_daily_budget_reached"):
+        await run(script)
+    # The second (billable) submission never reached Replicate.
+    assert script.count("POST", "predictions") == 1
+
+
 async def test_provider_side_failure_is_not_resubmitted():
     script = Script(creates=[created()], polls=[status("failed", error="Moderation check failed")])
     with pytest.raises(RuntimeError, match="Replicate failed: Moderation"):
@@ -198,7 +289,7 @@ async def test_persistent_poll_outage_is_bounded_and_cancels():
     ('Replicate start failed: {"detail":"Internal server error","status":503}', "provider_5xx"),
     ("Replicate generation timed out after 600s (prediction abc)", "prediction_timeout"),
     ("Replicate failed: Prediction interrupted; please retry (code: PA)", "prediction_interrupted"),
-    ("Replicate failed: Warning: Moderation check failed: Error code: 401", "moderation"),
+    ("Replicate failed: Warning: Moderation check failed: Error code: 401", "provider_auth"),
     ("ReadError('')", "transport"),
     ("ConnectTimeout('')", "transport"),
     ("something new", "other"),

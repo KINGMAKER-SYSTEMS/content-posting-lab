@@ -1,8 +1,10 @@
+import hashlib
 import logging
 import os
 import subprocess
 import time
 from contextlib import asynccontextmanager
+from functools import lru_cache
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -10,6 +12,8 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.datastructures import Headers, QueryParams
+from starlette.staticfiles import NotModifiedResponse
 import uvicorn
 
 import debug_logger
@@ -17,7 +21,8 @@ from project_manager import PROJECTS_DIR, ensure_default_project
 from providers import PROVIDERS
 from providers.base import API_KEYS
 from routers.control_plane import router as control_plane_router
-from routers.post_renders import router as post_renders_router, start_workers as start_post_render_workers
+from routers.control_plane import generation_budget_status
+from routers.post_renders import router as post_renders_router, start_workers as start_post_render_workers, readiness as post_render_readiness
 from routers.control_plane_dossier import router as control_plane_dossier_router
 from routers.control_plane_recipes import router as control_plane_recipes_router
 from routers.control_plane_source_libraries import (
@@ -120,6 +125,16 @@ async def lifespan(app: FastAPI):
     # Initialize structured logging before anything else
     debug_logger.setup_logging()
 
+    # main.py runs one process, and imports cannot start before this sweep.
+    # Hard-killed imports skip finally; their private scratch copies are stale.
+    # Keep this before imports, not in individual workers or request handlers.
+    try:
+        from scraper.frame_extractor import sweep_private_cookie_jars
+        sweep_private_cookie_jars()
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(f"cookie-jar sweep failed: {e}")
+
     Path("output").mkdir(parents=True, exist_ok=True)
     Path("caption_output").mkdir(parents=True, exist_ok=True)
     Path("burn_output").mkdir(parents=True, exist_ok=True)
@@ -193,8 +208,11 @@ async def lifespan(app: FastAPI):
         log.error("sounds bot: failed (%s)", e)
 
     post_render_jobs = start_post_render_workers()
+    from routers.control_plane import start_compaction_scheduler
+    start_compaction_scheduler()
     yield
-    from routers.control_plane import shutdown_dossier_generation
+    from routers.control_plane import shutdown_dossier_generation, stop_compaction_scheduler
+    stop_compaction_scheduler()
     await shutdown_dossier_generation()
     if post_render_jobs is not None:
         post_render_jobs.stop()
@@ -328,11 +346,20 @@ async def health_check():
     ffmpeg_ok = _check_ffmpeg()
     ytdlp_ok = _check_ytdlp()
     providers = _provider_status()
+    budget_status = generation_budget_status()
     return {
         "status": "ok" if ffmpeg_ok and ytdlp_ok else "degraded",
         "ffmpeg": ffmpeg_ok,
         "ytdlp": ytdlp_ok,
         "providers": providers,
+        # This route is deliberately unauthenticated. Keep only the integrity
+        # signal public; exact spend and configured limits are omitted from this
+        # anonymous response.
+        "generation_budget": {
+            "corrupt": bool(budget_status.get("corrupt", True))
+            if isinstance(budget_status, dict)
+            else True
+        },
         "notion_pages": bool(
             os.getenv("NOTION_API_KEY") and os.getenv("NOTION_PAGES_DB")
         ),
@@ -355,6 +382,17 @@ async def health_check():
     }
 
 
+@app.get("/api/ready")
+async def ready_check():
+    """Readiness is separate from liveness: /api/health always answers 200 when
+    the process is up, but /api/ready fails non-2xx when a configured worker
+    lane did not start or has no live worker."""
+    ready, detail = await post_render_readiness()
+    if not ready:
+        return JSONResponse(status_code=503, content={"status": "unavailable", **detail})
+    return {"status": "ok", **detail}
+
+
 class SafeStaticFiles(StaticFiles):
     """StaticFiles that answers 404, not 500, for a NUL byte in the path."""
 
@@ -364,7 +402,38 @@ class SafeStaticFiles(StaticFiles):
         return await super().get_response(path, scope)
 
 
-app.mount("/fonts", SafeStaticFiles(directory="fonts", check_dir=False), name="fonts")
+class FontStaticFiles(SafeStaticFiles):
+    """Serve font MIME types and cache validators from the installed file bytes."""
+
+    MEDIA_TYPES = {".ttf": "font/ttf", ".otf": "font/otf", ".woff": "font/woff", ".woff2": "font/woff2"}
+
+    @staticmethod
+    @lru_cache(maxsize=128)
+    def _digest(full_path: str, file_identity: tuple) -> str:
+        sha = hashlib.sha256()
+        with open(full_path, "rb") as handle:
+            for chunk in iter(lambda: handle.read(1 << 16), b""):
+                sha.update(chunk)
+        return sha.hexdigest()
+
+    def file_response(self, full_path, stat_result, scope, status_code: int = 200):
+        file_identity = (stat_result.st_dev, stat_result.st_ino, stat_result.st_size,
+                         stat_result.st_mtime_ns, stat_result.st_ctime_ns)
+        digest = self._digest(str(full_path), file_identity)
+        pinned = QueryParams(scope.get("query_string", b"")).get("v", "")
+        immutable = len(pinned) >= 8 and digest.startswith(pinned.lower())
+        media_type = self.MEDIA_TYPES.get(Path(str(full_path)).suffix.lower())
+        response = FileResponse(full_path, status_code=status_code, stat_result=stat_result, media_type=media_type)
+        response.headers["etag"] = f'"{digest}"'
+        response.headers["cache-control"] = (
+            "public, max-age=31536000, immutable" if immutable else "public, max-age=86400"
+        )
+        if self.is_not_modified(response.headers, Headers(scope=scope)):
+            return NotModifiedResponse(response.headers)
+        return response
+
+
+app.mount("/fonts", FontStaticFiles(directory="fonts", check_dir=False), name="fonts")
 # AgenticBuilderNews: rendered assets + the workspace SPA
 app.mount(
     "/agenticnews-assets",

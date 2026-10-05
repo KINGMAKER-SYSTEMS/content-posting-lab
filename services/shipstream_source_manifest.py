@@ -11,13 +11,15 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import re
 from dataclasses import dataclass
 from typing import Any, Callable
-from urllib.parse import quote, unquote, urlparse
+from urllib.parse import quote, unquote, urlparse, urlsplit
 
 import httpx
 
+from services.config_errors import ConfigError
 from services.source_dna_registry import (
     SourceDnaLibrary,
     SourceDnaError,
@@ -25,7 +27,9 @@ from services.source_dna_registry import (
 )
 
 
-SHIPSTREAM_ORIGIN = "https://shipstream.risingtidesviral.com"
+# The vault origin comes only from the environment. There is no fallback: an
+# unset or malformed value raises before any vault URL is trusted or fetched.
+SHIPSTREAM_VAULT_ORIGIN_ENV = "SHIPSTREAM_VAULT_ORIGIN"
 MANIFEST_SCHEMA = "shipstream.source-manifest.v1"
 HANDLE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -54,6 +58,26 @@ class ShipStreamSourceUnavailable(ShipStreamSourceError):
 
 class ShipStreamApprovedCutsError(ShipStreamSourceError):
     pass
+
+
+class ShipStreamNotConfigured(ShipStreamSourceUnavailable, ConfigError):
+    """Callers already treat an unavailable vault as fail-closed."""
+
+
+def shipstream_origin() -> str:
+    """Return the configured vault origin, or raise before any network call."""
+    parsed = urlsplit(os.environ.get(SHIPSTREAM_VAULT_ORIGIN_ENV, "").strip())
+    if (
+        parsed.scheme != "https"
+        or not parsed.hostname
+        or parsed.username
+        or parsed.password
+        or parsed.path not in {"", "/"}
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ShipStreamNotConfigured("ShipStream not configured")
+    return f"https://{parsed.netloc.lower()}"
 
 
 @dataclass(frozen=True)
@@ -100,6 +124,11 @@ def _https(value: Any) -> bool:
     return parsed.scheme == "https" and bool(parsed.netloc) and not parsed.username and not parsed.password
 
 
+def _same_page_handle(left: Any, right: Any) -> bool:
+    """Compare the display identity without treating it as an R2 path."""
+    return isinstance(left, str) and isinstance(right, str) and left.lower() == right.lower()
+
+
 def _vault_handle(master_pages: dict[str, Any]) -> str:
     handle = master_pages.get("handle")
     vault_url = master_pages.get("vaultUrl")
@@ -107,6 +136,7 @@ def _vault_handle(master_pages: dict[str, Any]) -> str:
         raise ShipStreamSourceError("ShipStream page handle is invalid")
     if not isinstance(vault_url, str):
         raise ShipStreamSourceError("ShipStream vault URL is missing")
+    vault_netloc = urlsplit(shipstream_origin()).netloc
     parsed = urlparse(vault_url)
     try:
         path_handle = unquote(parsed.path.removeprefix("/vault/").rstrip("/"))
@@ -114,20 +144,27 @@ def _vault_handle(master_pages: dict[str, Any]) -> str:
         raise ShipStreamSourceError("ShipStream vault URL is invalid") from error
     if (
         parsed.scheme != "https"
-        or parsed.netloc != "shipstream.risingtidesviral.com"
+        or parsed.netloc != vault_netloc
         or not parsed.path.startswith("/vault/")
         or parsed.params
         or parsed.query
         or parsed.fragment
-        or path_handle.lower() != handle.lower()
+        or not _same_page_handle(path_handle, handle)
     ):
         raise ShipStreamSourceError("ShipStream vault URL does not match the page")
     return handle
 
 
+def _vault_storage_handle(master_pages: dict[str, Any]) -> str:
+    """Return the exact R2 path segment selected by Master Pages' vault URL."""
+    _vault_handle(master_pages)  # Validate origin, path shape and page identity first.
+    parsed = urlparse(master_pages["vaultUrl"])
+    return unquote(parsed.path.removeprefix("/vault/").rstrip("/"))
+
+
 def source_manifest_url(handle: str) -> str:
     key = quote(f"vault/{handle}/source-manifest.json", safe="")
-    return f"{SHIPSTREAM_ORIGIN}/assets/{key}"
+    return f"{shipstream_origin()}/assets/{key}"
 
 
 def _fetch_manifest(url: str) -> bytes:
@@ -203,6 +240,7 @@ def _approved_cut_library(
     source_library: SourceDnaLibrary,
     *,
     handle: str,
+    storage_handle: str | None = None,
 ) -> ShipStreamApprovedCutLibrary | None:
     rows = value.get("cuts")
     if not isinstance(rows, list) or len(rows) > MAX_CUTS:
@@ -241,7 +279,7 @@ def _approved_cut_library(
             or not SHA256.fullmatch(sha256)
             or sha256 in hashes
             or sha256 in source_by_sha
-            or storage_key != f"vault/{handle}/pool/{sha256}.mp4"
+            or storage_key != f"vault/{storage_handle or handle}/pool/{sha256}.mp4"
             or storage_key in storage_keys
             or not isinstance(parent_sha256, str)
             or parent_sha256 not in source_by_sha
@@ -359,7 +397,7 @@ def _approved_cut_library(
     )
 
 
-def _master_from_page_master(row: Any, handle: str) -> dict[str, Any]:
+def _master_from_page_master(row: Any, handle: str, storage_handle: str | None = None) -> dict[str, Any]:
     if not isinstance(row, dict):
         raise ShipStreamSourceError("ShipStream page master is invalid")
     sha256 = row.get("sha256")
@@ -371,7 +409,7 @@ def _master_from_page_master(row: Any, handle: str) -> dict[str, Any]:
     if (
         not isinstance(sha256, str)
         or not SHA256.fullmatch(sha256)
-        or storage_key != f"vault/{handle}/masters/{sha256}.mp4"
+        or storage_key != f"vault/{storage_handle or handle}/masters/{sha256}.mp4"
         or isinstance(byte_count, bool)
         or not isinstance(byte_count, int)
         or byte_count < 1
@@ -420,14 +458,16 @@ def _master_from_page_master(row: Any, handle: str) -> dict[str, Any]:
         # source-floor and cross-page exclusion checks use original time.
         "sourceOffsetMs": source_offset_ms,
         "provenance": {
-            "sourceUrl": source_url or f"{SHIPSTREAM_ORIGIN}/assets/{quote(storage_key, safe='')}",
+            "sourceUrl": source_url or f"{shipstream_origin()}/assets/{quote(storage_key, safe='')}",
             "acquiredAt": registered_at,
             "authority": "ShipStream source-manifest.v1 exact page master",
         },
     }
 
 
-def _master_from_historical_cut(row: Any, handle: str, notion_page_id: str) -> dict[str, Any]:
+def _master_from_historical_cut(
+    row: Any, handle: str, notion_page_id: str, storage_handle: str | None = None,
+) -> dict[str, Any]:
     if not isinstance(row, dict):
         raise ShipStreamSourceError("ShipStream historical source is invalid")
     sha256 = row.get("sha256")
@@ -437,11 +477,11 @@ def _master_from_historical_cut(row: Any, handle: str, notion_page_id: str) -> d
     uploaded_at = row.get("uploadedAt")
     if (
         row.get("type") != "historical_posted_cut"
-        or row.get("pageHandle") != handle
+        or not _same_page_handle(row.get("pageHandle"), handle)
         or row.get("notionPageId") != notion_page_id
         or not isinstance(sha256, str)
         or not SHA256.fullmatch(sha256)
-        or storage_key != f"vault/{handle}/pool/{sha256}.mp4"
+        or storage_key != f"vault/{storage_handle or handle}/pool/{sha256}.mp4"
         or isinstance(byte_count, bool)
         or not isinstance(byte_count, int)
         or byte_count < 1
@@ -459,7 +499,7 @@ def _master_from_historical_cut(row: Any, handle: str, notion_page_id: str) -> d
         "durationMs": _milliseconds(media.get("durationSeconds"), "ShipStream historical source duration"),
         "sourceOffsetMs": 0,
         "provenance": {
-            "sourceUrl": f"{SHIPSTREAM_ORIGIN}/assets/{quote(storage_key, safe='')}",
+            "sourceUrl": f"{shipstream_origin()}/assets/{quote(storage_key, safe='')}",
             "acquiredAt": uploaded_at,
             "authority": (
                 "ShipStream source-manifest.v1 page-bound historical posted cut; "
@@ -478,6 +518,7 @@ def parse_shipstream_source_manifest(
     expected_library_id: str | None = None,
 ) -> SourceDnaLibrary:
     handle = _vault_handle(master_pages)
+    storage_handle = _vault_storage_handle(master_pages)
     if not raw or len(raw) > MAX_MANIFEST_BYTES:
         raise ShipStreamSourceError("ShipStream source manifest is empty or too large")
     try:
@@ -488,6 +529,8 @@ def parse_shipstream_source_manifest(
     authority = value.get("sourceAuthority") if isinstance(value, dict) else None
     format_slug = value.get("format") if isinstance(value, dict) else None
     notion_page_id = master_pages.get("notionPageId")
+    if not _nonblank(notion_page_id):
+        raise ShipStreamSourceError("Master Pages Notion page ID is missing")
     exact_page_authority = (
         isinstance(authority, dict)
         and (
@@ -514,14 +557,14 @@ def parse_shipstream_source_manifest(
     if (
         not isinstance(value, dict)
         or value.get("schema") != MANIFEST_SCHEMA
-        or value.get("page") != handle
+        or not _same_page_handle(value.get("page"), handle)
         or not isinstance(notion, dict)
         or not notion_page_matches
         or notion.get("contentNiche") != master_pages.get("contentNiche")
         or notion.get("contentEngine") != master_pages.get("contentEngine")
         or notion.get("serviceMode") != master_pages.get("automationMode")
         or not isinstance(authority, dict)
-        or authority.get("pageHandle") != handle
+        or not _same_page_handle(authority.get("pageHandle"), handle)
         or authority.get("notionPageId") != notion_page_id
         or not exact_page_authority
         or authority.get("replacementEligible") is not True
@@ -531,13 +574,13 @@ def parse_shipstream_source_manifest(
     ):
         raise ShipStreamSourceError("ShipStream source manifest diverges from Master Pages")
     if value.get("master") is not None:
-        masters = [_master_from_page_master(value["master"], handle)]
+        masters = [_master_from_page_master(value["master"], handle, storage_handle)]
     elif authority.get("kind") == "historical_posted_cut_recovery":
         rows = value.get("historicalPostedCuts")
         if not isinstance(rows, list) or not 1 <= len(rows) <= MAX_SOURCES:
             raise ShipStreamSourceError("ShipStream historical source library is empty or too large")
         masters = [
-            _master_from_historical_cut(row, handle, notion_page_id)
+            _master_from_historical_cut(row, handle, notion_page_id, storage_handle)
             for row in rows
         ]
     else:
@@ -616,6 +659,7 @@ def parse_shipstream_source_projection(
             value,
             source_library,
             handle=_vault_handle(master_pages),
+            storage_handle=_vault_storage_handle(master_pages),
         )
     except ShipStreamSourceError as error:
         raise ShipStreamApprovedCutsError(str(error)) from error
@@ -634,7 +678,7 @@ def load_shipstream_source_dna_library(
     expected_library_id: str | None = None,
     fetch_manifest: Callable[[str], bytes] | None = None,
 ) -> SourceDnaLibrary:
-    handle = _vault_handle(master_pages)
+    handle = _vault_storage_handle(master_pages)
     fetch = fetch_manifest or _fetch_manifest
     raw = fetch(source_manifest_url(handle))
     return parse_shipstream_source_manifest(
@@ -654,7 +698,7 @@ def load_shipstream_source_projection(
     expected_library_id: str | None = None,
     fetch_manifest: Callable[[str], bytes] | None = None,
 ) -> ShipStreamSourceProjection:
-    handle = _vault_handle(master_pages)
+    handle = _vault_storage_handle(master_pages)
     fetch = fetch_manifest or _fetch_manifest
     raw = fetch(source_manifest_url(handle))
     try:

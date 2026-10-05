@@ -10,8 +10,8 @@ These tests pin that removal so the router can't silently creep back in:
   * the `routers.gdrive` module no longer exists
   * no route on the app lives under the `/api/drive` prefix
 
-The underlying services.gdrive helper library is *not* removed — it is still
-used as a library and is covered by tests/test_gdrive.py.
+The underlying services.gdrive helper library has since also been removed
+(cruft audit 09-26): it had no remaining callers once the router was cut.
 """
 
 import importlib
@@ -55,9 +55,3 @@ def test_api_drive_status_no_longer_serves_drive_api(sync_client):
     # the catch-all is GET-only, so POST can't be shadowed by it: proves no real
     # /api/drive handler is mounted.
     assert sync_client.post("/api/drive/status").status_code in (404, 405)
-
-
-def test_services_gdrive_still_present():
-    """The Drive helper library stays — only the unreachable router was cut."""
-    mod = importlib.import_module("services.gdrive")
-    assert hasattr(mod, "is_configured")

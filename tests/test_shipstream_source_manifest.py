@@ -30,7 +30,7 @@ def _intent():
         handle=HANDLE,
         content_niche="POV — Night Core",
         content_engine="sourced_video",
-        vault_url=f"https://shipstream.risingtidesviral.com/vault/{HANDLE}",
+        vault_url=f"https://shipstream.test/vault/{HANDLE}",
     )
     intent["notionPageId"] = NOTION_PAGE_ID
     intent["automationMode"] = "Operator"
@@ -384,6 +384,48 @@ def test_content_lab_import_authority_is_an_exact_page_binding():
         )
 
 
+def test_case_preserved_page_handle_reads_master_at_exact_vault_url_storage_path():
+    intent, _ = _intent()
+    intent["handle"] = "Freddy.2am"
+    intent["vaultUrl"] = "https://shipstream.test/vault/freddy.2am"
+    sha256 = "c" * 64
+    manifest = _historical_manifest()
+    # Older writer versions persisted account identity in lowercase while
+    # the Master Pages display handle was subsequently title-cased.
+    manifest["page"] = "freddy.2am"
+    manifest["sourceAuthority"] = {
+        "kind": "content_lab_page_source_import",
+        "pageId": PAGE_ID,
+        "pageHandle": "freddy.2am",
+        "notionPageId": NOTION_PAGE_ID,
+        "replacementEligible": True,
+    }
+    manifest["master"] = {
+        "sha256": sha256,
+        "storageKey": f"vault/freddy.2am/masters/{sha256}.mp4",
+        "bytes": 20_000_000,
+        "media": {"durationSeconds": 7.5},
+        "originSourceUrl": "https://cdn.example/source.mp4",
+        "originWindowSeconds": [0.0, 7.5],
+        "registeredAt": "2026-10-03T12:00:00Z",
+    }
+    manifest["historicalPostedCuts"] = []
+    calls = []
+
+    library = load_shipstream_source_dna_library(
+        intent,
+        page_id=PAGE_ID,
+        expected_format=FORMAT,
+        fetch_manifest=lambda url: (calls.append(url), _raw(manifest))[1],
+    )
+
+    assert calls == [source_manifest_url("freddy.2am")]
+    assert library.masters[0].storage_key == manifest["master"]["storageKey"]
+    manifest["master"]["storageKey"] = f"vault/Freddy.2am/masters/{sha256}.mp4"
+    with pytest.raises(ShipStreamSourceError, match="identity is invalid"):
+        parse_shipstream_source_manifest(_raw(manifest), intent, page_id=PAGE_ID)
+
+
 @pytest.mark.parametrize(
     ("path", "value"),
     [
@@ -406,6 +448,30 @@ def test_page_and_master_pages_drift_fails_closed(path, value):
         parse_shipstream_source_manifest(
             _raw(manifest), intent, page_id=PAGE_ID,
             expected_format=FORMAT,
+        )
+
+
+@pytest.mark.parametrize("notion_page_id", [None, "", " "])
+@pytest.mark.parametrize("omit_manifest_ids", [False, True])
+def test_missing_master_pages_notion_id_cannot_establish_page_authority(
+    notion_page_id, omit_manifest_ids,
+):
+    intent, _ = _intent()
+    intent["notionPageId"] = notion_page_id
+    manifest = _historical_manifest()
+    manifest["notion"]["pageId"] = notion_page_id
+    manifest["sourceAuthority"]["notionPageId"] = notion_page_id
+    for row in manifest["historicalPostedCuts"]:
+        row["notionPageId"] = notion_page_id
+    if omit_manifest_ids:
+        manifest["notion"].pop("pageId")
+        manifest["sourceAuthority"].pop("notionPageId")
+        for row in manifest["historicalPostedCuts"]:
+            row.pop("notionPageId")
+
+    with pytest.raises(ShipStreamSourceError, match="Notion page ID is missing"):
+        parse_shipstream_source_manifest(
+            _raw(manifest), intent, page_id=PAGE_ID, expected_format=FORMAT,
         )
 
 

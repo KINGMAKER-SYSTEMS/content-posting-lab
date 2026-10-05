@@ -14,6 +14,17 @@ fonts, unknown fields, incomplete styles, or clipped output. Verification:
 40 passed. No deployment, video mutation, phone action, scheduling, or post.
 _________________________________________________________________________________
 
+time: [16:30 EDT] [04-10-26]
+agent: [Codex desktop] [gpt-6.1]
+worktree: [codex/miniapp-agent-authz-20261004-r2] [/tmp/content-posting-lab-pr217-envdoc]
+type: [docs]: Document Mini App agent key requirement
+area: [writing] [backend]
+
+Clarified that `MINIAPP_AGENT_KEY` is required to enable Mini App agent routes,
+which return 503 when blank or unset. Added no secret value. Documentation-only
+PR #217 update; no merge or deployment performed.
+_________________________________________________________________________________
+
 time: [17:00 EDT] [24-09-26]
 agent: [Codex desktop] [gpt-6-astra]
 worktree: [fix/source-master-loop-20260924] [/Users/ecfromthedc/dev/wt/source-master-loop]
@@ -126,6 +137,19 @@ catalog-to-executor path. Focused verification: 107 passed. No deploy,
 generation, bucket write, scheduler, phone, slot, lease, or post action.
 _________________________________________________________________________________
 
+time: [20:16] [09-01-26]
+agent: [codex] [gpt-5] [review_sweep]
+worktree: [codex/review-notion-page-id-20260901]
+type: [bug report]: Missing exact Notion authority on ShipStream source manifests
+area: [review]: Content Lab source projection
+
+Addressed the Codex finding on PR #93. Source projection now refuses a missing
+or blank Master Pages Notion page id before comparing any manifest fields, so
+two omitted values cannot masquerade as an exact page binding. The focused
+test covers null, empty, and whitespace-only authority. No generation, bucket
+write, scheduler, slot, lease, device, phone, or post action.
+_________________________________________________________________________________
+
 _________________________________________________________________________________
 
 time: [20:48] [01-09-26]
@@ -221,6 +245,18 @@ ________________________________________________________________________________
 
 _________________________________________________________________________________
 
+time: [22:27] [09-01-26]
+agent: [codex] [gpt-5] [review_sweep]
+worktree: [codex/review-notion-page-id-20260901]
+type: [review]: Rebase onto approved-cut projection
+area: [backend]: ShipStream manifest authority contracts
+
+Rebased the Notion page-identity fix onto current main while preserving the
+newer approved-cut projection, page-source intake, and artifact-origin
+contracts plus every append-only ledger entry. The source-master authority
+check remains separate from the approved derivative catalog. No generation,
+bucket write, scheduler, slot, lease, device, phone, deployment, or post action.
+_________________________________________________________________________________
 time: [16:19] [02-09-26]
 agent: [codex desktop] [gpt-5.6-sol]
 worktree: [fix/roster-completeness-proof-20260902] /private/tmp/content-lab-roster.L7umT8
@@ -989,3 +1025,521 @@ id format. The mint-alias and
 auto-create 409s no longer echo the alias or a page's recorded alias. No
 deploy was performed.
 
+_________________________________________________________________________________
+time: [04:56 EDT] [26-09-26]
+agent: [Claude Code] [claude-opus-5-5]
+worktree: [sec/lab-no-prod-defaults] [/Users/ecfromthedc/dev/wt/lab-no-prod-defaults]
+type: [security]: no Lab code defaults to a production URL
+area: [backend] [security] [testing]
+
+During a review a local probe ran the sound-sync handler un-stubbed; its
+hardcoded Campaign Hub default made one unauthenticated read-only GET to
+production /api/campaigns (404, nothing written). CAMPAIGN_HUB_URL and the new
+SHIPSTREAM_VAULT_ORIGIN are now required: unset or malformed, the Hub and
+ShipStream vault code raise ConfigError before building a request, and
+POST /api/telegram/sounds/sync and /api/slideshow/sounds/prepare answer 503
+"Campaign Hub not configured". A ShipStream vault that is not configured reads
+as "unavailable", the state an unreachable vault already produced. The
+.env.example template no longer carries production origins, and a usage
+docstring no longer names the Supabase project. tests/test_no_production_host_guard.py
+fails on any production hostname in app Python, and on production URLs in
+other tracked files outside a justified docs allowlist. A conftest audit hook
+refuses and fails any test that looks up or connects to a non-loopback host. Its first
+full run found two live leaks in the suite: every TestClient lifespan started
+the ABN factory, which scraped HN, GitHub, Reddit and lobste.rs, and the
+source-execution tests fetched page manifests from the production ShipStream
+vault. Only TestClient lifespans now get an idle factory start, and those
+tests answer manifest reads as an unreachable vault.
+Production needs CAMPAIGN_HUB_URL and SHIPSTREAM_VAULT_ORIGIN set before this
+deploys; neither was set on 2026-09-26. No deploy was performed.
+
+
+_________________________________________________________________________________
+time: [10:00pm] [09-26-26]
+agent: [Codex desktop]
+worktree: [codex/restore-boat-minimax-five-crops]
+type: [bug report]
+area: [backend]
+Restored boat-lake to the operator-requested MiniMax/Hailuo five-way crop using six existing boat-bucket prompts verbatim. Removed the fixed Wan boat-anchor requirement through a boat-only catalog overlay; unrelated catalog/provider versions remain unchanged. Both active boat pages must adopt the advertised selection and existing usable Minimax inventory.
+
+_________________________________________________________________________________
+time: [05:14 EDT] [26-09-27]
+agent: [Claude Code] [claude-sonnet-5]
+worktree: [test/shipstream-pin-scope] [/Users/ecfromthedc/dev/wt/lab-shipstream-pin-scope]
+type: [test]: narrow the ShipStream identity pin off the whole-catalog digest
+area: [testing]
+
+tests/test_shipstream_identity_pin.py::test_configured_origin_derives_the_pre_pr_identities
+has been red on main since PR #183 (boat Minimax format-contract change,
+merged at 8ad9ab3): the only values that moved were `.historical.catalogVersion`
+and `.master.catalogVersion`, the digest of the ENTIRE Dossier ingredient
+catalog (`catalog["catalogVersion"]`), which legitimately changes whenever
+ANY format contract changes. The pin's actual job — guarding the ShipStream
+identity FORMULA per #180 — is unaffected: libraryId, librarySha256,
+approved-cut ids/hashes, sourceUrls, manifestUrl, and the per-selection
+`selectionCatalogVersion` (what published policies store as
+production.catalog_version) were all unchanged. The test no longer pins the
+whole-catalog `catalogVersion` value; it still asserts that value is a
+well-formed sha256 digest, and keeps pinning everything else byte-for-byte.
+Mutation-proofed: still goes red on a change to the sourceUrl formula or
+library-id derivation in services/shipstream_source_manifest.py; stays green
+when an unrelated format's contract entry changes. Test-only change, no
+production code touched, no deploy.
+
+_________________________________________________________________________________
+time: [05:24 EDT] [26-09-27]
+agent: [Claude Code] [claude-sonnet-5]
+worktree: [test/shipstream-pin-scope] [/Users/ecfromthedc/dev/wt/lab-shipstream-pin-scope]
+type: [test]: pin ShipStream vault-origin case normalisation
+area: [testing]
+
+Follow-up to the catalogVersion-scope fix above, same PR (#186), flagged by
+review: shipstream_origin() in services/shipstream_source_manifest.py
+lowercases the configured host before it enters any identity, but nothing
+pinned that. A new test sets SHIPSTREAM_VAULT_ORIGIN to a mixed-case variant
+of the synthetic ORIGIN and asserts libraryId, librarySha256, sourceUrls,
+manifestUrl and selectionCatalogVersion come out byte-identical to the
+lowercase pin. Mutation-proofed: removing the `.lower()` call turns the new
+test red (the mixed-case host leaks into the identities); restoring it goes
+green. Test-only change, no production code touched, no deploy.
+
+_________________________________________________________________________________
+time: [04:59 EDT] [26-09-26]
+agent: [Claude Code] [claude-opus-5-5]
+worktree: [claude/lab-moderation-retry] [/Users/ecfromthedc/dev/seats/LAB-MODRETRY]
+type: [feature-request] [supply self-healing]: Bounded varied retry of a confirmed moderation refusal
+area: [backend] [testing]
+
+A confirmed Replicate moderation refusal (E005) on a planned generation call
+is now retried at most twice, each time with the next fixed deterministic
+prompt rewording (`services/moderation_retry.py`), on the same engine, model
+and safety settings. Retries draw on a per-page UTC-day budget
+(`CONTENT_LAB_MODERATION_RETRY_DAILY_BUDGET`, default 6) counted from durable
+`generationAttempts` rows; first attempts never consume it. Each retry has its
+own prediction checkpoint, records its estimated cost, and a retried clip
+records the sent prompt hash plus the plan's base hash and variant id, which
+restart recovery accepts only from a succeeded attempt row. Credit (402),
+provider auth (401/403, new `provider_auth` class) and all other classes still
+fail fast with no retry; the job status contract is unchanged. New tests in
+`tests/test_generation_moderation_retry.py` fail on main and pass here. No
+deployment was performed.
+
+_________________________________________________________________________________
+time: [08:10 EDT] [26-09-26]
+agent: [Claude Code] [claude-opus-5-5]
+worktree: [claude/lab-moderation-retry] [/Users/ecfromthedc/dev/seats/LAB-MODRETRY]
+type: [bug-fix] [supply self-healing]: #181 review round 2, narrower retry trigger and pinned spend guards
+area: [backend] [testing]
+
+Review defects on #181 fixed. The retry trigger is now exactly E005
+(`moderation_retry.retry_blocked`): moderation-class text without E005, or with
+an embedded HTTP status (a 429/5xx/402 from the provider's moderation
+dependency, failed-prediction logs mentioning "safety"), stays a terminal
+refusal named `moderation_not_e005_not_retried`. "Error code: 401/403" (the
+auth failure observed inside the moderation check on 2026-09-25) is now
+classed `provider_auth` with errorDetail `HTTP 401`, and fails fast; the
+errorClass/errorDetail charsets are unchanged. Rewordings no longer add people
+to people-free prompts (variant ids bumped to `family-safe.v2` and
+`backlit-shapes.v2`), and the cost table is pinned to the catalog. New tests
+pin the durable reservation before the paid retry, in-flight retries counting
+against the page budget, and the prediction-id + "Replicate failed:" guard;
+each is killed by its mutation. No deployment was performed.
+
+_________________________________________________________________________________
+time: [08:57 EDT] [26-09-26]
+agent: [Claude Code] [claude-opus-5-5]
+worktree: [claude/lab-moderation-retry] [/Users/ecfromthedc/dev/seats/LAB-MODRETRY]
+type: [bug-fix] [supply self-healing]: #181 review round 3, negation-aware person gate and wider status guard
+area: [backend] [testing]
+
+The person-wording gate for moderation-retry rewordings matched negations, so
+the scenic, ugc, boat and coffee catalog families ("no people") would have
+received "fully clothed" / silhouette-adult wording on an E005 retry. A person
+term now counts only when no negation (no, without, zero, not any, free of,
+devoid of, never) precedes it within three words of the same clause;
+"figure(s)" and "body/bodies" are no longer person terms. A test composes
+every combination of every catalog family. The embedded-HTTP-status guard
+that blocks a retry even with (E005) is now pinned and also matches
+`Error code 429`, `{'status': 500}`, `status_code=429`, `HTTP 503` and httpx
+`Server error '503 …'`; the real 09-25 E005 message is pinned as retried. By
+lead decision, the moderation model's own 401/403 keeps class `provider_auth`
+with errorDetail `moderation model HTTP 401`/`403`; our own token keeps
+`HTTP 401`/`403`. No deployment was performed.
+
+_________________________________________________________________________________
+time: [09:32 EDT] [26-09-26]
+agent: [Claude Code] [claude-opus-5-5]
+worktree: [claude/lab-moderation-retry] [/Users/ecfromthedc/dev/seats/LAB-MODRETRY]
+type: [bug-fix] [supply self-healing]: #181 review round 4, any 4xx/5xx number blocks an E005 retry
+area: [backend] [testing]
+
+The E005 retry no longer enumerates HTTP-status formats. Any standalone
+4xx/5xx number outside a URL refuses the retry even when (E005) is present,
+which also catches "429 Too Many Requests", urllib "HTTP Error 503", requests
+"429 Client Error", JSON "code": 500, error_code=503 and "RateLimitError 429".
+The real 09-25 E005 message carries no number and stays retried. A test pins
+the clause split of the person gate ("No cars; adults walk at dusk." depicts
+people). No deployment was performed.
+
+_________________________________________________________________________________
+time: [19:52 EDT] [26-09-28]
+agent: [Claude Code] [claude-opus-5-5]
+worktree: [dossier/page-frame] [/Users/ecfromthedc/dev/wt/lab-page-frame]
+type: [feature] [per-page frame]: page picture frame applied at prepared-post render
+area: [backend] [testing]
+
+A page may pick a picture frame: 9:16 (default, full-bleed), 16:9, 1:1, 3:4 or
+4:3. The Control Plane sends `frame` in the slot/render treatment only when it
+is not vertical; "9:16" is accepted as absent and anything else fails closed.
+Prepared-post rendering keeps the delivered 1080x1920 H.264 canvas and, after
+the existing near-9:16 normalization, applies
+`crop=1080:H:0:(1920-H)/2,pad=1080:1920:0:(1920-H)/2:black` (H 608/1080/1440/810)
+before the unchanged caption overlay. Frame is not source treatment: the
+normalized visual treatment, applied-video evidence and render capability
+schema are unchanged, so existing inventory stays reusable and a frame change
+reaches the next prepared post. Recipe registration (v2/v3/v4) and the
+generation decoder accept an optional valid `frame`; recipe bytes round-trip
+unchanged. With no frame the ffmpeg graph and final bytes are identical to
+before. Real-ffmpeg tests on the committed 1080x1920 portrait fixture prove
+black bars and the untouched centred band for every frame. The band's top row
+is rounded down to an even row so every source lands on the chroma grid the
+same way (4:3 is rows 554-1363). On a framed page the caption is drawn in the very middle (position middle,
+offset 0) whatever the slot's caption style places it, so a caption that fits
+the band stays off the bars (a very tall one can still reach onto them); font,
+size, colour and line breaks are unchanged (owner decision 2026-09-28). No
+deployment was performed.
+
+_________________________________________________________________________________
+time: [21:40 EDT] [26-09-30]
+agent: [Claude Code] [claude-opus-5-5]
+worktree: [closeout/varied-recut] [/Users/ecfromthedc/dev/seats/CLOSE-LABRECUT]
+type: [feature] [re-cut variety]: every re-cut uses a new section at a new length; no window is cut twice
+area: [backend] [testing]
+
+Operator rule 2026-09-30: when the Lab re-cuts a master it uses a different
+part of the footage and a different length than the cuts before it, lengths
+5 to 9 s in 0.5 s steps, for every sourced page. `plan_source_cuts` now scores
+every candidate (whole-second start x 0.5 s length): never-cut footage first,
+then a start far from the master's last three starts, then a length unlike the
+last three lengths, then least recently cut footage, then the seeded tiebreak.
+The first cut on a master uses the page's Cut length. Lengths are 5-9 s (the
+Worker's bound stays the maximum) and the delivered clip at the saved speed
+stays inside the same range. `constraints.priority: "low_runway"` and unknown
+constraint keys are accepted; `supportedConstraints` is advertised only with
+`CONTENT_LAB_ADVERTISE_SUPPORTED_CONSTRAINTS`, because the deployed Worker
+rejects unknown capabilities fields. The job ledger now carries when each
+window was cut (archive entries keep `usedAt`/`cutIndex`; older entries count
+as oldest). A window is never cut twice: once every whole-second start x
+length is cut, starts move to half, then quarter and three-quarter seconds
+(at least 250 ms apart, so different first frames at any frame rate above
+4 fps), and a cut repeats the master's last length only when nothing else
+fits. When every window is cut, capability reads 0 and job creation answers
+409 `source_windows_exhausted` (the page needs new footage) instead of
+`master_windows_exhausted`; `source_master_too_short` and
+`source_windows_reserved_by_other_pages` name the other empty plans. A census
+test fails any code
+path that builds source cuts without the planner. No deployment was performed.
+time: [03:04 EDT] [10-04-26]
+agent: [Codex desktop] [gpt-6.1]
+worktree: [codex/public-health-budget-redaction] [/private/tmp/content-posting-lab-health-redaction-20261004]
+type: [bug report]: Public health endpoint exposed exact paid-generation accounting
+area: [backend] [security] [testing]
+
+After PR #210 deployed, an anonymous production GET to `/api/health` exposed
+the exact configured generation budget and reserved spend. The public response
+now preserves only the budget-integrity corruption boolean; exact monetary
+accounting remains on authenticated Control Plane routes. Added a smoke
+regression for both healthy and corrupt ledger states and recorded the
+anonymous-health boundary in this contract. Local pytest is unavailable and
+the app import is blocked by missing `boto3`; hosted checks are required before
+merge. No deployment performed.
+
+_________________________________________________________________________________
+
+time: [03:10 EDT] [10-04-26]
+agent: [Codex desktop] [gpt-6.1]
+worktree: [codex/public-health-budget-redaction] [/private/tmp/content-posting-lab-health-redaction-20261004]
+type: [documentation correction]: Anonymous health data boundary
+area: [backend] [analysis]
+
+Corrected the PR description and source contract: this repository does not
+expose an authenticated exact-budget read endpoint. Public health preserves
+only the corruption signal; no route is claimed for exact accounting reads.
+
+_________________________________________________________________________________
+
+time: [03:11 EDT] [10-04-26]
+agent: [Codex desktop] [gpt-6.1]
+worktree: [codex/public-health-budget-redaction] [/private/tmp/content-posting-lab-health-redaction-20261004]
+type: [documentation correction]: Retract authenticated budget-route claim
+area: [backend] [analysis]
+
+Explicitly retracts the earlier event-log statement that exact monetary
+accounting remains on authenticated Control Plane routes. Repository review
+found no such read endpoint; this PR only redacts the anonymous health route.
+
+_________________________________________________________________________________
+
+time: [03:18 EDT] [10-04-26]
+agent: [Codex desktop] [gpt-6.1]
+worktree: [main]
+type: [gh actions]: Pull Request #211 post-merge verification
+area: [backend] [deployment] [testing]
+
+PR #211 merged as ba958a67e5251a6b255406aa4c327ee74f3c1204 at 03:17 EDT.
+Railway production deployment 6838117246 for that exact merge SHA completed
+success at 03:17:51 EDT. Anonymous GET /api/health returned HTTP 200 with
+generation_budget {corrupt:false}; day, budgetUsd, spentUsd, remainingUsd,
+resetsAt and note were absent. The branch has no CI workflow or check runs;
+local compileall and diff-check passed before merge, but pytest could not run
+because dependencies and disk space were unavailable. No paid generation was
+submitted. This verifies the public response redaction, not paid-generation
+accounting behavior.
+
+_________________________________________________________________________________
+
+_________________________________________________________________________________
+
+time: [14:15 EDT] [04-10-26]
+agent: [Codex desktop] [gpt-6.1]
+worktree: [codex/fix-seekable-frames-dir-safety] [seekable-frames-dir-safety]
+type: [bug report]: Seekable renderer deleted caller-selected frame directories
+area: [backend] [testing]
+
+The seekable HTML renderer previously recursively removed --frames-dir before
+rendering and could erase the working directory or unrelated user files. It
+now refuses populated or symlink frame paths, checks directory identity around
+writes and cleanup, writes frames exclusively, and
+cleans only the files created by this render in caller-owned directories.
+Recursive cleanup is restricted to the renderer's unique managed temporary
+directory. Regression tests cover the current directory and arbitrary populated
+paths, directory replacement, precise caller-directory cleanup, and managed temporary-directory
+cleanup. Failed renders clean only frame files created by that attempt. No
+deployment performed.
+
+_________________________________________________________________________________
+
+_________________________________________________________________________________
+
+time: [14:20 EDT] [04-10-26]
+agent: [Codex desktop] [gpt-6.1]
+worktree: [codex/fix-seekable-frames-dir-safety] [seekable-frames-dir-safety]
+type: [documentation correction]: State seekable frame-path guarantees precisely
+area: [writing] [analysis]
+
+Clarified that explicit --frames-dir paths may be existing empty directories or
+missing paths that the renderer creates. Directory identity is checked before
+writes and before cleanup; each frame path is created exclusively, and cleanup
+unlinks only tracked files whose identity still matches. These checks guard
+ordinary replacement and preexisting-file accidents, not a hostile concurrent
+process running as the same account. Recursive cleanup remains limited to the
+renderer-created unique temporary directory.
+
+_________________________________________________________________________________
+
+_________________________________________________________________________________
+time: [02:22pm] [10-04-26]
+agent: [Codex desktop] [gpt-6.1]
+worktree: [codex/secure-gh-capture-navigation] [/tmp/content-posting-lab-security]
+type: [security]: Restrict GitHub capture navigation and shell inputs
+area: [backend] [testing] [review]
+
+The GitHub capture workflow now accepts only bounded HTTPS github.com repository
+URLs, ignores caller-selected output directories and names, quotes fixed shell
+arguments, and blocks Playwright requests outside the GitHub and fixed asset
+host allowlist. The capture CLI bounds duration and confines new MP4 output to
+the repository without overwriting an existing file. Added six Node regression
+tests for URL, request, duration and filesystem boundaries. `node --test
+tools/gh-capture/target_policy.test.cjs`, syntax checks for both CommonJS files
+and the workflow, and `git diff --check` passed. No deployment performed.
+
+_________________________________________________________________________________
+
+_________________________________________________________________________________
+time: [02:30pm] [10-04-26]
+agent: [Codex desktop] [gpt-6.1]
+worktree: [codex/secure-gh-capture-navigation] [/tmp/content-posting-lab-security]
+type: [security]: Create first-run capture output safely
+area: [backend] [testing] [review]
+
+Independent review found that a clean checkout lacks the fixed footage parent,
+which made capture fail before navigation. Output validation now creates missing
+parent components one at a time under the canonical repository root, rejects
+symlink components and traversal before creation, and still refuses overwrites.
+A regression test covers the missing nested parent. The checkout reproduced the
+absent fixed directory; all seven focused Node tests passed. No deployment
+performed.
+
+_________________________________________________________________________________
+
+_________________________________________________________________________________
+time: [12:40pm PDT] [10-04-26]
+agent: [Claude Code] [claude-opus-5-5] [lead 13 Lab builder]
+worktree: [l13-frame-fit] [/Users/ecfromthedc/dev/seats/L13-lab-fit]
+type: [feature-request]: Captions shrink to fit inside the visible picture
+area: [backend] [testing]
+
+Owner rule 2026-10-04: a typed caption stays inside the visible picture - every
+row of the 1080x1920 canvas on a full-screen page, or the band of rows a framed
+page keeps (16:9 656-1263, 4:3 554-1363, 1:1 420-1499, 3:4 240-1679) - and 44 px
+in from each side (the gate's existing 4% side margin). The style's size is the
+maximum. A caption inside that area is drawn exactly as styled at any size; one
+that would leave it shrinks to the largest size that fits, never below 12 pt
+(30 px). Lines are scaled, not re-wrapped. Only a caption that cannot fit at
+12 pt refuses (CAPTION_OUT_OF_FRAME). CAPTION_LINE_TOO_WIDE and the fixed 80%
+column / full-canvas block checks are gone. The typed quality gate drops its 80%
+width and 45% height caps for "inside the same area"; the legacy untyped gate
+is unchanged. The plan records fitted_font_size_px only when a caption shrank,
+so captions that fit keep byte-identical overlays, plans and hashes. (Lead 13
+ruling, later the same day: no top/bottom inset, so the earlier 4% top/bottom
+inset and its near-edge fallback were removed.)
+Verification on maj: see PR #216 (focused files and full suite, plus an
+11,664-style old-vs-new render comparison). No deployment.
+
+time: [10:14pm] [04-10-26]
+agent: [Codex desktop] [gpt-6]
+worktree: [l13-frame-fit] [/private/tmp/cpl-pr216-contract]
+type: [refactor]: Frame-aware caption render v2 contract
+area: [backend] [testing]
+
+Closed the cross-service PR #216 mismatch with an explicit caption-render/v2
+request/result contract. V2 requires a closed picture_frame enum, binds that
+frame into the strict plan/hash, and returns fitted_font_size_px only when the
+caption shrinks. Both the hosted router and port-8002 burn server expose the
+same v2 behavior. V1 retains its original response shape and returns typed 422
+when a caption requires shrinking. Regression coverage verifies all five
+supported frames, visible-area containment, strict enum/unknown-field behavior,
+plan and PNG hashes, endpoint parity, and v1 compatibility. Focused checks:
+caption contract 70 passed; post-render and quality gate 101 passed. No merge or
+deployment.
+
+time: [16:52 EDT] [04-10-26]
+agent: [Codex desktop] [gpt-6]
+worktree: [l13-frame-fit] [/private/tmp/cpl-pr216-contract]
+type: [testing]: Bind endpoint tests to the bundled caption font fixture
+area: [testing]
+
+The first hosted-style focused run exposed that the global test isolation
+fixture redirects the Burn router font directory to an empty temporary path.
+The new v2 frame-parity cases and v1 compatibility case now explicitly bind
+their existing `font_dir` fixture to the router, matching the port-8002 parity
+test. The focused caption-render, post-render, and burn-quality suites pass
+171 tests with the isolated router client using
+`pytest --noconftest -p no:cacheprovider -p cplcaptiontest_plugin -q
+tests/test_caption_render_contract.py tests/test_post_render.py
+tests/test_burn_quality_gate.py`. The checkout's regular conftest cannot import
+because boto3 is unavailable in its interpreter; tests were run with
+`--noconftest` and the router-only client plugin. No merge or deployment.
+
+time: [05:53pm] [10-04-26]
+agent: [Codex desktop] [gpt-6.1]
+worktree: [l13-frame-fit] [/private/tmp/cpl-pr216-contract]
+type: [refactor]: Build TgCrypto on ARM64 without shipping gcc
+area: [backend] [testing]
+
+The ARM64 production-image build could not compile TgCrypto because gcc was
+missing. The Docker dependency-install layer now installs gcc, installs the
+existing production requirements, and purges gcc and its auto-installed build
+dependencies in the same layer. The root Docker verification contract now
+requires a target-architecture TgCrypto build and confirms gcc is absent from
+the completed image. Validation is in progress; no push, merge, or deployment.
+
+time: [05:55pm] [10-04-26]
+agent: [Codex desktop] [gpt-6.1]
+worktree: [l13-frame-fit] [/private/tmp/cpl-pr216-contract]
+type: [refactor]: Keep TgCrypto build toolchain out of image layers
+area: [backend] [testing]
+
+Adversarial review caught that purging gcc from a later Docker RUN would leave
+its binaries in a lower image layer. Moved gcc installation into the same RUN
+as pip installation and purge, leaving the ffmpeg/tesseract runtime layer
+unchanged. The ARM64 build then exposed a missing `stdint.h`, so libc6-dev is
+also installed and purged in that same RUN. The corrected full image build is
+in progress; no push, merge, or deployment.
+
+time: [06:00pm] [10-04-26]
+agent: [Codex desktop] [gpt-6.1]
+worktree: [l13-frame-fit] [/private/tmp/cpl-pr216-contract]
+type: [testing]: Verify ARM64 TgCrypto image build
+area: [testing]
+
+The corrected full Docker build passed with `--platform linux/arm64`. TgCrypto
+compiled into a CPython 3.11 aarch64 wheel; pip installed all production
+requirements; apt purged gcc, libc6-dev, and their auto-installed toolchain in
+the same RUN layer; and the packaged `import app` smoke check passed. Running
+the resulting image reported `aarch64` and imported the TgCrypto extension.
+Separate image checks confirmed both the `gcc` executable and Debian gcc
+package are absent. `git diff --check` passed. No push, merge, or deployment.
+
+time: [10:05pm] [10-04-26]
+agent: [Codex desktop] [gpt-6]
+worktree: [l13-frame-fit] [/private/tmp/cpl-pr216-contract]
+type: [bug report]: Keep framed top and bottom captions renderable
+area: [backend] [testing]
+
+Adversarial review reproduced 422 responses for short top/bottom captions on
+16:9, 4:3, and 1:1 frames because the frame-aware fitter kept their anchors at
+15%/85% of the full canvas, outside the visible band. Frame-aware rendering now
+positions those anchors at 15%/85% of the band, keeps zero-offset middle at the
+established canvas center, interprets offset as a band-relative adjustment, and
+minimally shifts ink into the band when needed. Full-screen v1/9:16 placement
+remains unchanged. Added band-position, fit/no-false-422, hosted-route, and
+portrait-compatibility regressions; updated the owning contract. Focused
+caption-render tests: 111 passed; prepared-post and quality-gate tests: 101
+passed; compileall, Python compilation, and `git diff --check` passed. No push,
+merge, or deployment.
+
+time: [16:25 EDT] [04-10-26]
+agent: [Codex desktop] [gpt-6.1]
+worktree: [codex/miniapp-agent-authz-20261004-r2] [/private/tmp/cpl-miniapp-authz]
+type: [security]: Close Mini App agent and page authorization gaps
+area: [backend] [testing] [review]
+
+The independent review of Content Lab PR #43 identified two authorization gaps
+that were also present on current main `8f7f83343a6b4594ffe9db5c81dcd705751f70d4`:
+Mini App agent queue list/update routes allowed anonymous access when
+`MINIAPP_AGENT_KEY` was unset, and `POST /api/miniapp/requests` persisted a
+caller-supplied `page_id` without proving it belonged to the authenticated
+poster. Video filtering also silently accepted a foreign page ID as an empty
+result. Agent routes now return 503 when the server key is unset and 401 for a
+missing/incorrect key; page-scoped video and request calls return 404 for
+unknown or foreign pages, while owned pages continue to work. Added regressions
+for unset-key list/mutation (including unchanged request state), foreign and
+owned page IDs, and updated queue tests to send the key. All 45 tests in
+`tests/test_miniapp_api.py` passed with a temporary router-only fixture. The
+standard pytest setup could not import repository `tests/conftest.py` because
+`boto3` is unavailable in this environment. `compileall` and `git diff --check`
+passed. No merge or deployment performed.
+_________________________________________________________________________________
+
+_________________________________________________________________________________
+
+time: [16:26 EDT] [04-10-26]
+agent: [Codex desktop] [gpt-6.1]
+worktree: [codex/miniapp-agent-authz-20261004-r2] [/private/tmp/cpl-miniapp-authz]
+type: [handoff]: Publish Mini App authorization repair for independent review
+area: [review] [testing]
+
+Opened PR #217: https://github.com/KINGMAKER-SYSTEMS/content-posting-lab/pull/217
+from `1f3a84c06adc4128db4ca449a66503bd7b1afa59` against main
+`8f7f83343a6b4594ffe9db5c81dcd705751f70d4`. GitHub reports the PR open and
+clean with no hosted checks reported. Independent review and hosted gates remain
+pending; no merge or deployment performed.
+_________________________________________________________________________________
+
+_________________________________________________________________________________
+time: [22:38] [04-10-26]
+agent: [Codex desktop] [gpt-6.1-sol]
+worktree: [codex/freddy-vault-projection] [/tmp/rt-merge-lab217]
+type: [workflow]: Ready exact vault-path source projection
+area: [backend] [review] [testing]
+
+Reviewed draft #208 and merged current main without losing its case-insensitive page identity checks or exact vault-path storage binding. The owning devlog now describes that storage contract. Source-manifest regressions run on the isolated test host before merge; no vault writer, phone driver or runtime configuration was changed.
+
+time: [22:32] [04-10-26]
+agent: [Codex desktop] [gpt-6.1-sol]
+worktree: [l13-frame-fit] [/tmp/rt-merge-lab217]
+type: [bug report]: Align frame-aware caption quality checks
+area: [backend] [testing] [review]
+
+Reviewed PR #216 against current main and retained the Mini App authorization repair. The local quality-check endpoint now accepts the same picture frame used to render the caption and evaluates its position against that band, including the renderer's minimal anchor adjustment. Frame-relative top/middle/bottom coverage and invalid-frame controls accompany the repair; the existing 253 focused renderer, gate and prepared-final tests passed before the correction. No phone input or runtime installation was performed.

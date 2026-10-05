@@ -5,6 +5,7 @@ import json
 import logging
 import math
 import os
+import re
 import time
 import uuid
 from datetime import datetime
@@ -36,6 +37,66 @@ def _make_clip_job_id(project: str = "clip") -> str:
     ts = datetime.now().strftime("%m%d%H%M")
     short = uuid.uuid4().hex[:4]
     return f"clip-{prefix}-{ts}-{short}"
+
+
+_BATCH_ID_RE = re.compile(r"[0-9a-f]{12}")
+
+
+def _clip_job_path(clipper_dir: Path, job_id: str) -> Path:
+    """Resolve a legacy or current job ID as a direct, non-symlink child."""
+    # Historical clip directories include 12-character UUID hex IDs, full
+    # UUID hex IDs from uploads, and caller-provided upload IDs. Keep those
+    # jobs manageable; confinement is enforced by path structure below.
+    if (
+        not isinstance(job_id, str)
+        or not job_id
+        or job_id in {".", ".."}
+        or "/" in job_id
+        or "\\" in job_id
+    ):
+        raise HTTPException(400, "Invalid clipper job ID")
+    parent = Path(clipper_dir)
+    candidate = parent / job_id
+    try:
+        if candidate.is_symlink():
+            raise HTTPException(400, "Invalid clipper job path")
+        resolved_parent = parent.resolve()
+        resolved_candidate = candidate.resolve()
+        if resolved_candidate.parent != resolved_parent or resolved_candidate.name != job_id:
+            raise HTTPException(400, "Invalid clipper job path")
+    except (OSError, ValueError, RuntimeError):
+        raise HTTPException(400, "Invalid clipper job path")
+    return resolved_candidate
+
+
+def _validate_batch_id(batch_id: object) -> str:
+    """Reject caller supplied IDs before they participate in filesystem paths."""
+    if not isinstance(batch_id, str) or _BATCH_ID_RE.fullmatch(batch_id) is None:
+        raise HTTPException(400, "batch_id must be 12 lowercase hexadecimal characters")
+    return batch_id
+
+
+def _delete_staging_dir(clipper_dir: Path, batch_id: str) -> bool:
+    """Remove only this ID's direct, non-symlink staging child."""
+    if not isinstance(batch_id, str) or _BATCH_ID_RE.fullmatch(batch_id) is None:
+        log.warning("refusing staging cleanup for invalid batch_id %r", batch_id)
+        return False
+    parent = Path(clipper_dir)
+    candidate = parent / f"_staging_{batch_id}"
+    try:
+        if candidate.is_symlink():
+            log.warning("refusing staging cleanup for symlink %s", candidate)
+            return False
+        resolved_parent = parent.resolve()
+        resolved_candidate = candidate.resolve()
+        if (resolved_candidate.parent != resolved_parent
+                or resolved_candidate.name != f"_staging_{batch_id}"):
+            log.warning("refusing staging cleanup outside clipper directory: %s", candidate)
+            return False
+    except OSError as exc:
+        log.warning("refusing staging cleanup for %s: %s", candidate, exc)
+        return False
+    return safe_rmtree(resolved_candidate)
 
 
 def _plan_segments(
@@ -547,10 +608,8 @@ async def r2_upload_complete(body: dict):
         raise HTTPException(503, "R2 storage is not configured on this deployment")
 
     project = body.get("project", "quick-test")
-    batch_id = body.get("batch_id")
+    batch_id = _validate_batch_id(body.get("batch_id"))
     items = body.get("items") or []
-    if not batch_id:
-        raise HTTPException(400, "batch_id is required")
     if not items:
         raise HTTPException(400, "items[] is required")
 
@@ -578,88 +637,99 @@ async def r2_upload_complete(body: dict):
     files_out: list[dict] = []
     errors: list[dict] = []
 
-    for item in items:
-        try:
-            index = int(item.get("index", 0))
-        except (TypeError, ValueError):
-            index = 0
-        filename = str(item.get("filename") or f"video_{index}.mp4")
-        key = str(item.get("key") or "")
-        if not key:
-            errors.append({"filename": filename, "error": "missing R2 key"})
-            continue
-
-        orig_ext = (Path(filename).suffix or ".mp4").lower()
-        safe_name = f"src_{index:03d}.mp4"
-        dest = staging_dir / safe_name
-
-        # Pull from R2 to the Railway volume (server-to-server, no edge proxy).
-        if orig_ext == ".mp4":
-            write_path = dest
-        else:
-            write_path = staging_dir / f"_raw_{index:03d}{orig_ext}"
-
-        try:
-            bytes_written = await asyncio.to_thread(r2.download_to_path, key, write_path)
-        except Exception as e:
-            log.error("r2 download failed for key=%s: %s", key, e)
-            errors.append({"filename": filename, "error": f"R2 fetch failed: {e}"})
-            continue
-
-        if bytes_written == 0:
-            safe_unlink(write_path)
-            errors.append({"filename": filename, "error": "uploaded file is empty"})
-            continue
-
-        # Non-mp4 → transcode to mp4 for browser compatibility
-        if orig_ext != ".mp4":
-            proc = await asyncio.create_subprocess_exec(
-                "ffmpeg", "-y", "-i", str(write_path),
-                "-c:v", "libx264", "-preset", "fast", "-crf", "23",
-                "-c:a", "aac", "-movflags", "+faststart",
-                str(dest),
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            _, stderr = await proc.communicate()
-            safe_unlink(write_path)
-            if proc.returncode != 0:
-                safe_unlink(dest)
-                tail = stderr.decode(errors="replace")[-200:]
-                errors.append({"filename": filename, "error": f"transcode failed: {tail.strip()}"})
+    # Same shape as upload_batch: an exception anywhere in this loop escaped
+    # the handler with the staging dir still on disk. The all-failed branch
+    # below only runs when the loop completes normally.
+    try:
+        for item in items:
+            try:
+                index = int(item.get("index", 0))
+            except (TypeError, ValueError):
+                index = 0
+            filename = str(item.get("filename") or f"video_{index}.mp4")
+            key = str(item.get("key") or "")
+            if not key:
+                errors.append({"filename": filename, "error": "missing R2 key"})
                 continue
-        else:
-            await _faststart(dest)
 
-        try:
-            info = await _get_video_info(dest)
-        except Exception as e:
-            safe_unlink(dest)
-            errors.append({"filename": filename, "error": f"probe failed: {e}"})
-            continue
+            orig_ext = (Path(filename).suffix or ".mp4").lower()
+            safe_name = f"src_{index:03d}.mp4"
+            dest = staging_dir / safe_name
 
-        if not info.get("duration") or info["duration"] <= 0:
-            safe_unlink(dest)
-            errors.append({"filename": filename, "error": "zero-duration video"})
-            continue
+            # Pull from R2 to the Railway volume (server-to-server, no edge proxy).
+            if orig_ext == ".mp4":
+                write_path = dest
+            else:
+                write_path = staging_dir / f"_raw_{index:03d}{orig_ext}"
 
-        thumb_name = f"thumb_{index:03d}.jpg"
-        thumb_path = staging_dir / thumb_name
-        thumb_ok = await _generate_thumbnail(dest, thumb_path)
+            try:
+                bytes_written = await asyncio.to_thread(r2.download_to_path, key, write_path)
+            except Exception as e:
+                log.error("r2 download failed for key=%s: %s", key, e)
+                errors.append({"filename": filename, "error": f"R2 fetch failed: {e}"})
+                continue
 
-        files_out.append({
-            "index": index,
-            "original_name": filename,
-            "path": str(dest),
-            "url": f"/projects/{sanitized}/clips/_staging_{batch_id}/{safe_name}",
-            "thumb_url": f"/projects/{sanitized}/clips/_staging_{batch_id}/{thumb_name}" if thumb_ok else "",
-            "duration": info["duration"],
-            "width": info["width"],
-            "height": info["height"],
-            "r2_key": key,
-        })
+            if bytes_written == 0:
+                safe_unlink(write_path)
+                errors.append({"filename": filename, "error": "uploaded file is empty"})
+                continue
+
+            # Non-mp4 → transcode to mp4 for browser compatibility
+            if orig_ext != ".mp4":
+                proc = await asyncio.create_subprocess_exec(
+                    "ffmpeg", "-y", "-i", str(write_path),
+                    "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+                    "-c:a", "aac", "-movflags", "+faststart",
+                    str(dest),
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                _, stderr = await proc.communicate()
+                safe_unlink(write_path)
+                if proc.returncode != 0:
+                    safe_unlink(dest)
+                    tail = stderr.decode(errors="replace")[-200:]
+                    errors.append({"filename": filename, "error": f"transcode failed: {tail.strip()}"})
+                    continue
+            else:
+                await _faststart(dest)
+
+            try:
+                info = await _get_video_info(dest)
+            except Exception as e:
+                safe_unlink(dest)
+                errors.append({"filename": filename, "error": f"probe failed: {e}"})
+                continue
+
+            if not info.get("duration") or info["duration"] <= 0:
+                safe_unlink(dest)
+                errors.append({"filename": filename, "error": "zero-duration video"})
+                continue
+
+            thumb_name = f"thumb_{index:03d}.jpg"
+            thumb_path = staging_dir / thumb_name
+            thumb_ok = await _generate_thumbnail(dest, thumb_path)
+
+            files_out.append({
+                "index": index,
+                "original_name": filename,
+                "path": str(dest),
+                "url": f"/projects/{sanitized}/clips/_staging_{batch_id}/{safe_name}",
+                "thumb_url": f"/projects/{sanitized}/clips/_staging_{batch_id}/{thumb_name}" if thumb_ok else "",
+                "duration": info["duration"],
+                "width": info["width"],
+                "height": info["height"],
+                "r2_key": key,
+            })
+
+    except Exception:
+        _delete_staging_dir(clipper_dir, batch_id)
+        raise
 
     if not files_out and errors:
+        # `upload_batch` clears staging in exactly this situation; this branch
+        # did not, leaving an empty directory per all-failed request.
+        _delete_staging_dir(clipper_dir, batch_id)
         raise HTTPException(400, f"All {len(errors)} files failed: {errors}")
 
     log.info("r2 upload-complete: project=%s batch=%s ok=%d err=%d",
@@ -680,7 +750,7 @@ async def upload_video_stream(request: Request):
     filename = request.query_params.get("filename", "video.mp4")
 
     clipper_dir = _get_clipper_dir(project)
-    job_dir = clipper_dir / job_id
+    job_dir = _clip_job_path(clipper_dir, job_id)
     job_dir.mkdir(parents=True, exist_ok=True)
 
     ext = Path(filename).suffix or ".mp4"
@@ -724,6 +794,7 @@ async def stage_streamed(request: Request):
     """
     project = request.query_params.get("project", "quick-test")
     batch_id = request.query_params.get("batch_id") or uuid.uuid4().hex[:12]
+    batch_id = _validate_batch_id(batch_id)
     filename = request.query_params.get("filename", "video.mp4")
     try:
         index = int(request.query_params.get("index", "0"))
@@ -734,6 +805,11 @@ async def stage_streamed(request: Request):
     staging_dir = clipper_dir / f"_staging_{batch_id}"
     staging_dir.mkdir(parents=True, exist_ok=True)
 
+    # staging-leak-exempt: the caller supplies batch_id so several requests
+    # group their files into ONE staging dir, so rmtree here would destroy a
+    # sibling upload that is still in flight. Every branch already frees its own
+    # bytes (including the 413 inside the open handle), so only an empty
+    # directory can accumulate, never space.
     orig_ext = (Path(filename).suffix or ".mp4").lower()
     safe_name = f"src_{index:03d}.mp4"
     dest = staging_dir / safe_name
@@ -829,7 +905,7 @@ async def upload_video(
         job_id = str(uuid.uuid4())
 
     clipper_dir = _get_clipper_dir(project)
-    job_dir = clipper_dir / job_id
+    job_dir = _clip_job_path(clipper_dir, job_id)
     job_dir.mkdir(parents=True, exist_ok=True)
 
     # Preserve original extension or default to .mp4
@@ -871,99 +947,108 @@ async def upload_batch(
 
     results: list[dict] = []
     errors: list[dict] = []
-    for i, file in enumerate(files):
-        orig_ext = (Path(file.filename or "video.mp4").suffix or ".mp4").lower()
-        # Always output as .mp4 for browser compatibility
-        safe_name = f"src_{i:03d}.mp4"
-        dest = staging_dir / safe_name
+    # Nothing guarded this loop. The chunked write below is unprotected, so a
+    # disk-full ENOSPC part-way through a multi-GB upload escaped the handler
+    # and left the partial staging dir behind -- which fires precisely in the
+    # out-of-space situation this whole change is about, and makes it worse.
+    try:
+        for i, file in enumerate(files):
+            orig_ext = (Path(file.filename or "video.mp4").suffix or ".mp4").lower()
+            # Always output as .mp4 for browser compatibility
+            safe_name = f"src_{i:03d}.mp4"
+            dest = staging_dir / safe_name
 
-        # Stream to disk in 8MB chunks for better throughput on large files
-        if orig_ext == ".mp4":
-            total_bytes = 0
-            with open(dest, "wb") as f:
-                while chunk := await file.read(8 * 1024 * 1024):
-                    f.write(chunk)
-                    total_bytes += len(chunk)
-            log.info("batch upload: %s → %s (%d bytes)", file.filename, dest, total_bytes)
-            if total_bytes == 0:
-                log.error("upload for %s produced 0 bytes", file.filename)
-                safe_unlink(dest)
-                errors.append({"name": file.filename, "reason": "uploaded file is empty (0 bytes)"})
-                continue
-            await _faststart(dest)
-        else:
-            # Non-MP4 (.mov, .mkv, .webm, etc): transcode to mp4 with faststart
-            raw_path = staging_dir / f"_raw_{i:03d}{orig_ext}"
-            total_bytes = 0
-            with open(raw_path, "wb") as f:
-                while chunk := await file.read(8 * 1024 * 1024):
-                    f.write(chunk)
-                    total_bytes += len(chunk)
-            log.info("batch upload: %s (%d bytes) → transcoding to mp4...", file.filename, total_bytes)
-            if total_bytes == 0:
-                log.error("upload for %s produced 0 bytes", file.filename)
+            # Stream to disk in 8MB chunks for better throughput on large files
+            if orig_ext == ".mp4":
+                total_bytes = 0
+                with open(dest, "wb") as f:
+                    while chunk := await file.read(8 * 1024 * 1024):
+                        f.write(chunk)
+                        total_bytes += len(chunk)
+                log.info("batch upload: %s → %s (%d bytes)", file.filename, dest, total_bytes)
+                if total_bytes == 0:
+                    log.error("upload for %s produced 0 bytes", file.filename)
+                    safe_unlink(dest)
+                    errors.append({"name": file.filename, "reason": "uploaded file is empty (0 bytes)"})
+                    continue
+                await _faststart(dest)
+            else:
+                # Non-MP4 (.mov, .mkv, .webm, etc): transcode to mp4 with faststart
+                raw_path = staging_dir / f"_raw_{i:03d}{orig_ext}"
+                total_bytes = 0
+                with open(raw_path, "wb") as f:
+                    while chunk := await file.read(8 * 1024 * 1024):
+                        f.write(chunk)
+                        total_bytes += len(chunk)
+                log.info("batch upload: %s (%d bytes) → transcoding to mp4...", file.filename, total_bytes)
+                if total_bytes == 0:
+                    log.error("upload for %s produced 0 bytes", file.filename)
+                    safe_unlink(raw_path)
+                    errors.append({"name": file.filename, "reason": "uploaded file is empty (0 bytes)"})
+                    continue
+                proc = await asyncio.create_subprocess_exec(
+                    "ffmpeg", "-y", "-i", str(raw_path),
+                    "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+                    "-c:a", "aac", "-movflags", "+faststart",
+                    str(dest),
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                _, stderr = await proc.communicate()
+                if proc.returncode != 0:
+                    stderr_text = stderr.decode(errors="replace")[-300:]
+                    log.error("transcode failed for %s: %s", file.filename, stderr_text)
+                    safe_unlink(raw_path)
+                    safe_unlink(dest)
+                    errors.append({
+                        "name": file.filename,
+                        "reason": f"transcode failed: {stderr_text.strip()[-200:]}",
+                    })
+                    continue
                 safe_unlink(raw_path)
-                errors.append({"name": file.filename, "reason": "uploaded file is empty (0 bytes)"})
-                continue
-            proc = await asyncio.create_subprocess_exec(
-                "ffmpeg", "-y", "-i", str(raw_path),
-                "-c:v", "libx264", "-preset", "fast", "-crf", "23",
-                "-c:a", "aac", "-movflags", "+faststart",
-                str(dest),
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            _, stderr = await proc.communicate()
-            if proc.returncode != 0:
-                stderr_text = stderr.decode(errors="replace")[-300:]
-                log.error("transcode failed for %s: %s", file.filename, stderr_text)
-                safe_unlink(raw_path)
+                log.info("batch upload: %s → transcoded to %s", file.filename, dest)
+
+            # Probe video info — fail loudly if unreadable
+            try:
+                info = await _get_video_info(dest)
+            except Exception as e:
+                log.error("probe failed for %s: %s", file.filename, e)
                 safe_unlink(dest)
-                errors.append({
-                    "name": file.filename,
-                    "reason": f"transcode failed: {stderr_text.strip()[-200:]}",
-                })
+                errors.append({"name": file.filename, "reason": f"probe failed: {e}"})
                 continue
-            safe_unlink(raw_path)
-            log.info("batch upload: %s → transcoded to %s", file.filename, dest)
 
-        # Probe video info — fail loudly if unreadable
-        try:
-            info = await _get_video_info(dest)
-        except Exception as e:
-            log.error("probe failed for %s: %s", file.filename, e)
-            safe_unlink(dest)
-            errors.append({"name": file.filename, "reason": f"probe failed: {e}"})
-            continue
+            if not info.get("duration") or info["duration"] <= 0:
+                log.error("probe returned zero duration for %s", file.filename)
+                safe_unlink(dest)
+                errors.append({"name": file.filename, "reason": "could not determine video duration"})
+                continue
 
-        if not info.get("duration") or info["duration"] <= 0:
-            log.error("probe returned zero duration for %s", file.filename)
-            safe_unlink(dest)
-            errors.append({"name": file.filename, "reason": "could not determine video duration"})
-            continue
+            # Generate thumbnail (best-effort — not fatal)
+            thumb_name = f"thumb_{i:03d}.jpg"
+            thumb_path = staging_dir / thumb_name
+            thumb_ok = await _generate_thumbnail(dest, thumb_path)
+            if not thumb_ok:
+                log.warning("thumbnail generation failed for %s (continuing without)", file.filename)
 
-        # Generate thumbnail (best-effort — not fatal)
-        thumb_name = f"thumb_{i:03d}.jpg"
-        thumb_path = staging_dir / thumb_name
-        thumb_ok = await _generate_thumbnail(dest, thumb_path)
-        if not thumb_ok:
-            log.warning("thumbnail generation failed for %s (continuing without)", file.filename)
+            sanitized = sanitize_project_name(project)
+            results.append({
+                "index": i,
+                "original_name": file.filename,
+                "path": str(dest),
+                "url": f"/projects/{sanitized}/clips/_staging_{batch_id}/{safe_name}",
+                "thumb_url": f"/projects/{sanitized}/clips/_staging_{batch_id}/{thumb_name}" if thumb_ok else "",
+                "duration": info["duration"],
+                "width": info["width"],
+                "height": info["height"],
+            })
 
-        sanitized = sanitize_project_name(project)
-        results.append({
-            "index": i,
-            "original_name": file.filename,
-            "path": str(dest),
-            "url": f"/projects/{sanitized}/clips/_staging_{batch_id}/{safe_name}",
-            "thumb_url": f"/projects/{sanitized}/clips/_staging_{batch_id}/{thumb_name}" if thumb_ok else "",
-            "duration": info["duration"],
-            "width": info["width"],
-            "height": info["height"],
-        })
+        # If every file failed, remove the empty staging dir and 4xx out so the UI shows toast
+    except Exception:
+        _delete_staging_dir(clipper_dir, batch_id)
+        raise
 
-    # If every file failed, remove the empty staging dir and 4xx out so the UI shows toast
     if not results and errors:
-        safe_rmtree(staging_dir)
+        _delete_staging_dir(clipper_dir, batch_id)
         detail = "; ".join(f"{e['name']}: {e['reason']}" for e in errors)
         raise HTTPException(status_code=400, detail=f"All uploads failed — {detail}")
 
@@ -987,8 +1072,34 @@ async def download_url(body: dict):
 
     dest = staging_dir / "src_000.mp4"
     try:
-        await download_video(video_url, dest)
+        # USE the returned path. `download_video` returns whatever yt-dlp
+        # actually produced, which is not always the name asked for: when the
+        # selected streams cannot go in an mp4 it merges to `.mkv` and exits 0,
+        # and its own fallback globs `src_000*` to find it. Discarding that and
+        # trusting `dest` returned HTTP 200 with a path to a file that does not
+        # exist, a url that 404s and `duration: 0` -- a dead player, with the
+        # real bytes sitting in staging under another name and nothing to
+        # collect them, all on the SUCCESS path this change's other fix never
+        # touches.
+        dest = await download_video(video_url, dest) or dest
     except Exception as e:
+        # A failed download leaves every yt-dlp intermediate behind: the .part
+        # files, the separately-fetched video and audio streams, the .temp
+        # remux. No job record exists for a download that never produced one,
+        # so `/api/clipper/jobs` cannot see them. (`delete_project` DOES remove
+        # them, since it rmtrees the whole project -- but that is a far bigger
+        # hammer than the situation calls for.)
+        #
+        # MEASURED on production 2026-09-23: two abandoned attempts from a
+        # four-minute window held 20.7 GB between them (an 8.61 GB `f401`
+        # video stream, a 5.08 GB `.temp`, and a 6.92 GB `.part`), on a volume
+        # that was 98.6% full. Every source import after that failed with
+        # "source import storage capacity is unavailable" -- so one video the
+        # clipper could not fetch stopped content for every page on the fleet.
+        #
+        # Every handler in this module that makes a staging dir must clear it
+        # on EVERY exit; several did not, and are fixed in the same change.
+        _delete_staging_dir(clipper_dir, batch_id)
         raise HTTPException(500, f"Download failed: {e}")
 
     try:
@@ -1007,7 +1118,7 @@ async def download_url(body: dict):
             "index": 0,
             "original_name": video_url.split("/")[-1].split("?")[0] or "video.mp4",
             "path": str(dest),
-            "url": f"/projects/{sanitized}/clips/_staging_{batch_id}/src_000.mp4",
+            "url": f"/projects/{sanitized}/clips/_staging_{batch_id}/{dest.name}",
             "thumb_url": f"/projects/{sanitized}/clips/_staging_{batch_id}/thumb_000.jpg",
             "duration": info["duration"],
             "width": info["width"],
@@ -1027,7 +1138,7 @@ async def trim_batch(body: dict):
     }
     """
     project = body.get("project", "quick-test")
-    batch_id = body.get("batch_id", "")
+    batch_id = _validate_batch_id(body.get("batch_id", ""))
     trims = body.get("trims", [])
 
     if not trims:
@@ -1078,7 +1189,7 @@ async def trim_batch(body: dict):
     # Clean up staging dir
     staging_dir = clipper_dir / f"_staging_{batch_id}"
     if staging_dir.exists():
-        safe_rmtree(staging_dir)
+        _delete_staging_dir(clipper_dir, batch_id)
         log.info("cleaned up staging dir: %s", staging_dir)
 
     return {
@@ -1155,7 +1266,8 @@ async def process_batch(body: dict):
     Poll GET /process-batch/{job_id} for progress — no SSE, no timeouts.
     """
     project = body.get("project", "quick-test")
-    batch_id = body.get("batch_id", "")
+    raw_batch_id = body.get("batch_id", "")
+    batch_id = _validate_batch_id(raw_batch_id) if raw_batch_id else ""
     clip_length = float(body.get("clip_length", 7))
     sources = body.get("sources", [])
 
@@ -1321,11 +1433,6 @@ async def _run_batch_job(
                 log.info("  clip %d/%d: %.1f+%.1fs → %s (%s)",
                          clip_counter, job["total"], clip_start, actual_clip_len, clip_name, "ok" if ok else "FAIL")
 
-        # Clean up staging dir
-        staging_dir = clipper_dir / f"_staging_{batch_id}"
-        if staging_dir.exists():
-            safe_rmtree(staging_dir)
-
         job["status"] = "complete"
         job["clips"] = results
         job["ok_count"] = sum(1 for r in results if r.get("ok"))
@@ -1339,6 +1446,19 @@ async def _run_batch_job(
         job["status"] = "error"
         job["error"] = str(e)
         _persist_job(job)
+
+    finally:
+        # The staging dir holds every uploaded source video for the batch -- the
+        # largest set this module writes. Its cleanup used to sit inside the try
+        # above, just before `status = "complete"`, so ANY failure in the clip
+        # loop skipped it and stranded the sources for good: `delete_clipper_job`
+        # removes `clipper_dir/<job_id>`, never `clipper_dir/_staging_<batch_id>`,
+        # so an operator who sees a failed job and deletes it still leaves the
+        # bytes behind. A `finally` is the only placement that survives both
+        # exits.
+        staging_dir = clipper_dir / f"_staging_{batch_id}"
+        if staging_dir.exists():
+            _delete_staging_dir(clipper_dir, batch_id)
 
 
 # ── Pipeline for local files ─────────────────────────────────────────
@@ -1523,7 +1643,7 @@ async def rename_clipper_job(job_id: str, body: dict, project: str = Query(defau
     if not new_label:
         return JSONResponse({"error": "Label is required"}, status_code=400)
     clipper_dir = _get_clipper_dir(project)
-    job_dir = clipper_dir / job_id
+    job_dir = _clip_job_path(clipper_dir, job_id)
     if not job_dir.exists():
         raise HTTPException(404, "Job not found")
     meta_path = job_dir / "job_meta.json"
@@ -1541,7 +1661,7 @@ async def rename_clipper_job(job_id: str, body: dict, project: str = Query(defau
 @router.delete("/jobs/{job_id}")
 async def delete_clipper_job(job_id: str, project: str = Query(default="quick-test")):
     clipper_dir = _get_clipper_dir(project)
-    job_dir = clipper_dir / job_id
+    job_dir = _clip_job_path(clipper_dir, job_id)
 
     if not job_dir.exists() or not job_dir.is_dir():
         raise HTTPException(404, "Job not found")
@@ -1561,7 +1681,7 @@ async def download_all_clips(job_id: str, project: str = Query(default="quick-te
     mirrored — keeps the endpoint working in local dev / pre-R2 jobs.
     """
     clipper_dir = _get_clipper_dir(project)
-    job_dir = clipper_dir / job_id
+    job_dir = _clip_job_path(clipper_dir, job_id)
 
     if not job_dir.exists():
         raise HTTPException(404, "Job not found")

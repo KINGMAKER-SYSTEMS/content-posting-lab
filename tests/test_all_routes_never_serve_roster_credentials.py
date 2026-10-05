@@ -19,6 +19,8 @@ import socket
 import threading
 
 import pytest
+from fastapi.routing import APIRoute
+from tests.route_inventory import registered_routes
 from fastapi.testclient import TestClient
 
 import services.roster as roster

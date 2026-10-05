@@ -555,3 +555,58 @@ def test_clip_crop_is_bounded_and_old_recipe_bytes_remain_accepted(lab):
             "/api/control-plane/v1/recipes", json=body,
             headers=_publication_headers(**{"Idempotency-Key": f"dossier:crop-{index}"}),
         ).status_code == 400
+
+
+@pytest.mark.parametrize("frame", ["9:16", "16:9", "1:1", "3:4", "4:3"])
+@pytest.mark.parametrize("payload", [_payload, _v4_payload], ids=["v2", "v4"])
+def test_page_frame_registers_and_round_trips_byte_identically(lab, payload, frame):
+    body = _with_spec(
+        payload(dossierRevision=f"rev-frame-{frame}", recipeVersion="dossier-frame00000001"),
+        lambda spec: spec["renderTreatment"].update(frame=frame),
+    )
+    response = lab.post(
+        "/api/control-plane/v1/recipes", json=body,
+        headers=_publication_headers(**{"Idempotency-Key": f"dossier:frame-{frame}"}),
+    )
+    assert response.status_code == 200, response.text
+    stored = recipes.load_registered_recipe(
+        PAGE_ID, body["recipeId"], body["engine"], body["recipeVersion"],
+    )
+    assert stored["recipeSpecCanonical"] == body["recipeSpecCanonical"]
+    assert stored["recipeSpecHash"] == body["recipeSpecHash"]
+    assert json.loads(stored["recipeSpecCanonical"])["renderTreatment"]["frame"] == frame
+    # A frame change is new recipe bytes under the same tuple, like any treatment change.
+    other = _with_spec(body, lambda spec: spec["renderTreatment"].update(
+        frame="1:1" if frame != "1:1" else "16:9"))
+    assert lab.post(
+        "/api/control-plane/v1/recipes", json=other,
+        headers=_publication_headers(**{"Idempotency-Key": f"dossier:frame-{frame}-changed"}),
+    ).status_code == 409
+
+
+@pytest.mark.parametrize("frame", ["2:3", "16x9", "9:16 ", "", None, 1.7778, True, ["16:9"], {"ratio": "4:3"}])
+def test_unknown_page_frame_fails_closed_at_registration(lab, frame):
+    body = _with_spec(
+        _payload(dossierRevision="rev-bad-frame"),
+        lambda spec: spec["renderTreatment"].update(frame=frame),
+    )
+    response = lab.post(
+        "/api/control-plane/v1/recipes", json=body,
+        headers=_publication_headers(**{"Idempotency-Key": "dossier:bad-frame"}),
+    )
+    assert response.status_code == 400
+    assert "frame must be one of" in response.text
+    assert not _record_file(body).exists()
+
+
+def test_recipe_without_frame_is_unchanged(lab):
+    body = _payload(dossierRevision="rev-no-frame")
+    assert "frame" not in json.loads(body["recipeSpecCanonical"])["renderTreatment"]
+    assert lab.post(
+        "/api/control-plane/v1/recipes", json=body,
+        headers=_publication_headers(**{"Idempotency-Key": "dossier:no-frame"}),
+    ).status_code == 200
+    stored = recipes.load_registered_recipe(
+        PAGE_ID, body["recipeId"], body["engine"], body["recipeVersion"],
+    )
+    assert stored["recipeSpecCanonical"] == body["recipeSpecCanonical"]

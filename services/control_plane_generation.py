@@ -27,6 +27,7 @@ from providers.base import API_KEYS
 from services.content_engine_registry import resolve_material_profile
 from services.caption_discipline import validate_caption_discipline
 from services.content_format_contracts import load_format_contracts
+from services.page_frame import frame_band_height
 
 
 CATALOG_PATH = (
@@ -145,6 +146,7 @@ class GenerationRecipe:
     family: dict[str, Any]
     provider_config: dict[str, Any]
     recipe_spec: dict[str, Any]
+    engine_profile_hash: str = ""
 
     @property
     def clips_per_generation(self) -> int:
@@ -199,6 +201,20 @@ def load_prompt_catalog(format_slug: str | None = None) -> tuple[dict[str, Any],
             catalog[field].update(still[field])
         if format_slug == "silhouette-truck":
             version = hashlib.sha256(still_raw).hexdigest()
+    if _catalog_path() == CATALOG_PATH.resolve():
+        boat_raw = CATALOG_PATH.with_name("boat_minimax.v1.json").read_bytes()
+        boat = json.loads(boat_raw)
+        for field, names in {
+            "formats": {"boat-lake"}, "families": {"boat"}, "providers": {"hailuo"},
+        }.items():
+            if not isinstance(boat.get(field), dict) or set(boat[field]) != names:
+                raise ValueError("boat catalog must be scoped to boat only")
+            # Hailuo is shared with trucks; the overlay cannot alter that provider.
+            if field == "providers" and boat[field] != {"hailuo": catalog[field]["hailuo"]}:
+                raise ValueError("boat catalog must preserve the shared Hailuo provider")
+            catalog[field].update(boat[field])
+        if format_slug == "boat-lake":
+            version = hashlib.sha256(boat_raw).hexdigest()
     return catalog, version
 
 
@@ -270,6 +286,11 @@ def _typed_recipe_spec(publication: dict[str, Any]) -> dict[str, Any] | None:
             or not MIN_CLIP_CROP_FOCUS <= float(focus_y) <= MAX_CLIP_CROP_FOCUS
         ):
             return None
+    try:
+        # Optional page frame; delivery-only, never part of source treatment.
+        frame_band_height(render)
+    except ValueError:
+        return None
     if spec.get("schema") == "dossier.recipe-spec.v4":
         try:
             validate_caption_discipline(spec.get("captionDiscipline"))
@@ -421,6 +442,7 @@ def resolve_generation_recipe(
         engine=provider_engine,
         provider_model=model,
         engine_registry_hash=profile.registry_hash,
+        engine_profile_hash=profile.authority_hash,
         format_contract_version=profile.format_contract_version,
         material_source=profile.material_source,
         asset_type=profile.asset_type,

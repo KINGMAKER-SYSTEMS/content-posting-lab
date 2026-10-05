@@ -13,10 +13,11 @@
 // Needs playwright on NODE_PATH (NODE_PATH=frontend/node_modules from repo root) and ffmpeg.
 const fs = require("node:fs");
 const path = require("node:path");
-const os = require("node:os");
 const { spawnSync } = require("node:child_process");
 const { pathToFileURL } = require("node:url");
 const { chromium } = require("playwright");
+const { prepareFramesDir } = require("./frame_directory.cjs");
+const runtime = { browser: null, frameWorkspace: null };
 
 function arg(name, fallback = null) {
   const idx = process.argv.indexOf(`--${name}`);
@@ -32,7 +33,6 @@ async function main() {
   const fps = Number(arg("fps", "24"));
   const width = Number(arg("width", "1920"));
   const height = Number(arg("height", "1080"));
-  const framesDir = arg("frames-dir") || path.join(os.tmpdir(), `seekframes-${process.pid}`);
   const durationOverride = arg("duration");
   const contactSheet = arg("contact-sheet");
   const posterTime = arg("poster-time");
@@ -43,11 +43,13 @@ async function main() {
     process.exit(2);
   }
 
-  fs.rmSync(framesDir, { recursive: true, force: true });
-  fs.mkdirSync(framesDir, { recursive: true });
+  const frameWorkspace = prepareFramesDir(arg("frames-dir"));
+  const framesDir = frameWorkspace.framesDir;
+  runtime.frameWorkspace = frameWorkspace;
   fs.mkdirSync(path.dirname(path.resolve(output)), { recursive: true });
 
   const browser = await chromium.launch({ headless: true });
+  runtime.browser = browser;
   const page = await browser.newPage({ viewport: { width, height }, deviceScaleFactor: 1 });
   await page.goto(pathToFileURL(path.resolve(input)).href, { waitUntil: "networkidle" });
   // fonts must be painted before frame 0 or early frames render in fallback glyphs
@@ -64,7 +66,8 @@ async function main() {
       else document.documentElement.style.setProperty("--time", String(time));
     }, t);
     const out = path.join(framesDir, `frame_${String(i).padStart(5, "0")}.png`);
-    await page.screenshot({ path: out, type: "png" });
+    const png = await page.screenshot({ type: "png" });
+    frameWorkspace.writeFrame(out, png);
     if (i % 48 === 0) console.log(`frame ${i}/${totalFrames}`);
   }
 
@@ -76,6 +79,7 @@ async function main() {
     console.log(`poster @${posterTime}s → ${posterOut}`);
   }
   await browser.close();
+  runtime.browser = null;
 
   const ff = spawnSync("ffmpeg", [
     "-y",
@@ -89,7 +93,7 @@ async function main() {
     "-movflags", "+faststart",
     output,
   ], { stdio: "inherit" });
-  if (ff.status !== 0) process.exit(ff.status || 1);
+  if (ff.status !== 0) throw new Error("ffmpeg failed with status " + ff.status);
 
   if (contactSheet) {
     // start / mid / end QA strip — review these BEFORE polishing anything
@@ -105,11 +109,22 @@ async function main() {
     if (sheet.status === 0) console.log(`contact sheet → ${contactSheet}`);
   }
 
-  if (flag("cleanup-frames")) fs.rmSync(framesDir, { recursive: true, force: true });
+  if (flag("cleanup-frames")) {
+    frameWorkspace.cleanup();
+    runtime.frameWorkspace = null;
+  }
   console.log(output);
 }
 
-main().catch((err) => {
+main().catch(async (err) => {
+  if (runtime.browser) await runtime.browser.close().catch(() => {});
+  if (runtime.frameWorkspace) {
+    try {
+      runtime.frameWorkspace.cleanup();
+    } catch (cleanupError) {
+      console.error("frame cleanup failed", cleanupError);
+    }
+  }
   console.error(err);
   process.exit(1);
 });
