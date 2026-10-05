@@ -48,3 +48,6 @@ agenticnews.db-wal
 # Temporary font preview PNGs
 font_previews/
 test-assets/
+
+# Seat scratch dirs (ds7_hdr HDR fixtures are copied here, never tracked).
+.scratch-ds7/

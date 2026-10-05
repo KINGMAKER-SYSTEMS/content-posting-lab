@@ -54,6 +54,7 @@ class MaterialProfile:
     max_quantity: int
     format_contract_version: str
     registry_hash: str
+    authority_hash: str
 
 
 def _registry_path() -> Path:
@@ -140,6 +141,11 @@ def _parse_profile(
         or max_quantity != 0
     ):
         raise ValueError(f"uncommissioned profile {format_slug} exposes an executor")
+    # Registry membership is global, but an active job is authorized by the
+    # selected profile. Keep admission caps out of this digest: changing a cap
+    # affects new work, not work already admitted under the same executor and
+    # format contract.
+    authority_hash = profile_authority_hash(format_slug, value)
     return MaterialProfile(
         format_slug=format_slug,
         content_niche=content_niche,
@@ -153,6 +159,34 @@ def _parse_profile(
         max_quantity=max_quantity,
         format_contract_version=format_contract_version,
         registry_hash=registry_hash,
+        authority_hash=authority_hash,
+    )
+
+
+def profile_authority_hash(format_slug: str, value: dict[str, Any]) -> str:
+    """Hash one executable profile without unrelated registry members/caps."""
+    authority_fields = {
+        key: value[key]
+        for key in sorted(PROFILE_FIELDS - {"maxQuantity"})
+    }
+    authority_bytes = json.dumps(
+        {"formatSlug": format_slug, **authority_fields},
+        sort_keys=True, separators=(",", ":"),
+    ).encode("utf-8")
+    return "sha256:" + hashlib.sha256(authority_bytes).hexdigest()
+
+
+def job_profile_authority_matches(
+    job: dict[str, Any], expected_hash: str,
+    legacy_pins: dict[str, Any] | None = None,
+) -> bool:
+    """Accept exact new pins, or legacy jobs with explicit matching authority pins."""
+    persisted = job.get("engineProfileHash")
+    if persisted is not None:
+        return persisted == expected_hash
+    return bool(legacy_pins) and all(
+        job.get(key) == expected_value
+        for key, expected_value in legacy_pins.items()
     )
 
 

@@ -33,7 +33,7 @@ def checkpoint(records):
 
 async def provider_run(script, records, prompt="truck on a ridge"):
     params = {"model_id": MODEL, "entry": {"_prediction_checkpoint": checkpoint(records)},
-              "duration": 6, "resolution": "1080p"}
+              "duration": 6, "resolution": "1080p", "job_id": "test-job-1", "cost_usd": 0.28}
     async with httpx.AsyncClient(transport=httpx.MockTransport(script.handler)) as client:
         return await replicate.generate(prompt, params, client)
 
@@ -153,7 +153,8 @@ async def test_restart_does_not_reset_processing_deadline(finished):
                                 ("POST", "/v1/predictions/paid-id/cancel")]
 
 
-def install_journal_provider(monkeypatch, *, interrupt_poll=None, interrupt_render=None, refuse=None):
+def install_journal_provider(monkeypatch, *, interrupt_poll=None, interrupt_render=None, refuse=None,
+                             refusal=None):
     calls = []
     seen = {"creates": 0, "interrupted": False}
 
@@ -167,7 +168,7 @@ def install_journal_provider(monkeypatch, *, interrupt_poll=None, interrupt_rend
             seen["interrupted"] = True
             raise asyncio.CancelledError("generation_runtime_shutdown")
         if prediction == refuse:
-            return status("failed", error="The input or output was flagged as sensitive. (E005)")
+            return status("failed", **(refusal or {"error": "The input or output was flagged as sensitive. (E005)"}))
         return status("succeeded", output="https://replicate.delivery/" + prediction)
 
     async def generate(job_id, index, provider, prompt, aspect_ratio, resolution, duration,
@@ -300,7 +301,28 @@ def test_status_restarts_only_exact_page_and_checkpointed_active_job(lab, monkey
 
 
 @pytest.mark.asyncio
+async def test_generation_setup_exception_terminalizes_not_ghosts(lab, monkeypatch):
+    job_id, _, _ = queue_silhouettes(lab, monkeypatch, 1)
+
+    def boom(recipe):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(cp, "generation_options", boom)
+    # Drive the REAL entrypoint (captured at import time, before `lab`
+    # monkeypatched _start_dossier_generation to `started.append`), so this
+    # proves the wiring, not just the guard helper in isolation.
+    _start_runner(job_id)
+    task = cp._generation_tasks[job_id]
+    await asyncio.wait_for(task, timeout=5)
+    saved = cp._get_job_or_404(job_id)
+    assert saved["status"] == "failed"
+    assert "disk full" in saved["error"]
+    assert saved.get("completedAt")
+
+
+@pytest.mark.asyncio
 async def test_restart_keeps_refusal_terminal_and_continues_original_next_candidate(lab, monkeypatch):
+    monkeypatch.setenv("CONTENT_LAB_MODERATION_RETRY_DAILY_BUDGET", "0")  # no varied retry available
     job_id, _, _ = queue_silhouettes(lab, monkeypatch, 2)
     calls = install_journal_provider(monkeypatch, interrupt_poll="p2", refuse="p1")
     with pytest.raises(asyncio.CancelledError):

@@ -608,6 +608,78 @@ def test_shipstream_page_source_is_bound_only_to_its_matching_format(monkeypatch
     )["catalogVersion"] == selected_version
 
 
+def test_newest_ready_shipstream_import_binds_over_legacy_source_dna(monkeypatch):
+    """chase.miles.4l's imported vault master supersedes its source-dna master."""
+    import services.dossier_ingredients as ingredients
+    from services.shipstream_source_manifest import (
+        parse_shipstream_source_projection,
+    )
+
+    page_id = "tt-chase-miles-4l"
+    notion_page_id = "3981465b-b829-8067-9317-eccc81093e4b"
+    intent, _ = master_pages(
+        page_id,
+        handle="chase.miles.4l",
+        content_niche="POV - Dirtbike",
+        content_engine="sourced_video",
+        vault_url="https://shipstream.test/vault/chase.miles.4l",
+    )
+    intent["notionPageId"] = notion_page_id
+    intent["automationMode"] = "Automation"
+    revision = intent_hash(intent)
+    imported_sha = "a3073e1000b1a760e38dc8f054c422bbcf1bc9451101dd67e9e354c81148a6dd"
+    manifest = {
+        "schema": "shipstream.source-manifest.v1",
+        "page": "chase.miles.4l",
+        "notion": {
+            "pageId": notion_page_id,
+            "contentEngine": "sourced_video",
+            "contentNiche": "POV - Dirtbike",
+            "serviceMode": "Automation",
+        },
+        "format": "pov-dirt-bike",
+        "sourceAuthority": {
+            "kind": "content_lab_page_source_import",
+            "pageId": page_id,
+            "pageHandle": "chase.miles.4l",
+            "notionPageId": notion_page_id,
+            "replacementEligible": True,
+        },
+        "master": {
+            "sha256": imported_sha,
+            "storageKey": f"vault/chase.miles.4l/masters/{imported_sha}.mp4",
+            "bytes": 99_140_709,
+            "media": {"durationSeconds": 120.0},
+            "originSourceUrl": "https://www.youtube.com/watch?v=vt5im2TRAKw",
+            "originWindowSeconds": [0.0, 120.0],
+            "registeredAt": "2026-10-01T18:13:51Z",
+        },
+        "historicalPostedCuts": [],
+        "cuts": [],
+        "updatedAt": "2026-10-01T18:13:51Z",
+    }
+    projection = parse_shipstream_source_projection(
+        json.dumps(manifest).encode(), intent,
+        page_id=page_id, expected_format="pov-dirt-bike",
+    )
+    monkeypatch.setattr(
+        ingredients, "load_shipstream_source_projection", lambda *args, **kwargs: projection,
+    )
+
+    catalog = ingredients.build_dossier_ingredient_catalog(page_id, intent, revision)
+    dirtbike = _format(catalog, "pov-dirt-bike")
+    master = _ingredient(dirtbike, "master-source-video")
+
+    assert master["status"] == "bound"
+    assert master["binding"]["libraryId"] == projection.source_library.library_id
+    assert master["binding"]["masters"][0]["sha256"] == imported_sha
+    assert {option["libraryId"] for option in master["options"]} == {
+        "pov-dirt-bike-chase-miles-4l-v1",
+        projection.source_library.library_id,
+    }
+    assert "master-source-video:selection_required" not in dirtbike["blockers"]
+
+
 def test_shipstream_manifest_format_cannot_override_master_pages_niche(monkeypatch):
     import services.dossier_ingredients as ingredients
     import services.shipstream_source_manifest as source_manifest

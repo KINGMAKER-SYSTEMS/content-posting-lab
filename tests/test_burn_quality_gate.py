@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import base64
 import io
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -16,6 +17,7 @@ from PIL import Image, ImageDraw
 
 import burn_server
 from burn_quality_gate import run_quality_check
+from services.caption_render import CaptionRenderRequestV2, picture_frame_rows, render_caption_overlay
 
 
 def _png_b64(img: Image.Image) -> str:
@@ -72,7 +74,7 @@ def test_long_voice_caption_fails():
     )
     assert result["ok"] is False
     joined = " ".join(result["reasons"])
-    assert "caption_too_long" in joined
+    assert "caption_too_long" not in joined
     assert "persona_voice" in joined
 
 
@@ -126,6 +128,35 @@ def test_typed_style_uses_its_declared_alignment_and_position():
     assert any("typed_position" in reason for reason in mismatch["reasons"])
 
 
+@pytest.mark.parametrize("frame", ["9:16", "16:9", "4:3", "1:1", "3:4"])
+@pytest.mark.parametrize("position", ["top", "middle", "bottom"])
+def test_quality_check_accepts_actual_frame_relative_caption(frame, position):
+    request = CaptionRenderRequestV2.model_validate({
+        "schema": "content-lab.caption-render-request.v2",
+        "picture_frame": frame,
+        "caption": "a fitting caption",
+        "style": {
+            "font": "TikTokSans16pt-Bold.ttf", "size_pt": 32.0,
+            "color": "#ffffff", "outline": "#000000", "position": position,
+            "align": "center", "offset_pct": 0.0, "line_balance": 0,
+        },
+    })
+    overlay = render_caption_overlay(request, font_dir=Path(__file__).parents[1] / "fonts",
+                                     fit_rows=picture_frame_rows(frame))
+    result = run_quality_check("a fitting caption", overlay_png=overlay.overlay.base64,
+                               caption_style=overlay.plan.effective_style.model_dump(),
+                               picture_frame=frame)
+    assert result["ok"] is True
+    assert result["reasons"] == []
+
+
+@pytest.mark.parametrize("frame", ["2:1", [], {}])
+def test_quality_check_rejects_invalid_frame(frame):
+    result = run_quality_check("a caption", overlay_png=v4_overlay(), picture_frame=frame)
+    assert result["ok"] is False
+    assert "picture_frame_invalid" in result["reasons"]
+
+
 @pytest.fixture
 def client(tmp_path, monkeypatch):
     monkeypatch.setattr(burn_server, "VIDEO_DIR", tmp_path / "video")
@@ -155,7 +186,8 @@ def test_quality_check_endpoint_rejects_long_voice(client):
     assert res.status_code == 422
     body = res.json()
     assert body["ok"] is False
-    assert any("caption_too_long" in r for r in body["reasons"])
+    assert any("persona_voice" in r for r in body["reasons"])
+    assert not any("caption_too_long" in r for r in body["reasons"])
 
 
 def test_quality_check_endpoint_rejects_disaster_overlay(client):
@@ -197,3 +229,19 @@ def test_quality_check_never_honours_force(client):
     )
     assert res.status_code == 422
     assert res.json()["ok"] is False
+
+
+def test_long_caption_with_fitting_overlay_is_accepted():
+    caption = " ".join(["keep these words"] * 20)
+    result = run_quality_check(caption, persona="male", overlay_png=v4_overlay())
+    assert result["ok"] is True
+    assert result["caption_words"] == 60
+
+
+def test_quality_check_endpoint_accepts_long_caption(client):
+    res = client.post("/api/quality-check", json={
+        "caption": " ".join(["keep these words"] * 20),
+        "persona": "male", "overlayPng": v4_overlay(),
+    })
+    assert res.status_code == 200
+    assert res.json()["ok"] is True

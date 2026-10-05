@@ -23,17 +23,28 @@ def test_actual_video_receipt_resolves_neutral_defaults_without_claiming_caption
 
 
 def test_recovery_inherits_proven_actual_treatment_and_cannot_invent_missing_history():
-    assert derived_source_treatment(None, "a" * 64, "b" * 64, "recovery") is None
+    job = {"jobId": "recovery-2", "recipeSpecHash": "sha256:" + "d" * 64}
+    treatment = {"filters": {"saturation": 0.5}, "clipSpeed": 0.75,
+                 "captionStyle": {"position": "top"}}
+    assert derived_source_treatment(None, "a" * 64, "b" * 64, job, treatment, parent_job_id="generation-1") is None
     original = source_treatment_receipt({"jobId": "generation-1", "recipeSpecHash": "sha256:" + "c" * 64},
-        {"filters": {"saturation": 0.5}}, "a" * 64, clip_speed=0.75, clip_crop=None)
-    derived = derived_source_treatment(original, "a" * 64, "b" * 64, "recovery-2")
+        treatment, "a" * 64, clip_speed=0.75, clip_crop=None)
+    original_copy = copy.deepcopy(original)
+    treatment["captionStyle"] = {"position": "bottom"}
+    derived = derived_source_treatment(original, "a" * 64, "b" * 64, job, treatment, parent_job_id="generation-1")
     assert derived["visualTreatment"] == original["visualTreatment"]
     assert derived["sourceSha256"] == "b" * 64
     assert derived["generationJobId"] == "recovery-2"
+    assert derived["recipeSpecHash"] == job["recipeSpecHash"]
+    assert derived["sourceRecipeTreatment"] == treatment
     assert derived["derivedFrom"] == {"sourceSha256": "a" * 64, "generationJobId": "generation-1"}
-    assert original["sourceSha256"] == "a" * 64
+    assert original == original_copy
     with pytest.raises(ValueError):
-        derived_source_treatment(original, "0" * 64, "b" * 64, "recovery-2")
+        derived_source_treatment(original, "0" * 64, "b" * 64, job, treatment, parent_job_id="generation-1")
+    with pytest.raises(ValueError):
+        derived_source_treatment(original, "a" * 64, "b" * 64, job, {**treatment, "clipSpeed": 1}, parent_job_id="generation-1")
+    with pytest.raises(ValueError):
+        derived_source_treatment(original, "a" * 64, "b" * 64, job, treatment, parent_job_id="another-producer")
 
 
 @pytest.mark.parametrize("treatment", [
@@ -103,3 +114,17 @@ def test_recovery_skips_unpreparable_master_without_inventing_treatment(change):
     elif change == "requested_crop":
         treatment["clipCrop"]["zoom"] = 1
     assert not recovery_treatment_matches(receipt, job, "b" * 64, treatment)
+
+
+@pytest.mark.parametrize("frame", ["9:16", "16:9", "1:1", "3:4", "4:3"])
+def test_page_frame_is_not_part_of_applied_source_treatment(frame):
+    job, treatment, receipt = recovery_evidence()
+    framed = {**treatment, "frame": frame}
+    assert normalized_visual_treatment(framed) == normalized_visual_treatment(treatment)
+    assert "frame" not in normalized_visual_treatment(framed)
+    # Unframed inventory stays reusable for a page that now picks a frame.
+    assert recovery_treatment_matches(receipt, job, "b" * 64, framed)
+    framed_receipt = source_treatment_receipt(job, framed, "b" * 64,
+        clip_speed=treatment["clipSpeed"], clip_crop=treatment["clipCrop"])
+    assert framed_receipt["visualTreatment"] == receipt["visualTreatment"]
+    assert recovery_treatment_matches(framed_receipt, job, "b" * 64, treatment)

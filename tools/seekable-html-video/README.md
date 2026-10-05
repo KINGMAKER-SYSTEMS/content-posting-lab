@@ -15,8 +15,18 @@ NODE_PATH=frontend/node_modules node tools/seekable-html-video/render_seekable.c
   --cleanup-frames
 ```
 
-Defaults: 1920×1080 @ 24fps (override with `--width/--height/--fps`). Needs ffmpeg and
+Defaults: 1920x1080 @ 24fps (override with `--width/--height/--fps`). Needs ffmpeg and
 playwright (already in `frontend/node_modules`).
+
+An explicit `--frames-dir` may be an existing empty, real directory or a
+missing path, which is created. Populated paths (including the current
+directory) and symlinks are refused. Keep the selected directory in place
+during rendering. Writes check its identity and create frame files exclusively;
+cleanup checks the directory before starting and removes only tracked files
+whose identities still match. This guards ordinary replacement and
+preexisting-file accidents, not hostile concurrent processes running as the
+same account. Cleanup leaves explicit directories in place and recursively
+removes only the renderer's unique managed temporary directory.
 
 ## Composition contract
 

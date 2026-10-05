@@ -83,15 +83,20 @@ def recovery_treatment_matches(receipt: dict | None, job: dict, source_sha256: s
         return False
 
 
-def derived_source_treatment(parent: dict | None, parent_sha: str, source_sha: str, job_id: str) -> dict | None:
+def derived_source_treatment(parent: dict | None, parent_sha: str, source_sha: str,
+                             job: dict, recipe_treatment: dict, *, parent_job_id: str) -> dict | None:
     """Recovery re-crops inherited source; it cannot attest a new requested grade or speed."""
     if parent is None:
         return None
-    if parent.get("schema") != "content-lab.source-treatment.v1" or parent.get("sourceSha256") != parent_sha:
+    if not isinstance(parent, dict) or not recovery_treatment_matches(
+        parent, {"jobId": parent_job_id, "recipeSpecHash": parent.get("recipeSpecHash")},
+        parent_sha, recipe_treatment,
+    ):
         raise ValueError("recovery source treatment binding mismatch")
-    result = copy.deepcopy(parent)
-    result["visualTreatment"] = normalized_visual_treatment(parent["visualTreatment"])
-    result["sourceSha256"] = source_sha
-    result["generationJobId"] = job_id
+    result = source_treatment_receipt(
+        job, recipe_treatment, source_sha,
+        clip_speed=parent["visualTreatment"]["clipSpeed"],
+        clip_crop=parent["visualTreatment"]["clipCrop"],
+    )
     result["derivedFrom"] = {"sourceSha256": parent_sha, "generationJobId": parent["generationJobId"]}
     return result
