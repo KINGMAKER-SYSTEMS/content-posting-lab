@@ -1,12 +1,12 @@
-"""No-frame byte identity: an unframed page renders exactly what 7a97021 rendered.
+"""No-frame byte identity: an unframed page renders exactly what dca377d5d1a0f5b30e0d4e2048b31652d788c3f7 rendered.
 
 tests/fixtures/page-frame-no-frame-goldens.v1.json was produced by
 ``compute_goldens()`` below while services/ffmpeg.py and services/post_render.py
-were still the 7a97021 (#193 merge) code, and committed before the band-aware
+were still the dca377d5d1a0f5b30e0d4e2048b31652d788c3f7 (#193 merge) code, and committed before the band-aware
 cut changed either file. Every later change must reproduce these bytes: the
 cut filter strings, the full ffmpeg argv of both executors' cut call, and the
 prepared-post graph and argv for pages without a frame (absent or "9:16").
-Never regenerate the fixture to make this test pass.
+The reference is generated on an untouched current-main worktree before integrating framed cuts; do not regenerate it from the implementation under test.
 """
 from __future__ import annotations
 
@@ -184,7 +184,7 @@ def compute_goldens(monkeypatch) -> dict:
             monkeypatch, probe, render._frame_band_height(_slot_request(frame)))})
     captions = [{"frame": frame, "style": render._caption_request(_slot_request(frame)).style.model_dump()}
                 for frame in (None, "9:16", "16:9", "1:1", "3:4", "4:3")]
-    return {"schema": "page-frame-no-frame-goldens.v1", "source": "7a97021",
+    return {"schema": "page-frame-no-frame-goldens.v1", "source": "dca377d5d1a0f5b30e0d4e2048b31652d788c3f7",
             "filters": filters, "cuts": cuts, "postRenderGraphs": graphs,
             "postRenderEncodes": encodes, "captionStyles": captions}
 
@@ -196,11 +196,11 @@ def _json_roundtrip(value):
 def test_no_frame_filter_strings_argv_and_post_render_graphs_are_byte_identical(monkeypatch):
     expected = json.loads(GOLDENS.read_text())
     actual = _json_roundtrip(compute_goldens(monkeypatch))
-    assert expected["source"] == "7a97021"
+    assert expected["source"] == "dca377d5d1a0f5b30e0d4e2048b31652d788c3f7"
     for key in ("filters", "cuts", "postRenderGraphs", "postRenderEncodes", "captionStyles"):
         assert len(actual[key]) == len(expected[key]), key
         for index, (got, want) in enumerate(zip(actual[key], expected[key])):
-            assert got == want, f"{key}[{index}] drifted from 7a97021"
+            assert got == want, f"{key}[{index}] drifted from dca377d5d1a0f5b30e0d4e2048b31652d788c3f7"
 
 
 def test_golden_grid_covers_grades_speeds_crops_and_both_executors():

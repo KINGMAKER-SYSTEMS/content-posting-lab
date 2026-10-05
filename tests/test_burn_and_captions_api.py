@@ -1065,3 +1065,16 @@ def test_load_batch_meta_roundtrip_and_resilience(tmp_path):
     # Corrupt JSON -> None (atomic_load swallows JSONDecodeError)
     (tmp_path / "batch_meta.json").write_text("{not json", encoding="utf-8")
     assert burn_router._load_batch_meta(tmp_path) is None
+
+
+def test_hosted_and_port_8002_burn_graphs_share_the_colour_renderer():
+    import burn_server
+
+    cc = {"brightness": -30, "contrast": 95, "saturation": 65}
+    shared = burn_router.build_cc_filter(cc, scale="1080:1920")
+    assert shared.startswith("format=rgba64le,")
+    assert "ra=-0.475000" in shared
+    assert burn_router._build_color_only_filter(cc) == shared
+    assert burn_server._build_color_only_filter(cc) == shared
+    assert shared in burn_router._build_filter_complex(cc)
+    assert shared in burn_server.build_filter_complex(cc)

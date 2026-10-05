@@ -254,6 +254,74 @@ def _framed_cut_filters(
     return DISPLAY_PIXELS_FILTER, picture_filter, pad_filter
 
 
+# colorchannelmixer accepts a coefficient only inside [-2, 2]. More
+# importantly, its *a coefficients are alpha-channel multipliers, not constants:
+# ra/ga/ba are real RGB offsets only while the input has an opaque alpha plane.
+_MIXER_LIMIT = 2.0
+
+
+def _colorchannelmixer(mat: list, off: list) -> str:
+    values = (*mat[0], *mat[1], *mat[2], *off)
+    if any(not math.isfinite(value) or abs(value) > _MIXER_LIMIT for value in values):
+        raise ValueError("colorchannelmixer coefficient outside [-2, 2]")
+    return (
+        f"colorchannelmixer="
+        f"rr={mat[0][0]:.6f}:rg={mat[0][1]:.6f}:rb={mat[0][2]:.6f}:ra={off[0]:.6f}:"
+        f"gr={mat[1][0]:.6f}:gg={mat[1][1]:.6f}:gb={mat[1][2]:.6f}:ga={off[1]:.6f}:"
+        f"br={mat[2][0]:.6f}:bg={mat[2][1]:.6f}:bb={mat[2][2]:.6f}:ba={off[2]:.6f}"
+    )
+
+
+def _factor_steps(value: float, matrix_for_factor) -> list[float]:
+    """Split one composable CSS factor until every mixer stage is legal."""
+    if abs(value) <= 2:
+        candidates = [value]
+    else:
+        count = math.ceil(math.log(abs(value), 2))
+        root = abs(value) ** (1 / count)
+        candidates = [math.copysign(root, value), *([root] * (count - 1))]
+    while any(
+        max(abs(coefficient) for row in matrix_for_factor(factor) for coefficient in row)
+        > _MIXER_LIMIT
+        for factor in candidates
+    ):
+        count = len(candidates) + 1
+        root = abs(value) ** (1 / count)
+        candidates = [math.copysign(root, value), *([root] * (count - 1))]
+    return candidates
+
+
+def _diagonal_filters(value: float, pivot: float = 0.0) -> list[str]:
+    diagonal = lambda factor: [
+        [factor, 0.0, 0.0],
+        [0.0, factor, 0.0],
+        [0.0, 0.0, factor],
+    ]
+    return [
+        _colorchannelmixer(
+            diagonal(factor),
+            [pivot * (1 - factor)] * 3,
+        )
+        for factor in _factor_steps(value, diagonal)
+    ]
+
+
+def _saturation_matrix(value: float) -> list[list[float]]:
+    sr, sg, sb = 0.2126, 0.7152, 0.0722
+    return [
+        [sr + (1 - sr) * value, sg - sg * value, sb - sb * value],
+        [sr - sr * value, sg + (1 - sg) * value, sb - sb * value],
+        [sr - sr * value, sg - sg * value, sb + (1 - sb) * value],
+    ]
+
+
+def _saturation_filters(value: float) -> list[str]:
+    return [
+        _colorchannelmixer(_saturation_matrix(factor), [0.0, 0.0, 0.0])
+        for factor in _factor_steps(value, _saturation_matrix)
+    ]
+
+
 def build_cc_filter(
     cc: dict | None,
     scale: str | None = None,
@@ -361,40 +429,17 @@ def build_cc_filter(
             if item
         ) or "null"
 
-    mat = [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
-    off = [0.0, 0.0, 0.0]
-
-    def mat_mul(a: list, b: list) -> list:
-        return [
-            [sum(a[i][k] * b[k][j] for k in range(3)) for j in range(3)]
-            for i in range(3)
-        ]
-
-    def mat_vec(m: list, v: list) -> list:
-        return [sum(m[i][j] * v[j] for j in range(3)) for i in range(3)]
-
+    # CSS applies filter functions from left to right. Keep those stages
+    # separate instead of composing one oversized matrix. rgba64le provides an
+    # opaque alpha plane, making ra/ga/ba the constant terms that CSS contrast
+    # around 0.5 requires; rgb24 silently made those offsets ineffective.
+    filters = [item for item in (square_filter, "format=rgba64le") if item]
     if abs(css_brightness - 1.0) >= 0.005:
-        b = css_brightness
-        mat = [[b * mat[i][j] for j in range(3)] for i in range(3)]
-        off = [b * o for o in off]
-
+        filters.extend(_diagonal_filters(css_brightness))
     if abs(css_contrast - 1.0) >= 0.005:
-        c = css_contrast
-        bias = 0.5 * (1 - c)
-        mat = [[c * mat[i][j] for j in range(3)] for i in range(3)]
-        off = [c * o + bias for o in off]
-
+        filters.extend(_diagonal_filters(css_contrast, pivot=0.5))
     if abs(css_saturate - 1.0) >= 0.005:
-        s = css_saturate
-        sr, sg, sb = 0.2126, 0.7152, 0.0722
-        sat_mat = [
-            [sr + (1 - sr) * s, sg - sg * s, sb - sb * s],
-            [sr - sr * s, sg + (1 - sg) * s, sb - sb * s],
-            [sr - sr * s, sg - sg * s, sb + (1 - sb) * s],
-        ]
-        off = mat_vec(sat_mat, off)
-        mat = mat_mul(sat_mat, mat)
-
+        filters.extend(_saturation_filters(css_saturate))
     if abs(t_raw) > 1:
         if t_raw > 0:
             amt = min(1.0, t_raw / 200)
@@ -423,8 +468,7 @@ def build_cc_filter(
                     0.072 + 0.928 * cos_a + 0.072 * sin_a,
                 ],
             ]
-        off = mat_vec(t_mat, off)
-        mat = mat_mul(t_mat, mat)
+        filters.append(_colorchannelmixer(t_mat, [0.0, 0.0, 0.0]))
 
     if abs(ti_raw) > 1:
         rad = math.radians(ti_raw / 3)
@@ -446,17 +490,11 @@ def build_cc_filter(
                 0.072 + 0.928 * cos_a + 0.072 * sin_a,
             ],
         ]
-        off = mat_vec(ti_mat, off)
-        mat = mat_mul(ti_mat, mat)
+        filters.append(_colorchannelmixer(ti_mat, [0.0, 0.0, 0.0]))
 
-    ccm = (
-        f"colorchannelmixer="
-        f"rr={mat[0][0]:.6f}:rg={mat[0][1]:.6f}:rb={mat[0][2]:.6f}:ra={off[0]:.6f}:"
-        f"gr={mat[1][0]:.6f}:gg={mat[1][1]:.6f}:gb={mat[1][2]:.6f}:ga={off[1]:.6f}:"
-        f"br={mat[2][0]:.6f}:bg={mat[2][1]:.6f}:bb={mat[2][2]:.6f}:ba={off[2]:.6f}"
-    )
-
-    filters = [item for item in (square_filter, "format=rgb24", ccm) if item]
+    # Return to the established output working format before spatial/effect
+    # filters and the encoder negotiate their final pixel format.
+    filters.append("format=rgb24")
     if sharpness >= 0.001:
         filters.append(f"unsharp=5:5:{sharpness:.2f}:5:5:{sharpness:.2f}")
     if grain_raw >= 0.001:
@@ -530,6 +568,77 @@ def _probe_input_duration_seconds(input_path: str) -> float | None:
     if result.returncode != 0 or not math.isfinite(duration) or duration <= 0:
         return None
     return duration
+
+
+# Colour-metadata field names as reported by ffprobe (`-show_entries stream=…`).
+_COLOR_FIELDS = ("color_space", "color_transfer", "color_primaries", "color_range")
+
+# Restore known fields for any declared PQ/HLG transfer. Tuple completeness is
+# diagnostic only: omitting flags does not remove the input's HDR transfer.
+_HDR_TRANSFERS = frozenset({"smpte2084", "arib-std-b67"})
+_HDR_MATRICES = frozenset({"bt2020nc", "bt2020c"})
+_HDR_PRIMARIES = "bt2020"
+_COLOR_RANGES = frozenset({"tv", "pc"})
+
+
+def _probe_input_color(input_path: str) -> dict[str, str] | None:
+    """Read local video colour fields, or return None when probing fails."""
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe", "-v", "error", "-protocol_whitelist", "file,pipe",
+                "-select_streams", "v:0",
+                "-show_entries", "stream=" + ",".join(_COLOR_FIELDS),
+                "-of", "default=noprint_wrappers=1",
+                input_path,
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=_INPUT_PROBE_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return None
+    if result.returncode != 0:
+        return None
+    fields: dict[str, str] = {}
+    for line in result.stdout.decode("utf-8", errors="replace").splitlines():
+        key, separator, value = line.strip().partition("=")
+        if separator and key in _COLOR_FIELDS and value:
+            fields[key] = value
+    return fields or None
+
+
+def _is_hdr_color(color: dict[str, str] | None) -> bool:
+    """True when the source declares a PQ or HLG transfer."""
+    return bool(color and color.get("color_transfer") in _HDR_TRANSFERS)
+
+
+def _is_complete_hdr_color(color: dict[str, str] | None) -> bool:
+    """Diagnostic: a declared HDR transfer with a complete BT.2020 tuple."""
+    return (
+        _is_hdr_color(color)
+        and color.get("color_primaries") == _HDR_PRIMARIES
+        and color.get("color_space") in _HDR_MATRICES
+        and color.get("color_range") in _COLOR_RANGES
+    )
+
+
+def _hdr_output_color_args(color: dict[str, str]) -> list[str]:
+    """Restore each known HDR field without inferring missing metadata."""
+    transfer = color["color_transfer"]
+    args: list[str] = []
+    for field, flag in (
+        ("color_space", "-colorspace"),
+        ("color_primaries", "-color_primaries"),
+        ("color_transfer", "-color_trc"),
+        ("color_range", "-color_range"),
+    ):
+        value = transfer if field == "color_transfer" else color.get(field)
+        if value and value not in {"unknown", "N/A"}:
+            args.extend((flag, value))
+    return args
 
 
 async def _bounded_encode_stderr(proc) -> bytes:
@@ -686,11 +795,12 @@ async def run_color_correct(
     page_frame: str | None = None,
     frame_fit: str | None = None,
     source_size: tuple[int, int] | None = None,
+    input_color: dict[str, str] | None = None,
 ) -> None:
     """Run ffmpeg to produce a color-corrected copy of a video.
 
-    A non-9:16 ``page_frame`` cuts the picture into its band on the black
-    1080x1920 canvas (see ``build_cc_filter``); only the -vf argument changes.
+    ``input_color`` may supply already-probed fields to skip the colour probe.
+
     Raises RuntimeError with the last ~500 chars of stderr on ffmpeg failure.
     """
     speed = _validated_playback_speed(playback_speed)
@@ -732,6 +842,19 @@ async def run_color_correct(
             "-t", f"{window[1] / 1000:.3f}",
         ] if window is not None else []
     )
+    color = input_color
+    if color is None:
+        # A slow ffprobe must not stall the service event loop.
+        color = await asyncio.to_thread(_probe_input_color, input_path)
+    is_hdr = _is_hdr_color(color)
+    color_args = _hdr_output_color_args(color) if is_hdr else []
+    # An incomplete/mixed HDR tuple is still transfer-positive, not SDR.
+    hdr_status = "hdr" if _is_complete_hdr_color(color) else "hdr_partial_or_mixed"
+    log.info(
+        "hdr_probe: %s input=%s",
+        "failed" if color is None else (hdr_status if is_hdr else "sdr"),
+        os.path.basename(input_path),
+    )
     cmd = [
         "ffmpeg", "-y",
         *input_window,
@@ -739,6 +862,7 @@ async def run_color_correct(
         "-vf", vf,
         *audio_args,
         *enc,
+        *color_args,
         *output_window,
         output_path,
     ]

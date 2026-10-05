@@ -164,7 +164,11 @@ def extract_index_entries(job: dict[str, Any]) -> dict[str, Any]:
             entries["sourceIdentities"].append((page_id, identity))
 
     if kind == "dossier_source_dna" and job.get("status") == "completed":
-        for cut in job.get("sourceCuts", []):
+        # usedAt/cutIndex let the cut planner vary re-cuts against the most
+        # recent ones and prefer the least recently cut footage. Entries
+        # archived before they existed simply count as the oldest.
+        used_at = job.get("completedAt") or job.get("createdAt")
+        for cut_index, cut in enumerate(job.get("sourceCuts", [])):
             if not isinstance(cut, dict):
                 continue
             entries["sourceDnaCuts"].append({
@@ -175,6 +179,8 @@ def extract_index_entries(job: dict[str, Any]) -> dict[str, Any]:
                 "masterSha256": cut.get("masterSha256"),
                 "startMs": cut.get("startMs"),
                 "durationMs": cut.get("durationMs"),
+                "usedAt": used_at if isinstance(used_at, str) else None,
+                "cutIndex": cut_index,
             })
 
     if kind == "syzygy_slideshow" and job.get("status") == "completed":
@@ -227,10 +233,14 @@ def extract_index_entries(job: dict[str, Any]) -> dict[str, Any]:
                 "engine": job.get("engine"),
                 "recipeId": job.get("recipeId"),
                 "engineRegistryHash": job.get("engineRegistryHash"),
+                "engineProfileHash": job.get("engineProfileHash"),
                 "formatContractVersion": job.get("formatContractVersion"),
                 "executorVersion": job.get("executorVersion"),
                 "promptCatalogHash": job.get("promptCatalogHash"),
+                "family": job.get("family"),
                 "providerModel": job.get("providerModel"),
+                "materialSource": job.get("materialSource"),
+                "assetType": job.get("assetType"),
                 "artifactRoot": job.get("artifactRoot"),
                 "createdAt": job.get("createdAt"),
                 "recipeSpecHash": job.get("recipeSpecHash"),

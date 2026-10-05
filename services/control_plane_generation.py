@@ -146,6 +146,7 @@ class GenerationRecipe:
     family: dict[str, Any]
     provider_config: dict[str, Any]
     recipe_spec: dict[str, Any]
+    engine_profile_hash: str = ""
 
     @property
     def clips_per_generation(self) -> int:
@@ -442,6 +443,7 @@ def resolve_generation_recipe(
         engine=provider_engine,
         provider_model=model,
         engine_registry_hash=profile.registry_hash,
+        engine_profile_hash=profile.authority_hash,
         format_contract_version=profile.format_contract_version,
         material_source=profile.material_source,
         asset_type=profile.asset_type,

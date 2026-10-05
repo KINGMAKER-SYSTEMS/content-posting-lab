@@ -181,7 +181,9 @@ def _truck_job(job_id, sha, page_id, root, *, created):
         "jobId": job_id, "pageId": page_id, "sourceKind": "generated", "status": "completed",
         "engine": "hailuo", "recipeId": "truck-scenic:master",
         "engineRegistryHash": "e" * 64, "formatContractVersion": "sha256:" + "a" * 64,
+        "engineProfileHash": "sha256:" + "b" * 64,
         "executorVersion": "v1", "promptCatalogHash": "p" * 64, "providerModel": "minimax/hailuo-2.3",
+        "family": "truck", "materialSource": "generated_video", "assetType": "video/mp4",
         "artifactRoot": str(root), "createdAt": created, "completedAt": created,
         "recipeSpecHash": recipe_spec_hash,
     }
@@ -215,7 +217,9 @@ def test_truck_master_candidates_unchanged_after_compaction(tmp_path, monkeypatc
     recipe = SimpleNamespace(
         engine="hailuo", recipe_id="truck-scenic:master",
         engine_registry_hash="e" * 64, format_contract_version="sha256:" + "a" * 64,
+        engine_profile_hash="sha256:" + "b" * 64,
         executor_version="v1", prompt_catalog_hash="p" * 64,
+        family_name="truck", material_source="generated_video", asset_type="video/mp4",
         provider_model="minimax/hailuo-2.3",
         recipe_spec={"renderTreatment": {"filters": {"brightness": 1.0}, "clipSpeed": 1.0,
                                           "clipCrop": {"zoom": 1.0, "focusX": 0.5, "focusY": 0.5}}},
@@ -224,18 +228,71 @@ def test_truck_master_candidates_unchanged_after_compaction(tmp_path, monkeypatc
 
     before = cp._truck_master_candidates(
         store, "acct:p", 10, content_engine="hailuo", recipe_id="truck-scenic:master",
-        generation_recipe=recipe, current_recipe_spec_hash="sha256:" + "d" * 64,
+        generation_recipe=recipe,
     )
     new_store, archived = c.compact_job_store(store, _now())
     assert {j["jobId"] for j in archived} == {"truck-old", "recovery-old"}
+    archived_truck = next(j for j in new_store[c.ARCHIVE_INDEX_KEY]["truckCandidateJobs"]
+                          if j["jobId"] == "truck-old")
+    assert archived_truck["engineProfileHash"] == "sha256:" + "b" * 64
+    assert archived_truck["materialSource"] == "generated_video"
+    assert archived_truck["assetType"] == "video/mp4"
     after = cp._truck_master_candidates(
         new_store, "acct:p", 10, content_engine="hailuo", recipe_id="truck-scenic:master",
-        generation_recipe=recipe, current_recipe_spec_hash="sha256:" + "d" * 64,
+        generation_recipe=recipe,
     )
     assert [x["sha256"] for x in before] == [x["sha256"] for x in after]
     assert {x["sha256"] for x in after} == {SHA, SHA2}
     # the archived recovery's master remains reserved (SHA3 not produced here,
     # but it must be in the reserved set -> no candidate with that sha)
+
+
+def test_legacy_truck_archive_index_uses_profile_pins_not_global_registry(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.setattr(cp, "_is_exact_16x9_video", lambda p: True)
+    root = tmp_path / "gen"
+    root.mkdir()
+    (root / f"clip-{SHA[:8]}.mp4").write_bytes(b"1234")
+    job = _truck_job("truck-legacy", SHA, "acct:p", root, created=_old())
+    job["engineRegistryHash"] = "e" * 64
+    # This is the pre-profile-pin archive summary emitted by origin/main.
+    archived = {
+        key: job.get(key)
+        for key in (
+            "jobId", "pageId", "sourceKind", "status", "engine", "recipeId",
+            "engineRegistryHash", "formatContractVersion", "executorVersion",
+            "promptCatalogHash", "providerModel", "artifactRoot", "createdAt",
+            "recipeSpecHash", "clips",
+        )
+    }
+    store = _empty()
+    store[c.ARCHIVE_INDEX_KEY] = {"truckCandidateJobs": [archived]}
+    recipe = SimpleNamespace(
+        engine="hailuo", recipe_id="truck-scenic:master",
+        engine_registry_hash="e" * 64, format_contract_version="sha256:" + "a" * 64,
+        engine_profile_hash="sha256:" + "b" * 64,
+        executor_version="v1", prompt_catalog_hash="p" * 64,
+        family_name="truck", material_source="generated_video", asset_type="video/mp4",
+        provider_model="minimax/hailuo-2.3",
+        recipe_spec={"renderTreatment": {"filters": {"brightness": 1.0}, "clipSpeed": 1.0,
+                                           "clipCrop": {"zoom": 1.0, "focusX": 0.5, "focusY": 0.5}}},
+        clips_per_generation=5,
+    )
+    kwargs = dict(content_engine="hailuo", recipe_id="truck-scenic:master",
+                  generation_recipe=recipe)
+    assert [x["sha256"] for x in cp._truck_master_candidates(store, "acct:p", 10, **kwargs)] == [SHA]
+    recipe.engine_registry_hash = "f" * 64
+    assert [x["sha256"] for x in cp._truck_master_candidates(store, "acct:p", 10, **kwargs)] == [SHA]
+
+    archived["pageId"] = "acct:other"
+    assert cp._truck_master_candidates(store, "acct:p", 10, **kwargs) == []
+    archived["pageId"] = "acct:p"
+
+    # The global hash no longer gates archive reuse, but the retained profile
+    # pins remain exact compatibility requirements.
+    archived["executorVersion"] = "sha256:" + "0" * 64
+    assert cp._truck_master_candidates(store, "acct:p", 10, **kwargs) == []
 
 
 # ── K1 reader: same-asset dedupe / no-repeat ──────────────────────────────
@@ -815,14 +872,16 @@ def test_generation_view_keeps_archived_truck_jobs(job_path, tmp_path, monkeypat
     recipe = SimpleNamespace(
         engine="hailuo", recipe_id="truck-scenic:master",
         engine_registry_hash="e" * 64, format_contract_version="sha256:" + "a" * 64,
+        engine_profile_hash="sha256:" + "b" * 64,
         executor_version="v1", prompt_catalog_hash="p" * 64,
+        family_name="truck", material_source="generated_video", asset_type="video/mp4",
         provider_model="minimax/hailuo-2.3",
         recipe_spec={"renderTreatment": {"filters": {"brightness": 1.0}, "clipSpeed": 1.0,
                                           "clipCrop": {"zoom": 1.0, "focusX": 0.5, "focusY": 0.5}}},
         clips_per_generation=5,
     )
     kwargs = dict(content_engine="hailuo", recipe_id="truck-scenic:master",
-                  generation_recipe=recipe, current_recipe_spec_hash="sha256:" + "d" * 64)
+                  generation_recipe=recipe)
     before = cp._truck_master_candidates(store, "acct:p", 10, **kwargs)
     assert [x["sha256"] for x in before] == [SHA]
     new_store, archived = c.compact_job_store(store, _now())

@@ -114,21 +114,27 @@ _URL = re.compile(r"https?://\S+", re.I)
 _STATUS_NUMBER = re.compile(r"\b[45]\d\d\b")
 
 
-# Flat per-attempt cost estimates in USD, keyed by Replicate model. A refused
-# prediction is billed like a successful one, so a refused attempt records the
-# same estimate. Figures are the repository's own catalog estimates (not
-# re-verified against live Replicate pricing); an unlisted model records null.
-ATTEMPT_COST_ESTIMATE_USD: dict[str, float] = {
-    # recipes/generation/silhouette_stills.v1.json providers.flux-image
-    # cost_per_gen_usd (one 2 MP FLUX.2 Pro still; catalog estimate).
-    "black-forest-labs/flux-2-pro": 0.03,
-    # recipes/generation/prompt_modules.v1.json providers.hailuo
-    # cost_per_gen_usd, "lab-observed" 2026-08-16 (1080p/6s video).
-    "minimax/hailuo-2.3": 0.28,
-    # recipes/generation/prompt_modules.v1.json providers.wan-i2v-fast
-    # cost_per_gen_usd, marked "best-known default", unverified.
-    "wan-video/wan-2.2-i2v-fast": 0.12,
-}
+# The per-attempt cost of a refused prediction is billed like a successful one,
+# so a refused attempt records the same estimate. Cost comes from ONE source of
+# truth — the provider catalog via ``generation_budget.catalog_cost_usd_by_model``
+# — so the executor and the operator-UI route can never price the same provider
+# two different ways. An unlisted model returns None and the caller fails closed.
+
+
+def attempt_cost_usd(model: str, duration_seconds: int | float | None = None, *, resolution: str | None = None, parameters: dict | None = None) -> float | None:
+    """Price a known model's exact payload; unknown recipe models return None.
+
+    Invalid pricing for a known model raises rather than falling back to a
+    stale recipe estimate. The caller must refuse before submitting paid work.
+    """
+    from providers import PROVIDERS
+    from services import generation_budget
+
+    if not any(model in (info.get("models") or []) for info in PROVIDERS.values()):
+        return None
+    return generation_budget.catalog_cost_usd_by_model(
+        model, duration_seconds, resolution=resolution, parameters=parameters,
+    )
 
 
 def variant_prompt(base_prompt: str, attempt: int) -> tuple[str, str | None]:
@@ -146,10 +152,6 @@ def variant_prompt(base_prompt: str, attempt: int) -> tuple[str, str | None]:
     prompt = prompt.rstrip()
     separator = " " if prompt.endswith((".", "!", "?")) else ". "
     return prompt + separator + suffix, variant_id
-
-
-def attempt_cost_usd(model: str) -> float | None:
-    return ATTEMPT_COST_ESTIMATE_USD.get(model)
 
 
 def daily_budget() -> int:

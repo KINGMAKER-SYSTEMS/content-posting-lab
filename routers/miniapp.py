@@ -10,13 +10,14 @@ bot token) and scoped to the poster that the calling Telegram user acts as:
   GET  /api/miniapp/requests      → the poster's own content requests
   POST /api/miniapp/requests      → file a new content request
 
-Agent-facing endpoints (gated by X-Agent-Key when MINIAPP_AGENT_KEY is set)
-let the external content agent read/work the request queue:
+Agent-facing endpoints require X-Agent-Key matching MINIAPP_AGENT_KEY. When the
+server key is unset, they remain unavailable (503) rather than opening access.
 
   GET   /api/miniapp/agent/requests
   PATCH /api/miniapp/agent/requests/{request_id}
 """
 
+import hmac
 import os
 
 from fastapi import APIRouter, Header, HTTPException, Query, Request
@@ -53,12 +54,23 @@ def _require_poster(request: Request) -> dict:
 
 
 def _require_agent_key(x_agent_key: str | None) -> None:
-    """Gate agent endpoints behind MINIAPP_AGENT_KEY when it is configured."""
+    """Require the configured server-owned key on every agent endpoint."""
     expected = os.getenv("MINIAPP_AGENT_KEY", "").strip()
     if not expected:
-        return  # not configured → open, consistent with the rest of the app
-    if not x_agent_key or x_agent_key.strip() != expected:
+        raise HTTPException(status_code=503, detail="agent access is not configured")
+    supplied = x_agent_key.strip() if isinstance(x_agent_key, str) else ""
+    if not supplied or not hmac.compare_digest(
+        supplied.encode("utf-8"), expected.encode("utf-8")
+    ):
         raise HTTPException(status_code=401, detail="invalid or missing agent key")
+
+
+def _poster_page(poster: dict, page_id: str) -> dict:
+    """Resolve a requested page only within the authenticated poster's scope."""
+    for page in poster_summary(poster)["pages"]:
+        if page.get("integration_id") == page_id:
+            return page
+    raise HTTPException(status_code=404, detail="page not found")
 
 
 # ── Request bodies ───────────────────────────────────────────────────
@@ -90,6 +102,10 @@ async def my_videos(request: Request, page_id: str | None = Query(default=None))
     """Rendered videos aggregated across the poster's pages."""
     poster = _require_poster(request)
     result = videos_for_poster(poster, page_id=page_id)
+    if page_id is not None and not any(
+        page.get("integration_id") == page_id for page in result["pages"]
+    ):
+        raise HTTPException(status_code=404, detail="page not found")
     return {"poster_id": poster.get("poster_id"), **result}
 
 
@@ -112,11 +128,8 @@ async def create_request(request: Request, body: ContentRequestBody):
         raise HTTPException(status_code=400, detail="text is required")
 
     page_name = None
-    if body.page_id:
-        for p in poster_summary(poster)["pages"]:
-            if p["integration_id"] == body.page_id:
-                page_name = p["name"]
-                break
+    if body.page_id is not None:
+        page_name = _poster_page(poster, body.page_id).get("name")
 
     entry = content_requests.add_request(
         poster_id=poster.get("poster_id"),

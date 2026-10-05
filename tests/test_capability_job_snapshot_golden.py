@@ -248,6 +248,10 @@ def test_dropping_truck_reservations_over_admits_is_caught(tmp_path, monkeypatch
         recipe_id=recipe_id,
         engine="ai_video",
         engine_registry_hash="h-engine",
+        engine_profile_hash="h-profile",
+        family_name="truck-scenic",
+        material_source="generated",
+        asset_type="video/mp4",
         format_contract_version="h-format",
         executor_version="h-executor",
         prompt_catalog_hash="h-catalog",
@@ -262,6 +266,10 @@ def test_dropping_truck_reservations_over_admits_is_caught(tmp_path, monkeypatch
         "engine": "ai_video",
         "recipeId": recipe_id,
         "engineRegistryHash": "h-engine",
+        "engineProfileHash": "h-profile",
+        "family": "truck-scenic",
+        "materialSource": "generated",
+        "assetType": "video/mp4",
         "formatContractVersion": "h-format",
         "executorVersion": "h-executor",
         "promptCatalogHash": "h-catalog",
@@ -316,11 +324,11 @@ def test_dropping_truck_reservations_over_admits_is_caught(tmp_path, monkeypatch
 
     shipped_candidates = cp._truck_master_candidates(
         shipped_view, page_id, 10, content_engine="ai_video", recipe_id=recipe_id,
-        generation_recipe=generation_recipe, current_recipe_spec_hash=recipe_spec_hash,
+        generation_recipe=generation_recipe,
     )
     mutant_candidates = cp._truck_master_candidates(
         mutant_view, page_id, 10, content_engine="ai_video", recipe_id=recipe_id,
-        generation_recipe=generation_recipe, current_recipe_spec_hash=recipe_spec_hash,
+        generation_recipe=generation_recipe,
     )
 
     # Shipped view: the completed recovery reserves the sha256, so the

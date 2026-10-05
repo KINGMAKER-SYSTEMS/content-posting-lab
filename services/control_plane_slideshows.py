@@ -97,6 +97,7 @@ class SlideshowRecipe:
     output_height: int
     encode_preset: str
     recipe_spec: dict[str, Any]
+    engine_profile_hash: str = ""
 
 
 def _executor_contract() -> tuple[dict[str, Any], str]:
@@ -352,6 +353,7 @@ def resolve_slideshow_recipe(
         format_slug=profile.format_slug,
         engine=engine,
         engine_registry_hash=profile.registry_hash,
+        engine_profile_hash=profile.authority_hash,
         format_contract_version=profile.format_contract_version,
         material_source=profile.material_source,
         asset_type=profile.asset_type,

@@ -724,7 +724,17 @@ def _sourced_ingredients(
         )
         options.append(projected_cuts)
     master_options = _master_source_options(format_slug, page_id, shipstream_library)
-    bound_master = master_options[0] if len(master_options) == 1 else None
+    # A valid page manifest is ShipStream's current source authority. When it
+    # supersedes a legacy source-dna registration, keep both choices visible but
+    # bind the ShipStream library so replacement can proceed without an
+    # impossible selection_required state.
+    bound_master = next((
+        option for option in master_options
+        if shipstream_library is not None
+        and option["libraryId"] == shipstream_library.library_id
+    ), None)
+    if bound_master is None and len(master_options) == 1:
+        bound_master = master_options[0]
     if projection_matches:
         selected = projected_cuts
         approved_cut_status = shipstream_projection.approved_cut_status

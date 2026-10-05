@@ -139,6 +139,7 @@ def _stub_generation_recipe():
         recipe_id="truck-scenic:master",
         engine="ai_video",
         engine_registry_hash="stub-engineRegistryHash",
+        engine_profile_hash="stub-engineProfileHash",
         format_contract_version="stub-formatContractVersion",
         executor_version="stub-executorVersion",
         material_source="generated",
