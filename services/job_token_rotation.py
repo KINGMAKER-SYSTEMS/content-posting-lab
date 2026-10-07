@@ -12,6 +12,7 @@ import os
 import re
 import secrets
 import stat
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -74,11 +75,30 @@ def _metadata(store: dict[str, Any], job_id: str) -> dict[str, Any]:
     status = job.get("status")
     if status not in TERMINAL or not isinstance(job.get("token"), str) or not job["token"]:
         return {"status": "not_rotatable", "jobId": job_id}
+    clips = job.get("clips")
+    if not isinstance(clips, list) or any(not isinstance(clip, dict) for clip in clips):
+        raise RotationRefused("job_artifacts_invalid")
     return {
         "status": "ready", "jobId": job_id, "jobStatus": status,
         "jobRevisionSha256": _revision(job),
-        "artifactCount": len(job.get("clips") or []),
+        "artifactCount": len(clips),
     }
+
+
+def _check_private_write_directory(path: Path) -> None:
+    """The existing atomic writer reopens a predictable temporary filename."""
+    try:
+        directory = path.parent.lstat()
+    except OSError as exc:
+        raise RotationRefused("store_directory_not_private") from exc
+    if (not stat.S_ISDIR(directory.st_mode) or directory.st_uid != os.geteuid()
+            or directory.st_mode & 0o077):
+        raise RotationRefused("store_directory_not_private")
+    temporary = path.with_suffix(
+        f"{path.suffix}.{os.getpid()}.{threading.get_ident()}.tmp"
+    )
+    if os.path.lexists(temporary):
+        raise RotationRefused("store_temp_conflict")
 
 
 def inspect_job(store_path: Path, job_id: str) -> dict[str, Any]:
@@ -108,13 +128,19 @@ def rotate_job(
         if not secrets.compare_digest(metadata["jobRevisionSha256"], expected_job_sha256):
             raise RotationRefused("job_changed_retry_dry_run")
         job = store["jobs"][job_id]
-        previous_audit = job.get("signedUrlTokenRotation")
-        prior_count = previous_audit.get("count") if isinstance(previous_audit, dict) else 0
+        if "signedUrlTokenRotation" in job:
+            previous_audit = job["signedUrlTokenRotation"]
+            if not isinstance(previous_audit, dict):
+                raise RotationRefused("rotation_audit_invalid")
+            prior_count = previous_audit.get("count")
+        else:
+            prior_count = 0
         if not isinstance(prior_count, int) or isinstance(prior_count, bool) or not 0 <= prior_count < 1_000_000:
             raise RotationRefused("rotation_audit_invalid")
         replacement = secrets.token_urlsafe(TOKEN_BYTES)
         if secrets.compare_digest(replacement, job["token"]):
             raise RotationRefused("token_generation_collision")
+        _check_private_write_directory(store_path)
         job["token"] = replacement
         job["signedUrlTokenRotation"] = {
             "at": datetime.now(timezone.utc).isoformat(),

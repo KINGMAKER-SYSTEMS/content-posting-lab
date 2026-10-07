@@ -406,7 +406,12 @@
   live job under the existing cross-process store lock and atomic save. Missing
   or archived jobs are no-ops, active jobs refuse, and a changed job revision
   refuses until a new dry-run. Output contains metadata and revisions, never a
-  token. The stored audit records UTC time, a closed reason and count. A
+  token. Malformed clip metadata or an existing malformed rotation audit
+  refuses with a bounded diagnostic. Applying a rotation requires the
+  job-store's immediate directory to be owned by the operator and inaccessible
+  to group and others; the tool never changes directory permissions. A
+  pre-existing atomic-save temporary file for that writer also refuses rather
+  than being truncated. The stored audit records UTC time, a closed reason and count. A
   rollback must never restore a previous token; rotate forward again if needed.
   Already-issued URLs cease to work after rotation, so the operator must
   coordinate downstream consumers before applying it.
@@ -676,7 +681,8 @@
   original preservation and existing bounded source intake; subprocesses are stubbed.
 - Run `pytest -q tests/test_job_token_rotation.py` for dry-run secrecy,
   job-scoped compare-and-set, cross-thread store-lock serialization, archived
-  no-op and old/new download and thumbnail credentials on synthetic artifacts.
+  no-op, malformed metadata/audit refusal, private-directory and temporary-file
+  guards, and old/new download and thumbnail credentials on synthetic artifacts.
 
 - Run `pytest -q tests/test_font_static_headers.py tests/test_static_path_confinement.py`
   for font MIME/cache headers, changed-byte validators and static path containment.

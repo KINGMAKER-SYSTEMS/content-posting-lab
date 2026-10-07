@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
 import time
 from pathlib import Path
@@ -175,3 +176,51 @@ def test_store_path_must_be_existing_regular_non_symlink(store):
     with pytest.raises(RotationRefused, match="store_unavailable"):
         rotate_job(link, TARGET, expected_job_sha256="0" * 64)
     assert not Path(str(link) + ".lock").exists()
+
+
+@pytest.mark.parametrize("clips", [1, {"unexpected": "shape"}, "bad", None])
+def test_malformed_artifacts_refuse_with_bounded_secret_free_code(store, clips, capsys):
+    current = _read(store)
+    current["jobs"][TARGET]["clips"] = clips
+    atomic_save(store, current)
+    before = store.read_bytes()
+    assert main(["--store", str(store), "--job-id", TARGET, "--dry-run"]) == 2
+    assert capsys.readouterr().out.strip() == '{"reason": "job_artifacts_invalid", "status": "refused"}'
+    assert store.read_bytes() == before
+
+
+@pytest.mark.parametrize("audit", [7, "bad", [], None])
+def test_malformed_existing_audit_refuses_without_resetting_count(store, audit, capsys):
+    current = _read(store)
+    current["jobs"][TARGET]["signedUrlTokenRotation"] = audit
+    atomic_save(store, current)
+    revision = inspect_job(store, TARGET)["jobRevisionSha256"]
+    before = store.read_bytes()
+    assert main(["--store", str(store), "--job-id", TARGET, "--apply",
+                 "--expected-job-sha256", revision]) == 2
+    assert capsys.readouterr().out.strip() == '{"reason": "rotation_audit_invalid", "status": "refused"}'
+    assert store.read_bytes() == before
+
+
+def test_shared_writable_directory_refuses_apply_without_store_change(store):
+    revision = inspect_job(store, TARGET)["jobRevisionSha256"]
+    before = store.read_bytes()
+    original_mode = store.parent.stat().st_mode & 0o777
+    try:
+        store.parent.chmod(0o777)
+        with pytest.raises(RotationRefused, match="store_directory_not_private"):
+            rotate_job(store, TARGET, expected_job_sha256=revision)
+    finally:
+        store.parent.chmod(original_mode)
+    assert store.read_bytes() == before
+
+
+def test_preexisting_atomic_temp_file_refuses_without_truncation(store):
+    revision = inspect_job(store, TARGET)["jobRevisionSha256"]
+    temporary = store.with_suffix(f"{store.suffix}.{os.getpid()}.{threading.get_ident()}.tmp")
+    temporary.write_text("existing file must survive")
+    before = store.read_bytes()
+    with pytest.raises(RotationRefused, match="store_temp_conflict"):
+        rotate_job(store, TARGET, expected_job_sha256=revision)
+    assert temporary.read_text() == "existing file must survive"
+    assert store.read_bytes() == before
