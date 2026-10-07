@@ -1570,3 +1570,13 @@ type: [bug report]: Align frame-aware caption quality checks
 area: [backend] [testing] [review]
 
 Reviewed PR #216 against current main and retained the Mini App authorization repair. The local quality-check endpoint now accepts the same picture frame used to render the caption and evaluates its position against that band, including the renderer's minimal anchor adjustment. Frame-relative top/middle/bottom coverage and invalid-frame controls accompany the repair; the existing 253 focused renderer, gate and prepared-final tests passed before the correction. No phone input or runtime installation was performed.
+_________________________________________________________________________________
+time: [05:57pm] [10-07-26] EDT; actual UTC: 2026-10-07T21:57:54Z
+agent: [codex] [gpt-6.1-sol] [focused builder]
+worktree: [codex/job-signed-url-rotation] /Users/smathdaddy-macbook/content-lab-rotation
+base: [origin/main] fe1f514e2d4323675887da5c05f308fce4b3983f
+type: [bug report]: operator-only per-job signed URL credential rotation preparation
+area: [backend], [testing], [review]
+
+Prepared an offline operator CLI for one explicit terminal live Content Lab job's download/thumbnail credential. It requires an absolute existing private job-store path, dry-run job revision, and explicit apply; a changed target revision refuses under the existing cross-process job-store lock. It writes through the existing atomic save with a private process umask, updates only the selected token plus bounded UTC audit metadata, and never outputs a token. Missing or archived jobs are no-ops; active and malformed jobs refuse. Rollback must rotate forward rather than restore the prior credential. The production Docker image copies services/, so the operator entrypoint is python -m services.job_token_rotation; the scripts/ wrapper is checkout convenience only. Synthetic tests proved dry-run secrecy and no write, other-job preservation, lock blocking, compare-and-set refusal, archived no-op, and old-token 403/new-token FileResponse for both download and thumbnail. Fifty-two focused Content Lab tests passed; local app/module import and module CLI help passed. No historical leaked token, production job store, live endpoint, publication, push, PR, merge or deployment was used. Applying rotation in production would require the exact current store path and downstream URL-consumer coordination; no old token can be recovered from this change.
+_________________________________________________________________________________
