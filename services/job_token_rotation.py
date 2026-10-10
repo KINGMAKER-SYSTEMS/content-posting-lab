@@ -76,8 +76,23 @@ def _metadata(store: dict[str, Any], job_id: str) -> dict[str, Any]:
     if status not in TERMINAL or not isinstance(job.get("token"), str) or not job["token"]:
         return {"status": "not_rotatable", "jobId": job_id}
     clips = job.get("clips")
-    if not isinstance(clips, list) or any(not isinstance(clip, dict) for clip in clips):
+    if not isinstance(clips, list):
         raise RotationRefused("job_artifacts_invalid")
+    if clips and (not isinstance(job.get("artifactRoot"), str) or not job["artifactRoot"]):
+        raise RotationRefused("job_artifacts_invalid")
+    for clip in clips:
+        if not isinstance(clip, dict):
+            raise RotationRefused("job_artifacts_invalid")
+        thumbnail = clip.get("thumbnail")
+        if not isinstance(thumbnail, dict) or not isinstance(clip.get("source"), dict):
+            raise RotationRefused("job_artifacts_invalid")
+        for artifact in (clip, thumbnail):
+            if (not isinstance(artifact.get("path"), str) or not artifact["path"]
+                    or not isinstance(artifact.get("name"), str) or not artifact["name"]
+                    or not isinstance(artifact.get("sha256"), str)
+                    or not REVISION_RE.fullmatch(artifact["sha256"])
+                    or type(artifact.get("bytes")) is not int or artifact["bytes"] <= 0):
+                raise RotationRefused("job_artifacts_invalid")
     return {
         "status": "ready", "jobId": job_id, "jobStatus": status,
         "jobRevisionSha256": _revision(job),
@@ -132,7 +147,20 @@ def rotate_job(
             previous_audit = job["signedUrlTokenRotation"]
             if not isinstance(previous_audit, dict):
                 raise RotationRefused("rotation_audit_invalid")
-            prior_count = previous_audit.get("count")
+            if set(previous_audit) != {"at", "reason", "count"}:
+                raise RotationRefused("rotation_audit_invalid")
+            prior_at = previous_audit["at"]
+            try:
+                parsed_at = datetime.fromisoformat(prior_at) if isinstance(prior_at, str) else None
+            except ValueError:
+                parsed_at = None
+            if (parsed_at is None or parsed_at.utcoffset() is None
+                    or parsed_at.utcoffset().total_seconds() != 0
+                    or previous_audit["reason"] not in {
+                        "exposed_signed_url", "scheduled_credential_rotation"
+                    }):
+                raise RotationRefused("rotation_audit_invalid")
+            prior_count = previous_audit["count"]
         else:
             prior_count = 0
         if not isinstance(prior_count, int) or isinstance(prior_count, bool) or not 0 <= prior_count < 1_000_000:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import threading
@@ -35,7 +36,11 @@ def store(tmp_path: Path, monkeypatch):
             "jobId": TARGET, "status": "completed", "pageId": "acct:fixture",
             "token": OLD_TOKEN, "artifactRoot": str(artifact_root),
             "clips": [{"path": "clip.mp4", "name": "clip.mp4",
-                       "thumbnail": {"path": "thumb.jpg", "name": "thumb.jpg"}}],
+                       "sha256": hashlib.sha256(b"fixture clip").hexdigest(),
+                       "bytes": len(b"fixture clip"), "source": {},
+                       "thumbnail": {"path": "thumb.jpg", "name": "thumb.jpg",
+                                     "sha256": hashlib.sha256(b"fixture thumbnail").hexdigest(),
+                                     "bytes": len(b"fixture thumbnail")}}],
         },
         OTHER: {
             "jobId": OTHER, "status": "completed", "pageId": "acct:other",
@@ -223,4 +228,38 @@ def test_preexisting_atomic_temp_file_refuses_without_truncation(store):
     with pytest.raises(RotationRefused, match="store_temp_conflict"):
         rotate_job(store, TARGET, expected_job_sha256=revision)
     assert temporary.read_text() == "existing file must survive"
+    assert store.read_bytes() == before
+
+
+@pytest.mark.parametrize("broken_clip", [
+    {},
+    {"path": "clip.mp4"},
+    {"path": "clip.mp4", "name": "clip.mp4", "bytes": 1,
+     "sha256": "0" * 64, "source": {}, "thumbnail": {}},
+])
+def test_incomplete_clip_refuses_before_any_token_change(store, broken_clip):
+    current = _read(store)
+    current["jobs"][TARGET]["clips"] = [broken_clip]
+    atomic_save(store, current)
+    before = store.read_bytes()
+    with pytest.raises(RotationRefused, match="job_artifacts_invalid"):
+        inspect_job(store, TARGET)
+    assert store.read_bytes() == before
+
+
+@pytest.mark.parametrize("audit", [
+    {"count": 1, "at": "not-a-date", "reason": "exposed_signed_url"},
+    {"count": 1, "at": "2026-10-10T12:00:00", "reason": "exposed_signed_url"},
+    {"count": 1, "at": "2026-10-10T12:00:00+00:00", "reason": "other"},
+    {"count": 1, "at": "2026-10-10T12:00:00+00:00",
+     "reason": "exposed_signed_url", "history": [{"at": "older"}]},
+])
+def test_malformed_existing_audit_fields_preserved_on_refusal(store, audit):
+    current = _read(store)
+    current["jobs"][TARGET]["signedUrlTokenRotation"] = audit
+    atomic_save(store, current)
+    revision = inspect_job(store, TARGET)["jobRevisionSha256"]
+    before = store.read_bytes()
+    with pytest.raises(RotationRefused, match="rotation_audit_invalid"):
+        rotate_job(store, TARGET, expected_job_sha256=revision)
     assert store.read_bytes() == before
