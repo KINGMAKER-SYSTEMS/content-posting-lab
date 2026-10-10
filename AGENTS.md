@@ -12,6 +12,14 @@
   parent traversal and symlinked job directories; listing skips unsafe jobs and
   symlinked frame assets. The browser's UUID job IDs remain supported.
 
+- Recreate LaMa frame cleaning records a private exact-image/mask/version
+  submission intent before the paid POST, then the returned Replicate prediction
+  ID before polling and the output URL before CDN download. A missing prediction
+  ID after intent is ambiguous and cannot be resubmitted automatically; known
+  IDs are polled again without another debit. A stable kernel claim prevents
+  concurrent starts and deletion while a job is active. Clean frames are
+  verified and atomically published after download.
+
 - `tools/seekable-html-video/render_seekable.cjs` owns seekable HTML-to-MP4 frame capture.
   An explicit `--frames-dir` may be an existing empty, real directory or a
   missing path, which is created; populated or symlink paths are refused.

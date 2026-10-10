@@ -5,7 +5,9 @@ import base64
 import json
 import logging
 import os
+import hashlib
 import re
+import tempfile
 import time
 from pathlib import Path
 
@@ -15,6 +17,8 @@ from pydantic import BaseModel
 
 from project_manager import get_project_recreate_dir
 from services.fsutil import safe_rmtree
+from services import generation_budget
+from services.generation_recovery import runner_lock
 
 log = logging.getLogger("recreate")
 log.setLevel(logging.DEBUG)
@@ -113,26 +117,56 @@ async def _get_video_duration(video_path: Path) -> float:
     return duration
 
 
+# Stable cross-process claim follows the validated real project child.
+def _job_lock_id(job_dir: Path) -> str:
+    return "recreate-" + hashlib.sha256(str(job_dir.resolve()).encode()).hexdigest()
+
+
 # ── Pipeline ─────────────────────────────────────────────────────────
 
 
-async def _remove_text_with_retry(
-    image_b64: str, client: httpx.AsyncClient, label: str, max_retries: int = 3,
-) -> str:
-    """Call remove_text with retry logic for transient Replicate API failures."""
-    from providers.replicate import remove_text
-
-    last_error = None
-    for attempt in range(1, max_retries + 1):
+def _persist_recreate_receipt(path: Path, record: dict) -> None:
+    """Commit a private original-attempt receipt before the paid request."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temp = tempfile.mkstemp(prefix=".lama-", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w") as stream:
+            os.fchmod(stream.fileno(), 0o600)
+            json.dump(record, stream, sort_keys=True)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temp, path)
+        directory = os.open(path.parent, os.O_RDONLY)
         try:
-            url = await remove_text(image_b64, client=client)
-            return url
-        except Exception as e:
-            last_error = e
-            log.warning("remove_text %s attempt %d/%d failed: %s", label, attempt, max_retries, e)
-            if attempt < max_retries:
-                await asyncio.sleep(2 * attempt)  # Exponential backoff: 2s, 4s
-    raise RuntimeError(f"Text removal failed for {label} after {max_retries} attempts: {last_error}")
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        if os.path.exists(temp):
+            os.unlink(temp)
+
+
+async def _remove_text_with_retry(
+    image_b64: str, client: httpx.AsyncClient, label: str,
+    receipt_path: Path,
+) -> str:
+    """Resume one original LaMa attempt; never resubmit an ambiguous create."""
+    from providers.replicate import remove_text
+    from services.generation_recovery import PredictionCheckpoint, runner_lock
+
+    # The kernel lock serializes same-job retries across workers. Receipt
+    # presence alone is never treated as an active owner.
+    with runner_lock(receipt_path, label.replace(" ", "-")) as acquired:
+        if not acquired:
+            raise RuntimeError(f"Text removal already running for {label}")
+        try:
+            record = json.loads(receipt_path.read_text()) if receipt_path.exists() else {}
+        except (OSError, ValueError) as exc:
+            raise RuntimeError(f"Cannot read original LaMa receipt for {label}") from exc
+        checkpoint = PredictionCheckpoint(
+            record, lambda value: _persist_recreate_receipt(receipt_path, value)
+        )
+        return await remove_text(image_b64, client=client, checkpoint=checkpoint)
 
 
 async def _download_cleaned_image(
@@ -143,7 +177,27 @@ async def _download_cleaned_image(
         try:
             resp = await client.get(url, timeout=60)
             resp.raise_for_status()
-            dest.write_bytes(resp.content)
+            # A failed/restarted GET must not leave a partial file that the
+            # job listing treats as a finished clean frame.
+            from io import BytesIO
+            from PIL import Image
+            with Image.open(BytesIO(resp.content)) as image:
+                image.verify()
+            fd, temp = tempfile.mkstemp(prefix=".clean-", dir=dest.parent)
+            try:
+                with os.fdopen(fd, "wb") as stream:
+                    stream.write(resp.content)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                os.replace(temp, dest)
+                directory = os.open(dest.parent, os.O_RDONLY)
+                try:
+                    os.fsync(directory)
+                finally:
+                    os.close(directory)
+            finally:
+                if os.path.exists(temp):
+                    os.unlink(temp)
             return
         except Exception as e:
             log.warning("download %s attempt %d failed: %s", label, attempt, e)
@@ -153,6 +207,19 @@ async def _download_cleaned_image(
 
 
 async def _run_pipeline(job_id: str, video_url: str, project: str):
+    """Hold one stable kernel claim across all job writes and paid submissions."""
+    try:
+        job_dir = _safe_recreate_job_dir(project, job_id)
+        with runner_lock(generation_budget.jobs_store_path(), _job_lock_id(job_dir)) as acquired:
+            if not acquired:
+                await _send(job_id, "error", {"error": "Recreate job already running"})
+                return
+            await _run_pipeline_owned(job_id, video_url, project)
+    except ValueError as exc:
+        await _send(job_id, "error", {"error": str(exc)})
+
+
+async def _run_pipeline_owned(job_id: str, video_url: str, project: str):
     """Download video, extract first/last frames, remove text from each."""
     from scraper.frame_extractor import download_video, extract_frame
 
@@ -217,7 +284,7 @@ async def _run_pipeline(job_id: str, video_url: str, project: str):
                 "text": "Removing text from first frame (attempt 1)...",
             })
             log.debug("remove_text: first frame (%d chars)", len(first_b64))
-            first_clean_url = await _remove_text_with_retry(first_b64, client, "first frame")
+            first_clean_url = await _remove_text_with_retry(first_b64, client, "first frame", job_dir / "first_lama_receipt.json")
             log.info("remove_text: first frame done → %s", first_clean_url[:120] if first_clean_url else "None")
 
             await _send(job_id, "status", {"text": "Downloading cleaned first frame..."})
@@ -230,7 +297,7 @@ async def _run_pipeline(job_id: str, video_url: str, project: str):
                 "text": "Removing text from last frame...",
             })
             log.debug("remove_text: last frame (%d chars)", len(last_b64))
-            last_clean_url = await _remove_text_with_retry(last_b64, client, "last frame")
+            last_clean_url = await _remove_text_with_retry(last_b64, client, "last frame", job_dir / "last_lama_receipt.json")
             log.info("remove_text: last frame done → %s", last_clean_url[:120] if last_clean_url else "None")
 
             await _send(job_id, "status", {"text": "Downloading cleaned last frame..."})
@@ -454,6 +521,10 @@ async def delete_recreate_job(
     if not job_dir.exists() or not job_dir.is_dir():
         raise HTTPException(404, "Job not found")
 
-    safe_rmtree(job_dir)
+    with runner_lock(generation_budget.jobs_store_path(), _job_lock_id(job_dir)) as acquired:
+        if not acquired:
+            raise HTTPException(409, "Recreate job is running")
+        if not safe_rmtree(job_dir):
+            raise HTTPException(500, "Recreate job could not be deleted")
     log.info("deleted job %s", job_id[:8])
     return {"deleted": True, "job_id": job_id}

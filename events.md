@@ -1608,3 +1608,12 @@ area: [backend], [testing], [review]
 
 Disposable API reproduction showed encoded parent job IDs could remove files outside the recreate directory. Recreate now validates one safe real child before pipeline writes or DELETE and skips unsafe listing entries and symlinked frame assets. Direct inner-pipeline, encoded/double-encoded REST and WebSocket, symlink, and valid UUID regressions pass. No provider request, production job deletion, push, merge or deployment occurred. Rollback is the previous code revision; do not restore it while untrusted recreate endpoints are reachable.
 _________________________________________________________________________________
+_________________________________________________________________________________
+time: [06:08am] [10-10-26] EDT; actual UTC: 2026-10-10T10:08:13Z
+agent: [Codex desktop with Mac mini builder] [gpt-6.1-sol] [focused builder]
+worktree: [codex/recreate-ambiguous-20261010] /Users/risingtidesdev/worktrees/content-lab-recreate-ambiguous-20261010
+type: [bug report]: LaMa recreate original-attempt reconciliation
+area: [backend], [testing], [review]
+
+The recreate frame cleaner previously retried every Replicate failure by creating another charged prediction. This private candidate records paid intent, prediction ID and output URL per frame, resumes known IDs without a new debit, and holds unknown submission outcomes for reconciliation. Cross-process job locking fences concurrent starts and DELETE, and the CDN result is verified before atomic publication. No provider or production request, push, PR, merge or deployment occurred; this candidate requires independent exact-head review after integration with the separate recreate path-confinement repair. Forty-eight focused tests passed before the devlog pass. Rollback is a code revision only if durable receipts are preserved; do not delete ambiguous original-attempt receipts.
+_________________________________________________________________________________
