@@ -7,6 +7,11 @@
 
 ## Ownership
 
+- `routers/recreate.py` confines REST and WebSocket job IDs to one real
+  recreate-directory child before any job write or deletion. Reject encoded
+  parent traversal and symlinked job directories; listing skips unsafe jobs and
+  symlinked frame assets. The browser's UUID job IDs remain supported.
+
 - `tools/seekable-html-video/render_seekable.cjs` owns seekable HTML-to-MP4 frame capture.
   An explicit `--frames-dir` may be an existing empty, real directory or a
   missing path, which is created; populated or symlink paths are refused.
