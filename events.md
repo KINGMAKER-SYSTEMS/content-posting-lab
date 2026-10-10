@@ -1617,3 +1617,13 @@ area: [backend], [testing], [review]
 
 The recreate frame cleaner previously retried every Replicate failure by creating another charged prediction. This private candidate records paid intent, prediction ID and output URL per frame, resumes known IDs without a new debit, and holds unknown submission outcomes for reconciliation. Cross-process job locking fences concurrent starts and DELETE, and the CDN result is verified before atomic publication. No provider or production request, push, PR, merge or deployment occurred; this candidate requires independent exact-head review after integration with the separate recreate path-confinement repair. Forty-eight focused tests passed before the devlog pass. Rollback is a code revision only if durable receipts are preserved; do not delete ambiguous original-attempt receipts.
 _________________________________________________________________________________
+
+_________________________________________________________________________________
+time: [08:05am] [10-10-26] EDT; actual UTC: 2026-10-10T12:05:52Z
+agent: [Codex desktop with Mac mini builder] [gpt-6.1-sol] [focused builder]
+worktree: [codex/recreate-ambiguous-20261010] /Users/risingtidesdev/worktrees/content-lab-recreate-ambiguous-20261010
+type: [bug report]: Recreate LaMa receipt deletion and budget boundary repair
+area: [backend], [testing], [review]
+
+Independent review of the private rebased candidate found DELETE could erase an unresolved paid attempt, and the pre-debit intent made a budget refusal look like an ambiguous provider submission. The private follow-up keeps budget-pending separate from the post-debit submission fence, retries only the same debit before that fence, rejects DELETE while any paid receipt/output remains unresolved, and reuses original video/frame bytes on known-attempt replay. Synthetic POST-timeout, known-ID poll, DELETE, budget-refusal/reset, and source-drift tests pass without provider calls. This remains an unpushed candidate requiring fresh independent review, merge, intended deployment and live verification; unresolved provider-create replies still require original-attempt reconciliation. Rollback must preserve receipt files and the generation-budget ledger.
+_________________________________________________________________________________

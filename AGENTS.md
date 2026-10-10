@@ -13,12 +13,15 @@
   symlinked frame assets. The browser's UUID job IDs remain supported.
 
 - Recreate LaMa frame cleaning records a private exact-image/mask/version
-  submission intent before the paid POST, then the returned Replicate prediction
-  ID before polling and the output URL before CDN download. A missing prediction
-  ID after intent is ambiguous and cannot be resubmitted automatically; known
-  IDs are polled again without another debit. A stable kernel claim prevents
-  concurrent starts and deletion while a job is active. Clean frames are
-  verified and atomically published after download.
+  budget-pending identity before the debit and a separate submission intent
+  after debit and before the paid POST, then the returned Replicate prediction
+  ID before polling and the output URL before CDN download. A budget refusal
+  may retry the same debit ID; a submission intent missing its prediction ID is
+  ambiguous and cannot be resubmitted automatically. Known IDs are polled again
+  without another debit. A stable kernel claim prevents concurrent starts and
+  deletion while a job is active; DELETE also refuses unresolved receipts after
+  the runner exits. Paid replays reuse their saved original video and frame
+  bytes. Clean frames are verified and atomically published after download.
 
 - `tools/seekable-html-video/render_seekable.cjs` owns seekable HTML-to-MP4 frame capture.
   An explicit `--frames-dir` may be an existing empty, real directory or a

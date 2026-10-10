@@ -586,25 +586,38 @@ async def remove_text(
         fingerprint = input_hash(_LAMA_VERSION, {"image": image_data_uri, "mask": mask_data_uri})
         prior = checkpoint.record if checkpoint is not None else None
         if prior:
-            if prior.get("inputHash") != fingerprint:
+            if not isinstance(prior, dict) or prior.get("inputHash") != fingerprint:
                 raise RuntimeError("LaMa checkpoint input mismatch")
             if prior.get("output"):
                 return prior["output"]
             pred_id = prior.get("predictionId")
-            if not pred_id:
+            debit_id = prior.get("debitId")
+            if not isinstance(debit_id, str) or not debit_id.startswith("recreate:"):
+                raise RuntimeError("LaMa checkpoint debit identity missing")
+            if not pred_id and prior.get("state") != "budget_pending":
                 raise RuntimeError("LaMa submission outcome unknown; reconcile original attempt")
         else:
-            cost_usd = generation_budget.per_gen_cost_usd_by_model("dpakkk/image-object-removal")
+            pred_id = None
             debit_id = "recreate:" + uuid.uuid4().hex
             if checkpoint is not None:
                 await checkpoint.save({"inputHash": fingerprint, "debitId": debit_id,
-                                       "state": "submission_intent"})
+                                       "state": "budget_pending"})
+
+        if not pred_id:
+            # Reuse the same debit identity after a budget refusal or uncertain
+            # ledger write. A committed debit returns true without recharging.
+            cost_usd = generation_budget.per_gen_cost_usd_by_model("dpakkk/image-object-removal")
             reserved = await asyncio.to_thread(
                 generation_budget.debit_generation_spend_at,
                 generation_budget.jobs_store_path(), cost_usd, debit_id,
             )
             if not reserved:
                 raise RuntimeError("generation_daily_budget_reached")
+            # This is the last reversible boundary. Once persisted, even a
+            # timeout or cancellation before the POST reply is ambiguous.
+            if checkpoint is not None:
+                await checkpoint.save({"inputHash": fingerprint, "debitId": debit_id,
+                                       "state": "submission_intent"})
             resp = await client.post(
                 f"{REPLICATE_API}/predictions",
                 headers=headers,
@@ -626,7 +639,7 @@ async def remove_text(
         else:
             raise RuntimeError(f"LaMa unexpected output: {output}")
         if checkpoint is not None:
-            await checkpoint.save({"inputHash": fingerprint, "debitId": (prior or {}).get("debitId", debit_id if not prior else None),
+            await checkpoint.save({"inputHash": fingerprint, "debitId": debit_id,
                                    "predictionId": pred_id, "state": "complete",
                                    "output": result})
         return result

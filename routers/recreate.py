@@ -238,13 +238,27 @@ async def _run_pipeline_owned(job_id: str, video_url: str, project: str):
         t1 = time.time()
         await _send(job_id, "downloading", {"text": "Downloading video..."})
         video_path = job_dir / "source_video.mp4"
-        try:
-            await asyncio.wait_for(download_video(video_url, video_path), timeout=120)
-        except asyncio.TimeoutError:
-            raise RuntimeError("Video download timed out after 2 minutes. Try a shorter video or check the URL.")
-        if not video_path.exists() or video_path.stat().st_size < 1000:
+        first_frame = job_dir / "first_frame_original.jpg"
+        last_frame = job_dir / "last_frame_original.jpg"
+        has_paid_receipt = any(
+            (job_dir / name).exists() or (job_dir / name).is_symlink()
+            for name in ("first_lama_receipt.json", "last_lama_receipt.json")
+        )
+        if has_paid_receipt:
+            # Preserve exact original pixels for the known paid attempt. A
+            # changed source URL must never replace the frame under its receipt.
+            if any(not path.is_file() or path.is_symlink()
+                   for path in (video_path, first_frame, last_frame)):
+                raise RuntimeError("Original recreate frames unavailable; reconcile paid attempt")
+        else:
+            try:
+                await asyncio.wait_for(download_video(video_url, video_path), timeout=120)
+            except asyncio.TimeoutError:
+                raise RuntimeError("Video download timed out after 2 minutes. Try a shorter video or check the URL.")
+        if not video_path.exists() or video_path.is_symlink() or video_path.stat().st_size < 1000:
             raise RuntimeError("Video download failed — file is empty or missing. Check if the URL is accessible.")
-        log.info("phase1 download: %.1fs, size=%d bytes", time.time() - t1, video_path.stat().st_size)
+        log.info("phase1 source: %.1fs, size=%d bytes, resume=%s",
+                 time.time() - t1, video_path.stat().st_size, has_paid_receipt)
 
         # Phase 2: Extract first and last frames
         t2 = time.time()
@@ -254,17 +268,15 @@ async def _run_pipeline_owned(job_id: str, video_url: str, project: str):
         except Exception as e:
             raise RuntimeError(f"Could not read video duration — file may be corrupted: {e}")
 
-        first_frame = job_dir / "first_frame_original.jpg"
-        last_frame = job_dir / "last_frame_original.jpg"
+        if not has_paid_receipt:
+            await extract_frame(video_path, first_frame, timestamp=0.0)
+            if not first_frame.exists():
+                raise RuntimeError("Failed to extract first frame from video")
 
-        await extract_frame(video_path, first_frame, timestamp=0.0)
-        if not first_frame.exists():
-            raise RuntimeError("Failed to extract first frame from video")
-
-        last_ts = max(0.0, duration - 0.1)
-        await extract_frame(video_path, last_frame, timestamp=last_ts)
-        if not last_frame.exists():
-            raise RuntimeError("Failed to extract last frame from video")
+            last_ts = max(0.0, duration - 0.1)
+            await extract_frame(video_path, last_frame, timestamp=last_ts)
+            if not last_frame.exists():
+                raise RuntimeError("Failed to extract last frame from video")
 
         first_b64 = _image_to_data_uri(first_frame)
         last_b64 = _image_to_data_uri(last_frame)
@@ -507,6 +519,29 @@ async def list_recreate_jobs(project: str = Query(default="quick-test")):
     return {"jobs": jobs}
 
 
+def _has_unresolved_lama_receipt(job_dir: Path) -> bool:
+    """A paid attempt remains durable until its output is downloaded."""
+    for name, clean_name in (
+        ("first_lama_receipt.json", "first_frame_clean.png"),
+        ("last_lama_receipt.json", "last_frame_clean.png"),
+    ):
+        receipt = job_dir / name
+        if not receipt.exists() and not receipt.is_symlink():
+            continue
+        try:
+            if receipt.is_symlink():
+                return True
+            record = json.loads(receipt.read_text())
+            if (not isinstance(record, dict) or record.get("state") != "complete"
+                    or not record.get("predictionId") or not record.get("output")
+                    or not (job_dir / clean_name).is_file()
+                    or (job_dir / clean_name).is_symlink()):
+                return True
+        except (OSError, ValueError):
+            return True
+    return False
+
+
 @router.delete("/jobs/{job_id}")
 async def delete_recreate_job(
     job_id: str,
@@ -524,6 +559,8 @@ async def delete_recreate_job(
     with runner_lock(generation_budget.jobs_store_path(), _job_lock_id(job_dir)) as acquired:
         if not acquired:
             raise HTTPException(409, "Recreate job is running")
+        if _has_unresolved_lama_receipt(job_dir):
+            raise HTTPException(409, "Recreate job has an unresolved LaMa attempt")
         if not safe_rmtree(job_dir):
             raise HTTPException(500, "Recreate job could not be deleted")
     log.info("deleted job %s", job_id[:8])
