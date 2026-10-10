@@ -248,3 +248,103 @@ async def test_generate_prompt_openai_call_failure_returns_502(monkeypatch):
     detail = r.json()["detail"]
     assert "429" in detail
     assert "rate limited" in detail
+
+@pytest.mark.parametrize("encoded", ["%2e%2e", "%252e%252e"])
+def test_recreate_delete_rejects_encoded_parent_and_preserves_outside_marker(monkeypatch, tmp_path, encoded):
+    from fastapi.testclient import TestClient
+
+    root = tmp_path / "project" / "recreate"
+    root.mkdir(parents=True)
+    marker = root.parent / "marker.txt"
+    marker.write_text("keep")
+    monkeypatch.setattr(recreate_router, "get_project_recreate_dir", lambda _: root)
+    with TestClient(app) as client:
+        response = client.delete(f"/api/recreate/jobs/{encoded}?project=fixture")
+    assert response.status_code in (400, 404)
+    assert marker.read_text() == "keep"
+    assert root.exists()
+
+
+@pytest.mark.parametrize("encoded", ["%2e%2e", "%252e%252e"])
+def test_recreate_websocket_rejects_encoded_parent_without_pipeline(monkeypatch, tmp_path, encoded):
+    from fastapi.testclient import TestClient
+    from starlette.websockets import WebSocketDisconnect
+
+    root = tmp_path / "project" / "recreate"
+    root.mkdir(parents=True)
+    marker = root.parent / "marker.txt"
+    marker.write_text("keep")
+    monkeypatch.setattr(recreate_router, "get_project_recreate_dir", lambda _: root)
+    starts = []
+
+    async def fake_pipeline(*args):
+        starts.append(args)
+
+    monkeypatch.setattr(recreate_router, "_run_pipeline", fake_pipeline)
+    with TestClient(app) as client:
+        with pytest.raises(WebSocketDisconnect):
+            with client.websocket_connect(f"/api/recreate/ws/{encoded}") as ws:
+                ws.send_json({"action": "start", "video_url": "https://example.invalid/video", "project": "fixture"})
+                ws.receive_json()
+    assert starts == []
+    assert marker.read_text() == "keep"
+    assert root.exists()
+
+@pytest.mark.anyio
+async def test_recreate_inner_rejects_parent_before_any_write(monkeypatch, tmp_path):
+    root = tmp_path / "project" / "recreate"
+    root.mkdir(parents=True)
+    marker = root.parent / "marker.txt"
+    marker.write_text("keep")
+    monkeypatch.setattr(recreate_router, "get_project_recreate_dir", lambda _: root)
+    sent = []
+
+    async def record(*args):
+        sent.append(args)
+
+    monkeypatch.setattr(recreate_router, "_send", record)
+    await recreate_router._run_pipeline("..", "https://example.invalid/video", "fixture")
+    assert sent and sent[0][1] == "error"
+    assert marker.read_text() == "keep"
+    assert root.exists()
+
+
+@pytest.mark.anyio
+async def test_recreate_rejects_symlinked_job_and_skips_symlinked_assets(monkeypatch, tmp_path):
+    root = tmp_path / "project" / "recreate"
+    root.mkdir(parents=True)
+    outside = tmp_path / "secret"
+    outside.mkdir()
+    (outside / "first_frame_original.jpg").write_bytes(b"secret")
+    (root / "linked-job").symlink_to(outside, target_is_directory=True)
+    valid = root / "valid-job"
+    valid.mkdir()
+    (valid / "first_frame_original.jpg").symlink_to(outside / "first_frame_original.jpg")
+    monkeypatch.setattr(recreate_router, "get_project_recreate_dir", lambda _: root)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        listing = await client.get("/api/recreate/jobs?project=fixture")
+        deletion = await client.delete("/api/recreate/jobs/linked-job?project=fixture")
+    assert listing.status_code == 200
+    assert listing.json()["jobs"] == []
+    assert deletion.status_code == 400
+    assert (outside / "first_frame_original.jpg").read_bytes() == b"secret"
+
+
+@pytest.mark.anyio
+async def test_recreate_valid_uuid_job_still_lists_and_deletes(monkeypatch, tmp_path):
+    root = tmp_path / "project" / "recreate"
+    root.mkdir(parents=True)
+    job_id = "4bd53710-2f72-4ceb-bb7e-e4a6590134e1"
+    job = root / job_id
+    job.mkdir()
+    (job / "first_frame_original.jpg").write_bytes(b"fixture")
+    monkeypatch.setattr(recreate_router, "get_project_recreate_dir", lambda _: root)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        listing = await client.get("/api/recreate/jobs?project=fixture")
+        deletion = await client.delete(f"/api/recreate/jobs/{job_id}?project=fixture")
+    assert listing.status_code == 200
+    assert listing.json()["jobs"][0]["job_id"] == job_id
+    assert deletion.status_code == 200
+    assert not job.exists()

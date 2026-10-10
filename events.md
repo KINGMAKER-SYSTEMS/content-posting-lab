@@ -1598,3 +1598,13 @@ area: [backend], [testing], [review]
 
 Independent exact-head review found that a terminal job with incomplete clip artifacts could pass rotation readiness while the download and thumbnail readers require missing fields, and a malformed prior audit could be overwritten. The private Mac mini repair validates the router-consumed clip/thumbnail fields and requires a closed, UTC-stamped prior audit before changing any token. Malformed or unknown prior audit fields refuse without changing store bytes. Twenty-four focused synthetic tests passed and independent review found no scoped source blocker. The release remains held for final-head verification and the required full production Docker image build. No production store or token was read or rotated; merge, deployment and downstream signed-URL consumer reconciliation remain separate. Rollback before any rotation is code-only; after a real rotation, never restore the old token and rotate forward if needed.
 _________________________________________________________________________________
+
+_________________________________________________________________________________
+time: [06:07am] [10-10-26] EDT; actual UTC: 2026-10-10T10:07:44Z
+agent: [Codex desktop with Mac mini builder] [gpt-6.1-sol] [focused builder]
+worktree: [codex/recreate-path-confinement-20261010] /Users/risingtidesdev/worktrees/content-lab-recreate-path-20261010
+type: [bug report]: Recreate REST/WebSocket job path traversal repair
+area: [backend], [testing], [review]
+
+Disposable API reproduction showed encoded parent job IDs could remove files outside the recreate directory. Recreate now validates one safe real child before pipeline writes or DELETE and skips unsafe listing entries and symlinked frame assets. Direct inner-pipeline, encoded/double-encoded REST and WebSocket, symlink, and valid UUID regressions pass. No provider request, production job deletion, push, merge or deployment occurred. Rollback is the previous code revision; do not restore it while untrusted recreate endpoints are reachable.
+_________________________________________________________________________________

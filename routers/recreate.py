@@ -5,6 +5,7 @@ import base64
 import json
 import logging
 import os
+import re
 import time
 from pathlib import Path
 
@@ -38,6 +39,23 @@ def _get_openai():
     return _openai_client
 
 router = APIRouter()
+
+_RECREATE_JOB_ID = re.compile(r"[A-Za-z0-9_-]{1,100}\Z")
+
+
+def _safe_recreate_job_dir(project: str, job_id: str) -> Path:
+    """Confine untrusted REST/WS job ids to one real recreate child."""
+    if not _RECREATE_JOB_ID.fullmatch(job_id):
+        raise ValueError("Invalid recreate job id")
+    root = get_project_recreate_dir(project).resolve()
+    candidate = root / job_id
+    if candidate.is_symlink():
+        raise ValueError("Recreate job symlink is not allowed")
+    target = candidate.resolve()
+    if target.parent != root:
+        raise ValueError("Recreate job escapes its project")
+    return target
+
 
 # ── WebSocket client registry ────────────────────────────────────────
 _ws_clients: dict[str, list[WebSocket]] = {}
@@ -141,8 +159,11 @@ async def _run_pipeline(job_id: str, video_url: str, project: str):
     t0 = time.time()
     log.info("pipeline START job=%s url=%s project=%s", job_id[:8], video_url[:80], project)
 
-    recreate_dir = get_project_recreate_dir(project)
-    job_dir = recreate_dir / job_id
+    try:
+        job_dir = _safe_recreate_job_dir(project, job_id)
+    except ValueError as exc:
+        await _send(job_id, "error", {"error": str(exc)})
+        return
     job_dir.mkdir(parents=True, exist_ok=True)
 
     try:
@@ -334,6 +355,11 @@ async def generate_prompt(request: Request, req: GeneratePromptRequest):
 async def websocket_recreate(ws: WebSocket, job_id: str):
     """WebSocket endpoint for real-time recreate pipeline progress."""
     await ws.accept()
+    try:
+        _safe_recreate_job_dir("quick-test", job_id)
+    except ValueError:
+        await ws.close(code=1008)
+        return
     log.info("WS connected: %s", job_id[:8])
     _ws_clients.setdefault(job_id, []).append(ws)
     try:
@@ -370,7 +396,12 @@ async def list_recreate_jobs(project: str = Query(default="quick-test")):
         return {"jobs": jobs}
 
     for job_dir in sorted(recreate_dir.iterdir()):
-        if not job_dir.is_dir():
+        try:
+            if _safe_recreate_job_dir(project, job_dir.name) != job_dir.resolve():
+                continue
+        except ValueError:
+            continue
+        if not job_dir.is_dir() or job_dir.is_symlink():
             continue
 
         # A job is visible once it has any extracted frame. Jobs that completed
@@ -379,7 +410,8 @@ async def list_recreate_jobs(project: str = Query(default="quick-test")):
         # see the failure and delete/retry it (otherwise it's silent data loss).
         first_clean = job_dir / "first_frame_clean.png"
         first_original = job_dir / "first_frame_original.jpg"
-        if not first_clean.exists() and not first_original.exists():
+        if ((first_clean.is_symlink() or first_original.is_symlink())
+                or not first_clean.exists() and not first_original.exists()):
             continue
 
         entry: dict = {
@@ -395,7 +427,12 @@ async def list_recreate_jobs(project: str = Query(default="quick-test")):
             ("last_clean", "last_frame_clean.png"),
         ]:
             fpath = job_dir / filename
-            entry[key] = _image_to_data_uri(fpath) if fpath.exists() else None
+            entry[key] = (
+                _image_to_data_uri(fpath)
+                if fpath.exists() and not fpath.is_symlink()
+                and fpath.resolve().parent == job_dir.resolve()
+                else None
+            )
 
         jobs.append(entry)
 
@@ -409,8 +446,10 @@ async def delete_recreate_job(
     project: str = Query(default="quick-test"),
 ):
     """Delete a recreate job and all its files."""
-    recreate_dir = get_project_recreate_dir(project)
-    job_dir = recreate_dir / job_id
+    try:
+        job_dir = _safe_recreate_job_dir(project, job_id)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
     if not job_dir.exists() or not job_dir.is_dir():
         raise HTTPException(404, "Job not found")
