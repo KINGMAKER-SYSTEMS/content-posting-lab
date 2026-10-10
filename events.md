@@ -1608,3 +1608,52 @@ area: [backend], [testing], [review]
 
 Disposable API reproduction showed encoded parent job IDs could remove files outside the recreate directory. Recreate now validates one safe real child before pipeline writes or DELETE and skips unsafe listing entries and symlinked frame assets. Direct inner-pipeline, encoded/double-encoded REST and WebSocket, symlink, and valid UUID regressions pass. No provider request, production job deletion, push, merge or deployment occurred. Rollback is the previous code revision; do not restore it while untrusted recreate endpoints are reachable.
 _________________________________________________________________________________
+_________________________________________________________________________________
+time: [06:08am] [10-10-26] EDT; actual UTC: 2026-10-10T10:08:13Z
+agent: [Codex desktop with Mac mini builder] [gpt-6.1-sol] [focused builder]
+worktree: [codex/recreate-ambiguous-20261010] /Users/risingtidesdev/worktrees/content-lab-recreate-ambiguous-20261010
+type: [bug report]: LaMa recreate original-attempt reconciliation
+area: [backend], [testing], [review]
+
+The recreate frame cleaner previously retried every Replicate failure by creating another charged prediction. This private candidate records paid intent, prediction ID and output URL per frame, resumes known IDs without a new debit, and holds unknown submission outcomes for reconciliation. Cross-process job locking fences concurrent starts and DELETE, and the CDN result is verified before atomic publication. No provider or production request, push, PR, merge or deployment occurred; this candidate requires independent exact-head review after integration with the separate recreate path-confinement repair. Forty-eight focused tests passed before the devlog pass. Rollback is a code revision only if durable receipts are preserved; do not delete ambiguous original-attempt receipts.
+_________________________________________________________________________________
+
+_________________________________________________________________________________
+time: [08:05am] [10-10-26] EDT; actual UTC: 2026-10-10T12:05:52Z
+agent: [Codex desktop with Mac mini builder] [gpt-6.1-sol] [focused builder]
+worktree: [codex/recreate-ambiguous-20261010] /Users/risingtidesdev/worktrees/content-lab-recreate-ambiguous-20261010
+type: [bug report]: Recreate LaMa receipt deletion and budget boundary repair
+area: [backend], [testing], [review]
+
+Independent review of the private rebased candidate found DELETE could erase an unresolved paid attempt, and the pre-debit intent made a budget refusal look like an ambiguous provider submission. The private follow-up keeps budget-pending separate from the post-debit submission fence, retries only the same debit before that fence, rejects DELETE while any paid receipt/output remains unresolved, and reuses original video/frame bytes on known-attempt replay. Synthetic POST-timeout, known-ID poll, DELETE, budget-refusal/reset, and source-drift tests pass without provider calls. This remains an unpushed candidate requiring fresh independent review, merge, intended deployment and live verification; unresolved provider-create replies still require original-attempt reconciliation. Rollback must preserve receipt files and the generation-budget ledger.
+_________________________________________________________________________________
+
+_________________________________________________________________________________
+time: [08:16am] [10-10-26] EDT; actual UTC: 2026-10-10T12:16:34Z
+agent: [Codex desktop with Mac mini builder] [gpt-6.1-sol] [focused builder]
+worktree: [codex/recreate-ambiguous-20261010] /Users/risingtidesdev/worktrees/content-lab-recreate-ambiguous-20261010
+type: [bug report]: Recreate emergency-stop and completed-deletion replay fence
+area: [backend], [frontend], [testing], [review]
+
+Fresh independent review found that a committed original debit could bypass the explicit zero emergency stop before a first Replicate POST, that completed-job deletion allowed stale same-ID paid replay, and that one clean frame was displayed as a complete saved job. The private candidate checks current emergency-stop policy before the first POST, retains completed paid receipt identities in a private tombstone before asset deletion, refuses stale same-ID start, requires both clean frames for complete, and leaves a refused DELETE visible in the browser. Real-ledger zero-stop/re-enable and completed-deletion replay tests accompany Python and frontend checks. No provider or production operation, push, PR, merge or deployment occurred. Rollback must retain private receipt/tombstone and budget-ledger state; legacy jobs without receipts cannot reconstruct paid identities.
+_________________________________________________________________________________
+
+_________________________________________________________________________________
+time: [08:35am] [10-10-26] EDT; actual UTC: 2026-10-10T12:35:00Z
+agent: [Codex desktop with Mac mini builder] [gpt-6.1-sol] [focused builder]
+worktree: [codex/recreate-ambiguous-20261010] /Users/risingtidesdev/worktrees/content-lab-recreate-ambiguous-20261010
+type: [bug report]: Recreate receipt corruption and source-independent recovery
+area: [backend], [testing], [review]
+
+Independent review found that a falsy JSON receipt could be treated as absent and start a new paid prediction. The private candidate now rejects existing malformed receipt content without changing its bytes or debiting, refuses a symlinked completed-job tombstone directory, and repolls known prediction IDs from preserved original frames even if the source video is unavailable. Synthetic corrupt-receipt, symlink, and expired-source regressions passed without a provider call. No push, PR, merge or deployment occurred. Rollback must preserve private receipts, tombstones and the generation-budget ledger; unknown provider-create outcomes still require original-attempt reconciliation.
+_________________________________________________________________________________
+
+_________________________________________________________________________________
+time: [08:56am] [10-10-26] EDT; actual UTC: 2026-10-10T12:56:04Z
+agent: [Codex desktop with Mac mini execution] [gpt-6.1-sol] [release owner]
+worktree: [codex/recreate-ambiguous-20261010] /Users/risingtidesdev/worktrees/content-lab-recreate-ambiguous-20261010
+type: [bug report]: Preserve paid-generation import boundary while locking recreate jobs
+area: [backend], [testing], [review]
+
+Exact-head full-suite verification of PR #220 exposed a new failure in the existing paid-generation router import contract: the recreate router imported the budget module solely to choose its kernel-lock path. The lock is now anchored to the stable recreate-project directory without importing or invoking the budget gate from the router. The existing import-boundary test and 49 recreate recovery tests pass. This changes no provider submission, receipt, or budget behavior. Root AGENTS.md remains current because the stable cross-process claim contract is unchanged; no child AGENTS.md governs the router. The branch head needs fresh independent review and checks before merge.
+_________________________________________________________________________________

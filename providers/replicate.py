@@ -544,7 +544,8 @@ _LAMA_VERSION = "40e67426e1bf78199d78b36580389fbbdcb4c9cdc2bc2b489e99d713f167b3c
 
 
 async def remove_text(
-    image_data_uri: str, client: httpx.AsyncClient | None = None
+    image_data_uri: str, client: httpx.AsyncClient | None = None,
+    checkpoint=None,
 ) -> str:
     """Remove burned-in text from an image using local mask + LaMa inpainting.
 
@@ -578,42 +579,84 @@ async def remove_text(
         # Step 1: Generate text mask locally (fast, no API call)
         mask_data_uri = _generate_text_mask(image_data_uri)
 
-        # This call always creates a new prediction; identical image bytes do
-        # not resume the prior one. Reserve a distinct submission before POST.
+        # Persist paid intent and original prediction identity for recreate jobs.
+        # An intent with no known identity may have reached Replicate: fail closed.
         from services import generation_budget
-        cost_usd = generation_budget.per_gen_cost_usd_by_model("dpakkk/image-object-removal")
-        debit_id = "recreate:" + uuid.uuid4().hex
-        reserved = await asyncio.to_thread(
-            generation_budget.debit_generation_spend_at,
-            generation_budget.jobs_store_path(), cost_usd, debit_id,
-        )
-        if not reserved:
-            raise RuntimeError("generation_daily_budget_reached")
+        from services.generation_recovery import input_hash
+        fingerprint = input_hash(_LAMA_VERSION, {"image": image_data_uri, "mask": mask_data_uri})
+        prior = checkpoint.record if checkpoint is not None else None
+        if prior is not None:
+            if not isinstance(prior, dict) or not prior or prior.get("inputHash") != fingerprint:
+                raise RuntimeError("LaMa checkpoint input mismatch")
+            state = prior.get("state")
+            if state not in ("budget_pending", "submission_intent", "polling", "complete"):
+                raise RuntimeError("LaMa checkpoint state invalid")
+            if state == "complete" and (not isinstance(prior.get("output"), str) or not prior["output"]):
+                raise RuntimeError("LaMa checkpoint output missing")
+            if state in ("polling", "complete") and not prior.get("predictionId"):
+                raise RuntimeError("LaMa checkpoint prediction identity missing")
+            if state in ("budget_pending", "submission_intent") and prior.get("predictionId"):
+                raise RuntimeError("LaMa checkpoint state conflicts with prediction identity")
+            if state == "complete":
+                return prior["output"]
+            pred_id = prior.get("predictionId")
+            debit_id = prior.get("debitId")
+            if not isinstance(debit_id, str) or not debit_id.startswith("recreate:"):
+                raise RuntimeError("LaMa checkpoint debit identity missing")
+            if not pred_id and prior.get("state") != "budget_pending":
+                raise RuntimeError("LaMa submission outcome unknown; reconcile original attempt")
+        else:
+            pred_id = None
+            debit_id = "recreate:" + uuid.uuid4().hex
+            if checkpoint is not None:
+                await checkpoint.save({"inputHash": fingerprint, "debitId": debit_id,
+                                       "state": "budget_pending"})
 
-        # Step 2: LaMa inpainting — community model, version-based endpoint
-        resp = await client.post(
-            f"{REPLICATE_API}/predictions",
-            headers=headers,
-            json={
-                "version": _LAMA_VERSION,
-                "input": {
-                    "image": image_data_uri,
-                    "mask": mask_data_uri,
-                },
-            },
-            timeout=30,
-        )
-        if resp.status_code not in (200, 201):
-            raise RuntimeError(f"Replicate LaMa start failed: {resp.text}")
-
-        pred_id = resp.json()["id"]
+        if not pred_id:
+            # A known debit can be free to replay even after the operator sets
+            # the explicit zero emergency stop. It must not authorize a first
+            # provider POST while paid generation is disabled.
+            if generation_budget.daily_budget_usd() <= 0:
+                raise RuntimeError("generation_daily_budget_reached")
+            # Reuse the same debit identity after a budget refusal or uncertain
+            # ledger write. A committed debit returns true without recharging.
+            cost_usd = generation_budget.per_gen_cost_usd_by_model("dpakkk/image-object-removal")
+            reserved = await asyncio.to_thread(
+                generation_budget.debit_generation_spend_at,
+                generation_budget.jobs_store_path(), cost_usd, debit_id,
+            )
+            if not reserved or generation_budget.daily_budget_usd() <= 0:
+                raise RuntimeError("generation_daily_budget_reached")
+            # This is the last reversible boundary. Once persisted, even a
+            # timeout or cancellation before the POST reply is ambiguous.
+            if checkpoint is not None:
+                await checkpoint.save({"inputHash": fingerprint, "debitId": debit_id,
+                                       "state": "submission_intent"})
+            resp = await client.post(
+                f"{REPLICATE_API}/predictions",
+                headers=headers,
+                json={"version": _LAMA_VERSION,
+                      "input": {"image": image_data_uri, "mask": mask_data_uri}},
+                timeout=30,
+            )
+            if resp.status_code not in (200, 201):
+                raise RuntimeError(f"Replicate LaMa start failed: {resp.text}")
+            pred_id = resp.json()["id"]
+            if checkpoint is not None:
+                await checkpoint.save({"inputHash": fingerprint, "debitId": debit_id,
+                                       "predictionId": pred_id, "state": "polling"})
         output = await _poll_prediction(client, headers, pred_id, "LaMa")
-
         if isinstance(output, str):
-            return output
-        if isinstance(output, list) and output:
-            return output[0]
-        raise RuntimeError(f"LaMa unexpected output: {output}")
+            result = output
+        elif isinstance(output, list) and output:
+            result = output[0]
+        else:
+            raise RuntimeError(f"LaMa unexpected output: {output}")
+        if checkpoint is not None:
+            await checkpoint.save({"inputHash": fingerprint, "debitId": debit_id,
+                                   "predictionId": pred_id, "state": "complete",
+                                   "output": result})
+        return result
 
     finally:
         if owns_client:

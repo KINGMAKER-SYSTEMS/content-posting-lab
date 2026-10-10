@@ -72,6 +72,12 @@ async def test_list_jobs_includes_incomplete_jobs():
     complete.mkdir(parents=True)
     (complete / "first_frame_original.jpg").write_bytes(b"orig")
     (complete / "first_frame_clean.png").write_bytes(b"clean")
+    (complete / "last_frame_clean.png").write_bytes(b"clean")
+
+    partial = recreate_dir / "partial-job"
+    partial.mkdir(parents=True)
+    (partial / "first_frame_original.jpg").write_bytes(b"orig")
+    (partial / "first_frame_clean.png").write_bytes(b"clean")
 
     incomplete = recreate_dir / "incomplete-job"
     incomplete.mkdir(parents=True)
@@ -86,6 +92,9 @@ async def test_list_jobs_includes_incomplete_jobs():
     assert "incomplete-job" in by_id, "failed job must be visible, not silently dropped"
     assert by_id["incomplete-job"]["status"] == "incomplete"
     assert by_id["incomplete-job"]["first_clean"] is None
+    assert by_id["partial-job"]["status"] == "incomplete"
+    assert by_id["partial-job"]["first_clean"] is not None
+    assert by_id["partial-job"]["last_clean"] is None
     assert by_id["complete-job"]["status"] == "complete"
 
 
@@ -112,30 +121,22 @@ async def test_delete_existing_job_removes_dir():
 
 
 @pytest.mark.anyio
-async def test_delete_job_survives_rmtree_failure(monkeypatch):
-    """A locked/permission-blocked dir must not 500 the DELETE route — the
-    rmtree is best-effort (ignore_errors=True), so the route still returns 200."""
+async def test_delete_job_reports_rmtree_failure(monkeypatch):
+    """A failed deletion must not claim the receipt and job are gone."""
     import services.fsutil as fsutil
 
     job_dir = get_project_recreate_dir("quick-test") / "locked-job"
     job_dir.mkdir(parents=True)
 
     def boom(path, ignore_errors=False, **kwargs):
-        # Mirror shutil.rmtree semantics: only raise when errors aren't ignored.
-        if not ignore_errors:
-            raise PermissionError("dir is locked")
+        raise PermissionError("dir is locked")
 
-    # The route now deletes through services.fsutil.safe_rmtree, which calls
-    # shutil.rmtree WITHOUT ignore_errors and swallows the resulting OSError
-    # (best-effort, never raises). Patch the underlying chokepoint so the route
-    # still returns 200 on a locked dir.
     monkeypatch.setattr(fsutil.shutil, "rmtree", boom)
-
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         r = await client.delete("/api/recreate/jobs/locked-job", params={"project": "quick-test"})
-        assert r.status_code == 200
-        assert r.json()["deleted"] is True
+    assert r.status_code == 500
+    assert job_dir.exists()
 
 
 def test_recreate_prompt_system_stays_minimal():

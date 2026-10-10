@@ -12,6 +12,26 @@
   parent traversal and symlinked job directories; listing skips unsafe jobs and
   symlinked frame assets. The browser's UUID job IDs remain supported.
 
+- Recreate LaMa frame cleaning records a private exact-image/mask/version
+  budget-pending identity before the debit and a separate submission intent
+  after debit and before the paid POST, then the returned Replicate prediction
+  ID before polling and the output URL before CDN download. A budget refusal
+  may retry the same debit ID, but the explicit zero-budget emergency stop blocks
+  every first provider POST even if that debit was already committed. A submission
+  intent missing its prediction ID is ambiguous and cannot be resubmitted
+  automatically; known IDs are polled again without another debit. A stable
+  kernel claim prevents concurrent starts and deletion while a job is active.
+  DELETE refuses unresolved receipts after the runner exits. Completed paid-job
+  deletion retains original receipts in a private `.paid-receipts/<job-id>.json`
+  tombstone outside the deleted media directory so stale same-ID starts refuse.
+  Paid replays reuse their saved original frame bytes and can repoll a known
+  prediction without the expired source video or ffprobe. Existing receipt
+  corruption fails closed without another debit or provider POST. The private
+  completed-job tombstone directory must be a real direct project child. Clean frames are
+  verified and atomically published after download. Listing reports complete
+  only when both clean frames exist, and the browser retains a job after a
+  refused DELETE instead of claiming removal.
+
 - `tools/seekable-html-video/render_seekable.cjs` owns seekable HTML-to-MP4 frame capture.
   An explicit `--frames-dir` may be an existing empty, real directory or a
   missing path, which is created; populated or symlink paths are refused.
