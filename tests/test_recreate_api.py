@@ -72,6 +72,12 @@ async def test_list_jobs_includes_incomplete_jobs():
     complete.mkdir(parents=True)
     (complete / "first_frame_original.jpg").write_bytes(b"orig")
     (complete / "first_frame_clean.png").write_bytes(b"clean")
+    (complete / "last_frame_clean.png").write_bytes(b"clean")
+
+    partial = recreate_dir / "partial-job"
+    partial.mkdir(parents=True)
+    (partial / "first_frame_original.jpg").write_bytes(b"orig")
+    (partial / "first_frame_clean.png").write_bytes(b"clean")
 
     incomplete = recreate_dir / "incomplete-job"
     incomplete.mkdir(parents=True)
@@ -86,6 +92,9 @@ async def test_list_jobs_includes_incomplete_jobs():
     assert "incomplete-job" in by_id, "failed job must be visible, not silently dropped"
     assert by_id["incomplete-job"]["status"] == "incomplete"
     assert by_id["incomplete-job"]["first_clean"] is None
+    assert by_id["partial-job"]["status"] == "incomplete"
+    assert by_id["partial-job"]["first_clean"] is not None
+    assert by_id["partial-job"]["last_clean"] is None
     assert by_id["complete-job"]["status"] == "complete"
 
 

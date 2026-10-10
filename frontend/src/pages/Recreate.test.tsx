@@ -168,3 +168,33 @@ describe('RecreatePage', () => {
     });
   });
 });
+
+describe('RecreatePage saved job integrity', () => {
+  it('keeps a one-frame saved job incomplete and retains it after a 409 delete', async () => {
+    useWorkflowStore.setState({ activeProjectName: 'quick-test' });
+    global.fetch = vi.fn().mockImplementation((_url: string, options?: RequestInit) => {
+      if (options?.method === 'DELETE') {
+        return Promise.resolve({ ok: false, status: 409 });
+      }
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ jobs: [{
+          job_id: 'partial-job', status: 'incomplete',
+          first_original: 'data:image/png;base64,dGVzdA==',
+          last_original: 'data:image/png;base64,dGVzdA==',
+          first_clean: 'data:image/png;base64,dGVzdA==', last_clean: null,
+        }] }),
+      });
+    });
+    render(<MemoryRouter><RecreatePage /></MemoryRouter>);
+    const saved = await screen.findByRole('button', { name: /partial-/i });
+    fireEvent.click(saved);
+    expect(screen.queryByText('Complete')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'x' }));
+    await waitFor(() => expect(global.fetch).toHaveBeenCalledWith(
+      expect.stringContaining('/api/recreate/jobs/partial-job'),
+      expect.objectContaining({ method: 'DELETE' }),
+    ));
+    expect(screen.getByRole('button', { name: /partial-/i })).toBeTruthy();
+  });
+});

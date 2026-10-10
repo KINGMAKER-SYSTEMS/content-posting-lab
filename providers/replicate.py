@@ -604,6 +604,11 @@ async def remove_text(
                                        "state": "budget_pending"})
 
         if not pred_id:
+            # A known debit can be free to replay even after the operator sets
+            # the explicit zero emergency stop. It must not authorize a first
+            # provider POST while paid generation is disabled.
+            if generation_budget.daily_budget_usd() <= 0:
+                raise RuntimeError("generation_daily_budget_reached")
             # Reuse the same debit identity after a budget refusal or uncertain
             # ledger write. A committed debit returns true without recharging.
             cost_usd = generation_budget.per_gen_cost_usd_by_model("dpakkk/image-object-removal")
@@ -611,7 +616,7 @@ async def remove_text(
                 generation_budget.debit_generation_spend_at,
                 generation_budget.jobs_store_path(), cost_usd, debit_id,
             )
-            if not reserved:
+            if not reserved or generation_budget.daily_budget_usd() <= 0:
                 raise RuntimeError("generation_daily_budget_reached")
             # This is the last reversible boundary. Once persisted, even a
             # timeout or cancellation before the POST reply is ambiguous.

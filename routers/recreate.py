@@ -122,12 +122,17 @@ def _job_lock_id(job_dir: Path) -> str:
     return "recreate-" + hashlib.sha256(str(job_dir.resolve()).encode()).hexdigest()
 
 
+def _retired_receipt_path(job_dir: Path) -> Path:
+    # The dot directory is outside the accepted job-ID alphabet.
+    return job_dir.parent / ".paid-receipts" / (job_dir.name + ".json")
+
+
 # ── Pipeline ─────────────────────────────────────────────────────────
 
 
 def _persist_recreate_receipt(path: Path, record: dict) -> None:
     """Commit a private original-attempt receipt before the paid request."""
-    path.parent.mkdir(parents=True, exist_ok=True)
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     fd, temp = tempfile.mkstemp(prefix=".lama-", dir=path.parent)
     try:
         with os.fdopen(fd, "w") as stream:
@@ -214,6 +219,9 @@ async def _run_pipeline(job_id: str, video_url: str, project: str):
             if not acquired:
                 await _send(job_id, "error", {"error": "Recreate job already running"})
                 return
+            if _retired_receipt_path(job_dir).exists() or _retired_receipt_path(job_dir).is_symlink():
+                await _send(job_id, "error", {"error": "Recreate job ID already retired"})
+                return
             await _run_pipeline_owned(job_id, video_url, project)
     except ValueError as exc:
         await _send(job_id, "error", {"error": str(exc)})
@@ -230,6 +238,9 @@ async def _run_pipeline_owned(job_id: str, video_url: str, project: str):
         job_dir = _safe_recreate_job_dir(project, job_id)
     except ValueError as exc:
         await _send(job_id, "error", {"error": str(exc)})
+        return
+    if _retired_receipt_path(job_dir).exists() or _retired_receipt_path(job_dir).is_symlink():
+        await _send(job_id, "error", {"error": "Recreate job ID already retired"})
         return
     job_dir.mkdir(parents=True, exist_ok=True)
 
@@ -488,6 +499,7 @@ async def list_recreate_jobs(project: str = Query(default="quick-test")):
         # cleaned ones failed mid-pipeline and must still surface so the user can
         # see the failure and delete/retry it (otherwise it's silent data loss).
         first_clean = job_dir / "first_frame_clean.png"
+        last_clean = job_dir / "last_frame_clean.png"
         first_original = job_dir / "first_frame_original.jpg"
         if ((first_clean.is_symlink() or first_original.is_symlink())
                 or not first_clean.exists() and not first_original.exists()):
@@ -495,7 +507,12 @@ async def list_recreate_jobs(project: str = Query(default="quick-test")):
 
         entry: dict = {
             "job_id": job_dir.name,
-            "status": "complete" if first_clean.exists() else "incomplete",
+            "status": (
+                "complete"
+                if all(path.is_file() and not path.is_symlink()
+                       for path in (first_clean, last_clean))
+                else "incomplete"
+            ),
         }
 
         # Return base64 data URIs for all available frames
@@ -542,6 +559,20 @@ def _has_unresolved_lama_receipt(job_dir: Path) -> bool:
     return False
 
 
+def _retire_paid_job(job_dir: Path) -> None:
+    """Keep original paid identities before removing completed media assets."""
+    receipts = {}
+    for name in ("first_lama_receipt.json", "last_lama_receipt.json"):
+        receipt = job_dir / name
+        if receipt.exists():
+            receipts[name] = json.loads(receipt.read_text())
+    if receipts:
+        tombstone = _retired_receipt_path(job_dir)
+        if tombstone.is_symlink():
+            raise OSError("Recreate tombstone path is a symlink")
+        _persist_recreate_receipt(tombstone, {"jobId": job_dir.name, "receipts": receipts})
+
+
 @router.delete("/jobs/{job_id}")
 async def delete_recreate_job(
     job_id: str,
@@ -561,6 +592,10 @@ async def delete_recreate_job(
             raise HTTPException(409, "Recreate job is running")
         if _has_unresolved_lama_receipt(job_dir):
             raise HTTPException(409, "Recreate job has an unresolved LaMa attempt")
+        try:
+            _retire_paid_job(job_dir)
+        except (OSError, ValueError) as exc:
+            raise HTTPException(500, "Recreate paid receipt could not be retained") from exc
         if not safe_rmtree(job_dir):
             raise HTTPException(500, "Recreate job could not be deleted")
     log.info("deleted job %s", job_id[:8])
