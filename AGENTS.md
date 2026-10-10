@@ -169,6 +169,8 @@
 - `services/control_plane_source_imports.py` owns bounded public-HTTPS download,
   exact-byte hashing, media probing, and refillable-master normalization for
   page-scoped source-link intake.
+- `services/job_token_rotation.py` and `scripts/rotate_job_download_token.py`
+  own operator-only rotation of one job's signed download credential.
 - `routers/burn.py` exposes caption rendering and final video compositing.
 - `services/roster_public.py` owns what `/api/roster`, `/api/pipeline` and
   `/api/email` may serialise: an allowlist of roster row fields plus a
@@ -397,6 +399,25 @@
   when their authority repeats the exact Control Plane page id, page handle,
   Notion page id, and replacement eligibility required by the active Master
   Pages projection.
+- Signed job download and thumbnail URLs use one per-job credential. The
+  operator rotation CLI (`python -m services.job_token_rotation`, which is
+  included in the production image) requires an explicit absolute existing job-store path,
+  one job id, a dry-run job revision, and `--apply`; it changes only a terminal
+  live job under the existing cross-process store lock and atomic save. Missing
+  or archived jobs are no-ops, active jobs refuse, and a changed job revision
+  refuses until a new dry-run. Output contains metadata and revisions, never a
+  token. A clip must carry the router-consumed artifact root, source mapping,
+  and clip/thumbnail path, name, SHA-256 and positive byte size. An existing
+  rotation audit must have exactly UTC time, a closed reason and count;
+  malformed or unknown audit fields refuse unchanged instead of discarding
+  history. Applying a rotation requires the
+  job-store's immediate directory to be owned by the operator and inaccessible
+  to group and others; the tool never changes directory permissions. A
+  pre-existing atomic-save temporary file for that writer also refuses rather
+  than being truncated. The stored audit records UTC time, a closed reason and count. A
+  rollback must never restore a previous token; rotate forward again if needed.
+  Already-issued URLs cease to work after rotation, so the operator must
+  coordinate downstream consumers before applying it.
 - A publishable caption render requires exact caption text and a complete page
   style: font, size, color, position, alignment, and line balance.
 - Resolve fonts only from Content Lab's installed, advertised TikTokSans files.
@@ -661,6 +682,10 @@
 - Run `pytest -q tests/test_ytdlp_download_diagnostics.py tests/test_control_plane_source_import_service.py tests/test_control_plane_source_imports.py`
   for private cookie-copy ownership, crash leftovers, failed/cancelled attempts,
   original preservation and existing bounded source intake; subprocesses are stubbed.
+- Run `pytest -q tests/test_job_token_rotation.py` for dry-run secrecy,
+  job-scoped compare-and-set, cross-thread store-lock serialization, archived
+  no-op, malformed metadata/audit refusal, private-directory and temporary-file
+  guards, and old/new download and thumbnail credentials on synthetic artifacts.
 
 - Run `pytest -q tests/test_font_static_headers.py tests/test_static_path_confinement.py`
   for font MIME/cache headers, changed-byte validators and static path containment.

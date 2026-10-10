@@ -1570,3 +1570,31 @@ type: [bug report]: Align frame-aware caption quality checks
 area: [backend] [testing] [review]
 
 Reviewed PR #216 against current main and retained the Mini App authorization repair. The local quality-check endpoint now accepts the same picture frame used to render the caption and evaluates its position against that band, including the renderer's minimal anchor adjustment. Frame-relative top/middle/bottom coverage and invalid-frame controls accompany the repair; the existing 253 focused renderer, gate and prepared-final tests passed before the correction. No phone input or runtime installation was performed.
+_________________________________________________________________________________
+time: [05:57pm] [10-07-26] EDT; actual UTC: 2026-10-07T21:57:54Z
+agent: [codex] [gpt-6.1-sol] [focused builder]
+worktree: [codex/job-signed-url-rotation] /Users/smathdaddy-macbook/content-lab-rotation
+base: [origin/main] fe1f514e2d4323675887da5c05f308fce4b3983f
+type: [bug report]: operator-only per-job signed URL credential rotation preparation
+area: [backend], [testing], [review]
+
+Prepared an offline operator CLI for one explicit terminal live Content Lab job's download/thumbnail credential. It requires an absolute existing private job-store path, dry-run job revision, and explicit apply; a changed target revision refuses under the existing cross-process job-store lock. It writes through the existing atomic save with a private process umask, updates only the selected token plus bounded UTC audit metadata, and never outputs a token. Missing or archived jobs are no-ops; active and malformed jobs refuse. Rollback must rotate forward rather than restore the prior credential. The production Docker image copies services/, so the operator entrypoint is python -m services.job_token_rotation; the scripts/ wrapper is checkout convenience only. Synthetic tests proved dry-run secrecy and no write, other-job preservation, lock blocking, compare-and-set refusal, archived no-op, and old-token 403/new-token FileResponse for both download and thumbnail. Fifty-two focused Content Lab tests passed; local app/module import and module CLI help passed. No historical leaked token, production job store, live endpoint, publication, push, PR, merge or deployment was used. Applying rotation in production would require the exact current store path and downstream URL-consumer coordination; no old token can be recovered from this change.
+_________________________________________________________________________________
+_________________________________________________________________________________
+time: [06:02pm] [10-07-26] EDT
+agent: [codex] [gpt-6.1-sol] [focused builder]
+worktree: [codex/job-signed-url-rotation] /Users/smathdaddy-macbook/content-lab-rotation
+type: [bug report]: harden operator-only job token rotation preparation
+area: [backend], [testing], [review]
+
+Closed exact-head review findings: malformed completed-job clip metadata now gives a bounded secret-free refusal; malformed existing token-rotation audit cannot silently reset the count. The operator apply path requires an owner-only immediate store directory and refuses a pre-existing atomic-save temporary filename before writing, guarding the existing writer's predictable tmp/reopen behavior without modifying the shared writer or production store permissions. Synthetic regressions cover malformed shapes, unchanged bytes and no secret diagnostics, a shared-writable directory, and pre-existing tmp preservation. Sixty-two focused Content Lab tests passed, and the devlog contract was updated. This is local preparation only; no production store/token, push, PR, merge or deployment was used.
+_________________________________________________________________________________
+_________________________________________________________________________________
+time: [05:02am] [10-10-26] EDT; actual UTC: 2026-10-10T09:02:00Z
+agent: [Codex desktop with Mac mini builder] [GPT-6.1] [root release owner]
+worktree: [codex/lab-token-rotation-audit-20261010] /Users/risingtidesdev/worktrees/lab-token-rotation-audit-20261010
+type: [bug report]: Content Lab PR #218 token-rotation metadata refusal repair
+area: [backend], [testing], [review]
+
+Independent exact-head review found that a terminal job with incomplete clip artifacts could pass rotation readiness while the download and thumbnail readers require missing fields, and a malformed prior audit could be overwritten. The private Mac mini repair validates the router-consumed clip/thumbnail fields and requires a closed, UTC-stamped prior audit before changing any token. Malformed or unknown prior audit fields refuse without changing store bytes. Twenty-four focused synthetic tests passed and independent review found no scoped source blocker. The release remains held for final-head verification and the required full production Docker image build. No production store or token was read or rotated; merge, deployment and downstream signed-URL consumer reconciliation remain separate. Rollback before any rotation is code-only; after a real rotation, never restore the old token and rotate forward if needed.
+_________________________________________________________________________________
