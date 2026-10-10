@@ -124,7 +124,12 @@ def _job_lock_id(job_dir: Path) -> str:
 
 def _retired_receipt_path(job_dir: Path) -> Path:
     # The dot directory is outside the accepted job-ID alphabet.
-    return job_dir.parent / ".paid-receipts" / (job_dir.name + ".json")
+    parent = job_dir.parent / ".paid-receipts"
+    if parent.is_symlink() or (parent.exists() and not parent.is_dir()):
+        raise ValueError("Invalid paid receipt directory")
+    if parent.resolve().parent != job_dir.parent.resolve():
+        raise ValueError("Paid receipt directory escapes its project")
+    return parent / (job_dir.name + ".json")
 
 
 # ── Pipeline ─────────────────────────────────────────────────────────
@@ -165,7 +170,12 @@ async def _remove_text_with_retry(
         if not acquired:
             raise RuntimeError(f"Text removal already running for {label}")
         try:
-            record = json.loads(receipt_path.read_text()) if receipt_path.exists() else {}
+            if receipt_path.is_symlink():
+                raise ValueError("Receipt symlink is not allowed")
+            exists = receipt_path.exists()
+            record = json.loads(receipt_path.read_text()) if exists else None
+            if exists and (not isinstance(record, dict) or not record):
+                raise ValueError("Invalid existing LaMa receipt")
         except (OSError, ValueError) as exc:
             raise RuntimeError(f"Cannot read original LaMa receipt for {label}") from exc
         checkpoint = PredictionCheckpoint(
@@ -259,27 +269,26 @@ async def _run_pipeline_owned(job_id: str, video_url: str, project: str):
             # Preserve exact original pixels for the known paid attempt. A
             # changed source URL must never replace the frame under its receipt.
             if any(not path.is_file() or path.is_symlink()
-                   for path in (video_path, first_frame, last_frame)):
+                   for path in (first_frame, last_frame)):
                 raise RuntimeError("Original recreate frames unavailable; reconcile paid attempt")
         else:
             try:
                 await asyncio.wait_for(download_video(video_url, video_path), timeout=120)
             except asyncio.TimeoutError:
                 raise RuntimeError("Video download timed out after 2 minutes. Try a shorter video or check the URL.")
-        if not video_path.exists() or video_path.is_symlink() or video_path.stat().st_size < 1000:
+        if not has_paid_receipt and (not video_path.exists() or video_path.is_symlink() or video_path.stat().st_size < 1000):
             raise RuntimeError("Video download failed — file is empty or missing. Check if the URL is accessible.")
-        log.info("phase1 source: %.1fs, size=%d bytes, resume=%s",
-                 time.time() - t1, video_path.stat().st_size, has_paid_receipt)
+        log.info("phase1 source: %.1fs, resume=%s", time.time() - t1, has_paid_receipt)
 
         # Phase 2: Extract first and last frames
         t2 = time.time()
         await _send(job_id, "extracting_frames", {"text": "Extracting frames..."})
-        try:
-            duration = await _get_video_duration(video_path)
-        except Exception as e:
-            raise RuntimeError(f"Could not read video duration — file may be corrupted: {e}")
-
+        duration = None
         if not has_paid_receipt:
+            try:
+                duration = await _get_video_duration(video_path)
+            except Exception as e:
+                raise RuntimeError(f"Could not read video duration — file may be corrupted: {e}")
             await extract_frame(video_path, first_frame, timestamp=0.0)
             if not first_frame.exists():
                 raise RuntimeError("Failed to extract first frame from video")

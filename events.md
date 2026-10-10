@@ -1637,3 +1637,13 @@ area: [backend], [frontend], [testing], [review]
 
 Fresh independent review found that a committed original debit could bypass the explicit zero emergency stop before a first Replicate POST, that completed-job deletion allowed stale same-ID paid replay, and that one clean frame was displayed as a complete saved job. The private candidate checks current emergency-stop policy before the first POST, retains completed paid receipt identities in a private tombstone before asset deletion, refuses stale same-ID start, requires both clean frames for complete, and leaves a refused DELETE visible in the browser. Real-ledger zero-stop/re-enable and completed-deletion replay tests accompany Python and frontend checks. No provider or production operation, push, PR, merge or deployment occurred. Rollback must retain private receipt/tombstone and budget-ledger state; legacy jobs without receipts cannot reconstruct paid identities.
 _________________________________________________________________________________
+
+_________________________________________________________________________________
+time: [08:35am] [10-10-26] EDT; actual UTC: 2026-10-10T12:35:00Z
+agent: [Codex desktop with Mac mini builder] [gpt-6.1-sol] [focused builder]
+worktree: [codex/recreate-ambiguous-20261010] /Users/risingtidesdev/worktrees/content-lab-recreate-ambiguous-20261010
+type: [bug report]: Recreate receipt corruption and source-independent recovery
+area: [backend], [testing], [review]
+
+Independent review found that a falsy JSON receipt could be treated as absent and start a new paid prediction. The private candidate now rejects existing malformed receipt content without changing its bytes or debiting, refuses a symlinked completed-job tombstone directory, and repolls known prediction IDs from preserved original frames even if the source video is unavailable. Synthetic corrupt-receipt, symlink, and expired-source regressions passed without a provider call. No push, PR, merge or deployment occurred. Rollback must preserve private receipts, tombstones and the generation-budget ledger; unknown provider-create outcomes still require original-attempt reconciliation.
+_________________________________________________________________________________

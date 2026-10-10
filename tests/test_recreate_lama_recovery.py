@@ -312,3 +312,93 @@ def test_completed_delete_retains_paid_tombstone_and_fences_stale_job_id(monkeyp
     asyncio.run(recreate._run_pipeline("same-job", "https://fixture.example/new", "fixture"))
     assert calls == ["error"]
     assert not job_dir.exists()
+
+@pytest.mark.parametrize("payload", ["{}", "null", "[]", "false", "0"])
+def test_corrupt_receipt_never_starts_paid_attempt(monkeypatch, tmp_path, payload):
+    debits = _provider(monkeypatch)
+    posts = []
+
+    class Client:
+        async def post(self, *args, **kwargs):
+            posts.append(kwargs)
+            raise AssertionError("Corrupt receipt must fail closed")
+
+    receipt = tmp_path / "first_lama_receipt.json"
+    receipt.write_text(payload)
+    with pytest.raises(RuntimeError):
+        asyncio.run(_remove_text_with_retry(IMAGE, Client(), "first frame", receipt))
+    assert receipt.read_text() == payload
+    assert debits == posts == []
+
+
+def test_paid_tombstone_parent_symlink_refused_without_deletion(monkeypatch, tmp_path):
+    from fastapi import HTTPException
+    from routers import recreate
+
+    root = tmp_path / "recreate"
+    job_dir = root / "same-job"
+    job_dir.mkdir(parents=True)
+    (job_dir / "first_frame_clean.png").write_bytes(b"clean")
+    (job_dir / "first_lama_receipt.json").write_text(json.dumps({
+        "state": "complete", "predictionId": "original", "debitId": "recreate:original",
+        "output": OUTPUT,
+    }))
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (root / ".paid-receipts").symlink_to(outside, target_is_directory=True)
+    monkeypatch.setattr(recreate, "get_project_recreate_dir", lambda _: root)
+    with pytest.raises(HTTPException) as denied:
+        asyncio.run(recreate.delete_recreate_job("same-job", project="fixture"))
+    assert denied.value.status_code == 500
+    assert job_dir.is_dir()
+    assert not list(outside.iterdir())
+
+
+@pytest.mark.parametrize("source_content", [None, b"changed source"] )
+def test_known_prediction_replay_without_source_or_probe(monkeypatch, tmp_path, source_content):
+    from routers import recreate
+    from scraper import frame_extractor
+    from services.generation_recovery import input_hash
+
+    debits = _provider(monkeypatch)
+    root = tmp_path / "recreate"
+    job_dir = root / "same-job"
+    job_dir.mkdir(parents=True)
+    if source_content is not None:
+        (job_dir / "source_video.mp4").write_bytes(source_content)
+    monkeypatch.setattr(recreate, "get_project_recreate_dir", lambda _: root)
+    calls = []
+    for label in ("first", "last"):
+        frame = job_dir / f"{label}_frame_original.jpg"
+        frame.write_bytes(label.encode())
+        image = recreate._image_to_data_uri(frame)
+        (job_dir / f"{label}_lama_receipt.json").write_text(json.dumps({
+            "inputHash": input_hash(replicate._LAMA_VERSION,
+                                    {"image": image, "mask": "fixture-mask"}),
+            "debitId": f"recreate:{label}", "predictionId": f"prediction-{label}",
+            "state": "polling",
+        }))
+
+    async def forbidden(*args, **kwargs):
+        raise AssertionError("Source download, probe or extraction must not run")
+
+    async def poll(*args, **kwargs):
+        calls.append(args[2])
+        return OUTPUT
+
+    async def downloaded(client, url, dest, label):
+        dest.write_bytes(b"clean")
+
+    async def sent(job_id, event, data):
+        calls.append(event)
+
+    monkeypatch.setattr(frame_extractor, "download_video", forbidden)
+    monkeypatch.setattr(frame_extractor, "extract_frame", forbidden)
+    monkeypatch.setattr(recreate, "_get_video_duration", forbidden)
+    monkeypatch.setattr(replicate, "_poll_prediction", poll)
+    monkeypatch.setattr(recreate, "_download_cleaned_image", downloaded)
+    monkeypatch.setattr(recreate, "_send", sent)
+    asyncio.run(recreate._run_pipeline_owned("same-job", "https://expired.invalid", "fixture"))
+    assert calls.count("prediction-first") == calls.count("prediction-last") == 1
+    assert "complete" in calls
+    assert debits == []

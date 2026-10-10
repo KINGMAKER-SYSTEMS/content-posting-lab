@@ -24,7 +24,10 @@
   DELETE refuses unresolved receipts after the runner exits. Completed paid-job
   deletion retains original receipts in a private `.paid-receipts/<job-id>.json`
   tombstone outside the deleted media directory so stale same-ID starts refuse.
-  Paid replays reuse their saved original video and frame bytes. Clean frames are
+  Paid replays reuse their saved original frame bytes and can repoll a known
+  prediction without the expired source video or ffprobe. Existing receipt
+  corruption fails closed without another debit or provider POST. The private
+  completed-job tombstone directory must be a real direct project child. Clean frames are
   verified and atomically published after download. Listing reports complete
   only when both clean frames exist, and the browser retains a job after a
   refused DELETE instead of claiming removal.

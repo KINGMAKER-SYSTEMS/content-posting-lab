@@ -585,10 +585,19 @@ async def remove_text(
         from services.generation_recovery import input_hash
         fingerprint = input_hash(_LAMA_VERSION, {"image": image_data_uri, "mask": mask_data_uri})
         prior = checkpoint.record if checkpoint is not None else None
-        if prior:
-            if not isinstance(prior, dict) or prior.get("inputHash") != fingerprint:
+        if prior is not None:
+            if not isinstance(prior, dict) or not prior or prior.get("inputHash") != fingerprint:
                 raise RuntimeError("LaMa checkpoint input mismatch")
-            if prior.get("output"):
+            state = prior.get("state")
+            if state not in ("budget_pending", "submission_intent", "polling", "complete"):
+                raise RuntimeError("LaMa checkpoint state invalid")
+            if state == "complete" and (not isinstance(prior.get("output"), str) or not prior["output"]):
+                raise RuntimeError("LaMa checkpoint output missing")
+            if state in ("polling", "complete") and not prior.get("predictionId"):
+                raise RuntimeError("LaMa checkpoint prediction identity missing")
+            if state in ("budget_pending", "submission_intent") and prior.get("predictionId"):
+                raise RuntimeError("LaMa checkpoint state conflicts with prediction identity")
+            if state == "complete":
                 return prior["output"]
             pred_id = prior.get("predictionId")
             debit_id = prior.get("debitId")
