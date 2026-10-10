@@ -1589,3 +1589,12 @@ area: [backend], [testing], [review]
 
 Closed exact-head review findings: malformed completed-job clip metadata now gives a bounded secret-free refusal; malformed existing token-rotation audit cannot silently reset the count. The operator apply path requires an owner-only immediate store directory and refuses a pre-existing atomic-save temporary filename before writing, guarding the existing writer's predictable tmp/reopen behavior without modifying the shared writer or production store permissions. Synthetic regressions cover malformed shapes, unchanged bytes and no secret diagnostics, a shared-writable directory, and pre-existing tmp preservation. Sixty-two focused Content Lab tests passed, and the devlog contract was updated. This is local preparation only; no production store/token, push, PR, merge or deployment was used.
 _________________________________________________________________________________
+_________________________________________________________________________________
+time: [05:02am] [10-10-26] EDT; actual UTC: 2026-10-10T09:02:00Z
+agent: [Codex desktop with Mac mini builder] [GPT-6.1] [root release owner]
+worktree: [codex/lab-token-rotation-audit-20261010] /Users/risingtidesdev/worktrees/lab-token-rotation-audit-20261010
+type: [bug report]: Content Lab PR #218 token-rotation metadata refusal repair
+area: [backend], [testing], [review]
+
+Independent exact-head review found that a terminal job with incomplete clip artifacts could pass rotation readiness while the download and thumbnail readers require missing fields, and a malformed prior audit could be overwritten. The private Mac mini repair validates the router-consumed clip/thumbnail fields and requires a closed, UTC-stamped prior audit before changing any token. Malformed or unknown prior audit fields refuse without changing store bytes. Twenty-four focused synthetic tests passed and independent review found no scoped source blocker. The release remains held for final-head verification and the required full production Docker image build. No production store or token was read or rotated; merge, deployment and downstream signed-URL consumer reconciliation remain separate. Rollback before any rotation is code-only; after a real rotation, never restore the old token and rotate forward if needed.
+_________________________________________________________________________________

@@ -406,8 +406,11 @@
   live job under the existing cross-process store lock and atomic save. Missing
   or archived jobs are no-ops, active jobs refuse, and a changed job revision
   refuses until a new dry-run. Output contains metadata and revisions, never a
-  token. Malformed clip metadata or an existing malformed rotation audit
-  refuses with a bounded diagnostic. Applying a rotation requires the
+  token. A clip must carry the router-consumed artifact root, source mapping,
+  and clip/thumbnail path, name, SHA-256 and positive byte size. An existing
+  rotation audit must have exactly UTC time, a closed reason and count;
+  malformed or unknown audit fields refuse unchanged instead of discarding
+  history. Applying a rotation requires the
   job-store's immediate directory to be owned by the operator and inaccessible
   to group and others; the tool never changes directory permissions. A
   pre-existing atomic-save temporary file for that writer also refuses rather
