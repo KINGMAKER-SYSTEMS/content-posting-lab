@@ -1647,3 +1647,13 @@ area: [backend], [testing], [review]
 
 Independent review found that a falsy JSON receipt could be treated as absent and start a new paid prediction. The private candidate now rejects existing malformed receipt content without changing its bytes or debiting, refuses a symlinked completed-job tombstone directory, and repolls known prediction IDs from preserved original frames even if the source video is unavailable. Synthetic corrupt-receipt, symlink, and expired-source regressions passed without a provider call. No push, PR, merge or deployment occurred. Rollback must preserve private receipts, tombstones and the generation-budget ledger; unknown provider-create outcomes still require original-attempt reconciliation.
 _________________________________________________________________________________
+
+_________________________________________________________________________________
+time: [08:56am] [10-10-26] EDT; actual UTC: 2026-10-10T12:56:04Z
+agent: [Codex desktop with Mac mini execution] [gpt-6.1-sol] [release owner]
+worktree: [codex/recreate-ambiguous-20261010] /Users/risingtidesdev/worktrees/content-lab-recreate-ambiguous-20261010
+type: [bug report]: Preserve paid-generation import boundary while locking recreate jobs
+area: [backend], [testing], [review]
+
+Exact-head full-suite verification of PR #220 exposed a new failure in the existing paid-generation router import contract: the recreate router imported the budget module solely to choose its kernel-lock path. The lock is now anchored to the stable recreate-project directory without importing or invoking the budget gate from the router. The existing import-boundary test and 49 recreate recovery tests pass. This changes no provider submission, receipt, or budget behavior. Root AGENTS.md remains current because the stable cross-process claim contract is unchanged; no child AGENTS.md governs the router. The branch head needs fresh independent review and checks before merge.
+_________________________________________________________________________________

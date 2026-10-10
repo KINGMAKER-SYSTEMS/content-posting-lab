@@ -17,7 +17,6 @@ from pydantic import BaseModel
 
 from project_manager import get_project_recreate_dir
 from services.fsutil import safe_rmtree
-from services import generation_budget
 from services.generation_recovery import runner_lock
 
 log = logging.getLogger("recreate")
@@ -225,7 +224,7 @@ async def _run_pipeline(job_id: str, video_url: str, project: str):
     """Hold one stable kernel claim across all job writes and paid submissions."""
     try:
         job_dir = _safe_recreate_job_dir(project, job_id)
-        with runner_lock(generation_budget.jobs_store_path(), _job_lock_id(job_dir)) as acquired:
+        with runner_lock(job_dir.parent / ".recreate-lock-anchor", _job_lock_id(job_dir)) as acquired:
             if not acquired:
                 await _send(job_id, "error", {"error": "Recreate job already running"})
                 return
@@ -596,7 +595,7 @@ async def delete_recreate_job(
     if not job_dir.exists() or not job_dir.is_dir():
         raise HTTPException(404, "Job not found")
 
-    with runner_lock(generation_budget.jobs_store_path(), _job_lock_id(job_dir)) as acquired:
+    with runner_lock(job_dir.parent / ".recreate-lock-anchor", _job_lock_id(job_dir)) as acquired:
         if not acquired:
             raise HTTPException(409, "Recreate job is running")
         if _has_unresolved_lama_receipt(job_dir):
