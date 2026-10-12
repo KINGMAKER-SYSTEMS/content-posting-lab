@@ -17,11 +17,15 @@ CWD). We point it at a tmp dir per-test so the suite neither reads real
 
 import json
 import time
+from types import SimpleNamespace
 
 import pytest
 
 import routers.upload as upload_router
 import services.upload as upload_svc
+
+
+_FAKE_UPLOADER = SimpleNamespace(upload_tiktok=lambda **kwargs: None)
 
 
 @pytest.fixture
@@ -76,6 +80,7 @@ def test_submit_valid_cookie_queues_job(sync_client, cookie_dir, monkeypatch):
         return None
 
     monkeypatch.setattr(upload_router, "process_queue", _noop)
+    monkeypatch.setattr(upload_svc.importlib, "import_module", lambda name: _FAKE_UPLOADER)
     _write_cookie(cookie_dir, "linked")
     r = sync_client.post(
         "/api/upload/submit",
@@ -84,6 +89,64 @@ def test_submit_valid_cookie_queues_job(sync_client, cookie_dir, monkeypatch):
     assert r.status_code == 200
     assert r.json()["job"]["account_name"] == "linked"
     assert r.json()["job"]["status"] == "queued"
+
+
+def test_submit_without_provider_refuses_before_job_creation(sync_client, cookie_dir, monkeypatch):
+    _write_cookie(cookie_dir, "linked")
+    monkeypatch.setattr(upload_svc.importlib, "import_module", lambda name: None)
+    r = sync_client.post("/api/upload/submit", json={"video_path": "/tmp/x.mp4", "account_name": "linked"})
+    assert r.status_code == 503
+    assert "provider runtime" in r.json()["detail"]
+    assert not (cookie_dir.parent / "upload_jobs.json").exists()
+
+
+def test_broken_provider_import_refuses_before_job_creation(sync_client, cookie_dir, monkeypatch):
+    _write_cookie(cookie_dir, "linked")
+
+    def _broken_import(name):
+        raise RuntimeError("missing browser dependency")
+
+    monkeypatch.setattr(upload_svc.importlib, "import_module", _broken_import)
+    r = sync_client.post("/api/upload/submit", json={"video_path": "/tmp/x.mp4", "account_name": "linked"})
+    assert r.status_code == 503
+    assert not (cookie_dir.parent / "upload_jobs.json").exists()
+
+
+def test_hosted_ephemeral_store_refuses_before_job_creation(sync_client, cookie_dir, monkeypatch):
+    _write_cookie(cookie_dir, "linked")
+    monkeypatch.setattr(upload_svc.importlib, "import_module", lambda name: _FAKE_UPLOADER)
+    monkeypatch.setenv("RAILWAY_ENVIRONMENT", "production")
+    monkeypatch.setenv("RAILWAY_VOLUME_MOUNT_PATH", str(cookie_dir))
+    r = sync_client.post("/api/upload/submit", json={"video_path": "/tmp/x.mp4", "account_name": "linked"})
+    assert r.status_code == 503
+    assert "durable upload reconciliation" in r.json()["detail"]
+    assert not (cookie_dir.parent / "upload_jobs.json").exists()
+
+
+def test_hosted_volume_store_alone_does_not_enable_upload(sync_client, cookie_dir, monkeypatch):
+    _write_cookie(cookie_dir, "linked")
+    monkeypatch.setattr(upload_svc.importlib, "import_module", lambda name: _FAKE_UPLOADER)
+    monkeypatch.setenv("RAILWAY_ENVIRONMENT", "production")
+    monkeypatch.setenv("RAILWAY_VOLUME_MOUNT_PATH", str(cookie_dir))
+    store_dir = cookie_dir / "_upload"
+    store_dir.mkdir()
+    store = store_dir / "upload_jobs.json"
+    monkeypatch.setattr(upload_svc, "UPLOAD_JOBS_FILE", str(store))
+
+    r = sync_client.post("/api/upload/submit", json={"video_path": "/tmp/x.mp4", "account_name": "linked"})
+    assert r.status_code == 503
+    assert "durable upload reconciliation" in r.json()["detail"]
+    assert not store.exists()
+
+
+def test_corrupt_job_store_refuses_without_overwrite(sync_client, cookie_dir, monkeypatch):
+    _write_cookie(cookie_dir, "linked")
+    monkeypatch.setattr(upload_svc.importlib, "import_module", lambda name: _FAKE_UPLOADER)
+    stored = cookie_dir.parent / "upload_jobs.json"
+    stored.write_text("{broken")
+    r = sync_client.post("/api/upload/submit", json={"video_path": "/tmp/x.mp4", "account_name": "linked"})
+    assert r.status_code == 503
+    assert stored.read_text() == "{broken"
 
 
 # ── check_cookie ──────────────────────────────────────────────────────────────
@@ -119,7 +182,9 @@ def test_cancel_missing_job_returns_404(sync_client, cookie_dir):
 
 def test_cancel_non_cancellable_job_returns_409(sync_client, cookie_dir):
     """A job already past 'queued' (e.g. uploading) cannot be cancelled → 409."""
-    job = upload_svc.submit_job(video_path="/tmp/x.mp4", account_name="acct")
+    from unittest.mock import patch
+    with patch.object(upload_svc.importlib, "import_module", return_value=_FAKE_UPLOADER):
+        job = upload_svc.submit_job(video_path="/tmp/x.mp4", account_name="acct")
     upload_svc._update_job(job["job_id"], {"status": "uploading"})
     r = sync_client.post(f"/api/upload/jobs/{job['job_id']}/cancel")
     assert r.status_code == 409

@@ -11,6 +11,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from services.upload import (
+    UploadUnavailable,
     cancel_job,
     get_all_jobs,
     get_cookie_status,
@@ -18,6 +19,7 @@ from services.upload import (
     get_queue_stats,
     list_cookie_files,
     process_queue,
+    require_upload_admission,
     submit_job,
 )
 
@@ -58,20 +60,30 @@ async def submit_upload(req: SubmitRequest):
             detail=f"Cookies expired for account '{req.account_name}'. Re-login required.",
         )
 
-    job = submit_job(
-        video_path=req.video_path,
-        account_name=req.account_name,
-        description=req.description,
-        hashtags=req.hashtags,
-        sound_name=req.sound_name,
-        sound_aud_vol=req.sound_aud_vol,
-        schedule_time=req.schedule_time,
-        schedule_day=req.schedule_day,
-        copyrightcheck=req.copyrightcheck,
-        headless=req.headless,
-        stealth=req.stealth,
-        proxy=req.proxy,
-    )
+    try:
+        require_upload_admission()
+    except UploadUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    try:
+        job = submit_job(
+            video_path=req.video_path,
+            account_name=req.account_name,
+            description=req.description,
+            hashtags=req.hashtags,
+            sound_name=req.sound_name,
+            sound_aud_vol=req.sound_aud_vol,
+            schedule_time=req.schedule_time,
+            schedule_day=req.schedule_day,
+            copyrightcheck=req.copyrightcheck,
+            headless=req.headless,
+            stealth=req.stealth,
+            proxy=req.proxy,
+        )
+    except UploadUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=503, detail="TikTok upload is unavailable: job storage write failed") from exc
 
     # Start queue processing in background
     asyncio.create_task(process_queue())

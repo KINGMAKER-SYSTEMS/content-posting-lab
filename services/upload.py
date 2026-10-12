@@ -6,6 +6,7 @@ cookie file detection, and thread-pool execution of sync Playwright calls.
 
 import asyncio
 import glob
+import importlib
 import json
 import os
 import random
@@ -18,7 +19,7 @@ from typing import Any
 
 from services.json_store import atomic_load, atomic_save
 
-UPLOAD_JOBS_FILE = "upload_jobs.json"
+UPLOAD_JOBS_FILE = os.getenv("CONTENT_LAB_UPLOAD_JOBS_FILE", "upload_jobs.json")
 COOKIE_DIR = "."  # TK_cookies_{account}.json stored in project root
 MAX_CONCURRENT = 1
 DEFAULT_DELAY_MIN = 5 * 60   # 5 minutes
@@ -28,6 +29,44 @@ _executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="tiktok-upload"
 _queue_lock = asyncio.Lock()
 _active_job_id: str | None = None
 _queue_running = False
+
+
+class UploadUnavailable(RuntimeError):
+    """A new upload cannot be admitted without its executor and durable job record."""
+
+
+def require_upload_admission() -> None:
+    """Refuse an upload before writing a job when the executor or receipt store is absent.
+
+    Hosted deployments cannot safely use this in-process queue: a persistent
+    JSON file alone does not coordinate claims or reconcile a crashed browser
+    after an uncertain Post. Local installations retain the historical queue.
+    """
+    if any(os.getenv(name) for name in (
+        "RAILWAY_ENVIRONMENT", "RAILWAY_SERVICE_ID", "RAILWAY_VOLUME_MOUNT_PATH"
+    )):
+        raise UploadUnavailable(
+            "TikTok upload is unavailable on this hosted service: durable upload reconciliation is not configured"
+        )
+
+    try:
+        uploader = importlib.import_module("tiktokautouploader")
+    except Exception:
+        uploader = None
+    if uploader is None or not callable(getattr(uploader, "upload_tiktok", None)):
+        raise UploadUnavailable("TikTok upload is unavailable: provider runtime is not installed")
+
+    path = Path(UPLOAD_JOBS_FILE)
+    if not path.parent.is_dir():
+        raise UploadUnavailable("TikTok upload is unavailable: job storage directory is missing")
+
+    if path.exists():
+        try:
+            with path.open(encoding="utf-8") as handle:
+                if not isinstance(json.load(handle), list):
+                    raise ValueError("job store is not a list")
+        except (OSError, ValueError):
+            raise UploadUnavailable("TikTok upload is unavailable: job storage is unreadable") from None
 
 
 # ── Job persistence ──────────────────────────────────────────────────────────
@@ -81,6 +120,7 @@ def submit_job(
     proxy: dict | None = None,
 ) -> dict:
     """Create a new upload job and add to queue."""
+    require_upload_admission()
     job = {
         "job_id": str(uuid.uuid4()),
         "status": "queued",
