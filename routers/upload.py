@@ -20,6 +20,7 @@ from services.upload import (
     list_cookie_files,
     process_queue,
     require_upload_admission,
+    require_upload_runtime,
     submit_job,
 )
 
@@ -149,6 +150,11 @@ async def trigger_login(account_name: str):
     Opens a visible browser window for manual login. The user must complete
     the login flow manually. Cookies are saved to TK_cookies_{account}.json.
     """
+    try:
+        require_upload_runtime()
+    except UploadUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
     # Run login in a subprocess so it doesn't block the event loop
     # tiktokautouploader opens a browser window for manual login on first run
     try:

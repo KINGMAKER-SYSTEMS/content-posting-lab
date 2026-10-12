@@ -149,6 +149,26 @@ def test_corrupt_job_store_refuses_without_overwrite(sync_client, cookie_dir, mo
     assert stored.read_text() == "{broken"
 
 
+@pytest.mark.parametrize("existing", [
+    [None],
+    ["not-a-job"],
+    [{"job_id": "old", "status": []}],
+    [{"job_id": "old", "status": "queued"}],
+    [{"job_id": "old", "status": "completed"}],
+])
+def test_malformed_job_list_refuses_without_overwrite(sync_client, cookie_dir, monkeypatch, existing):
+    _write_cookie(cookie_dir, "linked")
+    monkeypatch.setattr(upload_svc.importlib, "import_module", lambda name: _FAKE_UPLOADER)
+    stored = cookie_dir.parent / "upload_jobs.json"
+    original = json.dumps(existing)
+    stored.write_text(original)
+
+    r = sync_client.post("/api/upload/submit", json={"video_path": "/tmp/x.mp4", "account_name": "linked"})
+    assert r.status_code == 503
+    assert "job storage is unreadable" in r.json()["detail"]
+    assert stored.read_text() == original
+
+
 # ── check_cookie ──────────────────────────────────────────────────────────────
 
 
@@ -206,6 +226,7 @@ def test_trigger_login_does_not_spawn_real_browser(sync_client, cookie_dir, monk
         return _FakeProc()
 
     monkeypatch.setattr(upload_router.asyncio, "create_subprocess_exec", _fake_exec)
+    monkeypatch.setattr(upload_svc.importlib, "import_module", lambda name: _FAKE_UPLOADER)
     r = sync_client.post("/api/upload/login/whoever")
     assert r.status_code == 200
     body = r.json()
@@ -222,6 +243,24 @@ def test_trigger_login_subprocess_failure_returns_500(sync_client, cookie_dir, m
         raise OSError("no exe")
 
     monkeypatch.setattr(upload_router.asyncio, "create_subprocess_exec", _boom)
+    monkeypatch.setattr(upload_svc.importlib, "import_module", lambda name: _FAKE_UPLOADER)
     r = sync_client.post("/api/upload/login/whoever")
     assert r.status_code == 500
     assert "Failed to start login" in r.json()["detail"]
+
+
+@pytest.mark.parametrize("hosted", [False, True])
+def test_login_unavailable_does_not_spawn(sync_client, cookie_dir, monkeypatch, hosted):
+    if hosted:
+        monkeypatch.setenv("RAILWAY_ENVIRONMENT", "production")
+        monkeypatch.setattr(upload_svc.importlib, "import_module", lambda name: _FAKE_UPLOADER)
+    else:
+        monkeypatch.setattr(upload_svc.importlib, "import_module", lambda name: None)
+
+    async def _unexpected_spawn(*args, **kwargs):
+        raise AssertionError("login subprocess must not spawn")
+
+    monkeypatch.setattr(upload_router.asyncio, "create_subprocess_exec", _unexpected_spawn)
+    r = sync_client.post("/api/upload/login/whoever")
+    assert r.status_code == 503
+    assert "unavailable" in r.json()["detail"]

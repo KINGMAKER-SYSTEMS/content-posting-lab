@@ -1667,3 +1667,23 @@ area: [backend], [frontend], [testing]
 
 The private candidate makes /api/upload/submit return 503 before creating a job on Railway because this in-process queue has no cross-worker claim or original-attempt reconciliation; local admission refuses a missing uploader or corrupt queue without changing the existing file. The Distribution action shows the API's unavailable reason instead of a false queued success. Local checkout-relative storage stays supported. Mac mini isolated-worktree upload API/cookie/login tests pass 26/26 without browser or upload calls. Frontend build is unverified because this isolated checkout has no node_modules and the Mac mini has no npm binary; no production upload, push, PR, merge or deployment occurred. Rollback is to revert this admission/UI change while preserving the existing queue file; enabling hosted uploads additionally requires provisioning the provider runtime, a volume-backed queue, cross-worker claims and reconciliation of original attempts and any prior queue.
 _________________________________________________________________________________
+
+_________________________________________________________________________________
+time: [12:37pm] [10-12-26] EDT; actual UTC: 2026-10-12T16:37:00Z
+agent: [Codex desktop with Mac mini tests] [gpt-6.1-sol] [focused builder]
+worktree: [codex/upload-admission-20261012] /private/tmp/cpl-upload-admission-20261012
+type: [bug report]: Reject malformed stored upload jobs and unavailable login before subprocess
+area: [backend], [testing], [review]
+
+Independent review found a malformed but JSON-list queue such as [null] passed the first admission gate, returned a newly queued job, then crashed the queue worker. Admission and the final pre-append read now validate the existing queue-readable record shapes and preserve malformed bytes on refusal. The adjacent cookie-login route now uses the same hosted/provider runtime gate before subprocess creation, so the hosted image without the provider cannot falsely report login started. Synthetic malformed-list and no-spawn tests exercise both paths without any provider or publication call. The private candidate still needs fresh review and release verification; setting a volume path alone cannot safely enable hosted posting without original-attempt reconciliation and claims.
+_________________________________________________________________________________
+
+_________________________________________________________________________________
+time: [12:38pm] [10-12-26] EDT; actual UTC: 2026-10-12T16:38:26Z
+agent: [Codex desktop with Mac mini tests] [gpt-6.1-sol] [focused builder]
+worktree: [codex/upload-admission-20261012] /private/tmp/cpl-upload-admission-20261012
+type: [bug report]: Finalize malformed-queue and login admission regression verification
+area: [backend], [frontend], [testing]
+
+The corrected private candidate validates required queue-readable fields on queued and terminal rows before new jobs are appended, and refuses a malformed JSON list without overwriting its bytes. The existing-job status update path now uses the same strict read to avoid replacing corrupt state. The hosted login route rejects before launching a subprocess; local fake-subprocess tests preserve literal account transport. On an isolated current-main Mac mini checkout, the upload API/cookie/login tests passed 33/33 with no real provider or browser action. Frontend TypeScript project build and Vite production build also passed using an existing matching-lockfile node_modules tree and the task-bundled Node binary; no dependency install or shared-checkout edits. This supersedes the earlier build-unverified note. The candidate remains private and unpushed pending fresh independent review, release checks, and live proof.
+_________________________________________________________________________________

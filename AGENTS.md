@@ -256,13 +256,16 @@
 - `routers/upload.py` passes the legacy cookie-login account to its static
   Python subprocess runner as an argv value. Request values must never be
   interpolated into executable source; the exact account argument is preserved.
-- TikTok upload admission refuses Railway submission before job creation:
+- TikTok upload and cookie-login admission refuse Railway before queue writes
+  or login subprocess creation:
   a mounted JSON file alone cannot coordinate worker claims or reconcile an
   ambiguous browser Post after a crash. Enabling hosted uploads requires a
   durable original-attempt receipt/reconciliation and single-writer claim
   contract, plus the provider runtime and volume-backed queue migration.
   Local installs retain the checkout-relative queue and must have an importable
-  callable uploader and readable job store. Missing prerequisites or failed
+  callable uploader; upload submission also requires a job store whose existing
+  records have the queue-readable shape. Corrupt records are preserved and
+  never replaced with an empty queue. Missing prerequisites or failed
   writes return 503; admission never proves a TikTok publication.
 - `POST /api/telegram/send` delivers only a media file whose real path is under
   `projects/<project>/<videos|clips|burned|recreate|slideshow-images>/` or the

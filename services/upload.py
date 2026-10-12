@@ -35,13 +35,61 @@ class UploadUnavailable(RuntimeError):
     """A new upload cannot be admitted without its executor and durable job record."""
 
 
-def require_upload_admission() -> None:
-    """Refuse an upload before writing a job when the executor or receipt store is absent.
+def _valid_stored_jobs(value: object) -> bool:
+    """Check fields the queue reads before accepting another mutation."""
+    if not isinstance(value, list):
+        return False
+    statuses = {"queued", "uploading", "completed", "failed", "cancelled"}
+    for job in value:
+        if not isinstance(job, dict):
+            return False
+        if not isinstance(job.get("job_id"), str) or not job["job_id"]:
+            return False
+        if not isinstance(job.get("status"), str) or job["status"] not in statuses:
+            return False
+        if not all(isinstance(job.get(key), str) and job[key] for key in ("video_path", "account_name")):
+            return False
+        if job["status"] == "queued":
+            if not all(key in job for key in (
+                "description", "hashtags", "sound_name", "sound_aud_vol",
+                "schedule_time", "schedule_day", "copyrightcheck", "headless",
+                "stealth", "proxy",
+            )):
+                return False
+            if not isinstance(job.get("description"), str):
+                return False
+            if not isinstance(job.get("hashtags"), list) or not all(isinstance(tag, str) for tag in job["hashtags"]):
+                return False
+            for key in ("sound_name", "schedule_time"):
+                if job.get(key) is not None and not isinstance(job[key], str):
+                    return False
+            if not isinstance(job.get("sound_aud_vol"), str):
+                return False
+            if job.get("schedule_day") is not None and type(job["schedule_day"]) is not int:
+                return False
+            if not all(type(job.get(key)) is bool for key in ("copyrightcheck", "headless", "stealth")):
+                return False
+            if job.get("proxy") is not None and not isinstance(job["proxy"], dict):
+                return False
+    return True
 
-    Hosted deployments cannot safely use this in-process queue: a persistent
-    JSON file alone does not coordinate claims or reconcile a crashed browser
-    after an uncertain Post. Local installations retain the historical queue.
-    """
+
+def _read_stored_jobs() -> list[dict]:
+    path = Path(UPLOAD_JOBS_FILE)
+    if not path.exists():
+        return []
+    try:
+        with path.open(encoding="utf-8") as handle:
+            jobs = json.load(handle)
+        if not _valid_stored_jobs(jobs):
+            raise ValueError("invalid upload job record")
+    except (OSError, ValueError):
+        raise UploadUnavailable("TikTok upload is unavailable: job storage is unreadable") from None
+    return jobs
+
+
+def require_upload_runtime() -> None:
+    """Refuse hosted or broken provider runtimes before upload or login actions."""
     if any(os.getenv(name) for name in (
         "RAILWAY_ENVIRONMENT", "RAILWAY_SERVICE_ID", "RAILWAY_VOLUME_MOUNT_PATH"
     )):
@@ -56,17 +104,16 @@ def require_upload_admission() -> None:
     if uploader is None or not callable(getattr(uploader, "upload_tiktok", None)):
         raise UploadUnavailable("TikTok upload is unavailable: provider runtime is not installed")
 
+
+def require_upload_admission() -> None:
+    """Refuse an upload before writing a job when the executor or store is absent."""
+    require_upload_runtime()
+
     path = Path(UPLOAD_JOBS_FILE)
     if not path.parent.is_dir():
         raise UploadUnavailable("TikTok upload is unavailable: job storage directory is missing")
 
-    if path.exists():
-        try:
-            with path.open(encoding="utf-8") as handle:
-                if not isinstance(json.load(handle), list):
-                    raise ValueError("job store is not a list")
-        except (OSError, ValueError):
-            raise UploadUnavailable("TikTok upload is unavailable: job storage is unreadable") from None
+    _read_stored_jobs()
 
 
 # ── Job persistence ──────────────────────────────────────────────────────────
@@ -83,7 +130,7 @@ def _save_jobs(jobs: list[dict]) -> None:
 
 
 def _update_job(job_id: str, updates: dict) -> dict | None:
-    jobs = _load_jobs()
+    jobs = _read_stored_jobs()
     for job in jobs:
         if job["job_id"] == job_id:
             job.update(updates)
@@ -142,7 +189,7 @@ def submit_job(
         "error": None,
     }
 
-    jobs = _load_jobs()
+    jobs = _read_stored_jobs()
     jobs.append(job)
     _save_jobs(jobs)
     return job
