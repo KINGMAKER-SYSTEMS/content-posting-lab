@@ -322,6 +322,87 @@ def test_capability_reaches_zero_when_every_active_prompt_is_reserved(lab, statu
     assert started == []
 
 
+@pytest.mark.parametrize("candidate_state, expected_quantity", [
+    ("eligible", 5),
+    ("stale_profile", 0),
+    ("active_recovery", 0),
+    ("archived_recovery", 0),
+])
+def test_capability_counts_only_unreserved_current_truck_master_when_prompts_exhausted(
+    lab, monkeypatch, candidate_state, expected_quantity,
+):
+    client, tmp_path, _ = lab
+    publication = recipes.load_registered_recipe(
+        PAGE_ID, "truck-scenic:master", "ai_video", "dossier-1234567890abcdef",
+    )
+    recipe = cp.resolve_generation_recipe(publication)
+    assert recipe is not None
+    assert recipe.engine == "hailuo"  # Provider engine, not job content engine.
+    every_prompt = cp.plan_prompt_combinations(
+        recipe, "reserve-the-whole-effective-space",
+        cp.prompt_combination_space(recipe), set(),
+    )
+    assert len(every_prompt) == cp.prompt_combination_space(recipe)
+
+    root = tmp_path / "paid-master"
+    root.mkdir()
+    master = root / "original.mp4"
+    master.write_bytes(b"preserved-landscape-provider-master")
+    master_sha = hashlib.sha256(master.read_bytes()).hexdigest()
+    intent, revision = master_pages(PAGE_ID, handle="tucker.reeves")
+    authority = current_generation_authority()
+    if candidate_state == "stale_profile":
+        authority["engineProfileHash"] = "sha256:" + "0" * 64
+    producer_id = "cpl-1111111111111111"
+    producer = {
+        **authority,
+        "jobId": producer_id, "pageId": PAGE_ID, "sourceKind": "generated",
+        "status": "completed", "recipeSpecHash": publication["recipeSpecHash"],
+        "artifactRoot": str(root), "createdAt": "2026-08-30T00:00:00+00:00",
+        "clips": [{
+            "path": master.name, "sha256": master_sha, "bytes": master.stat().st_size,
+            "sourceTreatment": source_treatment_for(producer_id, master_sha),
+            "source": {
+                "pageId": PAGE_ID, "recipeId": recipe.recipe_id,
+                "contentNiche": intent["contentNiche"],
+                "contentEngine": intent["contentEngine"],
+                "masterPagesHash": revision,
+            },
+        }],
+    }
+    store = cp._load_jobs()
+    store["jobs"][producer_id] = producer
+    store["jobs"]["cpl-2222222222222222"] = {
+        **current_generation_authority(),
+        "jobId": "cpl-2222222222222222", "pageId": PAGE_ID,
+        "sourceKind": "generated", "status": "running",
+        "family": recipe.family_name, "promptPlan": every_prompt, "clips": [],
+    }
+    if candidate_state == "active_recovery":
+        store["jobs"]["cpl-3333333333333333"] = {
+            "jobId": "cpl-3333333333333333", "pageId": PAGE_ID,
+            "sourceKind": "truck_master_recovery", "status": "running",
+            "recoveryMasters": [{"sha256": master_sha}],
+        }
+    if candidate_state == "archived_recovery":
+        store[cp.compaction.ARCHIVE_INDEX_KEY] = {
+            "truckRecoveryMasters": [master_sha],
+        }
+    cp.atomic_save(cp._jobs_path(), store)
+    # The file is real; video-probe mechanics are covered separately.
+    monkeypatch.setattr(cp, "_is_exact_16x9_video", lambda path: path == master)
+
+    response = client.get(
+        "/api/control-plane/v1/capabilities", headers={"X-RT-Page-Id": PAGE_ID},
+    )
+    assert response.status_code == 200
+    assert response.json()["capabilities"] == [{
+        "recipeId": recipe.recipe_id, "engine": "ai_video",
+        "recipeVersion": publication["recipeVersion"],
+        "maxQuantity": expected_quantity,
+    }]
+
+
 
 def test_completed_prompt_space_can_refill_with_new_job_without_reusing_media(lab):
     client, _, started = lab

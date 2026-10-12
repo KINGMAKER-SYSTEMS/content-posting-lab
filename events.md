@@ -1657,3 +1657,13 @@ area: [backend], [testing], [review]
 
 Exact-head full-suite verification of PR #220 exposed a new failure in the existing paid-generation router import contract: the recreate router imported the budget module solely to choose its kernel-lock path. The lock is now anchored to the stable recreate-project directory without importing or invoking the budget gate from the router. The existing import-boundary test and 49 recreate recovery tests pass. This changes no provider submission, receipt, or budget behavior. Root AGENTS.md remains current because the stable cross-process claim contract is unchanged; no child AGENTS.md governs the router. The branch head needs fresh independent review and checks before merge.
 _________________________________________________________________________________
+
+_________________________________________________________________________________
+time: [06:40pm] [10-12-26] EDT; actual UTC: 2026-10-12T22:40:00Z
+agent: [Codex desktop with Mac mini verification] [gpt-6.1-sol] [focused builder]
+worktree: [codex/recovery-capacity-issue187-20261012] /Users/smathdaddy-macbook/contentlab-issue187-recovery
+type: [bug report]: Issue #187 truck-master recovery capability
+area: [backend], [testing]
+
+The capability path compared a preserved truck master's `ai_video` content engine against the resolved recipe's `hailuo` provider engine, hiding valid recovery capacity after fresh prompts were exhausted. A real-file endpoint fixture reproduced 0 instead of 5 available clips before the fix. The candidate now uses the registered `ai_video` content engine for recovery selection while retaining profile, treatment, file and active/archived reservation guards. The same fixture passes eligible, stale-profile, active-reservation and archived-reservation cases after the fix. The four-file control-plane, generation, source-execution and snapshot-golden suite passed 407 tests with 10 skips in the Mac mini's existing test environment. Independent exact-head review remains pending; no push, PR, merge, deployment or live generation occurred. Rollback is a code revision; preserve historical producer and recovery receipts.
+_________________________________________________________________________________

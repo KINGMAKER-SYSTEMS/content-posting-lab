@@ -527,6 +527,11 @@
   receipt proves the requested video grade, speed and crop. Missing, malformed
   or mismatched treatment skips that master and allows normal fresh generation;
   caption-only changes still permit reuse. This does not grant content approval.
+  Truck capability recovery counts eligible unreserved masters under the
+  `ai_video` content engine; a resolved recipe's provider engine (for example
+  `hailuo`) is not the stored producer content engine. Exhausted fresh prompts
+  do not hide eligible recovery capacity. Profile, source-byte, treatment and
+  active/archived reservation guards still apply.
 - `services.ffmpeg.run_color_correct` serializes its ffmpeg subprocesses within
   each service process so simultaneous asynchronous refill jobs cannot exhaust
   container memory during 1080x1920 libx264 encoding.
