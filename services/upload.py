@@ -40,11 +40,15 @@ def _valid_stored_jobs(value: object) -> bool:
     if not isinstance(value, list):
         return False
     statuses = {"queued", "uploading", "completed", "failed", "cancelled"}
+    seen_ids: set[str] = set()
     for job in value:
         if not isinstance(job, dict):
             return False
         if not isinstance(job.get("job_id"), str) or not job["job_id"]:
             return False
+        if job["job_id"] in seen_ids:
+            return False
+        seen_ids.add(job["job_id"])
         if not isinstance(job.get("status"), str) or job["status"] not in statuses:
             return False
         if not all(isinstance(job.get(key), str) and job[key] for key in ("video_path", "account_name")):

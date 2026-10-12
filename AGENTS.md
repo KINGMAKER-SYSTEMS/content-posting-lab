@@ -264,7 +264,7 @@
   contract, plus the provider runtime and volume-backed queue migration.
   Local installs retain the checkout-relative queue and must have an importable
   callable uploader; upload submission also requires a job store whose existing
-  records have the queue-readable shape. Corrupt records are preserved and
+  records have the queue-readable shape and unique job IDs. Corrupt records are preserved and
   never replaced with an empty queue. Missing prerequisites or failed
   writes return 503; admission never proves a TikTok publication.
 - `POST /api/telegram/send` delivers only a media file whose real path is under

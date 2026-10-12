@@ -169,6 +169,22 @@ def test_malformed_job_list_refuses_without_overwrite(sync_client, cookie_dir, m
     assert stored.read_text() == original
 
 
+def test_duplicate_job_ids_refuse_without_overwrite(sync_client, cookie_dir, monkeypatch):
+    _write_cookie(cookie_dir, "linked")
+    monkeypatch.setattr(upload_svc.importlib, "import_module", lambda name: _FAKE_UPLOADER)
+    original_job = upload_svc.submit_job(video_path="/tmp/old.mp4", account_name="linked")
+    completed = {**original_job, "status": "completed"}
+    queued = {**original_job, "status": "queued"}
+    stored = cookie_dir.parent / "upload_jobs.json"
+    original = json.dumps([completed, queued])
+    stored.write_text(original)
+
+    r = sync_client.post("/api/upload/submit", json={"video_path": "/tmp/new.mp4", "account_name": "linked"})
+    assert r.status_code == 503
+    assert "job storage is unreadable" in r.json()["detail"]
+    assert stored.read_text() == original
+
+
 # ── check_cookie ──────────────────────────────────────────────────────────────
 
 

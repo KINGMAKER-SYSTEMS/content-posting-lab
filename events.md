@@ -1687,3 +1687,13 @@ area: [backend], [frontend], [testing]
 
 The corrected private candidate validates required queue-readable fields on queued and terminal rows before new jobs are appended, and refuses a malformed JSON list without overwriting its bytes. The existing-job status update path now uses the same strict read to avoid replacing corrupt state. The hosted login route rejects before launching a subprocess; local fake-subprocess tests preserve literal account transport. On an isolated current-main Mac mini checkout, the upload API/cookie/login tests passed 33/33 with no real provider or browser action. Frontend TypeScript project build and Vite production build also passed using an existing matching-lockfile node_modules tree and the task-bundled Node binary; no dependency install or shared-checkout edits. This supersedes the earlier build-unverified note. The candidate remains private and unpushed pending fresh independent review, release checks, and live proof.
 _________________________________________________________________________________
+
+_________________________________________________________________________________
+time: [12:40pm] [10-12-26] EDT; actual UTC: 2026-10-12T16:40:00Z
+agent: [Codex desktop with Mac mini tests] [gpt-6.1-sol] [focused builder]
+worktree: [codex/upload-admission-20261012] /private/tmp/cpl-upload-admission-20261012
+type: [bug report]: Reject duplicate upload job identities before queue admission
+area: [backend], [testing], [review]
+
+Fresh independent review found that a stored completed row followed by a queued row sharing the same job_id passed shape validation; process_queue would select the queued row while get_job returned the completed one, then loop without advancing. The private candidate now rejects repeated IDs as corrupt before either admitting or appending a new job and preserves the existing bytes. Synthetic duplicate-ID regression and the upload API/cookie/login suite passed 34/34 on an isolated Mac mini current-main checkout; frontend TypeScript/Vite build passed there with matching-lockfile existing dependencies. Logs: /tmp/cpl-upload-admission-tests-20261012-1640.log and /tmp/cpl-upload-admission-frontend-build-20261012-1640.log on macmini-ip. No upload, provider action, push, PR, merge or deployment occurred. Fresh independent head review remains required.
+_________________________________________________________________________________
