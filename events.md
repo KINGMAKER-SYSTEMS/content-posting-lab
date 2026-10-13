@@ -1667,3 +1667,13 @@ area: [backend], [testing], [review]
 
 The public capability GET accepted a guessable page ID and returned recipe capacity and canonical source identities without the configured Control Plane token. This private candidate applies the existing fail-closed CONTROL_PLANE_TOKEN Bearer check before page intent or job reads, preserves the authorized Worker response, and updates route tests to use the Worker credential. Missing, invalid, browser-key, and unconfigured credentials are covered. No production request, push, merge, or deployment occurred; independent exact-head review and release verification remain required. Rollback is the prior code revision if authorized Worker reads regress.
 _________________________________________________________________________________
+
+_________________________________________________________________________________
+time: [10:17am] [10-13-26] EDT; actual UTC: 2026-10-13T14:17:05Z
+agent: [Codex desktop with Mac mini builder] [gpt-6.1-sol] [focused builder]
+worktree: [codex/health-tool-latency-20261013] /private/tmp/content-lab-health-tool-latency-20261013
+type: [bug report]: Bound public health tool probes
+area: [backend], [testing], [review]
+
+The public health handler synchronously spawned ffmpeg and yt-dlp with separate five-second timeouts on every probe, stalling the event loop and producing intermittent multi-second health latency. This candidate checks both concurrently off the event loop at startup, then returns the last completed result while a stale request starts a single bounded refresh. Missing tools still yield degraded status after refresh; provider and budget fields are unchanged. Thirteen focused health/lifespan tests pass. The production Docker image builds, imports app and TgCrypto, and contains no gcc. No push, merge or deployment occurred. Rollback is the prior app revision if health status regresses.
+_________________________________________________________________________________
