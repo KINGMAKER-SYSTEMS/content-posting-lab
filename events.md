@@ -1657,3 +1657,13 @@ area: [backend], [testing], [review]
 
 Exact-head full-suite verification of PR #220 exposed a new failure in the existing paid-generation router import contract: the recreate router imported the budget module solely to choose its kernel-lock path. The lock is now anchored to the stable recreate-project directory without importing or invoking the budget gate from the router. The existing import-boundary test and 49 recreate recovery tests pass. This changes no provider submission, receipt, or budget behavior. Root AGENTS.md remains current because the stable cross-process claim contract is unchanged; no child AGENTS.md governs the router. The branch head needs fresh independent review and checks before merge.
 _________________________________________________________________________________
+
+_________________________________________________________________________________
+time: [11:59pm] [10-12-26] EDT; actual UTC: 2026-10-13T03:59:38Z
+agent: [Codex desktop with Mac mini execution] [gpt-6.1-sol] [release owner]
+worktree: [codex/content-lab-job-key-lookup] /Users/risingtidesdev/worktrees/content-lab-job-key-lookup
+type: [bug report]: Read-only lost-ack Content Lab job receipt lookup
+area: [backend], [testing], [review]
+
+A lost create acknowledgment had no side-effect-free way to recover the original job ID: repeating create can validate current intent and resume paid work, while status needs the unknown ID. This isolated candidate adds an authenticated, exact-page/lane/key and original-request-hash receipt lookup that only reads the durable job index and returns job ID/status. Missing, foreign, archived, legacy-unhashed or changed-request rows hold for original-attempt reconciliation; corrupt storage fails closed. Independent source review found and the builder fixed an accepted boolean-quantity compatibility edge. Fifty-seven focused tests pass, including app-level dual authentication; no provider call, production write, push, PR, merge or deployment occurred yet. PR #179 route-auth integration, caller credentials, final-head review/checks and live read-only parity remain release holds. Rollback is a code revision preserving job receipts and idempotency history.
+_________________________________________________________________________________
