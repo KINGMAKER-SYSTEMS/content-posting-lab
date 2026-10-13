@@ -19,6 +19,7 @@ from services.control_plane_sources import (
 )
 from tests.test_control_plane_source_execution import (  # noqa: F401 (fixture)
     PAGE_ID,
+    TOKEN,
     headers,
     job_body,
     lab,
@@ -221,7 +222,7 @@ def test_a_tiny_master_cuts_every_window_once_then_answers_source_windows_exhaus
     frames = []
     for run in range(9):
         capability = client.get(
-            "/api/control-plane/v1/capabilities", headers={"X-RT-Page-Id": PAGE_ID},
+            "/api/control-plane/v1/capabilities", headers={"X-RT-Page-Id": PAGE_ID, "Authorization": f"Bearer {TOKEN}"},
         ).json()["capabilities"]
         assert capability[0]["maxQuantity"] == 1, (run, capability)
         created = client.post(
@@ -240,7 +241,7 @@ def test_a_tiny_master_cuts_every_window_once_then_answers_source_windows_exhaus
     assert all(start % 1_000 for start, _ in frames[5:]), frames[5:]
     assert {start % 1_000 for start, _ in frames[5:]} <= {250, 500, 750}
     capability = client.get(
-        "/api/control-plane/v1/capabilities", headers={"X-RT-Page-Id": PAGE_ID},
+        "/api/control-plane/v1/capabilities", headers={"X-RT-Page-Id": PAGE_ID, "Authorization": f"Bearer {TOKEN}"},
     ).json()["capabilities"]
     assert capability[0]["maxQuantity"] == 0
     stopped = client.post(
@@ -263,7 +264,7 @@ def test_a_master_shorter_than_any_cut_names_its_reason(lab, monkeypatch):
 
     monkeypatch.setattr(cp, "_dossier_source_recipe", too_short)
     capability = client.get(
-        "/api/control-plane/v1/capabilities", headers={"X-RT-Page-Id": PAGE_ID},
+        "/api/control-plane/v1/capabilities", headers={"X-RT-Page-Id": PAGE_ID, "Authorization": f"Bearer {TOKEN}"},
     ).json()["capabilities"]
     assert capability[0]["maxQuantity"] == 0
     refused = client.post(
@@ -370,9 +371,9 @@ def test_supported_constraints_are_advertised_only_behind_the_flag(lab, monkeypa
     # sent only once the operator turns the flag on.
     client, _, _ = lab
     monkeypatch.delenv(cp.ADVERTISE_CONSTRAINTS_ENV, raising=False)
-    plain = client.get("/api/control-plane/v1/capabilities", headers={"X-RT-Page-Id": PAGE_ID}).json()
+    plain = client.get("/api/control-plane/v1/capabilities", headers={"X-RT-Page-Id": PAGE_ID, "Authorization": f"Bearer {TOKEN}"}).json()
     assert set(plain) == {"schema", "capabilities"}
     monkeypatch.setenv(cp.ADVERTISE_CONSTRAINTS_ENV, "1")
-    advertised = client.get("/api/control-plane/v1/capabilities", headers={"X-RT-Page-Id": PAGE_ID}).json()
+    advertised = client.get("/api/control-plane/v1/capabilities", headers={"X-RT-Page-Id": PAGE_ID, "Authorization": f"Bearer {TOKEN}"}).json()
     assert advertised["supportedConstraints"] == ["sourceWindowExclusions", "priority"]
     assert advertised["capabilities"] == plain["capabilities"]

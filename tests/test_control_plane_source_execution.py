@@ -588,7 +588,7 @@ def test_capability_and_jobs_bind_master_hash_and_unique_windows(lab):
     client, _, started = lab
     capabilities = client.get(
         "/api/control-plane/v1/capabilities",
-        headers={"X-RT-Page-Id": PAGE_ID},
+        headers={"X-RT-Page-Id": PAGE_ID, "Authorization": f"Bearer {TOKEN}"},
     ).json()["capabilities"]
     assert any(row["recipeId"] == "pov-dirt-bike:master" for row in capabilities)
 
@@ -721,7 +721,7 @@ def test_capabilities_include_only_completed_page_source_import_identities(lab):
             },
         },
     })
-    headers_for_page = {"X-RT-Page-Id": PAGE_ID}
+    headers_for_page = {"X-RT-Page-Id": PAGE_ID, "Authorization": f"Bearer {TOKEN}"}
     capabilities = client.get(
         "/api/control-plane/v1/capabilities", headers=headers_for_page,
     ).json()["capabilities"]
@@ -750,7 +750,7 @@ def test_sourced_paths_never_probe_the_ai_video_resolver(lab, monkeypatch):
     monkeypatch.setattr(cp, "resolve_generation_recipe", unexpected_generation_probe)
     capabilities = client.get(
         "/api/control-plane/v1/capabilities",
-        headers={"X-RT-Page-Id": PAGE_ID},
+        headers={"X-RT-Page-Id": PAGE_ID, "Authorization": f"Bearer {TOKEN}"},
     )
     assert capabilities.status_code == 200
     assert capabilities.json()["capabilities"] == [{
@@ -870,7 +870,7 @@ def test_capability_counts_down_to_zero_only_when_every_window_is_cut(lab, monke
     def capability():
         response = client.get(
             "/api/control-plane/v1/capabilities",
-            headers={"X-RT-Page-Id": PAGE_ID},
+            headers={"X-RT-Page-Id": PAGE_ID, "Authorization": f"Bearer {TOKEN}"},
         )
         assert response.status_code == 200
         return response.json()["capabilities"]
@@ -1469,7 +1469,7 @@ def test_source_capability_suppresses_unknown_original_identity(lab, monkeypatch
         recipe = resolve(publication)
         return replace(recipe, masters=tuple(replace(master, provenance={}) for master in recipe.masters))
     monkeypatch.setattr(cp, "_dossier_source_recipe", malformed)
-    response = client.get("/api/control-plane/v1/capabilities", headers={"X-RT-Page-Id": PAGE_ID})
+    response = client.get("/api/control-plane/v1/capabilities", headers={"X-RT-Page-Id": PAGE_ID, "Authorization": f"Bearer {TOKEN}"})
     assert response.status_code == 200
     assert response.json()["capabilities"] == []
 
