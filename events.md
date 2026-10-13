@@ -1667,3 +1667,21 @@ area: [backend], [testing], [review]
 
 The public capability GET accepted a guessable page ID and returned recipe capacity and canonical source identities without the configured Control Plane token. This private candidate applies the existing fail-closed CONTROL_PLANE_TOKEN Bearer check before page intent or job reads, preserves the authorized Worker response, and updates route tests to use the Worker credential. Missing, invalid, browser-key, and unconfigured credentials are covered. No production request, push, merge, or deployment occurred; independent exact-head review and release verification remain required. Rollback is the prior code revision if authorized Worker reads regress.
 _________________________________________________________________________________
+time: [06:40pm] [10-12-26] EDT; actual UTC: 2026-10-12T22:40:00Z
+agent: [Codex desktop with Mac mini verification] [gpt-6.1-sol] [focused builder]
+worktree: [codex/recovery-capacity-issue187-20261012] /Users/smathdaddy-macbook/contentlab-issue187-recovery
+type: [bug report]: Issue #187 truck-master recovery capability
+area: [backend], [testing]
+
+The capability path compared a preserved truck master's `ai_video` content engine against the resolved recipe's `hailuo` provider engine, hiding valid recovery capacity after fresh prompts were exhausted. A real-file endpoint fixture reproduced 0 instead of 5 available clips before the fix. The candidate now uses the registered `ai_video` content engine for recovery selection while retaining profile, treatment, file and active/archived reservation guards. The same fixture passes eligible, stale-profile, active-reservation and archived-reservation cases after the fix. The four-file control-plane, generation, source-execution and snapshot-golden suite passed 407 tests with 10 skips in the Mac mini's existing test environment. Independent exact-head review remains pending; no push, PR, merge, deployment or live generation occurred. Rollback is a code revision; preserve historical producer and recovery receipts.
+_________________________________________________________________________________
+
+_________________________________________________________________________________
+time: [05:04am] [10-13-26] EDT; actual UTC: 2026-10-13T09:04:00Z
+agent: [Codex desktop with Mac mini builder] [gpt-6.1-sol] [integration builder]
+worktree: [codex/pr222-integration-20261013] /private/tmp/content-lab-pr222-integration
+type: [bug report]: Integrate truck recovery capacity with capability authorization
+area: [backend], [testing], [review]
+
+Merged current main's Control Plane Bearer requirement with the issue #187 truck-master recovery fix. The new endpoint regression sends the existing Worker credential; authorized capability responses retain the corrected unreserved-master quantity, while the security dependency still rejects anonymous reads before page data access. No push, merge to main, deployment or live generation occurred. Rollback requires preserving the current main capability authorization and reverting only the truck-recovery selection if needed; prior producer and recovery receipts remain intact.
+_________________________________________________________________________________

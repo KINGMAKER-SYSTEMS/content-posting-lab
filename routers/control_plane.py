@@ -2007,7 +2007,7 @@ def _generated_capability_quantity(
             MAX_CAPABILITY_QUANTITY,
             len(_truck_master_candidates(
                 store, page_id, recovery_limit,
-                content_engine=recipe.engine,
+                content_engine="ai_video",
                 recipe_id=recipe.recipe_id,
                 generation_recipe=recipe,
             )) * recipe.clips_per_generation,
