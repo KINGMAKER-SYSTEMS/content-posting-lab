@@ -521,7 +521,11 @@ def _capabilities_job_views(
     )
 
 
-@router.get("/v1/capabilities")
+def _require_capabilities_bearer(authorization: str | None = Header(default=None)) -> None:
+    require_control_plane_bearer(authorization)
+
+
+@router.get("/v1/capabilities", dependencies=[Depends(_require_capabilities_bearer)])
 def capabilities(
     x_rt_page_id: str | None = Header(default=None),
     x_page_id: str | None = Header(default=None),

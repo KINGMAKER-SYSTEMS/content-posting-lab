@@ -80,7 +80,7 @@ def test_intent_format_is_advertised_before_recipe_publication(lab):
     client, _, _, _ = lab
     response = client.get(
         "/api/control-plane/v1/capabilities",
-        headers={"X-RT-Page-Id": PAGE_ID},
+        headers={"X-RT-Page-Id": PAGE_ID, "Authorization": f"Bearer {TOKEN}"},
     )
     assert response.status_code == 200
     capabilities = response.json()["capabilities"]
