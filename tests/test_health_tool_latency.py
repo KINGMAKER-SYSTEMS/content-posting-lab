@@ -66,3 +66,52 @@ async def test_startup_tool_check_runs_concurrently_and_records_missing(monkeypa
     assert elapsed < 0.19
     assert app_module._tool_status == (False, True)
     assert app_module._tool_checked_at >= start
+
+
+@pytest.mark.asyncio
+async def test_permission_error_degrades_and_refresh_is_rate_limited(monkeypatch):
+    calls = []
+
+    def denied(*args, **kwargs):
+        calls.append(args[0])
+        raise PermissionError("executable denied")
+
+    monkeypatch.setattr(app_module.subprocess, "run", denied)
+    monkeypatch.setattr(app_module, "generation_budget_status", lambda: {"corrupt": False})
+    monkeypatch.setattr(app_module, "_tool_status", (True, True))
+    monkeypatch.setattr(app_module, "_tool_checked_at", 0.0)
+    monkeypatch.setattr(app_module, "_tool_refresh_task", None)
+
+    first = await app_module.health_check()
+    assert first["status"] == "ok"  # Last completed status until refresh settles.
+    await asyncio.wait_for(app_module._tool_refresh_task, timeout=1)
+    assert app_module._tool_status == (False, False)
+    assert len(calls) == 2
+    for _ in range(20):
+        response = await app_module.health_check()
+        assert response["status"] == "degraded"
+    assert len(calls) == 2
+    assert app_module._tool_checked_at > 0
+
+
+@pytest.mark.asyncio
+async def test_unexpected_checker_failure_degrades_without_probe_loop(monkeypatch):
+    calls = []
+
+    def broken():
+        calls.append("ffmpeg")
+        raise RuntimeError("checker failed")
+
+    monkeypatch.setattr(app_module, "_check_ffmpeg", broken)
+    monkeypatch.setattr(app_module, "_check_ytdlp", lambda: True)
+    monkeypatch.setattr(app_module, "_tool_status", (True, True))
+    monkeypatch.setattr(app_module, "_tool_checked_at", 0.0)
+    monkeypatch.setattr(app_module, "_tool_refresh_task", None)
+    monkeypatch.setattr(app_module, "generation_budget_status", lambda: {"corrupt": False})
+
+    await app_module.health_check()
+    await asyncio.wait_for(app_module._tool_refresh_task, timeout=1)
+    assert app_module._tool_status == (False, True)
+    for _ in range(10):
+        assert (await app_module.health_check())["status"] == "degraded"
+    assert calls == ["ffmpeg"]

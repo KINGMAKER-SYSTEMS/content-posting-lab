@@ -75,7 +75,7 @@ def _check_command(command: list[str]) -> bool:
         return True
     except (
         subprocess.CalledProcessError,
-        FileNotFoundError,
+        OSError,
         subprocess.TimeoutExpired,
     ):
         return False
@@ -99,10 +99,15 @@ _tool_refresh_task: asyncio.Task | None = None
 
 async def _refresh_tool_status() -> None:
     global _tool_status, _tool_checked_at
-    ffmpeg_ok, ytdlp_ok = await asyncio.gather(
-        asyncio.to_thread(_check_ffmpeg), asyncio.to_thread(_check_ytdlp)
+    results = await asyncio.gather(
+        asyncio.to_thread(_check_ffmpeg),
+        asyncio.to_thread(_check_ytdlp),
+        return_exceptions=True,
     )
-    _tool_status = (ffmpeg_ok, ytdlp_ok)
+    for name, result in zip(("ffmpeg", "yt-dlp"), results):
+        if isinstance(result, BaseException):
+            log.warning("%s health check failed: %s", name, result)
+    _tool_status = tuple(result is True for result in results)
     _tool_checked_at = time.monotonic()
 
 
@@ -117,6 +122,8 @@ def _schedule_tool_refresh() -> None:
     def report_failure(task: asyncio.Task) -> None:
         try:
             task.result()
+        except asyncio.CancelledError:
+            return
         except Exception:
             log.exception("health tool refresh failed")
 

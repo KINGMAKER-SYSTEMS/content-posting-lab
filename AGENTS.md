@@ -674,8 +674,10 @@
   executable check. Startup checks both off the event loop before serving.
   A request after the 60-second freshness interval starts at most one
   background refresh; concurrent probes return the last completed result
-  without launching their own commands. A failed or missing tool reports
-  degraded after the refresh. Keep the anonymous provider and budget fields
+  without launching their own commands. A failed or missing tool, including
+  an executable permission error, reports degraded after the refresh and
+  records a fresh check time so repeated probes cannot spin new checks.
+  Keep the anonymous provider and budget fields
   unchanged; readiness remains a separate endpoint.
 
 ## Work Guidance
