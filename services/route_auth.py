@@ -43,6 +43,8 @@ import hmac
 import logging
 import os
 import threading
+
+import anyio
 from typing import Callable, Iterable
 
 import jwt
@@ -339,6 +341,8 @@ class RouteAuthMiddleware:
         self.app = app
         self._owner = routes_owner
         self._cache: dict[int, tuple] = {}
+        # Keep a stalled Access cert endpoint from consuming every worker thread.
+        self._access_checks = threading.BoundedSemaphore(8)
 
     def _requirement(self, scope):
         """(route_auth requirement, before-body checks, child scope) of the matched route."""
@@ -370,7 +374,22 @@ class RouteAuthMiddleware:
             try:
                 if requirement is not None:
                     callers, token_in_key = requirement
-                    authorize(HTTPConnection(routed), tuple(sorted(callers)), worker_token_in_x_api_key=token_in_key)
+                    conn = HTTPConnection(routed)
+                    ordered = tuple(sorted(callers))
+                    if ACCESS in ordered and conn.headers.get(ACCESS_JWT_HEADER, "").strip():
+                        if not self._access_checks.acquire(blocking=False):
+                            _deny(conn, 503, "Operator identity verification is busy")
+                        try:
+                            # PyJWKClient uses blocking I/O (up to five seconds) on a cache miss.
+                            # Keep that off the ASGI loop while retaining pre-body refusal.
+                            await anyio.to_thread.run_sync(
+                                lambda: authorize(conn, ordered, worker_token_in_x_api_key=token_in_key),
+                                abandon_on_cancel=False,
+                            )
+                        finally:
+                            self._access_checks.release()
+                    else:
+                        authorize(conn, ordered, worker_token_in_x_api_key=token_in_key)
                 for check in checks:
                     check(Request(routed) if routed["type"] == "http" else HTTPConnection(routed))
             except HTTPException as exc:

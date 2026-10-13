@@ -217,6 +217,11 @@
   enforces the route's dependency, and header-only checks marked
   `before_body` (Mini App agent key, initData), before the body is read. `/api/miniapp/agent/*`
   fails closed (503) without MINIAPP_AGENT_KEY.
+  Access JWT verification may fetch JWKS through blocking PyJWKClient on a
+  cache miss; pre-body middleware runs presented Access checks off the ASGI
+  loop with at most eight concurrent lookups per app process. A saturated
+  lookup limit refuses with 503 before reading the body; missing/invalid
+  credentials and unavailable certs keep their existing fail-closed results.
   Middleware and auth inventory resolve FastAPI's effective include contexts
   in dispatch order, retaining combined prefixes and include-level dependencies
   for HTTP and websocket checks before body parsing. Use the public iterator

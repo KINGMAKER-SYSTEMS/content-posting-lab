@@ -1,6 +1,7 @@
 """Pre-body checks follow the effective router's actual registration order."""
 
 import asyncio
+import threading
 
 import pytest
 from fastapi import APIRouter, Depends, FastAPI, WebSocket
@@ -169,3 +170,144 @@ def test_distinct_include_callers_keep_separate_cached_dependencies(monkeypatch)
         assert client.post("/worker/items", headers=hub, content=b"{bad json").status_code == 401
         assert client.post("/hub/items", headers=worker, content=b"{bad json").status_code == 401
     assert calls == [{"caller": "worker"}, {"caller": "hub"}] * 3
+
+
+def test_slow_access_certs_leave_public_requests_responsive_and_auth_pre_body(monkeypatch):
+    from services import route_auth
+    from tests import route_auth_support as support
+
+    support.configure_all(monkeypatch)
+    app = FastAPI()
+
+    @app.post("/private", dependencies=[Depends(route_auth.require_access)])
+    def private(body: dict):
+        return body
+
+    @app.get("/api/health")
+    def health():
+        return {"ok": True}
+
+    started = threading.Event()
+    release = threading.Event()
+
+    def stalled_certs(token, issuer):
+        started.set()
+        assert release.wait(2), "test must release the stalled cert lookup"
+        raise route_auth._Unavailable()
+
+    monkeypatch.setattr(route_auth, "_signing_key", stalled_certs)
+    entered = []
+    body_reads = []
+
+    async def inner(scope, receive, send):
+        entered.append(scope["path"])
+
+    async def receive():
+        body_reads.append(1)
+        return {"type": "http.request", "body": b"{bad json", "more_body": False}
+
+    async def request(middleware, path, headers=()):
+        sent = []
+        scope = {
+            "type": "http", "path": path, "raw_path": path.encode(),
+            "method": "POST" if path == "/private" else "GET", "root_path": "",
+            "scheme": "http", "http_version": "1.1", "query_string": b"",
+            "server": ("test", 80), "client": ("test", 1), "headers": headers,
+        }
+
+        async def send(message):
+            sent.append(message)
+
+        await middleware(scope, receive, send)
+        return sent
+
+    async def scenario():
+        middleware = RouteAuthMiddleware(inner, app.router)
+        headers = ((b"cf-access-jwt-assertion", support.mint().encode()),
+                   (b"sec-fetch-site", b"same-origin"))
+        private = asyncio.create_task(request(middleware, "/private", headers))
+        try:
+            await asyncio.wait_for(asyncio.to_thread(started.wait, 1), timeout=1.2)
+            assert started.is_set()
+            # A synchronous PyJWKClient call on the ASGI loop stalls this unrelated request.
+            public = await asyncio.wait_for(request(middleware, "/api/health"), timeout=0.5)
+            assert public == [] and entered == ["/api/health"]
+        finally:
+            release.set()
+        denied = await private
+        assert denied[0]["status"] == 503
+        assert body_reads == [] and entered == ["/api/health"]
+
+    asyncio.run(scenario())
+
+
+def test_access_cert_lookup_concurrency_is_bounded(monkeypatch):
+    from services import route_auth
+    from tests import route_auth_support as support
+
+    support.configure_all(monkeypatch)
+    app = FastAPI()
+
+    @app.get("/private", dependencies=[Depends(route_auth.require_access)])
+    def private():
+        return {"ok": True}
+
+    started = threading.Event()
+    release = threading.Event()
+    active = 0
+    maximum = 0
+    lock = threading.Lock()
+
+    def stalled_certs(token, issuer):
+        nonlocal active, maximum
+        with lock:
+            active += 1
+            maximum = max(maximum, active)
+            if active == 8:
+                started.set()
+        try:
+            assert release.wait(2), "test must release cert lookups"
+            raise route_auth._Unavailable()
+        finally:
+            with lock:
+                active -= 1
+
+    monkeypatch.setattr(route_auth, "_signing_key", stalled_certs)
+
+    async def inner(scope, receive, send):
+        raise AssertionError("no denied request may reach the app")
+
+    async def request(middleware, token):
+        sent = []
+        scope = {
+            "type": "http", "path": "/private", "raw_path": b"/private",
+            "method": "GET", "root_path": "", "scheme": "http", "http_version": "1.1",
+            "query_string": b"", "server": ("test", 80), "client": ("test", 1),
+            "headers": [(b"cf-access-jwt-assertion", token.encode())],
+        }
+
+        async def receive():
+            raise AssertionError("auth must precede body reads")
+
+        async def send(message):
+            sent.append(message)
+
+        await middleware(scope, receive, send)
+        return sent
+
+    async def scenario():
+        middleware = RouteAuthMiddleware(inner, app.router)
+        token = support.mint()
+        pending = [asyncio.create_task(request(middleware, token)) for _ in range(8)]
+        try:
+            await asyncio.wait_for(asyncio.to_thread(started.wait, 1), timeout=1.2)
+            assert started.is_set()
+            saturated = await asyncio.wait_for(request(middleware, token), timeout=0.5)
+            assert saturated[0]["status"] == 503
+            assert maximum == 8
+        finally:
+            release.set()
+        denied = await asyncio.gather(*pending)
+        assert all(messages[0]["status"] == 503 for messages in denied)
+
+    asyncio.run(scenario())
