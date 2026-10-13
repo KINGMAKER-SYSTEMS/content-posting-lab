@@ -1657,3 +1657,13 @@ area: [backend], [testing], [review]
 
 Exact-head full-suite verification of PR #220 exposed a new failure in the existing paid-generation router import contract: the recreate router imported the budget module solely to choose its kernel-lock path. The lock is now anchored to the stable recreate-project directory without importing or invoking the budget gate from the router. The existing import-boundary test and 49 recreate recovery tests pass. This changes no provider submission, receipt, or budget behavior. Root AGENTS.md remains current because the stable cross-process claim contract is unchanged; no child AGENTS.md governs the router. The branch head needs fresh independent review and checks before merge.
 _________________________________________________________________________________
+
+_________________________________________________________________________________
+time: [04:46am] [10-13-26] EDT; actual UTC: 2026-10-13T08:46:00Z
+agent: [Codex desktop with Mac mini builder] [gpt-6.1-sol] [focused builder]
+worktree: [codex/capabilities-auth-20261013] /private/tmp/content-lab-capabilities-auth
+type: [bug report]: Require service Bearer before capability disclosure
+area: [backend], [testing], [review]
+
+The public capability GET accepted a guessable page ID and returned recipe capacity and canonical source identities without the configured Control Plane token. This private candidate applies the existing fail-closed CONTROL_PLANE_TOKEN Bearer check before page intent or job reads, preserves the authorized Worker response, and updates route tests to use the Worker credential. Missing, invalid, browser-key, and unconfigured credentials are covered. No production request, push, merge, or deployment occurred; independent exact-head review and release verification remain required. Rollback is the prior code revision if authorized Worker reads regress.
+_________________________________________________________________________________
