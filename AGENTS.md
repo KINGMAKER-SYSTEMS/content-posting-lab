@@ -670,6 +670,16 @@
   `recipes/generation/boat_minimax.v1.json` changes only boat generation;
   preserve unrelated prompt/provider versions and use the existing boat inventory.
 
+- `GET /api/health` reports the most recently completed ffmpeg/yt-dlp
+  executable check. Startup checks both off the event loop before serving.
+  A request after the 60-second freshness interval starts at most one
+  background refresh; concurrent probes return the last completed result
+  without launching their own commands. A failed or missing tool, including
+  an executable permission error, reports degraded after the refresh and
+  records a fresh check time so repeated probes cannot spin new checks.
+  Keep the anonymous provider and budget fields
+  unchanged; readiness remains a separate endpoint.
+
 ## Work Guidance
 
 - The production Docker image uses explicit COPY paths. Include every required
@@ -687,6 +697,10 @@
   module and return the same versioned schema and hashes.
 
 ## Verification
+- Run `pytest -q tests/test_health_tool_latency.py tests/test_smoke.py`
+  for nonblocking single-flight tool refresh, missing-tool degradation and
+  the public health response.
+
 
 - Run `node --test tools/seekable-html-video/frame_directory.test.cjs` for caller-directory preservation, exclusive writes, directory replacement, cleanup ownership, and managed temporary-directory cleanup.
 
