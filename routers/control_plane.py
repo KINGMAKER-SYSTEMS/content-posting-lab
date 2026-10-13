@@ -4796,7 +4796,7 @@ def job_by_idempotency_key(
                for field in ("engine", "lockedRecipeId", "recipeVersion", "policyHash")):
         raise HTTPException(status_code=400, detail="job identity fields are required")
     quantity = body.get("quantity")
-    if not isinstance(quantity, int) or isinstance(quantity, bool) or not 1 <= quantity <= MAX_JOB_QUANTITY:
+    if not isinstance(quantity, int) or not 1 <= quantity <= MAX_JOB_QUANTITY:
         raise HTTPException(status_code=400, detail="quantity must be an integer 1..100")
     constraints = body.get("constraints")
     if constraints is not None and not isinstance(constraints, dict):

@@ -164,3 +164,14 @@ def test_malformed_mapping_fails_closed(lookup):
     client, headers, body, _, _, persist = lookup
     persist(keys=[KEY])
     assert post(client, headers, body).status_code == 503
+
+
+def test_legacy_bool_quantity_exact_original_reconciles_but_integer_does_not(lookup):
+    client, headers, body, job, _, persist = lookup
+    original = {**body, "quantity": True}
+    true_hash = cp._job_request_hash(
+        original, page_id=PAGE, lane=LANE, master_pages=body["masterPages"],
+    )
+    persist(jobs={JOB_ID: {**job, "jobRequestHash": true_hash}})
+    assert post(client, headers, original).status_code == 200
+    assert post(client, headers, body).status_code == 404
