@@ -1659,6 +1659,16 @@ Exact-head full-suite verification of PR #220 exposed a new failure in the exist
 _________________________________________________________________________________
 
 _________________________________________________________________________________
+time: [04:46am] [10-13-26] EDT; actual UTC: 2026-10-13T08:46:00Z
+agent: [Codex desktop with Mac mini builder] [gpt-6.1-sol] [focused builder]
+worktree: [codex/capabilities-auth-20261013] /private/tmp/content-lab-capabilities-auth
+type: [bug report]: Require service Bearer before capability disclosure
+area: [backend], [testing], [review]
+
+The public capability GET accepted a guessable page ID and returned recipe capacity and canonical source identities without the configured Control Plane token. This private candidate applies the existing fail-closed CONTROL_PLANE_TOKEN Bearer check before page intent or job reads, preserves the authorized Worker response, and updates route tests to use the Worker credential. Missing, invalid, browser-key, and unconfigured credentials are covered. No production request, push, merge, or deployment occurred; independent exact-head review and release verification remain required. Rollback is the prior code revision if authorized Worker reads regress.
+_________________________________________________________________________________
+
+_________________________________________________________________________________
 time: [12:34pm] [10-12-26] EDT; actual UTC: 2026-10-12T16:34:00Z
 agent: [Codex desktop with Mac mini tests] [gpt-6.1-sol] [focused builder]
 worktree: [codex/upload-admission-20261012] /private/tmp/cpl-upload-admission-20261012
