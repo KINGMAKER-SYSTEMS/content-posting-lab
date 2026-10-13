@@ -215,7 +215,8 @@ def _deny(conn: HTTPConnection, status: int, detail: str):
 
 def authorize(conn: HTTPConnection, callers: Iterable[str], worker_token_in_x_api_key: bool = False) -> str:
     """Return the caller class that authenticated, or raise 503/401/403."""
-    live = [c for c in callers if configured(c)]
+    # Explicit machine credentials do not depend on Access cert availability.
+    live = sorted((c for c in callers if configured(c)), key=lambda c: c == ACCESS)
     if not live:
         _deny(conn, 503, "Route authentication is not configured")
     unavailable = False
@@ -376,7 +377,12 @@ class RouteAuthMiddleware:
                     callers, token_in_key = requirement
                     conn = HTTPConnection(routed)
                     ordered = tuple(sorted(callers))
-                    if ACCESS in ordered and conn.headers.get(ACCESS_JWT_HEADER, "").strip():
+                    machine_valid = any(
+                        configured(c) and _presented_valid(conn, c, token_in_key)
+                        for c in ordered if c != ACCESS
+                    )
+                    if (ACCESS in ordered and not machine_valid
+                            and conn.headers.get(ACCESS_JWT_HEADER, "").strip()):
                         if not self._access_checks.acquire(blocking=False):
                             _deny(conn, 503, "Operator identity verification is busy")
                         try:

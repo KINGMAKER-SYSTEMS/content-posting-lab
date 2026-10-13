@@ -252,6 +252,10 @@ def test_access_cert_lookup_concurrency_is_bounded(monkeypatch):
     def private():
         return {"ok": True}
 
+    @app.get("/mixed", dependencies=[Depends(route_auth.require_access_or_control_plane_token)])
+    def mixed():
+        return {"ok": True}
+
     started = threading.Event()
     release = threading.Event()
     active = 0
@@ -274,16 +278,19 @@ def test_access_cert_lookup_concurrency_is_bounded(monkeypatch):
 
     monkeypatch.setattr(route_auth, "_signing_key", stalled_certs)
 
-    async def inner(scope, receive, send):
-        raise AssertionError("no denied request may reach the app")
+    entered = []
 
-    async def request(middleware, token):
+    async def inner(scope, receive, send):
+        entered.append(scope["path"])
+
+    async def request(middleware, token, *, path="/private", worker=False):
         sent = []
         scope = {
-            "type": "http", "path": "/private", "raw_path": b"/private",
+            "type": "http", "path": path, "raw_path": path.encode(),
             "method": "GET", "root_path": "", "scheme": "http", "http_version": "1.1",
             "query_string": b"", "server": ("test", 80), "client": ("test", 1),
-            "headers": [(b"cf-access-jwt-assertion", token.encode())],
+            "headers": [(b"cf-access-jwt-assertion", token.encode())] + (
+                [(b"authorization", b"Bearer " + support.WORKER_TOKEN.encode())] if worker else []),
         }
 
         async def receive():
@@ -304,10 +311,17 @@ def test_access_cert_lookup_concurrency_is_bounded(monkeypatch):
             assert started.is_set()
             saturated = await asyncio.wait_for(request(middleware, token), timeout=0.5)
             assert saturated[0]["status"] == 503
+            # A valid machine credential must remain available even when the
+            # request also carries an Access header and the cert cap is full.
+            mixed = await asyncio.wait_for(
+                request(middleware, token, path="/mixed", worker=True), timeout=0.5,
+            )
+            assert mixed == [] and entered == ["/mixed"]
             assert maximum == 8
         finally:
             release.set()
         denied = await asyncio.gather(*pending)
         assert all(messages[0]["status"] == 503 for messages in denied)
+        assert entered == ["/mixed"]
 
     asyncio.run(scenario())
