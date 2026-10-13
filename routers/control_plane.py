@@ -4402,22 +4402,9 @@ async def create_job(
 
     # Fingerprint only the validated, immutable job contract.  Jobs written by
     # older runtimes have no hash; those legacy rows remain replay-compatible.
-    job_request_body = {
-        "pageId": page_id,
-        "lane": str(body.get("lane") or x_rt_lane),
-        "engine": engine,
-        "lockedRecipeId": recipe_id,
-        "recipeVersion": recipe_version,
-        "quantity": quantity,
-        "constraints": constraints or {},
-        "sourceIsolation": body.get("sourceIsolation") or None,
-        "policyHash": policy_hash,
-        "masterPages": master_pages,
-        "masterPagesHash": body["masterPagesHash"],
-    }
-    job_request_hash = "sha256:" + hashlib.sha256(json.dumps(
-        job_request_body, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
-    ).encode()).hexdigest()
+    job_request_hash = _job_request_hash(
+        body, page_id=page_id, lane=x_rt_lane, master_pages=master_pages,
+    )
 
     start_generation = False
     start_source = False
@@ -4758,18 +4745,38 @@ def _source_import_active_deadline_expired(job: dict[str, Any]) -> bool:
     ).total_seconds() >= SOURCE_IMPORT_ACTIVE_DEADLINE_SECONDS
 
 
-@router.get("/v1/job-receipts/by-idempotency-key")
+def _job_request_hash(
+    body: dict[str, Any], *, page_id: str, lane: str,
+    master_pages: dict[str, Any],
+) -> str:
+    """Fingerprint the immutable, canonical create request without IO."""
+    canonical = {
+        "pageId": page_id,
+        "lane": str(body.get("lane") or lane),
+        "engine": str(body.get("engine") or "").strip(),
+        "lockedRecipeId": str(body.get("lockedRecipeId") or "").strip(),
+        "recipeVersion": str(body.get("recipeVersion") or "").strip(),
+        "quantity": body.get("quantity"),
+        "constraints": body.get("constraints") or {},
+        "sourceIsolation": body.get("sourceIsolation") or None,
+        "policyHash": str(body.get("policyHash") or "").strip(),
+        "masterPages": master_pages,
+        "masterPagesHash": body["masterPagesHash"],
+    }
+    return "sha256:" + hashlib.sha256(json.dumps(
+        canonical, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+    ).encode()).hexdigest()
+
+
+@router.post("/v1/job-receipts/by-idempotency-key")
 def job_by_idempotency_key(
     x_rt_page_id: str | None = Header(default=None),
     x_rt_lane: str | None = Header(default=None),
     idempotency_key: str | None = Header(default=None),
     authorization: str | None = Header(default=None),
+    body: dict[str, Any] = Body(default=None),
 ) -> dict[str, Any]:
-    """Reconcile a lost create response without starting or resuming a job.
-
-    An archived key has no live job row from which to prove page/lane ownership.
-    It therefore shares the same response as an unknown or foreign key.
-    """
+    """Reconcile the exact original create request without starting a job."""
     require_control_plane_bearer(authorization)
     if not x_rt_page_id or not PAGE_ID_RE.fullmatch(x_rt_page_id):
         raise HTTPException(status_code=400, detail="X-RT-Page-Id header is required")
@@ -4777,6 +4784,38 @@ def job_by_idempotency_key(
         raise HTTPException(status_code=400, detail="X-RT-Lane header is required")
     if not idempotency_key or not IDEMPOTENCY_KEY_RE.fullmatch(idempotency_key):
         raise HTTPException(status_code=400, detail="Idempotency-Key header is required (8-200 token chars)")
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="job body must be a JSON object")
+    unknown = sorted(set(body) - JOB_FIELDS)
+    if unknown:
+        raise HTTPException(status_code=400, detail=f"unknown job fields: {', '.join(unknown)}")
+    _reject_prompt_fields(body)
+    if body.get("pageId") != x_rt_page_id or body.get("lane") != x_rt_lane:
+        raise HTTPException(status_code=400, detail="job scope does not match request headers")
+    if not all(isinstance(body.get(field), str) and body[field].strip()
+               for field in ("engine", "lockedRecipeId", "recipeVersion", "policyHash")):
+        raise HTTPException(status_code=400, detail="job identity fields are required")
+    quantity = body.get("quantity")
+    if not isinstance(quantity, int) or isinstance(quantity, bool) or not 1 <= quantity <= MAX_JOB_QUANTITY:
+        raise HTTPException(status_code=400, detail="quantity must be an integer 1..100")
+    constraints = body.get("constraints")
+    if constraints is not None and not isinstance(constraints, dict):
+        raise HTTPException(status_code=400, detail="constraints must be an object")
+    if len(json.dumps(body)) > MAX_GENERATION_JOB_BODY_BYTES:
+        raise HTTPException(status_code=400, detail="job body too large")
+    try:
+        source_window_exclusions((constraints or {}).get("sourceWindowExclusions"))
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    master_pages = exact_intent(
+        body.get("masterPages"), body.get("masterPagesHash"),
+        expected_page_id=x_rt_page_id,
+    )
+    if master_pages is None or master_pages["contentEngine"] != str(body["engine"]).strip():
+        raise HTTPException(status_code=400, detail="invalid job Master Pages identity")
+    request_hash = _job_request_hash(
+        body, page_id=x_rt_page_id, lane=x_rt_lane, master_pages=master_pages,
+    )
 
     try:
         store = _read_jobs_snapshot()
@@ -4786,7 +4825,6 @@ def job_by_idempotency_key(
     by_idempotency = store.get("byIdempotency")
     if not isinstance(jobs, dict) or not isinstance(by_idempotency, dict):
         raise HTTPException(status_code=503, detail="job store temporarily unavailable")
-
     job_id = by_idempotency.get(idempotency_key)
     job = jobs.get(job_id) if isinstance(job_id, str) else None
     if (
@@ -4796,8 +4834,11 @@ def job_by_idempotency_key(
         or job.get("idempotencyKey") != idempotency_key
         or job.get("pageId") != x_rt_page_id
         or job.get("lane") != x_rt_lane
+        or job.get("jobRequestHash") != request_hash
         or not isinstance(job.get("status"), str)
     ):
+        # Missing, foreign, archived, mismatched and legacy-unhashed rows
+        # share a non-enumerating hold response.
         raise HTTPException(status_code=404, detail={"code": "reconciliation_required"})
     return {
         "schema": RESPONSE_SCHEMA,

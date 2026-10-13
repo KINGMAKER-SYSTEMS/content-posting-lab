@@ -1,14 +1,16 @@
-"""Lost-ACK reconciliation must be scoped and must not resume paid work."""
+"""Lost-ACK lookup binds the original immutable request without paid work."""
 
 import json
 
 import pytest
-from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+import app as app_module
 import routers.control_plane as cp
+from tests.master_pages_fixtures import master_pages
 
-TOKEN = "lookup-test-bearer"
+TOKEN = "lookup-control-plane-bearer"
+APP_KEY = "lookup-app-api-key"
 PAGE = "acct:truck-page"
 LANE = "content-bucket-control-plane"
 KEY = "acct:truck-page:hash1:source_replenish"
@@ -21,11 +23,25 @@ def lookup(monkeypatch, tmp_path):
     path = tmp_path / "jobs.json"
     monkeypatch.setattr(cp, "_jobs_path", lambda: path)
     monkeypatch.setenv("CONTROL_PLANE_TOKEN", TOKEN)
-    app = FastAPI()
-    app.include_router(cp.router, prefix="/api/control-plane")
-    client = TestClient(app)
+    monkeypatch.setattr(app_module, "_APP_API_KEY", APP_KEY)
+    client = TestClient(app_module.app)
+    intent, revision = master_pages(PAGE)
+    body = {
+        "pageId": PAGE,
+        "lane": LANE,
+        "engine": "ai_video",
+        "lockedRecipeId": "truck-scenic:master",
+        "recipeVersion": "v1",
+        "quantity": 1,
+        "constraints": {},
+        "sourceIsolation": {"partitionKey": f"page:{PAGE}"},
+        "policyHash": "sha256:policy",
+        "masterPages": intent,
+        "masterPagesHash": revision,
+    }
     headers = {
         "Authorization": f"Bearer {TOKEN}",
+        "X-API-Key": APP_KEY,
         "X-RT-Page-Id": PAGE,
         "X-RT-Lane": LANE,
         "Idempotency-Key": KEY,
@@ -33,6 +49,7 @@ def lookup(monkeypatch, tmp_path):
     job = {
         "jobId": JOB_ID,
         "idempotencyKey": KEY,
+        "jobRequestHash": cp._job_request_hash(body, page_id=PAGE, lane=LANE, master_pages=intent),
         "pageId": PAGE,
         "lane": LANE,
         "status": "queued",
@@ -50,11 +67,15 @@ def lookup(monkeypatch, tmp_path):
         path.write_text(json.dumps(store))
         return path.read_bytes()
 
-    return client, headers, job, path, persist
+    return client, headers, body, job, path, persist
+
+
+def post(client, headers, body):
+    return client.post(URL, headers=headers, json=body)
 
 
 def test_lost_ack_lookup_returns_only_safe_receipt_without_side_effects(lookup, monkeypatch):
-    client, headers, job, path, persist = lookup
+    client, headers, body, _, path, persist = lookup
     original = persist()
     def unexpected(*args, **kwargs):
         raise AssertionError("lookup must not start, resume, save or debit")
@@ -62,7 +83,7 @@ def test_lost_ack_lookup_returns_only_safe_receipt_without_side_effects(lookup, 
     monkeypatch.setattr(cp, "_save_jobs", unexpected)
     monkeypatch.setattr(cp, "_start_dossier_generation", unexpected)
     monkeypatch.setattr(cp.generation_budget, "reserve", unexpected, raising=False)
-    response = client.get(URL, headers=headers)
+    response = post(client, headers, body)
     assert response.status_code == 200
     assert response.json() == {
         "schema": cp.RESPONSE_SCHEMA,
@@ -72,26 +93,39 @@ def test_lost_ack_lookup_returns_only_safe_receipt_without_side_effects(lookup, 
     assert path.read_bytes() == original
 
 
-def test_lookup_auth_page_and_lane_isolation(lookup):
-    client, headers, _, _, persist = lookup
+def test_app_and_control_plane_credentials_are_both_required(lookup):
+    client, headers, body, _, _, persist = lookup
     persist()
-    assert client.get(URL, headers={k: v for k, v in headers.items() if k != "Authorization"}).status_code == 401
-    missing = client.get(URL, headers={**headers, "Idempotency-Key": "missing-key-123"})
-    wrong_page = client.get(URL, headers={**headers, "X-RT-Page-Id": "acct:other"})
-    wrong_lane = client.get(URL, headers={**headers, "X-RT-Lane": "another-lane"})
-    for response in (missing, wrong_page, wrong_lane):
+    assert APP_KEY != TOKEN
+    no_app = {k: v for k, v in headers.items() if k != "X-API-Key"}
+    no_plane = {k: v for k, v in headers.items() if k != "Authorization"}
+    assert post(client, no_app, body).status_code == 401
+    assert post(client, no_plane, body).status_code == 401
+    assert post(client, {**headers, "Authorization": f"Bearer {APP_KEY}"}, body).status_code == 401
+    assert post(client, {**headers, "X-API-Key": TOKEN}, body).status_code == 401
+
+
+def test_missing_foreign_and_archived_are_indistinguishable(lookup):
+    client, headers, body, job, path, persist = lookup
+    persist()
+    missing = post(client, {**headers, "Idempotency-Key": "missing-key-123"}, body)
+    other_page = "acct:other"
+    other_intent, other_revision = master_pages(other_page)
+    foreign_page = post(
+        client, {**headers, "X-RT-Page-Id": other_page},
+        {**body, "pageId": other_page, "masterPages": other_intent,
+         "masterPagesHash": other_revision},
+    )
+    foreign_lane = post(
+        client, {**headers, "X-RT-Lane": "other-lane"},
+        {**body, "lane": "other-lane"},
+    )
+    archived_bytes = persist(jobs={})
+    archived = post(client, headers, body)
+    for response in (missing, foreign_page, foreign_lane, archived):
         assert response.status_code == 404
         assert response.json() == missing.json()
-
-
-def test_archived_mapping_and_missing_key_are_indistinguishable(lookup):
-    client, headers, _, path, persist = lookup
-    original = persist(jobs={})
-    archived = client.get(URL, headers=headers)
-    absent = client.get(URL, headers={**headers, "Idempotency-Key": "missing-key-123"})
-    assert archived.status_code == 404
-    assert archived.json() == absent.json()
-    assert path.read_bytes() == original
+    assert path.read_bytes() == archived_bytes
 
 
 @pytest.mark.parametrize("mutation", [
@@ -100,23 +134,33 @@ def test_archived_mapping_and_missing_key_are_indistinguishable(lookup):
     {"pageId": "acct:other"},
     {"lane": "another-lane"},
     {"status": None},
+    {"jobRequestHash": "sha256:" + "0" * 64},
+    {"jobRequestHash": None},
 ])
-def test_mismatched_live_row_is_not_accepted(lookup, mutation):
-    client, headers, job, _, persist = lookup
+def test_mismatched_and_legacy_live_row_is_not_accepted(lookup, mutation):
+    client, headers, body, job, _, persist = lookup
     persist(jobs={JOB_ID: {**job, **mutation}})
-    assert client.get(URL, headers=headers).status_code == 404
+    assert post(client, headers, body).status_code == 404
 
 
-def test_corrupt_store_fails_closed_without_start(lookup):
-    client, headers, _, path, _ = lookup
+def test_altered_original_request_holds_without_paid_work(lookup):
+    client, headers, body, _, _, persist = lookup
+    persist()
+    altered = {**body, "quantity": 2}
+    response = post(client, headers, altered)
+    assert response.status_code == 404
+    assert response.json()["detail"]["code"] == "reconciliation_required"
+
+
+def test_corrupt_store_fails_closed(lookup):
+    client, headers, body, _, path, _ = lookup
     path.write_text("{not-json")
-    response = client.get(URL, headers=headers)
+    response = post(client, headers, body)
     assert response.status_code == 503
     assert response.json()["detail"] == "job store temporarily unavailable"
 
 
 def test_malformed_mapping_fails_closed(lookup):
-    client, headers, job, _, persist = lookup
+    client, headers, body, _, _, persist = lookup
     persist(keys=[KEY])
-    response = client.get(URL, headers=headers)
-    assert response.status_code == 503
+    assert post(client, headers, body).status_code == 503
