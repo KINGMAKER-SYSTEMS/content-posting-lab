@@ -521,7 +521,11 @@ def _capabilities_job_views(
     )
 
 
-@router.get("/v1/capabilities")
+def _require_capabilities_bearer(authorization: str | None = Header(default=None)) -> None:
+    require_control_plane_bearer(authorization)
+
+
+@router.get("/v1/capabilities", dependencies=[Depends(_require_capabilities_bearer)])
 def capabilities(
     x_rt_page_id: str | None = Header(default=None),
     x_page_id: str | None = Header(default=None),
@@ -1110,6 +1114,7 @@ SOURCE_IMPORT_ACTIVE_DEADLINE_SECONDS = 6 * 60 * 60
 IDEMPOTENCY_KEY_RE = re.compile(r"^[A-Za-z0-9_.:-]{8,200}$")
 JOB_TOKEN_BYTES = 24
 GENERATION_ACTIVE_STATUSES = {"queued", "running"}
+GENERATION_RECEIPT_STATUSES = GENERATION_ACTIVE_STATUSES | {"completed", "failed"}
 SOURCE_DNA_UNAVAILABLE_STATUSES = compaction.SOURCE_DNA_UNAVAILABLE_STATUSES
 ASYNC_SOURCE_KINDS = {
     "generated", "dossier_source_dna", "truck_master_recovery",
@@ -4835,11 +4840,12 @@ def job_by_idempotency_key(
         or job.get("pageId") != x_rt_page_id
         or job.get("lane") != x_rt_lane
         or job.get("jobRequestHash") != request_hash
-        or not isinstance(job.get("status"), str)
     ):
         # Missing, foreign, archived, mismatched and legacy-unhashed rows
         # share a non-enumerating hold response.
         raise HTTPException(status_code=404, detail={"code": "reconciliation_required"})
+    if not isinstance(job.get("status"), str) or job["status"] not in GENERATION_RECEIPT_STATUSES:
+        raise HTTPException(status_code=503, detail="job store temporarily unavailable")
     return {
         "schema": RESPONSE_SCHEMA,
         "jobId": job_id,

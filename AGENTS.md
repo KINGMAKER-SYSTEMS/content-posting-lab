@@ -85,6 +85,7 @@
   lengths still verify. Preserve the saved speed and video treatment.
   Normalize cut timestamps and extend a fractional missing tail frame to the
   planned output duration; source-window provenance remains unchanged.
+- `GET /api/control-plane/v1/capabilities` requires the existing `CONTROL_PLANE_TOKEN` Bearer credential before reading page intent or job state. A missing server token returns 503; missing, invalid, or browser `APP_API_KEY` credentials return 401. The authorized Worker request and capability response schema stay unchanged.
 - Source cut planning honors the immutable original 60-second minimum for raw
   source libraries and the Worker-supplied global source-window exclusions
   before rendering. Exact page-bound ShipStream masters are already extracted
@@ -644,8 +645,10 @@
   lost-ack read. It requires the app API key and Control Plane bearer, scoped
   page/lane/idempotency headers, and the exact original job-create JSON body.
   It returns only the job ID and status when the durable key and canonical
-  request hash match; missing, foreign, archived, mismatched, or legacy
-  unhashed jobs require reconciliation and must not start or resume work.
+  request hash match and the saved status is queued, running, completed, or
+  failed. Missing, foreign, archived, mismatched, or legacy-unhashed jobs
+  require reconciliation; malformed saved statuses fail as unavailable. The
+  lookup must not start or resume work.
 - Application shutdown pauses checkpointed generation instead of deleting its
   paid artifacts. Authenticated, exact-page status/idempotency reads resume the
   same active job after replacement. A kernel-held per-job lock prevents two
@@ -734,6 +737,7 @@
   noise, short readable text, rotated single-frame text, complete coverage,
   unavailable providers, exact-byte binding, and cached-decision behavior.
 
+- Run `pytest -q tests/test_control_plane_capability_auth.py` for the capability Bearer boundary and unchanged authorized response.
 - Run `pytest -q tests/test_production_image_imports.py` for isolated imports from
   the Dockerfile's backend file selection. Build the Docker image for release;
   its app-import smoke check must pass before deployment. Confirm TgCrypto can

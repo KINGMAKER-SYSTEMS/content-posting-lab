@@ -1667,3 +1667,20 @@ area: [backend], [testing], [review]
 
 A lost create acknowledgment had no side-effect-free way to recover the original job ID: repeating create can validate current intent and resume paid work, while status needs the unknown ID. This isolated candidate adds an authenticated, exact-page/lane/key and original-request-hash receipt lookup that only reads the durable job index and returns job ID/status. Missing, foreign, archived, legacy-unhashed or changed-request rows hold for original-attempt reconciliation; corrupt storage fails closed. Independent source review found and the builder fixed an accepted boolean-quantity compatibility edge. Fifty-seven focused tests pass, including app-level dual authentication; no provider call, production write, push, PR, merge or deployment occurred yet. PR #179 route-auth integration, caller credentials, final-head review/checks and live read-only parity remain release holds. Rollback is a code revision preserving job receipts and idempotency history.
 _________________________________________________________________________________
+time: [04:46am] [10-13-26] EDT; actual UTC: 2026-10-13T08:46:00Z
+agent: [Codex desktop with Mac mini builder] [gpt-6.1-sol] [focused builder]
+worktree: [codex/capabilities-auth-20261013] /private/tmp/content-lab-capabilities-auth
+type: [bug report]: Require service Bearer before capability disclosure
+area: [backend], [testing], [review]
+
+The public capability GET accepted a guessable page ID and returned recipe capacity and canonical source identities without the configured Control Plane token. This private candidate applies the existing fail-closed CONTROL_PLANE_TOKEN Bearer check before page intent or job reads, preserves the authorized Worker response, and updates route tests to use the Worker credential. Missing, invalid, browser-key, and unconfigured credentials are covered. No production request, push, merge, or deployment occurred; independent exact-head review and release verification remain required. Rollback is the prior code revision if authorized Worker reads regress.
+_________________________________________________________________________________
+_________________________________________________________________________________
+time: [05:22am] [10-13-26] EDT; actual UTC: 2026-10-13T09:22:26Z
+agent: [Codex desktop with Mac mini builder] [gpt-6.1-sol] [focused builder]
+worktree: [codex/pr223-status-integration-20261013] /private/tmp/content-lab-pr223-status-20261013
+type: [bug report]: Fail closed on corrupt lost-ack receipt status
+area: [backend], [testing], [review]
+
+Independent current-base review found that the read-only original-job lookup accepted an exact-key job row with an arbitrary persisted status, returning an invalid success receipt. This isolated integration candidate preserves current main capability Bearer authentication and both append-only event entries, accepts only the persisted queued/running/completed/failed lifecycle states, and treats other saved status values as unavailable without mutation or provider calls. Exact status and unchanged-store regressions plus 233 relevant control-plane/source tests passed (10 skipped). No push, merge, deployment, or production request occurred; PR #223 remains draft for independent exact-head review, checks, caller compatibility, and live read-only parity. Rollback preserves the durable job/idempotency store; reverting this status check would reopen malformed receipt success.
+_________________________________________________________________________________

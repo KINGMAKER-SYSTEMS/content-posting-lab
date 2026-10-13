@@ -133,7 +133,6 @@ def test_missing_foreign_and_archived_are_indistinguishable(lookup):
     {"idempotencyKey": "different-key-123"},
     {"pageId": "acct:other"},
     {"lane": "another-lane"},
-    {"status": None},
     {"jobRequestHash": "sha256:" + "0" * 64},
     {"jobRequestHash": None},
 ])
@@ -141,6 +140,31 @@ def test_mismatched_and_legacy_live_row_is_not_accepted(lookup, mutation):
     client, headers, body, job, _, persist = lookup
     persist(jobs={JOB_ID: {**job, **mutation}})
     assert post(client, headers, body).status_code == 404
+
+
+@pytest.mark.parametrize("status", ["queued", "running", "completed", "failed"])
+def test_all_persisted_job_statuses_have_read_only_receipts(lookup, status):
+    client, headers, body, job, path, persist = lookup
+    original = persist(jobs={JOB_ID: {**job, "status": status}})
+    response = post(client, headers, body)
+    assert response.status_code == 200
+    assert response.json()["status"] == status
+    assert path.read_bytes() == original
+
+
+@pytest.mark.parametrize("status", [None, "", "unknown-bogus", "cancelled", 1, ["queued"]])
+def test_invalid_persisted_status_holds_without_side_effects(lookup, monkeypatch, status):
+    client, headers, body, job, path, persist = lookup
+    original = persist(jobs={JOB_ID: {**job, "status": status}})
+    def unexpected(*args, **kwargs):
+        raise AssertionError("corrupt status lookup must not mutate or call providers")
+    monkeypatch.setattr(cp, "_save_jobs", unexpected)
+    monkeypatch.setattr(cp, "_start_dossier_generation", unexpected)
+    monkeypatch.setattr(cp.generation_budget, "reserve", unexpected, raising=False)
+    response = post(client, headers, body)
+    assert response.status_code == 503
+    assert response.json()["detail"] == "job store temporarily unavailable"
+    assert path.read_bytes() == original
 
 
 def test_altered_original_request_holds_without_paid_work(lookup):
