@@ -5,6 +5,7 @@ cookie file detection, and thread-pool execution of sync Playwright calls.
 """
 
 import asyncio
+import fcntl
 import glob
 import importlib
 import json
@@ -13,11 +14,12 @@ import random
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from services.json_store import atomic_load, atomic_save
+from services.json_store import atomic_load, atomic_save, lock_for
 
 UPLOAD_JOBS_FILE = os.getenv("CONTENT_LAB_UPLOAD_JOBS_FILE", "upload_jobs.json")
 COOKIE_DIR = "."  # TK_cookies_{account}.json stored in project root
@@ -33,6 +35,24 @@ _queue_running = False
 
 class UploadUnavailable(RuntimeError):
     """A new upload cannot be admitted without its executor and durable job record."""
+
+
+class UploadReconciliationRequired(UploadUnavailable):
+    """The same account/video has an unresolved upload attempt."""
+
+
+@contextmanager
+def _job_store_write_lock():
+    """Serialize admission and status writes across local worker processes."""
+    with lock_for(UPLOAD_JOBS_FILE):
+        # The JSON file is replaced atomically, so its inode cannot be the lock.
+        # A stable sidecar coordinates read/check/append with other processes.
+        with open(f"{UPLOAD_JOBS_FILE}.lock", "a+b") as handle:
+            fcntl.flock(handle, fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(handle, fcntl.LOCK_UN)
 
 
 def _valid_stored_jobs(value: object) -> bool:
@@ -134,12 +154,15 @@ def _save_jobs(jobs: list[dict]) -> None:
 
 
 def _update_job(job_id: str, updates: dict) -> dict | None:
-    jobs = _read_stored_jobs()
-    for job in jobs:
-        if job["job_id"] == job_id:
-            job.update(updates)
-            _save_jobs(jobs)
-            return job
+    # Serialize the local queue read/modify/write with submissions so a status
+    # transition cannot clobber a newly admitted job across local processes.
+    with _job_store_write_lock():
+        jobs = _read_stored_jobs()
+        for job in jobs:
+            if job["job_id"] == job_id:
+                job.update(updates)
+                _save_jobs(jobs)
+                return job
     return None
 
 
@@ -193,20 +216,38 @@ def submit_job(
         "error": None,
     }
 
-    jobs = _read_stored_jobs()
-    jobs.append(job)
-    _save_jobs(jobs)
+    with _job_store_write_lock():
+        jobs = _read_stored_jobs()
+        target = os.path.realpath(video_path)
+        for existing in jobs:
+            if (existing["account_name"] == account_name
+                    and os.path.realpath(existing["video_path"]) == target
+                    and existing["status"] in {"queued", "uploading", "failed"}):
+                # `uploading` may have posted before a crash; even a failed
+                # browser call can have an unknown provider outcome. Never
+                # enqueue a second same-target Post until the original job is
+                # reconciled. A queued duplicate likewise needs no new job.
+                raise UploadReconciliationRequired(
+                    "TikTok upload original attempt requires reconciliation "
+                    "before resubmission (job %s)" % existing["job_id"]
+                )
+        jobs.append(job)
+        _save_jobs(jobs)
     return job
 
 
 def cancel_job(job_id: str) -> dict | None:
-    """Cancel a queued job. Cannot cancel an in-progress upload."""
-    job = get_job(job_id)
-    if not job:
-        return None
-    if job["status"] != "queued":
-        return job  # Can only cancel queued jobs
-    return _update_job(job_id, {"status": "cancelled", "completed_at": datetime.now().isoformat()})
+    """Cancel only a job that remains queued under the upload claim lock."""
+    with _job_store_write_lock():
+        jobs = _read_stored_jobs()
+        for job in jobs:
+            if job["job_id"] != job_id:
+                continue
+            if job["status"] == "queued":
+                job.update({"status": "cancelled", "completed_at": datetime.now().isoformat()})
+                _save_jobs(jobs)
+            return job
+    return None
 
 
 # ── Cookie helpers ───────────────────────────────────────────────────────────
@@ -301,23 +342,27 @@ async def _process_single_job(job_id: str) -> None:
     """Process a single upload job in the thread pool."""
     global _active_job_id
 
-    job = get_job(job_id)
-    if not job or job["status"] != "queued":
-        return
+    with _job_store_write_lock():
+        jobs = _read_stored_jobs()
+        job = next((row for row in jobs if row["job_id"] == job_id), None)
+        if not job or job["status"] != "queued":
+            return
+        # Persist the claim before the browser call. A lost outcome stays
+        # uploading and admission will refuse the same target.
+        job.update({"status": "uploading", "started_at": datetime.now().isoformat()})
+        _save_jobs(jobs)
 
     _active_job_id = job_id
-    _update_job(job_id, {"status": "uploading", "started_at": datetime.now().isoformat()})
-
-    loop = asyncio.get_event_loop()
-    result = await loop.run_in_executor(_executor, _run_upload_sync, job)
-
-    now = datetime.now().isoformat()
-    if result == "Completed":
-        _update_job(job_id, {"status": "completed", "completed_at": now})
-    else:
-        _update_job(job_id, {"status": "failed", "completed_at": now, "error": result})
-
-    _active_job_id = None
+    try:
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(_executor, _run_upload_sync, job)
+        now = datetime.now().isoformat()
+        if result == "Completed":
+            _update_job(job_id, {"status": "completed", "completed_at": now})
+        else:
+            _update_job(job_id, {"status": "failed", "completed_at": now, "error": result})
+    finally:
+        _active_job_id = None
 
 
 async def process_queue() -> None:

@@ -12,6 +12,7 @@ from pydantic import BaseModel
 
 from services.upload import (
     UploadUnavailable,
+    UploadReconciliationRequired,
     cancel_job,
     get_all_jobs,
     get_cookie_status,
@@ -81,6 +82,8 @@ async def submit_upload(req: SubmitRequest):
             stealth=req.stealth,
             proxy=req.proxy,
         )
+    except UploadReconciliationRequired as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except UploadUnavailable as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except OSError as exc:
@@ -115,7 +118,12 @@ async def poll_job(job_id: str):
 @router.post("/jobs/{job_id}/cancel")
 async def cancel_upload(job_id: str):
     """Cancel a queued upload job."""
-    job = cancel_job(job_id)
+    try:
+        job = cancel_job(job_id)
+    except UploadUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=503, detail="TikTok upload is unavailable: job storage write failed") from exc
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     if job["status"] != "cancelled":

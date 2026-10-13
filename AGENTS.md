@@ -267,7 +267,13 @@
   callable uploader; upload submission also requires a job store whose existing
   records have the queue-readable shape and unique job IDs. Corrupt records are preserved and
   never replaced with an empty queue. Missing prerequisites or failed
-  writes return 503; admission never proves a TikTok publication.
+  writes return 503; admission never proves a TikTok publication. A queued,
+  uploading, or failed job for the same real video path and cookie account
+  blocks another submission with 409 until the original attempt is reconciled;
+  a stable local file lock serializes queue writes and the queued-to-uploading
+  claim/cancel decision across worker processes, and the conflict creates no
+  job or provider action. Completed and cancelled
+  history retains its existing resubmission behavior.
 - `POST /api/telegram/send` delivers only a media file whose real path is under
   `projects/<project>/<videos|clips|burned|recreate|slideshow-images>/` or the
   legacy `output`/`burn_output` dirs. The volume root beside those dirs holds

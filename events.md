@@ -1707,3 +1707,13 @@ area: [backend], [testing], [review]
 
 Fresh independent review found that a stored completed row followed by a queued row sharing the same job_id passed shape validation; process_queue would select the queued row while get_job returned the completed one, then loop without advancing. The private candidate now rejects repeated IDs as corrupt before either admitting or appending a new job and preserves the existing bytes. Synthetic duplicate-ID regression and the upload API/cookie/login suite passed 34/34 on an isolated Mac mini current-main checkout; frontend TypeScript/Vite build passed there with matching-lockfile existing dependencies. Logs: /tmp/cpl-upload-admission-tests-20261012-1640.log and /tmp/cpl-upload-admission-frontend-build-20261012-1640.log on macmini-ip. No upload, provider action, push, PR, merge or deployment occurred. Fresh independent head review remains required.
 _________________________________________________________________________________
+
+_________________________________________________________________________________
+time: [05:24am] [10-13-26] EDT
+agent: [Codex desktop with Mac mini execution] [gpt-6.1-sol] [focused PR221 repair]
+worktree: [codex/pr221-original-attempt-fence] /private/tmp/content-lab-pr221-original-attempt-fence
+type: [bug report]: prevent a second TikTok upload submission during unresolved original attempt
+area: [backend], [testing], [review]
+
+Integrated PR221 with actual main 89b5831, preserving the newly merged Control Plane capability Bearer gate and append-only root events. The prior upload store validation rejected duplicate job IDs but still allowed a new queued upload for the same account/video while an original persisted job was uploading or had a failed browser outcome. Submission now holds queued, uploading, and failed same-target attempts for original-outcome reconciliation with HTTP 409 and no new queue write or provider launch. The local queue read/modify/write and queued-to-uploading/cancel transitions share a stable cross-process file lock so cancellation cannot mislabel an active Post as safe to resubmit. Focused upload/cookie and merged capability-auth tests pass 40, including path-normalized duplicate admission, byte-for-byte unchanged storage and an in-flight fake browser call. This is an isolated unpushed candidate; independent final-head review, hosted checks, local single-writer limits, and any live outcome remain release holds. No browser Post or production publication was attempted.
+_________________________________________________________________________________

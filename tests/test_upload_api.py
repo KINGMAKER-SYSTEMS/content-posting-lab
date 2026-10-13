@@ -15,7 +15,9 @@ CWD). We point it at a tmp dir per-test so the suite neither reads real
 `TK_cookies_*.json` from the repo root nor leaves any behind.
 """
 
+import asyncio
 import json
+import threading
 import time
 from types import SimpleNamespace
 
@@ -183,6 +185,67 @@ def test_duplicate_job_ids_refuse_without_overwrite(sync_client, cookie_dir, mon
     assert r.status_code == 503
     assert "job storage is unreadable" in r.json()["detail"]
     assert stored.read_text() == original
+
+
+@pytest.mark.parametrize("status", ["queued", "uploading", "failed"])
+def test_unresolved_original_upload_refuses_same_account_video_without_second_job(
+    sync_client, cookie_dir, monkeypatch, status,
+):
+    _write_cookie(cookie_dir, "linked")
+    monkeypatch.setattr(upload_svc.importlib, "import_module", lambda name: _FAKE_UPLOADER)
+
+    async def unexpected_queue_run():
+        pytest.fail("blocked duplicate scheduled the upload queue")
+
+    monkeypatch.setattr(upload_router, "process_queue", unexpected_queue_run)
+    original = upload_svc.submit_job(video_path="/tmp/clip.mp4", account_name="linked")
+    if status != "queued":
+        upload_svc._update_job(original["job_id"], {"status": status})
+    stored = cookie_dir.parent / "upload_jobs.json"
+    before = stored.read_bytes()
+
+    response = sync_client.post("/api/upload/submit", json={
+        "video_path": "/tmp/other/../clip.mp4", "account_name": "linked",
+    })
+    assert response.status_code == 409
+    assert "original attempt requires reconciliation" in response.json()["detail"]
+    assert original["job_id"] in response.json()["detail"]
+    assert stored.read_bytes() == before
+    assert len(upload_svc._read_stored_jobs()) == 1
+
+
+def test_upload_claim_cannot_be_cancelled_or_resubmitted_during_browser_call(
+    cookie_dir, monkeypatch,
+):
+    monkeypatch.setattr(upload_svc.importlib, "import_module", lambda name: _FAKE_UPLOADER)
+    original = upload_svc.submit_job(video_path="/tmp/clip.mp4", account_name="linked")
+    started = threading.Event()
+    release = threading.Event()
+    calls = []
+
+    def fake_upload(job):
+        calls.append(job["job_id"])
+        started.set()
+        assert release.wait(timeout=5)
+        return "Completed"
+
+    monkeypatch.setattr(upload_svc, "_run_upload_sync", fake_upload)
+
+    async def exercise():
+        task = asyncio.create_task(upload_svc._process_single_job(original["job_id"]))
+        try:
+            assert await asyncio.to_thread(started.wait, 5)
+            assert upload_svc.cancel_job(original["job_id"])["status"] == "uploading"
+            with pytest.raises(upload_svc.UploadReconciliationRequired):
+                upload_svc.submit_job(video_path="/tmp/clip.mp4", account_name="linked")
+            assert len(upload_svc._read_stored_jobs()) == 1
+        finally:
+            release.set()
+            await task
+
+    asyncio.run(exercise())
+    assert calls == [original["job_id"]]
+    assert upload_svc.get_job(original["job_id"])["status"] == "completed"
 
 
 # ── check_cookie ──────────────────────────────────────────────────────────────
