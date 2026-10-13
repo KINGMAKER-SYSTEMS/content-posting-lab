@@ -4758,6 +4758,54 @@ def _source_import_active_deadline_expired(job: dict[str, Any]) -> bool:
     ).total_seconds() >= SOURCE_IMPORT_ACTIVE_DEADLINE_SECONDS
 
 
+@router.get("/v1/job-receipts/by-idempotency-key")
+def job_by_idempotency_key(
+    x_rt_page_id: str | None = Header(default=None),
+    x_rt_lane: str | None = Header(default=None),
+    idempotency_key: str | None = Header(default=None),
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """Reconcile a lost create response without starting or resuming a job.
+
+    An archived key has no live job row from which to prove page/lane ownership.
+    It therefore shares the same response as an unknown or foreign key.
+    """
+    require_control_plane_bearer(authorization)
+    if not x_rt_page_id or not PAGE_ID_RE.fullmatch(x_rt_page_id):
+        raise HTTPException(status_code=400, detail="X-RT-Page-Id header is required")
+    if not x_rt_lane or not LANE_RE.fullmatch(x_rt_lane):
+        raise HTTPException(status_code=400, detail="X-RT-Lane header is required")
+    if not idempotency_key or not IDEMPOTENCY_KEY_RE.fullmatch(idempotency_key):
+        raise HTTPException(status_code=400, detail="Idempotency-Key header is required (8-200 token chars)")
+
+    try:
+        store = _read_jobs_snapshot()
+    except _JobsDecodeFailed as error:
+        raise HTTPException(status_code=503, detail="job store temporarily unavailable") from error
+    jobs = store.get("jobs")
+    by_idempotency = store.get("byIdempotency")
+    if not isinstance(jobs, dict) or not isinstance(by_idempotency, dict):
+        raise HTTPException(status_code=503, detail="job store temporarily unavailable")
+
+    job_id = by_idempotency.get(idempotency_key)
+    job = jobs.get(job_id) if isinstance(job_id, str) else None
+    if (
+        not isinstance(job, dict)
+        or not re.fullmatch(rf"{JOB_ID_PREFIX}[0-9a-f]{{16}}", job_id)
+        or job.get("jobId") != job_id
+        or job.get("idempotencyKey") != idempotency_key
+        or job.get("pageId") != x_rt_page_id
+        or job.get("lane") != x_rt_lane
+        or not isinstance(job.get("status"), str)
+    ):
+        raise HTTPException(status_code=404, detail={"code": "reconciliation_required"})
+    return {
+        "schema": RESPONSE_SCHEMA,
+        "jobId": job_id,
+        "status": job["status"],
+    }
+
+
 @router.get("/v1/jobs/{job_id}")
 async def job_status(
     job_id: str,
