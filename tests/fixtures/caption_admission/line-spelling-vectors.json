@@ -1,0 +1,195 @@
+{
+  "_comment": "Line-spelling vectors: does a list of saved line breaks spell the caption? The canonical rule, in this order: NFC, strip every \\p{Cf} character, collapse whitespace the way Python's str.split() does (JS \\s plus U+001C-001F and U+0085; NBSP and U+3000 are whitespace), lowercase (not casefold). Lines are joined with one space before the comparison. The Worker's labCaptionText (src/domain/captions.js) and the Lab's line_breaks check must give the same answer on every vector. The Lab copies this file byte-for-byte. Answers were derived from the rule and cross-checked by an independent implementation.",
+  "rule": [
+    "NFC",
+    "strip \\p{Cf}",
+    "collapse whitespace (Python split set)",
+    "lowercase"
+  ],
+  "vectors": [
+    {
+      "name": "soft hyphen inside a word, caption side",
+      "caption": "we dro\u00adve all nite",
+      "lines": [
+        "we drove",
+        "all nite"
+      ],
+      "accept": true
+    },
+    {
+      "name": "soft hyphen inside a word, lines side",
+      "caption": "we drove all nite",
+      "lines": [
+        "we dro\u00adve",
+        "all nite"
+      ],
+      "accept": true
+    },
+    {
+      "name": "ZWJ inside a word",
+      "caption": "al\u200dl nite",
+      "lines": [
+        "all nite"
+      ],
+      "accept": true
+    },
+    {
+      "name": "ZWSP inside a word, caption side",
+      "caption": "all\u200b nite",
+      "lines": [
+        "all nite"
+      ],
+      "accept": true
+    },
+    {
+      "name": "ZWSP inside a word, lines side",
+      "caption": "all nite",
+      "lines": [
+        "al\u200bl",
+        "nite"
+      ],
+      "accept": true
+    },
+    {
+      "name": "BOM at the start",
+      "caption": "\ufeffwe drove",
+      "lines": [
+        "we drove"
+      ],
+      "accept": true
+    },
+    {
+      "name": "BOM inside a word",
+      "caption": "we dr\ufeffove",
+      "lines": [
+        "we drove"
+      ],
+      "accept": true
+    },
+    {
+      "name": "U+001C separates words like Python split()",
+      "caption": "we drove\u001call nite",
+      "lines": [
+        "we drove",
+        "all nite"
+      ],
+      "accept": true
+    },
+    {
+      "name": "U+0085 separates words like Python split()",
+      "caption": "we drove\u0085all nite",
+      "lines": [
+        "we drove all",
+        "nite"
+      ],
+      "accept": true
+    },
+    {
+      "name": "NBSP is whitespace",
+      "caption": "we\u00a0drove all",
+      "lines": [
+        "we drove",
+        "all"
+      ],
+      "accept": true
+    },
+    {
+      "name": "U+3000 ideographic space is whitespace",
+      "caption": "we\u3000drove",
+      "lines": [
+        "we",
+        "drove"
+      ],
+      "accept": true
+    },
+    {
+      "name": "case differences",
+      "caption": "We Drove ALL Nite",
+      "lines": [
+        "we drove",
+        "all nite"
+      ],
+      "accept": true
+    },
+    {
+      "name": "NFC: decomposed caption, precomposed line",
+      "caption": "cafe\u0301",
+      "lines": [
+        "caf\u00e9"
+      ],
+      "accept": true
+    },
+    {
+      "name": "NFC: precomposed caption, decomposed line",
+      "caption": "caf\u00e9",
+      "lines": [
+        "cafe\u0301"
+      ],
+      "accept": true
+    },
+    {
+      "name": "NFC before Cf: e + U+0301 caption vs e + ZWJ + U+0301 line (the order matters: NFC runs first, so these differ)",
+      "caption": "e\u0301",
+      "lines": [
+        "e\u200d\u0301"
+      ],
+      "accept": false
+    },
+    {
+      "name": "NFC before Cf: the reverse pair also differs",
+      "caption": "e\u200d\u0301",
+      "lines": [
+        "e\u0301"
+      ],
+      "accept": false
+    },
+    {
+      "name": "a format character splitting a word across two lines is a different spelling",
+      "caption": "we drove",
+      "lines": [
+        "we dr\u200b",
+        "ove"
+      ],
+      "accept": false
+    },
+    {
+      "name": "a space between lines splits words only where the caption has one",
+      "caption": "we drove all nite",
+      "lines": [
+        "we",
+        "drove",
+        "all",
+        "nite"
+      ],
+      "accept": true
+    },
+    {
+      "name": "an extra word",
+      "caption": "we drove all nite",
+      "lines": [
+        "we drove",
+        "all nite",
+        "now"
+      ],
+      "accept": false
+    },
+    {
+      "name": "a missing word",
+      "caption": "we drove all nite",
+      "lines": [
+        "we drove",
+        "all"
+      ],
+      "accept": false
+    },
+    {
+      "name": "different words",
+      "caption": "we drove all nite",
+      "lines": [
+        "we drove",
+        "all night"
+      ],
+      "accept": false
+    }
+  ]
+}

@@ -1089,3 +1089,62 @@ def test_saved_lines_that_differ_only_by_format_characters_or_nfc_are_accepted(f
 def test_saved_lines_that_really_differ_from_the_caption_are_still_refused(caption, lines):
     with pytest.raises(ValidationError):
         caption_request(caption, line_breaks=lines)
+
+
+# --- Round 8: the Worker's shared line-spelling vectors ------------------------------------------------------------------
+# control-plane-worker/test/fixtures/line-spelling-vectors.json from ecfromthedc/rotational-posting-agent, branch
+# tr03p5-lostpost, commit 89e39a58b, copied byte for byte. Does a list of saved line breaks spell the caption? Canonical
+# order: NFC, strip Cf, collapse whitespace (Python split set), lowercase; lines joined with one space.
+LINE_SPELLING_SHA256 = "5beab23c7ff2915bef5d9b1749b4d7489d7680000c873dafeb5cb51e0309dcf5"
+
+
+def _line_spelling_vectors():
+    raw = (VECTOR_DIR / "line-spelling-vectors.json").read_bytes()
+    assert hashlib.sha256(raw).hexdigest() == LINE_SPELLING_SHA256, "vectors file changed: re-pin it from the Worker branch"
+    return json.loads(raw)["vectors"]
+
+
+def _saved_lines_verdict(caption, lines):
+    """True when the saved-lines check accepts these lines for this caption; False when it says they do not spell it."""
+    payload = request().model_dump(by_alias=True)
+    payload["caption"] = caption
+    payload["style"]["line_breaks"] = lines
+    try:
+        CaptionRenderRequest.model_validate(payload)
+    except ValidationError as error:
+        assert "line_breaks must preserve the caption text" in str(error), (caption, lines, str(error))
+        return False
+    return True
+
+
+def test_the_line_spelling_vectors_are_the_pinned_ones():
+    vectors = _line_spelling_vectors()
+    assert len(vectors) == 21
+    assert any(vector["accept"] for vector in vectors) and any(not vector["accept"] for vector in vectors)
+
+
+def test_every_line_spelling_vector_gets_the_same_answer_as_the_worker():
+    disagreements = []
+    for vector in _line_spelling_vectors():
+        got = _saved_lines_verdict(vector["caption"], vector["lines"])
+        if got != vector["accept"]:
+            disagreements.append((vector["name"], "worker accept=%s" % vector["accept"], "lab accept=%s" % got))
+    assert not disagreements, disagreements
+
+
+def test_every_accepted_line_spelling_vector_renders_and_draws_the_lines():
+    for vector in _line_spelling_vectors():
+        if vector["accept"]:
+            result = render_caption_overlay(
+                caption_request(vector["caption"], line_breaks=vector["lines"]), font_dir=REAL_FONT_DIR)
+            assert len(result.plan.lines) == len(vector["lines"]), vector["name"]
+            assert not any(unicodedata.category(char) == "Cf" for line in result.plan.lines for char in line.text)
+
+
+def test_lowercase_not_casefold_and_the_whitespace_step_comes_after_the_format_strip():
+    # Two points of the canonical rule the shared vectors do not exercise, pinned here: the comparison lowercases
+    # (it does not casefold, so "Stra\u00dfe" and "STRASSE" are different spellings), and whitespace is collapsed
+    # AFTER the Cf strip, so a format character between two spaces leaves one space, not two.
+    assert _saved_lines_verdict("Stra\u00dfe", ["STRA\u00dfE"]) is True
+    assert _saved_lines_verdict("Stra\u00dfe", ["STRASSE"]) is False
+    assert _saved_lines_verdict("red car", ["red \u200b", "car"]) is True

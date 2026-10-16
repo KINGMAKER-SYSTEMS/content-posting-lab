@@ -1759,3 +1759,13 @@ area: [backend], [testing]
 
 The saved-lines check compares lines with the caption in one fixed order that is the same on the Worker, the rail and the Lab: NFC, strip Cf, collapse whitespace, lowercase. The order is now written in the code and in AGENTS.md, and tests pin it (a format character between two spaces is accepted only in this order). The accept tests now assert the words that are drawn, not only that no format character is drawn.
 _________________________________________________________________________________
+
+_________________________________________________________________________________
+time: [01:51P] [10-15-26] EDT; actual UTC: 2026-10-16T05:51:34Z
+agent: [Claude Code] [Sonnet 5.5] [tr03p5 labglyph builder, round 8]
+worktree: [tr03p5-labglyph] /Users/ecfromthedc/dev/tides-ec976d/b5-labglyph
+type: [testing]: Run the Worker's line-spelling vectors through the saved-lines check
+area: [backend], [testing]
+
+The Worker's shared line-spelling vectors (21 cases, tr03p5-lostpost 89e39a58b) are copied byte for byte into tests/fixtures/caption_admission/ and sha-pinned. Every vector gets the same accept or reject from `CaptionRenderRequest` as from the Worker. Two points of the rule the vectors do not exercise (lowercase not casefold, whitespace collapsed after the Cf strip) are pinned by a Lab-side test.
+_________________________________________________________________________________
