@@ -1687,3 +1687,105 @@ area: [backend], [testing], [review]
 
 Independent review found that executable permission errors and unexpected checker failures could leave a stale healthy tool status and immediately reschedule another subprocess refresh on every probe. The command probe now treats all OS execution errors as unavailable; the refresh resolves individual checker failures to false and stamps the completed check, and cancellation is handled without spurious callback errors. Regression tests cover both failure classes and bounded refresh behavior: 15 focused health/lifespan cases pass. The production Docker image rebuilt, imported app and TgCrypto, and contains no gcc. No push, merge or deployment occurred.
 _________________________________________________________________________________
+
+_________________________________________________________________________________
+time: [08:16P] [10-15-26] EDT; actual UTC: 2026-10-16T00:16:08Z
+agent: [Claude Code] [Sonnet 5.5] [tr03p5 labglyph builder]
+worktree: [tr03p5-labglyph] /Users/ecfromthedc/dev/tides-ec976d/b5-labglyph
+type: [bug report]: Never report a caption render as done unless its text can be drawn and is drawn
+area: [backend], [testing]
+
+Every allowed TikTokSans font draws its missing-glyph box for a character it lacks (emoji, U+FE0F, U+2800, U+3164, U+FFA0, kana) and there is no fallback font, so such a caption rendered boxes, passed every check and the job still succeeded. `render_caption_overlay` now refuses any caption with a character the font cannot draw (`CAPTION_GLYPH_MISSING`, listing the code points, never dropping them) and a caption with no drawable letter or digit (`CAPTION_NO_TEXT`); the dead `CAPTION_EMPTY` arm is deleted. `render_post` now compares the burned QA frame with the same source frame at the same time (same delivery graph, no caption), on glyph pixels only, and refuses a caption that did not change the picture as it should (`CAPTION_NOT_DRAWN`, below 40% of the expected change) or cannot change it at all for this clip and look (`CAPTION_LOW_CONTRAST`); the measure is recorded in `decode.json` as `caption_ink_share`, the receipt is unchanged. All four new codes are terminal (not in `RETRY_CODES`). Tests: glyph gate table incl. the real 2026-10-02 lovenightdrives caption, the ink check on real footage and framed bands, and the Worker's shared vectors. No merge, deploy or Railway action.
+_________________________________________________________________________________
+
+_________________________________________________________________________________
+time: [08:25P] [10-15-26] EDT; actual UTC: 2026-10-16T00:25:20Z
+agent: [Claude Code] [Sonnet 5.5] [tr03p5 labglyph builder, round 2]
+worktree: [tr03p5-labglyph] /Users/ecfromthedc/dev/tides-ec976d/b5-labglyph
+type: [bug report]: Strip format characters before the glyph gate
+area: [backend], [testing]
+
+The Lab gate saw the raw text and refused a caption holding a Unicode Cf character (soft hyphen, U+200B-U+200D, U+2060, U+FEFF), which draws nothing. `render_caption_overlay` now applies one canonical rule, the one the Worker and rail use (lane capvisible): strip Cf, then glyph-check what remains, before drawing. U+FE0F, emoji and the blank fillers are not Cf and are still refused.
+
+_________________________________________________________________________________
+
+_________________________________________________________________________________
+time: [08:34P] [10-15-26] EDT; actual UTC: 2026-10-16T00:34:57Z
+agent: [Claude Code] [Sonnet 5.5] [tr03p5 labglyph builder, round 3]
+worktree: [tr03p5-labglyph] /Users/ecfromthedc/dev/tides-ec976d/b5-labglyph
+type: [bug report]: Pre-review fixes for the caption glyph gate
+area: [backend], [testing]
+
+Reviews of the glyph gate and ink check, fixed: (1) glyph coverage is now read from the font's cmap table, not from a rendered probe, so the verdict no longer depends on Pillow's layout engine (raqm can hide a missing U+FE0F); Pillow is pinned in requirements.txt. (2) The ink check now measures change against the source frame at the same time (same delivery graph, no caption): glyph pixels only, never a background box, so white text on a white clip, or a missing overlay behind a same-colour box, is refused as CAPTION_NOT_DRAWN, and thin fonts on busy footage pass. (3) NFC before the Cf strip, and saved line_breaks normalised exactly like the caption. (4) The Worker's shared admission vectors and drawable table are pinned as test fixtures; every vector the Worker admits the Lab admits and draws.
+
+_________________________________________________________________________________
+
+_________________________________________________________________________________
+time: [10:07P] [10-15-26] EDT; actual UTC: 2026-10-16T02:07:11Z
+agent: [Claude Code] [Sonnet 5.5] [tr03p5 labglyph builder, round 4]
+worktree: [tr03p5-labglyph] /Users/ecfromthedc/dev/tides-ec976d/b5-labglyph
+type: [bug report]: Split "cannot be seen" from "was not drawn"
+area: [backend], [testing]
+
+The ink check had one code for two causes. Now `CAPTION_LOW_CONTRAST` means the caption cannot be told apart from this clip (fewer than 64 glyph pixels would change by more than 48 levels, such as white text with no outline on a white clip): a fact about the clip and look. `CAPTION_NOT_DRAWN` is kept for a renderer fault (contrast expected, frame did not change). Both are terminal. `numpy` is declared in requirements.txt (floor only) and imported at the top of post_render.py so a missing install fails at build or import, not at the first render.
+_________________________________________________________________________________
+
+_________________________________________________________________________________
+time: [11:28P] [10-15-26] EDT; actual UTC: 2026-10-16T03:28:25Z
+agent: [Claude Code] [Sonnet 5.5] [tr03p5 labglyph builder, round 5]
+worktree: [tr03p5-labglyph] /Users/ecfromthedc/dev/tides-ec976d/b5-labglyph
+type: [bug report]: Measure the words against their own box
+area: [backend], [testing]
+
+Two review HIGHs on the ink check, one method. The reference frame is now the same source frame and delivery graph with the caption's box or highlight drawn but the words left out (the bare source frame when there is no box). A box alone can no longer prove the words (it is already in the reference), and white words on a dark box over a white clip are measured against the box, so they pass instead of being refused as low contrast. The box itself must also show its colour (60% match), so no overlay at all cannot pass when the clip happens to be the words' colour. `CAPTION_NOT_DRAWN`: words or box missing; `CAPTION_LOW_CONTRAST`: the words cannot be told apart from what is directly behind them. Calibration on 3,150 real renders is in docs/caption-ink-calibration.md and tests/fixtures/caption_ink_calibration/. The Worker's drawable table fixture is re-pinned (header now embeds the font shas), and a no-skip test fails if any Lab font is added, removed or changed.
+_________________________________________________________________________________
+
+_________________________________________________________________________________
+time: [12:16P] [10-15-26] EDT; actual UTC: 2026-10-16T04:16:13Z
+agent: [Claude Code] [Sonnet 5.5] [tr03p5 labglyph builder, round 6]
+worktree: [tr03p5-labglyph] /Users/ecfromthedc/dev/tides-ec976d/b5-labglyph
+type: [bug report]: Saved lines are compared with the caption by the same canonical rule
+area: [backend], [testing]
+
+The check that saved `line_breaks` spell the caption did not strip Unicode format characters, so lines that differ from the caption only by one (a soft hyphen, ZWJ, BOM) were rejected with a 422 where the Worker accepts them. It now applies the same NFC, Cf strip and whitespace collapse as the drawn caption, then lowercases, before comparing. Lines that really differ still fail.
+_________________________________________________________________________________
+
+_________________________________________________________________________________
+time: [12:25P] [10-15-26] EDT; actual UTC: 2026-10-16T04:25:27Z
+agent: [Claude Code] [Sonnet 5.5] [tr03p5 labglyph builder, round 7]
+worktree: [tr03p5-labglyph] /Users/ecfromthedc/dev/tides-ec976d/b5-labglyph
+type: [docs]: Document the line-spelling order; test the drawn words
+area: [backend], [testing]
+
+The saved-lines check compares lines with the caption in one fixed order that is the same on the Worker, the rail and the Lab: NFC, strip Cf, collapse whitespace, lowercase. The order is now written in the code and in AGENTS.md, and tests pin it (a format character between two spaces is accepted only in this order). The accept tests now assert the words that are drawn, not only that no format character is drawn.
+_________________________________________________________________________________
+
+_________________________________________________________________________________
+time: [01:51P] [10-15-26] EDT; actual UTC: 2026-10-16T05:51:34Z
+agent: [Claude Code] [Sonnet 5.5] [tr03p5 labglyph builder, round 8]
+worktree: [tr03p5-labglyph] /Users/ecfromthedc/dev/tides-ec976d/b5-labglyph
+type: [testing]: Run the Worker's line-spelling vectors through the saved-lines check
+area: [backend], [testing]
+
+The Worker's shared line-spelling vectors (21 cases, tr03p5-lostpost 89e39a58b) are copied byte for byte into tests/fixtures/caption_admission/ and sha-pinned. Every vector gets the same accept or reject from `CaptionRenderRequest` as from the Worker. Two points of the rule the vectors do not exercise (lowercase not casefold, whitespace collapsed after the Cf strip) are pinned by a Lab-side test.
+_________________________________________________________________________________
+
+_________________________________________________________________________________
+time: [02:57P] [10-15-26] EDT; actual UTC: 2026-10-16T06:57:17Z
+agent: [Claude Code] [Sonnet 5.5] [tr03p5 labglyph builder, round 9]
+worktree: [tr03p5-labglyph] /Users/ecfromthedc/dev/tides-ec976d/b5-labglyph
+type: [bug report]: A mid-grey box cannot count as shown when nothing was burned
+area: [backend], [testing]
+
+Light-grey footage, a #c0c0c0 box and white words passed both ink checks with no overlay in the video: the words were measured against the box (0.76) and the footage sat within the 64-level colour match of the box. A box pixel now counts as shown only if the burned colour is nearer the box colour than the bare source frame is at that pixel (the bare frame is cut as well for box looks); where the box is within 24 levels of the source nothing can be told and the pixel counts. Calibration redone on 3,102 real renders including mid-grey boxes. The Worker's line-spelling vectors are re-pinned at 25 cases.
+_________________________________________________________________________________
+
+_________________________________________________________________________________
+time: [04:38P] [10-16-26] EDT; actual UTC: 2026-10-16T08:38:52Z
+agent: [Claude Code] [Sonnet 5.5] [tr03p5 labglyph builder, round 10]
+worktree: [tr03p5-labglyph] /Users/ecfromthedc/dev/tides-ec976d/b5-labglyph
+type: [bug report]: Unchanged footage can never count as caption ink
+area: [backend], [testing]
+
+A flat #e0e0e0 source, a #c8c8c8 box (24 levels away, "indistinct") and white words passed both ink checks with no overlay: the words were measured against the hypothetical box, so unchanged footage scored 0.436 over the 0.40 gate. Now what is behind the words is the box colour only where the box really differs from the source (more than 24 levels) and the bare source otherwise; near a box a word pixel scores the lower of its judgement against the source and against the box, and needs 48 levels of contrast against both. Indistinct box pixels are left out of the box tally instead of counting as shown or as failed. The decision is one function (`_ink_refusal`) and a class-guard grid over source level, box level, words colour and outline (both sides of the 24-level boundary) asserts that nothing missing passes and a real render is never not-drawn. Calibration redone on 3,384 real renders including a fast-motion real clip; codec drift measured on real footage.
+_________________________________________________________________________________

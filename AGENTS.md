@@ -132,8 +132,48 @@
   The local quality-check request carries the same optional `picture_frame`;
   its typed placement and bounds use that picture band and retain full-canvas
   behavior when the field is absent.
+- `services/caption_render.py` applies one canonical rule, the same one the
+  Worker and the rail use (lane capvisible): NFC, strip Unicode format and
+  zero-width characters (category Cf: soft hyphen, U+200B-U+200F, U+2060, U+FEFF;
+  they draw nothing), then glyph-check what remains. Saved `line_breaks` lines
+  get the same treatment as the caption (plus whitespace collapsed to single
+  spaces), and the request check that they spell the caption compares both in
+  one fixed order, the same on the Worker, the rail and here: NFC, strip Cf,
+  collapse whitespace, lowercase. It refuses, and never drops, any remaining character the chosen font
+  has no glyph for (emoji, U+FE0F, U+2800, U+3164, kana and the rest: the font
+  would draw its missing-glyph box) with `CAPTION_GLYPH_MISSING`, and a caption
+  with no drawable letter or digit with `CAPTION_NO_TEXT`. Coverage is read from
+  the font's own cmap table (never from rendered pixels, which depend on Pillow's
+  layout engine), the same source as the Worker's drawable-codepoints table.
+  `tests/fixtures/caption_admission/` holds the Worker's shared vectors and that
+  table, sha-pinned; `Pillow` is pinned in `requirements.txt`.
 - `services/post_render.py` owns local prepared-final rendering and exact artifact
-  receipts; control-plane admission remains downstream authority.
+  receipts; control-plane admission remains downstream authority. After the QA
+  frame is cut it compares that frame with a reference: the same source frame at
+  the same time, through the same delivery graph, with the caption's box or
+  highlight drawn but its words left out (the bare source frame when the style
+  has no background; box looks also cut the bare source frame). What is behind the
+  words is the box colour where the box differs from the source by more than 24
+  levels and the bare source otherwise, so an unchanged source pixel can never
+  count as ink (near a box a pixel scores the lower of its judgement against the
+  source and against the box). Where the words would change what is behind them by
+  more than 48 levels, the burned frame must have moved at least 40% of the way
+  toward the words' colour; and a box or highlight must itself be shown: at least
+  60% of its counted pixels nearer the box colour than the bare source is (pixels
+  within 24 levels of the source are left out of that tally). A box alone never
+  proves the words, and white words on a dark box over a white clip are measured
+  against the box and pass. A box that is not in the burned frame is judged first
+  (`CAPTION_NOT_DRAWN`); then fewer than 64 word pixels that the words would
+  change (white text with no outline on a white clip, text in its own box's colour)
+  fails `CAPTION_LOW_CONTRAST`, a fact about that clip and look; then contrast
+  expected but no change at the words fails `CAPTION_NOT_DRAWN`, a renderer
+  fault. One function, `_ink_refusal`, makes the decision. The measures are in
+  `decode.json` (`caption_ink_share`, `caption_ink_pixels`, `caption_box_match`).
+  All four new codes are terminal (not in `RETRY_CODES`). `numpy` is a direct
+  requirement (floor only; imported at the top of `services/post_render.py`). The
+  calibration behind the thresholds, including the codec drift measured on real
+  footage, is in `docs/caption-ink-calibration.md` and
+  `tests/fixtures/caption_ink_calibration/`.
 - `services/post_render_jobs.py` and `routers/post_renders.py` own durable pre-lease
   render jobs, authenticated page-scoped status/artifacts and source acquisition.
 - `docs/post-render-setup.md` owns prepared-render storage, authentication and
@@ -758,7 +798,9 @@
 - Run `pytest -q tests/test_post_render_jobs.py tests/test_source_treatment.py`
   for durable crash/retry/lock/auth/source-grant and applied-video provenance checks.
 - Run `pytest -q tests/test_post_render.py` for prepared rendering, actual MP4
-  decode, treatment-once preservation, byte-budget retry and bounded failures.
+  decode, treatment-once preservation, byte-budget retry and bounded failures,
+  and the burned-frame caption ink check (`CAPTION_NOT_DRAWN`, `CAPTION_LOW_CONTRAST`, change against
+  the box-only reference frame, recorded in `decode.json` as `caption_ink_share`).
 - Run `pytest -q tests/test_page_frame_geometry.py tests/test_page_frame_cut.py
   tests/test_page_frame_no_frame_identity.py tests/test_page_frame_gate.py
   tests/test_page_frame_render.py` for page-frame table parity, the band-aware
@@ -771,7 +813,8 @@
   Run `pytest -q tests/test_pipeline_api.py` for the intake-password 503 path.
 
 - Run `pytest -q tests/test_caption_render_contract.py` for the typed caption
-  contract and `pytest -q tests/test_burn_and_captions_api.py` for Burn API
+  contract, including the glyph gate (`CAPTION_GLYPH_MISSING`,
+  `CAPTION_NO_TEXT`), and `pytest -q tests/test_burn_and_captions_api.py` for Burn API
   regressions. Run `pytest -q tests/test_burn_quality_gate.py` for legacy and
   typed overlay placement gates. Run the control-plane recipe, generation, and
   source-execution test files together when changing a Dossier recipe schema.

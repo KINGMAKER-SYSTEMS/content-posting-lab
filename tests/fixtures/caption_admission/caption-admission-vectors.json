@@ -1,0 +1,561 @@
+{
+ "schema": "control-plane.caption-admission-vectors.v1",
+ "purpose": "Shared test vectors for the caption render check: every character must be a code point the Content Lab TikTokSans fonts draw (data/drawable-codepoints.json), then at least one word of 2+ [A-Za-z0-9] must remain once zero-width characters are removed. The English-language gate is NOT part of these vectors (every vector is English or language-free). The rail copies this file byte for byte.",
+ "rules": {
+  "null": "admitted",
+  "emoji": "refused: an undrawable character that is an emoji",
+  "character": "refused: an undrawable character that is not an emoji",
+  "visible_word": "refused: every character is drawable but no 2+ [A-Za-z0-9] word remains",
+  "_note": "`rule` names the Worker's refusal class (emoji / character / visible_word). The rail only has to match `admit`; both sides refuse exactly the same texts.",
+  "canonical": "Apply normalization_order exactly: NFC, strip Cf, table check, word check. Order matters: see the NFC vectors."
+ },
+ "layout_whitespace_always_fine": [
+  "U+0020",
+  "U+0009",
+  "U+000A",
+  "U+000D"
+ ],
+ "drawable_table": "control-plane-worker/data/drawable-codepoints.json (lab_sha 713a0eb20f301512e8d217ef20cd6098c4bf0e61)",
+ "vectors": [
+  {
+   "text": "miss him",
+   "admit": true,
+   "rule": null,
+   "why": "plain words"
+  },
+  {
+   "text": "ok",
+   "admit": true,
+   "rule": null,
+   "why": "one 2-letter word"
+  },
+  {
+   "text": "Windows down, nowhere to be.",
+   "admit": true,
+   "rule": null,
+   "why": "punctuation"
+  },
+  {
+   "text": "it is 2am",
+   "admit": true,
+   "rule": null,
+   "why": "digits in a word"
+  },
+  {
+   "text": "caf\u00e9 days",
+   "admit": true,
+   "rule": null,
+   "why": "accent the font draws"
+  },
+  {
+   "text": "line one\nline two",
+   "admit": true,
+   "rule": null,
+   "why": "line break is layout"
+  },
+  {
+   "text": "it\u2019s 10/10, #fyp",
+   "admit": true,
+   "rule": null,
+   "why": "curly apostrophe, slash, hash"
+  },
+  {
+   "text": "ok\u00a0ok",
+   "admit": true,
+   "rule": null,
+   "why": "no-break space is in the font"
+  },
+  {
+   "text": "a\u200bb",
+   "admit": true,
+   "rule": null,
+   "why": "zero-width space is in the font; the viewer sees 'ab'"
+  },
+  {
+   "text": "brand\u2122 new",
+   "admit": true,
+   "rule": null,
+   "why": "TM is drawn by the font (prv: Worker over-refused)"
+  },
+  {
+   "text": "ok \u00a9 ok",
+   "admit": true,
+   "rule": null,
+   "why": "copyright is drawn"
+  },
+  {
+   "text": "ok \u00ae ok",
+   "admit": true,
+   "rule": null,
+   "why": "registered is drawn"
+  },
+  {
+   "text": "left \u2194 right",
+   "admit": true,
+   "rule": null,
+   "why": "left-right arrow is drawn"
+  },
+  {
+   "text": "up \u2195 down",
+   "admit": true,
+   "rule": null,
+   "why": "up-down arrow is drawn"
+  },
+  {
+   "text": "ok \u2196 ok",
+   "admit": true,
+   "rule": null,
+   "why": "arrow is drawn"
+  },
+  {
+   "text": "ok \u2197 ok",
+   "admit": true,
+   "rule": null,
+   "why": "arrow is drawn"
+  },
+  {
+   "text": "ok \u2198 ok",
+   "admit": true,
+   "rule": null,
+   "why": "arrow is drawn"
+  },
+  {
+   "text": "ok \u2199 ok",
+   "admit": true,
+   "rule": null,
+   "why": "arrow is drawn"
+  },
+  {
+   "text": "ok \u2014 ok \u2026",
+   "admit": true,
+   "rule": null,
+   "why": "dash and ellipsis"
+  },
+  {
+   "text": "tab\tseparated words",
+   "admit": true,
+   "rule": null,
+   "why": "tab is layout"
+  },
+  {
+   "text": "ok \u2776 \u2777 \u277e",
+   "admit": true,
+   "rule": null,
+   "why": "dingbat circled digits ARE in the font (prv: the rail's block-wide rule wrongly refused them)"
+  },
+  {
+   "text": "miss him \ud83d\ude2d",
+   "admit": false,
+   "rule": "emoji",
+   "why": "emoji beside words"
+  },
+  {
+   "text": "\ud83d\udd25\ud83d\udd25",
+   "admit": false,
+   "rule": "emoji",
+   "why": "emoji only"
+  },
+  {
+   "text": "miss him \u2764\ufe0f",
+   "admit": false,
+   "rule": "emoji",
+   "why": "text heart with emoji selector"
+  },
+  {
+   "text": "miss him \u2764",
+   "admit": false,
+   "rule": "emoji",
+   "why": "text-style heart is not in the font"
+  },
+  {
+   "text": "ok \ud83c\uddfa\ud83c\uddf8",
+   "admit": false,
+   "rule": "emoji",
+   "why": "flag"
+  },
+  {
+   "text": "a \ud83d\udc4d\ud83c\udffd b ok",
+   "admit": false,
+   "rule": "emoji",
+   "why": "emoji with skin tone"
+  },
+  {
+   "text": "1\ufe0f\u20e3 thing",
+   "admit": false,
+   "rule": "emoji",
+   "why": "keycap sequence"
+  },
+  {
+   "text": "ok \ud83d\ude00",
+   "admit": false,
+   "rule": "emoji",
+   "why": "grinning face"
+  },
+  {
+   "text": "ok \u2728 ok",
+   "admit": false,
+   "rule": "emoji",
+   "why": "sparkles"
+  },
+  {
+   "text": "ok \u2713 ok",
+   "admit": false,
+   "rule": "character",
+   "why": "check mark (prv: Worker admitted, font lacks it)"
+  },
+  {
+   "text": "so \u2605 good",
+   "admit": false,
+   "rule": "character",
+   "why": "black star"
+  },
+  {
+   "text": "ok \u2606 ok",
+   "admit": false,
+   "rule": "character",
+   "why": "white star"
+  },
+  {
+   "text": "ok \u266a ok",
+   "admit": false,
+   "rule": "character",
+   "why": "eighth note"
+  },
+  {
+   "text": "ok \u266b",
+   "admit": false,
+   "rule": "character",
+   "why": "beamed notes"
+  },
+  {
+   "text": "ok \u2717",
+   "admit": false,
+   "rule": "character",
+   "why": "ballot x"
+  },
+  {
+   "text": "ok \u2718",
+   "admit": false,
+   "rule": "character",
+   "why": "heavy ballot x"
+  },
+  {
+   "text": "ok \u2715",
+   "admit": false,
+   "rule": "character",
+   "why": "multiplication x"
+  },
+  {
+   "text": "ok \u275d",
+   "admit": false,
+   "rule": "character",
+   "why": "heavy quote"
+  },
+  {
+   "text": "ok \u275e",
+   "admit": false,
+   "rule": "character",
+   "why": "heavy quote"
+  },
+  {
+   "text": "ok \u275b",
+   "admit": false,
+   "rule": "character",
+   "why": "heavy quote"
+  },
+  {
+   "text": "ok \u275c",
+   "admit": false,
+   "rule": "character",
+   "why": "heavy quote"
+  },
+  {
+   "text": "1\u20e3 ok",
+   "admit": false,
+   "rule": "character",
+   "why": "bare combining keycap (no emoji selector)"
+  },
+  {
+   "text": "ok \u25a0 ok",
+   "admit": false,
+   "rule": "character",
+   "why": "black square"
+  },
+  {
+   "text": "a\u2060b ok",
+   "admit": true,
+   "rule": null,
+   "why": "word joiner is Cf: stripped first, the viewer sees 'ab ok'"
+  },
+  {
+   "text": "a\u2800b ok",
+   "admit": false,
+   "rule": "character",
+   "why": "braille blank inside a word: not in the font"
+  },
+  {
+   "text": "\u2800",
+   "admit": false,
+   "rule": "character",
+   "why": "braille blank only"
+  },
+  {
+   "text": "\u200b\u2060",
+   "admit": false,
+   "rule": "visible_word",
+   "why": "only Cf: stripped, nothing left"
+  },
+  {
+   "text": "a\u200cb ok",
+   "admit": true,
+   "rule": null,
+   "why": "zero-width non-joiner is Cf: stripped"
+  },
+  {
+   "text": "a\u200db ok",
+   "admit": true,
+   "rule": null,
+   "why": "zero-width joiner is Cf: stripped"
+  },
+  {
+   "text": "ok \ud83d",
+   "admit": false,
+   "rule": "character",
+   "why": "lone surrogate"
+  },
+  {
+   "text": "ok \u0000",
+   "admit": false,
+   "rule": "character",
+   "why": "control character"
+  },
+  {
+   "text": "ok \u203c",
+   "admit": false,
+   "rule": "emoji",
+   "why": "double exclamation emoji-style; Extended_Pictographic, so named emoji"
+  },
+  {
+   "text": "ok \u21a9",
+   "admit": false,
+   "rule": "emoji",
+   "why": "return arrow; Extended_Pictographic, so named emoji"
+  },
+  {
+   "text": "ok \u25b6",
+   "admit": false,
+   "rule": "emoji",
+   "why": "play triangle; Extended_Pictographic, so named emoji"
+  },
+  {
+   "text": "ok \u25c0",
+   "admit": false,
+   "rule": "emoji",
+   "why": "reverse triangle; Extended_Pictographic, so named emoji"
+  },
+  {
+   "text": "ok \u25aa",
+   "admit": false,
+   "rule": "emoji",
+   "why": "small square; Extended_Pictographic, so named emoji"
+  },
+  {
+   "text": "ok \u25ab",
+   "admit": false,
+   "rule": "emoji",
+   "why": "small square; Extended_Pictographic, so named emoji"
+  },
+  {
+   "text": "ok \u24c2",
+   "admit": false,
+   "rule": "emoji",
+   "why": "circled M; Extended_Pictographic, so named emoji"
+  },
+  {
+   "text": "?!",
+   "admit": false,
+   "rule": "visible_word",
+   "why": "no letters"
+  },
+  {
+   "text": "1",
+   "admit": false,
+   "rule": "visible_word",
+   "why": "one digit"
+  },
+  {
+   "text": "I",
+   "admit": false,
+   "rule": "visible_word",
+   "why": "one letter"
+  },
+  {
+   "text": "a",
+   "admit": false,
+   "rule": "visible_word",
+   "why": "one letter"
+  },
+  {
+   "text": "#",
+   "admit": false,
+   "rule": "visible_word",
+   "why": "hash only"
+  },
+  {
+   "text": "- -",
+   "admit": false,
+   "rule": "visible_word",
+   "why": "dashes only"
+  },
+  {
+   "text": "\u200b",
+   "admit": false,
+   "rule": "visible_word",
+   "why": "zero-width space only"
+  },
+  {
+   "text": "I'm",
+   "admit": false,
+   "rule": "visible_word",
+   "why": "no 2-character [A-Za-z0-9] run"
+  },
+  {
+   "text": "a b c",
+   "admit": false,
+   "rule": "visible_word",
+   "why": "single letters"
+  },
+  {
+   "text": "1 2 3",
+   "admit": false,
+   "rule": "visible_word",
+   "why": "single digits"
+  },
+  {
+   "text": "''",
+   "admit": false,
+   "rule": "visible_word",
+   "why": "apostrophes only"
+  },
+  {
+   "text": "Q&A",
+   "admit": false,
+   "rule": "visible_word",
+   "why": "two 1-letter runs"
+  },
+  {
+   "text": "",
+   "admit": false,
+   "rule": "visible_word",
+   "why": "empty"
+  },
+  {
+   "text": "   ",
+   "admit": false,
+   "rule": "visible_word",
+   "why": "spaces only"
+  },
+  {
+   "text": "\n\t",
+   "admit": false,
+   "rule": "visible_word",
+   "why": "layout only"
+  },
+  {
+   "text": "\u2060",
+   "admit": false,
+   "rule": "visible_word",
+   "why": "only Cf: stripped, nothing left"
+  },
+  {
+   "text": "good\u00adcaption",
+   "admit": true,
+   "rule": null,
+   "why": "soft hyphen is Cf: stripped, word 'goodcaption'"
+  },
+  {
+   "text": "a\u200db words",
+   "admit": true,
+   "rule": null,
+   "why": "ZWJ between letters is stripped"
+  },
+  {
+   "text": "\ufeffhello there",
+   "admit": true,
+   "rule": null,
+   "why": "BOM is Cf: stripped"
+  },
+  {
+   "text": "hi\u2800there",
+   "admit": false,
+   "rule": "character",
+   "why": "U+2800 is not Cf; it stays and the font has no glyph for it"
+  },
+  {
+   "text": "ok \ud83d\ude2d",
+   "admit": false,
+   "rule": "emoji",
+   "why": "emoji fails the table"
+  },
+  {
+   "text": "\u00a9 2am vibes",
+   "admit": true,
+   "rule": null,
+   "why": "copyright sign is drawn by the font"
+  },
+  {
+   "text": "ok \u200e ok",
+   "admit": true,
+   "rule": null,
+   "why": "left-to-right mark is Cf: stripped"
+  },
+  {
+   "text": "\u202aok there\u202c",
+   "admit": true,
+   "rule": null,
+   "why": "bidi embedding marks are Cf: stripped"
+  },
+  {
+   "text": "cafe\u0301 vibes",
+   "admit": true,
+   "rule": null,
+   "why": "decomposed e+acute composes to the drawn e-acute under NFC"
+  },
+  {
+   "text": "ae\u0301",
+   "admit": false,
+   "rule": "visible_word",
+   "why": "NFC makes 'a'+e-acute: no 2-char ASCII word. Skipping NFC would see the run 'ae' and ADMIT"
+  },
+  {
+   "text": "ok k\u030c",
+   "admit": false,
+   "rule": "character",
+   "why": "NFC composes k+caron to U+01E9, which the font lacks. Skipping NFC would check k and U+030C separately (both drawn) and ADMIT"
+  },
+  {
+   "text": "ok \u01e9",
+   "admit": false,
+   "rule": "character",
+   "why": "precomposed U+01E9 is not in the font"
+  },
+  {
+   "text": "ok A\u0308\u0304",
+   "admit": false,
+   "rule": "character",
+   "why": "NFC composes to U+01DE, which the font lacks; without NFC the parts are drawn"
+  },
+  {
+   "text": "caf\u00e9 vibes",
+   "admit": true,
+   "rule": null,
+   "why": "precomposed e-acute is drawn"
+  }
+ ],
+ "normalization_order": [
+  "0. NFC-normalize the text",
+  "1. strip every \\p{Cf} character (soft hyphen, U+200B-U+200F, U+202A-U+202E, U+2060-U+2064, U+FEFF, ...)",
+  "2. every remaining character except U+0020 U+0009 U+000A U+000D must be a code point in drawable-codepoints.json (U+2800 U+3164 U+115F U+1160 U+FFA0 and U+FE0F are not Cf: they stay and fail here)",
+  "3. at least one run of 2+ [A-Za-z0-9] must remain"
+ ]
+}

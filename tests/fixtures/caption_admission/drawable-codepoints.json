@@ -1,0 +1,651 @@
+{
+ "schema": "control-plane.drawable-codepoints.v1",
+ "purpose": "Code points a caption may contain: those every allowed Content Lab TikTokSans font draws. The Lab draws with one font and no fallback, so a code point missing from the cmap is drawn as an empty box.",
+ "lab_repo": "KINGMAKER-SYSTEMS/content-posting-lab",
+ "lab_sha": "713a0eb20f301512e8d217ef20cd6098c4bf0e61",
+ "allowed_fonts": "non-italic fonts/TikTokSans*.ttf (the Lab font pattern minus Italic)",
+ "rule": "intersection of the allowed fonts' cmaps (glyph id 0 excluded)",
+ "generator": "tools/gen-drawable-codepoints.mjs",
+ "fonts": [
+  {
+   "file": "TikTokSans-Bold.ttf",
+   "git_blob_sha": "2b50702b2ffed9c9b15131636a75ffe953a31ed3",
+   "sha256": "b563a3a6ca7f1ddf013f05719bb4bc3b8b1591db406b2aaa725dae5cec32ff61",
+   "codepoints": 910
+  },
+  {
+   "file": "TikTokSans-Regular.ttf",
+   "git_blob_sha": "05d77dc8c8db6ecc7752b1b4ddf4fd03a9c70ec8",
+   "sha256": "6bc5b7ae7670e1427e0ad2d8271069b012c561857a55518063274b19ae1a48f2",
+   "codepoints": 910
+  },
+  {
+   "file": "TikTokSans12pt-Black.ttf",
+   "git_blob_sha": "8e7d969fc1600238a6eb0d49a275062f3de17fec",
+   "sha256": "f9ecc3d17ef4e3f72bb0f2113bf1ba02e6b777e992c7d96949e378f63e094f42",
+   "codepoints": 910
+  },
+  {
+   "file": "TikTokSans12pt-Bold.ttf",
+   "git_blob_sha": "93b3754c73113f78dbb18011bcdf64215c5b36d9",
+   "sha256": "e3f803f90d9cec1113b1743f108b42070182b0c3a81a13c3f1d6b47684a76a55",
+   "codepoints": 910
+  },
+  {
+   "file": "TikTokSans12pt-ExtraBold.ttf",
+   "git_blob_sha": "a172657228b8ad7922e9013002ba33a707c06478",
+   "sha256": "110b8a9c2d21e6b8b8c0999ff8a0ba7556137aecf01f425c16f00c4d025aa4b8",
+   "codepoints": 910
+  },
+  {
+   "file": "TikTokSans12pt-Light.ttf",
+   "git_blob_sha": "6f9dfded13525f19aada36ba10ef701650fb7d29",
+   "sha256": "10f634de275bfc77369241201c7b7c8b447c6d0993c2df0344d78fd42187d7f5",
+   "codepoints": 910
+  },
+  {
+   "file": "TikTokSans12pt-Medium.ttf",
+   "git_blob_sha": "1001784a2730f353c5b5f8db6bb5fd0e5b9bc1f5",
+   "sha256": "c6940b7652976961f7bccd3745f3d478256f32abb0d337a43dfbc29edc1e8c18",
+   "codepoints": 910
+  },
+  {
+   "file": "TikTokSans12pt-Regular.ttf",
+   "git_blob_sha": "549424c4ecd10324a27d45a49df13604f4099e5b",
+   "sha256": "c4f2135fbe8c165b9c45afed8dffc941e67b045757c5c9f745a614af484e19b3",
+   "codepoints": 910
+  },
+  {
+   "file": "TikTokSans12pt-SemiBold.ttf",
+   "git_blob_sha": "d2bf44b2ab45142d6bfefac9161459b5c8b33253",
+   "sha256": "640df40d8d08da7782a60caa4820ce75d14d945bc7e17458251e6a106d693794",
+   "codepoints": 910
+  },
+  {
+   "file": "TikTokSans16pt-Black.ttf",
+   "git_blob_sha": "b82bf5966db3fd0528099db4f05ab5bf2262ed0c",
+   "sha256": "82a37968d67131f2cebe614578e8769ab0e75643d03cfb426e50484a185d400f",
+   "codepoints": 910
+  },
+  {
+   "file": "TikTokSans16pt-Bold.ttf",
+   "git_blob_sha": "2b50702b2ffed9c9b15131636a75ffe953a31ed3",
+   "sha256": "b563a3a6ca7f1ddf013f05719bb4bc3b8b1591db406b2aaa725dae5cec32ff61",
+   "codepoints": 910
+  },
+  {
+   "file": "TikTokSans16pt-ExtraBold.ttf",
+   "git_blob_sha": "7613cd5b8ac008833fd398b2bfe6a06c641cca92",
+   "sha256": "eda1d7ea765d3100c1e604d79b4f4b64d6c6de4b5a50762cd0f44e1ad3f816e1",
+   "codepoints": 910
+  },
+  {
+   "file": "TikTokSans16pt-Light.ttf",
+   "git_blob_sha": "1b89d71256e40a651fedfef6bae5331ff622f0f2",
+   "sha256": "11a043c2f0cab137b29fe103fc851e272e036e336e777dee439712ba3e28eae0",
+   "codepoints": 910
+  },
+  {
+   "file": "TikTokSans16pt-Medium.ttf",
+   "git_blob_sha": "38943944a891616713cdb6731f931a0dbb373645",
+   "sha256": "f1f88a674183cac924fc3b10dfca2646d03f81f76a74c85efe1d264833a73f02",
+   "codepoints": 910
+  },
+  {
+   "file": "TikTokSans16pt-Regular.ttf",
+   "git_blob_sha": "05d77dc8c8db6ecc7752b1b4ddf4fd03a9c70ec8",
+   "sha256": "6bc5b7ae7670e1427e0ad2d8271069b012c561857a55518063274b19ae1a48f2",
+   "codepoints": 910
+  },
+  {
+   "file": "TikTokSans16pt-SemiBold.ttf",
+   "git_blob_sha": "370569a82ee25d8d7fff35a1db9a510face2ff52",
+   "sha256": "70681c584da71808fd4e0a68cb24880e8c2aec0f3de117168c2da8568aeff26a",
+   "codepoints": 910
+  },
+  {
+   "file": "TikTokSans36pt-Black.ttf",
+   "git_blob_sha": "8c94f02e39d4ac69613f3a3e54629472dfce044e",
+   "sha256": "9895873e6e40ee86b069891e56cfeeed392ac874ccac58041209609f0d21ae54",
+   "codepoints": 910
+  },
+  {
+   "file": "TikTokSans36pt-Bold.ttf",
+   "git_blob_sha": "95da6a2df5788135b18d7aaac593a3fcc72f4c07",
+   "sha256": "f6da258a8664b99d1a5a071cc7aebedd06e4acae6e97b8f18df7af640089636f",
+   "codepoints": 910
+  },
+  {
+   "file": "TikTokSans36pt-ExtraBold.ttf",
+   "git_blob_sha": "f80a854dbf969fed4b723b5692ac39e58ce25d4a",
+   "sha256": "a5a77d3a794a655be41ef2fc79a09bebb24afdbe4f95d75dc257c5e77245978c",
+   "codepoints": 910
+  },
+  {
+   "file": "TikTokSans36pt-Light.ttf",
+   "git_blob_sha": "f337e5aeacdd4f97fb52052b98f130ba95179001",
+   "sha256": "bbd611d46ebf99bd389e70b8715bf20757edb4f1476139c00b81c45c67fb934d",
+   "codepoints": 910
+  },
+  {
+   "file": "TikTokSans36pt-Medium.ttf",
+   "git_blob_sha": "f69aef790e014f6c8bc8f8ca3b3c025df90573e6",
+   "sha256": "7c5c61b8664a338d47c7dc0cacf40c14f265aa9243774d1493aeb38efc885504",
+   "codepoints": 910
+  },
+  {
+   "file": "TikTokSans36pt-Regular.ttf",
+   "git_blob_sha": "4f382572f53a93d7611877e71a4e50141f9d10e1",
+   "sha256": "77ff58841ca65380d4117bfa761d118206f0a9c16bb374a7612f6528b81425bd",
+   "codepoints": 910
+  },
+  {
+   "file": "TikTokSans36pt-SemiBold.ttf",
+   "git_blob_sha": "0c8925b49a92dcf679a67ab7e79dfae9af66eace",
+   "sha256": "041f09d423d63700e07a1869eafc1fcb4b59f6e50cb89fd4e47220eeee438941",
+   "codepoints": 910
+  }
+ ],
+ "union_count": 910,
+ "intersection_count": 910,
+ "fonts_agree": true,
+ "ranges_sha256": "bdf7498ffadd18531264e8497edda27ab90b1079634f5a339b6633fae8fe1c43",
+ "ranges": [
+  [
+   13,
+   13
+  ],
+  [
+   32,
+   126
+  ],
+  [
+   160,
+   165
+  ],
+  [
+   167,
+   171
+  ],
+  [
+   174,
+   180
+  ],
+  [
+   182,
+   382
+  ],
+  [
+   385,
+   385
+  ],
+  [
+   390,
+   390
+  ],
+  [
+   394,
+   394
+  ],
+  [
+   398,
+   400
+  ],
+  [
+   407,
+   409
+  ],
+  [
+   413,
+   413
+  ],
+  [
+   416,
+   417
+  ],
+  [
+   431,
+   432
+  ],
+  [
+   435,
+   436
+  ],
+  [
+   461,
+   477
+  ],
+  [
+   482,
+   483
+  ],
+  [
+   486,
+   487
+  ],
+  [
+   490,
+   491
+  ],
+  [
+   508,
+   511
+  ],
+  [
+   536,
+   539
+  ],
+  [
+   562,
+   563
+  ],
+  [
+   567,
+   567
+  ],
+  [
+   581,
+   581
+  ],
+  [
+   595,
+   596
+  ],
+  [
+   599,
+   599
+  ],
+  [
+   601,
+   601
+  ],
+  [
+   603,
+   603
+  ],
+  [
+   616,
+   616
+  ],
+  [
+   626,
+   626
+  ],
+  [
+   652,
+   652
+  ],
+  [
+   710,
+   711
+  ],
+  [
+   728,
+   733
+  ],
+  [
+   768,
+   772
+  ],
+  [
+   774,
+   780
+  ],
+  [
+   786,
+   786
+  ],
+  [
+   795,
+   795
+  ],
+  [
+   803,
+   803
+  ],
+  [
+   806,
+   808
+  ],
+  [
+   814,
+   814
+  ],
+  [
+   817,
+   817
+  ],
+  [
+   821,
+   821
+  ],
+  [
+   823,
+   824
+  ],
+  [
+   894,
+   894
+  ],
+  [
+   900,
+   906
+  ],
+  [
+   908,
+   908
+  ],
+  [
+   910,
+   929
+  ],
+  [
+   931,
+   974
+  ],
+  [
+   1024,
+   1119
+  ],
+  [
+   1122,
+   1123
+  ],
+  [
+   1138,
+   1141
+  ],
+  [
+   1168,
+   1171
+  ],
+  [
+   1174,
+   1179
+  ],
+  [
+   1184,
+   1187
+  ],
+  [
+   1194,
+   1195
+  ],
+  [
+   1198,
+   1203
+  ],
+  [
+   1206,
+   1207
+  ],
+  [
+   1210,
+   1211
+  ],
+  [
+   1216,
+   1218
+  ],
+  [
+   1231,
+   1233
+  ],
+  [
+   1236,
+   1241
+  ],
+  [
+   1250,
+   1251
+  ],
+  [
+   1254,
+   1257
+  ],
+  [
+   1262,
+   1263
+  ],
+  [
+   1266,
+   1267
+  ],
+  [
+   3647,
+   3647
+  ],
+  [
+   7684,
+   7685
+  ],
+  [
+   7692,
+   7695
+  ],
+  [
+   7712,
+   7713
+  ],
+  [
+   7716,
+   7723
+  ],
+  [
+   7730,
+   7739
+  ],
+  [
+   7744,
+   7753
+  ],
+  [
+   7766,
+   7775
+  ],
+  [
+   7778,
+   7779
+  ],
+  [
+   7788,
+   7791
+  ],
+  [
+   7808,
+   7813
+  ],
+  [
+   7816,
+   7817
+  ],
+  [
+   7820,
+   7823
+  ],
+  [
+   7826,
+   7830
+  ],
+  [
+   7838,
+   7838
+  ],
+  [
+   7840,
+   7929
+  ],
+  [
+   8194,
+   8197
+  ],
+  [
+   8199,
+   8203
+  ],
+  [
+   8211,
+   8212
+  ],
+  [
+   8216,
+   8218
+  ],
+  [
+   8220,
+   8222
+  ],
+  [
+   8224,
+   8226
+  ],
+  [
+   8230,
+   8230
+  ],
+  [
+   8240,
+   8240
+  ],
+  [
+   8242,
+   8243
+  ],
+  [
+   8249,
+   8250
+  ],
+  [
+   8260,
+   8260
+  ],
+  [
+   8304,
+   8304
+  ],
+  [
+   8308,
+   8315
+  ],
+  [
+   8317,
+   8318
+  ],
+  [
+   8320,
+   8331
+  ],
+  [
+   8333,
+   8334
+  ],
+  [
+   8353,
+   8353
+  ],
+  [
+   8358,
+   8358
+  ],
+  [
+   8361,
+   8366
+  ],
+  [
+   8369,
+   8370
+  ],
+  [
+   8372,
+   8373
+  ],
+  [
+   8376,
+   8378
+  ],
+  [
+   8380,
+   8381
+  ],
+  [
+   8383,
+   8383
+  ],
+  [
+   8448,
+   8448
+  ],
+  [
+   8453,
+   8453
+  ],
+  [
+   8471,
+   8471
+  ],
+  [
+   8482,
+   8482
+  ],
+  [
+   8531,
+   8532
+  ],
+  [
+   8539,
+   8542
+  ],
+  [
+   8592,
+   8601
+  ],
+  [
+   8722,
+   8722
+  ],
+  [
+   8776,
+   8776
+  ],
+  [
+   8800,
+   8800
+  ],
+  [
+   8804,
+   8805
+  ],
+  [
+   9312,
+   9320
+  ],
+  [
+   9450,
+   9450
+  ],
+  [
+   9471,
+   9471
+  ],
+  [
+   9675,
+   9676
+  ],
+  [
+   9679,
+   9679
+  ],
+  [
+   10102,
+   10110
+  ],
+  [
+   64257,
+   64258
+  ],
+  [
+   65279,
+   65279
+  ]
+ ]
+}

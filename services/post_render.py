@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import io
 import json
 import math
 import os
@@ -20,11 +21,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Callable, Literal
 
+import numpy as np
 from PIL import Image
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from burn_quality_gate import overlay_geometry_reasons
-from services.caption_render import CaptionRenderRequest, CaptionStyle, render_caption_overlay
+from services.caption_render import CaptionRenderRequest, CaptionStyle, render_caption_with_background
 from services.ffmpeg import delivery_encode_args
 from services.page_frame import frame_band_height, frame_band_rows, frame_fit, letterbox_filter
 from services.source_treatment import normalized_visual_treatment
@@ -40,6 +42,36 @@ MAX_QA_BYTES = 2 * 1024 * 1024
 # conservative explicit bound so the job scheduler can reserve peak disk.
 MAX_OVERLAY_BYTES = 16 * 1024 * 1024
 MAX_DURATION_MS = 600_000
+# Proof the caption's words are in the delivered pixels, measured as CHANGE against
+# the picture around them. The reference is the same source frame at the same time,
+# through the same delivery graph, with the caption's background (box or highlight)
+# drawn but the words left out. Where the words would change that reference by more
+# than CAPTION_INK_CONTRAST levels, the burned frame must have moved at least
+# CAPTION_INK_MIN_SHARE of the way toward the words' colour, on average. A box alone
+# cannot pass (the reference already has it), matching colours alone prove nothing
+# (white text on a white clip "matches" whether or not it was drawn), and white text
+# on a dark box over a white clip is measured against the box, so it is visible and
+# passes. Too few changed pixels means the words cannot be seen against what is
+# directly behind them (no box and the same colour as the picture, or text in its own
+# box's colour): CAPTION_LOW_CONTRAST. Enough contrast but no change in the burned
+# frame: CAPTION_NOT_DRAWN.
+CAPTION_INK_MIN_SHARE = 0.40
+CAPTION_INK_ALPHA_MIN = 200
+CAPTION_INK_CONTRAST = 48
+CAPTION_INK_MIN_PIXELS = 64
+# The box or highlight itself must be in the burned frame too. Words measured against a box-only reference would
+# otherwise pass when nothing at all was drawn and the clip happens to be the words' colour (white words on a
+# black box over a white clip, with no overlay in the video). A box pixel counts as shown only when the burned
+# colour is nearer the box colour than the bare source frame's colour at that pixel (a plain colour match is not
+# enough: light-grey footage sits within tolerance of a #c0c0c0 box without any overlay). Box pixels within
+# CAPTION_BOX_DISTINCT levels of the source are left out of that tally (a black box over a black clip burns the source
+# colour and is a real caption; nothing can be told either way), and there the words are judged against the bare
+# source, so an unchanged source pixel can never count as ink. At least CAPTION_BOX_MIN_MATCH of the counted box
+# pixels must be shown.
+CAPTION_BOX_ALPHA_MIN = 200
+CAPTION_BOX_WORDS_TOLERANCE = 24
+CAPTION_BOX_DISTINCT = 24
+CAPTION_BOX_MIN_MATCH = 0.60
 Hash = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
 Identity = Annotated[str, Field(min_length=1, max_length=512)]
 
@@ -288,7 +320,7 @@ def _file_hash(path: Path, limit: int) -> tuple[str, int]:
     return digest.hexdigest(), total
 
 
-def _video_graph(source_probe: MediaProbe, frame_height: int | None = None) -> str:
+def _video_graph(source_probe: MediaProbe, frame_height: int | None = None, overlay: bool = True) -> str:
     chain = []
     if (source_probe.width, source_probe.height) != (1080, 1920):
         if abs(source_probe.width * 16 - source_probe.height * 9) <= 32:
@@ -307,6 +339,9 @@ def _video_graph(source_probe: MediaProbe, frame_height: int | None = None) -> s
         # The delivery frame is exactly 1080x1920 here. A page frame keeps its
         # centred band and letterboxes it in plain black on the same canvas.
         chain.append(letterbox_filter(frame_height))
+    if not overlay:
+        # The picture as delivered, without the caption: the reference for the ink check.
+        return f"[0:v:0]{','.join(chain) if chain else 'null'}[v]"
     if not chain:
         return "[0:v:0][1:v:0]overlay=0:0:format=auto[v]"
     return f"[0:v:0]{','.join(chain)}[delivery];[delivery][1:v:0]overlay=0:0:format=auto[v]"
@@ -341,6 +376,110 @@ def _encode_final(source: Path, overlay: Path, final: Path, source_probe: MediaP
                 raise
         final.unlink(missing_ok=True)
     raise PostRenderError("delivery_budget_exceeded", "both bounded encodes exceeded the byte or duration contract")
+
+
+def _caption_ink(overlay_png: bytes, qa_frame: Image.Image, reference_frame: Image.Image,
+                 background_png: bytes | None = None,
+                 source_frame: Image.Image | None = None) -> tuple[float, int, float | None]:
+    """What of the caption reached the burned frame: ``(words share, words pixels measured, box match)``.
+
+    The overlay is laid over the 1080x1920 delivery frame at 0:0 (see
+    ``_video_graph``), a framed page's band included, so its pixels line up with
+    all the frames without any offset. Only the overlay's own bounding box is read.
+
+    ``reference_frame`` is the delivery frame with the caption's background drawn and
+    the words left out (the bare source frame when the style has no background);
+    ``background_png`` is that background on its own, or None; ``source_frame`` is the
+    bare delivery frame (required with a background).
+
+    What is directly behind a word pixel is the box colour when the box really differs
+    from the source there (more than CAPTION_BOX_DISTINCT levels), and the bare source
+    otherwise. A box that hardly differs from the picture is no evidence of anything, so an
+    unchanged source pixel can never count as ink: there the words are judged against the
+    bare source AND against the box, and a pixel scores the lower of the two (unchanged
+    footage scores nothing against the source, a box with no words scores nothing against
+    the box). Codec drift on an unchanged pixel is under CAPTION_INK_CONTRAST x
+    CAPTION_INK_MIN_SHARE levels (about 19), which is what keeps it below the gate.
+
+    For each overlay pixel with alpha at least CAPTION_INK_ALPHA_MIN the overlay should
+    turn what is behind it into the expected colour. A box or highlight pixel expects what
+    is already there, so it changes nothing and is skipped with every other pixel whose
+    expected change is under CAPTION_INK_CONTRAST. Each measured pixel scores how far the
+    burned frame moved from what is behind it toward the expected colour (1.0 is all the
+    way, 0.0 not at all, clipped to -0.5..1.5); the words share is the mean, and
+    ``(0.0, count, ...)`` when fewer than CAPTION_INK_MIN_PIXELS pixels can be measured.
+
+    The box match is the share of the box's own pixels (the background, away from the
+    words) that are shown in the burned frame: nearer the box colour than the bare source
+    is at that pixel. Box pixels within CAPTION_BOX_DISTINCT levels of the source are left
+    out of the tally altogether (a black box over a black clip burns the source colour and
+    is a real caption; nothing can be told either way); None when none are left.
+    """
+    if background_png is not None and source_frame is None:
+        raise ValueError("a background needs the bare source frame to tell it from the burned frame")
+    with Image.open(io.BytesIO(overlay_png)) as opened:
+        overlay = opened.convert("RGBA")
+    box = overlay.getchannel("A").getbbox()
+    if box is None:
+        return 0.0, 0, None
+    layer = np.asarray(overlay.crop(box), dtype=np.float32)
+    alpha, colour = layer[..., 3], layer[..., :3]
+    reference = np.asarray(reference_frame.convert("RGB").crop(box), dtype=np.float32)
+    burned = np.asarray(qa_frame.convert("RGB").crop(box), dtype=np.float32)
+    behind = reference
+    near_box = None
+    box_match = None
+    if background_png is not None:
+        with Image.open(io.BytesIO(background_png)) as opened:
+            background = np.asarray(opened.convert("RGBA").crop(box), dtype=np.float32)
+        bare = np.asarray(source_frame.convert("RGB").crop(box), dtype=np.float32)
+        box_colour = background[..., :3]
+        under_box = background[..., 3] >= CAPTION_BOX_ALPHA_MIN
+        distinct = np.abs(box_colour - bare).max(axis=-1) > CAPTION_BOX_DISTINCT
+        behind = np.where((under_box & distinct)[..., None], reference, bare)
+        near_box = under_box & ~distinct
+        box_pixels = under_box & distinct & (np.abs(colour - box_colour).max(axis=-1) <= CAPTION_BOX_WORDS_TOLERANCE)
+        if box_pixels.any():
+            shown = np.abs(burned - box_colour).sum(axis=-1) < np.abs(burned - bare).sum(axis=-1)
+            box_match = float(shown[box_pixels].mean())
+    a3 = (alpha / 255.0)[..., None]
+    expected = colour * a3 + behind * (1.0 - a3)
+    change = expected - behind
+    measured = (alpha >= CAPTION_INK_ALPHA_MIN) & (np.abs(change).max(axis=-1) > CAPTION_INK_CONTRAST)
+    if near_box is not None:
+        change_box = colour * a3 + reference * (1.0 - a3) - reference
+        measured &= ~near_box | (np.abs(change_box).max(axis=-1) > CAPTION_INK_CONTRAST)
+    count = int(measured.sum())
+    if count < CAPTION_INK_MIN_PIXELS:
+        return 0.0, count, box_match
+    wanted, got = change[measured], (burned - behind)[measured]
+    progress = np.clip((wanted * got).sum(axis=-1) / (wanted * wanted).sum(axis=-1), -0.5, 1.5)
+    if near_box is not None:
+        near = near_box[measured]
+        if near.any():
+            wanted_box, got_box = change_box[measured][near], (burned - reference)[measured][near]
+            progress_box = np.clip((wanted_box * got_box).sum(axis=-1) / (wanted_box * wanted_box).sum(axis=-1), -0.5, 1.5)
+            progress[near] = np.minimum(progress[near], progress_box)
+    return float(progress.mean()), count, box_match
+
+
+def _ink_refusal(share: float, pixels: int, box_match: float | None) -> tuple[str, str] | None:
+    """The refusal (code, message) the ink measures call for, or None when the caption is shown.
+
+    One decision for the render and the class-guard tests. A box that is not in the burned frame
+    is a renderer fault whatever the words look like, so it is judged first; then words that
+    cannot be told apart from what is behind them (a fact about this clip and look); then words
+    that should show but did not change the frame (a renderer fault).
+    """
+    if box_match is not None and box_match < CAPTION_BOX_MIN_MATCH:
+        return "CAPTION_NOT_DRAWN", "the caption's box is not visible in the burned QA frame"
+    if pixels < CAPTION_INK_MIN_PIXELS:
+        # A fact about this clip and this look (the words are the colour of what is behind them), not a renderer fault.
+        return "CAPTION_LOW_CONTRAST", "the caption cannot be told apart from the picture behind it"
+    if share < CAPTION_INK_MIN_SHARE:
+        # Contrast was expected but the burned frame did not change at the words: the renderer did not draw them.
+        return "CAPTION_NOT_DRAWN", "the caption is not visible in the burned QA frame"
+    return None
 
 
 def source_visual_matches(request: PostRenderRequest) -> bool:
@@ -390,8 +529,8 @@ def render_post(source_path: Path, output_directory: Path, request: PostRenderRe
         # framed page's band, or the whole canvas when full-screen (owner
         # rule, 2026-10-04). The gate checks the same area.
         band_rows = frame_band_rows(band_height) if band_height is not None else None
-        overlay = render_caption_overlay(caption_request, font_dir=font_dir or Path(__file__).parents[1] / "fonts",
-                                         fit_rows=band_rows)
+        overlay, background_png = render_caption_with_background(
+            caption_request, font_dir=font_dir or Path(__file__).parents[1] / "fonts", fit_rows=band_rows)
         overlay_bytes = base64.b64decode(overlay.overlay.base64, validate=True)
         if (not 0 < len(overlay_bytes) <= MAX_OVERLAY_BYTES
                 or sha256(overlay_bytes) != overlay.overlay.sha256.removeprefix("sha256:")
@@ -420,10 +559,54 @@ def render_post(source_path: Path, output_directory: Path, request: PostRenderRe
         _run([tools.ffmpeg, "-nostdin", "-v", "error", "-xerror", "-protocol_whitelist", "file,pipe",
               "-ss", f"{qa_at_ms / 1000:.3f}", "-f", "mov", "-i", str(final_path),
               "-frames:v", "1", "-q:v", "3", "-update", "1", str(qa_path)], tools, output_file=qa_path, output_limit=MAX_QA_BYTES)
-        with Image.open(qa_path) as frame:
+        # The same source frame, through the same delivery graph, with the caption's background (box or
+        # highlight) but without its words: what the burned frame must differ from at the words. With no
+        # background it is the bare source frame. The source is deleted below, so this is the only chance.
+        reference_path = output_directory / "reference.jpg"
+        reference_command = [tools.ffmpeg, "-nostdin", "-v", "error", "-xerror", "-protocol_whitelist", "file,pipe",
+                             "-noautorotate", "-ss", f"{qa_at_ms / 1000:.3f}", "-f", "mov", "-i", str(source)]
+        if background_png is not None:
+            background_path = output_directory / "background.png"
+            background_path.write_bytes(background_png)
+            reference_command += ["-protocol_whitelist", "file,pipe", "-i", str(background_path)]
+        reference_command += ["-filter_complex", _video_graph(source_probe, band_height, overlay=background_png is not None),
+                              "-map", "[v]", "-frames:v", "1", "-q:v", "3", "-update", "1", str(reference_path)]
+        _run(reference_command, tools, output_file=reference_path, output_limit=MAX_QA_BYTES)
+        bare_path = None
+        if background_png is not None:
+            background_path.unlink()
+            # With a box the reference holds the box, so the bare source frame is cut too: it is what the burned
+            # frame looks like at the box if the overlay never made it into the video.
+            bare_path = output_directory / "bare.jpg"
+            _run([tools.ffmpeg, "-nostdin", "-v", "error", "-xerror", "-protocol_whitelist", "file,pipe",
+                  "-noautorotate", "-ss", f"{qa_at_ms / 1000:.3f}", "-f", "mov", "-i", str(source),
+                  "-filter_complex", _video_graph(source_probe, band_height, overlay=False), "-map", "[v]",
+                  "-frames:v", "1", "-q:v", "3", "-update", "1", str(bare_path)],
+                 tools, output_file=bare_path, output_limit=MAX_QA_BYTES)
+        with Image.open(qa_path) as frame, Image.open(reference_path) as reference:
             frame.load()
+            reference.load()
             if frame.size != (1080, 1920) or frame.format != "JPEG":
                 raise PostRenderError("qa_frame_invalid", "final QA frame is not a decodable 1080x1920 JPEG")
+            if reference.size != (1080, 1920):
+                raise PostRenderError("qa_frame_invalid", "source reference frame is not 1080x1920")
+            # The delivered pixels must show the words, not only the receipt.
+            if bare_path is None:
+                bare = None
+            else:
+                bare = Image.open(bare_path)
+                bare.load()
+                if bare.size != (1080, 1920):
+                    raise PostRenderError("qa_frame_invalid", "bare source frame is not 1080x1920")
+            caption_ink_share, caption_ink_pixels, caption_box_match = _caption_ink(
+                overlay_bytes, frame, reference, background_png, bare)
+        reference_path.unlink()
+        if bare_path is not None:
+            bare.close()
+            bare_path.unlink()
+        refusal = _ink_refusal(caption_ink_share, caption_ink_pixels, caption_box_match)
+        if refusal is not None:
+            raise PostRenderError(*refusal)
         final_sha, final_length = _file_hash(final_path, MAX_FINAL_BYTES)
         qa_sha, _ = _file_hash(qa_path, MAX_QA_BYTES)
         if final_sha == request.source_sha256:
@@ -447,6 +630,8 @@ def render_post(source_path: Path, output_directory: Path, request: PostRenderRe
             "source_probe": source_probe.__dict__, "final_probe": final_probe.__dict__,
             "decoded_video_frames": frames[-1], "qa_at_ms": qa_at_ms,
             "final_sha256": final_sha, "qa_frame_sha256": qa_sha,
+            "caption_ink_share": round(caption_ink_share, 4), "caption_ink_pixels": caption_ink_pixels,
+            **({"caption_box_match": round(caption_box_match, 4)} if caption_box_match is not None else {}),
         }, sort_keys=True))
         source.unlink()
         return RenderedPost(final_path, qa_path, receipt_path, receipt_json, sha256(receipt_json),
