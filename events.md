@@ -1749,3 +1749,13 @@ area: [backend], [testing]
 
 The check that saved `line_breaks` spell the caption did not strip Unicode format characters, so lines that differ from the caption only by one (a soft hyphen, ZWJ, BOM) were rejected with a 422 where the Worker accepts them. It now applies the same NFC, Cf strip and whitespace collapse as the drawn caption, then lowercases, before comparing. Lines that really differ still fail.
 _________________________________________________________________________________
+
+_________________________________________________________________________________
+time: [12:25P] [10-15-26] EDT; actual UTC: 2026-10-16T04:25:27Z
+agent: [Claude Code] [Sonnet 5.5] [tr03p5 labglyph builder, round 7]
+worktree: [tr03p5-labglyph] /Users/ecfromthedc/dev/tides-ec976d/b5-labglyph
+type: [docs]: Document the line-spelling order; test the drawn words
+area: [backend], [testing]
+
+The saved-lines check compares lines with the caption in one fixed order that is the same on the Worker, the rail and the Lab: NFC, strip Cf, collapse whitespace, lowercase. The order is now written in the code and in AGENTS.md, and tests pin it (a format character between two spaces is accepted only in this order). The accept tests now assert the words that are drawn, not only that no format character is drawn.
+_________________________________________________________________________________

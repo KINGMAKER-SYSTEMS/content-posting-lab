@@ -1057,23 +1057,26 @@ def test_nfc_comes_before_the_format_strip(font_dir):
 
 # --- Round 6: the saved-lines check uses the same canonical rule as the drawn caption ---------------------------------
 
-@pytest.mark.parametrize("caption,lines", [
-    ("good\u00adcaption here", ["goodcaption", "here"]),
-    ("goodcaption here", ["good\u00adcaption", "here"]),
-    ("a\u200db words", ["ab", "words"]),
-    ("\ufeffhello there", ["hello", "there"]),
-    ("hello there", ["hel\u2060lo", "\u200bthere"]),
-    ("cafe\u0301 vibes", ["caf\u00e9", "vibes"]),
-    ("caf\u00e9 vibes", ["cafe\u0301", "vibes"]),
-    ("Good\u00ad Caption", ["good", "CAPTION"]),
+@pytest.mark.parametrize("caption,lines,drawn", [
+    ("good\u00adcaption here", ["goodcaption", "here"], "goodcaption here"),
+    ("goodcaption here", ["good\u00adcaption", "here"], "goodcaption here"),
+    ("a\u200db words", ["ab", "words"], "ab words"),
+    ("\ufeffhello there", ["hello", "there"], "hello there"),
+    ("hello there", ["hel\u2060lo", "\u200bthere"], "hello there"),
+    ("cafe\u0301 vibes", ["caf\u00e9", "vibes"], "caf\u00e9 vibes"),
+    ("caf\u00e9 vibes", ["cafe\u0301", "vibes"], "caf\u00e9 vibes"),
+    ("Good\u00ad Caption", ["good", "CAPTION"], "good CAPTION"),
+    ("one  two\u3000three", ["one\u200b  two", "\u3000three"], "one two three"),
+    ("red car", ["red \u200b", "car"], "red car"),
 ], ids=["caption-has-soft-hyphen", "lines-have-soft-hyphen", "zwj", "bom", "format-chars-in-lines", "nfc-caption-decomposed",
-        "nfc-lines-decomposed", "case-and-format"])
-def test_saved_lines_that_differ_only_by_format_characters_or_nfc_are_accepted(font_dir, caption, lines):
-    # The Worker compares saved lines with the caption after stripping Cf; a Lab that did not would 422 a post
-    # the Worker admits. Accepted at the request, and drawn without the format characters.
+        "nfc-lines-decomposed", "case-and-format", "whitespace-and-format", "format-char-between-spaces"])
+def test_saved_lines_that_differ_only_by_format_characters_or_nfc_are_accepted(font_dir, caption, lines, drawn):
+    # The Worker compares saved lines with the caption after NFC, stripping Cf, collapsing whitespace and
+    # lowercasing; a Lab that did not would 422 a post the Worker admits. Accepted at the request, and the DRAWN
+    # words are exactly the saved lines' words, without the format characters.
     result = render_caption_overlay(caption_request(caption, line_breaks=lines), font_dir=font_dir)
-    drawn = " ".join(line.text for line in result.plan.lines)
-    assert not any(unicodedata.category(char) == "Cf" for char in drawn)
+    assert " ".join(line.text for line in result.plan.lines) == drawn
+    assert len(result.plan.lines) == len(lines)
 
 
 @pytest.mark.parametrize("caption,lines", [

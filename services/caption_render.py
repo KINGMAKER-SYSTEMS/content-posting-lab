@@ -238,8 +238,11 @@ class CaptionRenderRequest(BaseModel):
     @model_validator(mode="after")
     def validate_exact_lines(self) -> "CaptionRenderRequest":
         if self.style.line_breaks is not None:
-            # The same canonical text rule as the drawn caption (NFC, strip Cf, collapse whitespace) plus case,
-            # so a saved line that differs from the caption only by a format character is the same text.
+            # Line spelling, in this order, the same everywhere (Worker, rail, Lab): NFC, strip Cf (Unicode
+            # format characters), collapse whitespace, lowercase. The first three are the drawn caption's rule
+            # (``_normalized``); a saved line that differs from the caption only by a format character is the
+            # same text. The order is fixed on purpose: stripping before NFC would only change the contrived
+            # case of a format character between a base letter and its combining mark.
             canonical = lambda value: " ".join(_normalized(value).split()).lower()
             if canonical(" ".join(self.style.line_breaks)) != canonical(self.caption):
                 raise ValueError("line_breaks must preserve the caption text")

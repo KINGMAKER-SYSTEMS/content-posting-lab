@@ -137,7 +137,9 @@
   zero-width characters (category Cf: soft hyphen, U+200B-U+200F, U+2060, U+FEFF;
   they draw nothing), then glyph-check what remains. Saved `line_breaks` lines
   get the same treatment as the caption (plus whitespace collapsed to single
-  spaces). It refuses, and never drops, any remaining character the chosen font
+  spaces), and the request check that they spell the caption compares both in
+  one fixed order, the same on the Worker, the rail and here: NFC, strip Cf,
+  collapse whitespace, lowercase. It refuses, and never drops, any remaining character the chosen font
   has no glyph for (emoji, U+FE0F, U+2800, U+3164, kana and the rest: the font
   would draw its missing-glyph box) with `CAPTION_GLYPH_MISSING`, and a caption
   with no drawable letter or digit with `CAPTION_NO_TEXT`. Coverage is read from
