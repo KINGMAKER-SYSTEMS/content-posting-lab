@@ -238,7 +238,9 @@ class CaptionRenderRequest(BaseModel):
     @model_validator(mode="after")
     def validate_exact_lines(self) -> "CaptionRenderRequest":
         if self.style.line_breaks is not None:
-            canonical = lambda value: " ".join(value.split()).lower()
+            # The same canonical text rule as the drawn caption (NFC, strip Cf, collapse whitespace) plus case,
+            # so a saved line that differs from the caption only by a format character is the same text.
+            canonical = lambda value: " ".join(_normalized(value).split()).lower()
             if canonical(" ".join(self.style.line_breaks)) != canonical(self.caption):
                 raise ValueError("line_breaks must preserve the caption text")
         return self

@@ -4,6 +4,7 @@ import inspect
 import io
 import json
 import shutil
+import unicodedata
 from pathlib import Path
 
 import pytest
@@ -1052,3 +1053,36 @@ def test_nfc_comes_before_the_format_strip(font_dir):
     # Saved lines are composed too.
     saved = render_caption_overlay(caption_request("cafe\u0301 vibes", line_breaks=["cafe\u0301", "vibes"]), font_dir=font_dir)
     assert [line.text for line in saved.plan.lines] == ["caf\u00e9", "vibes"]
+
+
+# --- Round 6: the saved-lines check uses the same canonical rule as the drawn caption ---------------------------------
+
+@pytest.mark.parametrize("caption,lines", [
+    ("good\u00adcaption here", ["goodcaption", "here"]),
+    ("goodcaption here", ["good\u00adcaption", "here"]),
+    ("a\u200db words", ["ab", "words"]),
+    ("\ufeffhello there", ["hello", "there"]),
+    ("hello there", ["hel\u2060lo", "\u200bthere"]),
+    ("cafe\u0301 vibes", ["caf\u00e9", "vibes"]),
+    ("caf\u00e9 vibes", ["cafe\u0301", "vibes"]),
+    ("Good\u00ad Caption", ["good", "CAPTION"]),
+], ids=["caption-has-soft-hyphen", "lines-have-soft-hyphen", "zwj", "bom", "format-chars-in-lines", "nfc-caption-decomposed",
+        "nfc-lines-decomposed", "case-and-format"])
+def test_saved_lines_that_differ_only_by_format_characters_or_nfc_are_accepted(font_dir, caption, lines):
+    # The Worker compares saved lines with the caption after stripping Cf; a Lab that did not would 422 a post
+    # the Worker admits. Accepted at the request, and drawn without the format characters.
+    result = render_caption_overlay(caption_request(caption, line_breaks=lines), font_dir=font_dir)
+    drawn = " ".join(line.text for line in result.plan.lines)
+    assert not any(unicodedata.category(char) == "Cf" for char in drawn)
+
+
+@pytest.mark.parametrize("caption,lines", [
+    ("good\u00adcaption here", ["good", "caption", "here"]),
+    ("goodcaption here", ["good\u00ad", "caption here"]),
+    ("hello there", ["hello", "there now"]),
+    ("hello there", ["hello"]),
+    ("hello there", ["hello", "\U0001F62D there"]),
+], ids=["format-char-split-a-word", "format-char-line-split-a-word", "extra-words", "missing-words", "emoji-line"])
+def test_saved_lines_that_really_differ_from_the_caption_are_still_refused(caption, lines):
+    with pytest.raises(ValidationError):
+        caption_request(caption, line_breaks=lines)
