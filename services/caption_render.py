@@ -9,6 +9,7 @@ fonts, and turns the effective style into a transparent 1080x1920 PNG.
 from __future__ import annotations
 
 import base64
+import functools
 import hashlib
 import io
 import json
@@ -173,9 +174,10 @@ def caption_style_contract() -> dict:
     (contracts/caption-style.v1.json) lets the Worker check in its own CI that
     every caption style it can send is one this renderer takes. Not in it:
     render-time refusals that depend on the installed fonts and the rendered
-    size (CAPTION_FONT_UNAVAILABLE, italic fonts, and CAPTION_OUT_OF_FRAME for a
-    caption that cannot fit the visible picture even at 12 pt), and the request rule that line_breaks must spell
-    the caption. tests/test_caption_transforms.py fails when the copy drifts;
+    size (CAPTION_FONT_UNAVAILABLE, italic fonts, CAPTION_OUT_OF_FRAME for a
+    caption that cannot fit the visible picture even at 12 pt, and
+    CAPTION_GLYPH_MISSING / CAPTION_NO_TEXT for text the font cannot draw), and
+    the request rule that line_breaks must spell the caption. tests/test_caption_transforms.py fails when the copy drifts;
     regenerate it with ``python scripts/export_caption_style_contract.py``.
     """
 
@@ -560,6 +562,72 @@ def _load_font(font_path: Path, size_px: int) -> ImageFont.FreeTypeFont:
         ) from error
 
 
+# A character the font has no glyph for is drawn as the font's own missing-glyph
+# box ("tofu"), and there is no fallback font. Emoji, U+FE0F, U+2800 and U+3164
+# are all missing from every TikTokSans file. The box is real ink, so every
+# later check passes; the caption has to be refused here instead (owner rule,
+# 2026-10-15: no emoji on a caption, and never a post without its caption).
+# U+10FFFD is unassigned, so drawing it always gives the missing-glyph box.
+_NOTDEF_PROBE_CHAR = "\U0010FFFD"
+_GLYPH_PROBE_PX = 64
+_GLYPH_ERROR_CHARS_MAX = 8
+
+
+@functools.lru_cache(maxsize=64)
+def _glyph_probe(font_path: str) -> tuple[ImageFont.FreeTypeFont, bytes]:
+    font = _load_font(Path(font_path), _GLYPH_PROBE_PX)
+    return font, _glyph_ink(font, _NOTDEF_PROBE_CHAR)[0]
+
+
+def _glyph_ink(font: ImageFont.FreeTypeFont, char: str) -> tuple[bytes, bool]:
+    """The character drawn alone on a small canvas: its pixels, and whether any ink landed."""
+
+    canvas = Image.new("L", (_GLYPH_PROBE_PX * 2, _GLYPH_PROBE_PX * 2), 0)
+    ImageDraw.Draw(canvas).text((_GLYPH_PROBE_PX // 4, _GLYPH_PROBE_PX // 4), char, font=font, fill=255)
+    return canvas.tobytes(), canvas.getbbox() is not None
+
+
+@functools.lru_cache(maxsize=65_536)
+def _glyph_state(font_path: str, char: str) -> str:
+    """``missing`` (the box), ``blank`` (a real glyph with no ink) or ``drawn``."""
+
+    font, notdef = _glyph_probe(font_path)
+    pixels, has_ink = _glyph_ink(font, char)
+    if pixels == notdef:
+        return "missing"
+    return "drawn" if has_ink else "blank"
+
+
+def _require_drawable_text(font_path: Path, lines: list[str]) -> None:
+    """Refuse a caption the font cannot fully draw, or one with no letter or digit left.
+
+    Never drops a character: a caption that cannot be drawn as written is
+    handed back so the caller can use another caption.
+    """
+
+    key = str(font_path)
+    missing: list[str] = []
+    readable = False
+    for char in dict.fromkeys("".join(lines)):
+        if char.isspace():
+            continue
+        state = _glyph_state(key, char)
+        if state == "missing":
+            missing.append(char)
+        elif state == "drawn" and unicodedata.category(char)[0] in "LN":
+            readable = True
+    if missing:
+        shown = ", ".join(f"U+{ord(char):04X}" for char in missing[:_GLYPH_ERROR_CHARS_MAX])
+        if len(missing) > _GLYPH_ERROR_CHARS_MAX:
+            shown += f" and {len(missing) - _GLYPH_ERROR_CHARS_MAX} more"
+        raise CaptionRenderError(
+            "CAPTION_GLYPH_MISSING",
+            f"caption has characters the font cannot draw: {shown}",
+        )
+    if not readable:
+        raise CaptionRenderError("CAPTION_NO_TEXT", "caption has no letter or digit the font can draw")
+
+
 def _line_height_px(font_size_px: int) -> int:
     return max(1, round(font_size_px * _LINE_HEIGHT_MULTIPLIER))
 
@@ -741,8 +809,9 @@ def render_caption_overlay(
     lines = ([_cased(line, style.case) for line in style.line_breaks]
              if style.line_breaks is not None
              else _wrap_preserving_explicit_newlines(rendered_source, style.line_balance))
-    if not lines:
-        raise CaptionRenderError("CAPTION_EMPTY", "caption produced no renderable lines")
+    # The wrap always returns a line and the request needs one visible
+    # character, so "no lines" cannot happen; this refuses what a line holds.
+    _require_drawable_text(font_path, lines)
 
     max_width_px = round(FRAME_WIDTH * (_MAX_WIDTH_PCT / 100))
     horizontal_margin_px = (FRAME_WIDTH - max_width_px) // 2

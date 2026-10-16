@@ -132,8 +132,15 @@
   The local quality-check request carries the same optional `picture_frame`;
   its typed placement and bounds use that picture band and retain full-canvas
   behavior when the field is absent.
+- `services/caption_render.py` refuses, and never drops, any caption character
+  the chosen font has no glyph for (emoji, U+FE0F, U+2800, U+3164, kana and the
+  rest: the font would draw its missing-glyph box) with `CAPTION_GLYPH_MISSING`,
+  and a caption with no drawable letter or digit with `CAPTION_NO_TEXT`.
 - `services/post_render.py` owns local prepared-final rendering and exact artifact
-  receipts; control-plane admission remains downstream authority.
+  receipts; control-plane admission remains downstream authority. After the QA
+  frame is cut it checks that the overlay's solid pixels show in the overlay's
+  own colour in that frame (at least 60%); otherwise the job fails
+  `CAPTION_NOT_DRAWN`. All three codes are terminal (not in `RETRY_CODES`).
 - `services/post_render_jobs.py` and `routers/post_renders.py` own durable pre-lease
   render jobs, authenticated page-scoped status/artifacts and source acquisition.
 - `docs/post-render-setup.md` owns prepared-render storage, authentication and
@@ -758,7 +765,9 @@
 - Run `pytest -q tests/test_post_render_jobs.py tests/test_source_treatment.py`
   for durable crash/retry/lock/auth/source-grant and applied-video provenance checks.
 - Run `pytest -q tests/test_post_render.py` for prepared rendering, actual MP4
-  decode, treatment-once preservation, byte-budget retry and bounded failures.
+  decode, treatment-once preservation, byte-budget retry and bounded failures,
+  and the burned-frame caption ink check (`CAPTION_NOT_DRAWN`, share recorded
+  in `decode.json` as `caption_ink_share`).
 - Run `pytest -q tests/test_page_frame_geometry.py tests/test_page_frame_cut.py
   tests/test_page_frame_no_frame_identity.py tests/test_page_frame_gate.py
   tests/test_page_frame_render.py` for page-frame table parity, the band-aware
@@ -771,7 +780,8 @@
   Run `pytest -q tests/test_pipeline_api.py` for the intake-password 503 path.
 
 - Run `pytest -q tests/test_caption_render_contract.py` for the typed caption
-  contract and `pytest -q tests/test_burn_and_captions_api.py` for Burn API
+  contract, including the glyph gate (`CAPTION_GLYPH_MISSING`,
+  `CAPTION_NO_TEXT`), and `pytest -q tests/test_burn_and_captions_api.py` for Burn API
   regressions. Run `pytest -q tests/test_burn_quality_gate.py` for legacy and
   typed overlay placement gates. Run the control-plane recipe, generation, and
   source-execution test files together when changing a Dossier recipe schema.

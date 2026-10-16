@@ -676,3 +676,122 @@ def test_v2_requires_a_supported_frame_and_rejects_unknown_fields():
     raw["surprise"] = True
     with pytest.raises(ValidationError):
         CaptionRenderRequestV2.model_validate(raw)
+
+
+# --- Glyph gate: a caption the font cannot fully draw is refused, never drawn as boxes ------------------------------
+# Owner rule 2026-10-15: no emoji on a caption, and never a post without its caption. Every allowed TikTokSans
+# file draws its own missing-glyph box for a character it lacks (and there is no fallback font), and that box
+# counts as ink, so only this gate stops it. The tests use the real fonts in fonts/.
+
+REAL_FONT_DIR = Path(__file__).parents[1] / "fonts"
+REAL_FONTS = sorted(
+    path.name for path in REAL_FONT_DIR.glob("TikTokSans*.ttf") if "Italic" not in path.name
+)
+
+# The caption of slot-refresh:f596e07e7310f9056c0c24bd497fcbc50ba1bcd0 (acct lovenightdrives, posted
+# 2026-10-02), verbatim from the Worker's 10-02 English-gate export. It went out with two boxes at the end.
+LOVENIGHTDRIVES_1002 = (
+    "my sister requested a separate bed because my self soothing routine is rubbing my feet together "
+    "\U0001F62D\U0001F62D"
+)
+
+
+def caption_request(caption, **style_overrides):
+    payload = request(**{k: v for k, v in style_overrides.items() if k != "line_breaks"}).model_dump(by_alias=True)
+    payload["caption"] = caption
+    if "line_breaks" in style_overrides:
+        payload["style"]["line_breaks"] = style_overrides["line_breaks"]
+    return CaptionRenderRequest.model_validate(payload)
+
+
+@pytest.mark.parametrize("caption,expected", [
+    pytest.param("\U0001F62D", "U+1F62D", id="one-emoji"),
+    pytest.param("\U0001F62D\U0001F62D", "U+1F62D", id="two-emoji"),
+    pytest.param("ok \U0001F62D", "U+1F62D", id="text-then-emoji-is-refused-not-trimmed"),
+    pytest.param("\U0001F525 on fire", "U+1F525", id="emoji-first"),
+    pytest.param("so sad❤", "U+2764", id="old-style-heart"),
+    pytest.param("ok️ fine", "U+FE0F", id="variation-selector-inside-text"),
+    pytest.param("⠀", "U+2800", id="braille-blank-only"),
+    pytest.param("ㅤ", "U+3164", id="hangul-filler-only"),
+    pytest.param("ﾠ", "U+FFA0", id="halfwidth-hangul-filler-only"),
+    pytest.param("hello あ", "U+3042", id="kana"),
+    pytest.param("café‍", "U+200D", id="zero-width-joiner"),
+    pytest.param(LOVENIGHTDRIVES_1002, "U+1F62D", id="real-posted-caption-lovenightdrives-1002"),
+])
+def test_a_caption_with_a_character_the_font_cannot_draw_is_refused(font_dir, caption, expected):
+    with pytest.raises(CaptionRenderError) as error:
+        render_caption_overlay(caption_request(caption), font_dir=font_dir)
+    assert error.value.code == "CAPTION_GLYPH_MISSING"
+    assert expected in error.value.message
+
+
+@pytest.mark.parametrize("caption", ["?!", ".", "...", "​", "​​", "﻿", "- - -", "#", "’"])
+def test_a_caption_with_nothing_drawable_to_read_is_refused_as_no_text(font_dir, caption):
+    # U+200B and U+FEFF have real glyphs with no ink; punctuation has ink but no letter or digit.
+    with pytest.raises(CaptionRenderError) as error:
+        render_caption_overlay(caption_request(caption), font_dir=font_dir)
+    assert error.value.code == "CAPTION_NO_TEXT"
+
+
+@pytest.mark.parametrize("caption", [
+    "it's 2am",
+    "café",
+    "#fyp",
+    "WHEN YOU FINALLY SEE THE LIGHT",
+    "у тебя всё получится",
+    "rock’n’roll — “quoted”",
+    "7",
+    "tiếng việt",
+    "two\nlines",
+    "ok nbsp and zero​width",
+])
+def test_a_caption_the_font_can_draw_still_renders(font_dir, caption):
+    result = render_caption_overlay(caption_request(caption), font_dir=font_dir)
+    assert ink_box(result)
+
+
+@pytest.mark.parametrize("font", REAL_FONTS)
+def test_every_installed_font_refuses_the_posted_caption_and_draws_plain_text(font):
+    assert len(REAL_FONTS) >= 20
+    with pytest.raises(CaptionRenderError) as error:
+        render_caption_overlay(caption_request(LOVENIGHTDRIVES_1002, font=font), font_dir=REAL_FONT_DIR)
+    assert error.value.code == "CAPTION_GLYPH_MISSING"
+    # The same words without the emoji draw fine in that font.
+    plain = LOVENIGHTDRIVES_1002.replace("\U0001F62D", "").strip()
+    assert render_caption_overlay(caption_request(plain, font=font, size_pt=12, line_balance=100), font_dir=REAL_FONT_DIR)
+
+
+def test_the_gate_checks_the_text_as_it_will_be_drawn(font_dir):
+    # Explicit line_breaks are drawn verbatim, so an emoji in one is refused too.
+    broken = caption_request("fine words \U0001F62D", line_breaks=["fine words", "\U0001F62D"])
+    with pytest.raises(CaptionRenderError) as error:
+        render_caption_overlay(broken, font_dir=font_dir)
+    assert error.value.code == "CAPTION_GLYPH_MISSING"
+    # The case transform runs first: ß becomes SS, a letter the font has.
+    assert render_caption_overlay(caption_request("straße", case="upper"), font_dir=font_dir)
+
+
+def test_the_refusal_lists_each_missing_character_once_and_never_the_caption(font_dir):
+    with pytest.raises(CaptionRenderError) as error:
+        render_caption_overlay(caption_request("my secret words \U0001F62D\U0001F62D\U0001F525"), font_dir=font_dir)
+    assert error.value.message == "caption has characters the font cannot draw: U+1F62D, U+1F525"
+
+
+def test_the_preview_api_refuses_the_same_caption(sync_client, monkeypatch, font_dir):
+    from routers import burn as burn_router
+
+    monkeypatch.setattr(burn_router, "FONT_DIR", font_dir)
+    payload = request().model_dump()
+    payload["caption"] = LOVENIGHTDRIVES_1002
+    response = sync_client.post("/api/burn/caption-render/v1", json=payload)
+    assert response.status_code == 422
+    assert response.json()["error"] == "CAPTION_GLYPH_MISSING"
+
+
+def test_caption_empty_is_gone_because_no_input_can_reach_it():
+    # The old CAPTION_EMPTY arm needed zero lines. A blank caption is refused at the request, a blank
+    # explicit line still counts as one line, and an empty line_breaks list is refused at the style.
+    with pytest.raises(ValidationError):
+        CaptionRenderRequest.model_validate({**request().model_dump(by_alias=True), "caption": "   "})
+    with pytest.raises(ValidationError):
+        request(line_breaks=[])

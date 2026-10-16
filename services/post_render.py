@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import io
 import json
 import math
 import os
@@ -20,7 +21,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Callable, Literal
 
-from PIL import Image
+from PIL import Image, ImageChops
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from burn_quality_gate import overlay_geometry_reasons
@@ -40,6 +41,13 @@ MAX_QA_BYTES = 2 * 1024 * 1024
 # conservative explicit bound so the job scheduler can reserve peak disk.
 MAX_OVERLAY_BYTES = 16 * 1024 * 1024
 MAX_DURATION_MS = 600_000
+# Proof the caption is in the delivered pixels. Of the overlay's solid pixels
+# (alpha 200 or more), at least this share must look like the overlay's own
+# colour in the QA frame, within a tolerance that covers JPEG, 4:2:0 chroma
+# and the up-to-22% of video that shows through at alpha 200-254.
+CAPTION_INK_MIN_SHARE = 0.60
+CAPTION_INK_ALPHA_MIN = 200
+CAPTION_INK_TOLERANCE = 64
 Hash = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
 Identity = Annotated[str, Field(min_length=1, max_length=512)]
 
@@ -343,6 +351,31 @@ def _encode_final(source: Path, overlay: Path, final: Path, source_probe: MediaP
     raise PostRenderError("delivery_budget_exceeded", "both bounded encodes exceeded the byte or duration contract")
 
 
+def _caption_ink_share(overlay_png: bytes, qa_frame: Image.Image) -> float:
+    """Share of the overlay's solid pixels that the burned QA frame shows in the overlay's colour.
+
+    The overlay is laid over the 1080x1920 delivery frame at 0:0 (see
+    ``_video_graph``), a framed page's band included, so its pixels line up
+    with the QA frame without any offset. Only the overlay's own bounding box
+    is compared. 0.0 when the overlay has no solid pixel at all.
+    """
+
+    with Image.open(io.BytesIO(overlay_png)) as opened:
+        overlay = opened.convert("RGBA")
+    box = overlay.getchannel("A").getbbox()
+    if box is None:
+        return 0.0
+    solid = overlay.getchannel("A").crop(box).point(lambda a: 255 if a >= CAPTION_INK_ALPHA_MIN else 0)
+    solid_pixels = solid.histogram()[255]
+    if solid_pixels == 0:
+        return 0.0
+    difference = ImageChops.difference(overlay.convert("RGB").crop(box), qa_frame.convert("RGB").crop(box))
+    red, green, blue = difference.split()
+    worst = ImageChops.lighter(ImageChops.lighter(red, green), blue)
+    close = worst.point(lambda d: 255 if d <= CAPTION_INK_TOLERANCE else 0)
+    return close.histogram(mask=solid)[255] / solid_pixels
+
+
 def source_visual_matches(request: PostRenderRequest) -> bool:
     if request.source_visual_treatment_json is None:
         return False
@@ -424,6 +457,10 @@ def render_post(source_path: Path, output_directory: Path, request: PostRenderRe
             frame.load()
             if frame.size != (1080, 1920) or frame.format != "JPEG":
                 raise PostRenderError("qa_frame_invalid", "final QA frame is not a decodable 1080x1920 JPEG")
+            # The delivered pixels must show the caption, not only the receipt.
+            caption_ink_share = _caption_ink_share(overlay_bytes, frame)
+        if caption_ink_share < CAPTION_INK_MIN_SHARE:
+            raise PostRenderError("CAPTION_NOT_DRAWN", "the caption is not visible in the burned QA frame")
         final_sha, final_length = _file_hash(final_path, MAX_FINAL_BYTES)
         qa_sha, _ = _file_hash(qa_path, MAX_QA_BYTES)
         if final_sha == request.source_sha256:
@@ -447,6 +484,7 @@ def render_post(source_path: Path, output_directory: Path, request: PostRenderRe
             "source_probe": source_probe.__dict__, "final_probe": final_probe.__dict__,
             "decoded_video_frames": frames[-1], "qa_at_ms": qa_at_ms,
             "final_sha256": final_sha, "qa_frame_sha256": qa_sha,
+            "caption_ink_share": round(caption_ink_share, 4),
         }, sort_keys=True))
         source.unlink()
         return RenderedPost(final_path, qa_path, receipt_path, receipt_json, sha256(receipt_json),

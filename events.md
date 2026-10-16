@@ -1687,3 +1687,13 @@ area: [backend], [testing], [review]
 
 Independent review found that executable permission errors and unexpected checker failures could leave a stale healthy tool status and immediately reschedule another subprocess refresh on every probe. The command probe now treats all OS execution errors as unavailable; the refresh resolves individual checker failures to false and stamps the completed check, and cancellation is handled without spurious callback errors. Regression tests cover both failure classes and bounded refresh behavior: 15 focused health/lifespan cases pass. The production Docker image rebuilt, imported app and TgCrypto, and contains no gcc. No push, merge or deployment occurred.
 _________________________________________________________________________________
+
+_________________________________________________________________________________
+time: [08:16P] [10-15-26] EDT; actual UTC: 2026-10-16T00:16:08Z
+agent: [Claude Code] [Sonnet 5.5] [tr03p5 labglyph builder]
+worktree: [tr03p5-labglyph] /Users/ecfromthedc/dev/tides-ec976d/b5-labglyph
+type: [bug report]: Never report a caption render as done unless its text can be drawn and is drawn
+area: [backend], [testing]
+
+Every allowed TikTokSans font draws its missing-glyph box for a character it lacks (emoji, U+FE0F, U+2800, U+3164, U+FFA0, kana) and there is no fallback font, so such a caption rendered boxes, passed every check and the job still succeeded. `render_caption_overlay` now refuses any caption with a character the font cannot draw (`CAPTION_GLYPH_MISSING`, listing the code points, never dropping them) and a caption with no drawable letter or digit (`CAPTION_NO_TEXT`); the dead `CAPTION_EMPTY` arm is deleted. `render_post` now compares the overlay's solid pixels with the burned QA frame and fails `CAPTION_NOT_DRAWN` below 60% (JPEG-tolerant); the share is recorded in `decode.json` as `caption_ink_share`, the receipt is unchanged. All three codes are terminal (not in `RETRY_CODES`). Tests: glyph gate table incl. the real 2026-10-02 lovenightdrives caption, the ink check on real footage and framed bands, and the mutations named in the PR. No merge, deploy or Railway action.
+_________________________________________________________________________________
