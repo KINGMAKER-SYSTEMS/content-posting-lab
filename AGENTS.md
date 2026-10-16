@@ -154,8 +154,9 @@
   highlight drawn but its words left out (the bare source frame when the style
   has no background). Where the words would change the reference by more than 48
   levels, the burned frame must have moved at least 40% of the way toward the
-  words' colour, and a box or highlight must itself show its colour in at least
-  60% of its pixels. So a box alone never proves the words, and white words on a
+  words' colour, and a box or highlight must itself be shown: at least 60% of
+  its pixels must be nearer the box colour than the bare source frame (cut as
+  well for box looks) is at that pixel, or hardly different from it. So a box alone never proves the words, and white words on a
   dark box over a white clip are measured against the box and pass. Two different
   failures: fewer than 64 word pixels that the words would change (white text with
   no outline on a white clip, text in its own box's colour) fails

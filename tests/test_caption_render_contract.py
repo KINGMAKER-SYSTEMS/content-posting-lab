@@ -1093,9 +1093,9 @@ def test_saved_lines_that_really_differ_from_the_caption_are_still_refused(capti
 
 # --- Round 8: the Worker's shared line-spelling vectors ------------------------------------------------------------------
 # control-plane-worker/test/fixtures/line-spelling-vectors.json from ecfromthedc/rotational-posting-agent, branch
-# tr03p5-lostpost, commit 89e39a58b, copied byte for byte. Does a list of saved line breaks spell the caption? Canonical
+# tr03p5-lostpost, commit 38e4271c271edde0701151ab8ea26704df122c3c (25 cases), copied byte for byte. Does a list of saved line breaks spell the caption? Canonical
 # order: NFC, strip Cf, collapse whitespace (Python split set), lowercase; lines joined with one space.
-LINE_SPELLING_SHA256 = "5beab23c7ff2915bef5d9b1749b4d7489d7680000c873dafeb5cb51e0309dcf5"
+LINE_SPELLING_SHA256 = "35ba51d206c245b94c66d4c1fa358e7301b84b87277876cb4c73d43b088f2e7b"
 
 
 def _line_spelling_vectors():
@@ -1119,7 +1119,7 @@ def _saved_lines_verdict(caption, lines):
 
 def test_the_line_spelling_vectors_are_the_pinned_ones():
     vectors = _line_spelling_vectors()
-    assert len(vectors) == 21
+    assert len(vectors) == 25
     assert any(vector["accept"] for vector in vectors) and any(not vector["accept"] for vector in vectors)
 
 

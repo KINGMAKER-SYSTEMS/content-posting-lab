@@ -637,7 +637,7 @@ def test_a_normal_render_passes_and_records_how_much_caption_ink_it_shows(real_p
     decoded = _decode(tmp_path / "render")
     assert decoded["caption_ink_share"] >= 0.8
     assert decoded["caption_ink_pixels"] >= render.CAPTION_INK_MIN_PIXELS
-    for name in ("reference.jpg", "background.png"):
+    for name in ("reference.jpg", "background.png", "bare.jpg"):
         assert not (tmp_path / "render" / name).exists()
     # The receipt is unchanged: the share lives in decode.json only.
     assert "caption_ink_share" not in json.loads(result.receipt_json)
@@ -881,22 +881,22 @@ def test_the_ink_measure_scores_the_words_against_their_box_not_the_bare_source(
     box_only = _composite(black, background)
     full = _composite(black, png)
     # Words drawn: moved all the way from the box to white.
-    share, pixels, box_match = render._caption_ink(png, full, box_only, background)
+    share, pixels, box_match = render._caption_ink(png, full, box_only, background, black)
     assert share >= 0.99 and pixels > 1000 and box_match >= 0.99
     # A frame with the box and no words: nothing moved from the box-only reference; the box itself is there.
-    share, pixels, box_match = render._caption_ink(png, box_only, box_only, background)
+    share, pixels, box_match = render._caption_ink(png, box_only, box_only, background, black)
     assert abs(share) < 0.01 and pixels > 1000 and box_match >= 0.99
     # No box and no words in the frame: the box is missing too.
-    assert render._caption_ink(png, black, box_only, background)[2] < 0.05
+    assert render._caption_ink(png, black, box_only, background, black)[2] < 0.05
     # Scored against the bare source instead, the box alone would have looked half-drawn (the old hole).
-    assert render._caption_ink(png, box_only, black, background)[0] > 0.45
+    assert render._caption_ink(png, box_only, black, background, black)[0] > 0.45
 
 
 def test_words_on_a_contrasting_box_have_enough_contrast_even_when_they_match_the_clip():
     white = Image.new("RGB", (1080, 1920), (255, 255, 255))
     png, background = _overlay_for({"color": "#ffffff", "outline": None, "background": "box", "background_color": "#000000"})
     box_only = _composite(white, background)
-    share, pixels, _ = render._caption_ink(png, _composite(white, png), box_only, background)
+    share, pixels, _ = render._caption_ink(png, _composite(white, png), box_only, background, white)
     assert share >= 0.99 and pixels > 1000
     # The same words with no box have nothing to show against the white clip.
     png, background = _overlay_for({"color": "#ffffff", "outline": None})
@@ -916,13 +916,13 @@ def _verdict(row):
 
 
 def test_the_calibration_evidence_in_the_repo_supports_the_thresholds():
-    # tests/fixtures/caption_ink_calibration/real-render-shares.csv holds 3,150 real renders on seeno (9 clips, 5 fonts,
-    # 14 looks incl. boxes and highlights, 12 and 24 pt; each drawn, with no overlay in the video, and for box looks
+    # tests/fixtures/caption_ink_calibration/real-render-shares.csv holds 3,102 real renders on seeno (11 clips, 3 fonts,
+    # 18 looks incl. boxes, highlights and mid-grey boxes, 12 and 24 pt; each drawn, with no overlay in the video, and for box looks
     # with only the box in the video). See docs/caption-ink-calibration.md. The thresholds in post_render.py must
     # still give every recorded measurement its recorded verdict, and keep a clear gap on both sides.
     import csv
     rows = list(csv.DictReader((CALIBRATION_DIR / "real-render-shares.csv").open()))
-    assert len(rows) == 3150
+    assert len(rows) == 3102
     for row in rows:
         assert _verdict(row) == row["verdict"], row
     drawn_visible = [r for r in rows if r["mode"] == "drawn" and r["expected_invisible"] == "no"]
@@ -946,3 +946,61 @@ def test_the_calibration_evidence_in_the_repo_supports_the_thresholds():
     bare_boxed = [r for r in missing if r["mode"] == "bare" and r["box_match"] and r["verdict"] != "LOW_CONTRAST"
                   and float(r["share"]) >= render.CAPTION_INK_MIN_SHARE]
     assert bare_boxed and max(float(r["box_match"]) for r in bare_boxed) < render.CAPTION_BOX_MIN_MATCH - 0.1
+
+
+def test_a_box_needs_the_bare_source_frame_to_be_told_from_the_burned_frame():
+    png, background = _overlay_for({"color": "#ffffff", "outline": None, "background": "box", "background_color": "#808080"})
+    frame = Image.new("RGB", (1080, 1920), (0, 0, 0))
+    with pytest.raises(ValueError):
+        render._caption_ink(png, frame, frame, background)
+
+
+def _grey(value):
+    return Image.new("RGB", (1080, 1920), (value, value, value))
+
+
+@pytest.mark.parametrize("source_grey,box,words", [
+    (0xF0, "#c0c0c0", "#ffffff"),   # Codex r7 F1: light-grey footage, a #c0c0c0 box, white words
+    (0xE0, "#b0b0b0", "#ffffff"),
+    (0xD8, "#a8a8a8", "#ffffff"),
+    (0x90, "#606060", "#ffffff"),
+    (0xA0, "#d8d8d8", "#000000"),
+    (0x70, "#a0a0a0", "#000000"),
+], ids=["codex-r7-f1", "e0-vs-b0", "d8-vs-a8", "90-vs-60", "a0-vs-d8-black-words", "70-vs-a0-black-words"])
+def test_a_mid_grey_box_over_matching_grey_footage_does_not_count_as_shown_when_nothing_was_burned(source_grey, box, words):
+    # The footage sits within the old 64-level colour tolerance of the box colour, so a plain colour match called the
+    # box "shown" with no overlay in the video, and the words (measured against the box) passed too. A box pixel now
+    # counts only when the burned colour is nearer the box colour than the bare source is.
+    png, background = _overlay_for({"color": words, "outline": None, "background": "box", "background_color": box})
+    source = _grey(source_grey)
+    box_only = _composite(source, background)
+    full = _composite(source, png)
+    # Nothing burned: the frame is the bare source.
+    share, pixels, box_match = render._caption_ink(png, source, box_only, background, source)
+    assert box_match < 0.05
+    assert box_match < render.CAPTION_BOX_MIN_MATCH - 0.4
+    # The caption burned in: the box is shown and the words pass.
+    share, pixels, box_match = render._caption_ink(png, full, box_only, background, source)
+    assert box_match >= 0.99 and share >= 0.99 and pixels > 1000
+
+
+@pytest.mark.parametrize("source_grey,box,words", [
+    (0xF0, "#c0c0c0", "#ffffff"),
+    (0xE0, "#b0b0b0", "#ffffff"),
+    (0x90, "#606060", "#ffffff"),
+    (0x70, "#a0a0a0", "#000000"),
+], ids=["codex-r7-f1", "e0-vs-b0", "90-vs-60", "70-vs-a0-black-words"])
+def test_a_mid_grey_box_render_passes_with_the_overlay_and_is_refused_without_it(tmp_path, monkeypatch, source_grey, box, words):
+    # The exact Codex r7 look (and variants) through the real render: overlay in the video passes; no overlay is
+    # NOT_DRAWN (it passed both checks before); a box with no words is NOT_DRAWN too.
+    if not shutil.which("ffmpeg"):
+        pytest.skip("ffmpeg is required for actual render proof")
+    clip = _solid_colour_clip(tmp_path / "grey.mp4", "0x{0:02x}{0:02x}{0:02x}".format(source_grey))
+    look = _look_request(clip, color=words, outline=None, background="box", background_color=box)
+    render.render_post(clip, tmp_path / "ok", look, clock_ms=lambda: NOW)
+    decoded = _decode(tmp_path / "ok")
+    assert decoded["caption_box_match"] >= 0.9 and decoded["caption_ink_share"] >= 0.8
+    for name, transform in (("bare", _transparent), ("box-only", _background_only)):
+        with monkeypatch.context() as patch:
+            _deliver(patch, transform)
+            assert _refused(clip, tmp_path, look).code == "CAPTION_NOT_DRAWN", name

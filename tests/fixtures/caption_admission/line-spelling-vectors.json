@@ -1,5 +1,5 @@
 {
-  "_comment": "Line-spelling vectors: does a list of saved line breaks spell the caption? The canonical rule, in this order: NFC, strip every \\p{Cf} character, collapse whitespace the way Python's str.split() does (JS \\s plus U+001C-001F and U+0085; NBSP and U+3000 are whitespace), lowercase (not casefold). Lines are joined with one space before the comparison. The Worker's labCaptionText (src/domain/captions.js) and the Lab's line_breaks check must give the same answer on every vector. The Lab copies this file byte-for-byte. Answers were derived from the rule and cross-checked by an independent implementation.",
+  "_comment": "Line-spelling vectors: does a list of saved line breaks spell the caption? The canonical rule, in this order: NFC, strip every \\p{Cf} character, collapse whitespace the way Python's str.split() does (JS \\s plus U+001C-001F and U+0085; NBSP and U+3000 are whitespace), lowercase (not casefold). Lines are joined with one space before the comparison. The Worker's labCaptionText (src/domain/captions.js) and the Lab's line_breaks check must give the same answer on every vector. The Lab copies this file byte-for-byte. Two vectors pin ORDER (collapse whitespace after the Cf strip) and one pins LOWERCASE against casefold. Answers were derived from the rule and cross-checked by an independent implementation.",
   "rule": [
     "NFC",
     "strip \\p{Cf}",
@@ -190,6 +190,40 @@
         "all night"
       ],
       "accept": false
+    },
+    {
+      "name": "collapse AFTER the Cf strip: a format character between two spaces leaves one space, not two",
+      "caption": "red car",
+      "lines": [
+        "red \u200b",
+        "car"
+      ],
+      "accept": true
+    },
+    {
+      "name": "collapse AFTER the Cf strip: the same shape with the format character at the start of the second line",
+      "caption": "red car",
+      "lines": [
+        "red",
+        "\u200b car"
+      ],
+      "accept": true
+    },
+    {
+      "name": "lowercase, not casefold: sharp s stays sharp s, so STRASSE does not spell Stra\u00dfe",
+      "caption": "Stra\u00dfe",
+      "lines": [
+        "STRASSE"
+      ],
+      "accept": false
+    },
+    {
+      "name": "lowercase, not casefold: a line that only changes the case of Stra\u00dfe still spells it",
+      "caption": "Stra\u00dfe",
+      "lines": [
+        "STRA\u00dfE"
+      ],
+      "accept": true
     }
   ]
 }

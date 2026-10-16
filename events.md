@@ -1769,3 +1769,13 @@ area: [backend], [testing]
 
 The Worker's shared line-spelling vectors (21 cases, tr03p5-lostpost 89e39a58b) are copied byte for byte into tests/fixtures/caption_admission/ and sha-pinned. Every vector gets the same accept or reject from `CaptionRenderRequest` as from the Worker. Two points of the rule the vectors do not exercise (lowercase not casefold, whitespace collapsed after the Cf strip) are pinned by a Lab-side test.
 _________________________________________________________________________________
+
+_________________________________________________________________________________
+time: [02:57P] [10-15-26] EDT; actual UTC: 2026-10-16T06:57:17Z
+agent: [Claude Code] [Sonnet 5.5] [tr03p5 labglyph builder, round 9]
+worktree: [tr03p5-labglyph] /Users/ecfromthedc/dev/tides-ec976d/b5-labglyph
+type: [bug report]: A mid-grey box cannot count as shown when nothing was burned
+area: [backend], [testing]
+
+Light-grey footage, a #c0c0c0 box and white words passed both ink checks with no overlay in the video: the words were measured against the box (0.76) and the footage sat within the 64-level colour match of the box. A box pixel now counts as shown only if the burned colour is nearer the box colour than the bare source frame is at that pixel (the bare frame is cut as well for box looks); where the box is within 24 levels of the source nothing can be told and the pixel counts. Calibration redone on 3,102 real renders including mid-grey boxes. The Worker's line-spelling vectors are re-pinned at 25 cases.
+_________________________________________________________________________________

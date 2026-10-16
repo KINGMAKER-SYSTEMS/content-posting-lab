@@ -61,11 +61,14 @@ CAPTION_INK_CONTRAST = 48
 CAPTION_INK_MIN_PIXELS = 64
 # The box or highlight itself must be in the burned frame too. Words measured against a box-only reference would
 # otherwise pass when nothing at all was drawn and the clip happens to be the words' colour (white words on a
-# black box over a white clip, with no overlay in the video). The box is a flat colour, so a plain colour match is
-# enough: at least CAPTION_BOX_MIN_MATCH of its pixels within CAPTION_BOX_MATCH_TOLERANCE levels of the box colour.
+# black box over a white clip, with no overlay in the video). A box pixel counts as shown only when the burned
+# colour is nearer the box colour than the bare source frame's colour at that pixel (a plain colour match is not
+# enough: light-grey footage sits within tolerance of a #c0c0c0 box without any overlay). Where the box is hardly
+# different from the source (within CAPTION_BOX_DISTINCT levels) nothing can be told either way and the pixel counts.
+# At least CAPTION_BOX_MIN_MATCH of the box's pixels must be shown.
 CAPTION_BOX_ALPHA_MIN = 200
 CAPTION_BOX_WORDS_TOLERANCE = 24
-CAPTION_BOX_MATCH_TOLERANCE = 64
+CAPTION_BOX_DISTINCT = 24
 CAPTION_BOX_MIN_MATCH = 0.60
 Hash = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
 Identity = Annotated[str, Field(min_length=1, max_length=512)]
@@ -374,7 +377,8 @@ def _encode_final(source: Path, overlay: Path, final: Path, source_probe: MediaP
 
 
 def _caption_ink(overlay_png: bytes, qa_frame: Image.Image, reference_frame: Image.Image,
-                 background_png: bytes | None = None) -> tuple[float, int, float | None]:
+                 background_png: bytes | None = None,
+                 source_frame: Image.Image | None = None) -> tuple[float, int, float | None]:
     """What of the caption reached the burned frame: ``(words share, words pixels measured, box match)``.
 
     The overlay is laid over the 1080x1920 delivery frame at 0:0 (see
@@ -393,8 +397,13 @@ def _caption_ink(overlay_png: bytes, qa_frame: Image.Image, reference_frame: Ima
     ``(0.0, count, ...)`` when fewer than CAPTION_INK_MIN_PIXELS pixels can be measured.
 
     The box match is the share of the box's own pixels (the background, away from the
-    words) that show the box colour in the burned frame; None when there is no background.
+    words) that are shown in the burned frame: nearer the box colour than ``source_frame``
+    (the bare delivery frame, required with a background) is at that pixel, or not
+    distinguishable from it (within CAPTION_BOX_DISTINCT levels); None when there is no
+    background.
     """
+    if background_png is not None and source_frame is None:
+        raise ValueError("a background needs the bare source frame to tell it from the burned frame")
 
     with Image.open(io.BytesIO(overlay_png)) as opened:
         overlay = opened.convert("RGBA")
@@ -412,8 +421,11 @@ def _caption_ink(overlay_png: bytes, qa_frame: Image.Image, reference_frame: Ima
         box_pixels = (background[..., 3] >= CAPTION_BOX_ALPHA_MIN) & (
             np.abs(colour - background[..., :3]).max(axis=-1) <= CAPTION_BOX_WORDS_TOLERANCE)
         if box_pixels.any():
-            close = np.abs(burned - background[..., :3]).max(axis=-1) <= CAPTION_BOX_MATCH_TOLERANCE
-            box_match = float(close[box_pixels].mean())
+            bare = np.asarray(source_frame.convert("RGB").crop(box), dtype=np.float32)
+            box_colour = background[..., :3]
+            shown = ((np.abs(box_colour - bare).max(axis=-1) <= CAPTION_BOX_DISTINCT)
+                     | (np.abs(burned - box_colour).sum(axis=-1) < np.abs(burned - bare).sum(axis=-1)))
+            box_match = float(shown[box_pixels].mean())
     expected = colour * (alpha / 255.0)[..., None] + reference * (1.0 - alpha / 255.0)[..., None]
     change = expected - reference
     measured = (alpha >= CAPTION_INK_ALPHA_MIN) & (np.abs(change).max(axis=-1) > CAPTION_INK_CONTRAST)
@@ -515,8 +527,17 @@ def render_post(source_path: Path, output_directory: Path, request: PostRenderRe
         reference_command += ["-filter_complex", _video_graph(source_probe, band_height, overlay=background_png is not None),
                               "-map", "[v]", "-frames:v", "1", "-q:v", "3", "-update", "1", str(reference_path)]
         _run(reference_command, tools, output_file=reference_path, output_limit=MAX_QA_BYTES)
+        bare_path = None
         if background_png is not None:
             background_path.unlink()
+            # With a box the reference holds the box, so the bare source frame is cut too: it is what the burned
+            # frame looks like at the box if the overlay never made it into the video.
+            bare_path = output_directory / "bare.jpg"
+            _run([tools.ffmpeg, "-nostdin", "-v", "error", "-xerror", "-protocol_whitelist", "file,pipe",
+                  "-noautorotate", "-ss", f"{qa_at_ms / 1000:.3f}", "-f", "mov", "-i", str(source),
+                  "-filter_complex", _video_graph(source_probe, band_height, overlay=False), "-map", "[v]",
+                  "-frames:v", "1", "-q:v", "3", "-update", "1", str(bare_path)],
+                 tools, output_file=bare_path, output_limit=MAX_QA_BYTES)
         with Image.open(qa_path) as frame, Image.open(reference_path) as reference:
             frame.load()
             reference.load()
@@ -525,9 +546,19 @@ def render_post(source_path: Path, output_directory: Path, request: PostRenderRe
             if reference.size != (1080, 1920):
                 raise PostRenderError("qa_frame_invalid", "source reference frame is not 1080x1920")
             # The delivered pixels must show the words, not only the receipt.
+            if bare_path is None:
+                bare = None
+            else:
+                bare = Image.open(bare_path)
+                bare.load()
+                if bare.size != (1080, 1920):
+                    raise PostRenderError("qa_frame_invalid", "bare source frame is not 1080x1920")
             caption_ink_share, caption_ink_pixels, caption_box_match = _caption_ink(
-                overlay_bytes, frame, reference, background_png)
+                overlay_bytes, frame, reference, background_png, bare)
         reference_path.unlink()
+        if bare_path is not None:
+            bare.close()
+            bare_path.unlink()
         if caption_ink_pixels < CAPTION_INK_MIN_PIXELS:
             # A fact about this clip and this look (the words are the colour of what is behind them), not a renderer fault.
             raise PostRenderError("CAPTION_LOW_CONTRAST", "the caption cannot be told apart from the picture behind it")
