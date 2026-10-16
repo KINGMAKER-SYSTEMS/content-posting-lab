@@ -63,9 +63,11 @@ CAPTION_INK_MIN_PIXELS = 64
 # otherwise pass when nothing at all was drawn and the clip happens to be the words' colour (white words on a
 # black box over a white clip, with no overlay in the video). A box pixel counts as shown only when the burned
 # colour is nearer the box colour than the bare source frame's colour at that pixel (a plain colour match is not
-# enough: light-grey footage sits within tolerance of a #c0c0c0 box without any overlay). Where the box is hardly
-# different from the source (within CAPTION_BOX_DISTINCT levels) nothing can be told either way and the pixel counts.
-# At least CAPTION_BOX_MIN_MATCH of the box's pixels must be shown.
+# enough: light-grey footage sits within tolerance of a #c0c0c0 box without any overlay). Box pixels within
+# CAPTION_BOX_DISTINCT levels of the source are left out of that tally (a black box over a black clip burns the source
+# colour and is a real caption; nothing can be told either way), and there the words are judged against the bare
+# source, so an unchanged source pixel can never count as ink. At least CAPTION_BOX_MIN_MATCH of the counted box
+# pixels must be shown.
 CAPTION_BOX_ALPHA_MIN = 200
 CAPTION_BOX_WORDS_TOLERANCE = 24
 CAPTION_BOX_DISTINCT = 24
@@ -387,24 +389,34 @@ def _caption_ink(overlay_png: bytes, qa_frame: Image.Image, reference_frame: Ima
 
     ``reference_frame`` is the delivery frame with the caption's background drawn and
     the words left out (the bare source frame when the style has no background);
-    ``background_png`` is that background on its own, or None. For each overlay pixel
-    with alpha at least CAPTION_INK_ALPHA_MIN the overlay should turn the reference
-    colour into the expected colour. A box or highlight pixel expects what the reference
-    already shows, so it changes nothing and is skipped with every other pixel whose
+    ``background_png`` is that background on its own, or None; ``source_frame`` is the
+    bare delivery frame (required with a background).
+
+    What is directly behind a word pixel is the box colour when the box really differs
+    from the source there (more than CAPTION_BOX_DISTINCT levels), and the bare source
+    otherwise. A box that hardly differs from the picture is no evidence of anything, so an
+    unchanged source pixel can never count as ink: there the words are judged against the
+    bare source AND against the box, and a pixel scores the lower of the two (unchanged
+    footage scores nothing against the source, a box with no words scores nothing against
+    the box). Codec drift on an unchanged pixel is under CAPTION_INK_CONTRAST x
+    CAPTION_INK_MIN_SHARE levels (about 19), which is what keeps it below the gate.
+
+    For each overlay pixel with alpha at least CAPTION_INK_ALPHA_MIN the overlay should
+    turn what is behind it into the expected colour. A box or highlight pixel expects what
+    is already there, so it changes nothing and is skipped with every other pixel whose
     expected change is under CAPTION_INK_CONTRAST. Each measured pixel scores how far the
-    burned frame moved from the reference toward the expected colour (1.0 is all the way,
-    0.0 not at all, clipped to -0.5..1.5); the words share is the mean, and
+    burned frame moved from what is behind it toward the expected colour (1.0 is all the
+    way, 0.0 not at all, clipped to -0.5..1.5); the words share is the mean, and
     ``(0.0, count, ...)`` when fewer than CAPTION_INK_MIN_PIXELS pixels can be measured.
 
     The box match is the share of the box's own pixels (the background, away from the
-    words) that are shown in the burned frame: nearer the box colour than ``source_frame``
-    (the bare delivery frame, required with a background) is at that pixel, or not
-    distinguishable from it (within CAPTION_BOX_DISTINCT levels); None when there is no
-    background.
+    words) that are shown in the burned frame: nearer the box colour than the bare source
+    is at that pixel. Box pixels within CAPTION_BOX_DISTINCT levels of the source are left
+    out of the tally altogether (a black box over a black clip burns the source colour and
+    is a real caption; nothing can be told either way); None when none are left.
     """
     if background_png is not None and source_frame is None:
         raise ValueError("a background needs the bare source frame to tell it from the burned frame")
-
     with Image.open(io.BytesIO(overlay_png)) as opened:
         overlay = opened.convert("RGBA")
     box = overlay.getchannel("A").getbbox()
@@ -414,27 +426,60 @@ def _caption_ink(overlay_png: bytes, qa_frame: Image.Image, reference_frame: Ima
     alpha, colour = layer[..., 3], layer[..., :3]
     reference = np.asarray(reference_frame.convert("RGB").crop(box), dtype=np.float32)
     burned = np.asarray(qa_frame.convert("RGB").crop(box), dtype=np.float32)
+    behind = reference
+    near_box = None
     box_match = None
     if background_png is not None:
         with Image.open(io.BytesIO(background_png)) as opened:
             background = np.asarray(opened.convert("RGBA").crop(box), dtype=np.float32)
-        box_pixels = (background[..., 3] >= CAPTION_BOX_ALPHA_MIN) & (
-            np.abs(colour - background[..., :3]).max(axis=-1) <= CAPTION_BOX_WORDS_TOLERANCE)
+        bare = np.asarray(source_frame.convert("RGB").crop(box), dtype=np.float32)
+        box_colour = background[..., :3]
+        under_box = background[..., 3] >= CAPTION_BOX_ALPHA_MIN
+        distinct = np.abs(box_colour - bare).max(axis=-1) > CAPTION_BOX_DISTINCT
+        behind = np.where((under_box & distinct)[..., None], reference, bare)
+        near_box = under_box & ~distinct
+        box_pixels = under_box & distinct & (np.abs(colour - box_colour).max(axis=-1) <= CAPTION_BOX_WORDS_TOLERANCE)
         if box_pixels.any():
-            bare = np.asarray(source_frame.convert("RGB").crop(box), dtype=np.float32)
-            box_colour = background[..., :3]
-            shown = ((np.abs(box_colour - bare).max(axis=-1) <= CAPTION_BOX_DISTINCT)
-                     | (np.abs(burned - box_colour).sum(axis=-1) < np.abs(burned - bare).sum(axis=-1)))
+            shown = np.abs(burned - box_colour).sum(axis=-1) < np.abs(burned - bare).sum(axis=-1)
             box_match = float(shown[box_pixels].mean())
-    expected = colour * (alpha / 255.0)[..., None] + reference * (1.0 - alpha / 255.0)[..., None]
-    change = expected - reference
+    a3 = (alpha / 255.0)[..., None]
+    expected = colour * a3 + behind * (1.0 - a3)
+    change = expected - behind
     measured = (alpha >= CAPTION_INK_ALPHA_MIN) & (np.abs(change).max(axis=-1) > CAPTION_INK_CONTRAST)
+    if near_box is not None:
+        change_box = colour * a3 + reference * (1.0 - a3) - reference
+        measured &= ~near_box | (np.abs(change_box).max(axis=-1) > CAPTION_INK_CONTRAST)
     count = int(measured.sum())
     if count < CAPTION_INK_MIN_PIXELS:
         return 0.0, count, box_match
-    wanted, got = change[measured], (burned - reference)[measured]
+    wanted, got = change[measured], (burned - behind)[measured]
     progress = np.clip((wanted * got).sum(axis=-1) / (wanted * wanted).sum(axis=-1), -0.5, 1.5)
+    if near_box is not None:
+        near = near_box[measured]
+        if near.any():
+            wanted_box, got_box = change_box[measured][near], (burned - reference)[measured][near]
+            progress_box = np.clip((wanted_box * got_box).sum(axis=-1) / (wanted_box * wanted_box).sum(axis=-1), -0.5, 1.5)
+            progress[near] = np.minimum(progress[near], progress_box)
     return float(progress.mean()), count, box_match
+
+
+def _ink_refusal(share: float, pixels: int, box_match: float | None) -> tuple[str, str] | None:
+    """The refusal (code, message) the ink measures call for, or None when the caption is shown.
+
+    One decision for the render and the class-guard tests. A box that is not in the burned frame
+    is a renderer fault whatever the words look like, so it is judged first; then words that
+    cannot be told apart from what is behind them (a fact about this clip and look); then words
+    that should show but did not change the frame (a renderer fault).
+    """
+    if box_match is not None and box_match < CAPTION_BOX_MIN_MATCH:
+        return "CAPTION_NOT_DRAWN", "the caption's box is not visible in the burned QA frame"
+    if pixels < CAPTION_INK_MIN_PIXELS:
+        # A fact about this clip and this look (the words are the colour of what is behind them), not a renderer fault.
+        return "CAPTION_LOW_CONTRAST", "the caption cannot be told apart from the picture behind it"
+    if share < CAPTION_INK_MIN_SHARE:
+        # Contrast was expected but the burned frame did not change at the words: the renderer did not draw them.
+        return "CAPTION_NOT_DRAWN", "the caption is not visible in the burned QA frame"
+    return None
 
 
 def source_visual_matches(request: PostRenderRequest) -> bool:
@@ -559,14 +604,9 @@ def render_post(source_path: Path, output_directory: Path, request: PostRenderRe
         if bare_path is not None:
             bare.close()
             bare_path.unlink()
-        if caption_ink_pixels < CAPTION_INK_MIN_PIXELS:
-            # A fact about this clip and this look (the words are the colour of what is behind them), not a renderer fault.
-            raise PostRenderError("CAPTION_LOW_CONTRAST", "the caption cannot be told apart from the picture behind it")
-        if caption_ink_share < CAPTION_INK_MIN_SHARE:
-            # Contrast was expected but the burned frame did not change at the words: the renderer did not draw them.
-            raise PostRenderError("CAPTION_NOT_DRAWN", "the caption is not visible in the burned QA frame")
-        if caption_box_match is not None and caption_box_match < CAPTION_BOX_MIN_MATCH:
-            raise PostRenderError("CAPTION_NOT_DRAWN", "the caption's box is not visible in the burned QA frame")
+        refusal = _ink_refusal(caption_ink_share, caption_ink_pixels, caption_box_match)
+        if refusal is not None:
+            raise PostRenderError(*refusal)
         final_sha, final_length = _file_hash(final_path, MAX_FINAL_BYTES)
         qa_sha, _ = _file_hash(qa_path, MAX_QA_BYTES)
         if final_sha == request.source_sha256:

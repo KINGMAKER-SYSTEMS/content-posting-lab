@@ -1123,7 +1123,10 @@ def test_the_line_spelling_vectors_are_the_pinned_ones():
     assert any(vector["accept"] for vector in vectors) and any(not vector["accept"] for vector in vectors)
 
 
-def test_every_line_spelling_vector_gets_the_same_answer_as_the_worker():
+def test_every_line_spelling_vector_gets_the_accept_or_reject_the_pinned_contract_says():
+    # The vectors ARE the contract (sha-pinned, copied byte for byte from the Worker lane that decided each answer): this
+    # compares the Lab with the fixture's accept flags, not with Worker code run here. Agreement with the Worker is
+    # the Worker's own test of the same file.
     disagreements = []
     for vector in _line_spelling_vectors():
         got = _saved_lines_verdict(vector["caption"], vector["lines"])
@@ -1142,7 +1145,7 @@ def test_every_accepted_line_spelling_vector_renders_and_draws_the_lines():
 
 
 def test_lowercase_not_casefold_and_the_whitespace_step_comes_after_the_format_strip():
-    # Two points of the canonical rule the shared vectors do not exercise, pinned here: the comparison lowercases
+    # Two points of the canonical rule, also in the shared vectors since round 9 and kept here as a Lab-side pin: the comparison lowercases
     # (it does not casefold, so "Stra\u00dfe" and "STRASSE" are different spellings), and whitespace is collapsed
     # AFTER the Cf strip, so a format character between two spaces leaves one space, not two.
     assert _saved_lines_verdict("Stra\u00dfe", ["STRA\u00dfE"]) is True

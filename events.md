@@ -1779,3 +1779,13 @@ area: [backend], [testing]
 
 Light-grey footage, a #c0c0c0 box and white words passed both ink checks with no overlay in the video: the words were measured against the box (0.76) and the footage sat within the 64-level colour match of the box. A box pixel now counts as shown only if the burned colour is nearer the box colour than the bare source frame is at that pixel (the bare frame is cut as well for box looks); where the box is within 24 levels of the source nothing can be told and the pixel counts. Calibration redone on 3,102 real renders including mid-grey boxes. The Worker's line-spelling vectors are re-pinned at 25 cases.
 _________________________________________________________________________________
+
+_________________________________________________________________________________
+time: [04:38P] [10-16-26] EDT; actual UTC: 2026-10-16T08:38:52Z
+agent: [Claude Code] [Sonnet 5.5] [tr03p5 labglyph builder, round 10]
+worktree: [tr03p5-labglyph] /Users/ecfromthedc/dev/tides-ec976d/b5-labglyph
+type: [bug report]: Unchanged footage can never count as caption ink
+area: [backend], [testing]
+
+A flat #e0e0e0 source, a #c8c8c8 box (24 levels away, "indistinct") and white words passed both ink checks with no overlay: the words were measured against the hypothetical box, so unchanged footage scored 0.436 over the 0.40 gate. Now what is behind the words is the box colour only where the box really differs from the source (more than 24 levels) and the bare source otherwise; near a box a word pixel scores the lower of its judgement against the source and against the box, and needs 48 levels of contrast against both. Indistinct box pixels are left out of the box tally instead of counting as shown or as failed. The decision is one function (`_ink_refusal`) and a class-guard grid over source level, box level, words colour and outline (both sides of the 24-level boundary) asserts that nothing missing passes and a real render is never not-drawn. Calibration redone on 3,384 real renders including a fast-motion real clip; codec drift measured on real footage.
+_________________________________________________________________________________

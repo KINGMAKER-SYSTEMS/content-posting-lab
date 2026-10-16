@@ -905,30 +905,31 @@ def test_words_on_a_contrasting_box_have_enough_contrast_even_when_they_match_th
 
 def _verdict(row):
     """The verdict the current thresholds give a recorded measurement."""
-    pixels = int(row["pixels"])
-    if pixels < render.CAPTION_INK_MIN_PIXELS:
-        return "LOW_CONTRAST"
-    if float(row["share"]) < render.CAPTION_INK_MIN_SHARE:
-        return "NOT_DRAWN"
-    if row["box_match"] and float(row["box_match"]) < render.CAPTION_BOX_MIN_MATCH:
-        return "NOT_DRAWN"
-    return "PASS"
+    refusal = render._ink_refusal(float(row["share"]), int(row["pixels"]),
+                                  float(row["box_match"]) if row["box_match"] else None)
+    return "PASS" if refusal is None else refusal[0].replace("CAPTION_", "")
+
+
+def _calibration_rows():
+    import csv
+    return list(csv.DictReader((CALIBRATION_DIR / "real-render-shares.csv").open()))
 
 
 def test_the_calibration_evidence_in_the_repo_supports_the_thresholds():
-    # tests/fixtures/caption_ink_calibration/real-render-shares.csv holds 3,102 real renders on seeno (11 clips, 3 fonts,
-    # 18 looks incl. boxes, highlights and mid-grey boxes, 12 and 24 pt; each drawn, with no overlay in the video, and for box looks
-    # with only the box in the video). See docs/caption-ink-calibration.md. The thresholds in post_render.py must
-    # still give every recorded measurement its recorded verdict, and keep a clear gap on both sides.
-    import csv
-    rows = list(csv.DictReader((CALIBRATION_DIR / "real-render-shares.csv").open()))
-    assert len(rows) == 3102
+    # tests/fixtures/caption_ink_calibration/real-render-shares.csv holds 3,384 real renders on seeno (12 clips incl. a
+    # fast-motion real one, 3 fonts, 18 looks incl. boxes, highlights and mid-grey boxes, 12 and 24 pt; each drawn, with
+    # nothing burned in, and for box looks with only the box in the video). See docs/caption-ink-calibration.md. The
+    # thresholds in post_render.py must still give every recorded measurement its recorded verdict, and keep a clear
+    # gap on both sides.
+    rows = _calibration_rows()
+    assert len(rows) == 3384
     for row in rows:
         assert _verdict(row) == row["verdict"], row
     drawn_visible = [r for r in rows if r["mode"] == "drawn" and r["expected_invisible"] == "no"]
     missing = [r for r in rows if r["mode"] != "drawn"]
-    # Every drawn caption that can be seen passes; every one that cannot (same colour as what is behind it) is low contrast.
-    assert drawn_visible and all(r["verdict"] == "PASS" for r in drawn_visible)
+    # Every drawn caption that can be seen passes: none is refused, as not drawn or as low contrast. Every one that
+    # cannot (same colour as what is behind it) is low contrast.
+    assert len(drawn_visible) == 1200 and all(r["verdict"] == "PASS" for r in drawn_visible)
     assert all(r["verdict"] == "LOW_CONTRAST" for r in rows if r["mode"] == "drawn" and r["expected_invisible"] == "yes")
     # Nothing missing from the video ever passes.
     assert missing and all(r["verdict"] != "PASS" for r in missing)
@@ -938,14 +939,35 @@ def test_the_calibration_evidence_in_the_repo_supports_the_thresholds():
     assert min(float(r["share"]) for r in plain) > render.CAPTION_INK_MIN_SHARE + 0.1
     assert min(float(r["share"]) for r in boxed) > render.CAPTION_INK_MIN_SHARE + 0.4
     assert min(float(r["box_match"]) for r in boxed) > render.CAPTION_BOX_MIN_MATCH + 0.25
-    bare_plain = [r for r in missing if r["mode"] == "bare" and not r["box_match"] and r["share"]]
+    bare_plain = [r for r in missing if r["mode"] == "bare" and not r["box_match"] and int(r["pixels"]) >= render.CAPTION_INK_MIN_PIXELS]
     assert max(float(r["share"]) for r in bare_plain if r["clip"] != "noise") < 0.1
     assert max(float(r["share"]) for r in bare_plain if r["clip"] == "noise") < render.CAPTION_INK_MIN_SHARE - 0.05
-    # A box look with no overlay can score well on the words (white words on a black box over a white clip match the
-    # white clip); the box itself is what is missing.
-    bare_boxed = [r for r in missing if r["mode"] == "bare" and r["box_match"] and r["verdict"] != "LOW_CONTRAST"
-                  and float(r["share"]) >= render.CAPTION_INK_MIN_SHARE]
-    assert bare_boxed and max(float(r["box_match"]) for r in bare_boxed) < render.CAPTION_BOX_MIN_MATCH - 0.1
+    # A box look with nothing burned in or with only the box can score well on the words (white words on a black box
+    # over a white clip match the white clip); the box itself is what is missing.
+    broken_boxed = [r for r in missing if r["box_match"] and int(r["pixels"]) >= render.CAPTION_INK_MIN_PIXELS
+                    and float(r["share"]) >= render.CAPTION_INK_MIN_SHARE]
+    assert broken_boxed and max(float(r["box_match"]) for r in broken_boxed) < render.CAPTION_BOX_MIN_MATCH - 0.1
+
+
+def test_codec_drift_on_real_footage_stays_under_what_the_share_gate_tolerates():
+    # An unchanged source pixel must not look like ink. Its re-encode drift d scores d / (words contrast) against the
+    # gate, and the least contrast ever measured is CAPTION_INK_CONTRAST, so drift under CONTRAST x MIN_SHARE levels
+    # (about 19) can never pass as ink. Measured on the nothing-burned-in renders (the QA frame against the bare
+    # source frame, over the caption area): real footage, flat clips and a fast-motion real clip stay under it. The
+    # synthetic high-contrast test pattern stays under it at its 99th percentile. Random noise is not codec-stable by
+    # nature (drift near 180) and is held by its words share (0.29, see the calibration test).
+    tolerated = render.CAPTION_INK_CONTRAST * render.CAPTION_INK_MIN_SHARE
+    drift = {}
+    for row in _calibration_rows():
+        if row["drift_p99"]:
+            entry = drift.setdefault(row["clip"], [0.0, 0.0])
+            entry[0] = max(entry[0], float(row["drift_p99"]))
+            entry[1] = max(entry[1], float(row["drift_max"]))
+    for clip in ("portrait", "portrait-fast", "white", "bright-f2", "light-gray-f0", "mid-gray-a0", "bright-yellow",
+                 "black", "gray", "red"):
+        assert drift[clip][1] < tolerated, (clip, drift[clip])
+    assert drift["testsrc2"][0] < tolerated
+    assert drift["noise"][0] > 100
 
 
 def test_a_box_needs_the_bare_source_frame_to_be_told_from_the_burned_frame():
@@ -1004,3 +1026,155 @@ def test_a_mid_grey_box_render_passes_with_the_overlay_and_is_refused_without_it
         with monkeypatch.context() as patch:
             _deliver(patch, transform)
             assert _refused(clip, tmp_path, look).code == "CAPTION_NOT_DRAWN", name
+
+
+# --- Round 10: unchanged footage can never count as ink (Codex r9 F1) ----------------------------------------------------
+
+def test_codex_r9_counterexample_a_captionless_final_is_refused_with_a_near_box():
+    # Flat #e0e0e0 source, #c8c8c8 box (24 levels away: indistinct), white words, no outline, NO overlay in the
+    # video. The words used to be measured against the hypothetical box and unchanged footage scored
+    # (224-200)/(255-200) = 0.436, over the 0.40 gate, so a captionless final passed. A box that hardly differs from
+    # the picture is no evidence: the words are judged against the bare source (and the box), and unchanged footage
+    # can never count as ink.
+    png, background = _overlay_for({"color": "#ffffff", "outline": None, "background": "box", "background_color": "#c8c8c8"})
+    source = _grey(0xE0)
+    box_only = _composite(source, background)
+    share, pixels, box_match = render._caption_ink(png, source, box_only, background, source)
+    assert share < 0.05, share
+    assert render._ink_refusal(share, pixels, box_match) is not None
+    # The same look with the caption really burned in is not refused as not-drawn.
+    burned = _composite(source, png)
+    refusal = render._ink_refusal(*render._caption_ink(png, burned, box_only, background, source))
+    assert refusal is None or refusal[0] == "CAPTION_LOW_CONTRAST"
+
+
+def _jpeg(image, quality=92):
+    import io
+    out = io.BytesIO()
+    image.convert("RGB").save(out, format="JPEG", quality=quality)
+    out.seek(0)
+    return Image.open(out).convert("RGB")
+
+
+_GRID_SOURCES = [0, 16, 40, 80, 120, 128, 160, 200, 224, 232, 240, 255]
+# Box level relative to the source: far, near, and both sides of the 24-level "indistinct" boundary and of the
+# 48-level word-contrast line; 0 is a box exactly the colour of the footage.
+_GRID_OFFSETS = [-100, -60, -49, -48, -25, -24, -23, -1, 0, 1, 23, 24, 25, 48, 49, 60, 100]
+_GRID_WORDS = ["#ffffff", "#000000"]
+_GRID_OUTLINES = [False, True]
+
+
+def _grid_cases():
+    for source in _GRID_SOURCES:
+        for words in _GRID_WORDS:
+            for outline in _GRID_OUTLINES:
+                yield source, None, words, outline
+                for offset in _GRID_OFFSETS:
+                    box = source + offset
+                    if 0 <= box <= 255:
+                        yield source, box, words, outline
+
+
+def test_class_guard_nothing_missing_from_the_video_passes_and_a_real_render_is_never_not_drawn():
+    # Source level x box level x word colour x outline, including both sides of the 24-level box boundary, light on
+    # light and dark on dark. Frames are flat, so the "burned" frames are exactly what ffmpeg would deliver, round-
+    # tripped through JPEG like the QA frame. For every combination:
+    #   real      the caption burned in: shown, or CAPTION_LOW_CONTRAST (words that cannot be told apart from what is
+    #             behind them); never CAPTION_NOT_DRAWN, or a good post would be refused as a renderer fault.
+    #   no overlay  the bare source: never shown; and when the real render is shown, exactly CAPTION_NOT_DRAWN.
+    #   box only    the box without the words (box looks): the same.
+    cache = {}
+    checked = real_shown = window_cells = window_shown = 0
+    for source_level, box_level, words, outline in _grid_cases():
+        key = (box_level, words, outline)
+        if key not in cache:
+            style = {"color": words, "outline": ("#000000" if words == "#ffffff" else "#ffffff") if outline else None}
+            if box_level is not None:
+                style.update(background="box", background_color="#%02x%02x%02x" % ((box_level,) * 3))
+            cache[key] = _overlay_for(style)
+        png, background = cache[key]
+        source = _grey(source_level)
+        reference = _composite(source, background) if background is not None else source
+        frames = {"real": _composite(source, png), "none": source}
+        if background is not None:
+            frames["box-only"] = reference
+        verdicts = {}
+        for name, frame in frames.items():
+            measures = render._caption_ink(png, _jpeg(frame), reference, background, source)
+            refusal = render._ink_refusal(*measures)
+            verdicts[name] = None if refusal is None else refusal[0]
+        where = (source_level, box_level, words, outline, verdicts)
+        assert verdicts["real"] in (None, "CAPTION_LOW_CONTRAST"), where
+        assert verdicts["none"] is not None, where
+        if "box-only" in verdicts:
+            assert verdicts["box-only"] is not None, where
+        if verdicts["real"] is None:
+            real_shown += 1
+            assert verdicts["none"] == "CAPTION_NOT_DRAWN", where
+            if "box-only" in verdicts:
+                assert verdicts["box-only"] == "CAPTION_NOT_DRAWN", where
+        checked += 1
+        if box_level is not None and abs(box_level - source_level) <= render.CAPTION_BOX_DISTINCT:
+            window_cells += 1
+            window_shown += verdicts["real"] is None
+    assert checked > 600 and real_shown > 250
+    # The cells inside the 24-level window are where the indistinct branch is exercised: deleting it must go red.
+    assert window_cells > 100 and window_shown > 40
+
+
+@pytest.mark.parametrize("source_level,box_level,words", [
+    (0xE0, 0xC8, "#ffffff"),   # Codex r9 F1: 24 levels apart, indistinct
+    (0xE0, 0xC7, "#ffffff"),   # 25 levels apart, distinct
+    (0xE0, 0xF8, "#000000"),
+    (0x30, 0x48, "#000000"),   # dark on dark, 24 apart
+    (0x30, 0x49, "#000000"),   # dark on dark, 25 apart
+    (0x30, 0x18, "#ffffff"),
+], ids=["light-24", "light-25", "light-lighter-box", "dark-24", "dark-25", "dark-darker-box"])
+def test_near_boundary_boxes_through_a_real_render(tmp_path, monkeypatch, source_level, box_level, words):
+    # The grid above on real footage: a real encode (H.264, JPEG QA frame). Overlay burned in: shown or low contrast
+    # (never not-drawn). No overlay: refused, and not-drawn whenever the real render is shown.
+    if not shutil.which("ffmpeg"):
+        pytest.skip("ffmpeg is required for actual render proof")
+    clip = _solid_colour_clip(tmp_path / "flat.mp4", "0x{0:02x}{0:02x}{0:02x}".format(source_level))
+    look = _look_request(clip, color=words, outline=None, background="box",
+                         background_color="#{0:02x}{0:02x}{0:02x}".format(box_level))
+    real = None
+    try:
+        render.render_post(clip, tmp_path / "real", look, clock_ms=lambda: NOW)
+    except render.PostRenderError as error:
+        real = error.code
+        assert real == "CAPTION_LOW_CONTRAST"
+    _deliver(monkeypatch, _transparent)
+    missing = _refused(clip, tmp_path, look).code
+    if real is None:
+        assert missing == "CAPTION_NOT_DRAWN"
+
+
+def test_the_refusal_order_a_missing_box_is_judged_before_words_that_cannot_be_seen():
+    # A box that is not in the burned frame is a renderer fault whatever the words look like; words that cannot be
+    # told apart from what is behind them are a fact about the clip and look; words that should show but did not
+    # change the frame are a renderer fault.
+    refuse = render._ink_refusal
+    assert refuse(0.0, 0, 0.0)[0] == "CAPTION_NOT_DRAWN"            # box missing, words unmeasurable
+    assert refuse(0.0, 0, None)[0] == "CAPTION_LOW_CONTRAST"        # no box or an indistinct one, words unmeasurable
+    assert refuse(0.0, 500, 1.0)[0] == "CAPTION_NOT_DRAWN"          # words measurable, nothing changed
+    assert refuse(0.39, 500, None)[0] == "CAPTION_NOT_DRAWN"
+    assert refuse(0.95, 500, 0.59)[0] == "CAPTION_NOT_DRAWN"        # words fine, box missing
+    assert refuse(0.95, 500, 0.60) is None and refuse(0.40, 64, None) is None and refuse(0.95, 500, None) is None
+
+
+def test_a_box_only_frame_with_codec_drift_is_not_word_ink_for_an_indistinct_box():
+    # Source 0x20, box 0x38 (24 levels up: indistinct), words 0x71 (57 above the box, 81 above the source). The box
+    # alone moves the picture a third of the way to the words; add 9 levels of codec drift (the real fast-motion clip
+    # drifts up to 16) and judging against the source alone scores 0.41, over the gate. Words must also move past the
+    # box: the lower of the two judgements scores a box-only frame about 0.16.
+    png, background = _overlay_for({"color": "#717171", "outline": None, "background": "box", "background_color": "#383838"})
+    source = _grey(0x20)
+    box_only = _composite(source, background)
+    drifted = Image.eval(box_only, lambda v: min(255, v + 9))
+    share, pixels, box_match = render._caption_ink(png, drifted, box_only, background, source)
+    assert pixels > 1000
+    assert share < render.CAPTION_INK_MIN_SHARE - 0.15, share
+    # The same words really burned in score fully, drift or not.
+    burned = Image.eval(_composite(source, png), lambda v: min(255, v + 9))
+    assert render._caption_ink(png, burned, box_only, background, source)[0] > 0.9

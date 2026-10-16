@@ -152,21 +152,28 @@
   frame is cut it compares that frame with a reference: the same source frame at
   the same time, through the same delivery graph, with the caption's box or
   highlight drawn but its words left out (the bare source frame when the style
-  has no background). Where the words would change the reference by more than 48
-  levels, the burned frame must have moved at least 40% of the way toward the
-  words' colour, and a box or highlight must itself be shown: at least 60% of
-  its pixels must be nearer the box colour than the bare source frame (cut as
-  well for box looks) is at that pixel, or hardly different from it. So a box alone never proves the words, and white words on a
-  dark box over a white clip are measured against the box and pass. Two different
-  failures: fewer than 64 word pixels that the words would change (white text with
-  no outline on a white clip, text in its own box's colour) fails
-  `CAPTION_LOW_CONTRAST`, a fact about that clip and look; contrast was expected
-  but the frame did not change (words or box missing) fails `CAPTION_NOT_DRAWN`, a
-  renderer fault. The measures are in `decode.json` (`caption_ink_share`,
-  `caption_ink_pixels`, `caption_box_match`). All four new codes are terminal (not
-  in `RETRY_CODES`). `numpy` is a direct requirement (floor only; imported at the
-  top of `services/post_render.py`). The calibration behind the thresholds is in
-  `docs/caption-ink-calibration.md` and `tests/fixtures/caption_ink_calibration/`.
+  has no background; box looks also cut the bare source frame). What is behind the
+  words is the box colour where the box differs from the source by more than 24
+  levels and the bare source otherwise, so an unchanged source pixel can never
+  count as ink (near a box a pixel scores the lower of its judgement against the
+  source and against the box). Where the words would change what is behind them by
+  more than 48 levels, the burned frame must have moved at least 40% of the way
+  toward the words' colour; and a box or highlight must itself be shown: at least
+  60% of its counted pixels nearer the box colour than the bare source is (pixels
+  within 24 levels of the source are left out of that tally). A box alone never
+  proves the words, and white words on a dark box over a white clip are measured
+  against the box and pass. A box that is not in the burned frame is judged first
+  (`CAPTION_NOT_DRAWN`); then fewer than 64 word pixels that the words would
+  change (white text with no outline on a white clip, text in its own box's colour)
+  fails `CAPTION_LOW_CONTRAST`, a fact about that clip and look; then contrast
+  expected but no change at the words fails `CAPTION_NOT_DRAWN`, a renderer
+  fault. One function, `_ink_refusal`, makes the decision. The measures are in
+  `decode.json` (`caption_ink_share`, `caption_ink_pixels`, `caption_box_match`).
+  All four new codes are terminal (not in `RETRY_CODES`). `numpy` is a direct
+  requirement (floor only; imported at the top of `services/post_render.py`). The
+  calibration behind the thresholds, including the codec drift measured on real
+  footage, is in `docs/caption-ink-calibration.md` and
+  `tests/fixtures/caption_ink_calibration/`.
 - `services/post_render_jobs.py` and `routers/post_renders.py` own durable pre-lease
   render jobs, authenticated page-scoped status/artifacts and source acquisition.
 - `docs/post-render-setup.md` owns prepared-render storage, authentication and
