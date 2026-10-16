@@ -709,13 +709,12 @@ def caption_request(caption, **style_overrides):
     pytest.param("\U0001F62D\U0001F62D", "U+1F62D", id="two-emoji"),
     pytest.param("ok \U0001F62D", "U+1F62D", id="text-then-emoji-is-refused-not-trimmed"),
     pytest.param("\U0001F525 on fire", "U+1F525", id="emoji-first"),
-    pytest.param("so sad❤", "U+2764", id="old-style-heart"),
-    pytest.param("ok️ fine", "U+FE0F", id="variation-selector-inside-text"),
-    pytest.param("⠀", "U+2800", id="braille-blank-only"),
-    pytest.param("ㅤ", "U+3164", id="hangul-filler-only"),
-    pytest.param("ﾠ", "U+FFA0", id="halfwidth-hangul-filler-only"),
-    pytest.param("hello あ", "U+3042", id="kana"),
-    pytest.param("café‍", "U+200D", id="zero-width-joiner"),
+    pytest.param("so sad\u2764", "U+2764", id="old-style-heart"),
+    pytest.param("ok\ufe0f fine", "U+FE0F", id="variation-selector-inside-text"),
+    pytest.param("\u2800", "U+2800", id="braille-blank-only"),
+    pytest.param("\u3164", "U+3164", id="hangul-filler-only"),
+    pytest.param("\uffa0", "U+FFA0", id="halfwidth-hangul-filler-only"),
+    pytest.param("hello \u3042", "U+3042", id="kana"),
     pytest.param(LOVENIGHTDRIVES_1002, "U+1F62D", id="real-posted-caption-lovenightdrives-1002"),
 ])
 def test_a_caption_with_a_character_the_font_cannot_draw_is_refused(font_dir, caption, expected):
@@ -725,7 +724,7 @@ def test_a_caption_with_a_character_the_font_cannot_draw_is_refused(font_dir, ca
     assert expected in error.value.message
 
 
-@pytest.mark.parametrize("caption", ["?!", ".", "...", "​", "​​", "﻿", "- - -", "#", "’"])
+@pytest.mark.parametrize("caption", ["?!", ".", "...", "\u200b", "\u200b\u200b", "\ufeff", "- - -", "#", "\u2019"])
 def test_a_caption_with_nothing_drawable_to_read_is_refused_as_no_text(font_dir, caption):
     # U+200B and U+FEFF have real glyphs with no ink; punctuation has ink but no letter or digit.
     with pytest.raises(CaptionRenderError) as error:
@@ -735,15 +734,15 @@ def test_a_caption_with_nothing_drawable_to_read_is_refused_as_no_text(font_dir,
 
 @pytest.mark.parametrize("caption", [
     "it's 2am",
-    "café",
+    "caf\u00e9",
     "#fyp",
     "WHEN YOU FINALLY SEE THE LIGHT",
-    "у тебя всё получится",
-    "rock’n’roll — “quoted”",
+    "\u0443 \u0442\u0435\u0431\u044f \u0432\u0441\u0451 \u043f\u043e\u043b\u0443\u0447\u0438\u0442\u0441\u044f",
+    "rock\u2019n\u2019roll \u2014 \u201cquoted\u201d",
     "7",
-    "tiếng việt",
+    "ti\u1ebfng vi\u1ec7t",
     "two\nlines",
-    "ok nbsp and zero​width",
+    "ok\u00a0nbsp and zero\u200bwidth",
 ])
 def test_a_caption_the_font_can_draw_still_renders(font_dir, caption):
     result = render_caption_overlay(caption_request(caption), font_dir=font_dir)
@@ -767,8 +766,8 @@ def test_the_gate_checks_the_text_as_it_will_be_drawn(font_dir):
     with pytest.raises(CaptionRenderError) as error:
         render_caption_overlay(broken, font_dir=font_dir)
     assert error.value.code == "CAPTION_GLYPH_MISSING"
-    # The case transform runs first: ß becomes SS, a letter the font has.
-    assert render_caption_overlay(caption_request("straße", case="upper"), font_dir=font_dir)
+    # The case transform runs first: \u00df becomes SS, a letter the font has.
+    assert render_caption_overlay(caption_request("stra\u00dfe", case="upper"), font_dir=font_dir)
 
 
 def test_the_refusal_lists_each_missing_character_once_and_never_the_caption(font_dir):
@@ -792,6 +791,48 @@ def test_caption_empty_is_gone_because_no_input_can_reach_it():
     # The old CAPTION_EMPTY arm needed zero lines. A blank caption is refused at the request, a blank
     # explicit line still counts as one line, and an empty line_breaks list is refused at the style.
     with pytest.raises(ValidationError):
-        CaptionRenderRequest.model_validate({**request().model_dump(by_alias=True), "caption": "   "})
+        CaptionRenderRequest.model_validate({**request().model_dump(by_alias=True), "caption": " \u00a0 "})
     with pytest.raises(ValidationError):
         request(line_breaks=[])
+
+
+# --- Format and zero-width characters: removed first, like the Worker's captionAdmission -------------------------------
+# The Worker removes every Unicode Cf character (soft hyphen, U+200B-U+200D, U+2060, U+FEFF, bidi marks) before it
+# checks glyphs, so it admits a caption that holds one. The Lab removes the same set before the glyph gate and before
+# drawing, and refuses what is left only when the font has no glyph for it. U+FE0F and emoji are not Cf and stay refused.
+
+@pytest.mark.parametrize("caption,drawn", [
+    ("good\u00adcaption", "goodcaption"),
+    ("a\u200db words", "ab words"),
+    ("\ufeffhello there", "hello there"),
+    ("zero\u200bwidth\u2060join", "zerowidthjoin"),
+])
+def test_format_characters_are_removed_and_the_rest_is_drawn(font_dir, caption, drawn):
+    result = render_caption_overlay(caption_request(caption), font_dir=font_dir)
+    assert " ".join(line.text for line in result.plan.lines) == drawn
+    assert ink_box(result)
+
+
+def test_format_characters_in_saved_line_breaks_are_removed_too(font_dir):
+    result = render_caption_overlay(
+        caption_request("good\u00adcap \u200b tion", line_breaks=["good\u00adcap", "\u200b", "tion"]), font_dir=font_dir)
+    assert [line.text for line in result.plan.lines] == ["goodcap", "", "tion"]
+
+
+@pytest.mark.parametrize("caption,only", [
+    ("good\u00adcaption \U0001F62D", "U+1F62D"),
+    ("a\u200db words \U0001F525", "U+1F525"),
+    ("\ufeffhello there\uFE0F", "U+FE0F"),
+    ("hello\u200b\u3164there", "U+3164"),
+])
+def test_removing_format_characters_never_hides_a_character_with_no_glyph(font_dir, caption, only):
+    with pytest.raises(CaptionRenderError) as error:
+        render_caption_overlay(caption_request(caption), font_dir=font_dir)
+    assert error.value.code == "CAPTION_GLYPH_MISSING"
+    assert error.value.message.endswith(": " + only)
+
+
+def test_a_caption_of_only_format_characters_is_no_text(font_dir):
+    with pytest.raises(CaptionRenderError) as error:
+        render_caption_overlay(caption_request("\u00ad\u200d\u2060\ufeff"), font_dir=font_dir)
+    assert error.value.code == "CAPTION_NO_TEXT"

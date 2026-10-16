@@ -132,8 +132,10 @@
   The local quality-check request carries the same optional `picture_frame`;
   its typed placement and bounds use that picture band and retain full-canvas
   behavior when the field is absent.
-- `services/caption_render.py` refuses, and never drops, any caption character
-  the chosen font has no glyph for (emoji, U+FE0F, U+2800, U+3164, kana and the
+- `services/caption_render.py` first removes Unicode format and zero-width
+  characters (category Cf: soft hyphen, U+200B-U+200D, U+2060, U+FEFF), the same
+  set the Worker's caption admission removes; they draw nothing. It then refuses,
+  and never drops, any caption character the chosen font has no glyph for (emoji, U+FE0F, U+2800, U+3164, kana and the
   rest: the font would draw its missing-glyph box) with `CAPTION_GLYPH_MISSING`,
   and a caption with no drawable letter or digit with `CAPTION_NO_TEXT`.
 - `services/post_render.py` owns local prepared-final rendering and exact artifact

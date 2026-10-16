@@ -1697,3 +1697,13 @@ area: [backend], [testing]
 
 Every allowed TikTokSans font draws its missing-glyph box for a character it lacks (emoji, U+FE0F, U+2800, U+3164, U+FFA0, kana) and there is no fallback font, so such a caption rendered boxes, passed every check and the job still succeeded. `render_caption_overlay` now refuses any caption with a character the font cannot draw (`CAPTION_GLYPH_MISSING`, listing the code points, never dropping them) and a caption with no drawable letter or digit (`CAPTION_NO_TEXT`); the dead `CAPTION_EMPTY` arm is deleted. `render_post` now compares the overlay's solid pixels with the burned QA frame and fails `CAPTION_NOT_DRAWN` below 60% (JPEG-tolerant); the share is recorded in `decode.json` as `caption_ink_share`, the receipt is unchanged. All three codes are terminal (not in `RETRY_CODES`). Tests: glyph gate table incl. the real 2026-10-02 lovenightdrives caption, the ink check on real footage and framed bands, and the mutations named in the PR. No merge, deploy or Railway action.
 _________________________________________________________________________________
+
+_________________________________________________________________________________
+time: [08:25P] [10-15-26] EDT; actual UTC: 2026-10-16T00:25:20Z
+agent: [Claude Code] [Sonnet 5.5] [tr03p5 labglyph builder, round 2]
+worktree: [tr03p5-labglyph] /Users/ecfromthedc/dev/tides-ec976d/b5-labglyph
+type: [bug report]: Match the Worker: remove format characters before the glyph gate
+area: [backend], [testing]
+
+The Worker's caption admission removes every Unicode Cf character (soft hyphen, U+200B-U+200D, U+2060, U+FEFF) before checking glyphs, but the Lab gate saw the raw text and refused a caption holding one, which the Worker would then learn as refused for that look. `render_caption_overlay` now removes the same set before the glyph gate and before drawing (the picture never showed them). U+FE0F, emoji and the blank fillers are not removed and are still refused.
+_________________________________________________________________________________

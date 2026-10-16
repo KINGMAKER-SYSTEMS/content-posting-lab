@@ -568,6 +568,21 @@ def _load_font(font_path: Path, size_px: int) -> ImageFont.FreeTypeFont:
 # later check passes; the caption has to be refused here instead (owner rule,
 # 2026-10-15: no emoji on a caption, and never a post without its caption).
 # U+10FFFD is unassigned, so drawing it always gives the missing-glyph box.
+def _without_format_characters(text: str) -> str:
+    """Remove Unicode format and zero-width characters (category Cf).
+
+    The soft hyphen, U+200B-U+200D, U+2060 and U+FEFF are the usual ones. They
+    draw nothing and take no room, so the picture never showed them. The Worker's
+    caption admission (``captionAdmission``) removes the same set before it
+    looks at glyphs, so this keeps the two verdicts the same. U+FE0F and emoji
+    are not format characters and stay for the glyph gate to refuse.
+    """
+
+    if text.isascii():
+        return text
+    return "".join(char for char in text if unicodedata.category(char) != "Cf")
+
+
 _NOTDEF_PROBE_CHAR = "\U0010FFFD"
 _GLYPH_PROBE_PX = 64
 _GLYPH_ERROR_CHARS_MAX = 8
@@ -805,8 +820,8 @@ def render_caption_overlay(
             fonts[size] = _load_font(font_path, size)
         return fonts[size]
 
-    rendered_source = _cased(request.caption, style.case)
-    lines = ([_cased(line, style.case) for line in style.line_breaks]
+    rendered_source = _without_format_characters(_cased(request.caption, style.case))
+    lines = ([_without_format_characters(_cased(line, style.case)) for line in style.line_breaks]
              if style.line_breaks is not None
              else _wrap_preserving_explicit_newlines(rendered_source, style.line_balance))
     # The wrap always returns a line and the request needs one visible
