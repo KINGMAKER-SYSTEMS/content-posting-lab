@@ -658,9 +658,10 @@ def test_white_text_with_an_outline_on_a_white_clip_passes(tmp_path):
 
 @pytest.mark.parametrize("clip_colour", ["white", "0xf2f2f2"])
 @pytest.mark.parametrize("applied", [True, False], ids=["overlay-applied", "overlay-missing"])
-def test_white_text_with_no_outline_on_a_white_clip_is_refused_as_not_drawn(tmp_path, monkeypatch, clip_colour, applied):
+def test_white_text_with_no_outline_on_a_white_clip_is_refused_as_low_contrast(tmp_path, monkeypatch, clip_colour, applied):
     # It used to pass whether or not the overlay was applied (white matches white). Now the caption must change
-    # the picture: here it changes nothing, so the post would carry no readable caption and is refused.
+    # the picture: here it changes nothing, so the post would carry no readable caption and is refused. That is
+    # a fact about this clip and look (CAPTION_LOW_CONTRAST), the same whether or not the overlay was applied.
     if not shutil.which("ffmpeg"):
         pytest.skip("ffmpeg is required for actual render proof")
     clip = _solid_colour_clip(tmp_path / "bright.mp4", clip_colour)
@@ -668,9 +669,8 @@ def test_white_text_with_no_outline_on_a_white_clip_is_refused_as_not_drawn(tmp_
         _without_overlay(monkeypatch)
     with pytest.raises(render.PostRenderError) as error:
         render.render_post(clip, tmp_path / "render", _look_request(clip, outline=None), clock_ms=lambda: NOW)
-    assert error.value.code == "CAPTION_NOT_DRAWN"
-    if applied:
-        assert "cannot be told apart" in str(error.value)
+    assert error.value.code == "CAPTION_LOW_CONTRAST"
+    assert "cannot be told apart" in str(error.value)
     assert not (tmp_path / "render").exists()
 
 
@@ -742,5 +742,29 @@ def test_text_in_a_box_of_its_own_colour_is_not_a_visible_caption(real_portrait,
         render.render_post(real_portrait, tmp_path / "render",
                            _look_request(real_portrait, color="#ffffff", outline=None, background="box",
                                          background_color="#ffffff"), clock_ms=lambda: NOW)
-    assert error.value.code == "CAPTION_NOT_DRAWN"
+    assert error.value.code == "CAPTION_LOW_CONTRAST"
     assert "cannot be told apart" in str(error.value)
+
+
+def test_the_two_refusals_are_different_terminal_codes(real_portrait, monkeypatch, tmp_path):
+    # CAPTION_LOW_CONTRAST: this clip and look cannot show the words (a fact about the pair, not a renderer fault).
+    # CAPTION_NOT_DRAWN: contrast was expected, the frame did not change (the renderer did not draw it).
+    from services.post_render_jobs import RETRY_CODES
+    assert {"CAPTION_LOW_CONTRAST", "CAPTION_NOT_DRAWN"}.isdisjoint(RETRY_CODES)
+    low_contrast = _look_request(real_portrait, color="#ffffff", outline=None, background="box", background_color="#ffffff")
+    with pytest.raises(render.PostRenderError) as first:
+        render.render_post(real_portrait, tmp_path / "a", low_contrast, clock_ms=lambda: NOW)
+    _without_overlay(monkeypatch)
+    with pytest.raises(render.PostRenderError) as second:
+        render.render_post(real_portrait, tmp_path / "b", request(render.sha256(real_portrait.read_bytes())),
+                           clock_ms=lambda: NOW)
+    assert (first.value.code, second.value.code) == ("CAPTION_LOW_CONTRAST", "CAPTION_NOT_DRAWN")
+
+
+def test_numpy_is_a_declared_requirement_imported_when_the_module_loads():
+    # A missing install must fail at build or import, not at the first render. Floor only: an exact pin would fight
+    # numba and librosa.
+    requirements = (Path(__file__).parents[1] / "requirements.txt").read_text().splitlines()
+    numpy_lines = [line for line in requirements if line.lower().startswith("numpy")]
+    assert len(numpy_lines) == 1 and numpy_lines[0].startswith("numpy>=") and "==" not in numpy_lines[0]
+    assert render.np.__name__ == "numpy"

@@ -21,7 +21,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Callable, Literal
 
-from PIL import Image, ImageChops
+import numpy as np
+from PIL import Image
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from burn_quality_gate import overlay_geometry_reasons
@@ -378,8 +379,6 @@ def _caption_ink(overlay_png: bytes, qa_frame: Image.Image, source_frame: Image.
     the mean. ``(0.0, 0)`` when no pixel can be measured.
     """
 
-    import numpy as np  # already installed with librosa; imported here like services/sound_cache.py
-
     with Image.open(io.BytesIO(overlay_png)) as opened:
         overlay = opened.convert("RGBA")
     box = overlay.getchannel("A").getbbox()
@@ -502,8 +501,10 @@ def render_post(source_path: Path, output_directory: Path, request: PostRenderRe
                 overlay_bytes, frame, reference, style.background_color if style.background != "none" else None)
         reference_path.unlink()
         if caption_ink_pixels < CAPTION_INK_MIN_PIXELS:
-            raise PostRenderError("CAPTION_NOT_DRAWN", "the caption cannot be told apart from the picture behind it")
+            # A fact about this clip and this look (the words are the picture's colour), not a renderer fault.
+            raise PostRenderError("CAPTION_LOW_CONTRAST", "the caption cannot be told apart from the picture behind it")
         if caption_ink_share < CAPTION_INK_MIN_SHARE:
+            # Contrast was expected but the burned frame did not change: the renderer did not draw it.
             raise PostRenderError("CAPTION_NOT_DRAWN", "the caption is not visible in the burned QA frame")
         final_sha, final_length = _file_hash(final_path, MAX_FINAL_BYTES)
         qa_sha, _ = _file_hash(qa_path, MAX_QA_BYTES)

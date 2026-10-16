@@ -864,8 +864,9 @@ def drawing_engine(request, monkeypatch):
     pytest.param("good\u00adcaption \u200d\U0001F62D", "CAPTION_GLYPH_MISSING", id="emoji-after-format-characters"),
 ])
 def test_the_verdict_is_the_same_under_either_pillow_layout_engine(font_dir, drawing_engine, caption, code):
-    # Raqm (HarfBuzz) can hide a missing default-ignorable character that BASIC layout draws as a box. The probe is
-    # pinned to BASIC, so the refusal does not depend on which engine the host's Pillow drew with.
+    # Raqm (HarfBuzz) can hide a missing default-ignorable character that BASIC layout draws as a box. Coverage is
+    # read from the font's cmap table, so the layout engine does not change the verdict. (Where the host's Pillow
+    # has no raqm, the RAQM runs are skipped.)
     with pytest.raises(CaptionRenderError) as error:
         render_caption_overlay(caption_request(caption), font_dir=font_dir)
     assert error.value.code == code

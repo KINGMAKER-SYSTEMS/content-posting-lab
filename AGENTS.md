@@ -151,9 +151,14 @@
   (same delivery graph, no caption): where the caption would change the picture
   (glyph pixels only, never a background box) the burned frame must have moved at
   least 40% of the way toward the caption colour, and enough pixels must change
-  to see it at all; otherwise the job fails `CAPTION_NOT_DRAWN`. The measure and
-  pixel count are in `decode.json` (`caption_ink_share`, `caption_ink_pixels`).
-  All three codes are terminal (not in `RETRY_CODES`).
+  to see it at all. Two different failures: fewer than 64 glyph pixels that the
+  caption would change by more than 48 levels (for example white text with no
+  outline on a white clip) fails `CAPTION_LOW_CONTRAST`, a fact about that clip
+  and look; contrast was expected but the frame did not change fails
+  `CAPTION_NOT_DRAWN`, a renderer fault. The measure and pixel count are in
+  `decode.json` (`caption_ink_share`, `caption_ink_pixels`). All four new codes
+  are terminal (not in `RETRY_CODES`). `numpy` is a direct requirement (floor
+  only; it is imported at the top of `services/post_render.py`).
 - `services/post_render_jobs.py` and `routers/post_renders.py` own durable pre-lease
   render jobs, authenticated page-scoped status/artifacts and source acquisition.
 - `docs/post-render-setup.md` owns prepared-render storage, authentication and
@@ -779,7 +784,7 @@
   for durable crash/retry/lock/auth/source-grant and applied-video provenance checks.
 - Run `pytest -q tests/test_post_render.py` for prepared rendering, actual MP4
   decode, treatment-once preservation, byte-budget retry and bounded failures,
-  and the burned-frame caption ink check (`CAPTION_NOT_DRAWN`, change against
+  and the burned-frame caption ink check (`CAPTION_NOT_DRAWN`, `CAPTION_LOW_CONTRAST`, change against
   the source frame, recorded in `decode.json` as `caption_ink_share`).
 - Run `pytest -q tests/test_page_frame_geometry.py tests/test_page_frame_cut.py
   tests/test_page_frame_no_frame_identity.py tests/test_page_frame_gate.py

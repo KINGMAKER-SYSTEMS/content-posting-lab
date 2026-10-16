@@ -1695,7 +1695,7 @@ worktree: [tr03p5-labglyph] /Users/ecfromthedc/dev/tides-ec976d/b5-labglyph
 type: [bug report]: Never report a caption render as done unless its text can be drawn and is drawn
 area: [backend], [testing]
 
-Every allowed TikTokSans font draws its missing-glyph box for a character it lacks (emoji, U+FE0F, U+2800, U+3164, U+FFA0, kana) and there is no fallback font, so such a caption rendered boxes, passed every check and the job still succeeded. `render_caption_overlay` now refuses any caption with a character the font cannot draw (`CAPTION_GLYPH_MISSING`, listing the code points, never dropping them) and a caption with no drawable letter or digit (`CAPTION_NO_TEXT`); the dead `CAPTION_EMPTY` arm is deleted. `render_post` now compares the overlay's solid pixels with the burned QA frame and fails `CAPTION_NOT_DRAWN` below 60% (JPEG-tolerant); the share is recorded in `decode.json` as `caption_ink_share`, the receipt is unchanged. All three codes are terminal (not in `RETRY_CODES`). Tests: glyph gate table incl. the real 2026-10-02 lovenightdrives caption, the ink check on real footage and framed bands, and the mutations named in the PR. No merge, deploy or Railway action.
+Every allowed TikTokSans font draws its missing-glyph box for a character it lacks (emoji, U+FE0F, U+2800, U+3164, U+FFA0, kana) and there is no fallback font, so such a caption rendered boxes, passed every check and the job still succeeded. `render_caption_overlay` now refuses any caption with a character the font cannot draw (`CAPTION_GLYPH_MISSING`, listing the code points, never dropping them) and a caption with no drawable letter or digit (`CAPTION_NO_TEXT`); the dead `CAPTION_EMPTY` arm is deleted. `render_post` now compares the burned QA frame with the same source frame at the same time (same delivery graph, no caption), on glyph pixels only, and refuses a caption that did not change the picture as it should (`CAPTION_NOT_DRAWN`, below 40% of the expected change) or cannot change it at all for this clip and look (`CAPTION_LOW_CONTRAST`); the measure is recorded in `decode.json` as `caption_ink_share`, the receipt is unchanged. All four new codes are terminal (not in `RETRY_CODES`). Tests: glyph gate table incl. the real 2026-10-02 lovenightdrives caption, the ink check on real footage and framed bands, and the Worker's shared vectors. No merge, deploy or Railway action.
 _________________________________________________________________________________
 
 _________________________________________________________________________________
@@ -1718,4 +1718,14 @@ area: [backend], [testing]
 
 Reviews of the glyph gate and ink check, fixed: (1) glyph coverage is now read from the font's cmap table, not from a rendered probe, so the verdict no longer depends on Pillow's layout engine (raqm can hide a missing U+FE0F); Pillow is pinned in requirements.txt. (2) The ink check now measures change against the source frame at the same time (same delivery graph, no caption): glyph pixels only, never a background box, so white text on a white clip, or a missing overlay behind a same-colour box, is refused as CAPTION_NOT_DRAWN, and thin fonts on busy footage pass. (3) NFC before the Cf strip, and saved line_breaks normalised exactly like the caption. (4) The Worker's shared admission vectors and drawable table are pinned as test fixtures; every vector the Worker admits the Lab admits and draws.
 
+_________________________________________________________________________________
+
+_________________________________________________________________________________
+time: [10:07P] [10-15-26] EDT; actual UTC: 2026-10-16T02:07:11Z
+agent: [Claude Code] [Sonnet 5.5] [tr03p5 labglyph builder, round 4]
+worktree: [tr03p5-labglyph] /Users/ecfromthedc/dev/tides-ec976d/b5-labglyph
+type: [bug report]: Split "cannot be seen" from "was not drawn"
+area: [backend], [testing]
+
+The ink check had one code for two causes. Now `CAPTION_LOW_CONTRAST` means the caption cannot be told apart from this clip (fewer than 64 glyph pixels would change by more than 48 levels, such as white text with no outline on a white clip): a fact about the clip and look. `CAPTION_NOT_DRAWN` is kept for a renderer fault (contrast expected, frame did not change). Both are terminal. `numpy` is declared in requirements.txt (floor only) and imported at the top of post_render.py so a missing install fails at build or import, not at the first render.
 _________________________________________________________________________________
